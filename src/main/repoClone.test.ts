@@ -620,6 +620,11 @@ describe('arguments and environment', () => {
     expect(gw).toMatchObject({ git_ssh: 'ok' })
     expect('git_exec_path' in gw).toBe(false)
     expect('Git_Pager' in gw).toBe(false)
+    const ctl = { PATH: 'p', ORGAI_DATA_DIR: 'x', ORGAI_VAULT_KEY_FILE: 'x', ORGAI_CLI_VAULT_KEY_FILE: 'x', ELECTRON_RUN_AS_NODE: '1' }
+    for (const e of [gitEnv(ctl), ghEnv(ctl)]) {
+      expect(e.PATH).toBe('p')
+      for (const k of Object.keys(ctl).filter((n) => n !== 'PATH')) expect(k in e).toBe(false)
+    }
     const h = ghEnv(base)
     expect(h).toMatchObject({ PATH: 'p', GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' })
     for (const k of ['GH_HOST', 'DEBUG', 'GH_REPO', 'GH_ENTERPRISE_TOKEN']) expect(k in h).toBe(false)
@@ -760,6 +765,55 @@ describe('progress', () => {
     expect(r.tail).not.toContain('evil')
     expect(r.tail).toContain('fatal: boom')
     expect(r.tail).not.toContain('Receiving objects')
+  })
+
+  it('redacts a token split across chunks before the partial-line limit can cut through it', () => {
+    const limit = 8 * 1024
+    const token = 'ghp_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    const split = 8
+    const r = new CloneOutputReader(noop)
+
+    // The second chunk makes the retained tail start inside the credential in the unpatched reader.
+    r.feed(`${'x'.repeat(limit - split)}${token.slice(0, split)}`)
+    r.feed(`${token.slice(split)}${'x'.repeat(limit - split)}`)
+    r.feed('!\n')
+    r.end()
+
+    expect(r.tail).not.toContain(token.slice(-8))
+    expect(cloneErrorMessage(r.tail, { display: 'o/r', host: 'github.com' })).not.toContain(token.slice(-8))
+  })
+
+  it.each([
+    ['sk', `sk-${'a'.repeat(24)}`],
+    ['pk', `pk-${'b'.repeat(24)}`],
+    ['rk', `rk-${'c'.repeat(24)}`],
+    ['GitHub', `ghp_${'1234567890abcdefghij'}`],
+    ['GitHub fine-grained', `github_pat_${'ABCdef1234567890abcd'}`],
+    ['GitLab', `glpat-${'AbCdEf1234567890'}`]
+  ])('redacts a %s credential split across output chunks', (_label, token) => {
+    const r = new CloneOutputReader(noop)
+    const split = Math.min(5, token.length - 1)
+
+    r.feed(`fatal: ${token.slice(0, split)}`)
+    r.feed(`${token.slice(split)} denied\n`)
+
+    expect(r.tail).not.toContain(token)
+    expect(r.tail).not.toContain(token.slice(-8))
+    expect(cloneErrorMessage(r.tail, { display: 'o/r', host: 'github.com' })).not.toContain(token.slice(-8))
+  })
+
+  it('discards an overlong unterminated line before a cutoff can expose credential suffixes', () => {
+    const r = new CloneOutputReader(noop)
+    const limit = 8 * 1024
+    const password = 'p'.repeat(120)
+
+    r.feed(`${'x'.repeat(limit - 10)} https://user:`)
+    r.feed(`${password}@host.example/repo\nfatal: safe follow-up\n`)
+
+    expect(r.tail).not.toContain(password)
+    expect(r.tail).not.toContain('user:')
+    expect(r.tail).not.toContain('host.example')
+    expect(r.tail).toContain('fatal: safe follow-up')
   })
 
   it('bounds the tail', () => {

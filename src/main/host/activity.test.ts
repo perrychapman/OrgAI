@@ -153,7 +153,8 @@ describe('HostActivityTracker idle exit', () => {
   it('drains only after idleMs of continuous idleness; activity resets the clock; disarm stops it', async () => {
     vi.useFakeTimers()
     const onDrained = vi.fn()
-    const a = new HostActivityTracker({ idleMs: 60_000, pollMs: 10_000, onDrained })
+    const onDrainStart = vi.fn()
+    const a = new HostActivityTracker({ idleMs: 60_000, pollMs: 10_000, onDrained, onDrainStart })
     a.armIdleExit()
     vi.advanceTimersByTime(50_000)
     expect(onDrained).not.toHaveBeenCalled()
@@ -169,13 +170,13 @@ describe('HostActivityTracker idle exit', () => {
     vi.advanceTimersByTime(50_000)
     expect(onDrained).not.toHaveBeenCalled()
     expect(a.state()).toBe('ready')
-    vi.advanceTimersByTime(20_000)
-    await Promise.resolve()
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(20_000)
+    // onDrained comes from a setImmediate queued by that last poll.
+    await vi.advanceTimersByTimeAsync(1)
+    expect(onDrainStart).toHaveBeenCalledWith(false)
     expect(onDrained).toHaveBeenCalledTimes(1)
     expect(a.state()).toBe('draining')
-    vi.advanceTimersByTime(600_000)
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(600_000)
     expect(onDrained).toHaveBeenCalledTimes(1)
   })
 
@@ -185,8 +186,7 @@ describe('HostActivityTracker idle exit', () => {
     const a = new HostActivityTracker({ idleMs: 1_000, pollMs: 100, onDrained })
     a.acquire('pausedAutoResumes')
     a.armIdleExit()
-    vi.advanceTimersByTime(60_000)
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(onDrained).not.toHaveBeenCalled()
   })
 
@@ -197,8 +197,7 @@ describe('HostActivityTracker idle exit', () => {
     a.armIdleExit()
     vi.advanceTimersByTime(500)
     a.disarmIdleExit()
-    vi.advanceTimersByTime(60_000)
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(onDrained).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -223,16 +222,16 @@ describe('HostActivityTracker idle exit', () => {
   })
 })
 
-describe('HostActivityTracker requestDrain', () => {
+/** Resolve after the next setImmediate (onDrained runs from one). */
+const immediate = (): Promise<void> => new Promise((r) => setImmediate(r))
+
+describe('HostActivityTracker requestDrain (Wave 7: never releases, settles every drain)', () => {
   function fakeOwnership(order: string[] = []) {
     return {
       order,
       markDraining: vi.fn(() => {
         order.push('markDraining')
         return true
-      }),
-      release: vi.fn(() => {
-        order.push('release')
       })
     }
   }
@@ -240,17 +239,19 @@ describe('HostActivityTracker requestDrain', () => {
   it('refuses while busy with the blocking counts and changes nothing', async () => {
     const own = fakeOwnership()
     const onDrained = vi.fn()
-    const { a } = tracker({ ownership: own, onDrained })
+    const onDrainStart = vi.fn()
+    const { a } = tracker({ ownership: own, onDrained, onDrainStart })
     a.acquire('liveRuns')
     a.addSource('backgroundTasks', () => 2)
     await expect(a.requestDrain()).resolves.toEqual({ stopping: false, refusedBecause: { liveRuns: 1, backgroundTasks: 2 } })
     expect(a.state()).toBe('ready')
     expect(own.markDraining).not.toHaveBeenCalled()
-    expect(own.release).not.toHaveBeenCalled()
+    expect(onDrainStart).not.toHaveBeenCalled()
+    await immediate()
     expect(onDrained).not.toHaveBeenCalled()
   })
 
-  it('with force, marks draining, calls forceStop and then releases, even when forceStop throws', async () => {
+  it('with force: onDrainStart, markDraining, quiesce, forceStop (fallback on a throw), then onDrained from setImmediate', async () => {
     const order: string[] = []
     const own = fakeOwnership(order)
     const forceStop = vi.fn(async () => {
@@ -262,13 +263,28 @@ describe('HostActivityTracker requestDrain', () => {
       forceStop,
       forceStopFallback: () => order.push('fallback'),
       quiesce: () => order.push('quiesce'),
+      onDrainStart: (force) => order.push(`start:${force}`),
       onDrained: () => order.push('onDrained')
     })
     a.acquire('liveRuns')
     await expect(a.requestDrain({ force: true })).resolves.toEqual({ stopping: true })
-    expect(order).toEqual(['markDraining', 'quiesce', 'forceStop', 'fallback', 'release', 'onDrained'])
+    // The drain promise resolves first; onDrained only from the next setImmediate (the host.stop reply goes first).
+    expect(order).toEqual(['start:true', 'markDraining', 'quiesce', 'forceStop', 'fallback'])
+    await immediate()
+    expect(order).toEqual(['start:true', 'markDraining', 'quiesce', 'forceStop', 'fallback', 'onDrained'])
     expect(logs.some((l) => l.includes('stop failed'))).toBe(true)
     expect(a.state()).toBe('draining')
+  })
+
+  it('onDrained never runs inside requestDrain, even for an idle non-forced drain', async () => {
+    const onDrained = vi.fn()
+    const { a } = tracker({ ownership: fakeOwnership(), onDrained })
+    const p = a.requestDrain()
+    expect(onDrained).not.toHaveBeenCalled()
+    await p
+    expect(onDrained).not.toHaveBeenCalled()
+    await immediate()
+    expect(onDrained).toHaveBeenCalledTimes(1)
   })
 
   it('a forceStop that never settles is cut at forceStopMs: the fallback writes the runs and the drain finishes', async () => {
@@ -288,10 +304,11 @@ describe('HostActivityTracker requestDrain', () => {
     await vi.advanceTimersByTimeAsync(2_999)
     expect(settled).toBe(false)
     expect(fallback).not.toHaveBeenCalled()
-    expect(own.release).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
     await expect(p).resolves.toEqual({ stopping: true })
-    expect(order).toEqual(['markDraining', 'fallback', 'release', 'onDrained'])
+    expect(order).toEqual(['markDraining', 'fallback'])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(order).toEqual(['markDraining', 'fallback', 'onDrained'])
     expect(fallback).toHaveBeenCalledTimes(1)
     expect(logs.some((l) => l.includes('did not finish within 3000 ms'))).toBe(true)
   })
@@ -305,33 +322,35 @@ describe('HostActivityTracker requestDrain', () => {
 
   it('quiesce runs before forceStop, so background work forceStop would start is never waited on', async () => {
     vi.useFakeTimers()
-    const own = fakeOwnership()
     // Stands in for CapabilityService: a run ending arms a debounced review (a backgroundTasks count) unless disposed.
     let disposed = false
     let reviews = 0
     const forceStop = vi.fn(async () => {
       if (!disposed) reviews++
     })
-    const { a } = tracker({ ownership: own, forceStop, quiesce: () => (disposed = true), forceSettleMs: 10_000, forceSettlePollMs: 50 })
+    const onDrained = vi.fn()
+    const { a } = tracker({ ownership: fakeOwnership(), forceStop, quiesce: () => (disposed = true), settlePollMs: 50, onDrained })
     a.addSource('backgroundTasks', () => reviews)
     a.acquire('liveRuns')
     const p = a.requestDrain({ force: true })
     await vi.advanceTimersByTimeAsync(0)
     await expect(p).resolves.toEqual({ stopping: true })
     expect(reviews).toBe(0)
-    expect(own.release).toHaveBeenCalledTimes(1)
+    expect(onDrained).toHaveBeenCalledTimes(1)
   })
 
   it('a throwing quiesce is logged and the drain goes on', async () => {
-    const own = fakeOwnership()
+    const onDrained = vi.fn()
     const { a, logs } = tracker({
-      ownership: own,
+      ownership: fakeOwnership(),
+      onDrained,
       quiesce: () => {
         throw new Error('dispose broke')
       }
     })
     await expect(a.requestDrain()).resolves.toEqual({ stopping: true })
-    expect(own.release).toHaveBeenCalledTimes(1)
+    await immediate()
+    expect(onDrained).toHaveBeenCalledTimes(1)
     expect(logs.some((l) => l.includes('dispose broke'))).toBe(true)
   })
 
@@ -350,56 +369,190 @@ describe('HostActivityTracker requestDrain', () => {
     const plain = a.requestDrain()
     await Promise.resolve()
     expect(forceStop).toHaveBeenCalledTimes(1)
-    expect(own.release).not.toHaveBeenCalled()
     finishStop()
     await expect(Promise.all([first, second, plain])).resolves.toEqual([{ stopping: true }, { stopping: true }, { stopping: true }])
-    expect(order).toEqual(['markDraining', 'release', 'onDrained'])
+    await immediate()
+    expect(order).toEqual(['markDraining', 'onDrained'])
   })
 
-  it('a forced drain waits for in-flight writers before it releases ownership', async () => {
+  it('every drain (forced or not) waits for in-flight writers, with no deadline of its own', async () => {
+    vi.useFakeTimers()
+    for (const force of [true, false]) {
+      let t = 0
+      const logs: string[] = []
+      const onDrained = vi.fn()
+      const onSettling = vi.fn()
+      let mutation: () => void = () => {}
+      let tasks = 0
+      const a: HostActivityTracker = new HostActivityTracker({
+        ownership: fakeOwnership(),
+        now: () => t,
+        log: (m) => logs.push(m),
+        forceStop: async () => {},
+        settlePollMs: 10,
+        settleLogMs: 100,
+        onDrained,
+        onSettling,
+        // A non-forced drain starts only when idle; these writers start while it starts (a final write-back).
+        quiesce: () => {
+          mutation = a.acquire('inFlightRpcMutations', 'projects:remove')
+          tasks = 1
+          a.acquire('activeOAuthFlows') // never waited on: a sign-in can wait on the user forever
+        }
+      })
+      a.addSource('backgroundTasks', () => tasks)
+      const p = a.requestDrain({ force })
+      let settled = false
+      void p.then(() => (settled = true))
+      // Far past the old 10 s forced-drain deadline: still waiting, logged once.
+      for (let i = 0; i < 100; i++) {
+        t += 200
+        await vi.advanceTimersByTimeAsync(200)
+      }
+      expect(settled).toBe(false)
+      expect(onDrained).not.toHaveBeenCalled()
+      expect(onSettling).toHaveBeenCalledTimes(1)
+      expect(logs.filter((l) => l.includes('still waiting')).length).toBe(1)
+      mutation()
+      await vi.advanceTimersByTimeAsync(50)
+      expect(settled).toBe(false)
+      tasks = 0
+      await vi.advanceTimersByTimeAsync(20)
+      expect(settled).toBe(true)
+      expect(onDrained).toHaveBeenCalledTimes(1)
+      await expect(p).resolves.toEqual({ stopping: true })
+    }
+  })
+
+  it('a forced request upgrades a non-forced drain that waits for writers: forceStop runs once, then it settles', async () => {
+    vi.useFakeTimers()
+    const forceStop = vi.fn(async () => {})
+    const onDrainStart = vi.fn()
+    let writer: () => void = () => {}
+    const { a } = tracker({ ownership: fakeOwnership(), forceStop, settlePollMs: 10, onDrainStart, quiesce: () => (writer = a.acquire('activeWorktreeOps')) })
+    const p = a.requestDrain()
+    await vi.advanceTimersByTimeAsync(50)
+    expect(forceStop).not.toHaveBeenCalled()
+    const forced = a.requestDrain({ force: true })
+    await vi.advanceTimersByTimeAsync(20)
+    expect(forceStop).toHaveBeenCalledTimes(1)
+    writer()
+    await vi.advanceTimersByTimeAsync(20)
+    await expect(Promise.all([p, forced])).resolves.toEqual([{ stopping: true }, { stopping: true }])
+    expect(forceStop).toHaveBeenCalledTimes(1)
+    expect(onDrainStart).toHaveBeenCalledTimes(1)
+    expect(onDrainStart).toHaveBeenCalledWith(false)
+  })
+
+  it('a non-forced drain with runs only waiting on the user ends them (forceStop, fallback past the deadline) before the writers settle and onDrained', async () => {
     vi.useFakeTimers()
     const order: string[] = []
-    const own = fakeOwnership(order)
-    const { a } = tracker({ ownership: own, forceStop: async () => {}, forceSettlePollMs: 10, forceSettleMs: 60_000 })
-    const mutation = a.acquire('inFlightRpcMutations', 'projects:remove')
-    let tasks = 1
-    a.addSource('backgroundTasks', () => tasks)
-    a.acquire('activeOAuthFlows') // never waited on: a sign-in can wait on the user forever
-    let settled = false
-    const p = a.requestDrain({ force: true }).then((r) => {
-      settled = true
-      return r
+    let live = 2
+    let writer: () => void = () => {}
+    const { a } = tracker({
+      ownership: fakeOwnership(order),
+      // Waiting runs do not count as busy ('liveRuns' is busyRunCount), so the non-forced drain is accepted.
+      liveRuns: () => live,
+      quiesce: () => {
+        order.push('quiesce')
+        writer = a.acquire('inFlightRpcMutations')
+      },
+      forceStop: () =>
+        new Promise<void>((r) =>
+          globalThis.setTimeout(() => {
+            order.push('forceStop done')
+            live = 0
+            r()
+          }, 100)
+        ),
+      forceStopFallback: () => order.push('fallback'),
+      settlePollMs: 10,
+      onSettling: () => order.push('settling'),
+      onDrained: () => order.push('onDrained')
     })
+    const p = a.requestDrain()
     await vi.advanceTimersByTimeAsync(50)
-    expect(own.release).not.toHaveBeenCalled()
-    mutation()
-    await vi.advanceTimersByTimeAsync(50)
-    expect(own.release).not.toHaveBeenCalled()
-    tasks = 0
+    expect(order).toEqual(['markDraining', 'quiesce'])
+    await vi.advanceTimersByTimeAsync(60)
+    expect(order).toEqual(['markDraining', 'quiesce', 'forceStop done', 'settling'])
+    writer()
     await vi.advanceTimersByTimeAsync(20)
-    expect(own.release).toHaveBeenCalledTimes(1)
-    expect(settled).toBe(true)
     await expect(p).resolves.toEqual({ stopping: true })
+    expect(order).toEqual(['markDraining', 'quiesce', 'forceStop done', 'settling', 'onDrained'])
   })
 
-  it('a forced drain releases anyway (logged) once the writer wait times out', async () => {
+  it('a non-forced drain whose live-run stop hangs writes them through the fallback at forceStopMs', async () => {
     vi.useFakeTimers()
-    let t = 0
-    const own = fakeOwnership()
-    const logs: string[] = []
-    const a = new HostActivityTracker({ ownership: own, now: () => t, log: (m) => logs.push(m), forceStop: async () => {}, forceSettleMs: 100, forceSettlePollMs: 10 })
-    a.acquire('activeWorktreeOps')
-    const p = a.requestDrain({ force: true })
-    for (let i = 0; i < 12; i++) {
-      t += 10
-      await vi.advanceTimersByTimeAsync(10)
-    }
+    const fallback = vi.fn()
+    const onDrained = vi.fn()
+    const { a } = tracker({ ownership: fakeOwnership(), liveRuns: () => 1, forceStop: () => new Promise<void>(() => {}), forceStopMs: 3_000, forceStopFallback: fallback, onDrained })
+    const p = a.requestDrain()
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(fallback).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2)
+    expect(fallback).toHaveBeenCalledTimes(1)
     await expect(p).resolves.toEqual({ stopping: true })
-    expect(own.release).toHaveBeenCalledTimes(1)
-    expect(logs.some((l) => l.includes('activeWorktreeOps 1'))).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(onDrained).toHaveBeenCalledTimes(1)
   })
 
-  it('drains once: markDraining, release, onDrained, even with concurrent calls', async () => {
+  it('a non-forced drain with no live run never calls forceStop; a throwing liveRuns counts as live (logged)', async () => {
+    const forceStop = vi.fn(async () => {})
+    const { a } = tracker({ ownership: fakeOwnership(), liveRuns: () => 0, forceStop })
+    await a.requestDrain()
+    expect(forceStop).not.toHaveBeenCalled()
+    const second = tracker({
+      ownership: fakeOwnership(),
+      liveRuns: () => {
+        throw new Error('no runs table')
+      },
+      forceStop
+    })
+    await second.a.requestDrain()
+    expect(forceStop).toHaveBeenCalledTimes(1)
+    expect(second.logs.some((l) => l.includes('no runs table'))).toBe(true)
+  })
+
+  it('a settleOnly count (auth probe) never refuses a stop, but the drain waits for it before onDrained', async () => {
+    vi.useFakeTimers()
+    let probes = 1
+    const order: string[] = []
+    const onDrained = vi.fn(() => order.push('onDrained'))
+    const { a } = tracker({
+      ownership: fakeOwnership(),
+      settlePollMs: 10,
+      settleOnly: () => probes,
+      quiesce: () => order.push('abort'),
+      onDrained
+    })
+    expect(a.snapshot().idle).toBe(true)
+    const p = a.requestDrain()
+    await vi.advanceTimersByTimeAsync(200)
+    expect(order).toEqual(['abort'])
+    expect(onDrained).not.toHaveBeenCalled() // the probe child has not exited: ownership stays
+    probes = 0 // the child exited
+    await vi.advanceTimersByTimeAsync(50)
+    await expect(p).resolves.toEqual({ stopping: true })
+    await vi.advanceTimersByTimeAsync(20)
+    expect(order).toEqual(['abort', 'onDrained'])
+  })
+
+  it('abandonSettle ends the writer wait and onDrained is never called', async () => {
+    vi.useFakeTimers()
+    const onDrained = vi.fn()
+    const { a } = tracker({ ownership: fakeOwnership(), settlePollMs: 10, onDrained })
+    a.abandonSettle() // without a drain: nothing
+    a.acquire('backgroundTasks')
+    const p = a.requestDrain({ force: true })
+    await vi.advanceTimersByTimeAsync(100)
+    a.abandonSettle()
+    await vi.advanceTimersByTimeAsync(20)
+    await expect(p).resolves.toEqual({ stopping: true })
+    await vi.advanceTimersByTimeAsync(20)
+    expect(onDrained).not.toHaveBeenCalled()
+  })
+
+  it('drains once: markDraining, onDrained, even with concurrent calls', async () => {
     const order: string[] = []
     const own = fakeOwnership(order)
     const onDrained = vi.fn(() => order.push('onDrained'))
@@ -407,7 +560,8 @@ describe('HostActivityTracker requestDrain', () => {
     const results = await Promise.all([a.requestDrain(), a.requestDrain(), a.requestDrain({ force: true })])
     expect(results).toEqual([{ stopping: true }, { stopping: true }, { stopping: true }])
     await a.requestDrain()
-    expect(order).toEqual(['markDraining', 'release', 'onDrained'])
+    await immediate()
+    expect(order).toEqual(['markDraining', 'onDrained'])
     expect(onDrained).toHaveBeenCalledTimes(1)
     expect(a.state()).toBe('draining')
     expect(a.snapshot().state).toBe('draining')
@@ -418,25 +572,21 @@ describe('HostActivityTracker requestDrain', () => {
     expect(a.state()).toBe('draining')
   })
 
-  it('a throwing release is logged and onDrained still runs', async () => {
-    const onDrained = vi.fn()
+  it('a throwing onDrained is logged', async () => {
     const { a, logs } = tracker({
-      ownership: {
-        markDraining: () => true,
-        release: () => {
-          throw new Error('release broke')
-        }
-      },
-      onDrained
+      ownership: fakeOwnership(),
+      onDrained: () => {
+        throw new Error('exit broke')
+      }
     })
     await a.requestDrain()
-    expect(onDrained).toHaveBeenCalledTimes(1)
-    expect(logs.some((l) => l.includes('release broke'))).toBe(true)
+    await immediate()
+    expect(logs.some((l) => l.includes('exit broke'))).toBe(true)
   })
 })
 
 // Real ownership files under a short temp base (macOS's os.tmpdir() would push the socket past the 100-byte limit).
-describe.skipIf(process.platform === 'win32')('HostActivityTracker drain with real host ownership', () => {
+describe.skipIf(process.platform === 'win32')('HostActivityTracker drain with real host ownership (Wave 7)', () => {
   const dirs: string[] = []
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
@@ -448,16 +598,18 @@ describe.skipIf(process.platform === 'win32')('HostActivityTracker drain with re
     const dataDir = join(base, 'data')
     const runtimeBase = join(base, 'rt')
     mkdirSync(runtimeBase, { recursive: true, mode: 0o700 })
-    const ownership = await acquireHostOwnership({ dataDir, hostKind: 'headless-host', appVersion: '0.0.0-test', hostInstanceId: newHostInstanceId(), runtimeBase })
+    const ownership = await acquireHostOwnership({ dataDir, hostKind: 'desktop', appVersion: '0.0.0-test', hostInstanceId: newHostInstanceId(), runtimeBase })
     return { ownership, runDir: join(dataDir, 'run') }
   }
 
-  it('removes daemon.json and daemon.secret on drain', async () => {
+  it('the drain itself never removes daemon.json; it marks it draining', async () => {
     const { ownership, runDir } = await own()
-    expect(existsSync(join(runDir, 'daemon.json'))).toBe(true)
-    expect(existsSync(join(runDir, 'daemon.secret'))).toBe(true)
     const a = new HostActivityTracker({ ownership })
     await expect(a.requestDrain()).resolves.toEqual({ stopping: true })
+    await immediate()
+    expect(existsSync(join(runDir, 'daemon.json'))).toBe(true)
+    expect(JSON.parse(readFileSync(join(runDir, 'daemon.json'), 'utf8')).state).toBe('draining')
+    ownership.release()
     expect(existsSync(join(runDir, 'daemon.json'))).toBe(false)
     expect(existsSync(join(runDir, 'daemon.secret'))).toBe(false)
   })
@@ -469,6 +621,7 @@ describe.skipIf(process.platform === 'win32')('HostActivityTracker drain with re
     writeFileSync(path, JSON.stringify(other))
     const a = new HostActivityTracker({ ownership })
     await a.requestDrain()
+    ownership.release()
     expect(existsSync(path)).toBe(true)
     expect(JSON.parse(readFileSync(path, 'utf8')).hostInstanceId).toBe(other.hostInstanceId)
   })

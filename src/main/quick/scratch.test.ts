@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { isTrustRestrictedRun, isWorkspaceConfigPath } from './scratch'
+import { isTrustRestrictedRun, isWorkspaceConfigPath, unreadableFolderMessage } from './scratch'
 
 describe('isTrustRestrictedRun', () => {
   it('covers quick runs and build sessions only', () => {
@@ -47,5 +47,20 @@ describe('isWorkspaceConfigPath', () => {
       return // no link support here
     }
     expect(isWorkspaceConfigPath(ws, join(ws, 'cfg', 'settings.json'))).toBe(true)
+  })
+})
+
+describe('unreadableFolderMessage (cli-standalone-default.md 4.4)', () => {
+  const err = (code?: string): Error => Object.assign(new Error('x'), code ? { code } : {})
+  it('macOS EPERM names the privacy setting and the program running the host', () => {
+    const m = unreadableFolderMessage('/Users/a/Documents/x', err('EPERM'), 'darwin', '/usr/local/bin/node')
+    expect(m).toContain('macOS blocked OrgAI from reading /Users/a/Documents/x')
+    expect(m).toContain('Privacy & Security > Files and Folders')
+    expect(m).toContain('/usr/local/bin/node')
+  })
+  it('EACCES is the folder permissions; EPERM elsewhere and unknown errors keep the code', () => {
+    expect(unreadableFolderMessage('/x', err('EACCES'), 'darwin')).toBe("You do not have permission to read /x. Check the folder's permissions.")
+    expect(unreadableFolderMessage('/x', err('EPERM'), 'linux')).toBe('OrgAI cannot read /x (EPERM). Check its permissions.')
+    expect(unreadableFolderMessage('/x', err(), 'linux')).toBe('OrgAI cannot read /x. Check its permissions.')
   })
 })

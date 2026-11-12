@@ -1,6 +1,15 @@
 import type { ReactElement } from 'react'
-import { useEffect, useState } from 'react'
-import { Bot, ClipboardList, Clock, Database, Folder, ShieldAlert } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Bot, ClipboardList, Clock, Database, Files, Folder, Shield, ShieldAlert, ShieldOff } from 'lucide-react'
+import { metaPermission, modeInForce, modeInForceLabel, permissionModeHelp, permissionModeName, permissionSessionEnded, permissionTone } from '../lib/runSettings'
+import '../styles/run-settings.css'
+import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
+import { useOutputAnnouncements } from './outputs/useOutputAnnouncements'
+import { chipLabel } from '../lib/outputRevise'
+import { showHidden } from '../lib/hiddenChars'
+import { revealOutputsTab } from './outputs/revealOutputsTab'
+import '../styles/outputs.css'
+import '../styles/outputs-revise.css'
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
@@ -11,6 +20,8 @@ import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
 import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
+import { staffingCounts } from '../lib/planGraph'
+import { isWorkingAgent } from '../lib/agentActivity'
 import { agentCostInput, formatDuration, runCostInput, sumCosts, costView } from '../lib/cost'
 import { Cost } from './ui/Cost'
 import { chainOf, relativeTime } from '../lib/runChains'
@@ -18,11 +29,14 @@ import { shortPrompt } from '../lib/runLabels'
 import { autoContinueState } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
 import TeamFilesPointer from './team/TeamFilesPointer'
-import { quickAccessLabel, quickFolderLabel } from '../lib/assistants'
+import { quickFolderLabel } from '../lib/assistants'
+import { CHAT_ACCESS_ANNOUNCEMENT, CHAT_ACCESS_LABEL, CHAT_ACCESS_TITLE, chatAccessState } from '../lib/chatPermissions'
+import { useFrameAnnounce } from './layout/CanvasFrame'
+import { isOrgChangeRun, ORG_CHANGE_KIND_LABEL } from '../lib/orgChange'
 
 /**
  * The run's quiet metadata line at the start of the canvas toolbar (12 px, tertiary): the run it continues, agents,
- * plan steps (opens the Plan tab), cost, start time and "unattended". Items drop from the end in a narrow frame
+ * plan steps (opens the Plan tab), cost, start time and the permission mode when it is not the plain default. Items drop from the end in a narrow frame
  * (container queries in run.css); the status is not here, the active tab carries it.
  */
 export default function RunMeta({ run, project, agentCount }: { run: RunState; project: Project; agentCount: number }): ReactElement {
@@ -37,6 +51,16 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     return () => clearInterval(t)
   }, [live])
   const wallMs = (summary.endedAt ?? now) - summary.startedAt
+  // The Chat access chip. Turning to 'session' is announced once, never on mount.
+  const announce = useFrameAnnounce()
+  const accessState = summary.quick ? chatAccessState(summary.quick, !!run.sessionChanges) : null
+  // Keyed by run: RunMeta is not remounted on a tab switch, so another run's state must never count as a change.
+  const lastAccess = useRef({ runId: summary.id, state: accessState })
+  useEffect(() => {
+    const prev = lastAccess.current
+    if (prev.runId === summary.id && accessState === 'session' && prev.state !== 'session') announce?.(CHAT_ACCESS_ANNOUNCEMENT)
+    lastAccess.current = { runId: summary.id, state: accessState }
+  }, [summary.id, accessState, announce])
   // The host's run usage is the truth; before the first run.usage event the strip total can lag the agent costs.
   const agentCosts = sumCosts(Object.values(run.agents).map(agentCostInput))
   const own =
@@ -76,6 +100,19 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
       revealKnowledgeTab()
     } else useAppStore.getState().openKnowledgeItem({ projectId: project.id })
   }
+  // What the conversation produced (docs/design/outputs.md section 6): every member run, every agent.
+  const outputCount = useAppStore((s) => (run.summary.kind === 'work' && !summary.quick ? outputsOfRuns(s.outputsByProject[project.id], chain.map((m) => m.id)).length : 0))
+  useOutputAnnouncements(summary.id)
+  // A revise request this window sent to any run of the chain, still waiting for the team's version (outputs-2 7).
+  const revising = useAppStore((s) => {
+    for (const m of chain) {
+      const p = s.pendingRevisionsByRun[m.id]
+      if (p && p.length > 0) return p[p.length - 1]
+    }
+    return undefined
+  })
+  // Agents working now and steps ready to start; both 0 (nothing shown) for runs without staffing data or a plan graph.
+  const counts = staffingCounts({ agents: Object.values(run.agents), isWorking: isWorkingAgent, plan: run.plan, hasAssignments: (run.staffing?.assignments.length ?? 0) > 0 })
   const progress = run.plan ? planProgress(run.plan) : undefined
   const auto = autoContinueState({
     status: summary.status,
@@ -84,6 +121,15 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     maxAutoContinues: project.maxAutoContinues,
     kind: summary.kind
   })
+  // An ended run shows what its next message uses, as the composer's chip does ("Next message: Plan only").
+  const metaPerm = metaPermission(summary, project)
+  const metaMode = metaPerm?.mode ?? null
+  const metaNext = metaPerm?.next ?? false
+  const metaPrefix = metaNext ? 'Next message: ' : ''
+  // A session grant only exists while the session is live; an ended run shows the chip's value as it is.
+  const metaEnded = permissionSessionEnded(summary.status)
+  const metaTone = metaMode ? permissionTone(metaEnded ? metaMode : modeInForce(summary, metaMode)) : null
+  const metaLabel = metaMode ? (metaEnded ? permissionModeName(metaMode) : modeInForceLabel(summary, metaMode)) : ''
   const next = useAppStore((s) => s.proposalNextByRun[summary.id])
   const nextCopy = next ? PROPOSAL_NEXT_COPY[next.kind] : null
   const goNext = (): void => {
@@ -106,7 +152,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     <div className="run-meta" data-testid="run-meta">
       {next && nextCopy && (
         <span className="run-meta-item run-meta-next">
-          {next ? proposalNextLead(next) : nextCopy.lead}{' '}
+          {proposalNextLead(next)}{' '}
           <button type="button" className="link-btn" data-testid={nextCopy.testId} onClick={goNext}>
             {nextCopy.action}
           </button>
@@ -116,14 +162,23 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         </span>
       )}
       {!isVirtualProjectId(project.id) && <TeamFilesPointer projectId={project.id} />}
-      {summary.kind === 'setup' && <span className="run-meta-item">Setup session</span>}
+      {summary.kind === 'setup' && (
+        <span className="run-meta-item" data-testid="run-meta-kind">
+          {isOrgChangeRun(summary) ? `${ORG_CHANGE_KIND_LABEL} session` : 'Setup session'}
+        </span>
+      )}
       {summary.quick && (
         <>
           <span className="run-meta-item run-meta-folder" title={summary.quick.scratch ? 'A private scratch folder' : summary.quick.folder}>
             <Icon icon={Folder} size="xs" />
             {quickFolderLabel(summary.quick)}
           </span>
-          <span className="run-meta-item run-meta-access">{quickAccessLabel(summary.quick)}</span>
+          {accessState && (
+            <span className="run-meta-item run-meta-access" data-testid="run-meta-access" data-state={accessState} title={CHAT_ACCESS_TITLE[accessState]}>
+              {CHAT_ACCESS_LABEL[accessState]}
+              <span className="sr-only">. {CHAT_ACCESS_TITLE[accessState]}</span>
+            </span>
+          )}
         </>
       )}
       {summary.kind === 'mcp-assist' && summary.buildWorkspace && (
@@ -136,11 +191,73 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <Icon icon={Bot} size="xs" />
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
+      {metaMode && (
+        // Early in the line: the items at the end are the first to be cut in a narrow frame, and this one is a safety cue.
+        <span
+          className={`run-meta-item run-meta-permission${metaMode === 'auto' ? ' run-meta-unattended' : ''}`}
+          data-testid="run-meta-permission"
+          data-mode={metaMode}
+          data-next={metaNext ? 'true' : undefined}
+          data-tone={metaTone ?? undefined}
+          title={`${metaPrefix}${metaLabel}${summary.permissionModeChosen ? ' (this run)' : ''}: ${
+            metaMode === 'auto'
+              ? "the model's safety check approves or denies each call and asks only when unsure. Saved rules never ask."
+              : permissionModeHelp(metaMode)
+          }`}
+        >
+          <Icon icon={metaTone === 'danger' ? ShieldOff : metaTone ? ShieldAlert : Shield} size="xs" />
+          {metaPrefix}
+          {metaLabel}
+          <span className="sr-only">
+            {' '}
+            (permission mode{summary.permissionModeChosen ? ', this run' : ''})
+          </span>
+        </span>
+      )}
+      {(counts.working > 0 || counts.ready > 0) && (
+        <span className="run-meta-item run-meta-staffing" data-testid="run-meta-staffing" title="Agents working now and plan steps ready to start">
+          {counts.working > 0 && <span data-testid="run-meta-working">{counts.working} working</span>}
+          {counts.ready > 0 && <span data-testid="run-meta-ready">{counts.ready} ready</span>}
+        </span>
+      )}
       {recorded > 0 && (
         <button type="button" className="run-meta-item run-meta-recorded" data-testid="run-meta-recorded" title={recordedTitle(recordedText, sessions, recordedPartial)} onClick={() => openRecorded(summary.id)}>
           <Icon icon={Database} size="xs" />
           {recordedLabel(recorded, recordedPartial)}
           <span className="sr-only"> ({recordedText}{recordedPartial ? ', at least; some sessions are not loaded' : ''}; opens Knowledge)</span>
+        </button>
+      )}
+      {outputCount > 0 && (
+        <button
+          type="button"
+          className="run-meta-item run-meta-outputs"
+          data-testid="run-meta-outputs"
+          title={outputsCountLabel(outputCount)}
+          onClick={() => {
+            useAppStore.getState().openRunOutput(summary.id, null)
+            revealOutputsTab()
+          }}
+        >
+          <Icon icon={Files} size="xs" />
+          <span className="run-meta-outputs-count">{outputCount}</span>
+          <span className="run-meta-outputs-label">{outputCount === 1 ? 'output' : 'outputs'}</span>
+          <span className="sr-only">; opens the Outputs tab</span>
+        </button>
+      )}
+      {revising && (
+        <button
+          type="button"
+          className="run-meta-item run-meta-revision"
+          data-testid="run-meta-revision"
+          title={chipLabel(showHidden(revising.title))}
+          onClick={() => {
+            useAppStore.getState().openRunOutput(summary.id, revising.outputId)
+            revealOutputsTab()
+          }}
+        >
+          <Icon icon={Files} size="xs" />
+          <span className="run-meta-revision-text">{chipLabel(showHidden(revising.title))}</span>
+          <span className="sr-only">; opens it in the Outputs tab</span>
         </button>
       )}
       {sessions > 1 && (
@@ -183,15 +300,6 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
       {summary.team === 'single' && !summary.quick && !isVirtualProjectId(summary.projectId) && (
         <span className="run-meta-item" data-testid="run-meta-ask">
           Ask · one assistant
-        </span>
-      )}
-      {project.permissionMode === 'auto' && !summary.quick && summary.kind === 'work' && summary.team !== 'single' && !isVirtualProjectId(summary.projectId) && (
-        <span
-          className="run-meta-item run-meta-unattended"
-          title="Permission mode is auto: the model's safety check approves or denies each call and asks only when unsure. Saved rules never ask."
-        >
-          <Icon icon={ShieldAlert} size="xs" />
-          unattended
         </span>
       )}
     </div>

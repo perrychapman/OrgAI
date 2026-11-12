@@ -11,6 +11,17 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// Test isolation: ORGAI_VAULT_NO_OS_KEYSTORE (the app's vault) and ORGAI_CLI_VAULT_NO_OS_KEYSTORE (the orgai CLI's own
+// vault, a separate product) keep the vaults off the OS keystore for every app, CLI or helper an e2e script starts.
+// Every child inherits process.env, so setting them here (an import side effect, before any launch) covers launch(),
+// startCli() and the pty driver. A script that names its own key file (ORGAI_VAULT_KEY_FILE, ORGAI_CLI_VAULT_KEY_FILE)
+// keeps it; the flags are harmless beside it.
+process.env.ORGAI_VAULT_NO_OS_KEYSTORE = '1'
+process.env.ORGAI_CLI_VAULT_NO_OS_KEYSTORE = '1'
+// Electron's own safeStorage (the app's older secrets.json) would otherwise create a "... Safe Storage" keychain item on
+// macOS. Only launch() passes Chromium's --use-mock-keychain (key kept in memory); apps started elsewhere (cli-readonly,
+// verify-pack) do not, so they can still reach the real keychain through safeStorage.
+
 export const E2E_DIR = path.dirname(fileURLToPath(import.meta.url))
 export const APP_DIR = path.resolve(E2E_DIR, '..')
 export const SHOTS_DIR = path.join(E2E_DIR, 'shots')
@@ -57,25 +68,6 @@ export function electronBinary() {
 const failures = []
 
 /** Record a check. Failures are collected and reported by `finish()`. */
-/**
- * Record the user's choice of Terminal access 'full' in `<DATA_DIR>/data/settings.json` (merged into what is there),
- * as App settings does. A `--host inproc` host gives decide / configure only to the CLI process that started it (its
- * in-memory owner key, review H2); a long-lived `daemon start --host inproc` serves other CLI processes, which then
- * need this to answer cards or change settings.
- */
-export function allowFullTerminalAccess() {
-  const dir = path.join(DATA_DIR, 'data')
-  fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, 'settings.json')
-  let doc = {}
-  try {
-    if (fs.existsSync(file)) doc = JSON.parse(fs.readFileSync(file, 'utf8')) ?? {}
-  } catch {
-    doc = {}
-  }
-  fs.writeFileSync(file, JSON.stringify({ version: 1, ...doc, settings: { ...(doc.settings ?? {}), terminalAccessLevel: 'full' } }, null, 2))
-}
-
 export function check(ok, what, detail = '') {
   if (ok) log(`PASS ${what}`)
   else {
@@ -231,7 +223,7 @@ export async function launch({ shotPrefix = 'shot', clearPrefs = true } = {}) {
   if (!fs.existsSync(path.join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('out/main/index.js missing. Run `npm run build` first.')
   fs.mkdirSync(SHOTS_DIR, { recursive: true })
   // process.env is read here, so flags a script sets before launching (ORGAI_MOCK=1) still reach the app.
-  const app = await electron.launch({ executablePath: electronBinary(), args: [APP_DIR], cwd: APP_DIR, timeout: 60_000, env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR } })
+  const app = await electron.launch({ executablePath: electronBinary(), args: ['--use-mock-keychain', APP_DIR], cwd: APP_DIR, timeout: 60_000, env: { ...process.env, ORGAI_DATA_DIR: DATA_DIR } })
   const page = await app.firstWindow()
   page.on('dialog', (d) => {
     log('dialog:', d.message().slice(0, 100))
@@ -335,9 +327,21 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
   // The mock checkbox only exists under ORGAI_MOCK=1 and is on by default; useMock: false saves the project with the real adapter.
   const mock = form.locator('[data-testid=use-mock]')
   if ((await mock.count()) && (await mock.isChecked()) !== useMock) await form.locator('label.checkbox', { hasText: 'Use the mock adapter' }).click()
-  await form.getByRole('button', { name: skipSetup ? 'Create project' : 'Create and start setup' }).click()
+  const submit = form.getByRole('button', { name: skipSetup ? 'Create project' : 'Create and start setup' })
   // The dashboard (and its dialog or form) goes away once the project exists and the app navigates to it.
-  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 120_000 })
+  // A click can be lost when the first-launch inline form re-renders as the app finishes loading (CI run 42181924350:
+  // the filled form was still showing after 120 s with no project made), so re-click, but only while no project of
+  // this name exists yet.
+  for (let attempt = 0; ; attempt++) {
+    await submit.click()
+    try {
+      await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: attempt < 3 ? 20_000 : 120_000 })
+      break
+    } catch (e) {
+      if (attempt >= 3 || (await findProject(page, name)) || !(await submit.count())) throw e
+      log('create project: submit did not leave the Dashboard, clicking again')
+    }
+  }
   return await findProject(page, name)
 }
 
@@ -498,4 +502,41 @@ export async function windowShift(page) {
       ok: document.documentElement.scrollTop === 0 && document.body.scrollTop === 0 && Math.round(root.getBoundingClientRect().top) === 0 && shifted.length === 0
     }
   })
+}
+
+/**
+ * Appearance > Reduce motion ('on' | 'off' | 'system', docs/design/motion.md 5). With 'on', every motion token is ~0 and
+ * entry offsets are 0, so state changes are instant. Waits until <html data-reduce-motion> follows.
+ */
+export async function setReduceMotion(page, mode) {
+  await page.evaluate(async (m) => {
+    const info = await window.orgai.settings.get()
+    const { dataDir: _d, appVersion: _v, ...s } = info
+    await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, reduceMotion: m } })
+  }, mode)
+  // lib/theme.ts writes data-reduce-motion='on' only for 'on' and removes it otherwise.
+  await page
+    .waitForFunction((m) => (document.documentElement.getAttribute('data-reduce-motion') === 'on') === (m === 'on'), mode, { timeout: 5000 })
+    .catch(() => {})
+}
+
+/** Shortcut: reduced motion on. */
+export const motionOff = (page) => setReduceMotion(page, 'on')
+
+/**
+ * Wait (at most `ms`) until every finite animation in the document has finished: the view crossfade's short rise
+ * (motion.md 3.3) moves a view by a few pixels, so a layout measure taken during it reads a scroll that is not there.
+ * Infinite animations (breathing marks) are ignored.
+ */
+export async function settleMotion(page, ms = 1500) {
+  await page
+    .evaluate(async (limit) => {
+      const finite = document.getAnimations().filter((a) => {
+        const end = a.effect?.getComputedTiming?.().endTime
+        return typeof end === 'number' && Number.isFinite(end) && a.playState === 'running'
+      })
+      if (finite.length === 0) return
+      await Promise.race([Promise.all(finite.map((a) => a.finished.catch(() => undefined))), new Promise((r) => setTimeout(r, limit))])
+    }, ms)
+    .catch(() => {})
 }

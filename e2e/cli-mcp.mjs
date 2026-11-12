@@ -1,27 +1,25 @@
-// `cli-mcp` end to end (cli-spec 6.3, Wave 5): `orgai mcp` against a `--host inproc` daemon on the mock adapter. Run
+// `cli-mcp` end to end (cli-spec 6.3, Wave 5): `orgai mcp` on the mock adapter, each command hosting itself. Run
 // `npm run build` first. No tokens, no network (ORGAI_MOCK=1 makes connector sign-in and tests network-free).
 //
-// A `--host inproc` host cannot save secrets (no safeStorage outside Electron), so set-secret and the mock sign-in end
-// with that refusal here; src/cli/commands/mcp.int.test.ts covers both succeeding with a writable test store.
+// The orgai host has its own vault (a throwaway key file here), so set-secret and the mock sign-in succeed.
 //
-// 1. add a stdio server (text and JSON), list, show, disable / enable, set-secret --stdin (refused: read-only store,
-//    the value never echoed), remove without --yes (exit 2), remove --yes.
+// 1. add a stdio server (text and JSON), list, show, disable / enable, set-secret --stdin (saved to the vault, the
+//    value never echoed), remove without --yes (exit 2), remove --yes.
 // 2. library add / list; connectors list (text and JSON), connectors add of a no-sign-in preset (connected at once).
 // 3. `SSH_CONNECTION=... orgai mcp auth --library linear` prints the forward command `ssh -L 38917:127.0.0.1:38917 ...`
 //    and the announced URL; with JSON output the instructions go to stderr and stdout stays one document.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { check, finish, log, makeFixtureRepo, removeFixture } from './lib.mjs'
-import { cli, json, requireBuild, seedProject, show, startDaemon, stopDaemon } from './cliLib.mjs'
+import { cli, json, requireBuild, seedProject, show } from './cliLib.mjs'
 
 requireBuild()
 const repo = makeFixtureRepo('cli-mcp')
 const MOCK_URL = 'https://mock.invalid/oauth/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A38917%2Fcallback&state=mock'
 
 try {
-  await startDaemon()
   const project = await seedProject(repo, { name: 'Mcp e2e' })
-  check(!!project?.id, 'seeded a mock project over hostRpc')
+  check(!!project?.id, 'seeded a mock project with projects create')
   const inRepo = { cwd: repo }
 
   // ---- 1. project servers ----
@@ -49,7 +47,8 @@ try {
   check(r.code === 0 && json((await cli(['mcp', 'show', 'notes', '--output-format', 'json'], inRepo)).out)?.server?.enabled === true, 'mcp enable', show(r))
 
   r = await cli(['mcp', 'set-secret', 'notes', 'NOTES_TOKEN', '--stdin'], { ...inRepo, input: 'e2e-secret-value\n' })
-  check(r.code !== 0 && r.err.includes('cannot save secrets') && !(r.out + r.err).includes('e2e-secret-value'), 'set-secret --stdin on an inproc host is refused and never echoes the value', show(r))
+  // Wave 7: the CLI's own host has secure storage, so the value is saved (never echoed).
+  check(r.code === 0 && r.out.includes('Saved NOTES_TOKEN') && !(r.out + r.err).includes('e2e-secret-value'), 'set-secret --stdin saves to the vault and never echoes the value', show(r))
   r = await cli(['mcp', 'set-secret', 'notes', 'NOTES_TOKEN', 'on-argv'], inRepo)
   check(r.code === 2, 'a secret value on argv is exit 2', show(r))
 
@@ -87,8 +86,8 @@ try {
   r = await cli(['mcp', 'auth', '--library', 'linear'], { env: ssh })
   check(r.out.includes('Forward the callback first: ssh -L 38917:127.0.0.1:38917 dev@10.9.8.6'), 'mcp auth over SSH prints the ssh -L command', show(r))
   check(r.out.includes('Open this URL in a browser to sign in:') && r.out.includes(MOCK_URL), 'mcp auth prints the announced URL (browser not opened)', show(r))
-  // The inproc host cannot store the (fake) token: the sign-in ends as an authorization error.
-  check(r.code === 5 && r.out.includes('cannot save secrets'), 'the read-only store makes the sign-in fail with exit 5', show(r))
+  // Wave 7: the vault stores the (fake) token, so the mock sign-in completes.
+  check(r.code === 0 && r.out.includes('linear: authorized'), 'the vault stores the token and the sign-in completes', show(r))
   r = await cli(['mcp', 'auth', '--library', 'linear', '--no-browser', '--output-format', 'json'], { env: ssh })
   const doc = json(r.out)
   check(doc?.schemaVersion === 1 && doc?.authorizeUrl === MOCK_URL && doc?.openedBrowser === false && r.err.includes('ssh -L 38917:127.0.0.1:38917'), 'mcp auth json: one document, instructions on stderr', show(r))
@@ -98,8 +97,6 @@ try {
 } catch (e) {
   check(false, 'cli-mcp ran to the end', e?.stack ?? String(e?.message ?? e))
 } finally {
-  const stop = await stopDaemon().catch((e) => ({ code: -1, out: '', err: String(e) }))
-  log(`daemon stop: exit ${stop.code}`)
   removeFixture(repo)
   if (fs.existsSync(path.join(repo))) log('fixture left behind', repo)
   finish('cli-mcp')

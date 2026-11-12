@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrivalTracker } from './useArrival'
+import { tokenMs } from './useExitPresence'
 import { useUpdateNodeInternals, type NodeChange, type Position } from '@xyflow/react'
-import type { AppearanceSettings, CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
-import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS } from '@shared/types'
+import type { AppearanceSettings, CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern, CanvasPresentation, CanvasScenePalette } from '@shared/types'
+import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, CANVAS_PRESENTATIONS, CANVAS_SCENE_PALETTES } from '@shared/types'
 import { CANVAS_PRESETS, DEFAULT_APPEARANCE, activeCanvasPreset, applyCanvasPreset, type CanvasPreset, type CanvasPresetId } from '@shared/defaults'
 
 /**
@@ -74,7 +76,7 @@ export function applyDefaultCanvas(canvas: AppearanceSettings['canvas']): Appear
 
 /** A new canvas after picking a gallery entry (Default or a preset); the minimap is kept. */
 export function applyCanvasStyle(canvas: AppearanceSettings['canvas'], id: CanvasStyleId): AppearanceSettings['canvas'] {
-  return id === DEFAULT_STYLE_ID ? applyDefaultCanvas(canvas) : applyCanvasPreset(canvas, id)
+  return { ...(id === DEFAULT_STYLE_ID ? applyDefaultCanvas(canvas) : applyCanvasPreset(canvas, id)), presentation: 'graph' }
 }
 
 /** The label of a shown entry, or undefined for Custom. */
@@ -83,6 +85,8 @@ export function styleLabel(id: CanvasStyleId | undefined): string | undefined {
 }
 
 export interface CanvasOptions {
+  presentation: CanvasPresentation
+  scenePalette: CanvasScenePalette
   pattern: CanvasPattern
   edges: CanvasEdgeStyle
   layout: CanvasLayout
@@ -94,6 +98,8 @@ export interface CanvasOptions {
 
 /** The <html> attributes lib/theme.ts writes, in the order canvases read them. */
 export const CANVAS_ATTRS = [
+  'data-canvas-presentation',
+  'data-canvas-scene-palette',
   'data-canvas-pattern',
   'data-canvas-edges',
   'data-canvas-layout',
@@ -112,6 +118,8 @@ export function readCanvasOptions(get: (name: (typeof CANVAS_ATTRS)[number]) => 
   const tint = get('data-canvas-tint')
   const minimap = get('data-canvas-minimap')
   return {
+    presentation: pick(get('data-canvas-presentation'), CANVAS_PRESENTATIONS, d.presentation),
+    scenePalette: pick(get('data-canvas-scene-palette'), CANVAS_SCENE_PALETTES, d.scenePalette),
     pattern: pick(get('data-canvas-pattern'), CANVAS_PATTERNS, d.pattern),
     edges: pick(get('data-canvas-edges'), CANVAS_EDGE_STYLES, d.edges),
     layout: pick(get('data-canvas-layout'), CANVAS_LAYOUTS, d.layout),
@@ -122,7 +130,7 @@ export function readCanvasOptions(get: (name: (typeof CANVAS_ATTRS)[number]) => 
 }
 
 function sameOptions(a: CanvasOptions, b: CanvasOptions): boolean {
-  return a.pattern === b.pattern && a.edges === b.edges && a.layout === b.layout && a.nodeStyle === b.nodeStyle && a.tint === b.tint && a.minimap === b.minimap
+  return a.presentation === b.presentation && a.scenePalette === b.scenePalette && a.pattern === b.pattern && a.edges === b.edges && a.layout === b.layout && a.nodeStyle === b.nodeStyle && a.tint === b.tint && a.minimap === b.minimap
 }
 
 /** Reads a data-* attribute on <html> and follows changes (the appearance settings write them). */
@@ -366,4 +374,96 @@ export function minimapSize(stageWidth: number, stageHeight: number): { width: n
 export function groupNodeSize(style: CanvasNodeStyle, layout: CanvasLayout = 'left-right'): { width: number; height: number } {
   if (style === 'station') return agentNodeSize(style, layout)
   return GROUP_NODE_SIZE[effectiveNodeStyle(style)]
+}
+
+/* ---------- Motion: arrival, glide, fit duration (docs/design/motion.md 3.12, 3.13) ---------- */
+
+/** Above this many nodes a layout change snaps instead of gliding (per-frame edge work). */
+export const GLIDE_MAX_NODES = 60
+/** The glide attribute is removed this long after the transition should have ended. */
+export const GLIDE_END_MARGIN_MS = 50
+/** At most this many working nodes breathe at once (motion.md 3.18). */
+export const BREATHE_MAX_NODES = 12
+// Not data-layout-moving: that one sits on <html> (lib/layoutMotion.ts) for column and tray glides.
+const GLIDE_ATTR = 'data-canvas-gliding'
+const glideTimers = new WeakMap<Element, number>()
+
+/** The glide length in ms, or 0 when the canvas has too many nodes or motion is reduced. */
+export function glideMs(nodeCount: number): number {
+  if (nodeCount > GLIDE_MAX_NODES) return 0
+  const ms = tokenMs('--dur-slow')
+  return ms > 1 ? ms : 0
+}
+
+/** The fit animation length: 0 reduced, else the slow token. */
+/** True when the OS or App settings > Reduce motion asks for reduced motion, read now (for callbacks outside render). */
+export function reducedMotionNow(): boolean {
+  if (typeof document !== 'undefined' && document.documentElement.getAttribute('data-reduce-motion') === 'on') return true
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+/** Duration of a quiet refit after a resize (ms): 0 under either reduced-motion switch, else --dur-fast + --dur-instant. */
+export function refitMs(): number {
+  if (reducedMotionNow()) return 0
+  return tokenMs('--dur-fast') + tokenMs('--dur-instant')
+}
+
+export function fitMs(reduced: boolean): number {
+  if (reduced) return 0
+  const ms = tokenMs('--dur-slow')
+  return ms > 1 ? ms : 0
+}
+
+/**
+ * Marks the canvas as gliding: its `.react-flow` gets `data-canvas-gliding` (flow.css turns the node transition on and
+ * hides edges meanwhile) and loses it after the glide. Call it before the commit that moves the nodes. Returns the ms
+ * until the glide has settled (0 when nothing glides, so the caller may refit at once).
+ */
+export function beginCanvasGlide(root: Element | null | undefined, nodeCount: number): number {
+  const ms = glideMs(nodeCount)
+  const flow = root ? (root.matches('.react-flow') ? root : root.querySelector('.react-flow')) : null
+  if (!flow || ms === 0) return 0
+  const total = ms + GLIDE_END_MARGIN_MS
+  flow.setAttribute(GLIDE_ATTR, '')
+  const prev = glideTimers.get(flow)
+  if (prev !== undefined) window.clearTimeout(prev)
+  glideTimers.set(
+    flow,
+    window.setTimeout(() => {
+      flow.removeAttribute(GLIDE_ATTR)
+      glideTimers.delete(flow)
+    }, total)
+  )
+  return total
+}
+
+/** The first `BREATHE_MAX_NODES` working ids in node order: the only nodes that breathe. Pure. */
+export function breatheIndex(nodes: readonly { id: string; working: boolean }[]): Map<string, number> {
+  const out = new Map<string, number>()
+  for (const n of nodes) {
+    if (!n.working) continue
+    if (out.size >= BREATHE_MAX_NODES) break
+    out.set(n.id, out.size)
+  }
+  return out
+}
+
+/**
+ * Arrival tracking for canvas nodes: ids new since the canvas was shown (or since `scope` changed) pop in once. At most
+ * 12 ids arriving together animate. `arrivedKey` changes when the set of new ids does, for memo deps.
+ */
+export function useNodeArrival(ids: readonly string[], scope: string): { isNew: (id: string) => boolean; arrivedKey: string; markArrived: (ids: readonly string[]) => void } {
+  const ref = useRef<{ tracker: ArrivalTracker; started: boolean } | null>(null)
+  if (!ref.current) ref.current = { tracker: new ArrivalTracker({ maxPerBatch: 12 }), started: false }
+  const state = ref.current
+  const now = Date.now()
+  // An empty first list (the run is still loading) must not make everything that follows look new.
+  if (ids.length > 0 || state.started) {
+    state.started = true
+    state.tracker.update(ids, scope, now)
+  }
+  const isNew = (id: string): boolean => state.tracker.isNew(id, now)
+  const arrivedKey = ids.filter(isNew).join('|')
+  const markArrived = useCallback((list: readonly string[]): void => state.tracker.markArrived(list, Date.now()), [state])
+  return { isNew, arrivedKey, markArrived }
 }

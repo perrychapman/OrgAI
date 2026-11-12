@@ -171,6 +171,37 @@ describe('applyEvent', () => {
     expect(s.project?.name).toBe('One')
   })
 
+  it('staffing.updated replaces the run\'s staffing and changes nothing else; a record carries it in', () => {
+    let s = liveState()
+    const before = s.runs.r1
+    const staffing = { goal: 'cost' as const, assignments: [{ roleId: 'r-eng', model: 'haiku', tier: 'fast' as const, source: 'role' as const, at: 1 }] }
+    s = applyEvent(s, ev({ type: 'staffing.updated', runId: 'r1', staffing }, 11))
+    expect(s.runs.r1.staffing).toBe(staffing)
+    expect({ ...s.runs.r1, staffing: undefined }).toEqual({ ...before, staffing: undefined })
+    const next = { goal: 'speed' as const, assignments: [] }
+    s = applyEvent(s, ev({ type: 'staffing.updated', runId: 'r1', staffing: next }, 12))
+    expect(s.runs.r1.staffing).toBe(next)
+    // plan.updated still lands beside it.
+    const plan = { goal: 'G', steps: [], status: 'active' as const, autoContinues: 0, updatedAt: 1 }
+    s = applyEvent(s, ev({ type: 'plan.updated', runId: 'r1', plan }, 13))
+    expect(s.runs.r1.plan).toBe(plan)
+    expect(s.runs.r1.staffing).toBe(next)
+    // A run record (runs:get / snapshot) brings its staffing; a record without one keeps what the state has.
+    const r2 = summary('r2', { status: 'finished', startedAt: 200 })
+    s = applyRecord(s, { ...record(r2), staffing })
+    expect(s.runs.r2.staffing).toBe(staffing)
+    s = applyRecord(s, record(r2))
+    expect(s.runs.r2.staffing).toBe(staffing)
+  })
+
+  it('run.delegation sets the summary and the listed agents', () => {
+    let s = liveState()
+    const d = { verdict: 'failed' as const, missing: ['policy'], corrected: false, nativeSpawns: 1 }
+    s = applyEvent(s, ev({ type: 'run.delegation', runId: 'r1', summary: { failed: 1, corrected: 0, nativeSpawns: 1 }, agents: { root: d } }, 20))
+    expect(s.runs.r1.summary.delegation?.failed).toBe(1)
+    expect(s.runs.r1.agents.root.delegation).toEqual(d)
+  })
+
   it('log keeps only warn and error, as sanitized notices', () => {
     let s = liveState()
     s = applyEvent(s, ev({ type: 'log', runId: 'r1', level: 'info', message: 'quiet' }, 11))
@@ -374,5 +405,37 @@ describe('addNotice', () => {
     expect(s.notices).toHaveLength(TUI_NOTICE_MAX)
     expect(s.notices[s.notices.length - 1].id).toBe(TUI_NOTICE_MAX + 3)
     expect(addNotice(s, '   ')).toBe(s)
+  })
+})
+
+describe('run logs and plan usage (cli-parity 3.5)', () => {
+  const run = (): TuiState => applyRecord(createInitialState('/p'), record(summary('r1'), { logs: [{ at: 1, level: 'warn', message: 'early' }] }))
+  const logEv = (level: 'info' | 'warn' | 'error', message: string): RunsEventParams => ({ seq: 1, event: { type: 'log', runId: 'r1', level, message } }) as RunsEventParams
+
+  it('keeps every log of the run after the notice expires, merged with the record without duplicates', () => {
+    let s = run()
+    s = applyEvent(s, logEv('error', 'late'), { now: 5 })
+    s = applyEvent(s, logEv('info', 'fyi'), { now: 6 })
+    expect(s.runs.r1.logs?.map((l) => l.message)).toEqual(['early', 'late', 'fyi'])
+    expect(s.notices.map((n) => n.text)).toEqual(['late'])
+    s = applyRecord(s, record(summary('r1'), { logs: [{ at: 1, level: 'warn', message: 'early' }, { at: 5, level: 'error', message: 'late' }] }), { preferLive: true })
+    expect(s.runs.r1.logs?.map((l) => l.message)).toEqual(['early', 'late', 'fyi'])
+  })
+
+  it('keeps the newest usage.status for the status bar', () => {
+    const usage = { authMode: 'subscription', subscriptionType: 'max', available: true, windows: { fiveHour: { utilization: 42, resetsAt: null } } }
+    const s = applyEvent(createInitialState('/p'), { seq: 1, event: { type: 'usage.status', runId: '', usage } } as RunsEventParams)
+    expect(s.planUsage).toEqual(usage)
+  })
+})
+
+describe('applyEvent: agent.compacted (compaction investigation 2026-11-10)', () => {
+  it('counts on the agent row and adds one notice per compaction', () => {
+    let s = liveState()
+    s = applyEvent(s, ev({ type: 'agent.upsert', runId: 'r1', agent: { id: 'root', roleId: null, roleSlug: 'lead', name: 'Lead', parentId: null, spawnToolUseId: null, state: 'thinking', activity: 'Reading', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1 } }, 11))
+    s = applyEvent(s, ev({ type: 'agent.compacted', runId: 'r1', agentId: 'root', at: 5, trigger: 'auto' }, 12))
+    s = applyEvent(s, ev({ type: 'agent.compacted', runId: 'r1', agentId: 'root', at: 6, trigger: 'auto' }, 13))
+    expect(s.runs.r1!.agents.root!.compactions).toBe(2)
+    expect(s.notices.map((n) => n.text)).toEqual(['Lead compacted its context (1st time).', 'Lead compacted its context (2nd time).'])
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { UsageSpend, UsageStatus } from '@shared/types'
-import { missingFiveHour, spendPeriodRows, tightestWindow, usageRows } from './UsageMeter'
+import { missingFiveHour, spendPeriodRows, tightestWindow, tightestWindowRow, usageRows } from './UsageMeter'
 
 const RESETS_AT = Date.UTC(2026, 10, 11, 12, 0, 0)
 
@@ -57,6 +57,22 @@ describe('tightestWindow', () => {
     expect(tightestWindow(status())).toBeNull()
     expect(tightestWindow(null)).toBeNull()
     expect(tightestWindow(undefined)).toBeNull()
+  })
+})
+
+describe('tightestWindowRow', () => {
+  it('returns the same choice as tightestWindow plus the plan row with its reset time', () => {
+    const row = tightestWindowRow(NOV_4)
+    expect(row).toMatchObject({ label: 'Fable weekly', pct: 20, level: '' })
+    expect(row?.row.window.resetsAt).toBe(RESETS_AT)
+    expect(row?.row.limited).toBe(false)
+  })
+
+  it('flags the limited row and is null where tightestWindow is', () => {
+    const u = status({ windows: { sevenDay: { utilization: 60, resetsAt: RESETS_AT } }, status: 'rejected', limitedWindow: 'seven_day' })
+    expect(tightestWindowRow(u)?.row.limited).toBe(true)
+    expect(tightestWindowRow(status({ ...NOV_4, authMode: 'apiKey' }))).toBeNull()
+    expect(tightestWindowRow(null)).toBeNull()
   })
 })
 

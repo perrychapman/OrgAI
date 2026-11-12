@@ -15,6 +15,8 @@ import {
   TEAM_FILES_MCP_JSON,
   TEAM_FILES_SKILLS_DIR,
   isModelTier,
+  isReviewPolicy,
+  isStaffingGoal,
   isPermissionMode,
   type Effort,
   type McpRegistryRef,
@@ -22,7 +24,7 @@ import {
   type TeamFileProblem,
   type TeamFileWarning
 } from '@shared/types'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, ROLE_COLORS, isValidMcpServerName, skillDescriptionProblem, skillNameProblem, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
+import { cleanRoleStaffing, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, ROLE_COLORS, isValidMcpServerName, skillDescriptionProblem, skillNameProblem, storedSkillEvaluation, teamReviewOf } from '@shared/defaults'
 import { hiddenCharIn, hiddenCharProblem, isKeyLikeValue, reviewTarget } from '../capabilities/sanitize'
 import { validModelId } from '../connections/codexAccount'
 import { serverRiskRefusal, serverValueRefusal, slotRefusal, safeText } from '../kit/format'
@@ -214,6 +216,7 @@ export function roleDocProblem(r: TeamRoleDoc): string | null {
   if (typeof r.canSpawn !== 'boolean') return 'canSpawn must be true or false.'
   const refs =
     refProblem('spawnable', r.spawnable ?? [], (s) => ROLE_SLUG_RE.test(s)) ??
+    refProblem('required_reports', r.requiredReports ?? [], (s) => ROLE_SLUG_RE.test(s)) ??
     refProblem('skills', r.skills ?? [], (s) => s.length <= SKILL_NAME_MAX && skillNameProblem(s) === null) ??
     refProblem('mcpServers', r.mcpServers ?? [], (s) => isValidMcpServerName(s))
   if (refs) return refs
@@ -239,6 +242,8 @@ interface RoleRead {
   role?: TeamRoleDoc
   problem?: string
   keyShaped?: boolean
+  /** Things dropped from an otherwise good file, for ParsedTeam.notes. */
+  notes?: string[]
 }
 
 function readRole(slug: string, bytes: Buffer): RoleRead {
@@ -269,6 +274,8 @@ function readRole(slug: string, bytes: Buffer): RoleRead {
       skills: sortedUnique(fmList(d, 'skills', 'skills') ?? []),
       mcpServers: sortedUnique(fmList(d, 'mcpServers', 'mcpServers') ?? [])
     }
+    const required = sortedUnique(fmList(d, 'required_reports', 'required_reports') ?? [])
+    if (required.length > 0) role.requiredReports = required
     const tier = Object.hasOwn(d, 'tier') ? d.tier : null
     const model = Object.hasOwn(d, 'model') ? d.model : null
     if (tier !== null && model !== null) return { problem: 'It sets both tier and model; use one.' }
@@ -284,6 +291,19 @@ function readRole(slug: string, bytes: Buffer): RoleRead {
       if (typeof effort !== 'string' || !(EFFORT_VALUES as readonly string[]).includes(effort)) return { problem: 'The effort is not one of low, medium, high, xhigh or max.' }
       role.effort = effort as Effort
     }
+    // Staffing is advisory spend policy: anything malformed is dropped (cleanRoleStaffing), never a file problem, and
+    // said in a note. A key with no value counts as absent.
+    const sv = (k: string): FmValue | undefined => (Object.hasOwn(d, k) && d[k] !== null ? d[k] : undefined)
+    const staffing = cleanRoleStaffing({ mode: sv('staffing'), minTier: sv('staffing_min_tier'), maxEffort: sv('staffing_max_effort') })
+    if (staffing) role.staffing = staffing
+    const droppedStaffing = [
+      ...(sv('staffing') !== undefined && !staffing ? ['staffing'] : []),
+      ...(sv('staffing_min_tier') !== undefined && staffing?.minTier === undefined ? ['staffing_min_tier'] : []),
+      ...(sv('staffing_max_effort') !== undefined && staffing?.maxEffort === undefined ? ['staffing_max_effort'] : [])
+    ]
+    const notes = droppedStaffing.length
+      ? [`${slug} has ${droppedStaffing.length === 1 ? 'a staffing setting' : 'staffing settings'} that ${droppedStaffing.length === 1 ? 'is' : 'are'} not valid or not used without a staffing mode (${droppedStaffing.join(', ')}); ${droppedStaffing.length === 1 ? 'it was' : 'they were'} ignored.`]
+      : []
     const canSpawn = Object.hasOwn(d, 'canSpawn') ? d.canSpawn : false
     if (canSpawn !== null && typeof canSpawn !== 'boolean') return { problem: 'canSpawn must be true or false.' }
     role.canSpawn = canSpawn === true
@@ -296,7 +316,7 @@ function readRole(slug: string, bytes: Buffer): RoleRead {
     if (typeof color === 'string' && COLOR_RE.test(color)) role.color = color.toLowerCase()
     const p = roleDocProblem(role)
     if (p) return { problem: p }
-    return { role, keyShaped: keyShaped(norm) }
+    return { role, keyShaped: keyShaped(norm), notes }
   } catch (e) {
     return { problem: e instanceof BadFile ? e.message : 'It could not be read.' }
   }
@@ -317,6 +337,9 @@ const SETTING_KEYS = [
   'autoContinue',
   'maxAutoContinues',
   'runMessaging',
+  'staffing',
+  'staffingGoal',
+  'reviewPolicy',
   'teamReview',
   'skillEvaluation'
 ]
@@ -382,6 +405,12 @@ function readSettings(o: Record<string, unknown>, base: TeamSettingsDoc | null, 
   set('autoContinue', boolField(o, 'autoContinue'))
   set('maxAutoContinues', numField(o, 'maxAutoContinues', 0, 1000, true))
   set('runMessaging', boolField(o, 'runMessaging'))
+  // Malformed values are dropped, defaults are not held (normal form).
+  if (own(o, 'staffing') === 'fixed') settings.staffing = 'fixed'
+  const goal = own(o, 'staffingGoal')
+  if (isStaffingGoal(goal) && goal !== 'balanced') settings.staffingGoal = goal
+  const policy = own(o, 'reviewPolicy')
+  if (isReviewPolicy(policy) && policy !== 'risk') settings.reviewPolicy = policy
   const tr = own(o, 'teamReview')
   if (tr !== undefined && tr !== null) {
     if (!isObj(tr)) bad('teamReview is not valid.')
@@ -845,6 +874,7 @@ function parseInner(allFiles: TeamFile[], opts: ParseOptions): ParsedTeam {
       continue
     }
     if (r.keyShaped) out.warnings.push({ file: file.path, message: 'It has text that looks like a key. Keys must not be committed.' })
+    if (r.notes) out.notes.push(...r.notes)
     roles.set(slug, r.role)
   }
   for (const slug of rolesHeld) {
@@ -948,7 +978,12 @@ function parseInner(allFiles: TeamFile[], opts: ParseOptions): ParsedTeam {
     const srv = r.mcpServers.filter((s) => serverNames.has(s))
     const dropped = r.spawnable.length - spawnable.length + (r.skills.length - sk.length) + (r.mcpServers.length - srv.length)
     if (dropped) out.notes.push(`${r.slug} names ${dropped} role${dropped === 1 ? '' : 's'}, skill${dropped === 1 ? '' : 's'} or service${dropped === 1 ? '' : 's'} that ${dropped === 1 ? 'does' : 'do'} not exist; ${dropped === 1 ? 'it was' : 'they were'} left out.`)
-    return { ...r, spawnable, skills: sk, mcpServers: srv }
+    const out2: TeamRoleDoc = { ...r, spawnable, skills: sk, mcpServers: srv }
+    // A required report must be a spawnable role of this one (cleanRequiredReports); anything else is left out quietly.
+    const required = r.canSpawn ? (r.requiredReports ?? []).filter((s) => spawnable.includes(s)) : []
+    if (required.length > 0) out2.requiredReports = required
+    else delete out2.requiredReports
+    return out2
   })
   const roleSlugs = new Set(roleList.map((r) => r.slug))
   const mcpList2 = mcp.map((m) => {

@@ -17,10 +17,12 @@ import {
   type RepoTools
 } from '@shared/types'
 import { clampText, hiddenCharIn } from './capabilities/sanitize'
+import { scrubControlEnv } from './runtime/childEnv'
 import { cleanProjectPath } from './store/projects'
 import { canonicalDeep, isInside, isInsideEither, isNetworkPath, pathKey } from './quick/scratch'
 import { allowedDirectoryRisk } from './runtime/allowedDirectories'
 import { maskKeyLike } from './runtime/codexAppServer'
+import { trackChildProcess } from './host/shutdown'
 import { presentConfigPaths } from './runtime/folderConfigTrust'
 
 // ---- Constants ----
@@ -723,7 +725,7 @@ export function gitEnv(base: NodeJS.ProcessEnv, platform: NodeJS.Platform = proc
     const name = fold ? k.toUpperCase() : k
     return name.startsWith('GIT_') && !GIT_ENV_ALLOW.has(name)
   })
-  return buildEnv(base, drop, {
+  return buildEnv(scrubControlEnv(base), drop, {
     GIT_TERMINAL_PROMPT: '0',
     GIT_ALLOW_PROTOCOL: 'https:ssh',
     SSH_ASKPASS_REQUIRE: 'never',
@@ -733,7 +735,7 @@ export function gitEnv(base: NodeJS.ProcessEnv, platform: NodeJS.Platform = proc
 }
 
 export function ghEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return buildEnv(base, GH_ENV_DROP, { GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' })
+  return buildEnv(scrubControlEnv(base), GH_ENV_DROP, { GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1', NO_COLOR: '1' })
 }
 
 /** The exact argument list of the clone (pinned by a test). */
@@ -958,20 +960,30 @@ export function parseProgressLine(line: string): ParsedProgress | null {
 /** Splits git's output on \r and \n, keeps a bounded tail of the non-progress lines, reports monotonic overall percent. */
 export class CloneOutputReader {
   private partial = ''
+  /** Overlong untrusted lines are discarded in full so a credential cannot lose its identifying prefix. */
+  private discardingLine = false
   private lines: string[] = []
   private size = 0
   private last = 0
   constructor(private readonly onProgress: (p: { text: string; percent: number }) => void) {}
 
   feed(chunk: string): void {
-    const parts = (this.partial + chunk).split(/[\r\n]/)
-    this.partial = (parts.pop() ?? '').slice(-PARTIAL_LINE_MAX)
-    for (const line of parts) this.line(line)
+    let start = 0
+    for (let i = 0; i < chunk.length; i++) {
+      if (chunk[i] !== '\r' && chunk[i] !== '\n') continue
+      this.appendPartial(chunk.slice(start, i))
+      if (!this.discardingLine) this.line(this.partial)
+      this.partial = ''
+      this.discardingLine = false
+      start = i + 1
+    }
+    this.appendPartial(chunk.slice(start))
   }
 
   end(): void {
-    const rest = this.partial
+    const rest = this.discardingLine ? '' : this.partial
     this.partial = ''
+    this.discardingLine = false
     if (rest) this.line(rest)
   }
 
@@ -980,7 +992,8 @@ export class CloneOutputReader {
   }
 
   private line(raw: string): void {
-    const line = raw.trim()
+    // Sanitize before any line truncation or retention. This also handles a credential completed in this chunk.
+    const line = scrubStderr(raw).trim()
     if (!line) return
     // Text the remote sent never enters the tail: it must not steer a decision or a message.
     if (/^remote:/i.test(line)) return
@@ -1002,6 +1015,17 @@ export class CloneOutputReader {
     this.lines.push(line.slice(0, 2200))
     this.size += line.length + 1
     while (this.size > STDERR_TAIL_MAX && this.lines.length > 1) this.size -= (this.lines.shift() as string).length + 1
+  }
+
+  /** Keep an incomplete line only while it remains small enough to scrub as one complete value. */
+  private appendPartial(segment: string): void {
+    if (this.discardingLine || !segment) return
+    if (this.partial.length + segment.length > PARTIAL_LINE_MAX) {
+      this.partial = ''
+      this.discardingLine = true
+      return
+    }
+    this.partial += segment
   }
 }
 
@@ -1596,6 +1620,8 @@ export const defaultRun: RunFn = (file, args, opts) =>
 function defaultSpawnGit(platform: NodeJS.Platform): SpawnGitFn {
   return (file, args, opts) => {
     const child = spawn(file, args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: false, detached: platform !== 'win32' })
+    // Ended with the host at the shutdown's hard limit (cli-standalone.md 4.3); quiesce cancels it before that.
+    trackChildProcess(child, 'git clone')
     child.stdout?.setEncoding('utf8')
     child.stderr?.setEncoding('utf8')
     return {

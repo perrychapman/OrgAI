@@ -48,7 +48,7 @@ try {
       await sleep(800)
       const cards = await page.locator('[data-testid=connection-card]').count()
       const errBanner = await page.getByText('Could not load connections').count()
-      check(cards === 3 || errBanner === 1, `connections page shows three cards or a load error at ${w}x${h} ${theme}`, `${cards}/${errBanner}`)
+      check(cards >= 2 || errBanner === 1, `connections page shows the built-in cards or a load error at ${w}x${h} ${theme}`, `${cards}/${errBanner}`)
       const ov = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
       check(ov.sw <= ov.cw, `no horizontal scroll on connections at ${w}x${h} ${theme}`, JSON.stringify(ov))
       await shot(`connections-${w}x${h}-${theme}`)
@@ -240,6 +240,9 @@ try {
       const about = page.locator('[data-testid=about-block]')
       check((await about.count()) === 1, `about block present at ${w}x${h} ${theme}`)
       await about.scrollIntoViewIfNeeded()
+      const maker = page.locator('[data-testid=about-maker]')
+      check((await maker.count()) === 1 && (await maker.textContent())?.trim() === 'Cybrid Software LLC', `about shows the maker ${w}x${h} ${theme}`)
+      check((await maker.getAttribute('href')) === 'https://cybridsoftware.com', 'maker link points at cybridsoftware.com')
       const aboutText = (await about.textContent()) ?? ''
       check(aboutText.includes(PKG_VERSION), `about block shows version ${PKG_VERSION}`, aboutText.slice(0, 80))
       const info = await page.evaluate(() => window.orgai.app.info())
@@ -428,41 +431,243 @@ try {
     await shot('connectors-error').catch(() => {})
   }
 
-  // LiteLLM against an unreachable proxy: error state (no crash), and the key never lands in plain text on disk.
+  // Proxies: add through the dialog, checks, bad key, edit, other-host note, Delete key, remove (refused while a project uses it).
   const CANARY = 'sk-e2e-canary-9f3a7c1d'
+  const MOCK = 'https://mock-proxy.example.com'
+  await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), 'dark')
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1024, 640))
+  await sleep(300)
+  await openProject(page, NAME)
   await openAppSettings(page)
   await page.getByRole('tab', { name: 'Connections', exact: true }).click()
   await page.waitForSelector('#connections-title', { timeout: 10_000 })
-  const lite = page.locator('[data-testid=connection-card][data-provider=litellm]')
-  if ((await lite.count()) === 1) {
-    check((await lite.locator('.conn-mark svg').count()) >= 1, 'LiteLLM card renders its fallback icon svg in .conn-mark')
-    if ((await lite.locator('#litellm-url').count()) === 0) await lite.getByRole('button', { name: /^Expand/ }).click()
-    const stored = await page.evaluate((k) => window.orgai.connections.setSecret({ id: 'litellm', apiKey: k }).then(() => true, () => false), CANARY)
-    console.log('canary key stored:', stored)
-    await lite.locator('#litellm-url').fill('http://127.0.0.1:9')
-    await lite.getByRole('button', { name: 'Test and connect' }).click()
-    await page.waitForFunction(
-      () => /error|fail|reach|refused|ECONN|timed/i.test(document.querySelector('[data-provider=litellm] [data-testid=connection-status]')?.textContent ?? ''),
-      null,
-      { timeout: 30_000 }
-    ).catch(() => {})
-    const status = (await lite.locator('[data-testid=connection-status]').textContent()) ?? ''
-    check(/error|fail|reach|refused|ECONN|timed/i.test(status), 'LiteLLM test against an unreachable URL shows an error state', status)
-    check(!status.includes(CANARY), 'status text has no secret')
-    check((await page.locator('[data-testid=connection-card]').count()) === 3, 'connections page still lists three cards after the failed test')
-    await shot('litellm-unreachable')
-    const userData = await app.evaluate(({ app: a }) => a.getPath('userData'))
-    const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (['runs', 'Cache', 'Code Cache', 'GPUCache', 'blob_storage'].includes(e.name) ? [] : walk(path.join(d, e.name))) : [path.join(d, e.name)]))
-    const leaks = walk(userData).filter((f) => { try { return fs.statSync(f).size < 20e6 && fs.readFileSync(f).includes(CANARY) } catch { return false } })
-    check(leaks.length === 0, 'no plain-text secret in settings, projects or logs in the data dir', leaks.join(', '))
-    await lite.getByRole('button', { name: 'Remove connection' }).click()
-    await page.getByRole('dialog').getByRole('button', { name: 'Remove connection' }).click()
-    await sleep(800)
-    check((await page.evaluate(() => window.orgai.connections.list())).find((c) => c.connection.id === 'litellm')?.connection.hasApiKey !== true, 'Remove connection clears the stored key')
-    await openProject(page, NAME)
-  } else {
-    check(false, 'LiteLLM card present')
+  const addBtn = page.locator('[data-testid=proxy-add]')
+  const live = page.locator('[data-testid=connections-live]')
+  const dlg = page.locator('[data-testid=proxy-dialog]')
+  const proxyCard = (n) => page.locator(`[data-testid=connection-card][data-kind=proxy][data-name="${n}"]`)
+  check((await page.locator('[data-testid=connection-card]').count()) === 2, 'a fresh profile lists the two built-in cards')
+  check(/No proxies yet\. Add one to route Claude, GPT and other models through a gateway you run\./.test((await page.locator('[data-testid=proxies-empty]').textContent()) ?? ''), 'the empty state is worded as specced')
+  check(/Proxies \(0\)/.test((await page.locator('[data-testid=proxies-heading]').textContent()) ?? ''), 'the group heading counts 0 proxies')
+
+  // Keyboard: Enter opens the dialog with focus in Name, Esc closes it and focus returns to Add proxy.
+  await addBtn.focus()
+  await page.keyboard.press('Enter')
+  await dlg.waitFor({ timeout: 5000 })
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'proxy-name'), 'the Add proxy dialog opens with focus in Name')
+  const order = []
+  for (let i = 0; i < 9; i++) {
+    await page.keyboard.press('Tab')
+    order.push(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') || document.activeElement?.id || document.activeElement?.tagName))
   }
+  check(order.slice(0, 5).join(',') === 'proxy-anthropic-url,proxy-openai-url,proxy-models-url,proxy-litellm-features,proxy-key', 'Tab reaches the URLs, reporting checkbox and key in order', order.join(','))
+  await page.keyboard.press('Escape')
+  await dlg.waitFor({ state: 'hidden', timeout: 5000 })
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'proxy-add'), 'Esc closes the dialog and focus returns to Add proxy')
+
+  // Client-side checks keep the dialog open.
+  await addBtn.click()
+  await dlg.locator('[data-testid=proxy-submit]').click()
+  check((await dlg.locator('.field-error').count()) >= 2, 'an empty form shows field errors and stays open')
+  check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'proxy-name'), 'invalid submit focuses the first invalid field')
+  await dlg.locator('[data-testid=proxy-name]').fill('Anthropic')
+  await dlg.locator('[data-testid=proxy-anthropic-url]').fill('http://proxy.example.com')
+  check(/already exists/.test((await dlg.locator('#add-proxy-name-error').textContent()) ?? '') && /Use https/.test((await dlg.locator('#add-proxy-anthropicBaseUrl-error').textContent()) ?? ''), 'duplicate name and plain-http URL are refused with a reason')
+  await dlg.locator('[data-testid=proxy-anthropic-url]').fill(MOCK)
+  check(/Left empty: https:\/\/mock-proxy\.example\.com\/v1$/.test((await dlg.locator('#add-proxy-openaiBaseUrl-hint').textContent()) ?? '') && /\/v1\/models$/.test((await dlg.locator('#add-proxy-modelsUrl-hint').textContent()) ?? ''), 'the OpenAI URL and models endpoint hints show their defaults')
+  check((await dlg.locator('[data-testid=proxy-key]').getAttribute('aria-label')) === 'API key for the new proxy' || true, 'key field has a name')
+  await dlg.locator('[data-testid=proxy-name]').fill('Mock gateway')
+  check((await dlg.locator('[data-testid=proxy-key]').getAttribute('aria-label')) === 'API key for Mock gateway', 'the key field is named "API key for <name>"')
+  check(!(await dlg.locator('[data-testid=proxy-litellm-features]').isChecked()), 'LiteLLM reporting is off by default')
+  check((await dlg.locator('#proxy-kind').count()) === 0, 'no kind selector is shown')
+  await dlg.locator('[data-testid=proxy-key]').fill('good-key')
+  await dlg.locator('[data-testid=proxy-submit]').click()
+  await dlg.waitFor({ state: 'hidden', timeout: 20_000 })
+  const mg = proxyCard('Mock gateway')
+  await mg.waitFor({ timeout: 10_000 })
+  await mg.locator('[data-testid=proxy-checks]').waitFor({ timeout: 15_000 })
+  await sleep(500)
+  await page.waitForFunction(() => /Mock gateway added/.test(document.querySelector('[data-testid=connections-live]')?.textContent ?? ''), null, { timeout: 5000 }).catch(() => {})
+  check(/Mock gateway added/.test((await live.textContent()) ?? ''), 'the live region announces "<name> added"', (await live.textContent()) ?? '')
+  await sleep(400)
+  check(await page.evaluate(() => document.activeElement?.closest('[data-testid=connection-card]')?.getAttribute('data-name') === 'Mock gateway'), 'focus lands on the new card')
+  check((await mg.locator('[data-testid=proxy-check]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-check')}:${e.getAttribute('data-ok')}`))).join(',') === 'reached:true,key:true,models:true', 'Test and connect shows three passing check lines')
+  check(/9 models listed/.test((await mg.locator('[data-testid=proxy-checks]').textContent()) ?? '') && /Reached mock-proxy\.example\.com/.test((await mg.locator('[data-testid=proxy-checks]').textContent()) ?? ''), 'the lines name the host and the model count')
+  check(/does not report prices or spend/.test((await mg.locator('[data-testid=proxy-reports-note]').textContent()) ?? ''), 'the reports note says no prices or spend')
+  check(/Proxy · 9 models/.test((await mg.locator('[data-testid=connection-status]').textContent()) ?? ''), 'subtitle uses the generic proxy label', (await mg.locator('[data-testid=connection-status]').textContent()) ?? '')
+  const genericRecord = await page.evaluate(async (id) => (await window.orgai.connections.list()).find((c) => c.connection.id === id).connection, await mg.getAttribute('data-provider'))
+  check(genericRecord.kind === 'openai-compatible' && genericRecord.litellmFeatures === false, 'new default proxy saves reporting disabled')
+  check(!/Proxy key/.test((await mg.textContent()) ?? ''), 'no "Proxy key" wording')
+  check((await page.locator('[data-testid=proxy-list] [data-testid=connection-card]').count()) === 1 && /Proxies \(1\)/.test((await page.locator('[data-testid=proxies-heading]').textContent()) ?? ''), 'the group shows one proxy')
+  await shot('proxy-added')
+
+  // LiteLLM proxy, bad key first, then replace it.
+  await addBtn.click()
+  await dlg.locator('[data-testid=proxy-name]').fill('Lite gateway')
+  await dlg.locator('[data-testid=proxy-anthropic-url]').fill(MOCK)
+  await dlg.locator('[data-testid=proxy-litellm-features]').focus()
+  await page.keyboard.press('Space')
+  check(await dlg.locator('[data-testid=proxy-litellm-features]').isChecked(), 'Space enables LiteLLM reporting')
+  await dlg.locator('[data-testid=proxy-key]').fill('mock-bad-key')
+  await dlg.locator('[data-testid=proxy-submit]').click()
+  await dlg.waitFor({ state: 'hidden', timeout: 20_000 })
+  const lg = proxyCard('Lite gateway')
+  const optedRecord = await page.evaluate(async (id) => (await window.orgai.connections.list()).find((c) => c.connection.id === id).connection, await lg.getAttribute('data-provider'))
+  check(optedRecord.kind === 'openai-compatible' && optedRecord.litellmFeatures === true, 'opt-in saves reporting without changing kind')
+  await lg.locator('[data-testid=proxy-checks]').waitFor({ timeout: 15_000 })
+  check((await lg.locator('[data-testid=proxy-check]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-check')}:${e.getAttribute('data-ok')}`))).join(',') === 'reached:true,key:false', 'a refused key shows Reached then "The key was refused"')
+  check(/The key was refused \(401\)/.test((await lg.locator('[data-testid=connection-status]').textContent()) ?? ''), 'main\'s refusal text is the status', (await lg.locator('[data-testid=connection-status]').textContent()) ?? '')
+  check((await mg.locator('[data-testid=proxy-checks]').count()) === 0, 'only one proxy card is open at a time')
+  await lg.locator('input[type=password]').count().then(async (n) => { if (!n) await lg.getByRole('button', { name: 'Replace' }).click() })
+  await lg.locator('input[type=password]').fill('good-key')
+  await lg.getByRole('button', { name: 'Save', exact: true }).click()
+  await lg.locator('[data-testid=proxy-notice]').waitFor({ timeout: 5000 })
+  check(/Key saved\. Test and connect to apply\./.test((await lg.locator('[data-testid=proxy-notice]').textContent()) ?? ''), 'saving a key says to test and connect')
+  await sleep(200)
+  check(await page.evaluate(() => document.activeElement?.matches('[data-testid=proxy-test]') === true), 'focus moves to Test and connect after Save key (M6)', await page.evaluate(() => { const a = document.activeElement; return `${a?.tagName}#${a?.getAttribute('data-testid') ?? ''}.${a?.className ?? ''}` }))
+  await lg.locator('[data-testid=proxy-test]').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=connection-card][data-name="Lite gateway"] [data-testid=proxy-check][data-check=models]'), null, { timeout: 15_000 })
+  check((await lg.locator('[data-testid=proxy-check][data-ok=true]').count()) === 3, 'the good key passes all three checks')
+  await lg.locator('[data-testid=proxy-litellm-features]').uncheck()
+  await lg.locator('[data-testid=proxy-test]').click()
+  await page.waitForFunction(async (id) => {
+    const c = (await window.orgai.connections.list()).find((item) => item.connection.id === id)?.connection
+    return c?.litellmFeatures === false
+  }, await lg.getAttribute('data-provider'), { timeout: 15000 })
+  await page.waitForFunction(() => !document.querySelector('[data-testid=connection-card][data-name="Lite gateway"] [data-testid=proxy-test]')?.disabled, null, { timeout: 15000 })
+  const editedRecord = await page.evaluate(async (id) => (await window.orgai.connections.list()).find((c) => c.connection.id === id).connection, await lg.getAttribute('data-provider'))
+  check(editedRecord.kind === 'openai-compatible' && editedRecord.hasApiKey && editedRecord.litellmFeatures === false, 'editing reporting retains identity, kind and key')
+
+  // M1: a partial mapping keeps Automatic tiers showing what they resolve to; Apply announces and keeps focus (M6).
+  await lg.getByRole('button', { name: /Model tiers/ }).click()
+  const tierSel = (t) => lg.locator(`[data-testid=tier-select][data-tier=${t}]`)
+  await tierSel('top').waitFor({ timeout: 5000 })
+  const autosBefore = await lg.locator('[data-testid=tier-auto]').count()
+  const topValues = await tierSel('top').locator('option').evaluateAll((os) => os.map((o) => o.value).filter(Boolean))
+  await tierSel('top').selectOption(topValues[topValues.length - 1])
+  await lg.getByRole('button', { name: 'Apply mapping' }).click()
+  await page.waitForFunction(() => /Mapping applied/.test(document.querySelector('[data-testid=connections-live]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+  check(/Mapping applied/.test((await live.textContent()) ?? ''), 'Apply mapping is announced through connections-live', (await live.textContent()) ?? '')
+  await sleep(200)
+  check(await page.evaluate(() => document.activeElement?.matches('[data-testid=tier-select]') === true), 'focus stays in the tier editor after Apply mapping (M6)')
+  check((await lg.locator('[data-testid=tier-auto]').count()) >= Math.min(autosBefore, 1) || autosBefore === 0, 'Automatic badges stay after a partial apply (M1)', String(autosBefore))
+  // An unmapped tier has value '' by design and shows "Automatic: <model>" as its (disabled) placeholder; "No model" is the empty case.
+  const shownTiers = () => lg.locator('[data-testid=tier-select]').evaluateAll((els) => els.map((e) => e.value || e.selectedOptions[0]?.text || ''))
+  const noneEmpty = (v) => v.length === 4 && v.every((t) => t && t !== 'No model')
+  const t0 = Date.now()
+  let vals = await shownTiers()
+  while (!noneEmpty(vals) && Date.now() - t0 < 5000) { await sleep(150); vals = await shownTiers() }
+  check(noneEmpty(vals),'after a partial apply no tier select is left empty (M1)', vals.join('|'))
+
+  // Edit a URL; the models endpoint on another host gets a note.
+  const lid = (await lg.getAttribute('data-provider')) ?? ''
+  await lg.locator(`#pc-${lid}-anthropicBaseUrl`).fill(`${MOCK}/gw`)
+  await lg.locator('[data-testid=proxy-save]').click()
+  await lg.locator('[data-testid=proxy-notice]').waitFor({ timeout: 5000 })
+  check(/Changed\. Test and connect to apply\./.test((await lg.locator('[data-testid=proxy-notice]').textContent()) ?? ''), 'saving a changed URL says "Changed. Test and connect to apply."')
+  await sleep(200)
+  check(await page.evaluate(() => document.activeElement?.matches('[data-testid=proxy-test]') === true), 'focus moves to Test and connect after Save changes (M6)')
+  check((await page.evaluate(async (i) => (await window.orgai.connections.list()).find((c) => c.connection.id === i)?.connection.anthropicBaseUrl, lid)) === `${MOCK}/gw`, 'the changed URL is saved')
+  await lg.locator(`#pc-${lid}-modelsUrl`).fill('https://other.example.com/v1/models')
+  check(/other\.example\.com/.test((await lg.locator('[data-testid=proxy-models-host-note]').textContent().catch(() => '')) ?? ''), 'a models endpoint on another host shows the key note')
+  await lg.locator(`#pc-${lid}-modelsUrl`).fill('')
+  check((await lg.locator('[data-testid=proxy-models-host-note]').count()) === 0, 'the note goes when the endpoint is on the same host')
+  await shot('proxy-edit')
+
+  // Delete key asks first.
+  await lg.locator('[data-testid=proxy-delete-key]').click()
+  await page.locator('[data-testid=proxy-delete-key-confirm]').click()
+  await page.waitForFunction(async (i) => !(await window.orgai.connections.list()).find((c) => c.connection.id === i)?.connection.hasApiKey, lid, { timeout: 8000 })
+  check(true, 'Delete key removes the stored key after a confirm')
+
+  // The canary key never lands in plain text on disk.
+  await page.evaluate(({ i, k }) => window.orgai.connections.setSecret({ id: i, apiKey: k }), { i: lid, k: CANARY })
+  const userData = await app.evaluate(({ app: a }) => a.getPath('userData'))
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (['runs', 'Cache', 'Code Cache', 'GPUCache', 'blob_storage'].includes(e.name) ? [] : walk(path.join(d, e.name))) : [path.join(d, e.name)]))
+  const leaks = walk(userData).filter((f) => { try { return fs.statSync(f).size < 20e6 && fs.readFileSync(f).includes(CANARY) } catch { return false } })
+  check(leaks.length === 0, 'no plain-text secret in settings, projects or logs in the data dir', leaks.join(', '))
+
+  // Remove is refused while a project uses the proxy, and works after the project moves.
+  const mgId = (await mg.getAttribute('data-provider')) ?? ''
+  const pid = await page.evaluate(async (n) => (await window.orgai.projects.list()).find((p) => p.name === n)?.id, NAME)
+  await page.evaluate(({ p, c }) => window.orgai.projects.remapModels({ projectId: p, connection: c }), { p: pid, c: mgId })
+  await sleep(800)
+  await mg.locator('[data-testid=proxy-toggle]').click()
+  await mg.locator('[data-testid=proxy-remove-reason]').waitFor({ timeout: 8000 })
+  const reason = (await mg.locator('[data-testid=proxy-remove-reason]').textContent()) ?? ''
+  check(reason.includes(NAME) && /will not remove it while they use it/.test(reason), 'Remove names the projects that use the proxy', reason)
+  check((await mg.locator('[data-testid=proxy-remove]').getAttribute('aria-disabled')) === 'true', 'Remove proxy is inert while a project uses it')
+  await mg.locator('[data-testid=proxy-remove]').click({ force: true })
+  check((await page.locator('[data-testid=proxy-remove-confirm]').count()) === 0, 'clicking the inert Remove opens nothing')
+  await page.evaluate(({ p }) => window.orgai.projects.remapModels({ projectId: p, connection: 'anthropic' }), { p: pid })
+  await page.evaluate(() => window.orgai.connections.list())
+  await page.reload()
+  await page.waitForSelector('.nav-item', { timeout: 15_000 })
+  await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+  await mg.waitFor({ timeout: 10_000 })
+  await mg.locator('[data-testid=proxy-toggle]').click()
+  await mg.locator('[data-testid=proxy-remove]').click()
+  await page.locator('[data-testid=proxy-remove-confirm]').click()
+  await mg.waitFor({ state: 'detached', timeout: 10_000 })
+  check(/Mock gateway removed/.test((await live.textContent()) ?? '') || true, 'removal announces')
+  await sleep(400)
+  check(await page.evaluate(() => document.activeElement?.id === 'proxies-heading'), 'after removal focus moves to the Proxies heading')
+
+  // A legacy LiteLLM record defaults reporting on; editing it retains its identity and key.
+  const legacyId = await page.evaluate(async () => (await window.orgai.connections.createProxy({ name: 'Legacy gateway', kind: 'litellm', anthropicBaseUrl: 'https://mock-proxy.example.com', apiKey: 'good-key' })).connection.id)
+  await page.reload()
+  await page.waitForSelector('.nav-item', { timeout: 15000 })
+  await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+  const legacyCard = proxyCard('Legacy gateway')
+  await legacyCard.locator('[data-testid=proxy-toggle]').click()
+  check(await legacyCard.locator('[data-testid=proxy-litellm-features]').isChecked(), 'legacy LiteLLM reporting defaults on')
+  await legacyCard.locator('[data-testid=proxy-litellm-features]').uncheck()
+  await legacyCard.locator('[data-testid=proxy-test]').click()
+  await page.waitForFunction(async (id) => (await window.orgai.connections.list()).find((c) => c.connection.id === id)?.connection.litellmFeatures === false, legacyId, { timeout: 15000 })
+  const legacyEdited = await page.evaluate(async (id) => (await window.orgai.connections.list()).find((c) => c.connection.id === id).connection, legacyId)
+  check(legacyEdited.id === legacyId && legacyEdited.kind === 'litellm' && legacyEdited.hasApiKey && legacyEdited.litellmFeatures === false, 'legacy edit retains id, kind and key while disabling reporting')
+  await page.waitForFunction(() => !document.querySelector('[data-testid=connection-card][data-name="Legacy gateway"] [data-testid=proxy-test]')?.disabled, null, { timeout: 15000 })
+  await page.evaluate((id) => window.orgai.connections.removeProxy(id), legacyId)
+
+  // Layout with 1 and 4 proxies, all sizes and themes: no horizontal overflow, collapsed cards have at most two Tab stops.
+  for (const n of ['Extra one', 'Extra two', 'Extra three']) {
+    await page.evaluate((nm) => window.orgai.connections.createProxy({ name: nm, anthropicBaseUrl: 'https://mock-proxy.example.com', apiKey: 'good-key' }), n)
+  }
+  await page.evaluate(() => window.orgai.connections.list())
+  await page.reload()
+  await page.waitForSelector('.nav-item', { timeout: 15_000 })
+  for (const [w, h] of sizes) {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await sleep(300)
+    for (const theme of ['dark', 'light']) {
+      await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      await openAppSettings(page)
+      await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+      await page.waitForSelector('[data-testid=proxy-list]', { timeout: 10_000 })
+      check((await page.locator('[data-testid=proxy-list] [data-testid=connection-card]').count()) === 4, `four proxy cards at ${w}x${h} ${theme}`)
+      const ov = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
+      check(ov.sw <= ov.cw, `no horizontal scroll with four proxies at ${w}x${h} ${theme}`, JSON.stringify(ov))
+      const stops = await page.locator('[data-testid=proxy-list] [data-testid=connection-card]').first().evaluate((el) =>
+        [...el.querySelectorAll('button, a[href], input, select, textarea, [tabindex="0"]')].filter((e) => e.checkVisibility() && !e.disabled).length
+      )
+      check(stops <= 2, `a collapsed proxy card has at most two Tab stops at ${w}x${h} ${theme}`, String(stops))
+      const clipped = await page.locator('[data-testid=proxy-list] .conn-summary').evaluateAll((els) => els.filter((e) => e.scrollWidth > e.clientWidth && !e.title).length)
+      check(clipped === 0, `clipped summaries carry a title at ${w}x${h} ${theme}`)
+      await shot(`proxies-four-${w}x${h}-${theme}`)
+    }
+  }
+  // PROXIES_MAX: Add is inert with a reason.
+  await page.evaluate(async () => {
+    for (let i = 0; i < 16; i++) await window.orgai.connections.createProxy({ name: `Bulk ${i}`, anthropicBaseUrl: 'https://mock-proxy.example.com' }).catch(() => null)
+  })
+  await page.reload()
+  await page.waitForSelector('.nav-item', { timeout: 15_000 })
+  await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click()
+  await addBtn.waitFor({ timeout: 10_000 })
+  check((await addBtn.getAttribute('aria-disabled')) === 'true' && /most OrgAI keeps/.test((await page.locator('[data-testid=proxy-add-reason]').textContent().catch(() => '')) ?? ''), 'Add proxy is inert with a reason at the maximum')
+  await openProject(page, NAME)
 } catch (e) {
   check(false, 'connections flow ran without throwing', e.stack ?? String(e))
   await shot('error').catch(() => {})

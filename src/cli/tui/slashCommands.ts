@@ -3,10 +3,19 @@
  * notice built from host data goes through sanitizeTty, and a command's failure becomes one danger notice (a command
  * never throws into the shell).
  */
+import { outputsOfRun, outputsOverlayText } from '../outputsText'
+import { LOG_LEVEL_WORDS, logsOverlayText, type LogLevelFilter } from '../logText'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
 import { agentLabel, statusWordOfSummary } from '../render'
+import { helpKeyLines } from './keymap'
 import { sanitizeTty } from './sanitizeTty'
-import type { RunSummary } from '../../shared/types'
+import { offersRetro } from './selectors'
+import { usageText } from './usageText'
+import { approvalsText } from './approvals'
+import { MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE } from '../../shared/liveModelSwitch'
+import type { ProviderModel, RunOverrides, RunSummary } from '../../shared/types'
+import { connectionName, modelChoices, pickModel } from '../modelSwitch'
+import { parseSlashRunArgs } from '../runStartFlags'
 import type { SlashCommand, SlashContext, TuiState } from './types'
 
 /** One line of untrusted text, sanitized, whitespace folded, at most `max` characters. */
@@ -14,7 +23,9 @@ export function cleanLine(s: string | undefined, max = 200): string {
   const t = sanitizeTty(s ?? '')
     .replace(/\s+/g, ' ')
     .trim()
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t
+  // Cut on code points so a surrogate pair (emoji, rare CJK) is never split into a lone half.
+  const cps = Array.from(t)
+  return cps.length > max ? `${cps.slice(0, max - 1).join('')}…` : t
 }
 
 /** Free text from an argument (a prompt): sanitized, trimmed, newlines kept. */
@@ -49,35 +60,132 @@ function stoppable(s: TuiState): boolean {
 
 const canStart = (s: TuiState): boolean => !s.readOnlyReason && s.project !== undefined
 
-export const HELP_TEXT = [
-  'Keys',
-  '  Alt+D, F2, Ctrl+.   Focus the Decision Tray (Shift+Tab from the composer too)',
-  '  Tab                 Cycle the panes',
-  '  Esc                 Interrupt the running turn',
-  '  Ctrl+C              Clear the composer; twice on an empty composer quits (runs keep going)',
-  '  Ctrl+Z              Suspend (fg to come back)',
-  '  Enter               Send; Alt+Enter adds a new line',
-  '  /                   Open the command palette (on an empty composer)',
-  '',
-  'Decision Tray keys (only while the tray has focus)',
-  '  Permission     y allow once, s allow for the session, a always allow for the project (asks to confirm), n deny',
-  '  Rule request   r grant for the run, a always grant for the project (asks to confirm), n deny',
-  '  Proposal       y approve, e revise with a note, d decline, s enter secrets, v view in the pager',
-  '  Question       1-9 pick an option, Space toggle (multiple choice), c custom answer, Enter submit',
-  '  Merge review   v view the diff, m merge, h hold (keep the branch), x discard (asks to confirm)',
-  '  MCP install    r allow for the run, p save to the project, l save to the library (both ask), n deny',
-  '  On TERM=dumb press Enter after a decision key.',
-  '',
-  'Commands'
-].join('\n')
+const readOnlyText = (s: TuiState): string => `Read-only: ${cleanLine(s.readOnlyReason, 120)}`
 
-function helpText(): string {
-  const lines = SLASH_COMMANDS.map((c) => {
+function startReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  return s.project ? undefined : 'Open a project folder first.'
+}
+
+function interruptReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  const run = activeSummary(s)
+  if (!run) return 'No run is followed. Start or follow one first.'
+  return 'This run is not working right now.'
+}
+
+function stopReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  const run = activeSummary(s)
+  if (!run) return 'No run is followed. Start or follow one first.'
+  return 'This session already ended.'
+}
+
+const needsRunReason = (): string => 'Follow a run first (/runs, or start one with /new).'
+
+/** The followed run is paused (a usage limit) and this TUI may act on it. */
+const pausedRun = (s: TuiState): boolean => !s.readOnlyReason && activeSummary(s)?.status === 'paused'
+
+function pausedReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  if (!activeSummary(s)) return needsRunReason()
+  return pausedRun(s) ? undefined : 'This run is not paused.'
+}
+
+/** /new and /ask arguments: leading run flags (exec's parsers, runStartFlags.ts), then the prompt. */
+function startArgs(args: string): { prompt: string; overrides?: RunOverrides } {
+  const { prompt, overrides } = parseSlashRunArgs(args)
+  const clean = cleanText(prompt)
+  return { prompt: clean, ...(overrides ? { overrides } : {}) }
+}
+
+/** "model-id via Anthropic" for notices. */
+const selectionLabel = (m: Pick<ProviderModel, 'id' | 'connection'>, name?: string): string => `${cleanLine(m.id, 120)} via ${cleanLine(name ?? m.connection, 60)}`
+
+/** /model: no argument lists the choices (a picker when the shell has one), else resolves a tier or id and switches. */
+async function runModel(ctx: SlashContext, args: string): Promise<void> {
+  const run = activeSummary(ctx.state())
+  if (!run) {
+    ctx.notify(needsRunReason(), 'warn')
+    return
+  }
+  const catalog = await ctx.session.modelCatalog()
+  const want = cleanLine(args, 200)
+  let selected: ProviderModel | undefined
+  if (!want) {
+    const choices = modelChoices(run, catalog)
+    if (!choices.length) {
+      ctx.notify('No models available on connected connections.', 'warn')
+      return
+    }
+    const current = run.modelSelection ? selectionLabel({ id: run.modelSelection.model, connection: run.modelSelection.connection }, connectionName(catalog, run.modelSelection.connection)) : 'not recorded'
+    const options = choices.map((c) => ({
+      value: JSON.stringify([c.connection, c.id]),
+      label: cleanLine(`${c.label !== c.id ? `${c.label} (${c.id})` : c.id} · ${connectionName(catalog, c.connection)}${c.tiers.length ? ` · ${c.tiers.join(', ')}` : ''}${c.current ? ' · current' : c.handoff ? ' · ends session' : ''}`, 160)
+    }))
+    if (!ctx.pick) {
+      await ctx.openText('Models', [`Current: ${current}`, '', ...options.map((o) => `  ${o.label}`), '', 'Switch: /model <tier|model id>'].join('\n'))
+      return
+    }
+    const value = await ctx.pick(`Model (current: ${current})`, options)
+    if (value === undefined) return
+    const [connection, id] = JSON.parse(value) as [string, string]
+    selected = catalog.models.find((m) => m.connection === connection && m.id === id)
+  } else {
+    const picked = pickModel(run, catalog, want)
+    if ('error' in picked) {
+      ctx.notify(cleanLine(picked.error, 200), 'warn')
+      return
+    }
+    selected = picked.model
+  }
+  if (!selected) return
+  if (run.modelSelection?.model === selected.id && run.modelSelection.connection === selected.connection) {
+    ctx.notify(`Already on ${selectionLabel(selected, connectionName(catalog, selected.connection))}.`)
+    return
+  }
+  const out = await ctx.session.switchModel(selected, { confirm: () => ctx.confirm(`${MODEL_HANDOFF_TITLE} ${MODEL_HANDOFF_BODY}`) })
+  if (out.kind === 'cancelled') ctx.notify('Model unchanged.')
+  else if (out.kind === 'applied') ctx.notify(`Model changed to ${selectionLabel(selected, connectionName(catalog, selected.connection))}.`)
+  else ctx.notify(`Model selected for the next message: ${selectionLabel(selected, connectionName(catalog, selected.connection))}.`)
+}
+
+/**
+ * /approvals (cli-parity 3.4 as built, read-only): what waits for approval, in full (the gate's summary, "May spend
+ * more", what an undo would bring back, a folder's own config), ending with where approving is done and why.
+ */
+async function runApprovals(ctx: SlashContext): Promise<void> {
+  const api = ctx.session.approvals
+  if (!api) {
+    ctx.notify('Approvals are not available here.', 'warn')
+    return
+  }
+  const items = await api.list()
+  if (!items.length) {
+    ctx.notify('Nothing waits for approval.')
+    return
+  }
+  await ctx.openText('Approvals', approvalsText(items))
+}
+
+function retroReason(s: TuiState): string | undefined {
+  if (s.readOnlyReason) return readOnlyText(s)
+  const run = activeSummary(s)
+  if (!run) return 'Follow an ended work run first (/runs).'
+  if (run.status !== 'finished' && run.status !== 'error') return 'The run has not ended yet. The retrospective reviews an ended run.'
+  return 'Only ended team runs of a project have a retrospective, not chats or assistant runs.'
+}
+
+function commandLines(): string[] {
+  return SLASH_COMMANDS.map((c) => {
     const head = `/${c.name}${c.args ? ` ${c.args}` : ''}`
     const alias = c.aliases?.length ? ` (also ${c.aliases.map((a) => `/${a}`).join(', ')})` : ''
     return `  ${head.padEnd(22)}${c.summary}${alias}`
   })
-  return `${HELP_TEXT}\n${lines.join('\n')}`
+}
+
+function helpText(): string {
+  return HELP_TEXT
 }
 
 /** The table /runs shows: R# tag, status word, title; newest last. */
@@ -127,34 +235,38 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   },
   {
     name: 'new',
-    args: '[prompt]',
+    args: '[--goal g] [--permission-mode m] [--strict-delegation] [prompt]',
     summary: 'Start a new team run',
     available: canStart,
+    unavailableReason: startReason,
     run: (ctx, args) =>
       guarded(ctx, () => {
-        const prompt = cleanText(args)
-        return ctx.newRun(prompt ? { prompt } : {})
+        const { prompt, overrides } = startArgs(args)
+        return ctx.newRun({ ...(prompt ? { prompt } : {}), ...(overrides ? { overrides } : {}) })
       })
   },
   {
     name: 'ask',
-    args: '[prompt]',
+    args: '[--goal g] [--permission-mode m] [--strict-delegation] [prompt]',
     summary: 'Ask one assistant (no team)',
     available: canStart,
+    unavailableReason: startReason,
     run: (ctx, args) =>
       guarded(ctx, () => {
-        const prompt = cleanText(args)
-        return ctx.newRun(prompt ? { prompt, team: 'single' } : { team: 'single' })
+        const { prompt, overrides } = startArgs(args)
+        return ctx.newRun({ ...(prompt ? { prompt } : {}), team: 'single', ...(overrides ? { overrides } : {}) })
       })
   },
   {
     name: 'runs',
     aliases: ['ls', 'history'],
-    summary: "List this project's runs",
+    summary: "List this project's runs (pick one: Enter opens, c continues, r retrospective)",
     run: (ctx) =>
       guarded(ctx, async () => {
         const runs = await ctx.session.listRuns()
-        await ctx.openText('Runs', runsTable(runs, ctx.state().project?.id))
+        const own = ctx.state().project?.id ? runs.filter((r) => r.projectId === ctx.state().project?.id) : runs
+        if (ctx.openRuns && own.length > 0) ctx.openRuns(own)
+        else await ctx.openText('Runs', runsTable(runs, ctx.state().project?.id))
       })
   },
   {
@@ -177,19 +289,83 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     aliases: ['int'],
     summary: 'Interrupt the running turn',
     available: interruptible,
+    unavailableReason: interruptReason,
     run: (ctx) => guarded(ctx, () => ctx.session.interrupt())
+  },
+  {
+    name: 'model',
+    args: '[<tier|model id>]',
+    summary: "Switch the run's model (a short list without an argument)",
+    available: (s) => !s.readOnlyReason && s.activeRunId !== undefined,
+    unavailableReason: (s) => (s.readOnlyReason ? readOnlyText(s) : needsRunReason()),
+    run: (ctx, args) => guarded(ctx, () => runModel(ctx, args))
+  },
+  {
+    name: 'resume-now',
+    aliases: ['resumenow'],
+    summary: 'Resume this run, paused for a usage limit, now',
+    available: pausedRun,
+    unavailableReason: pausedReason,
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        await ctx.session.resumeNow()
+        ctx.notify('Resumed.')
+      })
+  },
+  {
+    name: 'cancel-resume',
+    aliases: ['keep-paused'],
+    summary: 'Keep this paused run paused (no automatic resume)',
+    available: (s) => pausedRun(s) && activeSummary(s)?.autoResume === true,
+    unavailableReason: (s) => pausedReason(s) ?? 'This run is not set to resume by itself.',
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        await ctx.session.cancelAutoResume()
+        ctx.notify('The run stays paused. /resume-now resumes it.')
+      })
   },
   {
     name: 'stop',
     aliases: ['end'],
     summary: 'End this session (the run stops)',
     available: stoppable,
+    unavailableReason: stopReason,
     run: (ctx) =>
       guarded(ctx, async () => {
         if (await ctx.confirm('End this session?')) await ctx.session.stop()
       })
   },
   {
+    name: 'approvals',
+    aliases: ['team-files', 'trust'],
+    summary: 'Read the team-file changes and folder config that wait for approval (read-only: approving is not available in the terminal yet)',
+    run: (ctx) => guarded(ctx, () => runApprovals(ctx))
+  },
+  {
+    name: 'team',
+    summary: "The project's saved roles as a tree: models, effort, staffing; edit a role in place",
+    available: (s) => s.project !== undefined,
+    unavailableReason: () => 'Open a project folder first.',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.openConfig) ctx.openConfig('team')
+        else ctx.notify('The Team view is not available here; use orgai team roles.', 'warn')
+      })
+  },
+  {
+    name: 'settings',
+    aliases: ['config', 'tiers'],
+    summary: 'Project, tier and app settings with their values; edit one in place',
+    available: (s) => s.project !== undefined,
+    unavailableReason: () => 'Open a project folder first.',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.openConfig) ctx.openConfig('settings')
+        else ctx.notify('The Settings view is not available here; use orgai projects show and orgai settings.', 'warn')
+      })
+  },
+  {
+    // The owning orgai's own card list; not the removed `orgai inbox` command (spec 4.1).
     name: 'inbox',
     aliases: ['tray', 'decisions'],
     summary: 'Focus the Decision Tray',
@@ -200,6 +376,93 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     aliases: ['agents'],
     summary: 'Show or hide the agent tree',
     run: (ctx) => guarded(ctx, () => ctx.togglePane('tree'))
+  },
+  {
+    name: 'fold',
+    aliases: ['finished'],
+    summary: 'Fold finished agents into "N done" rows, or show every agent',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.toggleFold) ctx.toggleFold()
+        else ctx.notify('Folding is not available here.', 'warn')
+      })
+  },
+  {
+    name: 'focus',
+    aliases: ['maximise', 'maximize'],
+    summary: 'Maximise the transcript, or bring the panes back',
+    run: (ctx) =>
+      guarded(ctx, () => {
+        if (ctx.toggleFocusMode) ctx.toggleFocusMode()
+        else ctx.notify('Focus mode is not available here.', 'warn')
+      })
+  },
+  {
+    name: 'agent',
+    aliases: ['inspect'],
+    args: '<name>',
+    summary: "Open an agent's inspector (facts, now, worktree, its own transcript)",
+    available: (s) => s.activeRunId !== undefined,
+    unavailableReason: needsRunReason,
+    run: (ctx, args) =>
+      guarded(ctx, () => {
+        if (ctx.openAgent) ctx.openAgent(cleanLine(args, 140))
+        else ctx.notify('The inspector is not available here.', 'warn')
+      })
+  },
+  {
+    name: 'usage',
+    aliases: ['cost'],
+    summary: 'Tokens, time and cost by agent and by role (whole conversation)',
+    available: (s) => s.activeRunId !== undefined,
+    unavailableReason: needsRunReason,
+    run: (ctx) => guarded(ctx, () => ctx.openText('Usage', usageText(ctx.state())))
+  },
+  {
+    name: 'retro',
+    aliases: ['retrospective'],
+    summary: "Org retrospective: the Architect reviews this ended run and proposes team changes",
+    available: (s) => {
+      const run = s.activeRunId ? s.runs[s.activeRunId] : undefined
+      return !s.readOnlyReason && !!run && offersRetro(run.summary)
+    },
+    unavailableReason: retroReason,
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        if (ctx.startRetro) await ctx.startRetro()
+        else ctx.notify('The Org retrospective is not available here.', 'warn')
+      })
+  },
+  {
+    name: 'logs',
+    args: '[info|all]',
+    summary: "The run's warnings and errors, kept for the whole run (info or all adds the rest)",
+    available: (s) => s.activeRunId !== undefined,
+    unavailableReason: needsRunReason,
+    run: (ctx, args) =>
+      guarded(ctx, async () => {
+        const word = cleanLine(args, 20).toLowerCase()
+        const level: LogLevelFilter = word === '' || word === 'warn' ? 'warn' : word === 'info' ? 'info' : word === 'all' ? 'all' : 'warn'
+        if (word !== '' && !LOG_LEVEL_WORDS.includes(word as LogLevelFilter)) {
+          ctx.notify('Use /logs, /logs info or /logs all.', 'warn')
+          return
+        }
+        const st = ctx.state()
+        const run = st.activeRunId ? st.runs[st.activeRunId] : undefined
+        await ctx.openText('Logs', logsOverlayText(run?.logs, level))
+      })
+  },
+  {
+    name: 'outputs',
+    summary: "The files this run produced (orgai outputs show <id> previews one)",
+    available: (s) => s.activeRunId !== undefined,
+    unavailableReason: needsRunReason,
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        const runId = ctx.state().activeRunId
+        const all = await ctx.session.listOutputs()
+        await ctx.openText('Outputs', outputsOverlayText(runId ? outputsOfRun(all, runId) : []))
+      })
   },
   {
     name: 'plan',
@@ -231,18 +494,15 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       })
   },
   {
-    name: 'app',
-    aliases: ['desktop', 'open'],
-    summary: 'Open this run in the desktop app',
-    run: (ctx) => guarded(ctx, () => ctx.session.openInDesktop(ctx.state().activeRunId))
-  },
-  {
     name: 'quit',
     aliases: ['q', 'exit'],
     summary: 'Leave the terminal UI (runs keep going)',
     run: (ctx) => guarded(ctx, () => ctx.quit())
   }
 ]
+
+/** /help: the commands first (what most people look for), then the keys (generated from KEYMAP, so hints, `?` and this cannot drift). */
+export const HELP_TEXT = ['Commands (type / in the composer)', ...commandLines(), '', ...helpKeyLines()].join('\n')
 
 /** `/name args` -> { name (lowercase), args (trimmed) }; null when the line is not a slash command. */
 export function parseSlash(line: string): { name: string; args: string } | null {
@@ -264,10 +524,18 @@ export function matchSlash(query: string, s: TuiState): SlashCommand[] {
 
 /** matchSlash over any command list (the palette's `commands`). */
 export function matchCommands(commands: readonly SlashCommand[], query: string, s: TuiState): SlashCommand[] {
+  return rankCommands(commands, query, s, true)
+}
+
+/** With an empty query /help and /new lead (issue #30 L6); the rest stay alphabetical. */
+const LEADING = ['help', 'new']
+
+function rankCommands(commands: readonly SlashCommand[], query: string, s: TuiState, available: boolean): SlashCommand[] {
   const q = (query ?? '').trim().replace(/^\//, '').split(/\s+/)[0].toLowerCase()
   const ranked: { cmd: SlashCommand; rank: number }[] = []
   for (const cmd of commands) {
-    if (cmd.available && !cmd.available(s)) continue
+    const ok = !cmd.available || cmd.available(s)
+    if (ok !== available) continue
     const aliases = cmd.aliases ?? []
     let rank = -1
     if (cmd.name === q) rank = 0
@@ -276,7 +544,12 @@ export function matchCommands(commands: readonly SlashCommand[], query: string, 
     else if (aliases.some((a) => a.startsWith(q))) rank = 3
     if (rank >= 0) ranked.push({ cmd, rank })
   }
-  ranked.sort((a, b) => a.rank - b.rank || a.cmd.name.localeCompare(b.cmd.name))
+  const lead = (c: SlashCommand): number => {
+    if (q !== '') return 0
+    const at = LEADING.indexOf(c.name)
+    return at < 0 ? LEADING.length : at
+  }
+  ranked.sort((a, b) => a.rank - b.rank || lead(a.cmd) - lead(b.cmd) || a.cmd.name.localeCompare(b.cmd.name))
   return ranked.map((r) => r.cmd)
 }
 
@@ -284,4 +557,24 @@ export function matchCommands(commands: readonly SlashCommand[], query: string, 
 export function findSlash(name: string, s: TuiState): SlashCommand | undefined {
   const n = name.toLowerCase()
   return matchSlash(n, s).find((c) => c.name === n || (c.aliases ?? []).includes(n))
+}
+
+/**
+ * The best unavailable command a query names (exact name or alias, else the first prefix match) with the reason it
+ * cannot run now. Only meaningful when no available command matches (issue #29 M6).
+ */
+export function unavailableFor(commands: readonly SlashCommand[], query: string, s: TuiState): { cmd: SlashCommand; reason: string } | undefined {
+  const cmd = rankCommands(commands, query, s, false)[0]
+  if (!cmd) return undefined
+  return { cmd, reason: cleanLine(cmd.unavailableReason?.(s) ?? 'Not available right now.', 160) }
+}
+
+/** "/retro: <reason>" for a typed line that names an unavailable command (the findSlash path), else undefined. */
+export function unavailableMessage(name: string, s: TuiState, commands: readonly SlashCommand[] = SLASH_COMMANDS): string | undefined {
+  if (matchCommands(commands, name, s).some((c) => c.name === name.toLowerCase() || (c.aliases ?? []).includes(name.toLowerCase()))) return undefined
+  const hit = unavailableFor(commands, name, s)
+  if (!hit) return undefined
+  const n = name.toLowerCase()
+  if (hit.cmd.name !== n && !(hit.cmd.aliases ?? []).includes(n)) return undefined
+  return `/${hit.cmd.name}: ${hit.reason}`
 }

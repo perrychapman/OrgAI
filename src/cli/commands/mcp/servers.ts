@@ -47,7 +47,8 @@ export function serverJson(s: McpServerInfo): Record<string, unknown> {
     auth: s.auth,
     ...(s.spec.libraryId ? { libraryId: s.spec.libraryId } : {}),
     ...(s.libraryMissing ? { libraryMissing: true } : {}),
-    ...(s.secretScope ? { secretScope: s.secretScope } : {})
+    ...(s.secretScope ? { secretScope: s.secretScope } : {}),
+    ...(s.unreadableSecrets?.length ? { unreadableSecrets: s.unreadableSecrets } : {})
   }
 }
 
@@ -101,6 +102,8 @@ export async function mcpShow(ctx: CliContext, args: string[]): Promise<number> 
       lines.push(...definitionLines(s.spec, s))
       lines.push(`Auth:         ${authText(s.auth)}`)
       if (s.missingSecrets.length) lines.push(`Missing:      ${s.missingSecrets.map(safeLine).join(', ')} (the server does not start until they are set)`)
+      // Wave 7 (5.4): a value saved but unreadable on this host says why instead of "set it again".
+      for (const u of s.unreadableSecrets ?? []) lines.push(`Unreadable:   ${safeLine(u.name)}: ${safeLine(u.reason)}`)
       if (s.spec.libraryId) lines.push(`Library:      ${safeLine(s.spec.libraryId)}${s.libraryMissing ? ' (the entry is gone; not passed to runs)' : ''}${s.secretScope ? `, secrets from the ${s.secretScope}` : ''}`)
       for (const [k, v] of Object.entries(s.spec.envOverrides ?? {})) lines.push(`Override:     ${safeLine(k)}=${safeLine(v)}`)
       for (const [k, v] of Object.entries(s.spec.headerOverrides ?? {})) lines.push(`Override:     ${safeLine(k)}: ${safeLine(v)}`)
@@ -215,6 +218,50 @@ export async function mcpLink(ctx: CliContext, args: string[]): Promise<number> 
     ])
     const added = res.servers.find((s) => !before.has(s.spec.id) && s.spec.libraryId === lib.entry.id)
     return emitMutation(ctx, project, res, added?.spec.id, `Linked ${safeLine(lib.entry.name)} from your MCP library to ${safeLine(project.name)}.`)
+  })
+}
+
+/**
+ * `mcp update <server> --role a,b | --no-roles | --all-roles` (cli-parity 3.3): which roles a server is available to
+ * after creation (McpServerSpec.roles, as the desktop's role checklist sets it). --role takes slugs or names (comma list
+ * or repeated) and must name roles of this project; --no-roles leaves it to no role (a role's own grant, Role.mcpServers,
+ * still reaches it); --all-roles drops the list, so every role, present and future, may use it. Saved with mcp:upsert,
+ * the call enable / disable use.
+ */
+export async function mcpUpdate(ctx: CliContext, args: string[]): Promise<number> {
+  const { values, positionals } = parseFlags(args, { role: { type: 'string', multiple: true }, 'no-roles': { type: 'boolean' }, 'all-roles': { type: 'boolean' } })
+  const use = 'Usage: orgai mcp update <server> (--role <slug>[,<slug>]... | --no-roles | --all-roles)'
+  if (!positionals[0]) throw usage(use)
+  noMore(positionals, 1)
+  const refs = (values.role ?? []).flatMap((r) => r.split(',')).map((r) => r.trim()).filter(Boolean)
+  const given = [values.role !== undefined, !!values['no-roles'], !!values['all-roles']].filter(Boolean).length
+  if (given !== 1) throw usage(`Give exactly one of --role, --no-roles or --all-roles. ${use}`)
+  if (values.role !== undefined && refs.length === 0) throw usage('--role needs at least one role slug; use --no-roles for none.')
+  return withHost(ctx, [...CONFIGURE], async (client) => {
+    const project = await requireProject(ctx, client)
+    const s = await findServer(client, project.id, positionals[0])
+    let roles: string[] | undefined
+    if (values['no-roles']) roles = []
+    else if (values.role !== undefined) {
+      roles = [
+        ...new Set(
+          refs.map((ref) => {
+            const lower = ref.toLowerCase()
+            const r = project.roles.find((x) => x.slug === ref) ?? project.roles.find((x) => x.id === ref) ?? project.roles.find((x) => x.name.trim().toLowerCase() === lower)
+            if (!r) throw usage(`--role: no role "${safeLine(ref).slice(0, 60)}" in ${safeLine(project.name)}. List them with: orgai team roles`)
+            return r.slug
+          })
+        )
+      ]
+    }
+    const spec = { ...s.spec }
+    if (roles) spec.roles = roles
+    else delete spec.roles
+    const res = await hostCall<McpMutationResult>(client, 'mcp:upsert', [{ projectId: project.id, spec }])
+    const who = roles === undefined ? 'every role' : roles.length ? roles.map(safeLine).join(', ') : 'no role (only roles granted it directly)'
+    const out = res.servers.find((x) => x.spec.id === s.spec.id)
+    emit(ctx, { project: { id: project.id, name: project.name }, previousRoles: s.spec.roles ?? null, roles: out?.spec.roles ?? null, ...(out ? { server: serverJson(out) } : {}) }, () => `${safeLine(s.spec.name)} is now available to ${who}.`)
+    return EXIT.ok
   })
 }
 

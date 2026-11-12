@@ -46,7 +46,7 @@ export function CanvasPresetGroup({
     e.preventDefault()
     const next = options[to]
     e.currentTarget.querySelector<HTMLElement>(`[data-preset="${next.id}"]`)?.focus()
-    if (next.id !== shown) onPick(next.id)
+    if (next.id !== shown || canvas.presentation === 'pocket-office') onPick(next.id)
   }
 
   return (
@@ -59,7 +59,7 @@ export function CanvasPresetGroup({
       onKeyDown={onKeyDown}
     >
       {CANVAS_STYLE_OPTIONS.map((p) => {
-        const checked = shown === p.id
+        const checked = (canvas.presentation ?? 'graph') === 'graph' && shown === p.id
         const descId = `${base}-${p.id}-desc`
         return (
           <button
@@ -68,7 +68,7 @@ export function CanvasPresetGroup({
             role="radio"
             aria-checked={checked}
             aria-describedby={descId}
-            tabIndex={checked ? 0 : -1}
+            tabIndex={shown === p.id ? 0 : -1}
             className="canvas-opt"
             data-testid="canvas-preset"
             data-preset={p.id}
@@ -95,7 +95,7 @@ export function CanvasPresetGroup({
         <button
           type="button"
           role="radio"
-          aria-checked
+          aria-checked={(canvas.presentation ?? 'graph') === 'graph'}
           aria-describedby={`${base}-custom-desc`}
           tabIndex={0}
           className="canvas-opt"
@@ -109,9 +109,9 @@ export function CanvasPresetGroup({
               {CUSTOM_DESCRIPTION}
             </span>
           </span>
-          <span className="canvas-opt-check">
+          {(canvas.presentation ?? 'graph') === 'graph' && <span className="canvas-opt-check">
             <Icon icon={Check} size="sm" />
-          </span>
+          </span>}
         </button>
       )}
     </div>
@@ -120,5 +120,5 @@ export function CanvasPresetGroup({
 
 /** Moves focus to the checked option of a preset group inside `root` (the deep link and the popover use it). */
 export function focusCheckedPreset(root: ParentNode | null): void {
-  root?.querySelector<HTMLElement>('[data-testid="canvas-preset"][aria-checked="true"]')?.focus({ preventScroll: true })
+  root?.querySelector<HTMLElement>('[data-testid="canvas-presentation"] input:checked')?.focus({ preventScroll: true })
 }

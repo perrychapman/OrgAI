@@ -70,6 +70,8 @@ export function applyAppearance(a: AppearanceSettings, prefersDark: boolean, roo
   if (a.reduceMotion === 'on') root.dataset.reduceMotion = 'on'
   else delete root.dataset.reduceMotion
   const c = a.canvas
+  root.dataset.canvasPresentation = c.presentation ?? 'graph'
+  root.dataset.canvasScenePalette = c.scenePalette ?? DEFAULT_APPEARANCE.canvas.scenePalette
   root.dataset.canvasPattern = c.pattern
   root.dataset.canvasTint = c.tint ? 'on' : 'off'
   root.dataset.canvasEdges = c.edges

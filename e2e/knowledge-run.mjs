@@ -305,10 +305,19 @@ try {
   const clearBtn = page.locator('[data-testid=knowledge-clear]')
   await clearBtn.waitFor({ state: 'visible' })
   check(await until(async () => !(await clearBtn.isDisabled())), '"Clear everything…" is enabled while items exist')
-  await clearBtn.focus()
-  await page.keyboard.press('Enter')
   // The shared useConfirm dialog (no dialog testId): found by its confirm button.
   const dlg = page.locator('.dialog, [role=dialog]', { has: page.locator('[data-testid=knowledge-clear-confirm]') }).first()
+  // Closing the forget confirm restores focus to its trigger a frame or two later (slower on macOS runners), which can
+  // take focus off the button between our focus() and the key press. Re-focus until the button really holds focus, then press.
+  for (let attempt = 0; attempt < 5 && !(await dlg.isVisible()); attempt++) {
+    await clearBtn.focus()
+    if (!(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'knowledge-clear'))) {
+      await sleep(300)
+      continue
+    }
+    await page.keyboard.press('Enter')
+    await dlg.waitFor({ state: 'visible', timeout: 2000 }).catch(() => {})
+  }
   await dlg.waitFor({ state: 'visible' })
   check(clean(await dlg.getByRole('heading').first().innerText()) === 'Clear everything the team recorded?', 'the confirm title', clean(await dlg.getByRole('heading').first().innerText()))
   const body = clean(await dlg.locator('[data-testid=knowledge-clear-body]').innerText())
@@ -542,7 +551,12 @@ try {
   check(readTexts.filter((t) => /^Recalled \d+ items? about Acme billing \(2 times\)$/.test(t)).length === 1, 'the same recall twice in a row is one row with a count', JSON.stringify(readTexts))
   check((await reads.first().locator('details summary').innerText()) === 'Show output', 'the recall result sits under "Show output"')
   await reads.first().locator('details summary').click()
-  const recallOutput = await reads.first().locator('details pre').innerText()
+  // The pre is empty to innerText until the opened details has been laid out (and the result row may land a moment after the call row).
+  let recallOutput = ''
+  await until(async () => {
+    recallOutput = await reads.first().locator('details pre').innerText().catch(() => '')
+    return /Acme Corp, organisation/.test(recallOutput)
+  })
   check(/Acme Corp, organisation/.test(recallOutput) && /Headquartered in Leeds/.test(recallOutput), 'the output reads in plain words', recallOutput.slice(0, 200))
   check(!/kn_|kf_|<<<|>>>|not instructions/.test(recallOutput), 'the output has no raw ids, fence or note to the model', recallOutput.slice(0, 200))
   await reads.first().locator('details summary').click()
@@ -703,6 +717,8 @@ try {
 } finally {
   try {
     if (!page.isClosed()) {
+      // A confirm dialog left open by a failed step would block every click below.
+      if (await page.locator('dialog[open], [role=dialog]').count()) await page.keyboard.press('Escape').catch(() => {})
       await projectTab(page, 'Live').click().catch(() => {})
       const end = page.getByRole('button', { name: 'End session' })
       if (await end.count()) await end.first().click().catch(() => {})

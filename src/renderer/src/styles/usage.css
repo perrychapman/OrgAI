@@ -157,3 +157,531 @@
   flex-direction: column;
   gap: var(--space-2);
 }
+
+/* ======================================================================================================
+   The app-wide Usage page (docs/design/usage-app.md). The page root is the `usage` size container; the page
+   scrolls (like the Dashboard) and the filter bar sticks. Tokens only.
+   ====================================================================================================== */
+.usage-view {
+  container: usage / inline-size;
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.usage-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  /* The sticky bar must never cover a focused element (its height is measured by UsageView). */
+  scroll-padding-top: var(--usage-filters-h, 0px);
+}
+.usage-page {
+  --usage-pad: var(--space-4);
+  max-width: 1280px;
+  margin-inline: auto;
+  padding: 0 var(--usage-pad) var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+@container usage (min-width: 1100px) {
+  .usage-page {
+    --usage-pad: var(--space-6);
+  }
+}
+.usage-page > * {
+  min-width: 0;
+}
+.usage-topbar-note,
+.usage-updated {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+}
+.topbar .usage-live-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+
+/* Header: scope line, subtitle, CSV status */
+.usage-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  padding-top: var(--space-4);
+}
+.usage-scopeline {
+  margin: 0;
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+}
+.usage-subtitle,
+.usage-csv-status {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.usage-csv-status {
+  font-size: var(--text-caption);
+}
+.usage-csv-status:empty {
+  display: none;
+}
+.usage-csv-status.failed {
+  color: var(--danger-text);
+}
+
+/* Filter bar: sticky, hairline, one row at 1600 and two at 1024 */
+.usage-filters {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  margin-inline: calc(-1 * var(--usage-pad));
+  padding: var(--space-2) var(--usage-pad);
+  background: var(--surface-0);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-4);
+}
+/* One wrapping row at 1600 px, two at 1024 px: the rows only group the DOM. */
+.usage-filters-row {
+  display: contents;
+}
+.usage-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 0;
+}
+.usage-field-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-months {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.usage-months .select,
+.usage-field .select {
+  min-width: 0;
+  max-width: 100%;
+}
+.usage-period-label {
+  margin: 0;
+  margin-inline-start: auto;
+  align-self: center;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+}
+.seg-item.is-inert {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+.usage-trigger-text {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-picker-panel {
+  min-width: 18rem;
+}
+.usage-more-panel {
+  min-width: 20rem;
+  max-width: min(24rem, calc(100vw - 16px));
+}
+.usage-more-filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.usage-more-h {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+}
+.usage-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.usage-picker-actions {
+  display: flex;
+  gap: var(--space-1);
+}
+.usage-picker-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+.usage-picker-group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+}
+.usage-picker-group > legend {
+  padding: 0;
+  margin-bottom: var(--space-0h);
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+}
+.usage-opt .checkbox {
+  display: flex;
+  width: 100%;
+}
+.usage-opt .checkbox-text,
+.usage-opt .checkbox-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.usage-opt[data-dim] {
+  color: var(--text-tertiary);
+}
+.usage-opt-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.usage-opt-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-opt-cost {
+  flex: none;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+.usage-opt-none {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+
+/* Chips */
+.usage-chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.usage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0h);
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--space-0h) var(--space-0h) var(--space-0h) var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  font-size: var(--text-small);
+}
+.usage-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-chip-remove {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-6);
+  height: var(--space-6);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.usage-chip-remove:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+.usage-chip-remove:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Summary strip: instruments are boxed like the Dashboard's */
+.usage-summary-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.usage-summary {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+@container usage (max-width: 839px) {
+  .usage-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@container usage (max-width: 559px) {
+  .usage-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.usage-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+.usage-summary-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-0h) var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-summary-model {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+.usage-summary-value {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.usage-summary-sub {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-text-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.usage-text-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.usage-live-note,
+.usage-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.usage-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* Panel shell the panel components follow: section.usage-panel > div.usage-panel-head + content (+ table details). The
+   run Usage tab also has a .usage-panel (usage-tab.css); inside the page those rules are reset. */
+.usage-view .usage-panel {
+  container: none;
+  overflow: visible;
+  padding: var(--space-4);
+  gap: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.usage-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+.usage-panel-head h2 {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+}
+.usage-panel-summary {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.usage-panel-head > :not(h2):not(.usage-panel-summary) {
+  margin-inline-start: auto;
+}
+.usage-table-details > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.usage-table-details > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.usage-table-wrap {
+  margin-top: var(--space-2);
+  max-width: 100%;
+  overflow-x: auto;
+}
+.usage-table-wrap:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.usage-table-wrap table {
+  border-collapse: collapse;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+.usage-table-wrap :is(th, td) {
+  padding: var(--space-1) var(--space-2);
+  text-align: start;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.usage-table-wrap :is(td, th):not(:first-child) {
+  text-align: end;
+}
+.usage-table-wrap :is(th:first-child, td:first-child) {
+  position: sticky;
+  inset-inline-start: 0;
+  background: var(--surface-1);
+  text-align: start;
+}
+
+/* Where it went: three panels in a row from about 1100 px, stacked below */
+.usage-where {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+@container usage (min-width: 1100px) {
+  .usage-where {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Footer */
+.usage-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.usage-loading {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.usage-definitions > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.usage-definitions > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.usage-definitions-list {
+  margin: var(--space-2) 0 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+@container usage (min-width: 880px) {
+  .usage-definitions-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.usage-definitions-list dt {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-small);
+}
+.usage-definitions-list dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+
+/* Loading placeholders at the loaded heights (nothing moves when data arrives) */
+.usage-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.usage-skeleton .skeleton {
+  height: auto;
+  border-radius: var(--radius-lg);
+}
+.usage-sk-summary {
+  min-height: 104px;
+}
+.usage-sk-spend {
+  min-height: 300px;
+}
+.usage-sk-where {
+  min-height: 320px;
+}
+.usage-sk-eff {
+  min-height: 220px;
+}
+.usage-sk-table {
+  min-height: 260px;
+}
+.usage-view .empty-state.compact {
+  padding-block: var(--space-6);
+}

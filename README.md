@@ -184,6 +184,7 @@ R1   Stopped  Add a health endpoint  Run   1m ago   $0.01001
 
 `orgai projects list` lists the projects the command knows, `orgai exec "<task>"` runs a task headless, `orgai tui`
 opens a terminal view (give a run, as in `orgai tui R1`, to open a saved one) and `orgai doctor` checks your setup.
+`orgai outputs list` shows the files runs produced, `orgai settings` and `orgai models` cover configuration, and
 `orgai --help` lists the rest. The CLI has been run on macOS in tests; it has not been run on Windows or Linux yet.
 
 ## Build from source

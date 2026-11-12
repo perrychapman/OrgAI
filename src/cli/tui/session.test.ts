@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { HostScope, PendingCards, RunsSubscribeInput, RunsSubscribeResult, RunSummary } from '../../shared/types'
 import { FakeHostClient, fakeContext, fakeInproc, flush, project, record, rpcError, summary } from '../testing/fakeContext'
-import { EXIT } from '../types'
-import { DESKTOP_UNAVAILABLE_NOTICE, connectTuiHost, openTuiSession, TUI_DECIDE_TIMEOUT_MS, TUI_NO_DECIDE_NOTICE } from './session'
+import { EXIT, HOST_STARTING_WAIT_MS } from '../types'
+import { connectTuiHost, openTuiSession, TUI_DECIDE_TIMEOUT_MS } from './session'
 
 const P = project('p1', '/work', { name: 'Shop' })
 const SCOPES: HostScope[] = ['read', 'operate', 'decide']
@@ -53,27 +53,16 @@ async function open(h: FakeHostClient, opts: { project?: typeof P; runId?: strin
 }
 
 describe('connectTuiHost', () => {
-  it('connects with read / operate / decide as a tui client and passes the skew warning to warn', async () => {
-    const h = host({ hello: { versionSkewWarning: 'App 1.2, CLI 1.1\x1b[31m' } })
+  it('starts this process\'s host and connects with read / operate / decide as a tui client; no skew or access notices', async () => {
+    const h = host()
     const f = fakeContext({ connect: [h] })
-    const warned: string[] = []
-    const conn = await connectTuiHost(f.ctx, { warn: (m) => warned.push(m) })
-    expect(f.connectCalls).toEqual([{ scopes: SCOPES, opts: { clientKind: 'tui', waitStartingMs: 2000 } }])
+    const conn = await connectTuiHost(f.ctx)
+    expect(f.inprocCalls).toHaveLength(1)
+    expect(f.connectCalls).toEqual([{ scopes: SCOPES, opts: { clientKind: 'tui', waitStartingMs: HOST_STARTING_WAIT_MS } }])
     expect(conn.client).toBe(h)
-    expect(conn.started).toBe(false)
-    expect(warned).toEqual(['App 1.2, CLI 1.1'])
     expect(await conn.projects()).toEqual([P])
-    // The session turns the same warning into a notice.
     const session = await openTuiSession(conn, { folder: '/work' })
-    expect(session.getState().notices.map((n) => n.text)).toEqual(['App 1.2, CLI 1.1'])
-  })
-
-  it("warns once up front when the host withheld 'decide' (Terminal access level 'operate', review H2)", async () => {
-    const h = host({ hello: { grantedScopes: ['read', 'operate'] } })
-    const f = fakeContext({ connect: [h] })
-    const conn = await connectTuiHost(f.ctx, {})
-    const session = await openTuiSession(conn, { folder: '/work' })
-    expect(session.getState().notices.map((n) => n.text)).toEqual([TUI_NO_DECIDE_NOTICE])
+    expect(session.getState().notices).toEqual([])
   })
 
   it('createProject reconnects with configure, then creates; refuses with exit 1 when not granted', async () => {
@@ -83,7 +72,7 @@ describe('connectTuiHost', () => {
     const conn = await connectTuiHost(f.ctx)
     const made = await conn.createProject({ name: 'New', path: '/work' } as never)
     expect(made.name).toBe('New')
-    expect(f.connectCalls[1]).toEqual({ scopes: [...SCOPES, 'configure'], opts: { clientKind: 'tui', waitStartingMs: 2000 } })
+    expect(f.connectCalls[1]).toEqual({ scopes: [...SCOPES, 'configure'], opts: { clientKind: 'tui', waitStartingMs: HOST_STARTING_WAIT_MS } })
     // The shared client stays open; the configure connection is closed after the call.
     expect(h1.closed).toBe(false)
     expect(h2.closed).toBe(true)
@@ -101,7 +90,7 @@ describe('connectTuiHost', () => {
   it('startSetup, checkPath; close stops an inproc host only when asked', async () => {
     const h = host({ answers: { 'setup:start': () => summary('s1', { kind: 'setup' }), 'projects:checkPath': () => ({ ok: true }) } })
     const inproc = fakeInproc()
-    const f = fakeContext({ globals: { host: 'inproc' }, connect: [h], inproc: async () => inproc })
+    const f = fakeContext({ connect: [h], inproc: async () => inproc })
     const conn = await connectTuiHost(f.ctx)
     expect(conn.inproc).toBe(inproc)
     expect((await conn.startSetup('p1')).id).toBe('s1')
@@ -333,21 +322,10 @@ describe('openTuiSession', () => {
     await expect(session.decide({ channel: 'setup:decide', payload: { runId: 'r1', proposalId: 'x', decision: { behavior: 'approve' } } })).rejects.toThrow('Changed meanwhile')
   })
 
-  it('openInDesktop: desktop_unavailable becomes a notice; worktreeDiff and listRuns', async () => {
+  it('worktreeDiff and listRuns', async () => {
     const r1 = summary('r1', { status: 'running' })
-    const h = host({
-      live: [r1],
-      answers: {
-        'window:openRun': () => {
-          throw rpcError({ code: 'desktop_unavailable', message: 'no desktop' })
-        },
-        'maintenance:diff': () => ({ stat: '', patch: '' })
-      }
-    })
+    const h = host({ live: [r1], answers: { 'maintenance:diff': () => ({ stat: '', patch: '' }) } })
     const { session } = await open(h, { project: P })
-    await session.openInDesktop()
-    expect(h.callsOf('window:openRun')).toEqual([[{ projectId: 'p1', runId: 'r1' }]])
-    expect(session.getState().notices.map((n) => n.text)).toEqual([DESKTOP_UNAVAILABLE_NOTICE])
     await session.worktreeDiff('wt-1')
     expect(h.callsOf('maintenance:diff')).toEqual([[{ projectId: 'p1', branch: 'wt-1' }]])
     expect((await session.listRuns()).map((r) => r.id)).toEqual(['r1'])

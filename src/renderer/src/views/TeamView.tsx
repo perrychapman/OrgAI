@@ -36,9 +36,12 @@ import RoleInspector from '../components/RoleInspector'
 import { layoutCanvas } from '../lib/layout'
 import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
+import { OfficeScene } from '../components/canvas/office/OfficeScene'
+import { withOfficeDepartments } from '../lib/office/departments'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
-import { EDGE_TYPE, HEX_GAP, HEX_TILE, edgeStroke, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, beginCanvasGlide, edgeStroke, fitMs, refitMs, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { isLayoutMoving, onLayoutSettled } from '../lib/layoutMotion'
 import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
 
 /** Role node box per node style for layout and fit (section 4): cards 220 wide, name tags 160 x 40. */
@@ -92,6 +95,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     if (!el || typeof ResizeObserver === 'undefined') return undefined
     let t: ReturnType<typeof setTimeout> | undefined
     let first = true
+    let pending = false
     const ro = new ResizeObserver(() => {
       if (first) {
         first = false
@@ -99,13 +103,23 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       }
       clearTimeout(t)
       t = setTimeout(() => {
-        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+        // The sidebar or side panel is gliding: one refit when it settles, never per frame.
+        if (isLayoutMoving()) {
+          pending = true
+          return
+        }
+        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
       }, 100)
+    })
+    const unsettled = onLayoutSettled(() => {
+      if (!pending) return
+      pending = false
+      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
     })
     ro.observe(el)
     return () => {
       clearTimeout(t)
+      unsettled()
       ro.disconnect()
     }
   }, [])
@@ -116,6 +130,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     if (!stage || typeof ResizeObserver === 'undefined') return undefined
     let t: ReturnType<typeof setTimeout> | undefined
     let last = -1
+    let pendingOff: (() => void) | undefined
     const ro = new ResizeObserver((entries) => {
       const h = entries[0]?.contentRect.height ?? stage.clientHeight
       if (last < 0) {
@@ -126,13 +141,24 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       clearTimeout(t)
       t = setTimeout(() => {
         last = stage.clientHeight
-        const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+        if (isLayoutMoving()) {
+          // The tray is gliding: wait for it to settle, then fit once.
+          // One pending listener at most; the effect cleanup removes it.
+          if (pendingOff) return
+          pendingOff = onLayoutSettled(() => {
+            pendingOff?.()
+            pendingOff = undefined
+            void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
+          })
+          return
+        }
+        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
       }, 150)
     })
     ro.observe(stage)
     return () => {
       clearTimeout(t)
+      pendingOff?.()
       ro.disconnect()
     }
   }, [])
@@ -148,6 +174,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const edgeMix = useCssVar('--canvas-edge-role-mix')
   const edgeInk = useCssVar('--canvas-edge-ink')
   const options = useCanvasOptions()
+  useEffect(() => {
+    if (options.presentation === 'pocket-office') flowRef.current = null
+  }, [options.presentation])
   const reducedMotion = useReducedMotion()
   const nodeDims = useNodeDims()
   const radial = options.layout === 'radial'
@@ -277,8 +306,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   useEffect(() => {
     if (importState !== 'available' && importState !== 'reverted') return undefined
     const t = window.setTimeout(() => {
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: reduced ? 0 : 150 })
+      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
     }, 120)
     if (importState === 'reverted') {
       const button = importNotice?.source === 'template' ? 'team-templates' : 'import-agents'
@@ -313,6 +341,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     return () => window.cancelAnimationFrame(id)
   }, [focusTick, selectedRole])
 
+  // New roles pop in once (motion.md 3.12); the roles present when the editor opens never do.
+  const roleIds = useMemo(() => project.roles.map((r) => r.id), [project.roles])
+  const arrival = useNodeArrival(roleIds, project.id)
   const nodes: RoleFlowNode[] = useMemo(
     () =>
       project.roles.map((role) => {
@@ -327,10 +358,10 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           initialHeight: roleSize.height,
           ...(nodeDims.dims[role.id] ? { measured: nodeDims.dims[role.id] } : {}),
           ariaLabel: `${role.name}, ${role.reportsTo === null ? 'root role' : 'role'}. ${capabilityLabel(capabilities)}. Press Enter to edit${role.reportsTo === null ? '' : ', Delete to remove'}.`,
-          data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length, capabilities }
+          data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length, capabilities, ...(arrival.isNew(role.id) ? { arrived: true } : {}) }
         }
       }),
-    [project, selectedRoleId, roleSize, nodeDims.dims]
+    [project, selectedRoleId, roleSize, nodeDims.dims, arrival.arrivedKey]
   )
 
   const edges: Edge[] = useMemo(
@@ -479,7 +510,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
 
   const onRootKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>): void => {
     const el = e.target as HTMLElement
-    if ((e.key === 'Enter' || e.key === ' ') && el.classList.contains('react-flow__node')) {
+    if ((e.key === 'Enter' || e.key === ' ') && (el.classList.contains('react-flow__node') || el.hasAttribute('data-office-agent-id') || el.hasAttribute('data-office-worker-id'))) {
       focusWanted.current = true
       setPanelOpen(true)
       setPanelTab('role')
@@ -488,7 +519,12 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }
 
   const returnToNode = useCallback((roleId: string) => {
-    rootRef.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(roleId)}"]`)?.focus()
+    const target = rootRef.current?.querySelector<HTMLElement>(`[data-office-worker-id="${CSS.escape(roleId)}"], .react-flow__node[data-id="${CSS.escape(roleId)}"]`)
+    if (target) { target.focus(); return }
+    const directoryTarget = rootRef.current?.querySelector<HTMLElement>(`[data-office-agent-id="${CSS.escape(roleId)}"]`)
+    const directory = directoryTarget?.closest('details')
+    if (directory) directory.open = true
+    directoryTarget?.focus()
   }, [])
 
   const addRole = (): void => {
@@ -543,10 +579,12 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: roleSize.width, height: roleSize.height })),
       { nodesep: 60, ranksep: 110, ringStep: ringStepFor(options.nodeStyle), ...(options.nodeStyle === 'hex' ? { honeycomb: { width: HEX_TILE.width, height: HEX_TILE.height, gap: HEX_GAP } } : {}) }
     )
+    // The nodes glide to their new places (up to 60 of them), then one fit.
+    const glide = beginCanvasGlide(frameRef.current, project.roles.length)
     updateRoles(project.id, (roles) => roles.map((r) => ({ ...r, position: pos[r.id] ?? r.position })))
     window.setTimeout(() => {
-      void flowRef.current?.fitView({ padding: radial ? 0.12 : 0.3, maxZoom: 1, duration: reducedMotion ? 0 : 300 })
-    }, 80)
+      void flowRef.current?.fitView({ padding: radial ? 0.12 : 0.3, maxZoom: 1, duration: fitMs(reducedMotion) })
+    }, glide > 0 ? glide + 10 : 80)
   }
 
   return (
@@ -639,9 +677,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 </div>
               )}
             </Popover>
-            <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
+            {options.presentation !== 'pocket-office' && <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
               Auto-layout
-            </Button>
+            </Button>}
             {/* Beside Auto-layout, in the button row: on the wrapped row with the note a 28 px button grew the toolbar
                 at 1024x640 and took that height from the Team assistant tray. */}
             <CanvasStyleButton testId="canvas-style-button" />
@@ -777,6 +815,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         </div>
         </div>
         <FrameStage>
+          {options.presentation === 'pocket-office' ? (
+            <OfficeScene mode="team" palette={options.scenePalette} agents={withOfficeDepartments(project.roles.map((role) => ({ id: role.id, name: role.name, parentId: role.reportsTo, status: 'Role' })))} messages={[]} selectedId={selectedRoleId ?? undefined} onSelect={(id) => { setSelectedEdgeId(null); selectRole(id); setPanelOpen(true); setPanelTab('role') }} onRemove={(id) => void requestRemove(id)} />
+          ) : (
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -807,6 +848,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             <Controls showInteractive={false} position="bottom-right" />
             <CanvasMinimap ariaLabel="Org chart minimap" />
           </ReactFlow>
+          )}
         </FrameStage>
         <FrameTray label={showCard ? 'Team files approval' : 'Team assistant'}>
           {showCard && filesStatus && (
@@ -833,7 +875,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         </FrameTray>
         <FrameFooter>
           <span>
-            {options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it and Delete removes it.
+            {options.presentation === 'pocket-office' ? 'Select a role to edit it. With a role focused, Enter edits it and Delete removes it.' : <>{options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it and Delete removes it.</>}
           </span>
         </FrameFooter>
       </CanvasFrame>
@@ -864,15 +906,18 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 }}
               />
             ) : selectedRole ? (
+              <div className={options.presentation === 'pocket-office' ? 'office-inspector' : undefined} data-office-palette={options.scenePalette}>
+              {options.presentation === 'pocket-office' && <div className="office-inspector-action"><Button size="sm" testId="office-role-back" onClick={() => { const id = selectedRole.id; selectRole(null); setPanelTab('catalog'); returnToNode(id) }}>Back to office</Button></div>}
               <RoleInspector
                 project={project}
                 role={selectedRole}
                 notice={notice && notice.roleId === selectedRole.id ? notice.text : null}
                 onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
                 onRemove={() => void requestRemove(selectedRole.id)}
-                onEscape={() => returnToNode(selectedRole.id)}
+                onEscape={() => { const id = selectedRole.id; if (options.presentation === 'pocket-office') { selectRole(null); setPanelTab('catalog') } returnToNode(id) }}
                 onAskAssistant={() => openAssistant()}
               />
+              </div>
             ) : (
               <EmptyState compact icon={MousePointerClick} title="No role selected" description="Select a role on the chart to edit what it can use." testId="team-no-role" />
             )}

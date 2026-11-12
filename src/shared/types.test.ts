@@ -22,8 +22,17 @@ import {
   DEFAULT_HEADLESS_DECISION_POLICY,
   EXEC_OUTCOMES,
   EXEC_OUTCOME_EXIT_CODE,
+  HOST_CLIENT_KINDS,
   HOST_IPC,
+  HOST_KINDS,
+  HOST_KIND_CAPABILITIES,
+  HOST_METHODS,
   HOST_SCOPES,
+  INSTALL_CHANNELS,
+  SECRETS_IPC,
+  VAULT_CUSTODY_SCHEMES,
+  VAULT_STATES,
+  hostCanOpenWindows,
   IPC,
   KIT_IPC,
   KNOWLEDGE_IPC,
@@ -97,7 +106,6 @@ describe('catalog', () => {
   it('defaults connections with the legacy auth and no secrets', () => {
     const c = defaultConnections({ kind: 'apiKey', envVar: 'KEY' })
     expect(c.anthropic.auth).toEqual({ kind: 'apiKey', envVar: 'KEY' })
-    expect(c.litellm).toEqual({ id: 'litellm', enabled: false, baseUrl: '', hasApiKey: false, tierModels: {} })
     expect(Object.keys(c)).toEqual([...CONNECTION_IDS])
     expect(structuredClone(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
   })
@@ -129,7 +137,7 @@ describe('projectConnection and adapterForProject', () => {
       { ...c, model: 'inherit' }
     ]
     const choice = adapterForProject({ provider: { ...p.provider, connection: 'litellm' }, roles }, catalog)
-    expect(choice).toEqual({ adapter: 'codex', connection: 'litellm', family: 'openai', mismatched: [b.id] })
+    expect(choice).toEqual({ adapter: 'codex', connection: 'litellm', family: 'openai', mismatched: [b.id], bridged: [{ roleId: b.id, connection: 'litellm', adapter: 'claude' }] })
     const claudeRoot = adapterForProject({ provider: { ...p.provider, connection: 'litellm' }, roles: [{ ...root, model: 'team-claude' }] }, catalog)
     expect(claudeRoot.adapter).toBe('claude')
     // A mixed chart on LiteLLM is informational: the root's family picked the adapter, the run may start.
@@ -153,6 +161,22 @@ describe('projectConnection and adapterForProject', () => {
     expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: ['r1'] })).toBe('single-family-connection')
     expect(mixedFamilyRefusal({ connection: 'openai', family: 'openai', mismatched: ['r1'] })).toBe('single-family-connection')
     expect(mixedFamilyRefusal({ connection: 'anthropic', family: 'claude', mismatched: [] })).toBeNull()
+  })
+
+  it('treats every non-built-in id (proxy-0a1b2c3d) as a proxy, exactly like litellm', () => {
+    const p = project()
+    const [root, a] = p.roles
+    const catalog = [
+      { ...litellmModel('team-claude', 'claude'), connection: 'proxy-0a1b2c3d' },
+      { ...litellmModel('team-gpt', 'openai'), connection: 'proxy-0a1b2c3d' }
+    ]
+    const on = (rootModel: string, reportModel: string) =>
+      adapterForProject({ provider: { ...p.provider, connection: 'proxy-0a1b2c3d' }, roles: [{ ...root, model: rootModel }, { ...a, model: reportModel }] }, catalog)
+    expect(on('team-gpt', 'team-claude')).toMatchObject({ adapter: 'codex', connection: 'proxy-0a1b2c3d', family: 'openai', mismatched: [a.id] })
+    expect(on('team-claude', 'team-gpt').adapter).toBe('claude')
+    expect(mixedFamilyRefusal(on('team-claude', 'team-gpt'))).toBeNull()
+    expect(mixedFamilyRefusal(on('inherit', 'team-gpt'))).toBe('no-root-family')
+    expect(mixedFamilyRefusal({ connection: 'proxy-0a1b2c3d', family: 'claude', mismatched: ['r1'] })).toBeNull()
   })
 
   it('keeps the anthropic and openai catalogs single-family, so a chart picked from them never mixes', () => {
@@ -221,6 +245,31 @@ describe('IPC names', () => {
   it('are unique', () => {
     const names = Object.values(IPC)
     expect(new Set(names).size).toBe(names.length)
+  })
+})
+
+describe('Wave 7 (standalone CLI) contracts', () => {
+  it('SECRETS_IPC values are unique and collide with no IPC, HOST_IPC channel or host.* method', () => {
+    const names = Object.values(SECRETS_IPC)
+    expect(names.sort()).toEqual(['secrets:confirmDelete', 'secrets:init', 'secrets:reset', 'secrets:status', 'secrets:undelete'])
+    const taken = new Set<string>([IPC, TEMPLATE_ENGAGEMENT_IPC, KNOWLEDGE_IPC, MCP_SCOPE_IPC, KIT_IPC, HOST_IPC, HOST_METHODS].flatMap((o) => Object.values(o)))
+    for (const n of names) expect(taken.has(n), n).toBe(false)
+  })
+
+  it('host kinds: every kind has capabilities; only desktop opens windows', () => {
+    expect([...HOST_KINDS].sort()).toEqual(Object.keys(HOST_KIND_CAPABILITIES).sort())
+    expect([...HOST_KINDS]).toEqual(['desktop', 'inproc'])
+    expect(HOST_KINDS.filter((k) => hostCanOpenWindows(k)).sort()).toEqual(['desktop'])
+    expect(HOST_KINDS.filter((k) => HOST_KIND_CAPABILITIES[k].inProcess)).toEqual(['inproc'])
+    expect(hostCanOpenWindows('__proto__' as never)).toBe(false)
+    expect(HOST_CLIENT_KINDS).toEqual(['cli', 'tui'])
+  })
+
+  it('enums are unique', () => {
+    for (const list of [VAULT_STATES, VAULT_CUSTODY_SCHEMES, INSTALL_CHANNELS] as readonly (readonly string[])[]) {
+      expect(new Set(list).size).toBe(list.length)
+    }
+    expect(INSTALL_CHANNELS).toEqual(['npm', 'app', 'archive', 'dev'])
   })
 })
 

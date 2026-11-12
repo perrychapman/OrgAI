@@ -118,6 +118,18 @@ describe('CodexAdapter self-control gate (fake app-server)', () => {
     })
   }
 
+  it('declines with no card an update in the repo whose move destination is under <dataDir>/codex (review H1)', async () => {
+    const { ctx, s, repo, data } = await started('bypassPermissions', { allowedRules: () => ['Edit', 'Write'] })
+    s.push('item/started', {
+      threadId: 'th-1',
+      turnId: 'tu-1',
+      item: { type: 'fileChange', id: 'mv', status: 'inProgress', changes: [{ path: join(repo, 'a.md'), kind: { type: 'update', move_path: join(data, 'codex', 'config.toml') }, diff: '' }] }
+    })
+    expect(await s.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'mv', startedAtMs: 1 })).toEqual({ decision: 'decline' })
+    expect(ctx.requestPermission).not.toHaveBeenCalled()
+    expect(rows(ctx.events)).toHaveLength(1)
+  })
+
   it('declines a permissions request whose folders reach OrgAI control files, with no card (review L)', async () => {
     const { ctx, s, data, repo } = await started('default')
     const perm = (permissions: unknown, reason?: string) => ({ threadId: 'th-1', itemId: 'p-1', permissions, ...(reason ? { reason } : {}) })

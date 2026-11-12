@@ -57,6 +57,35 @@ export function formatUsd(usd: number): string {
   return `$${t}`
 }
 
+/**
+ * Cents precision for glanceable pages (the Dashboard, docs/design/dashboard-2.md 11): two decimals from $0.01 up,
+ * "<$0.01" above zero and below a cent. The full figure stays in the tooltip.
+ */
+export function formatUsdCompact(usd: number): string {
+  if (usd === 0) return '$0.00'
+  if (usd < 0.01) return '<$0.01'
+  return `$${usd.toFixed(2)}`
+}
+
+/**
+ * The Usage page's one decimals rule (docs/design/usage-app.md section 5): 2 decimals from $1 (thousands separated),
+ * 3 from $0.01, 4 above $0, "< $0.0001" below that; $0 is "$0.00". Every figure on the page uses it, so a row and its
+ * total always agree on how they round.
+ */
+export function formatUsdPage(usd: number): string {
+  if (usd === 0) return '$0.00'
+  if (usd < 0.0001) return '< $0.0001'
+  if (usd >= 1) return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return `$${usd.toFixed(usd >= 0.01 ? 3 : 4)}`
+}
+
+/** Full precision for a title or CSV: at most 6 decimals, trailing zeros trimmed to 2. */
+export function formatUsdFull(usd: number): string {
+  let t = usd.toFixed(6)
+  while (t.endsWith('0') && t.length - t.indexOf('.') - 1 > 2) t = t.slice(0, -1)
+  return `$${t}`
+}
+
 /** Model ids with tokens but no known price (priceSource 'unknown' or a null cost), unique, in first-seen order. */
 export function unpricedModels(models: CostInput['models']): string[] {
   const out: string[] = []
@@ -69,8 +98,27 @@ function unpricedNote(models: CostInput['models']): string {
   return ids.length > 0 ? ` No price for ${ids.join(', ')}; set one in App settings > Connections > Model prices.` : ''
 }
 
-/** Describes one cost figure. The single place cost wording lives. */
-export function costView(input: CostInput): CostView {
+/**
+ * Describes one cost figure. The single place cost wording lives. `compact` rounds the text to cents
+ * (`formatUsdCompact`); the title keeps the full figure.
+ */
+export function costView(input: CostInput, opts?: { compact?: boolean; precision?: 'page' }): CostView {
+  const v = fullCostView(input)
+  if (opts?.precision === 'page') return pageCostView(input, v)
+  if (!opts?.compact || (v.kind !== 'known' && v.kind !== 'partial') || input.costUsd === null) return v
+  const text = formatUsdCompact(input.costUsd) + (v.kind === 'partial' ? '+' : '')
+  return text === v.text ? v : { ...v, text, title: `${formatUsd(input.costUsd)}${v.kind === 'partial' ? '+' : ''}. ${v.title}` }
+}
+
+/** The Usage page's figure: formatUsdPage, "+" on a lower bound, "~" before a legacy figure, full value in the title. */
+function pageCostView(input: CostInput, v: CostView): CostView {
+  if ((v.kind !== 'known' && v.kind !== 'partial') || input.costUsd === null) return v
+  const text = `${input.legacy ? '~' : ''}${formatUsdPage(input.costUsd)}${v.kind === 'partial' ? '+' : ''}`
+  const full = `${formatUsdFull(input.costUsd)}${v.kind === 'partial' ? '+' : ''}`
+  return { ...v, text, title: text === full ? v.title : `${full}. ${v.title}` }
+}
+
+function fullCostView(input: CostInput): CostView {
   const { costUsd, costSource } = input
   const legacy = input.legacy ? ` ${COST_TITLES.legacy}` : ''
   if (costSource === 'none' && (costUsd === null || costUsd === 0)) {

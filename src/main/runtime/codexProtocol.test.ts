@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import {
   API_KEY_ENV,
+  NATIVE_AGENT_CONFIG,
   NATIVE_SKILL_CONFIG,
   buildLaunchConfig,
   lockNativeSkills,
@@ -19,7 +20,12 @@ import {
   parseToolCall,
   parseTurnId,
   parseUserInputQuestions,
+  fullPolicyOverride,
   policyFor,
+  parseWorkspaceWriteTemp,
+  policyOverride,
+  sandboxPolicyFor,
+  TEMP_EXCLUDED,
   tomlKey,
   tomlString,
   unwrapShellCommand,
@@ -37,6 +43,46 @@ function spec(over: Partial<McpServerSpec> & { name: string }): McpServerSpec {
 function resolved(s: McpServerSpec, env: Record<string, string> = {}, headers: Record<string, string> = {}): ResolvedMcpServer {
   return { spec: s, env, headers }
 }
+
+describe('policyOverride / sandboxPolicyFor (live permission mode, turn/start fields)', () => {
+  const work = { writes: true, setupLike: false }
+  it('sends only what differs, and clears the auto reviewer with user', () => {
+    expect(policyOverride(policyFor('default', work), policyFor('default', work), [])).toEqual({})
+    expect(policyOverride(policyFor('default', work), policyFor('dontAsk', work), [])).toEqual({ approvalPolicy: 'never' })
+    expect(policyOverride(policyFor('auto', work), policyFor('default', work), [])).toEqual({ approvalPolicy: 'untrusted', approvalsReviewer: 'user' })
+    expect(policyOverride(policyFor('default', work), policyFor('auto', work), [])).toEqual({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' })
+    expect(policyOverride(policyFor('default', work), policyFor('plan', work), [])).toEqual({ approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false } })
+    expect(policyOverride(policyFor('default', work), policyFor('bypassPermissions', work), [])).toEqual({ approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } })
+  })
+  it('workspace-write carries the writable roots, no network and the given temp switches; unknown temp settings exclude both', () => {
+    const codexDefaults = { excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+    expect(policyOverride(policyFor('plan', work), policyFor('default', work), ['/a', ''], codexDefaults)).toEqual({
+      approvalPolicy: 'untrusted',
+      sandboxPolicy: { type: 'workspaceWrite', writableRoots: ['/a'], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+    })
+    // No temp argument: unknown, so the narrowest (both temp folders excluded).
+    expect(sandboxPolicyFor('workspace-write', ['/a'])).toEqual({ type: 'workspaceWrite', writableRoots: ['/a'], networkAccess: false, ...TEMP_EXCLUDED })
+    expect(TEMP_EXCLUDED).toEqual({ excludeTmpdirEnvVar: true, excludeSlashTmp: true })
+    expect(sandboxPolicyFor('read-only', ['/a'])).toEqual({ type: 'readOnly', networkAccess: false })
+  })
+  it('fullPolicyOverride sends all three policy fields even when nothing differs (an unknown Codex-side policy, review M1)', () => {
+    expect(fullPolicyOverride(policyFor('plan', work), ['/a'])).toEqual({ approvalPolicy: 'never', approvalsReviewer: 'user', sandboxPolicy: { type: 'readOnly', networkAccess: false } })
+    expect(fullPolicyOverride(policyFor('auto', work), ['/a'])).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandboxPolicy: { type: 'workspaceWrite', writableRoots: ['/a'], ...TEMP_EXCLUDED } })
+  })
+  it('parseWorkspaceWriteTemp reads config/read: only an explicit null section is Codex defaults, the user settings are kept, anything unreadable excludes', () => {
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: null } })).toEqual({ excludeTmpdirEnvVar: false, excludeSlashTmp: false })
+    // A missing key (renamed or moved in another Codex version) is unknown, not defaults (review L2).
+    expect(parseWorkspaceWriteTemp({ config: {} })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: undefined } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox: { workspace_write: null } } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: [] } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: { writable_roots: [], network_access: true, exclude_tmpdir_env_var: true, exclude_slash_tmp: false } } })).toEqual({ excludeTmpdirEnvVar: true, excludeSlashTmp: false })
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: { exclude_tmpdir_env_var: 'no' } } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({ config: { sandbox_workspace_write: 'x' } })).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp({})).toEqual(TEMP_EXCLUDED)
+    expect(parseWorkspaceWriteTemp(undefined)).toEqual(TEMP_EXCLUDED)
+  })
+})
 
 describe('policyFor (permission mode -> approval policy + sandbox)', () => {
   const work = { writes: true, setupLike: false }
@@ -156,7 +202,7 @@ describe('dynamic tool specs', () => {
   it('turns every harness tool into a function spec with a JSON schema from zod', () => {
     const tools = harnessToolsFor(fakeCtx())
     const specs = tools.map(dynamicToolSpec)
-    expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'propose_mcp_servers', 'list_skill_library', 'read_library_skill', 'propose_skills', 'request_permission_rules', 'list_runs', 'message_run', 'list_skills', 'load_skill'])
+        expect(specs.map((s) => s.name)).toEqual(['set_plan', 'orgai_update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'propose_org_change', 'list_mcp_servers', 'search_mcp_registry', 'request_mcp_install', 'propose_mcp_servers', 'list_skill_library', 'read_library_skill', 'propose_skills', 'request_permission_rules', 'list_runs', 'message_run', 'produce_output', 'register_output', 'read_output', 'list_skills', 'load_skill', 'app_reference'])
     const setPlan = specs[0]
     expect(setPlan).toMatchObject({ type: 'function' })
     const schema = setPlan.inputSchema as { type: string; required: string[]; properties: Record<string, { type?: string }> }
@@ -202,7 +248,8 @@ describe('native skill discovery', () => {
   it('every launch turns the bundled skills and the skill instructions off', () => {
     expect(NATIVE_SKILL_CONFIG).toEqual(['skills.bundled.enabled=false', 'skills.include_instructions=false'])
     const l = buildLaunchConfig(undefined, [])
-    expect(l.config).toEqual([...NATIVE_SKILL_CONFIG])
+    expect(l.config).toEqual([...NATIVE_SKILL_CONFIG, ...NATIVE_AGENT_CONFIG])
+    expect(NATIVE_AGENT_CONFIG).toEqual(['features.multi_agent=false', 'features.multi_agent_v2=false'])
   })
 
   it('parseSkillsList reads defensively and deduplicates by path', () => {
@@ -261,7 +308,14 @@ describe('buildLaunchConfig project docs', () => {
 
 describe('buildLaunchConfig', () => {
   const secretValue = 'sk-super-secret-1234'
-  const userConfig = (c: string): boolean => !NATIVE_SKILL_CONFIG.includes(c)
+  const userConfig = (c: string): boolean => !NATIVE_SKILL_CONFIG.includes(c) && !NATIVE_AGENT_CONFIG.includes(c)
+  /** The generated env name carrying `value`; it must look like ORGAI_MCP_<16 hex>_... */
+  const envNameOf = (l: { env: Record<string, string> }, value: string): string => {
+    const names = Object.keys(l.env).filter((k) => l.env[k] === value)
+    expect(names).toHaveLength(1)
+    expect(names[0]).toMatch(/^ORGAI_MCP_[0-9a-f]{16}_\d+_H\d+$/)
+    return names[0]
+  }
   const conn = (over: Partial<RunConnection> = {}): RunConnection => ({ connection: 'chatgpt' as never, adapter: 'codex', env: { CODEX_HOME: '/data/codex' }, ...over })
 
   it('ChatGPT login adds no provider and keeps CODEX_HOME', () => {
@@ -308,11 +362,23 @@ describe('buildLaunchConfig', () => {
     const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Team': 'a', Authorization: `Bearer ${secretValue}`, 'X-Key': 'kkk-secret' })])
     expect(l.config).toContain('mcp_servers.remote.url="https://x.test/mcp"')
     expect(l.config).toContain('mcp_servers.remote.http_headers={ X-Team = "a" }')
-    expect(l.config).toContain('mcp_servers.remote.bearer_token_env_var="ORGAI_MCP_0_H0"')
-    expect(l.config).toContain('mcp_servers.remote.env_http_headers={ X-Key = "ORGAI_MCP_0_H1" }')
-    expect(l.env.ORGAI_MCP_0_H0).toBe(secretValue)
-    expect(l.env.ORGAI_MCP_0_H1).toBe('kkk-secret')
+    const bearer = envNameOf(l, secretValue)
+    const key = envNameOf(l, 'kkk-secret')
+    expect(bearer).toMatch(/_0_H0$/)
+    expect(key).toMatch(/_0_H1$/)
+    expect(bearer.slice(0, 26)).toBe(key.slice(0, 26)) // one random prefix per launch config
+    expect(l.config).toContain(`mcp_servers.remote.bearer_token_env_var="${bearer}"`)
+    expect(l.config).toContain(`mcp_servers.remote.env_http_headers={ X-Key = "${key}" }`)
     expect(l.config.join('\n')).not.toMatch(/sk-super|kkk-secret/)
+  })
+
+  it('draws a fresh random env name prefix on every launch config build', () => {
+    const s = spec({ name: 'remote', transport: 'http', url: 'https://x.test/mcp', headers: {}, secretHeaders: ['X-Key'] })
+    const one = envNameOf(buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'v' })]), 'v')
+    const two = envNameOf(buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'v' })]), 'v')
+    expect(one).not.toBe(two)
+    const fixed = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'v' })], { random: (n) => new Uint8Array(n).fill(0xab) })
+    expect(fixed.env.ORGAI_MCP_abababababababab_0_H0).toBe('v')
   })
 
   it('never prints a header value in the summary, config or argv', () => {
@@ -320,15 +386,15 @@ describe('buildLaunchConfig', () => {
     const l = buildLaunchConfig(conn(), [resolved(s, {}, { Authorization: 'Bearer secret123' })])
     expect(l.summary.join('\n')).not.toContain('secret123')
     expect(l.config.join('\n')).not.toContain('secret123')
-    expect(l.env.ORGAI_MCP_0_H0).toBe('secret123')
+    expect(envNameOf(l, 'secret123')).toMatch(/_0_H0$/)
   })
 
   it('hands an OAuth access token to Codex through the environment only', () => {
     const s = spec({ name: 'oauthy', transport: 'http', url: 'https://x.test/mcp', headers: { 'X-Team': 'a' }, oauth: { resource: 'https://x.test/mcp' } as McpServerSpec['oauth'] })
     const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Team': 'a', Authorization: 'Bearer tok-oauth-123' })])
-    expect(l.config).toContain('mcp_servers.oauthy.bearer_token_env_var="ORGAI_MCP_0_H0"')
+    const bearer = envNameOf(l, 'tok-oauth-123')
+    expect(l.config).toContain(`mcp_servers.oauthy.bearer_token_env_var="${bearer}"`)
     expect(l.config).toContain('mcp_servers.oauthy.http_headers={ X-Team = "a" }')
-    expect(l.env.ORGAI_MCP_0_H0).toBe('tok-oauth-123')
     expect(l.config.join(' ')).not.toContain('tok-oauth-123')
     expect(l.summary.join(' ')).not.toContain('tok-oauth-123')
     expect(Object.values(l.env)).not.toContain('Bearer tok-oauth-123')
@@ -338,7 +404,7 @@ describe('buildLaunchConfig', () => {
     const s = spec({ name: 'r', transport: 'http', url: 'https://x.test/mcp', headers: { 'X-Key': 'public' } })
     const l = buildLaunchConfig(conn(), [resolved(s, {}, { 'X-Key': 'overridden-secret' })])
     expect(l.config.join(' ')).not.toContain('overridden-secret')
-    expect(l.config).toContain('mcp_servers.r.env_http_headers={ X-Key = "ORGAI_MCP_0_H0" }')
+    expect(l.config).toContain(`mcp_servers.r.env_http_headers={ X-Key = "${envNameOf(l, 'overridden-secret')}" }`)
   })
 
   it('refuses a stdio server whose secret name clashes with another server at a different value', () => {

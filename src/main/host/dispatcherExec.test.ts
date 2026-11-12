@@ -91,7 +91,18 @@ async function failure(p: Promise<unknown>): Promise<InstanceType<typeof HostRpc
 }
 
 describe('runs:start overrides (cli-spec 2 item 2, 6.2(1))', () => {
-  it('the desktop surface drops overrides (the renderer never sets them)', async () => {
+  it('the desktop surface keeps only a valid goal and drops every other override', async () => {
+    const { d, runs } = setup()
+    const wide = { permissionMode: 'bypassPermissions', maxBudgetUsd: 1000, strictDelegation: true, execMode: true, autoContinue: true }
+    await d.invoke(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', overrides: { ...wide, goal: 'cost' } }], DESKTOP)
+    expect(runs.start).toHaveBeenCalledWith(expect.objectContaining({ overrides: { goal: 'cost' }, allowWidening: false }))
+    await d.invoke(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', overrides: wide }], DESKTOP)
+    expect(runs.start.mock.calls[1][0]).not.toHaveProperty('overrides')
+    await expect(d.invoke(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', overrides: { goal: 'fastest' } }], DESKTOP)).rejects.toMatchObject({ code: 'bad_request' })
+    expect(runs.start).toHaveBeenCalledTimes(2)
+  })
+
+  it('the desktop surface drops overrides without a goal (the renderer never sets them)', async () => {
     const { d, runs } = setup()
     await d.invoke(IPC.runsStart, [{ projectId: 'proj_a', prompt: 'go', overrides: { permissionMode: 'bypassPermissions' } }], DESKTOP)
     const arg = runs.start.mock.calls[0][0] as Record<string, unknown>
@@ -165,11 +176,12 @@ describe('runs:continue overrides and exec', () => {
     expect(runs.continueRun).not.toHaveBeenCalled()
   })
 
-  it('the desktop drops overrides and exec; a plain continue keeps four arguments', async () => {
+  it('the desktop drops overrides and exec and passes only { desktop: true }; a plain RPC continue keeps four arguments', async () => {
     const { d, runs } = setup()
     await d.invoke(IPC.runsContinue, [{ runId: 'run_1', text: 'more', exec: true, overrides: { permissionMode: 'bypassPermissions' } }], DESKTOP)
     await d.invokeRpc(IPC.runsContinue, [{ runId: 'run_1', text: 'more' }], OPERATE)
-    expect(runs.continueRun.mock.calls[0]).toHaveLength(4)
+    expect(runs.continueRun.mock.calls[0]).toHaveLength(5)
+    expect(runs.continueRun.mock.calls[0][4]).toEqual({ desktop: true })
     expect(runs.continueRun.mock.calls[1]).toHaveLength(4)
   })
 

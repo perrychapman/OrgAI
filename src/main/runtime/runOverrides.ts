@@ -7,7 +7,7 @@
  * policy choice sets below must stay in step with its POLICY_CHOICES.
  */
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
-import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, MAX_TIMER_DELAY_MS, isPermissionMode } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, MAX_TIMER_DELAY_MS, STAFFING_GOALS, isPermissionMode, isStaffingGoal } from '@shared/types'
 import type { HeadlessDecisionPolicy, PermissionMode, Project, RunOverrides } from '@shared/types'
 
 /**
@@ -33,7 +33,12 @@ export function canNarrowPermissionMode(projectMode: PermissionMode, overrideMod
   return from === 'any' || from.includes(projectMode)
 }
 
-const projectMaxAutoContinues = (project: Project): number => project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
+/** Modes an "accept edits" grant widens to acceptEdits: default, dontAsk and plan (auto and bypass are wider already). */
+export function overlaidByAcceptEdits(mode: PermissionMode): boolean {
+  return mode !== 'acceptEdits' && canNarrowPermissionMode('acceptEdits', mode)
+}
+
+const projectMaxAutoContinues =(project: Project): number => project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
 
 /**
  * A project's own spend cap: a stored value <= 0 (or not finite) means no cap, as it always did for desktop runs (the
@@ -92,6 +97,20 @@ export function execBudgetUsd(effective: Project, o?: RunOverrides): number | un
   if (o?.maxBudgetUsd !== undefined) return effective.maxBudgetUsd
   if (o?.execMode) return projectBudgetUsd(effective)
   return undefined
+}
+
+/**
+ * The overrides with every `wait` decision choice turned into `fail` (cli-standalone-default.md 4.3). A host whose cards
+ * only this process could answer (the orgai command's own host) has nobody to wait for, so a policy that waits would hang
+ * until its timeout; this holds for any path that reaches the host, not only the exec flag parser. Returns `o` itself
+ * when nothing waits.
+ */
+export function withoutWaitPolicy(o: RunOverrides): RunOverrides {
+  const policy = o.decisionPolicy
+  if (!policy || !Object.values(policy).includes('wait')) return o
+  const out: Record<string, unknown> = { ...policy }
+  for (const [k, v] of Object.entries(out)) if (v === 'wait') out[k] = 'fail'
+  return { ...o, decisionPolicy: out as unknown as HeadlessDecisionPolicy }
 }
 
 // ---------- RPC-boundary builder ----------
@@ -164,6 +183,16 @@ export function runOverridesArgs(raw: unknown, opts: { partialPolicy?: boolean }
     if (value === undefined) continue
     if (typeof value !== 'boolean') throw badRequest(`overrides.${key} must be true or false.`)
     out[key] = value
+  }
+  // Only adds requirements, so every scope may set it (no overridesWidening rule); exactly true or absent.
+  if (raw.strictDelegation !== undefined) {
+    if (raw.strictDelegation !== true) throw badRequest('overrides.strictDelegation must be true.')
+    out.strictDelegation = true
+  }
+  // Run staffing goal: never widens (picks stay inside the roles' ceilings), so every scope may set it.
+  if (raw.goal !== undefined) {
+    if (!isStaffingGoal(raw.goal)) throw badRequest(`overrides.goal must be one of ${STAFFING_GOALS.join(', ')}.`)
+    out.goal = raw.goal
   }
   if (raw.maxAutoContinues !== undefined) {
     const v = raw.maxAutoContinues

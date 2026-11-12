@@ -1,5 +1,5 @@
 import { RUN_TITLE_MAX_CHARS } from '@shared/types'
-import type { RunConnection, RuntimeAdapter } from '../runtime/types'
+import type { CompletionInput, RunConnection, RuntimeAdapter } from '../runtime/types'
 
 /** How long a title may take before it is given up. Titles are advisory: nothing waits on them. */
 export const RUN_TITLE_TIMEOUT_MS = 20_000
@@ -22,7 +22,7 @@ export interface RunTitleInput {
   cwd?: string
   /** The connection's fast model; undefined = the adapter's default model. */
   model?: string
-  /** The run's resolved connection (LiteLLM env, Codex home). Never logged. */
+  /** The run's resolved connection (proxy env, Codex home). Never logged. */
   connection?: RunConnection
   /** Continuations: the run being continued, as its title or else a prompt excerpt. Context only. */
   continues?: string
@@ -30,6 +30,8 @@ export interface RunTitleInput {
   timeoutMs?: number
   /** Cancels the title (run stopped, app quitting): the completion is aborted and no title is returned. */
   signal?: AbortSignal
+  /** Called with the title completion's usage, so its spend is never invisible to the caller. */
+  onUsage?: CompletionInput['onUsage']
 }
 
 const QUOTES = /^["'`“”‘’«»*_]+|["'`“”‘’«»*_]+$/g
@@ -134,7 +136,8 @@ export async function generateRunTitle(
         prompt,
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.model ? { model: input.model } : {}),
-        ...(input.connection ? { connection: input.connection } : {})
+        ...(input.connection ? { connection: input.connection } : {}),
+        ...(input.onUsage ? { onUsage: input.onUsage } : {})
       }),
       input.timeoutMs ?? RUN_TITLE_TIMEOUT_MS,
       abort

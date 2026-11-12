@@ -9,9 +9,8 @@
  * Honest limits (UNVERIFIED / deferred):
  * - The pid is client-asserted (host.hello params.pid). An agent can claim any pid, and a process that double-forks
  *   (reparented to init / launchd) is no longer a descendant. This check is defence in depth only; the real gates are
- *   Terminal access (AppSettings.terminalServer), its level (AppSettings.terminalAccessLevel: by default a client gets
- *   read and operate only, never decide or configure; socketServer.ts grantScopes) and the self-control denial gate
- *   (checkSelfControlDenial).
+ *   the host's owner proof (only the CLI process that started the in-process host can make it; socketServer.ts) and
+ *   the self-control denial gate (checkSelfControlDenial).
  * - Socket-to-PID mapping (macOS only): with the accepted socket's fd, one `lsof -nP -U -F pfdn` (same 150 ms budget,
  *   run beside ps) finds the kernel address of the host's end of the socket (`d0x...` on that fd) and every process
  *   holding the other end (`n->0x...` naming that address). Those are the real peers; the ancestry walk then runs on
@@ -21,10 +20,22 @@
  *   other macOS versions are unverified.
  * - win32 answers 'unavailable' (no ps; GetNamedPipeClientProcessId needs a native addon). The socket server accepts
  *   such a client, so on Windows an agent holding daemon.secret is told apart from the user by nothing here: the scope
- *   cap is what keeps it from 'decide' / 'configure' unless the user chose full Terminal access (review H2).
- * - The claimed pid itself equal to the host's pid is 'ok' (only strict descendants count): an in-process client.
+ *   cap is what keeps it from 'decide' / 'configure' unless it is the in-process host's own CLI (review H2).
+ * - A client claiming the host's own pid (cli-standalone.md round 6 item 6): on macOS the claim proves nothing, so the
+ *   shortcut sits after the OS mapping. Only a mapped peer equal to the host's pid (an in-process client: the host holds
+ *   both ends of the socket) passes; a claim of the host's pid with no mapped peer (no socket fd, lsof failed or found
+ *   none) is 'unavailable', never 'ok', and the mapped peers are walked as for any claim, so an agent's shell claiming
+ *   the host's pid is 'descendant'. Linux and other platforms keep the shortcut: a claimed pid equal to the host's is
+ *   'ok' (only strict descendants count), since nothing there maps the socket to its peer.
+ * - 'unavailable' is ACCEPTED by socketServer.ts (logged "peer ancestry check unavailable; allowed"). So the macOS fix
+ *   above holds only when lsof maps the peer: a host-pid claim whose mapping fails (lsof error, timeout, no socket fd)
+ *   is accepted exactly as before, with only the log line changed. Recognising the in-process host's own client by an
+ *   owner proof (`RpcHelloParams.ownerProof`) arrives with PR #18 (commit 5a55c68), which is not on this branch; the
+ *   two are reconciled at merge (then a host-pid claim without a mapped peer could be refused unless it carries the
+ *   proof).
  */
 import { execFile } from 'node:child_process'
+import { lsofExecutable, neutralCwd, psExecutable } from './systemBinaries'
 
 export type PeerCheckResult = 'ok' | 'descendant' | 'unavailable'
 
@@ -55,8 +66,10 @@ export function parsePsTable(text: string): Map<number, number> {
 }
 
 function psTableOf(timeoutMs: number): Promise<Map<number, number>> {
+  const ps = psExecutable()
+  if (!ps) return Promise.reject(new Error('ps not found'))
   return new Promise((resolve, reject) => {
-    execFile('ps', ['-A', '-o', 'pid=,ppid='], { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+    execFile(ps, ['-A', '-o', 'pid=,ppid='], { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, windowsHide: true, cwd: neutralCwd() }, (err, stdout) => {
       if (err) reject(err)
       else resolve(parsePsTable(String(stdout)))
     })
@@ -64,8 +77,10 @@ function psTableOf(timeoutMs: number): Promise<Map<number, number>> {
 }
 
 function lsofTextOf(timeoutMs: number): Promise<string> {
+  const lsof = lsofExecutable()
+  if (!lsof) return Promise.reject(new Error('lsof not found'))
   return new Promise((resolve, reject) => {
-    execFile('lsof', ['-nP', '-U', '-F', 'pfdn'], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+    execFile(lsof, ['-nP', '-U', '-F', 'pfdn'], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true, cwd: neutralCwd() }, (err, stdout) => {
       // lsof exits 1 when some process could not be read but still prints the rest.
       const text = String(stdout ?? '')
       if (err && !text) reject(err)
@@ -148,7 +163,8 @@ export async function checkPeerAncestry(claimedPid: number, opts: PeerCheckOptio
   const platform = opts.platform ?? process.platform
   const timeoutMs = opts.timeoutMs ?? 150
   if (!Number.isSafeInteger(claimedPid) || claimedPid <= 0) return 'unavailable'
-  if (claimedPid === hostPid) return 'ok'
+  // Off macOS the claim of the host's own pid is taken as an in-process client (no OS mapping exists there).
+  if (platform !== 'darwin' && claimedPid === hostPid) return 'ok'
   if (!opts.psTable && platform !== 'darwin' && platform !== 'linux') return 'unavailable'
   const mapping =
     platform === 'darwin' && opts.socketFd !== undefined && Number.isSafeInteger(opts.socketFd) && opts.socketFd >= 0
@@ -159,7 +175,9 @@ export async function checkPeerAncestry(claimedPid: number, opts: PeerCheckOptio
       : Promise.resolve([] as number[])
   try {
     const [table, peers] = await Promise.all([withTimeout(opts.psTable ? opts.psTable() : psTableOf(timeoutMs), timeoutMs), mapping])
-    // The OS-mapped peers when known (an in-process client is the host itself: ok), else the claimed pid.
+    // macOS: a claim of the host's pid passes only through a mapped peer equal to it (below), never on its own.
+    if (peers.length === 0 && claimedPid === hostPid) return 'unavailable'
+    // The OS-mapped peers when known (a mapped peer that is the host itself is an in-process client: ok), else the claimed pid.
     const pids = peers.length > 0 ? peers : [claimedPid]
     let result: PeerCheckResult = 'ok'
     for (const pid of pids) {

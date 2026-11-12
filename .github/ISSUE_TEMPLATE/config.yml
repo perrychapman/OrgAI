@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/perrychapman/OrgAI/security/advisories/new
+    about: Do not file security problems as issues. Use private vulnerability reporting; see SECURITY.md.
+  - name: Documentation and conventions
+    url: https://github.com/perrychapman/OrgAI/blob/dev/CONTRIBUTING.md
+    about: How work is tracked, claimed and merged. Architecture notes are in .orgai/ARCHITECTURE.md.

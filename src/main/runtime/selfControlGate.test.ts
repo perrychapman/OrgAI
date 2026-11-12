@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync as fsRealpath, rmSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync as fsRealpath, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -11,6 +11,7 @@ import {
   orgaiCliRootsOf,
   readControlProtectedPaths,
   stripDataHeredocs,
+  vaultPrefixProtections,
   type SelfControlContext
 } from './selfControlGate'
 
@@ -29,10 +30,49 @@ describe('controlProtectedPaths', () => {
     const data = join(base, 'data')
     mkdirSync(data)
     const paths = controlProtectedPaths(data)
-    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json')])
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), join(data, 'auth-cwd')])
     expect(paths).toContain(join(data, 'settings.json'))
+    expect(paths).toContain(join(data, 'auth-cwd'))
+    // agents cannot write into or replace the auth probe's folder
+    const ctx: SelfControlContext = { protectedPaths: paths, cwd: base } as SelfControlContext
+    expect(checkSelfControlDenial('Write', { file_path: join(data, 'auth-cwd', '.claude', 'settings.json'), content: '{}' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(checkSelfControlDenial('Read', { file_path: join(data, 'auth-cwd') }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     const rt = join(base, 'rt')
     expect(controlProtectedPaths(data, rt)).toContain(rt)
+  })
+
+  it('Wave 7: appends the vault key files as exact paths, after the others', () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
+    dirs.push(base)
+    const data = join(base, 'data')
+    mkdirSync(data)
+    const key = join(base, 'keys', 'orgai.key')
+    const paths = controlProtectedPaths(data, undefined, { vaultKeyFiles: [key, ''] })
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), join(data, 'auth-cwd'), key])
+    expect(controlProtectedPaths(data, undefined, { vaultKeyFiles: [] })).toEqual(controlProtectedPaths(data))
+  })
+
+  it('protects the other product\'s control files, in both directions', () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-')))
+    dirs.push(base)
+    const app = join(base, 'OrgAI', 'data')
+    const cli = join(base, 'orgai-cli', 'data')
+    mkdirSync(app, { recursive: true })
+    mkdirSync(cli, { recursive: true })
+    for (const [own, other] of [
+      [app, cli],
+      [cli, app]
+    ] as const) {
+      const paths = controlProtectedPaths(own, undefined, { otherProductDataDirs: [other, ''] })
+      for (const e of ['run', 'secrets.json', 'codex', 'settings.json', 'auth-cwd', 'vault.json']) expect(paths).toContain(join(other, e))
+      const ctx: SelfControlContext = { protectedPaths: paths, cwd: base, home: base }
+      expect(checkSelfControlDenial('Read', { file_path: join(other, 'codex', 'auth.json') }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Write', { file_path: join(other, 'settings.json'), content: '{}' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Bash', { command: `cat ${join(other, 'settings.json')}` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      // Without the extra, the other folder is open (the old one-product list).
+      const bare: SelfControlContext = { protectedPaths: controlProtectedPaths(own), cwd: base, home: base }
+      expect(checkSelfControlDenial('Read', { file_path: join(other, 'codex', 'auth.json') }, bare)).toBeNull()
+    }
   })
 
   it('carries both spellings through a dir symlink, deduped', () => {
@@ -43,12 +83,12 @@ describe('controlProtectedPaths', () => {
     const link = join(base, 'link')
     symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir')
     const paths = controlProtectedPaths(link)
-    for (const p of ['run', 'secrets.json', 'codex', 'settings.json']) {
+    for (const p of ['run', 'secrets.json', 'codex', 'settings.json', 'auth-cwd']) {
       expect(paths).toContain(join(link, p))
       expect(paths).toContain(join(real, p))
     }
     expect(new Set(paths).size).toBe(paths.length)
-    expect(paths).toHaveLength(8)
+    expect(paths).toHaveLength(10)
   })
 
   it('never includes the data dir itself, quick/, project-skills/ or skills/', () => {
@@ -128,7 +168,8 @@ describe('checkSelfControlDenial', () => {
         root,
         join(root, 'projects.json'),
         join(root, 'runner', 'x'),
-        join(root, 'secrets.json.bak')
+        join(root, 'my-secrets.json'),
+        join(root, 'vaults', 'vault.json')
       ]) {
         expect(deny('Read', { file_path: t }, ctx)).toBeNull()
         expect(deny('Write', { file_path: t, content: '' }, ctx)).toBeNull()
@@ -507,7 +548,8 @@ describe('false positives in ordinary work (review M3)', () => {
     expect(command.length).toBeGreaterThan(32 * 1024)
     const t0 = Date.now()
     expect(deny('Bash', { command }, ctx)).toBeNull()
-    expect(Date.now() - t0).toBeLessThan(5000)
+    // A hang guard, not a benchmark: one check of 3,000 paths took 4.4-5.6 s on a loaded Windows box after the spaced-cd scan variant (PR #24).
+    expect(Date.now() - t0).toBeLessThan(10_000)
     expect(deny('Bash', { command: `${command} ${join(s.data, 'secrets.json')}` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
   })
 
@@ -631,18 +673,15 @@ describe('false positives in ordinary work (review M3)', () => {
   })
 })
 
-describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
+describe('old packaged-app CLI roots, given explicitly', () => {
   const res = '/Applications/OrgAI.app/Contents/Resources'
-  const roots = orgaiCliRootsOf(`${res}/app.asar`, 'darwin')
+  const roots = [`${res}/app.asar.unpacked/out/cli`, `${res}/bin`]
   const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: roots }
   const deny = (command: string, c: SelfControlContext = ctx): string | null => checkSelfControlDenial('Bash', { command }, c)
 
-  it('orgaiCliRootsOf(<res>/app.asar) covers the unpacked bundle and the launcher folder', () => {
-    expect(roots).toContain(`${res}/app.asar.unpacked/out/cli`)
-    expect(roots).toContain(`${res}/bin`)
-    expect(orgaiCliRootsOf(`${res}/app.asar.unpacked`, 'darwin')).toContain(`${res}/bin`)
-    // A dev root gets no packaged entries.
+  it('orgaiCliRootsOf gives only the bundle and source folders of a root', () => {
     expect(orgaiCliRootsOf('/repo', 'darwin')).toEqual(['/repo/out/cli', '/repo/src/cli'])
+    expect(orgaiCliRootsOf(`${res}/app.asar`, 'darwin')).toEqual([`${res}/app.asar/out/cli`, `${res}/app.asar/src/cli`])
   })
 
   it('denies every way of running the packaged CLI', () => {
@@ -687,7 +726,7 @@ describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
 
   it('denies cmd /c orgai.cmd on win32', () => {
     const wres = 'C:\\Users\\me\\AppData\\Local\\Programs\\OrgAI\\resources'
-    const wctx: SelfControlContext = { protectedPaths: [], cwd: 'C:\\work\\repo', platform: 'win32', shell: 'powershell', cliRoots: orgaiCliRootsOf(`${wres}\\app.asar`, 'win32') }
+    const wctx: SelfControlContext = { protectedPaths: [], cwd: 'C:\\work\\repo', platform: 'win32', shell: 'powershell', cliRoots: [`${wres}\\app.asar.unpacked\\out\\cli`, `${wres}\\bin`] }
     expect(wctx.cliRoots).toContain(`${wres}\\bin`)
     expect(checkSelfControlDenial('PowerShell', { command: `cmd /c "${wres}\\bin\\orgai.cmd" status` }, wctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     expect(checkSelfControlDenial('Bash', { command: `cmd /c "${wres}\\bin\\orgai.cmd" status` }, { ...wctx, shell: 'bash' })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
@@ -717,7 +756,7 @@ describe('packaged app CLI roots (cli-spec 7, Wave 6)', () => {
 
 describe('stdin, here-strings, substitutions, find -exec, globs, braces and escapes (Wave 6 review)', () => {
   const res = '/Applications/OrgAI.app/Contents/Resources'
-  const roots = orgaiCliRootsOf(`${res}/app.asar`, 'darwin')
+  const roots = [`${res}/app.asar.unpacked/out/cli`, `${res}/bin`]
   const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: roots, home: '/Users/me' }
   const deny = (command: string, c: SelfControlContext = ctx): string | null => checkSelfControlDenial('Bash', { command }, c)
 
@@ -837,5 +876,1135 @@ describe('commandRunsOrgaiCli', () => {
     expect(commandRunsOrgaiCli('eval orgai status')).toBe(true)
     expect(commandRunsOrgaiCli('ps -p 123')).toBe(false)
     expect(commandRunsOrgaiCli('npm install')).toBe(false)
+  })
+})
+
+describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
+  /** A data dir reached through a link (lexical) and its real folder, with the vault files present. */
+  function setup(): { data: string; real: string; refs: string[]; home: string; base: string } {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg7-')))
+    dirs.push(base)
+    const real = join(base, 'real-data')
+    for (const d of ['run', 'codex', 'skills']) mkdirSync(join(real, d), { recursive: true })
+    for (const f of ['vault.json', 'vault.json.tmp', 'secrets.json', 'projects.json']) writeFileSync(join(real, f), '{}')
+    const data = join(base, 'data')
+    symlinkSync(real, data, process.platform === 'win32' ? 'junction' : 'dir')
+    return { data, real, refs: controlProtectedPaths(data), home: base, base }
+  }
+  const bash = (command: string, ctx: SelfControlContext): string | null => checkSelfControlDenial('Bash', { command }, ctx)
+  const ps = (command: string, ctx: SelfControlContext): string | null => checkSelfControlDenial('PowerShell', { command }, ctx)
+  const encode = (text: string): string => Buffer.from(text, 'utf16le').toString('base64')
+
+  describe('package runners naming the package', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
+    it('denies npx, npm exec / x, pnpm dlx / exec, pnpx, yarn dlx, bunx and bun x with orgai or @orgai/cli', () => {
+      for (const command of [
+        'npx @orgai/cli status',
+        'npx @orgai/cli@1.2.3 status',
+        "npx '@orgai/cli@^1' status",
+        'npx -y @orgai/cli@latest runs list',
+        'npx --yes -- @orgai/cli status',
+        'npx --package @orgai/cli orgai status',
+        'npx --package=@orgai/cli -- orgai status',
+        'npx --package=@orgai/cli@2.0.0 orgai',
+        'npx -p @orgai/cli orgai status',
+        'npx -p@orgai/cli orgai',
+        'npx -p orgai@1 orgai',
+        'npm exec @orgai/cli',
+        'npm exec -- @orgai/cli status',
+        'npm exec --package=@orgai/cli -- orgai status',
+        'npm x @orgai/cli',
+        'npm -y exec @orgai/cli',
+        'npm --yes exec orgai status',
+        'npm exec -c "orgai status"',
+        'pnpm dlx @orgai/cli status',
+        'pnpm exec orgai status',
+        'pnpm --package=@orgai/cli dlx orgai',
+        'pnpm dlx -c "orgai runs stop R1"',
+        'pnpx @orgai/cli',
+        'yarn dlx @orgai/cli status',
+        'yarn dlx -p @orgai/cli orgai status',
+        'bunx @orgai/cli status',
+        'bunx orgai',
+        'bun x @orgai/cli',
+        'npx.cmd @orgai/cli status',
+        'C:\\nodejs\\npx.cmd @orgai/cli',
+        '/usr/local/bin/npx @orgai/cli status',
+        // Quoting, escapes and braces.
+        'npx "@orgai"/cli status',
+        "npx @'orgai/cli' status",
+        'npx @orgai/c\\li status',
+        'npx @orga{i,x}/cli status',
+        'npx @ORGAI/CLI status',
+        // Aliases, tarballs and URLs.
+        'npx npm:@orgai/cli status',
+        'npx --package=x@npm:@orgai/cli x status',
+        'npx https://registry.npmjs.org/@orgai/cli/-/cli-1.0.0.tgz',
+        'npx https://registry.npmjs.org/@orgai%2fcli',
+        // npx -c / --call texts.
+        "npx -c 'orgai status'",
+        "npx --call 'orgai daemon stop'",
+        // Wrappers, nesting and pipes.
+        'timeout 5 npx @orgai/cli status',
+        'env FOO=1 npx @orgai/cli',
+        "env -S 'npx @orgai/cli' status",
+        "bash -c 'npx @orgai/cli status'",
+        'sh -c "npm exec -- @orgai/cli status"',
+        "echo 'npx @orgai/cli status' | sh",
+        'echo "$(npx @orgai/cli status)"',
+        'xargs npx @orgai/cli < ids.txt',
+        // The installed package by path.
+        'node node_modules/@orgai/cli/out/cli/index.mjs status',
+        'node ~/.npm-global/lib/node_modules/@orgai/cli/dist/main.js',
+        './node_modules/@orgai/cli/bin/run status',
+        'cat node_modules/@orgai/cli/bin/run | sh'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+        expect(commandRunsOrgaiCli(command), command).toBe(true)
+      }
+    })
+
+    it('denies the published package name orgai-cli in every runner (owner decision 2026-11-06)', () => {
+      for (const command of [
+        'npx orgai-cli status',
+        'npx orgai-cli@1.2.3 status',
+        "npx 'orgai-cli@^1' status",
+        'npx -y orgai-cli@latest runs list',
+        'npx --yes -- orgai-cli status',
+        'npx --package orgai-cli orgai status',
+        'npx --package=orgai-cli -- orgai status',
+        'npx -p orgai-cli orgai status',
+        'npx -p@orgai-cli orgai',
+        'npx ORGAI-CLI status',
+        'npx orgai"-cli" status',
+        'npx orgai-c\\li status',
+        'npx orga{i,x}-cli status',
+        'npx orgai-cl? status',
+        'npm exec orgai-cli',
+        'npm exec -- orgai-cli status',
+        'npm exec --package=orgai-cli -- orgai status',
+        'npm x orgai-cli',
+        'pnpm dlx orgai-cli status',
+        'pnpm exec orgai-cli',
+        'pnpx orgai-cli',
+        'yarn dlx orgai-cli status',
+        'yarn dlx -p orgai-cli orgai status',
+        'bunx orgai-cli status',
+        'bun x orgai-cli',
+        'npx npm:orgai-cli status',
+        'npx --package=x@npm:orgai-cli x status',
+        'npx https://registry.npmjs.org/orgai-cli/-/orgai-cli-1.0.0.tgz',
+        'timeout 5 npx orgai-cli status',
+        "bash -c 'npx orgai-cli status'",
+        'node node_modules/orgai-cli/out/cli/index.mjs status',
+        'node ~/.npm-global/lib/node_modules/orgai-cli/dist/main.js',
+        './node_modules/orgai-cli/bin/run status'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+        expect(commandRunsOrgaiCli(command), command).toBe(true)
+      }
+    })
+
+    it('allows packages and commands that only look like orgai-cli', () => {
+      for (const command of [
+        'npx orgai-cli-tools status',
+        'npx my-orgai-cli status',
+        'npm install orgai-cli',
+        'npm view orgai-cli version',
+        'npm pack orgai-cli',
+        'echo orgai-cli',
+        'cat orgai-cli.log',
+        'git log --oneline -- docs/orgai-cli.md'
+      ]) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+
+    it('allows other packages and non-running npm commands', () => {
+      for (const command of [
+        'npx @orgai/cli-tools status',
+        'npx @other/cli status',
+        'npx prettier --write .',
+        'npx vitest run src/cli',
+        'npm exec vitest',
+        'pnpm dlx create-vite app',
+        'yarn dlx eslint .',
+        'bunx tsc --noEmit',
+        'npm install @orgai/cli',
+        'npm view @orgai/cli version',
+        'npm run build',
+        'npx cli status',
+        'echo @orgai/cli'
+      ]) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+  })
+
+  describe('vault.json* and secrets.json* in the data folder', () => {
+    it('vaultPrefixProtections finds the data folder in both spellings from the protected paths', () => {
+      const s = setup()
+      const dirsFound = vaultPrefixProtections(s.refs).map((p) => p.dir)
+      expect(dirsFound).toContain(s.data)
+      expect(dirsFound).toContain(s.real)
+      expect(vaultPrefixProtections(s.refs)[0].prefixes).toEqual(['vault.json', 'secrets.json'])
+      // A key file named secrets.json elsewhere (no run/ sibling) is not a data folder.
+      expect(vaultPrefixProtections(['/k/secrets.json'])).toEqual([])
+      expect(vaultPrefixProtections([])).toEqual([])
+    })
+
+    it('denies file tools on every vault.json* / secrets.json* sibling, lexical and canonical', () => {
+      const s = setup()
+      const ctx: SelfControlContext = { protectedPaths: s.refs, home: s.home }
+      for (const root of [s.data, s.real]) {
+        for (const name of ['vault.json', 'vault.json.tmp', 'vault.json.reset-2026-11-05T12-00-00Z', 'vault.json.corrupt-1730000000000', 'secrets.json.tmp', 'secrets.json.corrupt-x', 'secrets.json.bak', 'vault.jsonx']) {
+          const t = join(root, name)
+          for (const tool of ['Read', 'Edit', 'Write', 'MultiEdit']) expect(checkSelfControlDenial(tool, { file_path: t }, ctx), `${tool} ${t}`).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+          expect(checkSelfControlDenial('NotebookEdit', { notebook_path: t }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+          expect(checkSelfControlDenial('Grep', { pattern: 'x', path: t }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+        }
+      }
+      // Relative, `~` and `..` spellings.
+      expect(checkSelfControlDenial('Read', { file_path: 'vault.json.tmp' }, { ...ctx, cwd: s.data })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Read', { file_path: '../vault.json' }, { ...ctx, cwd: join(s.data, 'skills') })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Write', { file_path: '~/data/vault.json.reset-1', content: '' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Read', { file_path: join(s.data, '.', 'vault.json') }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    })
+
+    it.runIf(process.platform === 'darwin' || process.platform === 'win32')('folds case on darwin and win32', () => {
+      const s = setup()
+      expect(checkSelfControlDenial('Read', { file_path: join(s.real, 'Vault.JSON.tmp') }, { protectedPaths: s.refs })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(bash(`cat ${join(s.data, 'SECRETS.json.corrupt-1')}`, { protectedPaths: s.refs, home: s.home })).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    })
+
+    it('follows a link to a vault file from outside the data folder', () => {
+      const s = setup()
+      let link: string
+      let rel: string
+      if (process.platform === 'win32') {
+        // File symlinks need the Windows symlink privilege; a directory junction needs none and exercises the same
+        // canonical-path resolution (the vault file is reached through a folder link outside the data folder).
+        symlinkSync(s.real, join(s.base, 'innocent'), 'junction')
+        link = join(s.base, 'innocent', 'vault.json')
+        rel = 'innocent/vault.json'
+      } else {
+        link = join(s.base, 'innocent.txt')
+        symlinkSync(join(s.real, 'vault.json'), link)
+        rel = 'innocent.txt'
+      }
+      const ctx: SelfControlContext = { protectedPaths: s.refs, home: s.home, cwd: s.base }
+      expect(checkSelfControlDenial('Read', { file_path: link }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(bash(`cat ${link}`, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(bash(`cat ${rel}`, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    })
+
+    it('denies Glob / Grep searches that may match such a name in the data folder', () => {
+      const s = setup()
+      const ctx: SelfControlContext = { protectedPaths: s.refs, home: s.home, cwd: join(s.base, 'proj') }
+      for (const input of [
+        { pattern: 'vault*', path: s.data },
+        { pattern: 'v?ult.json.*', path: s.real },
+        { pattern: '[vs]*', path: s.data },
+        { pattern: '*.tmp', path: s.data },
+        { pattern: '*corrupt*', path: s.data },
+        { pattern: join(s.data, '*.json') },
+        { pattern: join(s.real, 'secrets.json.*') },
+        { pattern: '~/data/vault.json.reset-*' }
+      ]) {
+        expect(checkSelfControlDenial('Glob', input, ctx), JSON.stringify(input)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const input of [{ pattern: 'p*', path: s.data }, { pattern: '*.md', path: s.data }, { pattern: 'vault*', path: join(s.data, 'skills') }, { pattern: join(s.data, 'proj*.json') }]) {
+        expect(checkSelfControlDenial('Glob', input, ctx), JSON.stringify(input)).toBeNull()
+      }
+    })
+
+    it('denies shell words naming such a file: paths, cd, $HOME, globs, quoting, escapes, braces and nesting', () => {
+      const s = setup()
+      const ctx: SelfControlContext = { protectedPaths: s.refs, cwd: join(s.base, 'proj'), home: s.home }
+      for (const command of [
+        `cat ${join(s.data, 'vault.json')}`,
+        `cat ${join(s.real, 'vault.json.tmp')}`,
+        `cp ${join(s.data, 'vault.json.reset-2026')} /tmp/x`,
+        `base64 ${join(s.data, 'secrets.json.corrupt-1')}`,
+        `cd ${s.data} && cat vault.json`,
+        `cd ${s.data}; tar czf /tmp/v.tgz vault.json.corrupt-1`,
+        'cat "$HOME/data/vault.json"',
+        'cat ${HOME}/data/vault.json.tmp',
+        'cat ~/data/vault.json',
+        'cat ~/data/vault*',
+        `cat ${s.data}/v*`,
+        `cat ${s.data}/*.json`,
+        `cat ${s.data}/*`,
+        `cat ${s.data}/[v]ault.json`,
+        `cat ${s.data}/vault.js?n`,
+        `cat ${s.data}/*.tmp`,
+        `cat ${s.data}/vault.json\\.tmp`,
+        `cat ${s.data}/vau''lt.json`,
+        `cat "${s.data}"/vault.json`,
+        `cat '${s.data}/vault.json'`,
+        `cat ${s.data}/{vault,x}.json`,
+        `cat ${s.data}/{x,secrets}.json.tmp`,
+        `cat ${s.data}/vault.json{,.tmp}`,
+        `bash -c 'cat ${s.data}/vault.json'`,
+        `sh -c "cat $HOME/data/vault.json.tmp"`,
+        `echo "$(cat ${s.data}/vault.json)"`,
+        `diff <(cat ${s.data}/vault.json) /dev/null`,
+        `node -e "require('fs').readFileSync('${s.data}/vault.json')"`,
+        `cat < ${s.data}/vault.json`,
+        `ln -s ${s.data}/vault.json /tmp/v`
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        `ls ${s.data}`,
+        `ls ${s.data}/*.md`,
+        `ls ${s.data}/p*`,
+        `cat ${s.data}/projects.json`,
+        `cat ${s.data}/skills/vault.json`,
+        `cat ${s.data}/my-vault.json`,
+        `cat ${s.data}/vaults.json`,
+        'cat vault.json',
+        'cat ./secrets.json.example',
+        'grep -rn vault.json src'
+      ]) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+
+    it('reads an escaped space and the folders the data folder lives in (macOS, Windows, Linux defaults)', () => {
+      const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg7-')))
+      dirs.push(base)
+      const mac = join(base, 'Library', 'Application Support', 'OrgAI')
+      const win = join(base, 'AppData', 'Roaming', 'OrgAI')
+      const linux = join(base, '.config', 'OrgAI')
+      for (const d of [mac, win, linux]) mkdirSync(join(d, 'run'), { recursive: true })
+      const ctx: SelfControlContext = { protectedPaths: [...controlProtectedPaths(mac), ...controlProtectedPaths(win), ...controlProtectedPaths(linux)], cwd: join(base, 'proj'), home: base }
+      for (const command of [
+        'cat ~/Library/Application\\ Support/OrgAI/vault.json',
+        'cat ~/Library/Application\\ Support/OrgAI/secrets.json',
+        'cat ~/Library/Application\\ Support/OrgAI/run/daemon.secret',
+        `cat ${base}/Library/Application\\ Support/OrgAI/vault.json.tmp`,
+        'cat "$HOME/Library/Application Support/OrgAI/vault.json"',
+        'cat ~/Library/Application\\ Support/OrgAI/{x,vault}.json',
+        'cat ~/Library/Application\\ Support/OrgAI/v*',
+        'cat $APPDATA/OrgAI/vault.json',
+        'cat ${APPDATA}/OrgAI/secrets.json.tmp',
+        'cat %APPDATA%/OrgAI/vault.json',
+        'cat $XDG_CONFIG_HOME/OrgAI/vault.json',
+        'cat ${XDG_CONFIG_HOME}/OrgAI/run/daemon.json'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      expect(ps('Get-Content $env:APPDATA/OrgAI/vault.json', ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(ps('Get-Content ~/Library/Application` Support/OrgAI/vault.json', ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(bash('ls ~/Library/Application\\ Support/OrgAI', ctx)).toBeNull()
+      expect(bash('ls $XDG_CONFIG_HOME/OrgAI', ctx)).toBeNull()
+    })
+
+    it('protects the vault key files exactly (ORGAI_VAULT_KEY_FILE and custody.keyFile), not their neighbours', () => {
+      const s = setup()
+      const key = join(s.base, 'keys', 'orgai.key')
+      const ctx: SelfControlContext = { protectedPaths: controlProtectedPaths(s.data, undefined, { vaultKeyFiles: [key] }), cwd: join(s.base, 'proj'), home: s.home }
+      expect(checkSelfControlDenial('Read', { file_path: key }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(bash(`cat ${key}`, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(bash(`cat ${join(s.base, 'keys')}/*.key`, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(checkSelfControlDenial('Read', { file_path: `${key}.bak` }, ctx)).toBeNull()
+      // The vault prefix rule still applies with key files in the list.
+      expect(bash(`cat ${join(s.data, 'vault.json')}`, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    })
+  })
+
+  it('win32 spellings: the prefix rule, %APPDATA% and drive paths (pure, no file system)', () => {
+    const data = 'C:\\Users\\u\\AppData\\Roaming\\OrgAI'
+    const refs = [`${data}\\run`, `${data}\\secrets.json`, `${data}\\codex`]
+    const ctx: SelfControlContext = { protectedPaths: refs, platform: 'win32', home: 'C:\\Users\\u', cwd: 'C:\\work' }
+    for (const t of [`${data}\\vault.json`, `${data}\\VAULT.JSON.tmp`, 'c:/users/u/appdata/roaming/orgai/secrets.json.corrupt-1']) {
+      expect(checkSelfControlDenial('Read', { file_path: t }, ctx), t).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    expect(checkSelfControlDenial('Read', { file_path: `${data}\\projects.json` }, ctx)).toBeNull()
+    for (const command of [`type ${data}\\vault.json.tmp`, 'type %APPDATA%\\OrgAI\\vault.json', `type ${data}\\v*`, 'cat /c/Users/u/AppData/Roaming/OrgAI/vault.json', `type "${data}\\vault.json. "`]) {
+      expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    expect(ps('Get-Content $env:APPDATA\\OrgAI\\vault.json', ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(ps(`Copy-Item -Path:${data}\\secrets.json.tmp -Destination C:\\x`, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(ps(`Get-ChildItem ${data}`, ctx)).toBeNull()
+  })
+
+  describe('the CLI vault names (ORGAI_CLI_VAULT_*, OrgAI CLI Vault)', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
+    it('denies the renamed variables and the renamed keychain service like the desktop ones', () => {
+      for (const command of [
+        'echo $ORGAI_CLI_VAULT_KEY_FILE',
+        'echo ${ORGAI_CLI_VAULT_KEY_FILE}',
+        'printenv ORGAI_CLI_VAULT_KEY_FILE',
+        'echo $orgai_cli_vault_key_file',
+        'echo $ORGAI_"CLI"_VAULT_KEY_FILE',
+        'echo $ORGAI_CL\\I_VAULT_KEY_FILE',
+        'echo ${!ORGAI_CLI_V@}',
+        'echo ${!ORGAI_CLI_@}',
+        'echo ${!ORGAI_C@}',
+        'env | grep ORGAI_CLI_VAULT',
+        'security find-generic-password -s "OrgAI CLI Vault" -a abc -w',
+        'keyring get "OrgAI CLI Vault" abc',
+        'keyring get "OrgAI\\ CLI\\ Vault" abc',
+        'kwallet-query -r abc "OrgAI CLI Vault"',
+        "python3 -c \"import keyring; print(keyring.get_password('OrgAI CLI Vault', 'abc'))\""
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+    })
+    it('still allows the CLI data folder variable', () => {
+      expect(bash('ORGAI_CLI_DATA_DIR=/tmp/x node cli.js', ctx)).toBeNull()
+    })
+  })
+
+  describe('ORGAI_VAULT_* references', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
+    it('denies expansions, assignments, exports and environment reads of ORGAI_VAULT_*', () => {
+      for (const command of [
+        'echo $ORGAI_VAULT_KEY_FILE',
+        'echo "${ORGAI_VAULT_KEY_FILE}"',
+        'echo ${ORGAI_VAULT_KEY_FILE:-none}',
+        'echo ${#ORGAI_VAULT_KEY_FILE}',
+        'echo ${!ORGAI_VAULT@}',
+        'cat "$ORGAI_VAULT_KEY_FILE"',
+        'echo $orgai_vault_key_file',
+        'ORGAI_VAULT_KEY_FILE=/tmp/k node x.js',
+        'ORGAI_VAULT_KEY_FILE+=x node x.js',
+        'FOO=1 ORGAI_VAULT_KEY_FILE=/tmp/k ./host',
+        'env ORGAI_VAULT_KEY_FILE=/tmp/k node x.js',
+        'env "ORGAI_VAULT_KEY_FILE=/tmp/k" node x.js',
+        "env -S 'ORGAI_VAULT_KEY_FILE=/tmp/k node x.js'",
+        'env -u ORGAI_VAULT_KEY_FILE node x.js',
+        'export ORGAI_VAULT_KEY_FILE=/tmp/k',
+        'export ORGAI_VAULT_KEY_FILE',
+        'declare -x ORGAI_VAULT_KEY_FILE=/tmp/k',
+        'unset ORGAI_VAULT_KEY_FILE',
+        'printenv ORGAI_VAULT_KEY_FILE',
+        'printenv -0 ORGAI_VAULT_KEY_FILE',
+        'env | grep ORGAI_VAULT',
+        "sh -c 'echo $ORGAI_VAULT_KEY_FILE'",
+        "bash -c 'printenv ORGAI_VAULT_KEY_FILE'",
+        'python3 -c "import os; print(os.environ[\'ORGAI_VAULT_KEY_FILE\'])"',
+        "python3 -c \"import os; print(os.getenv('ORGAI_VAULT_KEY_FILE'))\"",
+        'node -e "console.log(process.env.ORGAI_VAULT_KEY_FILE)"',
+        "node -e \"console.log(process.env['ORGAI_VAULT_KEY_FILE'])\"",
+        'set ORGAI_VAULT_KEY_FILE=C:\\k',
+        'setx ORGAI_VAULT_KEY_FILE C:\\k',
+        'echo %ORGAI_VAULT_KEY_FILE%',
+        'echo !ORGAI_VAULT_KEY_FILE!'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        '$env:ORGAI_VAULT_KEY_FILE',
+        "$env:ORGAI_VAULT_KEY_FILE = 'C:\\k'",
+        '${env:ORGAI_VAULT_KEY_FILE}',
+        'Get-Item Env:ORGAI_VAULT_KEY_FILE',
+        'Get-ChildItem env:\\ORGAI_VAULT_KEY_FILE',
+        'Remove-Item Env:ORGAI_VAULT_KEY_FILE',
+        "[Environment]::GetEnvironmentVariable('ORGAI_VAULT_KEY_FILE')",
+        "[System.Environment]::SetEnvironmentVariable('ORGAI_VAULT_KEY_FILE', 'x', 'User')"
+      ]) {
+        expect(ps(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+    })
+
+    it('denies any word referencing ORGAI_VAULT_*, plain mentions and environment dumps included (review round 1)', () => {
+      for (const command of [
+        // Plain mentions (spec 8.4: any word; agents search with the Grep tool instead).
+        'grep -rn ORGAI_VAULT_KEY_FILE src',
+        'grep -rn "ORGAI_VAULT_KEY_FILE=" .',
+        'rg ORGAI_VAULT_ docs',
+        "echo 'ORGAI_VAULT_KEY_FILE names the key file'",
+        'git log --grep ORGAI_VAULT',
+        'cat docs/environment.md | grep ORGAI_VAULT_KEY',
+        // Environment dumps filtered on the name.
+        'printenv | grep ORGAI_VAULT',
+        'set | grep ORGAI_VAULT',
+        'export -p | grep ORGAI_VAULT',
+        'declare | grep ORGAI_VAULT',
+        'compgen -e | grep ORGAI_VAULT',
+        "cat /proc/self/environ | tr '\\0' '\\n' | grep ORGAI_VAULT",
+        'ps eww $$ | grep -o "ORGAI_VAULT[^ ]*"',
+        'env | grep -i orgai_vault',
+        // Spellings that hide the name from a plain search.
+        'env | grep ORGAI_"VAULT"',
+        "env | grep 'ORGAI_'VAULT",
+        'env | grep ORGAI_VAU\\LT',
+        'env | grep ORGAI_[V]AULT',
+        'env | grep ORGAI_V',
+        'printenv | grep ^ORGAI_VA',
+        'echo ${!ORGAI_V@}',
+        'compgen -v ORGAI_VAU'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        "Get-ChildItem Env: | Where-Object Name -like 'ORGAI_VAULT*'",
+        "dir env: | ? { $_.Name -match 'ORGAI_VAULT' }",
+        'gci env: | where Name -like ORGAI_V*',
+        'ls env:ORGAI_VAULT_KEY_FILE',
+        `pwsh -enc ${encode("Get-ChildItem Env: | Where-Object Name -like 'ORGAI_VAULT*'")}`
+      ]) {
+        expect(ps(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      // Other ORGAI_ names stay usable; the Grep tool is the way to search the name.
+      for (const command of ['echo $ORGAI_DATA_DIR', 'ORGAI_MOCK=1 npm run dev', 'grep -rn ORGAI_VERSION src', 'printenv PATH | grep ORGAI_VERBOSE']) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+      expect(checkSelfControlDenial('Grep', { pattern: 'ORGAI_VAULT_KEY_FILE', path: '/work/proj/src' }, ctx)).toBeNull()
+    })
+
+    it('treats ORGAI_MCP_* exactly like ORGAI_VAULT_*, shortened prefixes that may stand for either included', () => {
+      for (const command of [
+        'echo $ORGAI_MCP_0123456789abcdef_1_0',
+        'echo "${ORGAI_MCP_0123456789abcdef_1_0}"',
+        'ORGAI_MCP_0123456789abcdef_1_0=x node x.js',
+        'grep -rn ORGAI_MCP src',
+        'printenv | grep ORGAI_MCP',
+        'env | grep ORGAI_M',
+        'env | grep ORGAI_MC',
+        'env | grep -i orgai_mcp',
+        'env | grep ORGAI_"MCP"',
+        'env | grep ORGAI_M\\CP',
+        'env | grep ORGAI_[M]CP',
+        'printenv ORGAI_MCP_0123456789abcdef_1_0',
+        'echo ${!ORGAI_MCP@}',
+        'echo ${!ORGAI_M@}',
+        'echo ${!ORGAI@}',
+        'echo ${!ORGAI_@}',
+        'printenv | grep ^ORGAI_',
+        'compgen -v ORGAI_',
+        'compgen -v ORGAI*',
+        "sh -c 'echo $ORGAI_MCP_0123456789abcdef_1_0'",
+        'node -p "process.env.ORGAI_MCP_0123456789abcdef_1_0"',
+        'echo %ORGAI_MCP_0123456789abcdef_1_0%'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        '$env:ORGAI_MCP_0123456789abcdef_1_0',
+        "Get-ChildItem Env: | ? Name -like 'ORGAI_MCP*'",
+        'Get-Item Env:ORGAI_MCP_0123456789abcdef_1_0',
+        'gci env:ORGAI*',
+        "${env:ORGAI_MCP_0123456789abcdef_1_0}"
+      ]) {
+        expect(ps(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of ['ls orgai*.md', 'echo $ORGAI_DATA_DIR', 'grep -rn ORGAI_MOCK src', 'grep -rn ORGAI_MESSAGE src']) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+
+    it('denies whole-environment listings in every segment (best effort), not named reads or assignments', () => {
+      for (const command of [
+        'env',
+        'env -0',
+        'env | sort',
+        'env -u FOO',
+        'echo hi && env',
+        'ls; printenv',
+        'printenv -0',
+        'printenv | sort',
+        'set',
+        'set | sort',
+        'export',
+        'export -p',
+        'declare -x',
+        'declare -p',
+        'declare -xp',
+        'typeset -x',
+        'typeset -p',
+        'compgen -v',
+        'compgen -e',
+        'command env',
+        'sudo printenv',
+        "bash -c 'env'",
+        "sh -c 'ls; printenv | head'",
+        'cat /proc/self/environ',
+        'cat /proc/$$/environ',
+        'cat /proc/*/environ',
+        'cat /proc/1234/environ'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        'Get-ChildItem Env:',
+        'Get-ChildItem env:*',
+        'gci Env:\\',
+        'dir env:',
+        'ls Env:\\*',
+        'Get-Item env:',
+        'gi env:*',
+        'Get-ChildItem -Path env:',
+        'Get-ChildItem env: | Sort-Object Name',
+        '(Get-ChildItem env:).Count',
+        '[Environment]::GetEnvironmentVariables()',
+        '[System.Environment]::GetEnvironmentVariables()',
+        '$e = [System.Environment]::GetEnvironmentVariables(); $e',
+        'cmd /c set',
+        "pwsh -c 'gci env:'"
+      ]) {
+        expect(ps(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        'env FOO=1 node x.js',
+        'env -u X node x.js',
+        'env -S "node x.js"',
+        'printenv PATH',
+        'printenv HOME USER',
+        'echo $PATH',
+        'export FOO=1',
+        'set -e',
+        'set -euo pipefail',
+        'declare -x FOO=1',
+        'declare -p FOO',
+        'declare -f',
+        'compgen -c',
+        'FOO=1 node x.js',
+        'ls',
+        'cat /proc/cpuinfo'
+      ]) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+      for (const command of ['Get-ChildItem env:PATH', '$env:PATH', 'Get-Item env:HOME', 'Get-ChildItem src', 'ls .', 'dir C:\\work']) {
+        expect(ps(command, ctx), command).toBeNull()
+      }
+    })
+
+    it('denies reading another process\'s environment (the host keeps ORGAI_SECRET_* in its own)', () => {
+      for (const command of [
+        'cat /proc/$PPID/environ',
+        'strings /proc/$PPID/environ',
+        'ps eww $PPID',
+        'ps -E -p $PPID',
+        'xargs -0 -n1 < /proc/1234/environ',
+        'p=$PPID; tr "\\0" "\\n" < /proc/$p/environ'
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of ['ps aux', 'ps -ef', 'ps -p 1234 -o comm=', 'cat /proc/cpuinfo']) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+
+    it('leaves a data-only here-document that mentions the name alone (writing docs)', () => {
+      expect(bash("cat <<'EOF' > docs/notes.md\nSet ORGAI_VAULT_KEY_FILE to move the key.\nEOF", ctx)).toBeNull()
+    })
+  })
+
+  describe('key custodian tools', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
+    it('denies security reading, writing, dumping or exporting keychain items, -i and stdin', () => {
+      for (const command of [
+        'security find-generic-password -s "OrgAI Vault" -a abc -w',
+        '/usr/bin/security find-generic-password -w -s x',
+        'security find-internet-password -s example.com',
+        'security add-generic-password -s x -a y -w z',
+        'security delete-generic-password -s x',
+        'security dump-keychain',
+        'security dump-keychain -d login.keychain',
+        'security export -k login.keychain -o /tmp/x.p12',
+        'security -v find-generic-password -w',
+        'security -i',
+        'security -q -i',
+        'security -iq',
+        'security -qi',
+        'security',
+        'security -v',
+        'security -i<cmds.txt',
+        'security -i < cmds.txt',
+        'security < cmds.txt',
+        "security -i <<< 'find-generic-password -w -s x'",
+        'security -i <<EOF\nfind-generic-password -w -s x\nEOF',
+        "printf 'find-generic-password -s x -w\\n' | security -i",
+        'echo dump-keychain | security',
+        'cat cmds | /usr/bin/security -q',
+        'security show-keychain-info "OrgAI Vault"',
+        "security find-key -l 'OrgAI Vault'",
+        'security find-certificate -c OrgAI\\ Vault',
+        'sudo security dump-keychain',
+        'env FOO=1 security find-generic-password -w',
+        'xcrun security find-generic-password -w',
+        'xcrun --sdk macosx security -i',
+        'arch -arm64 security -i',
+        'launchctl asuser 501 security find-generic-password -w',
+        "env -S 'security dump-keychain'",
+        "bash -c 'security find-generic-password -w -s x'",
+        "zsh -c \"security -i <<< 'dump-keychain'\"",
+        "echo 'security dump-keychain' | sh",
+        'echo "$(security find-generic-password -w -s x)"',
+        'find . -exec security dump-keychain \;',
+        'nohup security export -o /tmp/x &',
+        "cat <<'EOF' | security -i\nfind-generic-password -w -s x\nEOF",
+        // Code that calls the tool itself.
+        "python3 -c \"import subprocess; subprocess.run(['security', 'find-generic-password', '-w', '-s', 'x'])\"",
+        "python3.12 -c 'import os; os.system(\"security dump-keychain\")'",
+        "python3 <<'EOF'\nimport subprocess\nsubprocess.run(['security', 'dump-keychain'])\nEOF",
+        "python3 -c \"import keyring; print(keyring.get_password('OrgAI Vault', 'abc'))\"",
+        "osascript -e 'do shell script \"security find-generic-password -w -s x\"'",
+        "perl -e 'system(\"secret-tool\", \"lookup\", \"service\", \"orgai\")'",
+        "node -e \"require('child_process').execSync('security -q find-generic-password -w')\"",
+        "ruby -e 'puts `security dump-keychain`'",
+        "python3 -c \"import secretstorage; secretstorage.dbus_init().get_object('org.freedesktop.secrets', '/')\"",
+        "python -c \"import win32crypt; win32crypt.CryptUnprotectData(b)\""
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+    })
+
+    it('allows the other security subcommands and words that only mention security', () => {
+      for (const command of [
+        "python3 -c 'import ssl; print(ssl.OPENSSL_VERSION)'",
+        "node -e \"console.log('security review done')\"",
+        'security find-certificate -a -c Apple',
+        'security find-identity -v -p codesigning',
+        'security cms -D -i embedded.mobileprovision',
+        'security verify-cert -c cert.pem',
+        'security list-keychains',
+        'security show-keychain-info',
+        'security unlock-keychain -p "" build.keychain',
+        'grep -rn security src',
+        'grep -i security notes.md',
+        'git log --grep security',
+        'echo "run the security command"',
+        'npm audit --audit-level=high # security'
+      ]) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+
+    it('denies any secret-tool call and D-Bus clients naming the Secret Service', () => {
+      for (const command of [
+        'secret-tool lookup service orgai vault abc',
+        'secret-tool --version',
+        '/usr/bin/secret-tool search service orgai',
+        'secret-tool store --label="OrgAI vault" service orgai vault abc',
+        'env FOO=1 secret-tool clear service orgai',
+        'echo x | secret-tool store --label=x service orgai',
+        "bash -c 'secret-tool lookup service orgai vault abc'",
+        'flatpak-spawn --host secret-tool lookup service orgai',
+        'busctl --user call org.freedesktop.secrets /org/freedesktop/secrets org.freedesktop.Secret.Service SearchItems a{ss} 0',
+        'gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.SearchItems "{}"',
+        'dbus-send --session --print-reply --dest=org.freedesktop.secrets /org/freedesktop/secrets org.freedesktop.DBus.Introspectable.Introspect',
+        'dbus-send --session --dest=x /org/freedesktop/secrets org.freedesktop.Secret.Service.Unlock',
+        'qdbus org.freedesktop.secrets',
+        "sh -c 'gdbus introspect --session --dest org.freedesktop.secrets --object-path /'"
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        'which secret-tool',
+        'apt-get install -y libsecret-tools',
+        'busctl --user list',
+        'gdbus introspect --session --dest org.gnome.Shell --object-path /',
+        'dbus-send --session --dest=org.freedesktop.Notifications /org/freedesktop/Notifications x',
+        'grep -rn org.freedesktop.secrets src'
+      ]) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+    })
+
+    it('reads arch -arch <name> as taking a value (review round 1)', () => {
+      for (const command of [
+        "printf 'dump-keychain\\n' | arch -arch arm64 security",
+        'arch -arch x86_64 security -i',
+        'arch -arch arm64 security',
+        'arch -arch arm64 -e FOO=1 security -i',
+        'arch -x86_64 -d FOO security -i',
+        'arch -arch arm64 orgai status',
+        'ar\\ch -arch arm64 security -i',
+        'xcrun --toolchain x security -i',
+        "printf 'dump-keychain\\n' | arch -arm64 security"
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      expect(bash('arch -arch arm64 security find-certificate -c Apple', ctx)).toBeNull()
+      expect(bash('arch -arch arm64 /usr/bin/true', ctx)).toBeNull()
+    })
+
+    it('reads custodian and package-runner names through backslash escapes and globs (review round 1)', () => {
+      for (const command of [
+        'sec\\urity dump-keychain',
+        'security dump-keych\\ain',
+        '/usr/bin/sec\\urity find-generic-password -w -s x',
+        'secret\\-tool lookup service orgai',
+        's\\ecret-tool lookup a b',
+        'secur?ty dump-keychain',
+        '/usr/bin/secur*y dump-keychain',
+        '/usr/bin/s[e]curity -i',
+        'security dump-keych?in',
+        'secret-too? lookup a b',
+        '/usr/bin/secret-t* store --label=x a b',
+        'launchctl asuser 501 sec\\urity find-generic-password -w',
+        'flatpak-spawn --host secret\\-tool lookup a b',
+        'echo dump-keychain | secur?ty',
+        'echo dump-keychain | sec\\urity -q',
+        'bus\\ctl --user call org.freedesktop.secrets / x y',
+        'gdbu? call --dest org.freedesktop.secrets',
+        "echo '[Security.Cryptography.ProtectedData]::Unprotect(1)' | pws? -",
+        // The scoped package name.
+        'n\\px @orgai/cli status',
+        'np\\x @orgai/cli status',
+        'npm e\\xec @orgai/cli status',
+        'bun\\x @orgai/cli status',
+        'pnpm --package=@orgai/cli d\\lx cli status',
+        'np? @orgai/cli status',
+        'npm ex?c @orgai/cli status',
+        '/usr/local/bin/np* @orgai/cli status',
+        'n\\px -c "orgai status"',
+        'pnpm --package=@orgai/cli dlx cli status'
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        'ls *',
+        'echo s* x*',
+        'cp ./* export/',
+        'grep -rn sec src',
+        'rg security -e export src',
+        'grep security -i notes.md',
+        'ls ?? lookup',
+        'npm run build',
+        'npm ex?c-thing status',
+        'np? cli status'
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBeNull()
+      }
+    })
+
+    it('reads custodian calls in array and call spellings inside interpreter code (review round 1)', () => {
+      for (const command of [
+        "node -e \"require('child_process').execFileSync('security',['dump-keychain'])\"",
+        "node -e \"require('child_process').execFileSync('security', ['find-generic-password','-s','x','-w'])\"",
+        "python3 -c \"import subprocess; subprocess.run(['security'] + ['dump-keychain'])\"",
+        "python3 -c \"import subprocess; subprocess.run(['security','dump-keychain'])\"",
+        "ruby -e 'system(%w[security dump-keychain])'",
+        "perl -e 'system((\"security\"), (\"dump-keychain\"))'",
+        // Code piped into a code runner that reads stdin.
+        "echo \"import subprocess; subprocess.run(['security','dump-keychain'])\" | python3",
+        "printf '%s' \"system('secret-tool lookup a b')\" | perl -",
+        "awk -f - <<< 'BEGIN { system(\"secret-tool lookup a b\") }'"
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+    })
+
+    it('does not refuse ordinary work that only mentions custodian names beside a code runner (review round 1)', () => {
+      for (const command of [
+        "grep -rn 'secret-tool' docs | awk '{print $1}'",
+        "grep -rn 'OrgAI Vault' src && node -v",
+        "npx vitest run src/main/runtime/selfControlGate.test.ts -t 'OrgAI Vault'",
+        'rg security -e export src',
+        "rg -n 'org.freedesktop.secrets' src | python3 tools/count.py",
+        "grep -rn 'security dump-keychain' docs | node scripts/summarize.mjs"
+      ]) {
+        expect(bash(command, ctx), JSON.stringify(command)).toBeNull()
+      }
+    })
+
+    it('denies PowerShell text naming ProtectedData or Unprotect, encoded commands included', () => {
+      for (const command of [
+        "pwsh -c '[Security.Cryptography.ProtectedData]::Unprotect($b, $null, 0)'",
+        'powershell.exe -Command "Add-Type -AssemblyName System.Security; [System.Security.Cryptography.ProtectedData]::Unprotect($b,$e,\'CurrentUser\')"',
+        'pwsh -NoProfile -Command Unprotect-CmsMessage -Path x',
+        "cmd /c powershell -c [Security.Cryptography.ProtectedData]::Unprotect(1)",
+        "echo '[Security.Cryptography.ProtectedData]::Unprotect(1)' | pwsh -c -",
+        "echo '[Security.Cryptography.ProtectedData]::Unprotect(1)' | pwsh -",
+        "pwsh <<< '[Security.Cryptography.ProtectedData]::Unprotect(1)'",
+        `pwsh -EncodedCommand ${encode('[Security.Cryptography.ProtectedData]::Unprotect($b, $null, 0)')}`,
+        `pwsh -enc ${encode('Unprotect-CmsMessage -Path x')}`,
+        `powershell -ec ${encode('[Security.Cryptography.ProtectedData]::Unprotect(1)')}`,
+        `powershell.exe -e ${encode('[Security.Cryptography.ProtectedData]::Unprotect(1)')}`,
+        `pwsh -EncodedC ${encode('[Security.Cryptography.ProtectedData]::Unprotect(1)')}`,
+        `bash -c "pwsh -enc ${encode('[Security.Cryptography.ProtectedData]::Unprotect(1)')}"`,
+        // An encoded command running the CLI.
+        `pwsh -enc ${encode('orgai runs stop R1')}`
+      ]) {
+        expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of [
+        'Add-Type -AssemblyName System.Security; [System.Security.Cryptography.ProtectedData]::Unprotect($b, $null, "CurrentUser")',
+        'Unprotect-CmsMessage -Path secret.txt',
+        `powershell -EncodedCommand ${encode('[Security.Cryptography.ProtectedData]::Unprotect(1)')}`,
+        `& pwsh -enc ${encode('orgai status')}`
+      ]) {
+        expect(ps(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      for (const command of ['pwsh -c Get-ChildItem', `pwsh -enc ${encode('Get-ChildItem')}`, 'grep -e abcdefgh file']) {
+        expect(bash(command, ctx), command).toBeNull()
+      }
+      expect(ps('Get-ChildItem', ctx)).toBeNull()
+    })
+
+    it('an encoded command naming a protected path is denied', () => {
+      const s = setup()
+      const ctx2: SelfControlContext = { protectedPaths: s.refs, cwd: join(s.base, 'proj'), home: s.home }
+      expect(bash(`pwsh -enc ${encode(`Get-Content ${join(s.data, 'vault.json')}`)}`, ctx2)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(ps(`powershell -enc ${encode(`Get-Content ${join(s.data, 'run', 'daemon.secret')}`)}`, ctx2)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    })
+  })
+
+  describe('review round 2', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
+    const denied = (commands: readonly string[]): void => {
+      for (const command of commands) expect(bash(command, ctx), JSON.stringify(command)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    const allowed = (commands: readonly string[]): void => {
+      for (const command of commands) expect(bash(command, ctx), JSON.stringify(command)).toBeNull()
+    }
+
+    it('reads security options the way getopt does: `--`, `-p<value>`, `-p <value>` and clusters', () => {
+      denied([
+        'security -- dump-keychain -d',
+        'security -pfoo dump-keychain -d',
+        'security -p foo dump-keychain -d',
+        "security -p 'a prompt' find-generic-password -w -s x",
+        'security -qpfoo find-generic-password -a me -w',
+        'security -qv -- find-generic-password -w',
+        'security -pfoo',
+        'security -p',
+        'security -qpfoo -i',
+        'env security -- dump-keychain',
+        'launchctl asuser 501 security -- dump-keychain',
+        'flatpak-spawn --host security -pX export -o /tmp/x',
+        'sudo security -qpX find-generic-password -w',
+        "python3 -c \"import subprocess; subprocess.run(['security','--','dump-keychain'])\"",
+        "python3 -c \"import subprocess; subprocess.run(['security', '-qpfoo', 'find-generic-password', '-w'])\"",
+        "node -e \"require('child_process').execFileSync('security', ['-p', 'x', 'dump-keychain'])\"",
+        "ruby -e 'system(\"security -- export -o /tmp/x\")'"
+      ])
+      allowed([
+        'security -p x find-certificate -a',
+        'security -pfoo list-keychains',
+        'security -- find-identity -v',
+        // `-e` is no security option: what follows is not its subcommand.
+        'rg security -e export src',
+        'grep security -i notes.md'
+      ])
+    })
+
+    it('reads names written as single-letter bracket classes', () => {
+      denied([
+        '/usr/bin/[s][e][c][u][r][i][t][y] dump-keychain',
+        '/usr/bin/[s][e][c][u][r][i][t][y] -i',
+        'echo dump-keychain | /usr/bin/[s][e][c][u][r][i][t][y]',
+        '/usr/bin/s[e][c][u][r][i][t][y] dump-keychain',
+        '/usr/bin/[sS][eE][cC][uU][rR][iI][tT][yY] dump-keychain',
+        '/usr/bin/[s-s]ecurity -i',
+        'security [d][u][m][p]-[k][e][y][c][h][a][i][n]',
+        '/usr/bin/[s][e][c][r][e][t]-[t][o][o][l] lookup a b',
+        '[b][u][s][c][t][l] --user call org.freedesktop.secrets /x y z',
+        '[g][d][b][u][s] call --dest org.freedesktop.secrets',
+        '[n][p][x] @orgai/cli status',
+        '/usr/local/bin/[n]p[x] -y orgai status',
+        'npm [e][x][e][c] @orgai/cli status',
+        "echo '[Security.Cryptography.ProtectedData]::Unprotect(1)' | [p][w][s][h] -",
+        '/usr/local/bin/[o][r][g][a][i] status'
+      ])
+      allowed([
+        // Classes of several letters or negated ones keep nothing: not read as a name.
+        'ls [a-z][a-z][a-z] lookup',
+        'echo [!s]ecurity dump-keychain',
+        'ls [st][eu] export'
+      ])
+    })
+
+    it('reads glob spellings of the scoped package in a package runner', () => {
+      denied([
+        'npx @orgai/cl? status',
+        'npx @orgai/c* status',
+        'npx @orga?/cli status',
+        'npx @orgai/cl[i] status',
+        'npx @orgai/cl?@1.2.3 status',
+        'npx -y @orga*/cli@latest runs list',
+        'npx --package=@orgai/cl? orgai status',
+        'npx -p @orgai/c* cli status',
+        'npm exec -- @orgai/cl? status',
+        'pnpm dlx @orgai/cl? status',
+        'yarn dlx @orgai/cl? status',
+        'bunx @orgai/cl? status',
+        'npx x@npm:@orgai/cl? status',
+        'npx orga? status',
+        'npx orga?@latest status'
+      ])
+      allowed(['npx prettier --write *', "npx eslint 'src/**/*.ts'", 'npx vitest run src/cli/*', 'npx tsc -p tsconfig.json', 'npx vitest o*'])
+    })
+
+    it('reads security -i and stdin in interpreter code, and unwraps script and launchctl', () => {
+      denied([
+        "python3 -c \"import os; os.system('security -i')\"",
+        "python3 -c \"import os; os.system('security -qi')\"",
+        "python3 -c \"import os; os.system('security -q -i')\"",
+        "python3 -c \"import os; os.system('security')\"",
+        "node -e \"require('child_process').execSync('printf dump-keychain | security')\"",
+        "node -e \"require('child_process').execSync('printf dump-keychain | /usr/bin/security -q')\"",
+        "python3 -c \"import subprocess; subprocess.run(['security'], input=b'dump-keychain')\"",
+        "python3 -c \"import subprocess; subprocess.run(['/usr/bin/security'], input=b'dump-keychain')\"",
+        'script -q /dev/null security -i',
+        'script /dev/null security dump-keychain',
+        'script -q -t 0 /dev/null security -i',
+        "printf dump-keychain | script -q /dev/null security",
+        "script -q -c 'security -i' /dev/null",
+        "script --command='security dump-keychain' /dev/null",
+        'printf dump-keychain | launchctl asuser 501 security',
+        'launchctl bsexec 1 security -i',
+        'launchctl asuser 501 /usr/bin/security < cmds.txt'
+      ])
+      allowed([
+        "python3 -c \"import subprocess; subprocess.run(['security', 'find-certificate', '-a'])\"",
+        "node -e \"console.log('security review done')\"",
+        "python3 -c \"print('the security team')\"",
+        'script -q /dev/null ls',
+        "script -q -c 'npm test' /dev/null",
+        'launchctl asuser 501 security find-certificate -a',
+        'launchctl list'
+      ])
+    })
+
+    it('denies the OrgAI Vault name after any keyring front end, however it is launched', () => {
+      denied([
+        "keyring get 'OrgAI Vault' key",
+        "keyring set 'OrgAI Vault' key",
+        "keyring del 'OrgAI Vault' key",
+        'keyring get OrgAI\\ Vault key',
+        'keyring get "OrgAI vault" key',
+        "~/.local/bin/keyring get 'OrgAI Vault' key",
+        "pipx run keyring get 'OrgAI Vault' key",
+        "python3 -m keyring get 'OrgAI Vault' key",
+        "kwallet-query -r 'OrgAI Vault' kdewallet",
+        "kwallet-query -f 'OrgAI Vault' -r abc kdewallet",
+        "kwalletcli -f 'OrgAI Vault' -e abc",
+        "k\\wallet-query -r 'OrgAI Vault' kdewallet",
+        "bash -c \"keyring get 'OrgAI Vault' key\"",
+        "security find-key -l 'OrgAI Vault'"
+      ])
+      allowed([
+        'keyring --list-backends',
+        "keyring get 'Other Service' key",
+        "grep -rn 'OrgAI Vault' src && node -v",
+        "npx vitest run src/main/runtime/selfControlGate.test.ts -t 'OrgAI Vault'",
+        'kwallet-query -l kdewallet'
+      ])
+    })
+
+    it('reads a local drive spelled as a device path or an admin share (win32, no file system)', () => {
+      const data = 'C:\\Users\\me\\AppData\\Roaming\\OrgAI'
+      const wctx: SelfControlContext = { protectedPaths: [`${data}\\run`, `${data}\\secrets.json`, `${data}\\codex`], platform: 'win32', home: 'C:\\Users\\me', cwd: 'C:\\work' }
+      const targets = [
+        `\\\\?\\${data}\\vault.json`,
+        `\\\\.\\${data}\\vault.json`,
+        '\\\\?\\c:\\users\\me\\appdata\\roaming\\orgai\\run\\daemon.secret',
+        '//?/C:/Users/me/AppData/Roaming/OrgAI/secrets.json.tmp',
+        '\\\\localhost\\c$\\Users\\me\\AppData\\Roaming\\OrgAI\\vault.json',
+        '\\\\LOCALHOST\\C$\\Users\\me\\AppData\\Roaming\\OrgAI\\codex\\auth.json',
+        '\\\\127.0.0.1\\c$\\Users\\me\\AppData\\Roaming\\OrgAI\\vault.json.corrupt-1',
+        '\\\\?\\UNC\\localhost\\c$\\Users\\me\\AppData\\Roaming\\OrgAI\\vault.json',
+        '\\\\?\\UNC\\127.0.0.1\\C$\\Users\\me\\AppData\\Roaming\\OrgAI\\secrets.json'
+      ]
+      for (const t of targets) {
+        expect(checkSelfControlDenial('Read', { file_path: t }, wctx), t).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+        expect(checkSelfControlDenial('Write', { file_path: t, content: 'x' }, wctx), t).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+        expect(ps(`Get-Content ${t}`, wctx), t).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      }
+      expect(checkSelfControlDenial('Grep', { pattern: 'x', path: '\\\\?\\C:\\Users\\me\\AppData\\Roaming\\OrgAI\\run' }, wctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      // Remote hosts, other shares and other folders stay with the normal flow.
+      for (const t of [
+        '\\\\server\\c$\\Users\\me\\AppData\\Roaming\\OrgAI\\vault.json',
+        '\\\\localhost\\share\\vault.json',
+        '\\\\?\\Volume{0}\\x',
+        '\\\\?\\C:\\Users\\me\\AppData\\Roaming\\OrgAI\\projects.json',
+        '\\\\localhost\\c$\\work\\notes.md'
+      ]) {
+        expect(checkSelfControlDenial('Read', { file_path: t }, wctx), t).toBeNull()
+        expect(ps(`Get-Content ${t}`, wctx), t).toBeNull()
+      }
+    })
+  })
+})
+
+describe('Wave 7 scan cost', () => {
+  // Review round 2: linearity, not wall-clock time (a loaded runner made a fixed 2 s limit fail with no code change).
+  // Each hostile text is timed at n and 2n (best of three, so a scheduler stall in one run does not count); a scan that
+  // grows with the square of the input takes about four times as long at 2n, a linear one about twice.
+  it('reads long hostile texts in linear time (quotes, backslashes, braces, custodian words)', () => {
+    const data = '/home/u/.config/OrgAI'
+    const ctx: SelfControlContext = { protectedPaths: controlProtectedPaths(data), cwd: '/work', home: '/home/u', platform: 'linux' }
+    const texts: [string, (n: number) => string, number][] = [
+      ['quote-backslash', (n) => `echo ${'"\\'.repeat(n)}`, 20_000],
+      ['single quotes', (n) => `echo ${"'a".repeat(n)}`, 20_000],
+      ['security words', (n) => `echo ${'security '.repeat(n)}x && node x.js`, 5_000],
+      ['escaped names', (n) => `echo ${'orgai\\'.repeat(n)}`, 10_000],
+      ['env words', (n) => `echo ${'env '.repeat(n)}`, 10_000],
+      // Review round 1: glob and escaped names read as programs and subcommands, runner words, security options.
+      ['glob names', (n) => `echo ${'s?c*r?t[y] '.repeat(n)}`, 2_500],
+      ['bracket names', (n) => `echo ${'[s][e][c][u][r][i][t][y] '.repeat(n)}`, 2_500],
+      ['runner words', (n) => `npx ${'np\\x e?ec '.repeat(n)}`, 2_500],
+      ['security options', (n) => `echo ${'security -v -- -pX '.repeat(n)}`, 2_500],
+      ['vault env', (n) => `echo ${'ORGAI_'.repeat(n)}`, 10_000],
+      ['vault label words', (n) => `echo ${'keyring OrgAI '.repeat(n)}`, 2_500]
+    ]
+    const best = (command: string): number => {
+      let min = Infinity
+      for (let k = 0; k < 3; k++) {
+        const t0 = performance.now()
+        checkSelfControlDenial('Bash', { command }, ctx)
+        min = Math.min(min, performance.now() - t0)
+      }
+      return min
+    }
+    expect(checkSelfControlDenial('Bash', { command: 'echo {a,b}{a,b}{a,b}{a,b}{a,b}' }, ctx)).toBeNull()
+    for (const [name, make, n] of texts) {
+      const t1 = best(make(n))
+      const t2 = best(make(2 * n))
+      expect(t2, `${name}: ${t1.toFixed(1)} ms at n, ${t2.toFixed(1)} ms at 2n`).toBeLessThan(3 * t1 + 100)
+    }
+  })
+})
+
+describe('wave 7 K6 / K7', () => {
+  const data = '/Users/u/Library/Application Support/OrgAI'
+  const ctx: SelfControlContext = { protectedPaths: [data + '/vault.json', data + '/secrets.json'], cwd: '/work/repo', platform: 'darwin', cliRoots: [] }
+  const denied = (command: string, c = ctx) => checkSelfControlDenial('Bash', { command }, c) !== null
+  it('keeps a quoted cd target with a space whole before inline code', () => {
+    expect(denied(`cd "${data}" && python3 -c "print(open('vault.json').read())"`)).toBe(true)
+    expect(denied(`cd "${data}" && node -e "require('fs').readFileSync('vault.json')"`)).toBe(true)
+    expect(denied(`cd "${data}" && python3 -c "open('secrets.json')"`)).toBe(true)
+    expect(denied(`cd "${data}/.." && python3 -c "open('OrgAI/vault.json')"`)).toBe(true)
+    expect(denied(`cd "${data}" && cat vault.json`)).toBe(true)
+  })
+  it('keeps every cd spelling of a spaced data dir whole (review K6 re-check)', () => {
+    const esc = data.replace(/ /g, '\\ ')
+    const code = `python3 -c "open('vault.json')"`
+    for (const cd of [
+      `cd ${esc}`,
+      `cd -- "${data}"`,
+      `cd -L "${data}"`,
+      `cd '${data}'`,
+      `pushd "${data}"`,
+      `Set-Location -LiteralPath "${data}"`,
+      `cd "${data}";`
+    ]) {
+      expect(denied(`${cd} && ${code}`), cd).toBe(true)
+      expect(denied(`${cd} && node -e "require('fs').readFileSync('secrets.json')"`), cd).toBe(true)
+    }
+    expect(denied(`cd "${data}" && cd sub && python3 -c "open('vault.json')"`)).toBe(false)
+    expect(denied(`cd "${data}/.." && ${code}`)).toBe(false)
+  })
+  it('space-free data dir control and unrelated code stay as before', () => {
+    const d = '/Users/u/data'
+    const c: SelfControlContext = { ...ctx, protectedPaths: [d + '/vault.json'] }
+    expect(denied(`cd "${d}" && python3 -c "open('vault.json')"`, c)).toBe(true)
+    expect(denied(`cd "${data}" && python3 -c "print(1)"`)).toBe(false)
+  })
+  it.each([
+    'yarn orgai status', 'pnpm orgai status', 'bun orgai', 'yarn run orgai', 'pnpm run orgai', 'bun run orgai',
+    'deno run npm:orgai-cli', 'deno run -A npm:orgai-cli status', 'deno x npm:orgai-cli', 'yarn @orgai/cli', 'deno run npm:@orgai/cli'
+  ])('denies %s', (cmd) => {
+    expect(checkSelfControlDenial('Bash', { command: cmd }, { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: [] })).not.toBeNull()
+  })
+  it.each(['yarn test', 'pnpm install', 'bun run build', 'deno run main.ts', 'yarn run lint'])('allows %s', (cmd) => {
+    expect(checkSelfControlDenial('Bash', { command: cmd }, { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: [] })).toBeNull()
   })
 })

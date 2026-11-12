@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { ROLE_COLORS, adapterForProject, mixedFamilyRefusal, newId, slugify } from '@shared/defaults'
+import { ROLE_COLORS, cleanRequiredReports, adapterForProject, mixedFamilyRefusal, newId, slugify } from '@shared/defaults'
 import type {
   AgentImportAction,
   AgentImportChoice,
@@ -9,7 +9,7 @@ import type {
   Project,
   Role
 } from '@shared/types'
-import { AGENT_IMPORT_ELEVATED_TOOLS, AGENT_IMPORT_MAX_CHOICES, AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
+import { AGENT_IMPORT_ELEVATED_TOOLS, AGENT_IMPORT_MAX_CHOICES, AGENT_IMPORT_SOURCE_LABELS, isBuiltinConnectionId } from '@shared/types'
 import { mapChosenModel, mapImportedModel, type MappedModel, type ModelContext } from './model'
 import { importKey } from './scan'
 import { DEFAULT_IMPORT_TOOLS, mapTools } from './tools'
@@ -173,6 +173,7 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
       model: mapped.model,
       ...(mapped.tier ? { tier: mapped.tier } : {}),
       ...(agent.effort ? { effort: agent.effort } : {}),
+      ...(agent.staffing ? { staffing: { ...agent.staffing } } : {}),
       canSpawn: agent.canSpawn ?? mappedTools.canSpawn,
       spawnable: [],
       reportsTo: null,
@@ -291,12 +292,20 @@ export function convertImport(input: ConvertInput): AgentImportPreview {
     // A replacement keeps the spawnable list of the role it replaces (cross-team grants included).
     const kept = d.replacesRoleId ? base.find((r) => r.id === d.replacesRoleId)?.spawnable ?? [] : []
     d.role.spawnable = [...kept, ...fromExport]
+    const reqFromExport = (d.agent.requiredReports ?? []).map((s) => exportSlugs.get(slugify(s))?.id).filter((x): x is string => !!x)
+    const reqKept = d.replacesRoleId ? base.find((r) => r.id === d.replacesRoleId)?.requiredReports ?? [] : []
+    if (reqKept.length || reqFromExport.length) d.role.requiredReports = [...reqKept, ...reqFromExport]
   }
   for (const r of roles) {
     const reports = roles.filter((x) => x.reportsTo === r.id).map((x) => x.id)
     const spawnable = [...new Set([...r.spawnable.filter((id) => ids.has(id) && id !== r.id), ...reports])]
     r.spawnable = spawnable
     if (reports.length) r.canSpawn = true
+    if (r.requiredReports) {
+      const required = cleanRequiredReports(r)
+      if (required) r.requiredReports = required
+      else delete r.requiredReports
+    }
   }
   if (root) root.canSpawn = true
 
@@ -337,12 +346,12 @@ function finish(input: ConvertInput, roles: Role[], drafts: Draft[], replacedRol
   for (const d of unknown) warnings.push(`${d.role.name}: model "${(d.agent.model ?? '').slice(0, 80)}" is not recognised; it uses the everyday tier (${d.role.model}).`)
   const instructionFiles = input.instructionFiles ?? []
   if (instructionFiles.length) warnings.push(`Instruction files are not turned into roles: ${instructionFiles.join(', ')}. The Architect reads them during setup.`)
-  if (input.model.connection === 'litellm' && drafts.some((d) => d.action !== 'skip')) {
+  if (!isBuiltinConnectionId(input.model.connection) && drafts.some((d) => d.action !== 'skip')) {
     const choice = adapterForProject({ provider: input.provider, roles }, input.model.catalog)
-    // On LiteLLM reports may use another family (mixedFamilyRefusal); only a root without a model blocks a run.
+    // On a proxy reports may use another family (mixedFamilyRefusal); only a root without a model blocks a run.
     if (mixedFamilyRefusal(choice) === 'no-root-family') {
       const names = choice.mismatched.map((id) => byId.get(id)?.name ?? id).join(', ')
-      warnings.push(`On LiteLLM the orchestrator's model picks the runtime, and it has none; ${names} use another model family. Give the orchestrator a model before running.`)
+      warnings.push(`On ${input.model.connectionName ?? 'this proxy'} the orchestrator's model picks the runtime, and it has none; ${names} use another model family. Give the orchestrator a model before running.`)
     }
   }
   const items: AgentImportItem[] = drafts.map((d) => {
@@ -390,7 +399,7 @@ export function importDigest(agents: readonly ImportedAgent[]): string {
   const h = createHash('sha256')
   for (const a of agents) {
     h.update(
-      JSON.stringify([a.source, a.file, a.name, a.slug, a.description, a.prompt, a.model, a.effort, a.tools, a.deniedTools, a.canSpawn, a.reportsTo, a.spawnable, a.tier, a.primary, a.responsibilities, a.color])
+      JSON.stringify([a.source, a.file, a.name, a.slug, a.description, a.prompt, a.model, a.effort, a.tools, a.deniedTools, a.canSpawn, a.reportsTo, a.spawnable, a.requiredReports, a.tier, a.primary, a.responsibilities, a.color, ...(a.staffing ? [a.staffing] : [])])
     )
     h.update('\n')
   }

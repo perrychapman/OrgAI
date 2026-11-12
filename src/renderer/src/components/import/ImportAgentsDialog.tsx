@@ -4,7 +4,9 @@ import { ArrowRight, ChevronDown, ChevronRight, FileSearch } from 'lucide-react'
 import type { AgentImportAction, AgentImportItem, AgentImportMode, AgentImportPreview, AgentImportScan, Project } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { projectConnection } from '@shared/defaults'
+import { importedRoleSpend } from '../../lib/roleStaffing'
 import { useAppStore } from '../../store/useAppStore'
+import { connectionLabel } from '../../lib/connectionLabel'
 import {
   buildChoices,
   elevatedLabels,
@@ -35,16 +37,18 @@ const MODES: { value: AgentImportMode; label: string; title: string }[] = [
 
 const SEARCHED = '.claude/agents, .opencode/agents, opencode.json, .codex/agents, .github/agents, .gemini/agents, .kiro/agents, .roomodes and .orgai/org.json'
 
-const CONN_NAME = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+
 
 function ImportRow({
   item,
   preview,
+  project,
   edit,
   modelOptions,
   onEdit
 }: {
   item: AgentImportItem
+  project: Project
   preview: AgentImportPreview
   edit: ImportEdit | undefined
   modelOptions: { value: string; label: string }[]
@@ -62,6 +66,8 @@ function ImportRow({
   const rootName = preview.roles.find((r) => r.reportsTo === null && r.id !== item.roleId)?.name
   const models = modelOptions.some((o) => o.value === item.model) ? modelOptions : [{ value: item.model, label: item.model }, ...modelOptions]
   const elevated = elevatedLabels(item.elevatedTools)
+  const importedRole = preview.roles.find((r) => r.id === item.roleId)
+  const spend = importedRoleSpend(importedRole, project, importedRole?.reportsTo === null)
   return (
     <li className={`import-row${included ? '' : ' is-skipped'}`} data-testid="import-row" data-slug={item.slug}>
       <div className="import-row-head">
@@ -108,6 +114,12 @@ function ImportRow({
           {item.modelReason === 'default' && <span className="hint">Not recognised, so the Everyday tier was used.</span>}
           {item.modelReason === 'inherit' && <span className="hint">Inherit means it uses its parent's model.</span>}
           {item.tier && item.modelReason === 'tier' && <span className="hint">Mapped to your {item.tier} tier.</span>}
+          {spend && (
+            <span className="hint" data-testid="import-spend">
+              {spend.text}
+              {spend.note ? `. ${spend.note}` : ''}
+            </span>
+          )}
         </div>
         {item.slugConflict && (
           <div className="import-field">
@@ -370,7 +382,7 @@ export default function ImportAgentsDialog({
             {preview && (
               <>
                 <p className="hint">
-                  Models map to {mock ? "the connection's tiers (mock adapter)" : `${CONN_NAME[preview.connection]}'s tiers`}
+                  Models map to {mock ? "the connection's tiers (mock adapter)" : `${connectionLabel(preview.connection)}'s tiers`}
                   {flat ? '; roles without a hierarchy report to the orchestrator' : ''}. Change either below.
                 </p>
                 <ul className="import-roles" aria-busy={loading}>
@@ -379,6 +391,7 @@ export default function ImportAgentsDialog({
                       key={item.key}
                       item={item}
                       preview={preview}
+                      project={project}
                       edit={edits[item.key]}
                       modelOptions={modelOptions}
                       onEdit={(patch) => edit(item.key, patch)}

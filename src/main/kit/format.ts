@@ -655,7 +655,11 @@ function parseTemplate(raw: unknown, index: number): ParsedItem {
       name: safeText(a.name, 80),
       slug: safeText(a.slug ?? slugFor(a.name, i), 64),
       prompt: a.prompt.length > ROLE_PROMPT_PREVIEW_MAX ? a.prompt.slice(0, ROLE_PROMPT_PREVIEW_MAX) : a.prompt,
-      elevatedTools: elevatedOf(a)
+      elevatedTools: elevatedOf(a),
+      // What the role may spend (parseOrgExport already validated the effort and cleaned the staffing).
+      ...(a.model && safeText(a.model, 80) ? { model: safeText(a.model, 80) } : {}),
+      ...(a.effort ? { effort: a.effort } : {}),
+      ...(a.staffing ? { staffing: a.staffing } : {})
     }))
     const granted = (roles as unknown[]).some(
       (r) =>
@@ -707,6 +711,7 @@ export function orgRolesFromAgents(agents: ImportedAgent[]): Record<string, unkn
     ...(a.model ? { model: a.model } : {}),
     ...(a.tier ? { tier: a.tier } : {}),
     ...(a.effort ? { effort: a.effort } : {}),
+    ...(a.staffing ? { staffing: { ...a.staffing } } : {}),
     ...(a.canSpawn !== undefined ? { canSpawn: a.canSpawn } : {}),
     spawnable: [...(a.spawnable ?? [])],
     ...(a.reportsTo !== undefined ? { reportsTo: a.reportsTo } : {}),

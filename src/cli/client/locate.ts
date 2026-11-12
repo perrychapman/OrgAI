@@ -1,8 +1,9 @@
 /**
- * Where the CLI finds OrgAI's data (cli-spec 3.2(1), 7(3)). `--data-dir` and ORGAI_DATA_DIR name the application
- * userDataDir; the data dir is always `<userDataDir>/data`. Precedence: --data-dir > ORGAI_DATA_DIR > the platform
- * default Electron uses for productName 'OrgAI' (macOS ~/Library/Application Support/OrgAI, Windows %APPDATA%\OrgAI,
- * Linux ${XDG_CONFIG_HOME:-~/.config}/OrgAI). Relative values resolve against cwd. Read paths never create anything.
+ * Where the CLI keeps its own data (standalone spec 3.1). `--data-dir` and ORGAI_CLI_DATA_DIR name the CLI's
+ * userDataDir; the data dir is always `<userDataDir>/data`. Precedence: --data-dir > ORGAI_CLI_DATA_DIR > the platform
+ * default (macOS ~/Library/Application Support/orgai-cli, Windows %APPDATA%\orgai-cli, Linux
+ * ${XDG_CONFIG_HOME:-~/.config}/orgai-cli). ORGAI_DATA_DIR is the desktop app's setting and is ignored here. Relative
+ * values resolve against cwd. Resolving creates nothing; productMarker.ts decides whether the folder may be used.
  */
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -29,20 +30,38 @@ const nonEmpty = (v: string | undefined): string | undefined => {
   return t ? t : undefined
 }
 
-/** Electron's default userData for productName 'OrgAI' on `platform`. */
-export function platformUserDataDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, home: string): string {
+function appDataDir(folder: string, platform: NodeJS.Platform, env: NodeJS.ProcessEnv, home: string): string {
   const p = pathFor(platform)
-  if (platform === 'darwin') return p.join(home, 'Library', 'Application Support', 'OrgAI')
-  if (platform === 'win32') return p.join(nonEmpty(env.APPDATA) ?? p.join(home, 'AppData', 'Roaming'), 'OrgAI')
-  return p.join(nonEmpty(env.XDG_CONFIG_HOME) ?? p.join(home, '.config'), 'OrgAI')
+  if (platform === 'darwin') return p.join(home, 'Library', 'Application Support', folder)
+  if (platform === 'win32') return p.join(nonEmpty(env.APPDATA) ?? p.join(home, 'AppData', 'Roaming'), folder)
+  return p.join(nonEmpty(env.XDG_CONFIG_HOME) ?? p.join(home, '.config'), folder)
 }
 
-/** True when the user picked the data folder (--data-dir or ORGAI_DATA_DIR): only then a spawned host gets ORGAI_DATA_DIR. */
+/** Electron's default userData for the desktop app (productName 'OrgAI') on `platform`: the CLI refuses it. */
+export function platformUserDataDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, home: string): string {
+  return appDataDir('OrgAI', platform, env, home)
+}
+
+/** The CLI's default userDataDir on `platform` (`orgai-cli` beside the app's `OrgAI`). */
+export function cliUserDataDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, home: string): string {
+  return appDataDir('orgai-cli', platform, env, home)
+}
+
+/** True when the user picked the CLI's data folder (--data-dir or ORGAI_CLI_DATA_DIR). */
 export function userChoseDataDir(input: Pick<DataDirInput, 'flag' | 'env'>): boolean {
-  return nonEmpty(input.flag) !== undefined || nonEmpty((input.env ?? process.env).ORGAI_DATA_DIR) !== undefined
+  return nonEmpty(input.flag) !== undefined || nonEmpty((input.env ?? process.env).ORGAI_CLI_DATA_DIR) !== undefined
 }
 
-function realOrSame(p: string): string {
+/** The one-time note when the desktop app's ORGAI_DATA_DIR is set and the CLI has its own override missing. */
+export const DESKTOP_DATA_DIR_NOTE = 'ORGAI_DATA_DIR is the OrgAI app\'s setting; orgai uses ORGAI_CLI_DATA_DIR.'
+
+/** True when ORGAI_DATA_DIR is set but neither --data-dir nor ORGAI_CLI_DATA_DIR is, so the note is due. */
+export function ignoresDesktopDataDir(input: Pick<DataDirInput, 'flag' | 'env'>): boolean {
+  const env = input.env ?? process.env
+  return nonEmpty(env.ORGAI_DATA_DIR) !== undefined && !userChoseDataDir(input)
+}
+
+export function realOrSame(p: string): string {
   try {
     return realpathSync.native(p)
   } catch {
@@ -56,8 +75,8 @@ export function resolveDataDirs(input: DataDirInput = {}): DataDirs {
   const platform = input.platform ?? process.platform
   const p = pathFor(platform)
   const cwd = input.cwd ?? process.cwd()
-  const chosen = nonEmpty(input.flag) ?? nonEmpty(env.ORGAI_DATA_DIR)
-  const raw = chosen !== undefined ? p.resolve(cwd, chosen) : platformUserDataDir(platform, env, input.home ?? homedir())
+  const chosen = nonEmpty(input.flag) ?? nonEmpty(env.ORGAI_CLI_DATA_DIR)
+  const raw = chosen !== undefined ? p.resolve(cwd, chosen) : cliUserDataDir(platform, env, input.home ?? homedir())
   // Only the running platform's file system can be asked for a real path.
   const userDataDir = platform === process.platform ? realOrSame(raw) : raw
   return { userDataDir, dataDir: p.join(userDataDir, 'data') }

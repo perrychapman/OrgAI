@@ -12,6 +12,7 @@ import type {
   MenuActionEvent,
   MenuState,
   OrgAIApi,
+  OutputsChangedEvent,
   SkillLibraryInfo,
   PermissionDecision,
   Project,
@@ -23,7 +24,9 @@ import type {
   TeamReviewSummary
 } from '../shared/types'
 import { IPC, isMenuAction } from '../shared/types'
-import { KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../shared/types'
+import { SELF_KNOWLEDGE_IPC, type AppNavigateEvent, type AppReferenceQuery } from '../shared/types'
+import { isAtlasSurfaceId } from '../shared/view/atlas'
+import { KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -45,6 +48,8 @@ const api: OrgAIApi = {
     list: () => ipcRenderer.invoke(IPC.connectionsList),
     update: (connection) => ipcRenderer.invoke(IPC.connectionsUpdate, connection),
     setSecret: (input) => ipcRenderer.invoke(IPC.connectionsSetSecret, input),
+    createProxy: (input) => ipcRenderer.invoke(IPC.connectionsCreateProxy, input),
+    removeProxy: (id) => ipcRenderer.invoke(IPC.connectionsRemoveProxy, id),
     test: (id) => ipcRenderer.invoke(IPC.connectionsTest, id),
     connect: (id) => ipcRenderer.invoke(IPC.connectionsConnect, id),
     login: (id, method) => ipcRenderer.invoke(IPC.connectionsLogin, id, method),
@@ -163,11 +168,15 @@ const api: OrgAIApi = {
     continue: (input: ContinueRunInput) => ipcRenderer.invoke(IPC.runsContinue, input),
     decideMerge: (input) => ipcRenderer.invoke(IPC.mergesDecide, input),
     resumeNow: (runId: string) => ipcRenderer.invoke(IPC.runsResumeNow, runId),
+    switchModel: (input) => ipcRenderer.invoke(IPC.runsSwitchModel, input),
+    setPermissionMode: (input) => ipcRenderer.invoke(IPC.runsSetPermissionMode, input),
     cancelAutoResume: (runId: string) => ipcRenderer.invoke(IPC.runsCancelAutoResume, runId),
     listLive: () => ipcRenderer.invoke(IPC.runsListLive),
     pendingCards: (runId: string) => ipcRenderer.invoke(IPC.runsPendingCards, runId),
     usageStats: (query) => ipcRenderer.invoke(IPC.runsUsageStats, query),
     usageCsv: (query) => ipcRenderer.invoke(IPC.runsUsageCsv, query),
+    usageOverview: (query) => ipcRenderer.invoke(IPC.runsUsageOverview, query),
+    usageOverviewCsv: (query) => ipcRenderer.invoke(IPC.runsUsageOverviewCsv, query),
     startQuick: (input) => ipcRenderer.invoke(IPC.runsStartQuick, input),
     promoteQuick: (input) => ipcRenderer.invoke(IPC.runsPromoteQuick, input)
   },
@@ -217,9 +226,11 @@ const api: OrgAIApi = {
     openLogs: () => ipcRenderer.invoke(IPC.appOpenLogs),
     logPath: () => ipcRenderer.invoke(IPC.appLogPath),
     info: () => ipcRenderer.invoke(IPC.appInfo),
-    cliShimStatus: () => ipcRenderer.invoke(IPC.appCliShimStatus),
-    installCliShim: () => ipcRenderer.invoke(IPC.appInstallCliShim),
-    uninstallCliShim: () => ipcRenderer.invoke(IPC.appUninstallCliShim)
+    cliCommandStatus: () => ipcRenderer.invoke(IPC.appCliCommandStatus),
+    installCliCommand: () => ipcRenderer.invoke(IPC.appInstallCliCommand),
+    cancelCliInstall: () => ipcRenderer.invoke(IPC.appCancelCliInstall),
+    removeOldCliShim: () => ipcRenderer.invoke(IPC.appRemoveOldCliShim),
+    reference: (query: AppReferenceQuery) => ipcRenderer.invoke(SELF_KNOWLEDGE_IPC.appReference, query)
   },
   onFocusRun: (cb) => {
     const listener = (_e: IpcRendererEvent, target: FocusRunTarget): void => cb(target)
@@ -334,6 +345,57 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, status: TeamFilesStatus): void => cb(status)
     ipcRenderer.on(TEAM_FILES_IPC.teamFilesChanged, listener)
     return () => ipcRenderer.removeListener(TEAM_FILES_IPC.teamFilesChanged, listener)
+  },
+  secrets: {
+    status: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsStatus, input ?? {}),
+    undelete: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsUndelete, input),
+    confirmDelete: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsConfirmDelete, input),
+    init: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsInit, input ?? {}),
+    reset: (input) => ipcRenderer.invoke(SECRETS_IPC.secretsReset, input)
+  },
+  onAppNavigate: (cb) => {
+    // Main validated the event; the renderer still gets only a known surface id and plain strings.
+    const listener = (_e: IpcRendererEvent, event: AppNavigateEvent): void => {
+      if (!event || typeof event !== 'object' || !isAtlasSurfaceId(event.surfaceId)) return
+      if (typeof event.runId !== 'string' || typeof event.agentLabel !== 'string') return
+      if (event.projectId !== undefined && typeof event.projectId !== 'string') return
+      cb({ surfaceId: event.surfaceId, runId: event.runId, agentLabel: event.agentLabel, ...(event.projectId !== undefined ? { projectId: event.projectId } : {}) })
+    }
+    ipcRenderer.on(SELF_KNOWLEDGE_IPC.appNavigate, listener)
+    return () => ipcRenderer.removeListener(SELF_KNOWLEDGE_IPC.appNavigate, listener)
+  },
+  // ---- Run outputs ----
+  outputs: {
+    list: (projectId) => ipcRenderer.invoke(OUTPUTS_IPC.outputsList, projectId),
+    preview: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsPreview, input),
+    open: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsOpen, ref),
+    reveal: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsReveal, ref),
+    saveAs: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsSaveAs, ref),
+    forget: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsForget, ref),
+    delete: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsDelete, input),
+    deletePreview: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsDeletePreview, ref),
+    versions: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsVersions, ref),
+    readSource: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsReadSource, ref),
+    thumb: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsThumb, ref),
+    compare: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsCompare, input),
+    notes: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsNotes, ref),
+    revisions: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsRevisions, ref),
+    reviseOptions: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsReviseOptions, ref),
+    saveEdit: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsSaveEdit, input),
+    restore: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsRestore, ref),
+    update: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsUpdate, input),
+    noteAdd: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsNoteAdd, input),
+    noteUpdate: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsNoteUpdate, input),
+    noteRemove: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsNoteRemove, input),
+    revise: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsRevise, input),
+    watch: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsWatch, ref),
+    unwatch: (ref) => ipcRenderer.invoke(OUTPUTS_IPC.outputsUnwatch, ref),
+    saveImage: (input) => ipcRenderer.invoke(OUTPUTS_IPC.outputsSaveImage, input)
+  },
+  onOutputsChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: OutputsChangedEvent): void => cb(event)
+    ipcRenderer.on(OUTPUTS_IPC.outputsChanged, listener)
+    return () => ipcRenderer.removeListener(OUTPUTS_IPC.outputsChanged, listener)
   }
 }
 

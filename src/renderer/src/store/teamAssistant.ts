@@ -28,13 +28,6 @@ interface TeamAssistantState {
   clearNew: (projectId: string) => void
   sessions: Record<string, TeamSession>
   updateSession: (projectId: string, patch: (s: TeamSession) => Partial<TeamSession>) => void
-  /** The Team-tab Architect session per project (survives tab switches). */
-  designRun: Record<string, string>
-  setDesignRun: (projectId: string, runId: string) => void
-  /** A request to show the Design mode (a Needs-you jump); `request` names the card to focus. */
-  designJump: { projectId: string; runId: string; request: string | null; n: number } | null
-  requestDesign: (projectId: string, runId: string, request?: string | null) => void
-  clearDesignJump: () => void
 }
 
 export const useTeamAssistantStore = create<TeamAssistantState>((set) => ({
@@ -51,16 +44,7 @@ export const useTeamAssistantStore = create<TeamAssistantState>((set) => ({
     set((st) => {
       const cur = st.sessions[projectId] ?? EMPTY_SESSION
       return { sessions: { ...st.sessions, [projectId]: { ...cur, ...patch(cur) } } }
-    }),
-  designRun: {},
-  setDesignRun: (projectId, runId) => set((st) => ({ designRun: { ...st.designRun, [projectId]: runId } })),
-  designJump: null,
-  requestDesign: (projectId, runId, request = null) =>
-    set((st) => ({
-      designRun: { ...st.designRun, [projectId]: runId },
-      designJump: { projectId, runId, request, n: (st.designJump?.n ?? 0) + 1 }
-    })),
-  clearDesignJump: () => set({ designJump: null })
+    })
 }))
 
 export function useTeamReviewSummary(projectId: string | null | undefined): TeamReviewSummary | undefined {
@@ -81,19 +65,27 @@ export function summaryFromReview(r: TeamReview): TeamReviewSummary {
 }
 
 const seeded = new Set<string>()
+const seeding = new Map<string, Promise<void>>()
 
 /** Seed a project's summary from its last persisted review once (a pushed summary wins). */
-export function seedTeamReview(projectId: string): void {
-  if (seeded.has(projectId)) return
+export function seedTeamReview(projectId: string): Promise<void> {
+  const pending = seeding.get(projectId)
+  if (pending) return pending
+  if (seeded.has(projectId)) return Promise.resolve()
   seeded.add(projectId)
-  void window.orgai.capabilities
+  const p = window.orgai.capabilities
     .lastReview(projectId)
     .then((r) => {
       if (!r) return
       if (useTeamAssistantStore.getState().summaries[projectId]) return
       useTeamAssistantStore.getState().setSummary(projectId, summaryFromReview(r))
     })
-    .catch(() => seeded.delete(projectId))
+    .catch(() => {
+      seeded.delete(projectId)
+    })
+    .finally(() => seeding.delete(projectId))
+  seeding.set(projectId, p)
+  return p
 }
 
 let unsubscribe: (() => void) | null = null

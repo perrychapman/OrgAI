@@ -1,17 +1,20 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useState } from 'react'
-import type { Project, ProjectPathCheck, QuickRunTeam } from '@shared/types'
+import type { Project, ProjectPathCheck, QuickRunTeam, VirtualProjectId } from '@shared/types'
 import { QUICK_RUN_MAX_PROMPT_CHARS } from '@shared/types'
-import { chatSummaryLine, START_PAGE_COPY } from '../../lib/assistants'
+import { CHAT_EXAMPLES, CHAT_EXAMPLES_HINT, chatSummaryLine, START_PAGE_COPY } from '../../lib/assistants'
 import { useAssistantRunsOn } from '../../lib/assistantModels'
 import { folderName } from '../../lib/paths'
 import { pathStatus } from '../../lib/projectsForm'
-import { CONNECTION_NAME } from '../../lib/settingsCopy'
+import { connectionLabel } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { newRunDraftKey, useAppStore } from '../../store/useAppStore'
+import { ASK_ORGAI_SEED } from '../../lib/menuActions'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
 import { Input } from '../ui/Input'
+import { Switch } from '../ui/Switch'
+import { CHAT_ASKS_LINE, CHAT_CHANGES_SWITCH, chatChangesHint } from '../../lib/chatPermissions'
 import Composer from '../Composer'
 
 const TEAMS: { value: QuickRunTeam; label: string }[] = [
@@ -40,9 +43,36 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   const teamName = useId()
   const folderId = useId()
   const statusId = useId()
-  const editsLabel = useId()
   const editsHint = useId()
+  const examplesHint = useId()
   const typed = text.trim()
+  const draftKey = newRunDraftKey(project.id)
+  const focusToken = useAppStore((s) => s.composerFocusToken)
+  const seed = useAppStore((s) => s.assistantSeed[project.id as VirtualProjectId])
+
+  /** Put `value` in the instruction field (the start page's composer) and focus it with the caret at the end. */
+  const fillInstruction = (value: string): void => {
+    const st = useAppStore.getState()
+    // A chip replaces only an empty field, the seed or another example; text the user typed is kept (review L4).
+    const now = (st.composerDrafts[draftKey]?.text ?? '').trim()
+    const replace = !now || now === ASK_ORGAI_SEED.trim() || CHAT_EXAMPLES.some((ex) => ex.text === now)
+    st.setComposerDraft(draftKey, { text: replace ? value : `${st.composerDrafts[draftKey]?.text.trimEnd()}\n${value}`, images: st.composerDrafts[draftKey]?.images ?? [] })
+    requestAnimationFrame(() => {
+      const field = document.querySelector<HTMLTextAreaElement>('[data-testid="assistant-start-quick"] .composer textarea')
+      if (!field) return
+      field.focus()
+      field.setSelectionRange(field.value.length, field.value.length)
+    })
+  }
+  // Help > Ask OrgAI about itself seeds "How do I " (UX rec 1): taken once; a draft the user already typed is kept.
+  useEffect(() => {
+    if (!seed) return
+    const st = useAppStore.getState()
+    st.clearAssistantSeed(project.id as VirtualProjectId)
+    if ((st.composerDrafts[draftKey]?.text ?? '').trim()) return
+    fillInstruction(seed)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed])
 
   useEffect(() => {
     if (!typed) return
@@ -80,7 +110,6 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   }
   const clear = (): void => {
     setText('')
-    setAllowEdits(false)
   }
 
   const summary = chatSummaryLine({
@@ -88,7 +117,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
     folderName: folder ? folderName(folder) : undefined,
     allowEdits,
     model,
-    connection: defaultConnection ? CONNECTION_NAME[defaultConnection] : undefined,
+    connection: defaultConnection ? connectionLabel(defaultConnection) : undefined,
     mock
   })
 
@@ -96,6 +125,23 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
     <div className="new-run" data-testid="assistant-start-quick">
       <div className="new-run-inner">
         <EmptyState title={copy.title} description={copy.description} />
+        <p className="muted chat-asks-line" data-testid="chat-asks-line">
+          {CHAT_ASKS_LINE}
+        </p>
+        <div className="chat-examples" data-testid="chat-examples">
+          <p className="muted chat-examples-hint" id={examplesHint}>
+            {CHAT_EXAMPLES_HINT}
+          </p>
+          <ul className="chat-examples-list" aria-describedby={examplesHint}>
+            {CHAT_EXAMPLES.map((ex) => (
+              <li key={ex.id}>
+                <button type="button" className="chip chat-example" data-testid="chat-example" data-example={ex.id} onClick={() => fillInstruction(ex.text)}>
+                  {ex.text}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
 
         <div className="chat-options">
           <div className="chat-folder" data-testid="chat-folder">
@@ -167,29 +213,12 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
 
             <div className="assistant-switch-row">
               <div className="assistant-switch-text">
-                <span id={editsLabel}>Allow edits in this folder</span>
-                {scratch && (
-                  <span className="muted chat-edits-hint" id={editsHint}>
-                    Choose a folder to allow edits.
-                  </span>
-                )}
+                <span aria-hidden="true">{CHAT_CHANGES_SWITCH}</span>
+                <span className="muted chat-edits-hint" id={editsHint}>
+                  {chatChangesHint(scratch, folder ? folderName(folder) : undefined)}
+                </span>
               </div>
-              {/* aria-disabled, not disabled: the switch stays in the tab order and its hint is read. */}
-              <button
-                type="button"
-                role="switch"
-                className="switch"
-                data-testid="chat-allow-edits"
-                aria-checked={allowEdits && !scratch}
-                aria-labelledby={editsLabel}
-                aria-describedby={scratch ? editsHint : undefined}
-                aria-disabled={scratch || undefined}
-                onClick={() => {
-                  if (!scratch) setAllowEdits(!allowEdits)
-                }}
-              >
-                <span className="switch-thumb" />
-              </button>
+              <Switch checked={allowEdits} onChange={setAllowEdits} label={CHAT_CHANGES_SWITCH} describedBy={editsHint} testId="chat-allow-edits" />
             </div>
           </div>
 
@@ -211,11 +240,12 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
         </div>
 
         <Composer
-          draftKey={newRunDraftKey(project.id)}
+          draftKey={draftKey}
           modeLabel="New chat"
           primaryLabel="Start"
-          placeholder="Describe the task"
+          placeholder="Ask about OrgAI or describe the task"
           autoFocus
+          focusToken={focusToken}
           onSubmit={async (prompt, images) => {
             if (prompt.length > QUICK_RUN_MAX_PROMPT_CHARS) {
               throw new Error(`That message is too long (the limit is ${QUICK_RUN_MAX_PROMPT_CHARS.toLocaleString()} characters). Shorten it and try again.`)
@@ -226,7 +256,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
               const problem = pathStatus('existing', typed, fresh)
               if (problem?.blocking) throw new Error(`Cannot start in that folder. ${problem.text} Clear the folder to chat in a scratch area.`)
             }
-            await startQuick({ prompt, ...(typed ? { folder: typed } : {}), team, allowEdits: allowEdits && !scratch, ...(images ? { images } : {}) })
+            await startQuick({ prompt, ...(typed ? { folder: typed } : {}), team, allowEdits,...(images ? { images } : {}) })
           }}
         />
       </div>

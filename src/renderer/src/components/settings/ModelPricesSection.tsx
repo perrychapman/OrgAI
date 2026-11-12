@@ -2,9 +2,9 @@ import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Pencil, Plus, RotateCcw } from 'lucide-react'
 import type { ConnectionId, ModelPriceInfo, ModelPriceOverride } from '@shared/types'
-import { CONNECTION_IDS } from '@shared/types'
+import { isProxyConnection } from '@shared/types'
 import { MODEL_PRICE_ID_MAX_CHARS } from '@shared/defaults'
-import { CONNECTION_NAME } from '../../lib/settingsCopy'
+import { connectionLabel } from '../../lib/connectionLabel'
 import { displayPerMTok, draftFromInfo, EMPTY_DRAFT, upsertOverride, removeOverride, validateDraft, visiblePriceRows } from '../../lib/modelPrices'
 import { APP_SETTINGS_SECTIONS, takeModelPriceTarget } from '../../lib/settingsTarget'
 import { scrollWithin } from '../../lib/scrollWithin'
@@ -68,6 +68,11 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
   const [showAll, setShowAll] = useState(false)
   const runs = useAppStore((s) => s.runs)
   const projects = useAppStore((s) => s.projects)
+  const connections = useAppStore((s) => s.connections)
+  // The connections to choose from come from the loaded list (Anthropic, OpenAI, then each proxy), never a fixed set.
+  const connectionList = connections ?? []
+  // Only a completed check can establish that a proxy did not report prices.
+  const noPrices = connectionList.filter((c) => isProxyConnection(c.connection) && c.status.checks?.reportsPrices === false)
   // Models the user's work touches: used by loaded runs, or set on a project's roles.
   const inUse = useMemo(() => {
     const ids = new Set<string>()
@@ -206,7 +211,7 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
                 <Select
                   id="model-price-connection"
                   value={editing.draft.connection}
-                  options={[{ value: '', label: 'Every connection' }, ...CONNECTION_IDS.map((id) => ({ value: id, label: CONNECTION_NAME[id] }))]}
+                  options={[{ value: '', label: 'Every connection' }, ...connectionList.map((c) => ({ value: c.connection.id, label: connectionLabel(c.connection.id) }))]}
                   onChange={(connection) => set({ connection: connection as '' | ConnectionId })}
                 />
               </div>
@@ -286,7 +291,7 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
                         <span className="mono" title={r.model}>
                           {r.model}
                         </span>
-                        {r.connection && <span className="muted"> · {CONNECTION_NAME[r.connection]}</span>}
+                        {r.connection && <span className="muted"> · {connectionLabel(r.connection)}</span>}
                       </th>
                       <td data-label="Source">
                         <span className="model-prices-source">{SOURCE_LABEL[r.source]}</span>
@@ -314,6 +319,11 @@ export function ModelPricesSection({ overrides, onSave }: { overrides: readonly 
             )}
           </SettingsCard>
         )}
+        {noPrices.map((c) => (
+          <p key={c.connection.id} className="settings-card-note" data-testid="model-prices-unreported" data-connection={c.connection.id}>
+            {connectionLabel(c.connection.id)} does not report prices. Costs for these models show as unknown until you set one.
+          </p>
+        ))}
         {rows && rows.length > shown.length && !showAll && (
           <p className="settings-card-note model-prices-more">
             Showing overrides and models you use.{' '}

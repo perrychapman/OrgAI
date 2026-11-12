@@ -2,8 +2,9 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { BellRing, Briefcase, ChevronDown, ChevronRight, LayoutDashboard,MessageSquare, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
-import { ASSISTANT_ORDER, assistantLabel, displayProject, locationLabel } from '../lib/assistants'
+import { BellRing, Briefcase, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { ASSISTANT_ORDER, assistantLabel, displayProject } from '../lib/assistants'
+import { decisionLocationLabel } from '../lib/chatPermissions'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../lib/needsYou'
@@ -11,8 +12,8 @@ import { openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions
 import { groupByClient, readCollapsedClients, writeCollapsedClients } from '../lib/clientGroups'
 import { needsYou } from '../lib/runChains'
 import { oneLine } from '../lib/decisionTitle'
-import { promptLine, runName, runTag } from '../lib/runLabels'
-import { isTeamSurfaceRun } from '../lib/runSurface'
+import { promptLine, runTag } from '../lib/runLabels'
+import { displayRunName, isOrgChangeRun, ORG_CHANGE_KIND_LABEL } from '../lib/orgChange'
 import { statusOfRun, statusText } from '../lib/runStatus'
 import { chainGroups } from '../lib/runChains'
 import { projectStatus } from '../lib/projectStatus'
@@ -20,9 +21,11 @@ import { initials } from '../lib/layout'
 import { currentPlatform, isMacPlatform, modKeyLabel } from '../lib/platform'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
-import { useSidebarCollapsed } from '../lib/useSidebarCollapsed'
+import { contentIsRail, useSidebarCollapsed } from '../lib/useSidebarCollapsed'
+import { useBellCue } from '../lib/useBellCue'
 import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
-import { CONNECTION_LABEL, currentConnection, SPEND_ROW_PREFIX, spendLevel, spendRowFigure, spendRowLabel, spendSentence } from '../lib/usage'
+import { connectionLabel, isProxyId } from '../lib/connectionLabel'
+import { currentConnection, reportsSpend, spendLevel, spendRowFigure, spendRowLabel, spendRowPrefix, spendSentence } from '../lib/usage'
 import { BrandLockup } from './layout/BrandLockup'
 import { ResizeHandle } from './layout/ResizeHandle'
 import { Icon } from './ui/Icon'
@@ -57,7 +60,7 @@ interface NavEntry {
 /** Open runs of a project, the ones that need the user first, then the newest. */
 function openRunsOf(runs: RunState[]): RunState[] {
   return runs
-    .filter((r) => isRunLive(r) && !isTeamSurfaceRun(r.summary))
+    .filter((r) => isRunLive(r))
     .sort((a, b) => Number(needsYou(b)) - Number(needsYou(a)) || b.summary.startedAt - a.summary.startedAt)
 }
 
@@ -78,25 +81,27 @@ function claudePill(auth: AuthStatusResult | null, status: ConnectionStatus | un
   return auth.loggedIn ? { tone: 'ok', label: `Claude · ${auth.method ?? 'logged in'}`, title: auth.detail } : { tone: 'danger', label: 'Claude not logged in', title: auth.detail }
 }
 
-/** `figure` is the label's part after "LiteLLM · "; the row renders the name visually hidden under a narrow footer so the figure and "today" always show. */
+/** `figure` is the label's part after "<name> · "; the row renders the name visually hidden under a narrow footer so the figure and "today" always show. */
 type Pill = { tone: string; label: string; title?: string; figure?: string }
 
 /**
- * Account row for a non-Anthropic connection: Codex follows its status, LiteLLM shows the key's spend: one figure
- * (today's spend when the proxy reports periods, else the budget text; `spendRowLabel`), the whole sentence as the
- * tooltip (`spendSentence`). The dot tone is the budget level only; a period figure never colours it.
+ * Account row for a non-Anthropic connection: OpenAI follows its status; a proxy that reports spend shows the key's
+ * spend: one figure (today's spend when the proxy reports periods, else the budget text; `spendRowLabel`), the whole
+ * sentence as the tooltip (`spendSentence`). A proxy that reports none shows its name and status, no spend text.
+ * The dot tone is the budget level only; a period figure never colours it.
  */
-function connectionPill(id: 'openai' | 'litellm', status: ConnectionStatus | undefined, usage: UsageStatus | undefined): Pill {
-  const name = CONNECTION_LABEL[id]
+function connectionPill(id: ConnectionId, status: ConnectionStatus | undefined, usage: UsageStatus | undefined, spends: boolean): Pill {
+  const name = connectionLabel(id)
   const detail = status?.detail
   if (status?.state === 'error') return { tone: 'danger', label: `${name} · error`, title: detail }
   if (status?.state === 'connecting') return { tone: 'warn', label: `${name} · connecting…`, title: detail }
   if (!status || status.state === 'disconnected') return { tone: 'warn', label: `${name} · not connected`, title: detail }
-  if (id === 'litellm') {
+  if (id !== 'openai' && !spends) return { tone: 'ok', label: `${name} · connected`, title: detail }
+  if (id !== 'openai') {
     const spend = usage?.spend
-    if (!spend) return { tone: 'warn', label: 'LiteLLM · spend unavailable', title: detail }
+    if (!spend) return { tone: 'warn', label: `${name} · spend unavailable`, title: detail }
     const level = spendLevel(spend)
-    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendRowLabel(spend), title: spendSentence(spend), figure: spendRowFigure(spend) }
+    return { tone: level === 'danger' ? 'danger' : level === 'warn' ? 'warn' : 'ok', label: spendRowLabel(spend, id), title: spendSentence(spend, id), figure: spendRowFigure(spend) }
   }
   return { tone: 'ok', label: `${name} · ${status.account ?? 'connected'}`, title: detail }
 }
@@ -111,6 +116,7 @@ export default function Sidebar({
   const selectedId = useAppStore((s) => s.selectedProjectId)
   const view = useAppStore((s) => s.view)
   const setView = useAppStore((s) => s.setView)
+  const openUsage = useAppStore((s) => s.openUsage)
   const openProject = useAppStore((s) => s.openProject)
   const openAssistant = useAppStore((s) => s.openAssistant)
   const virtualProjects = useAppStore((s) => s.virtualProjects)
@@ -131,10 +137,14 @@ export default function Sidebar({
   }, [loadDefaultConnection])
   const openProjectRecord = projects.find((p) => p.id === selectedId)
   const current: ConnectionId = currentConnection(openProjectRecord && view !== 'projects' && view !== 'appSettings' ? projectConnection(openProjectRecord) : null, defaultConnection)
-  const litellmOn = connections?.find((c) => c.connection.id === 'litellm')?.connection.enabled ?? false
-  const currentUsage = current === 'litellm' && !litellmOn ? undefined : usageByConnection[current]
-  const currentStatus = connections?.find((c) => c.connection.id === current)?.status
-  const pill: Pill = current === 'anthropic' ? claudePill(auth, currentStatus) : connectionPill(current, currentStatus, currentUsage)
+  const currentRecord = connections?.find((c) => c.connection.id === current)?.connection
+  const proxyOn = current !== 'anthropic' && current !== 'openai' ? (currentRecord?.enabled ?? false) : true
+  const currentUsage = !proxyOn ? undefined : usageByConnection[current]
+  const currentInfo = connections?.find((c) => c.connection.id === current)
+  const currentStatus = currentInfo?.status
+  const onProxy = isProxyId(current)
+  const currentSpends = onProxy && (currentInfo ? reportsSpend(currentInfo) : true)
+  const pill: Pill = current === 'anthropic' ? claudePill(auth, currentStatus) : connectionPill(current, currentStatus, currentUsage, currentSpends)
   const appVersion = useAppStore((s) => s.appInfo?.version)
   const devBuild = isDevBuild(appVersion)
   const devLabel = devBuild && appVersion ? devBuildLabel(appVersion) : ''
@@ -145,7 +155,9 @@ export default function Sidebar({
   const draftPage = useAppStore((s) => s.draftPage)
   const waiting = useAppStore(useShallow(waitingRuns))
   const indexes = useRunIndexes()
-  const { collapsed: rail, toggle, setCollapsed } = useSidebarCollapsed()
+  const { collapsed: railChosen, toggle, setCollapsed, motion } = useSidebarCollapsed()
+  // A collapse keeps the full content until the column has arrived (see contentIsRail).
+  const rail = contentIsRail(railChosen, motion)
   const [collapsed, setCollapsedRuns] = useState<Record<string, boolean>>({})
   const [collapsedClients, setCollapsedClients] = useState<Set<string>>(() => readCollapsedClients())
   // The selected project's row must stay reachable: opening it (or a project added to a collapsed client) expands its group.
@@ -169,16 +181,17 @@ export default function Sidebar({
   const teamItems = useTeamAttentionItems()
   const items = waiting.flatMap((r) => waitingItems(r))
   const needsCount = items.length + teamItems.length
-  const projectName = (id: string): string => locationLabel(id, projects)
+  const bellCue = useBellCue(needsCount)
+
   const inProject = (v: string): boolean => v !== 'projects' && v !== 'appSettings'
   const names = projects.map((p) => p.name)
 
   const account = mockAdapter ? { tone: 'ok', label: 'Mock adapter', title: undefined } : pill
-  /** The rail's accessible name and tooltip: LiteLLM's whole spend sentence (the rail shows no figure), else the label. */
-  const railName = current === 'litellm' && account.title ? account.title : account.label
-  /** The full row's tooltip: the LiteLLM spend sentence (the one-figure label can clip at narrow widths); other rows keep none. */
-  const rowTitle = rail ? railName : current === 'litellm' && !mockAdapter ? account.title : undefined
-  const tight = mockAdapter || current === 'litellm' ? null : tightestWindow(currentUsage)
+  /** The rail's accessible name and tooltip: a proxy's whole spend sentence (the rail shows no figure), else the label. */
+  const railName = currentSpends && account.title ? account.title : account.label
+  /** The full row's tooltip: the proxy's spend sentence (the one-figure label can clip at narrow widths); other rows keep none. */
+  const rowTitle = rail ? railName : currentSpends && !mockAdapter ? account.title : undefined
+  const tight = mockAdapter || onProxy ? null : tightestWindow(currentUsage)
   const needsLabel = `Needs you · ${needsCount}`
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
 
@@ -188,16 +201,15 @@ export default function Sidebar({
   const renderEntry = (entry: NavEntry): ReactElement => {
     const { id, name, project: p } = entry
     const projectRuns = allRuns.filter((r) => r.summary.projectId === id)
-    const visibleRuns = projectRuns.filter((r) => !isTeamSurfaceRun(r.summary))
-    const open = openRunsOf(visibleRuns)
+    const open = openRunsOf(projectRuns)
     const expanded = !rail && open.length > 0 && !collapsed[id]
-    const newest = [...(history[id] ?? []), ...visibleRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
+    const newest = [...(history[id] ?? []), ...projectRuns.map((r) => r.summary)].sort((a, b) => b.startedAt - a.startedAt)[0]
     const last = newest ? statusOfRun(projectRuns.find((x) => x.summary.id === newest.id) ?? { summary: newest }, p, false) : undefined
     // An open run's tag and name are its chain's first member's (one conversation, one name).
     const firstOf = new Map<string, RunSummary>()
     if (open.length > 0) {
       const known = new Map<string, RunSummary>((history[id] ?? []).map((h) => [h.id, h]))
-      for (const r of visibleRuns) known.set(r.summary.id, r.summary)
+      for (const r of projectRuns) known.set(r.summary.id, r.summary)
       for (const g of chainGroups([...known.values()])) for (const m of g.members) firstOf.set(m.id, g.first)
     }
     // One unit per level: decisions (the same count as the Needs-you row and the bell), with the run count beside it.
@@ -267,13 +279,17 @@ export default function Sidebar({
               const first = firstOf.get(r.summary.id) ?? r.summary
               const tag = runTag(indexes.get(first.id))
               const here = active && viewedId === r.summary.id
+              const orgChange = isOrgChangeRun(first)
               return (
                 <li key={r.summary.id}>
                   <button
                     type="button"
                     className={`nav-run ${here ? 'active' : ''}`}
                     aria-current={here ? 'true' : undefined}
-                    title={`${tag}: ${oneLine(promptLine(first.prompt), 300)}\n${statusText(rs)}`}
+                    data-testid="nav-run"
+                    data-run={r.summary.id}
+                    data-kind={orgChange ? 'org-change' : undefined}
+                    title={`${tag}: ${orgChange ? `${ORG_CHANGE_KIND_LABEL} · ` : ''}${oneLine(promptLine(first.prompt), 300)}\n${statusText(rs)}`}
                     onClick={() => {
                       if (selectedId !== id) selectProject(id)
                       void openRun(r.summary.id)
@@ -281,7 +297,13 @@ export default function Sidebar({
                   >
                     <span className={`run-dot ${rs.tone}`} aria-hidden="true" />
                     <span className="run-index">{tag}</span>
-                    <span className="nav-run-title">{runName(first)}</span>
+                    {orgChange && (
+                      <span className="nav-kind" data-testid="nav-run-kind-mark">
+                        {/* Decorative: the title already reads "Org chart: ..." (no doubled kind word for screen readers). */}
+                        <Icon icon={Network} size="xs" />
+                      </span>
+                    )}
+                    <span className="nav-run-title">{displayRunName(first)}</span>
                     <span className="sr-only">{statusText(rs)}</span>
                   </button>
                 </li>
@@ -375,12 +397,36 @@ export default function Sidebar({
           <Icon icon={LayoutDashboard} size="sm" />
           {!rail && 'Dashboard'}
         </button>
+        <button
+          type="button"
+          className={`nav-item ${view === 'usage' ? 'active' : ''}`}
+          data-testid="nav-usage"
+          aria-current={view === 'usage' ? 'page' : undefined}
+          aria-label={rail ? 'Usage' : undefined}
+          title={rail ? 'Usage' : undefined}
+          onClick={() => openUsage()}
+        >
+          <Icon icon={ChartColumn} size="sm" />
+          {!rail && 'Usage'}
+        </button>
         {needsCount > 0 && (
           <Popover
             trigger={
               <>
-                <Icon icon={BellRing} size="sm" />
-                {rail ? <span className="nav-rail-count">{needsCount}</span> : <span className="nav-text">{needsLabel}</span>}
+                <span className={`needs-bell${bellCue.ring ? ' motion-ring' : ''}`}>
+                  <Icon icon={BellRing} size="sm" />
+                </span>
+                {rail ? (
+                  <span className="needs-count" data-ping={bellCue.ping ? '' : undefined} onAnimationEnd={bellCue.onPingEnd}>
+                    <span className="nav-rail-count">{needsCount}</span>
+                  </span>
+                ) : (
+                  <span className="nav-text">
+                    <span className="needs-count" data-ping={bellCue.ping ? '' : undefined} onAnimationEnd={bellCue.onPingEnd}>
+                      {needsLabel}
+                    </span>
+                  </span>
+                )}
                 {!rail && <Icon icon={ChevronDown} size="xs" />}
               </>
             }
@@ -401,7 +447,7 @@ export default function Sidebar({
                         type="button"
                         className="needs-item"
                         data-kind={it.kind}
-                        title={`${it.label}\n${projectName(r.summary.projectId)} · ${runTag(indexes.get(r.summary.id))}: ${oneLine(promptLine(r.summary.prompt), 300)}`}
+                        title={`${it.label}\n${decisionLocationLabel(r.summary, projects)} · ${runTag(indexes.get(r.summary.id))}: ${oneLine(promptLine(r.summary.prompt), 300)}`}
                         onClick={() => {
                           close()
                           void jumpToDecision(r.summary.projectId, r.summary.id, it.key)
@@ -409,7 +455,7 @@ export default function Sidebar({
                       >
                         <span className="needs-what">{it.label}</span>
                         <span className="needs-where">
-                          {projectName(r.summary.projectId)} · <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {runName(r.summary)}
+                          {decisionLocationLabel(r.summary, projects)} · <span className="run-index">{runTag(indexes.get(r.summary.id))}</span>: {displayRunName(r.summary)}
                         </span>
                       </button>
                     </li>
@@ -483,7 +529,7 @@ export default function Sidebar({
                     title={`${g.label} (${g.items.length})`}
                     onClick={() => toggleClient(g.key)}
                   >
-                    <Icon icon={closed ? ChevronRight : ChevronDown} size="xs" />
+                    <Icon icon={ChevronDown} size="xs" />
                     <span className="nav-client-name">{g.label}</span>
                     <span className="nav-client-count">{` (${g.items.length})`}</span>
                     <span className="nav-client-fill" />
@@ -494,8 +540,11 @@ export default function Sidebar({
                       </Badge>
                     )}
                   </button>
-                  <div id={panelId} role="group" aria-label={g.label} hidden={closed}>
-                    {rows.map(renderEntry)}
+                  {/* Stays mounted: .motion-collapse glides the height and hides the rows (visibility) when closed. */}
+                  <div className="motion-collapse" data-collapsed={closed ? 'true' : 'false'}>
+                    <div id={panelId} role="group" aria-label={g.label}>
+                      {rows.map(renderEntry)}
+                    </div>
                   </div>
                 </div>
               )
@@ -510,7 +559,7 @@ export default function Sidebar({
               <span className="account-label">
                 {account.figure ? (
                   <>
-                    <span className="account-name">{SPEND_ROW_PREFIX}</span>
+                    <span className="account-name">{spendRowPrefix(current)}</span>
                     {account.figure}
                   </>
                 ) : (
@@ -518,7 +567,7 @@ export default function Sidebar({
                 )}
               </span>
               {tight && !rail && <span className="account-pct">{Math.round(tight.pct)}%</span>}
-              {!rail && !mockAdapter && (current === 'litellm' ? <SpendBar spend={currentUsage?.spend} /> : <UsageBar usage={currentUsage} />)}
+              {!rail && !mockAdapter && (onProxy ? currentSpends ? <SpendBar spend={currentUsage?.spend} id={current} /> : null : <UsageBar usage={currentUsage} />)}
             </>
           }
           triggerLabel={rail ? railName : undefined}

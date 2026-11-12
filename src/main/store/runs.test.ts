@@ -232,6 +232,28 @@ describe('RunStore', () => {
 })
 
 describe('RunStore image store', () => {
+  it('externalizes and hydrates returned images in ordered parts and assistant output', () => {
+    const store = new RunStore(dataDir)
+    const data = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]).toString('base64')
+    const image: ImageAttachment = { mediaType: 'image/png', data }
+    const transcript: TranscriptEntry[] = [
+      { id: 't', agentId: 'root', at: 1, block: { kind: 'tool_result', toolUseId: 'use', content: 'before\n[Image]\nafter', isError: false, parts: [{ type: 'text', text: 'before' }, { type: 'media', media: { kind: 'image', image } }, { type: 'text', text: 'after' }] } },
+      { id: 'a', agentId: 'root', at: 2, block: { kind: 'media', media: { kind: 'image', image } } }
+    ]
+    store.saveRecord(record(run('returned'), { transcript }))
+    const raw = readFileSync(join(dataDir, 'runs', 'returned.json'), 'utf8')
+    expect(raw).not.toContain(data)
+    expect(raw).toContain('ref')
+    expect(readdirSync(join(dataDir, 'runs', 'returned', 'images'))).toHaveLength(1)
+    expect(store.getRecord('returned')?.transcript).toEqual(transcript)
+    expect(image.data).toBe(data)
+    rmSync(join(dataDir, 'runs', 'returned', 'images'), { recursive: true })
+    const missing = store.getRecord('returned')!
+    expect(JSON.stringify(missing.transcript)).not.toContain(data)
+    expect(JSON.stringify(missing.transcript)).not.toContain('"ref"')
+    expect(JSON.stringify(missing.transcript)).toContain('"data":""')
+  })
+
   const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]).toString('base64')
   const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]).toString('base64')
   const sha = (b64: string): string => createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex')
@@ -369,6 +391,69 @@ describe('RunStore usage', () => {
 
 describe('RunStore exec fields (cli-spec Wave 0)', () => {
   const writeIndex = (runs: unknown[]): void => writeFileSync(join(dataDir, 'runs.json'), JSON.stringify({ version: 1, runs }), 'utf8')
+
+  it('normalizes stored conversation budgets and model adapters', () => {
+    const invalidBudgets: unknown[] = [0, -1, '5', null, {}, []]
+    const invalidAdapters: unknown[] = ['other', 'Claude', '', 1, null, {}]
+    writeIndex([
+      ...[0.01, 100].map((budget, i) => run(`budget-${i}`, { conversationBudgetUsd: budget })),
+      ...invalidBudgets.map((budget, i) => run(`bad-budget-${i}`, { conversationBudgetUsd: budget as number })),
+      ...(['claude', 'codex', 'mock'] as const).map((adapter) => run(adapter, { modelAdapter: adapter })),
+      ...invalidAdapters.map((adapter, i) => run(`bad-adapter-${i}`, { modelAdapter: adapter as never }))
+    ])
+    const s = new RunStore(dataDir)
+    expect(s.get('budget-0')!.conversationBudgetUsd).toBe(0.01)
+    expect(s.get('budget-1')!.conversationBudgetUsd).toBe(100)
+    invalidBudgets.forEach((_, i) => expect('conversationBudgetUsd' in s.get(`bad-budget-${i}`)!).toBe(false))
+    for (const adapter of ['claude', 'codex', 'mock']) expect(s.get(adapter)!.modelAdapter).toBe(adapter)
+    invalidAdapters.forEach((_, i) => expect('modelAdapter' in s.get(`bad-adapter-${i}`)!).toBe(false))
+    for (const budget of [NaN, Infinity, -Infinity]) {
+      expect('conversationBudgetUsd' in normalizeCrashedRunSummary(run('nonfinite', { conversationBudgetUsd: budget }))).toBe(false)
+    }
+  })
+
+  it('keeps rootEffort and permissionMode only when valid, and permissionModeChosen only as true next to a mode', () => {
+    const bad = (over: Record<string, unknown>): RunSummary => run('x', over as Partial<RunSummary>)
+    const kept = normalizeCrashedRunSummary(run('ok', { status: 'finished', rootEffort: 'xhigh', permissionMode: 'plan', permissionModeChosen: true }))
+    expect(kept).toMatchObject({ rootEffort: 'xhigh', permissionMode: 'plan', permissionModeChosen: true })
+    for (const effort of ['extreme', '', 3, null, {}]) expect('rootEffort' in normalizeCrashedRunSummary(bad({ rootEffort: effort }))).toBe(false)
+    for (const mode of ['yolo', '', 1, null]) {
+      const n = normalizeCrashedRunSummary(bad({ permissionMode: mode, permissionModeChosen: true }))
+      expect('permissionMode' in n).toBe(false)
+      expect('permissionModeChosen' in n).toBe(false)
+    }
+    for (const flag of [false, 'true', 1, null]) {
+      const n = normalizeCrashedRunSummary(bad({ permissionMode: 'default', permissionModeChosen: flag }))
+      expect(n.permissionMode).toBe('default')
+      expect('permissionModeChosen' in n).toBe(false)
+    }
+    // A chosen flag with no mode at all is dropped.
+    expect('permissionModeChosen' in normalizeCrashedRunSummary(bad({ permissionModeChosen: true }))).toBe(false)
+    // A session's "accept edits" overlay never survives a load (the session is gone).
+    const overlaid = normalizeCrashedRunSummary(bad({ permissionMode: 'plan', permissionModeChosen: true, sessionPermissionMode: 'acceptEdits' }))
+    expect('sessionPermissionMode' in overlaid).toBe(false)
+    expect(overlaid).toMatchObject({ permissionMode: 'plan', permissionModeChosen: true })
+    // The store applies it on load.
+    writeIndex([bad({ id: 'persist', permissionMode: 'dontAsk', permissionModeChosen: true, rootEffort: 'low' }), bad({ id: 'junk', permissionMode: 'x', rootEffort: 'x', permissionModeChosen: true })])
+    const s = new RunStore(dataDir)
+    expect(s.get('persist')).toMatchObject({ permissionMode: 'dontAsk', permissionModeChosen: true, rootEffort: 'low' })
+    expect(s.get('junk')).not.toHaveProperty('permissionMode')
+    expect(s.get('junk')).not.toHaveProperty('rootEffort')
+    expect(s.get('junk')).not.toHaveProperty('permissionModeChosen')
+  })
+
+  it('recovers a staged model selection for every supported run kind after reload', () => {
+    const store = new RunStore(dataDir)
+    const selection = { model: 'next-model', connection: 'custom-connection' }
+    for (const kind of ['work', 'setup', 'mcp-assist', 'skill-assist'] as const) {
+      store.upsert(run(kind, { kind, status: 'error', modelSelection: selection, modelAdapter: 'codex', conversationBudgetUsd: 2.5 }))
+    }
+    const reloaded = new RunStore(dataDir)
+    for (const kind of ['work', 'setup', 'mcp-assist', 'skill-assist'] as const) {
+      expect(reloaded.get(kind)).toMatchObject({ kind, status: 'error', modelSelection: selection, modelAdapter: 'codex', conversationBudgetUsd: 2.5 })
+      expect(reloaded.get(kind)!.sessionId).toBeUndefined()
+    }
+  })
 
   it("keeps endedBy 'policy' and 'budget' across a reload, and a live one still finishes with it", () => {
     const s = new RunStore(dataDir)

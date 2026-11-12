@@ -2,11 +2,13 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
+  Files,
   Bot,
   CheckCircle2,
   Circle,
   CircleDot,
   Database,
+  ExternalLink,
   FileText,
   HelpCircle,
   BookOpen,
@@ -23,21 +25,27 @@ import {
   XCircle,
   type LucideIcon
 } from 'lucide-react'
-import type { AgentInstance, PlanStep, RunPlan, TranscriptEntry } from '@shared/types'
+import type { AgentInstance, PlanStep, RunPlan, RunStaffing, TranscriptEntry, TranscriptMedia, TranscriptContentPart } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import RunKnowledge from './knowledge/RunKnowledge'
 import { isRunWindow } from '../lib/runKnowledge'
 import '../styles/knowledge-run.css'
-import { selectedProject, useAppStore, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
+import { selectedProject, useAppStore, useProjectSummaries, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
+import { chainOf } from '../lib/runChains'
+import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
 import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
 import { formatElapsed, formatTokens, planProgress } from '../lib/layout'
+import { planHasGraph, stepViews, waitingOnText } from '../lib/planGraph'
+import { agentStaffingView, assignmentOf, stepRanLabel } from '../lib/runStaffing'
 import { Cost } from './ui/Cost'
 import { agentCostInput } from '../lib/cost'
+import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
 import UsagePanel from './UsagePanel'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
+import { usableTranscriptImage } from '../lib/transcriptMedia'
 import FinishedList, { type FinishedGroup } from './FinishedList'
 import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
@@ -45,7 +53,16 @@ import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
 import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
+import { arriveClass, followBehavior } from '../lib/transcriptFollow'
+import { useArrival } from '../lib/useArrival'
+import { useReducedMotion } from '../lib/canvas'
+import { collapseSelfHelp, type SelfHelpRow } from '../lib/selfHelpRows'
 import { collapseKnowledgeWrites, readRowText, recallOutputText, type KnowledgeRow } from '../lib/knowledgeRun'
+import RunOutputs from './outputs/RunOutputs'
+import { revealOutputsTab } from './outputs/revealOutputsTab'
+import ReviseDialog from './outputs/ReviseDialog'
+import { canRevise } from '../lib/outputRevise'
+import { collapseOutputCalls, matchOutputId, producedSentence, registeredSentence, type OutputWriteRow } from '../lib/outputsRun'
 
 /** Distance from the end of the conversation under which it still counts as scrolled to the end. */
 const STICK_PX = 48
@@ -100,7 +117,7 @@ const STEP_LABELS: Record<PlanStep['status'], string> = {
 }
 
 /** The orchestrator's plan: goal, steps with status, and how the automatic continuation stands. */
-function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
+function PlanView({ plan, staffing }: { plan: RunPlan | undefined; staffing?: RunStaffing }): ReactElement {
   const project = useAppStore(selectedProject)
   if (!plan) {
     return (
@@ -114,6 +131,8 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
   const auto = project?.autoContinue !== false
   const cont = autoContinueLine(auto, plan.autoContinues, max)
   const status = plan.status === 'active' ? 'In progress' : plan.status === 'done' ? 'Done' : 'Blocked'
+  // Ready / waiting lines only for a plan that uses the graph (after, paths or staff); older plans look as they always did.
+  const views = planHasGraph(plan) ? stepViews(plan) : null
   return (
     <div className="plan-view">
       <div className="plan-head">
@@ -129,7 +148,11 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
       </div>
       {plan.status === 'blocked' && plan.blockedReason && <div className="plan-blocked">Blocked: {plan.blockedReason}</div>}
       <ol className="plan-steps">
-        {plan.steps.map((s) => (
+        {plan.steps.map((s, i) => {
+          const view = views?.[i]
+          const stateText =
+            view?.state === 'running' ? 'Running now' : view?.state === 'ready' ? 'Ready to start' : view?.state === 'waiting' ? waitingOnText(plan, view.waitingOn) : ''
+          return (
           <li key={s.id} className={`plan-step ${s.status}`}>
             <span className="plan-icon" title={STEP_LABELS[s.status]} role="img" aria-label={STEP_LABELS[s.status]}>
               <Icon icon={STEP_ICONS[s.status]} size="sm" />
@@ -140,9 +163,20 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
                 {s.owner && <span className="plan-owner">{s.owner}</span>}
               </div>
               {s.note && <div className="plan-note">{s.note}</div>}
+              {stateText && (
+                <div className="plan-state" data-testid="plan-step-state" data-state={view?.state} title={view?.state === 'waiting' ? stateText : undefined}>
+                  {stateText}
+                </div>
+              )}
+              {s.staff && (
+                <div className="plan-staff" data-testid="plan-step-staff">
+                  {stepRanLabel(s.staff, staffing, s.id)}
+                </div>
+              )}
             </div>
           </li>
-        ))}
+          )
+        })}
       </ol>
       {plan.summary && (
         <div className="plan-summary">
@@ -157,11 +191,11 @@ function PlanView({ plan }: { plan: RunPlan | undefined }): ReactElement {
  * A cross-run note. Peer text is untrusted: it is shown as plain text (never Markdown) and the row is styled so it
  * cannot be mistaken for something the user typed.
  */
-function PeerNoteRow({ note, at }: { note: PeerNote; at: number }): ReactElement {
+function PeerNoteRow({ note, at, arrive }: { note: PeerNote; at: number; arrive?: boolean }): ReactElement {
   const index = useRunIndexes().get(note.runId)
   const incoming = note.direction === 'in'
   return (
-    <div className={`entry peer ${incoming ? 'peer-in' : 'peer-out'}`}>
+    <div className={`entry peer ${incoming ? 'peer-in' : 'peer-out'}${arriveClass(arrive)}`}>
       <div className="tag">
         <span>
           {incoming ? 'Note from run' : 'To run'} <span className="run-index">{runTag(index)}</span> ({note.peer})
@@ -173,10 +207,10 @@ function PeerNoteRow({ note, at }: { note: PeerNote; at: number }): ReactElement
   )
 }
 
-function ToolUseRow({ name, input, label }: { name: string; input: unknown; /** A sentence that needed the result (lib/knowledgeRun.ts labels). */ label?: string }): ReactElement {
+function ToolUseRow({ name, input, label, arrive }: { name: string; input: unknown; arrive?: boolean; /** A sentence that needed the result (lib/knowledgeRun.ts labels). */ label?: string }): ReactElement {
   const row = humanizeToolUse(name, input)
   return (
-    <div className="entry tool_use">
+    <div className={`entry tool_use${arriveClass(arrive)}`}>
       <Icon icon={TOOL_ICONS[row.kind]} size="sm" />
       <div className="tool-main">
         <div className="tool-label">{label ?? row.label}</div>
@@ -191,16 +225,29 @@ function ToolUseRow({ name, input, label }: { name: string; input: unknown; /** 
   )
 }
 
-function ToolResultRow({ toolName, content, isError }: { toolName?: string; content: string; isError: boolean }): ReactElement | null {
+function MediaView({ media }: { media: TranscriptMedia }): ReactElement {
+  return <div data-testid="transcript-media">{media.kind === 'image' && usableTranscriptImage(media.image)
+    ? <TranscriptImages images={[media.image]} />
+    : <span data-testid="transcript-image-unavailable">{media.kind === 'unsupported' ? `${media.reason || 'Media unavailable'}${media.name ? `: ${media.name}` : ''}${media.mediaType ? ` (${media.mediaType})` : ''}` : 'Image unavailable'}</span>}</div>
+}
+
+function ToolResultRow({ toolName, content, parts, isError, arrive }: { toolName?: string; content: string; parts?: TranscriptContentPart[]; isError: boolean; arrive?: boolean }): ReactElement | null {
   const row = humanizeToolResult(toolName, content, isError)
-  if (!row) return null
-  const failed = isError || !!row.failed
+  if (!row && !parts) return null
+  const failed = isError || !!row?.failed
+  const mediaCount = parts?.filter((part) => part.type === 'media').length ?? 0
+  const unavailableCount = parts?.filter((part) => part.type === 'media' && (part.media.kind === 'unsupported' || !usableTranscriptImage(part.media.image))).length ?? 0
   return (
-    <div className={`entry tool_result${failed ? ' error' : ''}`}>
+    <div className={`entry tool_result${failed ? ' error' : ''}${arriveClass(arrive)}`}>
       <Icon icon={failed ? XCircle : CheckCircle2} size="sm" />
       <div className="tool-main">
-        <div className="tool-label">{row.label}</div>
-        {row.full && (
+        <div className="tool-label">{parts ? (failed ? 'Tool failed' : 'Tool completed') : row?.label}</div>
+        {parts ? (
+          <details className="entry-detail">
+            <summary>Show output{mediaCount > 0 ? ` (${mediaCount} ${mediaCount === 1 ? 'media item' : 'media items'}${unavailableCount === mediaCount ? ' unavailable' : unavailableCount ? `, ${unavailableCount} unavailable` : ''})` : ''}</summary>
+            <div>{parts.map((part, i) => part.type === 'text' ? <pre key={i}>{part.text}</pre> : <MediaView key={i} media={part.media} />)}</div>
+          </details>
+        ) : row?.full && (
           <details className="entry-detail">
             <summary>Show output</summary>
             <pre>{row.full}</pre>
@@ -241,7 +288,7 @@ export function collapseSkillLoads(entries: TranscriptEntry[]): { hidden: Set<st
  * The harness row that stands for a knowledge write (section 7): the humanised headline, an "Open" link to the item on
  * the Knowledge tab and the tool's result behind "Show output".
  */
-function KnowledgeWriteRow({ row, body, projectId, runId }: { row: KnowledgeRow; body: string | undefined; projectId: string | undefined; runId: string }): ReactElement {
+function KnowledgeWriteRow({ row, body, projectId, runId, arrive }: { arrive?: boolean; row: KnowledgeRow; body: string | undefined; projectId: string | undefined; runId: string }): ReactElement {
   const open = (): void => {
     if (!projectId || !row.focus) return
     // A run window cannot reach the project's Knowledge tab: its side tab shows the item instead (spec 3.3).
@@ -249,7 +296,7 @@ function KnowledgeWriteRow({ row, body, projectId, runId }: { row: KnowledgeRow;
     else useAppStore.getState().openKnowledgeItem({ projectId, ...row.focus })
   }
   return (
-    <div className="entry system harness knowledge-write-row" data-testid="knowledge-write-row">
+    <div className={`entry system harness knowledge-write-row${arriveClass(arrive)}`} data-testid="knowledge-write-row">
       <Icon icon={Database} size="sm" />
       <div className="tool-main">
         <span className="entry-plain">{row.text}</span>
@@ -273,12 +320,73 @@ function KnowledgeWriteRow({ row, body, projectId, runId }: { row: KnowledgeRow;
 }
 
 /**
+ * The harness row that stands for a produce_output / register_output call (docs/design/outputs.md section 7): the
+ * sentence, a "Show" link to the item in the Outputs tab when the index has it, and the tool result behind "Show details".
+ */
+function OutputWriteRowView({ row, body, runId, tabRunId, arrive }: { arrive?: boolean; row: OutputWriteRow; body: string | undefined; runId: string; tabRunId: string }): ReactElement {
+  const outputs = useAppStore((s) => {
+    const pid = s.runs[runId]?.summary.projectId
+    return pid ? s.outputsByProject[pid] : undefined
+  })
+  const id = row.state === 'refused' ? undefined : matchOutputId(outputs, runId, row.title, row.relPath)
+  const matched = id ? outputs?.find((o) => o.id === id) : undefined
+  // Main's result text no longer names the kind, so the matched index entry supplies it for the sentence.
+  const text = matched && row.state === 'produced' ? producedSentence(matched.kind, row.title) : matched && row.state === 'registered' ? registeredSentence(matched.kind, row.title) : row.text
+  const revisable = matched !== undefined && canRevise(matched).ok
+  const [revising, setRevising] = useState(false)
+  const reviseBtn = useRef<HTMLButtonElement>(null)
+  return (
+    <div className={`entry system harness output-write-row${arriveClass(arrive)}`} data-testid="output-write-row" data-state={row.state}>
+      <Icon icon={row.state === 'refused' ? AlertTriangle : Files} size="sm" />
+      <div className="tool-main">
+        <span className="entry-plain">{text}</span>
+        {id && (
+          <>
+            {' '}
+            <button type="button" className="link-btn output-write-show" data-testid="output-write-show" aria-label={`Show ${row.title} in Outputs`} onClick={() => {
+                useAppStore.getState().openRunOutput(tabRunId, id)
+                revealOutputsTab()
+              }}
+            >
+              Show
+            </button>
+          </>
+        )}
+        {revisable && matched && (
+          <>
+            {' '}
+            <button ref={reviseBtn} type="button" className="link-btn output-write-revise" data-testid="output-write-revise" aria-label={`Ask the team to revise ${row.title}`} onClick={() => setRevising(true)}>
+              Revise
+            </button>
+            {revising && (
+              <ReviseDialog
+                output={matched}
+                onClose={() => {
+                  setRevising(false)
+                  requestAnimationFrame(() => reviseBtn.current?.focus())
+                }}
+              />
+            )}
+          </>
+        )}
+        {body && row.state !== 'refused' && (
+          <details className="entry-detail">
+            <summary>Show details</summary>
+            <pre>{body}</pre>
+          </details>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
  * A knowledge read (spec 3.4): "Recalled N items about <query>" with the tool's answer under "Show output", or the quiet
  * "Added N known items: ..." row. The look of a write row, no Open link.
  */
-function KnowledgeReadRow({ text, body }: { text: string; body: string | undefined }): ReactElement {
+function KnowledgeReadRow({ text, body, arrive }: { text: string; body: string | undefined; arrive?: boolean }): ReactElement {
   return (
-    <div className="entry system harness knowledge-write-row knowledge-read-row" data-testid="knowledge-read-row">
+    <div className={`entry system harness knowledge-write-row knowledge-read-row${arriveClass(arrive)}`} data-testid="knowledge-read-row">
       <Icon icon={Database} size="sm" />
       <div className="tool-main">
         <span className="entry-plain">{text}</span>
@@ -286,6 +394,24 @@ function KnowledgeReadRow({ text, body }: { text: string; body: string | undefin
           <details className="entry-detail">
             <summary>Show output</summary>
             <pre>{recallOutputText(body)}</pre>
+          </details>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** An app_reference lookup or an open_in_app, as one quiet row; the tool's answer sits under "Show output". */
+function SelfHelpRowView({ row, arrive }: { row: SelfHelpRow; arrive?: boolean }): ReactElement {
+  return (
+    <div className={`entry system harness self-help-row${arriveClass(arrive)}`} data-testid="self-help-row" data-tool={row.tool}>
+      <Icon icon={row.tool === 'open_in_app' ? ExternalLink : BookOpen} size="sm" />
+      <div className="tool-main">
+        <span className="entry-plain">{row.text}</span>
+        {row.body && (
+          <details className="entry-detail">
+            <summary>Show output</summary>
+            <pre>{row.body}</pre>
           </details>
         )}
       </div>
@@ -301,7 +427,11 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const bottom = useRef<HTMLDivElement>(null)
   const partial = useAppStore((s) => (agent ? s.runs[runId]?.partial[agent.id] : undefined))
   const plan = useAppStore((s) => s.runs[runId]?.plan)
+  const runStaffing = useAppStore((s) => s.runs[runId]?.staffing)
+  const agentAssignment = useAppStore((s) => (agent ? assignmentOf(s.runs[runId]?.staffing, agent.id) : undefined))
+  const agentStaffing = agentStaffingView(agentAssignment)
   const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
+  const runConnection = useAppStore((s) => s.runs[runId]?.summary.connection)
   const index = useRunIndexes().get(tagRunId ?? runId)
   // Setup runs have no plan tab; fall back to the transcript there.
   const planTab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
@@ -312,7 +442,16 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     const project = s.projects.find((p) => p.id === run.projectId)
     return !!project && projectKindOf(project) === 'engagement'
   })
-  const tab: SideTab = planTab === 'knowledge' && !showKnowledgeTab ? 'transcript' : planTab
+  // The Outputs tab: work runs of stored projects, never setup runs, quick runs or the assistants.
+  const showOutputsTab = useAppStore((s) => {
+    const run = s.runs[runId]?.summary
+    return !!run && run.kind === 'work' && !run.quick && !isVirtualProjectId(run.projectId)
+  })
+  // The Outputs tab's count: the same list RunOutputs shows (every member run of the chain).
+  const outputsAll = useAppStore((s) => (projectId ? s.outputsByProject[projectId] : undefined))
+  const chainSummaries = useProjectSummaries()
+  const outputsCount = useMemo(() => outputsOfRuns(outputsAll, chainOf(chainSummaries, runId).map((m) => m.id)).length, [outputsAll, chainSummaries, runId])
+  const tab: SideTab = (planTab === 'knowledge' && !showKnowledgeTab) || (planTab === 'outputs' && !showOutputsTab) ? 'transcript' : planTab
 
   // One list for both shapes: the merged feed, or this run's entries as feed items.
   const items = useMemo<FeedItem[]>(() => feed ?? ownEntries.map((entry) => ({ kind: 'entry' as const, runId, entry })), [feed, ownEntries, runId])
@@ -337,8 +476,21 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   // One knowledge write is one row too: the harness "Recorded <kind> <name>" row stands for the engagement_knowledge /
   // engagement_context call and its result (docs/design/knowledge.md section 7).
   const knowledge = useMemo(() => collapseKnowledgeWrites(entries), [entries])
-  const shown = (e: TranscriptEntry): boolean => (showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id)
+  // Self-help tools (app_reference, open_in_app, propose_*): one quiet row or a sentence each (lib/selfHelpRows.ts).
+  const projects = useAppStore((s) => s.projects)
+  const selfHelp = useMemo(() => collapseSelfHelp(entries, (id) => projects.find((p) => p.id === id)?.name), [entries, projects])
+  const outputCalls = useMemo(() => collapseOutputCalls(entries), [entries])
+  const shown = (e: TranscriptEntry): boolean =>
+    (e.block.kind === 'tool_result' && !!e.block.parts?.some((part) => part.type === 'media')) || ((showThinking || e.block.kind !== 'thinking') && !skillLoads.hidden.has(e.id) && !knowledge.hidden.has(e.id) && !selfHelp.hidden.has(e.id) && !outputCalls.hidden.has(e.id))
   const visible = entries.filter(shown)
+
+  // Arrival (motion.md 2.2, 3.11): only rows appended to the newest session while the user follows the end fade in; bursts of more than 6, chain loads, run switches and the first paint never do.
+  const stuck = useRef(true)
+  const reduced = useReducedMotion()
+  const newestStart = items.findIndex((i) => i.kind === 'divider' && i.divider.runId === runId)
+  const arrivalIds = useMemo(() => items.slice(Math.max(newestStart, 0)).flatMap((i) => (i.kind === 'entry' ? [i.entry.id] : [])), [items, newestStart])
+  const isNew = useArrival(arrivalIds, `${runId}:${arrivalIds.length > 0}`, { maxPerBatch: 6 })
+  const arrive = (id: string): boolean => stuck.current && isNew(id)
 
   const rows = items.map((item) => {
     if (item.kind === 'omitted') {
@@ -362,7 +514,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     switch (b.kind) {
       case 'user':
         return (
-          <div key={e.id} className="entry user">
+          <div key={e.id} className={`entry user${arriveClass(arrive(e.id))}`}>
             <div className="tag">
               <span>You</span>
               <span>{new Date(e.at).toLocaleTimeString()}</span>
@@ -373,32 +525,45 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         )
       case 'text':
         return (
-          <div key={e.id} className="entry text">
+          <div key={e.id} className={`entry text${arriveClass(arrive(e.id))}`}>
             <Markdown text={b.text} />
           </div>
         )
+      case 'media':
+        return <div key={e.id} className={`entry text${arriveClass(arrive(e.id))}`}><MediaView media={b.media} /></div>
       case 'thinking':
         return (
-          <div key={e.id} className="entry thinking">
+          <div key={e.id} className={`entry thinking${arriveClass(arrive(e.id))}`}>
             {b.text}
           </div>
         )
-      case 'tool_use':
-        return <ToolUseRow key={e.id} name={b.name} input={b.input} label={knowledge.labels.get(e.id)} />
-      case 'tool_result':
-        return <ToolResultRow key={e.id} toolName={toolNames.get(b.toolUseId)} content={b.content} isError={b.isError} />
+      case 'tool_use': {
+        const sRow = selfHelp.rows.get(e.id)
+        if (sRow) return <SelfHelpRowView key={e.id} row={sRow} arrive={arrive(e.id)} />
+        return <ToolUseRow key={e.id} arrive={arrive(e.id)} name={b.name} input={b.input} label={knowledge.labels.get(e.id) ?? selfHelp.labels.get(e.id)} />
+      }
+      case 'tool_result': {
+        if (b.parts?.some((part) => part.type === 'media')) return <ToolResultRow key={e.id} arrive={arrive(e.id)} toolName={toolNames.get(b.toolUseId)} content={b.content} parts={b.parts} isError={b.isError} />
+        const oRow = outputCalls.rows.get(e.id)
+        if (oRow) return <OutputWriteRowView key={e.id} arrive={arrive(e.id)} row={oRow} body={outputCalls.body.get(e.id)} runId={item.runId} tabRunId={runId} />
+        return <ToolResultRow key={e.id} arrive={arrive(e.id)} toolName={toolNames.get(b.toolUseId)} content={b.content} parts={b.parts} isError={b.isError} />
+      }
       case 'system': {
         const peer = parsePeerNote(b.text)
-        if (peer) return <PeerNoteRow key={e.id} note={peer} at={e.at} />
+        if (peer) return <PeerNoteRow key={e.id} arrive={arrive(e.id)} note={peer} at={e.at} />
+        const oRow = e.source === 'harness' ? outputCalls.rows.get(e.id) : undefined
+        if (oRow) return <OutputWriteRowView key={e.id} arrive={arrive(e.id)} row={oRow} body={outputCalls.body.get(e.id)} runId={item.runId} tabRunId={runId} />
         const harness = e.source === 'harness'
+        const sRow = harness ? selfHelp.rows.get(e.id) : undefined
+        if (sRow) return <SelfHelpRowView key={e.id} row={sRow} arrive={arrive(e.id)} />
         const kRow = harness ? knowledge.rows.get(e.id) : undefined
-        if (kRow) return <KnowledgeWriteRow key={e.id} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} runId={runId} />
-        if (harness && knowledge.reads.has(e.id)) return <KnowledgeReadRow key={e.id} text={readRowText(b.text, knowledge.repeats.get(e.id))} body={knowledge.body.get(e.id)} />
+        if (kRow) return <KnowledgeWriteRow key={e.id} arrive={arrive(e.id)} row={kRow} body={knowledge.body.get(e.id)} projectId={projectId} runId={runId} />
+        if (harness && knowledge.reads.has(e.id)) return <KnowledgeReadRow key={e.id} arrive={arrive(e.id)} text={readRowText(b.text, knowledge.repeats.get(e.id))} body={knowledge.body.get(e.id)} />
         const skillName = harness ? b.text.match(/^Loaded skill (.+)$/)?.[1] : undefined
         const skillBody = skillName ? skillLoads.body.get(e.id) : undefined
         // Harness lines (nudges, hand-offs, limit notices) and in-run agent messages are quiet rows; the full text sits behind a disclosure.
         return (
-          <div key={e.id} className={`entry system${harness ? ' harness' : ''}`}>
+          <div key={e.id} className={`entry system${harness ? ' harness' : ''}${arriveClass(arrive(e.id))}`}>
             <Icon icon={skillName ? BookOpen : harness ? Info : MessageSquare} size="sm" />
             <div className="tool-main">
               {skillName ? <span className="entry-plain">{b.text}</span> : <Markdown text={b.text} />}
@@ -424,7 +589,6 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
 
   // Conversation variant: keep the newest entry in view unless the user scrolled up (within STICK_PX of the end counts as at the end).
   const listRef = useRef<HTMLDivElement>(null)
-  const stuck = useRef(true)
   // The user asked to see a chain member (History, a link, after Send): put its divider at the top once, then let go.
   const focusRun = useAppStore((s) => s.chainFocusRun)
   useEffect(() => {
@@ -441,10 +605,30 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     useAppStore.setState({ chainFocusRun: null })
   }, [focusRun, items, variant, tab])
   const [away, setAway] = useState(false)
+  const prevLast = useRef(lastEntryId)
+  const lastUserScroll = useRef(0)
+  const userScrolled = (): void => {
+    lastUserScroll.current = Date.now()
+  }
+  // A smooth follow in flight (start time, 0 = none): its in-between scroll events are not the user leaving the end
+  // (review M2), so onScroll ignores them until scrollend, a user gesture, or a 1 s safety limit.
+  const autoScroll = useRef(0)
+  const smoothTo = (el: HTMLElement, top: number): void => {
+    autoScroll.current = Date.now()
+    el.addEventListener('scrollend', () => (autoScroll.current = 0), { once: true })
+    el.scrollTo({ top, behavior: 'smooth' })
+  }
   useEffect(() => {
     const el = listRef.current
-    if (variant === 'conversation' && el && stuck.current) el.scrollTop = el.scrollHeight
-  }, [variant, lastEntryId, partial, showThinking])
+    if (variant !== 'conversation' || !el || !stuck.current) return
+    // A new row glides in when the hop is short and the user is not scrolling; streaming text growth just stays pinned.
+    const rowAdded = prevLast.current !== lastEntryId
+    prevLast.current = lastEntryId
+    const delta = el.scrollHeight - el.scrollTop - el.clientHeight
+    const behavior = rowAdded ? followBehavior({ delta, viewportHeight: el.clientHeight, sinceUserScrollMs: Date.now() - lastUserScroll.current, reducedMotion: reduced }) : 'auto'
+    if (behavior === 'smooth') smoothTo(el, el.scrollHeight)
+    else el.scrollTop = el.scrollHeight
+  }, [variant, lastEntryId, partial, showThinking, reduced])
 
   if (variant === 'conversation') {
     const toEnd = (): void => {
@@ -452,7 +636,9 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
       if (!el) return
       stuck.current = true
       setAway(false)
-      el.scrollTop = el.scrollHeight
+      const behavior = followBehavior({ delta: el.scrollHeight - el.scrollTop - el.clientHeight, viewportHeight: el.clientHeight, sinceUserScrollMs: Infinity, reducedMotion: reduced })
+      if (behavior === 'smooth') smoothTo(el, el.scrollHeight)
+      else el.scrollTop = el.scrollHeight
     }
     return (
       <div className="conversation-body" data-testid="conversation-transcript">
@@ -462,8 +648,15 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           role="region"
           tabIndex={0}
           aria-label="Conversation scroll area"
+          onWheel={userScrolled}
+          onTouchMove={userScrolled}
+          onKeyDown={userScrolled}
+          onPointerDown={userScrolled}
           onScroll={(e) => {
             const el = e.currentTarget
+            const started = autoScroll.current
+            if (started && lastUserScroll.current < started && Date.now() - started < 1000) return
+            autoScroll.current = 0
             const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX
             stuck.current = atEnd
             setAway(!atEnd)
@@ -482,7 +675,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           </div>
         </div>
         {away && (
-          <div className="conversation-jump">
+          <div className="conversation-jump motion-enter">
             <Button size="sm" variant="secondary" onClick={toEnd} testId="conversation-jump">
               <Icon icon={ArrowDown} size="sm" /> Jump to latest
             </Button>
@@ -499,6 +692,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     { id: 'transcript', label: 'Transcript', testId: 'side-tab-transcript' },
     ...(showPlanTab ? [{ id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' }] : []),
     { id: 'usage', label: 'Usage', testId: 'side-tab-usage' },
+    ...(showOutputsTab ? [{ id: 'outputs', label: 'Outputs', count: outputsCount, countLabel: outputsCountLabel(outputsCount), countTestId: 'side-tab-outputs-count', testId: 'side-tab-outputs' }] : []),
     ...(showKnowledgeTab ? [{ id: 'knowledge', label: 'Knowledge', testId: 'side-tab-knowledge' }] : []),
     { id: 'logs', label: 'Logs', count: errorCount, testId: 'side-tab-logs' }
   ]
@@ -521,12 +715,17 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
       </div>
       {tab === 'plan' && (
         <TabPanel idPrefix={idPrefix} id="plan" value={tab}>
-          <PlanView plan={plan} />
+          <PlanView plan={plan} staffing={runStaffing} />
         </TabPanel>
       )}
       {tab === 'usage' && (
         <TabPanel idPrefix={idPrefix} id="usage" value={tab}>
           <UsagePanel runId={runId} agent={agent} />
+        </TabPanel>
+      )}
+      {tab === 'outputs' && projectId && (
+        <TabPanel idPrefix={idPrefix} id="outputs" value={tab} className="run-outputs-panel">
+          <RunOutputs runId={runId} projectId={projectId} />
         </TabPanel>
       )}
       {tab === 'knowledge' && projectId && (
@@ -542,6 +741,11 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
       {agent && tab === 'transcript' && (
         <div className="agent-meta" aria-label="Agent details">
           <span>{agent.model ?? 'model unknown'}</span>
+          {connectionTag(agent.connection, runConnection) && (
+            <span data-testid="agent-connection" data-connection={agent.connection} title={connectionTagTitle(agent.connection!, runConnection!, 'run')}>
+              Runs on {connectionTag(agent.connection, runConnection)}
+            </span>
+          )}
           <span title="Input and output tokens">
             {formatTokens(agent.inputTokens)} in / {formatTokens(agent.outputTokens)} out
           </span>
@@ -555,12 +759,23 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           )}
         </div>
       )}
+      {agent && tab === 'transcript' && agentStaffing && (
+        <details className="agent-staffing" data-testid="agent-staffing-detail">
+          <summary data-testid="agent-staffing-summary" title={agentStaffing.reason}>
+            {agentStaffing.label}
+          </summary>
+          <div className="agent-staffing-body">
+            <div data-testid="agent-staffing-reason">{agentStaffing.reason}</div>
+            <div data-testid="agent-staffing-model">Model: {agentStaffing.model}</div>
+          </div>
+        </details>
+      )}
       {agent && tab === 'transcript' && (
         <div className="transcript-bar">
           <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />
         </div>
       )}
-      {tab === 'plan' || tab === 'usage' || tab === 'knowledge' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
+      {tab === 'plan' || tab === 'usage' || tab === 'outputs' || tab === 'knowledge' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}

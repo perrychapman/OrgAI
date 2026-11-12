@@ -15,6 +15,7 @@ import type {
   RunRecord,
   RunSummary
 } from '../shared/types'
+import type { HostBackgroundOptions } from '../main/host/bootstrap'
 
 /** Process exit codes (cli-spec 6.1). */
 export const EXIT = {
@@ -52,11 +53,8 @@ export class CliError extends Error {
 /** `schemaVersion` of every --output-format json / stream-json document. */
 export const CLI_JSON_SCHEMA_VERSION = 1
 
-/**
- * --host: 'auto' connects to a running host or starts a headless one; 'daemon' only connects (or starts) the shared
- * host and never runs in-process; 'inproc' runs a pure-Node host inside the CLI process.
- */
-export type HostMode = 'auto' | 'daemon' | 'inproc'
+/** How long a 'starting' host is waited for when connecting to this process's own host (the vault open can take 10 s). */
+export const HOST_STARTING_WAIT_MS = 15_000
 
 /** --output-format. 'stream-json' is one JSON document per line. */
 export type OutputFormat = 'text' | 'json' | 'stream-json'
@@ -65,15 +63,13 @@ export type OutputFormat = 'text' | 'json' | 'stream-json'
 export interface CliGlobals {
   /** --data-dir: the userDataDir (absolute after resolution; dataDir is `<userDataDir>/data`). */
   dataDir?: string
-  /** --host, default 'auto'. */
-  host: HostMode
   /** --output-format, default 'text'. */
   outputFormat: OutputFormat
   /** --project <id-or-path>: overrides cwd-based project resolution. */
   project?: string
   /** false with --no-color (or NO_COLOR / a non-TTY stdout, decided by index.ts). */
   color: boolean
-  /** Repeated --secret-env `<owner>:<kind>:<name>=<ENV_VAR>` specs (only valid with --host inproc). */
+  /** Repeated --secret-env `<owner>:<kind>:<name>=<ENV_VAR>` specs: used by this process's own host. */
   secretEnv: string[]
 }
 
@@ -110,15 +106,15 @@ export interface HostClient {
 
 /**
  * CliContext.connect's answer. On failure `reason` says why: no daemon.json / dead pid ('no_host'), host_starting past
- * waitStartingMs ('starting'), host_draining ('draining'), terminal_server_disabled ('disabled'), any other refusal
- * ('refused'), a failed proof either way ('auth_failed'), protocol_mismatch, or the endpoint did not answer
- * ('unreachable'). `daemon` is the daemon.json read, when there was one.
+ * waitStartingMs ('starting'), host_draining ('draining'), not_owner ('not_owner': the hello carried no valid owner
+ * proof), any other refusal ('refused'), a failed proof either way ('auth_failed'), protocol_mismatch, or the endpoint
+ * did not answer ('unreachable'). `daemon` is the daemon.json read, when there was one.
  */
 export type ConnectResult =
   | { ok: true; client: HostClient }
   | {
       ok: false
-      reason: 'no_host' | 'starting' | 'draining' | 'disabled' | 'refused' | 'auth_failed' | 'protocol_mismatch' | 'unreachable'
+      reason: 'no_host' | 'starting' | 'draining' | 'not_owner' | 'refused' | 'auth_failed' | 'protocol_mismatch' | 'unreachable'
       message: string
       daemon?: DaemonInfo
     }
@@ -147,28 +143,7 @@ export interface ProjectResolution {
   error?: string
 }
 
-/** Finds and starts the OrgAI app as a host (src/cli/launcher.ts, W2-T4). */
-export interface HostLauncher {
-  /**
-   * The app binary: ORGAI_ELECTRON_PATH ('env'), the packaged app next to this bundle ('packaged': the bundle sits in
-   * `<Resources>/app.asar.unpacked/out/cli`) or the dev checkout's electron + out/main ('dev'), in that order.
-   */
-  resolve(): { command: string; args: string[]; source: 'env' | 'packaged' | 'dev' } | { error: string }
-  /** Spawn it detached: `--headless-host` when headless, else a desktop window; `run` focuses that run id. */
-  spawn(opts: { headless: boolean; run?: string }): { pid?: number }
-  /** The daemon.json of the live host that owns the data folder (any state), else null. */
-  current(): DaemonInfo | null
-  /**
-   * Poll daemon.json until a host is 'ready' (with notInstanceId, a different one; with hostKinds, one of those kinds).
-   * null on timeout. Rejects with the reason when the app this launcher spawned could not start or exited non-zero
-   * before a matching host was ready (exit 0 is a hand-off to a running OrgAI, so polling goes on).
-   */
-  waitForReady(opts: { timeoutMs: number; notInstanceId?: string; hostKinds?: readonly HostKind[] }): Promise<DaemonInfo | null>
-  /** Poll until no host (or not that hostInstanceId) advertises. false on timeout. */
-  waitForGone(opts: { timeoutMs: number; hostInstanceId?: string }): Promise<boolean>
-}
-
-/** A pure-Node host running inside the CLI (`--host inproc`, src/cli/inprocHost.ts, W2-T4). */
+/** The pure-Node host running inside the CLI process (src/cli/inprocHost.ts). */
 export interface InprocHostHandle {
   status(): HostStatusResult
   /** Drain (force: stop live runs) and release ownership. */
@@ -177,10 +152,20 @@ export interface InprocHostHandle {
   readonly closed: Promise<void>
   /**
    * The host's in-memory owner key and instance id (inprocHost.ts): CliContext.connect proves with them that it is the
-   * process that started the host, which alone gets decide / configure past Terminal access (review H2). Never on disk.
+   * process that started the host; the socket serves nobody else. Never on disk.
    */
   readonly ownerKey?: string
   readonly hostInstanceId?: string
+}
+
+/** How the in-process host starts (ensureHost / withHost pass it to CliContext.startInproc). */
+export interface InprocStartOptions {
+  /**
+   * bootOrgAIHost's background work: management commands keep connection probes and
+   * turn model discovery, community prices and the usage monitor off. Default: all on. The first start in a process
+   * decides; a later call while that host is still running reuses it.
+   */
+  background?: HostBackgroundOptions
 }
 
 /** Everything a command may use. Built once per process by index.ts; tests build fakes. */
@@ -195,17 +180,19 @@ export interface CliContext {
   /** CLI_VERSION. */
   version: string
   /**
-   * Connect and authenticate to the running host with these scopes (clientKind default 'cli'). With waitStartingMs a
-   * 'host_starting' answer is retried until that long has passed. Never starts a host.
+   * Connect and authenticate to this process's own host with these scopes (clientKind default 'cli'), proving ownership
+   * with the in-memory owner key. Never starts a host.
    */
   connect(scopes: HostScope[], opts?: { clientKind?: HostClientKind; waitStartingMs?: number }): Promise<ConnectResult>
   /** The read-only store view (no host needed). */
   readStore(): Promise<ReadOnlySnapshot>
   /** cli-spec 4 resolution over these projects (globals.project, then cwd). */
   resolveProject(projects: Project[]): ProjectResolution
-  launcher: HostLauncher
-  /** Start a `--host inproc` host (lazy-loads the inprocHost chunk). */
-  startInproc(): Promise<InprocHostHandle>
+  /**
+   * Start this process's host (lazy-loads the inprocHost chunk). One per process at a time; a call after that host
+   * closed starts a new one (init's Architect after its withHost). Throws exit 6 while another orgai owns the folder.
+   */
+  startInproc(opts?: InprocStartOptions): Promise<InprocHostHandle>
   /** SIGINT / SIGTERM listeners; returns an unsubscribe function. */
   signals: { onInterrupt(fn: (sig: 'SIGINT' | 'SIGTERM') => void): () => void }
 }

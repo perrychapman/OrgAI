@@ -1,0 +1,352 @@
+/* The diagram, SVG and image viewer (docs/design/outputs-2.md section 8). Tokens only; both themes. Nothing here animates. */
+
+.diagram-viewer {
+  container: diagram / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+/* In the Larger view the viewer fills what is left of the dialog. */
+.output-dialog-body .output-preview,
+.output-dialog-body .diagram-viewer {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* ---------- Toolbar: one 36 px row, wrapping rather than clipping ---------- */
+.diagram-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  min-height: 36px;
+}
+.diagram-toolbar-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-inline-start: auto;
+}
+.diagram-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.diagram-zoom-readout {
+  min-width: 4ch;
+  text-align: center;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.diagram-light {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.diagram-toggle[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* ---------- Lines above the viewport ---------- */
+.diagram-notice,
+.diagram-large-note,
+.diagram-guard,
+.diagram-source-status,
+.diagram-scratch-note {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.diagram-large-note,
+.diagram-guard {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.diagram-source-status {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.diagram-stale-badge {
+  margin: 0;
+  align-self: flex-start;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  font-size: var(--text-caption);
+  line-height: var(--text-body-lh);
+}
+
+/* ---------- Error pane ---------- */
+.diagram-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
+  color: var(--text-primary);
+}
+.diagram-error-text {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.diagram-error-code {
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--text-mono-lh);
+  color: var(--danger-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Body: viewport and source ---------- */
+.diagram-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.diagram-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: 0;
+}
+.diagram-pane-view {
+  flex: 1 1 auto;
+}
+.diagram-pane-source {
+  flex: 1 1 auto;
+}
+.diagram-empty {
+  padding: var(--space-3);
+}
+/* Embedded: a set height (a stage inside a scrolling column cannot follow its content), never under 240 px. About 40% of
+   the window (spec 8.9) so the head and toolbar stay in view at 1024x640: 269 px there, 420 px at 1600x1000. */
+.diagram-viewer[data-context='detail'] .diagram-pane-view .pz-stage {
+  flex: 0 0 auto;
+  height: clamp(240px, 42vh, 480px);
+}
+.diagram-viewer[data-context='detail'] .diagram-pane-source {
+  flex: 0 0 auto;
+}
+.diagram-viewer[data-context='detail'] .diagram-source {
+  height: 200px;
+  flex: 0 0 auto;
+}
+/* Larger view: Split stacks 60 / 40, or puts the editor on the left at 40% from 900 px of width. */
+.diagram-viewer[data-context='dialog'] .diagram-body[data-view='split'] .diagram-pane-view {
+  flex: 3 1 0;
+}
+.diagram-viewer[data-context='dialog'] .diagram-body[data-view='split'] .diagram-pane-source {
+  flex: 2 1 0;
+}
+.diagram-body[data-layout='row'] {
+  flex-direction: row;
+}
+.diagram-body[data-layout='row'] .diagram-pane-source {
+  order: -1;
+  flex: 0 0 40%;
+}
+.diagram-body[data-layout='row'] .diagram-pane-view {
+  flex: 1 1 0;
+}
+
+/* ---------- Pan and zoom surface ---------- */
+.pz-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 240px;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+.pz-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  color: var(--text-primary);
+}
+.pz-viewport[data-dragging='true'] {
+  cursor: grabbing;
+}
+/* The stage clips an outside ring, so the ring sits inside the edge. */
+.pz-viewport:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.pz-content {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+.pz-viewport[data-dragging='true'] .pz-content {
+  will-change: transform;
+}
+.pz-viewport[data-stale='true'] .pz-content {
+  opacity: 0.6;
+}
+/* Light drawing: Mermaid's default theme assumes paper under it, so the viewport becomes paper whatever the app theme is. */
+.pz-stage[data-paper='true'] .pz-viewport {
+  background: white;
+}
+.pz-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.pz-hint {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  right: var(--space-2);
+  width: fit-content;
+  max-width: calc(100% - var(--space-4));
+  margin: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  pointer-events: none;
+}
+
+/* ---------- Overview ---------- */
+.diagram-overview {
+  position: absolute;
+  left: var(--space-2);
+  bottom: var(--space-2);
+  box-sizing: content-box;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  background: var(--surface-2);
+  cursor: pointer;
+  touch-action: none;
+}
+.diagram-overview-svg {
+  position: absolute;
+  inset: 0;
+}
+.diagram-overview-rect {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid var(--accent);
+  background: var(--accent-soft);
+  pointer-events: none;
+}
+
+/* ---------- Source ---------- */
+.diagram-source-pane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.diagram-source {
+  flex: 1 1 auto;
+  min-height: 200px;
+  padding: var(--space-3);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--text-mono-lh);
+  white-space: pre;
+  tab-size: 2;
+  resize: none;
+  overflow: auto;
+}
+.diagram-source:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ---------- Export panel and More menu ---------- */
+.diagram-export {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 16rem;
+}
+.diagram-export-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.diagram-export-label {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.diagram-export-actions {
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border-subtle);
+}
+.diagram-menu-group {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.diagram-menu-group > .diagram-export-label {
+  padding: 0 var(--space-3);
+}
+.output-menuitem[aria-checked='true'] {
+  background: var(--surface-3);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* ---------- Full window (the Larger view dialog covers the window; the app behind it stays put) ---------- */
+.dialog.size-lg:has(.output-dialog-body[data-full]) {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+}
+.dialog.size-lg:has(.output-dialog-body[data-full]) .dialog-panel {
+  height: 100%;
+  max-height: 100vh;
+}
+
+@container diagram (max-width: 559px) {
+  .diagram-toolbar {
+    gap: var(--space-1);
+  }
+}

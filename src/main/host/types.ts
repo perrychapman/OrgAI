@@ -5,6 +5,9 @@
  */
 import type {
   ActivityLeaseKind,
+  AppNavigateEvent,
+  AppReferenceQuery,
+  AppReferenceResult,
   FocusRunTarget,
   HostActivitySnapshot,
   HostClientKind,
@@ -27,11 +30,14 @@ import type { QuickRunService } from '../quick/quickRuns'
 import type { RunManager } from '../runtime/runManager'
 import type { AgentImportService } from '../setup/import/importer'
 import type { TeamFilesService } from '../teamFiles/service'
+import type { OutputsServiceApi } from '../outputs/api'
+import type { OutputWatcher } from '../outputs/watch'
 import type { SetupService } from '../setup/service'
 import type { TemplateService } from '../setup/templates'
 import type { SkillEvaluationApi, SkillServiceApi } from '../skills/types'
 import type { ProjectStore } from '../store/projects'
 import type { SettingsStore } from '../store/settings'
+import type { SecretStoreApi } from '../store/vaultTypes'
 import type { HostEventBus } from './events'
 
 /** What the host needs from its environment to answer app:info / app:logPath without Electron. */
@@ -51,6 +57,13 @@ export interface DesktopHooks {
   openRunWindow(target: FocusRunTarget): void
   /** teamFiles:changed: send a project's team-files status to every window (desktop_only push; never to a socket). */
   teamFilesChanged?(status: TeamFilesStatus): void
+  /**
+   * An agent's open_in_app (RunManager -> SelfKnowledgeHooks.navigate): send an AppNavigateEvent on IPC.appNavigate to
+   * the live unscoped main window (restored, focused, created when closed). false only when no window can be made.
+   */
+  navigate?(event: AppNavigateEvent): boolean
+  /** Electron shell.trashItem for outputs:delete (OutputsServiceOptions.trash). Absent = the service deletes for good. */
+  trashItem?(path: string): Promise<void>
 }
 
 /** host.status / host.stop, served by whoever owns the host lifecycle (bootstrap). */
@@ -91,6 +104,12 @@ export interface HostServices {
   kit?: KitService
   /** Team files (src/main/teamFiles/service.ts). Absent = the teamFiles channels answer 'not available' (older tests). */
   teamFiles?: TeamFilesService
+  /** The reference service (reference/appReference.ts); app:reference answers with status allowed. Absent = "not available". */
+  reference?: { query(q: AppReferenceQuery, opts: { status: boolean }): Promise<AppReferenceResult> }
+  /** Run outputs (src/main/outputs/service.ts). Absent = outputs:list answers [], preview 'none', forget / delete reject. */
+  outputs?: OutputsServiceApi
+  /** The outputs watcher (outputs/watch.ts): outputs:watch / unwatch, the touch on outputs:open and the focus check. Absent = watch answers { refused }. */
+  outputWatcher?: OutputWatcher
   /** The push bus. Absent = the dispatcher makes its own. */
   events?: HostEventBus
   /** Lease tracking for idle exit and drain. Absent = no tracking (noopActivity). */
@@ -103,6 +122,11 @@ export interface HostServices {
   desktop?: DesktopHooks
   /** host.status / host.stop. */
   host?: HostControl
+  /**
+   * Wave 7 (cli-standalone.md 5.6): the host's opened SecretStore, for the secrets:* channels and invokeRpc's
+   * prepareWrite (registry storesSecret). Absent = secrets:* answer that this host has no secret store.
+   */
+  secrets?: SecretStoreApi
 }
 
 /** How a call reached the dispatcher. */
@@ -114,6 +138,8 @@ export interface InvokeContext {
   clientKind?: HostClientKind
   /** The client's pid (socket, from host.hello). */
   pid?: number
+  /** The socket connection's id (socket surface only; host-assigned, never client-reported). */
+  connectionId?: string
   grantedScopes?: readonly HostScope[]
 }
 

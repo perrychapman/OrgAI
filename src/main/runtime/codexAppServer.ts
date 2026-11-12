@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { delimiter, dirname, join } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { delimiter, join, resolve } from 'node:path'
+import { trackChildProcess } from '../host/shutdown'
 import { scrubControlEnv } from './childEnv'
+import { checkCodexBinary, lookupCodexBinary, type CodexBinary, type CodexLookupOptions, type CodexVersionRunner } from './codexBinary'
+import { StreamingSecretRedactor } from './streamRedactor'
 
 /**
  * A client for `codex app-server`: JSON-RPC 2.0 messages, one JSON object per line, over the child's stdio.
@@ -15,15 +17,6 @@ import { scrubControlEnv } from './childEnv'
  * required and is not sent. The client sends `initialize` and then the `initialized` notification.
  */
 
-const PLATFORM_PACKAGES: Record<string, { pkg: string; triple: string }> = {
-  'linux-x64': { pkg: '@openai/codex-linux-x64', triple: 'x86_64-unknown-linux-musl' },
-  'linux-arm64': { pkg: '@openai/codex-linux-arm64', triple: 'aarch64-unknown-linux-musl' },
-  'darwin-x64': { pkg: '@openai/codex-darwin-x64', triple: 'x86_64-apple-darwin' },
-  'darwin-arm64': { pkg: '@openai/codex-darwin-arm64', triple: 'aarch64-apple-darwin' },
-  'win32-x64': { pkg: '@openai/codex-win32-x64', triple: 'x86_64-pc-windows-msvc' },
-  'win32-arm64': { pkg: '@openai/codex-win32-arm64', triple: 'aarch64-pc-windows-msvc' }
-}
-
 /**
  * OrgAI's own CODEX_HOME under the data dir. The connection service (login, account, models) and the Codex
  * adapter (runs) both use it, so OrgAI keeps its own ChatGPT login and config.toml and never loads the
@@ -33,36 +26,116 @@ export function codexHomeDir(dataDir: string): string {
   return join(dataDir, 'codex')
 }
 
-export interface CodexBinary {
-  /** The native codex executable. */
-  path: string
-  /** Extra PATH directory the CLI expects (bundled rg), when present. */
-  pathDir?: string
+export type { CodexBinary } from './codexBinary'
+
+/**
+ * The native codex binary (cli-standalone 6.2: ORGAI_CODEX_PATH, the per-platform package, then PATH; shims mapped to
+ * their native package, never spawned). Undefined when none was found; lookupCodexBinary says why.
+ */
+export function resolveCodexBinary(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+  opts: Omit<CodexLookupOptions, 'platform' | 'arch'> = {}
+): CodexBinary | undefined {
+  return lookupCodexBinary({ ...opts, platform, arch }).binary
+}
+
+/** start() after (or during) close(): nothing was spawned. */
+export const CODEX_CLOSED_BEFORE_START = 'codex app-server was closed before it started'
+
+// ---------- one app-server start at a time per Codex home ----------
+
+/**
+ * Upper bound on one hold of the start lock. A start normally settles well within it (the initialize request's own
+ * timeout is 30 s, the catalog dump's 4 s); a hung start is released at this point so it cannot block later starts forever.
+ */
+export const CODEX_START_LOCK_MAX_HOLD_MS = 60_000
+/** The key for a launch whose CODEX_HOME cannot be read (Codex then uses ~/.codex): all such launches share it. */
+export const CODEX_START_LOCK_SHARED_KEY = '<default codex home>'
+
+/** Per key while held: the waiters in arrival order (FIFO). No entry: free. */
+const startLocks = new Map<string, { waiters: (() => void)[] }>()
+
+/**
+ * The start lock key of a launch: the resolved CODEX_HOME the app-server will run with (`env` over the process
+ * environment, as CodexAppServer.start builds the child's env); the shared key when none is set. No file system access
+ * (the folder may not exist yet); case-insensitive on Windows.
+ */
+export function codexStartLockKey(env?: Record<string, string | undefined>): string {
+  const raw = env && Object.prototype.hasOwnProperty.call(env, 'CODEX_HOME') ? env.CODEX_HOME : process.env.CODEX_HOME
+  const home = raw?.trim()
+  if (!home) return CODEX_START_LOCK_SHARED_KEY
+  const r = resolve(home)
+  return process.platform === 'win32' ? r.toLowerCase() : r
 }
 
 /**
- * Locate the native codex binary from the per-platform optional dependency (@openai/codex-<platform>-<arch>),
- * mirroring @openai/codex/bin/codex.js. Inside a packaged app the path is rewritten from app.asar to
- * app.asar.unpacked (electron-builder asarUnpack). ORGAI_CODEX_PATH overrides everything. Undefined when
- * no binary is installed for this platform.
+ * Wait for the start lock of `key`; answers an idempotent release. Rejects (and leaves the queue) when `signal` aborts
+ * while waiting.
  */
-export function resolveCodexBinary(platform: string = process.platform, arch: string = process.arch): CodexBinary | undefined {
-  const override = process.env.ORGAI_CODEX_PATH?.trim()
-  if (override) return existsSync(override) ? { path: override } : undefined
-  const target = PLATFORM_PACKAGES[`${platform}-${arch}`]
-  if (!target) return undefined
-  try {
-    const req = createRequire(import.meta.url)
-    const pkgJson = req.resolve(`${target.pkg}/package.json`)
-    const root = dirname(pkgJson).replace(/app\.asar(?!\.unpacked)/, 'app.asar.unpacked')
-    const vendor = join(root, 'vendor', target.triple)
-    const bin = join(vendor, 'bin', platform === 'win32' ? 'codex.exe' : 'codex')
-    if (!existsSync(bin)) return undefined
-    const pathDir = join(vendor, 'codex-path')
-    return { path: bin, ...(existsSync(pathDir) ? { pathDir } : {}) }
-  } catch {
-    return undefined
+export function acquireCodexStartLock(key: string, opts: { signal?: AbortSignal } = {}): Promise<() => void> {
+  const { signal } = opts
+  if (signal?.aborted) return Promise.reject(new Error('Codex start cancelled'))
+  let released = false
+  const release = (): void => {
+    if (released) return
+    released = true
+    const lock = startLocks.get(key)
+    if (!lock) return
+    const next = lock.waiters.shift()
+    if (next) next()
+    else startLocks.delete(key)
   }
+  const lock = startLocks.get(key)
+  if (!lock) {
+    startLocks.set(key, { waiters: [] })
+    return Promise.resolve(release)
+  }
+  return new Promise((grantLock, reject) => {
+    const onAbort = (): void => {
+      const i = lock.waiters.indexOf(grant)
+      if (i >= 0) lock.waiters.splice(i, 1)
+      reject(new Error('Codex start cancelled'))
+    }
+    const grant = (): void => {
+      signal?.removeEventListener('abort', onAbort)
+      grantLock(release)
+    }
+    lock.waiters.push(grant)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * Run one app-server start under the start lock of `key` (codexStartLockKey). Two Codex app-servers starting at the same
+ * moment in one CODEX_HOME race on Codex's own sqlite state and one exits during initialize ("failed to initialize sqlite
+ * state runtime"; lab stub campaign, 2026-11-10), so OrgAI starts them one at a time per home, FIFO, process-wide. The
+ * hold ends when `start` settles, when `released` settles (the server's `exited`: closing it frees the lock at once),
+ * when `signal` aborts, or after `maxHoldMs`, whichever comes first. Starts in different homes never wait on each other.
+ */
+export async function withCodexStartLock<T>(
+  key: string,
+  start: () => Promise<T>,
+  opts: { signal?: AbortSignal; released?: Promise<unknown>; maxHoldMs?: number } = {}
+): Promise<T> {
+  const release = await acquireCodexStartLock(key, { signal: opts.signal })
+  const timer = setTimeout(release, opts.maxHoldMs ?? CODEX_START_LOCK_MAX_HOLD_MS)
+  timer.unref?.()
+  opts.signal?.addEventListener('abort', release, { once: true })
+  opts.released?.then(release, release)
+  try {
+    return await start()
+  } finally {
+    clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', release)
+    release()
+  }
+}
+
+/** Whether `key`'s start lock is held, and how many starts wait for it (tests). */
+export function codexStartLockState(key: string): { held: boolean; waiting: number } {
+  const lock = startLocks.get(key)
+  return { held: !!lock, waiting: lock?.waiters.length ?? 0 }
 }
 
 /** How many non-empty stderr lines CodexAppServer keeps for exit errors, and their total length cap. */
@@ -77,9 +150,6 @@ export function redactSecrets(text: string, secrets: readonly string[]): string 
   for (const s of [...secrets].filter((v) => v.length >= 4).sort((a, b) => b.length - a.length)) out = out.split(s).join('[redacted]')
   return out
 }
-
-/** Characters kept back when a newline-free stderr run is flushed (longer than any key we pass). */
-const STDERR_CARRY = 1_024
 
 /**
  * Mask key-like tokens exact-value redaction cannot match (a gateway echoing a key fragment, a token codex holds
@@ -126,8 +196,12 @@ export interface CodexAppServerOptions {
   experimentalApi?: boolean
   /** Request timeout, ms. Default 30 s. Turns are long-running but their requests return at once. */
   requestTimeoutMs?: number
-  /** Override the binary (tests). */
+  /** Override the binary (tests). A binary without `source` skips the version check. */
   binary?: CodexBinary
+  /** Runs `codex --version` (tests); default codexBinary.ts defaultCodexVersionRunner. */
+  versionRunner?: CodexVersionRunner
+  /** A warning to show the user (a run warning): Codex chosen through ORGAI_CODEX_PATH outside the tested version. */
+  onWarning?(message: string): void
   /** stderr lines (debug logging), secrets replaced by [redacted] (see `redact`). */
   onStderr?(line: string): void
   /**
@@ -135,6 +209,18 @@ export interface CodexAppServerOptions {
    * except CODEX_HOME, PATH and RUST_LOG is scrubbed as well.
    */
   redact?: string[]
+  /**
+   * Extra `-c` entries decided once the binary is known (after the version check, before the spawn), with the child's
+   * environment and the `config` above: the Codex adapter's model catalog override (codexNativeCatalog.ts). A throw or
+   * a rejection adds nothing (fail open). Not called by the connection service.
+   */
+  prepareConfig?(input: { binary: CodexBinary; env: Record<string, string | undefined>; config: readonly string[] }): Promise<string[]>
+  /**
+   * The caller already holds this home's start lock around the whole start() (the Codex adapter, withCodexStartLock):
+   * start() does not take it again. Default false: start() holds it from the spawn until initialize settles (the
+   * connection service's login, account and model discovery starts).
+   */
+  startLockHeld?: boolean
 }
 
 type ServerRequestHandler = (method: string, params: unknown) => Promise<unknown>
@@ -149,6 +235,8 @@ export class CodexAppServer {
   private serverRequestHandler?: ServerRequestHandler
   private buffer = ''
   private stderrBuffer = ''
+  private stderrRedactor = new StreamingSecretRedactor('[redacted]', 4)
+  private suppressStderrLine = false
   private stderrLines: string[] = []
   private closed = false
   private exitHandlers = new Set<(code: number | null, error?: Error) => void>()
@@ -162,8 +250,19 @@ export class CodexAppServer {
 
   /** Spawn the process and run the initialize handshake. Rejects when codex is missing or does not answer. */
   async start(clientVersion = '0.0.0'): Promise<unknown> {
-    const binary = this.options.binary ?? resolveCodexBinary()
-    if (!binary) throw new Error('The Codex CLI is not installed for this platform (@openai/codex optional dependency missing).')
+    if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
+    let binary = this.options.binary
+    if (!binary) {
+      const found = lookupCodexBinary()
+      if (!found.binary) throw new Error(found.problem)
+      binary = found.binary
+    }
+    // The version check covers every start: login, logout, discovery and runs (cli-standalone 6.2). Cached per binary.
+    const check = await checkCodexBinary(binary, { run: this.options.versionRunner })
+    if (!check.ok) throw new Error(check.reason)
+    // close() may land while the version check runs (End session, a cancelled completion): never spawn after it.
+    if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
+    if (check.warning) this.options.onWarning?.(check.warning)
     // codex app-server exits 1 at once when CODEX_HOME names a folder that does not exist.
     // Owner-only: it holds the ChatGPT login (auth.json). The path is used exactly as the child will see it.
     const home = this.options.env?.CODEX_HOME
@@ -172,9 +271,35 @@ export class CodexAppServer {
     // Codex or the MCP servers it spawns, inherited or set by the connection (cli-spec 3.4(3)).
     const env: Record<string, string | undefined> = scrubControlEnv({ ...process.env, ...this.options.env })
     if (binary.pathDir) env.PATH = `${binary.pathDir}${delimiter}${env.PATH ?? env.Path ?? ''}`
-    const args = ['app-server', ...(this.options.config ?? []).flatMap((c) => ['-c', c])]
+    const config = [...(this.options.config ?? [])]
+    if (this.options.prepareConfig) {
+      try {
+        const extra = await this.options.prepareConfig({ binary, env: { ...env }, config: [...config] })
+        if (Array.isArray(extra)) config.push(...extra.filter((c) => typeof c === 'string' && c.length > 0))
+      } catch {
+        // fail open: launch with the config as given
+      }
+      if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
+    }
+    // One start at a time per Codex home, from the spawn until initialize settles (withCodexStartLock).
+    if (this.options.startLockHeld) return this.spawnAndInitialize(binary, env, config, clientVersion)
+    return withCodexStartLock(codexStartLockKey(env), () => {
+      if (this.closed) throw new Error(CODEX_CLOSED_BEFORE_START)
+      return this.spawnAndInitialize(binary, env, config, clientVersion)
+    }, { released: this.exited })
+  }
+
+  private async spawnAndInitialize(binary: CodexBinary, env: Record<string, string | undefined>, config: string[], clientVersion: string): Promise<unknown> {
+    const args = ['app-server', ...config.flatMap((c) => ['-c', c])]
     const child = spawn(binary.path, args, { cwd: this.options.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    // An agent CLI: ended with the host at the shutdown's hard limit, also when the process table cannot be read (4.3).
+    trackChildProcess(child, 'codex app-server')
     this.child = child
+    // A host that gives up at the shutdown hard limit kills it (host/shutdown.ts); untracked on exit.
+    const untrack = trackChildProcess(child, 'codex app-server')
+    // A failed spawn emits 'error' and 'close' but no 'exit': untrack there too (review round 2).
+    child.once('error', untrack)
+    child.once('close', untrack)
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => this.onData(chunk))
     child.stderr.setEncoding('utf8')
@@ -249,6 +374,7 @@ export class CodexAppServer {
   private handleExit(code: number | null, error?: Error): void {
     if (this.closed) return
     this.closed = true
+    this.appendStderr(this.stderrRedactor.push('', this.secrets(), true))
     // A last line without a newline still counts.
     if (this.stderrBuffer.trim()) this.pushStderrLine(this.stderrBuffer)
     this.stderrBuffer = ''
@@ -262,9 +388,17 @@ export class CodexAppServer {
     this.markExited()
   }
 
-  /** Kill the process. Pending requests reject. */
+  /**
+   * Kill the process. Pending requests reject. Before the process exists (start() still checking the version) it marks
+   * the server closed so start() spawns nothing and rejects; `exited` resolves and no exit handler fires.
+   */
   close(): void {
-    if (!this.child || this.closed) return
+    if (this.closed) return
+    if (!this.child) {
+      this.closed = true
+      this.markExited()
+      return
+    }
     try {
       this.child.stdin.end()
       this.child.kill()
@@ -291,18 +425,30 @@ export class CodexAppServer {
 
   /** stderr arrives in chunks that can split a line: complete lines go out, the rest waits for the next chunk. */
   private onStderrData(chunk: string): void {
-    this.stderrBuffer += chunk
+    this.appendStderr(this.stderrRedactor.push(chunk, this.secrets()))
+  }
+
+  private appendStderr(text: string): void {
+    if (this.suppressStderrLine) {
+      const newline = text.indexOf('\n')
+      if (newline < 0) return
+      this.suppressStderrLine = false
+      text = text.slice(newline + 1)
+    }
+    if (!text) return
+    this.stderrBuffer += text
     let nl: number
     while ((nl = this.stderrBuffer.indexOf('\n')) >= 0) {
       const line = this.stderrBuffer.slice(0, nl)
       this.stderrBuffer = this.stderrBuffer.slice(nl + 1)
       this.pushStderrLine(line)
     }
-    // A runaway line without newlines is flushed in pieces so the buffer stays bounded.
-    // The last STDERR_CARRY characters stay buffered so a secret is never cut in two by the flush.
+    // Do not split a runaway line into independently scrubbed fragments: a credential could straddle the cut and
+    // lose the prefix that lets maskKeyLike recognize it. Emit a fixed marker, then discard through the next newline.
     if (this.stderrBuffer.length > STDERR_TAIL_MAX_CHARS * 4) {
-      this.pushStderrLine(this.stderrBuffer.slice(0, -STDERR_CARRY))
-      this.stderrBuffer = this.stderrBuffer.slice(-STDERR_CARRY)
+      this.stderrBuffer = ''
+      this.pushStderrLine('[redacted] (oversized stderr line omitted)')
+      this.suppressStderrLine = true
     }
   }
 
@@ -332,7 +478,7 @@ export class CodexAppServer {
       if (!parsed || typeof parsed !== 'object') return
       msg = parsed as Record<string, unknown>
     } catch {
-      this.options.onStderr?.(`(non-JSON stdout) ${line.slice(0, 200)}`)
+      this.options.onStderr?.(this.scrub(`(non-JSON stdout) ${line}`).slice(0, 200))
       return
     }
     const id = msg.id as number | string | undefined

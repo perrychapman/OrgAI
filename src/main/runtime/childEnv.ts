@@ -92,12 +92,12 @@ export interface IsolateClaudeEnvOptions {
 const PROXY_DROPPED = new Set(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CONFIG_DIR'])
 
 /**
- * OrgAI's own control variables (cli-spec 3.4(3)): the data dir, the daemon's and the secret overlay's settings, and
- * ELECTRON_RUN_AS_NODE (which turns the OrgAI binary into a Node runtime that could load the CLI). No agent or MCP
- * child may see them, whoever set them (the inherited env, a connection or an MCP spec). Names compare
- * case-insensitively. ORGAI_MOCK is not one of them.
+ * OrgAI's own control variables (cli-spec 3.4(3)): the data dir, the daemon's and the secret overlay's settings, the
+ * vault's key-file locator and custody settings (ORGAI_VAULT_*, cli-standalone 6.3), and ELECTRON_RUN_AS_NODE (which
+ * turns the OrgAI binary into a Node runtime that could load the CLI). No agent or MCP child may see them, whoever set
+ * them (the inherited env, a connection or an MCP spec). Names compare case-insensitively. ORGAI_MOCK, ORGAI_CLAUDE_PATH and ORGAI_CODEX_PATH are not one of them (not secrets).
  */
-export const ORGAI_CONTROL_ENV_PATTERNS: readonly RegExp[] = [/^ORGAI_DATA_DIR$/i, /^ORGAI_DAEMON_/i, /^ORGAI_SECRET_/i, /^ELECTRON_RUN_AS_NODE$/i]
+export const ORGAI_CONTROL_ENV_PATTERNS: readonly RegExp[] = [/^ORGAI_DATA_DIR$/i, /^ORGAI_CLI_DATA_DIR$/i, /^ORGAI_CLI_VAULT_/i, /^ORGAI_DAEMON_/i, /^ORGAI_SECRET_/i, /^ORGAI_VAULT_/i, /^ELECTRON_RUN_AS_NODE$/i]
 
 /** True for a name scrubControlEnv drops. */
 export function isControlEnvVar(name: string): boolean {

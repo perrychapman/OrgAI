@@ -2,6 +2,7 @@ import type {
   AdapterChoice,
   AgentInstance,
   AppearanceSettings,
+  NormalizedAppearanceSettings,
   AppSettings,
   ConnectionId,
   ConnectionStatus,
@@ -13,25 +14,37 @@ import type {
   ModelRef,
   ModelTier,
   PermissionMode,
+  PlanStep,
+  PlanStepStaff,
   Project,
   ProjectKind,
   ProjectRulesLocation,
   ProviderAuth,
+  ProviderConnection,
   ProviderConnections,
   ProviderId,
+  ProxyConnection,
   ProviderModel,
   QuickRunTeam,
+  BridgedRoleChoice,
+  ReviewPolicy,
+  RoleConnectionProblem,
   Role,
+  RoleStaffing,
+  RunStaffing,
   SetupKind,
   SkillEvaluationSettings,
   TeamReviewSettings,
   SkillSpec,
+  StaffingAssignment,
+  StaffingGoal,
+  StaffingMode,
   TokenUsage,
   UsageStatus,
   ToolName
 } from './types'
 import { SPAWN_TOOL } from './types'
-import { CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isModelTier, isProjectKind } from './types'
+import { BUILTIN_CONNECTION_IDS, DEFAULT_KEEP_RUNS, DEFAULT_MAX_AUTO_CONTINUES, EFFORTS, MODEL_TIERS, SKILL_DESCRIPTION_MAX, SKILL_NAME_MAX, TEAM_REVIEW_MAX_BUDGET, TEAM_REVIEW_MAX_EVERY_RUNS, TEAM_REVIEW_MIN_BUDGET, isBuiltinConnectionId, isEffort, isModelTier, isProjectKind, isProxyConnectionId, isReviewPolicy, isStaffingGoal, isStaffingMode, isStaffingSource } from './types'
 
 /** Run limits for new projects: enough parallel reports for a real team, and room for leads with their own reports. */
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 8
@@ -278,6 +291,20 @@ export interface SubagentLimits {
 }
 
 /**
+ * The sanitized Role.requiredReports: ids that are in `spawnable`, are not the role itself and are unique (first wins).
+ * undefined when none remain or when the role cannot spawn. Pure.
+ */
+export function cleanRequiredReports(role: Pick<Role, 'id' | 'canSpawn' | 'spawnable' | 'requiredReports'>): string[] | undefined {
+  if (!role.canSpawn || !role.requiredReports) return undefined
+  const allowed = new Set(role.spawnable ?? [])
+  const out: string[] = []
+  for (const id of role.requiredReports) {
+    if (typeof id === 'string' && id !== role.id && allowed.has(id) && !out.includes(id)) out.push(id)
+  }
+  return out.length > 0 ? out : undefined
+}
+
+/**
  * Longest reportsTo chain of an org chart, in edges (root alone = 0, root -> lead -> engineer = 2). A reportsTo that
  * names no role ends the chain; cycles are cut. Pure.
  */
@@ -389,7 +416,7 @@ export function importTierForModel(model: unknown): ModelTier | undefined {
 export function modelFamily(model: ModelRef): ModelFamily {
   const id = bareModelId(model)
   if (Object.hasOwn(CLAUDE_ALIAS_TIERS, id) || id.includes('claude')) return 'claude'
-  if (/^(gpt|o\d|codex|chatgpt)/.test(id)) return 'openai'
+  if (/(^|\.)(gpt|o\d|codex|chatgpt)/.test(id)) return 'openai'
   return 'other'
 }
 
@@ -404,38 +431,121 @@ export function projectConnection(project: Pick<Project, 'provider'>): Connectio
 }
 
 /**
- * Pick the adapter for a project's run. 'anthropic' runs on Claude, 'openai' on Codex. 'litellm' follows the
- * root role's model family (its catalog entry first, else modelFamily). Roles whose model would need the other
- * adapter are listed in `mismatched` ('inherit' roles always match): informational on LiteLLM, where reports may run
- * any model the proxy serves (mixedFamilyRefusal), a refusal on the single-family connections.
- * A 'mock' provider always runs on the mock adapter with nothing mismatched.
+ * Pick the adapter for a project's run. 'anthropic' runs on Claude, 'openai' on Codex. A proxy follows the
+ * root role's model family (its catalog entry first, else modelFamily). Roles on the root's connection whose model
+ * would need the other adapter are listed in `mismatched` ('inherit' roles always match): on a proxy they are also
+ * bridged (they run in a child session on the other adapter), on the single-family connections a refusal
+ * (mixedFamilyRefusal). Every non-root role on another connection (roleConnection) is bridged with the adapter its
+ * family needs there (each role's family is read from its own connection's catalog entries).
+ * A 'mock' provider always runs on the mock adapter with nothing mismatched; roles on another connection are bridged on 'mock'.
  */
 export function adapterForProject(project: Pick<Project, 'provider' | 'roles'>, catalog: readonly ProviderModel[]): AdapterChoice {
   const connection = projectConnection(project)
-  const familyOf = (model: ModelRef): ModelFamily =>
-    catalog.find((m) => m.id === model && m.connection === connection)?.family ?? modelFamily(model)
+  const familyOn = (model: ModelRef, on: ConnectionId): ModelFamily =>
+    catalog.find((m) => m.id === model && m.connection === on)?.family ?? modelFamily(model)
   const root = project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
-  const family = root && root.model !== 'inherit' ? familyOf(root.model) : undefined
-  if (project.provider.id === 'mock') return { adapter: 'mock', connection, family, mismatched: [] }
-  const adapter: ProviderId =
-    connection === 'anthropic' ? 'claude' : connection === 'openai' ? 'codex' : adapterForFamily(family ?? 'claude')
-  const mismatched = project.roles
-    .filter((r) => r.model !== 'inherit' && adapterForFamily(familyOf(r.model)) !== adapter)
-    .map((r) => r.id)
-  return { adapter, connection, family, mismatched }
+  const family = root && root.model !== 'inherit' ? familyOn(root.model, connection) : undefined
+  if (project.provider.id === 'mock') {
+    // Mock projects: a role naming another connection is bridged on the mock adapter (the [mock:bridged] marker).
+    const bridged = project.roles
+      .filter((r) => r !== root && roleConnection(r, project) !== connection)
+      .map((r) => ({ roleId: r.id, connection: roleConnection(r, project), adapter: 'mock' as ProviderId }))
+    return { adapter: 'mock', connection, family, mismatched: [], bridged }
+  }
+  const adapter = adapterOnConnection(connection, family)
+  const mismatched: string[] = []
+  const bridged: BridgedRoleChoice[] = []
+  for (const r of project.roles) {
+    if (r === root) continue
+    const on = roleConnection(r, project)
+    const own = r.model !== 'inherit' ? familyOn(r.model, on) : undefined
+    if (on === connection) {
+      if (own !== undefined && adapterForFamily(own) !== adapter) {
+        mismatched.push(r.id)
+        // Only a proxy can serve the other family; on a built-in connection it stays a mismatch (mixedFamilyRefusal).
+        if (!isBuiltinConnectionId(connection)) bridged.push({ roleId: r.id, connection, adapter: adapterForFamily(own) })
+      }
+      continue
+    }
+    // Another connection always needs its own child session (its own env and key), whatever the adapter.
+    bridged.push({ roleId: r.id, connection: on, adapter: adapterOnConnection(on, own) })
+  }
+  return { adapter, connection, family, mismatched, bridged }
+}
+
+/** The adapter that serves a model family on a connection: anthropic Claude, openai Codex, a proxy by family (Claude when unknown). */
+export function adapterOnConnection(connection: ConnectionId, family: ModelFamily | undefined): ProviderId {
+  return connection === 'anthropic' ? 'claude' : connection === 'openai' ? 'codex' : adapterForFamily(family ?? 'claude')
 }
 
 /**
- * Whether a work run with this adapter choice must be refused before it exists (owner decision 2026-11-03: one
- * connection per project; on a LiteLLM proxy the orchestrator's model picks the adapter and reports may run any model
- * the proxy serves). null = it may start (nothing mismatched, or a LiteLLM root with a known family);
+ * The connection a role's agents run on (the one reader of Role.connection): the role's own `connection` when set,
+ * else the project's (projectConnection). The root always runs on the project's connection (a `connection` on it is
+ * ignored). Pure.
+ */
+export function roleConnection(role: Pick<Role, 'connection' | 'reportsTo'>, project: Pick<Project, 'provider'>): ConnectionId {
+  if (role.reportsTo === null) return projectConnection(project)
+  return typeof role.connection === 'string' && isConnectionId(role.connection) ? role.connection : projectConnection(project)
+}
+
+/** The TierContext a role's model resolves against: its own connection's tier mapping and catalog. Pure. */
+export function roleTierContext(
+  role: Pick<Role, 'connection' | 'reportsTo'>,
+  project: Pick<Project, 'provider'>,
+  settings: ConnectionsView | undefined,
+  catalog?: readonly ProviderModel[]
+): TierContext {
+  const connection = roleConnection(role, project)
+  return { connection, tierModels: { ...(connectionRecord(settings, connection)?.tierModels ?? {}) }, ...(catalog ? { catalog } : {}) }
+}
+
+/**
+ * Non-root roles whose own connection cannot run them (see RoleConnectionProblem), in role order. Roles on the
+ * project's connection are never listed (the project's own connection problems surface elsewhere). `statuses` (live
+ * state per connection) adds 'disconnected'; without it only the stored records are judged. Mock projects: none. Pure.
+ */
+export function roleConnectionProblems(
+  project: Pick<Project, 'provider' | 'roles'>,
+  settings: ConnectionsView | undefined,
+  statuses?: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>>
+): RoleConnectionProblem[] {
+  if (project.provider.id === 'mock') return []
+  const own = projectConnection(project)
+  const out: RoleConnectionProblem[] = []
+  for (const r of project.roles) {
+    const on = roleConnection(r, project)
+    if (on === own) continue
+    const name = connectionName(on, settings)
+    const fix = "Connect it in App settings > Connections or change the role's connection."
+    let problem: RoleConnectionProblem['problem'] | undefined
+    let message = ''
+    if (!isKnownConnection(settings, on)) {
+      problem = 'unknown'
+      message = `Role ${r.name} runs on a connection that no longer exists. Change the role's connection.`
+    } else if (!connectionConfigured(on, settings)) {
+      problem = 'not-configured'
+      message = `Role ${r.name} runs on ${name}, which is not set up. ${fix}`
+    } else if (statuses?.[on] === 'disconnected') {
+      problem = 'disconnected'
+      message = `Role ${r.name} runs on ${name}, which is not connected. ${fix}`
+    }
+    if (problem) out.push({ roleId: r.id, roleName: r.name, connection: on, problem, message })
+  }
+  return out
+}
+
+/**
+ * Whether a work run with this adapter choice must be refused before it exists (multi-provider org charts: roles may
+ * span families and connections; a mismatched role on a proxy runs as a bridged report on the other adapter, and roles
+ * on other connections are never refused here, see roleConnectionProblems). null = it may start (nothing mismatched,
+ * or a proxy root with a known family);
  * 'no-root-family' = LiteLLM, roles on another family and the root has no model of its own ('inherit' or no roles),
  * so no adapter can be picked from it; 'single-family-connection' = Anthropic or OpenAI with a role of another family
  * (cannot come from their single-family catalogs; refused as before). Pure.
  */
 export function mixedFamilyRefusal(choice: Pick<AdapterChoice, 'connection' | 'family' | 'mismatched'>): 'no-root-family' | 'single-family-connection' | null {
   if (!choice.mismatched.length) return null
-  if (choice.connection !== 'litellm') return 'single-family-connection'
+  if (isBuiltinConnectionId(choice.connection)) return 'single-family-connection'
   return choice.family === undefined ? 'no-root-family' : null
 }
 
@@ -443,9 +553,13 @@ export function mixedFamilyRefusal(choice: Pick<AdapterChoice, 'connection' | 'f
 export function defaultConnections(auth: ProviderAuth = { kind: 'subscription' }): ProviderConnections {
   return {
     anthropic: { id: 'anthropic', enabled: true, auth: { ...auth }, tierModels: defaultTierModels(ANTHROPIC_BUILTIN_MODELS) },
-    openai: { id: 'openai', enabled: false, auth: { kind: 'chatgpt' }, tierModels: defaultTierModels(OPENAI_PLACEHOLDER_MODELS) },
-    litellm: { id: 'litellm', enabled: false, baseUrl: '', hasApiKey: false, tierModels: {} }
+    openai: { id: 'openai', enabled: false, auth: { kind: 'chatgpt' }, tierModels: defaultTierModels(OPENAI_PLACEHOLDER_MODELS) }
   }
+}
+
+/** Proxy connections for fresh settings: none (the user adds them, or an old settings.json migrates its LiteLLM record). */
+export function defaultProxies(): ProxyConnection[] {
+  return []
 }
 
 // ---------- MCP ----------
@@ -510,10 +624,10 @@ export function mcpServersForRole(project: Pick<Project, 'mcpServers'>, role: Pi
 }
 
 /** Default look. Theme stays 'dark' until the light theme is signed off, then becomes 'system' (plan.md section 2). */
-export const DEFAULT_APPEARANCE: AppearanceSettings = {
+export const DEFAULT_APPEARANCE: NormalizedAppearanceSettings = {
   theme: 'dark',
   accent: '#7c5cff',
-  canvas: { pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false },
+  canvas: { presentation: 'graph', scenePalette: 'color', pattern: 'dots', tint: true, edges: 'curved', layout: 'top-down', nodeStyle: 'card', minimap: false },
   reduceMotion: 'system'
 }
 
@@ -566,7 +680,7 @@ export const CANVAS_PRESETS: readonly CanvasPreset[] = [
   }
 ]
 
-/** The preset whose five fields all match this canvas (minimap is not part of a preset), or undefined. */
+/** The matching graph preferences, independent of presentation, scene palette and minimap, or undefined. */
 export function activeCanvasPreset(canvas: AppearanceSettings['canvas']): CanvasPresetId | undefined {
   return CANVAS_PRESETS.find(
     (p) =>
@@ -578,7 +692,7 @@ export function activeCanvasPreset(canvas: AppearanceSettings['canvas']): Canvas
   )?.id
 }
 
-/** A new canvas with the preset's five fields and the given minimap setting kept. An unknown id returns a copy unchanged. */
+/** Sets only graph preferences; preserves presentation, scene palette and minimap. Unknown ids return a copy unchanged. */
 export function applyCanvasPreset(canvas: AppearanceSettings['canvas'], id: CanvasPresetId): AppearanceSettings['canvas'] {
   const preset = CANVAS_PRESETS.find((p) => p.id === id)
   return preset ? { ...canvas, ...preset.canvas } : { ...canvas }
@@ -600,6 +714,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   quickRunModel: 'everyday',
   providerAuth: { kind: 'subscription' },
   connections: defaultConnections(),
+  proxies: defaultProxies(),
   defaultConnection: 'anthropic',
   notifications: true,
   appearance: DEFAULT_APPEARANCE,
@@ -608,8 +723,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultPreferSonnetNearLimit: false,
   communityPrices: true,
   defaultAutoContinue: true,
-  defaultMaxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES,
-  terminalServer: false
+  defaultMaxAutoContinues: DEFAULT_MAX_AUTO_CONTINUES
 }
 
 // ---------- Quick runs (Chat) ----------
@@ -617,27 +731,17 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 /** Role slug of a quick run's single assistant (team 'single'). */
 export const QUICK_ASSISTANT_SLUG = 'assistant'
 
-/** Tools a quick run with edits off never gets. */
-export const QUICK_EDIT_TOOLS: readonly ToolName[] = ['Edit', 'Write', 'Bash', 'NotebookEdit']
-
-/** A role's tools on a quick run: unchanged with edits on; Edit, Write, Bash and NotebookEdit removed with edits off. */
-export function quickRoleTools(tools: readonly ToolName[], allowEdits: boolean): ToolName[] {
-  return allowEdits ? [...tools] : tools.filter((t) => !QUICK_EDIT_TOOLS.includes(t))
-}
-
-const QUICK_SINGLE_TOOLS: readonly ToolName[] = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch']
+const QUICK_SINGLE_TOOLS: readonly ToolName[] = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Edit', 'Write', 'Bash', 'NotebookEdit']
 
 /**
- * Tools per role slug for a quick run. 'single': { assistant: Read, Glob, Grep, WebSearch, WebFetch, plus Edit,
- * Write and Bash with edits on }. 'default': each defaultRoles() role (orchestrator, implementer, reviewer,
- * researcher) with its tools filtered through quickRoleTools.
+ * Tools per role slug for a quick run. Edit and command tools stay whatever allowEdits says: a call asks the user
+ * (permission mode 'default') instead of the tool being missing. 'single': { assistant: Read, Glob, Grep, WebSearch,
+ * WebFetch, Edit, Write, Bash, NotebookEdit }. 'default': each defaultRoles() role with its own tools.
  */
-export function quickRunTools(team: QuickRunTeam, allowEdits: boolean): Record<string, ToolName[]> {
-  if (team === 'single') {
-    return { [QUICK_ASSISTANT_SLUG]: allowEdits ? [...QUICK_SINGLE_TOOLS, 'Edit', 'Write', 'Bash'] : [...QUICK_SINGLE_TOOLS] }
-  }
+export function quickRunTools(team: QuickRunTeam): Record<string, ToolName[]> {
+  if (team === 'single') return { [QUICK_ASSISTANT_SLUG]: [...QUICK_SINGLE_TOOLS] }
   const out: Record<string, ToolName[]> = {}
-  for (const role of defaultRoles()) out[role.slug] = quickRoleTools(role.tools, allowEdits)
+  for (const role of defaultRoles()) out[role.slug] = [...role.tools]
   return out
 }
 
@@ -705,31 +809,97 @@ export function claudeProviderLabel(auth: AppSettings['providerAuth']): string {
   return auth.kind === 'apiKey' ? `Claude (API key from ${auth.envVar})` : 'Claude (Claude Code login)'
 }
 
+/** What the connection helpers read from settings: the built-in records and the proxy list. Callers pass `settings` itself. */
+export type ConnectionsView = Partial<Pick<AppSettings, 'connections' | 'proxies'>>
+
+/** Every connection id: 'anthropic', 'openai', then the proxy ids in list order. */
+export function connectionIds(v?: { proxies?: readonly Pick<ProxyConnection, 'id'>[] }): ConnectionId[] {
+  return [...BUILTIN_CONNECTION_IDS, ...(Array.isArray(v?.proxies) ? v.proxies.map((p) => p.id) : [])]
+}
+
+/** The proxy record with this id (own list entry only; never a prototype key), or undefined. */
+export function proxyOf(v: ConnectionsView | undefined, id: ConnectionId): ProxyConnection | undefined {
+  if (typeof id !== 'string' || isBuiltinConnectionId(id)) return undefined
+  return Array.isArray(v?.proxies) ? v.proxies.find((p) => p.id === id) : undefined
+}
+
+/** The record of any connection (built-in or proxy), or undefined. */
+export function connectionRecord(v: ConnectionsView | undefined, id: ConnectionId): ProviderConnection | undefined {
+  if (id === 'anthropic') return v?.connections?.anthropic
+  if (id === 'openai') return v?.connections?.openai
+  return proxyOf(v, id)
+}
+
+/** A built-in id or a proxy id by shape: says nothing about whether the proxy exists (see isKnownConnection). Pure. */
+export function isConnectionId(v: unknown): v is ConnectionId {
+  return isBuiltinConnectionId(v) || isProxyConnectionId(v)
+}
+
+/** A built-in id, or the id of a proxy that exists in `v.proxies`. Never true for a prototype key. Pure. */
+export function isKnownConnection(v: ConnectionsView | undefined, id: unknown): id is ConnectionId {
+  return isBuiltinConnectionId(id) || (typeof id === 'string' && proxyOf(v, id) !== undefined)
+}
+
+/** Display name: 'Anthropic', 'OpenAI', the proxy's name, or 'Proxy' when the proxy is gone. */
+export function connectionName(id: ConnectionId, v?: ConnectionsView): string {
+  if (id === 'anthropic') return 'Anthropic'
+  if (id === 'openai') return 'OpenAI'
+  return proxyOf(v, id)?.name || 'Proxy'
+}
+
+const trimSlashes = (u: string): string => u.trim().replace(/\/+$/, '')
+
+/** The OpenAI / Codex base URL of a proxy: openaiBaseUrl when set, else `<anthropicBaseUrl>/v1` (not doubled when it already ends in /v1). '' when neither is set. */
+export function proxyOpenAIBase(p: Pick<ProxyConnection, 'anthropicBaseUrl' | 'openaiBaseUrl'>): string {
+  const own = trimSlashes(p.openaiBaseUrl ?? '')
+  if (own) return own
+  const base = trimSlashes(p.anthropicBaseUrl ?? '')
+  if (!base) return ''
+  return /\/v1$/i.test(base) ? base : `${base}/v1`
+}
+
+/** The model list URL of a proxy: modelsUrl when set, else `<proxyOpenAIBase>/models`. '' when there is no base. */
+export function proxyModelsUrl(p: Pick<ProxyConnection, 'anthropicBaseUrl' | 'openaiBaseUrl' | 'modelsUrl'>): string {
+  const own = (p.modelsUrl ?? '').trim()
+  if (own) return own
+  const base = proxyOpenAIBase(p)
+  return base ? `${base}/models` : ''
+}
+
+/**
+ * The family of a model a proxy lists. An id modelFamily() already calls claude or openai wins (a gateway may list
+ * claude-opus-5-high under owned_by 'antigravity'); else owned_by 'anthropic' -> claude, 'openai' -> openai; else
+ * 'other'.
+ */
+export function proxyModelFamily(id: string, ownedBy?: string): ModelFamily {
+  const f = modelFamily(id)
+  if (f !== 'other') return f
+  const o = (ownedBy ?? '').trim().toLowerCase()
+  return o === 'anthropic' ? 'claude' : o === 'openai' ? 'openai' : 'other'
+}
+
 /**
  * The connection a new project starts on: settings.defaultConnection when it is usable (anthropic always; openai
- * when enabled; litellm when enabled with a base URL and an API key), otherwise 'anthropic'.
+ * when enabled; a proxy when enabled with a base URL and an API key), otherwise 'anthropic'.
  */
-export function creationConnection(settings: Pick<AppSettings, 'defaultConnection' | 'connections'> | undefined): ConnectionId {
+export function creationConnection(settings: (Pick<AppSettings, 'defaultConnection'> & ConnectionsView) | undefined): ConnectionId {
   const want = settings?.defaultConnection
-  const c = settings?.connections
-  if (!want || !c) return 'anthropic'
-  if (want === 'openai') return c.openai?.enabled ? 'openai' : 'anthropic'
-  if (want === 'litellm') return c.litellm?.enabled && !!c.litellm.baseUrl?.trim() && c.litellm.hasApiKey ? 'litellm' : 'anthropic'
-  return 'anthropic'
+  if (!want || !settings || want === 'anthropic') return 'anthropic'
+  return connectionConfigured(want, settings) ? want : 'anthropic'
 }
 
 /**
  * Whether a connection is in use: enabled (anthropic always counts as enabled, as in `creationConnection`) and
  * either the app's default connection or the connection of at least one project (`projectConnection`; mock
  * projects follow the same rule). Idle probes that cost a process spawn or a network call (Codex plan usage,
- * LiteLLM key spend) run only then. Pure.
+ * proxy key spend) run only then. Pure.
  */
 export function connectionInUse(
   id: ConnectionId,
-  settings: Pick<AppSettings, 'defaultConnection' | 'connections'>,
+  settings: Pick<AppSettings, 'defaultConnection'> & ConnectionsView,
   projects: readonly Pick<Project, 'provider'>[]
 ): boolean {
-  const enabled = id === 'anthropic' || settings.connections?.[id]?.enabled === true
+  const enabled = id === 'anthropic' || connectionRecord(settings, id)?.enabled === true
   if (!enabled) return false
   if ((settings.defaultConnection ?? 'anthropic') === id) return true
   return projects.some((p) => projectConnection(p) === id)
@@ -737,37 +907,40 @@ export function connectionInUse(
 
 /**
  * Whether a connection's record allows it to be used at all: anthropic unless it was turned off (enabled false, the
- * card's Disconnect); openai when enabled; litellm when enabled with a base URL and a stored key. Says nothing about
- * its live status. Pure.
+ * card's Disconnect); openai when enabled; a proxy when it exists, is enabled and has a base URL and a stored key.
+ * Says nothing about its live status. Pure.
  */
-export function connectionConfigured(id: ConnectionId, connections: Partial<ProviderConnections> | undefined): boolean {
-  if (id === 'anthropic') return connections?.anthropic?.enabled !== false
-  if (id === 'openai') return connections?.openai?.enabled === true
-  const l = connections?.litellm
-  return l?.enabled === true && !!l.baseUrl?.trim() && l.hasApiKey === true
+export function connectionConfigured(id: ConnectionId, v: ConnectionsView | undefined): boolean {
+  if (id === 'anthropic') return v?.connections?.anthropic?.enabled !== false
+  if (id === 'openai') return v?.connections?.openai?.enabled === true
+  const p = proxyOf(v, id)
+  return p?.enabled === true && !!p.anthropicBaseUrl?.trim() && p.hasApiKey === true
 }
 
 /** Whether a connection can be the default: configured (connectionConfigured) and its live status is 'connected'. Pure. */
-export function connectionUsable(id: ConnectionId, connections: Partial<ProviderConnections> | undefined, state: ConnectionStatus['state'] | undefined): boolean {
-  return connectionConfigured(id, connections) && state === 'connected'
+export function connectionUsable(id: ConnectionId, v: ConnectionsView | undefined, state: ConnectionStatus['state'] | undefined): boolean {
+  return connectionConfigured(id, v) && state === 'connected'
 }
 
 /**
  * The default connection consumers use (new projects, Chat, the MCP and Skill assistants). `states` holds the live
  * state of every configured connection (connectionConfigured), 'unknown' while it has not been probed yet; leave out
- * connections that are not configured. Pure.
+ * connections that are not configured. `proxies` is the proxy list (AppSettings.proxies), which fixes the id order.
+ * Pure.
  * - chosen (the user picked it): the stored value whatever its state, so a run fails with that connection's own error
  *   (the honest outcome). Only a chosen connection that is no longer configured (turned off) falls through.
  * - automatic: the connection an automatic rewrite replaced (`replaced`) as soon as it is 'connected' again; else the
  *   stored value unless it is definitely 'disconnected' or not configured ('error', 'connecting' and 'unknown' keep
  *   it: a probe throw, a CLI timeout or a failed discovery never moves the default); else the first connected
- *   connection in CONNECTION_IDS order other than LiteLLM, LiteLLM only when it is the only connected one; else the
- *   stored value when configured, else the first configured connection, else the stored value (anthropic when unset).
+ *   built-in connection, a proxy only when exactly one proxy is connected and no built-in is (two or more connected
+ *   proxies and no built-in is undecided); else the stored value when configured, else the first configured
+ *   connection, else the stored value (anthropic when unset).
  */
 export function effectiveDefaultConnection(input: {
   stored: ConnectionId | undefined
   chosen?: boolean
   replaced?: ConnectionId
+  proxies?: readonly Pick<ProxyConnection, 'id'>[]
   states: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>>
 }): ConnectionId {
   const stored = isConnectionId(input.stored) ? input.stored : 'anthropic'
@@ -776,21 +949,18 @@ export function effectiveDefaultConnection(input: {
   const replaced = input.chosen !== true && isConnectionId(input.replaced) ? input.replaced : undefined
   if (replaced && input.states[replaced] === 'connected') return replaced
   if (own !== undefined && own !== 'disconnected') return stored
-  const connected = CONNECTION_IDS.filter((id) => input.states[id] === 'connected')
-  const pick = connected.find((id) => id !== 'litellm') ?? (connected.length === 1 ? connected[0] : undefined)
+  const ids = connectionIds(input)
+  const connected = ids.filter((id) => input.states[id] === 'connected')
+  const proxies = connected.filter((id) => !isBuiltinConnectionId(id))
+  const pick = connected.find((id) => isBuiltinConnectionId(id)) ?? (proxies.length === 1 ? proxies[0] : undefined)
   if (pick) return pick
   if (own !== undefined) return stored
-  return CONNECTION_IDS.find((id) => input.states[id] !== undefined) ?? stored
+  return ids.find((id) => input.states[id] !== undefined) ?? stored
 }
 
-/** A known ConnectionId (own property of the id list, never a prototype key). Pure. */
-export function isConnectionId(v: unknown): v is ConnectionId {
-  return typeof v === 'string' && (CONNECTION_IDS as readonly string[]).includes(v)
-}
-
-/** Provider label for a connection. Anthropic follows the auth choice. */
-export function connectionProviderLabel(id: ConnectionId, auth: AppSettings['providerAuth']): string {
-  return id === 'anthropic' ? claudeProviderLabel(auth) : id === 'openai' ? 'Codex (ChatGPT)' : 'LiteLLM'
+/** Provider label for a connection. Anthropic follows the auth choice; a proxy is labelled with its name (`v` supplies it). */
+export function connectionProviderLabel(id: ConnectionId, auth: AppSettings['providerAuth'], v?: ConnectionsView): string {
+  return id === 'anthropic' ? claudeProviderLabel(auth) : id === 'openai' ? 'Codex (ChatGPT)' : connectionName(id, v)
 }
 
 export function slugify(name: string): string {
@@ -829,12 +999,12 @@ export function defaultRoles(ctx: TierContext = { connection: 'anthropic', tierM
       'Lead agent. Plans the work, delegates to specialists, integrates results and reports to the user.',
     responsibilities: [
       'Understand the request and break it into well-scoped tasks',
-      'Delegate each task to the most suitable specialist',
+      'Delegate work that splits or needs a specialist to the most suitable report',
       'Review returned work for correctness and integration',
       'Keep the user informed with concise status and a final summary'
     ],
     prompt: `You are the lead engineer and orchestrator for this project.
-Plan before acting. Delegate implementation, review and testing to your specialist reports instead of doing everything yourself. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
+Plan before acting. Do contained work yourself; hand work that splits or needs a specialist to your reports, and start independent pieces together. Give each delegate a precise brief: the files involved, the acceptance criteria, and anything already decided. Integrate their results, verify the whole, and report back to the user with what changed and what remains.`,
     tools: FULL,
     ...modelOf('deep'),
     canSpawn: true,
@@ -1193,4 +1363,273 @@ export function skillDescriptionProblem(description: unknown): string | null {
 export function skillsForRole(project: Pick<Project, 'skills'>, role: Pick<Role, 'skills'>): SkillSpec[] {
   const ids = new Set(role.skills ?? [])
   return (project.skills ?? []).filter((s) => ids.has(s.id))
+}
+
+// ---------- Run staffing (types.ts "Run staffing") ----------
+
+/** Most StaffingAssignment rows kept per run (RunStaffing.assignments); the newest (last) are kept. */
+export const RUN_STAFFING_ASSIGNMENTS_MAX = 200
+/** Most ids kept in one PlanStep.after (the first valid ones). */
+export const PLAN_STEP_AFTER_MAX = 16
+/** Most entries kept in one PlanStep.paths (the first valid ones). */
+export const PLAN_STEP_PATHS_MAX = 24
+/** Longest PlanStep.paths entry kept; a longer one is dropped, never cut (a cut path names another file). */
+export const PLAN_STEP_PATH_MAX_CHARS = 300
+/** Longest StaffingAssignment.note kept; a longer one is cut at a character boundary. */
+export const STAFFING_NOTE_MAX_CHARS = 300
+
+const isRecordLike = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+const nonEmptyString = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined)
+
+/** True when `text` holds a C0 control character or DEL (a path or name with one is refused). */
+function hasControlChar(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c < 0x20 || c === 0x7f) return true
+  }
+  return false
+}
+
+/** `text` cut to `max` UTF-16 units without splitting a surrogate pair. */
+function cutAtBoundary(text: string, max: number): string {
+  if (text.length <= max) return text
+  let t = text.slice(0, max)
+  const last = t.charCodeAt(t.length - 1)
+  if (last >= 0xd800 && last <= 0xdbff) t = t.slice(0, -1)
+  return t
+}
+
+/** Tier order: > 0 when `a` is more capable than `b`, 0 when equal, < 0 when less (fast < everyday < deep < top). */
+export function compareTier(a: ModelTier, b: ModelTier): number {
+  return MODEL_TIERS.indexOf(b) - MODEL_TIERS.indexOf(a)
+}
+
+/** Effort order: > 0 when `a` is more than `b`, 0 when equal, < 0 when less (low < medium < high < xhigh < max). */
+export function compareEffort(a: Effort, b: Effort): number {
+  return EFFORTS.indexOf(a) - EFFORTS.indexOf(b)
+}
+
+/** The less capable of two tiers. */
+export function lowerTier(a: ModelTier, b: ModelTier): ModelTier {
+  return compareTier(a, b) <= 0 ? a : b
+}
+
+/** The lower of two efforts. */
+export function lowerEffort(a: Effort, b: Effort): Effort {
+  return compareEffort(a, b) <= 0 ? a : b
+}
+
+/**
+ * Role.staffing from untrusted data (a stored or imported role): undefined unless it is an object with a valid `mode`
+ * (a malformed value is dropped whole); an unknown `minTier` or `maxEffort` is dropped alone; other keys are dropped.
+ * Pure.
+ */
+export function cleanRoleStaffing(x: unknown): RoleStaffing | undefined {
+  if (!isRecordLike(x) || !isStaffingMode(x.mode)) return undefined
+  const out: RoleStaffing = { mode: x.mode }
+  if (isModelTier(x.minTier)) out.minTier = x.minTier
+  if (isEffort(x.maxEffort)) out.maxEffort = x.maxEffort
+  return out
+}
+
+/** Project.staffing with its default: 'fixed' only when the project says so, else 'auto'. */
+export function staffingModeOf(project: Pick<Project, 'staffing'> | null | undefined): StaffingMode {
+  return project?.staffing === 'fixed' ? 'fixed' : 'auto'
+}
+
+/** The goal a run staffs for: a valid per-run `override` (RunOverrides.goal), else Project.staffingGoal, else 'balanced'. */
+export function staffingGoalOf(project: Pick<Project, 'staffingGoal'> | null | undefined, override?: unknown): StaffingGoal {
+  if (isStaffingGoal(override)) return override
+  return isStaffingGoal(project?.staffingGoal) ? project.staffingGoal : 'balanced'
+}
+
+/** Project.reviewPolicy with its default ('risk'); an unknown value reads as the default. */
+export function reviewPolicyOf(project: Pick<Project, 'reviewPolicy'> | null | undefined): ReviewPolicy {
+  return isReviewPolicy(project?.reviewPolicy) ? project.reviewPolicy : 'risk'
+}
+
+/** A role's effective staffing (effectiveRoleStaffing): its mode and the bounds automatic staffing stays inside. */
+export interface EffectiveRoleStaffing {
+  mode: StaffingMode
+  /** The tier ceiling: the role's own tier. Absent when the role has none (an inherit role, an explicit model pick). */
+  maxTier?: ModelTier
+  /** The effort ceiling: Role.staffing.maxEffort, else the role's own effort. Absent = no ceiling from the chart. */
+  maxEffort?: Effort
+  /** The tier floor (Role.staffing.minTier). Never above maxTier: a floor above the ceiling is dropped. */
+  minTier?: ModelTier
+}
+
+/**
+ * The mode and bounds automatic staffing uses for `role` in `project`. Pure. Rules:
+ * - a project with `staffing: 'fixed'` makes every role 'fixed';
+ * - else the role's explicit `staffing.mode` wins;
+ * - else a role on a concrete model (not 'inherit', not a tier name or legacy Claude alias) with no `tier` is 'fixed'
+ *   (an explicit user pick); every other role is 'auto';
+ * - `maxTier` is the role's own tier when it has one; `maxEffort` is `staffing.maxEffort ?? role.effort`; `minTier` is
+ *   dropped when it is above `maxTier`.
+ * An 'inherit' role has no tier here: the resolver resolves it from the parent's resolved tier (spec 4.3), so its
+ * `maxTier` is absent and `minTier` is kept as given. Bounds are reported for 'fixed' roles too; a fixed role is never
+ * resized. `role.staffing` is read through cleanRoleStaffing, so a malformed value counts as absent.
+ */
+export function effectiveRoleStaffing(
+  role: Pick<Role, 'model' | 'tier' | 'effort' | 'staffing'>,
+  project: Pick<Project, 'staffing'> | null | undefined
+): EffectiveRoleStaffing {
+  const own = cleanRoleStaffing(role.staffing)
+  const tier = isModelTier(role.tier) ? role.tier : undefined
+  const model = typeof role.model === 'string' ? role.model.trim() : ''
+  const concrete = model !== '' && model !== 'inherit' && settingTier(model) === undefined
+  const mode: StaffingMode = staffingModeOf(project) === 'fixed' ? 'fixed' : (own?.mode ?? (concrete && !tier ? 'fixed' : 'auto'))
+  const out: EffectiveRoleStaffing = { mode }
+  if (tier) out.maxTier = tier
+  const maxEffort = own?.maxEffort ?? (isEffort(role.effort) ? role.effort : undefined)
+  if (maxEffort) out.maxEffort = maxEffort
+  if (own?.minTier && (!tier || compareTier(own.minTier, tier) <= 0)) out.minTier = own.minTier
+  return out
+}
+
+/** PlanStep.staff from untrusted data: kept only with a non-empty `role` (trimmed); an unknown tier or effort is dropped. */
+export function cleanPlanStepStaff(x: unknown): PlanStepStaff | undefined {
+  if (!isRecordLike(x) || typeof x.role !== 'string') return undefined
+  const role = x.role.trim()
+  if (!role) return undefined
+  const out: PlanStepStaff = { role }
+  if (isModelTier(x.tier)) out.tier = x.tier
+  if (isEffort(x.effort)) out.effort = x.effort
+  return out
+}
+
+/**
+ * PlanStep.paths from untrusted data: strings only, trimmed; empty, over PLAN_STEP_PATH_MAX_CHARS or holding a control
+ * character dropped; duplicates collapse (first kept); at most PLAN_STEP_PATHS_MAX. undefined when none remain.
+ */
+function cleanPlanStepPaths(x: unknown): string[] | undefined {
+  if (!Array.isArray(x)) return undefined
+  const out: string[] = []
+  for (const p of x) {
+    if (out.length >= PLAN_STEP_PATHS_MAX) break
+    if (typeof p !== 'string') continue
+    const t = p.trim()
+    if (!t || t.length > PLAN_STEP_PATH_MAX_CHARS || hasControlChar(t) || out.includes(t)) continue
+    out.push(t)
+  }
+  return out.length ? out : undefined
+}
+
+/**
+ * The plan's steps with their graph fields cleaned (pure; other fields are kept as they are, the input is not
+ * changed, a non-object step is passed through). Never throws.
+ * - `after`: only string ids of OTHER steps of this plan (a step's own id never counts; with duplicate ids the first
+ *   step holding an id is the one it names), deduplicated, at most PLAN_STEP_AFTER_MAX (the first valid ones); then a
+ *   dependency cycle is broken deterministically: a depth-first walk starts at each unvisited step in plan order and
+ *   follows "unblocks" edges (from a step to the steps waiting for it, in plan order); an edge that reaches a step still
+ *   on the walk closes a cycle, and that step's wait is dropped. So for `p1 after p2` and `p2 after p1`, p1 loses its
+ *   wait on p2: the earlier step stops waiting for a later one. The result has no cycle.
+ * - `paths`: see cleanPlanStepPaths. `staff`: see cleanPlanStepStaff.
+ * An empty or invalid `after`, `paths` or `staff` is removed from the step.
+ */
+export function cleanPlanStepGraph(steps: readonly PlanStep[]): PlanStep[] {
+  if (!Array.isArray(steps)) return []
+  const list = steps as readonly unknown[]
+  const firstIndex = new Map<string, number>()
+  list.forEach((s, i) => {
+    if (isRecordLike(s) && typeof s.id === 'string' && !firstIndex.has(s.id)) firstIndex.set(s.id, i)
+  })
+  // Each step's waits, as step indexes.
+  const waits: number[][] = list.map((s, i) => {
+    if (!isRecordLike(s) || !Array.isArray(s.after)) return []
+    const out: number[] = []
+    for (const id of s.after as unknown[]) {
+      if (out.length >= PLAN_STEP_AFTER_MAX) break
+      if (typeof id !== 'string' || id === s.id) continue
+      const j = firstIndex.get(id)
+      if (j === undefined || j === i || out.includes(j)) continue
+      out.push(j)
+    }
+    return out
+  })
+  // "Unblocks" edges: for each step, the steps that wait for it, in plan order.
+  const unblocks: number[][] = list.map(() => [])
+  waits.forEach((w, i) => {
+    for (const j of w) unblocks[j].push(i)
+  })
+  const dropped = new Set<string>()
+  const state = new Uint8Array(list.length)
+  for (let start = 0; start < list.length; start++) {
+    if (state[start] !== 0) continue
+    state[start] = 1
+    const stack: [number, number][] = [[start, 0]]
+    while (stack.length) {
+      const top = stack[stack.length - 1]
+      const [v, k] = top
+      if (k >= unblocks[v].length) {
+        stack.pop()
+        state[v] = 2
+        continue
+      }
+      top[1] = k + 1
+      const w = unblocks[v][k]
+      if (state[w] === 1) dropped.add(`${w}>${v}`)
+      else if (state[w] === 0) {
+        state[w] = 1
+        stack.push([w, 0])
+      }
+    }
+  }
+  return list.map((s, i) => {
+    if (!isRecordLike(s)) return s as PlanStep
+    const out = { ...s } as unknown as PlanStep
+    const after = waits[i].filter((j) => !dropped.has(`${i}>${j}`)).map((j) => (list[j] as PlanStep).id)
+    if (after.length) out.after = after
+    else delete out.after
+    const paths = cleanPlanStepPaths(s.paths)
+    if (paths) out.paths = paths
+    else delete out.paths
+    const staff = cleanPlanStepStaff(s.staff)
+    if (staff) out.staff = staff
+    else delete out.staff
+    return out
+  })
+}
+
+/**
+ * One StaffingAssignment from untrusted data. A row without a non-empty string `roleId` and `model`, a valid `source`
+ * or a finite `at` >= 0 is malformed: undefined. Optional members are kept only when valid (non-empty string agentId /
+ * stepId, a known tier and effort, a note trimmed, non-empty and cut to STAFFING_NOTE_MAX_CHARS); other keys are dropped.
+ */
+export function cleanStaffingAssignment(x: unknown): StaffingAssignment | undefined {
+  if (!isRecordLike(x)) return undefined
+  const roleId = nonEmptyString(x.roleId)
+  const model = nonEmptyString(x.model)
+  if (!roleId || !model || !isStaffingSource(x.source)) return undefined
+  if (typeof x.at !== 'number' || !Number.isFinite(x.at) || x.at < 0) return undefined
+  const out: StaffingAssignment = { roleId, model, source: x.source, at: x.at }
+  const agentId = nonEmptyString(x.agentId)
+  if (agentId) out.agentId = agentId
+  const stepId = nonEmptyString(x.stepId)
+  if (stepId) out.stepId = stepId
+  if (isModelTier(x.tier)) out.tier = x.tier
+  if (isEffort(x.effort)) out.effort = x.effort
+  if (typeof x.note === 'string') {
+    const note = cutAtBoundary(x.note.trim(), STAFFING_NOTE_MAX_CHARS).trim()
+    if (note) out.note = note
+  }
+  return out
+}
+
+/**
+ * RunStaffing from untrusted data (a stored record, or an adapter's updateStaffing argument): undefined unless it is an
+ * object; an unknown goal reads 'balanced'; malformed assignment rows are dropped (cleanStaffingAssignment), a missing
+ * or non-array list reads as empty, and only the newest (last) RUN_STAFFING_ASSIGNMENTS_MAX rows are kept. Pure.
+ */
+export function cleanRunStaffing(x: unknown): RunStaffing | undefined {
+  if (!isRecordLike(x)) return undefined
+  const goal: StaffingGoal = isStaffingGoal(x.goal) ? x.goal : 'balanced'
+  const assignments: StaffingAssignment[] = []
+  for (const row of Array.isArray(x.assignments) ? (x.assignments as unknown[]) : []) {
+    const a = cleanStaffingAssignment(row)
+    if (a) assignments.push(a)
+  }
+  return { goal, assignments: assignments.length > RUN_STAFFING_ASSIGNMENTS_MAX ? assignments.slice(-RUN_STAFFING_ASSIGNMENTS_MAX) : assignments }
 }

@@ -4,8 +4,8 @@
  *
  * - Flags map to RunOverrides (always `execMode: true`): --permission-mode, --no-auto-continue,
  *   --max-auto-continues, --max-budget / --max-cost (USD, finite >= 0; not both), --allow-unpriced-budget,
- *   --allow-unmerged, --allow-peer-messages, --wait-for-reset, --stall-timeout s, --on-* (decisionPolicy),
- *   --max-auto-denials, --wait-timeout s, --human-grace s. Bad values are usage errors (exit 2).
+ *   --allow-unmerged, --strict-delegation, --goal balanced|speed|cost, --allow-peer-messages, --wait-for-reset, --stall-timeout s, --on-* (decisionPolicy),
+ *   --max-auto-denials. Bad values are usage errors (exit 2); a `wait` policy is refused.
  * - The prompt is the positional, else --prompt-file <path|-> (resume: --prompt, --prompt-file), else stdin ('-', or no
  *   positional with a non-TTY stdin); at most 1 MB. Empty: exit 2. Untrusted text belongs in --prompt-file or stdin,
  *   never argv: on Windows the .cmd shim hands arguments to cmd.exe (review M12).
@@ -16,11 +16,12 @@
  *   settings (overridesWidening).
  * - The run's chain is followed (runs:subscribe, followChains) until a `run.finalized` for a followed run; the exit
  *   code is EXEC_OUTCOME_EXIT_CODE[outcome]. A snapshot that already carries summary.execOutcome ends at once.
- * - Output: text prints transcript rows and status words like `orgai watch`, then `<outcome> · <status> · <cost>`;
+ * - Output: text prints transcript rows, status words, run `log` events of level warn / error and the run-start
+ *   `Models:` info line (execLogLine), then `<outcome> · <status> · <cost>`;
  *   json prints one document at the end; stream-json prints every event, then a `result` line.
  * - SIGINT / SIGTERM: the first calls runs:stop on the newest followed run and waits up to 10 s for run.finalized,
  *   then exits 130 / 143; a second signal exits at once.
- * - --host inproc: the in-process host is stopped (force) before the command returns.
+ * - The in-process host is stopped (force) before the command returns.
  */
 import { readFileSync, statSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
@@ -28,7 +29,9 @@ import { MAX_AUTO_CONTINUES_LIMIT } from '../../shared/defaults'
 import {
   EXEC_OUTCOME_EXIT_CODE,
   MAX_TIMER_DELAY_MS,
+  STAFFING_GOALS,
   isPermissionMode,
+  isStaffingGoal,
   type AgentInstance,
   type ExecOutcome,
   type HeadlessDecisionPolicy,
@@ -40,6 +43,7 @@ import {
   type RunRecord,
   type RunsEventParams,
   type RunSummary,
+  type TeamFilesStatus,
   type TranscriptEntry
 } from '../../shared/types'
 import { isOpenStatus } from '../../shared/view/runChains'
@@ -52,12 +56,16 @@ import { TUI_FLAGS, findCommand } from '../commandTable'
 import { parseFlags, type FlagSpec } from '../flags'
 import { readStdinText } from '../manage'
 import { emit, emitLine, isJsonOutput, note, printText, safeLine, styleFor, styleStatus, warn, type Json } from '../output'
-import { agentLabel, costText, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
-import { resolveRunFromSource, warnVersionSkew } from '../runRef'
-import { CliError, EXIT, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
+import { agentLabel, costText, eventWithoutImages, pendingItems, planUpdateLine, recordWithoutImages, statusViewOf, statusWordOfSummary, transcriptLine } from '../render'
+import { staffingLine } from '../staffingText'
+import { pendingTeamFilesLine } from '../approvalText'
+import { loadImages } from '../images'
+import { compactionLine } from '../../shared/view/compactionText'
+import { liveSource, resolveRunFromSource } from '../runRef'
+import { CliError, EXIT, HOST_STARTING_WAIT_MS, type CliContext, type CommandFn, type HostCallError, type HostClient } from '../types'
 import { intFlag } from './runs'
+import { runPausedAction } from './resumeActions'
 import { runResumeTui } from './tui'
-import { liveSource } from './watch'
 
 export const EXEC_STDIN_MAX_BYTES = 1024 * 1024
 export const EXEC_STOP_WAIT_MS = 10_000
@@ -77,11 +85,13 @@ const usage = (message: string): CliError => new CliError(message, EXIT.usage)
 /** A parseFlags spec from a commandTable entry (value flags are strings, the rest booleans). */
 function specOf(command: string): FlagSpec {
   const spec: FlagSpec = {}
-  for (const f of findCommand(command)?.flags ?? []) spec[f.name] = { type: f.takesValue ? 'string' : 'boolean', ...(f.short ? { short: f.short } : {}) }
+  for (const f of findCommand(command)?.flags ?? []) spec[f.name] = { type: f.takesValue ? 'string' : 'boolean', ...(f.repeatable ? { multiple: true } : {}), ...(f.short ? { short: f.short } : {}) }
   return spec
 }
 
 type Values = Record<string, string | boolean | string[] | undefined>
+
+const strs = (v: Values, name: string): string[] => (Array.isArray(v[name]) ? (v[name] as string[]) : [])
 
 const str = (v: Values, name: string): string | undefined => (typeof v[name] === 'string' ? (v[name] as string) : undefined)
 
@@ -89,6 +99,8 @@ function choice(v: Values, name: string): string | undefined {
   const raw = str(v, name)
   if (raw === undefined) return undefined
   const allowed = findCommand('exec')?.flags.find((f) => f.name === name)?.values ?? findCommand('resume')?.flags.find((f) => f.name === name)?.values
+  // Nothing else can answer a card of an orgai run (cli-standalone-default.md 4.3): a policy that waits is refused.
+  if (raw === 'wait') throw usage(`--${name} wait is not available: only this terminal could answer, and exec has none. Use ${allowed?.join(', ')}.`)
   if (allowed && !allowed.includes(raw)) throw usage(`--${name} must be one of ${allowed.join(', ')}.`)
   return raw
 }
@@ -127,6 +139,12 @@ export function overridesFromFlags(v: Values): RunOverrides {
   if (cap !== undefined) o.maxBudgetUsd = amount(budget !== undefined ? 'max-budget' : 'max-cost', cap, 'an amount in USD (0 or more)')
   if (v['allow-unpriced-budget'] === true) o.allowUnpricedBudget = true
   if (v['allow-unmerged'] === true) o.allowUnmerged = true
+  if (v['strict-delegation'] === true) o.strictDelegation = true
+  const goal = str(v, 'goal')
+  if (goal !== undefined) {
+    if (!isStaffingGoal(goal)) throw usage(`--goal must be one of ${STAFFING_GOALS.join(', ')}.`)
+    o.goal = goal
+  }
   if (v['allow-peer-messages'] === true) o.allowPeerMessages = true
   if (v['wait-for-reset'] === true) o.waitForReset = true
   const stall = secondsMs('stall-timeout', str(v, 'stall-timeout'), true)
@@ -144,10 +162,6 @@ export function overridesFromFlags(v: Values): RunOverrides {
   pick('proposal', 'on-proposal')
   pick('merge', 'on-merge')
   if (str(v, 'max-auto-denials') !== undefined) policy.maxAutoDenials = intFlag('max-auto-denials', str(v, 'max-auto-denials'), 0, MAX_AUTO_DENIALS_LIMIT)
-  const wait = secondsMs('wait-timeout', str(v, 'wait-timeout'))
-  if (wait !== undefined) policy.waitTimeoutMs = wait
-  const grace = secondsMs('human-grace', str(v, 'human-grace'))
-  if (grace !== undefined) policy.humanGraceMs = grace
   // A partial policy: the host fills the missing choices with DEFAULT_HEADLESS_DECISION_POLICY.
   if (Object.keys(policy).length) o.decisionPolicy = policy as HeadlessDecisionPolicy
   return o
@@ -252,7 +266,7 @@ class Session {
   }
 
   checkGranted(scope: HostScope): void {
-    // Names the fix: the Terminal access level (review H2) or a version skew.
+    // Names the missing scope.
     const missing = missingScopesError(this.client, [scope])
     if (missing) throw missing
   }
@@ -260,7 +274,7 @@ class Session {
   async needConfigure(): Promise<void> {
     if (this.scopes.includes('configure')) return
     const scopes: HostScope[] = [...this.scopes, 'configure']
-    const res = await this.ctx.connect(scopes, { clientKind: 'cli', waitStartingMs: 2000 })
+    const res = await this.ctx.connect(scopes, { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS })
     if (!res.ok) throw connectFailure(res)
     this.base.close()
     this.base = res.client
@@ -279,8 +293,6 @@ async function openSession(ctx: CliContext, configure: boolean): Promise<Session
   const scopes: HostScope[] = configure ? ['read', 'operate', 'configure'] : ['read', 'operate']
   const host = await ensureHost(ctx, scopes, { interactive: false })
   const session = new Session(ctx, host, scopes)
-  warnVersionSkew(ctx, host.client)
-  if (host.started && host.inproc === undefined) note(ctx, 'Started the OrgAI host in the background.')
   try {
     if (configure) session.checkGranted('configure')
   } catch (e) {
@@ -288,6 +300,21 @@ async function openSession(ctx: CliContext, configure: boolean): Promise<Session
     throw e
   }
   return session
+}
+
+/**
+ * cli-parity 3.4: one stderr line (text mode) before a run starts while the project's team files have changes waiting
+ * for approval. A failed lookup says nothing: the run's own warning (TeamFilesService.beforeRun) still comes.
+ */
+export async function noteTeamFiles(ctx: CliContext, client: HostClient, projectId: string): Promise<void> {
+  if (isJsonOutput(ctx)) return
+  try {
+    const list = await client.call<TeamFilesStatus[]>('teamFiles:listAttention', [], { timeoutMs: 30_000 })
+    const line = pendingTeamFilesLine(Array.isArray(list) ? list : [], projectId)
+    if (line) note(ctx, line)
+  } catch {
+    // the run's warning covers it
+  }
 }
 
 // ---------- orgai exec ----------
@@ -306,6 +333,7 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
   if (v['allow-edits'] === true && !quick) throw usage('--allow-edits applies to --quick runs only.')
   if (quick && ctx.globals.project !== undefined) throw usage('--quick runs in the current folder; leave out --project.')
   const prompt = await readPrompt(ctx, positionals[0], promptFile, 'Give a prompt: orgai exec "<prompt>", --prompt-file <path>, or - to read it from stdin.')
+  const images = await loadImages(strs(v, 'image'), ctx.cwd)
 
   // cwd checks before any host is started: an agent worktree, and (while no host runs) an unregistered folder.
   if (ctx.globals.project === undefined) refuseManagedWorktree(ctx.resolveProject([]).managedWorktree)
@@ -324,7 +352,7 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
     if (quick) {
       if (overridesNeedConfigure(undefined, overrides)) await session.needConfigure()
       return call<RunSummary>(session.client, 'runs:startQuick', [
-        { prompt, folder: ctx.cwd, team: team ?? 'single', allowEdits: v['allow-edits'] === true, overrides }
+        { prompt, folder: ctx.cwd, team: team ?? 'single', allowEdits: v['allow-edits'] === true, ...(images.length ? { images } : {}), overrides }
       ])
     }
     const projects = await call<Project[]>(session.client, 'projects:list', [])
@@ -340,7 +368,8 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
       if (!isJsonOutput(ctx)) printText(ctx, styleFor(ctx).dim(`Created the project ${safeLine(project.name)}.`))
     }
     if (overridesNeedConfigure(project, overrides)) await session.needConfigure()
-    return call<RunSummary>(session.client, 'runs:start', [{ projectId: project.id, prompt, ...(team === 'single' ? { team: 'single' } : {}), overrides }])
+    await noteTeamFiles(ctx, session.client, project.id)
+    return call<RunSummary>(session.client, 'runs:start', [{ projectId: project.id, prompt, ...(team === 'single' ? { team: 'single' } : {}), ...(images.length ? { images } : {}), overrides }])
   })
 }
 
@@ -349,6 +378,8 @@ export const runExec: CommandFn = async (ctx: CliContext, args: string[]): Promi
 export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Promise<number> => {
   const { values, positionals } = parseFlags(args, specOf('resume'))
   const v = values as Values
+  // --now / --cancel-auto-resume act on a paused run (resumeActions.ts); they take no prompt and no exec flags.
+  if (v.now === true || v['cancel-auto-resume'] === true) return runPausedAction(ctx, v, positionals)
   if (v.exec !== true) {
     // Without --exec this is the terminal UI: exec-only flags are a mistake, not something to ignore.
     const tuiOnly = new Set(['prompt', 'exec', ...TUI_FLAGS.map((f) => f.name)])
@@ -365,6 +396,7 @@ export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Pro
   const promptFile = str(v, 'prompt-file')
   if ([flagPrompt !== undefined, promptFile !== undefined, dash.length > 0].filter(Boolean).length > 1) throw usage('Give one of --prompt <text>, --prompt-file <path> or -.')
   const prompt = await readPrompt(ctx, flagPrompt ?? (dash.length ? '-' : undefined), promptFile, 'Give a message to continue with: --prompt "<text>", --prompt-file <path>, or - to read it from stdin.')
+  const images = await loadImages(strs(v, 'image'), ctx.cwd)
   if (ctx.globals.project === undefined) refuseManagedWorktree(ctx.resolveProject([]).managedWorktree)
 
   const session = await openSession(ctx, false)
@@ -399,8 +431,22 @@ export const runResume: CommandFn = async (ctx: CliContext, args: string[]): Pro
     const from = runs.find((r) => r.id === runId)
     const project = from ? projects.find((p) => p.id === from.projectId) : undefined
     if (overridesNeedConfigure(project, overrides)) await session.needConfigure()
-    return call<RunSummary>(session.client, 'runs:continue', [{ runId, text: prompt, overrides, exec: true }])
+    if (project) await noteTeamFiles(ctx, session.client, project.id)
+    return call<RunSummary>(session.client, 'runs:continue', [{ runId, text: prompt, ...(images.length ? { images } : {}), overrides, exec: true }])
   })
+}
+
+/**
+ * The text line for a run `log` event, or null when exec does not print it: every warn and error, and of the info
+ * logs only the run-start "Models: ..." line (cli-parity 3.1). Sanitized to one line.
+ */
+export function execLogLine(level: string, message: string, st: ReturnType<typeof styleFor>): string | null {
+  const text = safeLine(message)
+  if (!text) return null
+  if (level === 'warn') return `${st.yellow('Warning:')} ${text}`
+  if (level === 'error') return `${st.red('Error:')} ${text}`
+  if (level === 'info' && text.startsWith('Models: ')) return `${st.dim('Models:')} ${text.slice('Models: '.length)}`
+  return null
 }
 
 // ---------- Following ----------
@@ -419,6 +465,7 @@ export const OUTCOME_LABEL: Record<ExecOutcome, string> = {
   'unmerged-conflicts': 'Unmerged conflicts',
   blocked: 'Blocked',
   'incomplete-plan': 'Plan not finished',
+  'delegation-incomplete': 'Required delegation incomplete',
   'needs-decision': 'Needs a decision',
   'budget-exceeded': 'Budget reached',
   'rate-limited': 'Usage limit reached',
@@ -491,6 +538,19 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
   let index = new Map<string, number>()
   let nextIndex = 1
   const printed = new Set<string>()
+  const staffed = new Set<string>()
+  /** Log lines already printed (a resync snapshot carries the record's logs again). */
+  const logged = new Set<string>()
+  const printLog = (runId: string, level: string, message: string): void => {
+    if (json) return
+    const line = execLogLine(level, message, st)
+    const key = `${runId}:${level}:${message}`
+    if (line === null || logged.has(key)) return
+    logged.add(key)
+    printText(ctx, `${st.dim(tagOf(runId))} ${line}`)
+  }
+  /** `runId:agentId` -> compactions seen in this stream (agent.compacted). */
+  const compacted = new Map<string, number>()
   let lastActive: RunRecord | undefined
 
   const tagOf = (runId: string): string => {
@@ -609,6 +669,28 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
       case 'plan.updated':
         if (!json) printText(ctx, `${st.dim(tagOf(runId))} ${planUpdateLine(ev.plan)}`)
         return
+      case 'log':
+        printLog(runId, ev.level, ev.message)
+        return
+      case 'agent.compacted': {
+        const key = `${runId}:${ev.agentId}`
+        const n = (compacted.get(key) ?? 0) + 1
+        compacted.set(key, n)
+        if (!json) printText(ctx, `${st.dim(tagOf(runId))} ${safeLine(compactionLine(agentOf(runId, ev.agentId)?.name ?? ev.agentId, Math.max(n, agentOf(runId, ev.agentId)?.compactions ?? 0)))}`)
+        return
+      }
+      case 'staffing.updated':
+        // One line per staffed report, once; json and stream-json carry the raw event instead.
+        if (!json) {
+          for (const a of ev.staffing.assignments) {
+            if (!a.agentId) continue
+            const key = `${runId}:${a.agentId}:${a.at}:${a.source}:${a.model}:${a.effort ?? ''}`
+            if (staffed.has(key)) continue
+            staffed.add(key)
+            printText(ctx, `${st.dim(tagOf(runId))} ${staffingLine(agentOf(runId, a.agentId) ? agentLabel(agentOf(runId, a.agentId)) : a.roleId, a)}`)
+          }
+        }
+        return
       default:
         printCards(runId, cardOf(ev))
     }
@@ -619,10 +701,10 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
     const ev = p.event
     if (typeof p.seq !== 'number' && ev.type === 'agent.partial') {
       adopt(ev.runId)
-      if (stream) emitLine(ctx, { type: 'event', atSeq: p.atSeq, event: ev })
+      if (stream) emitLine(ctx, { type: 'event', atSeq: p.atSeq, event: eventWithoutImages(ev) })
       return
     }
-    if (stream) emitLine(ctx, { type: 'event', ...(typeof p.seq === 'number' ? { seq: p.seq } : {}), event: ev })
+    if (stream) emitLine(ctx, { type: 'event', ...(typeof p.seq === 'number' ? { seq: p.seq } : {}), event: eventWithoutImages(ev) })
     applyEvent(ev)
   }
 
@@ -647,6 +729,7 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
       const s = stateOf(active.summary.id, active.summary)
       s.agents = { ...active.agents }
       // Every row the run wrote so far (it started a moment ago); a resync prints only what was missed.
+      for (const l of active.logs ?? []) printLog(active.summary.id, l.level, l.message)
       for (const e of active.transcript) printEntry(active.summary.id, e)
       if (firstTime) printCards(active.summary.id, snap.pendingCards?.[active.summary.id])
     }
@@ -701,7 +784,7 @@ async function runAndFollow(ctx: CliContext, session: Session, start: () => Prom
     if (signal) requestStop()
     follower = new RunStream({
       client: session.client,
-      connect: () => ctx.connect(session.scopes, { clientKind: 'cli', waitStartingMs: 2000 }),
+      connect: () => ctx.connect(session.scopes, { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS }),
       subscribeInput: () => ({ runIds: [...followed], followChains: true, nonInteractive: true, ...(newest ? { includeActiveRunRecord: newest } : {}) }),
       onEvent,
       onSnapshot,

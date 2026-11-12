@@ -1,0 +1,115 @@
+{
+  "format": "orgai.team/1",
+  "servers": [
+    {
+      "name": "context7",
+      "transport": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "description": "Context7 (Without a key): Fetch current documentation and examples for libraries and frameworks.",
+      "enabled": true,
+      "roles": [
+        "researcher"
+      ],
+      "connectorId": "context7",
+      "connectorVariant": "free"
+    },
+    {
+      "name": "deepwiki",
+      "transport": "http",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "description": "DeepWiki (Public repositories): Ask questions about public GitHub repositories and read their generated docs.",
+      "enabled": true,
+      "roles": [
+        "researcher"
+      ],
+      "connectorId": "deepwiki",
+      "connectorVariant": "public"
+    },
+    {
+      "name": "exa",
+      "transport": "http",
+      "url": "https://mcp.exa.ai/mcp",
+      "description": "Exa (Without a key): Search the web and read pages for research.",
+      "enabled": true,
+      "roles": [
+        "marketer"
+      ],
+      "connectorId": "exa",
+      "connectorVariant": "free"
+    },
+    {
+      "name": "github",
+      "transport": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "X-MCP-Readonly": "true"
+      },
+      "secretHeaders": [
+        "Authorization"
+      ],
+      "description": "GitHub (Read-only): Read repositories, issues, pull requests and code on GitHub.",
+      "enabled": true,
+      "roles": [
+        "orchestrator",
+        "qa-engineer",
+        "repo-steward",
+        "researcher",
+        "reviewer"
+      ],
+      "connectorId": "github",
+      "connectorVariant": "readonly"
+    },
+    {
+      "name": "playwright",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.82",
+        "--cdp-endpoint",
+        "http://127.0.0.1:9222"
+      ],
+      "description": "Drive and inspect the running OrgAI renderer via CDP: screenshots, a11y snapshots, clicks, typing, console",
+      "enabled": true,
+      "roles": [
+        "qa-engineer",
+        "ui-engineer",
+        "ux-researcher"
+      ],
+      "fromLibrary": true,
+      "registry": {
+        "name": "io.github.microsoft/playwright-mcp",
+        "version": "0.0.82",
+        "registryType": "npm",
+        "identifier": "@playwright/mcp"
+      }
+    },
+    {
+      "name": "shadcn",
+      "transport": "http",
+      "url": "https://shadcn.exchange/mcp",
+      "description": "Search 12,000+ shadcn/ui blocks from 130+ registries, free and paid, with install commands.",
+      "enabled": true,
+      "roles": [
+        "adapter-engineer",
+        "orchestrator",
+        "product-designer",
+        "qa-engineer",
+        "researcher",
+        "reviewer",
+        "runtime-engineer",
+        "runtime-lead",
+        "ui-engineer",
+        "ui-lead",
+        "ux-researcher"
+      ],
+      "fromLibrary": true,
+      "registry": {
+        "name": "exchange.shadcn/blocks",
+        "version": "1.0.0",
+        "registryType": "remote",
+        "identifier": "https://shadcn.exchange/mcp"
+      }
+    }
+  ]
+}

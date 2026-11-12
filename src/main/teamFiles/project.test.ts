@@ -311,3 +311,54 @@ describe('security review fixes', () => {
     expect(r.notes.filter((n) => /cannot hold/.test(n))).toHaveLength(2)
   })
 })
+
+describe('staffing fields', () => {
+  const ctx = { tierModel: (t: string) => ({ deep: 'model-deep', everyday: 'model-everyday' })[t as 'deep'], serverId: () => undefined, skillId: () => undefined, keepServerIds: [] as string[] }
+
+  it('writes nothing for a role without staffing and a project on its defaults', () => {
+    const plain = docFromProject(mkProject(), content).doc
+    const dflt = docFromProject(mkProject({ staffing: 'auto', staffingGoal: 'balanced', reviewPolicy: 'risk' }), content).doc
+    expect(dflt).toEqual(plain)
+    expect(JSON.stringify(plain)).not.toMatch(/staffing|reviewPolicy/)
+    const bad = docFromProject(mkProject({ staffing: 'nope', staffingGoal: 'nope', reviewPolicy: 'nope' } as unknown as Partial<Project>), content).doc
+    expect(bad).toEqual(plain)
+  })
+
+  it('carries the fields from the project to the document and back', () => {
+    const p = mkProject({ staffing: 'fixed', staffingGoal: 'speed', reviewPolicy: 'always' })
+    p.roles[1].staffing = { mode: 'auto', minTier: 'fast', maxEffort: 'medium' }
+    const doc = docFromProject(p, content).doc
+    expect(doc.settings).toMatchObject({ staffing: 'fixed', staffingGoal: 'speed', reviewPolicy: 'always' })
+    expect(doc.roles.find((r) => r.slug === 'dev')!.staffing).toEqual({ mode: 'auto', minTier: 'fast', maxEffort: 'medium' })
+    expect(doc.roles.find((r) => r.slug === 'lead')!.staffing).toBeUndefined()
+    const back = parseTeamFiles(serializeTeam(doc), { base: null, agentsDirExists: true })
+    expect(back.problems).toEqual([])
+    expect(back.digest).toBe(teamDigest(doc))
+    const roles = rolesFromDoc(mkProject(), back.doc!, ctx)
+    expect(roles.find((r) => r.slug === 'dev')!.staffing).toEqual({ mode: 'auto', minTier: 'fast', maxEffort: 'medium' })
+    expect(roles.find((r) => r.slug === 'lead')!.staffing).toBeUndefined()
+    const q = settingsFromDoc(mkProject({ staffing: 'fixed', staffingGoal: 'cost', reviewPolicy: 'never' }), back.doc!)
+    expect(q).toMatchObject({ staffing: 'fixed', staffingGoal: 'speed', reviewPolicy: 'always' })
+    // A document without them clears the project's values and a role's staffing.
+    const cleared = settingsFromDoc(p, docFromProject(mkProject(), content).doc)
+    expect(cleared.staffing).toBeUndefined()
+    expect(cleared.staffingGoal).toBeUndefined()
+    expect(cleared.reviewPolicy).toBeUndefined()
+    const prior = mkProject()
+    prior.roles[1].staffing = { mode: 'fixed' }
+    expect(rolesFromDoc(prior, docFromProject(mkProject(), content).doc, ctx).find((r) => r.slug === 'dev')!.staffing).toBeUndefined()
+  })
+
+  it('changes the quick key when any of them changes', () => {
+    const base = teamKey(mkProject())
+    expect(teamKey(mkProject({ staffing: 'fixed' }))).not.toBe(base)
+    expect(teamKey(mkProject({ staffingGoal: 'cost' }))).not.toBe(base)
+    expect(teamKey(mkProject({ reviewPolicy: 'never' }))).not.toBe(base)
+    const p = mkProject()
+    p.roles[1].staffing = { mode: 'fixed' }
+    expect(teamKey(p)).not.toBe(base)
+    // A default spelled out is the same team.
+    expect(teamKey(mkProject({ staffing: 'auto', staffingGoal: 'balanced', reviewPolicy: 'risk' }))).toBe(base)
+  })
+})
+

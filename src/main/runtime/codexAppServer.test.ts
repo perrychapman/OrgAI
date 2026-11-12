@@ -1,8 +1,25 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CodexAppServer, CodexRpcError, STDERR_TAIL_MAX_CHARS, codexExitMessage, codexHomeDir, maskKeyLike, redactSecrets, resolveCodexBinary } from './codexAppServer'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { trackedChildCount } from '../host/shutdown'
+import { clearCodexVersionCache } from './codexBinary'
+import {
+  CODEX_START_LOCK_MAX_HOLD_MS,
+  CODEX_START_LOCK_SHARED_KEY,
+  CodexAppServer,
+  CodexRpcError,
+  STDERR_TAIL_MAX_CHARS,
+  acquireCodexStartLock,
+  codexExitMessage,
+  codexHomeDir,
+  codexStartLockKey,
+  codexStartLockState,
+  maskKeyLike,
+  redactSecrets,
+  resolveCodexBinary,
+  withCodexStartLock
+} from './codexAppServer'
 import { buildLaunchConfig } from './codexProtocol'
 import { fakeCtx, project } from './testHelpers'
 import { harnessToolsFor } from './harnessTools'
@@ -31,14 +48,14 @@ describe('resolveCodexBinary', () => {
     if (saved !== undefined) process.env.ORGAI_CODEX_PATH = saved
   })
 
-  it('is undefined for a platform without a codex package', () => {
-    expect(resolveCodexBinary('aix', 'ppc64')).toBeUndefined()
-    expect(resolveCodexBinary('darwin', 'ia32')).toBeUndefined()
+  it('is undefined for a platform without a codex package (no PATH)', () => {
+    expect(resolveCodexBinary('aix', 'ppc64', { env: {} })).toBeUndefined()
+    expect(resolveCodexBinary('darwin', 'ia32', { env: {} })).toBeUndefined()
   })
 
   it('never throws for the macOS triples and uses the bare binary name there', () => {
     for (const arch of ['arm64', 'x64']) {
-      const bin = resolveCodexBinary('darwin', arch)
+      const bin = resolveCodexBinary('darwin', arch, { env: {} })
       // Only installed on a Mac; elsewhere the optional dependency is absent and the lookup is undefined.
       if (bin) expect(bin.path.replace(/\\/g, '/')).toMatch(/apple-darwin\/bin\/codex$/)
     }
@@ -59,6 +76,72 @@ describe('request plumbing without a process', () => {
     } finally {
       if (prev === undefined) delete process.env.ORGAI_CODEX_PATH
       else process.env.ORGAI_CODEX_PATH = prev
+    }
+  })
+
+  it('a failed app-server spawn leaves nothing in the shutdown registry (review round 2)', async () => {
+    const before = trackedChildCount('codex app-server')
+    // A hand-made binary (no source) skips the version check, so the spawn itself fails (ENOENT, no 'exit' event).
+    const s = new CodexAppServer({ cwd: tmpdir(), binary: { path: join(tmpdir(), 'orgai-definitely-not-codex', 'codex') } })
+    await expect(s.start()).rejects.toThrow()
+    await s.exited
+    await new Promise((r) => setTimeout(r, 20))
+    expect(trackedChildCount('codex app-server')).toBe(before)
+  })
+
+  it('checks the version of a resolved binary before spawning: refused outside 0.166.x, warned for ORGAI_CODEX_PATH', async () => {
+    const binary = { path: process.execPath, source: 'package' as const }
+    let ran = 0
+    const versionRunner = async (): Promise<string> => {
+      ran++
+      return 'codex-cli 0.199.0'
+    }
+    clearCodexVersionCache()
+    await expect(new CodexAppServer({ binary, versionRunner }).start()).rejects.toThrow('Codex 0.199.0 is not supported; install @openai/codex@0.166.0')
+    expect(ran).toBe(1)
+    clearCodexVersionCache()
+    const warnings: string[] = []
+    // ORGAI_CODEX_PATH: started anyway (here it is Node, so initialize fails), the warning came first.
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-codex-ver-'))
+    try {
+      writeFileSync(join(dir, 'app-server'), 'process.exit(3)')
+      const s = new CodexAppServer({ cwd: dir, binary: { path: process.execPath, source: 'env' }, versionRunner, onWarning: (m) => warnings.push(m) })
+      await expect(s.start()).rejects.toThrow(/exited \(code 3\)/)
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toMatch(/^Codex 0\.199\.0 at .* \(ORGAI_CODEX_PATH\) is not a tested version/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      clearCodexVersionCache()
+    }
+  })
+
+  it('a close() during the version check spawns nothing: start() rejects and exited resolves (review round 1)', async () => {
+    clearCodexVersionCache()
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-codex-close-'))
+    const marker = join(dir, 'spawned')
+    try {
+      // If the app-server were spawned it would write the marker and stay up (2 s, so a regression leaves no orphan).
+      writeFileSync(join(dir, 'app-server'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x'); setTimeout(() => process.exit(0), 2000)`)
+      let release!: (v: string) => void
+      const versionRunner = (): Promise<string> => new Promise((resolve) => (release = resolve))
+      const exits: unknown[] = []
+      const s = new CodexAppServer({ cwd: dir, binary: { path: process.execPath, source: 'package' }, versionRunner })
+      s.onExit((code) => exits.push(code))
+      const started = s.start()
+      await new Promise((r) => setTimeout(r, 10))
+      s.close()
+      release('codex-cli 0.166.0')
+      await expect(started).rejects.toThrow('codex app-server was closed before it started')
+      await expect(s.exited).resolves.toBeUndefined()
+      expect(s.running).toBe(false)
+      await new Promise((r) => setTimeout(r, 300))
+      expect(existsSync(marker)).toBe(false)
+      expect(exits).toEqual([])
+      // A start() after close() rejects at once as well.
+      await expect(s.start()).rejects.toThrow('closed before it started')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      clearCodexVersionCache()
     }
   })
 
@@ -126,6 +209,82 @@ next()
     expect(seen.join('\n')).not.toContain('SECRET')
     expect(seen).toContain('Error: CODEX_HOME points to "/x", but that path does not exist')
   })
+
+  /** A fake that records its `-c` arguments in argv.json, then exits 1. */
+  const recorder = (): string => {
+    writeFileSync(join(dir, 'app-server'), `require('node:fs').writeFileSync(${JSON.stringify(join(dir, 'argv.json'))}, JSON.stringify(process.argv.slice(2))); process.exit(1)\n`)
+    return join(dir, 'argv.json')
+  }
+  const argsOf = (file: string): string[] => JSON.parse(readFileSync(file, 'utf8'))
+
+  it('prepareConfig: its entries follow the given config; it sees the binary, the child env and the config', async () => {
+    const file = recorder()
+    const seen: unknown[] = []
+    const s = new CodexAppServer({
+      cwd: dir,
+      env: { CODEX_HOME: join(dir, 'home'), ORGAI_CODEX_API_KEY: 'k' },
+      config: ['features.multi_agent=false', 'model_provider="orgai"'],
+      binary: { path: process.execPath },
+      prepareConfig: async (input) => {
+        seen.push(input)
+        return ['model_catalog_json="/h/c.json"']
+      }
+    })
+    await expect(s.start()).rejects.toThrow(/exited/)
+    expect(argsOf(file)).toEqual(['-c', 'features.multi_agent=false', '-c', 'model_provider="orgai"', '-c', 'model_catalog_json="/h/c.json"'])
+    expect(seen[0]).toMatchObject({ binary: { path: process.execPath }, config: ['features.multi_agent=false', 'model_provider="orgai"'], env: { CODEX_HOME: join(dir, 'home'), ORGAI_CODEX_API_KEY: 'k' } })
+  })
+
+  it('prepareConfig fails open: a rejection or nothing launches with the config as given', async () => {
+    for (const prepareConfig of [async () => Promise.reject(new Error('boom')), async () => [] as string[]]) {
+      const file = recorder()
+      const s = new CodexAppServer({ cwd: dir, config: ['a=1'], binary: { path: process.execPath }, prepareConfig })
+      await expect(s.start()).rejects.toThrow(/exited/)
+      expect(argsOf(file)).toEqual(['-c', 'a=1'])
+    }
+  })
+
+  it("takes its Codex home's start lock from the spawn until initialize settles; startLockHeld skips it", async () => {
+    const file = recorder()
+    const home = join(dir, 'home')
+    const release = await acquireCodexStartLock(codexStartLockKey({ CODEX_HOME: home }))
+    const s = new CodexAppServer({ cwd: dir, env: { CODEX_HOME: home }, binary: { path: process.execPath } })
+    const started = s.start().then(
+      () => undefined,
+      (e: Error) => e
+    )
+    await new Promise((r) => setTimeout(r, 150))
+    // Another start holds the home: nothing was spawned yet.
+    expect(existsSync(file)).toBe(false)
+    expect(codexStartLockState(codexStartLockKey({ CODEX_HOME: home })).waiting).toBe(1)
+    release()
+    expect((await started)?.message).toMatch(/exited/)
+    expect(existsSync(file)).toBe(true)
+    // Released after the failed start.
+    expect(codexStartLockState(codexStartLockKey({ CODEX_HOME: home }))).toEqual({ held: false, waiting: 0 })
+    // The caller holds the lock (the Codex adapter): start() does not wait for it again.
+    rmSync(file)
+    const held = await acquireCodexStartLock(codexStartLockKey({ CODEX_HOME: home }))
+    try {
+      const t = new CodexAppServer({ cwd: dir, env: { CODEX_HOME: home }, binary: { path: process.execPath }, startLockHeld: true })
+      await expect(t.start()).rejects.toThrow(/exited/)
+      expect(existsSync(file)).toBe(true)
+    } finally {
+      held()
+    }
+  })
+
+  it('a close() while prepareConfig runs spawns nothing', async () => {
+    const file = recorder()
+    let release!: () => void
+    const s = new CodexAppServer({ cwd: dir, binary: { path: process.execPath }, prepareConfig: () => new Promise<string[]>((r) => (release = () => r(['x=1']))) })
+    const started = s.start()
+    await new Promise((r) => setTimeout(r, 10))
+    s.close()
+    release()
+    await expect(started).rejects.toThrow(/closed before it started/)
+    expect(existsSync(file)).toBe(false)
+  })
 })
 
 describe('stderr helpers', () => {
@@ -156,6 +315,68 @@ describe('stderr helpers', () => {
     expect(s.stderrTail().length).toBeLessThanOrEqual(STDERR_TAIL_MAX_CHARS)
     feed('y'.repeat(STDERR_TAIL_MAX_CHARS * 5))
     expect(s.stderrTail().length).toBeLessThanOrEqual(STDERR_TAIL_MAX_CHARS)
+  })
+
+  it('does not split known secrets when flushing a newline-free stderr line', () => {
+    const key = 'synthetic-codex-secret-value-1234567890'
+    const seen: string[] = []
+    const s = new CodexAppServer({ env: { OPENAI_API_KEY: key }, onStderr: (line) => seen.push(line) })
+    const feed = (s as unknown as { onStderrData(c: string): void }).onStderrData.bind(s)
+
+    feed(`${'x'.repeat(7200)}${key}${'z'.repeat(1014)}`)
+    feed('\n')
+
+    const output = seen.join('\n')
+    expect(output).not.toContain(key)
+    expect(output).not.toContain(key.slice(0, 20))
+    expect(output).not.toContain(key.slice(20))
+    expect(output).toContain('[redacted]')
+  })
+
+  it('masks an unknown key-like value before a forced flush cuts through it', () => {
+    const seen: string[] = []
+    const s = new CodexAppServer({ onStderr: (line) => seen.push(line) })
+    const feed = (s as unknown as { onStderrData(c: string): void }).onStderrData.bind(s)
+    const key = `sk-${'A'.repeat(40)}`
+
+    feed(`${'x'.repeat(7190)}${key} error ${'z'.repeat(1014)}`)
+    feed('\n')
+
+    const output = seen.join('\n')
+    expect(output).not.toContain(key)
+    expect(output).not.toContain(key.slice(0, 20))
+    expect(output).not.toContain(key.slice(20))
+    expect(output).toContain('[redacted]')
+  })
+
+  it('suppresses the rest of an unknown unbounded key-like value after a forced cut', () => {
+    const seen: string[] = []
+    const s = new CodexAppServer({ onStderr: (line) => seen.push(line) })
+    const feed = (s as unknown as { onStderrData(c: string): void }).onStderrData.bind(s)
+    const token = 'synthetic-bearer-value-abcdefghijklmnopqrstuvwxyz'
+
+    feed(`${'x'.repeat(7200)}Bearer ${token.slice(0, 8)}`)
+    feed(token.slice(8, 18).padEnd(1000, 'q'))
+    feed('q'.repeat(8000))
+    feed(`${token.slice(18)}\nnormal line\n`)
+
+    const output = seen.join('\n')
+    expect(output).not.toContain('Bearer')
+    expect(output).not.toContain(token)
+    expect(output).not.toContain(token.slice(0, 8))
+    expect(output).not.toContain(token.slice(8, 18))
+    expect(output).toContain('normal line')
+  })
+
+  it('redacts known secrets from non-JSON stdout diagnostics', () => {
+    const key = 'synthetic-codex-secret-value-1234567890'
+    const seen: string[] = []
+    const s = new CodexAppServer({ env: { OPENAI_API_KEY: key }, onStderr: (line) => seen.push(line) })
+    const feed = (s as unknown as { onData(c: string): void }).onData.bind(s)
+
+    feed(`not-json ${key}\n`)
+
+    expect(seen).toEqual(['(non-JSON stdout) not-json [redacted]'])
   })
 })
 
@@ -220,4 +441,118 @@ describe.skipIf(!live)('real codex app-server (token-free)', () => {
     // A thread without a first turn has no rollout on disk yet, so it cannot be resumed (verified): resume only after a turn ran.
     await expect(server.request('thread/resume', { threadId: started.thread.id, cwd: tmpdir() })).rejects.toThrow(/no rollout/)
   }, 30_000)
+})
+
+describe('Codex start lock (one app-server start at a time per CODEX_HOME)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+  const deferred = () => {
+    let resolve!: () => void
+    let reject!: (e: Error) => void
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    return { promise, resolve, reject }
+  }
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+
+  it('keys by the resolved CODEX_HOME the server runs with; none set shares one key', () => {
+    expect(codexStartLockKey({ CODEX_HOME: '/data/codex/' })).toBe(codexStartLockKey({ CODEX_HOME: '/data/x/../codex' }))
+    expect(codexStartLockKey({ CODEX_HOME: '/a' })).not.toBe(codexStartLockKey({ CODEX_HOME: '/b' }))
+    const saved = process.env.CODEX_HOME
+    try {
+      delete process.env.CODEX_HOME
+      expect(codexStartLockKey({})).toBe(CODEX_START_LOCK_SHARED_KEY)
+      expect(codexStartLockKey({ CODEX_HOME: '  ' })).toBe(CODEX_START_LOCK_SHARED_KEY)
+      process.env.CODEX_HOME = '/inherited'
+      expect(codexStartLockKey({})).toBe(codexStartLockKey({ CODEX_HOME: '/inherited' }))
+    } finally {
+      if (saved === undefined) delete process.env.CODEX_HOME
+      else process.env.CODEX_HOME = saved
+    }
+  })
+
+  it('serialises starts in one home in FIFO order; another home does not wait', async () => {
+    const order: string[] = []
+    const gates = [deferred(), deferred(), deferred()]
+    const run = (name: string, i: number, key: string) =>
+      withCodexStartLock(key, async () => {
+        order.push(`${name}+`)
+        await gates[i]!.promise
+        order.push(`${name}-`)
+      })
+    const a = run('a', 0, 'lock-test-home-1')
+    const b = run('b', 1, 'lock-test-home-1')
+    const c = run('c', 2, 'lock-test-home-2')
+    await tick()
+    expect(order).toEqual(['a+', 'c+'])
+    gates[1]!.resolve()
+    await tick()
+    expect(order).toEqual(['a+', 'c+'])
+    gates[0]!.resolve()
+    await Promise.all([a, b])
+    expect(order).toEqual(['a+', 'c+', 'a-', 'b+', 'b-'])
+    gates[2]!.resolve()
+    await c
+    expect(codexStartLockState('lock-test-home-1')).toEqual({ held: false, waiting: 0 })
+  })
+
+  it('releases after a failed start', async () => {
+    await expect(withCodexStartLock('lock-test-fail', async () => Promise.reject(new Error('exited during initialize')))).rejects.toThrow('exited')
+    expect(codexStartLockState('lock-test-fail').held).toBe(false)
+    await expect(withCodexStartLock('lock-test-fail', async () => 'ok')).resolves.toBe('ok')
+  })
+
+  it('a hung start is released at the cap, and later starts keep their order', async () => {
+    vi.useFakeTimers()
+    const order: string[] = []
+    void withCodexStartLock('lock-test-hung', () => new Promise(() => {}))
+    const b = withCodexStartLock('lock-test-hung', async () => void order.push('b'))
+    const c = withCodexStartLock('lock-test-hung', async () => void order.push('c'))
+    await vi.advanceTimersByTimeAsync(CODEX_START_LOCK_MAX_HOLD_MS - 1)
+    expect(order).toEqual([])
+    expect(codexStartLockState('lock-test-hung').waiting).toBe(2)
+    await vi.advanceTimersByTimeAsync(1)
+    await Promise.all([b, c])
+    expect(order).toEqual(['b', 'c'])
+    expect(codexStartLockState('lock-test-hung')).toEqual({ held: false, waiting: 0 })
+  })
+
+  it('a closed server (released) frees the lock while its start still hangs', async () => {
+    const exited = deferred()
+    void withCodexStartLock('lock-test-closed', () => new Promise(() => {}), { released: exited.promise })
+    await tick()
+    expect(codexStartLockState('lock-test-closed').held).toBe(true)
+    exited.resolve()
+    await tick()
+    expect(codexStartLockState('lock-test-closed').held).toBe(false)
+  })
+
+  it('an abort while waiting leaves the queue; an abort while holding releases at once', async () => {
+    const first = deferred()
+    const holder = withCodexStartLock('lock-test-abort', () => first.promise)
+    const waiting = new AbortController()
+    const waiter = withCodexStartLock('lock-test-abort', async () => 'never', { signal: waiting.signal })
+    const after = withCodexStartLock('lock-test-abort', async () => 'third')
+    await tick()
+    expect(codexStartLockState('lock-test-abort').waiting).toBe(2)
+    waiting.abort()
+    await expect(waiter).rejects.toThrow('cancelled')
+    expect(codexStartLockState('lock-test-abort').waiting).toBe(1)
+    first.resolve()
+    await holder
+    await expect(after).resolves.toBe('third')
+    // Holding: the abort releases before the hung start settles.
+    const holding = new AbortController()
+    void withCodexStartLock('lock-test-abort', () => new Promise(() => {}), { signal: holding.signal })
+    const next = withCodexStartLock('lock-test-abort', async () => 'next')
+    await tick()
+    holding.abort()
+    await expect(next).resolves.toBe('next')
+    // Already aborted: rejected without queueing.
+    await expect(acquireCodexStartLock('lock-test-abort', { signal: AbortSignal.abort() })).rejects.toThrow('cancelled')
+    expect(codexStartLockState('lock-test-abort')).toEqual({ held: false, waiting: 0 })
+  })
 })

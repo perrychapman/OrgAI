@@ -37,6 +37,8 @@ interface Props {
   summary?: string
   /** Extra content at the end of the meta line (a time, a branch name, an outcome badge). */
   headerExtra?: ReactNode
+  /** What the decision changes when that is not the run's own project (a Badge), before the run line. */
+  target?: ReactNode
   /** Body: detail, capped in height with its own scroll. */
   children?: ReactNode
   /** Helper text after the body detail, in the same scroll region (scope explanations, never a tooltip). */
@@ -94,6 +96,34 @@ export function useDecisionAnswer(): { busy: boolean; error: string | null; subm
   return { busy, error, submit, reset }
 }
 
+/** True when `el` is a displayed box whose content is taller than it (a 1 px tolerance for rounding). Pure over the element. */
+export function overflowsVertically(el: Pick<HTMLElement, 'scrollHeight' | 'clientHeight'> | null): boolean {
+  return !!el && el.clientHeight > 0 && el.scrollHeight > el.clientHeight + 1
+}
+
+/**
+ * Whether the element's content overflows it, kept current as the box or its children resize (a disclosure opening, the
+ * frame shrinking, a mode adding a field). Re-subscribes each render so new children are observed too.
+ */
+function useOverflows(ref: { current: HTMLElement | null }, active: boolean): boolean {
+  const [over, setOver] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!active || !el) {
+      setOver(false)
+      return undefined
+    }
+    const read = (): void => setOver(overflowsVertically(el))
+    read()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    for (const child of Array.from(el.children)) ro.observe(child)
+    return () => ro.disconnect()
+  })
+  return over
+}
+
 /** Set by the tray stepper just before it swaps cards: the next card mount keeps focus where it is. */
 export const decisionFocus = { suppress: false }
 
@@ -108,7 +138,7 @@ function typingElsewhere(card: HTMLElement | null): boolean {
  * The one shape of every decision (spec 12.1): header (kind chip, who, what, run), a body that scrolls on its own, and
  * a footer that is always visible. On mount focus goes to the primary button (M15) unless the user is typing.
  */
-export default function DecisionCard({ kind, runId, who, agentId, title, summary, headerExtra, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, expandSignal, error, testId }: Props): ReactElement {
+export default function DecisionCard({ kind, runId, who, agentId, title, summary, headerExtra, target, children, helper, primary, secondary, deny, focusDetails, inline, noAutoFocus, expandSignal, error, testId }: Props): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const k = KIND[kind]
   const [expanded, setExpanded] = useState(false)
@@ -127,6 +157,9 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
   })
   const hasBody = (children !== undefined && children !== null) || !!helper
   const hasDetails = inline ? !!helper : hasBody
+  const bodyRef = useRef<HTMLDivElement>(null)
+  // Only a proposal's body is a long list with stretches that hold no control; other kinds keep their Tab order.
+  const bodyScrolls = useOverflows(bodyRef, hasBody && kind === 'proposal')
   useEffect(() => {
     if (decisionFocus.suppress) {
       decisionFocus.suppress = false
@@ -170,6 +203,7 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
               <span className="decision-who-name">{who}</span>
             </span>
           )}
+          {target}
           <span className="decision-run">
             <RunLabel runId={runId} />
           </span>
@@ -193,7 +227,16 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
         )}
       </header>
       {hasBody && (
-        <div className="decision-body" id={bodyId}>
+        <div
+          ref={bodyRef}
+          className="decision-body"
+          id={bodyId}
+          // While its content overflows the body is a scroll region: one Tab stop so the keyboard can scroll it.
+          tabIndex={bodyScrolls ? 0 : undefined}
+          role={bodyScrolls ? 'group' : undefined}
+          aria-label={bodyScrolls ? `${k.label} details, scrollable` : undefined}
+          data-scrolls={bodyScrolls ? 'true' : undefined}
+        >
           {children}
           {helper && <div className="decision-helper">{helper}</div>}
         </div>

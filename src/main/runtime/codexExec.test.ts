@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RunEvent } from '@shared/types'
 import { CodexAdapter, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
-import { fakeCtx, project } from './testHelpers'
+import { fakeCtx, project, role } from './testHelpers'
+import { execNotQuiescentReason, execOutcomeFor } from './execSettle'
 import type { RootTurnEnd, RuntimeContext, RuntimeSession } from './types'
 
 // Headless exec settlement on the Codex adapter (cli-spec 6.2(2)) against a scripted app-server; nothing spends tokens.
@@ -153,8 +154,47 @@ describe('CodexSession exec settlement (fake app-server)', () => {
     await vi.waitFor(() => expect(sess.settlement!()).toEqual({ rootTurnGen: 1, rootIdle: true, continuationSettled: true, nudgeTurn1Sent: false, quiescent: true }))
   })
 
+  const command = { threadId: 'th-1', turnId: 'tu-1', startedAtMs: 1, item: { type: 'commandExecution', id: 'it-c1', pluginId: null, scriptPath: null, command: 'git status', cwd: '/repo', processId: null, source: 'agent', status: 'inProgress', commandActions: [{ type: 'unknown', command: 'git status' }], aggregatedOutput: null, exitCode: null, durationMs: null } }
+
+  it('exec run: a turn-1 text-only reply still gets the set-plan nudge (an acknowledgement must not end a headless run)', async () => {
+    const { s, ctx } = await start({ autoContinue: true })
+    ctx.run.overrides = { ...ctx.run.overrides, execMode: true }
+    s.push('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'm1', text: "I'll inspect the tests.", phase: 'final_answer' } })
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(2))
+  })
+
+  it('interactive run: turn 1 pure direct answer gets no set-plan nudge and the turn settles', async () => {
+    const { s, session: sess, activity } = await start({ autoContinue: true })
+    s.push('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'm1', text: 'It is 4.', phase: 'final_answer' } })
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(sess.settlement!()).toEqual({ rootTurnGen: 1, rootIdle: true, continuationSettled: true, nudgeTurn1Sent: true, quiescent: true }))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(s.turnStarts('th-1')).toHaveLength(1)
+    expect(activity).not.toContain('message')
+    const input = { settlement: sess.settlement!(), rootTurnGen: 1, limitHold: false, held: false, agents: [{ id: 'root', state: 'idle' as const }], openCards: 0, inboxLength: 0, flushing: false, plan: undefined, autoContinue: true }
+    expect(execNotQuiescentReason(input)).toBeNull()
+    expect(execOutcomeFor({ plan: undefined, agents: [] })).toEqual({ outcome: 'completed-unplanned' })
+  })
+
+  it('turn 1 with a tool call still gets the set-plan nudge', async () => {
+    const { s, session: sess } = await start({ autoContinue: true })
+    s.push('item/started', command)
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(2))
+    expect(sess.settlement!().continuationSettled).toBe(false)
+  })
+
+  it('turn 1 with a required delegation outstanding still gets the set-plan nudge', async () => {
+    const roles = [role({ id: 'r-lead', slug: 'lead', canSpawn: true, spawnable: ['r-eng'], requiredReports: ['r-eng'] }), role({ id: 'r-eng', slug: 'engineer', reportsTo: 'r-lead' })]
+    const { s } = await start({ autoContinue: true, roles, project: project({ path: dir, isolateWriters: false, roles }) })
+    s.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(2))
+  })
+
   it('settlement(): the set-plan nudge leaves the turn unsettled; the next completed turn settles; a failed one is skipped', async () => {
     const { s, session: sess, activity } = await start({ autoContinue: true })
+    s.push('item/started', command)
     s.push('turn/completed', turnDone('th-1', 'tu-1'))
     await vi.waitFor(() => expect(sess.settlement!().nudgeTurn1Sent).toBe(true))
     expect(sess.settlement!().continuationSettled).toBe(false)
@@ -174,7 +214,7 @@ describe('CodexSession exec settlement (fake app-server)', () => {
     // A spawn whose thread/start has not answered yet.
     let release: (() => void) | undefined
     s.overrides['thread/start'] = () => new Promise((r) => (release = () => r({ thread: { id: 'th-2' }, model: 'gpt-test' })))
-    const spawn = s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Build it' } })
+    const spawn = s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
     await vi.waitFor(() => expect(release).toBeDefined())
     expect(sess.settlement!().quiescent).toBe(false)
     release!()
@@ -190,7 +230,7 @@ describe('CodexSession exec settlement (fake app-server)', () => {
 
   it('notes subagent activity at a thread start and a report at its finish', async () => {
     const { s, activity } = await start()
-    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_agent', arguments: { role: 'engineer', brief: 'Build it' } })
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'Build it' } })
     expect(activity).toContain('subagent')
     await vi.waitFor(() => expect(s.turnStarts('th-2')).toHaveLength(1))
     s.push('turn/completed', turnDone('th-2', 'tu-2'))

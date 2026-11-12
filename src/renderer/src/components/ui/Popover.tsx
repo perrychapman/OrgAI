@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
+import { exitProps, useExitPresence } from '../../lib/useExitPresence'
 
 export type PopoverPlacement = 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end'
 
@@ -26,8 +27,11 @@ export function Popover({
   className,
   testId,
   triggerTestId,
+  triggerDescribedBy,
   onOpenChange
 }: {
+  /** id of an element that describes the trigger (aria-describedby). */
+  triggerDescribedBy?: string
   /** Content of the trigger button (icon and/or text). */
   trigger: ReactNode
   /** aria-label of the trigger when its content is an icon only. */
@@ -49,8 +53,13 @@ export function Popover({
   const id = useId()
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  const onOpenChangeRef = useRef(onOpenChange)
+  onOpenChangeRef.current = onOpenChange
   const [open, setOpen] = useState(false)
   const [placed, setPlaced] = useState(false)
+  const [opening, setOpening] = useState(0)
+  /** The panel size place() last measured; the ResizeObserver places again only when it differs. */
+  const placedSize = useRef<{ w: number; h: number } | null>(null)
 
   const place = useCallback(() => {
     const t = triggerRef.current
@@ -59,6 +68,7 @@ export function Popover({
     const r = t.getBoundingClientRect()
     const w = p.offsetWidth
     const h = p.offsetHeight
+    placedSize.current = { w, h }
     const vw = window.innerWidth
     const vh = window.innerHeight
     let top = placement.startsWith('top') ? r.top - h - GAP : r.bottom + GAP
@@ -70,38 +80,85 @@ export function Popover({
     top = Math.max(MARGIN, Math.min(top, vh - h - MARGIN))
     p.style.top = `${Math.round(top)}px`
     p.style.left = `${Math.round(left)}px`
+    // The enter scales from the trigger's side (motion.md 3.2): the panel's own side after the flip and clamp.
+    const above = top < r.top
+    p.dataset.side = above ? 'top' : 'bottom'
+    p.style.transformOrigin = `${above ? 'bottom' : 'top'} ${placement.endsWith('end') ? 'right' : 'left'}`
     setPlaced(true)
   }, [placement])
 
-  // Native light dismiss and Esc change the popover state without React; mirror it from the toggle event.
+  // Close synchronously: a close and reopen in one task can coalesce into one open toggle.
   useEffect(() => {
     const el = panelRef.current
     if (!el) return
+    const onBeforeToggle = (e: Event): void => {
+      if ((e as ToggleEvent).newState !== 'closed') return
+      setOpen(false)
+      onOpenChangeRef.current?.(false)
+    }
     const onToggle = (e: Event): void => {
       const next = (e as ToggleEvent).newState === 'open'
-      setOpen(next)
-      if (!next) {
-        setPlaced(false)
+      if (next) {
+        setOpen(true)
+        setOpening((revision) => revision + 1)
+        onOpenChangeRef.current?.(true)
+      } else {
+        // `placed` stays true: hiding the panel here would cut the CSS exit short. It is positioned again on the next open.
         const active = document.activeElement
         if (!active || active === document.body || el.contains(active)) triggerRef.current?.focus()
       }
-      onOpenChange?.(next)
     }
+    el.addEventListener('beforetoggle', onBeforeToggle)
     el.addEventListener('toggle', onToggle)
-    return () => el.removeEventListener('toggle', onToggle)
-  }, [onOpenChange])
+    return () => {
+      el.removeEventListener('beforetoggle', onBeforeToggle)
+      el.removeEventListener('toggle', onToggle)
+    }
+  }, [])
 
   useLayoutEffect(() => {
     if (open) place()
+  }, [open, opening, place])
+
+  // Content that grows after the first placement (a list that finishes loading) is placed again, so the panel never
+  // runs past the window edge. Only a real size change places again: placing on the observer's first (unchanged)
+  // report, or on a size that place() itself caused, would loop ("ResizeObserver loop completed" warnings).
+  useEffect(() => {
+    const p = panelRef.current
+    if (!open || !p || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      const last = placedSize.current
+      if (last && last.w === p.offsetWidth && last.h === p.offsetHeight) return
+      place()
+    })
+    ro.observe(p)
+    return () => ro.disconnect()
   }, [open, place])
 
-  // Focus moves in once the panel is placed (it is visibility:hidden, hence unfocusable, until then).
+  // Focus moves in once the panel is placed: to the checked radio when there is one, else the first control. It waits
+  // for a frame: on the first open the toggle event runs before the panel is rendered as an open popover, and focus()
+  // on its (still display:none) content is silently dropped, which left keyboard users on the trigger. A control the
+  // content already focused itself (the model picker's search box) is kept. Retried a few frames, never stolen back
+  // once the user moved focus elsewhere in the panel.
   useEffect(() => {
     const el = panelRef.current
     if (!open || !placed || !el) return
-    const first = el.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
-    ;(first ?? el).focus()
-  }, [open, placed])
+    let frame = 0
+    let tries = 0
+    const focusIn = (): void => {
+      if (!el.matches(':popover-open')) return
+      if (el.contains(document.activeElement) && document.activeElement !== el) return
+      const target =
+        el.querySelector<HTMLElement>('input[type=search]') ??
+        el.querySelector<HTMLElement>('input[type=radio]:checked') ??
+        el.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ??
+        el
+      target.focus()
+      if (!el.contains(document.activeElement) && tries++ < 6) frame = requestAnimationFrame(focusIn)
+    }
+    frame = requestAnimationFrame(focusIn)
+    return () => cancelAnimationFrame(frame)
+  }, [open, placed, opening])
 
   useEffect(() => {
     if (!open) return
@@ -118,6 +175,17 @@ export function Popover({
     }
   }, [])
 
+  // Children mount while open plus one exit duration; the last render stays up (inert) so the exit fades real content.
+  const exit = useExitPresence(open)
+  const lastContent = useRef<ReactNode>(null)
+  const content = typeof children === 'function' ? children({ close }) : children
+  if (open) lastContent.current = content
+  // Cleared in an effect, not in render: the hook's first pass after a close still reports unmounted before it lingers.
+  const exitMounted = exit.mounted
+  useEffect(() => {
+    if (!exitMounted) lastContent.current = null
+  }, [exitMounted])
+
   return (
     <span className="popover-wrap">
       <button
@@ -132,6 +200,7 @@ export function Popover({
         aria-haspopup={role === 'group' ? undefined : role}
         aria-controls={id}
         aria-label={triggerLabel}
+        aria-describedby={triggerDescribedBy}
         title={triggerTitle}
         data-testid={triggerTestId}
       >
@@ -147,8 +216,9 @@ export function Popover({
         className={className ? `popover-panel ${className}` : 'popover-panel'}
         data-placed={placed}
         data-testid={testId}
+        {...(exit.mounted ? exitProps(exit.state) : {})}
       >
-        {open && (typeof children === 'function' ? children({ close }) : children)}
+        {exit.mounted && (open ? content : lastContent.current)}
       </div>
     </span>
   )

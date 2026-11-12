@@ -96,6 +96,10 @@
 .frame-grid:has(> .frame-tray .decision-card[data-inline='true']) {
   --stage-min: 36cqh;
 }
+/* In a short frame, keep all question choices above the card's action footer. */
+.frame-grid:has(> .frame-tray[data-compact='true'] .decision-card[data-inline='true']) {
+  --stage-min: 25cqh;
+}
 /* A proposal lists what changes (servers, roles, skills): while one is the shown card the tray may take about 60%. */
 .frame-grid:has(> .frame-tray:not([data-compact='true']) .decision-card.kind-proposal) {
   --stage-min: 40cqh;
@@ -183,7 +187,7 @@
   bottom: 0;
   width: 1px;
   background: var(--border-default);
-  transition: background-color var(--dur-fast, 120ms) ease;
+  transition: background-color var(--dur-fast) var(--ease-out);
 }
 .resize-handle[data-edge='end']::after {
   right: 0;
@@ -201,7 +205,7 @@
   border-radius: 2px;
   background: var(--border-strong);
   opacity: 0;
-  transition: opacity var(--dur-fast, 120ms) ease;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 .resize-handle[data-edge='end']::before {
   right: 0;
@@ -256,6 +260,30 @@ html[data-resizing] * {
 .editor:has(> .side-panel[data-collapsed='true']),
 .live:has(> .side-panel[data-collapsed='true']) {
   grid-template-columns: minmax(0, 1fr) 40px;
+}
+
+/*
+ * Side panel collapse / expand glide (docs/design/motion.md 3.6). SidePanel calls beginLayoutMotion() for the user's
+ * Hide / Show, which sets html[data-columns-moving] for the length of the glide (a tray glide sets only
+ * html[data-layout-moving], which defers canvas refits and moves no columns); the column transition exists only then,
+ * so first layout, window resizes, the auto-collapse, a budget rail and drags (html[data-resizing]) all snap. The panel
+ * is clipped and its body keeps at least the panel minimum while it moves, so its content never reflows narrower.
+ * The data-side-wide composer move stays a snap.
+ */
+html[data-columns-moving] :is(.run-body, .editor, .live, .knowledge, .outputs) {
+  transition: grid-template-columns var(--dur-slow) var(--ease-in-out);
+}
+html[data-resizing] :is(.run-body, .editor, .live, .knowledge, .outputs) {
+  transition: none;
+}
+html[data-columns-moving] .side-panel {
+  overflow: hidden;
+}
+html[data-columns-moving] .side-panel-body {
+  min-width: 280px;
+}
+.side-panel[data-collapsed='true'] .side-rail {
+  width: 40px;
 }
 
 /* Settings pages: a single scrolling column in the editor grid. */
@@ -325,6 +353,10 @@ html[data-resizing] * {
   align-items: center;
   gap: var(--space-1);
 }
+/* Working / ready counts: two quiet figures that appear only above zero. */
+.run-meta-staffing {
+  gap: var(--space-2);
+}
 button.run-meta-item {
   padding: 0;
   border: 0;
@@ -367,7 +399,8 @@ button.run-meta-item:focus-visible {
   .run-meta-cost,
   .run-meta-wall,
   .run-meta-sessions,
-  .run-meta-agents {
+  .run-meta-agents,
+  .run-meta-staffing {
     display: none;
   }
 }
@@ -689,12 +722,12 @@ button.run-meta-item:focus-visible {
   grid-row: 1 / span 2;
   grid-column: 2;
 }
-.run-body.run-body[data-layout='conversation'] > .composer {
+.run-body.run-body[data-layout='conversation'] > .live-composer-region {
   grid-row: 2;
   grid-column: 1;
   border-left: 0;
 }
-.run-body.run-body[data-layout='conversation'] > .composer > .composer-field {
+.run-body.run-body[data-layout='conversation'] > .live-composer-region > .composer > .composer-field {
   max-width: 90ch;
   margin-inline: auto;
 }

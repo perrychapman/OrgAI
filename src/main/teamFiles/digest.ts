@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { McpRegistryRef } from '@shared/types'
+import { cleanRoleStaffing } from '@shared/defaults'
 import type { TeamDoc, TeamMcpDoc, TeamRoleDoc, TeamSettingsDoc, TeamSkillDoc, TeamSkillFileDoc } from './doc'
 
 /**
@@ -38,6 +39,10 @@ function normalizeSettings(s: TeamSettingsDoc): TeamSettingsDoc {
   copy('autoContinue')
   copy('maxAutoContinues')
   copy('runMessaging')
+  // Defaults are never held: absent and the default value are the same team.
+  if (s.staffing === 'fixed') out.staffing = 'fixed'
+  if (s.staffingGoal === 'speed' || s.staffingGoal === 'cost') out.staffingGoal = s.staffingGoal
+  if (s.reviewPolicy === 'always' || s.reviewPolicy === 'never') out.reviewPolicy = s.reviewPolicy
   if (s.teamReview) out.teamReview = { auto: s.teamReview.auto, tokenBudget: s.teamReview.tokenBudget, everyRuns: s.teamReview.everyRuns }
   if (s.skillEvaluation) {
     out.skillEvaluation = {
@@ -64,9 +69,13 @@ export function normalizeRole(r: TeamRoleDoc): TeamRoleDoc {
     skills: sortedUnique(r.skills),
     mcpServers: sortedUnique(r.mcpServers)
   }
+  const required = sortedUnique(r.requiredReports ?? [])
+  if (required.length > 0) out.requiredReports = required
   if (r.tier !== undefined) out.tier = r.tier
   else if (r.model !== undefined) out.model = r.model
   if (r.effort !== undefined) out.effort = r.effort
+  const staffing = cleanRoleStaffing(r.staffing)
+  if (staffing) out.staffing = staffing
   return out
 }
 

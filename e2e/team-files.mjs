@@ -192,7 +192,7 @@ try {
   check(await readToEnd(), 'the change list can be scrolled to its end')
   check(!(await approveInert()), 'Approve unlocks once the list has been read to its end')
   await page.locator('[data-testid=team-files-approve]').click()
-  check(await waitLine(/Approved\. The team in use/), 'line leaves the pending state after Approve', await lineText())
+  check(await waitLine(/Approved(\. The team in use| \d+ changes?)/), 'line leaves the pending state after Approve', await lineText())
   check((await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').tools.includes('Bash'), 'Approve put Bash on the chart')
   check((await page.locator('[data-testid=team-files-card]').count()) === 0, 'the card is gone')
   check(await focusLands(), 'focus is on a real element after Approve', await onReal())
@@ -298,9 +298,9 @@ try {
   await readToEnd()
   await approve.focus()
   await page.keyboard.press('Enter')
-  check(await waitLine(/Approved\. The team in use/), 'keyboard Approve leaves the pending state', await lineText())
+  check(await waitLine(/Approved(\. The team in use| \d+ changes?)/), 'keyboard Approve leaves the pending state', await lineText())
   check((await findProject(page, NAME)).mcpServers?.some((m) => m.name === 'docs' && m.url === SERVER_URL), 'the approved server is on the project')
-  check(!!(await onReal()), 'focus is on a real element after keyboard Approve', await onReal())
+  check(await focusLands(), 'focus is on a real element after keyboard Approve', await onReal())
   check(await noPageScroll(), 'no page scroll after Approve')
 
   // ---- 4. Commit ----

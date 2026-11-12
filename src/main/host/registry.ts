@@ -1,7 +1,7 @@
 /**
  * The exhaustive host channel registry (cli-spec 3.3(3), Wave 1): every IPC, TEMPLATE_ENGAGEMENT_IPC, KNOWLEDGE_IPC,
- * MCP_SCOPE_IPC, KIT_IPC and HOST_IPC channel plus the host.* protocol methods, with its scope, bulk flag and param
- * validators, and the RPC gate that refuses anything unmapped with `unknown_channel`.
+ * MCP_SCOPE_IPC, KIT_IPC, HOST_IPC and SECRETS_IPC (Wave 7) channel plus the host.* protocol methods, with its scope,
+ * bulk flag and param validators, and the RPC gate that refuses anything unmapped with `unknown_channel`.
  *
  * Scopes are copied from the spec's table (cli-spec 3.3(3)); registry.test.ts holds a second literal copy and compares.
  * Param specs live in params.ts, the clearable / nullable codec in jsonCodec.ts. Electron-free; relative imports only.
@@ -16,11 +16,17 @@ import {
   RPC_BULK_FRAME_MAX_BYTES,
   RPC_CONTROL_REQUEST_MAX_BYTES,
   RPC_CONTROL_RESPONSE_MAX_BYTES,
-  TEAM_FILES_IPC
+  SECRETS_IPC,
+  OUTPUTS_IPC,
+  TEAM_FILES_IPC,
+  hostCanOpenWindows
 } from '../../shared/types'
 import type { HostKind, HostRpcError, HostRpcErrorCode, HostScope, HostSubscribeTopic } from '../../shared/types'
 import { CHANNEL_JSON_FIELDS, decodeRequest } from './jsonCodec'
 import { CHANNEL_PARAMS, paramProblem } from './params'
+import { STORES_SECRET, type StoresSecretFn } from './storesSecret'
+
+export type { StoresSecretFn, StoresSecretHostView } from './storesSecret'
 
 /** A host RPC refusal: carries the wire error code (and retryAfterMs for host_starting / host_draining). */
 export class HostRpcFailure extends Error {
@@ -62,8 +68,16 @@ export interface RequestChannelEntry {
   socketOnly?: true
   /** Answered by the socket transport itself, not the dispatcher (runs:subscribe, host.subscribe). */
   transport?: true
-  /** Needs DesktopHooks; refused with desktop_unavailable without them (window:openRun). */
+  /**
+   * Needs a host that can open windows (HOST_KIND_CAPABILITIES canOpenWindows) and its DesktopHooks; refused with
+   * desktop_unavailable otherwise (window:openRun).
+   */
   desktopRequired?: true
+  /**
+   * Wave 7 (cli-standalone.md 5.6): true when this call will store a non-empty secret value; invokeRpc then awaits
+   * SecretStore.prepareWrite() before the handler runs. Absent on channels that never store a secret (storesSecret.ts).
+   */
+  storesSecret?: StoresSecretFn
   /** Where the handler or constant lives, for readers. */
   source: string
 }
@@ -108,24 +122,28 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'host.status', 'host.subscribe', 'app:info', 'app:logPath', 'settings:get', 'auth:status', 'projects:list', 'projects:get',
     'projects:checkPath', 'projects:previewRemap', 'projects:scanAgents', 'projects:previewImport', 'projects:removePreview',
     'projects:engagementDocument', 'projects:listNotes', 'projects:getNote', 'runs:list', 'runs:get', 'runs:listLive',
-    'runs:pendingCards', 'runs:usageStats', 'runs:usageCsv', 'runs:subscribe', 'runs:findDecision', 'permissions:list', 'permissions:ignored', 'connections:list',
+    'runs:pendingCards', 'runs:usageStats', 'runs:usageCsv', 'runs:usageOverview', 'runs:usageOverviewCsv', 'runs:subscribe', 'runs:findDecision', 'permissions:list', 'permissions:ignored', 'connections:list',
     'models:list', 'models:prices', 'mcp:list', 'mcp:registrySearch', 'mcpLibrary:list', 'connectors:list',
     'connectorPresets:list', 'skills:list', 'skills:read', 'skills:previewImport', 'skills:lastEvaluation', 'skillLibrary:list',
     'skillLibrary:read', 'capabilities:lastReview', 'maintenance:listWorktrees', 'maintenance:diff', 'templates:list',
-    'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention'
+    'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention', 'secrets:status',
+    'app:reference', 'outputs:list', 'outputs:preview', 'outputs:deletePreview', 'outputs:versions', 'outputs:readSource', 'outputs:thumb', 'outputs:compare', 'outputs:notes', 'outputs:revisions', 'outputs:reviseOptions'
   ],
   operate: [
-    'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
+    'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:switchModel', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
     'runs:cancelAutoResume', 'setup:start', 'setup:retro', 'mcp:startAssist', 'skills:startAssist', 'usage:refresh',
     'connections:test', 'models:refresh', 'mcp:test', 'mcpLibrary:test', 'capabilities:discover', 'capabilities:recommend',
-    'capabilities:cancel', 'capabilities:review', 'skills:evaluate', 'draft:orgChart', 'window:openRun'
+    'capabilities:cancel', 'capabilities:review', 'skills:evaluate', 'draft:orgChart', 'window:openRun', 'outputs:noteAdd', 'outputs:noteUpdate',
+    'outputs:noteRemove', 'outputs:revise', 'outputs:watch', 'outputs:unwatch'
   ],
   decide: ['runs:decide', 'permissions:decideRequest', 'setup:decide', 'setup:answer', 'merges:decide', 'mcp:answerInstall'],
   configure: [
     'host.stop', 'settings:set', 'projects:create', 'projects:save', 'projects:remove', 'projects:remapModels',
     'projects:applyImport', 'projects:exportOrg', 'projects:updateEngagementDocument', 'projects:saveNote',
     'projects:removeNote', 'runs:promoteQuick', 'permissions:add', 'permissions:remove', 'connections:connect',
-    'connections:update', 'connections:setSecret', 'connections:login', 'connections:cancelLogin', 'connections:logout',
+    'connections:update', 'connections:setSecret', 'connections:createProxy', 'connections:removeProxy', 'connections:login', 'connections:cancelLogin', 'connections:logout',
+    // runs:setPermissionMode is desktop-only in its handler (dispatcher.ts); 'configure' (never 'operate') keeps it out of a default client's reach too.
+    'runs:setPermissionMode',
     'connections:setDefault', 'mcp:upsert', 'mcp:remove', 'mcp:setSecret', 'mcp:linkLibrary', 'mcp:promote', 'mcp:authorize',
     'mcp:cancelAuthorize', 'mcp:revokeAuth', 'mcp:copyFromLibrary', 'mcp:setProjectOverrides', 'mcpLibrary:upsert',
     'mcpLibrary:remove', 'mcpLibrary:setSecret', 'connectors:add', 'connectors:setToken', 'connectorPresets:upsert',
@@ -135,14 +153,16 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'capabilities:undo', 'capabilities:dismiss', 'capabilities:restore', 'maintenance:integrateWorktree',
     'maintenance:discardWorktree', 'maintenance:uninstallRepo', 'templates:saveFromProject', 'templates:remove',
     'templates:apply', 'knowledge:saveNode', 'knowledge:removeNode', 'knowledge:saveEdge', 'knowledge:removeEdge',
-    'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'teamFiles:status'
+    'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'teamFiles:status', 'secrets:init', 'secrets:reset',
+    'secrets:undelete', 'secrets:confirmDelete', 'outputs:forget', 'outputs:delete', 'outputs:saveEdit', 'outputs:restore', 'outputs:update'
   ],
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
     'kit:previewImport', 'kit:applyImport', 'menu:setState', 'app:openPath', 'app:openLogs', 'app:setNotifications',
-    'app:cliShimStatus', 'app:installCliShim', 'app:uninstallCliShim', 'projects:parseRepoSource', 'projects:repoTools',
+    'app:cliCommandStatus', 'app:installCliCommand', 'app:cancelCliInstall', 'app:removeOldCliShim', 'projects:parseRepoSource', 'projects:repoTools',
     'projects:cloneRepo', 'projects:cancelClone', 'projects:setFolderConfigTrust', 'teamFiles:approve', 'teamFiles:reject',
-    'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit'
+    'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit',
+    'outputs:open', 'outputs:reveal', 'outputs:saveAs', 'outputs:saveImage'
   ]
 }
 
@@ -156,9 +176,11 @@ const PUSH_TABLE: Readonly<Record<string, Omit<PushChannelEntry, 'direction'>>> 
   [IPC.capabilitiesProgress]: { delivery: 'socket_subscribable', topic: 'capabilities', source: 'index.ts CapabilityService onProgress -> host/events.ts' },
   [IPC.capabilitiesReviewUpdated]: { delivery: 'socket_subscribable', topic: 'capabilities', source: 'index.ts CapabilityService onReviewUpdated -> host/events.ts' },
   [IPC.projectsEngagementChanged]: { delivery: 'socket_subscribable', topic: 'engagement', source: 'host/dispatcher.ts + RunManager engagementChanged -> host/events.ts' },
+  [OUTPUTS_IPC.outputsChanged]: { delivery: 'socket_subscribable', topic: 'engagement', source: 'host/dispatcher.ts outputs handlers + RunManager outputsChanged -> host/events.ts' },
   [IPC.appFocusRun]: { delivery: 'desktop_only', source: 'notifications.ts (notification click focuses a run)' },
   [IPC.menuAction]: { delivery: 'desktop_only', source: 'appMenu.ts (application menu item click)' },
   [IPC.projectsCloneProgress]: { delivery: 'desktop_only', source: 'ipc.ts registerRepoIpc (progress of a clone the window started)' },
+  [IPC.appNavigate]: { delivery: 'desktop_only', source: 'RunManager open_in_app -> SelfKnowledgeHooks.navigate -> DesktopHooks.navigate (index.ts, the live main window; never on the bus, never a socket)' },
   [TEAM_FILES_IPC.teamFilesChanged]: { delivery: 'desktop_only', source: 'host/bootstrap.ts TeamFilesService broadcastStatus -> DesktopHooks.teamFilesChanged (index.ts, every window; never on the bus, never a socket)' }
 }
 
@@ -191,13 +213,13 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
     IPC.capabilitiesReview, IPC.capabilitiesLastReview, IPC.capabilitiesDismiss, IPC.capabilitiesRestore
   ],
   'ipc.ts registerConnectionIpc': [
-    IPC.projectsRemapModels, IPC.projectsPreviewRemap, IPC.connectionsList, IPC.connectionsUpdate, IPC.connectionsSetSecret,
+    IPC.projectsRemapModels, IPC.projectsPreviewRemap, IPC.connectionsList, IPC.connectionsUpdate, IPC.connectionsSetSecret, IPC.connectionsCreateProxy, IPC.connectionsRemoveProxy,
     IPC.connectionsTest, IPC.connectionsConnect, IPC.connectionsLogin, IPC.connectionsCancelLogin, IPC.connectionsLogout,
     IPC.connectionsSetDefault, IPC.modelsList, IPC.modelsRefresh, IPC.modelsPrices
   ],
   'ipc.ts registerKitIpc': [KIT_IPC.kitPickExportPath, KIT_IPC.kitPickImportPath, KIT_IPC.kitExport, KIT_IPC.kitPreviewImport, KIT_IPC.kitApplyImport],
   'ipc.ts registerIpc (UsageMonitor.refresh)': [IPC.usageRefresh],
-  'ipc.ts desktop-only (shimInstaller.ts)': [IPC.appCliShimStatus, IPC.appInstallCliShim, IPC.appUninstallCliShim],
+  'ipc.ts desktop-only (cliInstaller.ts)': [IPC.appCliCommandStatus, IPC.appInstallCliCommand, IPC.appCancelCliInstall, IPC.appRemoveOldCliShim],
   'ipc.ts registerRepoIpc (desktop-only; repoClone.ts, progress and cancel-on-close use the IPC sender)': [
     IPC.projectsParseRepoSource, IPC.projectsRepoTools, IPC.projectsCloneRepo, IPC.projectsCancelClone
   ],
@@ -205,11 +227,24 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
     TEAM_FILES_IPC.teamFilesStatus, TEAM_FILES_IPC.teamFilesListAttention, TEAM_FILES_IPC.teamFilesApprove, TEAM_FILES_IPC.teamFilesReject,
     TEAM_FILES_IPC.teamFilesUndo, TEAM_FILES_IPC.teamFilesCommit, TEAM_FILES_IPC.teamFilesEnable
   ],
+  'host dispatcher outputs handlers (host/outputsHandlers.ts)': [
+    OUTPUTS_IPC.outputsList, OUTPUTS_IPC.outputsPreview, OUTPUTS_IPC.outputsForget, OUTPUTS_IPC.outputsDelete, OUTPUTS_IPC.outputsDeletePreview,
+    OUTPUTS_IPC.outputsVersions, OUTPUTS_IPC.outputsReadSource, OUTPUTS_IPC.outputsThumb, OUTPUTS_IPC.outputsCompare, OUTPUTS_IPC.outputsNotes,
+    OUTPUTS_IPC.outputsRevisions, OUTPUTS_IPC.outputsReviseOptions, OUTPUTS_IPC.outputsSaveEdit, OUTPUTS_IPC.outputsRestore,
+    OUTPUTS_IPC.outputsUpdate, OUTPUTS_IPC.outputsNoteAdd, OUTPUTS_IPC.outputsNoteUpdate, OUTPUTS_IPC.outputsNoteRemove,
+    OUTPUTS_IPC.outputsRevise, OUTPUTS_IPC.outputsWatch, OUTPUTS_IPC.outputsUnwatch
+  ],
+  'outputsIpc.ts registerOutputsIpc (desktop-only; shell and save dialog)': [OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs, OUTPUTS_IPC.outputsSaveImage],
   'host dispatcher (HOST_IPC, socket only; skills/service.ts libraryAddFromBundle)': [HOST_IPC.skillLibraryAddFromBundle],
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],
   'host dispatcher (HOST_IPC, socket only; RunManager.findDecision, cli-spec Wave 3)': [HOST_IPC.runsFindDecision],
+  'host dispatcher (SECRETS_IPC; SecretStore vault, cli-standalone.md 5.6, Wave 7)': [
+    SECRETS_IPC.secretsStatus, SECRETS_IPC.secretsInit, SECRETS_IPC.secretsReset, SECRETS_IPC.secretsUndelete,
+    SECRETS_IPC.secretsConfirmDelete
+  ],
   'socket transport (Wave 2 socketServer.ts; cli-spec 3.3(4).1)': [HOST_IPC.runsSubscribe],
   'socket transport (Wave 2 socketServer.ts; cli-spec 3.3(4).2)': [HOST_METHODS.hostSubscribe],
+  'host dispatcher (reference/appReference.ts, self-knowledge)': [IPC.appReference],
   'host dispatcher (HostControl.status, bootstrap.ts)': [HOST_METHODS.hostStatus],
   'host dispatcher (HostControl.stop, bootstrap.ts)': [HOST_METHODS.hostStop]
 }
@@ -240,9 +275,14 @@ function buildRegistry(): Record<string, ChannelEntry> {
         ...(socketOnly ? { socketOnly: true as const } : {}),
         ...(TRANSPORT_CHANNELS.has(channel) ? { transport: true as const } : {}),
         ...(channel === IPC.windowOpenRun ? { desktopRequired: true as const } : {}),
+        ...(Object.hasOwn(STORES_SECRET, channel) ? { storesSecret: STORES_SECRET[channel] } : {}),
         source: sourceOf(channel)
       }
     }
+  }
+  for (const channel of Object.keys(STORES_SECRET)) {
+    const e = out[channel]
+    if (!e || e.direction !== 'request' || e.scope === 'desktop_only') throw new Error(`Host registry: storesSecret names ${channel}, which is not a socket request channel`)
   }
   for (const [channel, push] of Object.entries(PUSH_TABLE)) {
     if (out[channel]) throw new Error(`Host registry: ${channel} is listed twice`)
@@ -288,8 +328,8 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> => {
 }
 
 /**
- * Validates one RPC call, in this order: known channel, a request (not push, not protocol), not desktop_only, desktop
- * hooks present for desktopRequired, scope granted (scopes are explicit, never hierarchical), params an array (a host.*
+ * Validates one RPC call, in this order: known channel, a request (not push, not protocol), not desktop_only, a host
+ * that can open windows for desktopRequired (hostCanOpenWindows), scope granted (scopes are explicit, never hierarchical), params an array (a host.*
  * method may take one plain object), the clearable / nullable codec (jsonCodec decodeRequest), then the param specs.
  * Throws HostRpcFailure.
  */
@@ -299,8 +339,9 @@ export const gateRequest: GateFn = (channel, params, ctx) => {
   if (entry.direction === 'push') throw bad(`${channel} is a push channel; subscribe with runs:subscribe or host.subscribe`)
   if (entry.direction === 'protocol') throw bad(`${channel} is part of the handshake only`)
   if (entry.scope === 'desktop_only') throw new HostRpcFailure('desktop_unavailable', `${channel} works only in the OrgAI window`)
-  if (entry.desktopRequired && ctx.hostKind === 'inproc') {
-    throw new HostRpcFailure('desktop_unavailable', `${channel} needs the OrgAI desktop app; this host runs inside the CLI`)
+  if (entry.desktopRequired && !hostCanOpenWindows(ctx.hostKind)) {
+    const where = ctx.hostKind === 'inproc' ? 'runs inside the CLI' : 'runs without the OrgAI app'
+    throw new HostRpcFailure('desktop_unavailable', `${channel} needs the OrgAI desktop app; this host ${where}`)
   }
   if (!ctx.grantedScopes.includes(entry.scope)) {
     throw new HostRpcFailure('scope_denied', `${channel} needs the '${entry.scope}' scope, which this connection was not granted`)

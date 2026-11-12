@@ -1,41 +1,40 @@
 import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, screen, shell } from 'electron'
-import { parseLargerThanScreen, parseWindowInactive, windowPlacement } from './windowPlacement'
-import { mkdirSync, realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { parseLargerThanScreen, parseWindowHidden, parseWindowInactive, windowPlacement } from './windowPlacement'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { AppSettings, FocusRunTarget, HostKind, RunEvent } from '@shared/types'
+import type { AppSettings, FocusRunTarget, RunEvent } from '@shared/types'
 import { IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
 import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
-import { installAppMenu, menuActionSender } from './appMenu'
+import { installAppMenu, menuActionSender, navigateSender } from './appMenu'
 import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
 import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
 import { installElectronLogHooks } from './electronLogHooks'
-import { acquireHostOwnership, HostAlreadyRunningError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
+import { acquireHostOwnership, HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
 import { bootOrgAIHost, type OrgAIHost } from './host/bootstrap'
-import { HostSocketServer } from './host/socketServer'
-import { currentHostInstanceId } from './host/identity'
+import { openSecretStore } from './store/secrets'
+import { unavailableCustodianFactory } from './store/unavailableCustodian'
+import { checkDesktopFolder, desktopFolderRefusal } from './store/productMarker'
 import {
   CLOSE_PROMPT_BUTTONS,
   CLOSE_PROMPT_CANCEL_ID,
   closePromptChoice,
   closePromptText,
-  parseHostArgs,
-  quitPromptButtons,
-  quitPromptNeeded,
   reopenAfterCancel,
-  secondInstanceAction,
   windowAllClosedAction,
   type ClosePromptChoice
 } from './hostLifecycle'
 import type { HostRuntimeEnv } from './host/runtimeEnv'
 import { windowBackground } from './appInfo'
-import { quitGate } from './quitGate'
+import { installShutdownSignals, type ShutdownReason } from './host/shutdown'
+import { beforeQuitHandler } from './desktopQuit'
 import { orgaiCliRootsOf, setOrgaiCliRoots } from './runtime/selfControlGate'
-import { createCliShimService, type CliShimService } from './host/shimInstaller'
+import { createCliInstallService, type CliInstallService } from './host/cliInstaller'
+import { createOldShimService } from './host/shimInstaller'
 import { RepoCloneService } from './repoClone'
 
 // The certificate-reader child runs this binary with ELECTRON_RUN_AS_NODE=1; if a RunAsNode fuse is off it would boot a full app here.
@@ -45,12 +44,29 @@ if (process.env.ELECTRON_RUN_AS_NODE) process.exit(0)
 // folder is canonicalized (realpath) so the single-instance lock, the data dir and the host's run/ folder always
 // name it one way (macOS /var vs /private/var, a symlinked profile).
 const dataOverride = dataDirOverride()
-const userDataDir = canonicalUserData(dataOverride?.userData ?? app.getPath('userData'))
-app.setPath('userData', userDataDir)
-if (dataOverride) {
-  const overrideLogs = join(userDataDir, 'logs')
-  mkdirSync(overrideLogs, { recursive: true })
-  app.setAppLogsPath(overrideLogs)
+const candidateUserData = dataOverride?.userData ?? app.getPath('userData')
+// The product marker (standalone spec 3.1), read-only and first: a folder the orgai CLI owns (marked, inside one or around
+// its default folder) is refused before the app creates it, sets it as userData, logs into it or takes Chromium's
+// single-instance lock there. A dialog is allowed before ready; nothing in the folder is touched.
+const cliDefaultDir = join(app.getPath('appData'), 'orgai-cli')
+const earlyFolder = desktopFolderRefusal(candidateUserData, { cliDefault: cliDefaultDir, isDefault: !dataOverride })
+const earlyRefusal = earlyFolder.refusal
+if (earlyRefusal) {
+  // Chromium must not start its profile in the refused folder or in the real default one: point it at a throwaway folder.
+  const scratch = mkdtempSync(join(tmpdir(), 'orgai-refused-'))
+  app.setPath('userData', scratch)
+  process.on('exit', () => rmSync(scratch, { recursive: true, force: true }))
+  dialog.showErrorBox('OrgAI cannot use this folder', earlyRefusal)
+  app.exit(2)
+}
+const userDataDir = earlyRefusal ? candidateUserData : canonicalUserData(candidateUserData)
+if (!earlyRefusal) {
+  app.setPath('userData', userDataDir)
+  if (dataOverride) {
+    const overrideLogs = join(userDataDir, 'logs')
+    mkdirSync(overrideLogs, { recursive: true })
+    app.setAppLogsPath(overrideLogs)
+  }
 }
 
 function canonicalUserData(dir: string): string {
@@ -65,50 +81,38 @@ function canonicalUserData(dir: string): string {
 /** The booted host (stores, services, runs, the event bus; host/bootstrap.ts); set once whenReady has built it. */
 let host: OrgAIHost | undefined
 let notifier: Notifier | undefined
-/** This process's ownership of <dataDir>/run (cli-spec 3.2(2)); released on will-quit and process exit. */
+/** This process's ownership of <dataDir>/run (cli-spec 3.2(2)); released by the shutdown and on process exit. */
 let ownership: HostOwnership | undefined
 /** True once whenReady has built the stores and the first window: the window handlers below wait for it. */
 let booted = false
 /** Set on the first before-quit that goes ahead: a second launch during a quit must not open a window in the quitting app. */
 let quitting = false
-/** The host's socket server (cli-spec 3.3); created before ownership so every accepted connection reaches it. */
-let server: HostSocketServer | undefined
+/** The orgai command installer, set once the app booted (the quit handlers cancel a running install). */
+let cliInstallForStatus: CliInstallService | undefined
 /** Clones started from a window (desktop only); cancelled when the quit goes ahead. */
 let repoClone: RepoCloneService | undefined
 
-// cli-spec 3.2(1): --headless-host (started by the orgai command: no window, no Dock icon) and --run <id>. Parsed once;
-// every lifecycle decision lives in hostLifecycle.ts.
-const hostArgs = parseHostArgs(process.argv)
-const hostKind: HostKind = hostArgs.headless ? 'headless-host' : 'desktop'
+// The app is a host of its own: no socket, no terminal clients, no headless mode (standalone spec 5.1).
+const hostKind = 'desktop' as const
 // The self-control gate treats an interpreter run of a file in this install's out/cli or src/cli as the orgai CLI.
 setOrgaiCliRoots(orgaiCliRootsOf(app.getAppPath()))
 /** In background mode (no windows, kept alive for its activity); logged once per entry. */
 let inBackground = false
-/** A prompt was answered "Stop all runs and quit" / "Stop and quit": the next quit goes through without asking. */
-let quitAnswered = false
-/** The quit comes from the activity drain (idle exit, host.stop): never prompt. */
-let drainQuit = false
-let quitPromptOpen = false
 /** The last-window close prompt (review H3) is showing. */
 let closePromptOpen = false
-
-// A second launch on the same userData (Electron's single-instance lock) is answered by the incumbent: a terminal
-// host launch (--headless-host) only logs, anything else brings a window forward (and opens --run's run window).
-app.on('second-instance', (_event, argv, _cwd, additionalData) => {
-  const action = secondInstanceAction({ argv, additionalData, booted, quitting })
-  if (action.kind === 'ignore') {
+/** Why the next quit happens (the shutdown coordinator's reason): the last window closing on Windows / Linux, else Quit. */
+let quitReason: ShutdownReason = 'desktop-quit'
+// A second launch on the same userData (Electron's single-instance lock) is answered by the incumbent: it brings a
+// window forward.
+app.on('second-instance', () => {
+  if (!booted || quitting) {
     if (quitting) log.info('A second launch arrived while OrgAI is quitting; ignored (start OrgAI again once it has closed).')
-    return
-  }
-  if (action.kind === 'headless') {
-    log.info('A terminal host launch found OrgAI already running.')
     return
   }
   showDockIcon()
   const main = liveWindowScopes().find(([, scope]) => scope === undefined)?.[0]
   if (main) showWindow(main)
   else createWindow()
-  if (action.run) openRunById(action.run)
 })
 app.on('activate', () => {
   if (!booted || quitting) return
@@ -117,14 +121,13 @@ app.on('activate', () => {
 })
 // The lock is keyed by userData, so it is taken after setPath. An unpackaged dev build ('orgai') and the packaged
 // 'OrgAI' share one userData folder on case-insensitive macOS, so the lock correctly makes them exclusive. The losing
-// process exits at once, without touching <dataDir>/run. additionalData tells the incumbent what this launch was
-// (Chromium may reorder argv on some platforms).
-const gotLock = app.requestSingleInstanceLock(
-  hostArgs.run !== undefined ? { headless: hostArgs.headless, run: hostArgs.run } : { headless: hostArgs.headless }
-)
-if (!gotLock) app.exit(0)
-// A terminal host never shows a Dock icon (macOS); a later window brings it back.
-if (gotLock && hostArgs.headless && process.platform === 'darwin') app.dock?.hide()
+// process exits at once, without touching <dataDir>/run.
+const gotLock = earlyRefusal ? false : app.requestSingleInstanceLock()
+if (!gotLock && !earlyRefusal) app.exit(0)
+// The marker is written here, after the lock (a folder already refused above never gets this far). The checks run again
+// in case the folder changed since the read-only pass.
+const folderCheck = gotLock ? checkDesktopFolder(userDataDir, { cliDefault: cliDefaultDir, isDefault: !dataOverride }) : {}
+const folderRefused = folderCheck.refusal !== undefined
 
 // Unpackaged (npm run dev, e2e) the name comes from package.json ("orgai"); on macOS that names ~/Library/Logs/<name>
 // and the About entry. userData was set above, so it does not move.
@@ -135,7 +138,7 @@ let logsDir = join(userDataDir, 'logs')
 function runtimeEnv(): HostRuntimeEnv {
   return { userDataDir, logsDir, appVersion: app.getVersion(), isPackaged: app.isPackaged, electronVersion: process.versions.electron }
 }
-if (gotLock) {
+if (gotLock && !folderRefused) {
   // app.getPath('logs') is ~/Library/Logs/<name> on macOS (where Console.app looks); on Windows and Linux it is
   // <userData>/logs. If it throws or is read-only (sandboxed or managed Macs), use <userData>/logs.
   logsDir = pickLogsDir([() => app.getPath('logs'), () => join(userDataDir, 'logs')], canWriteDir)
@@ -143,9 +146,9 @@ if (gotLock) {
   installElectronLogHooks(app)
 }
 // Finder/Dock launches on macOS get a minimal PATH; take the login shell's before anything spawns claude, codex or MCP servers.
-// The login shell's own PATH (without OrgAI's additions) is kept for the orgai command shim's "on your PATH" check.
+// The login shell's own PATH (without OrgAI's additions) is kept for the orgai command's "on your PATH" check.
 const shellPathResult = applyShellPath()
-if (gotLock) {
+if (gotLock && !folderRefused) {
   // Trust the OS certificate store too (corporate / inspecting root CAs), before anything can fetch (issue #16). Only
   // once the lock is ours, so a second launch that exits at once never starts the macOS certificate-reader child.
   // On macOS the store is read in a child process (it can stall) and applied when that finishes; the quit below kills it.
@@ -196,17 +199,10 @@ function showDockIcon(): void {
   void Promise.resolve(app.dock?.show()).catch(() => {})
 }
 
-/** A run id from --run: open its window when the host knows the run. */
-function openRunById(runId: string): void {
-  const summary = host?.runs.summary(runId)
-  if (summary) openRunWindow({ projectId: summary.projectId, runId: summary.id })
-  else log.info(`Asked to open run ${runId}, which this data folder does not have.`)
-}
-
 /**
- * No windows, and the host keeps serving in the background (cli-spec 3.2(1)): a --headless-host launch (daemon mode),
- * or a desktop launch whose user chose "Keep working in the background" (review H3: never without that answer). The
- * idle exit then quits once nothing keeps the host busy for ORGAI_DAEMON_IDLE_MINUTES.
+ * No windows, and the app keeps working in the background: the user chose "Keep working in the background" (review
+ * H3: never without that answer). The idle exit then quits once nothing keeps the app busy
+ * (ORGAI_DAEMON_IDLE_MINUTES, default 30).
  */
 function goBackground(): void {
   windowScopes.clear()
@@ -220,7 +216,7 @@ function goBackground(): void {
       .map(([k, n]) => `${k} ${n}`)
       .join(', ')
     if (busy) log.info(`All windows closed while OrgAI is busy (${busy}); it keeps running in the background until its work is done.`)
-    else log.info('All windows closed; this background host keeps serving terminal clients until its idle exit.')
+    else log.info('All windows closed; OrgAI quits at its idle exit.')
   }
 }
 
@@ -235,6 +231,8 @@ function openRunWindow(target: FocusRunTarget): void {
 // test and walkthrough windows open on another monitor without taking focus. Unset = the default behaviour.
 const WINDOW_DISPLAY = process.env.ORGAI_WINDOW_DISPLAY
 const WINDOW_INACTIVE = parseWindowInactive(process.env.ORGAI_WINDOW_INACTIVE)
+// ORGAI_WINDOW_HIDDEN=1: windows load but are never shown (scripts/verify-pack.mjs boots the packed app this way).
+const WINDOW_HIDDEN = parseWindowHidden(process.env.ORGAI_WINDOW_HIDDEN)
 // ORGAI_WINDOW_LARGER_THAN_SCREEN=1 (CI only, macOS): lets e2e windows exceed a small work area (constructor-only,
 // ignored off macOS). Unset = unchanged.
 const WINDOW_LARGER_THAN_SCREEN = parseLargerThanScreen(process.env.ORGAI_WINDOW_LARGER_THAN_SCREEN)
@@ -289,8 +287,17 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
   })
 
   windowScopes.set(win, scope)
-  win.on('closed', () => windowScopes.delete(win))
-  win.on('ready-to-show', () => (WINDOW_INACTIVE ? win.showInactive() : win.show()))
+  // The web contents id is read now: it is gone when 'closed' fires. A closed window's output watches end with it.
+  const webContentsId = win.webContents.id
+  win.on('closed', () => {
+    windowScopes.delete(win)
+    host?.services.outputWatcher?.dropOwner(`window:${webContentsId}`)
+  })
+  win.on('ready-to-show', () => {
+    if (WINDOW_HIDDEN) return
+    if (WINDOW_INACTIVE) win.showInactive()
+    else win.show()
+  })
   notifier?.attach(win)
   // window.open and target=_blank never create a window: http(s) links go to the user's browser, anything else
   // (file:, custom protocols, javascript:) is refused.
@@ -324,42 +331,29 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
 
 app.whenReady().then(async () => {
   if (!gotLock) return
+  if (folderCheck.refusal) {
+    dialog.showErrorBox('OrgAI cannot use this folder', folderCheck.refusal)
+    app.exit(2)
+    return
+  }
+  if (folderCheck.warning) log.warn(folderCheck.warning)
   const dataDir = join(app.getPath('userData'), 'data')
-  // Step 0 (cli-spec 3.2(2)): own <dataDir>/run before any store constructor, since RunStore rewrites live runs.
-  server = new HostSocketServer({
-    dataDir,
-    hostKind,
-    hostInstanceId: currentHostInstanceId(),
-    appVersion: app.getVersion(),
-    mock: process.env.ORGAI_MOCK === '1',
-    // Ownership restricts daemon.secret before it binds; the server only refuses while that reported a problem.
-    secretAclProblem: () => ownership?.secretAclWarning,
-    log: (m) => log.info(m)
-  })
-  const socketServer = server
+  // Step 0 (cli-spec 3.2(2)): own <dataDir>/run before any store constructor, since RunStore rewrites live runs. The app
+  // never listens on a socket (listen: false).
   try {
-    // Review M11: no listener and no daemon.secret yet; they exist only while Terminal access is on (syncTerminalListener).
-    // singleInstanceLockHeld: gotLock is true here (whenReady returns at once without it), and the lock is keyed by
-    // userData, so a stale Electron daemon.json whose pid cannot be confirmed never locks the user out (review M9).
-    ownership = await acquireHostOwnership({
-      dataDir,
-      hostKind,
-      appVersion: app.getVersion(),
-      listen: false,
-      singleInstanceLockHeld: gotLock,
-      onConnection: (s) => socketServer.accept(s)
-    })
+    ownership = await acquireHostOwnership({ dataDir, hostKind, appVersion: app.getVersion(), listen: false, singleInstanceLockHeld: gotLock })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     log.error(`Host ownership failed: ${message}`)
-    socketServer.close()
-    if (hostArgs.headless) {
-      // A terminal host has nobody to show a dialog to: the orgai command reads the exit code and the log.
+    if (e instanceof HostAlreadyRunningError && e.info.legacyKind === 'node') {
+      dialog.showErrorBox('An older OrgAI is still running', message)
     } else if (e instanceof HostAlreadyRunningError || e instanceof HostStartingOrBusyError) {
-      dialog.showErrorBox('OrgAI is already running', `${message}\n\nQuit the other OrgAI (or the terminal host using this data folder), then start OrgAI again.`)
+      dialog.showErrorBox('OrgAI is already running', `${message}\n\nQuit the other OrgAI using this data folder, then start OrgAI again.`)
+    } else if (e instanceof HostOwnershipError && e.code === 'daemon_json_unreadable' && e.ownerPid !== undefined) {
+      // A record the app cannot read that names a process that may still be running (the pid may also have been reused by an unrelated program).
+      dialog.showErrorBox('OrgAI may already be running', `Another OrgAI process (pid ${e.ownerPid}) may still be running for this data folder:\n${dataDir}\n\n${message}`)
     } else {
-      // Every other failure (an unsafe or unwritable run folder, a socket that cannot be created there, a full disk)
-      // would otherwise quit with no window at all.
+      // Every other failure (an unsafe or unwritable run folder, a full disk) would otherwise quit with no window at all.
       dialog.showErrorBox(
         'OrgAI could not start',
         `OrgAI could not take ownership of its data folder:\n${message}\n\nData folder: ${dataDir}\nCheck that the folder is on a local disk you can write to, then start OrgAI again.`
@@ -378,8 +372,7 @@ app.whenReady().then(async () => {
     }
   }
   // Stores, services, adapters, background probes and housekeeping (cli-spec 3.2(2) step 4). The boot's markReady is
-  // held back: daemon.json turns 'ready' below, once the listener matches Terminal access, so a client that waits for
-  // 'ready' never reads "listening: false" from a host about to listen.
+  // held back: the record turns 'ready' below, once the boot returned.
   const bootOwnership = {
     get info() {
       return owned.info
@@ -389,15 +382,42 @@ app.whenReady().then(async () => {
     markDraining: () => owned.markDraining(),
     release: () => owned.release()
   }
+  // Wave 7 (cli-standalone.md 5.6): open secure storage (decrypt `check`, reconcile with secrets.json, create it when
+  // absent) after ownership and before the boot, so the first
+  // probes see the stored secrets. A custodian failure leaves the app in legacy-only mode (secrets.json,
+  // as before) with a retry every 10 minutes and on window focus after a lock failure. The real custodians are the
+  // default (macOS keychain, DPAPI, Secret Service, ORGAI_VAULT_KEY_FILE). A mock launch (e2e, verify-pack) must never
+  // write an OS key item for a throwaway data folder, so it keeps the legacy-only mode unless a key file is named.
+  const secretStore = await openSecretStore({
+    dataDir,
+    userDataDir,
+    hostKind,
+    product: 'desktop',
+    cipher: safeStorage,
+    log: (m) => log.info(m),
+    ...(process.env.ORGAI_MOCK === '1' && !(process.env.ORGAI_VAULT_KEY_FILE ?? '').trim() ? { custodian: unavailableCustodianFactory } : {})
+  })
+  app.on('browser-window-focus', () => secretStore.retryOpen('focus'))
   const h = bootOrgAIHost({
     env: runtimeEnv(),
     dataDir,
     hostKind,
     ownership: bootOwnership,
     safeStorage,
+    secretStore,
     openExternal: (url) => shell.openExternal(url),
+    // The reference status snapshot reads the orgai command's state; the install service is built after boot.
+    cliShimStatus: () => {
+      if (!cliInstallForStatus) throw new Error('not ready')
+      return cliInstallForStatus.status()
+    },
     desktop: {
       openRunWindow,
+      // open_in_app: the live main window only, queued until its renderer is ready; focused only while OrgAI is the
+      // foreground app, else flashed (appMenu.ts navigateSender, review M2). No main window open: false, never a new one.
+      navigate: (event) => navigateSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes)(event),
+      // outputs:delete moves the file to the OS trash (the service deletes for good when this is missing or throws).
+      trashItem: (p) => shell.trashItem(p),
       teamFilesChanged: (status) => {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)
@@ -405,31 +425,29 @@ app.whenReady().then(async () => {
       }
     },
     mock: process.env.ORGAI_MOCK === '1',
+    // Wave 7 (cli-standalone.md 4.3): the shutdown sequence releases ownership, then calls onDrained; a quit started
+    // anywhere (Quit, a last window on Windows / Linux, idle exit, a signal) only leaves once it got here.
+    // Repository clones the windows started are cancelled as soon as the drain starts (round 6 item 9).
+    quiesce: () => {
+      repoClone?.dispose()
+      // A running install holds a mutation lease; cancel it now so the drain does not wait for npm.
+      cliInstallForStatus?.cancel()
+    },
+    // At the hard limit (writers still in flight after 60 s, descendants killed): leave now; the exit hook releases.
+    exitAtHardLimit: () => process.exit(0),
+    // Chromium's own helpers (GPU, renderers, network and utility services) are not the host's work: killing them
+    // only makes Chromium relaunch them. app.getAppMetrics lists them, re-read on every pass of the tree kill.
+    shutdownExcludePids: () => app.getAppMetrics().map((m) => m.pid),
     onDrained: () => {
-      drainQuit = true
-      socketServer.close()
+      quitting = true
       app.quit()
     }
   })
   host = h
-  socketServer.attach(h)
   const settings = h.settings
   applyTheme(settings.get())
   settings.onChange((s) => applyTheme(s))
-  // Review M11: the listener and daemon.secret exist only while Terminal access is on; daemon.json turns 'ready' once
-  // the first sync settled. Not awaited: on Windows the secret's ACL step may take a while and the window need not wait.
-  // terminalAccess() is the stored switch, or this session of a --headless-host boot while the user has not chosen
-  // (review H2: never saved), so a headless host listens without turning the desktop's Terminal access on.
-  void syncTerminalListener(owned, h.terminalAccess().enabled).then((ok) => {
-    if (!ok && hostArgs.headless) {
-      // A terminal host without a listener serves nobody; the orgai command reads the exit code and the log.
-      log.error('The terminal host could not open its connection point; quitting.')
-      app.exit(6)
-      return
-    }
-    owned.markReady()
-  })
-  settings.onChange(() => void syncTerminalListener(owned, h.terminalAccess().enabled))
+  owned.markReady()
   // Every push on the host's bus reaches every window (so a second window and the deprecated notifications mirror
   // stay in step); run events also go to the notifier.
   h.events.on((channel, payload) => {
@@ -457,7 +475,10 @@ app.whenReady().then(async () => {
   })
   // Open windows keep the desktop host busy (cli-spec 3.2(4) interactiveClients).
   h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
-  const cliShim = buildCliShim(h)
+  const cliInstall = buildCliInstall()
+  cliInstallForStatus = cliInstall
+  // An install still running when the app quits is stopped with it.
+  app.once('will-quit', () => cliInstall.cancel())
   // Start a project from a repository (desktop only: progress goes to the calling window, a closed window cancels).
   const clones = new RepoCloneService({
     dataDir,
@@ -476,139 +497,78 @@ app.whenReady().then(async () => {
     void teamFiles.checkAll().catch((e) => log.warn(`Team files boot check failed: ${e instanceof Error ? e.message : String(e)}`))
     app.on('browser-window-focus', () => teamFiles.focused())
   }
+  // Outputs: a window focus looks (stat only) for outside edits to the outputs opened this session and the newest ones
+  // of the projects this app shows (scoped windows' projects plus every project whose outputs were opened); at most once
+  // per 2 s. The watcher turns a settled change into an 'external' version.
+  const outputWatcher = h.services.outputWatcher
+  if (outputWatcher) {
+    let lastOutputsCheck = 0
+    app.on('browser-window-focus', () => {
+      const now = Date.now()
+      if (now - lastOutputsCheck < 2000) return
+      lastOutputsCheck = now
+      const ids = new Set(outputWatcher.openedProjectIds())
+      for (const [, scope] of liveWindowScopes()) if (scope?.projectId) ids.add(scope.projectId)
+      if (ids.size) outputWatcher.checkProjects([...ids])
+    })
+  }
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
-  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliShim, repoClone: clones })
+  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliInstall, repoClone: clones })
   installAppMenu(
     menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
   )
-  // A terminal host opens no window; the first plain launch (second-instance) or a Dock click (activate) does.
-  if (!hostArgs.headless) {
-    createWindow()
-    if (hostArgs.run) openRunById(hostArgs.run)
-  }
+  createWindow()
   booted = true
-  // cli-spec 7(3): point an existing orgai command shim at this install when it runs an older form of this launcher or
-  // a launcher that is gone (an app move or update); a newer or other-install shim stays. Every launch
-  // kind, headless included; never blocks boot, never creates a shim, never touches a foreign file.
-  if (app.isPackaged && !process.env.ORGAI_DATA_DIR) {
-    void cliShim
-      .refreshOnLaunch()
-      .then((outcome) => log.info(`orgai command shim at launch: ${outcome}`))
-      .catch((e: unknown) => log.warn(`orgai command shim refresh failed: ${e instanceof Error ? e.message : String(e)}`))
-  }
+  // SIGINT / SIGTERM (and SIGHUP) end the host through the same sequence as Quit (forced: runs end continuable).
+  installShutdownSignals(h.shutdown, { log: (m) => log.info(m) })
+  // No launch refresh of the old orgai command shim: this app ships no launcher, so there is nothing to point it at.
+  // Settings can still remove the old shim.
 })
 
 /**
- * Bind or close the host's listener (and write or remove daemon.secret) to match Terminal access (review M11). Calls
- * are serialized by the ownership handle. False when the listener could not be put in that state (logged).
+ * The orgai command installer (5.3): status from file metadata, `npm install -g orgai-cli`, and removal of the old
+ * app shim. process.env already holds the login shell's PATH merged in (applyShellPath above).
  */
-async function syncTerminalListener(owned: HostOwnership, on: boolean): Promise<boolean> {
-  const was = owned.listening
-  try {
-    await owned.setListening(on)
-    if (owned.listening !== was) log.info(on ? 'Terminal access is on: listening for terminal clients.' : 'Terminal access is off: stopped listening for terminal clients.')
-    return true
-  } catch (e) {
-    log.warn(`Terminal access: could not ${on ? 'start' : 'stop'} listening for terminal clients: ${e instanceof Error ? e.message : String(e)}`)
-    return false
-  }
-}
-
-/**
- * The orgai command shim service (cli-spec 7(3)). Installing it never turns Terminal access on by itself (review H2):
- * the App settings row asks the user to turn it on after an install.
- */
-function buildCliShim(h: OrgAIHost): CliShimService {
+function buildCliInstall(): CliInstallService {
   const shellPath = shellPathResult?.shellPath ?? []
-  return createCliShimService({
+  const home = homedir()
+  return createCliInstallService({
     platform: process.platform,
-    isPackaged: app.isPackaged,
-    dataDirOverride: !!dataOverride,
-    resourcesPath: process.resourcesPath,
-    userDataDir,
-    home: homedir(),
+    home,
     env: process.env,
-    // POSIX: the login shell's own PATH, '' (unknown) when it printed none; process.env.PATH holds OrgAI's merged
-    // additions (~/.local/bin among them), so it would always answer yes. Windows: the inherited user Path.
+    // POSIX: the login shell's own PATH; when it printed none, the installer falls back to the merged process.env.PATH.
+    // Windows: the inherited user Path.
     ...(process.platform === 'win32' ? {} : { loginPath: shellPath.join(':') }),
-    onInstalled: () => {
-      if (!h.terminalAccess().enabled) log.info('Installed the orgai command; Terminal access stays off until the user turns it on.')
-    }
+    appVersion: app.getVersion(),
+    oldShim: createOldShimService({ platform: process.platform, home, env: process.env })
   })
 }
 
-// Give up <dataDir>/run ownership on the way out; the exit hook covers app.exit and paths that skip will-quit.
-// release() is synchronous and idempotent.
-app.on('will-quit', () => {
-  server?.close()
-  ownership?.release()
-})
+// Wave 7 (cli-standalone.md 4.3): will-quit does not release; the shutdown coordinator released ownership before the
+// quit could get here. The process exit hook stays as the last resort (a crash path, app.exit before boot): the
+// process's own writes end with it. release() is synchronous and idempotent.
 process.on('exit', () => ownership?.release())
 
-/** Longest a quit waits for live runs to record their end (RunManager.stopAll) before it goes ahead anyway. */
-const QUIT_STOP_DEADLINE_MS = 3000
-// Live runs are cut by the app, not the user (RunSummary.endedBy 'app'): the first quit is held until stopAll has
-// written them, or the deadline passes (then markQuit writes them synchronously). A re-entrant quit while stopAll is
-// pending is held too and never calls stopAll again; one after the deadline is forced through. See quitGate.ts.
-const gate = quitGate({
-  liveCount: () => host?.runs.liveRunCount() ?? 0,
-  stopAll: () => host?.runs.stopAll({ reason: 'quit' }) ?? Promise.resolve(),
-  markQuit: () => host?.runs.markQuit(),
-  deadlineMs: QUIT_STOP_DEADLINE_MS,
-  quit: () => app.quit(),
-  warn: (m) => console.warn(m)
-})
-// One before-quit handler, so the order is fixed: the terminal-clients prompt first (a cancelled or kept quit never
-// reaches the gate, never marks the app quitting and never disposes the host), then the gate, then dispose.
-app.on('before-quit', (event) => {
-  const terminalClients = server?.attachedClientCount() ?? 0
-  if (quitPromptNeeded({ terminalClients, drainQuit, alreadyAnswered: quitAnswered || quitting })) {
-    event.preventDefault()
-    if (!quitPromptOpen) void askQuit(terminalClients)
-    return
-  }
-  quitting = true
-  repoClone?.dispose()
-  // A macOS certificate read still running is killed once the quit goes ahead (a kept quit leaves it alone).
-  stopSystemCertRead()
-  gate(event)
-  host?.dispose()
-})
-
-/**
- * An explicit quit while terminal clients are attached (cli-spec 3.2(1)). The spec's "N terminal run(s)" is counted as
- * attached terminal clients: no run is marked as started from the terminal yet.
- */
-async function askQuit(terminalClients: number): Promise<void> {
-  quitPromptOpen = true
-  let response = 2
-  try {
-    const opts = {
-      type: 'question' as const,
-      buttons: quitPromptButtons(terminalClients),
-      defaultId: 0,
-      cancelId: 2,
-      message: 'Terminals are still connected to OrgAI.',
-      detail: 'OrgAI can keep running in the background for them, or stop every run and quit.'
-    }
-    const parent = BrowserWindow.getFocusedWindow()
-    response = (parent ? await dialog.showMessageBox(parent, opts) : await dialog.showMessageBox(opts)).response
-  } catch (e) {
-    log.warn(`The quit prompt failed: ${e instanceof Error ? e.message : String(e)}`)
-  } finally {
-    quitPromptOpen = false
-  }
-  if (response === 0) {
-    for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.close()
-    goBackground()
-  } else if (response === 1) {
-    quitAnswered = true
-    app.quit()
-  } else if (reopenAfterCancel({ platform: process.platform, liveWindows: liveWindowScopes().length, quitting })) {
-    // Cancel after the last window closed (Windows, Linux): never leave OrgAI running with nothing on screen.
-    createWindow()
-  }
-}
+// One before-quit handler (desktopQuit.ts, unit-tested with a fake app): the shutdown coordinator holds the quit
+// (preventDefault) until it released ownership: a forced drain (runs end through stopAll({ reason: 'quit' }) within
+// 3 s, else markQuit writes them), the writers settle, ownership is released, then onDrained quits again and the
+// handler lets that quit through.
+app.on(
+  'before-quit',
+  beforeQuitHandler({
+    host: () => host,
+    quitting: () => quitting,
+    markQuitting: () => {
+      quitting = true
+    },
+    reason: () => quitReason,
+    stopCertRead: () => stopSystemCertRead(),
+    stopCliInstall: () => cliInstallForStatus?.cancel(),
+    // Never strand the app: the exit hook releases ownership.
+    exit: (code) => app.exit(code),
+    warn: (m) => log.warn(m)
+  })
+)
 
 /**
  * The last window closed on Windows or Linux while runs are working without the user (review H3): ask before going
@@ -642,21 +602,22 @@ async function askClose(workingRuns: number): Promise<void> {
     log.info('The user chose to keep OrgAI working in the background after closing its last window.')
     goBackground()
   } else if (choice === 'quit') {
-    quitAnswered = true
+    quitReason = 'window-closed'
     app.quit()
   } else {
     createWindow()
   }
 }
 
-// The last window closed (review H3): a --headless-host launch goes back to the background while no run is working,
-// macOS stays (Dock), and Windows / Linux quit through quitGate, asking first only while runs are working without the
-// user. That ask covers a --headless-host launch too (an `orgai` command started it and the user later opened its
-// window from the Start menu): working runs never go to the background unasked.
+// The last window closed (review H3): macOS stays (Dock), and Windows / Linux quit through the shutdown coordinator,
+// asking first only while runs are working without the user: working runs never go to the background unasked.
 app.on('window-all-closed', () => {
+  // Nothing quits before boot.
+  if (!booted) return
   const workingRuns = host ? host.runs.workingRunCount() : 0
-  const action = windowAllClosedAction({ platform: process.platform, launchedHeadless: hostArgs.headless, quitting, workingRuns })
-  if (action === 'quit') app.quit()
-  else if (action === 'background') goBackground()
-  else if (action === 'ask') void askClose(workingRuns)
+  const action = windowAllClosedAction({ platform: process.platform, quitting, workingRuns })
+  if (action === 'quit') {
+    quitReason = 'window-closed'
+    app.quit()
+  } else if (action === 'ask') void askClose(workingRuns)
 })

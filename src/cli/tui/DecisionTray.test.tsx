@@ -3,12 +3,14 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CardKind, DecisionOutcome, McpInstallRequest, PermissionRequest, UserQuestion } from '../../shared/types'
 import { DEFAULT_TUI_ENV, InputBus, InputBusContext, TuiEnvContext } from './context'
 import { DecisionTray } from './DecisionTray'
+import { trayHeight } from './trayLayout'
+import { textWidth } from './panes/text'
 import { cardKey, type CardRef, type DecisionCall, type DecisionTrayProps, type InputEvent, type ResolvedCardInfo, type TrayCard, type TuiEnv } from './types'
 
 const RUN = 'run_1'
 
 const key = (ch: string): InputEvent => ({ type: 'key', name: 'char', ch, ctrl: false, alt: false, shift: false, raw: ch })
-const named = (name: 'enter' | 'escape' | 'backtab' | 'down' | 'backspace'): InputEvent => ({ type: 'key', name, ctrl: false, alt: false, shift: name === 'backtab', raw: '' })
+const named = (name: 'enter' | 'escape' | 'backtab' | 'down' | 'backspace' | 'left' | 'right' | 'end'): InputEvent => ({ type: 'key', name, ctrl: false, alt: false, shift: name === 'backtab', raw: '' })
 
 function permission(id: string, extra: Partial<PermissionRequest> = {}): PermissionRequest {
   return {
@@ -45,7 +47,7 @@ interface Harness {
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5))
 
-async function mount(initial: Partial<DecisionTrayProps> & { cards: TrayCard[] }, env: Partial<TuiEnv> = {}, outcome?: (call: DecisionCall) => Promise<DecisionOutcome>): Promise<Harness> {
+async function mount(initial: Partial<DecisionTrayProps> & { cards: TrayCard[]; compact?: boolean }, env: Partial<TuiEnv> = {}, outcome?: (call: DecisionCall) => Promise<DecisionOutcome>): Promise<Harness> {
   const bus = new InputBus()
   const clock = { t: 10_000 }
   const calls: Harness['calls'] = []
@@ -95,6 +97,97 @@ async function mount(initial: Partial<DecisionTrayProps> & { cards: TrayCard[] }
   }
 }
 
+describe('compact proposal preview', () => {
+  it.each([70, 120, 200])('keeps a bounded proposal card with full review at %s columns', async (width) => {
+    const c = tray('proposal', 'architecture', {
+      id: 'architecture', kind: 'architecture', title: 'Desktop and terminal architecture',
+      payload: { summary: 'Keep the existing application boundaries. '.repeat(20), stack: ['STACK-DETAIL-MARKER'], modules: [], conventions: ['FULL-REVIEW-MARKER'], commands: [], risks: [] }
+    })
+    const height = trayHeight([c], width, 50, false)
+    expect(height).toBeLessThanOrEqual(9)
+    const h = await mount({ cards: [c], compact: true, width, height })
+    expect(h.frame()).toContain('Desktop and terminal architecture')
+    expect(h.frame()).toContain('[v] Review')
+    expect(h.frame()).toContain('[y] Approve')
+    expect(h.frame()).toContain('Review architecture')
+    expect(h.frame()).not.toContain('Approve architecture proposal')
+    expect(h.frame().split('\n').every(line => textWidth(line) <= Math.min(width, 96))).toBe(true)
+    expect(h.frame()).not.toContain('STACK-DETAIL-MARKER')
+    expect(h.frame()).not.toContain('Esc Back')
+    expect(h.frame().split('Esc to type')).toHaveLength(2)
+    h.clock.t += 1000
+    await h.press('v')
+    expect(h.onViewText.mock.calls[0]?.[1]).toContain('STACK-DETAIL-MARKER')
+    expect(h.onViewText.mock.calls[0]?.[1]).toContain('FULL-REVIEW-MARKER')
+    expect(h.calls).toHaveLength(0)
+    h.unmount()
+  })
+})
+
+describe('inline approval selection', () => {
+  it.each([{}, { color: false, unicode: false }, { screenReader: true, color: false }])('selects and approves a setup proposal with Enter: %j', async (env) => {
+    const c = { ...tray('proposal', 'team', { id: 'team', kind: 'orgChart', title: 'Your team', payload: { roles: [] } }), runKind: 'setup' as const }
+    const h = await mount({ cards: [c], compact: true }, env)
+    expect(h.frame()).toContain('> [y] Approve')
+    expect(h.frame()).toContain('Enter confirm')
+    await h.press(named('enter'))
+    expect(h.calls).toHaveLength(0)
+    h.clock.t += 1000
+    await h.press(named('enter'))
+    expect(h.calls[0]?.call.payload).toMatchObject({ proposalId: 'team', decision: { behavior: 'approve' } })
+    h.unmount()
+  })
+
+  it('selects revise without approving, and resets the selection on a new card', async () => {
+    const proposal = (id: string) => tray('proposal', id, { id, kind: 'orgChart', title: 'Your team', payload: { roles: [] } })
+    const h = await mount({ cards: [proposal('a')], compact: true })
+    h.clock.t += 1000
+    await h.press(named('right'))
+    expect(h.frame()).toContain('> [e] Revise')
+    await h.press(named('enter'))
+    expect(h.frame()).toContain('What should change')
+    expect(h.calls).toHaveLength(0)
+    await h.set({ cards: [proposal('b')] })
+    expect(h.frame()).toContain('> [y] Approve')
+    await h.press(named('enter'))
+    expect(h.calls).toHaveLength(0)
+    h.clock.t += 1000
+    await h.press(named('left'))
+    await h.press(named('enter'))
+    expect(h.onViewText).toHaveBeenCalledTimes(1)
+    expect(h.calls).toHaveLength(0)
+    h.unmount()
+  })
+
+  it('keeps Enter behind the permission read gate', async () => {
+    const c = tray('permission', 'long', permission('long', { input: { command: 'echo one\n'.repeat(35) + 'LAST-COMMAND-LINE' } }))
+    const h = await mount({ cards: [c], compact: true, width: 70, height: 9 })
+    h.clock.t += 1000
+    expect(h.frame()).not.toContain('LAST-COMMAND-LINE')
+    await h.press(named('enter'))
+    expect(h.calls).toHaveLength(0)
+    await h.press(named('end'))
+    expect(h.frame()).toContain('LAST-COMMAND-LINE')
+    await h.press(named('enter'))
+    expect(h.calls[0]?.call.payload).toMatchObject({ decision: { behavior: 'allow', scope: 'once' } })
+    h.unmount()
+  })
+
+  it('still requires the explicit second confirmation for a persistent grant', async () => {
+    const h = await mount({ cards: [tray('permission', 'p', permission('p'))], compact: true })
+    h.clock.t += 1000
+    await h.press(named('right'))
+    await h.press(named('right'))
+    expect(h.frame()).toContain('> [a] Always allow')
+    await h.press(named('enter'))
+    await h.press(named('enter'))
+    expect(h.calls).toHaveLength(0)
+    expect(h.frame()).toContain('saved to permission rules')
+    await h.press('y')
+    expect(h.calls[0]?.call.payload).toMatchObject({ decision: { behavior: 'allow', scope: 'project' } })
+    h.unmount()
+  })
+})
 describe('DecisionTray: card-swap guard', () => {
   it('ignores a key within 750 ms of a swap and decides the new card with the same key after it', async () => {
     const a = tray('permission', 'a', permission('a'))
@@ -155,7 +248,7 @@ describe('DecisionTray: two-step confirmations', () => {
     h.clock.t += 1000
     await h.press('a')
     expect(h.calls).toHaveLength(0)
-    expect(h.frame()).toContain('Always allow for project (saved to permission rules)? a/y to confirm, Esc to cancel')
+    expect(h.frame()).toContain('Always allow for project (saved to permission rules)? a/y to confirm | Esc cancels')
     await h.press('a')
     expect(h.calls).toHaveLength(1)
     expect(h.calls[0].call).toEqual({ channel: 'runs:decide', payload: { runId: RUN, requestId: 'a', expectedRevision: 1, decision: { behavior: 'allow', scope: 'project' } } })
@@ -175,22 +268,23 @@ describe('DecisionTray: two-step confirmations', () => {
     h.unmount()
   })
 
-  it("closes with 'Resolved in another window' when the card is removed and the desktop decided it", async () => {
+  it("closes with 'Resolved by' when the card is removed and the headless policy decided it", async () => {
     const a = tray('permission', 'a', permission('a'))
     const h = await mount({ cards: [a] })
     h.clock.t += 1000
     await h.press('a')
     expect(h.frame()).toContain('to confirm')
-    const resolved: ResolvedCardInfo[] = [{ key: a.key, ref: a.ref, cancelled: false, decidedBy: { surface: 'desktop' }, at: h.clock.t }]
+    const resolved: ResolvedCardInfo[] = [{ key: a.key, ref: a.ref, cancelled: false, decidedBy: { surface: 'policy' }, at: h.clock.t }]
     await h.set({ cards: [], resolved })
     expect(h.frame()).not.toContain('to confirm')
-    expect(h.frame()).toContain('Resolved in another window (the desktop app)')
+    expect(h.frame()).toContain('Resolved by the headless decision policy')
+    expect(h.frame()).not.toMatch(/another window|desktop app/)
     await h.press('a')
     expect(h.calls).toHaveLength(0)
     h.unmount()
   })
 
-  it("another terminal UI's decision closes a confirmation with 'Resolved in another window' too", async () => {
+  it("a terminal UI decision closes a confirmation with 'Resolved by' too", async () => {
     const a = tray('permission', 'a', permission('a'))
     const h = await mount({ cards: [a] })
     h.clock.t += 1000
@@ -198,7 +292,7 @@ describe('DecisionTray: two-step confirmations', () => {
     expect(h.frame()).toContain('to confirm')
     const resolved: ResolvedCardInfo[] = [{ key: a.key, ref: a.ref, cancelled: false, decidedBy: { surface: 'tui' }, at: h.clock.t }]
     await h.set({ cards: [], resolved })
-    expect(h.frame()).toContain('Resolved in another window (the terminal UI)')
+    expect(h.frame()).toContain('Resolved by the terminal UI')
     expect(h.calls).toHaveLength(0)
     h.unmount()
   })
@@ -385,12 +479,24 @@ describe('DecisionTray: outcomes and variants', () => {
     h.unmount()
   })
 
-  it('footer variant is one line with the title and hints', async () => {
-    const h = await mount({ cards: [tray('permission', 'a', permission('a'))], variant: 'footer' })
+  it('footer variant with one row is one line with the title and hints', async () => {
+    const h = await mount({ cards: [tray('permission', 'a', permission('a'))], variant: 'footer', height: 1 })
     const lines = h.frame().split('\n')
     expect(lines).toHaveLength(1)
     expect(lines[0]).toContain('R1 Run npm test a')
     expect(lines[0]).toContain('y Allow once')
+    h.unmount()
+  })
+
+  it('R2-M2: footer variant with more rows keeps the title on one line and wraps the keys below it at separators', async () => {
+    const h = await mount({ cards: [tray('permission', 'a', permission('a'))], variant: 'footer', height: 4, width: 60 })
+    const lines = h.frame().split('\n')
+    expect(lines.length).toBeGreaterThanOrEqual(2)
+    expect(lines[0]).toContain('R1 Run npm test a')
+    expect(lines[0]).not.toContain('y Allow once')
+    const keys = lines.slice(1).join(' ')
+    for (const k of ['y Allow once', 'v Full view', 'Esc Back', '? Keys']) expect(keys).toContain(k)
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(60)
     h.unmount()
   })
 
@@ -399,7 +505,7 @@ describe('DecisionTray: outcomes and variants', () => {
     const f = h.frame()
     expect(f).toContain('Needs you (2)')
     expect(f).toContain('Command: npm test a')
-    expect(f).toContain('y Allow once · s Allow for session · a Always allow for project · n Deny')
+    expect(f).toContain('y Allow once | s Allow for session | a Always allow for project | n Deny (note)')
     expect(f).toContain('R1 Run npm test b')
     h.unmount()
   })
@@ -416,5 +522,41 @@ describe('DecisionTray: outcomes and variants', () => {
     expect(text).toContain(' a | 1 +')
     expect(text).toContain('+x')
     h.unmount()
+  })
+})
+
+describe('DecisionTray: the agent and the focused card (ux-review-tui-org.md F5)', () => {
+  const withAgent = (c: TrayCard, agentId: string, agentLabel: string): TrayCard => ({ ...c, agentId, agentLabel }) as TrayCard
+
+  it('names the asking agent in the header and the footer line', async () => {
+    const a = withAgent(tray('permission', 'a', permission('a')), 'r2', 'mock-lead-report-2')
+    const full = await mount({ cards: [a] })
+    expect(full.frame().split('\n')[0]).toBe('> Needs you (1) | R1 | mock-lead-report-2 | permission: Run npm test a')
+    full.unmount()
+    const footer = await mount({ cards: [a], variant: 'footer', height: 1 })
+    expect(footer.frame()).toContain('R1 mock-lead-report-2: ')
+    footer.unmount()
+    const none = await mount({ cards: [tray('permission', 'b', permission('b'))] })
+    expect(none.frame().split('\n')[0]).toBe('> Needs you (1) | R1 | permission: Run npm test b')
+    none.unmount()
+  })
+
+  it('focusKey shows that card first and keeps the others in order; an unknown key changes nothing', async () => {
+    const a = tray('permission', 'a', permission('a'))
+    const b = tray('permission', 'b', permission('b'))
+    const c = tray('permission', 'c', permission('c'))
+    const h = await mount({ cards: [a, b, c], focusKey: c.key })
+    expect(h.frame().split('\n')[0]).toContain('Run npm test c')
+    expect(h.frame()).toContain('Run npm test a')
+    h.unmount()
+    const same = await mount({ cards: [a, b, c], focusKey: 'gone' })
+    expect(same.frame().split('\n')[0]).toContain('Run npm test a')
+    same.unmount()
+    // Decisions go to the card shown on top.
+    const decide = await mount({ cards: [a, b], focusKey: b.key })
+    decide.clock.t += 800
+    await decide.press('y')
+    expect(decide.calls[0].card.ref.requestId).toBe('b')
+    decide.unmount()
   })
 })

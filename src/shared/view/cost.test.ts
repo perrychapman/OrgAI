@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentCostInput, costView, formatDuration, formatUsd, runCostInput, sumCosts, unpricedModels } from './cost'
+import { agentCostInput, costView, formatDuration, formatUsd, formatUsdCompact, formatUsdFull, formatUsdPage, runCostInput, sumCosts, unpricedModels } from './cost'
 
 describe('cost', () => {
   it('formats amounts', () => {
@@ -71,5 +71,46 @@ describe('cost', () => {
     expect(formatDuration(45_000)).toBe('45s')
     expect(formatDuration(80_000)).toBe('1m 20s')
     expect(formatDuration(3_900_000)).toBe('1h 05m')
+  })
+})
+
+describe('compact cost', () => {
+  it('rounds to cents and keeps the full figure in the title', () => {
+    expect(formatUsdCompact(0.02571)).toBe('$0.03')
+    expect(formatUsdCompact(0.004)).toBe('<$0.01')
+    expect(formatUsdCompact(12.4)).toBe('$12.40')
+    const v = costView({ costUsd: 0.02571, costSource: 'provider' }, { compact: true })
+    expect(v.text).toBe('$0.03')
+    expect(v.title).toContain('$0.02571')
+  })
+  it('keeps the partial mark and leaves unknown and none alone', () => {
+    expect(costView({ costUsd: 0.004, costSource: 'computed', costPartial: true }, { compact: true }).text).toBe('<$0.01+')
+    expect(costView({ costUsd: null, costSource: 'unknown' }, { compact: true }).text).toBe('unknown')
+    expect(costView({ costUsd: 0, costSource: 'none' }, { compact: true }).text).toBe('—')
+  })
+})
+
+describe('page cost (Usage page decimals rule)', () => {
+  it('formats amounts by size', () => {
+    expect(formatUsdPage(0)).toBe('$0.00')
+    expect(formatUsdPage(42.1)).toBe('$42.10')
+    expect(formatUsdPage(12345.678)).toBe('$12,345.68')
+    expect(formatUsdPage(1)).toBe('$1.00')
+    expect(formatUsdPage(0.4261)).toBe('$0.426')
+    expect(formatUsdPage(0.01)).toBe('$0.010')
+    expect(formatUsdPage(0.0019)).toBe('$0.0019')
+    expect(formatUsdPage(0.00004)).toBe('< $0.0001')
+    expect(formatUsdFull(0.4261234)).toBe('$0.426123')
+    expect(formatUsdFull(2)).toBe('$2.00')
+  })
+  it('keeps the marks and the full figure in the title', () => {
+    const partial = costView({ costUsd: 4.2, costSource: 'computed', costPartial: true }, { precision: 'page' })
+    expect(partial.text).toBe('$4.20+')
+    expect(costView({ costUsd: 0.4, costSource: 'provider', legacy: true }, { precision: 'page' }).text).toBe('~$0.400')
+    const v = costView({ costUsd: 0.4261234, costSource: 'computed' }, { precision: 'page' })
+    expect(v.text).toBe('$0.426')
+    expect(v.title.startsWith('$0.426123.')).toBe(true)
+    expect(costView({ costUsd: null, costSource: 'unknown' }, { precision: 'page' }).text).toBe('unknown')
+    expect(costView({ costUsd: 0, costSource: 'none' }, { precision: 'page' }).text).toBe('—')
   })
 })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ProviderModel } from '@shared/types'
+import type { ConnectionInfo, ProviderModel } from '@shared/types'
 import { ASSISTANT_MODEL_FALLBACK, assistantModelLabel, modelDisplayName, modelSettingDescription, modelSettingGroups, modelSources, runsOnText } from './assistantModels'
 import type { ModelSource } from './assistantModels'
 
@@ -43,24 +43,55 @@ describe('modelSources', () => {
   it('always includes anthropic and only other connections that are enabled', () => {
     expect(modelSources(null, {}).map((s) => s.id)).toEqual(['anthropic'])
   })
+  it('lists every enabled proxy by its own name, in list order, and skips disabled ones', () => {
+    const info = (c: object): ConnectionInfo => ({ connection: c, status: { state: 'connected' } }) as unknown as ConnectionInfo
+    const list = [
+      info({ id: 'anthropic', enabled: true, tierModels: { deep: 'opus' } }),
+      info({ id: 'px_1', kind: 'litellm', name: 'Work gateway', anthropicBaseUrl: 'x', enabled: true, tierModels: { everyday: 'gpt-5' } }),
+      info({ id: 'px_2', kind: 'openai-compatible', name: 'Spare', anthropicBaseUrl: 'x', enabled: false, tierModels: {} }),
+      info({ id: 'openai', enabled: false, tierModels: {} })
+    ]
+    const s = modelSources(list, {})
+    expect(s.map((x) => [x.id, x.name])).toEqual([['anthropic', 'Anthropic'], ['px_1', 'Work gateway']])
+    expect(s[1].tierModels).toEqual({ everyday: 'gpt-5' })
+  })
 })
 
 describe('modelSettingGroups', () => {
   it('lists plain tier labels, then one Exact model group with recommended marked, keeping an unknown saved id', () => {
     const groups = modelSettingGroups('mystery', sources, false)
-    expect(groups.map((g) => g.label)).toEqual(['Tiers', 'Exact model'])
+    expect(groups.map((g) => g.label)).toEqual(['Tiers', 'OpenAI', 'Saved value'])
     expect(groups[0].options.map((o) => o.label)).toEqual(['Top tier', 'Deep tier', 'Everyday tier', 'Fast tier'])
-    expect(groups[1].options.map((o) => o.label)).toEqual(['GPT X (recommended)', 'GPT Y', 'mystery'])
-    expect(groups[1].options[2].value).toBe('mystery')
+    expect(groups[1].options.map((o) => o.label)).toEqual(['GPT X (recommended)', 'GPT Y'])
+    expect(groups[2].options[0]).toEqual({ value: 'mystery', label: 'mystery' })
   })
   it('labels each tier with the model it resolves to on the given connection', () => {
     const groups = modelSettingGroups('deep', sources, false, sources[0])
     expect(groups[0].options.find((o) => o.value === 'deep')?.label).toBe('Deep tier (opus)')
     expect(groups[0].options.find((o) => o.value === 'fast')?.label).toBe('Fast tier (haiku)')
   })
-  it('names the connection on exact models only when several connections offer models', () => {
-    const both: ModelSource[] = [...sources, { id: 'litellm', name: 'LiteLLM', tierModels: {}, catalog: [{ ...catalog[0], id: 'lite-1', label: 'Lite 1', connection: 'litellm' }] }]
-    expect(modelSettingGroups('deep', both, false)[1].options.map((o) => o.label)).toContain('Lite 1 (recommended) · LiteLLM')
+  it('groups by connection name and shows the family only where a connection serves several', () => {
+    const mixed: ProviderModel[] = [
+      { ...catalog[0], id: 'claude-a', label: 'claude-a', connection: 'px_1', family: 'claude', adapter: 'claude', recommended: false },
+      { ...catalog[0], id: 'gpt-5', label: 'gpt-5', connection: 'px_1', family: 'openai', recommended: false },
+      { ...catalog[0], id: 'gemini-2.5-pro', label: 'gemini-2.5-pro', connection: 'px_1', family: 'other', recommended: false }
+    ]
+    const both: ModelSource[] = [...sources, { id: 'px_1', name: 'Work gateway', tierModels: {}, catalog: mixed }]
+    const groups = modelSettingGroups('deep', both, false)
+    expect(groups.map((g) => g.label)).toEqual(['Tiers', 'OpenAI', 'Work gateway'])
+    expect(groups[1].options.map((o) => o.label)).toEqual(['GPT X (recommended)', 'GPT Y'])
+    expect(groups[2].options.map((o) => o.label)).toEqual(['claude-a · Claude', 'gpt-5 · GPT', 'gemini-2.5-pro · Other'])
+  })
+  it('lists an id shared by two connections once and never renders an empty group', () => {
+    const a = { ...catalog[0], id: 'same', label: 'same', connection: 'px_1' as const, recommended: false }
+    const b = { ...a, connection: 'px_2' as const }
+    const two: ModelSource[] = [
+      { id: 'px_1', name: 'Work', tierModels: {}, catalog: [a] },
+      { id: 'px_2', name: 'Lite', tierModels: {}, catalog: [b] }
+    ]
+    const groups = modelSettingGroups('deep', two, false)
+    expect(groups.map((g) => g.label)).toEqual(['Tiers', 'Work'])
+    expect(groups.every((g) => g.options.length > 0)).toBe(true)
   })
   it('offers inherit only when allowed', () => {
     expect(modelSettingGroups('deep', [], true)[0].options[0].value).toBe('inherit')

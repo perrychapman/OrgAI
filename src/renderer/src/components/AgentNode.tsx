@@ -7,15 +7,19 @@ import { agentLabel, splitLabelTail } from '../lib/agentTree'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import type { AgentInstance } from '@shared/types'
 import { formatElapsed, formatTokens, initials } from '../lib/layout'
-import { agentProducedNothing } from '@shared/defaults'
+import { agentNoResult, isWorkingAgent, nodeActivity, worktreeLabel } from '../lib/agentActivity'
 import { agentCostInput, costView } from '../lib/cost'
 import { Cost } from './ui/Cost'
 import { Icon } from './ui/Icon'
+import { Badge } from './ui/Badge'
+import { DELEGATION_BADGE_LABEL, delegationBadges, type DelegationBadgeKind } from '@shared/delegationView'
 import { activeRun, useAppStore } from '../store/useAppStore'
+import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
+import { agentStaffingView, assignmentOf } from '../lib/runStaffing'
 
-export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean }, 'agent'>
+/** `arrived`: new since the canvas was shown (pops in once). `breathe`: its phase slot when it is one of the first 12 working nodes. */
+export type AgentFlowNode = Node<{ agent: AgentInstance; color: string; isRoot: boolean; arrived?: boolean; breathe?: number }, 'agent'>
 
-const WORKING = new Set(['starting', 'thinking', 'tool', 'delegating'])
 
 /** A label that clips in the middle: the head takes the ellipsis, the last characters stay (see splitLabelTail). */
 function ClippedLabel({ label }: { label: string }): ReactElement {
@@ -46,26 +50,14 @@ export function MessageHandles({ hs }: { hs: (side: string) => { style?: CSSProp
   )
 }
 
-const WORKTREE_LABEL: Record<NonNullable<AgentInstance['worktree']>['status'], string> = {
-  active: 'isolated worktree',
-  merging: 'merging…',
-  merged: 'merged',
-  empty: 'no changes',
-  conflict: 'merge conflict',
-  removed: 'worktree removed',
-  review: 'awaiting your review',
-  held: 'held for later',
-  'waiting-children': 'waiting for its reports'
-}
-
-/** Nested reports merge into their parent's branch, not the main checkout. */
-function worktreeLabel(wt: NonNullable<AgentInstance['worktree']>): string {
-  if (wt.mergeTarget === 'parent' && wt.status === 'merged') return 'merged into parent'
-  return WORKTREE_LABEL[wt.status]
+const DELEGATION_BADGE_TEST_ID: Record<DelegationBadgeKind, string> = {
+  failed: 'agent-badge-delegation-failed',
+  corrected: 'agent-badge-delegation-corrected',
+  native: 'agent-badge-native-agents'
 }
 
 function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactElement {
-  const { agent, color, isRoot } = data
+  const { agent, color, isRoot, arrived, breathe } = data
   const [, tick] = useState(0)
   const live = !agent.endedAt
 
@@ -79,14 +71,20 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
   // While the agent streams text, its first words stand in for the activity line.
   const partial = useAppStore((s) => activeRun(s)?.partial[agent.id])
   const streaming = partial !== undefined
+  // A provider tag only when this agent runs on another connection than its run (set by main on every agent).
+  const runConnection = useAppStore((s) => activeRun(s)?.summary.connection)
+  const onTag = connectionTag(agent.connection, runConnection)
+  const onTitle = onTag && agent.connection && runConnection ? connectionTagTitle(agent.connection, runConnection, 'run') : (onTag ?? undefined)
+  // Resolved tier and effort from the run's newest assignment for this agent; nothing for the orchestrator or older runs.
+  const assignment = useAppStore((s) => assignmentOf(activeRun(s)?.staffing, agent.id))
+  const staffing = agentStaffingView(assignment)
   const costInput = agentCostInput(agent)
   const hasCost = !costView(costInput).empty
   // Ended without result text: its tokens bought nothing. A quiet dim and a tooltip, no badge.
   // The root is the orchestrator: it speaks the answer, so it is never flagged.
-  const noResult = !isRoot && agent.id !== 'root' && (!!agent.usage?.producedNothing || agentProducedNothing(agent))
-  // An idle run is not a pending decision: the root waits for a reply, "Waiting for you" is for a card.
-  const idleActivity = isRoot && agent.state === 'idle' && agent.activity === 'Waiting for you' ? 'Waiting for your reply' : agent.activity
-  const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : noResult ? 'Ended without a result' : idleActivity
+  const noResult = agentNoResult(agent, isRoot)
+  // An idle run is not a pending decision: the root waits for a reply, "Waiting for you" is for a card (lib/agentActivity.ts).
+  const activity = streaming ? partial.replace(/\s+/g, ' ').trim().slice(0, 80) || 'Writing…' : nodeActivity(agent, { isRoot })
 
   const { layout, nodeStyle } = useCanvasOptions()
   useHandleRefresh(id, layout, nodeStyle)
@@ -108,6 +106,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
         </div>}
     </>
   )
+  const delegationKinds = delegationBadges(agent.delegation)
   const tokensText = `${formatTokens(agent.inputTokens + agent.outputTokens)} tok`
   const tail = hasCost ? costView(costInput).text : formatElapsed(agent.startedAt, agent.endedAt)
   const worktreeText = agent.worktree
@@ -121,7 +120,10 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
     label === agent.name ? '' : agent.name,
     [agent.handle ? '' : agent.roleSlug, shortModel].filter(Boolean).join(' · '),
     activity,
+    staffing ? `${staffing.label}: ${staffing.reason}` : '',
     worktreeText,
+    delegationKinds.map((k) => DELEGATION_BADGE_LABEL[k]).join(', '),
+    onTitle ?? '',
     `${tokensText} · ${tail}`
   ]
     .filter(Boolean)
@@ -129,10 +131,11 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
 
   return (
     <div
-      className={`agent-node state-${agent.state} ${selected ? 'selected' : ''} ${noResult ? 'no-result' : ''} ${isRoot ? 'is-root' : ''}`}
+      className={`agent-node state-${agent.state} ${selected ? 'selected' : ''} ${noResult ? 'no-result' : ''} ${isRoot ? 'is-root' : ''} ${arrived ? 'motion-pop' : ''}`}
       data-style={nodeStyle}
       data-label={station ? geo.label : undefined}
-      style={{ ['--role' as string]: color, ...(station ? { width: geo.width, height: geo.height } : {}) }}
+      data-breathe={breathe !== undefined ? '' : undefined}
+      style={{ ['--role' as string]: color, ...(breathe !== undefined ? { ['--i' as string]: breathe } : {}), ...(station ? { width: geo.width, height: geo.height } : {}) }}
       title={compact ? compactTip : noResult ? 'Ended without a result: its tokens produced nothing' : undefined}
     >
       {!isRoot && <Handle type="target" position={sides.target as Position} {...hs(sides.target)} />}
@@ -145,7 +148,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
           <div className="station-name">
             <ClippedLabel label={label} />
           </div>
-          <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>
+          <span className="sr-only">{[activity, staffing ? `${staffing.label}, ${staffing.reason}` : '', worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>
         </>
       )}
       {hex && (
@@ -160,7 +163,7 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
               {badges}
             </div>
             <div className="hex-name">{label}</div>
-            <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>
+            <span className="sr-only">{[activity, staffing ? `${staffing.label}, ${staffing.reason}` : '', worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>
           </div>
         </>
       )}
@@ -175,20 +178,39 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
             {compact ? <ClippedLabel label={label} /> : agent.name}
           </div>
           {/* The tooltip is not read by keyboard or screen-reader users: say what the card would show. */}
-          {compact && <span className="sr-only">{[activity, worktreeText].filter(Boolean).join(', ')}</span>}
+          {compact && <span className="sr-only">{[activity, staffing ? `${staffing.label}, ${staffing.reason}` : '', worktreeText, onTag ? `runs on ${onTag}` : ''].filter(Boolean).join(', ')}</span>}
           {!compact && (
             <div className="sub">
               <span title={agent.handle ? `Handle ${agent.handle} (role ${agent.roleSlug})` : undefined}>{agent.handle ?? agent.roleSlug}</span>
               {shortModel && <span>· {shortModel}</span>}
+              {staffing && (
+                <span className="agent-staffing-chip" data-testid="agent-staffing" title={`${staffing.reason}\nModel: ${staffing.model}`}>
+                  {staffing.label}
+                </span>
+              )}
+              {onTag && (
+                <span className="agent-connection" data-testid="agent-connection" data-connection={agent.connection} title={onTitle}>
+                  {onTag}
+                </span>
+              )}
             </div>
           )}
         </div>
       </div>}
       {!compact && (
         <>
-          <div className={`activity ${streaming || WORKING.has(agent.state) ? 'working' : ''}`} title={activity}>
+          <div className={`activity ${streaming || isWorkingAgent(agent.state) ? 'working' : ''}`} title={activity}>
             {activity}
           </div>
+          {delegationKinds.length > 0 && (
+            <div className="row gap-1" style={{ flexWrap: 'wrap' }}>
+              {delegationKinds.map((k) => (
+                <Badge key={k} tone={k === 'failed' ? 'danger' : k === 'corrected' ? 'info' : 'attention'} testId={DELEGATION_BADGE_TEST_ID[k]}>
+                  {DELEGATION_BADGE_LABEL[k]}
+                </Badge>
+              ))}
+            </div>
+          )}
           {agent.worktree && (
             <div className={`worktree wt-${agent.worktree.status}`} title={`${agent.worktree.branch} · ${agent.worktree.path}`}>
               {worktreeText}
@@ -199,6 +221,15 @@ function AgentNodeView({ id, data, selected }: NodeProps<AgentFlowNode>): ReactE
             {hasCost ? <Cost value={costInput} labelled /> : <span>{formatElapsed(agent.startedAt, agent.endedAt)}</span>}
           </div>
         </>
+      )}
+      {compact && delegationKinds.length > 0 && (
+        <span className="sr-only">
+          {delegationKinds.map((k) => (
+            <span key={k} data-testid={DELEGATION_BADGE_TEST_ID[k]}>
+              {DELEGATION_BADGE_LABEL[k]}.{' '}
+            </span>
+          ))}
+        </span>
       )}
       <Handle type="source" position={sides.source as Position} {...hs(sides.source)} />
       {/* Agent-to-agent messages attach on the side facing the other node, after the reporting-line handles so those stay the defaults. */}

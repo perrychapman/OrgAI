@@ -1,0 +1,285 @@
+/* Outputs 2: versions, tabs, banners, the Larger view shell, delete and rename (docs/design/outputs-2.md 7, 10, 12). Tokens only. */
+
+.output-detail-head {
+  flex-wrap: wrap;
+}
+.output-version-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.output-version-select {
+  max-width: 100%;
+  min-width: 0;
+  font-size: var(--text-caption);
+}
+.output-version-solo {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.output-detail-toolbar {
+  flex-wrap: wrap;
+}
+.output-detail-tabs {
+  min-width: 0;
+}
+.output-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 0;
+}
+.output-edit-reason {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+
+/* Old version banner */
+.output-old-version {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.output-old-version p {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-body-lh);
+  color: var(--text-primary);
+}
+.output-old-version-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* External edit */
+.output-external {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.output-external p {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.output-external-arrived {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+}
+
+/* Versions list */
+.output-versions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.output-versions-bar {
+  display: flex;
+}
+.output-versions-error {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--danger-text, var(--danger));
+}
+.output-version-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.output-version-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+.output-version-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.output-version-row[data-current='true'] {
+  background: var(--surface-2);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-sm);
+}
+.output-version-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.output-version-num {
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.output-version-label {
+  font-size: var(--text-small);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.output-version-source,
+.output-version-meta {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.output-version-meta {
+  color: var(--text-tertiary);
+}
+.output-version-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.output-version-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.output-version-name-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.output-version-name-form .input {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+/* Larger view shell */
+.output-viewer-head,
+.output-viewer-tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.output-viewer-head {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.output-viewer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.output-viewer-toolbar .output-viewer-tools {
+  flex: 1 1 auto;
+}
+.output-viewer-main {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  gap: var(--space-3);
+}
+.output-viewer-main {
+  flex: 1 1 0;
+}
+.output-viewer-content {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.output-viewer-content > .output-detail-body {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+.output-notes-drawer-wrap {
+  flex: none;
+  width: 300px;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.output-notes-drawer-wrap[data-overlay='true'] {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(320px, 90%);
+  z-index: 2;
+  box-shadow: var(--shadow-md, 0 4px 16px rgb(0 0 0 / 0.25));
+}
+
+/* Delete and rename */
+.output-delete-body p {
+  margin: 0 0 var(--space-2);
+  overflow-wrap: anywhere;
+}
+.output-delete-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+.output-delete-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-2);
+  max-height: 200px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.output-delete-list:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.output-delete-list li {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.output-delete-name {
+  font-weight: var(--weight-semibold);
+  overflow-wrap: anywhere;
+}
+.output-delete-outside {
+  font-size: var(--text-caption);
+  color: var(--warning-text);
+}
+.output-rename-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}

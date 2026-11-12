@@ -9,7 +9,7 @@
  *
  * Standalone and pure: no electron import, no file I/O. Wave 1's src/main/host/registry.ts imports it.
  */
-import { HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
 
 // ---------- Safe parse / stringify ----------
 
@@ -80,12 +80,17 @@ export const PUSH_CHANNELS: readonly string[] = [
   IPC.appFocusRun,
   IPC.menuAction,
   IPC.projectsCloneProgress,
-  TEAM_FILES_IPC.teamFilesChanged
+  TEAM_FILES_IPC.teamFilesChanged,
+  IPC.appNavigate,
+  OUTPUTS_IPC.outputsChanged
 ]
 
-/** Every channel value the host knows: IPC (with TEMPLATE_ENGAGEMENT_IPC and KNOWLEDGE_IPC), MCP_SCOPE_IPC, KIT_IPC, HOST_IPC. */
+/**
+ * Every channel value the host knows: IPC (with TEMPLATE_ENGAGEMENT_IPC and KNOWLEDGE_IPC), MCP_SCOPE_IPC, KIT_IPC,
+ * HOST_IPC, SECRETS_IPC (Wave 7).
+ */
 export function allChannels(): string[] {
-  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(HOST_IPC)]
+  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 }
 
 /** Every request channel: allChannels() minus PUSH_CHANNELS. */
@@ -146,11 +151,13 @@ const PROJECT_CLEARABLE: readonly FieldPath[] = [
 
 /**
  * ProviderConnection fields connections:update clears (ConnectionService.update saves the sent record whole through
- * SettingsStore.set -> normalizeConnections). LiteLLM `baseUrl` is a required string ('' = unset): undefined
+ * SettingsStore.set -> normalizeConnections). A proxy's `anthropicBaseUrl` is a required string ('' = unset): undefined
  * normalizes to the default ''. A tierModels entry left undefined means "no model for this tier".
  */
 const CONNECTION_CLEARABLE: readonly FieldPath[] = [
-  'baseUrl',
+  'anthropicBaseUrl',
+  'openaiBaseUrl',
+  'modelsUrl',
   'autoTiers',
   'tierModels.top',
   'tierModels.deep',
@@ -223,10 +230,15 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'runs:decide': {}, // runs.decide(runId, requestId, PermissionDecision)
   'runs:continue': { note: IMAGES_NOTE }, // runs.continueRun(project, runId, text, images)
   'runs:resumeNow': {}, // runs.resumeNow(runId)
+  'runs:switchModel': {},
+  'runs:setPermissionMode': {}, // desktop surface only (the handler refuses socket / inproc); runs.setPermissionMode({ runId, mode })
   'runs:cancelAutoResume': {}, // runs.cancelAutoResume(runId)
   'runs:listLive': {}, // runs.liveRuns()
   'runs:pendingCards': { note: 'Response cards may carry SettingsProposalPayload.maxBudgetUsd: null (domain null, kept by JSON).' },
   'runs:usageStats': {}, // runs.usageStats(UsageStatsQuery)
+  // runs.usageOverview(UsageOverviewQuery?): costUsd null is a domain value (unknown), kept by JSON; no undefined fields matter.
+  'runs:usageOverview': { note: 'Bulk response: up to USAGE_STATS_MAX_LIMIT rows plus rollups.' },
+  'runs:usageOverviewCsv': { note: 'Returns CSV text (a string), JSON safe.' }, // runs.usageOverviewCsv(UsageOverviewQuery?)
   'runs:startQuick': { note: IMAGES_NOTE }, // quickArgs.start
   'runs:promoteQuick': {}, // quickArgs.promote
   'window:openRun': { note: 'Opens a desktop window; desktop only.' }, // checkRunTarget(FocusRunTarget)
@@ -252,11 +264,13 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'app:setNotifications': {}, // boolean
   'usage:refresh': {}, // UsageMonitor refresh (handler in index.ts)
   'app:openLogs': {}, // shell.openPath(logsDir)
-  'app:cliShimStatus': {}, // desktop only (cli-spec 7(3))
-  'app:installCliShim': {}, // desktop only
-  'app:uninstallCliShim': {}, // desktop only
+  'app:cliCommandStatus': {}, // desktop only (5.3)
+  'app:installCliCommand': {}, // desktop only
+  'app:cancelCliInstall': {}, // desktop only
+  'app:removeOldCliShim': {}, // desktop only
   'app:logPath': {}, // logPath()
   'app:info': {}, // buildAppInfo
+  'app:reference': {}, // appReferenceArgs: optional fields are left out
 
   // ---- permissions ----
   'permissions:list': {}, // projectRulesFile + readRules
@@ -271,6 +285,34 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'teamFiles:undo': {},
   'teamFiles:commit': {},
   'teamFiles:enable': {},
+  // ---- run outputs (OUTPUTS_IPC; outputArgs rebuilds each input). Optional fields are left out or sent as undefined by a
+  // client, never meaningful as null: outputArgs treats undefined and null alike (so nothing needs decoding), except
+  // where listed as clearable below. ----
+  'outputs:list': {},
+  'outputs:preview': { clearable: ['version'], note: 'version missing or null = the current version' },
+  'outputs:forget': {},
+  'outputs:delete': { clearable: ['expectedVersionCount'] },
+  'outputs:open': {}, // desktop only
+  'outputs:reveal': {}, // desktop only
+  'outputs:saveAs': {}, // desktop only
+  'outputs:saveImage': {}, // desktop only
+  'outputs:deletePreview': {},
+  'outputs:versions': {},
+  'outputs:readSource': {},
+  'outputs:thumb': {},
+  'outputs:compare': {},
+  'outputs:notes': {},
+  'outputs:revisions': {},
+  'outputs:reviseOptions': {},
+  'outputs:saveEdit': { clearable: ['forceNew'] },
+  'outputs:restore': {},
+  'outputs:update': { clearable: ['title', 'description', 'versionLabel'], note: 'an absent field is unchanged; description / label "" clears' },
+  'outputs:noteAdd': {},
+  'outputs:noteUpdate': { clearable: ['text', 'status'] },
+  'outputs:noteRemove': {},
+  'outputs:revise': { clearable: ['anchor', 'noteIds'] },
+  'outputs:watch': {},
+  'outputs:unwatch': {},
   'permissions:remove': {}, // permissionRuleArgs
   'permissions:add': {}, // permissionRuleArgs + permissionAddRefusal
   'permissions:decideRequest': {}, // runs.decideRules(runId, requestId, PermissionRuleDecision)
@@ -279,6 +321,8 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'connections:list': {}, // connections.list()
   'connections:update': { clearable: CONNECTION_CLEARABLE }, // connectionIdArg + ConnectionService.update
   'connections:setSecret': { nullable: ['apiKey'] }, // connectionSecretArgs: null clears the stored key
+  'connections:createProxy': {}, // proxyCreateArgs: optional fields are left out, never null
+  'connections:removeProxy': {}, // proxyIdArg
   'connections:test': {}, // connectionIdArg
   'connections:connect': {}, // connectionIdArg
   'connections:login': { note: 'Two arguments: (id, method?).' }, // connections.login(id, method)
@@ -368,7 +412,14 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'kit:exportBundle': { note: 'Response rawBytesBase64 is base64 text; bulk.' }, // KitBundleExportInput
   'kit:previewBundle': { note: 'rawBytesBase64 is base64 text; bulk.' }, // KitBundlePreviewInput
   'kit:applyBundle': { note: 'rawBytesBase64 is base64 text; bulk. stale_target_digest on a moved destination.' }, // KitBundleApplyInput
-  'runs:findDecision': {} // [requestId] -> DecisionLookup
+  'runs:findDecision': {}, // [requestId] -> DecisionLookup
+
+  // ---- SECRETS_IPC (Wave 7; never a secret value either way) ----
+  'secrets:status': {}, // [SecretsStatusInput?] -> SecretsStatusResult
+  'secrets:init': {}, // [SecretsInitInput?] -> SecretsInitResult
+  'secrets:reset': {}, // [SecretsResetInput] -> SecretsResetResult
+  'secrets:undelete': {}, // [SecretsUndeleteInput] -> SecretsUndeleteResult
+  'secrets:confirmDelete': {} // [SecretsConfirmDeleteInput] -> SecretsConfirmDeleteResult
 }
 
 // ---------- encode / decode ----------

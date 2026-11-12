@@ -40,6 +40,8 @@ export function scrubImages<T>(value: T): T {
 
 function scrub(v: unknown, depth: number): unknown {
   if (!isObj(v) || depth > 64) return v
+  // Returned transcript media has a singular image field rather than an images array.
+  if (v.kind === 'image' && isImageLike(v.image)) return { ...v, image: omitImage(v.image) }
   if (Array.isArray(v)) {
     let out: unknown[] | undefined
     for (let i = 0; i < v.length; i++) {

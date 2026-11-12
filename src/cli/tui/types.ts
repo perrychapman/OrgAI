@@ -42,9 +42,11 @@ import type {
   CardKind,
   DecidedBy,
   DecisionOutcome,
+  Effort,
   HostKind,
   McpInstallRequest,
   MergeReview,
+  ModelTier,
   PendingCards,
   PermissionRequest,
   PermissionRuleRequest,
@@ -53,9 +55,15 @@ import type {
   ProjectKind,
   ProjectPathCheck,
   Proposal,
+  ProviderModel,
   RpcHelloResult,
+  RunOverrides,
   RunPlan,
+  RunStaffing,
+  UsageStatus,
+  RunStatus,
   RunSummary,
+  RunOutput,
   RunTeam,
   TranscriptEntry,
   UserQuestion,
@@ -63,16 +71,26 @@ import type {
   WorktreeStatus
 } from '../../shared/types'
 import type { HostClient, InprocHostHandle } from '../types'
+import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
+import type { ApprovalsApi } from './approvals'
+import type { TuiConfigApi } from './configApi'
 
 // Re-exported for the onboarding props (Onboarding.tsx).
 export type { AgentImportSource }
 
 // ---------- Constants ----------
 
-/** Full-screen (alternate buffer) needs at least this many columns at launch (cli-spec 5.1). */
-export const FULLSCREEN_MIN_COLS = 100
+/**
+ * Full-screen (alternate buffer) needs at least this many columns at launch (cli-spec 5.1). Below SPLIT_MIN_COLS the
+ * body is the stacked layout; 70 keeps the common 80x24 window full-screen (ux-review-tui.md H3, issue #27).
+ */
+export const FULLSCREEN_MIN_COLS = 70
 /** ... and this many rows. */
 export const FULLSCREEN_MIN_ROWS = 24
+/** A status-line notice shows this long, then the key hint comes back (issue #26). */
+export const TUI_NOTICE_TTL_MS = 5000
+/** Esc on the composer interrupts a working run only when pressed twice within this window (issue #31). */
+export const ESC_INTERRUPT_MS = 1500
 /** Two-column split layout from this width; stacked below. */
 export const SPLIT_MIN_COLS = 110
 /** Action keys are ignored this long after the top tray card changed (cli-spec 5.3(2)). */
@@ -81,16 +99,23 @@ export const CARD_SWAP_GUARD_MS = 750
 export const TUI_TRANSCRIPT_MAX = 5000
 /** Notices kept in state. */
 export const TUI_NOTICE_MAX = 20
-/** Resolved-card infos kept (for "Resolved in another window"). */
+/** Log lines kept per run for /logs. */
+export const TUI_LOGS_MAX = 1000
+/** Resolved-card infos kept (for "Resolved by ..."). */
 export const TUI_RESOLVED_MAX = 50
+/** Agent-to-agent messages kept per run (counts only, never the text). */
+export const TUI_MESSAGES_MAX = 200
+/** A row whose agent sent or got a message this recently shows the traffic mark. */
+export const TUI_TRAFFIC_MS = 10_000
 
 // ---------- Modes and environment ----------
 
 export type BufferMode = 'fullscreen' | 'inline'
 export type LayoutMode = 'split' | 'stacked'
 export type PaneId = 'tree' | 'transcript' | 'plan' | 'worktrees'
-export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding'
-export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running'
+/** 'config': the /team or /settings view (its own keys while it is open). */
+export type FocusTarget = PaneId | 'composer' | 'tray' | 'palette' | 'onboarding' | 'inspector' | 'config'
+export type Tone = 'ok' | 'warn' | 'danger' | 'dim' | 'accent' | 'running' | 'identity' | 'identityCyan' | 'identityGreen' | 'identityAmber' | 'identityPink' | 'identityBlue' | 'message' | 'code' | 'muted'
 export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'gone'
 
 export interface TuiEnv {
@@ -101,6 +126,10 @@ export interface TuiEnv {
   dumbTerminal: boolean
   bracketedPaste: boolean
   unicode: boolean
+  /** Resolved terminal appearance for filled input surfaces. */
+  terminalTheme?: 'dark' | 'light'
+  /** Opt out of decorative motion (ORGAI_REDUCED_MOTION=1). */
+  reducedMotion?: boolean
 }
 
 // ---------- Input ----------
@@ -152,6 +181,7 @@ export type InputHandler = (e: InputEvent) => boolean
 // ---------- Rows and views (every string already sanitized by the producer) ----------
 
 export interface OrgTreeRow {
+  identityTone?: Tone
   id: string
   runId: string
   depth: number
@@ -160,16 +190,110 @@ export interface OrgTreeRow {
   state: AgentState
   stateWord: string
   activity: string
+  /** Raw activity was compound or shortened; do not infer a specific command category. */
+  activityIsCompound?: boolean
   costText: string
   isRoot: boolean
   /** An agent of an earlier chain member. */
   earlier?: boolean
   worktree?: { branch: string; status: WorktreeStatus }
+  // ---- Fold (F1) and row facts (F2, F5, F10); every field optional so plain rows stay valid ----
+  /** 'group' is a folded "N done" row (default 'agent'). */
+  kind?: 'agent' | 'group' | 'role'
+  /** Configured role that has no agent in this run. */
+  configuredRoleId?: string
+  /** The role name adds nothing beside the label (false: drop it from the row). Default true. */
+  roleShown?: boolean
+  /** Row id of the visible parent (agent rows). */
+  parentId?: string
+  /** Group: how many agents it folds, and how many of those failed. */
+  count?: number
+  failed?: number
+  /** Group: the key `expanded` uses (a visible agent's id, or an earlier-session key) and the folded agent ids (direct reports first). */
+  groupKey?: string
+  members?: string[]
+  /** Agent row of an earlier session: the key of its session group (to fold it back). */
+  earlierKey?: string
+  /** Open decision cards of this agent. */
+  waiting?: number
+  /** Worktree chip text ("2f", "review", "conflict", "held"). */
+  worktreeChip?: string
+  /** Required-delegation badge: 'skipped reports' | 'corrected' | 'native agents' (the most serious one the agent earned). */
+  delegationBadge?: string
+  /** Messages this agent sent / got (F6): per peer, counted over the kept messages. */
+  msgOut?: PeerCount[]
+  msgIn?: PeerCount[]
+  /** A message to or from this agent in the last TUI_TRAFFIC_MS. */
+  traffic?: boolean
+  /**
+   * Resolved staffing from the newest assignment for this agent, without the model id ("everyday / medium"),
+   * sanitized. With `model` the row reads "everyday (claude-sonnet-5-5) / medium"; the id is cut first when narrow,
+   * then the whole text goes.
+   */
+  staffing?: string
+  /** The newest assignment's tier and effort, so the row can rebuild the label around a cut model id. */
+  staffingPick?: { tier?: ModelTier; effort?: Effort }
+  /** The model this agent runs on (the assignment's model, else its live model), sanitized. */
+  model?: string
+  /** The connection the agent ran on, only when the run spans more than one connection. Sanitized. */
+  connection?: string
+}
+
+/** One peer of an agent's message traffic: its sanitized label and how many messages. */
+export interface PeerCount {
+  label: string
+  count: number
+}
+
+/** One live message; a sanitized preview accompanies the traffic facts. */
+export interface RunMessageRec {
+  from: string
+  to: string | null
+  toHandle: string
+  at: number
+  text?: string
+}
+
+/** The agent inspector's facts (every field sanitized; missing facts are left out). */
+export interface InspectorView {
+  id: string
+  runId: string
+  label: string
+  role: string
+  state: AgentState
+  stateWord: string
+  model?: string
+  /** Every model the agent used (usage.models plus its live model), when more than one. */
+  models?: string[]
+  /** The connection it ran on, when the run spans more than one. */
+  connection?: string
+  wall?: string
+  tokensIn?: string
+  tokensOut?: string
+  cost?: string
+  turns?: number
+  toolCalls?: number
+  activity?: string
+  worktree?: { branch: string; status: WorktreeStatus; files: number; mergeTarget: 'main' | 'parent' }
+  waiting: number
+  msgOut: PeerCount[]
+  msgIn: PeerCount[]
+  /** Staffing of this agent (newest assignment): the pick, why, and the model it resolved to; sanitized. */
+  staffing?: { label: string; reason: string; model: string }
+}
+
+/** A live run as a status-bar chip (F8). */
+export interface RunChip {
+  tag: string
+  runId: string
+  followed: boolean
+  needsYou: boolean
 }
 
 export type TranscriptRowKind = 'user' | 'text' | 'thinking' | 'tool' | 'result' | 'system' | 'harness' | 'divider' | 'error' | 'log'
 
 export interface TranscriptRow {
+  identityTone?: Tone
   key: string
   runId: string
   agentId?: string
@@ -178,10 +302,17 @@ export interface TranscriptRow {
   text: string
   tone?: Tone
   at?: number
+  /** Concise display label and expanded detail, already sanitized. */
+  summary?: string
+  pendingSummary?: string
+  detail?: string
+  /** Correlates tool calls and results before compacting completed activity. */
+  toolUseId?: string
 }
 
 /** A streaming (agent.partial) row for one agent. */
 export interface PartialRow {
+  identityTone?: Tone
   key: string
   runId: string
   agentId: string
@@ -195,14 +326,26 @@ export interface PlanStepView {
   status: 'pending' | 'in_progress' | 'done' | 'blocked' | 'skipped'
   owner?: string
   note?: string
+  /** Plans that use the graph only, open steps only: running, ready, or waiting on these step titles (sanitized, in plan order). */
+  flow?: { state: 'running' | 'ready' | 'waiting'; on?: string[] }
+  /** The orchestrator's pick for the step: "engineer (everyday / medium)", sanitized. */
+  staff?: string
 }
 
 export interface PlanView {
+  runId?: string
+  continued?: boolean
+  status?: 'active' | 'done' | 'blocked'
+  startedAt?: number
+  runStatus?: RunStatus
+  waiting?: boolean
   goal: string
   statusWord: string
   done: number
   total: number
   steps: PlanStepView[]
+  /** Some step has after, paths or staff: the steps carry `flow`. */
+  graph?: boolean
 }
 
 export interface WorktreeRow {
@@ -226,8 +369,19 @@ export interface StatusSummary {
   statusWord?: string
   tone?: Tone
   costText?: string
+  /** The followed run's root model now (run.model / RunSummary.modelSelection, else the root agent's model). */
+  rootModel?: string
   needsYou: number
   liveRuns: number
+  /** Agents working now and steps ready to start; only set (above zero) for runs with staffing data or a graph plan. */
+  working?: number
+  readySteps?: number
+  /** Auto-continues used and the cap ("auto 3/40"), while the followed run has a plan. */
+  autoText?: string
+  /** Plan windows, "5h 42% · 7d 18%"; the first thing to give way when narrow. */
+  windowText?: string
+  /** Live runs of the project as chips (R1* R2!), oldest first. */
+  runChips?: RunChip[]
   hostKind?: HostKind
   connection: ConnectionState
   readOnlyReason?: string
@@ -257,6 +411,9 @@ export type TrayCard = {
   projectKind?: ProjectKind
   /** Arrival order (TuiState.cardSeq at arrival). */
   arrivedSeq: number
+  /** The agent the card is about (every card kind carries one) and its sanitized label. */
+  agentId?: string
+  agentLabel?: string
 } & (
   | { kind: 'permission'; card: PermissionRequest }
   | { kind: 'rules'; card: PermissionRuleRequest }
@@ -295,6 +452,8 @@ export interface TuiRun {
   agents: Record<string, AgentInstance>
   transcript: TranscriptEntry[]
   plan?: RunPlan
+  /** Latest staffing record (staffing.updated, or the run record). Shown on agent rows, the inspector and the status bar. */
+  staffing?: RunStaffing
   /** Sanitized display text per agent id (agent.partial, cumulative). */
   partials: Record<string, string>
   cards: PendingCards
@@ -302,6 +461,10 @@ export interface TuiRun {
   omitted?: number
   /** The run's full record (runs:get / snapshot activeRun) has been applied. */
   recordLoaded: boolean
+  /** Newest TUI_MESSAGES_MAX agent.message events (TUI-local). */
+  messages?: RunMessageRec[]
+  /** The run's harness log, every level, newest TUI_LOGS_MAX (record logs plus `log` events); /logs reads it. */
+  logs?: { at: number; level: 'info' | 'warn' | 'error'; message: string }[]
 }
 
 export interface TuiNotice {
@@ -332,6 +495,8 @@ export interface TuiState {
   resolved: ResolvedCardInfo[]
   cardSeq: number
   lastSeq?: number
+  /** The newest plan-window report (usage.status): the status bar's 5-hour and 7-day figures. */
+  planUsage?: UsageStatus
 }
 
 // ---------- Session ----------
@@ -340,15 +505,17 @@ export interface TuiState {
 export interface TuiHostConnection {
   readonly client: HostClient
   readonly hello: RpcHelloResult
-  /** Set when the TUI started a `--host inproc` host. */
-  readonly inproc?: InprocHostHandle
-  /** This TUI started the host. */
-  readonly started: boolean
+  /** The host this TUI started in its own process. */
+  readonly inproc: InprocHostHandle
   projects(): Promise<Project[]>
   checkPath(path: string): Promise<ProjectPathCheck>
   /** Reconnects with the 'configure' scope (onboarding only). */
   createProject(input: ProjectCreateInput): Promise<Project>
   startSetup(projectId: string): Promise<RunSummary>
+  /** One call on a separate 'configure' connection (run options that widen the project's settings, as exec asks). */
+  callConfigured?<T>(method: string, params: unknown[]): Promise<T>
+  /** The CLI's user-data folder (the one-time /team and /settings hint keeps its record there). */
+  readonly userDataDir?: string
   close(opts?: { stopInproc?: boolean }): Promise<void>
 }
 
@@ -360,6 +527,10 @@ export interface OpenTuiSessionOptions {
 }
 
 export interface TuiSessionApi {
+  /** Read-only /approvals (cli-parity 3.4 as built): what waits for approval; deciding is done in the desktop app. */
+  approvals?: ApprovalsApi
+  /** The host calls of /team and /settings (cli-parity 3.7): the channels the commands use. */
+  config?: TuiConfigApi
   getState(): TuiState
   subscribe(listener: () => void): () => void
   readonly hostKind: HostKind
@@ -367,14 +538,26 @@ export interface TuiSessionApi {
   focusRun(runId: string): Promise<void>
   setComposeTarget(t: ComposeTarget): void
   /** Start, send or continue per the state; undefined when nothing was started. */
-  submitPrompt(text: string, opts?: { team?: RunTeam }): Promise<RunSummary | undefined>
-  startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam }): Promise<RunSummary>
+  /** `overrides` apply to a run this starts or continues (exec's run options, never execMode); a send ignores them. */
+  submitPrompt(text: string, opts?: { team?: RunTeam; overrides?: RunOverrides }): Promise<RunSummary | undefined>
+  startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam; overrides?: RunOverrides }): Promise<RunSummary>
+  /** The connected connections' model catalog (/model). */
+  modelCatalog(): Promise<ModelCatalog>
+  /** Switch the followed run's model behind the desktop's guard (modelSwitch.ts); `confirm` is asked for a handoff. */
+  switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }): Promise<SwitchOutcome>
+  /** runs:resumeNow on the followed run (paused for a usage limit); follows the resumed run. */
+  resumeNow(): Promise<RunSummary>
+  /** runs:cancelAutoResume on the followed run: it stays paused. */
+  cancelAutoResume(): Promise<void>
   interrupt(): Promise<void>
   stop(): Promise<void>
   decide(call: DecisionCall): Promise<DecisionOutcome>
   worktreeDiff(branch: string): Promise<WorktreeDiff>
+  /** outputs:list of the followed run's project (/outputs filters to the run). */
+  listOutputs(): Promise<RunOutput[]>
   listRuns(): Promise<RunSummary[]>
-  openInDesktop(runId?: string): Promise<void>
+  /** An Org retrospective of an ended work run (setup:retro, operate scope); follows the new run. */
+  startRetro(runId?: string): Promise<RunSummary>
   /** Re-subscribe after SIGCONT or a reconnect. */
   resync(): Promise<void>
   notify(text: string, tone?: Tone): void
@@ -391,6 +574,12 @@ export interface LayoutInput {
   visible: Record<PaneId, boolean>
   trayRows: number
   composerRows: number
+  /** Rows the tree would like (title, rows, footer line); the stacked layout gives it that much up to half the body. */
+  treeRows?: number
+  /** Rows the worktrees pane would like (split layout: it takes no more than that). */
+  worktreeRows?: number
+  /** Rows the open slash palette takes (0 or absent = closed); reserved above the composer (issue #28). */
+  paletteRows?: number
 }
 
 export interface PaneBox {
@@ -406,6 +595,10 @@ export interface LayoutPlan {
   panes: PaneBox[]
   tray: { width: number; height: number }
   composer: { width: number; height: number }
+  /** The slash palette's box (height 0 when closed). Optional until layout.ts fills it (issue #28). */
+  palette?: { width: number; height: number }
+  /** Blank columns between the split's two columns (1 in split mode, 0 stacked; issue #28 M2). */
+  gutter?: number
 }
 
 // ---------- Terminal ----------
@@ -434,12 +627,40 @@ export interface OrgTreePaneProps extends PaneProps {
   rows: OrgTreeRow[]
   selectedId?: string
   onSelect?(id: string): void
+  /** Right / Enter on a folded group. */
+  onExpand?(row: OrgTreeRow): void
+  /** Left: fold back the group the row (or its nearest expanded ancestor) opened. */
+  onCollapse?(row: OrgTreeRow): void
+  /** `h`: Hide finished agents on / off. */
+  onToggleFold?(): void
+  /** `z`: root the tree at this agent; `Z` / Backspace: back one level. */
+  onZoom?(row: OrgTreeRow): void
+  onUnzoom?(): void
+  /** The tree is rooted at an agent (breadcrumb in the title). */
+  zoomPath?: string
+  /** Whether finished agents are folded (hint text). */
+  folded?: boolean
+  /** Enter on a row whose agent has an open card: focus the tray on that agent's card. */
+  onFocusCard?(row: OrgTreeRow): void
+  /** Enter on any other agent row (hook for the inspector; a no-op until it exists). */
+  onActivate?(row: OrgTreeRow): void
+  /** A one-line notice (nothing to jump to ...). */
+  onNotice?(text: string): void
+  /** "Plan 2/5" while the plan pane is hidden. */
+  planChip?: string
 }
 
 export interface TranscriptPaneProps extends PaneProps {
+  compact?: boolean
+  detailsExpanded?: boolean
+  onToggleDetails?(): void
   rows: TranscriptRow[]
   partials: PartialRow[]
   omitted?: number
+  /** The focus target the scroll keys register under (default 'transcript'; the inspector uses 'inspector'). */
+  focusTarget?: FocusTarget
+  /** Keys the host pane handles first (the inspector's d / w / t / u). */
+  extraKeys?(e: InputEvent): boolean
 }
 
 export interface PlanPaneProps extends PaneProps {
@@ -456,6 +677,8 @@ export interface StatusBarProps {
   summary: StatusSummary
   notice?: TuiNotice
   hints: string
+  /** Clock for notice expiry (TUI_NOTICE_TTL_MS); Date.now when absent. */
+  now?: () => number
 }
 
 export interface DecisionTrayProps {
@@ -463,12 +686,21 @@ export interface DecisionTrayProps {
   height: number
   focused: boolean
   variant: 'full' | 'footer'
+  focusHint?: string
   cards: TrayCard[]
   resolved: ResolvedCardInfo[]
   onDecide(card: TrayCard, call: DecisionCall): Promise<DecisionOutcome>
   onViewText(title: string, text: string): Promise<void>
   onLeave(): void
   now?: () => number
+  /** Card key to show first (Enter on an agent row): the tray shows that card on top while it is open. */
+  focusKey?: string
+  /** `?` on the focused tray (not while a text field is open): the shell opens the tray's which-key overlay. */
+  onHelp?(): void
+  /** A one-line status notice (a rejected key, a gated decision key; issue #25 / #31 L2). */
+  onNotice?(text: string, tone?: Tone): void
+  /** Footer variant: the keys of the cards whose body was printed into scrollback (absent = every card counts as printed). */
+  printed?: ReadonlySet<string>
 }
 
 export type ComposerMode = 'start' | 'send' | 'continue' | 'quick' | 'readOnly'
@@ -479,9 +711,15 @@ export interface ComposerProps {
   mode: ComposerMode
   placeholder: string
   disabledReason?: string
+  /** The slash palette is open and shows the one input line: keep the rows, draw nothing. */
+  hidden?: boolean
   onSubmit(text: string): void
   onOpenPalette(initial: string): void
   onLeave(): void
+  /** A lone `?` on an empty composer: the shell opens the composer's which-key overlay (issue #30 L5). */
+  onHelp?(): void
+  /** The rows the composer draws now (text rows plus the reason line), so the layout can reserve them (issue #28). */
+  onRows?(rows: number): void
 }
 
 export interface SlashContext {
@@ -490,7 +728,21 @@ export interface SlashContext {
   notify(text: string, tone?: Tone): void
   setFocus(t: FocusTarget): void
   togglePane(p: PaneId): void
-  newRun(opts: { prompt?: string; team?: RunTeam }): Promise<void>
+  /** Maximise the transcript (hide every other pane), or bring the panes back. */
+  toggleFocusMode?(): void
+  /** A selectable runs list (Enter opens, c continues, r retro); without it /runs prints a table. */
+  openRuns?(runs: RunSummary[]): void
+  /** /retro: confirm, start the Org retrospective of the active run and follow it. */
+  startRetro?(): Promise<void>
+  /** /agent <name>: open that agent's inspector. */
+  openAgent?(arg: string): void
+  /** /team and /settings: open that view over the run view (cli-parity 3.7). */
+  openConfig?(view: 'team' | 'settings'): void
+  /** Hide finished agents on / off (optional: older test contexts lack it). */
+  toggleFold?(): void
+  newRun(opts: { prompt?: string; team?: RunTeam; overrides?: RunOverrides }): Promise<void>
+  /** A short list to choose from (/model); undefined when dismissed. Optional: without it the command prints the list. */
+  pick?(title: string, options: readonly { value: string; label: string }[]): Promise<string | undefined>
   switchRun(ref: string): Promise<void>
   confirm(question: string): Promise<boolean>
   openText(title: string, text: string): Promise<void>
@@ -503,6 +755,8 @@ export interface SlashCommand {
   args?: string
   summary: string
   available?(s: TuiState): boolean
+  /** Why the command is unavailable right now (shown instead of "No matching command"; issue #29 M6). */
+  unavailableReason?(s: TuiState): string | undefined
   run(ctx: SlashContext, args: string): void | Promise<void>
 }
 
@@ -523,6 +777,8 @@ export interface TuiLaunch {
   runId?: string
   prompt?: string
   team?: RunTeam
+  /** Bare `orgai`'s run flags (runStartFlags.ts): for the first run this TUI starts. */
+  overrides?: RunOverrides
   resumeText?: string
   readOnlyReason?: string
   /** No project for the folder: show onboarding. */

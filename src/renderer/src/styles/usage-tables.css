@@ -1,0 +1,378 @@
+/*
+ * Usage page: the efficiency instruments, "Runs worth a look" and "All runs" (docs/design/usage-app.md 6.5, 6.6, 7.3).
+ * Tokens only. Data marks never animate. The panel shell (.usage-panel, .usage-panel-head) is styled in usage.css.
+ */
+
+/* ---------- shared table bits ---------- */
+.usage-tbl-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.usage-tbl-wrap:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.usage-tbl {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-variant-numeric: tabular-nums;
+}
+.usage-tbl caption {
+  text-align: left;
+  color: var(--text-secondary);
+  padding: 0 0 var(--space-2);
+}
+.usage-tbl th,
+.usage-tbl td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: middle;
+  color: var(--text-primary);
+}
+.usage-tbl thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--usage-tbl-bg, var(--surface-0));
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+.usage-tbl tbody th[scope='row'] {
+  font-weight: var(--weight-regular, 400);
+}
+.usage-tbl .num {
+  text-align: right;
+  white-space: nowrap;
+}
+.usage-tbl .nowrap {
+  white-space: nowrap;
+}
+/* First column stays while the table scrolls sideways. */
+.usage-tbl th.sticky {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--usage-tbl-bg, var(--surface-0));
+}
+.usage-tbl thead th.sticky {
+  z-index: 3;
+}
+.usage-clip {
+  display: inline-block;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.usage-cell-sub {
+  display: block;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-regular, 400);
+}
+.usage-tag {
+  display: inline-block;
+  margin-inline-start: var(--space-2);
+  padding: 0 var(--space-1h);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+.usage-note {
+  margin: var(--space-2) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-panel-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.usage-panel-controls .select {
+  width: auto;
+  min-width: 12rem;
+}
+.usage-ctl-label {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.usage-more-btn {
+  margin-block-start: var(--space-2);
+}
+
+/* Sort header buttons carry aria-sort on the th. */
+.usage-sort {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  cursor: pointer;
+  color: inherit;
+  border-radius: var(--radius-xs);
+}
+.usage-sort:hover {
+  color: var(--text-primary);
+}
+.usage-sort:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.usage-sort-mark {
+  display: inline-block;
+  min-width: 1em;
+  font-size: 9px;
+}
+.usage-tbl th.num .usage-sort {
+  flex-direction: row-reverse;
+}
+
+/* A run's first cell: the button that opens it. */
+.usage-run-cell {
+  min-width: 14rem;
+  max-width: 22rem;
+}
+.usage-run-open {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  color: var(--accent-text);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 2px;
+}
+.usage-run-open:hover {
+  text-decoration-color: currentColor;
+}
+.usage-run-open:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.usage-run-name {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.usage-why {
+  min-width: 16rem;
+  max-width: 28rem;
+  color: var(--text-primary);
+}
+.usage-wasteful-table .usage-run-cell .usage-tag {
+  margin-inline-start: var(--space-2);
+}
+
+/* ---------- All runs ---------- */
+.usage-runs-details > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-xs);
+}
+.usage-runs-details > summary::-webkit-details-marker {
+  display: none;
+}
+.usage-runs-details > summary::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--text-secondary);
+  border-bottom: 2px solid var(--text-secondary);
+  transform: rotate(-45deg);
+  flex: none;
+}
+.usage-runs-details[open] > summary::before {
+  transform: rotate(45deg);
+}
+.usage-runs-details > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.usage-runs-details > summary h2 {
+  margin: 0;
+}
+.usage-runs-details[open] > summary {
+  margin-block-end: var(--space-2);
+}
+.usage-runs-scroll[data-windowed='true'] {
+  max-height: 560px;
+  overflow-y: auto;
+}
+.usage-run-row {
+  height: 44px;
+}
+.usage-run-row td,
+.usage-run-row th {
+  white-space: nowrap;
+  padding-block: 0;
+}
+.usage-run-row .usage-cell-sub {
+  display: inline;
+  margin-inline-start: var(--space-2);
+}
+.usage-spacer td {
+  padding: 0;
+  border: 0;
+}
+
+/* ---------- Efficiency ---------- */
+#usage-efficiency {
+  container: usage-eff / inline-size;
+}
+.usage-eff-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4) var(--space-5);
+}
+@container usage-eff (min-width: 1100px) {
+  .usage-eff-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@container usage-eff (max-width: 520px) {
+  .usage-eff-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.usage-eff-item {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.usage-eff-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 24px;
+}
+.usage-eff-name dt {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.usage-eff-item dd {
+  margin: 0;
+}
+.usage-eff-info {
+  color: var(--text-tertiary);
+}
+.usage-eff-pop {
+  max-width: 28rem;
+}
+.usage-eff-def {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-primary);
+}
+.usage-eff-value {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-block;
+  max-width: 100%;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  border-radius: var(--radius-xs);
+  overflow-wrap: anywhere;
+}
+.usage-eff-value:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--border-default);
+  text-underline-offset: 3px;
+}
+.usage-eff-value:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.usage-eff-draw {
+  min-height: 12px;
+}
+.usage-eff-detail {
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-eff-svg {
+  display: block;
+  overflow: visible;
+}
+.usage-eff-track {
+  fill: var(--surface-3);
+}
+.usage-eff-fill {
+  fill: var(--accent);
+}
+.usage-eff-seg-waiting {
+  fill: var(--info);
+}
+.usage-eff-seg-idle {
+  fill: var(--text-tertiary);
+}
+.usage-eff-seg-limit {
+  fill: var(--warning);
+}
+.usage-eff-range,
+.usage-eff-cap,
+.usage-eff-base {
+  stroke: var(--border-default);
+  stroke-width: 1;
+}
+.usage-eff-median {
+  fill: var(--accent);
+}
+.usage-eff-bar {
+  fill: var(--dash-strip-bar);
+}
+.usage-eff-dot-team {
+  fill: var(--accent);
+}
+.usage-eff-dot-ask {
+  fill: var(--info);
+}
+@media (forced-colors: active) {
+  .usage-eff-track {
+    fill: Canvas;
+    stroke: CanvasText;
+  }
+  .usage-eff-fill,
+  .usage-eff-seg-waiting,
+  .usage-eff-seg-idle,
+  .usage-eff-seg-limit,
+  .usage-eff-median,
+  .usage-eff-bar,
+  .usage-eff-dot-team,
+  .usage-eff-dot-ask {
+    fill: CanvasText;
+  }
+}

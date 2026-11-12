@@ -1,4 +1,6 @@
 import { basename } from 'node:path'
+import type { TranscriptContentPart, TranscriptMedia } from '@shared/types'
+import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { describeTool } from './activity'
 import {
   harnessToolName,
@@ -19,15 +21,26 @@ import {
  * Codex item -> harness tool name (so activity.ts phrases and the renderer's tool rendering fit):
  *   commandExecution -> Bash {command, cwd}        fileChange -> Edit (Write when every change is an add)
  *   mcpToolCall      -> mcp__<server>__<tool>      webSearch  -> WebSearch {query}
- *   dynamicToolCall  -> harness tools as mcp__orgai__<name>; spawn_agent -> Agent, send_message -> SendMessage,
- *                       list_agents -> ListAgents (inputs renamed to the Claude shapes)
- * Ignored: plan, imageView, contextCompaction, hookPrompt and the rest. Codex's own multi-agent items
+ *   dynamicToolCall  -> harness tools as mcp__orgai__<name>; spawn_report -> Agent, message_agent -> SendMessage,
+ *                       list_team -> ListAgents (the pre-rename names map the same way) (inputs renamed to the Claude shapes)
+ * contextCompaction -> compacted (the adapter emits agent.compacted). Ignored: plan, hookPrompt and the rest. Codex's own multi-agent items
  * (collabAgentToolCall, subAgentActivity) are logged: those agents are not governed by the org chart.
  */
 
 export const ORGAI_TOOL_PREFIX = 'mcp__orgai__'
 /** Tool names (as the model calls them) the harness network adds besides the harness tools. */
-export const NETWORK_TOOLS = { spawn: 'spawn_agent', message: 'send_message', list: 'list_agents' } as const
+export const NETWORK_TOOLS = { spawn: 'spawn_report', message: 'message_agent', list: 'list_team' } as const
+
+/** Names before the rename (they collided with Codex's built-in multi-agent tools). Threads saved earlier still use them. */
+const LEGACY_NETWORK_TOOLS: Record<string, string> = { spawn_agent: NETWORK_TOOLS.spawn, send_message: NETWORK_TOOLS.message, list_agents: NETWORK_TOOLS.list }
+
+/** The canonical network tool name for a new or pre-rename name, or null when it is not a network tool. */
+export function canonicalNetworkTool(name: string): string | null {
+  if (name === NETWORK_TOOLS.spawn || name === NETWORK_TOOLS.message || name === NETWORK_TOOLS.list) return name
+  return LEGACY_NETWORK_TOOLS[name] ?? null
+}
+
+export const NATIVE_AGENTS_UNAVAILABLE = "Codex's built-in multi-agent tools are not available in OrgAI."
 
 export type TurnStatus = 'completed' | 'interrupted' | 'failed'
 
@@ -37,17 +50,22 @@ export type CodexUpdate =
   | { type: 'partial'; threadId: string; text: string }
   | { type: 'thinking'; threadId: string; text: string }
   | { type: 'toolUse'; threadId: string; id: string; name: string; input: unknown; activity: string; state: 'tool' | 'waiting' }
-  | { type: 'toolResult'; threadId: string; toolUseId: string; content: string; isError: boolean }
-  | { type: 'tokens'; threadId: string; input: number; output: number; cachedInput: number }
+  | { type: 'media'; threadId: string; media: TranscriptMedia }
+  | { type: 'toolResult'; threadId: string; toolUseId: string; content: string; parts?: TranscriptContentPart[]; isError: boolean }
+  | { type: 'tokens'; threadId: string; input: number; output: number; cachedInput: number; contextWindow?: number }
+  /** Codex compacted the thread's conversation (a contextCompaction item completed). */
+  | { type: 'compacted'; threadId: string }
   | { type: 'turnStarted'; threadId: string; turnId: string }
   | { type: 'turnCompleted'; threadId: string; turnId: string; status: TurnStatus; result?: string; error?: CodexTurnError }
   | { type: 'error'; threadId: string; message: string; willRetry: boolean; usageLimit: boolean }
   | { type: 'log'; level: 'info' | 'warn'; message: string }
+  /** Codex's built-in multi-agent item started (once per item id). The adapter interrupts the turn. */
+  | { type: 'nativeSpawn'; threadId: string; tool: string; itemId: string }
 
 export interface MapperOptions {
   /** True for a model-visible harness tool name that waits on the user (isBlockingHarnessTool on the bare name). */
   isBlockingTool?(codexToolName: string): boolean
-  /** Model-visible names of the harness tools of this run (spawn_agent & co. are recognised separately). */
+  /** Model-visible names of the harness tools of this run (the network tools are recognised separately). */
   harnessToolNames?: Iterable<string>
 }
 
@@ -81,6 +99,8 @@ export class CodexEventMapper {
   private finalText = new Map<string, string>()
   private items = new Map<string, CodexItem>()
   private harness: Set<string>
+  /** Native multi-agent item ids already reported (started then completed of one id counts once). */
+  private nativeSeen = new Set<string>()
 
   constructor(private opts: MapperOptions = {}) {
     this.harness = new Set(opts.harnessToolNames ?? [])
@@ -114,7 +134,7 @@ export class CodexEventMapper {
         return [{ type: 'partial', threadId: n.threadId, text: '' }, { type: 'turnCompleted', threadId: n.threadId, turnId: n.turnId, status, ...(result ? { result } : {}), ...(n.error ? { error: n.error } : {}) }]
       }
       case 'tokenUsage':
-        return [{ type: 'tokens', threadId: n.threadId, input: n.input, output: n.output, cachedInput: n.cachedInput }]
+        return [{ type: 'tokens', threadId: n.threadId, input: n.input, output: n.output, cachedInput: n.cachedInput, ...(n.contextWindow ? { contextWindow: n.contextWindow } : {}) }]
       case 'agentMessageDelta': {
         const text = (this.streaming.get(n.itemId) ?? '') + n.delta
         this.streaming.set(n.itemId, text)
@@ -145,7 +165,7 @@ export class CodexEventMapper {
   private itemStarted(threadId: string, item: CodexItem): UpdateList {
     this.items.set(item.id, item)
     const tool = this.toolOf(item)
-    if (!tool) return this.otherItem(item)
+    if (!tool) return this.otherItem(threadId, item)
     return [{ type: 'toolUse', threadId, id: item.id, name: tool.name, input: tool.input, activity: tool.activity, state: tool.blocking ? 'waiting' : 'tool' }]
   }
 
@@ -175,24 +195,39 @@ export class CodexEventMapper {
         return [{ type: 'toolResult', threadId, toolUseId: item.id, content: fileChangeResult(item), isError: item.status === 'failed' || item.status === 'declined' }]
       case 'mcpToolCall': {
         const error = isRec(item.error) ? str(item.error.message) : undefined
-        const result = isRec(item.result) ? contentText(item.result.content) || (item.result.structuredContent ? safeJson(item.result.structuredContent) : '') : ''
-        return [{ type: 'toolResult', threadId, toolUseId: item.id, content: clip(error ?? result), isError: !!error || item.status === 'failed' }]
+        const result = isRec(item.result) && item.result.content != null ? normalizeTranscriptContent(item.result.content) : { content: '' }
+        if (!result.parts?.some(p => p.type === 'media')) delete result.parts
+        if (!result.content && !result.parts && isRec(item.result) && item.result.structuredContent) result.content = clip(safeJson(item.result.structuredContent))
+        return [{ type: 'toolResult', threadId, toolUseId: item.id, ...(error ? { content: clip(error) } : result), isError: !!error || item.status === 'failed' }]
       }
+      case 'imageView':
+        // Native imageView carries a local path, not returned image bytes. Never read that path.
+        return [{ type: 'media', threadId, media: normalizeTranscriptMedia(item) }]
       case 'dynamicToolCall':
         return [{ type: 'toolResult', threadId, toolUseId: item.id, content: clip(contentText(item.contentItems)), isError: item.success === false || item.status === 'failed' }]
       case 'webSearch':
         return [{ type: 'toolResult', threadId, toolUseId: item.id, content: '', isError: false }]
+      case 'contextCompaction':
+        // Codex compacted the thread's history (auto, mid-turn; checked with codex 0.167 at a zero-spend stub).
+        return [{ type: 'compacted', threadId }]
       default:
-        return this.otherItem(item, true)
+        return this.otherItem(threadId, item, true)
     }
   }
 
-  private otherItem(item: CodexItem, completed = false): UpdateList {
-    if (!completed) return []
-    if (item.type === 'collabAgentToolCall' || item.type === 'subAgentActivity') {
-      return [{ type: 'log', level: 'warn', message: `Codex used its built-in multi-agent feature (${str(item.tool) ?? item.type}); those agents are not governed by the org chart.` }]
+  private otherItem(threadId: string, item: CodexItem, completed = false): UpdateList {
+    if (item.type !== 'collabAgentToolCall' && item.type !== 'subAgentActivity') return []
+    const tool = str(item.tool) ?? item.type
+    if (completed) {
+      return [{ type: 'log', level: 'warn', message: `Codex used its built-in multi-agent feature (${tool}); those agents are not governed by the org chart.` }]
     }
-    return []
+    if (this.nativeSeen.has(item.id)) return []
+    this.nativeSeen.add(item.id)
+    return [
+      { type: 'toolUse', threadId, id: item.id, name: `codex:${tool}`, input: item.arguments ?? {}, activity: 'Used native multi-agent tools', state: 'tool' },
+      { type: 'toolResult', threadId, toolUseId: item.id, content: NATIVE_AGENTS_UNAVAILABLE, isError: true },
+      { type: 'nativeSpawn', threadId, tool, itemId: item.id }
+    ]
   }
 
   /** Harness tool name and input for an item that is a tool call, or null. */
@@ -230,15 +265,16 @@ export class CodexEventMapper {
 
   private dynamicTool(codexName: string, args: unknown): { name: string; input: unknown; activity: string; blocking: boolean } {
     const a = isRec(args) ? args : {}
-    if (codexName === NETWORK_TOOLS.spawn) {
+    const canonical = canonicalNetworkTool(codexName)
+    if (canonical === NETWORK_TOOLS.spawn) {
       const input = { subagent_type: str(a.role) ?? '', description: (str(a.brief) ?? '').slice(0, 120), prompt: str(a.brief) ?? '', ...(str(a.name) ? { name: str(a.name) } : {}) }
       return { name: 'Agent', input, activity: describeTool('Agent', input), blocking: false }
     }
-    if (codexName === NETWORK_TOOLS.message) {
+    if (canonical === NETWORK_TOOLS.message) {
       const input = { to: str(a.to) ?? '', message: str(a.message) ?? '' }
       return { name: 'SendMessage', input, activity: describeTool('SendMessage', input), blocking: false }
     }
-    if (codexName === NETWORK_TOOLS.list) return { name: 'ListAgents', input: {}, activity: describeTool('ListAgents', {}), blocking: false }
+    if (canonical === NETWORK_TOOLS.list) return { name: 'ListAgents', input: {}, activity: describeTool('ListAgents', {}), blocking: false }
     const bare = harnessToolName(codexName)
     if (this.harness.has(codexName) || this.harness.has(bare)) {
       return { name: `${ORGAI_TOOL_PREFIX}${bare}`, input: args ?? {}, activity: describeTool(bare, args, { harness: true }), blocking: this.opts.isBlockingTool?.(codexName) ?? false }
@@ -264,15 +300,41 @@ function safeJson(v: unknown): string {
 export interface FileChangeSummary {
   path: string
   kind: 'add' | 'update' | 'delete'
+  /**
+   * Where an update moves the file (Codex 0.166 `kind: { type: 'update', move_path: <dest> }`, shape from the schema
+   * and fixtures/codex-turn-tools.jsonl; a live move was never observed). Absent when there is no move (null or no
+   * field). A move field that is present but not a non-empty string becomes '' so every check fails closed: callers
+   * must treat any `movePath` key, '' included, as a second write target they cannot clear.
+   */
+  movePath?: string
 }
 
+/** The move destination of one raw change: undefined for no move, '' for a malformed one (fail closed). */
+function moveDestination(c: Record<string, unknown>): string | undefined {
+  const kind = isRec(c.kind) ? c.kind : undefined
+  const raw = kind && 'move_path' in kind ? kind.move_path : kind && 'movePath' in kind ? kind.movePath : 'move_path' in c ? c.move_path : c.movePath
+  if (raw === undefined || raw === null) return undefined
+  return typeof raw === 'string' && raw.trim() !== '' ? raw : ''
+}
+
+/**
+ * One summary per raw change, in order. A change with no usable path (not an object, or `path` missing, empty or not a
+ * string) is kept with path '' (review NL2): an approval covers the whole item, so dropping it would let the other
+ * changes be accepted on its behalf; '' fails every check and shows on the card.
+ */
 export function fileChanges(item: CodexItem): FileChangeSummary[] {
   if (!Array.isArray(item.changes)) return []
-  return item.changes.flatMap((c): FileChangeSummary[] => {
-    if (!isRec(c) || !str(c.path)) return []
+  return item.changes.map((c): FileChangeSummary => {
+    if (!isRec(c)) return { path: '', kind: 'update' }
     const kind = isRec(c.kind) ? str(c.kind.type) : str(c.kind)
-    return [{ path: str(c.path) as string, kind: kind === 'add' || kind === 'delete' ? kind : 'update' }]
+    const movePath = moveDestination(c)
+    return { path: str(c.path) ?? '', kind: kind === 'add' || kind === 'delete' ? kind : 'update', ...(movePath !== undefined ? { movePath } : {}) }
   })
+}
+
+/** Every path a change list writes: each source path plus each move destination ('' for a malformed one). */
+export function fileChangeTargets(changes: readonly FileChangeSummary[]): string[] {
+  return changes.flatMap((c) => (c.movePath !== undefined ? [c.path, c.movePath] : [c.path]))
 }
 
 function commandFailed(item: CodexItem): boolean {
@@ -291,7 +353,7 @@ function fileChangeResult(item: CodexItem): string {
   const changes = fileChanges(item)
   if (item.status === 'declined') return 'The change was declined and not applied.'
   if (!changes.length) return str(item.status) ?? ''
-  return changes.map((c) => `${c.kind} ${basename(c.path)}`).join('\n')
+  return changes.map((c) => `${c.kind} ${basename(c.path)}${c.movePath !== undefined ? ` -> ${c.movePath ? basename(c.movePath) : '(unknown)'}` : ''}`).join('\n')
 }
 
 /** Parse fixture JSONL (one `{method, params}` per line) into raw notifications. */

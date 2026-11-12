@@ -9,9 +9,9 @@
 //   release/BUILD.txt                         version, commit and time of the current build
 //   release/previous/<unpacked>/ + BUILD.txt  the build before it
 //
-// Steps: electron-vite build (main, preload, renderer), vite build -c vite.cli.config.ts (the orgai CLI bundle in
-// out/cli, which electron-builder unpacks from app.asar), then electron-builder --dir --publish never. On macOS the
-// children get CSC_IDENTITY_AUTO_DISCOVERY=false unless the caller set it, so a local pack never signs, never
+// Steps: electron-vite build (main, preload, renderer), then electron-builder --dir --publish never. The app ships no
+// orgai CLI (cli-standalone-default.md 5.2: electron-builder.yml excludes out/cli), so no CLI bundle is built and no
+// install.json is written. On macOS the children get CSC_IDENTITY_AUTO_DISCOVERY=false unless the caller set it, so a local pack never signs, never
 // contacts a timestamp server and never notarizes. Check the result with `npm run pack:verify`.
 //
 // Never touches anything outside release/ (and out/, which the builds write). Spawns only node (the local
@@ -31,8 +31,6 @@ export { unpackedLayout }
 export function buildSteps() {
   return [
     ['electron-vite', 'electron-vite', ['build']],
-    // The orgai CLI bundle (out/cli); `npm run build` runs the same step.
-    ['vite', 'vite', ['build', '-c', 'vite.cli.config.ts']],
     ['electron-builder', 'electron-builder', ['--dir', '--publish', 'never']]
   ]
 }
@@ -196,18 +194,20 @@ export function main(argv = process.argv.slice(2), root = ROOT, log = console.lo
   rotate(p, { dryRun, log, root })
 
   if (child.note) log(`${dryRun ? 'Would set' : 'Setting'} for every step: ${child.note}`)
-  for (const [pkg, bin, args] of steps) {
-    if (dryRun) {
-      let shown
-      try {
-        shown = rel(localBin(root, pkg, bin))
-      } catch (e) {
-        shown = `node_modules/${pkg} (${e.message})`
+  {
+    for (const [pkg, bin, args] of steps) {
+      if (dryRun) {
+        let shown
+        try {
+          shown = rel(localBin(root, pkg, bin))
+        } catch (e) {
+          shown = `node_modules/${pkg} (${e.message})`
+        }
+        log(`Would run: node ${shown} ${args.join(' ')}`)
+        continue
       }
-      log(`Would run: node ${shown} ${args.join(' ')}`)
-      continue
+      exec(process.execPath, [localBin(root, pkg, bin), ...args], { cwd: root, stdio: 'inherit', windowsHide: true, env: child.env })
     }
-    exec(process.execPath, [localBin(root, pkg, bin), ...args], { cwd: root, stdio: 'inherit', windowsHide: true, env: child.env })
   }
 
   const info = formatBuildInfo({ version: readVersion(root), commit: gitShortSha(root), builtAt: new Date() })

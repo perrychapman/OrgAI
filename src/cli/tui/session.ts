@@ -12,6 +12,10 @@
  */
 import {
   VIRTUAL_PROJECT_IDS,
+  type AppSettings,
+  type ConnectionInfo,
+  type FolderConfigReview,
+  type TeamFilesStatus,
   type CardKind,
   type DecisionOutcome,
   type HostKind,
@@ -19,8 +23,11 @@ import {
   type Project,
   type ProjectCreateInput,
   type ProjectPathCheck,
+  type ProviderModel,
+  type RunOverrides,
   type RunRecord,
   type RunSummary,
+  type RunOutput,
   type RunTeam,
   type WorktreeDiff
 } from '../../shared/types'
@@ -30,7 +37,11 @@ import { RunStream, type RunStreamTimers } from '../client/runStream'
 import { safeLine } from '../output'
 import { recordWithoutImages } from '../render'
 import { CliError, EXIT, type CliContext, type ConnectResult, type HostCallError, type HostClient, type InprocHostHandle } from '../types'
-import { composerMode } from './selectors'
+import { overridesNeedConfigure } from '../commands/exec'
+import { loadModelCatalog, switchRunModel } from '../modelSwitch'
+import { composerMode, offersRetro } from './selectors'
+import { approvalItems, waitingNotice, type ApprovalItem } from './approvals'
+import { projectKindOf } from '../../shared/defaults'
 import {
   addNotice,
   applyEvent,
@@ -43,8 +54,10 @@ import {
   setActiveRun,
   setComposeTarget,
   setConnection,
+  setProject,
   upsertRunSummary
 } from './state'
+import { hintStore, type TuiConfigApi } from './configApi'
 import type {
   ComposeTarget,
   DecisionCall,
@@ -57,16 +70,12 @@ import type {
 
 export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide']
 export const TUI_CONFIGURE_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
-/** Shown when host.hello withheld 'decide' (Terminal access level 'operate'). */
-export const TUI_NO_DECIDE_NOTICE =
-  "Decisions can't be answered from this terminal: set App settings > Terminal access > What terminals may do to Full control."
 /** How long a decision call may take (a proposal approval applies changes before it answers). */
 export const TUI_DECIDE_TIMEOUT_MS = 120_000
 /** Listeners are notified at most this often. */
 export const TUI_NOTIFY_MS = 16
 /** Earlier chain members fetched after a focus. */
 export const TUI_EARLIER_MEMBERS = 5
-export const DESKTOP_UNAVAILABLE_NOTICE = 'The desktop app is not available with --host inproc.'
 export const HOST_GONE_NOTICE = 'Lost the connection to the OrgAI host. Quit and start orgai again to reconnect.'
 
 /** A host call's rejection as a plain Error with a sanitized one-line message (the host's message when it sent one). */
@@ -83,8 +92,6 @@ const codeOf = (e: unknown): string | undefined => (e as Partial<HostCallError> 
 // ---------- Connection ----------
 
 export interface ConnectTuiOptions {
-  /** Called once with the host's version-skew warning (the session also shows it as a notice). */
-  warn?: (message: string) => void
 }
 
 class TuiConnection implements TuiHostConnection {
@@ -95,16 +102,14 @@ class TuiConnection implements TuiHostConnection {
    */
   private base: HostClient
   private follower: RunStream | undefined
-  readonly inproc?: InprocHostHandle
-  readonly started: boolean
+  readonly inproc: InprocHostHandle
 
   constructor(
     private readonly ctx: CliContext,
     host: EnsuredHost
   ) {
     this.base = host.client
-    if (host.inproc) this.inproc = host.inproc
-    this.started = host.started
+    this.inproc = host.inproc
   }
 
   /** The client calls go through (a stream's reconnect replaces it). */
@@ -114,6 +119,10 @@ class TuiConnection implements TuiHostConnection {
 
   get hello(): HostClient['hello'] {
     return this.client.hello
+  }
+
+  get userDataDir(): string {
+    return this.ctx.paths.userDataDir
   }
 
   /** A fresh connection with the same scopes (RunStream reconnects); on success it becomes the shared client. */
@@ -179,6 +188,15 @@ class TuiConnection implements TuiHostConnection {
     )
   }
 
+  /** One call with 'configure' (run options that widen the project's settings; exec's Session.needConfigure). */
+  async callConfigured<T>(method: string, params: unknown[]): Promise<T> {
+    return this.withConfigure((client) =>
+      client.call<T>(method, params).catch((e: unknown) => {
+        throw hostError(e)
+      })
+    )
+  }
+
   async startSetup(projectId: string): Promise<RunSummary> {
     return this.client.call<RunSummary>('setup:start', [{ projectId }]).catch((e: unknown) => {
       throw hostError(e)
@@ -195,10 +213,7 @@ class TuiConnection implements TuiHostConnection {
 
 export async function connectTuiHost(ctx: CliContext, opts: ConnectTuiOptions = {}): Promise<TuiHostConnection> {
   const host = await ensureHost(ctx, [...TUI_SCOPES], { clientKind: 'tui' })
-  const conn = new TuiConnection(ctx, host)
-  const skew = host.client.hello.versionSkewWarning
-  if (skew && opts.warn) opts.warn(safeLine(skew))
-  return conn
+  return new TuiConnection(ctx, host)
 }
 
 // ---------- Session ----------
@@ -257,12 +272,6 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     hostKind: conn.hello.hostKind,
     ...(opts.project ? { project: opts.project } : {}),
     ...(opts.readOnlyReason ? { readOnlyReason: opts.readOnlyReason } : {})
-  }
-  if (conn.hello.versionSkewWarning) state = addNotice(state, conn.hello.versionSkewWarning, 'warn', now())
-  // Review H2: the default Terminal access level grants read + operate only; say so up front instead of letting the
-  // first card answer fail with scope_denied.
-  if (Array.isArray(conn.hello.grantedScopes) && !conn.hello.grantedScopes.includes('decide')) {
-    state = addNotice(state, TUI_NO_DECIDE_NOTICE, 'warn', now())
   }
 
   const fire = (): void => {
@@ -456,6 +465,14 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     return pid
   }
 
+  /**
+   * A call that starts or continues a run: with run options that widen the project's settings it goes through a
+   * separate 'configure' connection (as exec asks for it), else the shared one.
+   */
+  const startCall = <T>(method: string, params: unknown[], overrides: RunOverrides | undefined, project: Project | undefined): Promise<T> =>
+    overrides && conn.callConfigured && overridesNeedConfigure(project, overrides) ? conn.callConfigured<T>(method, params) : call<T>(method, params)
+  const withOverrides = (o: RunOverrides | undefined): { overrides?: RunOverrides } => (o && Object.keys(o).length ? { overrides: o } : {})
+
   /** Focus a run the host just started or continued (its summary first, so following and tags know it). */
   const adopt = async (summary: RunSummary, chain?: string[]): Promise<RunSummary> => {
     if (!summary || typeof summary.id !== 'string') throw new Error('The OrgAI host did not return the run.')
@@ -468,7 +485,60 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     return summary
   }
 
+  // Read-only /approvals (read scope): every project's pending team files, and this code project's folder config.
+  const waitingItems = async (): Promise<ApprovalItem[]> => {
+    const attention = await call<TeamFilesStatus[]>('teamFiles:listAttention', [])
+    const p = state.project
+    const folderConfig = p && projectKindOf(p) === 'code' ? await call<FolderConfigReview>('projects:folderConfig', [p.id]).catch(() => undefined) : undefined
+    return approvalItems(Array.isArray(attention) ? attention : [], p ? { id: p.id, name: p.name, ...(folderConfig ? { folderConfig } : {}) } : undefined)
+  }
+
+  // /team and /settings (cli-parity 3.7): reads on the shared client, writes on a one-call 'configure' connection.
+  const write = <T>(method: string, params: unknown[]): Promise<T> => (conn.callConfigured ? conn.callConfigured<T>(method, params) : call<T>(method, params))
+  const firstOpen = conn.userDataDir ? hintStore(conn.userDataDir) : undefined
+  const config: TuiConfigApi = {
+    async project(id) {
+      const p = await call<Project | null>('projects:get', [id])
+      if (!p || typeof p !== 'object') throw new Error('That project is gone.')
+      return p
+    },
+    async saveProject(p) {
+      const saved = await write<Project>('projects:save', [p])
+      if (saved && state.project?.id === saved.id) set(setProject(state, saved))
+      return saved
+    },
+    async projects() {
+      const list = await call<Project[]>('projects:list', [])
+      return Array.isArray(list) ? list : []
+    },
+    async connections() {
+      const list = await call<ConnectionInfo[]>('connections:list', [])
+      return Array.isArray(list) ? list : []
+    },
+    async models(connection) {
+      const list = await call<ProviderModel[]>('models:list', connection ? [{ connection }] : [])
+      return Array.isArray(list) ? list : []
+    },
+    async settings() {
+      const s = await call<Partial<AppSettings>>('settings:get', [])
+      return s && typeof s === 'object' ? s : {}
+    },
+    setSetting: (patch) => write<Partial<AppSettings>>('settings:set', [patch]),
+    async updateConnection(connection) {
+      const info = await write<ConnectionInfo>('connections:update', [connection])
+      // The host remapped the roles on that connection: the open project follows.
+      const id = state.project?.id
+      if (id) {
+        const p = await call<Project | null>('projects:get', [id]).catch(() => null)
+        if (p && typeof p === 'object' && state.project?.id === p.id) set(setProject(state, p))
+      }
+      return info
+    },
+    ...(firstOpen ? { firstOpen } : {})
+  }
+
   const api: TuiSessionApi = {
+    config,
     getState: () => state,
     subscribe(listener) {
       listeners.add(listener)
@@ -498,25 +568,49 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
         case 'continue': {
           const from = activeId()
           const chain = [...state.activeChain]
-          const next = await call<RunSummary>('runs:continue', [{ runId: from, text }])
+          const next = await startCall<RunSummary>('runs:continue', [{ runId: from, text, ...withOverrides(o.overrides) }], o.overrides, state.project)
           return adopt(next, chain)
         }
         case 'start': {
           const projectId = state.project?.id
           if (!projectId) throw new Error('No project is open.')
-          const next = await call<RunSummary>('runs:start', [{ projectId, prompt: text, ...(o.team ? { team: o.team } : {}) }])
+          const next = await startCall<RunSummary>('runs:start', [{ projectId, prompt: text, ...(o.team ? { team: o.team } : {}), ...withOverrides(o.overrides) }], o.overrides, state.project)
           return adopt(next)
         }
         case 'quick':
-          return api.startQuick({ prompt: text, allowEdits: false, ...(o.team ? { team: o.team } : {}) })
+          return api.startQuick({ prompt: text, allowEdits: false, ...(o.team ? { team: o.team } : {}), ...withOverrides(o.overrides) })
       }
     },
-    async startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam }) {
+    async startQuick(input: { prompt: string; allowEdits: boolean; team?: RunTeam; overrides?: RunOverrides }) {
       if (typeof input.prompt !== 'string' || input.prompt.trim() === '') throw new Error('Type a message first.')
-      const next = await call<RunSummary>('runs:startQuick', [
-        { prompt: input.prompt, folder: state.folder, team: input.team ?? 'single', allowEdits: input.allowEdits === true }
-      ])
+      const next = await startCall<RunSummary>(
+        'runs:startQuick',
+        [{ prompt: input.prompt, folder: state.folder, team: input.team ?? 'single', allowEdits: input.allowEdits === true, ...withOverrides(input.overrides) }],
+        input.overrides,
+        undefined
+      )
       return adopt(next)
+    },
+    modelCatalog: () => loadModelCatalog(call),
+    approvals: {
+      list: () => waitingItems(),
+      waiting: async () => waitingNotice(await waitingItems())
+    },
+    async switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }) {
+      const runId = activeId()
+      const out = await switchRunModel(call, runId, selected, opts)
+      // The run.model event updates the status bar; the summary also carries the selection kept for the next message.
+      if (out.run?.id === runId) set(upsertRunSummary(state, out.run))
+      return out
+    },
+    async resumeNow() {
+      const from = activeId()
+      const chain = [...state.activeChain]
+      const next = await call<RunSummary>('runs:resumeNow', [from])
+      return next && next.id !== from ? adopt(next, chain) : adopt(next)
+    },
+    async cancelAutoResume() {
+      await call('runs:cancelAutoResume', [activeId()])
     },
     async interrupt() {
       await call('runs:interrupt', [activeId()])
@@ -534,23 +628,23 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     async worktreeDiff(branch: string): Promise<WorktreeDiff> {
       return call<WorktreeDiff>('maintenance:diff', [{ projectId: projectIdOf(state.activeRunId), branch }])
     },
+    async listOutputs() {
+      const list = await call<RunOutput[]>('outputs:list', [projectIdOf(state.activeRunId)])
+      return Array.isArray(list) ? list : []
+    },
     async listRuns() {
       const list = await call<RunSummary[]>('runs:list', [projectIdOf()])
       const out = Array.isArray(list) ? list : []
       if (state.project && out.some((r) => r.projectId === state.project?.id)) set(applyRunList(state, out))
       return out
     },
-    async openInDesktop(runId?: string) {
+    async startRetro(runId?: string) {
       const id = runId ?? activeId()
-      try {
-        await client().call('window:openRun', [{ projectId: projectIdOf(id), runId: id }])
-      } catch (e) {
-        if (codeOf(e) === 'desktop_unavailable') {
-          api.notify(DESKTOP_UNAVAILABLE_NOTICE, 'warn')
-          return
-        }
-        throw hostError(e)
-      }
+      const run = state.runs[id]?.summary
+      if (!run) throw new Error('Open the run first.')
+      if (!offersRetro(run)) throw new Error('An Org retrospective looks back at an ended work run of a project.')
+      const started = await call<RunSummary>('setup:retro', [{ projectId: run.projectId, runId: id }], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+      return adopt(started)
     },
     async resync() {
       await stream?.resubscribe().catch((e: unknown) => {

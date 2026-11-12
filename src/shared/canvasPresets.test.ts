@@ -20,13 +20,32 @@ describe('canvas presets', () => {
     }
   })
 
-  it('round-trips through applyCanvasPreset and keeps the minimap', () => {
+  it('defaults to the graph presentation and full color scene palette', () => {
+    expect(DEFAULT_APPEARANCE.canvas).toMatchObject({ presentation: 'graph', scenePalette: 'color' })
+  })
+
+  it('preserves scene preferences and minimap for every graph preset', () => {
     for (const p of CANVAS_PRESETS) {
-      for (const minimap of [true, false]) {
-        const next = applyCanvasPreset({ ...DEFAULT_APPEARANCE.canvas, minimap }, p.id)
-        expect(next.minimap).toBe(minimap)
-        expect(activeCanvasPreset(next)).toBe(p.id)
+      for (const presentation of ['graph', 'pocket-office'] as const) {
+        for (const scenePalette of ['color', 'neutral', 'green'] as const) {
+          for (const minimap of [true, false]) {
+            const canvas = { ...DEFAULT_APPEARANCE.canvas, presentation, scenePalette, minimap }
+            const next = applyCanvasPreset(canvas, p.id)
+            expect(next).toMatchObject({ ...p.canvas, presentation, scenePalette, minimap })
+            expect(canvas).toEqual({ ...DEFAULT_APPEARANCE.canvas, presentation, scenePalette, minimap })
+            expect(activeCanvasPreset(next)).toBe(p.id)
+          }
+        }
       }
+    }
+  })
+
+  it('accepts legacy canvas preferences without scene fields', () => {
+    const { presentation: _presentation, scenePalette: _scenePalette, ...legacy } = DEFAULT_APPEARANCE.canvas
+    for (const p of CANVAS_PRESETS) {
+      const next = applyCanvasPreset(legacy, p.id)
+      expect(next).toMatchObject({ ...p.canvas, minimap: legacy.minimap })
+      expect(activeCanvasPreset(next)).toBe(p.id)
     }
   })
 

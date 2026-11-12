@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AppSettingsInfo, DaemonInfo, RunEvent } from '../../shared/types'
+import type { AppSettingsInfo, DaemonInfo, RunEvent, RunSummary } from '../../shared/types'
 import { ACTIVITY_LEASE_KINDS, IPC } from '../../shared/types'
 
 // bootOrgAIHost must boot in plain Node (cli-spec 3.1): any electron import fails the whole file.
@@ -90,6 +90,7 @@ afterEach(async () => {
   hosts = []
   vi.useRealTimers()
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   rmSync(root, { recursive: true, force: true })
 })
 
@@ -235,6 +236,34 @@ describe('bootOrgAIHost', () => {
     await h.runs.stopAll({ reason: 'quit' })
   })
 
+  it('serves runs:usageOverview and runs:usageOverviewCsv over invokeRpc with read scope, naming every project (mock, no tokens)', async () => {
+    const now = Date.now()
+    const chat = { id: 'r_chat', projectId: 'quick', prompt: 'hi', status: 'finished', startedAt: now - 1000, endedAt: now, kind: 'work', totalCostUsd: 0 }
+    writeFileSync(join(dataDir, 'runs.json'), JSON.stringify({ version: 1, runs: [chat] }))
+    const h = boot()
+    const folder = join(root, 'repo-usage')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Usage, "one"', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const run = await h.runs.start({ project, prompt: 'count me' })
+    const read = { surface: 'inproc' as const, grantedScopes: ['read'] as const }
+    const o = (await h.dispatcher.invokeRpc(IPC.runsUsageOverview, [], read)) as import('../../shared/types').UsageOverview
+    expect(o.runs.map((r) => [r.runId, r.projectName, r.projectKind])).toEqual([
+      [run.id, 'Usage, "one"', 'code'],
+      ['r_chat', 'Chat', 'assistant']
+    ])
+    const only = (await h.dispatcher.invokeRpc(IPC.runsUsageOverview, [{ projectIds: ['quick'], bucket: 'month' }], read)) as import('../../shared/types').UsageOverview
+    expect(only.runs.map((r) => r.runId)).toEqual(['r_chat'])
+    expect(only.query).toMatchObject({ bucket: 'month', projectIds: ['quick'] })
+    await expect(h.dispatcher.invokeRpc(IPC.runsUsageOverview, [{ projectIds: ['../x'] }], read)).rejects.toThrow()
+    await expect(h.dispatcher.invokeRpc(IPC.runsUsageOverview, ['p1'], read)).rejects.toMatchObject({ code: 'bad_request' })
+    const csv = (await h.dispatcher.invokeRpc(IPC.runsUsageOverviewCsv, [null], read)) as string
+    const lines = csv.split('\r\n')
+    expect(lines).toHaveLength(3)
+    expect(lines[1]!.startsWith('"Usage, ""one""",,')).toBe(true)
+    expect(lines[2]!.startsWith('Chat,,')).toBe(true)
+    await h.runs.stopAll({ reason: 'quit' })
+  })
+
   it('serves host.status from ownership info and the activity snapshot', async () => {
     const h = boot()
     const status = h.hostControl.status()
@@ -264,13 +293,50 @@ describe('bootOrgAIHost', () => {
     const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'decide', 'configure'] as const }
     await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
     expect(own.markDraining).toHaveBeenCalledTimes(1)
+    // Wave 7 (4.3): the shutdown coordinator releases after the reply, then calls onDrained (the process may exit).
+    await h.shutdown.released()
     expect(own.release).toHaveBeenCalledTimes(1)
     expect(onDrained).toHaveBeenCalledTimes(1)
+    expect(onDrained).toHaveBeenCalledWith({ reason: 'host.stop', forced: false, hardLimit: false })
+    expect(h.shutdown.phase()).toBe('released')
     expect(h.activity.state()).toBe('draining')
     // A second stop joins the drain instead of being refused as a mutation.
     await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
     await expect(h.dispatcher.invokeRpc(IPC.settingsSet, [{}], ctx)).rejects.toMatchObject({ code: 'host_draining' })
     expect(h.activity.snapshot().counts.inFlightRpcMutations).toBe(0)
+  })
+
+  it('host.status carries the host-wide run counts; a plain stop goes through once nothing is live', async () => {
+    const h = boot({ terminalSessions: () => 2 })
+    expect(h.hostControl.status().handoff).toEqual({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 })
+    const folder = join(root, 'repo-handoff')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Counts', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
+    await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'keep me live' }], ctx)
+    const res = (await h.dispatcher.invokeRpc('host.stop', [{}], ctx)) as { stopping: boolean }
+    expect(res.stopping).toBe(false)
+    expect(h.activity.state()).toBe('ready')
+    await h.runs.stopAll({ reason: 'quit' })
+    // The ended work run armed a Team review (a backgroundTasks lease); without it and with nothing live, the stop goes through.
+    h.services.capabilities.dispose()
+    await vi.waitFor(() => expect(h.activity.isIdle()).toBe(true))
+    expect(h.hostControl.status().handoff).toMatchObject({ workingRuns: 0, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0 })
+    await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
+    await h.shutdown.released()
+  })
+
+  it('the drain quiesces OAuth flows, skill evaluation, org chart drafts and the entry point\'s own work (round 6 item 9)', async () => {
+    const quiesce = vi.fn()
+    const h = boot({ quiesce })
+    const mcp = vi.spyOn(h.services.mcp, 'dispose')
+    const evaluation = vi.spyOn(h.services.skillEvaluation as unknown as { dispose(): void }, 'dispose')
+    const caps = vi.spyOn(h.services.capabilities, 'dispose')
+    // An org chart draft's model call is aborted too (review round 2): it has no timeout and would hold its lease.
+    const drafts = vi.spyOn(h.dispatcher, 'quiesce')
+    await h.shutdown.shutdown('desktop-quit', { force: true })
+    for (const f of [mcp, evaluation, caps, drafts, quiesce]) expect(f).toHaveBeenCalledTimes(1)
+    await expect(h.services.mcp.authorize({ libraryId: 'x' })).rejects.toThrow(/shutting down/)
   })
 
   it('host.stop without force over invokeRpc is refused while a run is live, naming liveRuns only', async () => {
@@ -286,6 +352,40 @@ describe('bootOrgAIHost', () => {
     expect(h.activity.state()).toBe('ready')
     await h.runs.stopAll({ reason: 'quit' })
   })
+
+  it('a non-forced stop (a stop request) ends a run that only waits on the user, written as cut by the app before the release', async () => {
+    const own = fakeOwnership()
+    const h = boot({ ownership: own, hostKind: 'inproc' })
+    const atRelease: (RunSummary | null)[] = []
+    let runId = ''
+    own.release.mockImplementation(() => {
+      atRelease.push(h.runs.summary(runId))
+    })
+    const folder = join(root, 'repo-idle')
+    mkdirSync(folder)
+    const project = h.services.projects.create({ name: 'Idle', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const ctx = { surface: 'inproc' as const, grantedScopes: ['read', 'operate', 'configure'] as const }
+    // A one-step script: the single-agent run says one line and waits on the user (no plan nudges).
+    const script = join(root, 'idle-script.json')
+    writeFileSync(script, JSON.stringify({ delayMs: 0, work: [{ type: 'text', text: 'Ready when you are.' }] }))
+    vi.stubEnv('ORGAI_MOCK_SCRIPT', script)
+    const run = (await h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: 'wait for me', team: 'single' }], ctx)) as RunSummary
+    runId = run.id
+    // The mock work run finishes its turn and waits on the user: live, but not busy, so the host counts as idle.
+    await vi.waitFor(() => expect(h.runs.summary(runId)?.status).toBe('idle'), { timeout: 10_000 })
+    expect(h.runs.liveRunCount()).toBe(1)
+    expect(h.runs.busyRunCount()).toBe(0)
+    // As the idle exit would see it: nothing busy (the run's title is done), the run still live.
+    await vi.waitFor(() => expect(h.activity.isIdle()).toBe(true), { timeout: 10_000 })
+    expect(h.runs.liveRunCount()).toBe(1)
+    await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
+    await h.shutdown.released()
+    expect(own.release).toHaveBeenCalledTimes(1)
+    // Ended before the data folder was given up, as a quit ends it: by the app, while waiting, continuable.
+    expect(atRelease[0]).toMatchObject({ endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' })
+    expect(['finished', 'error']).toContain(atRelease[0]?.status)
+    expect(h.runs.liveRunCount()).toBe(0)
+  }, 30_000)
 
   it('a forced host.stop with a live work run schedules no Team review, waits on none and refuses model calls after', async () => {
     const releasedWith: number[] = []
@@ -303,6 +403,7 @@ describe('bootOrgAIHost', () => {
     expect(h.runs.liveRuns().length).toBe(1)
     const started = Date.now()
     await expect(h.dispatcher.invokeRpc('host.stop', [{ force: true }], ctx)).resolves.toEqual({ stopping: true })
+    await h.shutdown.released()
     // The run's end reached the Team assistant after it was disposed: nothing armed, nothing waited on.
     expect(runEnded).toHaveBeenCalled()
     expect(releasedWith).toEqual([0])
@@ -325,48 +426,10 @@ describe('bootOrgAIHost', () => {
     expect(armIdle).not.toHaveBeenCalled()
   })
 
-  it('arms idle exit for a non-desktop host', () => {
+  it('never arms idle exit for an inproc host (it lives until Ctrl+C)', () => {
     const armIdle = vi.spyOn(HostActivityTracker.prototype, 'armIdleExit')
-    boot({ hostKind: 'headless-host' })
-    expect(armIdle).toHaveBeenCalledTimes(1)
-  })
-
-  it('a headless boot opens Terminal access for its session only, never saving it (review H2)', () => {
-    const fresh = boot({ hostKind: 'headless-host' })
-    expect(fresh.settings.get().terminalServer).toBe(false)
-    expect(fresh.settings.get().terminalServerChosen).toBeUndefined()
-    expect(fresh.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
-    fresh.dispose()
-    // Nothing reached settings.json: a desktop boot afterwards keeps it off.
-    const desktop = boot({ hostKind: 'desktop' })
-    expect(desktop.terminalAccess()).toEqual({ enabled: false, level: 'operate' })
-    // The user allows full access, then turns Terminal access off in App settings (settings:set marks the choice).
-    desktop.settings.set({ ...desktop.settings.get(), terminalAccessLevel: 'full' })
-    expect(desktop.terminalAccess()).toEqual({ enabled: false, level: 'full' })
-    desktop.settings.set({ ...desktop.settings.get(), terminalServer: false, terminalServerChosen: true })
-    desktop.dispose()
-    for (const hostKind of ['headless-host', 'inproc'] as const) {
-      const later = boot({ hostKind })
-      expect(later.settings.get().terminalServer, hostKind).toBe(false)
-      expect(later.settings.get().terminalServerChosen).toBe(true)
-      expect(later.terminalAccess().enabled, hostKind).toBe(false)
-      later.dispose()
-    }
-  })
-
-  it('an in-process host follows the stored level like any host (its own CLI proves itself with the owner key); a choice made during a headless session wins at once', () => {
-    const inproc = boot({ hostKind: 'inproc' })
-    expect(inproc.terminalAccess()).toEqual({ enabled: true, level: 'operate' })
-    inproc.settings.set({ ...inproc.settings.get(), terminalAccessLevel: 'full' })
-    expect(inproc.terminalAccess()).toEqual({ enabled: true, level: 'full' })
-    inproc.dispose()
-    const headless = boot({ hostKind: 'headless-host' })
-    expect(headless.terminalAccess().enabled).toBe(true)
-    headless.settings.set({ ...headless.settings.get(), terminalServer: false, terminalServerChosen: true })
-    expect(headless.terminalAccess().enabled).toBe(false)
-    headless.settings.set({ ...headless.settings.get(), terminalServer: true, terminalServerChosen: true })
-    expect(headless.terminalAccess().enabled).toBe(true)
-    headless.dispose()
+    boot({ hostKind: 'inproc' })
+    expect(armIdle).not.toHaveBeenCalled()
   })
 
   it('dispose() is idempotent and leaves no timers behind', () => {

@@ -311,7 +311,9 @@ try {
     const chips = [...document.querySelectorAll('.decision-chip')]
     const card = document.querySelector('section.frame-tray article.decision-card')
     const tray = box('section.frame-tray')
-    const radios = card ? [...card.querySelectorAll('input[type=radio]')].map((r) => { const b = r.getBoundingClientRect(); return { t: b.top, b: b.bottom } }) : []
+    const radios = card ? [...card.querySelectorAll('input[type=radio]')].map((r) => { const b = (r.closest('label') ?? r).getBoundingClientRect(); return { t: b.top, b: b.bottom } }) : []
+    const body = card?.querySelector('.decision-body')?.getBoundingClientRect()
+    const footer = card?.querySelector('.decision-footer')?.getBoundingClientRect()
     const submit = card?.querySelector('.decision-footer .btn.primary')?.getBoundingClientRect()
     const end = [...document.querySelectorAll('.run-actions button')].find((b) => /End session/.test(b.getAttribute('aria-label') ?? ''))
     const label = end?.querySelector('.run-act-label')?.getBoundingClientRect()
@@ -324,7 +326,8 @@ try {
       overlap: chips.some((c, i) => i > 0 && c.getBoundingClientRect().left < chips[i - 1].getBoundingClientRect().right - 0.5),
       tray,
       stage: box('.frame-stage'),
-      radiosInside: radios.length >= 3 && tray ? radios.every((r) => r.t >= tray.t && r.b <= tray.b) : false,
+      radios, body: body && { t: body.top, b: body.bottom }, footer: footer && { t: footer.top, b: footer.bottom },
+      radiosInside: radios.length >= 3 && tray && body && footer ? radios.every((r) => r.t >= Math.max(tray.t, body.top) - 0.5 && r.b <= Math.min(tray.b, body.bottom, footer.top) + 0.5) : false,
       submitInside: !!submit && !!tray && submit.bottom <= tray.b - 1 && submit.top >= tray.t,
       endLabelW: label ? label.width : 0,
       composerH: document.querySelector('.composer')?.getBoundingClientRect().height ?? 0
@@ -366,7 +369,7 @@ try {
       panel: Math.round(document.querySelector('.side-panel')?.getBoundingClientRect().width ?? 0),
       stage: Math.round(document.querySelector('.frame-stage')?.getBoundingClientRect().width ?? 0),
       gap: Math.round((document.querySelector('.side-panel')?.getBoundingClientRect().left ?? 0) - (document.querySelector('.run-body .react-flow')?.getBoundingClientRect().right ?? 0)),
-      composerInPanel: (() => { const c = document.querySelector('.run-body > .composer')?.getBoundingClientRect(); const p = document.querySelector('.side-panel')?.getBoundingClientRect(); return !!c && !!p && c.left >= p.left - 1 && c.top >= p.bottom - 1 })(),
+      composerInPanel: (() => { const c = document.querySelector('.run-body > .live-composer-region')?.getBoundingClientRect(); const p = document.querySelector('.side-panel')?.getBoundingClientRect(); return !!c && !!p && c.left >= p.left - 1 && c.top >= p.bottom - 1 })(),
       sidebar: Math.round(document.querySelector('.sidebar')?.getBoundingClientRect().width ?? 0)
     }))
     check((await page.locator('[data-testid=sidebar-resize]').count()) === 0 && (await geo()).sidebar <= 60, 'no sidebar resize handle while the sidebar is a rail (1024)', JSON.stringify({ explicitSidebarChoice: await page.evaluate(() => localStorage.getItem('orgai.sidebar')), ...(await geo()), ...(await envDiag()) }))
@@ -634,6 +637,39 @@ try {
   await shot('run-auth-fail')
   await endSession(page)
 
+  // Required delegation (delegation-enforcement 4.1, 6): lead -> manager (requires policy and evidence) -> policy, evidence.
+  {
+    const before = await findProject(page, NAME)
+    const tpl = before.roles[0]
+    const mk = (id, name, slug, reportsTo, spawnable, requiredReports) => ({ ...tpl, id, name, slug, reportsTo, canSpawn: spawnable.length > 0, spawnable, requiredReports, mcpServers: [], skills: [] })
+    const chart = [
+      mk('dlg-lead', 'Lead', 'dlg-lead', null, ['dlg-mgr'], undefined),
+      mk('dlg-mgr', 'Manager', 'dlg-mgr', 'dlg-lead', ['dlg-pol', 'dlg-evi'], ['dlg-pol', 'dlg-evi']),
+      mk('dlg-pol', 'Policy Analyst', 'dlg-pol', 'dlg-mgr', [], undefined),
+      mk('dlg-evi', 'Evidence Reviewer', 'dlg-evi', 'dlg-mgr', [], undefined)
+    ]
+    await page.evaluate((p) => window.orgai.projects.save(p), { ...before, roles: chart, autoContinue: false })
+    const delegationRun = async (marker, badgeId) => {
+      await page.keyboard.press('Control+t')
+      await page.locator('.new-run').waitFor({ timeout: 5000 })
+      await startOnPage(`Delegate the work ${marker}`)
+      await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+      await page.locator(`[data-testid=${badgeId}]`).first().waitFor({ state: 'attached', timeout: 30_000 }).catch(() => {})
+    }
+    await delegationRun('[mock:delegation-skip]', 'agent-badge-delegation-failed')
+    check((await page.locator('[data-testid=agent-badge-delegation-failed]').count()) >= 1, 'a [mock:delegation-skip] run shows the "Skipped required reports" badge on an agent node')
+    await shot('run-delegation-skip')
+    await endSession(page)
+    await delegationRun('[mock:delegation-fix]', 'agent-badge-delegation-corrected')
+    check((await page.locator('[data-testid=agent-badge-delegation-corrected]').count()) >= 1, 'a [mock:delegation-fix] run shows the "Corrected" badge')
+    await page.waitForFunction(() => document.querySelectorAll('.react-flow__node .agent-node').length >= 4, null, { timeout: 30_000 }).catch(() => {})
+    const fixNodes = await page.locator('.react-flow__node .agent-node').count()
+    check(fixNodes >= 4, 'the corrected run shows the lead, the manager and its two worker nodes', String(fixNodes))
+    await shot('run-delegation-fix')
+    await endSession(page)
+    await page.evaluate((p) => window.orgai.projects.save(p), before)
+  }
+
   // One conversation per chain: Send on an ended run continues it in the same tab, the feed shows both turns with a divider.
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 5000 })
@@ -678,7 +714,7 @@ try {
   check((await chainRow.count()) === 1, 'History shows the continued chain as one row with data-sessions=2', String(await chainRow.count()))
   check(/Chain first turn/.test(await chainRow.first().innerText()), 'the chain row is named by its first turn')
   const chainTotal = await page.evaluate(async (pid) => {
-    const rows = (await window.orgai.runs.list(pid)).filter((r) => r.surface !== 'team')
+    const rows = await window.orgai.runs.list(pid)
     const parent = new Map(rows.map((r) => [r.id, r.id]))
     const find = (x) => {
       while (parent.get(x) !== x) x = parent.get(x)

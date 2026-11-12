@@ -32,11 +32,14 @@ export function canWrite(role: Pick<Role, 'tools'>): boolean {
 
 /** One data field value: one line, no field separator, no angle brackets (they delimit the data blocks). */
 function field(s: unknown, max: number): string {
-  const words = clampText(s, max)
+  // Normalize hidden characters and whitespace before credential checks, but do not truncate yet: a credential can
+  // cross the display limit, and checking only its truncated prefix would disclose that fragment to the model.
+  const normalized = clampText(s, typeof s === 'string' ? s.length + 1 : max)
+  const words = normalized
     .split(' ')
     .map((w) => (isKeyLikeValue(w) || isKeyLikeArg(w) ? '[redacted]' : w))
     .join(' ')
-  return words.replace(/\|/g, '/').replace(/[<>]/g, ' ').replace(/=/g, ':').trim()
+  return clampText(words.replace(/\|/g, '/').replace(/[<>]/g, ' ').replace(/=/g, ':').trim(), max)
 }
 
 /** What a prompt may say about candidates found on this computer (origin 'local'). */

@@ -1,21 +1,21 @@
 /**
- * TUI commands (cli-spec 5, 6.1): `orgai tui [--run <ref>]`, `orgai attach <ref>`, bare `orgai` / `orgai [--] <prompt>`
+ * TUI commands (cli-spec 5, 6.1): `orgai tui [--run <ref>]` (a saved run), bare `orgai` / `orgai [--] <prompt>`
  * and `orgai resume [ref] [--prompt <text>]` without --exec. Never statically imports react, ink or any ../tui/*.tsx:
  * the TUI is reached only through `await import('../tui/index')` (the out/cli/tui.mjs chunk; lazyTui.test.ts).
  *
  * Checks before any host starts: a terminal on both ends, and the managed agent worktree guard (cli-spec 4.2): starting
- * or continuing a run there is exit 2 naming the main checkout; `attach` and `tui --run` open read-only. What to open is
+ * or continuing a run there is exit 2 naming the main checkout; `tui --run` opens read-only. What to open is
  * resolved once the TUI is connected (`prepare`): run refs through the live host, else the folder's project, else the
  * folder onboarding.
  */
 import { isOpenStatus } from '../../shared/view/runChains'
-import type { Project, RunSummary, RunTeam } from '../../shared/types'
+import type { Project, RunOverrides, RunSummary, RunTeam } from '../../shared/types'
 import { quietInproc } from '../context'
 import { parseFlags } from '../flags'
-import { resolveRunFromSource } from '../runRef'
+import { liveSource, resolveRunFromSource } from '../runRef'
+import { execRunFlags, interactiveOverrides } from '../runStartFlags'
 import type { TuiHostConnection, TuiLaunch } from '../tui/types'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostCallError } from '../types'
-import { liveSource } from './watch'
 
 export const NO_TTY_MESSAGE = 'The terminal UI needs a terminal; use orgai exec for scripts.'
 export const PROMPT_NO_TTY_MESSAGE = 'The terminal UI needs a terminal. For scripts use: orgai exec "<prompt>"'
@@ -71,7 +71,7 @@ export async function launchTui(ctx: CliContext, flags: TuiFlags, prepare: (conn
 }
 
 /** The folder's project, else onboarding (no run asked for). */
-export async function prepareFolder(ctx: CliContext, conn: TuiHostConnection, extra: Pick<TuiLaunch, 'prompt' | 'team'> = {}): Promise<TuiLaunch> {
+export async function prepareFolder(ctx: CliContext, conn: TuiHostConnection, extra: Pick<TuiLaunch, 'prompt' | 'team' | 'overrides'> = {}): Promise<TuiLaunch> {
   const projects = await conn.projects().catch((e: unknown) => {
     throw hostFailure(e)
   })
@@ -122,25 +122,18 @@ export async function prepareResume(ctx: CliContext, conn: TuiHostConnection, re
   return { project: res.project, runId: ended.id, ...extra }
 }
 
-// ---------- orgai tui / orgai attach ----------
+// ---------- orgai tui ----------
 
 export const runTuiCommand: CommandFn = async (ctx, args) => {
   const { values, positionals } = parseFlags(args, { ...TUI_FLAGS, run: { type: 'string' } })
-  if (positionals.length) throw usage('Use: orgai tui [--run <runId-or-R#>] [--inline] [--ax-screen-reader]')
+  const USE = 'Use: orgai tui [<run> | --run <runId-or-R#>] [--inline] [--ax-screen-reader]'
+  if (positionals.length > 1 || (positionals.length === 1 && values.run !== undefined)) throw usage(USE)
   requireTty(ctx)
-  const ref = values.run
+  const ref = values.run ?? positionals[0]
   if (ref === undefined) {
     refuseManaged(ctx)
     return launchTui(ctx, flagsOf(values), (conn) => prepareFolder(ctx, conn))
   }
-  return launchTui(ctx, flagsOf(values), (conn) => prepareRun(ctx, conn, ref))
-}
-
-export const runAttach: CommandFn = async (ctx, args) => {
-  const { values, positionals } = parseFlags(args, TUI_FLAGS)
-  if (positionals.length !== 1) throw usage('Use: orgai attach <runId-or-R#> [--inline] [--ax-screen-reader]')
-  requireTty(ctx)
-  const ref = positionals[0]
   return launchTui(ctx, flagsOf(values), (conn) => prepareRun(ctx, conn, ref))
 }
 
@@ -151,20 +144,22 @@ export const runAttach: CommandFn = async (ctx, args) => {
  * without a prompt this prints `help()` (today's behaviour); a prompt without a terminal is exit 2 pointing at exec.
  * Before `--`, a prompt must contain whitespace (one bare word is a mistyped command).
  */
-export function parseDefaultTuiArgs(args: string[]): { flags: TuiFlags; prompt: string; team?: RunTeam } {
+export function parseDefaultTuiArgs(args: string[]): { flags: TuiFlags; prompt: string; team?: RunTeam; overrides?: RunOverrides } {
   const dashed = args.includes('--')
-  const { values, positionals } = parseFlags(args, { ...TUI_FLAGS, team: { type: 'string' } })
+  const { values, positionals } = parseFlags(args, { ...execRunFlags(), ...TUI_FLAGS, team: { type: 'string' } })
+  // Exec's run flags for the first run (cli-parity 3.5), validated by exec's own parser; headless-only ones are refused.
+  const overrides = interactiveOverrides(values as Record<string, unknown>)
   const team = values.team
   if (team !== undefined && team !== 'default' && team !== 'single') throw usage('--team must be one of default, single.')
   const prompt = positionals.join(' ')
   if (!dashed && prompt && !/\s/.test(prompt.trim())) throw usage(`Unknown command '${prompt}'. ${PROMPT_HINT}`)
   if (team !== undefined && !prompt.trim()) throw usage('--team applies to a prompt: orgai --team single -- "<prompt>"')
-  return { flags: flagsOf(values), prompt, ...(team ? { team: team as RunTeam } : {}) }
+  return { flags: flagsOf(values), prompt, ...(team ? { team: team as RunTeam } : {}), ...(overrides ? { overrides } : {}) }
 }
 
 /**
  * True when bare `orgai` only prints help: no terminal on both ends and no prompt. index.ts checks it before it builds
- * the context, so the secret-env refusal and the --host inproc scrub never run just to print help.
+ * the context, so the secret-env refusal and scrub never run just to print help.
  */
 export function defaultTuiPrintsHelp(io: Pick<CliContext['io'], 'stdinIsTTY' | 'stdout'>, args: string[]): boolean {
   if (io.stdinIsTTY && io.stdout.isTTY === true) return false
@@ -172,7 +167,7 @@ export function defaultTuiPrintsHelp(io: Pick<CliContext['io'], 'stdinIsTTY' | '
 }
 
 export async function runDefaultTui(ctx: CliContext, args: string[], opts: { help?: () => string } = {}): Promise<number> {
-  const { flags, prompt, team } = parseDefaultTuiArgs(args)
+  const { flags, prompt, team, overrides } = parseDefaultTuiArgs(args)
   if (!hasTty(ctx)) {
     if (!prompt.trim()) {
       if (opts.help) ctx.io.stdout.write(`${opts.help()}\n`)
@@ -181,7 +176,7 @@ export async function runDefaultTui(ctx: CliContext, args: string[], opts: { hel
     throw usage(PROMPT_NO_TTY_MESSAGE)
   }
   refuseManaged(ctx)
-  const extra: Pick<TuiLaunch, 'prompt' | 'team'> = prompt.trim() ? { prompt, ...(team ? { team } : {}) } : {}
+  const extra: Pick<TuiLaunch, 'prompt' | 'team' | 'overrides'> = { ...(prompt.trim() ? { prompt, ...(team ? { team } : {}) } : {}), ...(overrides ? { overrides } : {}) }
   return launchTui(ctx, flags, (conn) => prepareFolder(ctx, conn, extra))
 }
 

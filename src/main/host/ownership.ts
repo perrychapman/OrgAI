@@ -14,7 +14,7 @@ import {
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import type { DaemonInfo, HostKind, HostState } from '@shared/types'
+import { HOST_KINDS, type DaemonInfo, type HostKind, type HostState } from '../../shared/types'
 import { HOST_INSTANCE_ID_RE, currentHostInstanceId } from './identity'
 import { renameSyncRetry } from './fsRetry'
 import { processLivenessCachedAsync, selfStartTime, type Liveness } from './processInfo'
@@ -44,7 +44,7 @@ import { restrictDaemonSecretAcl } from './protocol'
  * another user's process, or a pid reused quickly) is 'unconfirmed' (review M9): with a dead endpoint it is reclaimed
  * only when daemon.json says the endpoint is bound (no `listening: false`; a listening host publishes daemon.json only
  * after it listens and writes `listening: false` before it closes, so a published listening host with no listener is
- * gone). An unconfirmed pid whose daemon.json says `listening: false` (an Electron host with Terminal access off,
+ * gone). An unconfirmed pid whose daemon.json says `listening: false` (the Electron app, which never listens,
  * review M11) is a running host whatever the probe says: only a 'dead' pid is reclaimed then, unless the incumbent is
  * an Electron host and this launch holds Electron's single-instance lock (`singleInstanceLockHeld`; review M9
  * follow-up: the lock proves no Electron host runs here, so a crash record is never a lockout). An unconfirmed startup.mkdir owner is reclaimed once the mutex is older than
@@ -123,7 +123,9 @@ export class HostOwnershipError extends Error {
   readonly exitCode = 6
   constructor(
     readonly code: HostOwnershipErrorCode,
-    message: string
+    message: string,
+    /** The pid an unreadable daemon.json still named, when it did. */
+    readonly ownerPid?: number
   ) {
     super(message)
     this.name = 'HostOwnershipError'
@@ -135,6 +137,11 @@ export function runDirHint(runDir: string): string {
   return `If you are sure no OrgAI (and no orgai terminal host) is running for this data folder, delete the folder ${runDir}, then start OrgAI again.`
 }
 
+/** The text for a background host of an older OrgAI version that is still alive: no window, nothing in this version can quit it. */
+export function legacyNodeHostMessage(pid: number): string {
+  return `An older OrgAI background process (pid ${pid}) is still running for this data folder. It has no window. End it (on macOS or Linux run: kill ${pid}; on Windows end the process in Task Manager), then start OrgAI again.`
+}
+
 /** A live host already owns the data dir (its daemon.json pid is live, or its endpoint answers). */
 export class HostAlreadyRunningError extends HostOwnershipError {
   constructor(
@@ -143,7 +150,9 @@ export class HostAlreadyRunningError extends HostOwnershipError {
   ) {
     super(
       'already_running',
-      `OrgAI is already running for this data folder (pid ${info.pid}, ${info.hostKind ?? 'host'} ${info.hostInstanceId}).${runDir ? ` ${runDirHint(runDir)}` : ''}`
+      info.legacyKind === 'node'
+        ? legacyNodeHostMessage(info.pid)
+        : `OrgAI is already running for this data folder (pid ${info.pid}, ${info.hostKind ?? 'host'} ${info.hostInstanceId}).${runDir ? ` ${runDirHint(runDir)}` : ''}`
     )
     this.name = 'HostAlreadyRunningError'
   }
@@ -182,10 +191,9 @@ export interface OwnershipOptions {
   hostInstanceId?: string
   /**
    * The caller holds Electron's single-instance lock (`app.requestSingleInstanceLock()`, keyed by userData, and dataDir
-   * is `<userData>/data`): no other Electron host (desktop / headless-host) runs on this data folder. An Electron
+   * is `<userData>/data`): no other Electron host (desktop) runs on this data folder. An Electron
    * incumbent whose pid is 'unconfirmed', whose daemon.json says `listening: false` and whose endpoint does not
-   * answer is then known to be stale and is reclaimed (review M9 follow-up: a crashed desktop host with Terminal access
-   * off whose pid Windows reused for an elevated process). Only the Electron hosts pass it; `--host inproc` takes no
+   * answer is then known to be stale and is reclaimed (review M9 follow-up: a crashed desktop host whose pid Windows reused for an elevated process). Only the Electron hosts pass it; `--host inproc` takes no
    * such lock and keeps the conservative refusal.
    */
   singleInstanceLockHeld?: boolean
@@ -207,9 +215,8 @@ export interface OwnershipOptions {
   /**
    * win32: what an icacls failure on daemon.secret does when the listener is bound at once (listen not false).
    * 'required' throws HostOwnershipError('secret_acl_failed'); 'best-effort' warns, goes on and sets
-   * HostOwnership.secretAclWarning. Default: 'best-effort' for the desktop host, 'required' for headless and inproc
-   * hosts, which exist to serve the orgai command. setListening(true) is always 'required' (a failure keeps the
-   * listener off; the Electron hosts acquire with listen: false, so a desktop launch never fails on it, review M8).
+   * HostOwnership.secretAclWarning. Default: 'best-effort' for the desktop host, 'required' for inproc
+   * hosts, which exist to serve the orgai command.
    */
   secretAcl?: 'required' | 'best-effort'
   /** Where warnings go (default console.warn). */
@@ -230,6 +237,14 @@ export interface OwnershipOptions {
   retryMs?: number
   /** Longest wait on a live startup.mkdir owner (default 30000). */
   liveWaitMs?: number
+  /**
+   * 'none' (the orgai CLI): never wait. A live startup.mkdir owner, a young mutex with no readable owner and a live
+   * incumbent are refused at once (HostStartingOrBusyError / HostAlreadyRunningError); a provably stale mutex or record
+   * is reclaimed as always. Default 'wait'.
+   */
+  wait?: 'none' | 'wait'
+  /** The owning process's cwd, written to daemon.json as `ownerCwd` (the CLI). */
+  ownerCwd?: string
   /** Connection probe of the incumbent's endpoint (default 1500). */
   probeTimeoutMs?: number
   /** Crash injection (tests only). */
@@ -237,8 +252,7 @@ export interface OwnershipOptions {
   /** Platform override (tests only; the win32 pipe path is UNVERIFIED and not exercised live). */
   platform?: NodeJS.Platform
   /**
-   * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron hosts, whose
-   * Terminal access may be off): neither exists until setListening(true); daemon.json carries `listening: false` and
+   * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron app, which never listens): neither exists; daemon.json carries `listening: false` and
    * the endpoint the listener will use.
    */
   listen?: boolean
@@ -253,19 +267,11 @@ export interface HostOwnership {
   readonly runtimeDir?: string
   /**
    * win32: why daemon.secret could not be given a current-user-only DACL when acquireHostOwnership bound the listener
-   * at once in best-effort mode (review M8); undefined when it was protected. setListening(true) never sets it: there
-   * an ACL failure rejects and the listener stays off.
+   * at once in best-effort mode (review M8); undefined when it was protected.
    */
   readonly secretAclWarning?: string
   /** True while daemon.secret exists and the listener is bound. */
   readonly listening: boolean
-  /**
-   * Bind the listener and write daemon.secret (on), or close the listener and remove daemon.secret (off), then rewrite
-   * daemon.json's `listening` (review M11: only while Terminal access is on). Calls run one at a time in call order; a
-   * call that matches the current state does nothing. The secret keeps its value for this host instance. Rejects when
-   * the bind (or, on Windows, the secret's ACL) fails; the listener is then off. After release() it does nothing.
-   */
-  setListening(on: boolean): Promise<void>
   /** Rewrite daemon.json with state 'ready' (only while it still carries our hostInstanceId). True when written. */
   markReady(): boolean
   /** Rewrite daemon.json with state 'draining' (same rule). */
@@ -283,7 +289,6 @@ const SOCKET_PATH_MAX = 100
 const DAEMON_JSON_MAX_BYTES = 64 * 1024
 const RUNTIME_DIR_RE = /^orgai-[0-9a-f]{12}$/
 const HOST_STATES: readonly HostState[] = ['starting', 'ready', 'draining']
-const HOST_KINDS: readonly HostKind[] = ['desktop', 'headless-host', 'inproc']
 
 export function runDirOf(dataDir: string): string {
   return join(dataDir, 'run')
@@ -323,15 +328,19 @@ function isObject(v: unknown): v is Record<string, unknown> {
 /** A validated DaemonInfo, or null for anything else (unknown fields dropped). */
 export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
   if (!isObject(raw)) return null
-  const { hostInstanceId, pid, processStartTime: start, endpoint, listening, state, startedAt, hostKind, appVersion } = raw
+  const { hostInstanceId, pid, processStartTime: start, endpoint, listening, state, startedAt, hostKind, appVersion, ownerCwd } = raw
   if (typeof hostInstanceId !== 'string' || !HOST_INSTANCE_ID_RE.test(hostInstanceId)) return null
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null
   if (typeof endpoint !== 'string' || !endpoint || endpoint.length > 1024 || endpoint.includes('\0')) return null
   if (typeof state !== 'string' || !HOST_STATES.includes(state as HostState)) return null
   if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return null
   if (start !== undefined && (typeof start !== 'string' || start.length > 200)) return null
-  if (hostKind !== undefined && (typeof hostKind !== 'string' || !HOST_KINDS.includes(hostKind as HostKind))) return null
+  // A record left by a crashed pre-upgrade `--headless-host` was the app itself: read it as 'desktop' so the single-instance lock can still reclaim it.
+  // A record of a removed Node background host ('node') is read as an in-process host: it is never reclaimable, so a live pid is "already running".
+  const kind = hostKind === 'headless-host' ? 'desktop' : hostKind === 'node' ? 'inproc' : hostKind
+  if (kind !== undefined && (typeof kind !== 'string' || !HOST_KINDS.includes(kind as HostKind))) return null
   if (appVersion !== undefined && (typeof appVersion !== 'string' || appVersion.length > 200)) return null
+  const cwd = typeof ownerCwd === 'string' && ownerCwd.length > 0 && ownerCwd.length <= 4096 && !ownerCwd.includes('\0') ? ownerCwd : undefined
   return {
     hostInstanceId,
     pid,
@@ -341,8 +350,10 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
     ...(listening === false ? { listening: false as const } : {}),
     state: state as HostState,
     startedAt,
-    ...(hostKind !== undefined ? { hostKind: hostKind as HostKind } : {}),
-    ...(appVersion !== undefined ? { appVersion } : {})
+    ...(kind !== undefined ? { hostKind: kind as HostKind } : {}),
+    ...(hostKind === 'node' ? { legacyKind: 'node' as const } : {}),
+    ...(appVersion !== undefined ? { appVersion } : {}),
+    ...(cwd !== undefined ? { ownerCwd: cwd } : {})
   }
 }
 
@@ -482,6 +493,29 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 
 /** Take ownership of `opts.dataDir` (cli-spec 3.2(2) Step 0). See the module comment. */
 export async function acquireHostOwnership(opts: OwnershipOptions): Promise<HostOwnership> {
+  return (await acquire(opts)) as HostOwnership
+}
+
+/** What {@link withStartupMutex} takes: the ownership options that matter without publishing a host. */
+export type StartupMutexOptions = Omit<OwnershipOptions, 'hostKind' | 'appVersion' | 'listen' | 'onConnection' | 'secretAcl' | 'restrictAcl'>
+
+/**
+ * Run `fn` while holding `<dataDir>/run/startup.mkdir` and while no live host owns the data folder (Wave 7,
+ * cli-standalone.md round 6 item 11). The same steps as
+ * {@link acquireHostOwnership} up to the incumbent check (the mutex, then daemon.json re-checked inside it; a live host
+ * throws HostAlreadyRunningError, a mutex held past liveWaitMs HostStartingOrBusyError), then `fn` instead of
+ * publishing: no daemon.json, no secret, no listener. A host starting meanwhile waits on the mutex and boots after `fn`
+ * is done. The mutex is released whether `fn` resolves or throws.
+ */
+export async function withStartupMutex<T>(opts: StartupMutexOptions, fn: () => T | Promise<T>): Promise<T> {
+  let result: { value: T } | undefined
+  await acquire({ ...opts, hostKind: 'inproc', appVersion: '', listen: false }, async () => {
+    result = { value: await fn() }
+  })
+  return (result as { value: T }).value
+}
+
+async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>): Promise<HostOwnership | undefined> {
   const platform = opts.platform ?? process.platform
   const id = opts.hostInstanceId ?? currentHostInstanceId()
   if (!HOST_INSTANCE_ID_RE.test(id)) throw new Error(`Invalid host instance id: ${id}`)
@@ -500,6 +534,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   const startupYoungMs = opts.startupYoungMs ?? 2000
   const retryMs = opts.retryMs ?? 100
   const liveWaitMs = opts.liveWaitMs ?? 30_000
+  const noWait = opts.wait === 'none'
   const probeTimeoutMs = opts.probeTimeoutMs ?? 1500
   const runtimeBase = opts.runtimeBase ?? defaultRuntimeBase()
   const fault = (b: OwnershipBoundary | ReleaseBoundary): void => {
@@ -542,11 +577,11 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       // A dead pid with a dead endpoint is reclaimed, and so is an unconfirmed pid (it may be a stranger that reused
       // the pid, review M9) with a dead endpoint that daemon.json says is bound. A confirmed live pid, or an endpoint
       // that answers, is a running host. So is an unconfirmed pid whose daemon.json says `listening: false` (review
-      // M11: an Electron host with Terminal access off has no listener at all, so a dead endpoint proves nothing; a
+      // M11: the Electron app has no listener at all, so a dead endpoint proves nothing; a
       // slow or unreadable start time must never let a second host write the same data folder).
       // Unless this launch holds Electron's single-instance lock and the incumbent is an Electron host: the lock
       // proves no Electron host runs on this data folder, so the record is stale (review M9 follow-up).
-      const lockProvesGone = opts.singleInstanceLockHeld === true && (incumbent.hostKind === 'desktop' || incumbent.hostKind === 'headless-host')
+      const lockProvesGone = opts.singleInstanceLockHeld === true && incumbent.hostKind === 'desktop'
       const unboundButMaybeLive = live === 'unconfirmed' && incumbent.listening === false && !lockProvesGone
       if (live === 'same' || reachable || unboundButMaybeLive) {
         removeStartupDir()
@@ -564,7 +599,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       const answer = dead && file.endpoint ? await probe(file.endpoint, probeTimeoutMs) : undefined
       if (!dead || answer === 'connected' || answer === 'eacces' || answer === 'timeout') {
         removeStartupDir()
-        throw new HostOwnershipError('daemon_json_unreadable', `${daemonPath} could not be used: ${file.reason}. ${runDirHint(runDir)}`)
+        throw new HostOwnershipError('daemon_json_unreadable', `${daemonPath} could not be used: ${file.reason}. ${runDirHint(runDir)}`, file.pid)
       }
       warn(`OrgAI host ownership: replacing an unusable daemon.json (${file.reason}) that names pid ${file.pid}, which is gone.`)
       if (file.endpoint) unlinkStaleEndpoint(file.endpoint)
@@ -572,6 +607,12 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
     // No live host owns the data dir from here on, and we hold the mutex.
     await sweepLeftovers()
     fault('after-probe')
+    if (underMutex) {
+      // withStartupMutex: the caller's work instead of publishing; nothing of ours to undo but the mutex.
+      await underMutex()
+      removeStartupDir()
+      return undefined
+    }
 
     if (listenNow) {
       // The handshake secret (win32: the run folder and the file restricted to the current user first, review H2 / M8).
@@ -585,7 +626,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       runtimeDir = bound.runtimeDir
       fault('after-listen')
     } else {
-      // Review M11: no secret and no listener until setListening(true); daemon.json names the endpoint it will use.
+      // Review M11: no secret and no listener; daemon.json names the endpoint a listener would use.
       const planned = plannedEndpoint()
       endpoint = planned.endpoint
       runtimeDir = planned.runtimeDir
@@ -600,7 +641,8 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       state: 'starting',
       startedAt: now(),
       hostKind: opts.hostKind,
-      appVersion: opts.appVersion
+      appVersion: opts.appVersion,
+      ...(opts.ownerCwd ? { ownerCwd: opts.ownerCwd } : {})
     }
     writeAtomic(daemonPath, JSON.stringify(info, null, 2), 0o600, id, () => fault('after-daemon-tmp'))
     published = true
@@ -652,7 +694,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
           if (state !== 'dead') {
             // Never steal from a live owner, however long it takes; give up after liveWaitMs.
             liveSince ??= now()
-            if (now() - liveSince >= liveWaitMs) throw new HostStartingOrBusyError(owner.pid, runDir)
+            if (noWait || now() - liveSince >= liveWaitMs) throw new HostStartingOrBusyError(owner.pid, runDir)
             await sleep(retryMs)
             continue
           }
@@ -668,6 +710,7 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
           throw err
         }
         if (now() - mtime < startupYoungMs) {
+          if (noWait) throw new HostStartingOrBusyError(undefined, runDir)
           await sleep(retryMs)
           continue
         }
@@ -901,10 +944,8 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
   function ownershipHandle(info: DaemonInfo, initialServer: Server | undefined, rtDir: string | undefined, aclWarning: string | undefined): HostOwnership {
     let current = info
     let released = false
-    /** The bound listener; undefined while Terminal access is off (review M11). */
+    /** The bound listener; undefined while the host does not listen (review M11). */
     let srv = initialServer
-    /** setListening calls, one at a time. */
-    let listenChain: Promise<void> = Promise.resolve()
     const write = (next: DaemonInfo): boolean => {
       if (released) return false
       if (readDaemonInfo(dataDir)?.hostInstanceId !== id) return false
@@ -913,10 +954,6 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       return true
     }
     const rewrite = (state: HostState): boolean => write({ ...current, state })
-    const withListening = (on: boolean): DaemonInfo => {
-      const { listening: _was, ...rest } = current
-      return on ? rest : { ...rest, listening: false }
-    }
     const removeSecretIfOurs = (): void => {
       try {
         if (readDaemonInfo(dataDir)?.hostInstanceId === id) rmSync(secretPath, { force: true })
@@ -932,36 +969,6 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
         /* best effort */
       }
     }
-    async function openListener(): Promise<void> {
-      if (released || srv) return
-      let bound: Awaited<ReturnType<typeof bindListener>>
-      try {
-        // Terminal access is being turned on: an ACL failure keeps the listener off (never a fatal launch, review M8).
-        await writeSecret('required')
-        bound = await bindListener()
-      } catch (e) {
-        removeSecretIfOurs()
-        throw e
-      }
-      if (released) {
-        // Released while binding: undo it.
-        await new Promise<void>((r) => bound.server.close(() => r()))
-        removeEndpointFiles()
-        return
-      }
-      srv = bound.server
-      write(withListening(true))
-    }
-    async function closeListener(): Promise<void> {
-      if (released || !srv) return
-      const closing = srv
-      srv = undefined
-      // daemon.json first, so a client from now on reads "Terminal access is off" instead of a dead socket.
-      write(withListening(false))
-      removeSecretIfOurs()
-      await new Promise<void>((r) => closing.close(() => r()))
-      removeEndpointFiles()
-    }
     return {
       get info() {
         return current
@@ -972,11 +979,6 @@ export async function acquireHostOwnership(opts: OwnershipOptions): Promise<Host
       ...(aclWarning ? { secretAclWarning: aclWarning } : {}),
       get listening() {
         return !!srv && !released
-      },
-      setListening(on: boolean) {
-        const step = listenChain.then(() => (on ? openListener() : closeListener()))
-        listenChain = step.catch(() => {})
-        return step
       },
       markReady() {
         const wrote = rewrite('ready')
@@ -1094,7 +1096,7 @@ export interface ProtectSecretOptions {
  * (the socket server runs none and refuses hellos while secretAclWarning is set). A failure (whoami or icacls missing or refusing: a junctioned profile, FAT / exFAT,
  * a network drive) throws HostOwnershipError('secret_acl_failed') in 'required' mode; in 'best-effort' mode it is
  * logged and returned as a warning sentence (review M8), and the secret is written regardless. Same-user programs are
- * not kept out by any ACL: the Terminal access level and the self-control gate are for those.
+ * not kept out by any ACL: the self-control gate is for those.
  * UNVERIFIED: never run on Windows from this code.
  */
 export async function protectSecretOnWindows(runDir: string, write: () => void, opts: ProtectSecretOptions): Promise<string | undefined> {
@@ -1113,7 +1115,7 @@ export async function protectSecretOnWindows(runDir: string, write: () => void, 
   if (!problem) return undefined
   const sentence = `Could not restrict daemon.secret to the current Windows user: ${problem}`
   if (opts.mode === 'required') throw new HostOwnershipError('secret_acl_failed', sentence)
-  const warning = `${sentence} Terminal access should stay off for this data folder (${dirname(runDir)}) until it is on a disk that keeps file permissions.`
+  const warning = `${sentence} The host should not listen on this data folder (${dirname(runDir)}) until it is on a disk that keeps file permissions.`
   ;(opts.warn ?? ((m: string) => console.warn(m)))(`OrgAI host ownership: ${warning}`)
   return warning
 }

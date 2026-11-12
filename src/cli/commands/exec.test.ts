@@ -2,8 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { EXEC_OUTCOMES, EXEC_OUTCOME_EXIT_CODE, type ExecOutcome, type Project, type RunEvent, type RunRecord, type RunsSubscribeResult, type RunSummary, type TranscriptEntry } from '../../shared/types'
-import { resetSkewWarning } from '../runRef'
+import { EXEC_OUTCOMES, EXEC_OUTCOME_EXIT_CODE, type ExecOutcome, type StaffingAssignment, type StaffingSource, type Project, type RunEvent, type RunRecord, type RunsSubscribeResult, type RunSummary, type TranscriptEntry } from '../../shared/types'
 import { FakeHostClient, fakeContext, fakeInproc, flush, project, record, summary, type FakeContextOptions } from '../testing/fakeContext'
 import { EXIT } from '../types'
 const resumeTui = vi.hoisted(() => ({ calls: [] as string[][] }))
@@ -14,7 +13,7 @@ vi.mock('./tui', () => ({
   }
 }))
 
-import { execIo, lastRootText, overridesFromFlags, runExec, runResume, UNREGISTERED_MESSAGE } from './exec'
+import { execIo, execLogLine, lastRootText, overridesFromFlags, runExec, runResume, UNREGISTERED_MESSAGE } from './exec'
 
 const p1 = project('p1', '/work/app', { name: 'App', permissionMode: 'default' } as Partial<Project>)
 const RUN = 'run_exec01'
@@ -72,7 +71,6 @@ const subscribed = (h: FakeHostClient) => until(() => h.callsOf('runs:subscribe'
 const realIo = { ...execIo }
 let stdin = ''
 beforeEach(() => {
-  resetSkewWarning()
   stdin = ''
   execIo.readStdin = async () => stdin
   execIo.timers = { sleep: () => Promise.resolve(), now: () => Date.now() }
@@ -80,6 +78,12 @@ beforeEach(() => {
 afterEach(() => Object.assign(execIo, realIo))
 
 describe('exec flags', () => {
+  it('--goal sets overrides.goal for each value; a bad value names the three; absent leaves it out', () => {
+    for (const goal of ['balanced', 'speed', 'cost']) expect(overridesFromFlags({ goal })).toEqual({ execMode: true, goal })
+    expect(overridesFromFlags({})).not.toHaveProperty('goal')
+    expect(() => overridesFromFlags({ goal: 'fast' })).toThrow(expect.objectContaining({ exitCode: EXIT.usage, message: '--goal must be one of balanced, speed, cost.' }))
+  })
+
   it('maps every flag to RunOverrides, always execMode', () => {
     expect(overridesFromFlags({})).toEqual({ execMode: true })
     expect(
@@ -93,15 +97,13 @@ describe('exec flags', () => {
         'allow-peer-messages': true,
         'wait-for-reset': true,
         'stall-timeout': '90',
-        'on-permission': 'wait',
+        'on-permission': 'deny',
         'on-rules': 'fail',
         'on-mcp-install': 'deny',
         'on-question': 'conservative',
         'on-proposal': 'decline',
         'on-merge': 'hold',
-        'max-auto-denials': '3',
-        'wait-timeout': '60',
-        'human-grace': '0'
+        'max-auto-denials': '3'
       })
     ).toEqual({
       execMode: true,
@@ -114,11 +116,15 @@ describe('exec flags', () => {
       allowPeerMessages: true,
       waitForReset: true,
       execStallTimeoutMs: 90_000,
-      decisionPolicy: { permission: 'wait', rules: 'fail', mcpInstall: 'deny', question: 'conservative', proposal: 'decline', merge: 'hold', maxAutoDenials: 3, waitTimeoutMs: 60_000, humanGraceMs: 0 }
+      decisionPolicy: { permission: 'deny', rules: 'fail', mcpInstall: 'deny', question: 'conservative', proposal: 'decline', merge: 'hold', maxAutoDenials: 3 }
     })
     expect(overridesFromFlags({ 'max-budget': '0' })).toEqual({ execMode: true, maxBudgetUsd: 0 })
     // The longest timer the host can arm, in whole seconds.
     expect(overridesFromFlags({ 'stall-timeout': '2147483' })).toEqual({ execMode: true, execStallTimeoutMs: 2_147_483_000 })
+    // A policy that waits is refused: nothing else can answer an orgai run's cards (cli-standalone-default.md 4.3).
+    for (const flag of ['on-permission', 'on-rules', 'on-mcp-install', 'on-question', 'on-proposal', 'on-merge']) {
+      expect(() => overridesFromFlags({ [flag]: 'wait' }), flag).toThrow(expect.objectContaining({ exitCode: EXIT.usage, message: expect.stringContaining('wait is not available') }))
+    }
     expect(overridesFromFlags({ 'on-question': 'fail' })).toEqual({ execMode: true, decisionPolicy: { question: 'fail' } })
   })
 
@@ -137,6 +143,7 @@ describe('exec flags', () => {
     [['--wait-timeout', 'soon', 'x']],
     [['--on-question', 'maybe', 'x']],
     [['--permission-mode', 'yolo', 'x']],
+    [['--goal', 'fastest', 'x']],
     [['--team', 'big', 'x']],
     [['--quick', '--create-project', 'x']],
     [['--allow-edits', 'x']],
@@ -146,6 +153,47 @@ describe('exec flags', () => {
     const f = live()
     await expect(runExec(f.ctx, argv)).rejects.toMatchObject({ exitCode: EXIT.usage })
     expect(f.connectCalls).toHaveLength(0)
+  })
+})
+
+describe('orgai exec / resume: --image', () => {
+  const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
+  it('reads each --image and passes it as images; a bad file is a usage error naming it before any host call', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-exec-img-'))
+    try {
+      writeFileSync(join(dir, 'a.png'), PNG)
+      writeFileSync(join(dir, 'b.png'), PNG)
+      writeFileSync(join(dir, 'bad.png'), 'nope')
+      const h = execHost({ answers: { 'runs:subscribe': () => snapshotOf(record(finalSummary('completed'))) } })
+      const f = live({ connect: [h] })
+      expect(await runExec(f.ctx, ['--image', join(dir, 'a.png'), '--image', join(dir, 'b.png'), 'look'])).toBe(EXIT.ok)
+      const sent = (h.callsOf('runs:start')[0] as [{ images: { mediaType: string; name: string }[] }])[0].images
+      expect(sent.map((i) => [i.mediaType, i.name])).toEqual([['image/png', 'a.png'], ['image/png', 'b.png']])
+      const g = live({ connect: [] })
+      await expect(runExec(g.ctx, ['--image', join(dir, 'bad.png'), 'look'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--image ' + join(dir, 'bad.png')) })
+      expect(g.connectCalls).toEqual([])
+      // resume: --image is an exec-side flag, like --max-budget.
+      await expect(runResume(g.ctx, ['R1', '--image', join(dir, 'a.png')])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--image needs --exec') })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('resume --exec passes images to runs:continue', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-resume-img-'))
+    try {
+      writeFileSync(join(dir, 'a.png'), PNG)
+      const old = summary('run_old001', { startedAt: 50, status: 'finished', execOutcome: 'completed' })
+      const h = execHost({ answers: { 'runs:list': () => [old], 'runs:continue': () => started({ resumedFrom: 'run_old001' }) } })
+      const f = live({ connect: [h] })
+      const done = runResume(f.ctx, ['R1', '--exec', '--prompt', 'more', '--image', join(dir, 'a.png')])
+      await subscribed(h)
+      expect((h.callsOf('runs:continue')[0] as [{ images: unknown[] }])[0].images).toHaveLength(1)
+      h.push('runs:event', finalized(11, 'completed'))
+      expect(await done).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
@@ -322,6 +370,91 @@ describe('orgai exec: following and outcomes', () => {
     expect(out.trimEnd().split('\n').at(-1)).toBe('Completed · Finished · $0.25')
   })
 
+  it('text: one line per staffed report (every source), once, sanitized; json keeps the raw event only', async () => {
+    const asg = (agentId: string, source: StaffingSource, over: Partial<StaffingAssignment> = {}): StaffingAssignment => ({ agentId, roleId: 'engineer', tier: 'everyday', model: 'claude-sonnet-5-5', effort: 'medium', source, at: 1, ...over })
+    const sources: StaffingSource[] = ['orchestrator', 'role', 'profile', 'clamped', 'plan-guard', 'escalated']
+    const assignments = sources.map((src, i) => asg(`w${i}`, src, { note: src === 'clamped' ? 'only fast\u001b[31m allowed' : undefined }))
+    const h = execHost()
+    const f = live({ connect: [h] })
+    const done = runExec(f.ctx, ['do it'])
+    await subscribed(h)
+    h.push('runs:event', ev(11, { type: 'agent.upsert', runId: RUN, agent: { ...record(started()).agents[0]!, id: 'w0', parentId: 'root', name: 'Engineer', handle: 'engineer-1' } }))
+    h.push('runs:event', ev(12, { type: 'staffing.updated', runId: RUN, staffing: { goal: 'balanced', assignments } }))
+    h.push('runs:event', ev(13, { type: 'staffing.updated', runId: RUN, staffing: { goal: 'balanced', assignments: [...assignments, asg('', 'role')] } }))
+    h.push('runs:event', finalized(14, 'completed'))
+    expect(await done).toBe(0)
+    const out = f.out()
+    expect(out).not.toContain('\u001b')
+    expect(out).toContain('R1 engineer-1 on everyday (claude-sonnet-5-5) / medium (chosen by the orchestrator)')
+    expect(out).toContain('engineer on everyday (claude-sonnet-5-5) / medium (the role\'s setting)')
+    expect(out).toContain("(from this project's history)")
+    expect(out).toContain('(capped by the role: only fast allowed)')
+    expect(out).toContain('(moved down by the plan guard)')
+    expect(out).toContain('(raised after a failed attempt)')
+    expect(out.match(/on everyday/g)).toHaveLength(6)
+
+    const h2 = execHost()
+    const g = live({ connect: [h2], globals: { outputFormat: 'json' } })
+    const done2 = runExec(g.ctx, ['do it'])
+    await subscribed(h2)
+    h2.push('runs:event', ev(11, { type: 'staffing.updated', runId: RUN, staffing: { goal: 'balanced', assignments } }))
+    h2.push('runs:event', finalized(12, 'completed'))
+    await done2
+    expect(g.out()).not.toContain(' on everyday')
+  })
+
+  it('text: prints warn and error logs and the Models line, once each; other info logs and json stay quiet', async () => {
+    const h = execHost()
+    const f = live({ connect: [h] })
+    const done = runExec(f.ctx, ['do it'])
+    await subscribed(h)
+    h.push('runs:event', ev(11, { type: 'log', runId: RUN, level: 'info', message: 'Models: deep = claude-opus-5-5, everyday = claude-sonnet-5-5 (Anthropic)' }))
+    h.push('runs:event', ev(12, { type: 'log', runId: RUN, level: 'warn', message: 'Model check: deep = claude-opus-4-1 is not the newest\u001b[31m of its family. Run orgai models refresh.' }))
+    h.push('runs:event', ev(13, { type: 'log', runId: RUN, level: 'warn', message: 'Model check: deep = claude-opus-4-1 is not the newest\u001b[31m of its family. Run orgai models refresh.' }))
+    h.push('runs:event', ev(14, { type: 'log', runId: RUN, level: 'error', message: 'Could not apply proposal: nope' }))
+    h.push('runs:event', ev(15, { type: 'log', runId: RUN, level: 'info', message: 'Messaged run x.' }))
+    h.push('runs:event', finalized(16, 'completed'))
+    expect(await done).toBe(0)
+    const out = f.out()
+    expect(out).not.toContain('\u001b')
+    expect(out).toContain('R1 Models: deep = claude-opus-5-5, everyday = claude-sonnet-5-5 (Anthropic)')
+    expect(out.match(/R1 Warning: Model check: deep = claude-opus-4-1 is not the newest of its family\. Run orgai models refresh\./g)).toHaveLength(1)
+    expect(out).toContain('R1 Error: Could not apply proposal: nope')
+    expect(out).not.toContain('Messaged run x.')
+
+    const h2 = execHost()
+    const g = live({ connect: [h2], globals: { outputFormat: 'json' } })
+    const done2 = runExec(g.ctx, ['do it'])
+    await subscribed(h2)
+    h2.push('runs:event', ev(11, { type: 'log', runId: RUN, level: 'warn', message: 'careful' }))
+    h2.push('runs:event', finalized(12, 'completed'))
+    await done2
+    expect(g.out()).not.toContain('Warning: careful')
+  })
+
+  it('execLogLine keeps warn, error and the Models line only', () => {
+    const st = { bold: (x: string) => x, dim: (x: string) => x, red: (x: string) => x, green: (x: string) => x, yellow: (x: string) => x, cyan: (x: string) => x }
+    expect(execLogLine('warn', 'a\nb', st)).toBe('Warning: a b')
+    expect(execLogLine('error', 'x', st)).toBe('Error: x')
+    expect(execLogLine('info', 'Models: fast = gpt-6.1-sol (OpenAI)', st)).toBe('Models: fast = gpt-6.1-sol (OpenAI)')
+    expect(execLogLine('info', 'Plan updated', st)).toBeNull()
+    expect(execLogLine('warn', '', st)).toBeNull()
+  })
+
+  it('text: one line per compaction with the agent\'s name and the ordinal (compaction investigation 2026-11-10)', async () => {
+    const h = execHost()
+    const f = live({ connect: [h] })
+    const done = runExec(f.ctx, ['do it'])
+    await subscribed(h)
+    h.push('runs:event', ev(11, { type: 'agent.upsert', runId: RUN, agent: { ...record(started()).agents[0]!, id: 'root', name: 'Lead' } }))
+    for (let i = 0; i < 3; i++) h.push('runs:event', ev(12 + i, { type: 'agent.compacted', runId: RUN, agentId: 'root', at: i, trigger: 'auto' }))
+    h.push('runs:event', finalized(15, 'completed'))
+    expect(await done).toBe(0)
+    const out = f.out()
+    expect(out).toContain('R1 Lead compacted its context (1st time).')
+    expect(out).toContain('R1 Lead compacted its context (3rd time).')
+  })
+
   it('json: one document at the end with the root agent result', async () => {
     const h = execHost()
     const f = live({ connect: [h], globals: { outputFormat: 'json' } })
@@ -343,14 +476,17 @@ describe('orgai exec: following and outcomes', () => {
     h.push('runs:event', { atSeq: 10, event: { type: 'agent.partial', runId: RUN, agentId: 'root', text: 'typ' } })
     h.push('runs:event', ev(11, { type: 'transcript', runId: RUN, entry: text('e2', 'row') }))
     h.push('runs:event', ev(11, { type: 'transcript', runId: RUN, entry: text('e2', 'row') }))
-    h.push('runs:event', finalized(12, 'completed'))
+    h.push('runs:event', ev(12, { type: 'transcript', runId: RUN, entry: { ...text('media', ''), block: { kind: 'media', media: { kind: 'image', image: { mediaType: 'image/png', data: 'U0VDUkVU' } } } } }))
+    h.push('runs:event', finalized(13, 'completed'))
     expect(await done).toBe(0)
     const lines = f.out().trimEnd().split('\n').map((l) => JSON.parse(l))
-    expect(lines.map((l) => l.type)).toEqual(['snapshot', 'event', 'event', 'event', 'result'])
+    expect(lines.map((l) => l.type)).toEqual(['snapshot', 'event', 'event', 'event', 'event', 'result'])
     expect(lines[1]).toMatchObject({ schemaVersion: 1, atSeq: 10 })
     expect(lines[2]).toMatchObject({ seq: 11, event: { type: 'transcript' } })
-    expect(lines[3]).toMatchObject({ seq: 12, event: { type: 'run.finalized' } })
-    expect(lines[4]).toMatchObject({ schemaVersion: 1, type: 'result', outcome: 'completed', exitCode: 0, result: 'All done.' })
+    expect(lines[3].event.entry.block.media.image).toEqual({ mediaType: 'image/png', byteLength: 6, omittedBase64: true })
+    expect(f.out()).not.toContain('U0VDUkVU')
+    expect(lines[4]).toMatchObject({ seq: 13, event: { type: 'run.finalized' } })
+    expect(lines[5]).toMatchObject({ schemaVersion: 1, type: 'result', outcome: 'completed', exitCode: 0, result: 'All done.' })
   })
 
   it('SIGINT calls runs:stop on the newest run and exits 130 once it is finalized; SIGTERM 143', async () => {
@@ -400,10 +536,10 @@ describe('orgai exec: following and outcomes', () => {
     expect(f.err()).toContain("The OrgAI host went away; the run's outcome is unknown.")
   })
 
-  it('--host inproc starts the in-process host and stops it (force) after the run', async () => {
+  it('starts the in-process host and stops it (force) after the run', async () => {
     const inproc = fakeInproc()
     const h = execHost()
-    const f = live({ connect: [h], globals: { host: 'inproc' }, inproc: async () => inproc })
+    const f = live({ connect: [h], inproc: async () => inproc })
     const done = runExec(f.ctx, ['do it'])
     await subscribed(h)
     h.push('runs:event', finalized(11, 'completed'))
@@ -420,7 +556,7 @@ describe('orgai exec: following and outcomes', () => {
         }
       }
     })
-    const f = live({ connect: [h], globals: { host: 'inproc' }, inproc: async () => inproc })
+    const f = live({ connect: [h], inproc: async () => inproc })
     await expect(runExec(f.ctx, ['do it'])).rejects.toMatchObject({ exitCode: EXIT.usage })
     expect(inproc.stops).toEqual([true])
   })

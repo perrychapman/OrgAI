@@ -16,6 +16,12 @@ import { scanAgentSources } from './import/scan'
 import { AGENT_IMPORT_SOURCE_LABELS } from '@shared/types'
 import type { LibraryProposalOptions } from '../mcp/service'
 
+/** A role's model for the Architect: `tier <t>: <id>`, `model <id>` without a tier, or `inherit`. Quoted as data. */
+export function roleModelLabel(r: Pick<Project['roles'][number], 'model' | 'tier'>): string {
+  if (r.model === 'inherit' && !r.tier) return 'inherit'
+  return r.tier ? `tier ${promptDatum(r.tier, 20)}: ${promptDatum(r.model, 80)}` : `model ${promptDatum(r.model, 80)}`
+}
+
 /** Caps of the Architect's "Detected agent definitions" block. */
 const DETECTED_PROMPT_EXCERPT = 600
 const DETECTED_BLOCK_MAX = 16_000
@@ -103,7 +109,7 @@ export class SetupService {
        */
       mcp?: {
         libraryEntries(): McpLibraryEntry[]
-        applyProposal(projectId: string, payload: McpServersProposalPayload, opts?: { projectOnly?: boolean }): Project
+        applyProposal(projectId: string, payload: McpServersProposalPayload, opts?: { projectOnly?: boolean; secrets?: Record<string, string> }): Project
         applyLibraryProposal(payload: McpServersProposalPayload, opts?: LibraryProposalOptions): void
       }
       /**
@@ -168,7 +174,7 @@ export class SetupService {
   }
 
   /** What happened in a run, condensed for the Architect: outcomes per role, warnings, and the final report. */
-  retroContext(record: RunRecord): string {
+  retroContext(record: RunRecord, project?: Pick<Project, 'roles'>): string {
     const s = record.summary
     const agents = Object.values(record.agents)
     const byId = new Map(agents.map((a) => [a.id, a]))
@@ -186,6 +192,16 @@ export class SetupService {
       lines.push(
         `- ${a.name} [${a.roleSlug}, ${a.model ?? 'model unknown'}]${parent ? ` under ${parent}` : ''}: ${a.state}, ${a.inputTokens + a.outputTokens} tokens, $${a.costUsd.toFixed(2)}${wt}${result ? `. Report: ${result}` : ''}`
       )
+    }
+    if (project?.roles.length) {
+      const took = new Set(agents.map((a) => a.roleSlug))
+      const idle = project.roles.filter((r) => !took.has(r.slug))
+      if (idle.length) {
+        lines.push(
+          '',
+          `Roles in the chart that did not take part in this run (not needed for this task; keep them unless there is other evidence): ${idle.map((r) => `${promptDatum(r.name, 80)} (${promptDatum(r.slug, 80)})`).join(', ')}`
+        )
+      }
     }
     const noteworthy = record.logs.filter((l) => l.level !== 'info').map((l) => `- [${l.level}] ${l.message.slice(0, 200)}`)
     if (noteworthy.length) lines.push('', 'Warnings and errors from the harness:', ...noteworthy.slice(0, 40))
@@ -216,8 +232,8 @@ export class SetupService {
     if (setup?.architecture) parts.push(`Previously approved architecture summary: ${promptDatum(setup.architecture.summary, 4000, true)}`)
     if (project.roles.length) {
       parts.push(
-        `Current org chart roles (revise rather than replace when they still fit): ${project.roles
-          .map((r) => `${promptDatum(r.name, 80)} [${promptDatum(r.model, 40)}] -> ${promptDatum(project.roles.find((x) => x.id === r.reportsTo)?.name ?? 'root', 80)}`)
+        `Current org chart roles (revise rather than replace when they still fit${setup?.state === 'complete' ? '; this is a revision: roles you do not mention in propose_org_chart are kept unchanged' : '; in this first setup the roles you propose are the whole chart'}): ${project.roles
+          .map((r) => `${promptDatum(r.name, 80)} (${promptDatum(r.slug, 80)}) [${roleModelLabel(r)}] -> ${promptDatum(project.roles.find((x) => x.id === r.reportsTo)?.name ?? 'root', 80)}`)
           .join('; ')}`
       )
     }
@@ -241,9 +257,20 @@ export class SetupService {
 
   /** Apply an approved proposal. Returns the saved project. */
   /** opts.projectOnly (work runs): an MCP proposal never writes the MCP library (review M3) and a skills proposal never changes the skill library (review L3). */
-  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean } = {}): Project {
+  /**
+   * opts.secrets (Wave 7, round 6 item 10): an MCP proposal's typed values, handed to the MCP hook, which stores them
+   * before it changes any record. Other kinds ignore it.
+   */
+  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean; secrets?: Record<string, string>; targeted?: true } = {}): Project {
     const project = this.projects.get(projectId)
     if (!project) throw new Error('Project not found')
+    // A targeted proposal (Chat's propose_project_settings) changes a stored project from outside any setup session:
+    // settings only, and it never creates or changes project.setup.
+    if (opts.targeted && proposal.kind !== 'settings') throw new Error('Only settings proposals can target a project from Chat.')
+    if (opts.targeted && proposal.kind === 'settings') {
+      if (proposal.payload.permissionMode === 'bypassPermissions') throw new Error('Bypass permissions can only be turned on in the project settings.')
+      if (Array.isArray(proposal.payload.allowRules) && proposal.payload.allowRules.length) throw new Error('Saved permission rules are not changed from Chat.')
+    }
     const setup: ProjectSetup = project.setup ?? { kind: 'existing', state: 'in_progress' }
     switch (proposal.kind) {
       case 'architecture': {
@@ -258,12 +285,20 @@ export class SetupService {
         return this.projects.save({ ...project, setup: { ...setup, architecture: proposal.payload, architecturePath: written } })
       }
       case 'orgChart': {
-        const m = mergeOrgChart(project, proposal.payload.roles)
+        // Grants are never part of an org chart approval (the card does not show them): strip them so the merge keeps
+        // the grants as they are now, not as they were when the card was raised (review M3), and new roles get none.
+        const proposed = proposal.payload.roles.map((r) => {
+          const { mcpServers: _m, skills: _s, ...rest } = r
+          void _m
+          void _s
+          return rest
+        })
+        const m = mergeOrgChart(project, proposed)
         return this.projects.save({ ...project, roles: m.roles, ...(m.mcpServers ? { mcpServers: m.mcpServers } : {}), setup })
       }
       case 'settings': {
         const p = proposal.payload
-        const next: Project = { ...project, setup }
+        const next: Project = opts.targeted ? { ...project } : { ...project, setup }
         if (typeof p.brief === 'string' && p.brief.trim()) next.brief = p.brief.trim()
         if (isPermissionMode(p.permissionMode)) next.permissionMode = p.permissionMode
         if (p.maxBudgetUsd === null) delete next.maxBudgetUsd
@@ -307,6 +342,9 @@ export class SetupService {
       case 'skills':
         if (!this.hooks.skills) throw new Error('The skill library is not available.')
         return this.hooks.skills.applyProposal(project.id, proposal.payload, opts.projectOnly ? { projectOnly: true } : {}) ?? project
+      case 'appSettings':
+        // App-wide settings are not a project's: RunManager applies them through RunManagerOptions.selfKnowledge.
+        throw new Error('App settings proposals do not change a project.')
     }
   }
 

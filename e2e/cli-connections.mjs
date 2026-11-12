@@ -1,35 +1,37 @@
 // `orgai connections | models | usage | notes` end to end (cli-spec 6.3, Wave 5, W5-T3). Run `npm run build` first.
-// Mock adapter only (ORGAI_MOCK=1): no tokens, no network, no provider CLI spawned. One long-lived host
-// (`daemon start --host inproc --foreground`), an engagement seeded through cliLib's raw hostRpc.
+// Mock adapter only (ORGAI_MOCK=1): no tokens, no network, no provider CLI spawned. Every command hosts itself, one
+// at a time; the engagement is seeded with `projects create`.
 //
 // 1. connections list --output-format json: three connections, exactly one default, no key material.
 // 2. connections set-default openai (not connected) exits 1 with the host's sentence.
 // 3. models list (json) and models prices (text, per MTok).
-// 4. One mock exec run ([mock:exec-plan] through --host daemon exec), then usage show (json, one run) and
+// 4. One mock exec run ([mock:exec-plan] through exec), then usage show (json, one run) and
 //    usage csv --out (a header plus one row; a second --out without --force exits 1).
-// 5. notes add / list / show / edit, a stale edit (a hostRpc save in between, the CLI edit with the old revision exits
+// 5. notes add / list / show / edit, a stale edit (another save in between, the CLI edit with the old revision exits
 //    1), remove; notes plan set / show and a stale plan set.
+// 6. connections tier anthropic: four rows (unmapped shown), an id outside the catalog exits 2, --dry-run saves
+//    nothing, a catalog id saves and --reset returns the tier to discovery's choice.
+// 7. settings list / get / set: one key at a time, none clears the budget, unknown keys and bad values exit 2.
 // Not driven: connections test / connect / login and usage refresh (they spawn `claude` or the Codex app-server).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { check, finish, log, makeFixtureRepo, removeFixture } from './lib.mjs'
-import { cli, hostRpc, json, requireBuild, seedProject, show, startDaemon, stopDaemon } from './cliLib.mjs'
+import { cli, json, requireBuild, seedProject, show } from './cliLib.mjs'
 
 requireBuild()
 const NAME = 'cli-connections'
 const repo = makeFixtureRepo('cli-connections')
 
 try {
-  await startDaemon({ cwd: repo })
   const eng = await seedProject(repo, { name: 'Acme review', kind: 'engagement' })
   check(eng?.kind === 'engagement', 'seeded an engagement project', JSON.stringify(eng).slice(0, 200))
-  const d = ['--host', 'daemon']
+  const d = []
 
   // 1. connections list
   const list = await cli([...d, 'connections', 'list', '--output-format', 'json'], { cwd: repo })
   const lj = json(list.out)
   check(list.code === 0 && lj?.schemaVersion === 1, 'connections list json exits 0', show(list))
-  check(JSON.stringify(lj?.connections?.map((c) => c.id)) === '["anthropic","openai","litellm"]', 'three connections in order', list.out.slice(0, 300))
+  check(JSON.stringify(lj?.connections?.map((c) => c.id)) === '["anthropic","openai"]', 'built-in connections in order (no proxy on a fresh profile)', JSON.stringify(lj?.connections?.map((c) => c.id)))
   check(lj?.connections?.filter((c) => c.isDefault).length === 1, 'exactly one default connection')
   check(!/"(apiKey|key|keyHash|secret)"\s*:|sk-/i.test(list.out), 'no key material in the JSON')
   const text = await cli([...d, 'connections', 'list'], { cwd: repo })
@@ -46,6 +48,11 @@ try {
   check(mj?.models?.every((m) => m.price === null || typeof m.price.inputPerToken === 'number'), 'every model price is a price or null (unknown)')
   const prices = await cli([...d, 'models', 'prices'], { cwd: repo })
   check(prices.code === 0 && prices.out.includes('USD per million tokens.'), 'models prices prints per-MTok rows', show(prices))
+  const mlist = await cli([...d, 'models', 'list'], { cwd: repo })
+  check(mlist.code === 0 && /SOURCE\s+CONTEXT/.test(mlist.out), 'models list text has SOURCE and CONTEXT columns', show(mlist))
+  const resolve = await cli([...d, 'models', 'resolve', '--output-format', 'json'], { cwd: repo })
+  const rj = json(resolve.out)
+  check(resolve.code === 0 && rj?.tiers?.length === 4 && Array.isArray(rj?.roles), 'models resolve json: four tiers and the roles', show(resolve))
 
   // 4. usage after one mock exec run
   const exec = await cli([...d, 'exec', '--output-format', 'json', '[mock:exec-plan] write the summary'], { cwd: repo, timeoutMs: 120_000 })
@@ -80,11 +87,12 @@ try {
   const edited = json(edit.out)?.note
   check(edit.code === 0 && edited?.updatedAt >= note.updatedAt, 'notes edit with the current revision', show(edit))
   await new Promise((r) => setTimeout(r, 10))
-  await hostRpc('projects:saveNote', [{ projectId: eng.id, noteId: note.id, title: 'Kickoff call', text: 'Changed in the app.' }])
+  const other = await cli([...d, 'notes', 'edit', note.id, '--text', 'Changed in between.'], { cwd: repo })
+  check(other.code === 0, 'another notes edit lands in between', show(other))
   const stale = await cli([...d, 'notes', 'edit', note.id, '--text', 'Mine', '--expected-updated-at', String(edited.updatedAt)], { cwd: repo })
   check(stale.code === 1 && stale.err.includes('The note changed since you read it'), 'a stale notes edit exits 1', show(stale))
   const kept = await cli([...d, 'notes', 'show', note.id], { cwd: repo })
-  check(kept.out.includes('Changed in the app.'), 'the stale edit saved nothing', show(kept))
+  check(kept.out.includes('Changed in between.'), 'the stale edit saved nothing', show(kept))
   const rm = await cli([...d, 'notes', 'remove', note.id, '--yes'], { cwd: repo })
   check(rm.code === 0, 'notes remove --yes', show(rm))
 
@@ -94,9 +102,38 @@ try {
   const planShow = await cli([...d, 'notes', 'plan', 'show'], { cwd: repo })
   check(planShow.code === 0 && planShow.out.includes('Scope: billing.'), 'notes plan show', show(planShow))
   await new Promise((r) => setTimeout(r, 10))
-  await hostRpc('projects:updateEngagementDocument', [{ projectId: eng.id, text: 'Their plan', expectedUpdatedAt: plan.updatedAt }])
+  const otherPlan = await cli([...d, 'notes', 'plan', 'set', '--text', 'Their plan', '--expected-updated-at', String(plan.updatedAt)], { cwd: repo })
+  check(otherPlan.code === 0, 'another plan save lands in between', show(otherPlan))
   const planStale = await cli([...d, 'notes', 'plan', 'set', '--text', 'Mine', '--expected-updated-at', String(plan.updatedAt)], { cwd: repo })
   check(planStale.code === 1 && /changed since/.test(planStale.err), 'a stale notes plan set exits 1', show(planStale))
+
+  // 6. connections tier
+  const tiers = await cli([...d, 'connections', 'tier', 'anthropic', '--output-format', 'json'], { cwd: repo })
+  const tj = json(tiers.out)
+  check(tiers.code === 0 && JSON.stringify(tj?.tiers?.map((t) => t.tier)) === '["top","deep","everyday","fast"]', 'connections tier lists the four tiers', show(tiers))
+  const fastWas = tj?.tiers?.[3]?.model ?? null
+  const pick = mj?.models?.filter((m) => m.connection === 'anthropic').map((m) => m.id).find((id) => id !== fastWas)
+  const tierBad = await cli([...d, 'connections', 'tier', 'anthropic', 'fast=not-a-model-xyz'], { cwd: repo })
+  check(tierBad.code === 2 && tierBad.err.includes("not in Anthropic's catalog"), 'connections tier refuses an id outside the catalog', show(tierBad))
+  const tierDry = await cli([...d, 'connections', 'tier', 'anthropic', `fast=${pick}`, '--dry-run', '--output-format', 'json'], { cwd: repo })
+  check(tierDry.code === 0 && json(tierDry.out)?.applied === false, 'connections tier --dry-run saves nothing', show(tierDry))
+  const tierSet = await cli([...d, 'connections', 'tier', 'anthropic', `fast=${pick}`, '--output-format', 'json'], { cwd: repo })
+  check(tierSet.code === 0 && json(tierSet.out)?.applied === true && json(tierSet.out)?.tiers?.[3]?.model === pick, 'connections tier saves a catalog id', show(tierSet))
+  const tierReset = await cli([...d, 'connections', 'tier', 'anthropic', '--reset', 'fast', '--output-format', 'json'], { cwd: repo })
+  check(tierReset.code === 0 && json(tierReset.out)?.tiers?.[3]?.model === fastWas, "connections tier --reset returns to discovery's choice", show(tierReset))
+
+  // 7. settings
+  const sl = await cli([...d, 'settings', 'list', '--output-format', 'json'], { cwd: repo })
+  check(sl.code === 0 && json(sl.out)?.settings?.some((s) => s.key === 'defaultKeepRuns'), 'settings list json', show(sl))
+  const sset = await cli([...d, 'settings', 'set', 'defaultKeepRuns', '33'], { cwd: repo })
+  const sget = await cli([...d, 'settings', 'get', 'defaultKeepRuns'], { cwd: repo })
+  check(sset.code === 0 && sget.out.trim() === '33', 'settings set / get round-trip', `${show(sset)} ${show(sget)}`)
+  const sbudget = await cli([...d, 'settings', 'set', 'defaultMaxBudgetUsd', 'none', '--output-format', 'json'], { cwd: repo })
+  check(sbudget.code === 0 && json(sbudget.out)?.value === null, 'settings set defaultMaxBudgetUsd none clears the cap', show(sbudget))
+  const sunknown = await cli([...d, 'settings', 'set', 'appearance', 'dark'], { cwd: repo })
+  check(sunknown.code === 2 && sunknown.err.includes('Unknown setting'), 'settings set refuses a key outside the list', show(sunknown))
+  const sbad = await cli([...d, 'settings', 'set', 'defaultKeepRuns', '0'], { cwd: repo })
+  check(sbad.code === 2, 'settings set refuses an out-of-range value', show(sbad))
 
   // A code project has no notes.
   const codeDir = makeFixtureRepo('cli-connections-code')
@@ -110,8 +147,6 @@ try {
 } catch (e) {
   check(false, 'no unexpected error', e?.stack ?? JSON.stringify(e))
 } finally {
-  log('stopping the daemon')
-  await stopDaemon().catch(() => undefined)
   removeFixture(repo)
   finish(NAME)
 }

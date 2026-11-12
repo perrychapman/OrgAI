@@ -1,18 +1,16 @@
 /**
- * `orgai` CLI entry (bundled to out/cli/orgai.mjs; the build adds the `#!/usr/bin/env node` banner). Plain Node only:
+ * `orgai` CLI (bin.ts is the bundle's entry, out/cli/orgai.mjs, and loads this module as its own chunk). Plain Node only:
  * no desktop-shell import, ever. Routes over commandTable.ts (cli-spec 6.1): global flags first (flags.ts), then the
  * command. Exit codes are EXIT in types.ts; a CliError carries its own, anything else is 1.
  */
+// First (bin.ts loads it before this module too): inspectorSignal.ts.
+import './inspectorSignal'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { runApp } from './commands/app'
 import { runCompletions } from './commands/completions'
 import { runConnections } from './commands/connections'
-import { runDaemon } from './commands/daemon'
-import { runDecide } from './commands/decide'
 import { runDoctor } from './commands/doctor'
 import { runExec, runResume } from './commands/exec'
-import { runInbox } from './commands/inbox'
 import { runInit } from './commands/init'
 import { runKit } from './commands/kit'
 import { runKnowledge } from './commands/knowledge'
@@ -23,36 +21,34 @@ import { runOrg } from './commands/org'
 import { runPermissions } from './commands/permissions'
 import { runProjects } from './commands/projects'
 import { runRuns } from './commands/runs'
+import { runSecrets } from './commands/secrets'
+import { runSettings } from './commands/settings'
+import { runOutputs } from './commands/outputs'
 import { runSkills } from './commands/skills'
 import { runStatus } from './commands/status'
 import { runTeam } from './commands/team'
-import { defaultTuiPrintsHelp, PROMPT_HINT, runAttach, runDefaultTui, runTuiCommand } from './commands/tui'
+import { defaultTuiPrintsHelp, PROMPT_HINT, runDefaultTui, runTuiCommand } from './commands/tui'
 import { runUsage } from './commands/usage'
-import { runWatch } from './commands/watch'
 import { runWorktrees } from './commands/worktrees'
 import { COMMANDS, DEFAULT_TUI_FLAGS, GLOBAL_FLAGS, findCommand, type CommandEntry, type CommandFlag } from './commandTable'
 import { buildContext } from './context'
 import { splitGlobalFlags } from './flags'
 import { safe } from './output'
-import { collectSecretOverlay, scrubSecretEnv, secretEnvRefusal } from './secretOverlay'
+import { SECRET_ENV_REFUSAL, collectSecretOverlay, isHostlessCommand, planSecretEnv, scrubSecretEnv } from './secretOverlay'
 import { CliError, EXIT, type CliIo, type CommandFn } from './types'
 import { CLI_VERSION } from './version'
+import { readInstallInfo } from './installInfo'
+import { versionLine } from './versionLine'
 
 /** Command name -> its CommandFn; every COMMANDS entry has one (index.test.ts). */
 export const ROUTES: Record<string, CommandFn> = {
   status: runStatus,
   runs: runRuns,
-  watch: runWatch,
-  inbox: runInbox,
-  daemon: runDaemon,
-  app: runApp,
   doctor: runDoctor,
   completions: runCompletions,
   exec: runExec,
   resume: runResume,
-  decide: runDecide,
   tui: runTuiCommand,
-  attach: runAttach,
   init: runInit,
   org: runOrg,
   team: runTeam,
@@ -66,7 +62,10 @@ export const ROUTES: Record<string, CommandFn> = {
   notes: runNotes,
   usage: runUsage,
   kit: runKit,
-  projects: runProjects
+  projects: runProjects,
+  secrets: runSecrets,
+  settings: runSettings,
+  outputs: runOutputs
 }
 
 export interface MainOverrides {
@@ -178,18 +177,21 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     const { globals, rest } = splitGlobalFlags(argv)
     const [name, ...args] = rest
 
-    /** The secret refusal and the --host inproc overlay (taken out of the environment before anything can spawn). */
-    const prepareContext = (checkSecrets: boolean): ReturnType<typeof buildContext> => {
-      if (checkSecrets) {
-        const refusal = secretEnvRefusal(globals.host, env, globals.secretEnv)
-        if (refusal) throw new CliError(refusal, EXIT.usage)
-      }
+    /**
+     * Environment secrets (secretOverlay.ts planSecretEnv): the refusal, the one warning, and the overlay taken out of
+     * the environment before anything can spawn. `command` undefined is bare `orgai`.
+     */
+    const prepareContext = (command: string | undefined, commandArgs: readonly string[]): ReturnType<typeof buildContext> => {
+      const plan = planSecretEnv(isHostlessCommand(command, commandArgs), env, globals.secretEnv)
+      if (plan.refusal) throw new CliError(plan.refusal, EXIT.usage)
       let overlay: Map<string, string> | undefined
-      if (globals.host === 'inproc') {
+      if (plan.collect) {
         const collected = collectSecretOverlay(env, globals.secretEnv)
         scrubSecretEnv(env, collected.consumedVars)
-        overlay = collected.overlay
+        // An ignored ambient secret is scrubbed, never handed to a host (there is none for such a command).
+        if (!plan.dropOverlay) overlay = collected.overlay
       }
+      if (plan.warning) io.stderr.write(`${plan.warning}\n`)
       return contextFor(globals, env, io, overrides, overlay)
     }
 
@@ -204,10 +206,10 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
         out(generalHelp())
         return EXIT.ok
       }
-      return await runDefaultTui(prepareContext(true), rest, { help: generalHelp })
+      return await runDefaultTui(prepareContext(undefined, rest), rest, { help: generalHelp })
     }
     if (VERSION_WORDS.has(name)) {
-      out(CLI_VERSION)
+      out(versionLine(CLI_VERSION, readInstallInfo()))
       return EXIT.ok
     }
     if (HELP_WORDS.has(name)) {
@@ -234,7 +236,13 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     }
     if (!command.available || !ROUTES[command.name]) throw new CliError(`\`orgai ${command.name}\` is not available in this build yet.`, EXIT.usage)
 
-    return await ROUTES[command.name](prepareContext(command.name !== 'completions'), args)
+    // Completions needs no data folder and no host: no context (no marker write, no folder refusal, no ambient-secret
+    // warning). Only an explicit --secret-env is still refused, as for every read-only command.
+    if (command.name === 'completions') {
+      if (globals.secretEnv.length > 0) throw new CliError(SECRET_ENV_REFUSAL, EXIT.usage)
+      return await runCompletions({ io }, args)
+    }
+    return await ROUTES[command.name](prepareContext(command.name, args), args)
   } catch (e) {
     if (e instanceof CliError) {
       err(e.message)
@@ -253,8 +261,7 @@ function isDefaultTuiFlag(arg: string): boolean {
 }
 
 /**
- * The context, with the --host inproc secret overlay taken out of the environment first (before anything can spawn).
- * `overlay` is passed when the caller already collected it.
+ * The context. `overlay` is the environment secret overlay prepareContext already collected (and scrubbed).
  */
 function contextFor(
   globals: ReturnType<typeof splitGlobalFlags>['globals'],
@@ -282,7 +289,7 @@ function unknownCommandMessage(word: string): string {
 /**
  * The packaged launcher (build/bin/orgai) runs this bundle on the app's own binary with ELECTRON_RUN_AS_NODE=1. Under
  * Electron (`versions.electron` set) that variable is taken out of `env` before anything spawns, so pagers, git,
- * `orgai app`, MCP servers and the inproc adapters never inherit it (an inherited one would turn any Electron app they
+ * MCP servers and the inproc adapters never inherit it (an inherited one would turn any Electron app they
  * start into Node). Plain Node keeps the environment as it is. True when it removed the variable.
  */
 export function scrubElectronRunAsNode(env: NodeJS.ProcessEnv, versions: Partial<Record<string, string | undefined>> = process.versions): boolean {
@@ -302,7 +309,8 @@ function isEntry(): boolean {
   }
 }
 
-if (isEntry()) {
+/** Run the orgai command in this process (bin.ts, the bundle's entry, calls it once the CLI has loaded). */
+export function runCli(): void {
   // Before main() builds the context (which reads process.env) and before anything can spawn.
   scrubElectronRunAsNode(process.env)
   process.on('unhandledRejection', (reason: unknown) => {
@@ -322,3 +330,6 @@ if (isEntry()) {
     }
   )
 }
+
+// `node src/cli/index.ts` style runs (the bundle starts through bin.ts, whose module URL differs).
+if (isEntry()) runCli()

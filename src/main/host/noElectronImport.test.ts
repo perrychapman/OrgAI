@@ -28,17 +28,24 @@ const PURE_NODE_MODULES = [
   './outboundQueue',
   './bulkBudget',
   './peerCheck',
+  './storesSecret',
+  './shutdown',
+  './mutationLease',
   '../store/projects',
   '../store/settings',
   '../store/runs',
   '../store/secrets',
+  '../store/vaultTypes',
+  '../runtime/claudeBinary',
   '../store/mcpLibrary',
   '../store/knowledge',
+  '../outputs/service',
   '../runtime/runManager',
   '../runtime/claude',
   '../runtime/codex',
   '../runtime/mock',
   '../mcp/service',
+  '../reference/appReference',
   '../connections/service',
   '../skills/service',
   '../kit/service',
@@ -46,8 +53,7 @@ const PURE_NODE_MODULES = [
   '../capabilities/service',
   '../quick/quickRuns',
   '../maintenance',
-  '../usageMonitor',
-  '../quitGate'
+  '../usageMonitor'
 ]
 
 describe('host modules load without electron', () => {

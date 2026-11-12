@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import type { ImageAttachment, PermissionMode } from '@shared/types'
 import type { HarnessTool } from './harnessTools'
@@ -24,6 +25,7 @@ export const METHOD = {
   mcpReload: 'config/mcpServer/reload',
   mcpStatusList: 'mcpServerStatus/list',
   configValueWrite: 'config/value/write',
+  configRead: 'config/read',
   skillsList: 'skills/list',
   skillsConfigWrite: 'skills/config/write',
   rateLimitsRead: 'account/rateLimits/read'
@@ -372,6 +374,72 @@ export function policyFor(mode: PermissionMode, opts: { writes: boolean; setupLi
   return choice
 }
 
+/** The temp-folder switches of a workspace-write SandboxPolicy (v2/SandboxPolicy.ts; both fields are required there). */
+export type WorkspaceWriteTemp = { excludeTmpdirEnvVar: boolean; excludeSlashTmp: boolean }
+
+/** Temp-folder switches when the effective settings are unknown: both temp folders excluded (the narrowest). */
+export const TEMP_EXCLUDED: WorkspaceWriteTemp = { excludeTmpdirEnvVar: true, excludeSlashTmp: true }
+
+/**
+ * The temp-folder switches of the effective config from a `config/read` answer (v2/ConfigReadResponse.ts:
+ * `config.sandbox_workspace_write: SandboxWorkspaceWrite | null`, snake_case fields; generate-ts of @openai/codex
+ * 0.166.0). Only an explicit null (the key present, no section, as Codex documents it) means Codex's defaults (temp
+ * folders writable: both false). A missing key (a Codex version that renamed or moved it), a value that is not a
+ * boolean, or an answer without a config is unknown and excludes the folder (never wider than the user's setting).
+ */
+export function parseWorkspaceWriteTemp(res: unknown): WorkspaceWriteTemp {
+  const config = isRec(res) && isRec(res.config) ? res.config : undefined
+  if (!config) return TEMP_EXCLUDED
+  const ww = config.sandbox_workspace_write
+  if (ww === null) return { excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+  if (!isRec(ww)) return TEMP_EXCLUDED
+  return {
+    excludeTmpdirEnvVar: typeof ww.exclude_tmpdir_env_var === 'boolean' ? ww.exclude_tmpdir_env_var : true,
+    excludeSlashTmp: typeof ww.exclude_slash_tmp === 'boolean' ? ww.exclude_slash_tmp : true
+  }
+}
+
+/**
+ * turn/start's SandboxPolicy object for a sandbox mode (TurnStartParams.sandboxPolicy, "for this turn and subsequent
+ * turns"; generate-ts of @openai/codex 0.166.0, v2/SandboxPolicy.ts). thread/start takes the mode string, turn/start
+ * only the object, whose workspace-write fields are all required, so each is chosen so it is never wider than what the
+ * thread was launched with: `writableRoots` is the caller's (codex.ts passes the launch config's
+ * sandbox_workspace_write.writable_roots that are still allowed now), `networkAccess` is always false (a user's own
+ * network_access = true is narrowed), and the temp-folder switches are the effective config's (`temp`, from
+ * config/read; TEMP_EXCLUDED when unknown). Live: unverified.
+ */
+export function sandboxPolicyFor(sandbox: SandboxMode, writableRoots: string[], temp: WorkspaceWriteTemp = TEMP_EXCLUDED): Record<string, unknown> {
+  if (sandbox === 'read-only') return { type: 'readOnly', networkAccess: false }
+  if (sandbox === 'danger-full-access') return { type: 'dangerFullAccess' }
+  return {
+    type: 'workspaceWrite',
+    writableRoots: writableRoots.filter((r) => typeof r === 'string' && r.length > 0),
+    networkAccess: false,
+    excludeTmpdirEnvVar: temp.excludeTmpdirEnvVar,
+    excludeSlashTmp: temp.excludeSlashTmp
+  }
+}
+
+/**
+ * The turn/start fields that move a thread from the policy it was started with (`from`) to `to`: approvalPolicy,
+ * approvalsReviewer ('user' clears auto_review) and sandboxPolicy, each only when it differs. Empty = nothing to send.
+ */
+export function policyOverride(from: PolicyChoice, to: PolicyChoice, writableRoots: string[], temp: WorkspaceWriteTemp = TEMP_EXCLUDED): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (from.approvalPolicy !== to.approvalPolicy) out.approvalPolicy = to.approvalPolicy
+  if ((from.approvalsReviewer ?? 'user') !== (to.approvalsReviewer ?? 'user')) out.approvalsReviewer = to.approvalsReviewer ?? 'user'
+  if (from.sandbox !== to.sandbox) out.sandboxPolicy = sandboxPolicyFor(to.sandbox, writableRoots, temp)
+  return out
+}
+
+/**
+ * All three turn/start policy fields for `to`, unconditionally: for a thread whose Codex-side policy is unknown (a
+ * turn/start that carried an override was rejected or timed out on OrgAI's side, so Codex may or may not hold it).
+ */
+export function fullPolicyOverride(to: PolicyChoice, writableRoots: string[], temp: WorkspaceWriteTemp = TEMP_EXCLUDED): Record<string, unknown> {
+  return { approvalPolicy: to.approvalPolicy, approvalsReviewer: to.approvalsReviewer ?? 'user', sandboxPolicy: sandboxPolicyFor(to.sandbox, writableRoots, temp) }
+}
+
 // ---------- saved allow rules ----------
 
 // The matcher is vendor-neutral and shared with the Claude adapter's PreToolUse hook.
@@ -475,20 +543,25 @@ export interface LaunchConfig {
  * tool_timeout_sec, required; semantics UNVERIFIED without a model turn):
  *   stdio  command + args + env (non-secret values); secret env names are forwarded with env_vars from the
  *          app-server's own environment (same name), so values are not in argv.
- *   http   url + http_headers (non-secret); each secret header becomes env_http_headers { Header = "ORGAI_MCP_<n>_H<k>" }.
+ *   http   url + http_headers (non-secret); each secret header becomes
+ *          env_http_headers { Header = "ORGAI_MCP_<hex>_<n>_H<k>" }, `<hex>` being 16 random lowercase hex characters
+ *          drawn once per call, so a command or stdio server inheriting the app-server's environment cannot target a
+ *          name it can predict (the self-control gate also refuses words referencing ORGAI_MCP_; neither hides the
+ *          values from a whole-environment dump). `opts.random` is injectable for tests and must return 8 bytes.
  *          An Authorization header of the form "Bearer x" is passed as bearer_token_env_var instead.
  * One app-server has one environment, so one secret env name can carry only one value per run. Two enabled stdio
  * servers that need the same secret name with the same value share it through env_vars. With different values the
  * later server is refused before launch (no config line at all, an entry in `skipped` naming the variable and the
  * server that forwarded it first); a secret value never goes into argv. The adapter logs each skipped entry as a run
- * warning. HTTP secret headers need no such check: their env names (ORGAI_MCP_<n>_H<k>) are unique per server.
+ * warning. HTTP secret headers need no such check: their env names (ORGAI_MCP_<hex>_<n>_H<k>) are unique per server.
  */
 export function buildLaunchConfig(
   connection: RunConnection | undefined,
   servers: ResolvedMcpServer[],
-  opts: { noProjectDocs?: boolean; writableRoots?: string[]; folderTrust?: FolderTrustConfig } = {}
+  opts: { noProjectDocs?: boolean; writableRoots?: string[]; folderTrust?: FolderTrustConfig; random?: (size: number) => Uint8Array } = {}
 ): LaunchConfig {
-  const config: string[] = [...NATIVE_SKILL_CONFIG, ...(opts.noProjectDocs ? NO_PROJECT_DOCS_CONFIG : [])]
+  const mcpEnvPrefix = `ORGAI_MCP_${Buffer.from((opts.random ?? randomBytes)(8)).toString('hex')}`
+  const config: string[] = [...NATIVE_SKILL_CONFIG, ...NATIVE_AGENT_CONFIG, ...(opts.noProjectDocs ? NO_PROJECT_DOCS_CONFIG : [])]
   const trust = folderTrustEntry(opts.folderTrust)
   if (trust) config.push(trust)
   // Allowed folders become extra writable roots of the workspace-write sandbox (key found in the codex 0.166.0
@@ -577,7 +650,7 @@ export function buildLaunchConfig(
           continue
         }
         const m = /^bearer\s+(.+)$/i.exec(v)
-        const envName = `ORGAI_MCP_${n}_H${k++}`
+        const envName = `${mcpEnvPrefix}_${n}_H${k++}`
         if (h.toLowerCase() === 'authorization' && m) {
           env[envName] = m[1]
           config.push(`${base}.bearer_token_env_var=${tomlString(envName)}`)
@@ -610,6 +683,12 @@ export function buildLaunchConfig(
  */
 export const NO_PROJECT_DOCS_CONFIG: readonly string[] = ['project_doc_max_bytes=0']
 export const NATIVE_SKILL_CONFIG: readonly string[] = ['skills.bundled.enabled=false', 'skills.include_instructions=false']
+
+/**
+ * Switches Codex's built-in multi-agent tools off (delegation-enforcement 5.1): their agents are invisible to OrgAI.
+ * UNVERIFIED that every Codex build honours both keys; codex.ts detects and stops a native item regardless.
+ */
+export const NATIVE_AGENT_CONFIG: readonly string[] = ['features.multi_agent=false', 'features.multi_agent_v2=false']
 
 /** Most skills one lock disables per call (a folder with more is warned about; the rest stay enabled). */
 export const NATIVE_SKILL_DISABLE_LIMIT = 500

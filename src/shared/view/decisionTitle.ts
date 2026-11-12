@@ -152,7 +152,8 @@ export const PROPOSAL_KIND_LABEL: Record<ProposalKind, string> = {
   orgChart: 'Org chart',
   settings: 'Run settings',
   mcpServers: 'MCP servers',
-  skills: 'Skills'
+  skills: 'Skills',
+  appSettings: 'App settings'
 }
 
 /** The kind label for one project: an engagement's architecture proposal is its "Engagement plan". */

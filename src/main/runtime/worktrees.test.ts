@@ -165,6 +165,29 @@ describe('findWorktree / pendingWorktrees', () => {
   })
 })
 
+describe('host git environment', () => {
+  it.skipIf(process.platform === 'win32')("a hook run by the host's commit never sees OrgAI's secret or vault variables", async () => {
+    await prepareRepo(root)
+    const wt = addWorktree('envhook')
+    const out = join(root, 'hook-env.txt')
+    const hook = join(root, '.git', 'hooks', 'post-commit')
+    mkdirSync(dirname(hook), { recursive: true })
+    writeFileSync(hook, `#!/bin/sh\nenv > "${out}"\n`, { mode: 0o755 })
+    process.env.ORGAI_SECRET_LEAKCHECK = 'shh'
+    process.env.ORGAI_VAULT_KEY_FILE = '/leak/key'
+    try {
+      put(wt.path, 'src/hooked.js', 'export const h = 1\n')
+      expect(await commitLeftovers(wt.path, 'hooked')).toEqual({ committed: true })
+    } finally {
+      delete process.env.ORGAI_SECRET_LEAKCHECK
+      delete process.env.ORGAI_VAULT_KEY_FILE
+    }
+    const env = readFileSync(out, 'utf8')
+    expect(env).not.toContain('ORGAI_SECRET_LEAKCHECK')
+    expect(env).not.toContain('ORGAI_VAULT_KEY_FILE')
+  })
+})
+
 describe('commitLeftovers', () => {
   it('commits uncommitted work and reports nothing to do when clean', async () => {
     await prepareRepo(root)

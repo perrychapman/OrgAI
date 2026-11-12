@@ -12,6 +12,7 @@ import { Select } from '../ui/Select'
 import { ClampedNumber } from './ClampedNumber'
 import { SettingsAdvanced } from './SettingsAdvanced'
 import { SettingsCard } from './SettingsCard'
+import { StaffingSettings } from './StaffingSettings'
 import { SettingsGroup, SettingsSection } from './SettingsSection'
 
 /** planGuardOf modes: Automatic (unset) engages on a plan with a weekly window or a warning status. */
@@ -124,6 +125,7 @@ export function LimitsSection({ project, patch }: { project: Project; patch: (p:
       </SettingsSection>
 
       <SettingsAdvanced paneKey="project-limits">
+        <StaffingSettings project={project} patch={patch} />
         <SettingsGroup title="Runs and agents">
           <SettingsCard>
             {planRows}

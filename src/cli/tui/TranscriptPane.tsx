@@ -12,14 +12,78 @@ import { useMemo, useRef, useState } from 'react'
 import { omittedLabel } from '../../shared/view/transcriptRows'
 import { useFocusHandler, useTuiEnv } from './context'
 import { glyphs } from './theme'
+import { compactToolRows } from './streamRows'
+import { readableMarkdown } from './markdownBlocks'
 import type { BufferMode, PartialRow, Tone, TranscriptPaneProps, TranscriptRow, TuiEnv } from './types'
-import { PaneLines, cutSegs, navKey, segText, styleFor, type PaneLine } from './panes/lines'
-import { textWidth, wrapText } from './panes/text'
+import { PaneLines, cutSegs, navKey, segText, styleFor, type PaneLine, type Seg } from './panes/lines'
+import { sliceToWidth, textWidth, wrapText } from './panes/text'
 
 interface RowStyle {
   prefix: string
+  continuation: string
   tone?: Tone
+  /** A status/marker tone for the leading glyph, separate from prose. */
+  prefixTone?: Tone
+  prefixSegs?: Seg[]
+  continuationSegs?: Seg[]
+  /** null deliberately keeps the body on the neutral foreground. */
+  bodyTone?: Tone | null
+  /** Explicit non-dim row tones are status text for system rows, not prose decoration. */
+  bodyStatus?: boolean
+  bodyDim?: boolean
+  bodyBold?: boolean
   dim?: boolean
+  bold?: boolean
+}
+
+function hanging(prefix: string): string {
+  return ' '.repeat(textWidth(prefix))
+}
+
+function promptMark(env: TuiEnv): string {
+  return env.unicode && !env.screenReader && !env.dumbTerminal ? '›' : '>'
+}
+
+function style(prefix: string, over: Omit<RowStyle, 'prefix' | 'continuation'> = {}, continuation = hanging(prefix)): RowStyle {
+  return { prefix, continuation, ...over }
+}
+
+function prefixParts(row: RowStyle, first: boolean, raw: string, width: number, env: TuiEnv): Seg[] {
+  if (!raw) return []
+  const parts = first ? row.prefixSegs : row.continuationSegs
+  if (parts) return fitSegments(parts, Math.min(width, textWidth(raw)))
+  return [{ text: raw, tone: row.prefixTone ?? row.tone, dim: row.dim, bold: row.bold }]
+}
+
+/** Prefixes are structural markers: preserve their visible glyph before adding an ellipsis. */
+function fitSegments(parts: Seg[], width: number): Seg[] {
+  let remaining = Math.max(0, Math.floor(width))
+  const out: Seg[] = []
+  for (const part of parts) {
+    if (remaining <= 0) break
+    const text = sliceToWidth(part.text, remaining)
+    if (text) out.push({ ...part, text })
+    remaining -= textWidth(text)
+  }
+  return out
+}
+
+function bodyPart(row: RowStyle, text: string): Seg {
+  const statusTone = row.bodyStatus && row.tone && row.tone !== 'dim' ? row.tone : undefined
+  return {
+    text,
+    tone: statusTone ?? (row.bodyTone === null ? undefined : row.bodyTone ?? row.tone),
+    dim: row.bodyDim ?? row.dim,
+    bold: row.bodyBold ?? row.bold
+  }
+}
+
+function prefixWithLabel(marker: string, agent: string, suffix = ''): Seg[] {
+  const out: Seg[] = []
+  if (marker) out.push({ text: marker })
+  if (agent) out.push({ text: agent, tone: 'identity', bold: true })
+  if (suffix) out.push({ text: suffix })
+  return out
 }
 
 /** Prefix and tone per row kind. */
@@ -29,38 +93,176 @@ export function rowStyle(row: TranscriptRow, env: TuiEnv): RowStyle {
   let s: RowStyle
   switch (row.kind) {
     case 'user':
-      s = { prefix: 'you: ', tone: 'accent' }
+      s = style(env.screenReader ? 'you: ' : `${promptMark(env)} `, {
+        prefixSegs: [{ text: env.screenReader ? 'you: ' : `${promptMark(env)} `, tone: 'accent', bold: true }],
+        bodyTone: null
+      })
       break
     case 'text':
-      s = { prefix: label }
+      s = style(env.screenReader ? label || 'assistant: ' : `${g.bullet} ${label}`, {
+        prefixSegs: env.screenReader
+          ? prefixWithLabel('', label || 'assistant: ')
+          : prefixWithLabel(`${g.bullet} `, label),
+        continuationSegs: [{ text: '  ' }],
+        bodyTone: null
+      }, '  ')
       break
     case 'thinking':
-      s = { prefix: row.agentLabel ? `${row.agentLabel} (thinking): ` : '(thinking) ', dim: true }
+      s = style(row.agentLabel ? `${row.agentLabel} (thinking): ` : '(thinking) ', {
+        prefixSegs: row.agentLabel
+          ? [{ text: row.agentLabel, tone: 'identity', bold: true }, { text: ' (thinking): ', dim: true }]
+          : [{ text: '(thinking) ', dim: true }],
+        continuationSegs: [{ text: '  ', dim: true }],
+        bodyTone: null,
+        bodyDim: true,
+        dim: true
+      })
       break
     case 'tool':
-      s = { prefix: env.screenReader ? `${label}tool: ` : `${g.arrow} ${label}`, dim: true }
+      s = style(env.screenReader ? `${label}tool: ` : `${g.arrow} ${label}`, {
+        prefixSegs: env.screenReader
+          ? [...prefixWithLabel('', label), { text: 'tool: ', tone: 'code' }]
+          : [...prefixWithLabel(`${g.arrow} `, label),],
+        continuationSegs: [{ text: '  ' }],
+        bodyTone: 'code'
+      }, '  ')
+      if (!env.screenReader) s.prefixSegs = s.prefixSegs?.map((seg, i) => i === 0 ? { ...seg, tone: 'code' } : seg)
       break
     case 'result':
-      s = { prefix: env.screenReader ? 'result: ' : '  ', dim: true }
+      s = style(env.screenReader ? 'result: ' : `${g.lastBranch} `, {
+        prefixSegs: [{ text: env.screenReader ? 'result: ' : `${g.lastBranch} `, tone: 'muted' }],
+        bodyTone: 'muted'
+      })
       break
     case 'error':
-      s = { prefix: env.screenReader ? `${label}error: ` : `${g.cross} ${label}`, tone: 'danger' }
+      s = style(env.screenReader ? `${label}error: ` : `${g.cross} ${label}`, {
+        prefixSegs: env.screenReader
+          ? [...prefixWithLabel('', label), { text: 'error: ', tone: 'danger' }]
+          : [{ text: `${g.cross} `, tone: 'danger' }, ...prefixWithLabel('', label)],
+        bodyTone: null
+      })
       break
     case 'divider':
-      s = { prefix: '', dim: true }
+      s = style('', { bodyTone: 'muted', dim: true })
       break
     case 'system':
     case 'harness':
     case 'log':
     default:
-      s = { prefix: '', dim: true }
+      s = style('', { bodyTone: 'muted', bodyStatus: true, dim: true })
       break
   }
   if (row.tone) {
     s.tone = row.tone
     if (row.tone !== 'dim') s.dim = false
   }
+  if (row.identityTone) s.prefixSegs = s.prefixSegs?.map(seg => seg.tone === 'identity' ? { ...seg, tone: row.identityTone } : seg)
   return s
+}
+
+interface DisplayLine {
+  text: string
+  style: RowStyle
+  segs?: Seg[]
+}
+
+/** A small terminal-safe Markdown subset. Unmatched markup stays literal. */
+function inlineMarkup(text: string): Seg[] {
+  return text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean).map(part =>
+    part.startsWith('`') && part.endsWith('`') ? { text: part.slice(1, -1), tone: 'code' as const }
+      : part.startsWith('**') && part.endsWith('**') ? { text: part.slice(2, -2), bold: true }
+        : { text: part })
+}
+
+function markdownLines(text: string, base: RowStyle, width: number, env: TuiEnv): DisplayLine[] {
+  if (text.split('\n').filter(line => /^\s*```/.test(line)).length % 2 !== 0) return hangingLines(text, base, width, env)
+  text = readableMarkdown(text)
+  const out: DisplayLine[] = []
+  let code = false
+  let first = true
+  for (const raw of text.split('\n')) {
+    const fence = /^\s*```(.*)$/.exec(raw)
+    if (fence) {
+      code = !code
+      if (code) out.push(...hangingLines(fence[1].trim() || 'code', style(first ? base.prefix : '  ', { tone: 'code', bodyTone: 'code' }), width, env))
+      first = false
+      continue
+    }
+    if (code) {
+      out.push(...hangingLines(raw, style(env.screenReader ? '  ' : `  ${glyphs(env).v} `, { tone: 'code', bodyTone: 'code' }, '    '), width, env))
+      first = false
+      continue
+    }
+    const heading = /^#{1,6}\s+(.+)$/.exec(raw)
+    const bullet = /^(\s*)[-*+]\s+(.+)$/.exec(raw)
+    const line = heading?.[1] ?? (bullet ? `${bullet[1]}${env.screenReader ? '-' : glyphs(env).bullet} ${bullet[2]}` : raw)
+    const prefix = first ? base.prefix : '  '
+    const spans = inlineMarkup(line)
+    const visible = spans.map(s => s.text).join('')
+    const formatted = hangingLines(visible, style(prefix, {
+      tone: base.tone,
+      dim: base.dim,
+      bold: !!heading,
+      prefixSegs: prefix === base.prefix ? base.prefixSegs : undefined,
+      continuationSegs: base.continuationSegs,
+      bodyTone: base.bodyTone,
+      bodyDim: base.bodyDim,
+      bodyBold: !!heading
+    }, '  '), width, env)
+    let offset = 0
+    for (const l of formatted) {
+      const lead = l.text.startsWith(prefix) ? prefix : '  '
+      const body = l.text.slice(lead.length)
+      const found = visible.indexOf(body, offset)
+      const start = found < 0 ? offset : found
+      let pos = 0
+      const leadParts = lead === base.prefix && prefix === base.prefix
+        ? base.prefixSegs ?? [{ text: lead, tone: base.prefixTone ?? base.tone, dim: base.dim }]
+        : base.continuationSegs ?? [{ text: lead }]
+      const segs: Seg[] = [...fitSegments(leadParts, textWidth(lead))]
+      for (const span of spans) {
+        const end = pos + span.text.length
+        const from = Math.max(start, pos), to = Math.min(start + body.length, end)
+        if (to > from) segs.push({ ...span, text: span.text.slice(from - pos, to - pos), bold: !!heading || span.bold })
+        pos = end
+      }
+      out.push({ ...l, segs })
+      offset = start + body.length
+    }
+    first = false
+  }
+  return out
+}
+
+/** Prefix each wrapped line while keeping the body aligned below the first line's text. */
+function hangingLines(text: string, row: RowStyle, width: number, env: TuiEnv): DisplayLine[] {
+  const w = Math.floor(width)
+  if (w <= 0) return []
+  const out: DisplayLine[] = []
+  let first = true
+  for (const logical of text.split('\n')) {
+    const prefix = first ? row.prefix : row.continuation
+    const available = w - textWidth(prefix)
+    if (available <= 0) {
+      const clipped = sliceToWidth(prefix, w)
+      out.push({ text: clipped, style: row, segs: prefixParts(row, first, clipped, w, env) })
+      first = false
+      // A long label may not fit at all in a narrow pane. Keep its marker, then emit the body with the
+      // continuation prefix (or no prefix when even that is wider than the pane) instead of dropping it.
+      const bodyPrefix = textWidth(row.continuation) < w ? row.continuation : ''
+      const bodyWidth = Math.max(1, w - textWidth(bodyPrefix))
+      for (const part of wrapText(logical, bodyWidth)) {
+        out.push({ text: bodyPrefix + part, style: row, segs: [...prefixParts(row, false, bodyPrefix, w, env), bodyPart(row, part)] })
+      }
+      continue
+    }
+    for (const part of wrapText(logical, available)) {
+      const currentPrefix = first ? row.prefix : row.continuation
+      out.push({ text: currentPrefix + part, style: row, segs: [...prefixParts(row, first, currentPrefix, w, env), bodyPart(row, part)] })
+      first = false
+    }
+  }
+  return out
 }
 
 /** A divider row as a full-width rule with its text ("── Continued 3 min later ─────"). */
@@ -75,17 +277,24 @@ export function dividerLine(text: string, width: number, env: TuiEnv): string {
 }
 
 /** The display lines of one row at `width`: the prefix on the first line, each logical line wrapped. */
-export function rowLines(row: TranscriptRow, width: number, env: TuiEnv): { text: string; style: RowStyle }[] {
+export function rowLines(row: TranscriptRow, width: number, env: TuiEnv): DisplayLine[] {
   const style = rowStyle(row, env)
   if (row.kind === 'divider') return [{ text: dividerLine(row.text, width, env), style }]
-  return wrapText(`${style.prefix}${row.text}`, width).map((text) => ({ text, style }))
+  if (row.kind === 'text' && /^#{1,6}\s|```|`[^`]+`|\*\*[^*]+\*\*|^\s*[-*+]\s|\||\[[^\]]+\]\(/m.test(row.text)) return markdownLines(row.text, style, width, env)
+  return hangingLines(row.text, style, width, env)
 }
 
-function partialLines(p: PartialRow, width: number): string[] {
-  return wrapText(`${p.agentLabel}: ${p.text}`, width)
+function partialLines(p: PartialRow, width: number, env: TuiEnv, compact = false): DisplayLine[] {
+  const g = glyphs(env)
+  const label = compact ? '' : `${p.agentLabel}: `
+  const prefix = env.screenReader ? label : `${g.bullet} ${label}`
+  const prefixSegs = env.screenReader
+    ? [{ text: label, tone: p.identityTone ?? 'identity' as const, bold: true }]
+    : [{ text: `${g.bullet} ` }, { text: label, tone: p.identityTone ?? 'identity' as const, bold: true }]
+  return hangingLines(p.text, style(prefix, { prefixSegs, continuationSegs: [{ text: '  ' }], bodyTone: compact ? undefined : 'muted' }, '  '), width, env)
 }
 
-interface Built {
+export interface Built {
   lines: PaneLine[]
   /** First line index of each row key. */
   starts: Map<string, number>
@@ -93,7 +302,27 @@ interface Built {
   rowOfLine: string[]
 }
 
-function build(rows: readonly TranscriptRow[], omitted: number, width: number, env: TuiEnv): Built {
+/** Wrapped lines per row key, kept while width and env stay the same (issue #35 M1: an appended row re-wraps nothing else). */
+export interface RowCache {
+  compact?: boolean
+  expanded?: boolean
+  width: number
+  env: TuiEnv
+  rows: Map<string, { row: TranscriptRow; lines: DisplayLine[] }>
+}
+
+const sameRow = (a: TranscriptRow, b: TranscriptRow): boolean =>
+  a.kind === b.kind && a.text === b.text && a.tone === b.tone && a.agentLabel === b.agentLabel && a.identityTone === b.identityTone
+
+export function build(rows: readonly TranscriptRow[], omitted: number, width: number, env: TuiEnv, cache?: RowCache, compact = false, expanded = false): Built {
+  if (cache && (cache.width !== width || cache.env !== env || cache.compact !== compact || cache.expanded !== expanded)) {
+    cache.compact = compact
+    cache.expanded = expanded
+    cache.width = width
+    cache.env = env
+    cache.rows.clear()
+  }
+  const seen = new Set<string>()
   const lines: PaneLine[] = []
   const starts = new Map<string, number>()
   const rowOfLine: string[] = []
@@ -101,13 +330,39 @@ function build(rows: readonly TranscriptRow[], omitted: number, width: number, e
     lines.push({ key: 'omitted', segs: cutSegs([{ text: omittedLabel(omitted), dim: true }], width, env) })
     rowOfLine.push('')
   }
+  let previous: TranscriptRow | undefined
+  let speaker: string | undefined
   for (const row of rows) {
     starts.set(row.key, lines.length)
-    rowLines(row, width, env).forEach((l, i) => {
-      lines.push({ key: `${row.key}:${i}`, segs: [{ text: l.text, tone: l.style.tone, dim: l.style.dim }] })
+    if (previous && previous.kind !== 'divider' && (row.kind === 'user' || (compact && row.kind === 'text'))) {
+      lines.push({ key: `${row.key}:gap`, segs: [] })
+      rowOfLine.push(row.key)
+    }
+    if (row.kind === 'user' || row.kind === 'divider') speaker = undefined
+    const who = row.agentLabel && row.kind !== 'user' && row.kind !== 'divider' ? `${row.runId}:${row.agentId ?? row.agentLabel}` : undefined
+    if (compact && who && who !== speaker) {
+      lines.push({ key: `${row.key}:speaker`, segs: cutSegs([{ text: row.agentLabel!, tone: row.identityTone ?? 'identity', bold: true }], width, env) })
+      rowOfLine.push(row.key)
+      speaker = who
+    }
+    const display = compact ? { ...row, agentLabel: undefined } : row
+    let wrapped = cache?.rows.get(row.key)
+    if (!wrapped || !sameRow(wrapped.row, display)) {
+      wrapped = { row: display, lines: rowLines(display, width, env) }
+      if (compact && !expanded && (row.kind === 'tool' || row.kind === 'result')) {
+        const segments = cutSegs([...((rowStyle(display, env).prefixSegs) ?? []), { text: row.text.replace(/\s+/g, ' '), tone: 'muted' }], width, env)
+        wrapped.lines = [{ text: segText(segments), style: rowStyle(display, env), segs: segments }]
+      }
+      cache?.rows.set(row.key, wrapped)
+    }
+    seen.add(row.key)
+    wrapped.lines.forEach((l, i) => {
+      lines.push({ key: `${row.key}:${i}`, segs: l.segs ?? [{ text: l.text, tone: l.style.tone, dim: l.style.dim, bold: l.style.bold }] })
       rowOfLine.push(row.key)
     })
+    previous = row
   }
+  if (cache) for (const k of [...cache.rows.keys()]) if (!seen.has(k)) cache.rows.delete(k)
   return { lines, starts, rowOfLine }
 }
 
@@ -117,6 +372,28 @@ interface Anchor {
   offset: number
   /** The newest row key when the user scrolled up, for "N new rows below". */
   lastSeen: string | undefined
+}
+
+/** Only contiguous completed tool activity is folded; failures and unfinished work stay visible. */
+export function groupToolRows(rows: TranscriptRow[], expanded = false): TranscriptRow[] {
+  if (expanded) return rows
+  const out: TranscriptRow[] = []
+  for (let i = 0; i < rows.length;) {
+    const start = i
+    const row = rows[i]!
+    if (row.kind !== 'tool' && row.kind !== 'result') { out.push(row); i++; continue }
+    while (i < rows.length && (rows[i].kind === 'tool' || rows[i].kind === 'result') && rows[i].agentId === row.agentId && rows[i].runId === row.runId) i++
+    const group = rows.slice(start, i)
+    const calls = group.filter(r => r.kind === 'tool')
+    const results = group.filter(r => r.kind === 'result')
+    const paired = calls.every(call => call.toolUseId)
+      ? calls.every(call => results.some(result => result.toolUseId === call.toolUseId))
+      : group.every((item, at) => item.kind === (at % 2 === 0 ? 'tool' : 'result'))
+    if (group.length >= 3 && group.at(-1)?.kind === 'result' && calls.length === results.length && paired) {
+      out.push({ ...row, text: `${calls.length} tool calls completed · Enter expands`, kind: 'tool' })
+    } else out.push(...group)
+  }
+  return out
 }
 
 export function TranscriptPane(props: TranscriptPaneProps & { mode: BufferMode }) {
@@ -129,11 +406,26 @@ function FullTranscript(props: TranscriptPaneProps) {
   const width = Math.max(0, Math.floor(props.width))
   const height = Math.max(0, Math.floor(props.height))
   const [anchor, setAnchor] = useState<Anchor | undefined>(undefined)
+  const [localExpanded, setLocalExpanded] = useState(false)
+  const toolsExpanded = props.detailsExpanded ?? localExpanded
+  const grouped = useMemo(() => props.compact ? compactToolRows(props.rows, toolsExpanded) : groupToolRows(props.rows, toolsExpanded), [props.rows, toolsExpanded, props.compact])
 
-  const built = useMemo(() => build(props.rows, props.omitted ?? 0, width, env), [props.rows, props.omitted, width, env])
+  const rowCache = useRef<RowCache>({ width, env, rows: new Map() })
+  const built = useMemo(() => build(grouped, props.omitted ?? 0, width, env, rowCache.current, props.compact, toolsExpanded), [grouped, props.omitted, width, env, props.compact, toolsExpanded])
   const partial: PaneLine[] = []
+  let lastSpeaker = [...grouped].reverse().find(row => row.kind === 'user' || row.kind === 'divider' || row.agentLabel)
   for (const p of props.partials) {
-    partialLines(p, width).forEach((text, i) => partial.push({ key: `partial:${p.key}:${i}`, segs: [{ text, dim: true }] }))
+    if (props.compact) {
+      if (built.lines.length || partial.length) partial.push({ key: `partial:${p.key}:gap`, segs: [] })
+      if (lastSpeaker?.agentId !== p.agentId || lastSpeaker?.runId !== p.runId || lastSpeaker?.kind === 'user' || lastSpeaker?.kind === 'divider') {
+        partial.push({ key: `partial:${p.key}:speaker`, segs: cutSegs([{ text: p.agentLabel, tone: p.identityTone ?? 'identity', bold: true }], width, env) })
+      }
+      lastSpeaker = { ...p, kind: 'text' }
+    }
+    partialLines(p, width, env, props.compact).forEach((line, i) => partial.push({
+      key: `partial:${p.key}:${i}`,
+      segs: line.segs ?? [{ text: line.text, tone: line.style.tone, dim: line.style.dim, bold: line.style.bold }]
+    }))
   }
   const lines = [...built.lines, ...partial]
   const total = lines.length
@@ -167,8 +459,16 @@ function FullTranscript(props: TranscriptPaneProps) {
   }
 
   useFocusHandler(
-    'transcript',
+    props.focusTarget ?? 'transcript',
     (e) => {
+      if (props.extraKeys?.(e)) return true
+      if (e.type === 'key' && e.name === 'enter' && !e.ctrl && !e.alt && props.rows.some(r => r.kind === 'tool')) {
+        if (props.onToggleDetails) props.onToggleDetails()
+        else setLocalExpanded(v => !v)
+        setAnchor(undefined)
+        anchorRef.current = undefined
+        return true
+      }
       const k = navKey(e)
       if (!k) return false
       const cur = topRef.current
@@ -208,7 +508,7 @@ function FullTranscript(props: TranscriptPaneProps) {
     const text = newBelow > 0 ? `${newBelow} new ${newBelow === 1 ? 'row' : 'rows'} below; End to jump` : 'More below; End to jump'
     view.push({ key: 'below', segs: cutSegs([{ text, tone: 'warn' }], width, env) })
   }
-  return <PaneLines width={width} height={height} lines={view} env={env} />
+  return <PaneLines width={width} height={height} lines={view} env={env} align={anchor ? 'top' : 'bottom'} />
 }
 
 function InlineTranscript(props: { rows: TranscriptRow[]; width: number }) {
@@ -217,6 +517,9 @@ function InlineTranscript(props: { rows: TranscriptRow[]; width: number }) {
   const w = written.current
   for (const row of props.rows) {
     if (w.keys.has(row.key)) continue
+    if (w.items.length && row.kind === 'user' && w.items.at(-1)?.kind !== 'divider') {
+      w.items.push({ key: `${row.key}:gap`, runId: row.runId, kind: 'system', text: '' })
+    }
     w.keys.add(row.key)
     w.items.push(row)
   }
@@ -229,8 +532,8 @@ function InlineTranscript(props: { rows: TranscriptRow[]; width: number }) {
         <Box key={row.key} flexDirection="column">
           {(width > 0 ? rowLines(row, width, env) : [{ text: `${rowStyle(row, env).prefix}${row.text}`, style: rowStyle(row, env) }]).map(
             (l, i) => (
-              <Text key={i} {...styleFor({ tone: l.style.tone, dim: l.style.dim }, env)}>
-                {l.text || ' '}
+              <Text key={i} {...styleFor({ tone: l.style.tone, dim: l.style.dim, bold: l.style.bold }, env)}>
+                {l.segs ? l.segs.map((s, j) => <Text key={j} {...styleFor(s, env)}>{s.text}</Text>) : l.text || ' '}
               </Text>
             )
           )}

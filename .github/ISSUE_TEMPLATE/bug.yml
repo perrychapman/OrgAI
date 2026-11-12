@@ -1,0 +1,94 @@
+name: Bug report
+description: Something does not work as it should.
+labels: ["bug", "status: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems do not go here; see SECURITY.md. Never paste keys, tokens or the contents of `secrets.json`.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: App settings > About.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11, macOS 15, Ubuntu 24.04
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      options:
+        - Claude
+        - Codex
+        - LiteLLM
+        - mock
+        - none / not relevant
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - tui
+        - cli
+        - main-runtime (includes permissions)
+        - adapters (claude*, codex*, mock.ts)
+        - renderer
+        - connections
+        - mcp
+        - skills
+        - knowledge
+        - docs
+        - ci
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+    validations:
+      required: true
+  - type: dropdown
+    id: mock
+    attributes:
+      label: Reproducible with ORGAI_MOCK=1?
+      options:
+        - "Yes"
+        - "No"
+        - Not tried
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (redacted)
+      description: Relevant lines from main.log. Remove keys, tokens and anything from secrets.json.
+      render: text
+  - type: textarea
+    id: checked-by
+    attributes:
+      label: Checked by
+      description: "How each claim above was checked: unit / e2e (name) / mock / live (with consent) / unverified (list what no run confirmed)."
+    validations:
+      required: true

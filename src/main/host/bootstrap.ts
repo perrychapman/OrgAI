@@ -1,8 +1,7 @@
 /**
  * bootOrgAIHost (cli-spec 3.1, 3.2(2) step 4, 3.2(4), Wave 1): Electron-free host construction. Every store, service,
  * adapter and background probe the app needs is built here, in the order index.ts's whenReady built them before, so the
- * same boot runs inside Electron (index.ts, the desktop shell) and, from Wave 2 on, in plain Node (`--host inproc`,
- * `--headless-host`).
+ * same boot runs inside Electron (index.ts, the desktop shell) and, from Wave 2 on, in plain Node (`--host inproc`).
  *
  * The caller acquires <dataDir>/run ownership BEFORE calling (RunStore rewrites live runs at construction). Every
  * main -> client push goes through one HostEventBus; the desktop shell forwards it to windows. Synchronous, like the
@@ -12,13 +11,15 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary, TerminalAccessLevel } from '../../shared/types'
-import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_PROTOCOL_VERSION, IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isVirtualProjectId } from '../../shared/types'
+import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary } from '../../shared/types'
+import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
+import { connectionConfigured, connectionIds } from '../../shared/defaults'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
 import { CommunityPrices } from '../connections/communityPrices'
 import { ConnectionService } from '../connections/service'
+import { authChildrenInFlight } from '../connections/anthropicAuth'
 import { KitService } from '../kit/service'
 import { log } from '../log'
 import { MaintenanceService } from '../maintenance'
@@ -30,10 +31,12 @@ import { sweepScratchDirs } from '../quick/scratch'
 import { ClaudeAdapter } from '../runtime/claude'
 import { sweepStaleSkillDirs } from '../runtime/claudeSkills'
 import { CodexAdapter } from '../runtime/codex'
+import { codexHomeDir } from '../runtime/codexAppServer'
 import { MockAdapter } from '../runtime/mock'
 import { repoLockActivity } from '../runtime/repoLock'
-import { RunManager } from '../runtime/runManager'
+import { RunManager, outputScopeOf } from '../runtime/runManager'
 import { controlProtectedPaths } from '../runtime/selfControlGate'
+import { cliUserDataDir, platformUserDataDir } from '../../cli/client/locate'
 import type { RunConnection, RuntimeAdapter } from '../runtime/types'
 import { AgentImportService } from '../setup/import/importer'
 import { SetupService } from '../setup/service'
@@ -42,6 +45,8 @@ import { skillsProject } from '../skills/assist'
 import { SkillEvaluationService } from '../skills/evaluation'
 import { SkillService } from '../skills/service'
 import { knowledgeStore } from '../store/knowledge'
+import { createOutputsService } from '../outputs/service'
+import { createOutputWatcher } from '../outputs/watch'
 import { McpLibraryStore } from '../store/mcpLibrary'
 import { listNotes, orphanRunProjects, readNote, readRetainedRunProjects, saveNote } from '../store/projectData'
 import { ProjectStore } from '../store/projects'
@@ -50,14 +55,18 @@ import { SecretStore, type SecretCipher, type SecretStoreOptions } from '../stor
 import { SettingsStore } from '../store/settings'
 import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
-import { harnessProjectFor, withEffectiveDefault } from './args'
+import { createAppReference, type ShortcutRow } from '../reference/appReference'
+import { withAppSettingChanges } from '../../shared/appSettingsProposal'
+import type { AppSettingsProposalPayload, CliCommandStatus } from '../../shared/types'
+import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
 import { HostEventBus } from './events'
 import type { HostOwnership } from './ownership'
 import type { HostRuntimeEnv } from './runtimeEnv'
+import { ShutdownCoordinator, type ShutdownReleaseInfo } from './shutdown'
 import type { DesktopHooks, HostControl, HostServices } from './types'
 
-/** How long after a LiteLLM run ends its key's spend is re-read (the proxy batches spend writes, ~10 s by default). */
+/** How long after a proxy run ends its key's spend is re-read (the proxy batches spend writes, ~10 s by default). */
 export const LITELLM_SPEND_DELAY_MS = 15_000
 
 /** What a housekeeping step sees. */
@@ -92,6 +101,22 @@ export const defaultHousekeeping: HousekeepingSteps = {
   }
 }
 
+/**
+ * Which background work a boot starts (Wave 7, cli-standalone.md 4.1 step 4). Each flag defaults to
+ * `BootOrgAIHostOptions.startBackground !== false`. A management command's in-process host keeps connection status
+ * probes on and turns off model discovery, community prices and the usage monitor.
+ */
+export interface HostBackgroundOptions {
+  /** connections.init(): probe each enabled connection's status at boot. */
+  connectionProbes?: boolean
+  /** connections.startDiscovery(): model discovery (first run 20 s after boot, then hourly). */
+  modelDiscovery?: boolean
+  /** communityPrices.start() (never under mock). */
+  communityPrices?: boolean
+  /** usageMonitor.start(): plan usage at boot and every 10 minutes while idle. */
+  usageMonitor?: boolean
+}
+
 export interface BootOrgAIHostOptions {
   env: HostRuntimeEnv
   /** `<userDataDir>/data`. */
@@ -103,8 +128,17 @@ export interface BootOrgAIHostOptions {
   safeStorage: SecretCipher
   /** SecretStore options: `--host inproc` passes { readOnly: true, overlay } (cli-spec 3.5). Default: read-write. */
   secrets?: SecretStoreOptions
+  /**
+   * Wave 7 (cli-standalone.md 5.6): the store openSecretStore opened (and reconciled) after acquireHostOwnership and
+   * before this boot. When given, `safeStorage` and `secrets` are not used to build one.
+   */
+  secretStore?: SecretStore
   openExternal(url: string): Promise<void> | void
   desktop?: DesktopHooks
+  /** Shortcut rows for the reference corpus (the shell maps shared/view SHORTCUTS to this; main never imports renderer code). */
+  referenceShortcuts?: readonly ShortcutRow[]
+  /** The command line shim state for the reference status snapshot (desktop shell only). */
+  cliShimStatus?: () => CliCommandStatus | Promise<CliCommandStatus>
   /** ORGAI_MOCK === '1': registers the scripted mock adapter and keeps discovery off the real home. */
   mock: boolean
   platform?: NodeJS.Platform
@@ -112,9 +146,40 @@ export interface BootOrgAIHostOptions {
   processEnv?: NodeJS.ProcessEnv
   /** connections.init / startDiscovery, communityPrices.start (not under mock), usageMonitor.start. Default true. */
   startBackground?: boolean
+  /** Per-kind overrides of startBackground (Wave 7). */
+  background?: HostBackgroundOptions
   housekeeping?: Partial<HousekeepingSteps>
-  /** Called once a drain finished (the desktop shell quits the app). */
-  onDrained?: () => void
+  /**
+   * Called once a shutdown released ownership (Wave 7, cli-standalone.md 4.3: after the writers settled and the socket
+   * closed, or at the hard limit): the process may exit now. Desktop: quit the app; inproc: resolve `closed`.
+   */
+  onDrained?: (info: ShutdownReleaseInfo) => void
+  /**
+   * The socket server's graceful close (HostSocketServer.closeGracefully), run by the shutdown before the release so the
+   * host.stop reply is flushed. Absent = no socket to close here.
+   */
+  closeSocket?: (graceMs: number) => Promise<void>
+  /**
+   * The shutdown's hard limit (4.3): once the host's descendants are gone, end the process (its exit hook releases
+   * ownership), so no writer of this host can run after the data folder is given up. Every real entry point passes one
+   * (desktop: process.exit; inproc: startInprocHost's, which tells the terminal and exits);
+   * absent (tests) = release, then onDrained.
+   */
+  exitAtHardLimit?: () => void
+  /**
+   * Processes the hard limit never kills, with their subtrees (the desktop: Electron's own GPU, renderer and utility
+   * helpers from app.getAppMetrics, which Chromium would relaunch as fast as they die). Absent = none.
+   */
+  shutdownExcludePids?: () => number[]
+  /** The shutdown's hard limit and its tree-kill waits; production uses the defaults (tests shorten them). */
+  shutdownLimits?: { hardLimitMs?: number; kill?: { termGraceMs?: number; waitMs?: number; stepMs?: number } }
+  /** Authenticated terminal sessions (HostSocketServer.terminalSessionCount), for the host.status counts. Absent = 0. */
+  terminalSessions?: () => number
+  /**
+   * More background work the drain stops at once (after the host's own: Team assistant, OAuth flows, skill evaluation),
+   * e.g. the desktop's repository clones. A throw is logged.
+   */
+  quiesce?: () => void
 }
 
 export interface OrgAIHost {
@@ -128,19 +193,28 @@ export interface OrgAIHost {
   projectOrHarness(projectId: string): Project | null | undefined
   hostControl: HostControl
   /**
-   * Whether host.hello accepts terminal clients now and the most it grants (socketServer.ts): AppSettings.terminalServer,
-   * or this session of a headless / in-process boot while the user has made no choice; the level from
-   * AppSettings.terminalAccessLevel on every host kind (an in-process host's own CLI proves itself with the owner key).
+   * The one shutdown sequence (Wave 7, cli-standalone.md 4.3): host.stop, idle exit and every entry point's exit path
+   * (desktop Quit, signals, inproc cleanup) go through it; ownership is released only after the writers settled.
    */
-  terminalAccess(): HostTerminalAccess
+  shutdown: ShutdownCoordinator
   /** Stop background timers and probes (before-quit). Idempotent. */
   dispose(): void
 }
 
-/** OrgAIHost.terminalAccess(). */
-export interface HostTerminalAccess {
-  enabled: boolean
-  level: TerminalAccessLevel
+/**
+ * An approved appSettings proposal, applied exactly like settings:set (dispatcher): the changes merge onto the stored
+ * settings, settingsSetArgs keeps every main-owned field, SettingsStore.set normalizes and notifies its listeners
+ * (theme, settings:changed). Throws a readable sentence on a refused value; nothing is saved then. Exported for tests.
+ */
+export function applyAppSettingsPayload(settings: Pick<SettingsStore, 'get' | 'set'>, payload: AppSettingsProposalPayload): void {
+  const stored = settings.get()
+  settings.set(settingsSetArgs(withAppSettingChanges(stored, payload.changes), stored))
+}
+
+/** The other product's default data folder: the CLI's for the app, the app's for the CLI (the gate protects its control files). */
+function otherProductDataDir(hostKind: HostKind): string {
+  const dir = hostKind === 'desktop' ? cliUserDataDir : platformUserDataDir
+  return join(dir(process.platform, process.env, homedir()), 'data')
 }
 
 export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
@@ -171,28 +245,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   settings.onChange(broadcastSettings)
 
   const runStore = new RunStore(dataDir)
-  const secrets = new SecretStore(dataDir, opts.safeStorage, opts.secrets)
-  // A headless or in-process host exists to serve the CLI: it accepts terminal clients for this session (cli-spec 1 /
-  // 3.3, "enabled when ... launches via orgai"; AppSettings.terminalServer) without saving that, so the desktop app
-  // never inherits an open socket nobody chose (review H2). A choice made in App settings (terminalServerChosen)
-  // stands: off means host.hello refuses terminal clients here too.
-  const sessionTerminal = hostKind !== 'desktop' && settings.get().terminalServer !== true && settings.get().terminalServerChosen !== true
-  if (hostKind !== 'desktop' && settings.get().terminalServer !== true) {
-    log.info(
-      sessionTerminal
-        ? `Terminal access is on for this ${hostKind} host's session only (not saved).`
-        : `Terminal access is off in App settings; this ${hostKind} host refuses terminal clients until it is turned on.`
-    )
-  }
-  const terminalAccess = (): HostTerminalAccess => {
-    const s = settings.get()
-    return {
-      enabled: s.terminalServer === true || (sessionTerminal && s.terminalServerChosen !== true),
-      // The same on every host kind (review H2): an in-process host's own CLI gets every scope through its in-memory
-      // owner key (socketServer.ts ownerKey), never through this level, so another client of it is capped too.
-      level: s.terminalAccessLevel === 'full' ? 'full' : 'operate'
-    }
-  }
+  const secrets = opts.secretStore ?? new SecretStore(dataDir, opts.safeStorage, opts.secrets)
+  // Socket access is fixed by the host kind (no setting): only the orgai process's in-process host answers a socket, and
+  // only its own process through the owner proof (every scope); the desktop opens no socket at all.
   // `adapters` is declared below and only read when discovery runs.
   let adapters: { claude: ClaudeAdapter; codex: CodexAdapter; mock?: MockAdapter }
   const connections = new ConnectionService({
@@ -239,7 +294,10 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     // Library changes that save a project (unlink on remove, promote) reach every client like a run's project update.
     onProjectChanged: emitProject,
     // `orgai mcp auth` (announceUrl): the authorization URL reaches 'connections' subscribers (cli-spec 6.3(5)).
-    onAuthorizeUrl: (u) => events.emit(IPC.connectionsEvent, { type: 'mcp.authorize', authorize: u })
+    onAuthorizeUrl: (u) => events.emit(IPC.connectionsEvent, { type: 'mcp.authorize', authorize: u }),
+    // Wave 7 (round 6 item 9): only an authorization's final commit holds a mutation lease. `activityRef` is set below,
+    // before any call can arrive.
+    commitLease: (label) => (activityRef ? activityRef.acquire('inFlightRpcMutations', label) : () => {})
   })
   const skills = new SkillService({
     dataDir,
@@ -293,8 +351,10 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const keepRunsFor = (projectId: string): number => projects.get(projectId)?.keepRuns ?? DEFAULT_KEEP_RUNS
   // complete() (org chart drafts) has no project: use the enabled Codex-capable connection, OpenAI first.
   const codexCompletion = (): RunConnection | undefined => {
-    const c = settings.get().connections
-    const connection = c.openai.enabled ? 'openai' : c.litellm.enabled ? 'litellm' : undefined
+    const s = settings.get()
+    // OpenAI first, then the first enabled proxy that has a base URL and a stored key.
+    const proxy = (s.proxies ?? []).find((p) => p.enabled && p.hasApiKey && (p.openaiBaseUrl?.trim() || p.anthropicBaseUrl?.trim()))
+    const connection: ConnectionId | undefined = s.connections.openai.enabled ? 'openai' : proxy?.id
     if (!connection) return undefined
     try {
       return connections.runConnection(undefined, { adapter: 'codex', connection, mismatched: [] })
@@ -306,12 +366,13 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   // The scripted mock adapter (no tokens) is opt-in; a project uses it only when its provider.id is "mock".
   adapters = {
     claude: new ClaudeAdapter(),
-    codex: new CodexAdapter({ completionConnection: codexCompletion }),
+    // codexHome: the catalog override (codexNativeCatalog.ts) writes only into the Codex home the connection service assigns.
+    codex: new CodexAdapter({ completionConnection: codexCompletion, codexHome: codexHomeDir(dataDir) }),
     ...(mockAdapter ? { mock: new MockAdapter() } : {})
   }
-  // A LiteLLM run that ends changed the key's spend: re-read it once the proxy has written it (it batches spend
+  // A proxy run that ends changed the key's spend: re-read it once the proxy has written it (it batches spend
   // writes); each end restarts the one timer, so the last run's spend is read. Set once the usage monitor exists.
-  let refreshLiteLLMSpend: (() => void) | undefined
+  let refreshProxySpend: (() => void) | undefined
   let spendTimer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
   // Set once RunManager exists; work-run ends feed the proactive Team review (never setup-like or harness runs).
@@ -324,23 +385,68 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       const summary = runManager?.summaryOf(event.runId)
       if (summary?.kind === 'work' && !isVirtualProjectId(summary.projectId)) capabilities?.runEnded(summary.projectId, event.runId)
     }
-    if (runManager?.summaryOf(event.runId)?.connection !== 'litellm') return
+    const endedOn = runManager?.summaryOf(event.runId)?.connection
+    if (endedOn === undefined || isBuiltinConnectionId(endedOn)) return
     if (disposed) return
     clearTimeout(spendTimer)
     spendTimer = setTimeout(() => {
       spendTimer = undefined
-      refreshLiteLLMSpend?.()
+      refreshProxySpend?.()
     }, LITELLM_SPEND_DELAY_MS)
   }
   let activityRef: HostActivityTracker | undefined
+  /** Set once the dispatcher exists (below); the drain's quiesce aborts its model calls (draft:orgChart). */
+  let dispatcherRef: HostDispatcher | undefined
+  // Self-knowledge: OrgAI answers about itself (reference service, built lazily on first query) and can configure itself.
+  const reference = createAppReference({
+    shortcuts: opts.referenceShortcuts,
+    status: {
+      appVersion: env.appVersion,
+      platform,
+      dataDir,
+      mock: mockAdapter,
+      hostKind,
+      settings: () => settings.get(),
+      connections: () => connections.list(),
+      projectCount: () => projects.list().length,
+      mcpLibraryCount: () => mcp.libraryEntries().length,
+      skillLibraryCount: () => skills.libraryList().length,
+      ...(opts.cliShimStatus ? { cliShim: opts.cliShimStatus } : {})
+    }
+  })
+  // Run outputs (types.ts "Run outputs"): one service for the harness tools (RunManager) and the outputs:* channels.
+  // The OS trash only on the desktop (Electron shell.trashItem); every other host deletes for good. The service raises
+  // outputs:changed itself for the versions the watcher captures and the revision ends it settles.
+  const outputs = createOutputsService(dataDir, {
+    ...(opts.desktop?.trashItem ? { trash: opts.desktop.trashItem } : {}),
+    onChange: (projectId, ids, what) => events.emit(OUTPUTS_IPC.outputsChanged, { projectId, ids, what })
+  })
+  const outputWatcher = createOutputWatcher({
+    service: outputs,
+    scopeOf: (projectId) => {
+      const p = projects.get(projectId)
+      return p ? outputScopeOf(p, dataDir) : null
+    },
+    emit: (event) => events.emit(OUTPUTS_IPC.outputsChanged, event)
+  })
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    selfKnowledge: {
+      reference: (q, o) => reference.query(q, o),
+      navigate: (e) => opts.desktop?.navigate?.(e) ?? false,
+      settings: () => settings.get(),
+      // As settings:set (dispatcher): merge onto the stored settings through settingsSetArgs; SettingsStore.set
+      // normalizes and notifies its listeners (theme, settings:changed with the effective default).
+      applyAppSettings: (payload) => applyAppSettingsPayload(settings, payload)
+    },
     teamFiles,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
-    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir),
+    // Wave 7: plus the vault's key file, re-read per call (the vault may change; cli-standalone.md 8.4).
+    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles(), otherProductDataDirs: [otherProductDataDir(hostKind)] }),
     // cli-spec 6.2(1) humanGraceMs: open windows (index.ts source) plus TUI / interactive sockets (socketServer's
     // attachedClientCount, which leaves non-interactive CLI exec sockets out). `activity` is created further down;
     // before that (never during a run) there is nobody to count.
+    noWaitPolicy: hostKind === 'inproc',
     interactiveClients: () => (activityRef ? activityRef.snapshot().counts.interactiveClients : 0),
     // "Always allow for project" cards: append folders / switch to Accept edits on the stored project (the store cleans them).
     saveProjectPermissions: (projectId, patch) =>
@@ -360,14 +466,29 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     knowledge: knowledgeStore(dataDir),
     engagementChanged: (event) => events.emit(IPC.projectsEngagementChanged, event),
+    outputs,
+    outputsChanged: (event) => events.emit(OUTPUTS_IPC.outputsChanged, event),
     orgTemplate: (templateId, project) => templates.forRun(templateId, project),
     // An auto-resumed build session gets its checked workspace back; a vanished one throws (resumeNow reports it).
     buildProject: (summary) => harnessProjectFor(summary, connections.effectiveSettings(), dataDir, mockAdapter),
     opusGuardThreshold: () => settings.get().opusGuardThreshold,
     catalog: () => connections.catalog(),
+    modelsError: (id) => connections.modelsErrorFor(id),
     appSettings: () => settings.get(),
     communityPrices: () => communityPrices.get(),
     resolveConnection: (project, choice) => connections.runConnection(project, choice),
+    // Bridged reports (multi-provider org charts): a role on another connection runs on its own RunConnection.
+    resolveRoleConnection: (project, target) => connections.runConnectionFor(project, target),
+    // Architect drafts may name any configured connection; their tiers map through that connection's own mapping.
+    connectionModels: () => {
+      const s = settings.get()
+      return connectionIds(s)
+        .filter((id) => connectionConfigured(id, s))
+        .map((id) => {
+          const c = connections.importModelContext(id)
+          return { connection: id, name: c.connectionName, tierModels: c.tierModels, models: c.catalog.map((m) => m.id) }
+        })
+    },
     fastModel: (_project, choice) => connections.fastModel(choice),
     mcp: {
       enabledServers: (project) => mcp.enabledServers(project),
@@ -462,11 +583,15 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const kit = new KitService({ appVersion: env.appVersion, platform, skills, mcp, templates })
 
   const startBackground = opts.startBackground !== false
-  if (startBackground) {
-    connections.init()
-    connections.startDiscovery()
-    if (!mockAdapter) communityPrices.start()
+  const background: Required<HostBackgroundOptions> = {
+    connectionProbes: opts.background?.connectionProbes ?? startBackground,
+    modelDiscovery: opts.background?.modelDiscovery ?? startBackground,
+    communityPrices: opts.background?.communityPrices ?? startBackground,
+    usageMonitor: opts.background?.usageMonitor ?? startBackground
   }
+  if (background.connectionProbes) connections.init()
+  if (background.modelDiscovery) connections.startDiscovery()
+  if (background.communityPrices && !mockAdapter) communityPrices.start()
 
   // Plan usage without a run: at boot, every 10 minutes while idle, and on request from the meter.
   const monitor = new UsageMonitor({
@@ -474,14 +599,14 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     auth: () => settings.get().providerAuth,
     broadcast: emitRun,
     liveRuns: () => rm.liveRunCount(),
-    extraProbes: [() => connections.probeCodexUsage(), { key: 'litellm', probe: () => connections.probeLiteLLMUsage() }]
+    extraProbes: [() => connections.probeCodexUsage(), { key: 'proxies', probe: () => connections.probeProxyUsages() }]
   })
   // Every usage.status a run or probe sends is merged onto the monitor's newest Claude status.
   const unobserve = events.on((channel, payload) => {
     if (channel === IPC.runEvent) monitor.observe(payload as RunEvent)
   })
-  refreshLiteLLMSpend = () => void monitor.refreshProbe('litellm')
-  if (startBackground) monitor.start()
+  refreshProxySpend = () => void monitor.refreshProbe('proxies')
+  if (background.usageMonitor) monitor.start()
 
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
   // The virtual projects (harness, quick, skills) own runs without being stored: their runs survive restarts.
@@ -500,20 +625,59 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   steps.sweepStaleSkillDirs(ctx)
   if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
 
+  // Wave 7 (cli-standalone.md 4.3): the one shutdown sequence. The activity tracker drains and settles the writers; the
+  // coordinator closes the socket, releases ownership (never before the writers are done), ends the process through
+  // onDrained, and at SHUTDOWN_HARD_LIMIT_MS kills this process's descendants and exits.
+  const shutdown = new ShutdownCoordinator({
+    release: () => ownership.release(),
+    ...(opts.closeSocket ? { closeSocket: opts.closeSocket } : {}),
+    handoffFacts: () => ({ ...rm.handoffFacts(), terminalSessions: opts.terminalSessions?.() ?? 0 }),
+    ...(opts.onDrained ? { onReleased: opts.onDrained } : {}),
+    ...(opts.exitAtHardLimit ? { exitAtHardLimit: opts.exitAtHardLimit } : {}),
+    ...(opts.shutdownExcludePids ? { excludePids: opts.shutdownExcludePids } : {}),
+    ...(opts.shutdownLimits?.hardLimitMs !== undefined ? { hardLimitMs: opts.shutdownLimits.hardLimitMs } : {}),
+    ...(opts.shutdownLimits?.kill ? { killTiming: opts.shutdownLimits.kill } : {}),
+    log: (m) => log.info(m)
+  })
   // cli-spec 3.2(4): what keeps the host from going idle and how it drains.
   const activity = new HostActivityTracker({
     ownership,
     idleMs: daemonIdleMs(processEnv),
-    onDrained: opts.onDrained,
-    // A draining host starts no Team review: without this, every run forceStop ends would arm a run-ended review
-    // (a backgroundTasks lease the settle step then waits on, and a model call from a host giving up its data folder).
-    quiesce: () => caps.dispose(),
+    ...shutdown.activityHooks(),
+    // A draining host starts no background work and abandons what waits on a user or a model (round 6 item 9): no
+    // Team review (every run forceStop ends would arm one), no OAuth flow, no skill evaluation model step, no org chart
+    // draft, plus the entry point's own (the desktop's repository clones).
+    quiesce: () => {
+      caps.dispose()
+      mcp.dispose()
+      skillEvaluation.dispose()
+      // `claude auth status` children have their cwd in the data folder: end them; the drain waits for their exit
+      // (the tracker's settleOnly, never counted toward a stop refusal) before ownership is released and the folder can be removed.
+      connections.abortProbes()
+      // An org chart draft's model call (no timeout of its own) would hold its mutation lease until the hard limit.
+      dispatcherRef?.quiesce()
+      if (opts.quiesce) {
+        try {
+          opts.quiesce()
+        } catch (e) {
+          log.warn(`Quiescing the entry point's background work failed: ${(e as Error)?.message ?? String(e)}`)
+        }
+      }
+    },
     forceStop: () => rm.stopAll({ reason: 'quit' }),
-    // As the desktop quit's quitGate: past the deadline (or on a throw) write every live run as cut by the app now.
+    // Every live run, waiting ones included: a non-forced drain ends those too, as cut
+    // by the app ("Ended when OrgAI closed", continuable), before the writers settle and ownership is released.
+    liveRuns: () => rm.liveRunCount(),
+    // Auth probe children (abortProbes at quiesce) are awaited in the settle phase only: never a stop refusal.
+    settleOnly: () => authChildrenInFlight(),
+    // Past the deadline (or on a throw) write every live run as cut by the app now (RunManager.markQuit).
     forceStopFallback: () => rm.markQuit(),
     log: (m) => log.info(m)
   })
   activityRef = activity
+  shutdown.attachActivity(activity)
+  // Wave 7 (cli-standalone.md 4.3): background vault work (creation, reconciliation, write-back) holds a lease.
+  secrets.attachLeases((label) => activity.acquire('backgroundTasks', label))
   // Runs that only wait on the user (idle, a card open, held) do not keep a host busy (review H3; runActivity.ts).
   activity.addSource('liveRuns', () => rm.busyRunCount())
   activity.addSource('pausedAutoResumes', () => rm.activeResumeTimerCount() + rm.inFlightResumeCount())
@@ -532,9 +696,15 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       mock: mockAdapter,
       pid: ownership.info.pid,
       startedAt: ownership.info.startedAt,
-      activity: activity.snapshot()
+      activity: activity.snapshot(),
+      // The run counts the TUI's quit confirm shows (host.status).
+      ...((): { handoff?: HostStatusResult['handoff'] } => {
+        const facts = shutdown.handoffFacts()
+        return facts ? { handoff: facts } : {}
+      })()
     }),
-    stop: (input) => activity.requestDrain(input)
+    // host.stop through the coordinator: the drain.
+    stop: (input) => shutdown.stop(input)
   }
 
   const services: HostServices = {
@@ -555,9 +725,12 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     templates,
     kit,
     teamFiles,
+    outputs,
+    outputWatcher,
     events,
     activity,
     usage: { refresh: () => monitor.refresh() },
+    reference,
     env: {
       app: { getVersion: () => env.appVersion, getPath: () => env.userDataDir, isPackaged: env.isPackaged },
       platform,
@@ -565,18 +738,21 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       hostKind
     },
     ...(opts.desktop ? { desktop: opts.desktop } : {}),
-    host: hostControl
+    host: hostControl,
+    secrets
   }
   const dispatcher = new HostDispatcher(services)
+  dispatcherRef = dispatcher
 
   // Stores built, probes started, housekeeping done: advertise the host as ready.
   ownership.markReady()
-  // Background hosts exit when idle; the desktop host lives as long as its windows (Wave 2 adds background mode).
-  if (hostKind !== 'desktop') activity.armIdleExit()
+  // No host arms an idle exit: the desktop host lives as long as its windows, and an inproc host as long as its terminal
+  // command ('Press Ctrl+C to stop'); an idle drain would end runs waiting on the user.
 
   const dispose = (): void => {
     if (disposed) return
     disposed = true
+    outputWatcher.dispose()
     caps.dispose()
     connections.dispose()
     communityPrices.dispose()
@@ -585,7 +761,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     monitor.stop()
     activity.disarmIdleExit()
     unobserve()
+    // Wave 7 (cli-standalone.md 5.6): the vault's background retry timer (legacy-only app hosts).
+    secrets.dispose()
   }
 
-  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, terminalAccess, dispose }
+  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, dispose }
 }

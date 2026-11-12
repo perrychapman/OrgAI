@@ -1,29 +1,30 @@
-// Headless `orgai exec` / `orgai resume --exec` / `orgai decide` end to end (cli-spec 6.2, Wave 3). Run `npm run build`
-// first. Mock adapter only (ORGAI_MOCK=1): no tokens. No Electron: every host here is `--host inproc` (a pure-Node host
-// in the CLI process), either per command or a long-lived `daemon start --host inproc --foreground`.
+// Headless `orgai exec` / `orgai resume --exec` end to end (cli-spec 6.2; cli-standalone-default.md 4.1, 4.3). Run
+// `npm run build` first. Mock adapter only (ORGAI_MOCK=1): no tokens. No Electron: every command hosts itself in its own
+// process (a pure-Node host), one at a time.
 //
-// 1. In an unregistered fixture repo: `exec` exits 2 (not a project). `--host inproc exec --create-project` creates
-//    it and completes ([mock:exec-plan], 0 'completed'); then one exec per outcome: --team single (0
-//    'completed-unplanned'), [mock:exec-blocked] (3 'blocked'), --max-budget 0 (3 'budget-exceeded'), the default
-//    script with --on-permission fail (3 'needs-decision'), [mock:turn-fail] (1 'failed'), [mock:rate-limit] (4
-//    'rate-limited'), [mock:exec-question] with --on-question conservative (0 'completed-unplanned'). stream-json lines all parse and end
-//    with a `result` line.
-// 2. A long-lived host (`daemon start --host inproc --foreground`): `--host daemon exec --on-permission wait` on the
-//    default script waits on a card; `inbox --output-format json` shows its request id; `decide <id> deny` exits 0
-//    ('applied'), a second decide exits 1, `decide nope deny` exits 2. On a [mock:exec-slow] exec run, `runs send`,
-//    `runs interrupt` and `runs stop` exit 0 and the exec process ends 130 'interrupted'. SIGINT to an exec process
-//    ends it 130 'interrupted'. `resume R1 --exec --prompt more` exits 0, and `resume --exec --prompt-file` exits 0.
-// 1 also runs `exec --prompt-file` with a file holding quotes, & and | (the way untrusted text is passed on Windows,
-// review M12).
+// 1. In an unregistered fixture repo: `exec` exits 2 (not a project). `exec --create-project` creates it and completes
+//    ([mock:exec-plan], 0 'completed'); then one exec per outcome: --team single (0 'completed-unplanned'),
+//    [mock:exec-blocked] (3 'blocked'), --max-budget 0 (3 'budget-exceeded'), the default script with --on-permission
+//    fail (3 'needs-decision'), [mock:turn-fail] (1 'failed'), [mock:rate-limit] (4 'rate-limited'), [mock:exec-question]
+//    with --on-question conservative (0 'completed-unplanned'). stream-json lines all parse and end with a `result`
+//    line. `exec --prompt-file` with a file holding quotes, & and | (the way untrusted text is passed on Windows,
+//    review M12).
+// 2. A `wait` decision policy is refused (exit 2): nothing but this process could answer. SIGINT to an exec process ends
+//    it 130 'interrupted' (POSIX). `resume R1 --exec --prompt more` exits 0, and `resume --exec --prompt-file` exits 0.
+// 3. Run control (cli-parity 3.5): `runs model R1` lists the selection and choices (json, exit 0); `resume R1
+//    --cancel-auto-resume` on an ended run exits 1 with the "not paused any more" hint (a pause lives only in its own
+//    orgai); `resume R1 --now` without a terminal exits 2; `--goal fastest` on bare orgai exits 2 (exec's parser).
 //
 // win32 (review H4): child.kill('SIGINT') is TerminateProcess there, so no handler would run and the exit code would
-// not be 130. The SIGINT case is skipped with a log line and the same stop is driven through `orgai runs stop` on a
-// fresh exec run (no interrupt first); the long-lived daemon is ended with `daemon stop --force`, not SIGINT. The script
-// has not been run on Windows yet.
+// not be 130. The SIGINT case is skipped with a log line. The script has not been run on Windows yet.
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { APP_DIR, DATA_DIR, allowFullTerminalAccess, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { APP_DIR, DATA_DIR, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
+import { writeFileSync as markWrite } from 'node:fs'
+import { join as markJoin } from 'node:path'
+// The CLI marks its own data folder (spec 3.1); this script seeds files before the first command, so it marks it itself.
+markWrite(markJoin(DATA_DIR, 'product.json'), `${JSON.stringify({ product: 'orgai-cli', version: 1 })}\n`, { mode: 0o600 })
 
 process.env.ORGAI_MOCK = '1'
 const CLI = path.join(APP_DIR, 'out', 'cli', 'orgai.mjs')
@@ -34,7 +35,7 @@ if (!fs.existsSync(CLI)) {
   process.exit(1)
 }
 
-const ENV = { ...process.env, ORGAI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1' }
+const ENV = { ...process.env, ORGAI_CLI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1' }
 delete ENV.ELECTRON_RUN_AS_NODE
 
 /** Start the CLI; returns { child, done } where done resolves { code, signal, out, err }. */
@@ -82,8 +83,6 @@ async function until(what, fn, ms = 30_000) {
   throw new Error(`timed out waiting for ${what}`)
 }
 
-const readDaemon = () => json(fs.existsSync(DAEMON_JSON) ? fs.readFileSync(DAEMON_JSON, 'utf8') : '')
-
 // Before W3-T4 lands the bundle has the contracts stub; skip rather than fail (this guard matches only its text).
 const probe = await cli(['exec', 'probe'], { cwd: APP_DIR })
 if (probe.err.includes('`orgai exec` is not built yet.')) {
@@ -92,15 +91,14 @@ if (probe.err.includes('`orgai exec` is not built yet.')) {
 }
 
 const repo = makeFixtureRepo('cli-exec')
-let daemon
 try {
   // ---------- 1. Per-command inproc host ----------
   const unregistered = await cli(['exec', 'do it'], { cwd: repo })
   check(unregistered.code === 2 && unregistered.err.includes('not an OrgAI project'), 'exec in an unregistered folder exits 2', show(unregistered))
 
-  /** One `--host inproc exec --output-format json` run; checks the exit code and the outcome. */
+  /** One `exec --output-format json` run; checks the exit code and the outcome. */
   async function execCase(name, args, code, outcome) {
-    const r = await cli(['--host', 'inproc', 'exec', '--output-format', 'json', ...args], { cwd: repo })
+    const r = await cli(['exec', '--output-format', 'json', ...args], { cwd: repo })
     const doc = json(r.out)
     check(r.code === code && doc?.outcome === outcome && doc?.exitCode === code, `${name}: exit ${code}, ${outcome}`, show(r))
     return doc
@@ -112,6 +110,7 @@ try {
   await execCase('[mock:exec-blocked]', ['[mock:exec-blocked] do it'], 3, 'blocked')
   await execCase('--max-budget 0', ['--max-budget', '0', 'Spend nothing'], 3, 'budget-exceeded')
   await execCase('default script with --on-permission fail', ['--on-permission', 'fail', 'Do the default work'], 3, 'needs-decision')
+  await execCase('--strict-delegation [mock:delegation-skip]', ['--strict-delegation', '[mock:delegation-skip] do it'], 3, 'delegation-incomplete')
   await execCase('[mock:turn-fail]', ['[mock:turn-fail] do it'], 1, 'failed')
   await execCase('[mock:rate-limit]', ['[mock:rate-limit] do it'], 4, 'rate-limited')
   // No plan: the turn-1 set-plan nudge runs, then the run settles unplanned. No window or TUI is open, so the
@@ -125,90 +124,80 @@ try {
   fs.writeFileSync(promptFile, '\ufeffSay "hi" & echo not-a-command | more\n', 'utf8')
   await execCase('exec --prompt-file (quotes, & and |)', ['--team', 'single', '--prompt-file', promptFile], 0, 'completed-unplanned')
 
-  const streamed = await cli(['--host', 'inproc', 'exec', '--output-format', 'stream-json', '--team', 'single', 'hello again'], { cwd: repo })
+  // Images: a PNG header is enough for the validator (magic bytes), a text file named .png is refused before any run starts.
+  const pngFile = path.join(DATA_DIR, 'cli-exec-shot.png')
+  fs.writeFileSync(pngFile, Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000002000001e221bc330000000049454e44ae426082', 'hex'))
+  await execCase('exec --image (repeatable)', ['--team', 'single', '--image', pngFile, '--image', pngFile, 'Describe the picture'], 0, 'completed-unplanned')
+  const fakePng = path.join(DATA_DIR, 'cli-exec-fake.png')
+  fs.writeFileSync(fakePng, 'not an image')
+  const badImage = await cli(['exec', '--team', 'single', '--image', fakePng, 'Describe the picture'], { cwd: repo })
+  check(badImage.code === 2 && badImage.err.includes('cli-exec-fake.png') && /not a supported image/.test(badImage.err), 'exec --image with a non-image file exits 2 naming the file', show(badImage))
+  const noImage = await cli(['exec', '--team', 'single', '--image', path.join(DATA_DIR, 'missing.png'), 'x'], { cwd: repo })
+  check(noImage.code === 2 && /cannot read the file/.test(noImage.err), 'exec --image with a missing file exits 2', show(noImage))
+
+  const streamed = await cli(['exec', '--output-format', 'stream-json', '--team', 'single', 'hello again'], { cwd: repo })
   const sl = lines(streamed.out)
   check(streamed.code === 0 && sl.length > 1 && sl.every((l) => l && l.schemaVersion === 1), 'stream-json: every line parses with schemaVersion', show(streamed))
   check(sl.at(-1)?.type === 'result' && sl.at(-1)?.outcome === 'completed-unplanned', 'stream-json ends with a result line', JSON.stringify(sl.at(-1))?.slice(0, 300))
   check(sl.some((l) => l?.type === 'event' && l.event?.type === 'run.finalized'), 'stream-json carries run.finalized', '')
 
-  // ---------- 2. A long-lived host ----------
-  // Its clients are other processes: decide needs Terminal access 'full', the user's choice (review H2). The
-  // per-command `--host inproc` runs above needed nothing: their own process proves itself with the owner key.
-  allowFullTerminalAccess()
-  daemon = start(['--host', 'inproc', 'daemon', 'start', '--foreground'], { cwd: repo })
-  await until('the inproc daemon to be ready', () => readDaemon()?.state === 'ready')
-
-  // A card that waits for a person; decide answers it.
-  const waiting = start(['--host', 'daemon', 'exec', '--output-format', 'json', '--on-permission', 'wait', 'Do the default work'], { cwd: repo })
-  const item = await until(
-    'a pending decision in the inbox',
-    async () => {
-      const r = await cli(['inbox', '--output-format', 'json'], { cwd: repo })
-      return json(r.out)?.items?.[0]
-    },
-    60_000
-  )
-  check(typeof item?.requestId === 'string', 'inbox --output-format json lists the waiting card', JSON.stringify(item))
-  const denied = await cli(['decide', item.requestId, 'deny'], { cwd: repo })
-  check(denied.code === 0, 'decide <id> deny exits 0 (applied)', show(denied))
-  const again = await cli(['decide', item.requestId, 'deny'], { cwd: repo })
-  check(again.code === 1, 'a second decide exits 1 (already resolved)', show(again))
-  const nope = await cli(['decide', 'nope', 'deny'], { cwd: repo })
-  check(nope.code === 2, 'decide on an unknown request exits 2', show(nope))
-  const waited = await waiting.done
-  check([0, 3].includes(waited.code) && typeof json(waited.out)?.outcome === 'string', 'the waiting exec ends with an outcome after the decision', show(waited))
-
-  // runs send / interrupt / stop on a slow exec run; stop finalizes it 'interrupted'.
-  let slowOut = ''
-  const slow = start(['--host', 'daemon', 'exec', '--output-format', 'stream-json', '[mock:exec-slow] take your time'], { cwd: repo, onOut: (o) => (slowOut = o) })
-  const slowRun = await until('the slow run to start', () => lines(slowOut).find((l) => l?.type === 'event')?.event?.runId, 30_000)
-  const sent = await cli(['runs', 'send', slowRun, 'a follow-up'], { cwd: repo })
-  check(sent.code === 0, 'runs send on the exec run exits 0', show(sent))
-  const interrupted = await cli(['runs', 'interrupt', slowRun], { cwd: repo })
-  check(interrupted.code === 0, 'runs interrupt exits 0', show(interrupted))
-  const stopped = await cli(['runs', 'stop', slowRun], { cwd: repo })
-  check(stopped.code === 0, 'runs stop exits 0', show(stopped))
-  const slowDone = await slow.done
-  const slowLast = lines(slowDone.out).at(-1)
-  check(slowDone.code === 130 && slowLast?.outcome === 'interrupted', 'runs stop ends the exec process 130, interrupted', show(slowDone))
+  // ---------- 2. Wait policies, SIGINT, resume ----------
+  const waitRefused = await cli(['exec', '--on-permission', 'wait', 'Do the default work'], { cwd: repo })
+  check(waitRefused.code === 2 && /wait is not available/.test(waitRefused.err), 'a wait decision policy is refused (exit 2)', show(waitRefused))
 
   if (process.platform === 'win32') {
-    // No POSIX signals on Windows: kill('SIGINT') would TerminateProcess the CLI before its handler runs.
-    log('SKIP SIGINT to an exec process on win32 (kill is TerminateProcess there); driving the stop through `orgai runs stop` instead')
-    let stopOut = ''
-    const viaStop = start(['--host', 'daemon', 'exec', '--output-format', 'stream-json', '[mock:exec-slow] stop me from another terminal'], { cwd: repo, onOut: (o) => (stopOut = o) })
-    const stopRun = await until('the exec run to stream', () => lines(stopOut).find((l) => l?.type === 'event')?.event?.runId, 30_000)
-    const stoppedOnly = await cli(['runs', 'stop', stopRun], { cwd: repo })
-    check(stoppedOnly.code === 0, 'win32: runs stop exits 0', show(stoppedOnly))
-    const stopDone = await viaStop.done
-    check(stopDone.code === 130 && lines(stopDone.out).at(-1)?.outcome === 'interrupted', 'win32: runs stop (no interrupt first) ends exec 130 with outcome interrupted', show(stopDone))
+    // No POSIX signals on Windows: kill('SIGINT') would TerminateProcess the CLI before its handler ran.
+    log('SKIP SIGINT to an exec process on win32 (kill is TerminateProcess there)')
   } else {
     // SIGINT to an exec process: runs:stop, then 130.
     let sawEvent = false
-    const sig = start(['--host', 'daemon', 'exec', '--output-format', 'stream-json', '[mock:exec-slow] wait for the signal'], { cwd: repo, onOut: (o) => (sawEvent ||= o.includes('"type":"event"')) })
+    const sig = start(['exec', '--output-format', 'stream-json', '[mock:exec-slow] wait for the signal'], { cwd: repo, onOut: (o) => (sawEvent ||= o.includes('"type":"event"')) })
     await until('the exec run to stream', () => sawEvent)
     sig.child.kill('SIGINT')
     const sigDone = await sig.done
     check(sigDone.code === 130 && lines(sigDone.out).at(-1)?.outcome === 'interrupted', 'SIGINT ends exec 130 with outcome interrupted', show(sigDone))
   }
 
-  const resumed = await cli(['--host', 'daemon', 'resume', 'R1', '--exec', '--prompt', 'more', '--output-format', 'json'], { cwd: repo })
+  const resumed = await cli(['resume', 'R1', '--exec', '--prompt', 'more', '--output-format', 'json'], { cwd: repo })
   check(resumed.code === 0 && json(resumed.out)?.exitCode === 0, 'resume R1 --exec --prompt more exits 0', show(resumed))
-  const resumedFromFile = await cli(['--host', 'daemon', 'resume', 'R1', '--exec', '--prompt-file', promptFile, '--output-format', 'json'], { cwd: repo })
+  const resumedFromFile = await cli(['resume', 'R1', '--exec', '--prompt-file', promptFile, '--output-format', 'json'], { cwd: repo })
   check(resumedFromFile.code === 0 && json(resumedFromFile.out)?.exitCode === 0, 'resume R1 --exec --prompt-file exits 0', show(resumedFromFile))
+  const resumedImage = await cli(['resume', 'R1', '--exec', '--prompt', 'and this', '--image', pngFile, '--output-format', 'json'], { cwd: repo })
+  check(resumedImage.code === 0 && json(resumedImage.out)?.exitCode === 0, 'resume R1 --exec --image exits 0', show(resumedImage))
+  const resumeNoExec = await cli(['resume', 'R1', '--image', pngFile], { cwd: repo })
+  check(resumeNoExec.code === 2 && /--image needs --exec/.test(resumeNoExec.err), 'resume --image without --exec exits 2', show(resumeNoExec))
+
+  // Run logs and the auto-continue count in runs show.
+  const logsShown = await cli(['runs', 'show', 'R1', '--logs', '--level', 'all'], { cwd: repo })
+  check(logsShown.code === 0 && /Logs \(all levels; \d+ of \d+\):/.test(logsShown.out), 'runs show --logs --level all prints the run log', show(logsShown))
+  const logsBadLevel = await cli(['runs', 'show', 'R1', '--logs', '--level', 'loud'], { cwd: repo })
+  check(logsBadLevel.code === 2 && /--level must be one of/.test(logsBadLevel.err), 'runs show --level loud exits 2', show(logsBadLevel))
+
+  // ---------- 3. Run control ----------
+  const models = await cli(['runs', 'model', 'R1', '--output-format', 'json'], { cwd: repo })
+  check(models.code === 0 && typeof json(models.out)?.runId === 'string' && Array.isArray(json(models.out)?.choices), 'runs model R1 lists the selection and the choices', show(models))
+  const cancelEnded = await cli(['resume', 'R1', '--cancel-auto-resume'], { cwd: repo })
+  check(cancelEnded.code === 1 && cancelEnded.err.includes('is not paused any more'), 'resume --cancel-auto-resume on an ended run exits 1 with the hint', show(cancelEnded))
+  const nowNoTty = await cli(['resume', 'R1', '--now'], { cwd: repo })
+  check(nowNoTty.code === 2 && nowNoTty.err.includes('needs a terminal'), 'resume --now without a terminal exits 2', show(nowNoTty))
+  const badGoal = await cli(['--goal', 'fastest', '--', 'do it'], { cwd: repo })
+  check(badGoal.code === 2 && badGoal.err.includes('--goal must be one of balanced, speed, cost.'), "bare orgai validates --goal with exec's parser", show(badGoal))
 } catch (e) {
   check(false, 'cli-exec ran to the end', e instanceof Error ? e.stack : String(e))
 } finally {
-  if (daemon) {
-    // win32: SIGINT would TerminateProcess the foreground daemon and leave daemon.json behind; ask it to stop instead.
-    if (process.platform === 'win32') await cli(['daemon', 'stop', '--force'], { cwd: APP_DIR, timeoutMs: 30_000 }).catch(() => undefined)
-    else daemon.child.kill('SIGINT')
-    const t = setTimeout(() => daemon.child.kill('SIGKILL'), 20_000)
-    await daemon.done
-    clearTimeout(t)
+  // An exec process must leave no host behind: a leftover daemon.json fails the script and its pid is killed, so a later
+  // script on the same folder is not refused with exit 6.
+  const left = fs.existsSync(DAEMON_JSON) ? fs.readFileSync(DAEMON_JSON, 'utf8') : undefined
+  check(left === undefined, 'no host is left behind', left)
+  if (left !== undefined) {
+    try {
+      const pid = Number(JSON.parse(left).pid)
+      if (Number.isInteger(pid) && pid > 1 && pid !== process.pid) process.kill(pid, 'SIGKILL')
+    } catch {
+      /* already gone or unreadable */
+    }
+    fs.rmSync(DAEMON_JSON, { force: true })
   }
-  // Never leave a host behind.
-  if (fs.existsSync(DAEMON_JSON)) await cli(['daemon', 'stop', '--force'], { cwd: APP_DIR, timeoutMs: 30_000 }).catch(() => undefined)
   removeFixture(repo)
   log('done')
 }

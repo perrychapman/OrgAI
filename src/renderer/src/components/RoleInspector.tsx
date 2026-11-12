@@ -2,9 +2,10 @@ import type { KeyboardEvent, ReactElement } from 'react'
 import { useState } from 'react'
 import { Trash2 } from 'lucide-react'
 import type { Project, Role } from '@shared/types'
-import { projectConnection } from '@shared/defaults'
+import { projectConnection, roleConnection } from '@shared/defaults'
 import RoleModelPicker from './RoleModelPicker'
 import RoleCapabilities from './team/RoleCapabilities'
+import RoleStaffingControls from './team/RoleStaffingControls'
 import type { CapabilityKind } from './team/CapabilityBlock'
 import { ROLE_COLORS, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
@@ -14,8 +15,9 @@ import { Checkbox } from './ui/Checkbox'
 import { Input } from './ui/Input'
 import { Textarea } from './ui/Textarea'
 import { initials } from '../lib/layout'
-import { setReportsTo, wouldCycle } from '../lib/roleOps'
+import { setReportsTo, withRequiredReport, withSpawnableToggled, wouldCycle } from '../lib/roleOps'
 import { roleModelSummary } from '../lib/roleModels'
+import { modelFoldSummary } from '../lib/roleConnection'
 
 interface Props {
   project: Project
@@ -33,7 +35,7 @@ interface Props {
 
 export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape, onAskAssistant }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
-  const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === projectConnection(project))?.connection.tierModels)
+  const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === roleConnection(role, project))?.connection.tierModels)
   const others = project.roles.filter((r) => r.id !== role.id)
   const isRoot = role.reportsTo === null
   const id = (name: string): string => `role-${name}`
@@ -43,10 +45,7 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
   const patch = (p: Partial<Role>): void =>
     updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, ...p } : r)))
 
-  const toggleSpawnable = (rid: string): void => {
-    const spawnable = role.spawnable.includes(rid) ? role.spawnable.filter((x) => x !== rid) : [...role.spawnable, rid]
-    patch({ spawnable, canSpawn: spawnable.length > 0 ? true : role.canSpawn })
-  }
+  const toggleSpawnable = (rid: string): void => patch(withSpawnableToggled(role, rid))
 
   const changeParent = (value: string): void => {
     const reportsTo = value || null
@@ -154,9 +153,10 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
         <details className="role-fold stack-2" open={roomy} data-testid="role-model-fold">
           <summary className="side-section-title" id={id('model')}>
             Model
-            <span className="role-fold-summary muted">{roleModelSummary(role, tierModels ?? {})}</span>
+            <span className="role-fold-summary muted">{modelFoldSummary(roleModelSummary(role, tierModels ?? {}), roleConnection(role, project), projectConnection(project))}</span>
           </summary>
           <RoleModelPicker project={project} role={role} />
+          <RoleStaffingControls project={project} role={role} />
         </details>
 
         <section className="stack-2" aria-labelledby={id('delegation')}>
@@ -168,17 +168,26 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
             <div className="check-grid">
               {others.length === 0 && <span className="hint">Add more roles to delegate to.</span>}
               {others.map((r) => (
-                <Checkbox
-                  key={r.id}
-                  checked={role.spawnable.includes(r.id)}
-                  onChange={() => toggleSpawnable(r.id)}
-                  label={
-                    <span className="row gap-2">
-                      <span className="avatar xs" style={{ ['--role' as string]: r.color }} aria-hidden="true" />
-                      {r.name}
-                    </span>
-                  }
-                />
+                <div key={r.id} className="row gap-3">
+                  <Checkbox
+                    checked={role.spawnable.includes(r.id)}
+                    onChange={() => toggleSpawnable(r.id)}
+                    label={
+                      <span className="row gap-2">
+                        <span className="avatar xs" style={{ ['--role' as string]: r.color }} aria-hidden="true" />
+                        {r.name}
+                      </span>
+                    }
+                  />
+                  <Checkbox
+                    checked={(role.requiredReports ?? []).includes(r.id)}
+                    onChange={(v) => patch(withRequiredReport(role, r.id, v))}
+                    disabled={!role.spawnable.includes(r.id)}
+                    title="The harness requires this report to be delegated to every time this role finishes"
+                    testId={`role-required-report-${r.slug}`}
+                    label="Required"
+                  />
+                </div>
               ))}
             </div>
           )}

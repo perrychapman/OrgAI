@@ -5,17 +5,20 @@ import { memo } from 'react'
 import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import { TOOL_CATALOG, type Role } from '@shared/types'
+import { projectConnection, roleConnection } from '@shared/defaults'
+import { selectedProject, useAppStore } from '../store/useAppStore'
+import { connectionTagTitle } from '../lib/roleConnection'
 import { initials } from '../lib/layout'
 import { roleChipLabel } from '../lib/roleModels'
 import { elevatedTools, toolsAriaLabel } from '../lib/roleCapabilities'
 import { capabilityLabel, capabilityParts, type CapabilityCounts } from '../lib/teamView'
 
-export type RoleFlowNode = Node<{ role: Role; reportCount: number; capabilities: CapabilityCounts }, 'role'>
+export type RoleFlowNode = Node<{ role: Role; reportCount: number; capabilities: CapabilityCounts; arrived?: boolean }, 'role'>
 
 const CAP_ICONS = { tools: Wrench, connections: Plug, skills: BookOpen } as const
 
 function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactElement {
-  const { role, reportCount, capabilities } = data
+  const { role, reportCount, capabilities, arrived } = data
   const parts = capabilityParts(capabilities)
   const elevated = elevatedTools(role.tools, TOOL_CATALOG)
   const { layout, nodeStyle } = useCanvasOptions()
@@ -28,14 +31,28 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
   const geo = stationGeometry(layout)
   const hs = (side: string): { style?: CSSProperties } => (station ? { style: stationHandleStyle(geo, side as `${Position}`) } : {})
   const isRoot = role.reportsTo === null
+  // The provider shows only when this role is pinned to a connection other than the project's (never on the root).
+  const base = useAppStore((s) => {
+    const p = selectedProject(s)
+    return p ? projectConnection(p) : undefined
+  })
+  const on = useAppStore((s) => {
+    const p = selectedProject(s)
+    return p ? roleConnection(role, p) : undefined
+  })
+  const pinnedOn = on && base && on !== base ? on : undefined
+  const chip = roleChipLabel(role, pinnedOn, base)
+  const pinnedTitle = pinnedOn && base ? connectionTagTitle(pinnedOn, base) : undefined
+  // Screen readers get the provider too (every node style), not only the tooltip (review M4).
+  const capsLabel = `${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}${pinnedTitle ? `. ${pinnedTitle}` : ''}`
   const tip = compact
-    ? [role.name, role.slug, roleChipLabel(role), role.canSpawn ? `leads ${reportCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
+    ? [role.name, role.slug, chip, pinnedTitle ?? '', role.canSpawn ? `leads ${reportCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
         .filter(Boolean)
         .join('\n')
     : undefined
   return (
     <div
-      className={`role-node ${selected ? 'selected' : ''} ${isRoot ? 'is-root' : ''}`}
+      className={`role-node ${selected ? 'selected' : ''} ${isRoot ? 'is-root' : ''} ${arrived ? 'motion-pop' : ''}`}
       data-style={nodeStyle}
       data-label={station ? geo.label : undefined}
       style={{ ['--role' as string]: role.color, ...(station ? { width: geo.width, height: geo.height } : {}) }}
@@ -67,15 +84,20 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
         </div>
       </div>}
       {compact && (
-        <span className="sr-only" data-testid="role-node-caps" role="img" aria-label={`${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}`} />
+        <span className="sr-only" data-testid="role-node-caps" role="img" aria-label={capsLabel} />
       )}
       {!compact && <div className="meta">
-        <span className="chip" title={role.model === 'inherit' ? undefined : role.model}>
-          {roleChipLabel(role)}
+        <span
+          className="chip"
+          data-testid="role-model-chip"
+          data-connection={pinnedOn}
+          title={[pinnedTitle, role.model === 'inherit' ? '' : role.model].filter(Boolean).join('\n') || undefined}
+        >
+          {chip}
         </span>
         {role.canSpawn && <span className="chip">leads {reportCount}</span>}
       </div>}
-      {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={`${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}`}>
+      {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={capsLabel}>
         {parts.length === 0 ? 'No tools' : parts.map((p, i) => (
           <span key={p.key} className="caps-part" aria-hidden="true">
             {i > 0 && <span className="caps-sep"> · </span>}

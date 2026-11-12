@@ -34,6 +34,8 @@ function setup(over: Partial<ConnectionServiceDeps> = {}, dir?: string) {
     broadcast: (e) => events.push(e),
     openExternal: async () => {},
     anthropicProbe: async () => ({ state: 'connected', detail: 'Claude Code login' }),
+    // Never look for or run a real codex (cli-standalone 6.2 runtime check).
+    codexRuntime: async () => ({ ok: true, binary: { path: '/fake/codex' } }),
     now: () => 1000,
     ...over
   })
@@ -321,5 +323,42 @@ describe('runConnection tiers and models', () => {
     expect(ctx.settings.get().connections.anthropic.tierModels.deep).toBe('opus')
     expect(rc.models).toEqual(['fable', 'opus', 'sonnet', 'haiku'])
     expect(ctx.service.runConnection(undefined, { adapter: 'mock', connection: 'anthropic', mismatched: [] }).tierModels).toBeUndefined()
+  })
+})
+
+describe('anthropic tier variables never force an alias onto an older model (compaction investigation 2026-11-10)', () => {
+  const choice = { adapter: 'claude' as const, connection: 'anthropic' as const, mismatched: [] }
+  const auto = () => project({ provider: { id: 'claude', label: 'x', auth: { kind: 'subscription' }, connection: 'anthropic' } })
+
+  it('discovery keeps what each alias resolves to; a tier mapped to an older id of that family sets no variable', async () => {
+    const lines: string[] = []
+    const list = [
+      { id: 'opus', resolvedModel: 'claude-opus-5-5' },
+      { id: 'sonnet', resolvedModel: 'claude-sonnet-5-5' },
+      { id: 'claude-sonnet-4-5' },
+      { id: 'haiku', resolvedModel: 'claude-haiku-5-5' }
+    ]
+    const ctx = setup({ anthropicModels: async () => list, logInfo: (m) => lines.push(m) })
+    await ctx.service.refresh({ connection: 'anthropic' })
+    expect(ctx.service.models({ connection: 'anthropic' }).find((m) => m.id === 'opus')?.upstream).toBe('claude-opus-5-5')
+    const s = ctx.settings.get()
+    // A stored mapping onto older ids (an earlier pick or an older install), plus a current and a cross-family pick.
+    const tierModels = { top: 'claude-opus-5-5', deep: 'claude-opus-4-5-20251101', everyday: 'claude-sonnet-4-5[1m]', fast: 'claude-haiku-5-5' }
+    ctx.settings.set({ ...s, connections: { ...s.connections, anthropic: { ...s.connections.anthropic, tierModels, autoTiers: [] } } })
+    expect(ctx.service.runConnection(auto(), choice).env).toEqual({ ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-opus-5-5', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-5-5' })
+    expect(lines.filter((l) => l.includes('older than'))).toEqual([
+      'Anthropic tier mapping names claude-opus-4-5-20251101, older than claude-opus-5-5; ANTHROPIC_DEFAULT_OPUS_MODEL is not set, so the alias runs on the CLI’s own current model.'.replace('’', "'"),
+      "Anthropic tier mapping names claude-sonnet-4-5[1m], older than claude-sonnet-5-5; ANTHROPIC_DEFAULT_SONNET_MODEL is not set, so the alias runs on the CLI's own current model."
+    ])
+    // Said once per value.
+    ctx.service.runConnection(auto(), choice)
+    expect(lines.filter((l) => l.includes('older than'))).toHaveLength(2)
+  })
+
+  it('without discovery nothing is known to be newer: a concrete mapping is still passed (staffing as before)', () => {
+    const ctx = setup()
+    const s = ctx.settings.get()
+    ctx.settings.set({ ...s, connections: { ...s.connections, anthropic: { ...s.connections.anthropic, tierModels: { deep: 'claude-opus-4-5' } } } })
+    expect(ctx.service.runConnection(auto(), choice).env).toEqual({ ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-5' })
   })
 })

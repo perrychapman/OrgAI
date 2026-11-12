@@ -1,6 +1,6 @@
 /**
- * A CliContext for unit tests: in-memory io, a scriptable fake HostClient, a fake read-only store, a fake launcher
- * and inproc handle, and signals the test fires by hand. Nothing here touches the network, spawns a process or
+ * A CliContext for unit tests: in-memory io, a scriptable fake HostClient, a fake read-only store, a fake
+ * inproc handle, and signals the test fires by hand. Nothing here touches the network, spawns a process or
  * spends tokens.
  */
 import type { DaemonInfo, HostRpcError, HostStatusResult, Project, RpcHelloResult, RunRecord, RunSummary } from '../../shared/types'
@@ -10,8 +10,8 @@ import type {
   ConnectResult,
   HostCallError,
   HostClient,
-  HostLauncher,
   InprocHostHandle,
+  InprocStartOptions,
   ProjectResolution,
   ReadOnlySnapshot
 } from '../types'
@@ -36,7 +36,7 @@ export class FakeHostClient implements HostClient {
     this.hello = {
       protocolVersion: 1,
       hostInstanceId: 'aaaaaaaaaaaa',
-      hostKind: 'desktop',
+      hostKind: 'inproc',
       appVersion: '0.0.0-test',
       dataDir: '/data/data',
       mock: true,
@@ -118,8 +118,8 @@ export interface FakeContextOptions {
   store?: FakeStore
   /** Override project resolution; default: --project by id or path, else the deepest project containing cwd. */
   resolveProject?: (projects: Project[]) => ProjectResolution
-  launcher?: Partial<HostLauncher>
-  inproc?: () => Promise<InprocHostHandle>
+  /** The host startInproc() returns (default: a fakeInproc()). */
+  inproc?: (opts?: InprocStartOptions) => Promise<InprocHostHandle>
   /** io.stdinIsTTY (default false). */
   stdinIsTTY?: boolean
 }
@@ -131,7 +131,8 @@ export interface FakeContext {
   /** Fire SIGINT / SIGTERM at the registered listeners. */
   signal(sig: 'SIGINT' | 'SIGTERM'): void
   connectCalls: { scopes: string[]; opts?: unknown }[]
-  launcherCalls: { method: string; args: unknown }[]
+  /** The options of each startInproc() call. */
+  inprocCalls: (InprocStartOptions | undefined)[]
   signalListeners(): number
 }
 
@@ -174,7 +175,7 @@ export function hostStatus(extra: Partial<HostStatusResult> = {}): HostStatusRes
   return {
     protocolVersion: 1,
     hostInstanceId: 'aaaaaaaaaaaa',
-    hostKind: 'desktop',
+    hostKind: 'inproc',
     state: 'ready',
     appVersion: '0.0.0-test',
     dataDir: '/data/data',
@@ -205,33 +206,13 @@ function defaultResolve(globals: CliGlobals, cwd: string, projects: Project[]): 
 export function fakeContext(o: FakeContextOptions = {}): FakeContext {
   let stdout = ''
   let stderr = ''
-  const globals: CliGlobals = { host: 'auto', outputFormat: 'text', color: false, secretEnv: [], ...o.globals }
+  const globals: CliGlobals = { outputFormat: 'text', color: false, secretEnv: [], ...o.globals }
   const listeners = new Set<(sig: 'SIGINT' | 'SIGTERM') => void>()
   const connectCalls: FakeContext['connectCalls'] = []
-  const launcherCalls: FakeContext['launcherCalls'] = []
+  const inprocCalls: FakeContext['inprocCalls'] = []
   const queue = [...(o.connect ?? [noHost()])]
   const store = o.store ?? {}
   const cwd = o.cwd ?? '/work'
-  const launcher: HostLauncher = {
-    resolve: () => {
-      launcherCalls.push({ method: 'resolve', args: undefined })
-      return o.launcher?.resolve ? o.launcher.resolve() : { command: '/bin/orgai-app', args: [], source: 'dev' }
-    },
-    spawn: (args) => {
-      launcherCalls.push({ method: 'spawn', args })
-      return o.launcher?.spawn ? o.launcher.spawn(args) : { pid: 999 }
-    },
-    // A read of daemon.json; not recorded in launcherCalls.
-    current: () => (o.launcher?.current ? o.launcher.current() : null),
-    waitForReady: async (args) => {
-      launcherCalls.push({ method: 'waitForReady', args })
-      return o.launcher?.waitForReady ? o.launcher.waitForReady(args) : null
-    },
-    waitForGone: async (args) => {
-      launcherCalls.push({ method: 'waitForGone', args })
-      return o.launcher?.waitForGone ? o.launcher.waitForGone(args) : true
-    }
-  }
   const ctx: CliContext = {
     globals,
     paths: o.paths ?? { userDataDir: '/data', dataDir: '/data/data' },
@@ -261,10 +242,9 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
       }
     },
     resolveProject: (projects) => (o.resolveProject ? o.resolveProject(projects) : defaultResolve(globals, cwd, projects)),
-    launcher,
-    startInproc: async () => {
-      if (!o.inproc) throw new Error('no inproc host in this test')
-      return o.inproc()
+    startInproc: async (opts) => {
+      inprocCalls.push(opts)
+      return o.inproc ? o.inproc(opts) : fakeInproc()
     },
     signals: {
       onInterrupt: (fn) => {
@@ -281,12 +261,12 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
       for (const fn of [...listeners]) fn(sig)
     },
     connectCalls,
-    launcherCalls,
+    inprocCalls,
     signalListeners: () => listeners.size
   }
 }
 
-/** A fake `--host inproc` handle: records stop() calls; `closed` resolves on the first stop. */
+/** A fake in-process host handle: records stop() calls; `closed` resolves on the first stop. */
 export function fakeInproc(status: Partial<HostStatusResult> = {}): InprocHostHandle & { stops: boolean[] } {
   const stops: boolean[] = []
   let resolveClosed!: () => void

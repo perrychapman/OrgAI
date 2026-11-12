@@ -63,12 +63,12 @@ describe('mock exec markers', () => {
     await session.finished
   })
 
-  it('[mock:exec-plan] with the driver on settles after its evaluation (plan done: no nudge)', async () => {
+  it('[mock:exec-plan] with the driver on settles after its evaluation (plan done: no nudge; no report, so no wait)', async () => {
+    // No report ever ended or runs, so the driver evaluates on the next timer tick instead of after continuationDelayMs
+    // (the pending-timer state is covered in continuation.test.ts).
     const { sessionP, ends, activity } = start(`Do it ${EXEC_PLAN_TOKEN}`, { autoContinue: true, continuationDelayMs: 300 })
     const session = await sessionP
     await vi.waitFor(() => expect(ends).toHaveLength(1), { interval: 5 })
-    // The evaluation timer is pending.
-    expect(session.settlement().continuationSettled).toBe(false)
     await vi.waitFor(() => expect(session.settlement().continuationSettled).toBe(true))
     expect(session.harnessMessages).toEqual([])
     expect(activity).toContain('continuation')

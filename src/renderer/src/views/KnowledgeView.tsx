@@ -89,7 +89,7 @@ function WriteNotice({ text, undoable, onUndo, onDismiss, onExpire }: { text: st
   }, [held, text])
   return (
     <div
-      className="knowledge-notice-wrap"
+      className="knowledge-notice-wrap motion-fade"
       onPointerEnter={() => setPointer(true)}
       onPointerLeave={() => setPointer(false)}
       onFocus={() => setFocus(true)}
@@ -215,8 +215,11 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
 
   // ---- view switch ----
   const [view, setView] = useState<ViewMode>(() => (readPref(VIEW_KEY + projectId) === 'graph' ? 'graph' : 'list'))
+  // Set by a user switch: the body that mounts next enters with the swap (never on first paint).
+  const [swapped, setSwapped] = useState(false)
   const changeView = (v: ViewMode): void => {
     setView(v)
+    setSwapped(true)
     writePref(VIEW_KEY + projectId, v)
   }
   const graphView = view === 'graph'
@@ -691,6 +694,7 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
           />
         ) : graphView ? (
           <KnowledgeNeural
+            enter={swapped}
             ref={neuralRef}
             projectId={projectId}
             graph={graph ?? emptyKnowledgeGraph()}
@@ -726,6 +730,8 @@ export default function KnowledgeView({ project }: { project: Project }): ReactE
           />
         ) : (
           <KnowledgeList
+            enter={swapped}
+            scope={`${projectId}|${filter.query}|${filter.kinds.join(',')}|${filter.origins.join(',')}|${filter.showRetired}`}
             ref={listRef}
             domId={listDomId}
             groups={groups}

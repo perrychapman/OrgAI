@@ -47,9 +47,15 @@ describe('role model choice', () => {
 })
 
 describe('exact model groups', () => {
-  it('groups a LiteLLM catalog by family', () => {
+  it('groups a proxy catalog by family and names the family in each option', () => {
     const g = exactModelGroups([m('claude-a', 'claude'), m('gpt-a', 'openai'), m('llama', 'other')], true, 'inherit')
-    expect(g.filter((x) => x.label).map((x) => x.label)).toEqual(['Claude', 'OpenAI', 'Other'])
+    expect(g.filter((x) => x.label).map((x) => x.label)).toEqual(['Claude', 'GPT', 'Other'])
+    expect(g.flatMap((x) => x.options).map((o) => o.label)).toEqual(['Not set (use the tier above)', 'claude-a · Claude', 'gpt-a · GPT', 'llama · Other'])
+  })
+  it('keeps a GPT exact model custom and readable on the chip', () => {
+    expect(roleModelChoice({ model: 'gpt-a' }, { deep: 'claude-a' })).toBe('custom')
+    expect(roleChipLabel({ model: 'gpt-a' })).toBe('gpt-a')
+    expect(roleChipLabel({ model: 'gpt-a', tier: 'fast' })).toBe('Fast')
   })
   it('lists other connections in one group and marks a missing model', () => {
     const g = exactModelGroups([m('a', 'claude')], false, 'gone')
@@ -67,5 +73,22 @@ describe('effort view', () => {
     const v = effortView('xhigh', 'codex')
     expect(v.options.at(-1)).toEqual({ value: 'xhigh', label: 'xhigh (not used on OpenAI)' })
     expect(v.note).toContain('xhigh')
+  })
+})
+
+describe('multi-provider labels', () => {
+  it('adds the connection to the chip and summary only when pinned elsewhere', () => {
+    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' }, 'openai', 'anthropic')).toBe('Everyday · OpenAI')
+    expect(roleChipLabel({ model: 'gpt-6-sol' }, 'openai', 'anthropic')).toBe('gpt-6-sol · OpenAI')
+    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' }, 'anthropic', 'anthropic')).toBe('Everyday')
+    expect(roleChipLabel({ model: 'sonnet', tier: 'everyday' })).toBe('Everyday')
+    expect(roleModelSummary({ model: 'gpt-x' }, tiers, 'openai', 'anthropic')).toBe('Custom · OpenAI')
+    expect(roleModelSummary({ model: 'sonnet' }, tiers, 'openai', 'anthropic')).toBe('Everyday · OpenAI')
+    expect(roleModelSummary({ model: 'inherit' }, tiers, 'openai', 'anthropic')).toBe('Inherited · OpenAI')
+  })
+  it('names the connection when an effort is dropped', () => {
+    expect(effortView('max', 'codex', 'OpenAI').note).toBe('max is not used on OpenAI; Default applies.')
+    expect(effortView('max', 'codex', 'Gateway').options.at(-1)?.label).toBe('max (not used on Gateway)')
+    expect(effortView('max', 'claude').unsupported).toBeUndefined()
   })
 })

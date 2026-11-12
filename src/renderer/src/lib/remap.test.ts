@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { Project, ProviderModel, Role } from '@shared/types'
+import type { ConnectionInfo, Project, ProviderModel, Role } from '@shared/types'
 import { builtinModels, mixedFamilyRefusal, newProject } from '@shared/defaults'
-import { describeRemap, otherFamilyRoles, proxyFamilyNotice, previewRemap, roleTier, startRefusal } from './remap'
+import { describeRemap, otherFamilyRoles, proxyFamilyNotice, previewRemap, roleTier, projectStartRefusal, routeLines, startRefusal, tierMappingLines } from './remap'
 
 function project(models: Record<string, string>): Project {
   const p = newProject({ name: 'Demo', path: '/tmp/demo', brief: '' })
@@ -39,6 +39,36 @@ describe('remap preview', () => {
     expect(res.changes).toEqual([])
   })
 
+  it('leaves a role on its own connection alone on a switch and lists it as kept', () => {
+    const p = project({ a: 'fable', b: 'sonnet', c: 'haiku' })
+    const pinned = { ...p, roles: p.roles.map((r, i) => (i === 1 ? { ...r, connection: 'openai' as const } : r)) }
+    const res = previewRemap({
+      project: pinned,
+      connection: 'openai',
+      tierModels: { top: 'gpt-5-codex', everyday: 'gpt-5-mini', fast: 'gpt-5-nano' },
+      catalog: openai,
+      switching: true
+    })
+    expect(res.changes.map((c) => c.roleId)).not.toContain(pinned.roles[1].id)
+    expect(res.kept).toEqual([{ roleId: pinned.roles[1].id, roleName: pinned.roles[1].name, connection: 'openai' }])
+    expect(previewRemap({ project: p, connection: 'openai', tierModels: {}, catalog: openai, switching: true }).kept).toBeUndefined()
+  })
+
+  it('keeps a role that names the project\'s own connection on a switch, like main (review M1)', () => {
+    const p = project({ a: 'fable', b: 'sonnet', c: 'haiku' })
+    const own = { ...p, provider: { ...p.provider, connection: 'anthropic' as const }, roles: p.roles.map((r, i) => (i === 1 ? { ...r, connection: 'anthropic' as const } : r)) }
+    const res = previewRemap({ project: own, connection: 'openai', tierModels: { everyday: 'gpt-5-mini' }, catalog: openai, switching: true })
+    expect(res.kept?.map((k) => k.roleId)).toEqual([own.roles[1].id])
+    expect(res.changes.map((c) => c.roleId)).not.toContain(own.roles[1].id)
+  })
+
+  it('a mapping edit previews only roles running on the edited connection (review M3)', () => {
+    const p = project({ a: 'fable', b: 'sonnet', c: 'haiku' })
+    const mixed = { ...p, provider: { ...p.provider, connection: 'anthropic' as const }, roles: p.roles.map((r, i) => (i === 1 ? { ...r, connection: 'openai' as const, model: 'gpt-5-mini', tier: 'everyday' as const } : r)) }
+    const onOpenai = previewRemap({ project: mixed, connection: 'openai', tierModels: { everyday: 'gpt-5' }, previousTierModels: { everyday: 'gpt-5-mini' }, catalog: openai, switching: false })
+    expect(onOpenai.changes.map((c) => c.roleId)).toEqual([mixed.roles[1].id])
+  })
+
   it('derives the tier from the model when the role has none', () => {
     expect(roleTier({ model: 'opus' })).toBe('deep')
     expect(roleTier({ model: 'inherit', tier: 'top' })).toBeUndefined()
@@ -64,9 +94,59 @@ describe('remap preview', () => {
   })
 
   it('words one informational notice', () => {
-    expect(proxyFamilyNotice('claude', 2)).toBe('Claude orchestrator; 2 roles on other model families run through the proxy.')
-    expect(proxyFamilyNotice('openai', 1)).toBe('OpenAI orchestrator; 1 role on another model family runs through the proxy.')
+    expect(proxyFamilyNotice('claude', 2)).toBe('Claude orchestrator; 2 roles on other model families run as bridged reports in their own session.')
+    expect(proxyFamilyNotice('openai', 1)).toBe('OpenAI orchestrator; 1 role on another model family runs as a bridged report in its own session.')
     expect(proxyFamilyNotice('claude', 0)).toBeNull()
+  })
+})
+
+describe('tier mapping lines', () => {
+  const roles = [
+    { model: 'opus', tier: 'deep' as const },
+    { model: 'sonnet', tier: 'everyday' as const },
+    { model: 'haiku', tier: 'everyday' as const }
+  ]
+  it('lists every tier and says what a missing one does to its roles', () => {
+    const lines = tierMappingLines({ everyday: 'model-e', deep: 'model-d' }, roles, 'Team gateway')
+    expect(lines.map((l) => l.text)).toEqual([
+      'Top is not mapped on Team gateway. No role uses it; pick a model under Model tiers on its card in App settings > Connections if you want one.',
+      'Deep: model-d',
+      'Everyday: model-e',
+      'Fast is not mapped on Team gateway. No role uses it; pick a model under Model tiers on its card in App settings > Connections if you want one.'
+    ])
+    const none = tierMappingLines({ everyday: 'model-e' }, roles, 'Team gateway')
+    expect(none[1].text).toBe(
+      'Deep is not mapped on Team gateway, so the role on Deep keeps its current model. To change that, pick a Deep model under Model tiers on its card in App settings > Connections.'
+    )
+  })
+  it('names the route per family from the catalog', () => {
+    const catalog = [
+      { id: 'c-1', family: 'claude', baseUrl: 'https://a.example' },
+      { id: 'g-1', family: 'openai', baseUrl: 'https://b.example/v1' }
+    ] as ProviderModel[]
+    expect(routeLines({ deep: 'c-1', everyday: 'g-1' }, catalog)).toEqual([
+      { route: 'claude', text: 'Claude models use the Anthropic URL.', url: 'https://a.example' },
+      { route: 'other', text: 'GPT and other models use the OpenAI URL.', url: 'https://b.example/v1' }
+    ])
+    expect(routeLines({ deep: 'c-1' }, catalog).map((l) => l.route)).toEqual(['claude'])
+    expect(routeLines({}, catalog)).toEqual([])
+  })
+})
+
+describe('projectStartRefusal', () => {
+  const info = (id: string, state: 'connected' | 'disconnected'): ConnectionInfo =>
+    ({ connection: { id, enabled: true, tierModels: {} }, status: { state }, modelCount: 0, isDefault: false }) as unknown as ConnectionInfo
+  it('is null for a mock project and while the list is not loaded', () => {
+    const p = project({ a: 'opus' })
+    expect(projectStartRefusal({ ...p, provider: { ...p.provider, id: 'mock' } }, [], [])).toBeNull()
+    expect(projectStartRefusal(p, null, [])).toBeNull()
+  })
+  it('names a role whose own connection is not connected, with a count for more', () => {
+    const p = project({ a: 'opus', b: 'sonnet', c: 'haiku' })
+    const roles = p.roles.map((r, i) => (i >= 1 ? { ...r, connection: 'openai' as const } : r))
+    const text = projectStartRefusal({ ...p, roles }, [info('anthropic', 'connected'), info('openai', 'disconnected')], [])
+    expect(text).toContain('runs on OpenAI, which is not connected')
+    expect(text).toMatch(/\d+ more roles? ha(s|ve) the same kind of problem\.$/)
   })
 })
 

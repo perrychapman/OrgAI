@@ -3,14 +3,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
-import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit, withoutUnchosenTerminalAccess } from './settings'
+import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit } from './settings'
 
 describe('tier model validation', () => {
   it('drops renderer or file tier models that are not valid model ids', () => {
     const tierModels = { top: '--help', deep: ' opus ', everyday: 'has space', fast: 'bell\u0007' }
-    const s = normalizeSettings({ connections: { anthropic: { tierModels }, litellm: { tierModels: { deep: 'x'.repeat(201), fast: 'openai/gpt-ok' } } } } as never)
+    const s = normalizeSettings({ connections: { anthropic: { tierModels } }, proxies: [{ id: 'litellm', name: 'P', tierModels: { deep: 'x'.repeat(201), fast: 'openai/gpt-ok' } }] } as never)
     expect(s.connections.anthropic.tierModels).toEqual({ deep: 'opus' })
-    expect(s.connections.litellm.tierModels).toEqual({ fast: 'openai/gpt-ok' })
+    expect(s.proxies[0].tierModels).toEqual({ fast: 'openai/gpt-ok' })
   })
 
   it('SettingsStore.set drops them too', () => {
@@ -188,9 +188,16 @@ describe('near-limit everyday steering', () => {
 })
 
 describe('connection autoTiers', () => {
+  it('retains only boolean LiteLLM reporting overrides without changing legacy identity', () => {
+    for (const value of [true, false, 'true', null]) {
+      const p = normalizeSettings({ proxies: [{ id: 'litellm', name: 'P', kind: 'litellm', litellmFeatures: value }] } as never).proxies[0]
+      expect(p).toMatchObject({ id: 'litellm', kind: 'litellm' })
+      expect(p.litellmFeatures).toBe(typeof value === 'boolean' ? value : undefined)
+    }
+  })
   it('keeps known tiers once and leaves a missing list undefined', () => {
-    const s = normalizeSettings({ connections: { litellm: { autoTiers: ['fast', 'fast', 'bogus', 'deep'] } } } as never)
-    expect(s.connections.litellm.autoTiers).toEqual(['fast', 'deep'])
+    const s = normalizeSettings({ proxies: [{ id: 'litellm', name: 'P', autoTiers: ['fast', 'fast', 'bogus', 'deep'] }] } as never)
+    expect(s.proxies[0].autoTiers).toEqual(['fast', 'deep'])
     expect(normalizeSettings({}).connections.anthropic.autoTiers).toBeUndefined()
   })
 })
@@ -202,7 +209,8 @@ describe('connections', () => {
     expect(s.providerAuth).toEqual({ kind: 'apiKey', envVar: 'MY_KEY' })
     expect(s.connections.anthropic.tierModels).toEqual({ top: 'fable', deep: 'opus', everyday: 'sonnet', fast: 'haiku' })
     expect(s.connections.openai).toMatchObject({ enabled: false, auth: { kind: 'chatgpt' } })
-    expect(s.connections.litellm).toMatchObject({ enabled: false, baseUrl: '', hasApiKey: false })
+    expect(s.proxies).toEqual([])
+    expect(s.connections).not.toHaveProperty('litellm')
     expect(s.defaultConnection).toBe('anthropic')
   })
 
@@ -214,13 +222,13 @@ describe('connections', () => {
       connections: {
         ...base.connections,
         anthropic: { ...base.connections.anthropic, auth: { kind: 'apiKey', envVar: 'K' } },
-        litellm: { ...base.connections.litellm, baseUrl: ' http://x:4000 ', tierModels: { deep: 'a', bogus: 'b', fast: 3 } as never }
       },
+      proxies: [{ id: 'litellm', name: 'P', kind: 'litellm', anthropicBaseUrl: ' http://localhost:4000/ ', enabled: false, hasApiKey: false, tierModels: { deep: 'a', bogus: 'b', fast: 3 } as never }],
       defaultConnection: 'nope' as never
     })
     expect(s.providerAuth).toEqual({ kind: 'apiKey', envVar: 'K' })
-    expect(s.connections.litellm.baseUrl).toBe('http://x:4000')
-    expect(s.connections.litellm.tierModels).toEqual({ deep: 'a' })
+    expect(s.proxies[0].anthropicBaseUrl).toBe('http://localhost:4000')
+    expect(s.proxies[0].tierModels).toEqual({ deep: 'a' })
     expect(s.defaultConnection).toBe('anthropic')
   })
 
@@ -245,7 +253,7 @@ describe('appearance', () => {
   it('keeps valid values and falls back field by field', () => {
     expect(
       normalizeAppearance({ theme: 'light', accent: '#22C58B', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', minimap: true }, reduceMotion: 'on' })
-    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { pattern: 'grid', tint: false, edges: 'orthogonal', layout: 'top-down', nodeStyle: 'card', minimap: true }, reduceMotion: 'on' })
+    ).toEqual({ theme: 'light', accent: '#22c58b', canvas: { presentation: 'graph', scenePalette: 'color', pattern: 'grid', tint: false, edges: 'orthogonal', layout: 'top-down', nodeStyle: 'card', minimap: true }, reduceMotion: 'on' })
     expect(normalizeAppearance({ theme: 'sepia', accent: 'purple', canvas: { pattern: 'stars', tint: 'yes', edges: 3, layout: 'spiral', nodeStyle: 'blob' }, reduceMotion: 'always' })).toEqual(DEFAULT_APPEARANCE)
     expect(normalizeAppearance({ theme: 'system', accent: '#AbC' })).toMatchObject({ theme: 'system', accent: '#aabbcc' })
     expect(normalizeAppearance('nonsense')).toEqual(DEFAULT_APPEARANCE)
@@ -253,7 +261,31 @@ describe('appearance', () => {
 
   it('loads a canvas saved before layout and nodeStyle existed with their defaults', () => {
     const a = normalizeAppearance({ canvas: { pattern: 'grid', tint: false, edges: 'straight', minimap: true } })
-    expect(a.canvas).toEqual({ pattern: 'grid', tint: false, edges: 'straight', layout: 'top-down', nodeStyle: 'card', minimap: true })
+    expect(a.canvas).toEqual({ presentation: 'graph', scenePalette: 'color', pattern: 'grid', tint: false, edges: 'straight', layout: 'top-down', nodeStyle: 'card', minimap: true })
+  })
+
+  it('defaults missing and unknown scene preferences independently', () => {
+    for (const value of [undefined, null, '', 'future-scene', 7, {}, []]) {
+      expect(normalizeAppearance({ canvas: { presentation: value, scenePalette: value } }).canvas)
+        .toMatchObject({ presentation: 'graph', scenePalette: 'color' })
+    }
+    expect(normalizeAppearance({ canvas: { presentation: 'pocket-office', scenePalette: 'invalid' } }).canvas)
+      .toMatchObject({ presentation: 'pocket-office', scenePalette: 'color' })
+    expect(normalizeAppearance({ canvas: { presentation: 'invalid', scenePalette: 'green' } }).canvas)
+      .toMatchObject({ presentation: 'graph', scenePalette: 'green' })
+    for (const scenePalette of ['color', 'neutral', 'green']) {
+      expect(normalizeAppearance({ canvas: { presentation: 'pocket-office', scenePalette } }).canvas)
+        .toMatchObject({ presentation: 'pocket-office', scenePalette })
+    }
+  })
+
+  it('round-trips scene selection without losing any graph preference or palette', () => {
+    const graph = normalizeAppearance({ canvas: { pattern: 'circuit', tint: false, edges: 'straight', layout: 'left-right', nodeStyle: 'station', minimap: true, scenePalette: 'green' } })
+    const scene = normalizeAppearance({ ...graph, canvas: { ...graph.canvas, presentation: 'pocket-office' } })
+    expect(scene.canvas).toEqual({ ...graph.canvas, presentation: 'pocket-office' })
+    const saved = normalizeAppearance(JSON.parse(JSON.stringify(scene)))
+    expect(saved).toEqual(scene)
+    expect(normalizeAppearance({ ...saved, canvas: { ...saved.canvas, presentation: 'graph' } })).toEqual(graph)
   })
 
   it('keeps the new themed values and drops junk for pattern, layout and nodeStyle', () => {
@@ -331,7 +363,11 @@ describe('defaultConnectionChosen', () => {
 
   it('migrates a pre-merge file: a non-anthropic default was the user pick, anthropic is automatic', () => {
     expect(normalizeSettings({ defaultConnection: 'openai' }).defaultConnectionChosen).toBe(true)
-    expect(normalizeSettings({ defaultConnection: 'litellm' }).defaultConnectionChosen).toBe(true)
+    expect(normalizeSettings({ defaultConnection: 'litellm', proxies: [{ id: 'litellm', name: 'P' }] } as never).defaultConnectionChosen).toBe(true)
+    // A default naming a proxy that does not exist falls back to automatic anthropic.
+    const gone = normalizeSettings({ defaultConnection: 'proxy-0a1b2c3d', defaultConnectionChosen: true } as never)
+    expect(gone.defaultConnection).toBe('anthropic')
+    expect(gone.defaultConnectionChosen).toBe(false)
     expect(normalizeSettings({ defaultConnection: 'anthropic' }).defaultConnectionChosen).toBe(false)
     expect(normalizeSettings(null).defaultConnectionChosen).toBe(false)
     for (const v of ['true', 1, null, {}]) expect(normalizeSettings({ defaultConnection: 'anthropic', defaultConnectionChosen: v } as never).defaultConnectionChosen).toBe(false)
@@ -349,34 +385,28 @@ describe('defaultConnectionReplaced', () => {
   })
 })
 
-describe('terminalServer', () => {
-  it('defaults to false and keeps only a boolean true', () => {
-    expect(normalizeSettings(undefined).terminalServer).toBe(false)
-    expect(normalizeSettings({}).terminalServer).toBe(false)
-    expect(normalizeSettings({ terminalServer: true }).terminalServer).toBe(true)
-    expect(normalizeSettings({ terminalServer: false }).terminalServer).toBe(false)
-    for (const junk of ['true', 1, null, {}, []]) expect(normalizeSettings({ terminalServer: junk } as never).terminalServer).toBe(false)
+describe('removed Terminal access keys', () => {
+  const KEYS = ['terminalServer', 'terminalServerChosen', 'terminalAccessLevel', 'terminalAccessLevelChosen']
+
+  it('are dropped on read', () => {
+    const n = normalizeSettings({ terminalServer: true, terminalServerChosen: true, terminalAccessLevel: 'full', terminalAccessLevelChosen: true } as never)
+    for (const k of KEYS) expect(n).not.toHaveProperty(k)
   })
 
-  it("terminalAccessLevel keeps only 'full' (missing = operate)", () => {
-    expect(normalizeSettings({})).not.toHaveProperty('terminalAccessLevel')
-    expect(normalizeSettings({ terminalAccessLevel: 'full' }).terminalAccessLevel).toBe('full')
-    for (const junk of ['operate', 'FULL', true, 1, null, {}]) expect(normalizeSettings({ terminalAccessLevel: junk } as never)).not.toHaveProperty('terminalAccessLevel')
-  })
-
-  it('reads Terminal access saved on without a choice (an older headless boot) as off; a chosen one stays (review H2)', () => {
-    const on = normalizeSettings({ terminalServer: true })
-    expect(withoutUnchosenTerminalAccess(on).terminalServer).toBe(false)
-    const chosen = normalizeSettings({ terminalServer: true, terminalServerChosen: true })
-    expect(withoutUnchosenTerminalAccess(chosen)).toBe(chosen)
+  it('an old settings.json still loads, and the next write leaves the keys out', () => {
     const dir = mkdtempSync(join(tmpdir(), 'orgai-term-'))
     try {
-      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalServer: true, terminalAccessLevel: 'full' } }))
-      const s = new SettingsStore(dir).get()
-      expect(s.terminalServer).toBe(false)
-      expect(s.terminalAccessLevel).toBe('full')
-      writeFileSync(join(dir, 'settings.json'), JSON.stringify({ version: 1, settings: { terminalServer: true, terminalServerChosen: true } }))
-      expect(new SettingsStore(dir).get().terminalServer).toBe(true)
+      writeFileSync(
+        join(dir, 'settings.json'),
+        JSON.stringify({ version: 1, settings: { notifications: false, terminalServer: true, terminalServerChosen: true, terminalAccessLevel: 'full', terminalAccessLevelChosen: true } })
+      )
+      const store = new SettingsStore(dir)
+      expect(store.get().notifications).toBe(false)
+      for (const k of KEYS) expect(store.get()).not.toHaveProperty(k)
+      store.set({ ...store.get(), notifications: true })
+      const saved = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as { settings: Record<string, unknown> }
+      expect(saved.settings.notifications).toBe(true)
+      for (const k of KEYS) expect(saved.settings).not.toHaveProperty(k)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

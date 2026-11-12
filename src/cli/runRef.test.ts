@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { resolveRunRef } from './runRef'
+import { openReadSource, resolveRunRef } from './runRef'
+import { fakeContext } from './testing/fakeContext'
 import { CliError, EXIT } from './types'
 
 const runs = [
@@ -46,5 +47,25 @@ describe('resolveRunRef', () => {
     expect(usageError(() => resolveRunRef('run_zzzzzz', { runs })).message).toMatch(/No run matches/)
     expect(usageError(() => resolveRunRef('../etc', { runs })).message).toMatch(/not a run id/)
     usageError(() => resolveRunRef('', { runs }))
+  })
+})
+
+describe('openReadSource', () => {
+  it('reads the files, never connects or starts a host, and notes a snapshot beside another orgai', async () => {
+    const alone = fakeContext()
+    const src = await openReadSource(alone.ctx)
+    expect(src.hostState).toBe('stopped')
+    expect(alone.err()).toBe('')
+    src.close()
+    const beside = fakeContext({ store: { hostState: 'ready' } })
+    await openReadSource(beside.ctx)
+    expect(beside.err()).toBe('orgai is running in another terminal; this is a saved snapshot.\n')
+    const quiet = fakeContext({ store: { hostState: 'starting' } })
+    await openReadSource(quiet.ctx, { quiet: true })
+    expect(quiet.err()).toBe('')
+    for (const f of [alone, beside, quiet]) {
+      expect(f.connectCalls).toEqual([])
+      expect(f.inprocCalls).toEqual([])
+    }
   })
 })

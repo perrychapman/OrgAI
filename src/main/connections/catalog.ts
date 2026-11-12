@@ -1,5 +1,5 @@
 import { adapterForFamily, builtinModels, defaultTierModels, tierForModel } from '@shared/defaults'
-import { MODEL_TIERS } from '@shared/types'
+import { MODEL_TIERS, isBuiltinConnectionId } from '@shared/types'
 import { sanitizeModelPrice } from '../runtime/pricing'
 import type { AdapterModelInfo } from '../runtime/types'
 import { validModelId } from './codexAccount'
@@ -19,7 +19,7 @@ export function classifyFamily(id: string, litellmProvider?: string | null): Mod
   if ((p.includes('bedrock') || p.includes('vertex')) && claudeId) return 'claude'
   if (p === 'openai' || p === 'text-completion-openai' || p.startsWith('azure')) return 'openai'
   if (claudeId) return 'claude'
-  if (/(^|\/)(gpt|o\d|codex|chatgpt)/.test(b)) return 'openai'
+  if (/(^|[/.])(gpt|o\d|codex|chatgpt)/.test(b)) return 'openai'
   return 'other'
 }
 
@@ -42,7 +42,7 @@ export function inferTier(id: string, family: ModelFamily): ModelTier | undefine
     if (/nano/.test(b)) return 'fast'
     if (/mini/.test(b)) return 'everyday'
     if (/codex/.test(b) || /(^|-)pro($|-)/.test(b)) return 'top'
-    if (/^(gpt|o\d|chatgpt)/.test(b)) return 'deep'
+    if (/(^|\.)(gpt|o\d|chatgpt)/.test(b)) return 'deep'
     return undefined
   }
   const size = /(?:^|[^\d.])(\d+(?:\.\d+)?)b(?:$|[^a-z])/.exec(b)
@@ -71,11 +71,22 @@ export interface DiscoveredModelInput {
   price?: ModelPrice
   /** LiteLLM litellm_params.model. */
   upstream?: string
+  /** A proxy's `owned_by` (untrusted; kept only when printable, at most 64 chars). */
+  ownedBy?: string
+}
+
+/** A proxy's owned_by as catalog text: a printable one-line string of at most 64 chars, else undefined. Pure. */
+export function cleanOwnedBy(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined
+  const t = v.trim()
+  if (!t || t.length > 64 || !/^[\x20-\x7e]+$/.test(t)) return undefined
+  return t
 }
 
 export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModelInput): ProviderModel {
   // Proxy text is untrusted: bounded here, prices must be within range or they are dropped.
   const cap = (v: string | undefined): string | undefined => v?.slice(0, 200)
+  const ownedBy = cleanOwnedBy(m.ownedBy)
   const price = sanitizeModelPrice(m.price)
   const upstream = cap(m.upstream)
   m = { ...m, label: cap(m.label), litellmProvider: cap(m.litellmProvider ?? undefined) ?? null }
@@ -93,7 +104,8 @@ export function makeDiscoveredModel(connection: ConnectionId, m: DiscoveredModel
     source: 'discovered',
     ...(m.recommended ? { recommended: true } : {}),
     ...(price ? { price } : {}),
-    ...(upstream ? { upstream } : {})
+    ...(upstream ? { upstream } : {}),
+    ...(ownedBy ? { ownedBy } : {})
   }
 }
 
@@ -144,11 +156,15 @@ export function anthropicModelsToCatalog(list: readonly AdapterModelInfo[]): Pro
     if (!id || id === 'default' || seen.has(id) || !validModelId(id)) continue
     seen.add(id)
     const tier = id.includes('[') ? undefined : (tierForModel(id) ?? tierFromDescription(info.description))
+    // The concrete model the id resolves to in the CLI now (an alias's native target), kept as `upstream` so a tier
+    // mapping can be checked against it (staleClaudeOverride).
+    const resolved = info.resolvedModel && validModelId(info.resolvedModel) && info.resolvedModel !== id ? info.resolvedModel : undefined
     const { tier: _inferred, ...entry } = makeDiscoveredModel('anthropic', {
       id,
       label: info.label,
       family: 'claude',
-      hint: info.description?.slice(0, 300)
+      hint: info.description?.slice(0, 300),
+      ...(resolved ? { upstream: resolved } : {})
     })
     out.push(tier ? { ...entry, tier } : entry)
   }
@@ -162,7 +178,12 @@ export function anthropicModelsToCatalog(list: readonly AdapterModelInfo[]): Pro
  */
 export function suggestTierModels(connection: ConnectionId, catalog: readonly ProviderModel[]): Partial<Record<ModelTier, ModelRef>> {
   const own = catalog.filter((m) => m.connection === connection)
-  const out = defaultTierModels(own)
+  // A mixed proxy serves Claude-family models on the Claude adapter, which maps tiers through ANTHROPIC_DEFAULT_*_MODEL
+  // and runs most roles, so Claude-family ids win a tier when the proxy lists one (stable otherwise: a tier with no
+  // Claude model falls back to whatever the catalog suggests). This is auto-fill only: the user may pick a GPT or other
+  // id per tier (ProviderModel.family tells the UI which adapter route a pick takes).
+  const ordered = isBuiltinConnectionId(connection) ? own : [...own.filter((m) => m.family === 'claude'), ...own.filter((m) => m.family !== 'claude')]
+  const out = defaultTierModels(ordered)
   if (connection === 'anthropic') {
     for (const tier of MODEL_TIERS) {
       const alias = own.find((m) => m.tier === tier && /^[a-z]+$/.test(m.id))
@@ -175,4 +196,53 @@ export function suggestTierModels(connection: ConnectionId, catalog: readonly Pr
 /** The connection's builtin default mapping (what a fresh install holds). */
 export function builtinTierModels(connection: ConnectionId): Partial<Record<ModelTier, ModelRef>> {
   return defaultTierModels(builtinModels(connection))
+}
+
+/**
+ * A Claude model id's family and version, for telling an older model of a family from a newer one: 'claude-opus-4-5',
+ * 'claude-opus-4-1-20250805', 'anthropic/claude-sonnet-4-5[1m]' and the older 'claude-3-5-sonnet-20241022' order.
+ * A trailing date (8 digits) is not part of the version. undefined for an alias, 'inherit' or any other id. Pure.
+ */
+export function claudeModelVersion(id: string): { family: string; version: number[] } | undefined {
+  const b = bare(id).replace(/\[[^\]]*\]$/, '')
+  const parts = b.split('-')
+  if (parts[0] !== 'claude' || parts.length < 3) return undefined
+  const rest = parts.slice(1).filter((p) => !/^\d{8}$/.test(p))
+  const nums = (xs: string[]): number[] | undefined => (xs.length && xs.every((x) => /^\d{1,3}$/.test(x)) ? xs.map(Number) : undefined)
+  // New order: claude-<family>-<major>[-<minor>]; old order: claude-<major>[-<minor>]-<family>.
+  if (/^[a-z]+$/.test(rest[0]!)) {
+    const version = nums(rest.slice(1))
+    return version ? { family: rest[0]!, version } : undefined
+  }
+  const family = rest.at(-1)!
+  const version = nums(rest.slice(0, -1))
+  return version && /^[a-z]+$/.test(family) ? { family, version } : undefined
+}
+
+function compareVersions(a: readonly number[], b: readonly number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0)
+    if (d) return d
+  }
+  return 0
+}
+
+/**
+ * The newest Claude model of `id`'s family the catalog knows (its ids and the models its aliases resolve to,
+ * ProviderModel.upstream), when that is newer than `id`; undefined when `id` is the newest known, of another family or
+ * not a dated Claude id. Pure.
+ */
+export function newerClaudeModel(id: string, catalog: readonly Pick<ProviderModel, 'id' | 'upstream'>[]): string | undefined {
+  const mine = claudeModelVersion(id)
+  if (!mine) return undefined
+  let best: { id: string; version: number[] } | undefined
+  for (const m of catalog) {
+    for (const candidate of [m.id, m.upstream]) {
+      if (!candidate) continue
+      const v = claudeModelVersion(candidate)
+      if (!v || v.family !== mine.family || compareVersions(v.version, mine.version) <= 0) continue
+      if (!best || compareVersions(v.version, best.version) > 0) best = { id: bare(candidate).replace(/\[[^\]]*\]$/, ''), version: v.version }
+    }
+  }
+  return best?.id
 }

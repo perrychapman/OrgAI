@@ -51,6 +51,12 @@
 .entry-thumb.on {
   border-color: var(--accent);
 }
+.entry-thumb.unavailable {
+  min-height: var(--space-6);
+  padding: var(--space-2);
+  line-height: var(--text-caption-lh);
+  cursor: default;
+}
 .entry-thumb:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
@@ -516,6 +522,16 @@
   font-size: var(--text-caption);
   color: var(--text-secondary);
 }
+.plan-state,
+.plan-staff {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+  word-break: break-word;
+}
+.plan-state[data-state='running'],
+.plan-state[data-state='ready'] {
+  color: var(--accent-text);
+}
 .plan-summary {
   border-top: 1px solid var(--border-default);
   padding-top: 8px;
@@ -538,6 +554,7 @@
 }
 .side-run > .side-header,
 .side-run > .agent-meta,
+.side-run > .agent-staffing,
 .side-run > .transcript-bar {
   flex: none;
 }
@@ -598,4 +615,37 @@
   border-radius: var(--radius-full);
   background: currentColor;
   flex: none;
+}
+
+/* A row appended while the user follows the end (motion.md 3.11): fade + 4px rise, no stagger. */
+.transcript-arrive {
+  animation: motion-rise var(--dur-fade) var(--ease-out) backwards;
+}
+
+.composer-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* Resolved tier and effort of the selected agent: one quiet line, the reason and model on expand. */
+.agent-staffing {
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.agent-staffing > summary {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.agent-staffing > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.agent-staffing-body {
+  padding-top: var(--space-1);
+  color: var(--text-tertiary);
+  word-break: break-word;
 }

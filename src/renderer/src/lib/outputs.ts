@@ -1,0 +1,199 @@
+// Pure helpers for run outputs (docs/design/outputs.md). No React, no DOM, no store.
+import { OUTPUT_EDITABLE_KINDS, OUTPUT_EDIT_MAX_BYTES, type OutputKind, type OutputPreview, type RunOutput } from '@shared/types'
+import { formatDate } from './dates'
+
+/** The one visible name of each kind, on every surface (docs/design/outputs.md "Words"). */
+export const OUTPUT_KIND_LABEL: Readonly<Record<OutputKind, string>> = {
+  docx: 'Word document',
+  xlsx: 'Excel workbook',
+  pptx: 'PowerPoint deck',
+  mermaid: 'Diagram',
+  markdown: 'Markdown',
+  text: 'Text',
+  csv: 'CSV',
+  json: 'JSON',
+  svg: 'SVG',
+  image: 'Image',
+  pdf: 'PDF',
+  other: 'File'
+}
+
+/** The kind chips may shorten the two Office names; the full label is their title. */
+const KIND_CHIP_LABEL: Partial<Record<OutputKind, string>> = { docx: 'Word', xlsx: 'Excel', pptx: 'PowerPoint' }
+
+/** Extra words the search matches per kind (the app's name for it, what a user would type). */
+const KIND_SEARCH_WORDS: Partial<Record<OutputKind, readonly string[]>> = {
+  docx: ['word', 'document'],
+  xlsx: ['excel', 'spreadsheet', 'workbook'],
+  pptx: ['powerpoint', 'deck', 'slides', 'presentation'],
+  mermaid: ['diagram', 'chart'],
+  image: ['picture', 'photo']
+}
+
+export function kindLabel(kind: OutputKind): string {
+  return OUTPUT_KIND_LABEL[kind] ?? 'File'
+}
+/** Kept for older callers. */
+export const outputKindLabel = kindLabel
+
+/** The kind filter chip's text ("Word", "Excel", else the full label). */
+export function kindChipLabel(kind: OutputKind): string {
+  return KIND_CHIP_LABEL[kind] ?? kindLabel(kind)
+}
+
+/** The file's extension without the dot, lower case; '' when there is none or it is not a plain short one. */
+export function fileExtension(fileName: string): string {
+  const name = fileName.split(/[\\/]/).pop() ?? ''
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return ''
+  const ext = name.slice(dot + 1).toLowerCase()
+  return /^[a-z0-9]{1,8}$/.test(ext) ? ext : ''
+}
+
+/** Text of the small extension badge: ".docx" ('' for no extension). */
+export function extBadgeText(fileName: string): string {
+  const ext = fileExtension(fileName)
+  return ext ? `.${ext}` : ''
+}
+
+/** The words the project tab's search looks in: title, file, path, role, the kind's name, its extension and aliases. */
+export function outputSearchTerms(o: Pick<RunOutput, 'title' | 'fileName' | 'relPath' | 'role' | 'kind'>): string[] {
+  return [o.title, o.fileName, o.relPath, o.role ?? '', kindLabel(o.kind), fileExtension(o.fileName), ...(KIND_SEARCH_WORDS[o.kind] ?? [])]
+}
+
+/** Kinds outputs:open refuses ('other' and svg: an SVG would open in a browser that runs its scripts). */
+export const OUTPUT_NOT_OPENABLE: readonly OutputKind[] = ['other', 'svg']
+
+/** Main opens only allowlisted kinds; 'other' and svg files are only shown in their folder or saved. */
+export function canOpenOutput(o: Pick<RunOutput, 'kind' | 'missing'>): boolean {
+  return !OUTPUT_NOT_OPENABLE.includes(o.kind) && !o.missing
+}
+
+/** Outputs 2: every output can be deleted (registered ones with a confirm that names the file; a missing one just leaves OrgAI). */
+export function canDeleteOutput(_o?: Pick<RunOutput, 'source' | 'missing'>): boolean {
+  return true
+}
+
+/** Kinds the user edits as text inside OrgAI (OUTPUT_EDITABLE_KINDS). */
+export function isEditableKind(kind: OutputKind): boolean {
+  return (OUTPUT_EDITABLE_KINDS as readonly OutputKind[]).includes(kind)
+}
+
+/** The app that edits an Office kind outside OrgAI, or null. */
+export function externalAppName(kind: OutputKind): string | null {
+  return kind === 'docx' ? 'Word' : kind === 'xlsx' ? 'Excel' : kind === 'pptx' ? 'PowerPoint' : null
+}
+
+/** Revise needs a text form: image, pdf, other and a missing file cannot be revised (docs/design/outputs-2.md 11.6). */
+export function canReviseFallback(o: Pick<RunOutput, 'kind' | 'missing'>): boolean {
+  return !o.missing && o.kind !== 'image' && o.kind !== 'pdf' && o.kind !== 'other'
+}
+
+/** Why Edit is not offered for an editable kind (visible text, never a missing button); null when it is offered. */
+export function editBlockedReason(o: Pick<RunOutput, 'kind' | 'missing' | 'bytes'>, isCurrent: boolean): string | null {
+  if (!isEditableKind(o.kind)) return null
+  if (o.missing) return 'The file is gone.'
+  if (!isCurrent) return 'Restore this version to edit it.'
+  if (o.bytes > OUTPUT_EDIT_MAX_BYTES) return 'This file is too large to edit here. Edit it in your own app.'
+  return null
+}
+
+/** "512 bytes", "38 KB", "1.2 MB". Never "0 KB" for a non-empty file; an unknown size (not finite) is ''. */
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return ''
+  if (n < 1024) return `${Math.round(n)} ${n === 1 ? 'byte' : 'bytes'}`
+  const kb = n / 1024
+  if (kb < 1024) return `${kb < 10 ? Math.max(1, Math.round(kb * 10) / 10) : Math.round(kb)} KB`
+  const mb = kb / 1024
+  return `${mb < 10 ? Math.round(mb * 10) / 10 : Math.round(mb)} MB`
+}
+
+/** "Word document · 38 KB · outputs/Project plan.docx". */
+export function outputMetaLine(o: Pick<RunOutput, 'kind' | 'bytes' | 'relPath'>): string {
+  return [kindLabel(o.kind), formatBytes(o.bytes), o.relPath].filter(Boolean).join(' · ')
+}
+
+/** "Analyst · R1 · 7 Nov 2026" (role missing = "An agent"; run tag missing = left out). */
+export function provenanceLine(o: Pick<RunOutput, 'role' | 'createdAt'>, runTag?: string): string {
+  return [o.role?.trim() || 'An agent', runTag, formatDate(o.createdAt)].filter(Boolean).join(' · ')
+}
+
+/** Insert an output newest first, or replace the entry with the same id in place. */
+export function mergeOutput(list: readonly RunOutput[] | undefined, output: RunOutput): RunOutput[] {
+  const cur = list ?? []
+  const at = cur.findIndex((o) => o.id === output.id)
+  if (at < 0) return [output, ...cur]
+  const next = cur.slice()
+  next[at] = output
+  return next
+}
+
+/** The outputs of a set of runs (a chain), newest first, keeping the list's order. */
+export function outputsOfRuns(list: readonly RunOutput[] | undefined, runIds: ReadonlySet<string> | readonly string[]): RunOutput[] {
+  const ids = runIds instanceof Set ? runIds : new Set(runIds as readonly string[])
+  return (list ?? []).filter((o) => ids.has(o.runId))
+}
+
+/** "5 outputs" / "1 output". */
+export function outputsCountLabel(n: number): string {
+  return `${n} ${n === 1 ? 'output' : 'outputs'}`
+}
+
+/**
+ * Key of a cached preview: a re-produced file changes updatedAt and so misses the cache. An older version (never
+ * changes) is keyed by its number.
+ */
+export function previewKey(o: Pick<RunOutput, 'id' | 'updatedAt' | 'createdAt'>, olderVersion?: number | null): string {
+  if (olderVersion !== undefined && olderVersion !== null) return `${o.id}#v${olderVersion}`
+  return `${o.id}@${o.updatedAt ?? o.createdAt}`
+}
+
+/** The current version's provenance: "Analyst · R2 · 7 Nov 2026", "You · edited · ...", "Changed outside OrgAI · ...". */
+export function currentProvenance(o: Pick<RunOutput, 'role' | 'createdAt' | 'updatedAt' | 'current'>, runTag?: string): string {
+  const c = o.current
+  const at = formatDate(c?.at ?? o.updatedAt ?? o.createdAt)
+  if (c?.source === 'edit') return ['You · edited', at].filter(Boolean).join(' · ')
+  if (c?.source === 'external') return ['Changed outside OrgAI', at].filter(Boolean).join(' · ')
+  if (c?.source === 'restore') return ['Restored by you', at].filter(Boolean).join(' · ')
+  return [(c?.role ?? o.role)?.trim() || 'An agent', runTag, at].filter(Boolean).join(' · ')
+}
+
+/** A small LRU of previews per project (docs/design/outputs.md section 4). */
+export class PreviewCache {
+  private readonly map = new Map<string, OutputPreview>()
+  constructor(private readonly max = 24) {}
+  get(key: string): OutputPreview | undefined {
+    const v = this.map.get(key)
+    if (v !== undefined) {
+      this.map.delete(key)
+      this.map.set(key, v)
+    }
+    return v
+  }
+  set(key: string, value: OutputPreview): void {
+    this.map.delete(key)
+    this.map.set(key, value)
+    while (this.map.size > this.max) {
+      const oldest = this.map.keys().next().value
+      if (oldest === undefined) break
+      this.map.delete(oldest)
+    }
+  }
+  get size(): number {
+    return this.map.size
+  }
+}
+
+const caches = new Map<string, PreviewCache>()
+/** The preview cache of one project (module-level, survives remounts; dropped by forgetPreviewCache). */
+export function previewCacheFor(projectId: string): PreviewCache {
+  let c = caches.get(projectId)
+  if (!c) {
+    c = new PreviewCache()
+    caches.set(projectId, c)
+  }
+  return c
+}
+export function forgetPreviewCache(projectId: string): void {
+  caches.delete(projectId)
+}

@@ -72,7 +72,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 })
 
 import { ClaudeSession, MCP_RESTART_DELAY_MS } from './claude'
-import { fakeCtx, mcpSpec, project } from './testHelpers'
+import { fakeCtx, mcpSpec, project, role } from './testHelpers'
+import { execNotQuiescentReason, execOutcomeFor } from './execSettle'
 import type { RootTurnEnd, RuntimeContext } from './types'
 
 const init = { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'm', claude_code_version: 'test', tools: [], mcp_servers: [] }
@@ -252,10 +253,49 @@ describe('ClaudeSession exec settlement (fake query)', () => {
     expect(activity).toContain('restart')
   }, 10_000)
 
+  const toolTurn = { type: 'assistant', uuid: 'a-tool', parent_tool_use_id: null, message: { id: 'a-tool', model: 'm', content: [{ type: 'tool_use', id: 'tu-bash', name: 'Bash', input: { command: 'ls' } }] } }
+
+  it('exec run: a turn-1 text-only reply still gets the set-plan nudge (an acknowledgement must not end a headless run)', async () => {
+    const { ctx, session, activity } = start({ autoContinue: true, continuationDelayMs: 10 })
+    ctx.run.overrides = { ...ctx.run.overrides, execMode: true }
+    const q = await firstQuery()
+    q.emit(init)
+    q.emit({ type: 'assistant', uuid: 'a-ack', parent_tool_use_id: null, message: { id: 'a-ack', model: 'm', content: [{ type: 'text', text: "I'll inspect the tests." }] } })
+    q.emit(result())
+    await vi.waitFor(() => expect(session.settlement().nudgeTurn1Sent).toBe(true))
+    expect(session.settlement().continuationSettled).toBe(false)
+    expect(activity).toContain('message')
+  })
+
+  it('interactive run: turn 1 pure direct answer gets no set-plan nudge and the turn settles', async () => {
+    const { session, activity } = start({ autoContinue: true, continuationDelayMs: 10 })
+    const q = await firstQuery()
+    q.emit(init)
+    q.emit({ type: 'assistant', uuid: 'a-text', parent_tool_use_id: null, message: { id: 'a-text', model: 'm', content: [{ type: 'text', text: 'It is 4.' }] } })
+    q.emit(result())
+    await vi.waitFor(() => expect(session.settlement()).toEqual({ rootTurnGen: 1, rootIdle: true, continuationSettled: true, nudgeTurn1Sent: true, quiescent: true }))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(activity).not.toContain('message')
+    const input = { settlement: session.settlement(), rootTurnGen: 1, limitHold: false, held: false, agents: [{ id: 'root', state: 'idle' as const }], openCards: 0, inboxLength: 0, flushing: false, plan: undefined, autoContinue: true }
+    expect(execNotQuiescentReason(input)).toBeNull()
+    expect(execOutcomeFor({ plan: undefined, agents: [] })).toEqual({ outcome: 'completed-unplanned' })
+  })
+
+  it('turn 1 with a required delegation outstanding still gets the set-plan nudge', async () => {
+    const roles = [role({ id: 'r-lead', slug: 'lead', canSpawn: true, spawnable: ['r-eng'], requiredReports: ['r-eng'] }), role({ id: 'r-eng', slug: 'engineer', reportsTo: 'r-lead' })]
+    const { session } = start({ autoContinue: true, continuationDelayMs: 10, roles }, { roles })
+    const q = await firstQuery()
+    q.emit(init)
+    q.emit(result())
+    await vi.waitFor(() => expect(session.settlement().nudgeTurn1Sent).toBe(true))
+    expect(session.settlement().continuationSettled).toBe(false)
+  })
+
   it('continuation settling: the turn-1 set-plan nudge is sent, then the follow-up turn settles', async () => {
     const { session, activity } = start({ autoContinue: true, continuationDelayMs: 10 })
     const q = await firstQuery()
     q.emit(init)
+    q.emit(toolTurn)
     q.emit(result())
     await vi.waitFor(() => expect(session.settlement().nudgeTurn1Sent).toBe(true))
     expect(session.settlement().continuationSettled).toBe(false)

@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import { agentActivityLabel } from './activity'
+import { compactToolRows } from './streamRows'
 import type { AgentInstance, MergeReview, PermissionRequest, RunEvent, RunRecord, RunSummary, TranscriptEntry, UserQuestion } from '../../shared/types'
 import type { SnapshotResult } from '../client/runStream'
 import { project, record, summary } from '../testing/fakeContext'
 import {
+  agentDetail,
   composerMode,
+  failedTurnSentence,
   orgTreeRows,
   partialRows,
   planView,
   statusSummary,
+  windowText,
   topCard,
   transcriptRows,
   trayCards,
@@ -61,7 +66,8 @@ describe('trayCards', () => {
     s = applyEvent(s, ev({ type: 'permission.request', runId: 'r1', request: perm('c', 'r1') }))
     const cards = trayCards(s)
     expect(cards.map((c) => c.ref.requestId)).toEqual(['q', 'b', 'a', 'c'])
-    expect(cards.map((c) => c.runTag)).toEqual(['R2', 'R2', 'R1', 'R1'])
+    // The followed run's cards carry its bare tag; another run's also name it (R2-L2).
+    expect(cards.map((c) => c.runTag)).toEqual(['R2', 'R2', 'R1 prompt r1', 'R1 prompt r1'])
     expect(cards[0]).toMatchObject({ kind: 'question', runKind: 'setup', projectKind: 'code', ref: { hostInstanceId: HOST, runId: 'r2', revision: 1 } })
     expect(cards[1].ref.revision).toBe(3)
     expect(cards[1].key).toBe(`${HOST}|r2|permission|b|3`)
@@ -77,6 +83,33 @@ describe('trayCards', () => {
 })
 
 describe('orgTreeRows', () => {
+  it('carries one short delegation badge per agent, the most serious first', () => {
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'running', startedAt: 1 })]), { activeRunId: 'r1' })
+    s = applyRecord(s, {
+      ...record(summary('r1', { status: 'running', startedAt: 1 })),
+      agents: {
+        root: agent('root', null),
+        a: agent('a', 'root', { startedAt: 2, delegation: { verdict: 'failed', missing: ['x'], corrected: true, nativeSpawns: 1 } }),
+        b: agent('b', 'root', { startedAt: 3, delegation: { verdict: 'ok', missing: [], corrected: true, nativeSpawns: 0 } }),
+        c: agent('c', 'root', { startedAt: 4, delegation: { verdict: 'ok', missing: [], corrected: false, nativeSpawns: 2 } })
+      }
+    })
+    s = setActiveRun(s, 'r1', ['r1'])
+    const rows = orgTreeRows(s)
+    expect(rows.map((r) => r.delegationBadge)).toEqual([undefined, 'skipped reports', 'corrected', 'native agents'])
+  })
+  it.each([
+    '$ npm test\nrm -rf build',
+    '$ npm test $(curl example.invalid)',
+    `$ npm test ${'x'.repeat(150)} && curl example.invalid`
+  ])('keeps complex activity generic after flattening and clipping: %s', (activity) => {
+    let s = applyRecord(base(), { ...record(summary('r1', { status: 'running' })), agents: { root: agent('root', null, { activity }) } })
+    s = setActiveRun(s, 'r1')
+    const row = orgTreeRows(s).find(r => r.id === 'root')!
+    expect(agentActivityLabel(row)).toBe('Running a command')
+  })
+
   it('depth first, root first, children by start; earlier chain members marked earlier under the root', () => {
     let s = base()
     const r1 = summary('r1', { status: 'finished', startedAt: 1, endedAt: 2, sessionId: 's' })
@@ -102,6 +135,7 @@ describe('orgTreeRows', () => {
     ])
     expect(rows[0]).toMatchObject({ isRoot: true, label: 'Orchestrator', stateWord: 'Thinking' })
     expect(rows[2].worktree).toEqual({ branch: 'wt-a', status: 'active' })
+    expect(rows[2].delegationBadge).toBeUndefined()
     // A handle with control characters falls back to the role name.
     expect(rows[3].label).toBe('Worker')
   })
@@ -118,6 +152,49 @@ describe('orgTreeRows', () => {
 })
 
 describe('transcriptRows', () => {
+  it.each([false, true])('sanitizes pending command summaries with a failed result: %s', (failed) => {
+    let s = applyRecord(base(), {
+      ...record(summary('r1', { status: 'running' })),
+      transcript: [
+        entry('tu', { kind: 'tool_use', id: 'call1', name: 'Bash', input: { command: 'echo \x1b]52;c;Zm9v\x07 \x1b[2J' } }),
+        ...(failed ? [entry('tr', { kind: 'tool_result', toolUseId: 'call1', content: 'failed', isError: true })] : [])
+      ]
+    })
+    s = setActiveRun(s, 'r1')
+    const rows = compactToolRows(transcriptRows(s).rows)
+    expect(rows[0].text).toMatch(/^Command: echo/)
+    expect(rows[0].text).not.toMatch(/[\x1b\x07]/)
+  })
+
+  it('shows standalone and ordered tool-result media without image bytes', () => {
+    const image = { kind: 'image' as const, image: { mediaType: 'image/png' as const, data: 'U0VDUkVU' } }
+    let s = base()
+    s = applyRecord(s, { ...record(summary('r1', { status: 'running' })), transcript: [
+      entry('m', { kind: 'media', media: image }),
+      entry('r', { kind: 'tool_result', toolUseId: 't', content: '', isError: false, parts: [{ type: 'text', text: 'before' }, { type: 'media', media: image }, { type: 'media', media: { kind: 'unsupported', reason: 'unavailable' } }] })
+    ] })
+    s = setActiveRun(s, 'r1')
+    const rows = transcriptRows(s).rows
+    expect(rows.map((row) => row.text)).toEqual(['[image image/png 6 bytes]', 'before [image image/png 6 bytes] [unsupported media: unavailable]'])
+    expect(JSON.stringify(rows)).not.toContain('U0VDUkVU')
+    expect(compactToolRows(rows, true).some(row => row.text.includes('[image image/png 6 bytes]'))).toBe(true)
+    expect(JSON.stringify(compactToolRows(rows, true))).not.toContain('U0VDUkVU')
+  })
+
+  it.each([false, true])('sanitizes pending command summaries with a failed result: %s', (failed) => {
+    let s = applyRecord(base(), {
+      ...record(summary('r1', { status: 'running' })),
+      transcript: [
+        entry('tu', { kind: 'tool_use', id: 'call1', name: 'Bash', input: { command: 'echo \x1b]52;c;Zm9v\x07 \x1b[2J' } }),
+        ...(failed ? [entry('tr', { kind: 'tool_result', toolUseId: 'call1', content: 'failed', isError: true })] : [])
+      ]
+    })
+    s = setActiveRun(s, 'r1')
+    const rows = compactToolRows(transcriptRows(s).rows)
+    expect(rows[0].text).toMatch(/^Command: echo/)
+    expect(rows[0].text).not.toMatch(/[\x1b\x07]/)
+  })
+
   it('merges the chain oldest first with a divider, maps every block kind, sanitizes text', () => {
     let s = base()
     const r1 = summary('r1', { status: 'finished', startedAt: 1000, endedAt: 2000, sessionId: 's' })
@@ -155,7 +232,7 @@ describe('transcriptRows', () => {
     s = applyRecord(s, { ...record(summary('r1', { status: 'running' })), agents: { root: agent('root', null) } })
     s = setActiveRun(s, 'r1')
     s = applyEvent(s, { atSeq: 1, event: { type: 'agent.partial', runId: 'r1', agentId: 'root', text: 'typing' } })
-    expect(partialRows(s)).toEqual([{ key: 'partial|r1|root', runId: 'r1', agentId: 'root', agentLabel: 'Orchestrator', text: 'typing' }])
+    expect(partialRows(s)).toEqual([{ key: 'partial|r1|root', runId: 'r1', agentId: 'root', agentLabel: 'Orchestrator', identityTone: 'identity', text: 'typing' }])
   })
 })
 
@@ -180,6 +257,8 @@ describe('planView and worktreeRows', () => {
     expect(planView(s)).toMatchObject({ goal: 'Ship', statusWord: 'In progress', done: 1, total: 3 })
     expect(planView(s)?.steps[1]).toEqual({ id: 'p2', title: 'Two', status: 'in_progress', owner: 'Dev', note: 'n' })
     expect(planView(setActiveRun(s, 'none'))).toBeUndefined()
+    const continued = applyRecord(s, { ...record(summary('r2', { status: 'running', resumedFrom: 'r1', startedAt: 99_000 })), plan: s.runs.r1.plan })
+    expect(planView(setActiveRun(continued, 'r2'))).toMatchObject({ runId: 'r2', continued: true, done: 1, startedAt: 99_000 })
   })
 
   it('worktree rows carry the open merge review id', () => {
@@ -192,6 +271,17 @@ describe('planView and worktreeRows', () => {
       { agentId: 'w', runId: 'r1', label: 'w-1', branch: 'br', status: 'ready', changedFiles: 2, mergeTarget: 'main', reviewId: 'mr1' },
       { agentId: 'v', runId: 'r1', label: 'Worker', branch: 'br2', status: 'active', changedFiles: 0, mergeTarget: 'parent' }
     ])
+  })
+})
+
+describe('statusSummary: plan windows and auto-continues', () => {
+  it('formats the 5-hour and 7-day windows and the followed run\'s auto-continue count', () => {
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'running' })]), { activeRunId: 'r1' })
+    s = { ...s, planUsage: { authMode: 'subscription', subscriptionType: 'max', available: true, windows: { fiveHour: { utilization: 41.6, resetsAt: null }, sevenDay: { utilization: 18, resetsAt: null } } } as never }
+    s = { ...s, runs: { ...s.runs, r1: { ...s.runs.r1, plan: { goal: 'g', steps: [], status: 'active', autoContinues: 3, updatedAt: 1 } } } }
+    expect(statusSummary(s)).toMatchObject({ windowText: '5h 42% · 7d 18%', autoText: 'auto 3/40' })
+    expect(windowText({ authMode: 'apiKey', subscriptionType: null, available: false, windows: {} } as never)).toBeUndefined()
   })
 })
 
@@ -216,6 +306,50 @@ describe('statusSummary', () => {
     expect(statusSummary(s).statusWord).toBe('Stopped at its budget limit')
     s = applyEvent(s, ev({ type: 'run.status', runId: 'r1', status: 'error' }))
     expect(statusSummary(s).statusWord).toBe('Failed')
+  })
+
+  it('a failed root turn on an idle run reads "Idle · last turn failed" in the danger tone (#29 M5); a plain idle run does not', () => {
+    const run = (state: AgentInstance['state']): RunRecord => record(summary('r1', { status: 'idle' }), { agents: { root: agent('root', null, { state }) } })
+    let s = applySnapshot(base(), snap([summary('r1', { status: 'idle' })], [], run('error')), { activeRunId: 'r1' })
+    expect(statusSummary(s)).toMatchObject({ statusWord: 'Idle · last turn failed', tone: 'danger' })
+    s = applySnapshot(base(), snap([summary('r1', { status: 'idle' })], [], run('idle')), { activeRunId: 'r1' })
+    expect(statusSummary(s)).toMatchObject({ statusWord: 'Idle', tone: 'dim' })
+  })
+
+  it('the bare failure reason becomes a readable sentence in the transcript (#29 M5)', () => {
+    expect(failedTurnSentence('during execution')).toBe('The last turn failed (error during execution). Send a message to try again.')
+    expect(failedTurnSentence('error_max_turns')).toContain('error max turns')
+    expect(failedTurnSentence('Hello there')).toBe('Hello there')
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'idle' })], [], record(summary('r1', { status: 'idle' }), { transcript: [entry('t1', { kind: 'text', text: 'during execution' })], agents: { root: agent('root', null) } })), { activeRunId: 'r1' })
+    expect(transcriptRows(s).rows[0].text).toMatch(/^The last turn failed/)
+  })
+
+  it('#29 leftover: the mock [mock:turn-fail] agent (state error, activity "during execution") reads as a sentence in the tree footer and the inspector', () => {
+    // mock.ts sets root.activity = 'error_during_execution'.replace(/^error_/, '').replace(/_/g, ' '); the text never enters the transcript.
+    const failed = agent('root', null, { state: 'error', activity: 'during execution' })
+    let s = applySnapshot(base(), snap([summary('r1', { status: 'idle' })], [], record(summary('r1', { status: 'idle' }), { agents: { root: failed } })), { activeRunId: 'r1' })
+    s = applyEvent(s, ev({ type: 'agent.upsert', runId: 'r1', agent: failed }))
+    const sentence = 'The last turn failed (error during execution). Send a message to try again.'
+    expect(orgTreeRows(s).find((r) => r.kind === 'agent' && r.isRoot)?.activity).toBe(sentence)
+    expect(agentDetail(s, 'root')?.activity).toBe(sentence)
+    // A normal activity is untouched.
+    const ok = applyEvent(s, ev({ type: 'agent.upsert', runId: 'r1', agent: agent('root', null, { activity: 'Reading files' }) }))
+    expect(orgTreeRows(ok).find((r) => r.kind === 'agent' && r.isRoot)?.activity).toBe('Reading files')
+  })
+
+  it('R2-L2: a card of a run that is not followed names that run; an agent this client has not loaded gets no "An agent" label', () => {
+    let s = base()
+    s = applySnapshot(s, snap([summary('r1', { status: 'running', startedAt: 1, prompt: 'Build the report' }), summary('r2', { status: 'running', startedAt: 2 })]), { activeRunId: 'r2' })
+    s = applyEvent(s, ev({ type: 'permission.request', runId: 'r1', request: perm('a', 'r1', { agentId: 'impl-1' }) }))
+    s = applyEvent(s, ev({ type: 'permission.request', runId: 'r2', request: perm('b', 'r2') }))
+    const cards = trayCards(s)
+    const own = cards.find((c) => c.ref.runId === 'r2')!
+    const other = cards.find((c) => c.ref.runId === 'r1')!
+    expect(own.runTag).toBe('R2')
+    expect(other.runTag).toMatch(/^R1 .*Build the report/)
+    expect(other.agentLabel).toBeUndefined()
+    expect(JSON.stringify(other)).not.toContain('An agent')
   })
 
   it('without an active run: no run fields; readOnlyReason and host kind pass through', () => {

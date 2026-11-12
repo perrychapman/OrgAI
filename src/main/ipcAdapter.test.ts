@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HOST_IPC, HOST_METHODS, IPC } from '@shared/types'
-import type { EngagementChangedEvent } from '@shared/types'
+import type { CliCommandStatus, EngagementChangedEvent } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>()
@@ -26,7 +26,6 @@ const { registerIpc, DESKTOP_ONLY_CHANNELS } = await import('./ipc')
 const { HostDispatcher } = await import('./host/dispatcher')
 const { HostEventBus } = await import('./host/events')
 const { project: makeProject } = await import('./runtime/testHelpers')
-const { CLI_SHIM_UNAVAILABLE } = await import('./host/shimInstaller')
 const { desktopOnlyChannels } = await import('./host/registry')
 type IpcServices = import('./ipc').IpcServices
 
@@ -85,7 +84,7 @@ describe('registerIpc (thin adapter)', () => {
     expect([...handlers.keys()].sort()).toEqual([...expected].sort())
     for (const ch of handlers.keys()) expect(SOCKET_ONLY.has(ch), ch).toBe(false)
     expect(handlers.has(IPC.usageRefresh)).toBe(true)
-    expect(DESKTOP_ONLY_CHANNELS).toHaveLength(24)
+    expect(DESKTOP_ONLY_CHANNELS).toHaveLength(29)
   })
 
   it('DESKTOP_ONLY_CHANNELS is exactly the registry desktop_only request set', () => {
@@ -165,52 +164,59 @@ describe('registerIpc (thin adapter)', () => {
     expect(svc.openRunWindow).toHaveBeenCalledWith({ projectId: 'proj_e', runId: 'run_1' })
   })
 
-  describe('orgai command shim channels (desktop only)', () => {
+  describe('orgai command install channels (desktop only)', () => {
+    const unavailable: CliCommandStatus = { state: 'not-installed', oldShim: false, npmFound: false, tag: 'latest', command: 'npm install -g orgai-cli@latest', installing: false }
+
     it('answer the unavailable fallback without a service', async () => {
       registerIpc(services())
-      expect(call(IPC.appCliShimStatus)).toEqual(CLI_SHIM_UNAVAILABLE)
-      for (const ch of [IPC.appInstallCliShim, IPC.appUninstallCliShim]) {
-        await expect(call(ch)).resolves.toEqual({ ok: false, message: CLI_SHIM_UNAVAILABLE.reason, status: CLI_SHIM_UNAVAILABLE })
+      expect(call(IPC.appCliCommandStatus)).toEqual(unavailable)
+      for (const ch of [IPC.appInstallCliCommand, IPC.appRemoveOldCliShim]) {
+        await expect(call(ch)).resolves.toMatchObject({ ok: false, status: unavailable })
       }
+      expect(call(IPC.appCancelCliInstall)).toBe(false)
     })
 
     it('delegate to the given service', async () => {
-      const status = { state: 'installed' as const, path: '/h/.local/bin/orgai', binDir: '/h/.local/bin', onPath: true }
-      const cliShim = {
+      const status: CliCommandStatus = { ...unavailable, state: 'npm', version: '0.2.0', npmFound: true }
+      const cliInstall = {
         status: vi.fn(() => status),
         install: vi.fn(async () => ({ ok: true, message: 'Installed.', status })),
-        uninstall: vi.fn(async () => ({ ok: true, message: 'Removed.', status: { ...status, state: 'not-installed' as const } })),
-        refreshOnLaunch: vi.fn(async () => 'unchanged' as const)
+        removeOldShim: vi.fn(async () => ({ ok: true, message: 'Removed.', status: { ...status, oldShim: false } })),
+        cancel: vi.fn(() => true)
       }
-      registerIpc({ ...services(), cliShim })
-      expect(call(IPC.appCliShimStatus)).toEqual(status)
-      await expect(call(IPC.appInstallCliShim)).resolves.toMatchObject({ ok: true, message: 'Installed.' })
-      await expect(call(IPC.appUninstallCliShim)).resolves.toMatchObject({ ok: true, status: { state: 'not-installed' } })
-      expect(cliShim.install).toHaveBeenCalledTimes(1)
-      expect(cliShim.uninstall).toHaveBeenCalledTimes(1)
+      registerIpc({ ...services(), cliInstall })
+      expect(call(IPC.appCliCommandStatus)).toEqual(status)
+      await expect(call(IPC.appInstallCliCommand)).resolves.toMatchObject({ ok: true, message: 'Installed.' })
+      await expect(call(IPC.appRemoveOldCliShim)).resolves.toMatchObject({ ok: true, status: { oldShim: false } })
+      expect(call(IPC.appCancelCliInstall)).toBe(true)
+      expect(cliInstall.install).toHaveBeenCalledTimes(1)
+      expect(cliInstall.removeOldShim).toHaveBeenCalledTimes(1)
     })
 
     it('turn a throwing service into ok: false, never a rejection', async () => {
-      const cliShim = {
+      const cliInstall = {
         status: vi.fn(() => {
           throw new Error('stat failed')
         }),
         install: vi.fn(async () => {
-          throw new Error('EACCES: permission denied')
+          throw new Error('spawn boom')
         }),
-        uninstall: vi.fn(() => {
+        removeOldShim: vi.fn(() => {
           throw new Error('sync boom')
         }),
-        refreshOnLaunch: vi.fn(async () => 'skipped' as const)
+        cancel: vi.fn(() => {
+          throw new Error('cancel boom')
+        })
       }
-      registerIpc({ ...services(), cliShim: cliShim as never })
-      expect(call(IPC.appCliShimStatus)).toEqual(CLI_SHIM_UNAVAILABLE)
-      await expect(call(IPC.appInstallCliShim)).resolves.toEqual({
+      registerIpc({ ...services(), cliInstall: cliInstall as never })
+      expect(call(IPC.appCliCommandStatus)).toEqual(unavailable)
+      await expect(call(IPC.appInstallCliCommand)).resolves.toEqual({
         ok: false,
-        message: 'OrgAI could not change the orgai command: EACCES: permission denied',
-        status: CLI_SHIM_UNAVAILABLE
+        message: 'OrgAI could not change the orgai command: spawn boom',
+        status: unavailable
       })
-      await expect(call(IPC.appUninstallCliShim)).resolves.toMatchObject({ ok: false, message: 'OrgAI could not change the orgai command: sync boom' })
+      await expect(call(IPC.appRemoveOldCliShim)).resolves.toMatchObject({ ok: false, message: 'OrgAI could not change the orgai command: sync boom' })
+      expect(call(IPC.appCancelCliInstall)).toBe(false)
     })
   })
 })

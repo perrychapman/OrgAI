@@ -78,12 +78,28 @@ function readableError(e: unknown): string {
  */
 export class SkillEvaluationService implements SkillEvaluationApi {
   private inflight = new Map<string, Promise<SkillEvaluationReport>>()
+  /** Model steps in flight, so dispose() can abort them. */
+  private modelSteps = new Set<AbortController>()
+  /** dispose() ran (the host is shutting down): no new evaluation, no report written by an aborted one. */
+  private disposed = false
   /** Activity (backgroundTasks): skill evaluations in flight (one per project at most). */
   inFlightCount(): number { return this.inflight.size }
 
   constructor(private deps: SkillEvaluationDeps) {}
 
+  /**
+   * The host is shutting down (activity quiesce, cli-standalone.md round 6 item 9): abort every model step in flight,
+   * so a drain never waits up to SKILL_EVAL_TIMEOUT_MS for one. An aborted evaluation answers its caller with the error
+   * and leaves the last saved report as it was. New evaluations are refused. Idempotent.
+   */
+  dispose(): void {
+    this.disposed = true
+    for (const ac of this.modelSteps) ac.abort()
+    this.modelSteps.clear()
+  }
+
   evaluate(projectId: string): Promise<SkillEvaluationReport> {
+    if (this.disposed) return Promise.reject(new Error('OrgAI is shutting down; evaluate the skills once it has started again.'))
     const existing = this.inflight.get(projectId)
     if (existing) return existing
     const p = this.run(projectId).finally(() => this.inflight.delete(projectId))
@@ -155,13 +171,15 @@ export class SkillEvaluationService implements SkillEvaluationApi {
       else await this.modelStep(project, report, system, prompt, estimate, skills, gaps.map((g) => g.id))
     }
 
-    this.write(report)
+    // An evaluation cut by shutdown keeps the last saved report (its error would only replace a good one).
+    if (!this.disposed) this.write(report)
     return report
   }
 
   private async modelStep(project: Project, report: SkillEvaluationReport, system: string, prompt: string, estimate: number, skills: EvalSkill[], gapIds: string[]): Promise<void> {
     const ac = new AbortController()
     const timer = setTimeout(() => ac.abort(), SKILL_EVAL_TIMEOUT_MS)
+    this.modelSteps.add(ac)
     let tokens = 0
     let cost = 0
     let costKnown = false
@@ -198,10 +216,11 @@ export class SkillEvaluationService implements SkillEvaluationApi {
       }
     } catch (e) {
       report.skippedReason = 'error'
-      report.error = ac.signal.aborted ? 'The model took too long to answer.' : readableError(e)
+      report.error = this.disposed ? 'OrgAI shut down before the model answered.' : ac.signal.aborted ? 'The model took too long to answer.' : readableError(e)
       if (reported) report.tokensUsed = tokens
     } finally {
       clearTimeout(timer)
+      this.modelSteps.delete(ac)
     }
   }
 

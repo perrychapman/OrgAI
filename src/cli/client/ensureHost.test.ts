@@ -1,90 +1,83 @@
 import { describe, expect, it } from 'vitest'
-import type { DaemonInfo } from '../../shared/types'
 import { FakeHostClient, fakeContext, fakeInproc, noHost } from '../testing/fakeContext'
-import { EXIT } from '../types'
-import { ENSURE_HOST_READY_TIMEOUT_MS, ensureHost } from './ensureHost'
+import { CliError, EXIT, HOST_STARTING_WAIT_MS } from '../types'
+import { ENSURE_HOST_STARTING_WAIT_MS, ensureHost, MANAGEMENT_INPROC, missingScopesError } from './ensureHost'
 
-const ready: DaemonInfo = { hostInstanceId: 'bbbbbbbbbbbb', pid: 77, endpoint: '/tmp/y.sock', state: 'ready', startedAt: 1, hostKind: 'headless-host' }
-
-describe('ensureHost', () => {
-  it('connects to a running host with the scopes, waiting while it starts', async () => {
+describe('ensureHost (cli-standalone-default.md 4.1)', () => {
+  it('starts this process\'s own host, then connects to it with the scopes, waiting up to 15 s while it starts', async () => {
+    const inproc = fakeInproc()
     const h = new FakeHostClient()
-    const f = fakeContext({ connect: [h] })
-    const r = await ensureHost(f.ctx, ['read', 'operate'])
-    expect(r).toEqual({ client: h, started: false })
-    expect(f.connectCalls).toEqual([{ scopes: ['read', 'operate'], opts: { clientKind: 'cli', waitStartingMs: 2000 } }])
-    expect(f.launcherCalls).toEqual([])
-  })
-
-  it('no host: starts the app headless, waits for an Electron host, then connects', async () => {
-    const h = new FakeHostClient()
-    const f = fakeContext({ connect: [noHost(), h], launcher: { waitForReady: async () => ready } })
+    const f = fakeContext({ connect: [h], inproc: async () => inproc })
     const r = await ensureHost(f.ctx, ['read', 'operate'], { interactive: false })
-    expect(r.client).toBe(h)
-    expect(r.started).toBe(true)
-    expect(f.launcherCalls).toEqual([
-      { method: 'resolve', args: undefined },
-      { method: 'spawn', args: { headless: true } },
-      { method: 'waitForReady', args: { timeoutMs: ENSURE_HOST_READY_TIMEOUT_MS, hostKinds: ['headless-host', 'desktop'] } }
-    ])
-    expect(f.connectCalls).toHaveLength(2)
+    expect(r).toEqual({ client: h, inproc })
+    expect(ENSURE_HOST_STARTING_WAIT_MS).toBe(HOST_STARTING_WAIT_MS)
+    expect(HOST_STARTING_WAIT_MS).toBe(15_000)
+    expect(f.inprocCalls).toEqual([undefined])
+    expect(f.connectCalls).toEqual([{ scopes: ['read', 'operate'], opts: { clientKind: 'cli', waitStartingMs: HOST_STARTING_WAIT_MS } }])
   })
 
-  it('no host and the app never gets ready: exit 6; cannot be found or fails to start: exit 1', async () => {
-    const f = fakeContext({ connect: [noHost()], launcher: { waitForReady: async () => null } })
-    await expect(ensureHost(f.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.hostBusy })
-    const g = fakeContext({ connect: [noHost()], launcher: { resolve: () => ({ error: 'OrgAI app not found.' }) } })
-    await expect(ensureHost(g.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: 'OrgAI app not found.' })
-    const k = fakeContext({
-      connect: [noHost()],
-      launcher: {
-        waitForReady: async () => {
-          throw new Error('exited with code 6')
-        }
+  it('never connects before it started its own host, and never looks for a running one', async () => {
+    const order: string[] = []
+    const f = fakeContext({
+      connect: [new FakeHostClient()],
+      inproc: async () => {
+        order.push('start')
+        return fakeInproc()
       }
     })
-    await expect(ensureHost(k.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('exited with code 6') })
+    const connect = f.ctx.connect
+    f.ctx.connect = async (...a) => {
+      order.push('connect')
+      return connect(...a)
+    }
+    await ensureHost(f.ctx, ['read'])
+    expect(order).toEqual(['start', 'connect'])
   })
 
-  it('terminal access off: exit 1 naming App settings > Terminal access, and no app is started', async () => {
-    const f = fakeContext({ connect: [{ ok: false, reason: 'disabled', message: '' }] })
-    await expect(ensureHost(f.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.failure, message: expect.stringContaining('App settings') })
-    await expect(ensureHost(f.ctx, ['read'])).rejects.toMatchObject({ message: expect.stringContaining('Terminal access') })
-    expect(f.launcherCalls).toEqual([])
-  })
-
-  it('a failed handshake proof is exit 5; draining or still starting exit 6', async () => {
-    const a = fakeContext({ connect: [{ ok: false, reason: 'auth_failed', message: 'The handshake proof did not verify.' }] })
-    await expect(ensureHost(a.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.auth })
-    const d = fakeContext({ connect: [{ ok: false, reason: 'draining', message: 'OrgAI is shutting down.' }] })
-    await expect(ensureHost(d.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.hostBusy })
-    const s = fakeContext({ connect: [{ ok: false, reason: 'starting', message: 'OrgAI is starting.' }] })
-    await expect(ensureHost(s.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.hostBusy })
-  })
-
-  it('--host inproc: starts the in-process host, then connects to its socket; a failed connect stops it', async () => {
-    const inproc = fakeInproc()
+  it('the terminal UI connects as a tui client; a management command boots its host with MANAGEMENT_INPROC', async () => {
     const h = new FakeHostClient()
-    const f = fakeContext({ globals: { host: 'inproc' }, connect: [h], inproc: async () => inproc })
-    const r = await ensureHost(f.ctx, ['read', 'operate'])
-    expect(r).toEqual({ client: h, inproc, started: true })
-    expect(f.launcherCalls).toEqual([])
-    expect(inproc.stops).toEqual([])
-
-    const other = fakeInproc()
-    const g = fakeContext({ globals: { host: 'inproc' }, connect: [{ ok: false, reason: 'auth_failed', message: 'bad proof' }], inproc: async () => other })
-    await expect(ensureHost(g.ctx, ['read'])).rejects.toMatchObject({ exitCode: EXIT.auth })
-    expect(other.stops).toEqual([true])
+    const t = fakeContext({ connect: [h] })
+    await ensureHost(t.ctx, ['read', 'operate', 'decide'], { clientKind: 'tui' })
+    expect(t.connectCalls[0].opts).toMatchObject({ clientKind: 'tui' })
+    const g = fakeContext({ connect: [h] })
+    await ensureHost(g.ctx, ['read'], { inproc: MANAGEMENT_INPROC })
+    expect(g.inprocCalls).toEqual([MANAGEMENT_INPROC])
   })
 
-  it("passes clientKind 'tui' through (the terminal UI is an interactive client)", async () => {
-    const h = new FakeHostClient()
-    const f = fakeContext({ connect: [h] })
-    await ensureHost(f.ctx, ['read', 'operate', 'decide'], { clientKind: 'tui' })
-    expect(f.connectCalls).toEqual([{ scopes: ['read', 'operate', 'decide'], opts: { clientKind: 'tui', waitStartingMs: 2000 } }])
+  it('another orgai owning the folder: the start is refused at once with exit 6 and nothing connects', async () => {
+    const refusal = new CliError('orgai is already running in another terminal (/work/a, pid 4242). Use that one, or quit it first.', EXIT.hostBusy)
+    const f = fakeContext({
+      connect: [new FakeHostClient()],
+      inproc: async () => {
+        throw refusal
+      }
+    })
+    await expect(ensureHost(f.ctx, ['read'])).rejects.toBe(refusal)
+    expect(f.connectCalls).toEqual([])
+  })
+
+  it('a failed connect stops the host it started again and maps the reason', async () => {
+    for (const [reason, code] of [['auth_failed', EXIT.auth], ['starting', EXIT.hostBusy], ['draining', EXIT.hostBusy], ['not_owner', EXIT.failure], ['no_host', EXIT.failure]] as const) {
+      const inproc = fakeInproc()
+      const f = fakeContext({ connect: [{ ok: false, reason, message: `x ${reason}` }], inproc: async () => inproc })
+      await expect(ensureHost(f.ctx, ['read'])).rejects.toMatchObject({ exitCode: code })
+      expect(inproc.stops).toEqual([true])
+    }
     const inproc = fakeInproc()
-    const g = fakeContext({ globals: { host: 'inproc' }, connect: [h], inproc: async () => inproc })
-    await ensureHost(g.ctx, ['read'], { clientKind: 'tui' })
-    expect(g.connectCalls[0].opts).toEqual({ clientKind: 'tui', waitStartingMs: 2000 })
+    const f = fakeContext({ connect: [noHost()], inproc: async () => inproc })
+    f.ctx.connect = async () => {
+      throw new Error('socket exploded')
+    }
+    await expect(ensureHost(f.ctx, ['read'])).rejects.toThrow('socket exploded')
+    expect(inproc.stops).toEqual([true])
+  })
+
+  it('missingScopesError names the scopes the host did not grant, and nothing when all are granted', () => {
+    const c = new FakeHostClient({}, { hello: { grantedScopes: ['read', 'operate'] } })
+    expect(missingScopesError(c, ['read', 'operate'])).toBeUndefined()
+    const e = missingScopesError(c, ['read', 'decide', 'configure'])
+    expect(e).toBeInstanceOf(CliError)
+    expect(e?.message).toContain("'decide', 'configure'")
+    expect(e?.exitCode).toBe(EXIT.failure)
   })
 })

@@ -21,7 +21,8 @@ import { SettingsAdvanced, openSettingsAdvanced } from '../components/settings/S
 import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
-import { CONNECTION_NAME, PERMISSION_MODE_SHORT, SETTINGS_COPY } from '../lib/settingsCopy'
+import { PERMISSION_MODE_SHORT, SETTINGS_COPY } from '../lib/settingsCopy'
+import { connectionLabel } from '../lib/connectionLabel'
 import { PERMISSION_MODE_TRADEOFF } from '../lib/permissionCopy'
 import { modelSettingGroups, modelSources } from '../lib/assistantModels'
 import { ModelSelect } from '../components/ui/ModelSelect'
@@ -36,15 +37,17 @@ import SkillLibrarySection from '../components/skills/SkillLibrarySection'
 import TemplatesSection from '../components/templates/TemplatesSection'
 import KitSection from '../components/kit/KitSection'
 import { CanvasSection } from '../components/settings/CanvasSection'
-import { CliShimRow } from '../components/settings/CliShimRow'
+import { CliCommandRow } from '../components/settings/CliCommandRow'
 import { Select } from '../components/ui/Select'
-import { TERMINAL_ACCESS_TRUST } from '../lib/cliShim'
-import { TERMINAL_ACCESS_LEVEL_HINT, TERMINAL_ACCESS_LEVEL_OPTIONS, isTerminalAccessLevel, terminalAccessLevelOf, terminalAccessLevelPatch } from '../lib/terminalAccess'
 import { mergePendingSettings } from '../lib/settingsMerge'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
+import { askOrgAI } from '../lib/menuActions'
+import AppNavigateBanner from '../components/AppNavigateBanner'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
+const MAKER_NAME = 'Cybrid Software LLC'
+const MAKER_URL = 'https://cybridsoftware.com'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'dark', label: 'Dark' },
@@ -270,7 +273,6 @@ export default function AppSettingsView(): ReactElement {
   }
 
   const appearance: AppearanceSettings = info.appearance ?? DEFAULT_APPEARANCE
-  const terminalLevel = terminalAccessLevelOf(info)
   const patchAppearance = (p: Partial<AppearanceSettings>, canvas?: Partial<AppearanceSettings['canvas']>): void => {
     const next: AppearanceSettings = { ...appearance, ...p, canvas: { ...appearance.canvas, ...canvas } }
     setAppearance(next)
@@ -319,6 +321,7 @@ export default function AppSettingsView(): ReactElement {
         <div className="spacer" />
         <SaveIndicator />
       </div>
+      <AppNavigateBanner />
       <SettingsPage idBase="app-settings" label="App settings sections" panes={PANES} active={pane} onSelect={setPane}>
         {error && (
           <p className="field-error" role="alert">
@@ -490,7 +493,7 @@ export default function AppSettingsView(): ReactElement {
                   />
                 </SettingsCard>
                 <p className="muted" data-testid="assistant-models-note">
-                  Chat and the MCP and Skill assistants run on {CONNECTION_NAME[defaultConn]}, the default connection. Setup uses each project's connection.
+                  Chat and the MCP and Skill assistants run on {connectionLabel(defaultConn)}, the default connection. Setup uses each project's connection.
                 </p>
               </SettingsGroup>
               <SettingsGroup title="New projects (advanced)">
@@ -513,45 +516,7 @@ export default function AppSettingsView(): ReactElement {
               </SettingsGroup>
               <SettingsGroup title="Terminal">
                 <SettingsCard>
-                  <SettingRow
-                    id="terminal-server-row"
-                    title="Terminal access"
-                    description={`Lets the orgai command in a terminal on this computer see and control OrgAI. ${TERMINAL_ACCESS_TRUST} Off, OrgAI opens no connection point for terminals at all.`}
-                    control={
-                      <Switch
-                        checked={info.terminalServer === true}
-                        label="Terminal access"
-                        testId="terminal-server-switch"
-                        describedBy={settingDescId('terminal-server-row')}
-                        onChange={(terminalServer) => patch({ terminalServer }, true)}
-                      />
-                    }
-                  />
-                  <SettingRow
-                    id="terminal-access-level-row"
-                    title="What terminals may do"
-                    description={
-                      info.terminalServer === true
-                        ? TERMINAL_ACCESS_LEVEL_HINT[terminalLevel]
-                        : `${TERMINAL_ACCESS_LEVEL_HINT[terminalLevel]} Applies once Terminal access is on.`
-                    }
-                    width="select"
-                    control={
-                      <span data-testid="terminal-access-level">
-                        <Select
-                          id="terminal-access-level-select"
-                          label="What terminals may do"
-                          value={terminalLevel}
-                          options={TERMINAL_ACCESS_LEVEL_OPTIONS}
-                          describedBy={settingDescId('terminal-access-level-row')}
-                          onChange={(v) => {
-                            if (isTerminalAccessLevel(v)) patch(terminalAccessLevelPatch(v), true)
-                          }}
-                        />
-                      </span>
-                    }
-                  />
-                  <CliShimRow terminalAccessOn={info.terminalServer === true} onTurnOnTerminalAccess={() => patch({ terminalServer: true }, true)} />
+                  <CliCommandRow />
                 </SettingsCard>
               </SettingsGroup>
             </SettingsAdvanced>
@@ -613,6 +578,12 @@ export default function AppSettingsView(): ReactElement {
                     </span>
                   )}
                 </dd>
+                <dt>Made by</dt>
+                <dd>
+                  <a className="connector-link" href={MAKER_URL} target="_blank" rel="noreferrer noopener" data-testid="about-maker">
+                    {MAKER_NAME}
+                  </a>
+                </dd>
                 <dt>Platform</dt>
                 <dd>
                   {appInfo.platform} · {appInfo.packaged ? 'packaged' : 'development'}
@@ -637,6 +608,12 @@ export default function AppSettingsView(): ReactElement {
                   </Fragment>
                 ))}
               </dl>
+              <p className="about-ask">
+                <span className="muted">Not sure where something is?</span>{' '}
+                <Button size="sm" testId="ask-orgai-button" onClick={() => void askOrgAI()}>
+                  Ask OrgAI about itself
+                </Button>
+              </p>
             </SettingsCard>
           </SettingsSection>
         )}

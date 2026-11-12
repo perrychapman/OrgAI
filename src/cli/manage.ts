@@ -10,11 +10,22 @@
 import { projectKindOf } from '../shared/defaults'
 import type { HostScope, HostSubscribeTopic, Project } from '../shared/types'
 import { pushChannelsForTopic } from '../main/host/registry'
-import { ensureHost, missingScopesError, TERMINAL_ACCESS_HINT, VERSION_SKEW_SCOPE_HINT } from './client/ensureHost'
-import { consumeSecretEnv } from './client/launcher'
-import { note, safeLine, warn } from './output'
-import { checkProjectResolution, warnVersionSkew } from './runRef'
+import { ensureHost, MANAGEMENT_INPROC, missingScopesError } from './client/ensureHost'
+import { safeLine, warn } from './output'
+import { checkProjectResolution } from './runRef'
+import { reservedSecretSourceProblem } from './secretOverlay'
 import { CliError, EXIT, type CliContext, type HostCallError, type HostClient } from './types'
+
+/**
+ * Read a secret from the environment variable `name` (--from-env, --client-secret-from-env) and take it out of `env`
+ * at once, so the host this command starts later, and that host's agents, never inherit it (review M13). Commands read
+ * their secrets before they connect (withHost starts the host).
+ */
+export function consumeSecretEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name]
+  delete env[name]
+  return value
+}
 
 /** The most a secret read from stdin may be. */
 export const SECRET_STDIN_MAX_BYTES = 64 * 1024
@@ -28,17 +39,29 @@ const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 /** Swappable in tests: the y/N question on the terminal and the stdin reader. */
 export const manageDeps = {
   ttyConfirm: (question: string): Promise<boolean> => ttyConfirm(question),
+  /**
+   * Ask `prompt` on /dev/tty (the console on Windows) and read one line ('' for an empty line); undefined when no
+   * terminal could be opened or it closed before a line came (Ctrl+D), so a caller never mistakes that for an answer.
+   */
+  ttyAsk: (prompt: string): Promise<string | undefined> => ttyAsk(prompt),
   readStdin: (maxBytes: number, label?: string): Promise<string> => readProcessStdin(maxBytes, label)
 }
 
 /** Ask `question [y/N]` on /dev/tty (the console on Windows) and read one line; only y / yes is a yes. */
 async function ttyConfirm(question: string): Promise<boolean> {
+  return /^y(es)?$/i.test(((await ttyAsk(`${question} [y/N] `)) ?? '').trim())
+}
+
+/** Write `prompt` on /dev/tty (the console on Windows) and read one line; undefined with no terminal or at EOF. */
+async function ttyAsk(prompt: string): Promise<string | undefined> {
   const readline = await import('node:readline')
   if (process.platform === 'win32') {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true })
     try {
-      const answer = await new Promise<string>((resolve) => rl.question(`${question} [y/N] `, resolve))
-      return /^y(es)?$/i.test(answer.trim())
+      return await new Promise<string | undefined>((resolve) => {
+        rl.question(prompt, resolve)
+        rl.once('close', () => resolve(undefined))
+      })
     } finally {
       rl.close()
     }
@@ -49,18 +72,17 @@ async function ttyConfirm(question: string): Promise<boolean> {
   try {
     fd = fs.openSync('/dev/tty', 'r+')
   } catch {
-    return false
+    return undefined
   }
   const input = new tty.ReadStream(fd)
   const output = new tty.WriteStream(fd)
   const rl = readline.createInterface({ input, output, terminal: false })
   try {
-    output.write(`${question} [y/N] `)
-    const answer = await new Promise<string>((resolve) => {
+    output.write(prompt)
+    return await new Promise<string | undefined>((resolve) => {
       rl.once('line', resolve)
-      rl.once('close', () => resolve(''))
+      rl.once('close', () => resolve(undefined))
     })
-    return /^y(es)?$/i.test(answer.trim())
   } finally {
     rl.close()
     input.destroy()
@@ -91,19 +113,18 @@ export function readStdinText(maxBytes: number, label?: string): Promise<string>
 // ---------- Host connection ----------
 
 /**
- * Connect (ensureHost: --host inproc starts the in-process host; auto / daemon connect, or start the headless app),
- * check every requested scope was granted, run `fn`, and always clean up: close the client and stop an in-process host
- * this call started (stop(true), a warning when that fails).
+ * Start this process's host (ensureHost; refused with exit 6 while another orgai owns the folder), check every
+ * requested scope was granted, run `fn`, and always clean up: close the client and stop the host (stop(true), a warning
+ * when that fails). The host boots with MANAGEMENT_INPROC: connection probes and system certificates on, model
+ * discovery, community prices and the usage monitor off.
  */
 export async function withHost<T>(ctx: CliContext, scopes: HostScope[], fn: (client: HostClient) => Promise<T>): Promise<T> {
-  const host = await ensureHost(ctx, scopes, { interactive: false })
+  const host = await ensureHost(ctx, scopes, { interactive: false, inproc: MANAGEMENT_INPROC })
   const cleanup = async (): Promise<void> => {
     host.client.close()
-    if (host.inproc) await host.inproc.stop(true).catch((e: unknown) => warn(ctx, `Could not stop the in-process host: ${e instanceof Error ? e.message : String(e)}`))
+    await host.inproc.stop(true).catch((e: unknown) => warn(ctx, `Could not stop the in-process host: ${e instanceof Error ? e.message : String(e)}`))
   }
   try {
-    warnVersionSkew(ctx, host.client)
-    if (host.started && host.inproc === undefined) note(ctx, 'Started the OrgAI host in the background.')
     const missing = missingScopesError(host.client, scopes)
     if (missing) throw missing
     return await fn(host.client)
@@ -132,16 +153,13 @@ export function hostError(e: unknown): CliError {
     case 'unknown_channel':
       return new CliError(message, EXIT.usage)
     case 'scope_denied':
-      // A scope Terminal access withheld names its own fix; anything else is a version skew.
-      return new CliError(/Terminal access/.test(message) ? message : `${message} ${VERSION_SKEW_SCOPE_HINT}`, EXIT.failure)
+      return new CliError(message, EXIT.failure)
     case 'stale_target_digest':
     case 'stale_revision':
       return new CliError(message, EXIT.failure)
     case 'host_draining':
     case 'host_starting':
       return new CliError(message, EXIT.hostBusy)
-    case 'terminal_server_disabled':
-      return new CliError(TERMINAL_ACCESS_HINT, EXIT.failure)
     case 'auth_failed':
       return new CliError(message, EXIT.auth)
     default:
@@ -186,14 +204,18 @@ export async function confirm(ctx: CliContext, question: string, yes: boolean): 
  * A secret value from exactly one source: the environment variable `fromEnv` (set and non-empty) or stdin (one
  * trailing newline trimmed, at most 64 KB, never an interactive terminal: the value would echo). Secrets are never
  * accepted on argv and never printed; errors name the variable, never a value. The variable is taken out of the
- * environment once read (launcher.ts consumeSecretEnv): call this before withHost, which may start a host.
+ * environment once read (consumeSecretEnv): call this before withHost, which may start a host. An
+ * ORGAI_SECRET_* name is refused with its own message (secretOverlay.ts reservedSecretSourceProblem): prepareContext has
+ * already taken such variables out of the environment. `fromEnvFlag` names the option in that message.
  */
-export async function readSecretValue(ctx: CliContext, opts: { fromEnv?: string; stdin?: boolean; what: string }): Promise<string> {
+export async function readSecretValue(ctx: CliContext, opts: { fromEnv?: string; stdin?: boolean; what: string; fromEnvFlag?: string }): Promise<string> {
   const { fromEnv, stdin, what } = opts
   if (fromEnv !== undefined && stdin) throw new CliError(`Give ${what} with --from-env or --stdin, not both.`, EXIT.usage)
   if (fromEnv === undefined && !stdin) throw new CliError(`Give ${what} with --from-env <VAR> or --stdin; secrets are never taken as arguments.`, EXIT.usage)
   if (fromEnv !== undefined) {
     if (!ENV_NAME_RE.test(fromEnv)) throw new CliError(`--from-env needs an environment variable name, not "${safeLine(fromEnv).slice(0, 40)}".`, EXIT.usage)
+    const reserved = reservedSecretSourceProblem(fromEnv, opts.fromEnvFlag ?? '--from-env')
+    if (reserved) throw new CliError(reserved, EXIT.usage)
     // Taken out of the environment at once: a host this command starts (and its agents) never inherit it (review M13).
     const v = consumeSecretEnv(ctx.env, fromEnv)
     if (v === undefined || v === '') throw new CliError(`The environment variable ${fromEnv} is not set or empty; it should hold ${what}.`, EXIT.usage)

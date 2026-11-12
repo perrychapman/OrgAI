@@ -2,7 +2,7 @@
  * Decision tray actions to the exact cli-spec 5.3 payloads (W4-T2), plus the card text the tray and the inline
  * scrollback show. Pure: no React, no I/O.
  *
- * The payloads match src/shared/types.ts and `orgai decide`'s buildDecision (src/cli/commands/decide.ts), which is the
+ * The payloads match src/shared/types.ts (the removed `orgai decide` built the same ones), which is the
  * code truth where the spec table differs: a proposal revise sends `feedback`, a rules deny sends `message`. Every
  * payload carries `expectedRevision: card.ref.revision`, so a card that changed after the user read it is refused by
  * the host as 'stale-revision'.
@@ -35,6 +35,7 @@ import {
 } from '../../shared/view/mcpProposal'
 import { pinnedVersionOf } from '../../shared/view/mcpVersion'
 import { collapseRules, noRuleLine, permissionOffer, referenceEffect, referenceLocation, ruleChip } from '../../shared/view/permissionCopy'
+import { graphemes, graphemeWidth, textWidth, truncateEnd } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
 import type { DecisionCall, TrayCard } from './types'
 
@@ -114,6 +115,7 @@ export function bindingsFor(card: TrayCard): TrayBinding[] {
         out.push({ key: 'a', label: 'Always allow for project', act: 'allow-project', twoStep: true })
       }
       out.push({ key: 'n', label: 'Deny', act: 'deny', text: 'optional' })
+      out.push({ key: 'v', label: 'Full view', act: 'view' })
       return out
     }
     case 'rules':
@@ -168,7 +170,7 @@ export function confirmQuestion(card: TrayCard, b: TrayBinding): string {
     case 'save-project':
       return 'Install this MCP server and save it to the project?'
     case 'save-library':
-      return 'Install this MCP server and save it to the app-wide library?'
+      return 'Install this MCP server and save it to the global library?'
     default:
       return `${b.label} (${cardTitle(card)})?`
   }
@@ -310,26 +312,36 @@ export function cardKindWord(card: TrayCard): string {
   }
 }
 
-function inputText(input: unknown): string {
+/** The most characters of a tool input the full view (v) carries. */
+export const INPUT_FULL_MAX = 65536
+/** The most characters of a tool input the card itself shows before cutting with "...". */
+const INPUT_CARD_MAX = 600
+
+function inputText(input: unknown, full: boolean): string {
   try {
     const s = JSON.stringify(input)
-    return s === undefined ? '' : s.length > 600 ? `${s.slice(0, 599)}…` : s
+    if (s === undefined) return ''
+    const max = full ? INPUT_FULL_MAX : INPUT_CARD_MAX
+    if (s.length <= max) return s
+    return full ? `${s.slice(0, max)} (cut at ${max} characters)` : `${s.slice(0, max - 3)}...`
   } catch {
     return ''
   }
 }
 
-function permissionLines(card: Extract<TrayCard, { kind: 'permission' }>): string[] {
+function permissionLines(card: Extract<TrayCard, { kind: 'permission' }>, full = false): string[] {
   const c = card.card
   const out: string[] = []
   const tool = String(c.toolName ?? '')
   const o = c.input && typeof c.input === 'object' ? (c.input as Record<string, unknown>) : {}
-  if (c.summary) out.push(text(c.summary))
-  if ((tool === 'Bash' || tool === 'PowerShell') && typeof o.command === 'string') out.push(`Command: ${text(o.command)}`)
+  const command = (tool === 'Bash' || tool === 'PowerShell') && typeof o.command === 'string' ? o.command : undefined
+  const summaryCommand = c.summary?.trim().replace(/^(?:\$\s*|Run\s+|Command:\s*)/, '').trim()
+  if (c.summary && (command === undefined || summaryCommand !== command.trim())) out.push(text(c.summary))
+  if (command !== undefined) out.push(`Command: ${text(command)}`)
   else {
     const file = [o.file_path, o.notebook_path, o.path].find((x) => typeof x === 'string')
     if (typeof file === 'string') out.push(`File: ${text(file)}`)
-    else out.push(`Tool: ${oneText(tool, 80)}${Object.keys(o).length ? ` ${text(inputText(c.input))}` : ''}`)
+    else out.push(`Tool: ${oneText(tool, 80)}${Object.keys(o).length ? ` ${text(inputText(c.input, full))}` : ''}`)
   }
   const offer = permissionOffer(c)
   if (offer.referenceFolder) {
@@ -492,11 +504,11 @@ function installLines(card: Extract<TrayCard, { kind: 'mcpInstall' }>): string[]
 
 type McpInstallRequest = Extract<TrayCard, { kind: 'mcpInstall' }>['card']
 
-function logicalLines(card: TrayCard, full: boolean): string[] {
+function rawLines(card: TrayCard, full: boolean): string[] {
   let lines: string[]
   switch (card.kind) {
     case 'permission':
-      lines = permissionLines(card)
+      lines = permissionLines(card, full)
       break
     case 'rules':
       lines = rulesLines(card)
@@ -518,41 +530,186 @@ function logicalLines(card: TrayCard, full: boolean): string[] {
   return lines
 }
 
-/** Wrap one line to `width` columns (code points; words kept whole when they fit). */
-export function wrapLine(line: string, width: number): string[] {
-  const w = Math.max(10, Math.floor(width))
-  const chars = Array.from(line)
-  if (chars.length <= w) return [line]
-  const out: string[] = []
-  let rest = chars
-  while (rest.length > w) {
-    let cut = w
-    for (let i = w; i > Math.floor(w / 2); i--) {
-      if (rest[i] === ' ') {
-        cut = i
+/** The most characters of one body item (a command, a summary) the card itself shows when the card has a full view. */
+export const CARD_ITEM_MAX = 600
+/** The most characters the full view (v) carries in all, for every card kind. */
+export const FULL_VIEW_MAX = 65536
+const FULL_VIEW_CUT = '(cut at 64 KB)'
+
+/** Cards that offer a full view (v): only they cut a body item at CARD_ITEM_MAX. */
+function hasFullView(card: TrayCard): boolean {
+  return card.kind === 'permission' || card.kind === 'proposal' || card.kind === 'merge'
+}
+
+/** `s` cut to `max` characters without splitting a surrogate pair. */
+function cutChars(s: string, max: number): string {
+  let end = Math.min(s.length, max)
+  const last = s.charCodeAt(end - 1)
+  if (end < s.length && last >= 0xd800 && last <= 0xdbff) end--
+  return s.slice(0, end)
+}
+
+/** The body items (each may hold line breaks); `cut` says the card or the full view left text out. */
+function logicalLines(card: TrayCard, full: boolean): { lines: string[]; cut: boolean } {
+  const raw = rawLines(card, full)
+  let cut = false
+  if (full) {
+    // One cap for every body kind: the whole full view carries at most FULL_VIEW_MAX characters.
+    let used = 0
+    const out: string[] = []
+    for (const l of raw) {
+      if (used + l.length > FULL_VIEW_MAX) {
+        const room = FULL_VIEW_MAX - used
+        if (room > 0) out.push(cutChars(l, room))
+        out.push(FULL_VIEW_CUT)
+        cut = true
         break
       }
+      used += l.length + 1
+      out.push(l)
     }
-    out.push(rest.slice(0, cut).join('').trimEnd())
-    rest = rest.slice(cut)
-    while (rest[0] === ' ') rest = rest.slice(1)
+    return { lines: out, cut }
   }
-  if (rest.length) out.push(rest.join(''))
+  const viewable = hasFullView(card)
+  const max = viewable ? CARD_ITEM_MAX : FULL_VIEW_MAX
+  const lines = raw.map((l) => {
+    if (l.length <= max) return l
+    cut = true
+    return `${cutChars(l, max)} ... (cut${viewable ? '; v shows all' : ''})`
+  })
+  return { lines, cut }
+}
+
+/**
+ * Wrap one line to `width` terminal columns (CJK and emoji count 2, never a code-point count). Breaks at the last space
+ * in the second half of the line when there is one, else hard at a grapheme boundary. Linear in the line.
+ */
+export function wrapLine(line: string, width: number): string[] {
+  const w = Math.max(10, Math.floor(width))
+  if (textWidth(line) <= w) return [line]
+  const gs = graphemes(line)
+  const ws = gs.map(graphemeWidth)
+  const n = gs.length
+  const out: string[] = []
+  let i = 0
+  while (i < n) {
+    let col = 0
+    let j = i
+    let space = -1
+    while (j < n && col + ws[j] <= w) {
+      if (gs[j] === ' ' && col * 2 > w) space = j
+      col += ws[j]
+      j++
+    }
+    if (j >= n) {
+      out.push(gs.slice(i).join(''))
+      break
+    }
+    let cutAt = j
+    if (gs[j] !== ' ' && space > i) cutAt = space
+    if (cutAt === i) cutAt = i + 1 // a grapheme wider than the line: never loop
+    out.push(gs.slice(i, cutAt).join('').trimEnd())
+    i = cutAt
+    while (i < n && gs[i] === ' ') i++
+  }
   return out
+}
+
+export interface CardDetail {
+  lines: string[]
+  /** A body item was cut at CARD_ITEM_MAX: the end of the card is not on screen until v shows it. */
+  capped: boolean
+}
+
+const detailCache = new WeakMap<object, Map<string, CardDetail>>()
+
+/** The card's wrapped body (memoised per card data and width) and whether it was cut. */
+export function cardDetail(card: TrayCard, width: number): CardDetail {
+  const data = card.card as object
+  const key = `${Math.floor(width)}|${card.kind}|${card.projectKind ?? ''}|${card.runKind}`
+  let perCard = detailCache.get(data)
+  const hit = perCard?.get(key)
+  if (hit) return hit
+  const { lines: items, cut } = logicalLines(card, false)
+  const lines: string[] = []
+  for (const l of items) for (const part of l.split('\n')) lines.push(...wrapLine(part, width))
+  const detail: CardDetail = { lines, capped: cut }
+  if (!perCard) detailCache.set(data, (perCard = new Map()))
+  if (perCard.size >= 8) perCard.clear()
+  perCard.set(key, detail)
+  return detail
 }
 
 export function cardDetailLines(card: TrayCard, width: number): string[] {
+  return cardDetail(card, width).lines
+}
+
+/** Setup proposals get a readable preview; their complete contents stay in the full review view. */
+export function proposalPreview(card: TrayCard, width: number): string[] | undefined {
+  if (card.kind !== 'proposal' || (card.card.kind !== 'architecture' && card.card.kind !== 'orgChart')) return undefined
+  const p = card.card
+  const lines = [oneText(p.title, 200)]
+  if (p.kind === 'architecture' && p.payload.summary) lines.push(oneText(p.payload.summary, 160))
+  if (p.kind === 'orgChart') lines.push(`${p.payload.roles.length} roles proposed`)
+  const effect = p.effect === 'next-run' ? 'Applies to the next run.' : proposalEffectCopy(p.effect)
+  if (effect) lines.push(effect)
+  if (anyHidden(card.card)) lines.unshift(HIDDEN_BADGE)
+  return lines.map(line => truncateEnd(line, Math.max(1, width), '…'))
+}
+
+/** The phrases of a card's key hint line ("y Allow once"), in order; the tray wraps them only between phrases. */
+export function hintPhrases(card: TrayCard, dumb: boolean, compact = false, selectedKey?: string): string[] {
+  const bs = bindingsFor(card)
+  const parts: string[] = []
+  const picks = bs.filter((b) => b.act === 'pick')
+  if (picks.length) parts.push(picks.length === 1 ? '1 Pick' : `1-${picks.length} Pick`)
+  for (const b of bs) {
+    if (b.act === 'pick') continue
+    const k = b.key === 'space' ? 'Space' : b.key === 'enter' ? 'Enter' : b.key
+    const proposal = compact && card.kind === 'proposal'
+    const label = proposal && b.act === 'view' ? 'Review' : b.label
+    const cursor = selectedKey === undefined ? '' : selectedKey === b.key ? '> ' : '  '
+    parts.push(`${cursor}${proposal || selectedKey !== undefined ? `[${k}]` : k} ${label}${b.text === 'optional' ? ' (note)' : ''}`)
+  }
+  if (selectedKey !== undefined) parts.push('Left/Right choose', 'Enter confirm')
+  if (!compact) parts.push('Esc Back', '? Keys')
+  if (dumb) parts.push('(then Enter)')
+  return parts
+}
+
+/** Joins phrases with `sep` into lines of at most `width` columns, breaking only between phrases (a phrase wider than a line is cut with `ellipsis`). */
+export function wrapPhrases(phrases: readonly string[], sep: string, width: number, ellipsis = '...'): string[] {
+  const w = Math.max(10, Math.floor(width))
   const out: string[] = []
-  for (const l of logicalLines(card, false)) for (const part of l.split('\n')) out.push(...wrapLine(part, width))
+  let cur = ''
+  for (const raw of phrases) {
+    const chars = Array.from(raw)
+    const p = chars.length > w ? `${chars.slice(0, Math.max(1, w - ellipsis.length)).join('')}${ellipsis}` : raw
+    if (cur === '') cur = p
+    else if (Array.from(cur + sep + p).length <= w) cur += sep + p
+    else {
+      out.push(cur)
+      cur = p
+    }
+  }
+  if (cur !== '') out.push(cur)
   return out
 }
 
-export function cardFullText(card: TrayCard): string {
+/** The full view (v) text and whether it was cut at FULL_VIEW_MAX. */
+export function cardFullView(card: TrayCard): { text: string; cut: boolean } {
   const head = `${cardTitle(card)}\n\n`
   if (card.kind === 'merge') {
     const m = card.card
     const stat = text(m.stat)
-    return `${head}${stat ? `${stat.trimEnd()}\n\n` : ''}${text(m.patch)}`
+    const patch = text(m.patch)
+    const cut = patch.length > FULL_VIEW_MAX
+    return { text: `${head}${stat ? `${stat.trimEnd()}\n\n` : ''}${cut ? `${cutChars(patch, FULL_VIEW_MAX)}\n${FULL_VIEW_CUT}` : patch}`, cut }
   }
-  return `${head}${logicalLines(card, true).join('\n')}\n`
+  const { lines, cut } = logicalLines(card, true)
+  return { text: `${head}${lines.join('\n')}\n`, cut }
+}
+
+export function cardFullText(card: TrayCard): string {
+  return cardFullView(card).text
 }

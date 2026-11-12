@@ -39,6 +39,17 @@ describe('buildOrgExport', () => {
     for (const r of p.roles) expect(text).not.toContain(r.id)
     expect(text).not.toContain('position')
     expect(text).not.toContain('secret-server')
+    expect(text).not.toContain('staffing')
+  })
+
+  it('carries a role\'s staffing, cleaned, and nothing for a role without it', () => {
+    const p = project()
+    p.roles[1].staffing = { mode: 'fixed', minTier: 'fast', maxEffort: 'low', junk: 1 } as never
+    p.roles[2].staffing = { mode: 'bogus' } as never
+    const doc = buildOrgExport(p)
+    expect(doc.roles.find((r) => r.slug === 'implementer')?.staffing).toEqual({ mode: 'fixed', minTier: 'fast', maxEffort: 'low' })
+    expect(doc.roles[2]).not.toHaveProperty('staffing')
+    expect(doc.roles[0]).not.toHaveProperty('staffing')
   })
 })
 

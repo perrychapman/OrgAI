@@ -1,15 +1,20 @@
-import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
-import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isModelTier } from '@shared/types'
-import { effectiveSubagentLimits, isolateWritersOn, newId, projectKindOf } from '@shared/defaults'
+import { ordinal } from '@shared/view/compactionText'
+import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, PermissionMode, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
+import { canNarrowPermissionMode } from './runOverrides'
+import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
+import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, projectKindOf, settingTier, staffingGoalOf } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
-import { ROOT_AGENT_ID, isSetupLikeRun, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
-import { CodexAppServer, CodexRpcError, codexExitMessage, type CodexAppServerOptions } from './codexAppServer'
+import { PermissionModeRefusal } from './permissionModeRefusal'
+import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult,type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
+import { CodexAppServer, CodexRpcError, codexExitMessage, codexStartLockKey, withCodexStartLock, type CodexAppServerOptions } from './codexAppServer'
+import { catalogStartFailure, nativeAgentsCatalogConfig, rejectNativeCatalog, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
+import { startCodexToolGateway } from './codexToolGateway'
+import type { ClaudeToolGateway } from './claudeToolGateway'
 import {
   METHOD,
   SERVER_REQUEST,
   buildLaunchConfig,
   codexToolName,
-  dynamicToolSpec,
   harnessToolName,
   lockNativeSkills,
   matchesBashRule,
@@ -21,42 +26,57 @@ import {
   parseToolCall,
   parseTurnId,
   parseUserInputQuestions,
+  fullPolicyOverride,
+  parseWorkspaceWriteTemp,
   policyFor,
+  policyOverride,
+  TEMP_EXCLUDED,
   toolResponse,
   untilFromRateLimits,
   userInput,
   type DynamicToolSpec,
   type FolderTrustConfig,
   type LaunchConfig,
-  type PolicyChoice
+  type PolicyChoice,
+  type WorkspaceWriteTemp
 } from './codexProtocol'
 import { countUsage, setModelTokens } from './runUsage'
-import { CodexEventMapper, NETWORK_TOOLS, ThrottledPartial, fileChanges, type CodexUpdate } from './codexEvents'
+import { CodexEventMapper, ThrottledPartial, fileChangeTargets, fileChanges, type CodexUpdate } from './codexEvents'
 import { costFromPrice, openAiMix, priceFor } from './pricing'
 import {
   CodexAgentNetwork,
   callNetworkTool,
   childFirstMessage,
   codexToolNotes,
+  NATIVE_RULE_NOTE,
   createAgentWorktree,
+  canonicalNetworkTool,
+  codexToolsFor,
   networkToolNames,
-  networkToolSpecs,
   reportMessage,
   type NetworkHost,
   type SpawnRequest
 } from './codexAgents'
-import { SETUP_TOOLS_INSTRUCTIONS, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
-import { ContinuationDriver, stepActivity } from './continuation'
+import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
+import { ContinuationDriver, agentSlots, rootRoleNames, stepActivity } from './continuation'
+import { obligationsFor } from './delegation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
+import { staffingProfileDep, withRootStaffingBrief } from '../store/staffingProfile'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
 import { describeTool, isAuthFailure } from './activity'
 import { WorktreeIntegrator } from './integration'
+import { StaffingBook } from './staffingBook'
+import { recordStaffing } from './staffing'
+import { buildContextPack, contextPackRefusal, contextPackResultLine, contextPackRoots, withContextPack, type ContextPack, type ProtectedDeepCache } from './contextPack'
+import { waitingNote, waitingNoteExcluded } from './waitingNote'
 import { allowRuleStrings, applyAllowScope, chooseSuggestions, isOfferableDirectory, listRules, suggestionLabels } from './permissionRules'
 import { isFreeCdTarget, matchOptionsFor, type MatchOptions } from './ruleMatch'
 import { dirname, isAbsolute, join } from 'node:path'
 import { isGitRepo } from './worktrees'
 import { canonicalDeep, isInsideEither, isNetworkPath, isTrustRestrictedRun, isWorkspaceConfigPath } from '../quick/scratch'
 import { lstatSync } from 'node:fs'
+import { quickEditCard, quickEditFree } from './quickEditCard'
+import { hasDotSegment } from '../quick/sessionEdits'
 import { commandReferenceTouch, referenceCommandMessage, referenceFolderMessage, referenceFolderOf, referenceRefusalEntry } from './referenceDirectories'
 
 /**
@@ -183,7 +203,7 @@ function withoutControlEnv(servers: ResolvedMcpServer[]): ResolvedMcpServer[] {
  * Shape of a run
  *   one app-server process per run, env = connection.env (CODEX_HOME = OrgAI's own Codex home) over process.env
  *   root thread    thread/start { developerInstructions = role prompt, dynamicTools, cwd, approvalPolicy, sandbox }
- *   subagents      Codex has no spawn the harness can govern, so the dynamic tool spawn_agent starts another thread
+ *   subagents      Codex has no spawn the harness can govern, so the dynamic tool spawn_report starts another thread
  *                  per report (own prompt, model, worktree); its final message goes to the parent as a harness message
  *   approvals      item/*\/requestApproval server requests -> ctx.requestPermission (or saved rules / the mode's policy)
  *   harness tools  dynamicTools on thread/start, answered through the item/tool/call server request
@@ -217,6 +237,72 @@ export interface CodexAdapterOptions {
   completionConnection?: () => RunConnection | undefined | Promise<RunConnection | undefined>
   /** Turn-request timeout for complete(), ms. Default 180 s. */
   completionTimeoutMs?: number
+  /**
+   * The model catalog override that switches Codex's built-in multi-agent tools off (codexNativeCatalog.ts), run by the
+   * app-server start once the binary is known. Tests inject it; default nativeAgentsCatalogConfig.
+   */
+  nativeCatalog?: (input: NativeCatalogInput) => Promise<NativeCatalogResult>
+  /**
+   * The Codex home OrgAI assigns its connections (codexHomeDir(dataDir), as the connection service builds it). The catalog
+   * override is written only when the run's CODEX_HOME resolves to it; missing = no override.
+   */
+  codexHome?: string
+}
+
+/** CodexAppServerOptions.prepareConfig for the catalog override: never throws, reports the result. */
+function catalogPreparer(options: CodexAdapterOptions, models: () => string[], onResult: (r: NativeCatalogResult) => void): NonNullable<CodexAppServerOptions['prepareConfig']> {
+  return async (input) => {
+    let r: NativeCatalogResult
+    try {
+      r = await (options.nativeCatalog ?? nativeAgentsCatalogConfig)({ ...input, models: models(), ...(options.codexHome ? { expectedHome: options.codexHome } : {}) })
+    } catch (e) {
+      r = { status: 'failed', config: [], reason: String((e as Error)?.message ?? e).slice(0, 120), ms: 0 }
+    }
+    try {
+      onResult(r)
+    } catch {
+      // reporting never blocks the launch
+    }
+    return r.config
+  }
+}
+
+/**
+ * Start an app-server under its Codex home's start lock (codexAppServer.ts withCodexStartLock): held from before the
+ * version check and the catalog step until initialize settles, the server closes, `signal` aborts or the cap passes.
+ */
+function lockedStart(server: CodexServerLike, env: Record<string, string | undefined> | undefined, clientVersion: string | undefined, signal?: AbortSignal): Promise<unknown> {
+  return withCodexStartLock(codexStartLockKey(env), () => server.start(clientVersion), { released: server.exited, ...(signal ? { signal } : {}) })
+}
+
+/** A failed start's text for catalogStartFailure: the error message and the app-server's (redacted) stderr tail. */
+function startFailureText(e: unknown, server: CodexServerLike): string {
+  let tail = ''
+  try {
+    tail = server.stderrTail?.() ?? ''
+  } catch {
+    // a fake without a tail
+  }
+  return `${String((e as Error)?.message ?? e)}\n${tail}`
+}
+
+/** The first line of a start error for a run warning, shortened. */
+function startFailureReason(e: unknown): string {
+  return String((e as Error)?.message ?? e).split('\n')[0]!.slice(0, 200)
+}
+
+/**
+ * The tier the root runs on now, the ceiling of an 'inherit' report: its chart tier, or after a model switch
+ * (`override`, switchModel) the tier that model names or the connection maps it to. Undefined = unknown, so an
+ * 'inherit' report runs as configured rather than on a stale ceiling. Pure.
+ */
+export function codexRootTier(root: Pick<Role, 'model' | 'tier'>, override: string | undefined, tierModels: Partial<Record<string, string>> | undefined): ReturnType<typeof settingTier> {
+  const model = override?.trim()
+  if (!model) return (isModelTier(root.tier) ? root.tier : undefined) ?? settingTier(root.model)
+  const named = settingTier(model)
+  if (named) return named
+  for (const [tier, id] of Object.entries(tierModels ?? {})) if (isModelTier(tier) && id?.trim() === model) return tier
+  return undefined
 }
 
 const ORGAI_SERVICE = 'orgai'
@@ -247,10 +333,29 @@ interface ThreadInfo {
   policy: PolicyChoice
 }
 
+/** Turns in which one agent may use Codex's built-in multi-agent tools before it fails (the third one fails it). */
+const NATIVE_STRIKE_LIMIT = 3
+const NATIVE_FAIL_ACTIVITY = 'Used native multi-agent tools'
+const NATIVE_AGENTS_NOTICE =
+  `Harness: Codex's built-in multi-agent tools are not available in OrgAI and their agents do not count. Delegate with spawn_report (role exactly as listed); the harness records only those reports. ${NATIVE_RULE_NOTE}`
+
+/** sendToRoot's rejection when the root thread does not exist yet (already logged). */
+const ROOT_DROPPED = new Error('the root thread does not exist yet')
+/**
+ * policyPending sentinel: a turn/start that carried a policy override was rejected (or timed out on OrgAI's side), so
+ * Codex may or may not hold that policy. The thread's next turn/start sends all three policy fields (review M1).
+ */
+const POLICY_UNKNOWN = 'unknown' as const
+
 class CodexSession implements RuntimeSession {
   readonly finished: Promise<void>
   private server!: CodexServerLike
   private unsubscribers: (() => void)[] = []
+  /** The Codex version warning (ORGAI_CODEX_PATH outside the tested range) was shown for this session. */
+  private versionWarned = false
+  private metadataWarned = false
+  private toolGateway?: Promise<ClaudeToolGateway>
+  private gatewaySecrets: string[] = []
   private agents = new Map<string, AgentInstance>()
   private threads = new Map<string, ThreadInfo>()
   private agentThread = new Map<string, string>()
@@ -265,30 +370,95 @@ class CodexSession implements RuntimeSession {
   private integrator: WorktreeIntegrator
   private continuation: ContinuationDriver
   private root: Role
+  /** Run staffing: binds each spawn_report to its plan step and resolves what it may run on (never above the role's ceiling). */
+  private staffing: StaffingBook
+  /** threadId -> the effort every message to that thread carries (only reports whose staffing overrides the chart). */
+  private threadEffort = new Map<string, string>()
+  /** agentId -> the model a staffed report's thread runs on, kept for thread/resume after an MCP restart. */
+  private staffedModel = new Map<string, string>()
   private setupLike: boolean
   private isolation: boolean
   private harness: HarnessTool[] = []
   private harnessByCodexName = new Map<string, HarnessTool>()
   private rootThreadId = ''
+  private rootModelOverride?: string
+  /** App-server usage totals are cumulative for the thread, including turns on earlier models. */
+  private rootTokenTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  /** Thread id -> the context window Codex measures it against (thread/tokenUsage/updated modelContextWindow). */
+  private contextWindows = new Map<string, number>()
+  /** Agent id -> compactions of its thread in this session (log wording only; RunManager keeps the run's count). */
+  private compactionCounts = new Map<string, number>()
   /** Messages the user sent before the root thread existed. */
   private earlySends: { text: string; images?: ImageAttachment[] }[] = []
   /** Rules granted with "allow for this run". */
   private sessionRules: string[] = []
   /** A session (or project) grant of a setMode acceptEdits suggestion: edits inside free folders need no card. */
   private sessionAcceptEdits = false
+  /** The mode last applied live (setPermissionMode); undefined = the start-time mode from ctx.project. */
+  private liveMode?: PermissionMode
+  /**
+   * Threads whose Codex-side policy still differs from ThreadInfo.policy after a live mode switch: thread id -> the
+   * policy Codex holds. Their next turn/start carries the difference (policyOverride), then the entry goes.
+   * POLICY_UNKNOWN: an override's turn/start failed, so the next one carries the full policy (fullPolicyOverride).
+   */
+  private policyPending = new Map<string, PolicyChoice | typeof POLICY_UNKNOWN>()
+  /** Thread id -> the mode its ThreadInfo.policy was derived from by a live switch (what a turn/start override sends). */
+  private policyMode = new Map<string, PermissionMode>()
+  /** sandbox_workspace_write.writable_roots of the current app-server's launch config (a turn/start override never adds one). */
+  private launchWritableRoots: string[] = []
+  /** The effective config's workspace-write temp-folder switches (config/read right after each app-server's initialize, for turn/start overrides). */
+  private workspaceTemp?: Promise<WorkspaceWriteTemp>
+  /** Thread id -> every permission mode that may hold on Codex's side for it (a live switch compares these). */
+  private threadModes = new Map<string, PermissionMode[]>()
   /** The reference-folder policy downgrade warning was logged (once per run). */
   private warnedReferencePolicy = false
   /** Folders granted through an addDirectories suggestion for this session (also free for `cd` and edits). */
   private sessionDirs: string[] = []
   private limited = false
   private ending = false
+  /** Bridged reports started through spawn_report and still working: harness agent id -> who they report to. */
+  /** Epoch ms the newest bridged report finished (bridged reports are not in `agents`); bookkeeping for the continuation wait. */
+  private lastBridgedEndedAt?: number
+  private bridgedLive = new Map<string, { handle: string; roleSlug: string; connectionName: string; parentId: string }>()
   private ended = false
   private launch: LaunchConfig = { config: [], env: {}, summary: [], skipped: [] }
+  /** The model catalog override is in effect for the current app-server: Codex offers no built-in multi-agent tools. */
+  private nativeAgentsOff = false
+  /** The catalog override's failure was logged (once per run). */
+  private nativeCatalogWarned = false
+  /** Codex did not start with the catalog override: no override for the rest of this session. */
+  private nativeCatalogRejected = false
+  /** A start with the catalog override failed and was recovered: its one warning was logged (once per session). */
+  private nativeCatalogStartWarned = false
+  /** The catalog file an app-server was launched with (set by its prepareConfig, before the spawn). */
+  private catalogOf = new WeakMap<CodexServerLike, string>()
+  /** The app-server whose first start (with the override) is in flight: its exit is retried, not a run failure. */
+  private retryableStart?: CodexServerLike
+  /** Bridged results that landed while the run was held for the user (interrupt) or for a stopped child, delivered after the user's next message. */
+  private heldBridged: { parentId: string; text: string }[] = []
   private mcpRestartPending = false
   /** Root turn ends so far (completed, failed and interrupted): RootTurnEnd.turnGen. */
   private rootTurnGen = 0
+  /** Tool calls the root made this session (any kind, spawns included); a pure direct-answer turn 1 has none. */
+  private rootToolCalls = 0
   /** thread/start or thread/resume requests in flight. */
   private threadStarts = 0
+  /** Updates of threads OrgAI has not bound yet, held while a thread start is in flight and re-dispatched after it. */
+  private heldUpdates: CodexUpdate[] = []
+  /** Server requests of unbound threads waiting for a thread start to resolve. */
+  private bindWaiters: (() => void)[] = []
+  /** Foreign threads whose turn was already interrupted. */
+  private foreignInterrupted = new Set<string>()
+  /** Native multi-agent items seen this run (Phase 3 wires it into the run summary). */
+  private nativeItems = 0
+  /** Strikes per agent: turns in which it used Codex's built-in multi-agent tools. */
+  private nativeStrikes = new Map<string, number>()
+  /** threadId -> the turn already struck (several native items in one turn are one strike). */
+  private struckTurn = new Map<string, string>()
+  /** threadId -> the strike whose interrupted turn is still to complete; that turnCompleted skips normal handling. */
+  private nativeTag = new Map<string, { strike: number }>()
+  /** Delegation gate: reports held back for 'wait' (parked) or 'correct' (still working), by agent id. */
+  private heldReports = new Map<string, { result: string | undefined; waiting: boolean }>()
   private restarting = false
   private pendingMcpPrefixes: string[] = []
   private closeSignal!: () => void
@@ -305,6 +475,17 @@ class CodexSession implements RuntimeSession {
     this.isolation = !this.setupLike && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     // Explicit project limits win; otherwise derived from the roles this run actually has (effectiveSubagentLimits).
     const limits = effectiveSubagentLimits({ ...ctx.project, roles: ctx.roles })
+    this.staffing = new StaffingBook({
+      project: ctx.project,
+      // Live: switchModel moves the root to another model mid-run.
+      rootTier: () => codexRootTier(this.root, this.rootModelOverride, this.ctx.connection?.tierModels),
+      tierModels: () => ctx.connection?.tierModels ?? {},
+      adapterEfforts: effortOptionsFor('codex'),
+      plan: () => ctx.getPlan(),
+      goal: () => staffingGoalOf(ctx.project, ctx.staffingGoal),
+      // The project profile's default pick for an unrequested spawn (spec 4.5); none on a fixed project.
+      ...staffingProfileDep(ctx)
+    })
     this.net = new CodexAgentNetwork({ roles: ctx.roles, root, maxDepth: limits.depth, maxConcurrent: limits.concurrency })
     this.closed = new Promise((resolve) => (this.closeSignal = resolve))
     this.partial = new ThrottledPartial((agentId, text) => this.emit({ type: 'agent.partial', runId: ctx.run.id, agentId, text }))
@@ -323,7 +504,8 @@ class CodexSession implements RuntimeSession {
       addMcpServer: (spec) => this.addMcpServer(spec),
       configChanged: (change) => this.configChanged(change)
     }
-    this.harness = harnessToolsFor(ctx, hooks)
+    // Bridged reports go through spawn_report (spawnBridged), so no delegate_agent here.
+    this.harness = harnessToolsFor(ctx, hooks, { bridgeThroughSpawn: true })
     for (const t of this.harness) this.harnessByCodexName.set(codexToolName(t.name), t)
     this.mapper = new CodexEventMapper({
       harnessToolNames: this.harnessByCodexName.keys(),
@@ -340,6 +522,10 @@ class CodexSession implements RuntimeSession {
       },
       notify: (text) => this.notifyOrchestrator(text)
     })
+    const live = (): number => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size
+    // The plan tools count free agent slots from ctx.liveReports; only this adapter knows its live threads, bridged ones included.
+    // A child or fake context without it reads as zero live reports.
+    ctx.liveReports = live
     this.continuation = new ContinuationDriver({
       kind: ctx.run.kind,
       projectKind: projectKindOf(ctx.project),
@@ -353,7 +539,19 @@ class CodexSession implements RuntimeSession {
       delayMs: ctx.continuationDelayMs,
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
-      liveReports: () => [...this.agents.values()].filter((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error').length,
+      // Bridged reports are not threads of this session but still count as working reports.
+      liveReports: live,
+      // Interactive work runs only (see claude.ts): a headless exec run keeps the set-plan nudge.
+      directAnswerTurn: () =>
+        ctx.run.kind === 'work' && !ctx.run.overrides?.execMode && !this.setupLike && this.continuation.turnGen === 1 && this.rootToolCalls === 0 && live() === 0 && ctx.pendingInteractions() === 0 &&
+        (obligationsFor(ctx.roles, ctx.run.overrides?.strictDelegation === true)[this.root.id]?.length ?? 0) === 0,
+      slots: () => agentSlots(ctx, live()),
+      ownRoles: () => rootRoleNames(ctx.roles),
+      lastReportEndedAt: () => {
+        let last = this.lastBridgedEndedAt
+        for (const a of this.agents.values()) if (a.id !== ROOT_AGENT_ID && a.endedAt !== undefined && (last === undefined || a.endedAt > last)) last = a.endedAt
+        return last
+      },
       pendingInteractions: () => ctx.pendingInteractions(),
       rateLimited: () => this.limited,
       stopping: () => this.ending || this.restarting,
@@ -376,10 +574,15 @@ class CodexSession implements RuntimeSession {
 
   async send(text: string, images?: ImageAttachment[]): Promise<void> {
     this.continuation.userMessage()
+    // Bridged results held for the user (bridgedFinished): the orchestrator's come with this message, a report's go to it now.
+    const held = this.heldBridged.splice(0)
+    const rootNotes = held.filter((h) => h.parentId === ROOT_AGENT_ID).map((h) => h.text)
     this.transcript(ROOT_AGENT_ID, userBlock(text, images))
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
     // The transcript entry above is what the user typed; the knowledge block goes only to the model.
-    const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
+    const typed = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
+    const body = rootNotes.length ? (typed ? `${rootNotes.join('\n\n')}\n\n---\n${typed}` : rootNotes.join('\n\n')) : typed
+    for (const h of held) if (h.parentId !== ROOT_AGENT_ID) this.deliverHeldBridged(h.parentId, h.text)
     if (this.rootThreadId) await this.sendToThread(this.rootThreadId, body, images)
     else this.earlySends.push({ text: body, images })
   }
@@ -387,6 +590,7 @@ class CodexSession implements RuntimeSession {
   async interrupt(): Promise<void> {
     // An interrupted turn waits for the user; no automatic continue until they reply.
     this.continuation.hold()
+    this.nativeTag.clear()
     await this.interruptAll()
   }
 
@@ -394,6 +598,179 @@ class CodexSession implements RuntimeSession {
   async receive(message: PeerMessage): Promise<void> {
     if (this.ending) return
     this.notifyOrchestrator(peerMessageText(message), 'Reading a message from another run…', { transcript: false })
+  }
+
+  /** Switch only the root at an idle boundary, preserving the existing conversation and grants. */
+  async switchModel(input: { model: string; connection?: RunConnection }): Promise<void> {
+    if (this.ctx.bridgedChild) throw new Error('Only the run root can switch models.')
+    if (!validModelId(input.model)) throw new Error('Invalid model id.')
+    if (input.connection && (input.connection.adapter !== this.ctx.connection?.adapter || input.connection.connection !== this.ctx.connection?.connection)) {
+      throw new Error('Switching connections requires transporting the conversation and is not supported by this session.')
+    }
+    if (this.ending || this.ended || !this.rootThreadId) throw new Error('This session is not live; continue the run before switching models.')
+    const state = this.settlement()
+    if (!state.rootIdle || !state.quiescent || this.ctx.pendingInteractions() > 0 || this.bridgedLive.size > 0 || [...this.agents.values()].some((a) => a.id !== ROOT_AGENT_ID && a.state !== 'done' && a.state !== 'error')) {
+      throw new Error('Switch models when the root is idle and all decision cards are answered.')
+    }
+    this.rootModelOverride = input.model
+    const root = this.agents.get(ROOT_AGENT_ID)
+    if (root) {
+      root.model = input.model
+      this.upsert(root)
+    }
+  }
+
+  /**
+   * Live permission mode switch (RuntimeSession.setPermissionMode; RunManager.setPermissionMode is the only caller).
+   * Everything is derived from `mode` (RunManager sets ctx.project before this call only for a narrowing). The
+   * app-server cannot change a running turn's sandbox or approval policy: TurnSettingsUpdateParams carries only
+   * reviewer / model / effort, and thread/settings/update is experimental-only (generate-ts of @openai/codex 0.166.0).
+   * TurnStartParams.approvalPolicy / approvalsReviewer / sandboxPolicy hold "for this turn and subsequent turns", so:
+   *   - the root must be between turns (else refused): its next turn/start carries the new policy;
+   *   - every thread's OrgAI-side policy (ThreadInfo.policy: declined approvals, accepted edits) changes at once;
+   *   - a report between turns gets the new policy on its next turn/start (covered); a report inside a turn or with a
+   *     turn/start in flight (the serialized queue) keeps what Codex holds until that turn ends, and is counted in
+   *     `reportsUnchanged` unless every mode it may run under is no wider than `mode`, whatever its agent state says;
+   *   - policyPending always holds what Codex holds: a turn/start answered after another switch leaves the entry on the
+   *     policy it sent, so the next turn/start corrects it (settlePolicy, review H1);
+   *   - a thread whose role cannot be resolved keeps its policy and is counted (review L3);
+   *   - reports spawned from now on start with the new policy (policyFor reads `mode` through ctx.project / liveMode).
+   * Bridged reports are separate sessions RunManager tracks (BridgedSessions); not counted here. Bypass is refused where
+   * policyFor would not honour it (a quick run, reference folders). A mode other than acceptEdits, auto or bypass clears
+   * a card's session accept-edits grant. Open cards stay open; session rules are untouched.
+   */
+  async setPermissionMode(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }> {
+    if (this.ctx.bridgedChild) throw new PermissionModeRefusal('Only the run root can change the permission mode.')
+    if (this.setupLike) throw new PermissionModeRefusal('This run keeps its own permission mode.')
+    if (this.ending || this.ended || !this.rootThreadId || !this.threads.has(this.rootThreadId)) throw new PermissionModeRefusal('This session is not live. The mode will apply when the run continues.')
+    if (this.restarting || this.mcpRestartPending || this.threadStarts > 0) throw new PermissionModeRefusal('The session is starting a thread or restarting. Try again in a moment.')
+    if (isTrustRestrictedRun(this.ctx.run) && (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions')) {
+      throw new PermissionModeRefusal('This run asks before each change, so it cannot use that permission mode.')
+    }
+    if (mode === 'bypassPermissions' && this.hasReferenceFolders()) throw new PermissionModeRefusal('Reference folders keep this run asking before writes outside the project, so it cannot use Bypass permissions.')
+    if (this.activeTurn.has(this.rootThreadId) || this.queues.has(this.rootThreadId)) {
+      throw new PermissionModeRefusal('Codex applies a new permission mode when a turn starts. Interrupt the run or wait until the orchestrator is idle, then change it.')
+    }
+    let reportsUnchanged = 0
+    for (const [threadId, info] of this.threads) {
+      const role = info.agentId === ROOT_AGENT_ID ? this.root : this.net.roleOf(info.agentId)
+      // policyPending always holds what Codex holds for the thread (kept across switches until a turn/start moves it).
+      if (!this.policyPending.has(threadId)) this.policyPending.set(threadId, info.policy)
+      if (!role) {
+        // No role to derive a policy from (review L3): the thread keeps its policy on both sides, so it is counted.
+        if (info.agentId !== ROOT_AGENT_ID) reportsUnchanged += 1
+        continue
+      }
+      // A turn running or a turn/start in flight (the serialized queue) can act whatever the agent's state says. A
+      // thread whose Codex-side policy is unknown (an override's turn/start failed, review M1) keeps every mode it may
+      // hold until a turn/start succeeds.
+      const inTurn = this.activeTurn.has(threadId) || this.queues.has(threadId) || this.policyPending.get(threadId) === POLICY_UNKNOWN
+      info.policy = this.policyFor(role, mode)
+      this.policyMode.set(threadId, mode)
+      if (inTurn) {
+        // Codex keeps the old policy until this turn ends (or until a turn/start lands): the thread may run under either mode.
+        const modes = new Set([...(this.threadModes.get(threadId) ?? []), mode])
+        this.threadModes.set(threadId, [...modes])
+        if (info.agentId !== ROOT_AGENT_ID && !(this.threadModes.get(threadId) ?? []).every((m) => canNarrowPermissionMode(mode, m))) reportsUnchanged += 1
+      } else {
+        this.threadModes.set(threadId, [mode])
+      }
+    }
+    // RuntimeSession.setPermissionMode contract: a mode other than acceptEdits, auto or bypass drops the session grant.
+    if (mode !== 'acceptEdits' && mode !== 'auto' && mode !== 'bypassPermissions') this.sessionAcceptEdits = false
+    this.liveMode = mode
+    return reportsUnchanged ? { applied: true, reportsUnchanged } : true
+  }
+
+  /**
+   * After a turn/start that carried a live switch's override: Codex now holds `sent` (derived from `sentMode`) "for this
+   * turn and subsequent turns". If another switch changed ThreadInfo.policy while the request was in flight (review H1),
+   * the entry stays, now holding `sent`, so the thread's next turn/start moves it again, and the thread counts under both
+   * modes until then. Only when the thread's policy still matches what was sent does the entry go.
+   */
+  private settlePolicy(threadId: string, sent: PolicyChoice, sentMode: PermissionMode | undefined): void {
+    const now = this.threads.get(threadId)?.policy
+    if (now && Object.keys(policyOverride(sent, now, [], TEMP_EXCLUDED)).length === 0) {
+      this.policyPending.delete(threadId)
+      if (sentMode) this.threadModes.set(threadId, [sentMode])
+      return
+    }
+    this.policyPending.set(threadId, sent)
+    const modes = new Set<PermissionMode>(this.threadModes.get(threadId) ?? [])
+    if (sentMode) modes.add(sentMode)
+    if (this.liveMode) modes.add(this.liveMode)
+    this.threadModes.set(threadId, [...modes])
+  }
+
+  /**
+   * A turn/start that carried an override was rejected or timed out on OrgAI's side (review M1): Codex may have applied
+   * it anyway (a timed-out request it still processed) or not. The thread's Codex-side policy is unknown until a
+   * turn/start succeeds, so its next turn/start sends the full policy, and it counts under the sent mode as well as the
+   * modes it already had (setPermissionMode keeps them while the sentinel stands).
+   */
+  private policyUnknown(threadId: string, sentMode: PermissionMode | undefined): void {
+    this.policyPending.set(threadId, POLICY_UNKNOWN)
+    const modes = new Set<PermissionMode>(this.threadModes.get(threadId) ?? [])
+    if (sentMode) modes.add(sentMode)
+    if (this.liveMode) modes.add(this.liveMode)
+    this.threadModes.set(threadId, [...modes])
+  }
+
+  /**
+   * Writable roots for a turn/start sandboxPolicy (review L1): the launch config's roots that are still writable roots
+   * now (codexWritableRoots read live), so an override is never wider than the launch nor than the current folders.
+   */
+  private overrideWritableRoots(): string[] {
+    const live = new Set(codexWritableRoots(this.ctx))
+    return this.launchWritableRoots.filter((r) => live.has(r))
+  }
+
+  /**
+   * The effective config's workspace-write temp-folder switches, read through config/read right after the app-server's
+   * initialize (run() and the MCP restart call this once per app-server, before any thread starts, so the answer is the
+   * config the threads start with, not a config.toml edited later; review L2). Stable in generate-ts of @openai/codex
+   * 0.166.0; cwd = the project folder so project layers count. A failed or unreadable answer excludes both temp folders
+   * (parseWorkspaceWriteTemp / TEMP_EXCLUDED): never wider than the user's. Not awaited at launch: a turn/start
+   * override awaits the stored answer.
+   */
+  private readWorkspaceTempAtLaunch(server: CodexServerLike): void {
+    const cwd = this.ctx.project.path
+    const answer = server
+      .request(METHOD.configRead, { includeLayers: false, ...(typeof cwd === 'string' && cwd.length > 0 ? { cwd } : {}) })
+      .then(parseWorkspaceWriteTemp, (e: Error) => {
+        this.log('info', `Could not read Codex's sandbox settings (${e?.message ?? e}); a mode change keeps temp folders out of writable roots.`)
+        return TEMP_EXCLUDED
+      })
+    this.workspaceTemp = answer
+  }
+
+  /** The launch-time temp switches (readWorkspaceTempAtLaunch); TEMP_EXCLUDED when no read was made for this app-server. */
+  private readWorkspaceTemp(): Promise<WorkspaceWriteTemp> {
+    return this.workspaceTemp ?? Promise.resolve(TEMP_EXCLUDED)
+  }
+
+  /**
+   * A session / project allow's setMode acceptEdits: edits inside free folders need no card from now on, and RunManager
+   * lays acceptEdits over a narrower mode for the rest of this session (RuntimeContext.acceptEditsGranted). A card raised
+   * under a wider mode and answered after the run moved to plan or dontAsk does not take the run out of it (as claude.ts
+   * allowWithScope); the card's rules still apply. Called once per applied grant.
+   */
+  private grantAcceptEdits(): void {
+    const now = this.liveMode ?? this.ctx.project.permissionMode
+    if (now === 'plan' || now === 'dontAsk') {
+      this.log('info', `Kept the run in ${now === 'plan' ? 'Plan' : "Don't ask"} mode: the permission card's mode change was not applied.`)
+      return
+    }
+    this.sessionAcceptEdits = true
+    this.ctx.acceptEditsGranted?.()
+  }
+
+  /** Every permission mode that may hold for a thread starting now (ctx.project, the live mode, a session accept-edits grant). */
+  private modesInForce(): PermissionMode[] {
+    const modes = new Set<PermissionMode>([this.ctx.project.permissionMode])
+    if (this.liveMode) modes.add(this.liveMode)
+    if (this.sessionAcceptEdits) modes.add('acceptEdits')
+    return [...modes]
   }
 
   /** Headless exec settlement view (cli-spec 6.2(2)). */
@@ -416,15 +793,38 @@ class CodexSession implements RuntimeSession {
     if (this.ending) return
     this.ending = true
     this.continuation.dispose()
+    this.nativeTag.clear()
     await this.interruptAll()
     this.server?.close()
+    if (this.toolGateway) await this.toolGateway.then(gateway => gateway.close(), () => {})
     this.closeSignal()
+  }
+
+  /** RunManager's one delegation correction: a harness message to the root, never an auto-continue. */
+  async nudge(text: string): Promise<void> {
+    if (this.ending) return
+    await this.sendToRoot(text, 'Reading a harness notice…')
+    this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
   }
 
   // ---------- plumbing ----------
 
+  private scrubGateway(value: unknown): unknown {
+    // Native JSON-RPC errors can contain reqwest URLs, including the loopback authentication path.
+    const scrub = (value: unknown): unknown => {
+      if (typeof value === 'string') {
+        for (const secret of this.gatewaySecrets) value = (value as string).split(secret).join('[redacted]')
+        return value
+      }
+      if (Array.isArray(value)) return value.map(scrub)
+      if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrub(item)]))
+      return value
+    }
+    return this.gatewaySecrets.length ? scrub(value) : value
+  }
+
   private emit(e: RunEvent): void {
-    this.ctx.emit(e)
+    this.ctx.emit(this.scrubGateway(e) as RunEvent)
   }
 
   private log(level: 'info' | 'warn' | 'error', message: string): void {
@@ -476,7 +876,7 @@ class CodexSession implements RuntimeSession {
    */
   private estimateCost(agent: AgentInstance, u: { input: number; output: number; cachedInput: number }): number | undefined {
     const conn = this.ctx.connection
-    if (conn?.connection !== 'litellm' || !conn.pricing) return undefined
+    if (!conn || isBuiltinConnectionId(conn.connection) || !conn.pricing) return undefined
     const price = priceFor(conn.pricing, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model)
     return price ? costFromPrice(openAiMix(u.input, u.cachedInput, u.output), price) : undefined
   }
@@ -521,8 +921,32 @@ class CodexSession implements RuntimeSession {
     return a
   }
 
-  private agentOf(threadId: string): string {
-    return this.threads.get(threadId)?.agentId ?? ROOT_AGENT_ID
+  /** The agent of a thread OrgAI started; undefined for a thread that is not part of this run's org chart. */
+  private agentOf(threadId: string): string | undefined {
+    return this.threads.get(threadId)?.agentId
+  }
+
+  /**
+   * agentOf for a server request: while a thread start is in flight an unbound thread may be the one being started, so
+   * the request waits until it is bound or the start resolved. Undefined (refuse) for a thread that stays unknown.
+   */
+  private async agentForRequest(threadId: string): Promise<string | undefined> {
+    while (!this.threads.has(threadId) && this.threadStarts > 0) await new Promise<void>((resolve) => this.bindWaiters.push(resolve))
+    const id = this.agentOf(threadId)
+    if (id === undefined) this.log('warn', `Refused a request from thread ${threadId}: it is not part of this run's org chart.`)
+    return id
+  }
+
+  private wakeBindWaiters(): void {
+    for (const w of this.bindWaiters.splice(0)) w()
+  }
+
+  /** Re-dispatch held updates of `threadId` (now bound), or every held update when the starts have all resolved. */
+  private flushHeld(threadId?: string): void {
+    const held = this.heldUpdates.filter((u) => (threadId ? 'threadId' in u && u.threadId === threadId : true))
+    if (!held.length) return
+    this.heldUpdates = this.heldUpdates.filter((u) => !held.includes(u))
+    for (const u of held) this.apply(u, true)
   }
 
   private serialized<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
@@ -537,6 +961,18 @@ class CodexSession implements RuntimeSession {
   }
 
   /** Steer the running turn of a thread, or start a new one. */
+  /**
+   * The effort a thread's first turn carries (TurnStartParams.effort holds "for this turn and subsequent turns", so
+   * the later turns keep it): the role's own when Codex takes it (low / medium / high); with none set,
+   * `medium` in a work run (the same default the Claude adapter writes, CLAUDE_SDK_DEFAULT_EFFORT) so Codex's own
+   * default does not decide; none for setup-like runs and quick chats. A role effort Codex does not take (xhigh, max)
+   * stays unset as before.
+   */
+  private turnEffort(own: string | undefined): { effort?: string } {
+    if (own) return ['low', 'medium', 'high'].includes(own) ? { effort: own } : {}
+    return this.setupLike || this.ctx.run.quick ? {} : { effort: 'medium' }
+  }
+
   private sendToThread(threadId: string, text: string, images?: ImageAttachment[], extra: Record<string, unknown> = {}): Promise<void> {
     return this.serialized(threadId, async () => {
       const input = userInput(text, images)
@@ -549,7 +985,26 @@ class CodexSession implements RuntimeSession {
           this.log('info', `Could not steer the running turn (${(e as Error).message}); starting a new one.`)
         }
       }
-      const res = await this.server.request(METHOD.turnStart, { threadId, input, ...extra })
+      const staffedEffort = this.threadEffort.get(threadId)
+      // A live permission mode switch reaches Codex's side here: turn/start's policy fields hold "for this turn and subsequent turns".
+      const temp = this.policyPending.has(threadId) ? await this.readWorkspaceTemp() : TEMP_EXCLUDED
+      const pending = this.policyPending.get(threadId)
+      const target = this.threads.get(threadId)?.policy
+      const sentMode = this.policyMode.get(threadId) ?? this.liveMode
+      const override = !pending || !target
+        ? {}
+        : pending === POLICY_UNKNOWN
+          ? fullPolicyOverride(target, this.overrideWritableRoots(), temp)
+          : policyOverride(pending, target, this.overrideWritableRoots(), temp)
+      let res: unknown
+      try {
+        res = await this.server.request(METHOD.turnStart, { threadId, input, ...(staffedEffort ? { effort: staffedEffort } : {}), ...extra, ...override, ...(threadId === this.rootThreadId && this.rootModelOverride ? { model: this.rootModelOverride } : {}) })
+      } catch (e) {
+        // Codex may have applied the override even though OrgAI saw a failure (a timeout): unknown until one succeeds.
+        if (Object.keys(override).length > 0) this.policyUnknown(threadId, sentMode)
+        throw e
+      }
+      if (pending && target) this.settlePolicy(threadId, target, sentMode)
       const id = parseTurnId(res)
       if (id && !this.completedTurns.has(id)) this.activeTurn.set(threadId, id)
     })
@@ -561,6 +1016,14 @@ class CodexSession implements RuntimeSession {
    * `agentMessage` deliveries: those carry another agent's words and stay unmarked, like Claude's native SendMessage.
    */
   private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string; agentMessage?: boolean } = {}): void {
+    this.sendToRoot(text, activity, opts).catch((e: Error) => {
+      if (e !== ROOT_DROPPED) this.log('warn', `Could not deliver a harness message to the orchestrator: ${e.message}`)
+    })
+    this.noteActivity('message')
+  }
+
+  /** notifyOrchestrator's work, returning the real send promise (it rejects when the message did not reach the root thread). */
+  private sendToRoot(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string; agentMessage?: boolean } = {}): Promise<void> {
     if (opts.transcript !== false) {
       this.transcript(
         ROOT_AGENT_ID,
@@ -575,10 +1038,9 @@ class CodexSession implements RuntimeSession {
     }
     if (!this.rootThreadId) {
       this.log('warn', 'A harness message for the orchestrator was dropped: the root thread does not exist yet.')
-      return
+      return Promise.reject(ROOT_DROPPED)
     }
-    void this.sendToThread(this.rootThreadId, text).catch((e) => this.log('warn', `Could not deliver a harness message to the orchestrator: ${(e as Error).message}`))
-    this.noteActivity('message')
+    return this.sendToThread(this.rootThreadId, text)
   }
 
   private async interruptAll(): Promise<void> {
@@ -596,8 +1058,7 @@ class CodexSession implements RuntimeSession {
    * reference folders (read live; an unreadable list counts as having some) bypass and auto are downgraded so writes
    * outside the workspace still reach onFileApproval (codexProtocol.ts policyFor); one run warning says so.
    */
-  private policyFor(role: Role): PolicyChoice {
-    const mode = this.ctx.project.permissionMode
+  private policyFor(role: Role, mode: PermissionMode = this.ctx.project.permissionMode): PolicyChoice {
     const base = { writes: canWrite(role), setupLike: this.setupLike, quick: !!this.ctx.run.quick, setupWrites: typeof this.ctx.run.buildWorkspace === 'string' }
     if (!this.hasReferenceFolders()) return policyFor(mode, base)
     const choice = policyFor(mode, { ...base, referenceFolders: true })
@@ -619,12 +1080,7 @@ class CodexSession implements RuntimeSession {
   }
 
   private toolsFor(role: Role, isRoot: boolean): { specs: DynamicToolSpec[]; names: string[] } {
-    const harness = this.harness.filter((t) => isRoot || t.audience === 'all' || (role.canSpawn && t.audience === 'spawners'))
-    const network = networkToolNames(role, { setupLike: this.setupLike })
-    return {
-      specs: [...harness.map(dynamicToolSpec), ...networkToolSpecs(network)],
-      names: [...harness.map((t) => codexToolName(t.name)), ...network]
-    }
+    return codexToolsFor(this.harness, role, isRoot, { setupLike: this.setupLike })
   }
 
   private instructionsFor(role: Role, isRoot: boolean): string {
@@ -635,22 +1091,23 @@ class CodexSession implements RuntimeSession {
     const engagementDocument = this.ctx.engagementDocument?.()
     // Constant for the run (RunManager computes it once), so every thread's instructions carry the same index.
     const knowledgeBrief = this.ctx.knowledgeBrief?.()
-    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}) })
+    // spawnFiles: spawn_report takes `files` (contextPack.ts); only where a pack can be inlined (contextPackRefusal).
+    const base = buildRolePrompt(role, this.ctx.roles, this.ctx.project, { isSetup, isolation: this.isolation, ...(this.ctx.run.overrides?.strictDelegation ? { strictDelegation: true } : {}), ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}), ...(this.ctx.run.quick ? { quick: this.ctx.run.quick } : {}), ...(this.ctx.run.team ? { team: this.ctx.run.team } : {}), ...(this.ctx.allowedDirectories?.().length ? { allowedDirectories: this.ctx.allowedDirectories() } : {}), ...(this.ctx.referenceDirectories?.().length ? { referenceDirectories: this.ctx.referenceDirectories() } : {}), ...(engagementDocument ? { engagementDocument } : {}), ...(knowledgeBrief ? { knowledgeBrief } : {}), ...(skills.length ? { skills, skillTool: 'load_skill' as const } : {}), ...this.bridgeFlags(), ...(contextPackRefusal(this.ctx.run, isSetup) ? {} : { spawnFiles: true }) })
     const { names } = this.toolsFor(role, isRoot)
-    const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan') })
+    const notes = codexToolNotes(names, { renamedPlanTool: names.includes('orgai_update_plan'), nativeRule: !this.nativeAgentsOff })
     const parts = [base]
     if (isSetup && isRoot && this.ctx.run.kind === 'setup') parts.push(SETUP_TOOLS_INSTRUCTIONS)
     if (notes) parts.push(notes)
     return parts.join('\n\n')
   }
 
-  private threadParams(role: Role, isRoot: boolean, cwd: string, parentModel?: string): Record<string, unknown> {
+  private threadParams(role: Role, isRoot: boolean, cwd: string, parentModel?: string, modelOverride?: string): Record<string, unknown> {
     const policy = this.policyFor(role)
     const own = codexModelFor(role.model)
     if (!own && typeof role.model === 'string' && role.model.trim() && !validModelId(role.model.trim())) {
       this.log('warn', `Ignoring the invalid model of ${String(role.name).replace(/[^ -~]/g, "?").slice(0, 80)}; it uses the ${parentModel ? "parent's" : 'default'} model.`)
     }
-    const model = own ?? (validModelId(parentModel) ? parentModel : undefined)
+    const model = modelOverride ?? own ?? (validModelId(parentModel) ? parentModel : undefined)
     return {
       cwd,
       ...(model ? { model } : {}),
@@ -670,6 +1127,13 @@ class CodexSession implements RuntimeSession {
       return await this.startThreadNow(params, method)
     } finally {
       this.threadStarts -= 1
+      if (this.threadStarts === 0) {
+        // The caller binds the thread right after this returns; whatever is still unbound after that is foreign.
+        setImmediate(() => {
+          if (this.threadStarts === 0) this.flushHeld()
+          this.wakeBindWaiters()
+        })
+      }
     }
   }
 
@@ -699,20 +1163,144 @@ class CodexSession implements RuntimeSession {
 
   private bindThread(threadId: string, agentId: string, policy: PolicyChoice): void {
     this.threads.set(threadId, { agentId, policy })
+    this.threadModes.set(threadId, this.modesInForce())
     this.agentThread.set(agentId, threadId)
+    this.flushHeld(threadId)
+    this.wakeBindWaiters()
   }
 
   private createServer(launch: LaunchConfig): CodexServerLike {
+    let created: CodexServerLike | undefined
     const options: CodexAppServerOptions = {
       cwd: this.ctx.project.path,
       env: launch.env,
       config: launch.config,
+      // startServer holds this home's start lock around the whole start (lockedStart).
+      startLockHeld: true,
+      redact: this.gatewaySecrets,
       onStderr: (line) => {
         // The CLI's tracing output is chatty; only surface real problems.
+        if ((line.includes('Model metadata for `') && line.includes('not found. Defaulting to fallback metadata;')) ||
+          (line.includes('Unknown model ') && line.includes(' is used. This will use fallback model metadata.'))) {
+          if (this.metadataWarned) return
+          this.metadataWarned = true
+          this.log('warn', `codex: ${line.slice(0, 300)}`)
+          this.log('warn', 'Codex is using fallback model metadata. The exact configured model ID is unchanged; this warning alone does not mean the model is unavailable. Ask the proxy administrator for authoritative Codex model catalog metadata (model_catalog_json); OrgAI does not invent model capabilities or context limits.')
+          return
+        }
         if (/\b(error|fatal|panic)\b/i.test(line)) this.log('warn', `codex: ${line.slice(0, 300)}`)
+      },
+      // Codex chosen through ORGAI_CODEX_PATH outside the tested version (cli-standalone 6.2): one run warning, not one
+      // per app-server restart.
+      onWarning: (message) => {
+        if (this.versionWarned) return
+        this.versionWarned = true
+        this.log('warn', message)
+      },
+      // Codex's built-in multi-agent tools off through the model catalog (fails open: one warning, the prompt keeps its
+      // fallback sentence and the native-item strikes stay in force).
+      // After Codex refused to start with it, never again in this session.
+      ...(this.nativeCatalogRejected ? {} : { prepareConfig: catalogPreparer(this.options, () => this.namedModels(), (r) => this.onNativeCatalog(r, created)) })
+    }
+    const server = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+    created = server
+    if (!this.gatewaySecrets.length) return server
+    const request = server.request.bind(server)
+    server.request = async <T>(...args: Parameters<CodexServerLike['request']>): Promise<T> => {
+      try { return await request(...args) as T }
+      catch (error) {
+        if (error instanceof CodexRpcError) throw new CodexRpcError(error.method, this.scrubGateway(error.error) as typeof error.error)
+        if (error instanceof Error) {
+          error.message = this.scrubGateway(error.message) as string
+          if (error.stack) error.stack = this.scrubGateway(error.stack) as string
+        }
+        throw error instanceof Error ? error : this.scrubGateway(error)
       }
     }
-    return this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+    return server
+  }
+
+  /**
+   * Create, adopt (assign and wire) and start an app-server, one start at a time per Codex home (lockedStart). When a
+   * start with the catalog override in effect fails:
+   * - with a transient text (catalogStartFailure: Codex's sqlite start race) it is started once more WITH the override;
+   * - otherwise (or when that retry fails too) once more without it, and the session drops the override (the prompt
+   *   keeps the fallback sentence). The catalog is rejected for the process (rejectNativeCatalog, never deleted) only
+   *   when that start without it succeeds and the failure text names the catalog or the configuration; otherwise the
+   *   next session offers it again.
+   * One warning per session says which case happened. A failure without the override, or after the fallback, is thrown.
+   */
+  private async startServer(launch: LaunchConfig, adopt: (server: CodexServerLike) => void): Promise<CodexServerLike> {
+    let failure: { path: string; text: string; reason: string } | undefined
+    let transientRetried = false
+    for (;;) {
+      const server = this.createServer(launch)
+      adopt(server)
+      this.retryableStart = server
+      try {
+        await lockedStart(server, launch.env, this.options.clientVersion)
+      } catch (e) {
+        const catalog = this.catalogOf.get(server)
+        if (!catalog || this.ending) throw e
+        this.unwire()
+        server.close()
+        failure = { path: catalog, text: startFailureText(e, server), reason: startFailureReason(e) }
+        if (!transientRetried && catalogStartFailure(failure.text) === 'transient') transientRetried = true
+        else {
+          this.nativeCatalogRejected = true
+          this.nativeAgentsOff = false
+        }
+        continue
+      } finally {
+        if (this.retryableStart === server) this.retryableStart = undefined
+      }
+      if (failure) this.noteCatalogStartRecovery(failure, this.catalogOf.has(server))
+      return server
+    }
+  }
+
+  /** The app-server started after a failed start with the catalog override: one warning per session naming the case. */
+  private noteCatalogStartRecovery(failure: { path: string; text: string; reason: string }, withCatalog: boolean): void {
+    const rejected = !withCatalog && catalogStartFailure(failure.text) === 'catalog'
+    if (rejected) rejectNativeCatalog(failure.path)
+    if (this.nativeCatalogStartWarned) return
+    this.nativeCatalogStartWarned = true
+    const still = "Agents still see Codex's built-in multi-agent tools and are told to delegate with spawn_report."
+    if (withCatalog) this.log('warn', `Codex did not start on the first try (${failure.reason}); it was started again with the model catalog override, which stays in effect.`)
+    else if (rejected) this.log('warn', `Codex did not start with the model catalog override (${failure.reason}); it was started again without it, and the catalog is not used again until OrgAI restarts. ${still}`)
+    else this.log('warn', `Codex did not start with the model catalog override (${failure.reason}); it was started again without it for this session (the failure does not name the catalog, so later sessions use it again). ${still}`)
+  }
+
+  /** Every concrete model id this run names (roles and the connection's tier mapping): the catalog override checks them. */
+  private namedModels(): string[] {
+    const ids = [...this.ctx.roles.map((r) => codexModelFor(r.model)), ...Object.values(this.ctx.connection?.tierModels ?? {}).map((m) => codexModelFor(m))]
+    return [...new Set(ids.filter((m): m is string => !!m))]
+  }
+
+  private onNativeCatalog(r: NativeCatalogResult, server: CodexServerLike | undefined): void {
+    this.nativeAgentsOff = r.status === 'written' || r.status === 'cached'
+    if (server && (r.status === 'written' || r.status === 'cached')) this.catalogOf.set(server, r.path)
+    if (this.nativeAgentsOff) this.log('info', `Codex: built-in multi-agent tools off (model catalog ${r.status === 'cached' ? 'reused' : 'written'}, ${r.ms} ms)`)
+    else if (r.status === 'skipped') this.log('info', `Codex: model catalog override skipped (${r.reason}); agents are told to delegate with spawn_report.`)
+    else if (r.status === 'failed' && !this.nativeCatalogWarned) {
+      this.nativeCatalogWarned = true
+      this.log('warn', `Codex's built-in multi-agent tools could not be switched off (${r.reason}); agents still see them and are told to delegate with spawn_report.`)
+    }
+  }
+
+  private buildLaunch(servers: Parameters<typeof buildLaunchConfig>[1], opts: Parameters<typeof buildLaunchConfig>[2]): LaunchConfig | Promise<LaunchConfig> {
+    const connection = this.ctx.connection
+    if (connection && !isBuiltinConnectionId(connection.connection) && connection.codexAuth === 'apiKey' && connection.apiKey && connection.openaiBaseUrl) {
+      this.toolGateway ??= startCodexToolGateway(connection.openaiBaseUrl, connection.apiKey)
+      return this.toolGateway.then(gateway => {
+        this.gatewaySecrets = [gateway.baseUrl, new URL(gateway.baseUrl).pathname.slice(1)]
+        if (this.ending) { gateway.close(); throw new Error('Session ended.') }
+        const launch = buildLaunchConfig({ ...connection, openaiBaseUrl: gateway.baseUrl }, servers, opts)
+        launch.summary = launch.summary.map(line => line.startsWith('provider orgai ->') ? 'provider orgai through the tool-name gateway (API key from the environment)' : line)
+        return launch
+      })
+    }
+    return buildLaunchConfig(connection, servers, opts)
   }
 
   private wire(server: CodexServerLike): void {
@@ -720,7 +1308,8 @@ class CodexSession implements RuntimeSession {
     server.onServerRequest((method, params) => this.onServerRequest(method, params))
     this.unsubscribers.push(
       server.onExit((code, error) => {
-        if (this.restarting || this.ending) return
+        // A first start with the catalog override that dies is retried without it (startServer).
+        if (this.restarting || this.ending || (server === this.retryableStart && this.catalogOf.has(server))) return
         const message = error?.message ?? codexExitMessage(code, server.stderrTail?.())
         this.fail(message)
       })
@@ -754,6 +1343,7 @@ class CodexSession implements RuntimeSession {
     }
     this.emit(error ? { type: 'run.status', runId: this.ctx.run.id, status: 'error', error } : { type: 'run.status', runId: this.ctx.run.id, status: 'finished' })
     this.server?.close()
+    if (this.toolGateway) void this.toolGateway.then(gateway => gateway.close(), () => {})
     this.closeSignal()
   }
 
@@ -765,18 +1355,25 @@ class CodexSession implements RuntimeSession {
     this.transcript(ROOT_AGENT_ID, userBlock(ctx.prompt, ctx.images))
 
     try {
-      let firstMessage = composeFirstMessage(ctx.prompt, firstMessageHiddenContext(ctx, (m) => this.log('warn', m)))
+      let firstMessage = composeFirstMessage(ctx.prompt, firstMessageHiddenContext(withRootStaffingBrief(ctx), (m) => this.log('warn', m)))
       if (this.isolation) {
         const leftover = await this.integrator.start()
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = withoutControlEnv(ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : [])
-      this.launch = buildLaunchConfig(ctx.connection, servers, { ...trustLaunchOpts(ctx), writableRoots: codexWritableRoots(ctx) })
+      const writableRoots = codexWritableRoots(ctx)
+      const launch = this.buildLaunch(servers, { ...trustLaunchOpts(ctx), writableRoots })
+      this.launch = launch instanceof Promise ? await launch : launch
+      this.launchWritableRoots = writableRoots
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
-      this.server = this.createServer(this.launch)
-      this.wire(this.server)
-      await this.server.start(this.options.clientVersion)
+      await this.startServer(this.launch, (server) => {
+        this.server = server
+        this.wire(server)
+      })
+      // End session during the start (the version check, the handshake): no thread, no prompt to the model.
+      if (this.ending) return
+      this.readWorkspaceTempAtLaunch(this.server)
 
       const policy = this.policyFor(this.root)
       const params = this.threadParams(this.root, true, ctx.project.path)
@@ -801,7 +1398,7 @@ class CodexSession implements RuntimeSession {
       this.emit({ type: 'run.status', runId, status: 'running', sessionId: started.threadId })
       this.log('info', `Codex thread ${started.threadId} started${started.model ? ` (${started.model})` : ''}`)
 
-      const effort = this.root.effort && ['low', 'medium', 'high'].includes(this.root.effort) ? { effort: this.root.effort } : {}
+      const effort = this.turnEffort(this.root.effort)
       await this.sendToThread(started.threadId, firstMessage, ctx.images, effort)
       for (const m of this.earlySends.splice(0)) await this.sendToThread(started.threadId, m.text, m.images)
       await this.closed
@@ -819,9 +1416,26 @@ class CodexSession implements RuntimeSession {
     for (const u of this.mapper.handle(method, params)) this.apply(u)
   }
 
-  private apply(u: CodexUpdate): void {
+  private apply(u: CodexUpdate, replayed = false): void {
     if (u.type === 'log') return this.log(u.level, u.message)
+    // Turn tracking first, for any thread (a replayed update was tracked when it first arrived).
+    if (!replayed) {
+      if (u.type === 'turnStarted' && u.turnId) this.activeTurn.set(u.threadId, u.turnId)
+      else if (u.type === 'turnCompleted') {
+        if (u.turnId) this.completedTurns.add(u.turnId)
+        if (this.activeTurn.get(u.threadId) === u.turnId || !u.turnId) this.activeTurn.delete(u.threadId)
+      }
+    }
     const agentId = this.agentOf(u.threadId)
+    if (agentId === undefined) {
+      // A thread OrgAI did not start. While a start is in flight it may be that one: hold the update and re-dispatch it.
+      if (this.threadStarts > 0 && !replayed) {
+        this.heldUpdates.push(u)
+        return
+      }
+      this.applyForeign(u)
+      return
+    }
     const agent = this.agents.get(agentId)
     switch (u.type) {
       case 'text':
@@ -834,16 +1448,20 @@ class CodexSession implements RuntimeSession {
       case 'partial':
         this.partial.set(agentId, u.text)
         return
+      case 'media':
+        this.transcript(agentId, { kind: 'media', media: u.media })
+        return
       case 'thinking':
         this.transcript(agentId, { kind: 'thinking', text: u.text })
         return
       case 'toolUse':
         this.transcript(agentId, { kind: 'tool_use', id: u.id, name: u.name, input: u.input })
         if (agent) countUsage(agent, 'toolCalls')
+        if (agentId === ROOT_AGENT_ID) this.rootToolCalls++
         this.setState(agentId, u.state, u.activity)
         return
       case 'toolResult': {
-        this.transcript(agentId, { kind: 'tool_result', toolUseId: u.toolUseId, content: u.content, isError: u.isError })
+        this.transcript(agentId, { kind: 'tool_result', toolUseId: u.toolUseId, content: u.content, ...(u.parts ? { parts: u.parts } : {}), isError: u.isError })
         this.noteArchitectureEdit(agentId, u.toolUseId)
         if (agent && agent.state !== 'done' && agent.state !== 'error') {
           const activity = (agentId === ROOT_AGENT_ID && !this.setupLike ? stepActivity(this.ctx.getPlan()) : undefined) ?? 'Thinking…'
@@ -851,17 +1469,40 @@ class CodexSession implements RuntimeSession {
         }
         return
       }
+      case 'compacted':
+        this.onCompacted(agentId, u.threadId)
+        return
       case 'tokens':
+        if (u.contextWindow) this.contextWindows.set(u.threadId, u.contextWindow)
         if (agent) {
           agent.inputTokens = u.input
           agent.outputTokens = u.output
-          setModelTokens(agent, agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model ?? 'unknown', {
+          const model = agent.model ?? this.agents.get(ROOT_AGENT_ID)?.model ?? 'unknown'
+          let tokens = {
             input: Math.max(0, u.input - u.cachedInput),
             output: u.output,
             cacheRead: Math.min(u.cachedInput, u.input),
             cacheWrite: 0
-          })
-          const cost = this.estimateCost(agent, u)
+          }
+          if (agentId === ROOT_AGENT_ID) {
+            const previous = agent.usage?.models.find((m) => m.model === model)?.tokens
+            const total = tokens
+            tokens = {
+              input: (previous?.input ?? 0) + Math.max(0, total.input - this.rootTokenTotals.input),
+              output: (previous?.output ?? 0) + Math.max(0, total.output - this.rootTokenTotals.output),
+              cacheRead: (previous?.cacheRead ?? 0) + Math.max(0, total.cacheRead - this.rootTokenTotals.cacheRead),
+              cacheWrite: 0
+            }
+            this.rootTokenTotals = total
+          }
+          setModelTokens(agent, model, tokens)
+          const conn = this.ctx.connection
+          const cost = agentId === ROOT_AGENT_ID && this.rootModelOverride && conn?.pricing && !isBuiltinConnectionId(conn.connection)
+            ? agent.usage?.models.reduce((sum, m) => {
+              const price = priceFor(conn.pricing!, m.model)
+              return sum + (price ? costFromPrice({ input: m.tokens.input, output: m.tokens.output, cacheRead: m.tokens.cacheRead, cacheCreation: m.tokens.cacheWrite }, price) : 0)
+            }, 0)
+            : this.estimateCost(agent, u)
           const moved = cost !== undefined && Math.abs(cost - agent.costUsd) > 1e-12
           if (moved) agent.costUsd = cost
           this.upsert(agent)
@@ -869,20 +1510,31 @@ class CodexSession implements RuntimeSession {
         }
         return
       case 'turnStarted':
-        if (u.turnId) this.activeTurn.set(u.threadId, u.turnId)
         if (agent && (agent.state === 'idle' || agent.state === 'done')) {
           this.setState(agentId, 'thinking', 'Thinking…')
           if (agentId === ROOT_AGENT_ID) this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'running' })
         }
         return
-      case 'turnCompleted':
-        if (u.turnId) this.completedTurns.add(u.turnId)
-        if (this.activeTurn.get(u.threadId) === u.turnId || !u.turnId) this.activeTurn.delete(u.threadId)
+      case 'turnCompleted': {
         this.partial.clear(agentId)
         if (agent) countUsage(agent, 'turns')
+        const tag = this.nativeTag.get(u.threadId)
+        if (tag) {
+          this.nativeTag.delete(u.threadId)
+          // A failed turn is the ordinary failure path; an interrupted or finished one was cut short by the strike.
+          if (u.status !== 'failed') {
+            this.nativeStrikeEnded(agentId, tag.strike, u)
+            void this.maybeRestartForMcp()
+            return
+          }
+        }
         if (agentId === ROOT_AGENT_ID) this.rootTurnCompleted(u)
         else this.childTurnCompleted(agentId, u)
         void this.maybeRestartForMcp()
+        return
+      }
+      case 'nativeSpawn':
+        this.onNativeSpawn(agentId, u)
         return
       case 'error':
         this.log(u.willRetry ? 'info' : 'warn', `Codex: ${u.message}${u.willRetry ? ' (retrying)' : ''}`)
@@ -895,11 +1547,101 @@ class CodexSession implements RuntimeSession {
     }
   }
 
+  /**
+   * Codex compacted an agent's thread: one log line, a transcript row on the root, agent.compacted for RunManager's
+   * count, and the continuation's thrash guard (a compaction never nudges by itself).
+   */
+  private onCompacted(agentId: string, threadId: string): void {
+    const agent = this.agents.get(agentId)
+    const n = (this.compactionCounts.get(agentId) ?? 0) + 1
+    this.compactionCounts.set(agentId, n)
+    const name = agent?.name ?? agentId
+    this.log('info', `Compaction ${n} of ${agentId === ROOT_AGENT_ID ? "the orchestrator's" : `${name}'s`} conversation (Codex).`)
+    if (agentId === ROOT_AGENT_ID) this.transcript(agentId, { kind: 'system', text: `The conversation was compacted (${ordinal(n)} time).` }, { source: 'harness' })
+    this.emit({ type: 'agent.compacted', runId: this.ctx.run.id, agentId, at: Date.now(), trigger: 'auto' })
+    if (this.setupLike) return
+    const contextWindow = this.contextWindows.get(threadId)
+    this.continuation.compacted({ agentId, name, ...(agent?.model ? { model: agent.model } : {}), ...(contextWindow ? { contextWindow } : {}) })
+  }
+
+  /** An update of a thread that is not part of this run: never attributed to an agent. */
+  private applyForeign(u: Exclude<CodexUpdate, { type: 'log' }>): void {
+    switch (u.type) {
+      case 'turnStarted':
+        this.log('warn', `Thread ${u.threadId} is not part of this run's org chart; interrupting its turn.`)
+        if (u.turnId && !this.foreignInterrupted.has(u.turnId)) {
+          this.foreignInterrupted.add(u.turnId)
+          void this.server?.request(METHOD.turnInterrupt, { threadId: u.threadId, turnId: u.turnId }).catch((e: Error) => this.log('warn', `Could not interrupt thread ${u.threadId}: ${e.message}`))
+        }
+        return
+      case 'toolUse':
+        this.log('info', `Foreign thread ${u.threadId} used ${u.name}.`)
+        return
+      case 'nativeSpawn':
+        this.log('info', `Foreign thread ${u.threadId} used ${u.tool}.`)
+        return
+      case 'error':
+        this.log('info', `Foreign thread ${u.threadId}: ${u.message}`)
+        return
+      default:
+        return
+    }
+  }
+
+  /** Codex's built-in multi-agent tools were used (item started): interrupt the turn, one strike per turn. */
+  private onNativeSpawn(agentId: string, u: Extract<CodexUpdate, { type: 'nativeSpawn' }>): void {
+    this.nativeItems += 1
+    this.ctx.delegation?.nativeStrike(agentId)
+    this.log('warn', `${this.agents.get(agentId)?.name ?? agentId} used Codex's built-in multi-agent tool ${u.tool} (${this.nativeItems} native item${this.nativeItems === 1 ? '' : 's'} this run).`)
+    const turnId = this.activeTurn.get(u.threadId)
+    if (!turnId || this.struckTurn.get(u.threadId) === turnId) return
+    this.struckTurn.set(u.threadId, turnId)
+    const strike = (this.nativeStrikes.get(agentId) ?? 0) + 1
+    this.nativeStrikes.set(agentId, strike)
+    this.nativeTag.set(u.threadId, { strike })
+    void this.server.request(METHOD.turnInterrupt, { threadId: u.threadId, turnId }).catch((e: Error) => this.log('warn', `Interrupt failed: ${e.message}`))
+  }
+
+  /** The struck turn is over. Strikes 1 and 2 tell the agent; strike 3 fails it. */
+  private nativeStrikeEnded(agentId: string, strike: number, u: Extract<CodexUpdate, { type: 'turnCompleted' }>): void {
+    const agent = this.agents.get(agentId)
+    if (!agent || this.ending) return
+    if (strike >= NATIVE_STRIKE_LIMIT) {
+      this.failNative(agent, u.result)
+      return
+    }
+    this.setState(agentId, 'thinking', 'Reading a harness notice…')
+    this.deliverTo(agentId, NATIVE_AGENTS_NOTICE).catch((e) => this.log('warn', `Could not deliver the native-tools notice: ${(e as Error).message}`))
+  }
+
+  /** Strike 3: end the agent with an error. A child frees its network slot and reports the failure; the root ends the session. */
+  private failNative(agent: AgentInstance, result?: string): void {
+    const message = `${agent.name} kept using Codex's built-in multi-agent tools, which are not available in OrgAI.`
+    this.log('error', message)
+    if (agent.id === ROOT_AGENT_ID) {
+      this.setState(ROOT_AGENT_ID, 'error', NATIVE_FAIL_ACTIVITY)
+      this.endRun(message)
+      return
+    }
+    this.ctx.delegation?.ended(agent.id)
+    this.heldReports.delete(agent.id)
+    this.finishAgent(agent.id, true)
+    if (result) agent.result = result
+    agent.state = 'error'
+    agent.activity = NATIVE_FAIL_ACTIVITY
+    agent.endedAt = Date.now()
+    this.upsert(agent)
+    this.noteActivity('report')
+    const text = reportMessage(agent, { status: 'failed', result, error: 'it used Codex\'s built-in multi-agent tools, which are not available in OrgAI' })
+    this.deliverTo(agent.parentId ?? ROOT_AGENT_ID, text).catch((e) => this.log('warn', `Could not report the failure of ${agent.handle ?? agent.id}: ${(e as Error).message}`))
+    this.recheckParent(agent)
+  }
+
   private noteArchitectureEdit(agentId: string, itemId: string): void {
     const archPath = this.ctx.project.setup?.architecturePath
     const item = this.mapper.item(itemId)
     if (this.setupLike || !archPath || !item || item.type !== 'fileChange' || item.status !== 'completed') return
-    if (!fileChanges(item).some((c) => isArchitectureFile(c.path, archPath))) return
+    if (!fileChangeTargets(fileChanges(item)).some((p) => p !== '' && isArchitectureFile(p, archPath))) return
     this.log('info', `${this.agents.get(agentId)?.name ?? agentId} updated ${archPath}`)
     void this.ctx.noteArchitectureUpdated().catch((e) => this.log('warn', `Could not record the architecture update: ${(e as Error).message}`))
   }
@@ -947,7 +1689,14 @@ class CodexSession implements RuntimeSession {
   private childTurnCompleted(agentId: string, u: Extract<CodexUpdate, { type: 'turnCompleted' }>): void {
     const child = this.agents.get(agentId)
     if (!child) return
-    this.net.finish(agentId)
+    if (u.status === 'completed' && this.ctx.delegation && !this.ending) {
+      this.evaluateChild(child, u.result)
+      return
+    }
+    // Interrupted or failed: no accepted completion.
+    if (u.status !== 'completed') this.ctx.delegation?.ended(agentId)
+    this.heldReports.delete(agentId)
+    this.finishAgent(agentId, u.status === 'failed')
     if (u.result) child.result = u.result
     if (u.status === 'interrupted') {
       child.state = 'done'
@@ -962,10 +1711,74 @@ class CodexSession implements RuntimeSession {
     child.endedAt = Date.now()
     this.upsert(child)
     this.noteActivity('report')
-    if (u.status === 'completed') void this.integrator.onSubagentFinished(agentId)
-    if (u.status === 'interrupted') return
+    if (u.status === 'completed') void this.integrator.onSubagentFinished(child.id)
+    if (u.status === 'interrupted') {
+      this.recheckParent(child)
+      return
+    }
     const text = reportMessage(child, u.status === 'failed' ? { status: 'failed', result: u.result, error: u.error?.message } : { status: 'completed', result: u.result })
-    this.deliverTo(child.parentId ?? ROOT_AGENT_ID, text)
+    this.deliverTo(child.parentId ?? ROOT_AGENT_ID, text).catch((e: Error) => this.log('warn', `Could not deliver the report of ${child.handle ?? child.id}: ${e.message}`))
+    this.recheckParent(child)
+  }
+
+  /** A child's completed turn, asked of the delegation gate (spec 5.5): wait, correct, or hand the report over. */
+  private evaluateChild(child: AgentInstance, result: string | undefined): void {
+    const gate = this.ctx.delegation
+    if (!gate) return
+    const d = gate.completion(child.id, { canCorrect: true, canWait: true, reportText: result ?? '' })
+    if (d.action === 'wait') {
+      this.heldReports.set(child.id, { result, waiting: true })
+      this.net.park(child.id)
+      if (result) child.result = result
+      child.endedAt = undefined
+      this.upsert(child)
+      this.setState(child.id, 'waiting', 'Waiting for reports')
+      return
+    }
+    if (d.action === 'correct') {
+      this.heldReports.set(child.id, { result, waiting: false })
+      if (result) child.result = result
+      this.setState(child.id, 'thinking', 'Reading a harness notice…')
+      if (d.text) this.deliverTo(child.id, d.text, { correction: true }).catch((e: Error) => this.log('warn', `Could not deliver the delegation correction to ${child.handle ?? child.id}: ${e.message}`))
+      return
+    }
+    this.heldReports.delete(child.id)
+    const failed = d.action === 'fail'
+    this.finishAgent(child.id, failed)
+    if (result) child.result = result
+    child.state = 'done'
+    child.endedAt = Date.now()
+    child.activity = failed ? 'Skipped required reports' : 'Reported back'
+    this.upsert(child)
+    this.noteActivity('report')
+    if (failed) void this.integrator.holdFailed(child.id, d.missing ?? 'it skipped its required reports')
+    else void this.integrator.onSubagentFinished(child.id)
+    const receipt = d.action === 'none' ? undefined : gate.receiptText(child.id)
+    const text = (receipt ? `${receipt}\n\n` : '') + reportMessage(child, { status: 'completed', result })
+    const parentId = child.parentId ?? ROOT_AGENT_ID
+    this.deliverTo(parentId, text).then(
+      () => {
+        if (d.action === 'none' || this.agents.get(parentId)?.state === 'error') return
+        gate.delivered(child.id)
+      },
+      (e: Error) => this.log('warn', `Could not deliver the report of ${child.handle ?? child.id}: ${e.message}`)
+    )
+    this.recheckParent(child)
+  }
+
+  /** A child reached a terminal state: a waiting parent with no running child left is evaluated again with its held report. */
+  private recheckParent(child: AgentInstance): void {
+    const parentId = child.parentId
+    if (!parentId || this.ending) return
+    const held = this.heldReports.get(parentId)
+    if (!held?.waiting) return
+    const running = [...this.agents.values()].some((a) => a.parentId === parentId && a.id !== child.id && a.state !== 'done' && a.state !== 'error') || [...this.bridgedLive.values()].some((b) => b.parentId === parentId)
+    if (running) return
+    const parent = this.agents.get(parentId)
+    if (!parent) return
+    this.heldReports.delete(parentId)
+    this.net.unpark(parentId)
+    this.evaluateChild(parent, held.result)
   }
 
   /**
@@ -973,16 +1786,29 @@ class CodexSession implements RuntimeSession {
    * messages (report hand-offs) get a harness row; `agentMessage` deliveries (send_message) carry another
    * agent's words and stay unmarked.
    */
-  private deliverTo(agentId: string, text: string, opts: { agentMessage?: boolean } = {}): Promise<void> {
-    if (agentId === ROOT_AGENT_ID) {
-      this.notifyOrchestrator(text, undefined, { agentMessage: opts.agentMessage })
+  private deliverTo(agentId: string, text: string, opts: { agentMessage?: boolean; correction?: boolean; transcript?: boolean } = {}): Promise<void> {
+    if (this.agents.get(agentId)?.state === 'error') {
+      this.log('warn', `Did not deliver a message to ${this.agents.get(agentId)?.handle ?? agentId}: it ended with an error.`)
       return Promise.resolve()
+    }
+    if (agentId === ROOT_AGENT_ID) {
+      const sent = this.sendToRoot(text, undefined, { agentMessage: opts.agentMessage, ...(opts.transcript === false ? { transcript: false } : {}) })
+      this.noteActivity('message')
+      return sent
     }
     const threadId = this.agentThread.get(agentId)
     const target = this.agents.get(agentId)
     if (!threadId || !target) return Promise.reject(new Error(`${agentId} has no thread`))
-    this.transcript(agentId, { kind: 'system', text }, opts.agentMessage ? undefined : { source: 'harness' })
+    if (opts.transcript !== false) this.transcript(agentId, { kind: 'system', text }, opts.agentMessage ? undefined : { source: 'harness' })
+    const held = this.heldReports.get(agentId)
+    if (held && !opts.correction) {
+      // A hand-off (or message) starts a new turn: the held report is dropped and that turn is evaluated again.
+      this.heldReports.delete(agentId)
+      this.net.unpark(agentId)
+      if (held.waiting) this.setState(agentId, 'thinking', 'Reading a message…')
+    }
     if (target.state === 'done' || target.state === 'idle') {
+      if (target.state === 'done') this.ctx.delegation?.resumed(agentId)
       target.endedAt = undefined
       this.setState(agentId, 'thinking', 'Reading a message…')
     }
@@ -1030,12 +1856,13 @@ class CodexSession implements RuntimeSession {
   private async onToolCall(params: unknown): Promise<unknown> {
     const call = parseToolCall(params)
     if (!call) return toolResponse('Malformed tool call.', false)
-    const agentId = this.agentOf(call.threadId)
+    const agentId = await this.agentForRequest(call.threadId)
+    if (agentId === undefined) return toolResponse("This thread is not part of this run's org chart.", false)
     const role = this.net.roleOf(agentId) ?? this.root
-    const isNetwork = (Object.values(NETWORK_TOOLS) as string[]).includes(call.tool)
-    if (isNetwork) {
-      if (!networkToolNames(role, { setupLike: this.setupLike }).includes(call.tool)) return toolResponse(`${role.slug} may not use ${call.tool}.`, false)
-      const out = await callNetworkTool(this.net, this.networkHost, agentId, call.callId, call.tool, call.arguments)
+    const networkTool = canonicalNetworkTool(call.tool)
+    if (networkTool) {
+      if (!networkToolNames(role, { setupLike: this.setupLike }).includes(networkTool)) return toolResponse(`${role.slug} may not use ${call.tool}.`, false)
+      const out = await callNetworkTool(this.net, this.networkHost, agentId, call.callId, networkTool, call.arguments)
       return toolResponse(out.text, out.success)
     }
     const tool = this.harnessByCodexName.get(call.tool)
@@ -1103,7 +1930,8 @@ class CodexSession implements RuntimeSession {
     const opts = this.matchOpts()
     if (!opts) return false
     return paths.every((p) => {
-      if (typeof p !== 'string' || !p || !isAbsolute(p) || hasProtectedSegment(p)) return false
+      // A raw `.` / `..` segment is never free: a lexical check collapses it before the kernel follows a link (NL1).
+      if (typeof p !== 'string' || !p || !isAbsolute(p) || hasProtectedSegment(p) || hasDotSegment(p)) return false
       if (refs.length && referenceFolderOf(p, refs, this.ctx.project.path)) return false
       if (!isFreeCdTarget(dirname(p), opts)) return false
       let real: string
@@ -1139,13 +1967,18 @@ class CodexSession implements RuntimeSession {
     const chosen = callOpts ? chooseSuggestions(toolName, input, undefined, false, callOpts) : []
     // A restricted run never turns on accept-edits: its folder is not the user's project.
     const suggestions = restricted ? chosen.filter((s) => s.type !== 'setMode') : chosen
+    // A Chat (quick) run's covered edit also offers "Allow for session" (quick/sessionEdits.ts). Card only: applyAllowScope
+    // below gets `suggestions` without it, so it never sets sessionAcceptEdits or an acceptForSession answer.
+    const card = touching
+      ? { suggestions, ruleLabels: suggestionLabels(suggestions) }
+      : quickEditCard(this.ctx.run, toolName, input, this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path, suggestions)
     try {
       const decision = await this.ctx.requestPermission({
         agentId,
         toolName,
         input,
         summary,
-        ...(suggestions.length ? { suggestions, ruleLabels: suggestionLabels(suggestions) } : {}),
+        ...(card.suggestions.length ? { suggestions: card.suggestions, ruleLabels: card.ruleLabels } : {}),
         ...(referenceFolder ? { referenceFolder } : {})
       })
       let granted = false
@@ -1164,7 +1997,7 @@ class CodexSession implements RuntimeSession {
           this.sessionRules.push(...allowRuleStrings(scoped))
           const offer = this.safeMatchOptions()
           for (const s of scoped) {
-            if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.sessionAcceptEdits = true
+            if (s.type === 'setMode' && s.mode === 'acceptEdits' && !restricted) this.grantAcceptEdits()
             if (s.type === 'addDirectories' && offer) {
               // Checked as written and by real path (reviewer-3 M3: a link or another case spelling of ~/.ssh).
               for (const d of s.directories) if (typeof d === 'string' && d && !this.sessionDirs.includes(d) && isOfferableDirectory(d, offer) && offerableByRealPath(d, offer)) this.sessionDirs.push(d)
@@ -1182,7 +2015,8 @@ class CodexSession implements RuntimeSession {
   private async onCommandApproval(params: unknown): Promise<unknown> {
     const req = parseCommandApproval(params)
     if (!req) return { decision: 'decline' }
-    const agentId = this.agentOf(req.threadId)
+    const agentId = await this.agentForRequest(req.threadId)
+    if (agentId === undefined) return { decision: 'decline' }
     // Self-control gate first (cli-spec 3.4(1)): declined without a card before the policy, reference checks and rules.
     const selfCwd = typeof req.cwd === 'string' && req.cwd && isAbsolute(req.cwd) ? req.cwd : this.ctx.project.path
     if (this.selfControlDenied(agentId, [{ toolName: process.platform === 'win32' ? 'PowerShell' : 'Bash', input: { command: req.command } }], selfCwd)) {
@@ -1283,12 +2117,16 @@ class CodexSession implements RuntimeSession {
   private async onFileApproval(params: unknown): Promise<unknown> {
     const req = parseFileApproval(params)
     if (!req) return { decision: 'decline' }
-    const agentId = this.agentOf(req.threadId)
+    const agentId = await this.agentForRequest(req.threadId)
+    if (agentId === undefined) return { decision: 'decline' }
     const item = this.mapper.item(req.itemId)
     const changes = item ? fileChanges(item) : []
+    // Every path the change writes: each source path and each move destination (`kind.move_path`, review H1). Every
+    // check below judges these, never the source paths alone; a malformed destination is '' and fails each check.
+    const targets = fileChangeTargets(changes)
     // Self-control gate first (cli-spec 3.4(1)): every changed path and the grantRoot as edit targets, declined without
     // a card. A change with no usable path is left to the checks below.
-    const selfChecks = [...changes.map((c) => c.path), ...(req.grantRoot ? [req.grantRoot] : [])]
+    const selfChecks = [...targets, ...(req.grantRoot ? [req.grantRoot] : [])]
       .filter((p): p is string => typeof p === 'string' && p.length > 0)
       .map((p) => ({ toolName: 'Edit', input: { file_path: p } }))
     if (selfChecks.length && this.selfControlDenied(agentId, selfChecks, this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path)) {
@@ -1297,7 +2135,7 @@ class CodexSession implements RuntimeSession {
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) return { decision: 'decline' }
     // Reference folders are read-only: declined without a card, before the accept-edits auto-accept and any rule.
-    const refDenial = this.referenceChangeDenial(agentId, changes, req.grantRoot)
+    const refDenial = this.referenceChangeDenial(agentId, targets.map((path) => ({ path })), req.grantRoot)
     if (refDenial) {
       // One harness row on the calling agent: "Refused: <file> is in a reference folder (read only)" (H2). The decline
       // itself carries no text to the agent (the approval answer is a bare decision).
@@ -1306,17 +2144,19 @@ class CodexSession implements RuntimeSession {
       return { decision: 'decline' }
     }
     const buildWorkspace = this.ctx.run.buildWorkspace
-    if (buildWorkspace && (changes.length ? changes.some((c) => isWorkspaceConfigPath(buildWorkspace, c.path)) : req.grantRoot ? isWorkspaceConfigPath(buildWorkspace, req.grantRoot) : false)) {
+    if (buildWorkspace && (targets.length ? targets.some((p) => isWorkspaceConfigPath(buildWorkspace, p)) : req.grantRoot ? isWorkspaceConfigPath(buildWorkspace, req.grantRoot) : false)) {
       this.log('warn', 'Declined a change under .claude/ in the build workspace.')
       this.transcript(agentId, { kind: 'system', text: 'Build sessions cannot write settings under .claude/ in the workspace.' }, { source: 'harness' })
       return { decision: 'decline' }
     }
     const saved = this.ctx.allowedRules?.() ?? this.savedRules()
-    const paths = changes.map((c) => c.path)
+    const paths = targets
     // Settings, hooks and VCS folders are never accepted silently, whatever rule or mode is in force.
-    // Lexical and real path both (a link inside the project can name a protected folder elsewhere).
+    // Lexical and real path both (a link inside the project can name a protected folder elsewhere). A raw `.` / `..`
+    // segment counts as protected (review NL1): resolving it lexically hides where a link in front of it leads, so such
+    // a change always asks, never a silent accept by rule or mode.
     const protectedPath = (p: string): boolean => {
-      if (hasProtectedSegment(p)) return true
+      if (hasProtectedSegment(p) || hasDotSegment(p)) return true
       try {
         return hasProtectedSegment(canonicalDeep(p))
       } catch {
@@ -1326,7 +2166,7 @@ class CodexSession implements RuntimeSession {
     const touchesProtected = paths.some(protectedPath) || (req.grantRoot ? protectedPath(req.grantRoot) : false)
     // A saved bare Edit / Write rule (legacy files) covers concrete changed files only, never a grantRoot request
     // (write access to a whole folder, possibly / or home: review re-check Medium).
-    if (!touchesProtected && paths.length > 0 && [...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
+    if (!touchesProtected && paths.length > 0 && paths.every((p) => p !== '') && [...saved, ...this.sessionRules].some((r) => r === 'Edit' || r === 'Write')) return { decision: 'accept' }
     // Accept edits (the project's mode, read now: RunManager refreshes ctx.project, or the thread's policy) or a
     // session grant of it: concrete changed files inside the project, an allowed folder or a granted folder, by lexical
     // and real path, need no card. A grantRoot alone, or anything outside, asks.
@@ -1341,6 +2181,11 @@ class CodexSession implements RuntimeSession {
       ...(req.reason ? { reason: req.reason } : {}),
       ...(req.grantRoot ? { grantRoot: req.grantRoot } : {})
     }
+    // Chat (quick) session edit grant, after every decline above: concrete changed files all inside the chat's folder
+    // (quick/sessionEdits.ts; a grantRoot or no changes never counts) are accepted for this call only ('accept', never
+    // acceptForSession, so Codex keeps asking OrgAI for the next change). A change carrying `movePath` is never covered
+    // and never offered the session grant (quickEditCard.ts); `input.changes` carries it so the card shows the move.
+    if (quickEditFree(this.ctx, 'Edit', input, this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path)) return { decision: 'accept' }
     const { decision, granted } = await this.ask(agentId, 'Edit', input)
     if (decision.behavior === 'deny') return { decision: 'decline' }
     return { decision: this.sessionDecision(granted) }
@@ -1349,7 +2194,8 @@ class CodexSession implements RuntimeSession {
   private async onPermissionsApproval(params: unknown): Promise<unknown> {
     const req = parsePermissionsApproval(params)
     if (!req) return { permissions: {}, scope: 'turn' }
-    const agentId = this.agentOf(req.threadId)
+    const agentId = await this.agentForRequest(req.threadId)
+    if (agentId === undefined) return { permissions: {}, scope: 'turn' }
     const policy = this.threads.get(req.threadId)?.policy
     if (policy?.denyApprovals) return { permissions: {}, scope: 'turn' }
     // Self-control gate (cli-spec 3.4(1)): a requested folder at, under or above OrgAI's control files (the data dir,
@@ -1370,7 +2216,8 @@ class CodexSession implements RuntimeSession {
     const req = parseUserInputQuestions(params)
     const answers: Record<string, { answers: string[] }> = {}
     if (!req) return { answers }
-    const agentId = this.agentOf(req.threadId)
+    const agentId = await this.agentForRequest(req.threadId)
+    if (agentId === undefined) return { answers }
     for (const q of req.questions) {
       this.setState(agentId, 'waiting', 'Asking you a question…')
       const answer = await this.ctx.requestQuestion({
@@ -1396,12 +2243,209 @@ class CodexSession implements RuntimeSession {
     announce: (m: AgentMessage, text: string) => {
       this.emit({ type: 'agent.message', runId: this.ctx.run.id, ...m })
       this.transcript(m.from, { kind: 'system', text })
+    },
+    bridgedRole: (role) => {
+      const b = this.bridgedRoles().find((x) => x.roleId === role.id)
+      return b ? { connectionName: b.connectionName } : undefined
+    },
+    spawnBridged: (req) => this.spawnBridged(req),
+    bridgedAgents: () => this.bridgedLive.values(),
+    afterSpawn: (callerId, roleId) => this.waitingNoteFor(callerId, roleId)
+  }
+
+  /** Set once the one-report-and-waiting note was given (at most once per run). */
+  private waitingNoteShown = false
+
+  /** The one-report-and-waiting note (waitingNote.ts, split-execution 3.6) for a spawn by `callerId`, at most once per run. */
+  private waitingNoteFor(callerId: string, roleId: string): string | undefined {
+    const strict = this.ctx.run.overrides?.strictDelegation === true
+    const note = waitingNote({
+      callerIsRoot: callerId === ROOT_AGENT_ID && !this.ctx.bridgedChild,
+      callerRunningReports: this.net.liveChildren(callerId).length,
+      spawnedRoleId: roleId,
+      requiredRoleIds: obligationsFor(this.ctx.roles, strict)[this.root.id] ?? [],
+      plan: this.ctx.getPlan(),
+      assignments: this.ctx.getStaffing()?.assignments ?? [],
+      runningAgentIds: this.net.liveIds(),
+      shown: this.waitingNoteShown,
+      excludedRun: waitingNoteExcluded(this.ctx.run, this.setupLike)
+    })
+    if (note) this.waitingNoteShown = true
+    return note
+  }
+
+  /** The run's deep protected set for the context pack where handles are not pinned (Windows): walked once per run. */
+  private packDeepCache: ProtectedDeepCache = {}
+
+  /** The context pack for a spawn (contextPack.ts, split-execution 3.2): read checks as a Read by the report would pass. */
+  private contextPackFor(files: string[] | undefined, callerCwd: string, reportCwd: string): ContextPack {
+    if (!files?.length) return { files: [], skipped: [] }
+    const { paths, unavailable } = readControlProtectedPaths(this.ctx.controlProtectedPaths?.bind(this.ctx))
+    return buildContextPack(files, {
+      callerCwd,
+      readRoots: contextPackRoots(this.ctx, [callerCwd, reportCwd]),
+      protectedPaths: paths,
+      pathsUnavailable: unavailable,
+      refuseAll: contextPackRefusal(this.ctx.run, this.setupLike),
+      deepCache: this.packDeepCache
+    })
+  }
+
+  /** The run's bridged roles (RuntimeContext.bridge, read at call time); none in a bridged child or when unreadable. */
+  private bridgedRoles(): BridgedRole[] {
+    if (!this.ctx.bridge || this.ctx.bridgedChild) return []
+    try {
+      return this.ctx.bridge.roles()
+    } catch (e) {
+      this.log('warn', `Could not read the run's bridged roles: ${(e as Error).message}`)
+      return []
     }
   }
 
-  private async spawnChild(req: SpawnRequest): Promise<void> {
+  /** PromptFlags for bridged reports: their marks (started through spawn_report) and a bridged child's report prompt. */
+  private bridgeFlags(): { bridgedRoles?: BridgedRole[]; bridgeVia?: 'spawn'; bridged?: boolean } {
+    const roles = this.bridgedRoles()
+    return { ...(roles.length ? { bridgedRoles: roles, bridgeVia: 'spawn' as const } : {}), ...(this.ctx.bridgedChild ? { bridged: true } : {}) }
+  }
+
+  /**
+   * spawn_report for a bridged role: RuntimeContext.bridge.spawn starts it in its own child session (the harness remaps
+   * its events into this run). Resolves once the child exists (onStarted), so the tool call is answered at once; when
+   * the child's final text arrives it goes to the parent like a native report's (deliverTo, a harness message), fenced
+   * through bridgedResultText. A refusal before the child exists rejects with RunManager's message.
+   */
+  private spawnBridged(req: SpawnRequest & { name?: string }): Promise<{ agentId: string; handle: string }> {
+    const bridge = this.ctx.bridge
+    if (!bridge) return Promise.reject(new Error('no report in this run runs on another connection'))
+    const b = this.bridgedRoles().find((x) => x.roleId === req.role.id)
+    const connectionName = b?.connectionName ?? 'another connection'
+    const parentRole = this.net.roleOf(req.parentId) ?? this.root
+    return new Promise((resolve, reject) => {
+      let started: { agentId: string; handle: string } | undefined
+      const adopt = (info: { agentId: string; handle: string }): void => {
+        if (started) return
+        started = { agentId: info.agentId, handle: info.handle }
+        this.net.adopt(req.id, info.agentId, info.handle)
+        this.bridgedLive.set(info.agentId, { handle: info.handle, roleSlug: req.role.slug, connectionName, parentId: req.parentId })
+        this.noteActivity('subagent')
+        resolve(started)
+      }
+      let pending: Promise<BridgeSpawnResult>
+      try {
+        pending = bridge.spawn({
+          role: req.role.id,
+          brief: req.brief,
+          ...(req.name ? { name: req.name } : {}),
+          ...(req.description ? { description: req.description } : {}),
+          ...(req.onCall?.tier ? { tier: req.onCall.tier } : {}),
+          ...(req.onCall?.effort ? { effort: req.onCall.effort } : {}),
+          parentAgentId: req.parentId,
+          parentRoleId: parentRole.id,
+          ...(req.callId ? { toolUseId: req.callId } : {}),
+          onStarted: adopt
+        })
+      } catch (e) {
+        reject(e)
+        return
+      }
+      pending.then(
+        (r) => {
+          adopt({ agentId: r.agentId, handle: r.handle })
+          this.bridgedFinished(r, req.role.name)
+        },
+        (e) => {
+          if (!started) reject(e)
+          else {
+            this.log('warn', `Bridged report ${started.handle} ended without a result: ${(e as Error)?.message ?? String(e)}`)
+            this.bridgedFinished({ ...started, ok: false, text: (e as Error)?.message ?? 'It ended without a result.' }, req.role.name)
+          }
+        }
+      )
+    })
+  }
+
+  /**
+   * A bridged report finished: hand its final text (or failure) to the agent that spawned it. A child the harness stopped
+   * (RunManager stops bridged reports first when the user interrupts, before this session's own interrupt lands) and any
+   * result that lands while the run is held for the user wait for the user's next message (send) instead of starting a
+   * turn, like the Claude adapter's held notices: the transcript row shows now, the delivery waits.
+   */
+  private bridgedFinished(r: BridgeSpawnResult, roleName: string): void {
+    const live = this.bridgedLive.get(r.agentId)
+    this.bridgedLive.delete(r.agentId)
+    this.lastBridgedEndedAt = Date.now()
+    this.net.finish(r.agentId)
+    this.noteActivity('report')
+    if (this.ending) return
+    const parentId = live?.parentId ?? ROOT_AGENT_ID
+    const text = `Harness: ${bridgedResultText(r, roleName)}`
+    if (r.stopped || this.continuation.isHeld()) {
+      const summary = r.stopped ? `${r.handle} was stopped.` : r.ok ? `${r.handle} reported back.` : `${r.handle} failed.`
+      this.heldBridged.push({ parentId, text })
+      this.transcript(this.agents.has(parentId) ? parentId : ROOT_AGENT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
+      return
+    }
+    this.deliverTo(parentId, text).catch((e) => this.log('warn', `Could not deliver the report of ${r.handle}: ${(e as Error).message}`))
+    const parent = this.agents.get(parentId)
+    if (parent && this.heldReports.get(parentId)?.waiting) this.recheckParent({ ...parent, id: r.agentId, parentId } as AgentInstance)
+  }
+
+  /** A report's turn ended with any outcome: free its network slot and tell the staffing book whether it failed (not an interrupt). */
+  private finishAgent(agentId: string, failed = false): void {
+    this.net.finish(agentId)
+    this.staffing.ended(agentId, { failed })
+  }
+
+  /** A held bridged result for a report (not the orchestrator), delivered once the user spoke. Its row was written when it landed. */
+  private deliverHeldBridged(parentId: string, text: string): void {
+    if (this.ending) return
+    this.deliverTo(parentId, text, { transcript: false }).catch((e) => this.log('warn', `Could not deliver a held report to ${this.agents.get(parentId)?.handle ?? parentId}: ${(e as Error).message}`))
+  }
+
+  private async spawnChild(req: SpawnRequest): Promise<{ staffing?: string; note?: string; pack?: string }> {
     const parent = this.agents.get(req.parentId)
     const parentRole = this.net.roleOf(req.parentId) ?? this.root
+    // Run staffing: bind to the plan step and resolve tier / effort before anything is created (cancelled below on failure).
+    const decision = this.staffing.decide({
+      key: req.id,
+      role: req.role,
+      ...(req.parentId !== ROOT_AGENT_ID ? { parentAgentId: req.parentId } : {}),
+      ...(req.onCall ? { onCall: req.onCall } : {})
+    })
+    // The model only when the tier changed, the effort only when the effort changed: an effort-only pick keeps the
+    // model the role would run on anyway (its own, or its parent's when it inherits).
+    const { resolved } = decision
+    const staffedModel = resolved.tierChanged && validModelId(resolved.model) ? resolved.model : undefined
+    const staffedEffort = resolved.effortChanged ? resolved.effort : undefined
+    let pack: ContextPack | undefined
+    try {
+      // `started` runs only once the first message was accepted, so a spawn that did not start leaves no row and no attempt.
+      pack = await this.spawnChildNow(req, parent, parentRole, { model: staffedModel, effort: staffedEffort }, () => {
+        const row = this.staffing.started(req.id, req.id, Date.now())
+        if (row) recordStaffing(this.ctx, row).catch((e: Error) => this.log('warn', `Could not record the staffing of ${req.handle}: ${e.message}`))
+      })
+    } catch (e) {
+      this.staffing.cancel(req.id)
+      this.threadEffort.delete(this.agentThread.get(req.id) ?? '')
+      this.staffedModel.delete(req.id)
+      throw e
+    }
+    const ignored = resolved.mode === 'fixed' && (req.onCall?.tier || req.onCall?.effort)
+    const packLine = pack ? contextPackResultLine(pack) : ''
+    return {
+      ...(packLine ? { pack: packLine } : {}),
+      ...(resolved.mode === 'auto' ? { staffing: decision.label } : {}),
+      ...(ignored ? { note: `It runs on its configured model and effort; the ${req.onCall?.tier && req.onCall?.effort ? 'tier and effort' : req.onCall?.tier ? 'tier' : 'effort'} you gave ${req.onCall?.tier && req.onCall?.effort ? 'were' : 'was'} ignored.` } : {})
+    }
+  }
+
+  private async spawnChildNow(
+    req: SpawnRequest,
+    parent: AgentInstance | undefined,
+    parentRole: Role,
+    staffed: { model?: string; effort?: string },
+    onStarted: () => void
+  ): Promise<ContextPack> {
     // Writing reports get their own worktree when their parent is the orchestrator or is itself isolated.
     const parentWt = req.parentId === ROOT_AGENT_ID ? undefined : this.integrator.worktreeOf(req.parentId)
     const parentIsolated = req.parentId === ROOT_AGENT_ID || !!parentWt
@@ -1422,10 +2466,13 @@ class CodexSession implements RuntimeSession {
     this.integrator.noteBrief(req.id, req.description ?? req.brief.slice(0, 100))
     const parentLabel = req.parentId === ROOT_AGENT_ID ? 'the orchestrator' : (parent?.handle ?? parentRole.slug)
     const policy = this.policyFor(req.role)
+    let registered = false
     try {
-      const params = this.threadParams(req.role, false, cwd, parent?.model)
+      const params = this.threadParams(req.role, false, cwd, parent?.model, staffed.model)
       const started = await this.startThread(params)
       this.bindThread(started.threadId, req.id, policy)
+      if (staffed.model) this.staffedModel.set(req.id, staffed.model)
+      if (staffed.effort) this.threadEffort.set(started.threadId, staffed.effort)
       this.noteActivity('subagent')
       this.newAgent(req.id, req.role, {
         parentId: req.parentId,
@@ -1436,14 +2483,24 @@ class CodexSession implements RuntimeSession {
         ...(started.model ?? parent?.model ? { model: started.model ?? parent?.model } : {}),
         ...(worktree ? { worktree } : {})
       })
+      registered = true
+      this.ctx.delegation?.noteSpawn(req.id, req.parentId, req.role.id)
       this.transcript(req.id, { kind: 'user', text: req.brief })
-      const effort = req.role.effort && ['low', 'medium', 'high'].includes(req.role.effort) ? { effort: req.role.effort } : {}
+      const effort = staffed.effort ? { effort: staffed.effort } : this.turnEffort(req.role.effort)
       // After newAgent, so the "Added N known items" row lands on the report; the block stays out of its transcript entry.
       const knownItems = spawnKnowledge(this.ctx, req.brief, req.id, (m) => this.log('warn', m))
-      await this.sendToThread(started.threadId, childFirstMessage(parentLabel, withSpawnKnowledge(req.brief, knownItems)), undefined, effort)
+      // Context pack: the lead's paths resolve against its own working folder; the block stays out of the transcript entry.
+      const pack = this.contextPackFor(req.files, parentWt?.path ?? this.ctx.project.path, cwd)
+      await this.sendToThread(started.threadId, withContextPack(childFirstMessage(parentLabel, withSpawnKnowledge(req.brief, knownItems)), pack), undefined, effort)
+      onStarted()
+      return pack
     } catch (e) {
       if (this.agents.delete(req.id)) this.emit({ type: 'agent.remove', runId: this.ctx.run.id, agentId: req.id })
-      if (worktree) void this.integrator.onSubagentFinished(req.id)
+      const gate = this.ctx.delegation
+      if (registered) gate?.ended(req.id)
+      // An obligated writer's branch is held rather than merged (its report never came).
+      const obligated = !!gate && (obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)[req.role.id]?.length ?? 0) > 0
+      if (worktree) void (obligated ? this.integrator.holdFailed(req.id, 'its first message could not be sent') : this.integrator.onSubagentFinished(req.id))
       throw e
     }
   }
@@ -1493,25 +2550,45 @@ class CodexSession implements RuntimeSession {
     this.restarting = true
     this.mcpRestartPending = false
     this.noteActivity('restart')
+    // End session can land during any await below. stop() / endRun() close whatever `this.server` is at that moment,
+    // so a server this restart created after that would never be closed: check `ending` before creating one, and close
+    // the one we made when the run ended while it started (review round 2).
+    let created: CodexServerLike | undefined
+    const abandon = (): void => {
+      this.restarting = false
+      if (created) {
+        this.unwire()
+        created.close()
+      }
+    }
     try {
       const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
-      const launch = buildLaunchConfig(this.ctx.connection, servers, {
+      if (this.ending) return abandon()
+      const writableRoots = codexWritableRoots(this.ctx)
+      const launch = await this.buildLaunch(servers, {
         ...trustLaunchOpts(this.ctx),
-        writableRoots: codexWritableRoots(this.ctx)
+        writableRoots
       })
       const old = this.server
       this.unwire()
       old.close()
       await Promise.race([old.exited, new Promise((r) => setTimeout(r, EXIT_WAIT_MS))])
+      if (this.ending) return abandon()
       this.launch = launch
-      this.server = this.createServer(launch)
-      this.wire(this.server)
-      await this.server.start(this.options.clientVersion)
+      this.launchWritableRoots = writableRoots
+      this.workspaceTemp = undefined
+      await this.startServer(launch, (server) => {
+        created = server
+        this.server = server
+        this.wire(server)
+      })
+      if (this.ending) return abandon()
+      this.readWorkspaceTempAtLaunch(this.server)
       for (const [threadId, info] of this.threads) {
         const role = this.net.roleOf(info.agentId) ?? this.root
         const wt = this.integrator.worktreeOf(info.agentId)
         // threadParams re-derives the policy (mode and reference folders read now); the thread keeps the new one.
-        const { dynamicTools: _t, serviceName: _s, ...resume } = this.threadParams(role, info.agentId === ROOT_AGENT_ID, wt?.path ?? this.ctx.project.path)
+        const { dynamicTools: _t, serviceName: _s, ...resume } = this.threadParams(role, info.agentId === ROOT_AGENT_ID, wt?.path ?? this.ctx.project.path, undefined, this.staffedModel.get(info.agentId))
         void _t
         void _s
         info.policy = this.policyFor(role)
@@ -1533,6 +2610,8 @@ class CodexSession implements RuntimeSession {
         'Using a new MCP server…'
       )
     } catch (e) {
+      // stop() closed the new server while it started: the run is ending, not failing.
+      if (this.ending) return abandon()
       this.restarting = false
       this.fail(`Could not restart Codex to attach the MCP server: ${(e as Error).message}`)
       return
@@ -1561,8 +2640,31 @@ export class CodexAdapter implements RuntimeAdapter {
     // empty temp dir as cwd). Nothing in a tool-less read-only thread needs the folder.
     const launch = buildLaunchConfig(connection, [], { noProjectDocs: true })
     const scratchCwd = tmpdir()
-    const options: CodexAppServerOptions = { cwd: scratchCwd, env: launch.env, config: launch.config }
-    const server: CodexServerLike = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+    // The catalog override here too: a tool-less thread would otherwise still carry Codex's multi-agent tools and rule.
+    // A failed start with it follows startServer's rules: a transient failure is retried once with it, anything else once
+    // without it, and the catalog is rejected for the process only when that worked and the failure names the catalog.
+    let catalog: string | undefined
+    const open = (withCatalog: boolean): CodexServerLike => {
+      catalog = undefined
+      const options: CodexAppServerOptions = {
+        cwd: scratchCwd,
+        env: launch.env,
+        config: launch.config,
+        startLockHeld: true,
+        ...(withCatalog
+          ? {
+              prepareConfig: catalogPreparer(this.options, () => [codexModelFor(input.model)].filter((m): m is string => !!m), (r) => {
+                if (r.status === 'written' || r.status === 'cached') catalog = r.path
+              })
+            }
+          : {})
+      }
+      const s = this.options.createServer ? this.options.createServer(options) : new CodexAppServer(options)
+      listen(s)
+      return s
+    }
+    let server!: CodexServerLike
+    let starting = true
     let text = ''
     let final = ''
     let failure: string | undefined
@@ -1570,28 +2672,34 @@ export class CodexAdapter implements RuntimeAdapter {
     let done!: () => void
     const completed = new Promise<void>((resolve) => (done = resolve))
     const mapper = new CodexEventMapper()
-    server.onNotification((method, params) => {
-      for (const u of mapper.handle(method, params)) {
-        // thread/tokenUsage/updated carries the thread's running total; the last one is the completion's spend.
-        if (u.type === 'tokens') tokens = { input: u.input, output: u.output, cachedInput: u.cachedInput }
-        if (u.type === 'text') text += (text ? '\n\n' : '') + u.text
-        if (u.type === 'turnCompleted') {
-          final = u.result ?? ''
-          if (u.status === 'failed') failure = u.error?.message ?? 'the turn failed'
-          done()
+    const listen = (s: CodexServerLike): void => {
+      s.onNotification((method, params) => {
+        if (s !== server) return
+        for (const u of mapper.handle(method, params)) {
+          // thread/tokenUsage/updated carries the thread's running total; the last one is the completion's spend.
+          if (u.type === 'tokens') tokens = { input: u.input, output: u.output, cachedInput: u.cachedInput }
+          if (u.type === 'text') text += (text ? '\n\n' : '') + u.text
+          if (u.type === 'turnCompleted') {
+            final = u.result ?? ''
+            if (u.status === 'failed') failure = u.error?.message ?? 'the turn failed'
+            done()
+          }
         }
-      }
-    })
-    server.onServerRequest(async (method) => {
-      // Nothing may run: decline every approval and tool call.
-      if (method === SERVER_REQUEST.toolCall) return toolResponse('No tools are available.', false)
-      if (method === SERVER_REQUEST.mcpElicitation) return { action: 'decline', content: null, _meta: null }
-      return { decision: 'decline' }
-    })
-    server.onExit((code, error) => {
-      failure ??= error?.message ?? codexExitMessage(code, server.stderrTail?.())
-      done()
-    })
+      })
+      s.onServerRequest(async (method) => {
+        // Nothing may run: decline every approval and tool call.
+        if (method === SERVER_REQUEST.toolCall) return toolResponse('No tools are available.', false)
+        if (method === SERVER_REQUEST.mcpElicitation) return { action: 'decline', content: null, _meta: null }
+        return { decision: 'decline' }
+      })
+      s.onExit((code, error) => {
+        // An abandoned app-server, or a first start with the catalog override (retried below), is not the completion's failure.
+        if (s !== server || (starting && catalog)) return
+        failure ??= error?.message ?? codexExitMessage(code, s.stderrTail?.())
+        done()
+      })
+    }
+    server = open(true)
     let timer: ReturnType<typeof setTimeout> | undefined
     // The caller gave up (run-title timeout, run stopped): end the turn wait, kill the app-server at once so pending
     // requests reject, and settle whichever step is awaited (start, thread/start, turn/start) even if one hangs.
@@ -1608,7 +2716,29 @@ export class CodexAdapter implements RuntimeAdapter {
     if (input.signal?.aborted) throw new Error('Completion cancelled')
     input.signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      await step(server.start(this.options.clientVersion))
+      // One start at a time per Codex home (lockedStart); an abort leaves the lock queue whether waiting or holding.
+      const startOnce = (s: CodexServerLike): Promise<unknown> => step(lockedStart(s, launch.env, this.options.clientVersion, input.signal))
+      try {
+        let failed: { path: string; text: string } | undefined
+        let transientRetried = false
+        for (;;) {
+          try {
+            await startOnce(server)
+          } catch (e) {
+            if (!catalog || input.signal?.aborted) throw e
+            failed = { path: catalog, text: startFailureText(e, server) }
+            server.close()
+            const transient = !transientRetried && catalogStartFailure(failed.text) === 'transient'
+            if (transient) transientRetried = true
+            server = open(transient)
+            continue
+          }
+          break
+        }
+        if (failed && !catalog && catalogStartFailure(failed.text) === 'catalog') rejectNativeCatalog(failed.path)
+      } finally {
+        starting = false
+      }
       if (input.signal?.aborted) throw new Error('Completion cancelled')
       const model = codexModelFor(input.model)
       const res = await step(server.request(METHOD.threadStart, {

@@ -5,13 +5,12 @@
  * comes from runIndexMap over that project's runs, so it matches the app's run tabs), or a unique id prefix of at
  * least 6 characters. Ambiguous and unknown refs are usage errors (exit 2).
  *
- * `openReadSource` is the rule every read command follows: connect to the live host with the 'read' scope; when no
- * host is running, it is still starting or terminal access is off, read the data dir instead (ReadOnlySnapshot) and
- * say so on stderr in text mode. A read command never starts a host.
+ * `openReadSource` is the rule every read command follows: read the data folder (ReadOnlySnapshot), never a host.
  */
 import { VIRTUAL_PROJECT_IDS, type Project, type RunRecord, type RunSummary } from '../shared/types'
 import { runIndexMap } from '../shared/view/runLabels'
-import { note, warn } from './output'
+import { note } from './output'
+import { SNAPSHOT_NOTE } from './ownedMessage'
 import { CliError, EXIT, type CliContext, type HostClient, type ProjectResolution, type ReadOnlySnapshot } from './types'
 
 /** The host's id shape (src/main/host/params.ts PARAM_ID_PATTERN; copied so the CLI bundle stays small). */
@@ -60,117 +59,50 @@ export const isRunTag = (ref: string): boolean => TAG_RE.test(ref.trim())
 
 // ---------- Data source ----------
 
-/** Why the source is the saved data: the ConnectResult reason. */
-export type HostlessReason = 'no_host' | 'starting' | 'disabled' | 'draining' | 'unreachable'
+/** What run-ref resolution needs of a data source: a ReadSource, or a live host (liveSource). */
+export type RunSource = Pick<ReadSource, 'projects' | 'runs' | 'allRuns' | 'record'>
 
 export interface ReadSource {
-  /** The live host answered. */
-  live: boolean
-  client?: HostClient
-  snapshot?: ReadOnlySnapshot
-  /** 'ready' when live; else the snapshot's view of daemon.json. */
+  snapshot: ReadOnlySnapshot
+  /** The snapshot's view of daemon.json: 'stopped' when no orgai owns the folder. */
   hostState: ReadOnlySnapshot['hostState']
-  /** Pending cards are known only with a live host. */
-  liveInboxAvailable: boolean
-  /** Set when hostless: why. */
-  hostless?: { reason: HostlessReason; message: string }
   projects(): Promise<Project[]>
-  /** runs:list(projectId), newest first. */
+  /** The project's runs, newest first. */
   runs(projectId: string): Promise<RunSummary[]>
   /** Every run of these projects (virtual ones included when `virtual`), newest first. */
   allRuns(projectIds: readonly string[]): Promise<RunSummary[]>
-  /** runs:get (bulk) or the stored record; null when missing. */
+  /** The stored record; null when missing. */
   record(runId: string): Promise<RunRecord | null>
   close(): void
 }
 
-/** The note printed on stderr in text mode when the saved data is shown. */
-export function hostlessNote(reason: HostlessReason, message: string): string {
-  switch (reason) {
-    case 'no_host':
-      return 'No OrgAI host is running; showing saved data.'
-    case 'starting':
-      return 'OrgAI is starting; showing saved data.'
-    case 'disabled':
-      return message || 'Terminal access is turned off in OrgAI; showing saved data.'
-    case 'draining':
-      return 'OrgAI is shutting down; showing saved data.'
-    case 'unreachable':
-      return 'The OrgAI host did not answer; showing saved data.'
-  }
-}
-
-const HOSTLESS: ReadonlySet<string> = new Set<HostlessReason>(['no_host', 'starting', 'disabled', 'draining', 'unreachable'])
-
-/** The exit code for a connect refusal that is not a hostless case. */
-function refusalExit(reason: string): number {
-  return reason === 'auth_failed' ? EXIT.auth : EXIT.failure
-}
-
 const newestFirst = (a: RunSummary, b: RunSummary): number => b.startedAt - a.startedAt || b.id.localeCompare(a.id)
 
-/** The version skew warning goes to stderr once per process. */
-let skewWarned = false
-/** Tests reset the once-per-process flag. */
-export function resetSkewWarning(): void {
-  skewWarned = false
-}
-
-/** Print hello.versionSkewWarning once (stderr, every format). */
-export function warnVersionSkew(ctx: CliContext, client: HostClient): void {
-  const w = client.hello.versionSkewWarning
-  if (w && !skewWarned) {
-    skewWarned = true
-    warn(ctx, w)
-  }
+/**
+ * The data every read command shows (cli-standalone-default.md 4.3): the files of the data folder, never a host. Beside
+ * another orgai that owns the folder a stderr note in text mode says this is a saved snapshot (no live cards). Never
+ * starts a host, never writes. `quiet` skips the note (the command prints its own wording).
+ */
+export async function openReadSource(ctx: CliContext, opts: { quiet?: boolean } = {}): Promise<ReadSource> {
+  return sourceOf(ctx, await ctx.readStore(), opts)
 }
 
 /**
- * The live host (scope 'read'), else the saved data with a stderr note in text mode. Other refusals (auth, protocol,
- * refused) are CliErrors. `quiet` skips the note (the command prints its own wording).
+ * For the read commands that start their own host when nobody owns the folder (usage show, secrets status): the saved
+ * files as a ReadSource while another orgai owns it (with the snapshot note), else null. Chosen before any connect, so
+ * an owned answer never reaches a host call.
  */
-export async function openReadSource(ctx: CliContext, opts: { quiet?: boolean } = {}): Promise<ReadSource> {
-  const res = await ctx.connect(['read'], { clientKind: 'cli', waitStartingMs: 2000 })
-  if (res.ok) {
-    const client = res.client
-    warnVersionSkew(ctx, client)
-    const runs = async (projectId: string): Promise<RunSummary[]> => {
-      const list = await client.call<RunSummary[]>('runs:list', [projectId])
-      return (Array.isArray(list) ? list : []).slice().sort(newestFirst)
-    }
-    return {
-      live: true,
-      client,
-      hostState: 'ready',
-      liveInboxAvailable: true,
-      projects: async () => {
-        const list = await client.call<Project[]>('projects:list', [])
-        return Array.isArray(list) ? list : []
-      },
-      runs,
-      allRuns: async (projectIds) => {
-        const lists = await Promise.all(projectIds.map((id) => runs(id).catch(() => [] as RunSummary[])))
-        const seen = new Set<string>()
-        return lists
-          .flat()
-          .filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)))
-          .sort(newestFirst)
-      },
-      record: async (runId) => (await client.call<RunRecord | null>('runs:get', [runId], { timeoutMs: 60_000 })) ?? null,
-      close: () => client.close()
-    }
-  }
-  if (!HOSTLESS.has(res.reason)) throw new CliError(res.message || `Could not connect to the OrgAI host (${res.reason}).`, refusalExit(res.reason))
-  const reason = res.reason as HostlessReason
-  if (!opts.quiet) note(ctx, hostlessNote(reason, res.message))
+export async function ownerSnapshot(ctx: CliContext, opts: { quiet?: boolean } = {}): Promise<ReadSource | null> {
   const snap = await ctx.readStore()
+  return snap.hostState === 'stopped' ? null : sourceOf(ctx, snap, opts)
+}
+
+function sourceOf(ctx: CliContext, snap: ReadOnlySnapshot, opts: { quiet?: boolean }): ReadSource {
+  if (!opts.quiet && snap.hostState !== 'stopped') note(ctx, SNAPSHOT_NOTE)
   const byProject = (projectId: string): RunSummary[] => snap.runs.filter((r) => r.projectId === projectId).sort(newestFirst)
   return {
-    live: false,
     snapshot: snap,
     hostState: snap.hostState,
-    liveInboxAvailable: false,
-    hostless: { reason, message: res.message },
     projects: async () => snap.projects,
     runs: async (projectId) => byProject(projectId),
     allRuns: async (projectIds) => {
@@ -179,6 +111,31 @@ export async function openReadSource(ctx: CliContext, opts: { quiet?: boolean } 
     },
     record: async (runId) => snap.readRecord(runId),
     close: () => undefined
+  }
+}
+
+/** A RunSource over a connected client (projects, runs, records); exec, resume and the TUI use it for their own host. */
+export function liveSource(client: HostClient): RunSource {
+  const runs = async (projectId: string): Promise<RunSummary[]> => {
+    if (!projectId) return []
+    const list = await client.call<RunSummary[]>('runs:list', [projectId])
+    return (Array.isArray(list) ? list : []).slice().sort(newestFirst)
+  }
+  return {
+    projects: async () => {
+      const list = await client.call('projects:list', [])
+      return Array.isArray(list) ? (list as Project[]) : []
+    },
+    runs,
+    allRuns: async (ids) => {
+      const lists = await Promise.all(ids.map((id) => runs(id).catch(() => [] as RunSummary[])))
+      const seen = new Set<string>()
+      return lists
+        .flat()
+        .filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)))
+        .sort(newestFirst)
+    },
+    record: async (runId) => (await client.call<RunRecord | null>('runs:get', [runId]).catch(() => null)) ?? null
   }
 }
 
@@ -199,7 +156,7 @@ export function checkProjectResolution(res: ProjectResolution): void {
  */
 export async function resolveRunFromSource(
   ctx: CliContext,
-  src: ReadSource,
+  src: RunSource,
   ref: string
 ): Promise<{ runId: string; projects: Project[]; resolution: ProjectResolution; runs: RunSummary[] }> {
   const projects = await src.projects()

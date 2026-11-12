@@ -1,43 +1,32 @@
 /**
  * Integration: `orgai org`, `team`, `worktrees` and `permissions` against a real in-process mock host over its socket
- * (cli-spec 6.3, Wave 5). The host runs in this process (startInprocHost); every command goes through `main(argv)` with
- * `--host daemon`, so it connects as a real CLI client would. Mock adapter only; no tokens, no network.
+ * (cli-spec 6.3, Wave 5). Every command goes through `main(argv)`, which starts its own host in this process. Mock adapter only; no tokens, no network.
  */
+import { writeProductMarker } from '../../main/store/productMarker'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { allowFullTerminalAccess } from '../testing/terminalAccess'
+import { withSeedHost } from '../testing/seedHost'
 import type { Project } from '../../shared/types'
-import { connectHost } from '../client/hostClient'
 import { main } from '../index'
-import { startInprocHost, type InprocHost } from '../inprocHost'
 import type { CliIo } from '../types'
-import { CLI_VERSION } from '../version'
 
 let userDataDir: string
-let dataDir: string
 let projectDir: string
-let host: InprocHost
 let project: Project
 const env: NodeJS.ProcessEnv = { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0', PATH: process.env.PATH }
 
 beforeAll(async () => {
   userDataDir = realpathSync(mkdtempSync(join(tmpdir(), 'orgteam-')))
-  dataDir = join(userDataDir, 'data')
   projectDir = join(userDataDir, 'repo')
   mkdirSync(projectDir)
-  // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
-  allowFullTerminalAccess(join(userDataDir, 'data'))
-  host = await startInprocHost({ userDataDir, dataDir, env: { ...env }, mock: true, overlay: new Map(), logging: false, startBackground: false })
-  const res = await connectHost({ dataDir, scopes: ['read', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
-  if (!res.ok) throw new Error(res.message)
-  project = await res.client.call<Project>('projects:create', [{ name: 'Int app', path: projectDir, brief: '', mock: true }])
-  res.client.close()
+  writeProductMarker(userDataDir, 'orgai-cli')
+  // Every run() below starts its own host on this folder; a seed host makes the project first.
+  project = await withSeedHost(userDataDir, (client) => client.call<Project>('projects:create', [{ name: 'Int app', path: projectDir, brief: '', mock: true }]), { scopes: ['read', 'configure'] })
 }, 60_000)
 
 afterAll(async () => {
-  await host?.stop(true).catch(() => {})
   rmSync(userDataDir, { recursive: true, force: true })
 })
 
@@ -49,7 +38,7 @@ async function run(args: string[], format: 'text' | 'json' = 'text'): Promise<{ 
     stderr: { write: (s: string) => ((err += s), true), isTTY: false },
     stdinIsTTY: false
   }
-  const code = await main(['--data-dir', userDataDir, '--host', 'daemon', '--no-color', '--output-format', format, ...args], { env: { ...env }, io, cwd: projectDir })
+  const code = await main(['--data-dir', userDataDir, '--no-color', '--output-format', format, ...args], { env: { ...env }, io, cwd: projectDir })
   return { code, out, err }
 }
 

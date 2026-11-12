@@ -4,6 +4,7 @@
  * its existing tests. Relative imports only (noElectronImport.test.ts).
  */
 import { existsSync } from 'node:fs'
+import { APP_REFERENCE_ACTIONS, type AppReferenceQuery } from '../../shared/types'
 import type {
   FolderConfigTrustInput,
   ProjectCreateInput,
@@ -15,6 +16,8 @@ import type {
   CapabilityUndoInput,
   ConnectionId,
   ConnectionSecretInput,
+  ProxyCreateInput,
+  ProxyKind,
   ConnectorAddInput,
   ConnectorPresetRemoveInput,
   ConnectorTokenInput,
@@ -32,11 +35,25 @@ import type {
   McpInstallDecision,
   McpServerSpec,
   MergeDecision,
+  OutputRef,
+  OutputCompareInput,
+  OutputDeleteInput,
+  OutputNoteAddInput,
+  OutputNoteAnchor,
+  OutputNoteRemoveInput,
+  OutputNoteUpdateInput,
+  OutputPreviewInput,
+  OutputReviseInput,
+  OutputSaveEditInput,
+  OutputSaveImageInput,
+  OutputUpdateInput,
+  OutputVersionRef,
   PermissionDecision,
   PermissionRuleDecision,
   QuestionAnswer,
   ContinueRunInput,
   SendRunInput,
+  SetRunPermissionModeInput,
   StartRunInput,
   McpLibrarySecretInput,
   McpProjectOverridesInput,
@@ -58,14 +75,24 @@ import type {
 } from '../../shared/types'
 import {
   HARNESS_PROJECT_ID,
+  PROXY_KINDS,
+  isBuiltinConnectionId,
+  isEffort,
+  isPermissionMode,
+  isProxyConnectionId,
   KNOWLEDGE_FACT_MAX_CHARS,
   KNOWLEDGE_LINK_ID_RE,
   KNOWLEDGE_NODE_FACTS_MAX,
+  OUTPUT_ID_RE,
+  OUTPUT_NOTE_ID_RE,
+  OUTPUT_NOTES_MAX,
+  OUTPUT_EXPORT_IMAGE_MAX_BYTES,
+  OUTPUT_EDIT_MAX_BYTES,
   PROPOSAL_NOTE_MAX_CHARS,
   QUICK_RUN_MAX_PROMPT_CHARS,
   isVirtualProjectId
 } from '../../shared/types'
-import { isConnectionId, isSafeId, projectKindOf } from '../../shared/defaults'
+import { isSafeId, projectKindOf } from '../../shared/defaults'
 import { stripSettingsInfo } from '../appInfo'
 import { hiddenCharIn } from '../capabilities/sanitize'
 import { harnessProject as buildHarnessProject } from '../mcp/assist'
@@ -553,28 +580,86 @@ export const capabilityArgs = {
  * prototype key), else "Unknown connection". Exported for tests.
  */
 export function connectionIdArg(raw: unknown): ConnectionId {
-  if (!isConnectionId(raw)) throw new Error('Unknown connection')
+  // Shape only (a built-in or a proxy id); ConnectionService says "Unknown connection" for a proxy that does not exist.
+  if (!isBuiltinConnectionId(raw) && !isProxyConnectionId(raw)) throw new Error('Unknown connection')
   return raw
 }
 
-/** Longest LiteLLM key accepted over IPC (connections:setSecret). */
+/** connections:removeProxy input: a proxy id string (PROXY_ID_RE), else "Unknown connection". Exported for tests. */
+export function proxyIdArg(raw: unknown): string {
+  if (!isProxyConnectionId(raw)) throw new Error('Unknown connection')
+  return raw
+}
+
+/** Longest proxy key accepted over IPC (connections:setSecret, connections:createProxy). */
 export const CONNECTION_SECRET_MAX_CHARS = 4000
 
+const KEY_HIDDEN_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
+
+function checkedKey(key: string): string {
+  if (key.length > CONNECTION_SECRET_MAX_CHARS) throw new Error(`The API key is too long (at most ${CONNECTION_SECRET_MAX_CHARS} characters).`)
+  if (KEY_HIDDEN_RE.test(key.trim())) throw new Error('The API key contains line breaks or hidden characters.')
+  return key
+}
+
 /**
- * connections:setSecret input rebuilt as `{ id: 'litellm', apiKey: string | null }`: the key is printable text
+ * connections:setSecret input rebuilt as `{ id: <proxy id>, apiKey: string | null }`: the key is printable text
  * without line breaks or control characters (it becomes an env var and an Authorization header), at most
  * CONNECTION_SECRET_MAX_CHARS; '' or null clears it. Anything else is refused; extra fields are dropped. The error
  * never echoes the value. Exported for tests.
  */
 export function connectionSecretArgs(raw: unknown): ConnectionSecretInput {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Only the LiteLLM connection has a stored secret')
+  const refusal = 'Only a proxy connection has a stored secret'
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(refusal)
   const i = raw as Record<string, unknown>
-  if (i.id !== 'litellm') throw new Error('Only the LiteLLM connection has a stored secret')
-  if (i.apiKey === null || i.apiKey === undefined) return { id: 'litellm', apiKey: null }
+  if (!isProxyConnectionId(i.id)) throw new Error(refusal)
+  if (i.apiKey === null || i.apiKey === undefined) return { id: i.id, apiKey: null }
   if (typeof i.apiKey !== 'string') throw new Error('The API key must be text.')
-  if (i.apiKey.length > CONNECTION_SECRET_MAX_CHARS) throw new Error(`The API key is too long (at most ${CONNECTION_SECRET_MAX_CHARS} characters).`)
-  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(i.apiKey.trim())) throw new Error('The API key contains line breaks or hidden characters.')
-  return { id: 'litellm', apiKey: i.apiKey }
+  return { id: i.id, apiKey: checkedKey(i.apiKey) }
+}
+
+/** Longest name / URL string accepted raw over IPC for connections:createProxy; main validates the real rules. */
+const PROXY_RAW_NAME_MAX = 200
+const PROXY_RAW_URL_MAX = 2048
+
+/**
+ * connections:createProxy input rebuilt: a plain object; `name` and `anthropicBaseUrl` are required strings (name at
+ * most 200 raw characters, main applies PROXY_NAME_MAX and the duplicate rule), `kind` one of PROXY_KINDS,
+ * `openaiBaseUrl` / `modelsUrl` optional strings of at most 2,048 characters, `apiKey` an optional key under the
+ * setSecret rules. Extra fields are dropped; arrays, null and prototype keys are refused. Errors never echo the key.
+ * Exported for tests.
+ */
+export function proxyCreateArgs(raw: unknown): ProxyCreateInput {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('The proxy settings must be an object.')
+  const proto = Object.getPrototypeOf(raw)
+  if (proto !== Object.prototype && proto !== null) throw new Error('The proxy settings must be an object.')
+  for (const k of ['__proto__', 'constructor', 'prototype']) if (Object.hasOwn(raw, k)) throw new Error('The proxy settings must be an object.')
+  const i = raw as Record<string, unknown>
+  if (typeof i.name !== 'string') throw new Error('The proxy needs a name.')
+  if (i.name.length > PROXY_RAW_NAME_MAX) throw new Error(`The proxy name is too long (at most ${PROXY_RAW_NAME_MAX} characters).`)
+  if (typeof i.anthropicBaseUrl !== 'string') throw new Error('The proxy needs an address.')
+  const out: ProxyCreateInput = { name: i.name, anthropicBaseUrl: urlField(i.anthropicBaseUrl, 'address') }
+  if (i.kind !== undefined) {
+    if (typeof i.kind !== 'string' || !(PROXY_KINDS as readonly string[]).includes(i.kind)) throw new Error('Unknown proxy kind.')
+    out.kind = i.kind as ProxyKind
+  }
+  if (i.openaiBaseUrl !== undefined) out.openaiBaseUrl = urlField(i.openaiBaseUrl, 'OpenAI address')
+  if (i.litellmFeatures !== undefined) {
+    if (typeof i.litellmFeatures !== 'boolean') throw new Error('LiteLLM reporting must be enabled or disabled.')
+    out.litellmFeatures = i.litellmFeatures
+  }
+  if (i.modelsUrl !== undefined) out.modelsUrl = urlField(i.modelsUrl, 'models address')
+  if (i.apiKey !== undefined) {
+    if (typeof i.apiKey !== 'string') throw new Error('The API key must be text.')
+    out.apiKey = checkedKey(i.apiKey)
+  }
+  return out
+}
+
+function urlField(v: unknown, what: string): string {
+  if (typeof v !== 'string') throw new Error(`The proxy ${what} must be text.`)
+  if (v.length > PROXY_RAW_URL_MAX) throw new Error(`The proxy ${what} is too long (at most ${PROXY_RAW_URL_MAX} characters).`)
+  return v
 }
 
 /**
@@ -593,8 +678,7 @@ export function modelsQueryArg(raw: unknown): ModelsQuery | undefined {
  * settings:set input: a plain object (anything else is refused), merged onto the stored settings (never onto the
  * defaults, so a field the renderer left out keeps its stored value). The main-owned fields always keep their stored
  * values: defaultConnection, defaultConnectionChosen and defaultConnectionReplaced (change the default only through
- * connections:setDefault), connections and its providerAuth mirror (connections:update / setSecret), and
- * terminalServerChosen (set here once a save changes terminalServer). The AppSettingsInfo extras are dropped. Pure; exported for tests. SettingsStore.set normalizes the rest.
+ * connections:setDefault), connections and its providerAuth mirror (connections:update / setSecret). The AppSettingsInfo extras are dropped. Pure; exported for tests. SettingsStore.set normalizes the rest.
  */
 export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Settings must be an object.')
@@ -606,8 +690,8 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
     defaultConnectionChosen: _chosen,
     defaultConnectionReplaced: _replaced,
     connections: _connections,
+    proxies: _proxies,
     providerAuth: _auth,
-    terminalServerChosen: _terminalChosen,
     ...rest
   } = incoming
   // A field whose kind differs from the stored one's (a non-array modelPrices, a string flag, null) is dropped, so a
@@ -622,15 +706,12 @@ export function settingsSetArgs(raw: unknown, stored: AppSettings): AppSettings 
   const out: AppSettings = { ...stored, ...rest }
   out.defaultConnection = stored.defaultConnection
   out.connections = stored.connections
+  out.proxies = stored.proxies
   out.providerAuth = stored.providerAuth
   delete out.defaultConnectionChosen
   delete out.defaultConnectionReplaced
   if (stored.defaultConnectionChosen !== undefined) out.defaultConnectionChosen = stored.defaultConnectionChosen
   if (stored.defaultConnectionReplaced !== undefined) out.defaultConnectionReplaced = stored.defaultConnectionReplaced
-  // terminalServerChosen is main-owned: it sticks once a save changed Terminal access, so a later headless boot
-  // never overrides the user's choice (bootstrap.ts).
-  delete out.terminalServerChosen
-  if (stored.terminalServerChosen === true || (out.terminalServer === true) !== (stored.terminalServer === true)) out.terminalServerChosen = true
   return out
 }
 
@@ -999,21 +1080,52 @@ function messageParts(text: unknown, images: unknown, what: string): { text: str
   return { text, images: images as ImageAttachment[] }
 }
 
-/** runs:start: { projectId, prompt, scaffold?, images?, team? }, rebuilt; team only 'single'. */
+const MODEL_ID_MAX_CHARS = 200
+const MODEL_ID_HIDDEN_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
+
+/**
+ * A per-run root model choice ({ model, connection }), rebuilt: undefined and null are absent. The model is trimmed text
+ * of 1 to 200 characters without control characters; the connection a built-in or proxy id (shape only, the catalog
+ * check is RunManager's). Extra keys are dropped.
+ */
+function modelSelectionArg(v: unknown): { model: string; connection: ConnectionId } | undefined {
+  if (v === undefined || v === null) return undefined
+  if (!isPlain(v)) throw badInput('modelSelection must be an object with a model and a connection.')
+  const model = typeof v.model === 'string' ? v.model.trim() : ''
+  if (!model || model.length > MODEL_ID_MAX_CHARS || MODEL_ID_HIDDEN_RE.test(model)) throw badInput('The model must be text of 1 to 200 characters without control characters.')
+  if (!isBuiltinConnectionId(v.connection) && !isProxyConnectionId(v.connection)) throw badInput('Unknown connection.')
+  return { model, connection: v.connection }
+}
+
+/** runs:start: { projectId, prompt, scaffold?, images?, team?, overrides?, modelSelection?, effort?, permissionMode? }, rebuilt; team only 'single'. */
 export function startRunArgs(input: unknown): StartRunInput {
   if (!isPlain(input)) throw badInput('Unknown run input.')
   if (!isValidId(input.projectId)) throw badInput('Project not found')
   const { text, images } = messageParts(input.prompt, input.images, 'prompt')
   if (input.scaffold !== undefined && input.scaffold !== null && typeof input.scaffold !== 'boolean') throw badInput('scaffold must be true or false.')
   const overrides: RunOverrides | undefined = runOverridesArgs(input.overrides)
+  const modelSelection = modelSelectionArg(input.modelSelection)
+  if (input.effort !== undefined && input.effort !== null && !isEffort(input.effort)) throw badInput('effort is not a known reasoning effort.')
+  if (input.permissionMode !== undefined && input.permissionMode !== null && !isPermissionMode(input.permissionMode)) throw badInput('permissionMode is not a known permission mode.')
   return {
     projectId: input.projectId,
     prompt: text,
     ...(input.scaffold === true ? { scaffold: true } : {}),
     ...(images ? { images } : {}),
     ...(input.team === 'single' ? { team: 'single' as const } : {}),
-    ...(overrides ? { overrides } : {})
+    ...(overrides ? { overrides } : {}),
+    ...(modelSelection ? { modelSelection } : {}),
+    ...(isEffort(input.effort) ? { effort: input.effort } : {}),
+    ...(isPermissionMode(input.permissionMode) ? { permissionMode: input.permissionMode } : {})
   }
+}
+
+/** runs:setPermissionMode: { runId, mode }, rebuilt; extra fields dropped. */
+export function setPermissionModeArgs(input: unknown): SetRunPermissionModeInput {
+  if (!isPlain(input)) throw badInput('Unknown run.')
+  const runId = refField(input, 'runId', 'run')
+  if (!isPermissionMode(input.mode)) throw badInput('mode is not a known permission mode.')
+  return { runId, mode: input.mode }
 }
 
 /** runs:send: { runId, text, images? }, rebuilt; every other field (overrides, exec included) is dropped. */
@@ -1120,4 +1232,222 @@ export function folderConfigTrustArgs(input: unknown): FolderConfigTrustInput {
   if (typeof i.trust !== 'boolean') throw new Error('Choose whether to trust or stop trusting this folder\'s config.')
   if (typeof i.digest !== 'string' || i.digest.length > 64) throw new Error("Review this folder's config first.")
   return { projectId, trust: i.trust, digest: i.digest }
+}
+
+/**
+ * app:reference input rebuilt: a plain object with an action from APP_REFERENCE_ACTIONS, optional `query` / `id`
+ * (strings) and `budget` (finite number); unknown fields dropped. Length and hidden-character limits are enforced by
+ * the reference service itself (it answers a refusal sentence), not here. Throws a readable Error for a bad shape.
+ */
+export function appReferenceArgs(raw: unknown): AppReferenceQuery {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('The reference query must be an object.')
+  const i = raw as Record<string, unknown>
+  const action = i.action
+  if (typeof action !== 'string' || !(APP_REFERENCE_ACTIONS as readonly string[]).includes(action)) {
+    throw new Error(`The reference action must be one of: ${APP_REFERENCE_ACTIONS.join(', ')}.`)
+  }
+  const out: AppReferenceQuery = { action: action as AppReferenceQuery['action'] }
+  for (const key of ['query', 'id'] as const) {
+    const v = i[key]
+    if (v === undefined || v === null) continue
+    if (typeof v !== 'string') throw new Error(`The reference ${key} must be text.`)
+    out[key] = v
+  }
+  if (i.budget !== undefined && i.budget !== null) {
+    if (typeof i.budget !== 'number' || !Number.isFinite(i.budget)) throw new Error('The reference budget must be a number.')
+    out.budget = i.budget
+  }
+  return out
+}
+
+/** A shallow cap on any text an outputs:* input carries; the service (or handler) enforces the real limits with a sentence. */
+const OUTPUT_ARG_TEXT_MAX = 200_000
+
+function outputObject(input: unknown, what = 'Project not found'): Record<string, unknown> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error(what)
+  return input as Record<string, unknown>
+}
+
+function outputText(v: unknown, field: string, max = OUTPUT_ARG_TEXT_MAX): string {
+  if (typeof v !== 'string') throw new Error(`The ${field} must be text.`)
+  if (v.length > max) throw new Error(`The ${field} is too long.`)
+  return v
+}
+
+function outputInt(v: unknown, field: string, min = 1): number {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > 1_000_000_000) throw new Error(`The ${field} is not valid.`)
+  return v
+}
+
+function outputFrac(v: unknown, field: string): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error(`The note position (${field}) is not valid.`)
+  return v
+}
+
+/** A note anchor rebuilt shallowly (known fields of one known type, finite numbers, capped strings); the service validates deeply. */
+function outputAnchor(raw: unknown): OutputNoteAnchor {
+  const a = outputObject(raw, 'The note position is not valid.')
+  switch (a.type) {
+    case 'text':
+      return { type: 'text', start: outputInt(a.start, 'note start', 0), end: outputInt(a.end, 'note end', 0), quote: outputText(a.quote, 'note quote', 10_000) }
+    case 'block':
+      return {
+        type: 'block',
+        index: outputInt(a.index, 'note block', 0),
+        start: outputInt(a.start, 'note start', 0),
+        end: outputInt(a.end, 'note end', 0),
+        quote: outputText(a.quote, 'note quote', 10_000)
+      }
+    case 'cells': {
+      const out: OutputNoteAnchor = {
+        type: 'cells',
+        sheet: outputText(a.sheet, 'sheet name', 200),
+        r1: outputInt(a.r1, 'note row', 0),
+        c1: outputInt(a.c1, 'note column', 0),
+        r2: outputInt(a.r2, 'note row', 0),
+        c2: outputInt(a.c2, 'note column', 0)
+      }
+      if (a.quote !== undefined && a.quote !== null) out.quote = outputText(a.quote, 'note quote', 10_000)
+      return out
+    }
+    case 'region': {
+      if (a.shape !== 'box' && a.shape !== 'ellipse') throw new Error('The note position is not valid.')
+      const out: OutputNoteAnchor = { type: 'region', shape: a.shape, x: outputFrac(a.x, 'x'), y: outputFrac(a.y, 'y'), w: outputFrac(a.w, 'w'), h: outputFrac(a.h, 'h') }
+      if (a.slide !== undefined && a.slide !== null) out.slide = outputInt(a.slide, 'note slide')
+      if (a.labels !== undefined && a.labels !== null) {
+        if (!Array.isArray(a.labels) || a.labels.length > 200) throw new Error('The note position is not valid.')
+        out.labels = a.labels.map((l) => outputText(l, 'note label', 10_000))
+      }
+      return out
+    }
+    case 'slide':
+      return { type: 'slide', slide: outputInt(a.slide, 'note slide') }
+    case 'whole':
+      return { type: 'whole' }
+    default:
+      throw new Error('The note position is not valid.')
+  }
+}
+
+/**
+ * outputs:* inputs (types.ts "Run outputs"), rebuilt field by field: a safe project id (a virtual id passes; the
+ * handler answers it), an output id matching OUTPUT_ID_RE, note ids matching OUTPUT_NOTE_ID_RE, integers >= 1 for
+ * versions, strings with caps; extra fields dropped, other shapes refused. The renderer never sends a path.
+ */
+export const outputArgs = {
+  projectId(id: unknown): string {
+    if (!isSafeId(id)) throw new Error('Project not found')
+    return id
+  },
+  ref(input: unknown): OutputRef {
+    const i = outputObject(input)
+    if (!isSafeId(i.projectId)) throw new Error('Project not found')
+    if (typeof i.outputId !== 'string' || !OUTPUT_ID_RE.test(i.outputId)) throw new Error('Output not found')
+    return { projectId: i.projectId, outputId: i.outputId }
+  },
+  preview(input: unknown): OutputPreviewInput {
+    const ref = outputArgs.ref(input)
+    const v = (input as Record<string, unknown>).version
+    return v === undefined || v === null ? ref : { ...ref, version: outputInt(v, 'version') }
+  },
+  versionRef(input: unknown): OutputVersionRef {
+    const ref = outputArgs.ref(input)
+    return { ...ref, version: outputInt((input as Record<string, unknown>).version, 'version') }
+  },
+  compare(input: unknown): OutputCompareInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    return { ...ref, a: outputInt(i.a, 'version'), b: outputInt(i.b, 'version') }
+  },
+  saveEdit(input: unknown): OutputSaveEditInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    const out: OutputSaveEditInput = {
+      ...ref,
+      baseVersion: outputInt(i.baseVersion, 'version'),
+      text: outputText(i.text, 'text', OUTPUT_EDIT_MAX_BYTES + 1024)
+    }
+    if (i.forceNew !== undefined && i.forceNew !== null) {
+      if (typeof i.forceNew !== 'boolean') throw new Error('forceNew must be true or false.')
+      out.forceNew = i.forceNew
+    }
+    return out
+  },
+  update(input: unknown): OutputUpdateInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    const out: OutputUpdateInput = { ...ref }
+    if (i.title !== undefined && i.title !== null) out.title = outputText(i.title, 'title', 10_000)
+    if (i.description !== undefined && i.description !== null) out.description = outputText(i.description, 'description', 10_000)
+    if (i.versionLabel !== undefined && i.versionLabel !== null) {
+      const l = outputObject(i.versionLabel, 'The version label is not valid.')
+      out.versionLabel = { n: outputInt(l.n, 'version'), label: outputText(l.label, 'label', 10_000) }
+    }
+    return out
+  },
+  delete(input: unknown): OutputDeleteInput {
+    const ref = outputArgs.ref(input)
+    const v = (input as Record<string, unknown>).expectedVersionCount
+    return v === undefined || v === null ? ref : { ...ref, expectedVersionCount: outputInt(v, 'version count', 0) }
+  },
+  noteAdd(input: unknown): OutputNoteAddInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    return { ...ref, version: outputInt(i.version, 'version'), anchor: outputAnchor(i.anchor), text: outputText(i.text, 'note', 20_000) }
+  },
+  noteUpdate(input: unknown): OutputNoteUpdateInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    if (typeof i.noteId !== 'string' || !OUTPUT_NOTE_ID_RE.test(i.noteId)) throw new Error('Note not found')
+    const out: OutputNoteUpdateInput = { ...ref, noteId: i.noteId }
+    if (i.text !== undefined && i.text !== null) out.text = outputText(i.text, 'note', 20_000)
+    if (i.status !== undefined && i.status !== null) {
+      if (i.status !== 'open' && i.status !== 'resolved') throw new Error('A note can be set to open or resolved only.')
+      out.status = i.status
+    }
+    return out
+  },
+  noteRemove(input: unknown): OutputNoteRemoveInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    if (typeof i.noteId !== 'string' || !OUTPUT_NOTE_ID_RE.test(i.noteId)) throw new Error('Note not found')
+    return { ...ref, noteId: i.noteId }
+  },
+  revise(input: unknown): OutputReviseInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    if (i.scope !== 'whole' && i.scope !== 'selection' && i.scope !== 'notes') throw new Error('The revise scope is not valid.')
+    const t = outputObject(i.target, 'The revise target is not valid.')
+    let target: OutputReviseInput['target']
+    if (t.type === 'new') target = { type: 'new' }
+    else if (t.type === 'run' && isSafeId(t.runId)) target = { type: 'run', runId: t.runId }
+    else throw new Error('The revise target is not valid.')
+    const out: OutputReviseInput = {
+      ...ref,
+      version: outputInt(i.version, 'version'),
+      scope: i.scope,
+      instruction: outputText(i.instruction, 'instruction', 100_000),
+      target
+    }
+    if (i.anchor !== undefined && i.anchor !== null) out.anchor = outputAnchor(i.anchor)
+    if (i.noteIds !== undefined && i.noteIds !== null) {
+      if (!Array.isArray(i.noteIds) || i.noteIds.length > OUTPUT_NOTES_MAX) throw new Error('The note list is not valid.')
+      out.noteIds = i.noteIds.map((n) => {
+        if (typeof n !== 'string' || !OUTPUT_NOTE_ID_RE.test(n)) throw new Error('Note not found')
+        return n
+      })
+    }
+    return out
+  },
+  saveImage(input: unknown): OutputSaveImageInput {
+    const ref = outputArgs.ref(input)
+    const i = input as Record<string, unknown>
+    if (i.mime !== 'image/png' && i.mime !== 'image/svg+xml') throw new Error('Only PNG and SVG pictures can be saved.')
+    return {
+      ...ref,
+      suggestedName: outputText(i.suggestedName, 'file name', 255),
+      mime: i.mime,
+      dataBase64: outputText(i.dataBase64, 'picture', Math.ceil(OUTPUT_EXPORT_IMAGE_MAX_BYTES / 3) * 4 + 8)
+    }
+  }
 }

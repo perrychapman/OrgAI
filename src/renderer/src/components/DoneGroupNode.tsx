@@ -9,6 +9,8 @@ import { IconButton } from './ui/IconButton'
 import { Cost } from './ui/Cost'
 import { agentCostInput, sumCosts } from '../lib/cost'
 import { agentLabel } from '../lib/agentTree'
+import { groupConnectionNote } from '../lib/roleConnection'
+import { activeRun, useAppStore } from '../store/useAppStore'
 
 /**
  * One compact node standing in for every finished agent folded under a visible parent (its whole settled subtree,
@@ -16,7 +18,7 @@ import { agentLabel } from '../lib/agentTree'
  * many delegations. Counts and cost cover the subtree.
  */
 export type DoneGroupFlowNode = Node<
-  { parentId: string; parentName: string; agents: AgentInstance[]; color: string; onToggle: (parentId: string) => void; label?: string; earlier?: boolean },
+  { parentId: string; parentName: string; agents: AgentInstance[]; color: string; onToggle: (parentId: string) => void; label?: string; earlier?: boolean; arrived?: boolean },
   'done-group'
 >
 
@@ -28,7 +30,7 @@ export function groupId(parentId: string): string {
 }
 
 function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>): ReactElement {
-  const { agents, color, parentId, parentName, onToggle, label, earlier } = data
+  const { agents, color, parentId, parentName, onToggle, label, earlier, arrived } = data
   const failed = agents.filter((a) => a.state === 'error').length
   const done = agents.length - failed
   const cost = sumCosts(agents.map(agentCostInput))
@@ -52,7 +54,8 @@ function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>)
     const half = side === 'top' || side === 'bottom' ? 5 : 14
     return { style: stationHandleStyle({ ...geo, r: half }, side as `${Position}`) }
   }
-  const tip = names + (agents.length > 4 ? ', …' : '') + (compact && conflicts > 0 ? ` · ${conflicts} unmerged` : '')
+  const runConnection = useAppStore((s) => activeRun(s)?.summary.connection)
+  const tip = names + (agents.length > 4 ? ', …' : '') + groupConnectionNote(agents, runConnection) + (compact && conflicts > 0 ? ` · ${conflicts} unmerged` : '')
   const expand = (
     // Enter and Space on the chevron expand the group; React Flow's node handler must not also select it.
     <span className="done-expand" onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation() }}>
@@ -85,7 +88,7 @@ function DoneGroupNodeView({ id, data, selected }: NodeProps<DoneGroupFlowNode>)
       data-count={agents.length}
       data-style={nodeStyle}
       data-label={station ? geo.label : undefined}
-      className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''}`}
+      className={`done-group ${earlier ? 'earlier' : ''} ${selected ? 'selected' : ''} ${arrived ? 'motion-pop' : ''}`}
       data-earlier={earlier ? 'true' : undefined}
       style={{ ['--role' as string]: color, ...(station ? { width: geo.width, height: geo.height } : {}) }}
       title={tip}

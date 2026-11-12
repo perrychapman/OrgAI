@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import type { AgentInstance, AgentState, ConnectionId, RunStatus } from '@shared/types'
-import { MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS } from '@shared/types'
+import { BRIDGE_HARNESS_TOOLS, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS, isBuiltinConnectionId } from '@shared/types'
 import { PLAN_TOOLS } from './continuation'
 
 /**
@@ -28,7 +28,8 @@ export const HARNESS_TOOL_ACTIVITY: Record<string, string> = {
   [MCP_HARNESS_TOOLS.proposeServers]: 'Proposing MCP servers…',
   [PERMISSION_HARNESS_TOOLS.request]: 'Asking you for a permission rule…',
   [RUN_HARNESS_TOOLS.list]: 'Checking other runs…',
-  [RUN_HARNESS_TOOLS.message]: 'Messaging another run…'
+  [RUN_HARNESS_TOOLS.message]: 'Messaging another run…',
+  [BRIDGE_HARNESS_TOOLS.delegate]: 'Delegating to a report on another connection…'
 }
 
 /** Short, single-line, length-capped text from untrusted tool input. */
@@ -42,6 +43,10 @@ function snippet(v: unknown, max = 40): string | undefined {
 /** Harness tool labels that name their subject when the input carries one. */
 function harnessToolDetail(name: string, input: unknown): string | undefined {
   const i = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+  if (name === BRIDGE_HARNESS_TOOLS.delegate) {
+    const role = snippet(i.role)
+    return role ? `Delegating to ${role} on another connection…` : undefined
+  }
   if (name === MCP_HARNESS_TOOLS.searchRegistry) {
     const q = snippet(i.query)
     return q ? `Searching the MCP registry for "${q}"…` : undefined
@@ -203,10 +208,12 @@ export function scrubAuthDetail(text: string): string {
  * The one-line run error for an authentication failure on `connection`. It names the connection and says where
  * to fix it. Never includes the raw provider text (it may echo a key fragment).
  */
-export function authFailureMessage(connection: ConnectionId | undefined): string {
+export function authFailureMessage(connection: ConnectionId | undefined, name?: string): string {
+  if (connection !== undefined && !isBuiltinConnectionId(connection)) {
+    const label = name?.trim() || (connection === 'litellm' ? 'LiteLLM' : 'proxy')
+    return `The ${label} connection was refused: the proxy did not accept the API key. Check the key and base URL in Settings > Connections.`
+  }
   switch (connection) {
-    case 'litellm':
-      return 'The LiteLLM connection was refused: the proxy did not accept the API key. Check the key and base URL in Settings > Connections.'
     case 'openai':
       return 'The OpenAI connection was refused: sign in again or check the API key in Settings > Connections.'
     default:

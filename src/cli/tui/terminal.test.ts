@@ -70,9 +70,10 @@ function setup(bufferMode: BufferMode, opts: { platform?: NodeJS.Platform; brack
 
 describe('chooseBufferMode', () => {
   const base = { isTTY: true, cols: 100, rows: 24, inline: false, screenReader: false, term: 'xterm-256color' }
-  it('full-screen from 100x24, inline below or when asked', () => {
+  it('full-screen from 70x24, inline below or when asked', () => {
     expect(chooseBufferMode(base)).toBe('fullscreen')
-    expect(chooseBufferMode({ ...base, cols: 99 })).toBe('inline')
+    expect(chooseBufferMode({ ...base, cols: 70 })).toBe('fullscreen')
+    expect(chooseBufferMode({ ...base, cols: 69 })).toBe('inline')
     expect(chooseBufferMode({ ...base, rows: 23 })).toBe('inline')
     expect(chooseBufferMode({ ...base, inline: true })).toBe('inline')
     expect(chooseBufferMode({ ...base, screenReader: true })).toBe('inline')
@@ -265,6 +266,29 @@ describe('createTerminal', () => {
 })
 
 describe('gateWrites', () => {
+  it('keeps the native cursor hidden during fullscreen repaints and restores it on exit', () => {
+    const { stdout, term } = setup('fullscreen')
+    const gated = gateWrites(stdout as unknown as NodeJS.WriteStream, () => term.suspended, true)
+    term.enter()
+    // A renderer or terminal integration can reveal the native cursor after entry.
+    stdout.write(SEQ.cursorShow)
+    gated.write('repaint')
+    expect(stdout.out.endsWith(SEQ.cursorHide)).toBe(true)
+    gated.write(Buffer.from('frame' + SEQ.cursorShow))
+    expect(stdout.out.endsWith(SEQ.cursorHide)).toBe(true)
+    expect(stdout.out).toContain('frame')
+    term.suspend()
+    const suspendedOutput = stdout.out
+    gated.write('background repaint')
+    expect(stdout.out).toBe(suspendedOutput)
+    expect(stdout.out.lastIndexOf(SEQ.cursorShow)).toBeGreaterThan(stdout.out.lastIndexOf(SEQ.cursorHide))
+    term.resume()
+    gated.write('resumed frame')
+    expect(stdout.out.endsWith(SEQ.cursorHide)).toBe(true)
+    term.restore()
+    expect(stdout.out.lastIndexOf(SEQ.cursorShow)).toBeGreaterThan(stdout.out.lastIndexOf(SEQ.cursorHide))
+  })
+
   it('drops writes while held (calling their callback) and passes everything else through', async () => {
     const written: string[] = []
     const stream = Object.assign(new EventEmitter(), {

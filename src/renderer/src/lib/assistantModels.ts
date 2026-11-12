@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { ConnectionId, ConnectionInfo, ProviderModel } from '@shared/types'
-import { MODEL_TIER_OPTIONS } from '@shared/types'
+import { MODEL_TIER_OPTIONS, isProxyConnection } from '@shared/types'
+import { connectionKindLabel, connectionLabel } from './connectionLabel'
+import { mixedFamilies, withFamily } from './modelFamily'
 import { modelForTier, settingTier } from '@shared/defaults'
 import type { TierContext } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
@@ -30,19 +32,24 @@ export interface ModelSource {
   catalog?: readonly ProviderModel[]
 }
 
-const CONNECTION_NAMES: Record<ConnectionId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
+/** The name of a connection record: a proxy's own name, else the built-in's. */
+function sourceName(c: ConnectionInfo['connection']): string {
+  return isProxyConnection(c) ? c.name : connectionKindLabel(c)
+}
 
-/** The usable connections (Anthropic always, the others when enabled), in a stable order, with their loaded catalogs. */
+/**
+ * The usable connections in list order (Anthropic always, every other one when enabled: OpenAI and each proxy), with
+ * their loaded catalogs.
+ */
 export function modelSources(
   connections: readonly ConnectionInfo[] | null | undefined,
   models: Partial<Record<ConnectionId, ProviderModel[]>>
 ): ModelSource[] {
-  const list = connections ?? []
-  return (['anthropic', 'openai', 'litellm'] as ConnectionId[]).flatMap((id): ModelSource[] => {
-    const c = list.find((x) => x.connection.id === id)?.connection
-    if (id !== 'anthropic' && !c?.enabled) return []
-    return [{ id, name: CONNECTION_NAMES[id], tierModels: c?.tierModels ?? {}, catalog: models[id] }]
-  })
+  const out: ModelSource[] = (connections ?? [])
+    .filter((x) => x.connection.id === 'anthropic' || x.connection.enabled)
+    .map((x) => ({ id: x.connection.id, name: sourceName(x.connection), tierModels: x.connection.tierModels ?? {}, catalog: models[x.connection.id] }))
+  if (!out.some((s) => s.id === 'anthropic')) out.unshift({ id: 'anthropic', name: 'Anthropic', tierModels: {}, catalog: models.anthropic })
+  return out
 }
 
 /**
@@ -59,17 +66,23 @@ export function modelSettingGroups(value: string, sources: readonly ModelSource[
   }
   const groups: ModelSettingGroup[] = [{ label: 'Tiers', options: MODEL_TIER_OPTIONS.map((o) => ({ value: o.value, label: tierLabel(o) })) }]
   if (allowInherit) groups.unshift({ label: 'Inherit', options: [{ value: 'inherit', label: 'Inherit from parent' }] })
-  const withCatalog = sources.filter((s) => (s.catalog ?? []).some((m) => m.connection === s.id))
-  const exact: ModelSettingOption[] = []
-  for (const src of withCatalog) {
-    for (const m of (src.catalog ?? []).filter((x) => x.connection === src.id)) {
-      exact.push({ value: m.id, label: `${m.label || m.id}${m.recommended ? ' (recommended)' : ''}${withCatalog.length > 1 ? ` · ${src.name}` : ''}` })
-    }
+  // One group per connection, named by the connection; a model's family shows only where that connection mixes them.
+  const seen = new Set<string>()
+  for (const src of sources) {
+    const own = (src.catalog ?? []).filter((x) => x.connection === src.id)
+    if (!own.length) continue
+    const mixed = mixedFamilies(own)
+    // A setting stores a bare model id, so a second connection serving the same id cannot be told apart: the id is listed
+    // once, under the first connection that offers it (selecting it runs it wherever the project's connection serves it).
+    // A connection whose ids were all listed already gets no group (never an empty optgroup).
+    const options = own
+      .filter((m) => !seen.has(m.id) && (seen.add(m.id), true))
+      .map((m) => ({ value: m.id, label: withFamily(`${m.label || m.id}${m.recommended ? ' (recommended)' : ''}`, m.family, mixed) }))
+    if (options.length) groups.push({ label: src.name, options })
   }
   const all = sources.flatMap((s) => s.catalog ?? [])
   const known = value === 'inherit' || MODEL_TIER_OPTIONS.some((o) => o.value === value) || all.some((m) => m.id === value)
-  if (!known && value) exact.push({ value, label: modelDisplayName(value, all) })
-  if (exact.length) groups.push({ label: 'Exact model', options: exact })
+  if (!known && value) groups.push({ label: 'Saved value', options: [{ value, label: modelDisplayName(value, all) }] })
   return groups
 }
 
@@ -156,6 +169,6 @@ export function useAssistantRunsOn(key: AssistantKey): { label: string; connecti
   const tierModels = useAppStore((s) => (conn ? s.connections?.find((c) => c.connection.id === conn)?.connection.tierModels : undefined))
   const catalog = useAppStore((s) => (conn ? s.models[conn] : undefined))
   const label = assistantModelLabel(value, conn ? { id: conn, tierModels: tierModels ?? {}, catalog } : undefined)
-  const connection = conn ? CONNECTION_NAMES[conn] : undefined
+  const connection = conn ? connectionLabel(conn) : undefined
   return { label, connection, text: runsOnText(label, connection) }
 }

@@ -3,14 +3,26 @@ import { homedir } from 'node:os'
 import { resolve as resolvePath } from 'node:path'
 import type {
   AgentInstance,
+  DelegationVerdict,
   EngagementChangedEvent,
+  HostHandoffFacts,
   EngagementNoteWriter,
   FolderConfigState,
+  OutputProduceInput,
+  OutputReadInput,
+  OutputRegisterInput,
+  OutputsChangedEvent,
+  RunOutput,
   RunUsage,
+  UsageOverview,
   UsageStats,
   UsageStatsQuery,
   AppSettings,
   AdapterChoice,
+  BridgedRoleChoice,
+  ConnectionId,
+  ModelRef,
+  ModelTier,
   CardKind,
   DecisionLookup,
   DecisionOptions,
@@ -60,42 +72,76 @@ import type {
   RunKind,
   RunPeer,
   RunPlan,
+  RunStaffing,
   RunRecord,
   RunSummary,
+  SwitchRunModelInput,
+  SwitchRunModelResult,
+  SetRunPermissionModeInput,
+  SetRunPermissionModeResult,
+  Effort,
+  PermissionMode,
   RunSurface,
   SkillUseCount,
   UserQuestion
 } from '@shared/types'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, writesToProjectFolder } from '@shared/defaults'
+import { BridgedSessions, bridgeKey } from './bridge'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
-import { IntervalTimer, buildUsageCsv, buildUsageStats, computeRunUsage, emptyAgentUsage, legacySummaryUsage, monthRange, normalizeRunRecord } from './runUsage'
+import {
+  IntervalTimer,
+  buildUsageCsv,
+  buildUsageOverview,
+  buildUsageOverviewCsv,
+  buildUsageStats,
+  computeRunUsage,
+  emptyAgentUsage,
+  legacySummaryUsage,
+  monthRange,
+  normalizeRunRecord,
+  sanitizeUsageOverviewQuery,
+  type UsageOverviewNames
+} from './runUsage'
 import { knowledgeAutoContextOn } from '@shared/knowledge'
 import { RESUME_TEXT } from './prompts'
 import { dropLoneHighSurrogate, fenceDatum, knowledgeBrief, knowledgeContextBlock, knowledgeListItem, recallKnowledge } from '@shared/knowledgeIndex'
 import { strongMentionLinks } from '@shared/knowledgeLinks'
-import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
+import { DEFAULT_EXEC_STALL_TIMEOUT_MS, DEFAULT_HEADLESS_DECISION_POLICY, DEFAULT_MAX_AUTO_CONTINUES, EXEC_FINALIZE_STOP_TIMEOUT_MS, EXEC_SETTLE_DEBOUNCE_MS, EXEC_TITLE_JOIN_MS, HARNESS_PROJECT_ID, KNOWLEDGE_RECALLED_IDS_MAX, KNOWLEDGE_RUN_WRITES_MAX, MAX_TIMER_DELAY_MS, OUTPUTS_RUN_MAX, RUN_TITLE_MAX_CHARS, PERMISSION_MODE_OPTIONS, isBuiltinConnectionId, isEffort, isPermissionMode, runPermissionModeChoices, QUICK_PROJECT_ID, RUN_MESSAGE_MAX_CHARS, RUN_PEER_PROMPT_CHARS, SKILLS_PROJECT_ID, USAGE_STATS_DEFAULT_LIMIT, USAGE_STATS_MAX_LIMIT, isVirtualProjectId } from '@shared/types'
 import { architectRole, mcpAssistantRole, skillAssistantRole } from '@shared/setup'
 import { isTrustRestrictedRun, isInsideEither, samePath, canonicalDeep } from '../quick/scratch'
+import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits'
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
+import { runModelLogs } from './runModels'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
+import type { DelegationGate, SelfKnowledgeHooks } from './types'
+import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
+import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
+import { clampText } from '../capabilities/sanitize'
 import { datum } from './harnessTools'
+import type { OutputScope, OutputWriteResult, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
+import { isValidId } from '../windowScope'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
 import { hasContent, sanitizeImages } from './attachments'
 import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
+import { PermissionModeRefusal } from './permissionModeRefusal'
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { effectiveRunProject, execBudgetUsd } from './runOverrides'
+import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, overlaidByAcceptEdits, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
+import { modelHandoff } from './modelHandoff'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
+import { delegationPreflight, obligationsFor, subtreeFailed } from './delegation'
+import { DelegationLedger } from './delegationLedger'
 import { keepsHostBusy, runActivityState, type RunActivityState } from './runActivity'
 import { countsAsDenial, fullPolicy, policyAction, type PolicyDecisions } from './decisionPolicy'
 import { DecisionIndex } from './decisionIndex'
 import { cancelPending, cleanProposalDecision, emptyPending, listPending, proposalEffect, proposalOutcome, type PendingCardMaps } from './pendingCards'
 import { addRules, addRulesReport, isBlanketAllowRule, isUnsafeAllowRule, listRules, tooBroadRuleRefusal } from './permissionRules'
 import { projectRulesFile, readEngagementDocument } from '../store/projectData'
+import { readStaffingProfile, recordRunInStaffingProfile, staffingProfileApplies } from '../store/staffingProfile'
 import { cleanFolderConfigTrust, folderConfigStateOf, folderConfigWarning, presentConfigPaths } from './folderConfigTrust'
 
 /**
@@ -112,6 +158,7 @@ import { allowedDirectoryRisk } from './allowedDirectories'
 import { isValidRule } from './ruleMatch'
 import { controlProtectedPaths } from './selfControlGate'
 import { validateSpec } from '../mcp/validate'
+import { ProposalSecretsNotSaved } from '../mcp/proposalSecrets'
 import { assistContext, buildToolsFor } from '../mcp/assist'
 import { skillAssistContext } from '../skills/assist'
 import { generateRunTitle } from '../ai/runTitle'
@@ -135,6 +182,31 @@ export interface ResolvedAllowedDirectories {
   dropped: string[]
   /** The subset of `dropped` left out as too broad or sensitive (home, a folder holding the project, ~/.ssh ...). */
   unsafe: string[]
+}
+
+/**
+ * The folders an outputs call may touch, from the stored project (types.ts "Run outputs"; api.ts OutputScope): the
+ * project folder, the existing allowed folders (resolveAllowedDirectories: real paths, never the data folder or a
+ * folder inside the project) and the reference folders (never accepted). Used by RunManager at call time and by the
+ * outputs:* handlers.
+ */
+export function outputScopeOf(project: Project, dataDir: string | undefined): OutputScope {
+  const allowed = resolveAllowedDirectories(project.allowedDirectories, { projectPath: project.path, dataDir }).dirs
+  // References are refused by the service, so none is dropped here (one inside the project folder must still count):
+  // both the given and the canonical spelling go in.
+  const references = [
+    ...new Set(
+      (project.referenceDirectories ?? [])
+        .filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+        .flatMap((r) => [resolvePath(r.trim()), canonicalPath(resolvePath(r.trim()))])
+    )
+  ]
+  return { projectId: project.id, projectPath: project.path, allowedDirectories: allowed, referenceDirectories: references }
+}
+
+/** The noun of the transcript row "Produced <word> <title>". */
+function producedWord(kind: string): string {
+  return kind === 'docx' ? 'document' : kind === 'xlsx' ? 'workbook' : kind === 'pptx' ? 'deck' : kind === 'mermaid' || kind === 'svg' ? 'diagram' : 'file'
 }
 
 /** OrgAI's data folder in both spellings (deduped); empty without a data dir. */
@@ -286,6 +358,22 @@ function hasOpenCard(r: PendingCardMaps): boolean {
 }
 
 /**
+ * RunSummary.permissionMode for a run whose session runs in `mode` (review L1): undefined for runs that take no per-run
+ * mode (setup-like runs pin their own, whatever the project says); on a run with a narrower choice list (Chat) a mode
+ * outside it is what its adapter downgrades to asking, 'default'. Every other run records `mode` as is.
+ */
+export function recordedRunPermissionMode(run: Pick<RunSummary, 'kind' | 'quick' | 'buildWorkspace'>, mode: PermissionMode): PermissionMode | undefined {
+  const choices = runPermissionModeChoices(run)
+  if (!choices.length) return undefined
+  return choices.includes(mode) ? mode : 'default'
+}
+
+/** The plain sentence for running reports that keep their earlier mode after a live permission mode change. */
+export function reportsUnchangedText(n: number): string {
+  return n === 1 ? '1 running report keeps the earlier mode until it finishes.' : `${n} running reports keep the earlier mode until they finish.`
+}
+
+/**
  * A run.status event with the summary's endedBy / endedWhile: on 'finished' / 'error' when the summary has them, on
  * 'stopping' only with endedBy 'user'. Any an adapter put on the event are dropped (RunManager is their only source).
  */
@@ -317,6 +405,8 @@ interface ActiveRun {
   pendingRules: PendingCardMaps['pendingRules']
   /** Rules granted for this run only (scope 'run'); project grants go to the settings file. */
   runRules: string[]
+  /** Quick runs: the user chose Allow for session on a covered edit; dies with the run (RuntimeContext.quickSessionEdits). */
+  quickSessionEdits?: boolean
   /** The project's (canonical) path, for saving project-scoped grants. */
   projectPath: string
   /** Set for engagements: their saved rules live in OrgAI's data folder, never in the project folder. */
@@ -334,6 +424,14 @@ interface ActiveRun {
    * until teardown.
    */
   limitHold?: boolean
+  /** Required delegation (work runs only): the host-owned ledger behind RuntimeContext.delegation. */
+  ledger?: DelegationLedger
+  /** The last run.delegation payload (JSON), so an unchanged ledger emits nothing. */
+  delegationSent?: string
+  /** The ledger carries something to show (obligations, strict, preflight problems or a native strike); plain adaptive runs stay silent. */
+  delegationOn?: boolean
+  /** The root turn generation at which the exec root's one correction was sent; pending until a later turn ends. */
+  correctionGen?: number
   /** The user ended the session; never pause it. */
   userStopped?: boolean
   /**
@@ -368,6 +466,12 @@ interface ActiveRun {
   knowledgeWrites: number
   /** The writes cap was reached and logged once. */
   knowledgeCapWarned?: boolean
+  /** open_in_app places shown this run and when the last one went out (OPEN_IN_APP_PER_RUN_MAX / OPEN_IN_APP_MIN_INTERVAL_MS). */
+  appOpens?: number
+  appOpenedAt?: number
+  /** produce_output / register_output successes this run made (OUTPUTS_RUN_MAX); the cap warning is logged once. */
+  outputsMade: number
+  outputsCapWarned?: boolean
   /** Per named receiving agent: node id -> the signature last served in full (knowledge_recall and auto context). In memory only. */
   knowledgeShown: Map<string, Map<string, string>>
   /** Per named receiving agent: node id -> the signature last put in an automatic context block, full or not. In memory only. */
@@ -379,6 +483,9 @@ interface ActiveRun {
   /** knowledgeBrief() was computed (also when it was undefined); the text is constant for the run. */
   knowledgeBriefDone?: boolean
   knowledgeBriefText?: string
+  /** engagementDocument() was read (also when it was undefined); like the brief, the text is constant for the run so a resumed session keeps a cache-stable prompt prefix. */
+  engagementDocumentDone?: boolean
+  engagementDocumentText?: string
   /** Time with at least one decision card open. */
   waiting: IntervalTimer
   /** Time held on a usage limit, until the user's next send or the run's end. */
@@ -449,8 +556,34 @@ interface ActiveRun {
   chainPriorCostUsd: number
   /** Agents already checked for an unpriced model (exec budget). */
   priceChecked: Set<string>
+  /** Bridged reports (multi-provider org charts): the child sessions of this run. Set at start when roles are bridged. */
+  bridge?: BridgedSessions
+  /** Agents the bridge wrapper emitted (remapped id -> the bridged role's connection); later upserts keep it. */
+  /** agent.compacted events counted per agent id (AgentInstance.compactions, set on every agent.upsert). */
+  compactions?: Map<string, number>
+  bridgedAgents?: Map<string, ConnectionId>
+  /** RunConnection per distinct connection of bridged roles, for pricing (never emitted, logged or persisted). */
+  bridgedConnections?: RunConnection[]
   /** Whether a model setting or id has a known price on this run's connection (exec budget). Set in start(). */
   modelPriced?: (model: string) => boolean
+  /**
+   * The permission mode the user chose for this run (start-time choice, a carried one, or runs:setPermissionMode). It is
+   * laid over ctx.project every time the project is re-derived (runProjectFor), so a live install or proposal cannot undo it.
+   * An "accept edits" grant never changes it (see acceptEditsGrant).
+   */
+  chosenMode?: PermissionMode
+  /**
+   * The adapter applied a session / project "accept edits" grant to this session (RuntimeContext.acceptEditsGranted):
+   * runProjectFor lays acceptEdits over a narrower mode for the rest of the session. Cleared by an applied
+   * runs:setPermissionMode (the adapter drops its grant on a narrowing). Never persisted or carried.
+   */
+  acceptEditsGrant?: true
+  /** Bumped by each followed "accept edits" grant, so setPermissionMode can tell one landed while it awaited. */
+  modeGen?: number
+  /** The run's live project (start()'s `live`, as setLive keeps it), so mode changes re-derive ctx.project from it. */
+  liveProject?: () => Project
+  /** A runs:setPermissionMode call is waiting on the session: a second one is refused (serialized per run). */
+  permissionModeChanging?: boolean
   /** teardown ran (it may be reached from both the finalizer and session.finished). */
   tornDown?: boolean
 }
@@ -591,6 +724,11 @@ export interface RunManagerOptions {
    * policy waits humanGraceMs before auto-resolving a card while this is above 0. Missing = 0.
    */
   interactiveClients?: () => number
+  /**
+   * The orgai command's own host (hostKind 'inproc'): nothing but that process can answer a card, so a `wait` decision
+   * policy is turned into `fail` when a run starts, whichever path brought it (cli-standalone-default.md 4.3).
+   */
+  noWaitPolicy?: boolean
   /** OrgAI's data dir, for the allowed-folder checks. Tests may omit it (the data-dir check is then skipped). */
   dataDir?: string
   /**
@@ -618,8 +756,10 @@ export interface RunManagerOptions {
   communityPrices?: () => Record<string, ModelPrice> | undefined
   /** Delay between a turn ending and the automatic-continue check (RuntimeContext.continuationDelayMs). */
   continuationDelayMs?: number
-  /** The model catalog used to decide which adapter a LiteLLM project runs on (adapterForProject). Default: empty. */
+  /** The model catalog used to decide which adapter a proxy project runs on (adapterForProject). Default: empty. */
   catalog?: () => ProviderModel[]
+  /** The last background model-discovery failure of a connection (ConnectionInfo.modelsError), for the run-start model check. */
+  modelsError?: (connection: ConnectionId) => string | undefined
   /**
    * App settings for the built-in roles' models (setupModel, mcpAssistModel) and the connections' tier mappings.
    * Missing = the built-in roles use the 'deep' tier on the run's connection.
@@ -628,6 +768,17 @@ export interface RunManagerOptions {
     Partial<Pick<AppSettings, 'modelPrices' | 'communityPrices' | 'skillAssistModel' | 'quickRunModel'>>
   /** How a run reaches its models; errors become start errors. Missing = no RuntimeContext.connection. */
   resolveConnection?: (project: Project, choice: AdapterChoice) => RunConnection
+  /**
+   * Bridged reports (multi-provider org charts): the RunConnection of a role on another connection / adapter than the
+   * run's root (ConnectionService.runConnectionFor). Throws a readable error when it cannot be used; the run is then
+   * refused. Missing = only 'mock' bridged roles can run ("This project has roles on other connections...").
+   */
+  resolveRoleConnection?: (project: Project, target: { connection: ConnectionId; adapter: ProviderId }) => RunConnection
+  /**
+   * RuntimeContext.connectionModels on setup runs: every connection a drafted role may name (connectionConfigured),
+   * with its tier mapping and catalog ids. Missing = drafts may not name another connection.
+   */
+  connectionModels?: () => { connection: ConnectionId; name: string; tierModels: Partial<Record<ModelTier, ModelRef>>; models: ModelRef[] }[]
   /**
    * The connection's fast-tier model for one-shot helpers (run titles). Missing or undefined = the adapter's
    * default model.
@@ -648,8 +799,10 @@ export interface RunManagerOptions {
     /** The app-wide MCP library (secret-free), for setup-like runs. */
     libraryEntries?(): McpLibraryEntry[]
     /**
-     * Store an approved MCP proposal's typed secret values (ProposalDecision.secrets) and return the names of its
-     * servers still waiting for a secret (McpService.storeProposalSecrets). projectId null = library session.
+     * The names of an approved MCP proposal's servers still waiting for a secret (McpService.storeProposalSecrets).
+     * projectId null = library session. RunManager calls it with `values` undefined after the apply: the typed values
+     * (ProposalDecision.secrets) go into SetupService.applyProposal / applyLibraryProposal as `secrets`, which store
+     * them before any record changes (round 6 item 10).
      */
     storeProposalSecrets?(projectId: string | null, payload: McpServersProposalPayload, values: Record<string, string> | undefined): string[]
   }
@@ -693,10 +846,20 @@ export interface RunManagerOptions {
    */
   engagementChanged?: (event: EngagementChangedEvent) => void
   /**
+   * The run outputs service (outputs/service.ts `createOutputsService(dataDir)`), for RuntimeContext.outputs on work
+   * runs of stored projects (never quick, setup-like, build or virtual-project runs). Missing = the tools say outputs
+   * are not available.
+   */
+  outputs?: OutputsServiceApi
+  /** Push outputs:changed after an agent produced or registered an output (bootstrap.ts emits it on the HostEventBus). Missing = no push. */
+  outputsChanged?: (event: OutputsChangedEvent) => void
+  /**
    * A saved team template's roles converted for `project` (setup/templates.ts, the agent-import convert path),
    * for RuntimeContext.orgTemplate on setup runs. null for an unknown id. Missing = templates unavailable.
    */
   orgTemplate?: (templateId: string, project: Project) => { name: string; roles: Role[] } | null
+  /** Self-knowledge and self-configuration (app_reference, open_in_app, appSettings apply). See SelfKnowledgeHooks. */
+  selfKnowledge?: SelfKnowledgeHooks
 }
 
 /** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
@@ -716,6 +879,9 @@ const INSTALL_EDITABLE = ['name', 'url', 'command', 'args', 'env', 'headers', 's
 const isStringList = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string')
 const isStringRecord = (v: unknown): v is Record<string, string> =>
   !!v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).every((x) => typeof x === 'string')
+
+/** A proposal approval refused before anything was applied: decideProposal keeps the card pending (Wave 7). */
+class ProposalKeptOpen extends Error {}
 
 /**
  * The requested spec with the user's allowed edits applied. Ids, transport, registry refs, OAuth configs and
@@ -749,7 +915,6 @@ export function mergeInstallEdit(requested: McpServerSpec, edit: McpServerSpec |
 
 /** Human label of a model family for refusal messages. */
 const FAMILY_LABEL: Record<string, string> = { claude: 'Claude', openai: 'OpenAI', other: 'other' }
-const CONNECTION_LABEL: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }
 /** A project or role name for one log line: control characters become spaces, at most 80 chars. */
 const logText = (s: string): string => s.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').slice(0, 80)
 
@@ -792,6 +957,8 @@ export interface StartInput {
   resumeSessionId?: string
   /** The run being continued. */
   resumedFrom?: string
+  modelSelection?: RunSummary['modelSelection']
+  conversationBudgetUsd?: number
   /** Cost already recorded on the run being continued. */
   resumeBaseCostUsd?: number
   /** The continued run's plan; it carries over with a fresh automatic-continue count. */
@@ -822,6 +989,85 @@ export interface StartInput {
   overrides?: RunOverrides
   /** The caller holds the 'configure' scope: widening overrides apply (runOverrides.ts effectiveRunProject). */
   allowWidening?: boolean
+  /**
+   * The desktop user's start-time choices (StartRunInput.modelSelection / effort / permissionMode). Only the desktop
+   * runs:start handler sets it; RunManager validates each against the catalog, effortOptionsFor and
+   * runPermissionModeChoices and refuses (throws) before a run exists.
+   */
+  userChoice?: StartUserChoice
+  /** Set by continueRun only (a symbol key, so no caller input can carry it): the per-run choices of the continued run. */
+  [CARRIED_CHOICES]?: CarriedChoices
+}
+
+/** StartInput.userChoice. */
+export interface StartUserChoice {
+  modelSelection?: { model: string; connection: ConnectionId }
+  effort?: Effort
+  permissionMode?: PermissionMode
+}
+
+/** Internal StartInput key: what continueRun carries from the run it continues (already vetted for the permission mode). */
+const CARRIED_CHOICES = Symbol('carriedChoices')
+
+interface CarriedChoices {
+  /** The continued run's root effort; start() drops it (with a warning) on an adapter that does not take it. */
+  rootEffort?: Effort
+  /** A chosen permission mode that continueRun decided to carry. */
+  permissionMode?: PermissionMode
+  /** Lines logged on the new run right after it starts. */
+  logs?: { level: 'info' | 'warn'; message: string }[]
+}
+
+/** What a run of this kind is, for the checks on a desktop user's per-run choices. */
+export interface StartChoiceRun {
+  kind: RunKind
+  quick?: QuickRunInfo
+  buildWorkspace?: string
+  /** An exec run (overrides.execMode): it keeps the mode it started with. */
+  exec: boolean
+}
+
+/** The same text rule as switchModel's: non-empty, short, trimmed, no control characters. */
+const isChoiceText = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200 && v.trim() === v && !/[\x00-\x1f\x7f]/.test(v)
+
+/**
+ * Start-time choices of the desktop user (StartInput.userChoice), checked BEFORE a run exists, so a refusal leaves no
+ * run and no stored record. Pure; throws a plain-words Error on the first problem and returns only the known, clean
+ * fields. The effort is checked against the adapter once choose() has picked it (checkStartEffort).
+ *
+ * - modelSelection: valid text for both fields, and the catalog holds exactly that id on exactly that connection
+ *   (stricter than a continuation, which may keep a selection whose model has left the catalog).
+ * - permissionMode: a real mode that runPermissionModeChoices lists for this run (setup-like runs and Chat / build
+ *   sessions are narrowed there); an exec run keeps the mode it started with.
+ */
+export function checkStartChoice(choice: StartUserChoice, run: StartChoiceRun, catalog: readonly ProviderModel[]): StartUserChoice {
+  const out: StartUserChoice = {}
+  if (choice.modelSelection !== undefined) {
+    const sel: unknown = choice.modelSelection
+    const model = sel && typeof sel === 'object' ? (sel as { model?: unknown }).model : undefined
+    const connection = sel && typeof sel === 'object' ? (sel as { connection?: unknown }).connection : undefined
+    if (!isChoiceText(model) || !isChoiceText(connection)) throw new Error('Invalid model selection')
+    if (!catalog.some((m) => m.id === model && m.connection === connection)) throw new Error('This model is not available on that connection. Choose another model.')
+    out.modelSelection = { model, connection }
+  }
+  if (choice.effort !== undefined) {
+    if (!isEffort(choice.effort)) throw new Error('Invalid effort level')
+    out.effort = choice.effort
+  }
+  if (choice.permissionMode !== undefined) {
+    if (!isPermissionMode(choice.permissionMode)) throw new Error('Invalid permission mode')
+    if (run.exec) throw new Error('Exec runs keep the mode they started with.')
+    if (!runPermissionModeChoices({ kind: run.kind, quick: run.quick, buildWorkspace: run.buildWorkspace }).includes(choice.permissionMode)) {
+      throw new Error('This run cannot use that permission mode.')
+    }
+    out.permissionMode = choice.permissionMode
+  }
+  return out
+}
+
+/** The effort a run's adapter takes (effortOptionsFor); throws a plain-words Error otherwise. Pure. */
+export function checkStartEffort(effort: Effort, adapter: ProviderId): void {
+  if (!effortOptionsFor(adapter).includes(effort)) throw new Error(`This model does not take the ${effort} effort level.`)
 }
 
 /** Internal ContinueRunOptions key: the automatic rate-limit resume (keeps the exec fields like `exec`). */
@@ -835,12 +1081,14 @@ export interface ContinueRunOptions {
   exec?: boolean
   /** The caller holds the 'configure' scope. */
   allowWidening?: boolean
+  /** The desktop surface (or RunManager's own resume timer): a widening per-run permission mode the user chose carries. */
+  desktop?: true
   /** Set only by RunManager's own auto-resume. */
   [AUTO_RESUME]?: true
 }
 
-/** Narrowing overrides a continuation always keeps. */
-const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues'] as const
+/** Narrowing overrides a continuation always keeps (goal never widens: picks stay inside the roles' ceilings). */
+const NARROWING_KEYS = ['permissionMode', 'maxBudgetUsd', 'autoContinue', 'maxAutoContinues', 'strictDelegation', 'goal'] as const
 /** Exec fields a continuation keeps only with `exec` or on the automatic resume. */
 const EXEC_KEYS = ['execMode', 'execChainId', 'waitForReset', 'decisionPolicy', 'allowUnmerged', 'allowUnpricedBudget', 'execStallTimeoutMs', 'allowPeerMessages'] as const
 
@@ -1074,7 +1322,7 @@ export class RunManager {
     if (input.tier === 'fast') {
       model = this.options.fastModel?.(project, choice) ?? (choice.adapter === 'claude' ? 'haiku' : undefined)
     } else if (choice.adapter !== 'mock') {
-      const tiered = this.options.appSettings?.().connections?.[choice.connection]?.tierModels?.everyday
+      const tiered = connectionRecord(this.options.appSettings?.() ?? {}, choice.connection)?.tierModels?.everyday
       const fromRole = project.roles.find((r) => r.tier === 'everyday' && r.model !== 'inherit')?.model
       model = (typeof tiered === 'string' && tiered.trim()) || fromRole || undefined
     }
@@ -1093,18 +1341,22 @@ export class RunManager {
 
   /**
    * Pick the adapter for a run (mixedFamilyRefusal decides whether a work run whose roles span model families may
-   * start). On LiteLLM a mixed chart starts with one info line naming the roles on another family; setup-like runs
+   * start). On a proxy a mixed chart starts with one info line naming the roles on another family; setup-like runs
    * use a built-in role and only need the root's adapter.
    */
   private choose(project: Project, kind: RunKind): { adapter: RuntimeAdapter; choice: AdapterChoice } {
     const catalog = this.options.catalog?.() ?? []
     const choice = adapterForProject(project, catalog)
+    const known = this.options.appSettings?.()
+    if (known && choice.adapter !== 'mock' && !isKnownConnection(known, choice.connection)) {
+      throw new Error('That connection no longer exists. Pick another in Project settings > Connection.')
+    }
     if (!isSetupLikeRun(kind) && choice.mismatched.length) {
       const bad = choice.mismatched.map((id) => project.roles.find((r) => r.id === id)).filter((r): r is Role => !!r)
       const names = (bad.length ? bad.map((r) => r.name) : choice.mismatched).map((n) => logText(String(n)))
       const families = [...new Set(bad.map((r) => catalog.find((m) => m.id === r.model && m.connection === choice.connection)?.family ?? modelFamily(r.model)))]
       const other = families.length ? families.map((f) => (f === 'other' ? 'non-Claude' : (FAMILY_LABEL[f] ?? f))).join('/') : 'other'
-      const where = CONNECTION_LABEL[choice.connection] ?? choice.connection
+      const where = connectionName(choice.connection, this.options.appSettings?.())
       const refusal = mixedFamilyRefusal(choice)
       if (refusal === 'no-root-family') {
         throw new Error(
@@ -1127,6 +1379,162 @@ export class RunManager {
     return { adapter, choice }
   }
 
+  /** The pricing context for a connection (`rc`: its RunConnection, when the run has one). Settings are read at each call. */
+  private pricingContext(on: ConnectionId, rc: RunConnection | undefined): PricingContext {
+    const s = this.options.appSettings?.()
+    const community = s?.communityPrices === false ? undefined : this.options.communityPrices?.()
+    return {
+      connection: on,
+      overrides: s?.modelPrices ?? [],
+      ...(rc?.pricing ? { pricing: rc.pricing } : {}),
+      catalog: this.options.catalog?.() ?? [],
+      aliases: aliasesFor(rc, connectionRecord(s ?? {}, on)?.tierModels),
+      ...(community ? { community } : {})
+    }
+  }
+
+  /**
+   * Whether a model setting or id has a known price on `on` (exec budget, and the start-time check of an explicitly
+   * chosen model under a project cap). A tier name or alias is read through the connection's tier mapping first.
+   */
+  private modelIsPriced(setting: string, on: ConnectionId, rc: RunConnection | undefined): boolean {
+    const tierModels = connectionRecord(this.options.appSettings?.() ?? {}, on)?.tierModels ?? {}
+    // An empty catalog means "not discovered yet": the connection's builtin list answers then (modelForTier).
+    const catalog = this.options.catalog?.() ?? []
+    const resolved = resolveModelSetting(setting, { connection: on, tierModels, ...(catalog.length ? { catalog } : {}) })
+    if (!resolved || resolved.model === 'inherit') return true
+    const ctx = this.pricingContext(on, rc)
+    if (resolvePrice(resolved.model, ctx) !== null) return true
+    // A bare tier name or Claude alias the connection does not map is resolved by the CLI itself (latest model of the
+    // family): its real id is only known from usage reports, which checkExecBudget prices live.
+    return !!settingTier(resolved.model) && !Object.hasOwn(ctx.aliases ?? {}, resolved.model)
+  }
+
+  /**
+   * The project a run's adapter sees: the live project with the run's overrides applied, then the user's per-run
+   * permission mode (chosenMode) on top. The one place both start() and setLive() derive ctx.project from.
+   */
+  private runProjectFor(active: ActiveRun, project: Project): Project {
+    const own = this.runOwnProject(active, project)
+    return active.acceptEditsGrant && overlaidByAcceptEdits(own.permissionMode) ? { ...own, permissionMode: 'acceptEdits' } : own
+  }
+
+  /** runProjectFor without the "accept edits" grant overlay: the run's own mode, which RunSummary.permissionMode records. */
+  private runOwnProject(active: ActiveRun, project: Project): Project {
+    const effective = effectiveRunProject(project, active.summary.overrides, { allowWidening: active.allowWidening })
+    return active.chosenMode ? { ...effective, permissionMode: active.chosenMode } : effective
+  }
+
+  /**
+   * Re-derive ctx.project from the run's live project (chosenMode and the grant overlay included), record the run's own
+   * mode (recordedRunPermissionMode) and the overlay (sessionPermissionMode) on the summary, and when any of the three
+   * mode fields moved, save the summary and broadcast run.permissionMode. `ctx` defaults to active.ctx (setLive passes
+   * its own, the same object once the run started). `force` saves and broadcasts even when the three fields did not
+   * move since this call began (the caller changed permissionModeChosen itself first): one snapshot, after re-deriving.
+   */
+  private rederiveRunMode(active: ActiveRun, ctx: RuntimeContext | undefined = active.ctx, force = false): void {
+    if (!ctx) return
+    const live = active.liveProject?.()
+    const own = live ? this.runOwnProject(active, live).permissionMode : (active.chosenMode ?? ctx.project.permissionMode)
+    if (live) ctx.project = this.runProjectFor(active, live)
+    const s = active.summary
+    const before = `${s.permissionMode}|${s.permissionModeChosen}|${s.sessionPermissionMode}`
+    const recorded = recordedRunPermissionMode(s, own)
+    if (recorded) s.permissionMode = recorded
+    else delete s.permissionMode
+    if (ctx.project.permissionMode === 'acceptEdits' && own !== 'acceptEdits' && recorded !== undefined) s.sessionPermissionMode = 'acceptEdits'
+    else delete s.sessionPermissionMode
+    if (!force && `${s.permissionMode}|${s.permissionModeChosen}|${s.sessionPermissionMode}` === before) return
+    this.store.upsert(s)
+    this.broadcastRunMode(active)
+  }
+
+  /**
+   * A session's "accept edits" grant ends with the session (never carried): at a finished / error / paused status and
+   * at teardown. The ended run shows its own mode again. Idempotent.
+   */
+  private endAcceptEditsGrant(active: ActiveRun): void {
+    delete active.acceptEditsGrant
+    if (!active.summary.sessionPermissionMode) return
+    delete active.summary.sessionPermissionMode
+    this.store.upsert(active.summary)
+    this.broadcastRunMode(active)
+  }
+
+  /** run.permissionMode: a snapshot of the summary's three mode fields (the renderer replaces all three). */
+  private broadcastRunMode(active: ActiveRun): void {
+    const s = active.summary
+    this.broadcast({
+      type: 'run.permissionMode',
+      runId: s.id,
+      ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}),
+      ...(s.permissionModeChosen ? { permissionModeChosen: true as const } : {}),
+      ...(s.sessionPermissionMode ? { sessionPermissionMode: s.sessionPermissionMode } : {})
+    })
+  }
+
+  /**
+   * RuntimeContext.acceptEditsGranted (reviews M1, M-a, M-b): the adapter applied a session / project "accept edits"
+   * grant to its own session. RunManager lays acceptEdits over a narrower mode in force for the rest of this session
+   * (ctx.project, RunSummary.sessionPermissionMode, run.permissionMode). The run's own mode, permissionModeChosen and
+   * what a continuation carries are untouched: a session grant ends with its session. Only bound on work runs that are
+   * not trust-restricted; bridged children never get the hook.
+   */
+  private followAcceptEditsGrant(active: ActiveRun): void {
+    const ctx = active.ctx
+    if (!ctx) return
+    // Bumped on every grant, even a repeated one (re-check Low 1a): setPermissionMode must see each one that lands.
+    active.modeGen = (active.modeGen ?? 0) + 1
+    if (active.acceptEditsGrant) return
+    active.acceptEditsGrant = true
+    const before = ctx.project.permissionMode
+    this.rederiveRunMode(active)
+    if (before !== ctx.project.permissionMode) {
+      const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === 'acceptEdits')?.label ?? 'acceptEdits'
+      active.emit({ type: 'log', runId: active.summary.id, level: 'info', message: `${label} is on for the rest of this session.` })
+    }
+  }
+
+  /**
+   * Bridged reports (multi-provider org charts): roles of a work run whose (connection, adapter) differs from the
+   * root's run in child sessions. Only team work runs of a stored project bridge; quick, single, setup-like,
+   * trust-restricted and virtual-project runs ignore the list. Refuses the run (throws) before it exists when a role's
+   * connection cannot be used or this build cannot run it. Returns the RunConnection per distinct pair.
+   */
+  private resolveBridged(
+    project: Project,
+    choice: AdapterChoice,
+    kind: RunKind,
+    flags: { quick?: unknown; team?: RunTeam; buildWorkspace?: string }
+  ): { bridged: BridgedRoleChoice[]; connections: Map<string, RunConnection> } {
+    const none = { bridged: [] as BridgedRoleChoice[], connections: new Map<string, RunConnection>() }
+    const list = choice.bridged ?? []
+    if (!list.length) return none
+    if (kind !== 'work' || flags.quick || flags.team === 'single' || isVirtualProjectId(project.id) || isTrustRestrictedRun({ quick: flags.quick as QuickRunInfo | undefined, buildWorkspace: flags.buildWorkspace })) return none
+    const settings = this.options.appSettings?.()
+    const problem = roleConnectionProblems(project, settings)[0]
+    if (problem) throw new Error(problem.message)
+    const connections = new Map<string, RunConnection>()
+    for (const b of list) {
+      const key = bridgeKey(b.connection, b.adapter)
+      if (connections.has(key)) continue
+      const roleName = project.roles.find((r) => r.id === b.roleId)?.name ?? b.roleId
+      const where = connectionName(b.connection, settings)
+      if (!this.adapters[b.adapter]) throw new Error(`Role ${logText(roleName)} runs on ${where}: no runtime adapter for provider "${b.adapter}".`)
+      if (b.adapter === 'mock') {
+        connections.set(key, { connection: b.connection, adapter: 'mock' })
+        continue
+      }
+      if (!this.options.resolveRoleConnection) throw new Error('This project has roles on other connections, which this build cannot run.')
+      try {
+        connections.set(key, this.options.resolveRoleConnection(project, { connection: b.connection, adapter: b.adapter }))
+      } catch (e) {
+        throw new Error(`Role ${logText(roleName)} runs on ${where}: ${(e as Error).message}`)
+      }
+    }
+    return { bridged: list, connections }
+  }
+
   /**
    * The model of a setup or MCP assistant run's built-in role, from App settings, resolved against the run's
    * connection (builtinModel.ts). undefined for work runs or without settings (the role's default applies).
@@ -1141,7 +1549,8 @@ export class RunManager {
       connection: choice.connection,
       adapter: choice.adapter,
       catalog: this.options.catalog?.() ?? [],
-      tierModels: settings.connections?.[choice.connection]?.tierModels ?? {},
+      connectionName: connectionName(choice.connection, settings),
+      tierModels: connectionRecord(settings, choice.connection)?.tierModels ?? {},
       root: project.roles.find((r) => r.reportsTo === null) ?? project.roles[0]
     })
   }
@@ -1157,7 +1566,7 @@ export class RunManager {
     if (!role) return { project }
     const settings = this.options.appSettings?.()
     const connection = projectConnection(project)
-    const tierModels = settings?.connections?.[connection]?.tierModels ?? {}
+    const tierModels = connectionRecord(settings ?? {}, connection)?.tierModels ?? {}
     const tier = settingTier(role.model)
     const hint = tier ? tierModels[tier]?.trim() || 'inherit' : role.model
     const withModel = (model: string, tierName?: Role['tier']): Project => ({
@@ -1174,6 +1583,7 @@ export class RunManager {
       connection: choice.connection,
       adapter: choice.adapter,
       catalog: this.options.catalog?.() ?? [],
+      connectionName: connectionName(choice.connection, settings),
       tierModels,
       fallbackTier: 'everyday'
     })
@@ -1207,6 +1617,8 @@ export class RunManager {
     hiddenContext,
     scaffold,
     resumeSessionId,
+    modelSelection,
+    conversationBudgetUsd,
     resumedFrom,
     resumeBaseCostUsd,
     plan: carriedPlan,
@@ -1219,12 +1631,16 @@ export class RunManager {
     buildWorkspace,
     team,
     overrides: rawOverrides,
-    allowWidening
+    allowWidening,
+    userChoice,
+    [CARRIED_CHOICES]: carried
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
     if (team !== undefined && team !== 'single') throw new Error('Unknown team for this run.')
+    let continuationBudget = conversationBudgetUsd !== undefined ? projectBudgetUsd(project) : undefined
     // Headless exec overrides (cli-spec 6.2(1)) shape work runs only.
-    const overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
+    let overrides: RunOverrides | undefined = rawOverrides && Object.keys(rawOverrides).length ? { ...rawOverrides } : undefined
+    if (overrides && this.options.noWaitPolicy) overrides = withoutWaitPolicy(overrides)
     if (overrides && isSetupLikeRun(kind)) throw new Error('Run overrides apply to work runs only.')
     if (team === 'single') {
       if (kind !== 'work') throw new Error('Only a work run can use the single assistant.')
@@ -1241,14 +1657,26 @@ export class RunManager {
     if (this.options.teamFiles && (kind === 'work' || kind === 'setup') && !isVirtualProjectId(project.id) && !quick && !buildWorkspace) {
       try {
         const fresh = this.options.teamFiles.beforeRun(project)
-        if (fresh.project?.id === project.id) project = fresh.project
+        if (fresh.project?.id === project.id) {
+          if (continuationBudget !== undefined && fresh.project !== project && conversationBudgetUsd !== undefined) {
+            const totalCap = Math.min(conversationBudgetUsd, projectBudgetUsd(fresh.project) ?? Infinity)
+            const prior = resumedFrom ? this.summary(resumedFrom) : null
+            const spent = prior ? this.chainOf(prior).reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0) : 0
+            continuationBudget = Math.min(continuationBudget, totalCap - spent)
+            conversationBudgetUsd = totalCap
+          }
+          project = fresh.project
+        }
         teamWarning = fresh.warning
       } catch (e) {
         log.warn(`Team files could not be checked before the run: ${(e as Error).message}`)
       }
     }
     // Linked MCP servers come from the library as it is now (a deleted entry disables its links).
+    if (continuationBudget !== undefined && continuationBudget <= 0) throw new Error('The conversation budget is spent; switching models does not reset it.')
     project = this.options.mcp?.withLibrary?.(project) ?? project
+    // Team/library refreshes return stored projects, whose cap has not had conversation spend deducted.
+    if (continuationBudget !== undefined) project = { ...project, maxBudgetUsd: Math.min(continuationBudget, projectBudgetUsd(project) ?? Infinity) }
     // The Chat's single assistant settles its model before the adapter is chosen.
     let quickWarning: string | undefined
     if (team === 'single') project = singleRunProject(project, this.options.appSettings?.().quickRunModel)
@@ -1257,9 +1685,45 @@ export class RunManager {
       project = resolved.project
       quickWarning = resolved.warning
     }
+    // ---- The desktop user's start-time choices (userChoice). Every check below runs before `summary` is created, so a
+    // refusal leaves no run: nothing is stored and nothing is in this.runs. Model first (it settles the adapter), then
+    // the effort against that adapter, the permission mode, and the price of an explicitly chosen model under a cap.
+    const choiceRun: StartChoiceRun = { kind, ...(quick ? { quick } : {}), ...(buildWorkspace ? { buildWorkspace } : {}), exec: !!overrides?.execMode }
+    const chosen = userChoice ? checkStartChoice(userChoice, choiceRun, this.options.catalog?.() ?? []) : undefined
+    // An explicit choice wins over the single assistant's quick-run model settled above.
+    if (chosen?.modelSelection) modelSelection = chosen.modelSelection
     // Adapter and connection are settled before a run exists, so a refusal leaves no run behind.
+    if (modelSelection) {
+      const selected = this.options.catalog?.().find((m) => m.id === modelSelection.model && m.connection === modelSelection.connection)
+      if (!selected && modelSelection.connection !== projectConnection(project)) throw new Error('Selected model is no longer available')
+      const originalConnection = projectConnection(project)
+      project = { ...project, provider: { ...project.provider, connection: modelSelection.connection, id: project.provider.id === 'mock' ? 'mock' : selected?.adapter ?? project.provider.id }, roles: project.roles.map((r) => r.reportsTo === null ? { ...r, model: modelSelection.model, connection: modelSelection.connection } : { ...r, connection: r.connection ?? originalConnection }) }
+    }
     const { adapter, choice } = this.choose(project, kind)
+    if (modelSelection && modelSelection.connection !== choice.connection) {
+      throw new Error(chosen?.modelSelection ? 'That connection is not available. Choose another model.' : 'The original connection is no longer available for this session')
+    }
+    // The root's effort: a chosen one must suit the adapter that will run (refused); a carried one that does not is
+    // dropped with a warning on the new run (a continuation never refuses over it).
+    let rootEffort: Effort | undefined
+    let droppedEffort: Effort | undefined
+    if (chosen?.effort) {
+      checkStartEffort(chosen.effort, choice.adapter)
+      rootEffort = chosen.effort
+    } else if (carried?.rootEffort) {
+      if (effortOptionsFor(choice.adapter).includes(carried.rootEffort)) rootEffort = carried.rootEffort
+      else droppedEffort = carried.rootEffort
+    }
+    // The user's permission mode for this run (a validated choice, or one continueRun decided to carry). An exec run
+    // keeps the mode of its overrides. ctx.project gets it through runProjectFor.
+    const chosenMode: PermissionMode | undefined = chosen?.permissionMode ?? (carried?.permissionMode && !overrides?.execMode ? carried.permissionMode : undefined)
+    const bridging = this.resolveBridged(project, choice, kind, { quick, team, buildWorkspace })
     const connection = this.options.resolveConnection?.(project, choice)
+    // An explicit model under a project cap needs a known price, or the cap could not be enforced. Checked here, with
+    // the same pricing as active.modelPriced, so the refusal still leaves no run.
+    if (chosen?.modelSelection && projectBudgetUsd(project) !== undefined && !overrides?.allowUnpricedBudget && !this.modelIsPriced(chosen.modelSelection.model, choice.connection, connection)) {
+      throw new Error('This model has no known price, so the project budget cannot be enforced.')
+    }
     const libraryEntries = (): McpLibraryEntry[] => this.options.mcp?.libraryEntries?.() ?? []
     if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project, libraryEntries(), buildWorkspace ? { allowBuild: true } : {})
     // Library scope (the virtual skills project) has no stored project: the catalog and reads take null.
@@ -1282,7 +1746,9 @@ export class RunManager {
       status: 'starting',
       startedAt: Date.now(),
       totalCostUsd: 0,
-      // Labels the run's cost in the UI (CLI estimate, LiteLLM prices, or none on a ChatGPT plan).
+      modelAdapter: choice.adapter,
+      ...(conversationBudgetUsd !== undefined && conversationBudgetUsd > 0 && Number.isFinite(conversationBudgetUsd) ? { conversationBudgetUsd } : {}),
+      // Labels the run's cost in the UI (CLI estimate, proxy prices, or none on a ChatGPT plan).
       connection: connection?.connection ?? choice.connection
     }
     if (resumedFrom) summary.resumedFrom = resumedFrom
@@ -1295,6 +1761,12 @@ export class RunManager {
       if (overrides.execMode && !overrides.execChainId) overrides.execChainId = summary.id
       summary.overrides = overrides
     }
+    // Display facts, set before the first save: the mode in force (only runs that take a per-run mode; see
+    // recordedRunPermissionMode) and the user's per-run choices.
+    const recordedMode = recordedRunPermissionMode(summary, chosenMode ?? effectiveRunProject(project, overrides, { allowWidening }).permissionMode)
+    if (recordedMode) summary.permissionMode = recordedMode
+    if (chosenMode) summary.permissionModeChosen = true
+    if (rootEffort) summary.rootEffort = rootEffort
     const exec = !!overrides?.execMode
     const active: ActiveRun = {
       summary,
@@ -1314,6 +1786,7 @@ export class RunManager {
       skillCounts: new Map(),
       skillLoads: 0,
       knowledgeWrites: 0,
+      outputsMade: 0,
       knowledgeShown: new Map(),
       knowledgeContextShown: new Map(),
       knowledgeUsage: { recalls: 0, autoContexts: 0, itemsServed: 0, charsServed: 0 },
@@ -1333,6 +1806,7 @@ export class RunManager {
       record: { summary, agents: {}, transcript: [], logs: [] },
       ...(resumeSessionId ? { resumeSessionId } : {}),
       ...(allowWidening ? { allowWidening: true } : {}),
+      ...(chosenMode ? { chosenMode } : {}),
       rootTurnGen: 0,
       activityGen: 0,
       autoDenials: 0,
@@ -1340,43 +1814,42 @@ export class RunManager {
       chainPriorCostUsd: overrides?.execChainId ? this.chainPriorCost(project.id, overrides.execChainId, summary.id) : 0,
       priceChecked: new Set()
     }
+    if (bridging.bridged.length) {
+      active.bridgedAgents = new Map()
+      active.bridgedConnections = [...bridging.connections.values()]
+    }
     this.runs.set(summary.id, active)
     // Only the automatic resume of a waitForReset chain is the same invocation; nothing else re-applies the grant.
     if (allowWidening && overrides?.execMode && overrides.waitForReset) this.widenedRuns.add(summary.id)
     this.store.upsert(summary)
 
     // Settings are read at each pricing call, so a saved override applies to a live run on its next usage update.
-    const pricing = (): PricingContext => {
-      const s = this.options.appSettings?.()
-      const community = s?.communityPrices === false ? undefined : this.options.communityPrices?.()
-      return {
-        connection: choice.connection,
-        overrides: s?.modelPrices ?? [],
-        ...(connection?.pricing ? { pricing: connection.pricing } : {}),
-        catalog: this.options.catalog?.() ?? [],
-        aliases: aliasesFor(connection, s?.connections?.[choice.connection]?.tierModels),
-        ...(community ? { community } : {})
-      }
+    const pricingFor = (on: ConnectionId): PricingContext => {
+      // A bridged agent is priced by ITS connection: that RunConnection's pricing record and tier aliases.
+      const rc = on === choice.connection ? connection : active.bridgedConnections?.find((c) => c.connection === on)
+      return this.pricingContext(on, rc)
     }
     // Exec budgets (cli-spec 6.2(3)): a role's model setting is read like the pricing aliases (tier name -> the
     // connection's tier model) before its price is looked up. 'inherit' has no model of its own and is not checked.
-    active.modelPriced = (setting: string): boolean => {
-      const tierModels = this.options.appSettings?.().connections?.[choice.connection]?.tierModels ?? {}
-      // An empty catalog means "not discovered yet": the connection's builtin list answers then (modelForTier).
-      const catalog = this.options.catalog?.() ?? []
-      const resolved = resolveModelSetting(setting, { connection: choice.connection, tierModels, ...(catalog.length ? { catalog } : {}) })
-      if (!resolved || resolved.model === 'inherit') return true
-      const ctx = pricing()
-      if (resolvePrice(resolved.model, ctx) !== null) return true
-      // A bare tier name or Claude alias the connection does not map is resolved by the CLI itself (latest model of the
-      // family): its real id is only known from usage reports, which checkExecBudget prices live.
-      return !!settingTier(resolved.model) && !Object.hasOwn(ctx.aliases ?? {}, resolved.model)
-    }
+    active.modelPriced = (setting: string): boolean => this.modelIsPriced(setting, choice.connection, connection)
 
-    const emit = (raw: RunEvent): void => {
+    const emit = (raw: RunEvent, from?: { bridged: true }): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
-      if (raw.type === 'run.usage') return
+      if (raw.type === 'run.usage' || raw.type === 'run.model' || raw.type === 'run.permissionMode') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
+      // A compaction of an agent's conversation: counted here (AgentInstance.compactions belongs to RunManager), recorded
+      // and broadcast, then the agent goes out again with its new count.
+      if (raw.type === 'agent.compacted') {
+        if (typeof raw.agentId !== 'string' || !raw.agentId) return
+        const counts = (active.compactions ??= new Map())
+        counts.set(raw.agentId, Math.min(1_000_000, (counts.get(raw.agentId) ?? 0) + 1))
+        this.recordEvent(active, raw)
+        logRunEvent(summary, raw)
+        this.broadcast(raw)
+        const known = active.record.agents[raw.agentId]
+        if (known) emit({ type: 'agent.upsert', runId: summary.id, agent: known })
+        return
+      }
       let e = raw
       // An exec run the finalizer claimed (cli-spec 6.2(2)): it writes the final status itself; later adapter statuses
       // (the abort's 'finished' / 'error', a stray 'idle') never change status, execOutcome or endedBy.
@@ -1395,19 +1868,39 @@ export class RunManager {
       if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error' || e.status === 'paused')) this.flushRecalled(active)
       const outcome = e.type === 'run.status' && !active.outcome ? runOutcome(e.status, !!active.userStopped) : null
       if (outcome) {
+        // Every terminal path settles the ledger before an outcome is chosen (spec 5.6).
+        this.finalizeDelegation(active, { sessionEnded: true })
         active.outcome = outcome
         active.cutOff = new Set(Object.values(active.record.agents).filter(isLiveAgent).map((a) => a.id))
       }
       // No card outlives its run: cancel every pending card before a terminal (or paused) status goes out.
       if (outcome || (e.type === 'run.status' && e.status === 'paused')) this.cancelCards(active)
+      // Revision requests this run never answered are closed (a paused run may still answer; only an outcome ends them).
+      if (outcome) this.outputsRunEnded(active)
       if (e.type === 'agent.upsert') {
         let agent = e.agent
         if (active.outcome) {
           if (isLiveAgent(agent)) active.cutOff?.add(agent.id)
           agent = settleAgent(agent, !!active.cutOff?.has(agent.id), active.outcome, ROOT_AGENT_ID)
         }
-        // Priced into a copy (never the adapter's object) before it is recorded or broadcast.
-        e = { ...e, agent: priceAgent(agent, pricing()) }
+        // The connection is RunManager's: a bridged child's agent keeps the wrapper's value, everything else gets its
+        // role's connection (the root: the run's). An adapter's own value is replaced.
+        let on: ConnectionId
+        if (from?.bridged && agent.connection) {
+          on = agent.connection
+          active.bridgedAgents?.set(agent.id, on)
+        } else {
+          const role = agent.roleId ? project.roles.find((r) => r.id === agent.roleId) : undefined
+          on = active.bridgedAgents?.get(agent.id) ?? (role && agent.id !== ROOT_AGENT_ID ? roleConnection(role, project) : choice.connection)
+        }
+        // Priced into a copy (never the adapter's object) before it is recorded or broadcast. The delegation display is the ledger's.
+        const priced = priceAgent({ ...agent, connection: on }, pricingFor(on))
+        delete priced.delegation
+        const compacted = active.compactions?.get(agent.id)
+        if (compacted) priced.compactions = compacted
+        else delete priced.compactions
+        const shown = active.ledger ? this.delegationDisplay(active)[agent.id] : undefined
+        e = { ...e, agent: shown ? { ...priced, delegation: shown } : priced }
       }
       const closing = e.type === 'run.status' && (e.status === 'finished' || e.status === 'error' || e.status === 'paused')
       if (e.type === 'run.status') {
@@ -1416,7 +1909,10 @@ export class RunManager {
         if (e.sessionId) summary.sessionId = e.sessionId
         if (e.error) summary.error = e.error
         active.idleTimer.set(e.status === 'idle', now)
-        if (closing) summary.endedAt = now
+        if (closing) {
+          summary.endedAt = now
+          this.endAcceptEditsGrant(active)
+        }
         // A session cut by End session or by the app quitting records who cut it, so the status word needs no agents.
         if ((e.status === 'finished' || e.status === 'error') && active.endedBy) {
           summary.endedBy = active.endedBy
@@ -1442,12 +1938,17 @@ export class RunManager {
         e = withEndFacts(e, summary)
       } else if (e.type === 'run.cost') {
         // The provider's own total feeds RunUsage; summary.totalCostUsd follows usage.costUsd.
-        // On a priced (LiteLLM) connection the adapter's total is a proxy estimate, not the provider's own figure.
+        // On a priced (proxy) connection the adapter's total is a proxy estimate, not the provider's own figure.
         if (!connection?.pricing) active.providerTotalUsd = e.totalCostUsd
       }
       this.recordEvent(active, e)
       logRunEvent(summary, e)
       this.broadcast(e)
+      // A removed agent never reports: its ledger entry is ended (spec 5.2).
+      if (e.type === 'agent.remove' && active.ledger) {
+        active.ledger.ended(e.agentId)
+        this.delegationChanged(active)
+      }
       if (e.type === 'agent.upsert' || e.type === 'run.cost' || e.type === 'run.status' || e.type === 'plan.updated' || e.type === 'skill.used') {
         if (closing) this.closeTimers(active)
         this.refreshUsage(active, closing)
@@ -1460,15 +1961,28 @@ export class RunManager {
         }
       }
       if (exec) this.execEventSeen(active, e)
+      else if (summary.conversationBudgetUsd !== undefined && (e.type === 'agent.upsert' || e.type === 'run.cost')) this.checkExecBudget(active, e.type === 'agent.upsert' ? e.agent : undefined)
     }
 
     active.emit = emit
     emit({ type: 'run.status', runId: summary.id, status: 'starting', ...(summary.surface ? { surface: summary.surface } : {}) })
     if (notice) emit({ type: 'log', runId: summary.id, level: 'info', message: notice })
+    // cli-parity 3.1: the concrete model of each tier in use, and a warning for a stale or fallback one (runModels.ts).
+    if (kind === 'work' && choice.adapter !== 'mock') {
+      const roleOn = new Map(bridging.bridged.map((b) => [b.roleId, b.connection]))
+      for (const l of runModelLogs({ roles: project.roles, connectionOf: (id) => roleOn.get(id) ?? choice.connection, catalog: () => this.options.catalog?.() ?? [], connectionName: (id) => connectionName(id, this.options.appSettings?.()), modelsError: this.options.modelsError })) emit({ type: 'log', runId: summary.id, ...l })
+    }
+    for (const line of carried?.logs ?? []) emit({ type: 'log', runId: summary.id, level: line.level, message: line.message })
+    if (droppedEffort) emit({ type: 'log', runId: summary.id, level: 'warn', message: `This model does not take the ${droppedEffort} effort level, so the run uses its default effort.` })
     if (carriedPlan && kind === 'work') emit({ type: 'plan.updated', runId: summary.id, plan: { ...structuredClone(carriedPlan), autoContinues: 0 } })
     // Advisory title from the fast model; never awaited, never fails the run.
     // The harness's own resume message is never titled (the continued run's title is carried instead).
-    if (kind === 'work' && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
+    if (kind === 'work' && exec && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
+      // A headless exec run is never titled by a model call (no spend, nothing for the finalizer to wait on): its title
+      // is the first line of its prompt, bounded.
+      const first = prompt.trim().split(/\r?\n/)[0].replace(/\s+/g, ' ').trim()
+      summary.title = first.length > RUN_TITLE_MAX_CHARS ? `${first.slice(0, RUN_TITLE_MAX_CHARS - 1).trimEnd()}…` : first
+    } else if (kind === 'work' && !summary.title && prompt.trim() && prompt.trim() !== RESUME_TEXT.trim()) {
       active.titleTask = this.titleRun(active, adapter, {
         prompt,
         cwd: project.path,
@@ -1490,6 +2004,17 @@ export class RunManager {
       }
     }
 
+    // Run staffing (shared/types.ts "Run staffing"): mirrors updatePlan. Cleaned here (cleanRunStaffing), stored on the
+    // record by recordEvent, persisted with the record's flush and broadcast. Nothing calls it yet.
+    const updateStaffing = async (staffing: RunStaffing): Promise<void> => {
+      const next = cleanRunStaffing(staffing)
+      if (!next) {
+        log.warn(`Run ${summary.id}: a staffing update that is not an object was ignored.`)
+        return
+      }
+      emit({ type: 'staffing.updated', runId: summary.id, staffing: next })
+    }
+
     const setupLike = isSetupLikeRun(kind)
     // Setup-like runs and the virtual projects (harness, skills, Chat) carry no project MCP servers, plugins or skills.
     const bare = setupLike || isVirtualProjectId(project.id)
@@ -1499,6 +2024,7 @@ export class RunManager {
     const mcp = this.options.mcp
     /** The project as saved after installs this run made; the canonical path is kept. */
     let live: Project = project
+    active.liveProject = () => live
     const projectServers = (): McpServerSpec[] => (bare ? [] : (mcp?.enabledServers(live) ?? live.mcpServers?.filter((s) => s.enabled) ?? []))
     const runServerSpecs = (): McpServerSpec[] => [...active.runServers.values()].map((r) => r.spec)
     const allServers = (): McpServerSpec[] => {
@@ -1603,7 +2129,8 @@ export class RunManager {
       const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems): void => {
         // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
         const next: Project = { ...live }
-        const overlay = <K extends keyof Project>(key: K): void => {
+        const ownBefore = this.runOwnProject(active, live).permissionMode
+        const overlay =<K extends keyof Project>(key: K): void => {
           if (saved[key] === undefined) delete next[key]
           else next[key] = saved[key]
         }
@@ -1645,8 +2172,24 @@ export class RunManager {
         else if (settle === 'folders') overlay('allowedDirectories')
         else overlay('permissionMode')
         live = noFolderWrites({ ...next, path: live.path })
+        // Review L3: an approved project change that narrows the run's own mode to Plan or Don't ask takes the "accept
+        // edits" overlay with it (otherwise new Codex threads and a restarted Claude query would start in acceptEdits
+        // under a project that now says Plan). Only a change of the run's own mode counts: a mode the user chose for the
+        // run (chosenMode) is not moved by the project, so its overlay stays. The live native session is NOT told
+        // (session.setPermissionMode is not called from here: setLive runs inside the adapter's own permission / hook
+        // calls, where a call back into the session could wait on itself); the session's grant ends at its next restart
+        // or when the user chooses the mode again.
+        if (active.acceptEditsGrant) {
+          const ownAfter = this.runOwnProject(active, live).permissionMode
+          if ((ownAfter === 'plan' || ownAfter === 'dontAsk') && ownAfter !== ownBefore && canNarrowPermissionMode(ownBefore, ownAfter)) {
+            delete active.acceptEditsGrant
+            const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === ownAfter)?.label ?? ownAfter
+            emit({ type: 'log', runId: summary.id, level: 'warn', message: `The project mode is now ${label}. An "accept edits" permission granted earlier may still apply to the running session until it restarts or you choose the mode again.` })
+          }
+        }
         // The run's overrides are re-applied to the saved project (cli-spec 6.2(1)): a tightened project re-clamps them.
-        ctx.project = effectiveRunProject(live, summary.overrides, { allowWidening: active.allowWidening })
+        // RunSummary.permissionMode follows: an approved project change (acceptEdits for project) moves it.
+        this.rederiveRunMode(active, ctx)
         ctx.autoContinue = ctx.project.autoContinue !== false && planNudgesApply(summary)
         ctx.maxAutoContinues = ctx.project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
         this.applyExecBudget(active, ctx)
@@ -1767,10 +2310,29 @@ export class RunManager {
       }
       // What the run sees (cli-spec 6.2(1)): the project with its overrides applied, before ctx exists, so the adapter's
       // permission mode and continuation host read the effective values from turn 1.
-      const runProject = effectiveRunProject(project, summary.overrides, { allowWidening: active.allowWidening })
+      const runProject = this.runProjectFor(active, project)
+      const bridge = bridging.bridged.length
+        ? new BridgedSessions({
+            adapters: this.adapters,
+            parent: () => ctx,
+            bridged: bridging.bridged,
+            connections: bridging.connections,
+            extraConnections: connection ? [connection] : [],
+            emit: (e) => emit(e, { bridged: true }),
+            agents: () => Object.values(active.record.agents),
+            connectionName: (id) => connectionName(id, this.options.appSettings?.()),
+            log: { info: (m) => log.info(m), warn: (m) => log.warn(m) }
+          })
+        : undefined
+      active.bridge = bridge
+      const gate = kind === 'work' && !summary.quick && summary.team !== 'single' ? this.createDelegation(active, project, choice.adapter, bridging.bridged.map((b) => b.roleId)) : undefined
+      // The project's staffing profile, read once: a snapshot for the life of the run (spec 4.5).
+      const staffingProfile = this.options.dataDir && staffingProfileApplies(summary, runProject) ? readStaffingProfile(this.options.dataDir, summary.projectId) : undefined
       const ctx: RuntimeContext = {
+        ...(staffingProfile ? { staffingProfile: () => staffingProfile } : {}),
         run: summary,
         project: runProject,
+        ...(gate ? { delegation: gate } : {}),
         ...(folderLoads ? { folderConfigLoads: folderLoads } : {}),
         roles:
           kind === 'setup' ? [architectRole(builtinModel, { kind: projectKindOf(project) })]
@@ -1786,6 +2348,16 @@ export class RunManager {
         listRuns: () => this.listRunsFor(active),
         messageRun: (targetId, text) => this.messageRun(active, targetId, text),
         ...(connection ? { connection } : {}),
+        ...(bridge
+          ? {
+              bridge: { roles: () => bridge.roles(), spawn: (input) => bridge.spawn(input) },
+              agentConnection: (roleId: string) => {
+                const r = ctx.roles.find((x) => x.id === roleId)
+                return r ? roleConnection(r, live) : undefined
+              }
+            }
+          : {}),
+        ...(kind === 'setup' && this.options.connectionModels ? { connectionModels: () => this.options.connectionModels!() } : {}),
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) =>
           this.requestProposal(active, req, (saved) => {
@@ -1802,7 +2374,7 @@ export class RunManager {
             }
           }),
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
-        ...(bare
+        ...(bare && !isQuick
           ? {}
           : { requestMcpInstall: (req: Omit<McpInstallRequest, 'id' | 'runId' | 'createdAt'>) => this.requestMcpInstall(active, req, () => live, (saved) => setLive(saved, 'mcpServers', { ids: [req.spec.id], names: [req.spec.name] })) }),
         ...(mcp ? { searchMcpRegistry: (input: McpRegistrySearchInput) => mcp.searchRegistry(input) } : {}),
@@ -1843,7 +2415,15 @@ export class RunManager {
               savedRules: () => withoutUnloadedImports(listRules({ file: this.rulesFileFor(live) })),
               saveProjectRules: (rules: string[]) => addRulesReport({ file: this.rulesFileFor(live) }, rules)
             }),
-        ...(!writesToProjectFolder(project) ? { engagementDocument: () => (this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined) } : {}),
+        ...(!writesToProjectFolder(project) ? {
+              engagementDocument: () => {
+                if (!active.engagementDocumentDone) {
+                  active.engagementDocumentDone = true
+                  active.engagementDocumentText = this.options.dataDir ? readEngagementDocument(this.options.dataDir, project.id) : undefined
+                }
+                return active.engagementDocumentText
+              }
+            } : {}),
         // Context notes: work runs of an engagement and single-agent runs; never Chat, setup-like or trust-restricted runs.
         ...(this.options.engagementNotes && kind === 'work' && !bare && !restricted && (projectKindOf(project) === 'engagement' || team === 'single')
           ? {
@@ -1870,6 +2450,11 @@ export class RunManager {
               knowledge: this.bindKnowledge(active, this.options.knowledge, project.id, () => ctx.roles),
               ...this.bindKnowledgeReads(active, this.options.knowledge, project.id, () => this.options.resolveProject?.(project.id) ?? live)
             }
+          : {}),
+        // Run outputs: work runs of a stored project (code or engagement, team default or single); never Chat, setup-like,
+        // build-session or trust-restricted runs.
+        ...(this.options.outputs && kind === 'work' && !bare && !restricted
+          ? { outputs: this.bindOutputs(active, this.options.outputs, project.id, () => ctx.roles, () => this.options.resolveProject?.(project.id) ?? live) }
           : {}),
         // Saved team templates: Architect setup runs only.
         ...(this.options.orgTemplate && kind === 'setup' && !isVirtualProjectId(project.id)
@@ -1914,12 +2499,33 @@ export class RunManager {
             }
           : {}),
         ...(isQuick && this.options.listProjects ? { listProjects: () => this.options.listProjects!() } : {}),
+        ...(this.options.selfKnowledge
+          ? {
+              appReference: (q: AppReferenceQuery) => this.options.selfKnowledge!.reference(q, { status: isQuick || kind === 'mcp-assist' || kind === 'skill-assist' }),
+              ...(isQuick || setupLike ? { navigate: (target: { surfaceId: AtlasSurfaceId; projectId?: string }, caller: { agentId?: string }) => this.navigateFor(active, target, caller) } : {}),
+              ...(isQuick
+                ? {
+                    appSettings: () => this.options.selfKnowledge!.settings(),
+                    storedProject: (projectId: string) => this.storedProjectFor(projectId)
+                  }
+                : {})
+            }
+          : {}),
         ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(project.id),
               readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(project.id, ref)
             }
           : {}),
+        ...(isQuick && this.options.skillAssist
+          ? {
+              skillCatalog: () => this.options.skillAssist!.catalog(null),
+              readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(null, ref)
+            }
+          : {}),
+        ...(isQuick ? { quickSessionEdits: () => active.quickSessionEdits === true } : {}),
+        // The adapter applied an "accept edits" grant to its session: ctx.project follows (never on restricted runs).
+        ...(!restricted && runPermissionModeChoices(summary).includes('acceptEdits') ? { acceptEditsGranted: () => this.followAcceptEditsGrant(active) } : {}),
         ...(kind === 'skill-assist' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(skillScope()),
@@ -1939,6 +2545,10 @@ export class RunManager {
         opusGuardThreshold: this.options.opusGuardThreshold?.(),
         getPlan: () => active.record.plan,
         updatePlan,
+        getStaffing: () => active.record.staffing,
+        updateStaffing,
+        // The per-run override (RunOverrides.goal) on top of the project's goal, fixed at run start.
+        staffingGoal: staffingGoalOf(runProject, summary.overrides?.goal),
         pendingInteractions: () => pendingCount(active),
         // A Chat with the single assistant is a conversation: no plan nudges (planNudgesApply).
         autoContinue: runProject.autoContinue !== false && planNudgesApply(summary),
@@ -1951,8 +2561,25 @@ export class RunManager {
           this.broadcast({ type: 'project.updated', runId: summary.id, project: updated })
         }
       }
+      const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
+      if (root && modelSelection) root.model = modelSelection.model
+      // The root's effort choice (ctx.roles holds this run's own copies); reports keep their own role effort and staffing.
+      if (root && rootEffort) root.effort = rootEffort
+      if (root && root.model !== 'inherit' && summary.connection) {
+        summary.modelSelection = { model: root.model, connection: summary.connection }
+        this.store.upsert(summary)
+      }
       active.ctx = ctx
-      if (exec) {
+      if (gate && active.ledger) {
+        const problems = active.ledger.snapshot().problems
+        for (const message of problems) emit({ type: 'log', runId: summary.id, level: exec ? 'error' : 'warn', message: `Required delegation: ${message}` })
+        // An unmeetable obligation refuses an exec run before its session starts (spec 4.5); an interactive run goes on with the warning.
+        if (exec && problems.length > 0) {
+          await this.finalizeExecRun(summary.id, 'delegation-incomplete', { endedBy: 'policy' })
+          return summary
+        }
+      }
+      if (exec || summary.conversationBudgetUsd !== undefined) {
         // Budget before launch (cli-spec 6.2(3)): a spent chain (maxBudgetUsd 0 included) or an unpriced role model
         // ends the run as 'budget-exceeded' without ever starting the adapter.
         this.applyExecBudget(active, ctx)
@@ -2005,8 +2632,8 @@ export class RunManager {
   /** The exec budget of the run's effective project and what is left of it for the adapter (ctx.budgetUsd). */
   private applyExecBudget(a: ActiveRun, ctx: RuntimeContext): void {
     const o = a.summary.overrides
-    if (!o?.execMode) return
-    a.execBudget = execBudgetUsd(ctx.project, o)
+    if (!o?.execMode && a.summary.conversationBudgetUsd === undefined) return
+    a.execBudget = o?.execMode ? execBudgetUsd(ctx.project, o) : projectBudgetUsd(ctx.project)
     if (a.execBudget !== undefined) ctx.budgetUsd = Math.max(0, a.execBudget - a.chainPriorCostUsd)
     else delete ctx.budgetUsd
   }
@@ -2029,11 +2656,11 @@ export class RunManager {
   }
 
   /** Synchronous budget check on every agent.upsert of an exec run (after pricing). */
-  private checkExecBudget(a: ActiveRun, agent: AgentInstance): void {
+  private checkExecBudget(a: ActiveRun, agent?: AgentInstance): void {
     const budget = a.execBudget
     if (budget === undefined || a.finalizing) return
     const runId = a.summary.id
-    if (!a.summary.overrides?.allowUnpricedBudget) {
+    if (agent && !a.summary.overrides?.allowUnpricedBudget) {
       const unpriced = agent.usage?.models.find((m) => m.costUsd === null)
       let model = unpriced?.model
       if (!model && !a.priceChecked.has(agent.id)) {
@@ -2049,11 +2676,132 @@ export class RunManager {
         return
       }
     }
-    const cost = a.summary.usage?.costUsd ?? 0
+    const cost = Math.max(a.summary.usage?.costUsd ?? 0, a.summary.usage?.providerCostUsd ?? 0)
     if (a.chainPriorCostUsd + cost >= budget) {
       a.emit({ type: 'log', runId, level: 'warn', message: `The budget of $${budget.toFixed(2)} is reached ($${(a.chainPriorCostUsd + cost).toFixed(2)} estimated); the run ends.` })
       void this.finalizeExecRun(runId, 'budget-exceeded', { endedBy: 'budget' })
     }
+  }
+
+  // ---------- required delegation (docs/design/delegation-enforcement.md 4.3-4.5, 5.2, 5.6, 5.8) ----------
+
+  /**
+   * The ledger and gate of a work run: obligations from the roles and RunOverrides.strictDelegation, the preflight problems
+   * (stored on the ledger), the root registered. The gate is RuntimeContext.delegation; holds force canCorrect / canWait false.
+   */
+  private createDelegation(a: ActiveRun, project: Project, adapterId: ProviderId, bridged: readonly string[]): DelegationGate {
+    const strict = a.summary.overrides?.strictDelegation === true
+    const roles = project.roles
+    const obligations = obligationsFor(roles, strict)
+    const root = roles.find((r) => r.reportsTo === null) ?? roles[0]
+    const problems = delegationPreflight(roles, obligations, effectiveSubagentLimits({ ...project, roles }), adapterId as 'claude' | 'codex' | 'mock', bridged)
+    const ledger = new DelegationLedger(
+      { obligations, strict, problems },
+      {
+        roleLabel: (roleId) => {
+          const r = roles.find((x) => x.id === roleId)
+          return { slug: r?.slug ?? roleId, name: r?.name ?? roleId }
+        },
+        handle: (agentId) => a.record.agents[agentId]?.handle ?? agentId,
+        spawnTool: adapterId === 'codex' ? 'spawn_report' : 'the Agent tool'
+      }
+    )
+    if (root) ledger.noteRoot(ROOT_AGENT_ID, root.id)
+    a.ledger = ledger
+    a.delegationOn = strict || Object.keys(obligations).length > 0 || problems.length > 0
+    this.delegationChanged(a)
+    const held = (): boolean => this.delegationHold(a)
+    const changed = <T,>(v: T): T => {
+      this.delegationChanged(a)
+      return v
+    }
+    return {
+      noteSpawn: (childId, parentId, roleId) => changed(ledger.noteSpawn(childId, parentId, roleId)),
+      completion: (agentId, opts) => changed(ledger.completion(agentId, { ...opts, canCorrect: opts.canCorrect && !held(), canWait: opts.canWait && !held() })),
+      ended: (agentId) => changed(ledger.ended(agentId)),
+      resumed: (agentId) => changed(ledger.resumed(agentId)),
+      delivered: (childId) => changed(ledger.delivered(childId)),
+      receiptText: (childId) => ledger.receiptText(childId),
+      nativeStrike: (agentId) => {
+        a.delegationOn = true
+        return changed(ledger.nativeStrike(agentId))
+      }
+    }
+  }
+
+  /** A held, usage-limited or stopping run (or one whose session ended) can neither correct nor wait (spec 4.4). */
+  private delegationHold(a: ActiveRun): boolean {
+    return a.held || !!a.limitHold || !!a.userStopped || !!a.finalizing || a.outcome !== undefined || a.summary.status === 'stopping'
+  }
+
+  private delegationDisplay(a: ActiveRun): Record<string, NonNullable<AgentInstance['delegation']>> {
+    return a.ledger && a.delegationOn ? a.ledger.summary().agents : {}
+  }
+
+  /** The ledger changed: persist the snapshot, update the summary and per-agent display fields and emit run.delegation. */
+  private delegationChanged(a: ActiveRun): void {
+    if (!a.ledger || !a.delegationOn) return
+    const { summary, agents } = a.ledger.summary()
+    const json = JSON.stringify({ summary, agents })
+    if (json === a.delegationSent) return
+    a.delegationSent = json
+    a.record.delegation = a.ledger.snapshot()
+    a.summary.delegation = summary
+    for (const [id, inst] of Object.entries(a.record.agents)) {
+      if (agents[id]) inst.delegation = agents[id]
+      else delete inst.delegation
+    }
+    try {
+      this.store.upsert(a.summary)
+    } catch (e) {
+      log.warn(`Run ${a.summary.id}: could not persist the delegation summary: ${(e as Error).message}`)
+    }
+    if (!a.flushTimer) a.flushTimer = setTimeout(() => this.flush(a), FLUSH_INTERVAL_MS)
+    a.emit({ type: 'run.delegation', runId: a.summary.id, summary, agents })
+  }
+
+  /**
+   * Every terminal path calls this before an outcome is chosen (spec 5.6): descendants still open are ended, then the root is
+   * judged with canCorrect and canWait false unless it already completed. A root with valid receipts that never called
+   * complete_plan is ok. Idempotent.
+   */
+  private finalizeDelegation(a: ActiveRun, _opts: { sessionEnded: boolean }): void {
+    const ledger = a.ledger
+    if (!ledger) return
+    for (const id of Object.keys(ledger.snapshot().agents)) if (id !== ROOT_AGENT_ID) ledger.ended(id)
+    ledger.completion(ROOT_AGENT_ID, { canCorrect: false, canWait: false, reportText: '' })
+    this.delegationChanged(a)
+  }
+
+  /** execOutcomeFor's delegation inputs (spec 5.8). Empty without a ledger. */
+  private delegationFacts(a: ActiveRun): { rootVerdict?: DelegationVerdict; subtreeFailed?: boolean; strictNativeSpawns?: number } {
+    const ledger = a.ledger
+    if (!ledger) return {}
+    const state = ledger.snapshot()
+    const rootVerdict = ledger.rootVerdict()
+    return {
+      ...(rootVerdict ? { rootVerdict } : {}),
+      subtreeFailed: subtreeFailed(state),
+      ...(state.strict ? { strictNativeSpawns: ledger.summary().summary.nativeSpawns } : {})
+    }
+  }
+
+  /**
+   * Exec quiescence with the root missing required reports and its correction unused: send the correction through the
+   * adapter's harness-message path (RuntimeSession.nudge, not an auto-continue) and stay live. True when one was sent.
+   */
+  private sendRootCorrection(a: ActiveRun): boolean {
+    const ledger = a.ledger
+    const nudge = a.session?.nudge
+    if (!ledger || !nudge || a.correctionGen !== undefined || this.delegationHold(a)) return false
+    const d = ledger.completion(ROOT_AGENT_ID, { canCorrect: true, canWait: false, reportText: '', provisional: true })
+    this.delegationChanged(a)
+    if (d.action !== 'correct' || !d.text) return false
+    a.correctionGen = a.rootTurnGen
+    this.bumpActivity(a)
+    a.emit({ type: 'log', runId: a.summary.id, level: 'warn', message: 'The root finished without its required reports; sent its one correction.' })
+    void nudge.call(a.session, d.text).catch((e: unknown) => log.warn(`Run ${a.summary.id}: the delegation correction was not delivered: ${(e as Error)?.message ?? e}`))
+    return true
   }
 
   /** RunManager's view of an exec run's own events (after they were recorded and broadcast). */
@@ -2078,7 +2826,8 @@ export class RunManager {
       if (a.userStopped) {
         void this.finalizeExecRun(runId, 'interrupted', { endedBy: a.endedBy ?? 'user' })
       } else {
-        const r = execOutcomeFor({ plan: a.record.plan, agents: Object.values(a.record.agents), allowUnmerged: a.summary.overrides?.allowUnmerged })
+        this.finalizeDelegation(a, { sessionEnded: true })
+        const r = execOutcomeFor({ plan: a.record.plan, agents: Object.values(a.record.agents), allowUnmerged: a.summary.overrides?.allowUnmerged, ...this.delegationFacts(a) })
         void this.finalizeExecRun(runId, r.outcome, { endedBy: r.endedBy })
       }
     }
@@ -2128,6 +2877,8 @@ export class RunManager {
     if (!a.summary.overrides?.execMode || a.finalizing || this.runs.get(a.summary.id) !== a) return
     const st = a.summary.status
     if (st !== 'running' && st !== 'idle') return
+    // A bridged child still working keeps the run open; poll like an adapter with pending work.
+    if (a.bridge?.hasActive()) return this.armSettle(a, EXEC_SETTLE_POLL_MS)
     const settlement = a.session?.settlement?.()
     const input = {
       settlement,
@@ -2139,10 +2890,14 @@ export class RunManager {
       inboxLength: a.inbox.length,
       flushing: !!a.flushing,
       plan: a.record.plan,
-      autoContinue: a.ctx?.autoContinue === true
+      autoContinue: a.ctx?.autoContinue === true,
+      delegationCorrectionPending: a.correctionGen !== undefined && a.rootTurnGen <= a.correctionGen
     }
     if (execQuiescent(input)) {
-      const r = execOutcomeFor({ plan: a.record.plan, agents: input.agents, allowUnmerged: a.summary.overrides.allowUnmerged })
+      // A root with missing required reports gets its one correction and the run stays live (spec 5.6).
+      if (this.sendRootCorrection(a)) return this.armSettle(a, EXEC_SETTLE_POLL_MS)
+      this.finalizeDelegation(a, { sessionEnded: false })
+      const r = execOutcomeFor({ plan: a.record.plan, agents: input.agents, allowUnmerged: a.summary.overrides.allowUnmerged, ...this.delegationFacts(a) })
       void this.finalizeExecRun(a.summary.id, r.outcome, { endedBy: r.endedBy })
       return
     }
@@ -2262,7 +3017,7 @@ export class RunManager {
     }
     this.closeTimers(a)
     this.refreshUsage(a, true)
-    s.execOutcome = outcome
+    if (s.overrides?.execMode) s.execOutcome = outcome
     if (endedBy) s.endedBy = endedBy
     else if (s.endedBy !== 'app') delete s.endedBy
     try {
@@ -2274,7 +3029,7 @@ export class RunManager {
     a.finalizeDone = true
     // The run leaves the live set here once its final status is written (session.finished's teardown waited for it).
     if (this.runs.get(s.id) === a) this.teardown(a)
-    if (!a.finalizedSent) {
+    if (s.overrides?.execMode && !a.finalizedSent) {
       a.finalizedSent = true
       this.broadcast({ type: 'run.finalized', runId: s.id, ...(s.overrides?.execChainId ? { execChainId: s.overrides.execChainId } : {}), outcome, summary: { ...s } })
     }
@@ -2396,7 +3151,8 @@ export class RunManager {
       idleMs: a.idleTimer.elapsed(now),
       now,
       skills: [...a.skillCounts.values()],
-      knowledge: a.knowledgeUsage
+      knowledge: a.knowledgeUsage,
+      transcript: a.record.transcript
     })
   }
 
@@ -2473,6 +3229,58 @@ export class RunManager {
     a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: shown, at: Date.now(), source: 'harness', block: { kind: 'system', text } } })
   }
 
+  /** A stored, non-virtual project (Chat's propose_project_settings target, open_in_app project checks). */
+  private storedProjectFor(projectId: string): Project | undefined {
+    if (typeof projectId !== 'string' || isVirtualProjectId(projectId)) return undefined
+    let p: Project | null | undefined
+    try {
+      p = this.options.resolveProject?.(projectId)
+    } catch {
+      p = undefined
+    }
+    return p && !isVirtualProjectId(p.id) ? p : undefined
+  }
+
+  /**
+   * ctx.navigate (open_in_app): limits, surface and project checks, then one AppNavigateEvent through
+   * options.selfKnowledge.navigate and one harness row on the calling agent.
+   */
+  private navigateFor(a: ActiveRun, target: { surfaceId: AtlasSurfaceId; projectId?: string }, caller: { agentId?: string }): AppNavigateOutcome {
+    const sk = this.options.selfKnowledge
+    if (!sk) return { ok: false, refusal: 'This run cannot open places in the app.' }
+    if (!isAtlasSurfaceId(target?.surfaceId)) return { ok: false, refusal: 'That is not a place OrgAI knows; use app_reference locate to find the surface id.' }
+    if ((a.appOpens ?? 0) >= OPEN_IN_APP_PER_RUN_MAX) return { ok: false, refusal: `Already opened ${OPEN_IN_APP_PER_RUN_MAX} places in this run.` }
+    const now = Date.now()
+    if (a.appOpenedAt !== undefined && now - a.appOpenedAt < OPEN_IN_APP_MIN_INTERVAL_MS) return { ok: false, refusal: 'Wait a moment before opening another place.' }
+    const scope = atlasSurface(target.surfaceId)?.scope ?? 'app'
+    let projectId: string | undefined
+    if (scope === 'project' || scope === 'engagement' || scope === 'run') {
+      if (target.projectId === undefined) {
+        if (scope !== 'run') return { ok: false, refusal: 'That place belongs to a project; give projectId (call list_projects for ids).' }
+      } else {
+        const project = this.storedProjectFor(target.projectId)
+        if (!project) return { ok: false, refusal: 'No such project; call list_projects for ids.' }
+        if (scope === 'engagement' && projectKindOf(project) !== 'engagement') return { ok: false, refusal: 'That place only exists in engagement projects.' }
+        projectId = project.id
+      }
+    }
+    const agent = caller.agentId && caller.agentId !== ROOT_AGENT_ID ? a.record.agents[caller.agentId] : a.record.agents[ROOT_AGENT_ID]
+    const agentLabel = clampText(agent?.name || a.rootRole, 80) || 'Assistant'
+    const event: AppNavigateEvent = { surfaceId: target.surfaceId, ...(projectId ? { projectId } : {}), runId: a.summary.id, agentLabel }
+    let shown = false
+    try {
+      shown = sk.navigate(event)
+    } catch (e) {
+      log.warn(`open_in_app could not be delivered: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    if (!shown) return { ok: false, refusal: 'No OrgAI window is open to show it in.' }
+    a.appOpens = (a.appOpens ?? 0) + 1
+    a.appOpenedAt = now
+    const path = atlasPath(target.surfaceId)
+    this.knowledgeRow(a, caller.agentId ?? ROOT_AGENT_ID, `Opened ${path} for you`)
+    return { ok: true, path }
+  }
+
   /** Push projects:engagementChanged for an agent write (index.ts passes the broadcaster); never throws into the tool. */
   private engagementChanged(projectId: string, what: 'notes' | 'knowledge', ids: string[]): void {
     const event: EngagementChangedEvent = { projectId, what, ids }
@@ -2481,6 +3289,103 @@ export class RunManager {
     } catch (e) {
       log.warn(`engagementChanged broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
     }
+  }
+
+  /**
+   * RuntimeContext.outputs over the outputs service: the folder scope read from the stored project at call time (so an
+   * allowed folder added mid-run counts at once), the source from the run's agent record, the per-run cap, `output.created`,
+   * one quiet transcript row on the calling agent and the outputs:changed push (never throws into the tool).
+   */
+  private bindOutputs(
+    a: ActiveRun,
+    service: OutputsServiceApi,
+    projectId: string,
+    roles: () => Role[],
+    project: () => Project
+  ): NonNullable<RuntimeContext['outputs']> {
+    const done = async (
+      caller: KnowledgeCaller,
+      call: (scope: OutputScope, source: { runId: string; agentId?: string; role?: string }) => Promise<OutputWriteResult>,
+      row: (o: RunOutput) => string
+    ): Promise<OutputWriteResult> => {
+      if (a.outputsMade >= OUTPUTS_RUN_MAX) {
+        if (!a.outputsCapWarned) {
+          a.outputsCapWarned = true
+          log.warn(`Run ${a.summary.id}: output limit (${OUTPUTS_RUN_MAX}) reached; later outputs are refused`)
+        }
+        throw new Error(`The output limit for this run (${OUTPUTS_RUN_MAX}) is reached; nothing was saved.`)
+      }
+      // Reserve the slot before the await so parallel calls cannot pass the check together; release it on failure.
+      let known: ReturnType<RunManager['knowledgeSource']>
+      let result: OutputWriteResult
+      a.outputsMade++
+      try {
+        known = this.knowledgeSource(a, caller, roles())
+        const scope = outputScopeOf(project(), this.options.dataDir)
+        result = await call(scope, { runId: a.summary.id, agentId: known.agentId, ...(known.role ? { role: known.role } : {}) })
+      } catch (e) {
+        a.outputsMade--
+        throw e
+      }
+      const { output, created } = result
+      const versioned = !created && !!result.versioned
+      // A call that changed nothing (same content) costs no slot and emits no event; the transcript still says so.
+      if (!created && !versioned) a.outputsMade--
+      const n = output.version ?? 1
+      if (created) a.emit({ type: 'output.created', runId: a.summary.id, output })
+      else if (versioned) a.emit({ type: 'output.versioned', runId: a.summary.id, output })
+      this.knowledgeRow(a, known.agentId, created ? row(output) : versioned ? `Updated ${datum(output.title, 120)} to version ${n}` : `No change; still version ${n}`)
+      try {
+        this.options.outputsChanged?.({ projectId, ids: [output.id], what: created ? 'added' : versioned ? 'version' : 'updated' })
+      } catch (e) {
+        log.warn(`outputsChanged broadcast failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
+      return result
+    }
+    return {
+      produce: (input: OutputProduceInput, caller) =>
+        done(
+          caller,
+          (scope, source) => service.produce(scope, input, source),
+          (o) => `Produced ${producedWord(o.kind)} ${datum(o.title, 120)}`
+        ),
+      register: (input: OutputRegisterInput, caller) =>
+        done(
+          caller,
+          (scope, source) => service.register(scope, input, source),
+          (o) => `Registered output ${datum(o.title, 120)}`
+        ),
+      // Read-only: no cap, no event, no row. The service resolves the scope's folders for its own path checks.
+      read: (input: OutputReadInput) => service.readForAgent(outputScopeOf(project(), this.options.dataDir), input)
+    }
+  }
+
+  /**
+   * A run reached an outcome (finished, error, stopped): let the outputs service close the revision requests it never
+   * answered and push 'revision' for the outputs they touch. Never throws, never waits for the caller.
+   */
+  private outputsRunEnded(a: ActiveRun): void {
+    const service = this.options.outputs
+    const projectId = a.summary.projectId
+    if (!service || isVirtualProjectId(projectId)) return
+    try {
+      // The service's own onChange pushes the 'revision' change; emitting it here too would double it.
+      service.runEnded(projectId, a.summary.id)
+    } catch (e) {
+      log.warn(`outputs runEnded failed for run ${a.summary.id}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /** Revise routing (outputs/revise.ts): how a live run stands, or null when it is not live. */
+  liveRunFacts(runId: string): { status: RunSummary['status']; limitHold: boolean; pendingCards: number } | null {
+    const a = this.runs.get(runId)
+    if (!a || !LIVE_STATUSES.has(a.summary.status)) return null
+    return { status: a.summary.status, limitHold: !!a.limitHold, pendingCards: pendingCount(a) }
+  }
+
+  /** Revise routing: OrgAI is quitting, so nothing starts, continues or takes a message. */
+  isQuitting(): boolean {
+    return this.quitting
   }
 
   /** RuntimeContext.knowledge over the store: provenance, the writes cap, one transcript row per write, the push. */
@@ -2734,6 +3639,9 @@ export class RunManager {
     }
     active.tornDown = true
     const runId = active.summary.id
+    this.endAcceptEditsGrant(active)
+    // Bridged children never outlive their run.
+    if (active.bridge?.hasActive()) void active.bridge.stopAll('the run ended').catch(() => {})
     // A widened chain's grant lives only until its own automatic resume (an armed timer); any other end drops it.
     if (!this.resumeTimers.has(runId)) this.widenedRuns.delete(runId)
     // Every waiting card (permissions, proposals, questions, rules, merges, installs) is settled as cancelled.
@@ -2760,6 +3668,8 @@ export class RunManager {
       }
     }
     this.flush(active)
+    // The run's assignments go into its project's staffing profile (spec 4.5); never throws, once per run id.
+    if (active.ctx) recordRunInStaffingProfile(this.options.dataDir, active.record, active.ctx.project, (m) => log.warn(m))
     this.runs.delete(runId)
     this.store.prune(this.keepRunsFor)
   }
@@ -2782,16 +3692,29 @@ export class RunManager {
     active.titleAbort = abort
     this.titleAborts.set(abort, active.summary.projectId)
     try {
-      const title = await generateRunTitle(adapter, { ...input, signal: abort.signal }, (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
+      const title = await generateRunTitle(
+        adapter,
+        {
+          ...input,
+          signal: abort.signal,
+          // Title spend is logged (it is not an agent's usage, so it is not in the run totals).
+          onUsage: (u) => log.info(`Run ${runId}: title used ${(Number(u?.tokens?.input) || 0) + (Number(u?.tokens?.output) || 0)} tokens${u?.model ? ` on ${u.model}` : ''}`)
+        },
+        (message) => log.info(`Run ${runId}: no title (${scrub(message)})`))
       if (!title || abort.signal.aborted) return
       const live = this.runs.get(runId) === active
-      if (!live && !this.store.get(runId)) return
+      if (!live) {
+        const stored = this.store.get(runId)
+        if (!stored) return
+        active.summary = stored
+        active.record.summary = stored
+      }
       active.summary.title = title
       this.store.upsert(active.summary)
       if (live) {
         active.emit({ type: 'run.title', runId, title })
       } else {
-        // The session already ended and its record was flushed; record.summary is active.summary, so save it again.
+        // The session already ended and its record was flushed; save the latest summary with the title.
         this.flush(active)
         logRunEvent(active.summary, { type: 'run.title', runId, title })
         this.broadcast({ type: 'run.title', runId, title })
@@ -2821,6 +3744,9 @@ export class RunManager {
         break
       case 'plan.updated':
         r.plan = e.plan
+        break
+      case 'staffing.updated':
+        r.staffing = e.staffing
         break
       case 'run.title':
         // record.summary is the live summary object; this only schedules the save.
@@ -2861,7 +3787,7 @@ export class RunManager {
       held: a.held,
       limitHold: !!a.limitHold,
       agents: Object.values(a.record.agents),
-      peerMessagesPending: a.inbox.length > 0 || !!a.flushing,
+      peerMessagesPending: a.inbox.length > 0 || !!a.flushing || !!a.bridge?.hasActive(),
       ...(settlement ? { settlement } : {})
     })
   }
@@ -2889,6 +3815,29 @@ export class RunManager {
       if (keepsHostBusy(this.activityStateOf(a), !!s.overrides?.execMode && !s.execOutcome)) n++
     }
     return n
+  }
+
+  /**
+   * The run counts host.status reports (the TUI's quit confirm), stricter than
+   * busyRunCount: every live run in any form counts (working or ending, waiting on the user, held), every paused run
+   * with an auto-resume pending (armed or firing), and every open card. terminalSessions is the socket server's; the
+   * caller fills it.
+   */
+  handoffFacts(): Omit<HostHandoffFacts, 'terminalSessions'> {
+    let workingRuns = 0
+    let waitingRuns = 0
+    let heldRuns = 0
+    let openCards = 0
+    for (const a of this.runs.values()) {
+      openCards += pendingCount(a)
+      const s = a.summary
+      const state = this.activityStateOf(a)
+      // An exec run in flight is working whatever its root does (its follower owns its end), as in busyRunCount.
+      if (state !== 'waiting' || (LIVE_STATUSES.has(s.status) && !!s.overrides?.execMode && !s.execOutcome)) workingRuns++
+      else if (a.held || a.limitHold) heldRuns++
+      else waitingRuns++
+    }
+    return { workingRuns, waitingRuns, heldRuns, pausedRuns: this.activeResumeTimerCount() + this.inFlightResumeCount(), openCards }
   }
 
   /** runs:listLive: every live run (session open or opening) across all projects, every kind, oldest first. Copies. */
@@ -2921,11 +3870,42 @@ export class RunManager {
     const query = sanitizeUsageQuery(raw)
     const now = Date.now()
     const inRange = (s: RunSummary): boolean =>
+      s.projectId === query.projectId &&
       (query.kinds as RunKind[]).includes(s.kind) && (query.since === undefined || s.startedAt >= query.since) && (query.until === undefined || s.startedAt < query.until)
+    return buildUsageStats(this.usageSummaries(this.store.list(query.projectId), inRange, now), query, now)
+  }
+
+  /**
+   * runs:usageOverview: usage across every project (stored, virtual and a removed project's leftover runs); see
+   * UsageOverview. `names` resolves project and connection display names (the dispatcher's project lookup). Throws for
+   * a malformed month or project id list (sanitizeUsageOverviewQuery).
+   */
+  usageOverview(raw: unknown, names: UsageOverviewNames): UsageOverview {
+    const query = sanitizeUsageOverviewQuery(raw)
+    const now = Date.now()
+    const kinds = new Set(query.kinds)
+    const only = query.projectIds ? new Set(query.projectIds) : null
+    const inRange = (s: RunSummary): boolean =>
+      kinds.has(s.kind) && (!only || only.has(s.projectId)) && (query.since === undefined || s.startedAt >= query.since) && (query.until === undefined || s.startedAt < query.until)
+    return buildUsageOverview(this.usageSummaries(this.store.all(), inRange, now), query, names, now, new Set(this.runs.keys()))
+  }
+
+  /** runs:usageOverviewCsv: the overview's rows as CSV, at most USAGE_STATS_MAX_LIMIT (the query's limit is replaced). */
+  usageOverviewCsv(raw: unknown, names: UsageOverviewNames): string {
+    // A non-object raw (other than undefined / null) is passed through so the sanitizer refuses it.
+    const query = raw === undefined || raw === null ? { limit: USAGE_STATS_MAX_LIMIT } : typeof raw === 'object' && !Array.isArray(raw) ? { ...raw, limit: USAGE_STATS_MAX_LIMIT } : raw
+    return buildUsageOverviewCsv(this.usageOverview(query, names))
+  }
+
+  /**
+   * Summaries with usage filled for the usage queries: stored ones that pass `keep` (legacy ones normalized from their
+   * record once and written back to the index) plus live runs with their current usage.
+   */
+  private usageSummaries(stored: readonly RunSummary[], keep: (s: RunSummary) => boolean, now: number): RunSummary[] {
     const byId = new Map<string, RunSummary>()
     const fill: { id: string; usage: RunUsage }[] = []
-    for (const s of this.store.list(query.projectId)) {
-      if (!inRange(s) || this.runs.has(s.id)) continue
+    for (const s of stored) {
+      if (!keep(s) || this.runs.has(s.id)) continue
       if (s.usage) {
         byId.set(s.id, s)
         continue
@@ -2939,10 +3919,10 @@ export class RunManager {
     if (fill.length) this.store.setUsage(fill)
     // Live runs read their current usage, not the last saved one.
     for (const a of this.runs.values()) {
-      if (a.summary.projectId !== query.projectId || !inRange(a.summary)) continue
+      if (!keep(a.summary)) continue
       byId.set(a.summary.id, { ...a.summary, usage: this.currentUsage(a, now) })
     }
-    return buildUsageStats([...byId.values()], query, now)
+    return [...byId.values()]
   }
 
   // ---------- cross-run messaging ----------
@@ -3147,6 +4127,19 @@ export class RunManager {
       delete request.suggestions
       delete request.ruleLabels
     } else if ('referenceFolder' in request) delete request.referenceFolder
+    // Fields only RunManager may set: drop whatever an adapter sent.
+    delete request.quickReadOnly
+    delete request.maxScope
+    delete request.workingFolder
+    delete request.workingFolderScratch
+    const quick = active.summary.quick
+    if (quick && !quick.allowEdits && isQuickWriteTool(request.toolName)) request.quickReadOnly = true
+    if (request.referenceFolder) request.maxScope = 'once'
+    else if (this.isRestricted(active.summary)) request.maxScope = 'session'
+    if (quick) {
+      request.workingFolder = quick.folder
+      if (quick.scratch) request.workingFolderScratch = true
+    }
     request.revision = 1
     logPermission(active.summary, request)
     return new Promise((resolve) => {
@@ -3183,11 +4176,25 @@ export class RunManager {
       log.info(`Narrowed a ${narrowed.scope} grant to once: the call touches a reference folder`)
       narrowed = { ...narrowed, scope: 'once' }
     }
+    if (isQuickSessionEditGrant(active.summary, pending.request, narrowed) && !active.quickSessionEdits) {
+      active.quickSessionEdits = true
+      log.info('Quick run: edits allowed for the session in its folder')
+    }
     const effective = narrowed?.behavior === 'allow' ? 'allow' : 'deny'
     this.cardResolved(active, 'permission', requestId, 'applied', effective, opts.decidedBy)
     pending.resolve(narrowed)
     const savedToProject = narrowed?.behavior === 'allow' && narrowed.scope === 'project'
-    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
+    this.broadcast({ type: 'permission.resolved', runId, requestId, ...(savedToProject ? { savedToProject: true as const } : {}), ...(narrowed?.behavior === 'allow' && narrowed.scope ? { scope: narrowed.scope } : {}), ...(opts.decidedBy ? { decidedBy: opts.decidedBy } : {}) })
+    if (active.summary.quick && narrowed?.behavior === 'allow' && narrowed.scope === 'session') {
+      // Adapter labels are built from the agent's own command text: strip hidden characters before they reach a row.
+      const labels = (pending.request.ruleLabels ?? []).map((l) => excerpt(clampText(String(l), 80), 80)).filter(Boolean).join(', ')
+      const what = isQuickSessionEditGrant(active.summary, pending.request, narrowed)
+        ? "edits in this chat's folder"
+        : labels
+          ? excerpt(labels, 200)
+          : excerpt(clampText(String(pending.request.toolName), 80), 80)
+      systemBlock(active, Date.now(), `You allowed ${what} for this chat.`)
+    }
     this.cardSettled(active)
     return applied(runId, requestId, effective, opts)
   }
@@ -3209,13 +4216,31 @@ export class RunManager {
           return outcome
         }
         let waitingForSecrets: string[] | undefined
+        // Round 6 item 10: the typed values go into the apply itself, which stores them before it changes any record. Values
+        // the store cannot take now (vault locked, damaged, no secure storage) make it throw ProposalSecretsNotSaved with
+        // the store's own reason (5.4), nothing applied; decideProposal keeps the card open for another try. Over the
+        // socket, the setup:decide storesSecret predicate has prepared (created or reopened) the vault before this runs,
+        // by the same slot rule (proposalSecrets.ts proposalTypedSlots).
+        const secrets = proposal.kind === 'mcpServers' && decision.secrets ? { secrets: decision.secrets } : {}
         {
           try {
-            if (active.summary.projectId === HARNESS_PROJECT_ID) {
+            if (proposal.kind === 'appSettings') {
+              // App-wide settings: Chat only, applied through the settings path (RunManagerOptions.selfKnowledge).
+              if (!active.summary.quick || !this.options.selfKnowledge) throw new Error('App settings can only be changed from Chat.')
+              this.options.selfKnowledge.applyAppSettings(proposal.payload)
+            } else if (proposal.target) {
+              // A stored project's settings changed from Chat: re-resolve the target, settings only, setup untouched.
+              if (!active.summary.quick) throw new Error('Only Chat can change another project\'s settings.')
+              if (proposal.kind !== 'settings') throw new Error('Only settings proposals can target a project.')
+              const target = this.storedProjectFor(proposal.target.projectId)
+              if (!target) throw new Error('That project no longer exists.')
+              const updated = this.setup.applyProposal(target.id, proposal, { targeted: true })
+              this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
+            } else if (active.summary.projectId === HARNESS_PROJECT_ID) {
               // The harness project is virtual: its proposals change the MCP library only, never a stored project.
               if (proposal.kind !== 'mcpServers') throw new Error('Only MCP library proposals can be applied here.')
-              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {})
-              waitingForSecrets = this.storeProposalSecrets(null, proposal, decision.secrets)
+              this.setup.applyLibraryProposal(proposal.payload as McpServersProposalPayload, { ...(active.summary.buildWorkspace ? { buildWorkspace: active.summary.buildWorkspace } : {}), ...secrets })
+              waitingForSecrets = this.proposalWaitingForSecrets(null, proposal)
             } else if (active.summary.projectId === SKILLS_PROJECT_ID) {
               // Library-scope Skill assistant: skill proposals change the skill library only.
               if (proposal.kind !== 'skills') throw new Error('Only skill proposals can be applied here.')
@@ -3225,13 +4250,16 @@ export class RunManager {
             } else if (active.summary.kind === 'skill-assist' && proposal.kind !== 'skills') {
               throw new Error('Only skill proposals can be applied in a Skill assistant session.')
             } else {
-              const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work' })
-              // Before onApplied: a stored secret lets the server start (enabledServers reads the SecretStore live).
-              waitingForSecrets = this.storeProposalSecrets(active.summary.projectId, proposal, decision.secrets)
+              // The values are stored before onApplied: a stored secret lets the server start (enabledServers reads the
+              // SecretStore live).
+              const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work', ...secrets })
+              waitingForSecrets = this.proposalWaitingForSecrets(active.summary.projectId, proposal)
               onApplied?.(updated)
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
             }
           } catch (e) {
+            // The store refused the values before anything was applied (round 6 item 10): the card keeps waiting for them.
+            if (e instanceof ProposalSecretsNotSaved) throw new ProposalKeptOpen(`${e.message}. Nothing was applied; the card is still open.`)
             const message = (e as Error).message
             logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
             this.broadcast({ type: 'log', runId: active.summary.id, level: 'error', message: `Could not apply proposal: ${message}` })
@@ -3249,14 +4277,21 @@ export class RunManager {
     })
   }
 
-  /** Store an approved MCP proposal's secret values; the names of its servers still waiting for one. Never throws. */
-  private storeProposalSecrets(projectId: string | null, proposal: Proposal, values: Record<string, string> | undefined): string[] | undefined {
+  /**
+   * The names of an applied MCP proposal's servers still waiting for a secret value (McpService.storeProposalSecrets
+   * without values: the apply already stored what the card carried). Never throws: a failed read names every upserted
+   * server with a secret slot, so the outcome never claims a value was saved.
+   */
+  private proposalWaitingForSecrets(projectId: string | null, proposal: Proposal): string[] | undefined {
     if (proposal.kind !== 'mcpServers' || !this.options.mcp?.storeProposalSecrets) return undefined
     try {
-      return this.options.mcp.storeProposalSecrets(projectId, proposal.payload, values)
+      return this.options.mcp.storeProposalSecrets(projectId, proposal.payload, undefined)
     } catch (e) {
-      log.warn(`Proposal secrets could not be stored: ${(e as Error).message}`)
-      return undefined
+      log.warn(`Could not list the servers waiting for secrets: ${(e as Error).message}`)
+      const named = (Array.isArray(proposal.payload.upsert) ? proposal.payload.upsert : [])
+        .filter((u) => (u?.secretEnv?.length ?? 0) + (u?.secretHeaders?.length ?? 0) > 0 && typeof u.name === 'string')
+        .map((u) => u.name)
+      return named.length ? named : undefined
     }
   }
 
@@ -3267,7 +4302,16 @@ export class RunManager {
     if (this.staleRevision(pending.proposal.revision, opts)) return { status: 'stale-revision', runId, requestId: proposalId }
     active.pendingProposals.delete(proposalId)
     // The broadcast carries the secret-free outcome (with waitingForSecrets), never decision.secrets.
-    const outcome = pending.resolve(decision) ?? proposalOutcome(cleanProposalDecision(decision))
+    let resolved: ProposalOutcome | void
+    try {
+      resolved = pending.resolve(decision)
+    } catch (e) {
+      // Not applied and not answered (the vault cannot take the values now): the card stays open for another try.
+      if (!(e instanceof ProposalKeptOpen)) throw e
+      active.pendingProposals.set(proposalId, pending)
+      throw new Error(e.message)
+    }
+    const outcome = resolved ?? proposalOutcome(cleanProposalDecision(decision))
     // An approval the harness could not apply came back as a revise: say so (applyError).
     const applyError = cleanProposalDecision(decision).behavior === 'approve' && outcome.behavior === 'revise' ? outcome.feedback : undefined
     this.cardResolved(active, 'proposal', proposalId, 'applied', outcome.behavior, opts.decidedBy)
@@ -3423,6 +4467,14 @@ export class RunManager {
     setProject: (saved: Project) => void
   ): Promise<McpInstallDecision> {
     const request: McpInstallRequest = { ...req, id: newId('mcpi'), runId: active.summary.id, createdAt: Date.now(), revision: 1 }
+    delete request.runOnly
+    if (active.summary.quick) {
+      // Chat: the server lives in this run only and only the calling agent's role may use it.
+      request.runOnly = true
+      // An unknown caller (no agent record, no slug) gets nobody rather than the root role.
+      const slug = active.record.agents[req.agentId]?.roleSlug
+      request.spec = { ...request.spec, roles: slug ? [slug] : [] }
+    }
     return new Promise((resolve) => {
       active.pendingInstalls.set(request.id, {
         request,
@@ -3454,11 +4506,13 @@ export class RunManager {
 
   /** Validate an install answer and apply it (save the server or keep it for this run). Never throws. */
   private settleInstall(active: ActiveRun, request: McpInstallRequest, raw: McpInstallDecision, project: Project, setProject: (saved: Project) => void): McpInstallDecision {
-    const scope = raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
+    // Any quick run: scope 'run' and never persisted, whatever project the run sits on.
+    const quickRun = !!active.summary.quick
+    const scope = quickRun ? 'run' : raw?.scope === 'project' ? 'project' : raw?.scope === 'library' ? 'library' : 'run'
     const note = typeof raw?.note === 'string' && raw.note.trim() ? raw.note.trim().slice(0, 600) : undefined
     if (!raw?.approved) return { approved: false, scope, ...(note ? { note } : {}) }
     const refuse = (why: string): McpInstallDecision => ({ approved: false, scope, note: `The harness did not install it: ${why}` })
-    if (isVirtualProjectId(project.id)) return refuse('installs are not available in this session; propose library entries instead.')
+    if (isVirtualProjectId(project.id) && !quickRun) return refuse('installs are not available in this session; propose library entries instead.')
     if (raw.spec !== undefined && (!raw.spec || typeof raw.spec !== 'object' || raw.spec.id !== request.spec.id)) return refuse('the edited server must keep the requested id.')
     const id = request.spec.id
     const taken =
@@ -3467,6 +4521,7 @@ export class RunManager {
       !!this.options.mcp?.libraryEntries?.().some((e) => e.id === id)
     if (taken) return refuse('a server with that id already exists.')
     const spec = mergeInstallEdit(request.spec, raw.spec)
+    if (quickRun) spec.roles = [...(request.spec.roles ?? [])]
     const others = [...(project.mcpServers ?? []), ...[...active.runServers.values()].map((r) => r.spec)]
     const errors = validateSpec(spec, others)
     if (errors.length) return { approved: false, scope, note: `The harness did not install it: ${errors.join(' ')}` }
@@ -3527,6 +4582,38 @@ export class RunManager {
     return { status: 'not-found', requestId }
   }
 
+  async switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult> {
+    this.refuseWhileQuitting()
+    if (!input || typeof input.runId !== 'string' || typeof input.model !== 'string' || !input.model || input.model.length > 200 || input.model.trim() !== input.model || /[\x00-\x1f\x7f]/.test(input.model)) throw new Error('Invalid model selection')
+    if (input.expectedRunId !== undefined && !isValidId(input.expectedRunId)) throw new Error('Invalid expected run id')
+    let run = this.summary(input.runId)
+    if (!run) throw new Error('Run not found')
+    run = this.chainOf(run).reduce((latest, item) => item.startedAt > latest.startedAt || (item.startedAt === latest.startedAt && item.resumedFrom === latest.id) ? item : latest, run)
+    if (input.expectedRunId !== undefined && run.id !== input.expectedRunId) return { run, applied: false, reason: 'The conversation has continued; select the model again.' }
+    const connection = input.connection ?? run.modelSelection?.connection ?? run.connection
+    if (!connection) throw new Error('Connection is required')
+    const model = (this.options.catalog?.() ?? []).find((m) => m.connection === connection && m.id === input.model)
+    if (!model) throw new Error('Model is not available on this connection')
+    const active = this.runs.get(run.id)
+    if (active && (connection !== run.connection || (active.adapter !== 'mock' && model.adapter !== active.adapter)) && !['finished', 'error', 'paused'].includes(run.status)) return { run, applied: false, reason: 'End this session, then select the model and send a message to continue with a transcript handoff.' }
+    const selection = { model: input.model, connection }
+    if (active && !['finished', 'error', 'paused'].includes(run.status)) {
+      if (active.execBudget !== undefined && active.chainPriorCostUsd + (run.usage?.costUsd ?? run.totalCostUsd) >= active.execBudget) return { run, applied: false, reason: 'The conversation budget is spent; switching models does not reset it.' }
+      if (active.execBudget !== undefined && !run.overrides?.allowUnpricedBudget && active.modelPriced && !active.modelPriced(input.model)) {
+        return { run, applied: false, reason: 'This model has no known price, so the budget cannot be enforced.' }
+      }
+      if (!active.session?.switchModel) return { run, applied: false, reason: 'This session cannot switch models.' }
+      try { await active.session.switchModel({ model: input.model }) }
+      catch (error) { return { run: this.summary(run.id) ?? run, applied: false, reason: (error as Error).message } }
+      const root = active.ctx?.roles.find((r) => r.reportsTo === null) ?? active.ctx?.roles[0]
+      if (root) root.model = input.model
+      active.priceChecked.clear()
+    }
+    const updated = this.patchSummary(run.id, { modelSelection: selection })!
+    this.broadcast({ type: 'run.model', runId: run.id, selection })
+    return { run: updated, applied: !active || ['finished', 'error', 'paused'].includes(run.status) ? false : true, ...(!active || ['finished', 'error', 'paused'].includes(run.status) ? { reason: 'Model will be used when the run continues.' } : {}) }
+  }
+
   async send(runId: string, text: string, rawImages?: ImageAttachment[]): Promise<void> {
     this.refuseWhileQuitting()
     const active = this.runs.get(runId)
@@ -3549,6 +4636,8 @@ export class RunManager {
   async interrupt(runId: string): Promise<void> {
     const active = this.runs.get(runId)
     if (active?.session) active.held = true
+    // A bridged report works for the delegating agent, not for the user's next message: an interrupt ends it.
+    await active?.bridge?.stopAll('the user interrupted the run')
     await active?.session?.interrupt()
   }
 
@@ -3614,7 +4703,10 @@ export class RunManager {
   private stopSession(r: ActiveRun): Promise<void> | undefined {
     if (!r.session) return undefined
     if (r.stopCall) return r.stopCall
-    const call = r.session.stop()
+    // Bridged children go first (their spawns resolve "Stopped"); the root's stop starts in the same tick.
+    const children = r.bridge?.hasActive() ? r.bridge.stopAll(r.endedBy === 'app' ? 'OrgAI is closing' : 'the run was stopped') : undefined
+    const root = r.session.stop()
+    const call = children ? Promise.all([children, root]).then(() => undefined) : root
     r.stopCall = call
     call.catch(() => {
       if (r.stopCall === call) r.stopCall = undefined
@@ -3680,7 +4772,7 @@ export class RunManager {
   }
 
   /**
-   * The app is quitting and will not wait any longer (index.ts quitGate: the deadline passed, stopAll failed, or a
+   * The app is quitting and will not wait any longer (the shutdown's forced drain, activity.ts: the deadline passed, stopAll failed, or a
    * forced second quit). Synchronously refuses new work, cancels resumes and titles, marks every live run cut by the
    * app (an End session already under way keeps 'user') and writes each summary and record. Safe to call again.
    */
@@ -3740,7 +4832,7 @@ export class RunManager {
     if (!from) throw new Error('Run not found')
     if (from.projectId !== project.id) throw new Error('Run belongs to another project')
     if (from.status !== 'finished' && from.status !== 'error' && from.status !== 'paused') throw new Error('Run is still active; send a message instead')
-    if (!from.sessionId) throw new Error('This run has no session to continue')
+    if (!from.sessionId && !from.modelSelection) throw new Error('This run has no session to continue')
     const prompt = text.trim()
     const images = sanitizeImages(rawImages, (m) => log.warn(m))
     if (!hasContent(prompt, images)) throw new Error('Nothing to send')
@@ -3759,16 +4851,48 @@ export class RunManager {
 
     // Continue from the newest ended run of the chain, so no turn of a later continuation is lost.
     const target = chain
-      .filter((r) => r.sessionId && (r.status === 'finished' || r.status === 'error' || r.status === 'paused'))
+      .filter((r) => (r.sessionId || r.modelSelection) && (r.status === 'finished' || r.status === 'error' || r.status === 'paused'))
       .reduce((best, r) => (r.startedAt > best.startedAt || (r.startedAt === best.startedAt && r.resumedFrom === best.id) ? r : best), from)
     const sessionId = target.sessionId ?? from.sessionId
 
-    const overrides = continuedOverrides(target.overrides ?? from.overrides, opts)
+    const selectedAdapter = this.options.catalog?.().find((m) => m.id === target.modelSelection?.model && m.connection === target.modelSelection?.connection)?.adapter
+    const switching = target.modelSelection && (!target.sessionId || target.modelSelection.connection !== target.connection || (selectedAdapter && selectedAdapter !== (target.modelAdapter ?? project.provider.id) && (target.modelAdapter ?? project.provider.id) !== 'mock'))
+    const overrides = continuedOverrides(target.overrides ?? from.overrides, switching ? { ...opts, exec: !!target.overrides?.execMode } : opts)
+    // A new provider session must not regain the conversation's already spent desktop budget.
+    let carriedBudget = target.conversationBudgetUsd
+    if ((switching || carriedBudget !== undefined) && !overrides?.execMode) {
+      // A carried override is already the remaining allowance, whereas the stored conversation cap and the
+      // current project cap describe total spend. Never subtract the chain from a remaining allowance twice.
+      const spent = chain.reduce((sum, r) => sum + Math.max(0, r.usage?.costUsd ?? r.totalCostUsd), 0)
+      // An explicit continuation override is a new remaining allowance, unlike a carried original total.
+      const requestedCap = carriedBudget !== undefined && opts.overrides?.maxBudgetUsd !== undefined
+        ? spent + opts.overrides.maxBudgetUsd : Infinity
+      const cap = Math.min(carriedBudget ?? overrides?.maxBudgetUsd ?? Infinity, projectBudgetUsd(project) ?? Infinity, requestedCap)
+      if (Number.isFinite(cap)) {
+        if (spent >= cap) throw new Error('The conversation budget is spent; switching models does not reset it.')
+        project = { ...project, maxBudgetUsd: cap - spent }
+        if (overrides?.maxBudgetUsd !== undefined) overrides.maxBudgetUsd = cap - spent
+        carriedBudget = cap
+      }
+    }
     // A paused run is handed over to its continuation; it stays in history as finished. An exec run still waiting for
     // its reset (no execOutcome) whose continuation is not an exec run (the Desktop composer, `orgai resume` without
     // --exec) is finalized as 'interrupted' by the user, so its `orgai exec` follower ends instead of adopting the
     // desktop continuation (which never sends run.finalized) and waiting forever.
     const handedToExec = !!overrides?.execMode
+    // The per-run choices of the run being continued (docs: StartRunInput.effort / permissionMode). The effort goes on
+    // as is (start() drops it with a warning where the adapter cannot take it). A chosen permission mode is carried
+    // when it narrows the project's current mode, or the desktop user / the resume timer / a 'configure' caller is
+    // continuing; otherwise the project's mode applies and the new run says so.
+    const carried: CarriedChoices = {}
+    if (target.rootEffort && isEffort(target.rootEffort)) carried.rootEffort = target.rootEffort
+    if (target.permissionModeChosen && target.permissionMode && isPermissionMode(target.permissionMode) && !handedToExec) {
+      const chosenMode = target.permissionMode
+      const allowed = runPermissionModeChoices(target).includes(chosenMode)
+      const trusted = opts.desktop === true || opts[AUTO_RESUME] === true || opts.allowWidening === true
+      if (allowed && (trusted || canNarrowPermissionMode(project.permissionMode, chosenMode))) carried.permissionMode = chosenMode
+      else carried.logs = [{ level: 'info', message: "The per-run permission mode was not carried; the project's mode applies." }]
+    }
     for (const r of target.id === from.id ? [from] : [target, from]) {
       if (r.status !== 'paused') continue
       this.clearResume(r.id)
@@ -3785,23 +4909,26 @@ export class RunManager {
       kind: target.kind,
       ...(overrides ? { overrides } : {}),
       ...(opts.allowWidening ? { allowWidening: true } : {}),
+      ...(carried.rootEffort || carried.permissionMode || carried.logs ? { [CARRIED_CHOICES]: carried } : {}),
       // The harness's own resume message is not a new task: keep the title of the run it continues.
       // A follow-up is titled with the task it continues as context, so it stays recognisable.
       ...(prompt === RESUME_TEXT.trim() && target.title
         ? { title: target.title }
         : { titleContext: target.title ?? excerpt(target.prompt, 200) }),
-      hiddenContext: target.kind === 'setup' ? this.setup.hiddenContext(project) : undefined,
+      hiddenContext: [target.kind === 'setup' ? this.setup.hiddenContext(project) : '', switching ? modelHandoff(chain.map((r) => this.get(r.id)).filter((r): r is RunRecord => !!r)) : ''].filter(Boolean).join('\n\n') || undefined,
       // A Team-tray Architect session stays in the Team tray when it is continued or auto-resumed.
       ...(target.surface ? { surface: target.surface } : {}),
       // A Chat run keeps its folder and settings; an MCP build session reopens in the same workspace.
       ...(target.quick ? { quick: target.quick } : {}),
       ...(target.buildWorkspace ? { buildWorkspace: target.buildWorkspace } : {}),
       ...(target.team === 'single' ? { team: target.team } : {}),
-      resumeSessionId: sessionId,
+      resumeSessionId: switching ? undefined : sessionId,
+      ...(target.modelSelection ? { modelSelection: target.modelSelection } : {}),
+      ...(carriedBudget !== undefined ? { conversationBudgetUsd: carriedBudget } : {}),
       resumedFrom: target.id,
       // totalCostUsd may be a computed cost; only the provider's own total is subtracted from the next provider total.
-      // On a LiteLLM project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.
-      resumeBaseCostUsd: projectConnection(project) === 'litellm' ? 0 : target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
+      // On a proxy project the adapter total was a proxy estimate (older records may carry it as providerCostUsd): no base.
+      resumeBaseCostUsd: !isBuiltinConnectionId(projectConnection(project)) ? 0 : target.usage ? (target.usage.providerCostUsd ?? 0) : target.totalCostUsd,
       plan: target.kind === 'work' ? this.get(target.id)?.plan : undefined,
       ...(target.id !== from.id
         ? { notice: `Continued from run ${target.id} ("${excerpt(target.prompt)}"), the newest run of this session, instead of the older run ${from.id}.` }
@@ -3912,15 +5039,148 @@ export class RunManager {
    * Continue a paused run now, with the harness's resume message. A manual resume (Desktop or RPC) holds its own
    * resume lease across the async setup.prepare gap; the timer path takes the lease itself and calls resumeUnleased.
    */
-  resumeNow(runId: string): Promise<RunSummary> {
-    return this.withResumeLease(() => this.resumeUnleased(runId))
+  resumeNow(runId: string, opts: { desktop?: true } = {}): Promise<RunSummary> {
+    return this.withResumeLease(() => this.resumeUnleased(runId, opts.desktop ? { desktop: true } : {}))
+  }
+
+  /**
+   * runs:setPermissionMode (desktop only; the desktop handler is the only caller, so no peer, harness tool or agent can
+   * reach it). Contract: SetRunPermissionModeInput / SetRunPermissionModeResult. The desktop user owns the run, so
+   * narrowing and widening are treated alike; everything else is checked here. A refusal changes nothing, with one
+   * exception: when the session applied `mode` twice and an "accept edits" grant landed after each, the session really
+   * runs `mode` under the grant, so chosenMode, permissionModeChosen and the overlay record that (applied: false, with the
+   * reports-unchanged count).
+   */
+  async setPermissionMode(input: SetRunPermissionModeInput): Promise<SetRunPermissionModeResult> {
+    this.refuseWhileQuitting()
+    if (!input || typeof input !== 'object' || typeof input.runId !== 'string' || !isPermissionMode(input.mode)) throw new Error('Invalid permission mode')
+    const mode = input.mode
+    let run = this.summary(input.runId)
+    if (!run) throw new Error('Run not found')
+    // The conversation's newest run, like switchModel: a stale id of an older run in the chain lands on the live one.
+    run = this.chainOf(run).reduce((latest, item) => item.startedAt > latest.startedAt || (item.startedAt === latest.startedAt && item.resumedFrom === latest.id) ? item : latest, run)
+    if (run.overrides?.execMode) throw new Error('Exec runs keep the mode they started with.')
+    const choices = runPermissionModeChoices(run)
+    if (!choices.length) throw new Error('This run keeps its own permission mode.')
+    if (!choices.includes(mode)) throw new Error('This run cannot use that permission mode.')
+    const active = this.runs.get(run.id)
+    // Ended or paused: saved for the continuation (continueRun reads permissionMode / permissionModeChosen).
+    if (!active || run.status === 'finished' || run.status === 'error' || run.status === 'paused') {
+      const saved = this.patchSummary(run.id, { permissionMode: mode, permissionModeChosen: true }) ?? run
+      this.broadcast({ type: 'run.permissionMode', runId: run.id, permissionMode: mode, permissionModeChosen: true })
+      return { run: saved, applied: false, reason: 'The mode will be used when the run continues.' }
+    }
+    const session = active.session
+    const ctx = active.ctx
+    if (!session?.setPermissionMode || !ctx) {
+      return { run, applied: false, reason: 'This session cannot change its permission mode while it runs. End the session, then choose the mode before you continue.' }
+    }
+    // Serialized per run (review M2): a second change while one waits on the session is refused, nothing changes.
+    if (active.permissionModeChanging) return { run, applied: false, reason: 'Another permission mode change for this run is still in progress. Try again in a moment.' }
+    active.permissionModeChanging = true
+    try {
+      // Review L3: a narrowing is in force on ctx.project before the session answers (no call slips through under the
+      // old, wider mode); a widening only after the session applied it (no call is allowed under a mode that never
+      // took effect). The adapter derives its mapping from `mode` itself. chosenMode keeps setLive from undoing it. The
+      // adapter drops its own "accept edits" grant on any applied change below acceptEdits (contract), so the overlay
+      // goes with a narrowing too, and comes back if the session refuses.
+      const previousChosen = active.chosenMode
+      const previousGrant = active.acceptEditsGrant
+      const narrows = canNarrowPermissionMode(ctx.project.permissionMode, mode)
+      if (narrows) {
+        active.chosenMode = mode
+        delete active.acceptEditsGrant
+        this.rederiveRunMode(active)
+      }
+      let applied = false
+      let reportsUnchanged = 0
+      let refusalReason: string | undefined
+      // Review L-a: a grant followed while the change awaited may reach the provider after it. That matters for every
+      // mode below acceptEdits (the adapter drops its grant there, re-check Low 1b), so such a change is sent once more
+      // to be the last word. Applied twice yet raced twice: refused (Low 1c, below).
+      const raceable = overlaidByAcceptEdits(mode)
+      let raced = false
+      for (let attempt = 0; attempt < (raceable ? 2 : 1) && !applied; attempt++) {
+        const gen = active.modeGen ?? 0
+        try {
+          const answer = await session.setPermissionMode(mode)
+          if (answer === true || (answer && typeof answer === 'object' && answer.applied === true)) {
+            const n = typeof answer === 'object' ? answer.reportsUnchanged : 0
+            reportsUnchanged = typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : 0
+            raced = raceable && (active.modeGen ?? 0) !== gen
+            applied = !raced
+          } else break
+        } catch (e) {
+          // Review L2: a provider / SDK message is logged, never shown; the user gets a fixed plain sentence.
+          if (e instanceof PermissionModeRefusal) {
+            // A typed, opt-in refusal: OrgAI-written plain text, bounded and cleaned, is the reason.
+            // eslint-disable-next-line no-control-regex
+            const clean = e.message.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+            if (clean) refusalReason = clean
+          } else {
+            log.warn(`Run ${run.id}: the session refused a permission mode change (${(e as Error)?.message ?? String(e)})`)
+          }
+          break
+        }
+      }
+      if (!applied && raced) {
+        // Re-check Low 1c: the session applied `mode` but a grant landed after it each time. The session's own mode is
+        // `mode` (never the earlier, possibly wider choice) with the grant on top, which the overlay shows.
+        active.chosenMode = mode
+        active.acceptEditsGrant = true
+        active.summary.permissionModeChosen = true
+        // Re-derive first, then one broadcast (forced: permissionModeChosen moved before the derivation).
+        this.rederiveRunMode(active, active.ctx, true)
+        // The session did apply `mode`, so the reports it could not change are counted like on an applied change.
+        reportsUnchanged += active.bridge?.liveWiderThan(mode) ?? 0
+        const note = reportsUnchanged ? reportsUnchangedText(reportsUnchanged) : ''
+        return {
+          run: this.summary(run.id) ?? run,
+          applied: false,
+          reason: `An "accept edits" permission was granted during the change. Choose the mode again.${note ? ` ${note}` : ''}`,
+          ...(reportsUnchanged ? { reportsUnchanged } : {})
+        }
+      }
+      if (!applied) {
+        // Back to the earlier choice (unless something else replaced ours meanwhile) and the earlier grant (a grant that
+        // landed during the await set it itself), then re-derived from the live project as it is now (an approval may
+        // have landed during the await); the summary follows.
+        if (narrows && active.chosenMode === mode) {
+          if (previousChosen) active.chosenMode = previousChosen
+          else delete active.chosenMode
+        }
+        if (previousGrant) active.acceptEditsGrant = true
+        this.rederiveRunMode(active)
+        return { run: this.summary(run.id) ?? run, applied: false, reason: refusalReason ?? 'The session could not change its permission mode now.' }
+      }
+      active.chosenMode = mode
+      delete active.acceptEditsGrant
+      if (!active.summary.permissionModeChosen) {
+        active.summary.permissionModeChosen = true
+        this.store.upsert(active.summary)
+        this.broadcastRunMode(active)
+      }
+      this.rederiveRunMode(active)
+      // Bridged children are separate sessions that keep the mode they started in (they never take this change). Counted
+      // on every change, not only on a matrix narrowing: modes the matrix cannot compare (dontAsk to default) still leave
+      // a child wider than `mode` (liveWiderThan is 0 when none is).
+      reportsUnchanged += active.bridge?.liveWiderThan(mode) ?? 0
+      const updated = this.summary(run.id) ?? run
+      const label = PERMISSION_MODE_OPTIONS.find((o) => o.value === mode)?.label ?? mode
+      const note = reportsUnchanged ? reportsUnchangedText(reportsUnchanged) : ''
+      active.emit({ type: 'log', runId: run.id, level: 'info', message: `Permission mode set to ${label} for this run.${note ? ` ${note}` : ''}` })
+      return { run: updated, applied: true, ...(reportsUnchanged ? { reportsUnchanged, reason: note } : {}) }
+    } finally {
+      delete active.permissionModeChanging
+    }
   }
 
   /**
    * resumeNow's body, without the activity lease (the caller holds it). `auto` is the timer path only: a manual
-   * Resume now (Desktop or RPC) never re-applies a 'configure' caller's widening.
+   * Resume now (Desktop or RPC) never re-applies a 'configure' caller's widening. `desktop` (the desktop's Resume now,
+   * and the timer, which acts for the desktop user) lets a per-run permission mode the user chose carry over.
    */
-  private async resumeUnleased(runId: string, opts: { auto?: boolean } = {}): Promise<RunSummary> {
+  private async resumeUnleased(runId: string, opts: { auto?: boolean; desktop?: true } = {}): Promise<RunSummary> {
     const widened = opts.auto === true && this.widenedRuns.has(runId)
     this.clearResume(runId)
     this.refuseWhileQuitting()
@@ -3940,7 +5200,9 @@ export class RunManager {
       const keepExec = !!o?.execMode && !!o.waitForReset && !from.execOutcome
       return await (keepExec
         ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}) })
-        : this.continueRun(project, runId, RESUME_TEXT))
+        : opts.desktop || opts.auto
+          ? this.continueRun(project, runId, RESUME_TEXT, undefined, { desktop: true })
+          : this.continueRun(project, runId, RESUME_TEXT))
     } catch (e) {
       // The timer is gone; a run still paused must not claim it will resume by itself.
       const s = this.summary(runId)

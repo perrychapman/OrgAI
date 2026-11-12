@@ -14,21 +14,25 @@ vi.mock('./selectors', () => {
     trayCards: (s: S) => s.testCards ?? [],
     topCard: (s: S) => (s.testCards ?? [])[0],
     orgTreeRows: () => [],
+    cardsByAgent: () => ({}),
+    collapseTarget: () => undefined,
+    resolveSelectedRow: (_rows: unknown, id: string | undefined) => id,
     transcriptRows: (s: S) => ({ rows: s.testRows ?? [], omitted: 0 }),
     partialRows: () => [],
     planView: () => undefined,
     worktreeRows: () => [],
     statusSummary: (s: S) => ({ needsYou: (s.testCards ?? []).length, liveRuns: s.testLive ?? 0, connection: 'live' }),
-    composerMode: () => 'send'
+    composerMode: () => 'send',
+    runTagOf: (s: { runOrder: string[] }, id: string) => `R${s.runOrder.indexOf(id) + 1}`
   }
 })
 
 vi.mock('./layout', () => ({
-  computeLayout: (input: { cols: number; rows: number; visible: Record<string, boolean> }) => ({
+  computeLayout: (input: { cols: number; rows: number; trayRows: number; visible: Record<string, boolean> }) => ({
     mode: 'split',
     statusRows: 1,
     panes: (['tree', 'transcript', 'plan', 'worktrees'] as const).filter((p) => input.visible[p]).map((pane) => ({ pane, column: pane === 'tree' ? 0 : 1, width: 40, height: 5 })),
-    tray: { width: input.cols, height: 3 },
+    tray: { width: input.cols, height: input.trayRows },
     composer: { width: input.cols, height: 3 }
   })
 }))
@@ -41,6 +45,7 @@ vi.mock('./input/keys', () => ({
 }))
 
 vi.mock('./decisions', () => ({
+  proposalPreview: () => undefined,
   cardDetailLines: (card: { key: string }) => [`DETAIL ${card.key}`, 'second line'],
   cardTitle: () => 'title',
   bindingsFor: () => [],
@@ -146,7 +151,7 @@ const tick = () => new Promise((r) => setTimeout(r, 10))
 
 interface TestState {
   folder: string
-  runs: Record<string, { summary: Partial<RunSummary> }>
+  runs: Record<string, TestRun>
   runOrder: string[]
   activeChain: string[]
   activeRunId?: string
@@ -162,12 +167,54 @@ interface TestState {
   testRows?: { key: string; runId: string; kind: string; text: string }[]
 }
 
+/** Keep App fixtures on the same shape as the session's real TuiRun snapshots. */
+interface TestRun {
+  summary: Partial<RunSummary>
+  agents?: Record<string, never>
+  transcript?: unknown[]
+  partials?: Record<string, string>
+  cards?: {
+    permissions: unknown[]
+    questions: unknown[]
+    proposals: unknown[]
+    ruleRequests: unknown[]
+    mergeReviews: unknown[]
+    mcpInstalls: unknown[]
+  }
+  recordLoaded?: boolean
+  messages?: unknown[]
+}
+
+const completeRun = (id: string, run: TestRun): TestRun => ({
+  ...run,
+  summary: { id, status: 'idle', ...run.summary },
+  agents: run.agents ?? {},
+  transcript: run.transcript ?? [],
+  partials: run.partials ?? {},
+  cards: run.cards ?? { permissions: [], questions: [], proposals: [], ruleRequests: [], mergeReviews: [], mcpInstalls: [] },
+  recordLoaded: run.recordLoaded ?? true
+})
+
+const completeRuns = (runs: Record<string, TestRun>): Record<string, TestRun> =>
+  Object.fromEntries(Object.entries(runs).map(([id, run]) => [id, completeRun(id, run)]))
+
 function fakeSession(initial: Partial<TestState> = {}, hostKind: 'daemon' | 'inproc' | 'desktop' = 'daemon') {
-  let state: TestState = { folder: '/work/repo', runs: {}, runOrder: [], activeChain: [], composeTarget: 'active', notices: [], resolved: [], cardSeq: 0, connection: 'live', ...initial }
+  let state: TestState = {
+    folder: '/work/repo',
+    runOrder: [],
+    activeChain: [],
+    composeTarget: 'active',
+    notices: [],
+    resolved: [],
+    cardSeq: 0,
+    connection: 'live',
+    ...initial,
+    runs: completeRuns(initial.runs ?? {})
+  }
   const subs = new Set<() => void>()
   let n = 0
   const set = (patch: Partial<TestState>) => {
-    state = { ...state, ...patch }
+    state = { ...state, ...patch, ...(patch.runs ? { runs: completeRuns(patch.runs) } : {}) }
     for (const fn of [...subs]) fn()
   }
   const api = {
@@ -195,7 +242,7 @@ function fakeSession(initial: Partial<TestState> = {}, hostKind: 'daemon' | 'inp
   return { api, set, state: () => state }
 }
 
-function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolean; inproc?: boolean; onboarding?: boolean; now?: () => number; launch?: import('./types').TuiLaunch } = {}) {
+function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolean; inproc?: boolean | object; onboarding?: boolean; now?: () => number; launch?: import('./types').TuiLaunch } = {}) {
   const s = opts.session ?? fakeSession()
   const listeners = new Set<(e: Ev) => void>()
   const input = { subscribe: (fn: (e: Ev) => void) => (listeners.add(fn), () => void listeners.delete(fn)) }
@@ -223,7 +270,7 @@ function mount(opts: { session?: ReturnType<typeof fakeSession>; inline?: boolea
     client: {} as never,
     hello: {} as never,
     started: false,
-    ...(opts.inproc ? { inproc: {} as never } : {}),
+    inproc: (opts.inproc && opts.inproc !== true ? opts.inproc : {}) as never,
     projects: vi.fn(async () => []),
     checkPath: vi.fn(async () => ({ exists: true, isDirectory: true, isGitRepo: true, suggestedName: 'repo', empty: false })),
     createProject: vi.fn(async () => P),
@@ -278,7 +325,13 @@ describe('App launch prompt and suspension', () => {
   })
 
   it('holds the view still while the terminal is suspended and redraws on resume', async () => {
-    const s = fakeSession({ testRows: [{ key: 'a', runId: 'r', kind: 'text', text: 'first' }] })
+    const s = fakeSession({
+      activeRunId: 'run_1',
+      activeChain: ['run_1'],
+      runOrder: ['run_1'],
+      runs: { run_1: { summary: { id: 'run_1', status: 'running' } } },
+      testRows: [{ key: 'a', runId: 'r', kind: 'text', text: 'first' }]
+    })
     const m = mount({ session: s })
     await tick()
     expect(m.frame()).toContain('first')
@@ -339,13 +392,21 @@ describe('App focus and routing', () => {
   })
 
   it('Tab cycles the visible panes and back to the composer', async () => {
-    const m = mount()
+    const m = mount({
+      session: fakeSession({
+        activeRunId: 'run_1',
+        activeChain: ['run_1'],
+        runOrder: ['run_1'],
+        runs: { run_1: { summary: { id: 'run_1', status: 'running' } } }
+      })
+    })
     const order: string[] = []
-    for (let i = 0; i < 5; i++) {
+    // Plan and Worktrees show only when something needs them (nothing does here), so the ring is tree, transcript, composer.
+    for (let i = 0; i < 3; i++) {
       await m.send(named('tab'))
       order.push(['ORGTREE*', 'TRANSCRIPT*', 'PLAN*', 'WORKTREES*', 'COMPOSER*'].find((t) => m.frame().includes(t)) ?? '?')
     }
-    expect(order).toEqual(['ORGTREE*', 'TRANSCRIPT*', 'PLAN*', 'WORKTREES*', 'COMPOSER*'])
+    expect(order).toEqual(['ORGTREE*', 'TRANSCRIPT*', 'COMPOSER*'])
     await m.send(named('tab'), named('backtab'))
     expect(m.frame()).toContain('COMPOSER*')
     m.r.unmount()
@@ -358,7 +419,7 @@ describe('App focus and routing', () => {
     expect(m.frame()).toContain('COMPOSER*[]')
     expect(m.s.api.notify).not.toHaveBeenCalledWith(PRESS_AGAIN)
     await m.send(ctrlKey('c'))
-    expect(m.s.api.notify).toHaveBeenLastCalledWith(PRESS_AGAIN, undefined)
+    expect(m.s.api.notify).toHaveBeenLastCalledWith(PRESS_AGAIN, 'warn')
     t += CTRL_C_QUIT_MS + 1
     await m.send(ctrlKey('c'))
     expect(m.exits).toEqual([])
@@ -385,9 +446,41 @@ describe('App focus and routing', () => {
     s.set({ runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } })
     await tick()
     await m.send(named('escape'))
+    expect(s.api.interrupt).not.toHaveBeenCalled()
+    expect(s.api.notify).toHaveBeenLastCalledWith('Press Esc again to interrupt the run.', undefined)
+    await m.send(named('escape'))
     expect(s.api.interrupt).toHaveBeenCalledTimes(1)
+    expect(s.api.notify).toHaveBeenLastCalledWith('Interrupting the run...', undefined)
     m.r.unmount()
   })
+
+  it('the second Esc after ESC_INTERRUPT_MS only asks again; an idle run says nothing is running', async () => {
+    let t = 1000
+    const s = fakeSession({ activeRunId: 'run_1', runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } })
+    const m = mount({ session: s, now: () => t })
+    await m.send(named('escape'))
+    t += 2000
+    await m.send(named('escape'))
+    expect(s.api.interrupt).not.toHaveBeenCalled()
+    await m.send(key('x'), named('escape')) // a key in between resets
+    expect(s.api.interrupt).not.toHaveBeenCalled()
+    s.set({ runs: { run_1: { summary: { id: 'run_1', status: 'idle' } } } })
+    await tick()
+    await m.send(named('escape'))
+    expect(s.api.notify).toHaveBeenLastCalledWith('Nothing is running.', undefined)
+    m.r.unmount()
+  })
+
+  it('Tab in inline mode never moves focus to invisible panes and explains once', async () => {
+    const m = mount({ inline: true })
+    await tick()
+    await m.send(named('tab'), named('tab'))
+    expect(m.frame()).toContain('COMPOSER*')
+    const calls = m.s.api.notify.mock.calls.filter((c) => String(c[0]).startsWith('Panes need a full-screen'))
+    expect(calls.length).toBe(1)
+    m.r.unmount()
+  })
+
 
   it('Ctrl+Z suspends and stops through the terminal', async () => {
     const m = mount()
@@ -430,32 +523,37 @@ describe('App quitting', () => {
   it('an inproc host with live runs asks first; n keeps going, y quits', async () => {
     const m = mount({ inproc: true, session: fakeSession({ testLive: 2 }, 'inproc') })
     await m.send(ctrlKey('d'))
-    expect(m.frame()).toContain('Quitting stops 2 live runs in this in-process host')
+    expect(m.frame()).toContain('Quit and stop 2 active runs?')
     await m.send(key('n'))
     expect(m.exits).toEqual([])
-    expect(m.frame()).not.toContain('Quitting stops')
+    expect(m.frame()).not.toContain('Quit and stop')
     await m.send(ctrlKey('d'), key('y'))
     expect(m.exits.map((e) => e[0])).toEqual([0])
     m.r.unmount()
   })
 
-  it('a daemon host quits at once and reports a live run as detached', async () => {
-    const s = fakeSession({ testLive: 1, activeRunId: 'run_1', runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } })
-    const m = mount({ session: s })
+  it("counts every live run on this terminal's host, also ones other terminals or projects started", async () => {
+    const inproc = { status: () => ({ handoff: { workingRuns: 2, waitingRuns: 1, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 } }) }
+    const m = mount({ inproc, session: fakeSession({ testLive: 1 }, 'inproc') })
     await m.send(ctrlKey('d'))
-    expect(m.exits).toHaveLength(1)
-    expect(m.exits[0][1]).toMatchObject({ detachedLive: true })
+    expect(m.frame()).toContain('Quit and stop 3 active runs, 2 of them from other projects?')
+    await m.send(key('n'))
     m.r.unmount()
   })
 
-  it('a client of a daemon started with --host inproc (hostKind inproc) quits at once: the runs live in the daemon', async () => {
-    const s = fakeSession({ testLive: 1, activeRunId: 'run_1', runs: { run_1: { summary: { id: 'run_1', status: 'running' } } } }, 'inproc')
-    const m = mount({ session: s })
-    await m.send(ctrlKey('d'))
-    expect(m.frame()).not.toContain('Quitting stops')
-    expect(m.exits).toHaveLength(1)
-    expect(m.exits[0][1]).toMatchObject({ detachedLive: true })
-    m.r.unmount()
+  it('onboarding: Ctrl+C, Ctrl+D and Esc ask first when other terminals have runs on this host, none listed here', async () => {
+    const inproc = { status: () => ({ handoff: { workingRuns: 1, waitingRuns: 0, heldRuns: 0, pausedRuns: 0, openCards: 0, terminalSessions: 2 } }) }
+    for (const [label, quit] of [['ctrl+c', ctrlKey('c')], ['ctrl+d', ctrlKey('d')], ['esc', named('escape')]] as const) {
+      const m = mount({ inproc, onboarding: true, session: fakeSession({}, 'inproc') })
+      await tick()
+      await m.send(quit)
+      const flat = m.frame().replace(/[│|]/g, ' ').replace(/\s+/g, ' ')
+      expect(flat, label).toContain('Quit and stop 1 active run, 1 of them from other projects?')
+      expect(m.exits).toEqual([])
+      await m.send(key('y'))
+      expect(m.exits.map((e) => e[0])).toEqual([0])
+      m.r.unmount()
+    }
   })
 })
 
@@ -476,6 +574,7 @@ describe('App onboarding', () => {
 
   it('[2] starts the Architect on the new project and focuses that setup run', async () => {
     const m = mount({ onboarding: true })
+    await tick()
     await m.send(key('2'))
     await tick()
     expect(m.conn.startSetup).toHaveBeenCalledWith('p_new')
@@ -485,10 +584,12 @@ describe('App onboarding', () => {
 
   it('[1] then a message starts a quick run; Esc cancels with exit 0', async () => {
     const m = mount({ onboarding: true })
+    await tick()
     await m.send(key('e'), key('1'), key('o'), key('k'), named('enter'))
     expect(m.s.api.startQuick).toHaveBeenCalledWith({ prompt: 'ok', allowEdits: true })
     m.r.unmount()
     const c = mount({ onboarding: true })
+    await tick()
     await c.send(named('escape'))
     expect(c.exits.map((e) => e[0])).toEqual([0])
     c.r.unmount()
@@ -530,8 +631,7 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
       s.set({ runs: { run_s: { summary: { id: 'run_s', kind: 'setup', ...patch } } } })
       await tick()
       expect(m.exits.map((e) => e[0])).toEqual([code])
-      expect(m.exits[0][1]).toMatchObject({ detachedLive: false })
-      m.r.unmount()
+        m.r.unmount()
     }
   })
 
@@ -575,13 +675,13 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
     let t = 1000
     const m = mount({ session: s, launch: LAUNCH, now: () => t })
     await m.send(ctrlKey('c'))
-    expect(s.api.notify).toHaveBeenLastCalledWith(PRESS_AGAIN_STOP, undefined)
+    expect(s.api.notify).toHaveBeenLastCalledWith(PRESS_AGAIN_STOP, 'warn')
     t += 100
     await m.send(ctrlKey('c'))
     await tick()
     expect(s.api.stop).toHaveBeenCalledTimes(1)
     expect(m.exits.map((e) => e[0])).toEqual([130])
-    expect(m.exits[0][1]).toMatchObject({ detachedLive: false, message: 'Architect setup stopped.' })
+    expect(m.exits[0][1]).toMatchObject({ message: 'Architect setup stopped.' })
     m.r.unmount()
   })
 
@@ -600,7 +700,7 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
       expect(m.exits).toEqual([]) // still waiting (bounded) for a status in case the stop landed anyway
       await vi.advanceTimersByTimeAsync(STOP_WAIT_MS + 10)
       expect(m.exits.map((e) => e[0])).toEqual([1])
-      expect(m.exits[0][1]).toMatchObject({ detachedLive: true, message: 'Could not stop Architect setup: The host refused the stop. The run keeps going.' })
+      expect(m.exits[0][1]).toMatchObject({ message: 'Could not stop Architect setup: The host refused the stop.' })
       expect((m.exits[0][1] as { message?: string }).message).not.toContain('stopped.')
       m.r.unmount()
     } finally {
@@ -633,18 +733,20 @@ describe('App exitWhenEnded / stopOnQuit (Wave 5 interactive runs)', async () =>
     const m = mount({ session: s, launch: LAUNCH, inproc: true })
     await m.send(ctrlKey('d'))
     await tick()
-    expect(m.frame()).not.toContain('Quitting stops')
+    expect(m.frame()).not.toContain('Quit and stop')
     expect(s.api.stop).toHaveBeenCalledTimes(1)
     expect(m.exits.map((e) => e[0])).toEqual([130])
     m.r.unmount()
   })
 
-  it('a normal session still detaches on quit (no stop)', async () => {
-    const s = fakeSession(open('running'))
+  it('a normal session asks before quitting a live run and does not stop the run itself (the host stop ends it)', async () => {
+    const s = fakeSession({ ...open('running'), testLive: 1 })
     const m = mount({ session: s, launch: { runId: 'run_s' } })
     await m.send(ctrlKey('d'))
+    expect(m.exits).toEqual([])
+    await m.send(key('y'))
     expect(s.api.stop).not.toHaveBeenCalled()
-    expect(m.exits).toEqual([[0, expect.objectContaining({ detachedLive: true })]])
+    expect(m.exits).toEqual([[0, { session: s.api }]])
     s.set(open('finished'))
     await tick()
     expect(m.exits).toHaveLength(1)

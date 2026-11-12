@@ -1,13 +1,41 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { adapterForFamily, adapterForProject, builtinModels, connectionConfigured, connectionInUse, connectionProviderLabel, connectionUsable, creationConnection, effectiveDefaultConnection, isConnectionId, modelFamily, modelForTier, projectConnection } from '@shared/defaults'
-import { CONNECTION_IDS, MODEL_TIERS } from '@shared/types'
+import {
+  adapterForFamily,
+  adapterForProject,
+  builtinModels,
+  connectionConfigured,
+  connectionIds,
+  connectionInUse,
+  connectionName,
+  connectionProviderLabel,
+  connectionRecord,
+  connectionUsable,
+  creationConnection,
+  effectiveDefaultConnection,
+  isConnectionId,
+  isKnownConnection,
+  modelFamily,
+  modelForTier,
+  projectConnection,
+  roleConnection,
+  proxyModelsUrl,
+  proxyOf,
+  proxyOpenAIBase,
+  settingTier,
+  staffingModeOf
+} from '@shared/defaults'
+import { MODEL_TIERS, PROXIES_MAX, PROXY_KINDS, isBuiltinConnectionId, isProxyConnection } from '@shared/types'
 import type {
+  ProxyConnection,
+  ProxyCreateInput,
+  ProxyRemoveResult,
   ModelPriceInfo,
   ModelPricesQuery,
   AdapterChoice,
   ConnectionEvent,
   AppSettings,
+  ConnectionChecks,
   ConnectionDefaultInput,
   ConnectionId,
   ConnectionInfo,
@@ -22,6 +50,7 @@ import type {
   Project,
   ProviderAuth,
   ProviderConnection,
+  ProviderId,
   ProviderModel,
   RemapModelsInput,
   RemapModelsOutput,
@@ -30,19 +59,21 @@ import type {
   UsageStatus
 } from '@shared/types'
 import { CodexAppServer, codexHomeDir } from '../runtime/codexAppServer'
+import { checkCodexRuntime, type CodexRuntimeCheck } from '../runtime/codexBinary'
 import { listModelPrices, sanitizeModelPrice } from '../runtime/pricing'
 import type { ProjectStore } from '../store/projects'
-import { LITELLM_KEY, type SecretStore } from '../store/secrets'
+import { proxySecretKey, type SecretStore } from '../store/secrets'
 import type { SettingsStore } from '../store/settings'
 import type { AdapterModelInfo, RunConnection } from '../runtime/types'
 import { anthropicStatus } from './anthropicAuth'
-import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, suggestTierModels, tierFromDescription } from './catalog'
+import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, newerClaudeModel, suggestTierModels, tierFromDescription } from './catalog'
 import { cancelLogin, listModels, validModelId, MODEL_TEXT_MAX, logoutAccount, onLoginCompleted, readAccount, readRateLimits, startLogin, type CodexRpc } from './codexAccount'
 import { mapCodexRateLimits } from './codexUsage'
-import { LITELLM_MAX_MODELS, fetchLiteLLMModels, fetchLiteLLMSpend, normalizeBaseUrl } from './litellm'
+import { LITELLM_MAX_MODELS, fetchLiteLLMKeyInfo, fetchLiteLLMSpend, fetchProxyModels, normalizeBaseUrl } from './litellm'
 import { pricingFromCatalog } from '../runtime/pricing'
 import { remapProject } from './remap'
-import { CONNECTION_LABELS, defaultRefusal, withoutReplaced } from './defaultPick'
+import { defaultRefusal, withoutReplaced } from './defaultPick'
+import { cleanProxyKey, cleanProxyName, isMockProxyUrl, newProxyId, normalizeProxyUrl } from './proxy'
 
 export interface ConnectionServiceDeps {
   dataDir: string
@@ -54,6 +85,11 @@ export interface ConnectionServiceDeps {
   fetch?: typeof fetch
   /** Create the (not yet started) Codex app-server client. Default: a CodexAppServer with OrgAI's CODEX_HOME. */
   codexFactory?: () => CodexAppServer
+  /**
+   * Where Codex is and whether its version is supported (cli-standalone 6.2), checked by the OpenAI probe for every
+   * auth kind. Default: codexBinary.ts checkCodexRuntime (a file-system lookup plus a cached `codex --version`).
+   */
+  codexRuntime?: () => Promise<CodexRuntimeCheck>
   now?: () => number
   /** Info-level log line (default console.info; index.ts passes the main log). */
   logInfo?: (message: string) => void
@@ -97,14 +133,38 @@ type Tiers = Partial<Record<ModelTier, ModelRef>>
 const sameTiers = (a: Tiers, b: Tiers): boolean => JSON.stringify(sortKeys(a)) === JSON.stringify(sortKeys(b))
 const sortKeys = (o: Tiers): [string, string | undefined][] => Object.entries(o).sort(([x], [y]) => x.localeCompare(y))
 
+/** `{ baseUrl }` for a proxy model: claude family -> the Anthropic base URL, else the OpenAI base; {} when that is empty. */
+function withBaseUrl(proxy: ProxyConnection, m: Pick<ProviderModel, 'family'>): { baseUrl?: string } {
+  const url = m.family === 'claude' ? proxy.anthropicBaseUrl.trim().replace(/\/+$/, '') : proxyOpenAIBase(proxy)
+  return url ? { baseUrl: url } : {}
+}
+
 /** discover(): a ChatGPT connection with no signed-in account has nothing to discover (not an error). */
 const SIGNED_OUT = 'signed-out' as const
 
-const PROVIDER_LABEL: Record<ConnectionId, string> = { anthropic: 'Claude', openai: 'Codex (ChatGPT)', litellm: 'LiteLLM' }
+/** The provider label a project stores for a connection ('Claude', 'Codex (ChatGPT)' or the proxy's name). */
+function providerLabelFor(id: ConnectionId, v: Pick<AppSettings, 'proxies'>): string {
+  return id === 'anthropic' ? 'Claude' : id === 'openai' ? 'Codex (ChatGPT)' : connectionName(id, v)
+}
+
+/** Origins (scheme + host + port) that receive a proxy's key: base, effective OpenAI base and effective models URL. */
+function proxyOrigins(p: ProxyConnection): Set<string> {
+  const out = new Set<string>()
+  for (const u of [p.anthropicBaseUrl, p.openaiBaseUrl || p.anthropicBaseUrl, p.modelsUrl || p.anthropicBaseUrl]) {
+    if (!u) continue
+    try {
+      out.add(new URL(u).origin)
+    } catch {
+      // an unparsable stored value never counts as an origin
+    }
+  }
+  return out
+}
 
 /**
  * Connections and the model catalog: probes, logins, discovery, tier mapping, project remaps and the per-run
- * model access (RunConnection). Nothing here ever returns, broadcasts or logs the LiteLLM key.
+ * model access (RunConnection). Proxy connections (AppSettings.proxies) are any number; each has its own key in the
+ * SecretStore. Nothing here ever returns, broadcasts or logs a proxy key.
  * Statuses are cached; init(), test() and connect() refresh them, list() answers from the cache.
  */
 export class ConnectionService {
@@ -124,16 +184,40 @@ export class ConnectionService {
   /** Activity (activeOAuthFlows): provider logins (ChatGPT browser / device code) still waiting for the user. */
   pendingLoginCount(): number { return this.pendingLogins.size }
   private disposed = false
+  /** Aborts in-flight `claude auth status` children at dispose (they hold a cwd under the data folder). */
+  private stopSignal = new AbortController()
   /**
    * Connections whose current 'disconnected' status is tentative (a LiteLLM base URL change or a saved key waiting
    * for Test and connect): effectiveDefault reads them as 'unknown', so they never move the default. Cleared by the
    * next definite status.
    */
   private tentative = new Set<ConnectionId>()
+  /** Proxy ids removed in this session; a new id never reuses one (a run record or usage row may still name it). */
+  private removedProxyIds = new Set<string>()
 
   constructor(private deps: ConnectionServiceDeps) {
     this.modelsFile = join(deps.dataDir, 'models.json')
     this.loadModels()
+  }
+
+  private settingsNow(): AppSettings {
+    return this.deps.settings.get()
+  }
+
+  /** The record of a built-in or existing proxy connection, or undefined. */
+  private record(id: ConnectionId): ProviderConnection | undefined {
+    return connectionRecord(this.settingsNow(), id)
+  }
+
+  /** The record of a known connection; throws "Unknown connection" for anything else (prototype keys included). */
+  private need(id: unknown): ProviderConnection {
+    const rec = isKnownConnection(this.settingsNow(), id) ? this.record(id) : undefined
+    if (!rec) throw new Error('Unknown connection')
+    return rec
+  }
+
+  private allIds(): ConnectionId[] {
+    return connectionIds(this.settingsNow())
   }
 
   private now(): number {
@@ -146,7 +230,8 @@ export class ConnectionService {
     try {
       if (!existsSync(this.modelsFile)) return
       const parsed = JSON.parse(readFileSync(this.modelsFile, 'utf8')) as { models?: Record<string, unknown>; refreshedAt?: Record<string, unknown> }
-      for (const id of CONNECTION_IDS) {
+      // Only connections that exist now: entries of a removed proxy (or junk ids) in an old file are left behind.
+      for (const id of this.allIds()) {
         const at = parsed.refreshedAt?.[id]
         if (typeof at === 'number' && Number.isFinite(at) && at > 0) this.refreshedAt[id] = at
         const list = parsed.models?.[id]
@@ -192,32 +277,41 @@ export class ConnectionService {
     }
     // OpenAI placeholders stand in until model/list has answered.
     if (id === 'openai') return found.length ? found.map((m) => ({ ...m })) : builtinModels('openai')
-    return found.map((m) => ({ ...m }))
+    // Proxy models: baseUrl is derived here, at read time, from the proxy's current URLs (so a URL change shows at
+    // once, without rediscovery); discovery stamps the same value into the stored entries.
+    const proxy = proxyOf(this.settingsNow(), id)
+    return found.map((m) => {
+      const { baseUrl: _stale, ...rest } = m
+      return proxy ? { ...rest, ...withBaseUrl(proxy, m) } : rest
+    })
   }
 
   /** Every connection's catalog, for adapterForProject. */
   catalog(): ProviderModel[] {
-    return CONNECTION_IDS.flatMap((id) => this.catalogFor(id))
+    return this.allIds().flatMap((id) => this.catalogFor(id))
+  }
+
+  /** The last background discovery failure of a connection (ConnectionInfo.modelsError), or undefined. */
+  modelsErrorFor(id: ConnectionId): string | undefined {
+    return this.modelsErrors[id]
   }
 
   /** The catalog of one connection, or of every enabled connection. */
   models(query?: ModelsQuery): ProviderModel[] {
-    if (query?.connection !== undefined && !isConnectionId(query.connection)) throw new Error('Unknown connection')
+    if (query?.connection !== undefined) this.need(query.connection)
     if (query?.connection) return this.catalogFor(query.connection)
-    const s = this.deps.settings.get()
-    return CONNECTION_IDS.filter((id) => s.connections[id].enabled).flatMap((id) => this.catalogFor(id))
+    return this.allIds().filter((id) => this.record(id)?.enabled).flatMap((id) => this.catalogFor(id))
   }
 
-  /** models:prices: user overrides, LiteLLM proxy prices and the built-in table (pricing.ts listModelPrices). */
+  /** models:prices: user overrides, proxy prices from the catalogs and the built-in table (pricing.ts listModelPrices). */
   prices(query?: ModelPricesQuery): ModelPriceInfo[] {
-    return listModelPrices(query, this.deps.settings.get().modelPrices ?? [], CONNECTION_IDS.flatMap((id) => this.catalogFor(id)))
+    return listModelPrices(query, this.deps.settings.get().modelPrices ?? [], this.allIds().flatMap((id) => this.catalogFor(id)))
   }
 
-  /** Re-discover models (LiteLLM, Codex) and return the new catalog. A failed discovery keeps the old catalog and sets an error status. */
+  /** Re-discover models (proxies, Codex) and return the new catalog. A failed discovery keeps the old catalog and sets an error status. */
   async refresh(query?: ModelsQuery): Promise<ProviderModel[]> {
-    if (query?.connection !== undefined && !isConnectionId(query.connection)) throw new Error('Unknown connection')
-    const s = this.deps.settings.get()
-    const ids = query?.connection ? [query.connection] : CONNECTION_IDS.filter((id) => s.connections[id].enabled)
+    if (query?.connection !== undefined) this.need(query.connection)
+    const ids = query?.connection ? [query.connection] : this.allIds().filter((id) => this.record(id)?.enabled)
     const results: RemapResult[] = []
     for (const id of ids) {
       try {
@@ -243,12 +337,12 @@ export class ConnectionService {
   }
 
   private async discoverRaw(id: ConnectionId): Promise<ProviderModel[] | null | typeof SIGNED_OUT> {
-    if (id === 'litellm') {
-      const conn = this.deps.settings.get().connections.litellm
-      const key = this.deps.secrets.get(LITELLM_KEY)
-      if (!conn.baseUrl) throw new Error('LiteLLM has no base URL')
-      if (!key) throw new Error('LiteLLM has no API key')
-      return fetchLiteLLMModels(conn.baseUrl, key, this.deps.fetch ?? fetch)
+    const proxy = proxyOf(this.settingsNow(), id)
+    if (proxy) {
+      if (!proxy.anthropicBaseUrl) throw new Error(`${proxy.name} has no base URL`)
+      const key = this.proxyKey(proxy, `${proxy.name} has no API key`)
+      const models = await fetchProxyModels(proxyModelsUrl(proxy), key, this.deps.fetch ?? fetch, { kind: proxy.kind, litellmFeatures: proxy.litellmFeatures, connection: proxy.id, baseUrl: proxy.anthropicBaseUrl })
+      return models.map((m) => ({ ...m, ...withBaseUrl(proxy, m) }))
     }
     if (id === 'openai') {
       if (this.deps.settings.get().connections.openai.auth.kind !== 'chatgpt') return null
@@ -315,7 +409,7 @@ export class ConnectionService {
    * suggestion and becomes auto. Returns the mapping before and after.
    */
   private retier(id: ConnectionId, catalog: readonly ProviderModel[], previousSuggestion: Tiers): { previous: Tiers; next: Tiers } {
-    const conn = this.deps.settings.get().connections[id]
+    const conn = this.need(id)
     const previous = conn.tierModels
     const suggestion = suggestTierModels(id, catalog)
     const ids = new Set(catalog.map((m) => m.id))
@@ -354,7 +448,7 @@ export class ConnectionService {
    * effectiveDefault reads that status as 'unknown' until the next definite one.
    */
   private setStatus(id: ConnectionId, status: ConnectionStatus, opts: { definite?: boolean } = {}): ConnectionStatus {
-    if (!isConnectionId(id)) throw new Error('Unknown connection')
+    this.need(id)
     const before = this.effectiveDefault()
     this.statuses[id] = status
     if (opts.definite === false) this.tentative.add(id)
@@ -386,7 +480,7 @@ export class ConnectionService {
     if (s.defaultConnectionChosen === true) return
     // A replaced connection that is no longer configured can never be moved back to: forget it.
     const old = s.defaultConnectionReplaced
-    if (old !== undefined && !(isConnectionId(old) && connectionConfigured(old, s.connections))) {
+    if (old !== undefined && !(isConnectionId(old) && connectionConfigured(old, s))) {
       s = this.deps.settings.set({ ...withoutReplaced(s), defaultConnectionChosen: false })
     }
     const next = this.effectiveDefault()
@@ -401,18 +495,19 @@ export class ConnectionService {
         ? { ...withoutReplaced(s), defaultConnection: next, defaultConnectionChosen: false }
         : { ...s, defaultConnection: next, defaultConnectionChosen: false, defaultConnectionReplaced: replaced ?? s.defaultConnection }
     )
-    const why = back ? `${CONNECTION_LABELS[next]} is connected again` : `${CONNECTION_LABELS[s.defaultConnection]} is not connected`
-    ;(this.deps.logInfo ?? ((m) => console.info(m)))(`Default connection is now ${CONNECTION_LABELS[next]} (automatic: ${why})`)
+    const label = (id: ConnectionId): string => connectionName(id, s)
+    const why = back ? `${label(next)} is connected again` : `${label(s.defaultConnection)} is not connected`
+    ;(this.deps.logInfo ?? ((m) => console.info(m)))(`Default connection is now ${label(next)} (automatic: ${why})`)
   }
 
   /** Whether a connection can be the default now (configured and connected). */
   isUsable(id: ConnectionId): boolean {
-    return connectionUsable(id, this.deps.settings.get().connections, this.statuses[id]?.state)
+    return connectionUsable(id, this.settingsNow(), this.statuses[id]?.state)
   }
 
   /** The refusal for making an unusable connection the default, or null when it is usable. */
   defaultRefusalFor(id: ConnectionId): string | null {
-    return this.isUsable(id) ? null : defaultRefusal(id, this.deps.settings.get().connections)
+    return this.isUsable(id) ? null : defaultRefusal(id, this.settingsNow())
   }
 
   /** Settings as consumers should see them: defaultConnection is the effective default. */
@@ -429,12 +524,12 @@ export class ConnectionService {
       this.deps.settings.set({ ...withoutReplaced(s), defaultConnectionChosen: false })
       this.rewriteDefault()
     } else {
-      if (!isConnectionId(input)) throw new Error('Unknown connection')
+      this.need(input)
       // Re-choosing the stored default needs only that it is still configured (its live state may be anything);
       // any other connection must be usable now.
       const refusal =
         input === s.defaultConnection
-          ? connectionConfigured(input, s.connections) ? null : defaultRefusal(input, s.connections)
+          ? connectionConfigured(input, s) ? null : defaultRefusal(input, s)
           : this.defaultRefusalFor(input)
       if (refusal) throw new Error(refusal)
       this.deps.settings.set({ ...withoutReplaced(s), defaultConnection: input, defaultConnectionChosen: true })
@@ -442,10 +537,25 @@ export class ConnectionService {
     return this.list()
   }
 
+  /**
+   * The stored key of a proxy connection, else a throw: a key that is stored but cannot be read here says why with the store's reason
+   * (Wave 7, 5.4: saved by the OrgAI app and not yet shared, a locked or damaged vault), never "no API key" (which would
+   * send the user to type it again); `missing` is the sentence for a key that is not stored at all.
+   */
+  private proxyKey(proxy: ProxyConnection, missing: string): string {
+    const stored = this.deps.secrets.status(proxySecretKey(proxy.id))
+    if (typeof stored === 'object') throw new Error(`The ${proxy.name} API key cannot be read here: ${stored.unreadable.replace(/[.\s]+$/, '')}.`)
+    const key = this.deps.secrets.get(proxySecretKey(proxy.id))
+    if (!key) throw new Error(missing)
+    return key
+  }
+
   private safeMessage(e: unknown): string {
     let msg = e instanceof Error ? e.message : String(e)
-    const key = this.deps.secrets.get(LITELLM_KEY)
-    if (key) msg = msg.split(key).join('***')
+    for (const p of this.settingsNow().proxies) {
+      const key = this.deps.secrets.get(proxySecretKey(p.id))
+      if (key) msg = msg.split(key).join('***')
+    }
     return msg.slice(0, 200)
   }
 
@@ -457,22 +567,30 @@ export class ConnectionService {
   effectiveDefault(): ConnectionId {
     const s = this.deps.settings.get()
     const states: Partial<Record<ConnectionId, ConnectionStatus['state'] | 'unknown'>> = {}
-    for (const id of CONNECTION_IDS) {
-      if (!connectionConfigured(id, s.connections)) continue
+    for (const id of connectionIds(s)) {
+      if (!connectionConfigured(id, s)) continue
       states[id] = this.tentative.has(id) ? 'unknown' : (this.statuses[id]?.state ?? 'unknown')
     }
-    return effectiveDefaultConnection({ stored: s.defaultConnection, chosen: s.defaultConnectionChosen === true, replaced: s.defaultConnectionReplaced, states })
+    return effectiveDefaultConnection({ stored: s.defaultConnection, chosen: s.defaultConnectionChosen === true, replaced: s.defaultConnectionReplaced, proxies: s.proxies, states })
   }
 
   private info(id: ConnectionId, effective: ConnectionId = this.effectiveDefault()): ConnectionInfo {
-    const connection = this.deps.settings.get().connections[id]
+    const connection = this.need(id)
     const refreshed = this.refreshedAt[id]
     const error = this.modelsErrors[id]
+    const users = isProxyConnection(connection)
+      ? this.deps.projects
+          .list()
+          .filter((p) => projectConnection(p) === id || p.roles.some((r) => roleConnection(r, p) === id))
+          .slice(0, 50)
+          .map((p) => ({ id: p.id, name: p.name }))
+      : undefined
     return {
       connection,
       status: this.statuses[id] ?? { state: 'disconnected' },
       modelCount: this.catalogFor(id).length,
       isDefault: id === effective,
+      ...(users ? { usedBy: users } : {}),
       ...(refreshed ? { modelsRefreshedAt: refreshed } : {}),
       ...(error ? { modelsError: error } : {})
     }
@@ -480,7 +598,7 @@ export class ConnectionService {
 
   async list(): Promise<ConnectionInfo[]> {
     const effective = this.effectiveDefault()
-    return CONNECTION_IDS.map((id) => this.info(id, effective))
+    return this.allIds().map((id) => this.info(id, effective))
   }
 
   /** Probe one connection without touching its catalog or enabled flag. Returns the status (not stored). */
@@ -489,10 +607,12 @@ export class ConnectionService {
     try {
       if (id === 'anthropic') {
         const probe = this.deps.anthropicProbe ?? anthropicStatus
-        return { ...(await probe(s.connections.anthropic.auth)), checkedAt: this.now() }
+        return { ...(await probe(s.connections.anthropic.auth, process.env, { dataDir: this.deps.dataDir, signal: this.stopSignal.signal })), checkedAt: this.now() }
       }
       if (id === 'openai') return await this.probeOpenAI()
-      return await this.probeLiteLLM()
+      const proxy = proxyOf(s, id)
+      if (!proxy) return { state: 'disconnected', detail: 'This connection no longer exists.', checkedAt: this.now() }
+      return await this.probeProxy(proxy)
     } catch (e) {
       return { state: 'error', detail: this.safeMessage(e), checkedAt: this.now() }
     }
@@ -501,32 +621,67 @@ export class ConnectionService {
   private async probeOpenAI(): Promise<ConnectionStatus> {
     const auth = this.deps.settings.get().connections.openai.auth
     const checkedAt = this.now()
+    // Every auth kind runs through the Codex CLI: no supported Codex is an error (never a definite disconnect, which
+    // would move an automatic default connection), so the probe and runs agree (cli-standalone 6.2).
+    const runtime = await (this.deps.codexRuntime ?? (() => checkCodexRuntime()))()
+    if (!runtime.ok) return { state: 'error', detail: runtime.reason, checkedAt }
+    const note = runtime.warning ? ` ${runtime.warning}` : ''
     if (auth.kind === 'apiKey') {
       return this.env(auth.envVar)
-        ? { state: 'connected', detail: `Using ${auth.envVar}`, checkedAt }
+        ? { state: 'connected', detail: `Using ${auth.envVar}${note ? `.${note}` : ''}`, checkedAt }
         : { state: 'disconnected', detail: `${auth.envVar} is not set in OrgAI's environment`, checkedAt }
     }
     const state = await this.withCodex((rpc) => readAccount(rpc))
     const a = state.account
     if (a?.type === 'chatgpt') {
       const account = [a.email, a.planType].filter(Boolean).join(' · ') || 'ChatGPT'
-      return { state: 'connected', detail: 'Signed in with ChatGPT', account, checkedAt }
+      return { state: 'connected', detail: `Signed in with ChatGPT${note ? `.${note}` : ''}`, account, checkedAt }
     }
-    if (a) return { state: 'connected', detail: 'Signed in to Codex', checkedAt }
+    if (a) return { state: 'connected', detail: `Signed in to Codex${note ? `.${note}` : ''}`, checkedAt }
     return { state: 'disconnected', detail: 'Not signed in. Sign in with ChatGPT.', checkedAt }
   }
 
-  private async probeLiteLLM(): Promise<ConnectionStatus> {
-    const conn = this.deps.settings.get().connections.litellm
+  private async probeProxy(conn: ProxyConnection): Promise<ConnectionStatus> {
     const checkedAt = this.now()
-    if (!conn.baseUrl) return { state: 'disconnected', detail: 'Set the proxy base URL.', checkedAt }
-    const key = this.deps.secrets.get(LITELLM_KEY)
-    // A key that is stored but cannot be decrypted (safeStorage failure, another OS keyring) is an error, not a
-    // definite disconnect: it must not move the automatic default.
+    if (!conn.anthropicBaseUrl) return { state: 'disconnected', detail: 'Set the proxy base URL.', checkedAt }
+    // A key that is stored but cannot be read here (Wave 7, 5.4: saved by the app and not yet shared, a locked or damaged
+    // vault, safeStorage failure) is an error with the store's reason, not a definite disconnect: it must not move the
+    // automatic default, and "set it again" would be the wrong advice.
+    const stored = this.deps.secrets.status(proxySecretKey(conn.id))
+    if (typeof stored === 'object') return { state: 'error', detail: stored.unreadable, checkedAt }
+    const key = this.deps.secrets.get(proxySecretKey(conn.id))
     if (!key && conn.hasApiKey) return { state: 'error', detail: 'The stored key could not be read. Set the API key again.', checkedAt }
     if (!key) return { state: 'disconnected', detail: 'Set an API key.', checkedAt }
-    const models = await fetchLiteLLMModels(conn.baseUrl, key, this.deps.fetch ?? fetch)
-    return { state: 'connected', detail: `${models.length} model${models.length === 1 ? '' : 's'} available`, checkedAt }
+    // The list alone answers "reachable and the key works"; prices (LiteLLM /model/info) wait for discovery.
+    let models: ProviderModel[]
+    try {
+      models = await fetchProxyModels(proxyModelsUrl(conn), key, this.deps.fetch ?? fetch, { kind: conn.kind, connection: conn.id, listOnly: true })
+    } catch (e) {
+      const detail = this.safeMessage(e)
+      const refused = /invalid key|\(40[13]\)|\b40[13] from/i.test(detail)
+      const unreachable = !refused && /Could not reach|Timed out|redirected/i.test(detail)
+      const checks: ConnectionChecks = { reached: !unreachable, keyAccepted: refused ? false : null, modelCount: null, reportsPrices: null, reportsSpend: null }
+      return { state: 'error', detail, checkedAt, checks }
+    }
+    // Prices are only known after discovery: until a catalog exists they are undetermined (null).
+    const known = this.discovered[conn.id]
+    const mock = isMockProxyUrl(conn.anthropicBaseUrl) || isMockProxyUrl(proxyModelsUrl(conn))
+    const reportsPrices = mock ? false : known?.length ? known.some((m) => m.price !== undefined) : null
+    let reportsSpend: boolean | null = false
+    if (mock) reportsSpend = false
+    else if (conn.litellmFeatures ?? conn.kind === 'litellm') {
+      try {
+        reportsSpend = (await fetchLiteLLMKeyInfo(conn.anthropicBaseUrl, key, this.deps.fetch ?? fetch)) !== null
+      } catch {
+        reportsSpend = false
+      }
+    }
+    return {
+      state: 'connected',
+      detail: `${models.length} model${models.length === 1 ? '' : 's'} available`,
+      checkedAt,
+      checks: { reached: true, keyAccepted: true, modelCount: models.length, reportsPrices, reportsSpend }
+    }
   }
 
   private env(name: string): string | undefined {
@@ -534,7 +689,7 @@ export class ConnectionService {
   }
 
   async test(id: ConnectionId): Promise<ConnectionStatus> {
-    if (!isConnectionId(id)) throw new Error('Unknown connection')
+    this.need(id)
     return this.setStatus(id, await this.probe(id))
   }
 
@@ -542,54 +697,184 @@ export class ConnectionService {
 
   private saveConnection(c: ProviderConnection): void {
     const current = this.deps.settings.get()
+    if (isProxyConnection(c)) {
+      if (!proxyOf(current, c.id)) throw new Error('Unknown connection')
+      this.deps.settings.setProxies(current.proxies.map((p) => (p.id === c.id ? c : p)))
+      return
+    }
+    if (!isBuiltinConnectionId(c.id)) throw new Error('Unknown connection')
     this.deps.settings.set({ ...current, connections: { ...current.connections, [c.id]: c } })
   }
 
+  /** A proxy record from the renderer, validated over the stored one: id, kind and hasApiKey cannot change. */
+  private editedProxy(old: ProxyConnection, c: unknown): ProxyConnection {
+    const i = (c && typeof c === 'object' ? c : {}) as Partial<ProxyConnection>
+    if (i.litellmFeatures !== undefined && typeof i.litellmFeatures !== 'boolean') throw new Error('LiteLLM reporting must be enabled or disabled')
+    const others = this.settingsNow().proxies.filter((p) => p.id !== old.id).map((p) => p.name)
+    const optional = (v: unknown, label: string): string | undefined => {
+      if (v === undefined || v === null) return undefined
+      if (typeof v === 'string' && !v.trim()) return undefined
+      return normalizeProxyUrl(v, label)
+    }
+    const baseRaw = typeof i.anthropicBaseUrl === 'string' ? i.anthropicBaseUrl : old.anthropicBaseUrl
+    const anthropicBaseUrl = baseRaw.trim() ? normalizeProxyUrl(baseRaw, 'Base URL') : ''
+    const openaiBaseUrl = optional(i.openaiBaseUrl, 'OpenAI base URL')
+    const modelsUrl = optional(i.modelsUrl, 'Models URL')
+    const { openaiBaseUrl: _o, modelsUrl: _m, ...rest } = old
+    return {
+      ...rest,
+      ...(i.litellmFeatures !== undefined ? { litellmFeatures: i.litellmFeatures } : {}),
+      name: cleanProxyName(i.name ?? old.name, others),
+      anthropicBaseUrl,
+      ...(openaiBaseUrl ? { openaiBaseUrl } : {}),
+      ...(modelsUrl ? { modelsUrl } : {}),
+      enabled: typeof i.enabled === 'boolean' ? i.enabled : old.enabled,
+      tierModels: i.tierModels && typeof i.tierModels === 'object' ? { ...i.tierModels } : { ...old.tierModels }
+    }
+  }
+
   async update(c: ProviderConnection): Promise<ConnectionInfo> {
-    if (!c || !isConnectionId(c.id)) throw new Error('Unknown connection')
+    if (!c || typeof c !== 'object') throw new Error('Unknown connection')
+    const old = this.need(c.id)
     const before = this.effectiveDefault()
-    const old = this.deps.settings.get().connections[c.id]
-    const wasConfigured = connectionConfigured(c.id, this.deps.settings.get().connections)
+    const wasConfigured = connectionConfigured(c.id, this.settingsNow())
+    let incoming: ProviderConnection = c
+    if (isProxyConnection(old)) incoming = this.editedProxy(old, c)
+    else if (isProxyConnection(c)) throw new Error('Unknown connection')
     // autoTiers is main-owned (the renderer's copy is ignored): a tier the caller changed is the user's from now on.
     const wasAuto = this.autoTiersOf(c.id, old.tierModels, old.autoTiers, suggestTierModels(c.id, this.catalogFor(c.id)))
-    for (const tier of MODEL_TIERS) if ((c.tierModels?.[tier] ?? '') !== (old.tierModels[tier] ?? '')) wasAuto.delete(tier)
-    // SettingsStore.set keeps the stored hasApiKey and mirrors Anthropic auth into providerAuth.
-    this.saveConnection({ ...c, autoTiers: MODEL_TIERS.filter((t) => wasAuto.has(t)) } as ProviderConnection)
-    const fresh = this.deps.settings.get().connections[c.id]
-    if (c.id === 'litellm' && fresh.id === 'litellm' && old.id === 'litellm' && fresh.baseUrl !== old.baseUrl) {
-      this.setStatus('litellm', { state: 'disconnected', detail: 'Changed. Test and connect to apply.', checkedAt: this.now() }, { definite: false })
+    for (const tier of MODEL_TIERS) if ((incoming.tierModels?.[tier] ?? '') !== (old.tierModels[tier] ?? '')) wasAuto.delete(tier)
+    // The settings store keeps the stored hasApiKey and mirrors Anthropic auth into providerAuth.
+    this.saveConnection({ ...incoming, autoTiers: MODEL_TIERS.filter((t) => wasAuto.has(t)) } as ProviderConnection)
+    const fresh = this.need(c.id)
+    if (isProxyConnection(old) && isProxyConnection(fresh)) {
+      const moved = (['name', 'anthropicBaseUrl', 'openaiBaseUrl', 'modelsUrl'] as const).some((k) => (old[k] ?? '') !== (fresh[k] ?? ''))
+      const oldOrigins = proxyOrigins(old)
+      const newHost = [...proxyOrigins(fresh)].some((o) => !oldOrigins.has(o))
+      if (newHost && fresh.hasApiKey) {
+        // The saved key must never travel to a host the user did not enter it for.
+        this.deps.secrets.delete(proxySecretKey(fresh.id))
+        this.deps.settings.setProxyKeyStored(fresh.id, false)
+        this.setStatus(
+          old.id,
+          { state: 'disconnected', detail: 'The address moved to another host, so the saved key was removed. Enter the key again.', checkedAt: this.now() },
+          { definite: false }
+        )
+      } else if (moved) {
+        this.setStatus(old.id, { state: 'disconnected', detail: 'Changed. Test and connect to apply.', checkedAt: this.now() }, { definite: false })
+      }
     }
     if (!sameTiers(old.tierModels, fresh.tierModels)) {
       this.broadcastRemaps(this.remapConnectionProjects(c.id, fresh.tierModels, old.tierModels, 'tierModels'))
     }
-    // Turning a connection off (Anthropic's Disconnect) or on, or clearing / setting LiteLLM's base URL, changes what
+    // Turning a connection off (Anthropic's Disconnect) or on, or clearing / setting a proxy's base URL, changes what
     // is configured: a definite change.
-    if (old.enabled !== fresh.enabled || wasConfigured !== connectionConfigured(c.id, this.deps.settings.get().connections)) this.rewriteDefault()
+    if (old.enabled !== fresh.enabled || wasConfigured !== connectionConfigured(c.id, this.settingsNow())) this.rewriteDefault()
     this.defaultMayHaveMoved(before)
+    if (isProxyConnection(fresh)) this.deps.broadcast({ type: 'connections.changed' })
     return this.info(c.id)
   }
 
+  /** Throws SecretStore.clearRefusal's sentence for the LiteLLM key (vault damaged; app-only key on a Node host). */
+  private refuseClear(key: string): void {
+    const refusal = this.deps.secrets.clearRefusal(key)
+    if (refusal) throw new Error(refusal)
+  }
+
   async setSecret(input: ConnectionSecretInput): Promise<ConnectionInfo> {
-    if (input?.id !== 'litellm') throw new Error('Only the LiteLLM connection has a stored secret')
-    const key = input.apiKey?.trim() || null
+    const id = input?.id
+    const proxy = typeof id === 'string' ? proxyOf(this.settingsNow(), id) : undefined
+    if (!proxy) {
+      if (isBuiltinConnectionId(id)) throw new Error('Only proxy connections have a stored secret')
+      throw new Error('Unknown connection')
+    }
+    const key = cleanProxyKey(input.apiKey)
+    // An explicit clear is checked before anything changes (Wave 7, 5.5 Deletes).
+    if (!key) this.refuseClear(proxySecretKey(proxy.id))
     const before = this.effectiveDefault()
-    this.deps.secrets.set(LITELLM_KEY, key)
-    this.deps.settings.setLiteLLMKeyStored(!!key)
+    this.deps.secrets.set(proxySecretKey(proxy.id), key)
+    this.deps.settings.setProxyKeyStored(proxy.id, !!key)
     // A saved key waits for Test and connect (tentative); a removed key is a definite disconnect.
     this.setStatus(
-      'litellm',
+      proxy.id,
       { state: 'disconnected', detail: key ? 'Key saved. Test and connect to apply.' : 'Set an API key.', checkedAt: this.now() },
       { definite: !key }
     )
     this.defaultMayHaveMoved(before)
-    return this.info('litellm')
+    this.deps.broadcast({ type: 'connections.changed' })
+    return this.info(proxy.id)
+  }
+
+  /**
+   * Add a proxy connection. Enabled and not yet connected: the caller connects or tests next. Refused with a readable
+   * message at PROXIES_MAX, on a duplicate or invalid name, or on an invalid URL / kind / key. The key (optional) is
+   * stored like setSecret and never returned.
+   */
+  async createProxy(input: ProxyCreateInput): Promise<ConnectionInfo> {
+    if (!input || typeof input !== 'object') throw new Error('Give the connection a name and a base URL.')
+    const s = this.settingsNow()
+    if (s.proxies.length >= PROXIES_MAX) throw new Error(`You can add at most ${PROXIES_MAX} proxy connections. Remove one first.`)
+    const name = cleanProxyName(input.name, s.proxies.map((p) => p.name))
+    const kind = input.kind === undefined ? 'openai-compatible' : PROXY_KINDS.find((k) => k === input.kind)
+    if (!kind) throw new Error('Unknown proxy kind')
+    if (input.litellmFeatures !== undefined && typeof input.litellmFeatures !== 'boolean') throw new Error('LiteLLM reporting must be enabled or disabled')
+    const anthropicBaseUrl = normalizeProxyUrl(input.anthropicBaseUrl, 'Base URL')
+    const openaiBaseUrl = input.openaiBaseUrl?.trim() ? normalizeProxyUrl(input.openaiBaseUrl, 'OpenAI base URL') : undefined
+    const modelsUrl = input.modelsUrl?.trim() ? normalizeProxyUrl(input.modelsUrl, 'Models URL') : undefined
+    const key = cleanProxyKey(input.apiKey)
+    const id = newProxyId([...s.proxies.map((p) => p.id), ...this.removedProxyIds])
+    const before = this.effectiveDefault()
+    if (key) this.deps.secrets.set(proxySecretKey(id), key)
+    try {
+      this.deps.settings.setProxies([
+        ...s.proxies,
+        { id, name, kind, ...(input.litellmFeatures !== undefined ? { litellmFeatures: input.litellmFeatures } : {}), anthropicBaseUrl, ...(openaiBaseUrl ? { openaiBaseUrl } : {}), ...(modelsUrl ? { modelsUrl } : {}), enabled: true, hasApiKey: !!key, tierModels: {} }
+      ])
+    } catch (e) {
+      this.deps.secrets.delete(proxySecretKey(id))
+      throw e
+    }
+    this.setStatus(id, { state: 'disconnected', detail: 'Not connected yet. Test and connect.', checkedAt: this.now() }, { definite: false })
+    this.defaultMayHaveMoved(before)
+    this.deps.broadcast({ type: 'connections.changed' })
+    return this.info(id)
+  }
+
+  /**
+   * Delete a proxy connection: its record, stored key, catalog entries and status. Refused while any project's
+   * connection is this proxy. A chosen default pointing at it returns to automatic. Run records and usage rows that
+   * name the id are kept.
+   */
+  async removeProxy(id: string): Promise<ProxyRemoveResult> {
+    const proxy = typeof id === 'string' ? proxyOf(this.settingsNow(), id) : undefined
+    if (!proxy) throw new Error('Unknown connection')
+    const users = this.deps.projects.list().filter((p) => projectConnection(p) === proxy.id || p.roles.some((r) => roleConnection(r, p) === proxy.id))
+    if (users.length) {
+      const shown = users.slice(0, 5).map((p) => p.name)
+      const more = users.length > 5 ? ` and ${users.length - 5} more` : ''
+      throw new Error(`${proxy.name} is used by ${shown.join(', ')}${more}. Move those projects to another connection first.`)
+    }
+    const before = this.effectiveDefault()
+    const s = this.settingsNow()
+    this.deps.settings.setProxies(s.proxies.filter((p) => p.id !== proxy.id))
+    this.deps.secrets.delete(proxySecretKey(proxy.id))
+    delete this.discovered[proxy.id]
+    delete this.refreshedAt[proxy.id]
+    delete this.modelsErrors[proxy.id]
+    delete this.statuses[proxy.id]
+    this.tentative.delete(proxy.id)
+    this.removedProxyIds.add(proxy.id)
+    this.persistModels()
+    this.rewriteDefault()
+    this.defaultMayHaveMoved(before)
+    this.deps.broadcast({ type: 'connections.changed' })
+    return { connections: await this.list() }
   }
 
   // ---------- connect / logout ----------
 
   async connect(id: ConnectionId): Promise<ConnectionInfo> {
-    if (!isConnectionId(id)) throw new Error('Unknown connection')
-    const conn = this.deps.settings.get().connections[id]
+    const conn = this.need(id)
     if (!conn.enabled) this.saveConnection({ ...conn, enabled: true } as ProviderConnection)
     this.setStatus(id, { state: 'connecting', checkedAt: this.now() })
     const status = this.setStatus(id, await this.probe(id))
@@ -597,6 +882,10 @@ export class ConnectionService {
       try {
         const found = await this.discover(id)
         const results = Array.isArray(found) ? this.applyCatalog(id, found, ['connected', 'catalog']) : this.reapplyTiers(id)
+        if (Array.isArray(found) && status.checks) {
+          // Discovery knows what the list-only probe could not: whether any model carries a price.
+          this.setStatus(id, { ...status, checks: { ...status.checks, modelCount: found.length, reportsPrices: found.some((m) => m.price !== undefined) } })
+        }
         this.broadcastRemaps(results)
       } catch (e) {
         this.setStatus(id, { state: 'error', detail: this.safeMessage(e), checkedAt: this.now() })
@@ -613,7 +902,7 @@ export class ConnectionService {
   }
 
   async logout(id: ConnectionId): Promise<ConnectionInfo> {
-    if (!isConnectionId(id)) throw new Error('Unknown connection')
+    this.need(id)
     const before = this.effectiveDefault()
     const checkedAt = this.now()
     if (id === 'openai') {
@@ -626,10 +915,13 @@ export class ConnectionService {
         }
       }
       this.setStatus('openai', { state: 'disconnected', detail: 'Signed out', checkedAt })
-    } else if (id === 'litellm') {
-      this.deps.secrets.delete(LITELLM_KEY)
-      this.deps.settings.setLiteLLMKeyStored(false)
-      this.setStatus('litellm', { state: 'disconnected', detail: 'API key removed', checkedAt })
+    } else if (!isBuiltinConnectionId(id)) {
+      // Removing the key is the user's explicit clear (5.5): refused before anything changes when it cannot be recorded.
+      this.refuseClear(proxySecretKey(id))
+      this.deps.secrets.clear(proxySecretKey(id))
+      this.deps.settings.setProxyKeyStored(id, false)
+      this.setStatus(id, { state: 'disconnected', detail: 'API key removed', checkedAt })
+      this.deps.broadcast({ type: 'connections.changed' })
     } else {
       this.setStatus('anthropic', { state: 'disconnected', detail: 'Marked disconnected', checkedAt })
     }
@@ -780,12 +1072,31 @@ export class ConnectionService {
 
   /** Apply a remap to a project and keep provider.id on the adapter its models need. */
   private remapOne(project: Project, id: ConnectionId, tierModels: Tiers, previous: Tiers | undefined, reason: RemapReason): { project: Project; result: RemapResult } {
-    const out = remapProject(project, { connection: id, tierModels, previousTierModels: previous, catalog: this.catalogFor(id), reason })
+    // Only roles running on `id` (roleConnection) are touched; on 'switched' only roles without their own connection.
+    const include = (role: Project['roles'][number]): boolean =>
+      reason === 'switched' ? role.reportsTo === null || !role.connection : roleConnection(role, project) === id
+    const out = remapProject(project, { connection: id, tierModels, previousTierModels: previous, catalog: this.catalogFor(id), reason, include })
     let next = out.project
     if (reason === 'switched' || out.result.changes.length) {
       next = this.withAdapter(next)
     }
     return { project: next, result: out.result }
+  }
+
+  /** Remap every connection a project's roles run on, each through its own tier mapping; one merged result. */
+  private remapEachConnection(project: Project, reason: RemapReason): { project: Project; result: RemapResult } {
+    const own = projectConnection(project)
+    let current = project
+    const changes: RemapResult['changes'] = []
+    const ids = new Set<ConnectionId>([own, ...project.roles.map((r) => roleConnection(r, project))])
+    for (const id of ids) {
+      const record = this.record(id)
+      if (!record) continue
+      const out = this.remapOne(current, id, record.tierModels, undefined, reason)
+      current = out.project
+      changes.push(...out.result.changes)
+    }
+    return { project: current, result: { projectId: project.id, connection: own, reason, changes } }
   }
 
   /**
@@ -796,7 +1107,7 @@ export class ConnectionService {
     const settings = this.effectiveSettings()
     const id = creationConnection(settings)
     if (id === 'anthropic') return project
-    const tierModels = settings.connections[id].tierModels
+    const tierModels = this.record(id)?.tierModels ?? {}
     // A tiered role without a mapping would keep its Anthropic alias, which the other connection cannot serve.
     // Stay on Anthropic then; the user maps the tier in Settings > Connections and switches the project.
     const unmapped = project.roles.some((r) => r.tier && r.model !== 'inherit' && !tierModels[r.tier]?.trim())
@@ -804,13 +1115,13 @@ export class ConnectionService {
       console.warn(`New project stays on Anthropic: the ${id} connection has no model for every tier the roles use.`)
       return project
     }
-    const provider = { ...project.provider, connection: id, label: connectionProviderLabel(id, settings.providerAuth) }
+    const provider = { ...project.provider, connection: id, label: connectionProviderLabel(id, settings.providerAuth, settings) }
     return this.remapOne({ ...project, provider }, id, tierModels, undefined, 'switched').project
   }
 
   /** The agent importer's view of a connection: its catalog and tier mapping (src/main/setup/import/model.ts). */
-  importModelContext(id: ConnectionId): { connection: ConnectionId; catalog: ProviderModel[]; tierModels: Tiers } {
-    return { connection: id, catalog: this.catalogFor(id), tierModels: { ...this.deps.settings.get().connections[id].tierModels } }
+  importModelContext(id: ConnectionId): { connection: ConnectionId; connectionName: string; catalog: ProviderModel[]; tierModels: Tiers } {
+    return { connection: id, connectionName: connectionName(id, this.deps.settings.get()), catalog: this.catalogFor(id), tierModels: { ...(this.record(id)?.tierModels ?? {}) } }
   }
 
   /** Keep provider.id on the adapter the project's models need (mock projects are left alone). Pure. */
@@ -823,7 +1134,7 @@ export class ConnectionService {
   private remapConnectionProjects(id: ConnectionId, tierModels: Tiers, previous: Tiers | undefined, reason: RemapReason): RemapResult[] {
     const results: RemapResult[] = []
     for (const p of this.deps.projects.list()) {
-      if (projectConnection(p) !== id) continue
+      if (projectConnection(p) !== id && !p.roles.some((r) => roleConnection(r, p) === id)) continue
       const { project, result } = this.remapOne(p, id, tierModels, previous, reason)
       if (!result.changes.length) continue
       this.deps.projects.save(project)
@@ -837,14 +1148,15 @@ export class ConnectionService {
     const stored = this.deps.projects.get(input.projectId)
     if (!stored) throw new Error('Project not found')
     const connection = input.connection
-    if (connection && !CONNECTION_IDS.includes(connection)) throw new Error('Unknown connection')
+    if (connection !== undefined) this.need(connection)
     const id = connection ?? projectConnection(stored)
     let project = stored
     if (connection) {
-      project = { ...stored, provider: { ...stored.provider, connection, label: PROVIDER_LABEL[connection] } }
+      project = { ...stored, provider: { ...stored.provider, connection, label: providerLabelFor(connection, this.settingsNow()) } }
     }
-    const tierModels = this.deps.settings.get().connections[id].tierModels
-    return this.remapOne(project, id, tierModels, undefined, connection ? 'switched' : 'manual')
+    if (!connection) return this.remapEachConnection(project, 'manual')
+    const tierModels = this.need(id).tierModels
+    return this.remapOne(project, id, tierModels, undefined, 'switched')
   }
 
   remapModels(input: RemapModelsInput): RemapModelsOutput {
@@ -860,15 +1172,72 @@ export class ConnectionService {
 
   // ---------- per-run model access ----------
 
+  /** Stale tier mappings already logged by anthropicTierEnv (`VAR=id`), so each is said once per process. */
+  private staleTierWarned = new Set<string>()
+
   runConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
-    const built = this.buildRunConnection(project, choice)
+    const built = { ...this.buildRunConnection(project, choice), name: connectionName(choice.connection, this.deps.settings.get()) }
     if (choice.adapter === 'mock') return built
     const id = choice.connection
     return {
       ...built,
-      tierModels: { ...this.deps.settings.get().connections[id].tierModels },
+      tierModels: { ...(this.record(id)?.tierModels ?? {}) },
       models: this.catalogFor(id).map((m) => m.id)
     }
+  }
+
+  /**
+   * Multi-provider org charts: the RunConnection of a bridged role's child session (AdapterChoice.bridged entry), with
+   * the same secret rules as runConnection. The project's own auth (an API-key env var) applies only when the target
+   * is the project's connection; otherwise the connection's own record decides (the anthropic login or its key var).
+   * Throws a readable error naming the connection when it cannot be used (no key, no base URL, gone).
+   */
+  runConnectionFor(project: Project, target: { connection: ConnectionId; adapter: ProviderId }): RunConnection {
+    const own = projectConnection(project) === target.connection
+    const choice: AdapterChoice = { adapter: target.adapter, connection: target.connection, mismatched: [] }
+    const built = this.runConnection(own ? project : undefined, choice)
+    // Another connection's run gets no project (its auth must not apply), so the staffing variables are added here.
+    if (!own && target.connection === 'anthropic' && target.adapter === 'claude' && staffingModeOf(project) === 'auto') {
+      return { ...built, env: { ...(built.env ?? {}), ...this.anthropicTierEnv() } }
+    }
+    return built
+  }
+
+  /**
+   * Run staffing on the Anthropic connection (orchestration-efficiency 4.3): the ANTHROPIC_DEFAULT_*_MODEL variables a
+   * proxy sets, for each tier the connection maps to a concrete model id, so that an alias written at spawn (the only
+   * model a spawn may carry) means the connection's model for that tier. A value that is itself an alias or tier name
+   * is skipped (the alias already resolves natively). Only `sonnet` on a subscription login is live-checked (smoke
+   * check 10); the other three variables and an API-key login are unverified.
+   */
+  private anthropicTierEnv(): Record<string, string> {
+    const t = this.record('anthropic')?.tierModels ?? {}
+    const env: Record<string, string> = {}
+    const catalog = this.catalogFor('anthropic')
+    const set = (name: string, value: string | undefined): void => {
+      const v = value?.trim()
+      // Also an alias with a context suffix ("sonnet[1m]"): mapping an alias to itself would not resolve.
+      if (!v || settingTier(v.replace(/\[[^\]]*\]$/, '')) !== undefined) return
+      // Never force an alias onto an older model of its family than the CLI serves for it (or than the catalog lists):
+      // the variable moves every spawn, the 'default' model and an alias root onto that id, and an older Claude model
+      // can have a fifth of the context window (claude-opus-4-5: 200k, compacting at 167k; claude-opus-5-5: 1M). The
+      // alias then resolves natively. Fixed by changing the tier mapping in Settings > Connections.
+      const newer = newerClaudeModel(v, catalog)
+      if (newer) {
+        const key = `${name}=${v}`
+        if (!this.staleTierWarned.has(key)) {
+          this.staleTierWarned.add(key)
+          ;(this.deps.logInfo ?? ((m) => console.info(m)))(`Anthropic tier mapping names ${v}, older than ${newer}; ${name} is not set, so the alias runs on the CLI's own current model.`)
+        }
+        return
+      }
+      env[name] = v
+    }
+    set('ANTHROPIC_DEFAULT_FABLE_MODEL', t.top)
+    set('ANTHROPIC_DEFAULT_OPUS_MODEL', t.deep)
+    set('ANTHROPIC_DEFAULT_SONNET_MODEL', t.everyday)
+    set('ANTHROPIC_DEFAULT_HAIKU_MODEL', t.fast)
+    return env
   }
 
   private buildRunConnection(project: Project | undefined, choice: AdapterChoice): RunConnection {
@@ -881,7 +1250,9 @@ export class ConnectionService {
       // Lets one-shot completions get the key even when the env var is not literally ANTHROPIC_API_KEY.
       const auth = project?.provider.auth ?? settings.connections.anthropic.auth
       const key = auth.kind === 'apiKey' ? this.env(auth.envVar) : undefined
-      return { ...base, env: key ? { ANTHROPIC_API_KEY: key } : {} }
+      // Run staffing: only for a project the harness staffs ('fixed' keeps today's environment exactly).
+      const tiers = choice.adapter === 'claude' && project && staffingModeOf(project) === 'auto' ? this.anthropicTierEnv() : {}
+      return { ...base, env: { ...tiers, ...(key ? { ANTHROPIC_API_KEY: key } : {}) } }
     }
     if (id === 'openai') {
       const auth = settings.connections.openai.auth
@@ -890,16 +1261,16 @@ export class ConnectionService {
       if (!apiKey) throw new Error(`${auth.envVar} is not set in OrgAI's environment.`)
       return { ...base, codexAuth: 'apiKey', apiKey, env: codexHome() }
     }
-    const conn = settings.connections.litellm
-    const key = this.deps.secrets.get(LITELLM_KEY)
-    if (!conn.baseUrl) throw new Error('LiteLLM has no base URL. Set it in Settings > Connections.')
-    if (!key) throw new Error('LiteLLM has no API key. Set it in Settings > Connections.')
-    const baseUrl = normalizeBaseUrl(conn.baseUrl)
-    // Prices from /model/info (catalog); runs on models without one get no estimate.
-    const pricing = pricingFromCatalog(this.catalogFor('litellm'))
+    const conn = proxyOf(settings, id)
+    if (!conn) throw new Error('This connection no longer exists. Pick another one for the project in Settings > Connections.')
+    if (!conn.anthropicBaseUrl) throw new Error(`${conn.name} has no base URL. Set it in Settings > Connections.`)
+    const key = this.proxyKey(conn, `${conn.name} has no API key. Set it in Settings > Connections.`)
+    const baseUrl = normalizeBaseUrl(conn.anthropicBaseUrl)
+    // Prices from the catalog (LiteLLM /model/info only); runs on models without one get no estimate.
+    const pricing = pricingFromCatalog(this.catalogFor(conn.id))
     const priced = pricing ? { pricing } : {}
     if (choice.adapter === 'codex') {
-      return { ...base, codexAuth: 'apiKey', apiKey: key, openaiBaseUrl: `${baseUrl}/v1`, env: codexHome(), ...priced }
+      return { ...base, codexAuth: 'apiKey', apiKey: key, openaiBaseUrl: proxyOpenAIBase(conn), env: codexHome(), ...priced }
     }
     const env: Record<string, string> = { ANTHROPIC_BASE_URL: baseUrl, ANTHROPIC_AUTH_TOKEN: key }
     const t = conn.tierModels
@@ -917,7 +1288,7 @@ export class ConnectionService {
    */
   fastModel(choice: Pick<AdapterChoice, 'adapter' | 'connection'>): string | undefined {
     if (choice.adapter === 'mock') return undefined
-    const conn = this.deps.settings.get().connections[choice.connection]
+    const conn = this.record(choice.connection)
     if (!conn) return undefined
     const fast = conn.tierModels.fast?.trim()
     if (fast) return fast
@@ -931,11 +1302,11 @@ export class ConnectionService {
   // ---------- scheduled discovery ----------
 
   private configured(id: ConnectionId): boolean {
-    const conn = this.deps.settings.get().connections[id]
-    if (!conn.enabled) return false
+    const conn = this.record(id)
+    if (!conn?.enabled) return false
     if (id === 'anthropic') return true
-    if (id === 'openai') return conn.id === 'openai' && conn.auth.kind === 'chatgpt'
-    return !!(conn as { baseUrl?: string }).baseUrl && !!this.deps.secrets.get(LITELLM_KEY)
+    if (id === 'openai') return !isProxyConnection(conn) && conn.id === 'openai' && conn.auth.kind === 'chatgpt'
+    return isProxyConnection(conn) && !!conn.anthropicBaseUrl && !!this.deps.secrets.get(proxySecretKey(conn.id))
   }
 
   /**
@@ -947,7 +1318,7 @@ export class ConnectionService {
     this.discoveryBusy = true
     try {
       const results: RemapResult[] = []
-      for (const id of CONNECTION_IDS) {
+      for (const id of this.allIds()) {
         if (this.disposed) break
         if (!this.configured(id)) continue
         const at = this.refreshedAt[id]
@@ -1007,34 +1378,37 @@ export class ConnectionService {
   }
 
   /**
-   * The LiteLLM virtual key's spend and budget (GET /key/info) plus its spend by UTC calendar period (the daily
-   * activity routes, keyed by the key's hash; a failure there only sets `spend.periodsNote`), or null when LiteLLM
-   * is off, has no base URL or key, is not in use (neither the default connection nor any project's,
-   * `connectionInUse`) or the proxy did not answer /key/info with a spend (no DB, refused, timeout, junk). Never
-   * throws; the key is never logged. `updatedAt` is the instant the periods were computed from.
+   * One UsageStatus per enabled, configured, in-use proxy with LiteLLM reporting enabled: its spend and budget (GET
+   * /key/info) plus its spend by UTC calendar period (the daily activity routes, keyed by the key's hash; a failure
+   * there only sets `spend.periodsNote`). `connection` is that proxy's id. A proxy that is off, has no base URL or key,
+   * is not in use (neither the default connection nor any project's, `connectionInUse`), has reporting disabled, is the
+   * ORGAI_MOCK=1 mock host, or whose /key/info gave no spend (no DB, refused, timeout, junk) yields nothing. Never
+   * throws; no key is logged. `updatedAt` is the instant the periods were computed from.
    */
-  async probeLiteLLMUsage(): Promise<UsageStatus | null> {
+  async probeProxyUsages(): Promise<UsageStatus[]> {
     const settings = this.effectiveSettings()
-    const conn = settings.connections.litellm
-    if (!conn.enabled || !conn.baseUrl) return null
-    if (!connectionInUse('litellm', settings, this.deps.projects.list())) return null
-    const key = this.deps.secrets.get(LITELLM_KEY)
-    if (!key) return null
-    try {
-      const now = this.now()
-      const spend = await fetchLiteLLMSpend(conn.baseUrl, key, this.deps.fetch ?? fetch, now)
-      if (!spend) return null
-      return { connection: 'litellm', authMode: 'apiKey', subscriptionType: null, available: true, windows: {}, spend, updatedAt: now }
-    } catch {
-      return null
+    const out: UsageStatus[] = []
+    for (const conn of settings.proxies) {
+      if (!(conn.litellmFeatures ?? conn.kind === 'litellm') || !conn.enabled || !conn.anthropicBaseUrl) continue
+      if (isMockProxyUrl(conn.anthropicBaseUrl) || isMockProxyUrl(proxyModelsUrl(conn))) continue
+      if (!connectionInUse(conn.id, settings, this.deps.projects.list())) continue
+      const key = this.deps.secrets.get(proxySecretKey(conn.id))
+      if (!key) continue
+      try {
+        const now = this.now()
+        const spend = await fetchLiteLLMSpend(conn.anthropicBaseUrl, key, this.deps.fetch ?? fetch, now)
+        if (spend) out.push({ connection: conn.id, authMode: 'apiKey', subscriptionType: null, available: true, windows: {}, spend, updatedAt: now })
+      } catch {
+        // a proxy that cannot report spend simply shows none
+      }
     }
+    return out
   }
 
   /** Kick off background status probes for enabled connections. Never blocks or throws. */
   init(): void {
-    const s = this.deps.settings.get()
-    for (const id of CONNECTION_IDS) {
-      if (!s.connections[id].enabled) continue
+    for (const id of this.allIds()) {
+      if (!this.record(id)?.enabled) continue
       this.statuses[id] = { state: 'connecting' }
       void this.probe(id).then((status) => {
         if (!this.disposed) this.setStatus(id, status)
@@ -1050,8 +1424,14 @@ export class ConnectionService {
     return this.deps.projects.migrateAll()
   }
 
+  /** Host drain: stop the `claude auth status` children and start no more (the drain then waits for their exit). */
+  abortProbes(): void {
+    this.stopSignal.abort()
+  }
+
   dispose(): void {
     this.disposed = true
+    this.stopSignal.abort()
     for (const t of this.discoveryTimers.splice(0)) {
       clearTimeout(t)
       clearInterval(t)

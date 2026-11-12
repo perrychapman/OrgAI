@@ -1,8 +1,13 @@
 import { createHash } from 'node:crypto'
 import { SPEND_PERIOD_DAYS, SPEND_PERIOD_NOTES, type ModelPrice, type ProviderModel, type SpendPeriod, type SpendPeriodsNote, type UsageSpend } from '@shared/types'
-import { makeDiscoveredModel } from './catalog'
+import { proxyModelFamily } from '@shared/defaults'
+import type { ProxyKind } from '@shared/types'
+import { classifyFamily, cleanOwnedBy, makeDiscoveredModel } from './catalog'
 import { validModelId } from './codexAccount'
+import { hiddenCharIn } from '../capabilities/sanitize'
+import { MOCK_BAD_KEY, isMockProxyUrl, mockProxyModels, normalizeProxyUrl } from './proxy'
 import { sanitizeModelPrice } from '../runtime/pricing'
+import { cancelResponseBody, readCappedResponseText } from '../http/readCapped'
 
 /**
  * LiteLLM proxy discovery. UNVERIFIED against a live proxy (written from LiteLLM's documented API):
@@ -38,21 +43,15 @@ type FetchLike = typeof fetch
 
 /** Validate and normalize a proxy base URL (no trailing slash). Throws a short human error. */
 export function normalizeBaseUrl(raw: string): string {
-  const text = raw.trim()
-  if (!text) throw new Error('LiteLLM base URL is empty')
-  let url: URL
-  try {
-    url = new URL(text)
-  } catch {
-    throw new Error(`"${text}" is not a valid URL`)
-  }
-  const local = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname)
-  if (url.protocol === 'http:') {
-    if (!local) throw new Error('LiteLLM over http is only allowed for localhost. Use https.')
-  } else if (url.protocol !== 'https:') {
-    throw new Error(`Unsupported URL scheme ${url.protocol} (use https)`)
-  }
-  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`
+  return normalizeProxyUrl(raw, 'Base URL')
+}
+
+/** Remote text for a status line: whitespace collapsed, control / zero-width / bidi characters dropped. */
+function printableText(s: string): string {
+  return Array.from(s.replace(/\s+/g, ' '))
+    .filter((c) => !hiddenCharIn(c))
+    .join('')
+    .trim()
 }
 
 function hostOf(base: string): string {
@@ -68,9 +67,14 @@ function headers(key: string): Record<string, string> {
 }
 
 async function getJson(path: string, base: string, key: string, fetchImpl: FetchLike): Promise<unknown> {
+  return getJsonUrl(`${base}${path}`, path, base, key, fetchImpl)
+}
+
+/** GET a full URL; `path` is what error messages call it, `base` only names the host. */
+async function getJsonUrl(url: string, path: string, base: string, key: string, fetchImpl: FetchLike): Promise<unknown> {
   let res: Response
   try {
-    res = await fetchImpl(`${base}${path}`, {
+    res = await fetchImpl(url, {
       method: 'GET',
       headers: headers(key),
       redirect: 'error',
@@ -83,13 +87,18 @@ async function getJson(path: string, base: string, key: string, fetchImpl: Fetch
     throw new Error(`Could not reach ${hostOf(base)}`)
   }
   if (!res.ok) {
-    let reason = res.statusText
-    if (res.status === 401 || res.status === 403) reason = 'invalid key'
+    // statusText is remote-controlled too. Redact the complete key before bounding this fallback string.
+    let reason = printableText(res.statusText.split(key).join('***')).slice(0, 120)
+    if (res.status === 401 || res.status === 403) {
+      reason = 'invalid key'
+      await cancelResponseBody(res)
+    }
     else {
       try {
-        const body = (await res.json()) as { error?: { message?: unknown } | string; detail?: unknown }
+        const text = await readCappedResponseText(res, LITELLM_MAX_BODY_BYTES)
+        const body = JSON.parse(text) as { error?: { message?: unknown } | string; detail?: unknown }
         const msg = typeof body.error === 'string' ? body.error : body.error?.message ?? body.detail
-        if (typeof msg === 'string' && msg) reason = msg.split(key).join('***').slice(0, 120)
+        if (typeof msg === 'string' && msg) reason = printableText(msg.split(key).join('***')).slice(0, 120)
       } catch {
         // keep statusText
       }
@@ -98,7 +107,7 @@ async function getJson(path: string, base: string, key: string, fetchImpl: Fetch
   }
   let text: string
   try {
-    text = await readCapped(res, LITELLM_MAX_BODY_BYTES)
+    text = await readCappedResponseText(res, LITELLM_MAX_BODY_BYTES)
   } catch {
     throw new Error(`${path} response was too large or unreadable`)
   }
@@ -119,10 +128,13 @@ async function getStatusJson(url: string, key: string, fetchImpl: FetchLike): Pr
   } catch {
     return { kind: 'failed' }
   }
-  if (!res.ok) return { kind: 'status', status: res.status }
+  if (!res.ok) {
+    await cancelResponseBody(res)
+    return { kind: 'status', status: res.status }
+  }
   let text: string
   try {
-    text = await readCapped(res, LITELLM_MAX_BODY_BYTES)
+    text = await readCappedResponseText(res, LITELLM_MAX_BODY_BYTES)
   } catch {
     return { kind: 'failed' }
   }
@@ -131,31 +143,6 @@ async function getStatusJson(url: string, key: string, fetchImpl: FetchLike): Pr
   } catch {
     return { kind: 'failed' }
   }
-}
-
-/** The body as text, failing once it passes `max` bytes (the stream is cancelled). */
-async function readCapped(res: Response, max: number): Promise<string> {
-  const declared = Number(res.headers?.get?.('content-length'))
-  if (Number.isFinite(declared) && declared > max) throw new Error('too large')
-  if (!res.body) {
-    const t = await res.text()
-    if (t.length > max) throw new Error('too large')
-    return t
-  }
-  const reader = res.body.getReader()
-  const chunks: Uint8Array[] = []
-  let size = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    size += value.byteLength
-    if (size > max) {
-      await reader.cancel().catch(() => undefined)
-      throw new Error('too large')
-    }
-    chunks.push(value)
-  }
-  return Buffer.concat(chunks).toString('utf8')
 }
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {})
@@ -266,6 +253,83 @@ export async function fetchLiteLLMModels(baseUrl: string, key: string, fetchImpl
     // best effort: /model/info is often admin-only
   }
   return buildLiteLLMModels(ids, info)
+}
+
+/** The entries of an OpenAI-style models body with their sanitized `owned_by`. Tolerates a bare array and string entries. */
+export function parseProxyModelList(body: unknown): { id: string; ownedBy?: string }[] {
+  const list = Array.isArray(body) ? body : Array.isArray(obj(body).data) ? (obj(body).data as unknown[]) : []
+  const out = new Map<string, { id: string; ownedBy?: string }>()
+  for (const item of list) {
+    if (out.size >= LITELLM_MAX_MODELS) break
+    const id = typeof item === 'string' ? item.trim() : str(obj(item).id) ?? str(obj(item).model_name)
+    if (!id || id.length > LITELLM_MAX_ID_CHARS || out.has(id)) continue
+    const ownedBy = typeof item === 'string' ? undefined : cleanOwnedBy(obj(item).owned_by)
+    out.set(id, { id, ...(ownedBy ? { ownedBy } : {}) })
+  }
+  return [...out.values()]
+}
+
+export interface FetchProxyModelsOptions {
+  /** Legacy reporting default; litellmFeatures explicitly overrides it. */
+  kind: ProxyKind
+  litellmFeatures?: boolean
+  /** The proxy's connection id, stamped on every catalog entry. */
+  connection: string
+  /** The Anthropic base URL (root) the optional LiteLLM /model/info route hangs off. */
+  baseUrl?: string
+  /** Only the models URL (no /model/info), for a status probe. */
+  listOnly?: boolean
+}
+
+/**
+ * Discover a proxy's models: GET <modelsUrl> with the key as Bearer (redirects refused, 10 s, 5 MB, at most
+ * LITELLM_MAX_MODELS ids that pass validModelId). Each entry gets `family = proxyModelFamily(id, ownedBy)`, its
+ * adapter and `ownedBy`. With reporting enabled (litellmFeatures, falling back to kind === 'litellm'), /model/info
+ * adds prices, upstream and context window (best effort: any failure only means no metadata). Without opt-in,
+ * discovery calls only the models URL. With
+ * ORGAI_MOCK=1 the mock proxy host answers without network (proxy.ts). Throws a short readable Error; the key is
+ * never in the message.
+ */
+export async function fetchProxyModels(modelsUrl: string, key: string, fetchImpl: FetchLike = fetch, opts: FetchProxyModelsOptions): Promise<ProviderModel[]> {
+  if (isMockProxyUrl(modelsUrl)) {
+    if (key === MOCK_BAD_KEY) throw new Error('The key was refused (401).')
+    return mockProxyModels(opts.connection)
+  }
+  const url = normalizeProxyUrlForFetch(modelsUrl)
+  const entries = parseProxyModelList(await getJsonUrl(url, new URL(url).pathname, new URL(url).origin, key, fetchImpl))
+  let info = new Map<string, ModelInfoEntry>()
+  if ((opts.litellmFeatures ?? opts.kind === 'litellm') && opts.baseUrl && !opts.listOnly) {
+    try {
+      info = parseModelInfo(await getJson('/model/info', normalizeBaseUrl(opts.baseUrl), key, fetchImpl))
+    } catch {
+      // best effort: /model/info is often admin-only or absent
+    }
+  }
+  const models: ProviderModel[] = []
+  for (const { id, ownedBy } of entries) {
+    if (models.length >= LITELLM_MAX_MODELS) break
+    if (!validModelId(id)) continue
+    const e = info.get(id)
+    if (e?.mode && !CHAT_MODES.has(e.mode)) continue
+    let family = proxyModelFamily(id, ownedBy)
+    if (family === 'other' && e?.litellmProvider) family = classifyFamily(id, e.litellmProvider)
+    models.push(
+      makeDiscoveredModel(opts.connection, {
+        id,
+        family,
+        ownedBy,
+        litellmProvider: e?.litellmProvider,
+        contextWindow: e?.contextWindow,
+        price: e?.price,
+        upstream: e?.upstream
+      })
+    )
+  }
+  return models
+}
+
+function normalizeProxyUrlForFetch(url: string): string {
+  return normalizeProxyUrl(url, 'Models URL')
 }
 
 /** Epoch ms from an ISO string or an epoch number (seconds or ms); null otherwise. */

@@ -665,6 +665,8 @@ try {
     // After the user moved the view: the same part of the graph stays on the stage, scaled down for a shrink.
     await page.locator('[data-testid=knowledge-neural-zoom-in]').click()
     await sleep(450)
+    // Poll: on a loaded runner the click can land while the refit after the grow is still settling.
+    for (let i = 0; i < 20 && (await attr('data-user-view')) !== 'true'; i++) await sleep(250)
     check((await attr('data-user-view')) === 'true', `${theme}: a zoom makes the view the user's`)
     // The zoom eases and the stage resizes over a few frames: read both only once they hold still.
     const steady = async () => {

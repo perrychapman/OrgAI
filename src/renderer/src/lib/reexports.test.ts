@@ -26,7 +26,7 @@ const EXPECTED_EXPORTS: Readonly<Record<string, readonly string[]>> = {
     'clampLabel'
   ],
   cost: [
-    'COST_TITLES', 'agentCostInput', 'costView', 'formatDuration', 'formatTokens', 'formatUsd', 'runCostInput',
+    'COST_TITLES', 'agentCostInput', 'costView', 'formatDuration', 'formatTokens', 'formatUsd', 'formatUsdCompact', 'formatUsdFull', 'formatUsdPage', 'runCostInput',
     'sumCosts', 'unpricedModels'
   ],
   dates: [
@@ -36,6 +36,13 @@ const EXPECTED_EXPORTS: Readonly<Record<string, readonly string[]>> = {
     'PROPOSAL_KIND_LABEL', 'baseName', 'installTitle', 'isCdSegment', 'isHiddenCommand', 'mergeTitle', 'oneLine',
     'permissionTitle', 'proposalKindLabel', 'proposalTitle', 'questionTitle', 'rulesTitle', 'shellAction',
     'shellSegments'
+  ],
+  agentTree: [
+    'AGENT_LABEL_MAX', 'agentLabel', 'ancestorsOf', 'hasLiveDescendant', 'normalizeParents', 'splitLabelTail'
+  ],
+  foldFinished: [
+    'COLLAPSE_GRACE_MS', 'SETTLE_TIMER_FLOOR_MS', 'foldFinished', 'groupParentOf', 'isSettledAt', 'nextSettleAt',
+    'settleTimerDelay'
   ],
   hiddenChars: [
     'HIDDEN_CHARS', 'HIDDEN_CLASS', 'HIDDEN_OR_CONTROL_RUN', 'hasHidden', 'showHidden'

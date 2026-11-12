@@ -1,4 +1,5 @@
 import type { McpServerSpec, Project, Role } from '@shared/types'
+import { cleanRequiredReports } from '@shared/defaults'
 
 /**
  * Merging a proposed org chart (toRoles output: new ids, slugs from names, no grants) into the project's current
@@ -97,11 +98,22 @@ export function mergeOrgChart(existing: Pick<Project, 'roles' | 'mcpServers' | '
       }
       if (p.tier !== undefined) role.tier = p.tier
       else delete role.tier
+      // The proposal owns the required reports too: a proposed role without any clears the kept role's list.
+      if (p.requiredReports !== undefined) role.requiredReports = [...p.requiredReports]
+      else delete role.requiredReports
+      // The proposed model was resolved on the proposed role's connection, so the connection follows the proposal.
+      if (p.connection !== undefined) role.connection = p.connection
+      else delete role.connection
       if (p.mcpServers !== undefined) role.mcpServers = [...p.mcpServers]
       if (p.skills !== undefined) role.skills = [...p.skills]
     }
     role.reportsTo = role.reportsTo === null ? null : remap(role.reportsTo)
     role.spawnable = [...new Set((role.spawnable ?? []).map(remap))]
+    if (role.requiredReports !== undefined) {
+      const required = cleanRequiredReports({ ...role, requiredReports: role.requiredReports.map(remap) })
+      if (required) role.requiredReports = required
+      else delete role.requiredReports
+    }
     const mcp = filtered(role.mcpServers, mcpIds)
     if (mcp === undefined) delete role.mcpServers
     else role.mcpServers = mcp

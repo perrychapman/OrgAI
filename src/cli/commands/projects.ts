@@ -1,5 +1,5 @@
 /**
- * `orgai projects <list|show|check|create|set|remove|save-chat>` (cli-spec 6.3, Wave 5).
+ * `orgai projects <list|show|check|create|set|remove|save-chat|trust>` (cli-spec 6.3, Wave 5; trust cli-parity 3.4).
  *
  * Reads take ['read']; create, set, remove and save-chat take ['read', 'configure']. Every project name, path, client
  * and host message is untrusted text and goes through safe / safeLine before any styling. projects:save has no
@@ -17,12 +17,23 @@ import {
   projectConnection,
   projectKindLabel,
   projectKindOf,
-  runMessagingOn
+  reviewPolicyOf,
+  runMessagingOn,
+  staffingGoalOf,
+  staffingModeOf
 } from '../../shared/defaults'
 import {
+  DEFAULT_KEEP_RUNS,
   DEFAULT_MAX_AUTO_CONTINUES,
+  REVIEW_POLICIES,
+  STAFFING_GOALS,
+  STAFFING_MODES,
+  isReviewPolicy,
+  isStaffingGoal,
+  isStaffingMode,
   isVirtualProjectId,
   type AgentImportSource,
+  type FolderConfigReview,
   type OrgTemplateInfo,
   type Project,
   type ProjectCreateInput,
@@ -30,21 +41,25 @@ import {
   type ProjectPathCheck,
   type ProjectRemoveResult,
   type QuickRunPromoteResult,
+  type RemapModelsInput,
+  type RemapModelsOutput,
+  type RemapResult,
   type RunSummary
 } from '../../shared/types'
 import { resolveProject } from '../client/resolveProject'
+import { folderTrustLines, NO_APPROVE_COMMAND, TRUST_WHERE } from '../approvalText'
+import { connectionArg, labelOfId } from './connections'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, requireProject, runSubcommands, withHost } from '../manage'
 import { emit, isJsonOutput, plural, safe, safeLine, styleFor, table, termWidth, type Json } from '../output'
-import { resolveRunFromSource } from '../runRef'
+import { checkProjectResolution, liveSource, openReadSource, resolveRunFromSource } from '../runRef'
 import { CliError, EXIT, type CliContext, type CommandFn, type HostClient } from '../types'
-import { liveSource } from './watch'
 
 const READ = ['read'] as const
 const CONFIGURE = ['read', 'configure'] as const
 
 const usage = (message: string): CliError => new CliError(message, EXIT.usage)
-const USAGE = 'projects <list|show|check|create|set|remove|save-chat> [options]'
+const USAGE = 'projects <list|show|check|create|set|remove|save-chat|trust> [options]'
 
 // ---------- Shared helpers (also used by commands/init.ts) ----------
 
@@ -191,6 +206,13 @@ export function projectFacts(p: Project): Json {
     maxAutoContinues: p.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
     runMessaging: runMessagingOn(p),
     isolateWriters: isolateWritersOn(p),
+    staffing: staffingModeOf(p),
+    staffingGoal: staffingGoalOf(p),
+    reviewPolicy: reviewPolicyOf(p),
+    reviewMerges: p.reviewMerges === true,
+    maxWindowShare: typeof p.maxWindowShare === 'number' && p.maxWindowShare > 0 ? p.maxWindowShare : null,
+    keepRuns: p.keepRuns ?? DEFAULT_KEEP_RUNS,
+    brief: p.brief ?? '',
     roles: Array.isArray(p.roles) ? p.roles.length : 0,
     mcpServers: p.mcpServers?.length ?? 0,
     skills: p.skills?.length ?? 0,
@@ -222,8 +244,17 @@ export function projectLines(ctx: CliContext, p: Project): string[] {
     `  Auto-continue:   ${onOff(p.autoContinue !== false)} (at most ${p.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES})`,
     `  Run messaging:   ${onOff(runMessagingOn(p))}`,
     `  Isolate writers: ${onOff(isolateWritersOn(p))}`,
+    `  Review merges:   ${onOff(p.reviewMerges === true)}`,
+    `  Staffing:        ${staffingModeOf(p) === 'auto' ? 'Automatic' : 'Fixed'}`,
+    `  Staffing goal:   ${staffingGoalOf(p)}`,
+    `  Review policy:   ${reviewPolicyOf(p)}`,
+    `  Window share:    ${typeof p.maxWindowShare === 'number' && p.maxWindowShare > 0 ? `${p.maxWindowShare}% of the five-hour window per run` : 'off'}`,
+    `  Runs kept:       ${p.keepRuns === undefined ? `Automatic (${DEFAULT_KEEP_RUNS})` : String(p.keepRuns)}`,
     `  Team:            ${plural(Array.isArray(p.roles) ? p.roles.length : 0, 'role')}, ${plural(p.mcpServers?.length ?? 0, 'MCP server')}, ${plural(p.skills?.length ?? 0, 'skill')}`
   )
+  const brief = (p.brief ?? '').trim()
+  lines.push(`  Brief:           ${brief ? '' : st.dim('not set')}`.trimEnd())
+  if (brief) for (const l of safe(brief.length > 1000 ? `${brief.slice(0, 1000)}...` : brief).split('\n')) lines.push(`    ${l}`)
   const folders = (label: string, list: string[] | undefined): void => {
     if (!list?.length) return
     lines.push(`  ${label}`)
@@ -239,8 +270,10 @@ export function projectLines(ctx: CliContext, p: Project): string[] {
 const runList: CommandFn = async (ctx, args) => {
   const { positionals } = parseFlags(args, {})
   if (positionals.length) throw usage('Use: orgai projects list')
-  return withHost(ctx, [...READ], async (client) => {
-    const list = await listProjects(client)
+  {
+    // Read from the saved files: no host, no write (cli-standalone-default.md 4.3).
+    const src = await openReadSource(ctx)
+    const list = (await src.projects()).filter((p) => !isVirtualProjectId(p.id))
     const rows = list.map((p) => ({ id: p.id, name: p.name, kind: projectKindOf(p), ...(p.client ? { client: p.client } : {}), path: p.path }))
     emit(ctx, { projects: rows }, () => {
       if (!list.length) return 'No projects yet. Create one with: orgai init'
@@ -253,18 +286,27 @@ const runList: CommandFn = async (ctx, args) => {
       )
     })
     return EXIT.ok
-  })
+  }
 }
 
 const runShow: CommandFn = async (ctx, args) => {
   const { positionals } = parseFlags(args, {})
   if (positionals.length > 1) throw usage('Use: orgai projects show [<id-or-path>]')
-  return withHost(ctx, [...READ], async (client) => {
-    const found = await projectFromArg(ctx, client, positionals[0])
-    const p = await getProject(client, found.id)
-    emit(ctx, { project: projectFacts(p) }, () => projectLines(ctx, p))
-    return EXIT.ok
-  })
+  const src = await openReadSource(ctx)
+  const list = (await src.projects()).filter((p) => !isVirtualProjectId(p.id))
+  let p: Project
+  if (positionals[0] === undefined) {
+    const res = ctx.resolveProject(list)
+    checkProjectResolution(res)
+    if (!res.project) throw usage('No OrgAI project here. Run this inside a project folder or pass --project <id-or-path>.')
+    p = res.project
+  } else {
+    const res = resolveProject(list, { flag: positionals[0], cwd: ctx.cwd, platform: ctx.platform })
+    if (!res.project) throw usage(safeLine(res.error ?? `No OrgAI project matches ${positionals[0]}.`))
+    p = res.project
+  }
+  emit(ctx, { project: projectFacts(p) }, () => projectLines(ctx, p))
+  return EXIT.ok
 }
 
 /** Text lines of a projects:checkPath answer. */
@@ -322,10 +364,18 @@ const SET_FLAGS = {
   'auto-continue': { type: 'string' },
   'max-auto-continues': { type: 'string' },
   'run-messaging': { type: 'string' },
-  'isolate-writers': { type: 'string' }
+  'isolate-writers': { type: 'string' },
+  staffing: { type: 'string' },
+  'staffing-goal': { type: 'string' },
+  'review-policy': { type: 'string' },
+  'review-merges': { type: 'string' },
+  'max-window-share': { type: 'string' },
+  'keep-runs': { type: 'string' },
+  connection: { type: 'string' },
+  yes: { type: 'boolean', short: 'y' }
 } as const
 
-type SetValues = Partial<Record<keyof typeof SET_FLAGS, string>>
+type SetValues = Partial<Record<Exclude<keyof typeof SET_FLAGS, 'yes'>, string>>
 
 /** A clearable field's "clear" value on the wire: null (the host decodes it to an own undefined). */
 const CLEAR = null
@@ -383,18 +433,84 @@ export function setPatch(project: Project, v: SetValues): Record<string, unknown
   if (v['max-auto-continues'] !== undefined) patch.maxAutoContinues = intArg('max-auto-continues', v['max-auto-continues'], 0, 1000)
   if (v['run-messaging'] !== undefined) patch.runMessaging = onOffArg('run-messaging', v['run-messaging'])
   if (v['isolate-writers'] !== undefined) patch.isolateWriters = onOffArg('isolate-writers', v['isolate-writers'])
+  // Run staffing, as Settings > Limits > Run staffing: the default value clears the field (an own undefined, which the
+  // JSON wire drops; these three are not in the codec's null list).
+  if (v.staffing !== undefined) {
+    if (!isStaffingMode(v.staffing)) throw usage(`--staffing must be one of ${STAFFING_MODES.join(', ')}.`)
+    patch.staffing = v.staffing === 'auto' ? undefined : v.staffing
+  }
+  if (v['staffing-goal'] !== undefined) {
+    if (!isStaffingGoal(v['staffing-goal'])) throw usage(`--staffing-goal must be one of ${STAFFING_GOALS.join(', ')}.`)
+    patch.staffingGoal = v['staffing-goal'] === 'balanced' ? undefined : v['staffing-goal']
+  }
+  if (v['review-policy'] !== undefined) {
+    if (!isReviewPolicy(v['review-policy'])) throw usage(`--review-policy must be one of ${REVIEW_POLICIES.join(', ')}.`)
+    patch.reviewPolicy = v['review-policy'] === 'risk' ? undefined : v['review-policy']
+  }
+  if (v['review-merges'] !== undefined) patch.reviewMerges = onOffArg('review-merges', v['review-merges'])
+  if (v['max-window-share'] !== undefined) {
+    // Stored as a percent of the five-hour window (1 to 100), as the desktop Limits field; auto = off.
+    const raw = v['max-window-share'].trim().replace(/%$/, '')
+    if (raw === 'auto') patch.maxWindowShare = CLEAR
+    else {
+      const n = /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : NaN
+      if (!(n >= 1 && n <= 100)) throw usage('--max-window-share must be a percent of the five-hour window from 1 to 100 (not a fraction), or auto.')
+      patch.maxWindowShare = n
+    }
+  }
+  if (v['keep-runs'] !== undefined) patch.keepRuns = v['keep-runs'].trim() === 'auto' ? CLEAR : intArg('keep-runs', v['keep-runs'], 1, 5000, true)
   return patch
 }
 
+/** One sentence when the patch moves staffing from fixed to automatic (it can raise spend); null otherwise. */
+export function staffingSpendSentence(project: Project, patch: Record<string, unknown>): string | null {
+  if (!('staffing' in patch) || patch.staffing !== undefined) return null
+  if (staffingModeOf(project) !== 'fixed') return null
+  return 'Automatic staffing lets each report run at a higher tier or effort than its role is set to, which may spend more.'
+}
+
+function connectionPatchArg(project: Project, raw: string): RemapModelsInput | null {
+  const to = connectionArg(raw)
+  return to === projectConnection(project) ? null : { projectId: project.id, connection: to }
+}
+
 const runSet: CommandFn = async (ctx, args) => {
-  const { values, positionals } = parseFlags(args, SET_FLAGS)
+  const { values: all, positionals } = parseFlags(args, SET_FLAGS)
+  const { yes, ...values } = all
   if (positionals.length > 1) throw usage('Use: orgai projects set [<id-or-path>] [--name ...] [--max-budget <usd|none>] [--max-depth <n|auto>] ...')
-  if (Object.keys(values).length === 0) throw usage(`Nothing to change. Flags: ${Object.keys(SET_FLAGS).map((f) => `--${f}`).join(', ')}.`)
+  if (Object.keys(values).length === 0) throw usage(`Nothing to change. Flags: ${Object.keys(SET_FLAGS).filter((f) => f !== 'yes').map((f) => `--${f}`).join(', ')}.`)
+  const { connection: connectionFlag, ...fields } = values
+  if (connectionFlag !== undefined) connectionArg(connectionFlag) // exit 2 before any host starts
   return withHost(ctx, [...CONFIGURE], async (client) => {
     const found = await projectFromArg(ctx, client, positionals[0])
     const fresh = await getProject(client, found.id)
-    const patch = setPatch(fresh, values)
-    const saved = await hostCall<Project>(client, 'projects:save', [{ ...fresh, ...patch }])
+    const patch = setPatch(fresh, fields)
+    const spend = staffingSpendSentence(fresh, patch)
+    if (spend && !(await confirm(ctx, `${spend} Switch ${safeLine(fresh.name)} to automatic staffing?`, yes === true))) {
+      emit(ctx, { saved: false }, () => 'Nothing changed.')
+      return EXIT.failure
+    }
+    // --connection goes through the preview and remap `orgai models remap --to <id> --apply` uses, never a raw write.
+    const remap = connectionFlag !== undefined ? connectionPatchArg(fresh, connectionFlag) : null
+    if (remap) {
+      const preview = await hostCall<RemapResult>(client, 'projects:previewRemap', [remap])
+      if (!isJsonOutput(ctx)) {
+        const n = preview.changes.length
+        ctx.io.stderr.write(
+          `${[
+            `${n} role model${n === 1 ? '' : 's'} in ${safeLine(fresh.name)} on ${labelOfId(preview.connection)}:`,
+            ...preview.changes.map((c) => `  ${safeLine(fresh.roles.find((r) => r.id === c.roleId)?.name ?? c.roleId)}: ${safeLine(c.from)} -> ${safeLine(c.to)}`)
+          ].join('\n')}\n`
+        )
+      }
+      if (!(await confirm(ctx, `Move ${safeLine(fresh.name)} to ${labelOfId(remap.connection!)} and save these models?`, yes === true))) {
+        emit(ctx, { saved: false }, () => 'Nothing changed.')
+        return EXIT.failure
+      }
+    }
+    let saved = fresh
+    if (Object.keys(patch).length) saved = await hostCall<Project>(client, 'projects:save', [{ ...fresh, ...patch }])
+    if (remap) saved = (await hostCall<RemapModelsOutput>(client, 'projects:remapModels', [remap])).project
     emit(ctx, { project: projectFacts(saved) }, () => [`Saved ${safeLine(saved.name)}.`, ...projectLines(ctx, saved).slice(1)])
     return EXIT.ok
   })
@@ -480,7 +596,30 @@ const runSaveChat: CommandFn = async (ctx, args) => {
   })
 }
 
+// ---------- trust (cli-parity 3.4) ----------
+
+/**
+ * `projects trust [show]` (read): the folder's own agent config as the host reviews it (projects:folderConfig) and
+ * whether agents load it. `projects trust allow | deny` decide nothing: allowing is done in the desktop app for now (a
+ * terminal cannot yet prove a person is answering); they exit 2 without starting a host, whatever flags follow.
+ */
+const runTrust = async (ctx: CliContext, args: string[]): Promise<number> => {
+  const sub = args[0]
+  if (sub === 'allow' || sub === 'deny') throw new CliError(NO_APPROVE_COMMAND, EXIT.usage)
+  if (sub !== undefined && !sub.startsWith('-') && sub !== 'show') throw usage(`Unknown subcommand 'trust ${safeLine(sub).slice(0, 64)}'. Usage: orgai projects trust [show]`)
+  const { positionals } = parseFlags(sub === 'show' ? args.slice(1) : args, {})
+  if (positionals.length) throw usage('Usage: orgai projects trust [show] (pick the project with --project)')
+  return withHost(ctx, [...READ], async (client) => {
+    const project = await requireProject(ctx, client)
+    const review = await hostCall<FolderConfigReview>(client, 'projects:folderConfig', [project.id])
+    const decide = review.state === 'none' ? [] : ['', TRUST_WHERE]
+    emit(ctx, { project: { id: project.id, name: project.name, path: project.path }, folderConfig: review }, () => [...folderTrustLines(review, project.name), ...decide])
+    return EXIT.ok
+  })
+}
+
 export const PROJECT_SUBCOMMANDS = {
+  trust: runTrust,
   list: runList,
   show: runShow,
   check: runCheck,

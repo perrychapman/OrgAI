@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_APP_SETTINGS, connectionInUse, creationConnection, effectiveSubagentLimits, planGuardOf, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRoleTools, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG, singleRunProject } from './defaults'
-import type { Project, ProviderModel } from './types'
+import { DEFAULT_APP_SETTINGS, connectionConfigured, connectionIds, connectionName, connectionProviderLabel, connectionRecord, connectionInUse, isConnectionId, isKnownConnection, proxyModelFamily, proxyModelsUrl, proxyOf, proxyOpenAIBase, creationConnection, effectiveSubagentLimits, planGuardOf, defaultRoles, libraryEntryFromSpec, linkedSpec, mcpSupportsOAuth, newId, newProject, rootRole, slugify, importTierForModel, tierForModel, modelFamily, modelForTier, resolveModelSetting, settingTier, preferEverydayNearLimit, quickRunTools, quickRunPermissionMode, QUICK_ASSISTANT_SLUG, singleRunProject } from './defaults'
+import type { Project, ProviderModel, ProxyConnection } from './types'
 import { RUN_KIND_LABELS, VIRTUAL_PROJECT_IDS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from './types'
-import { isSafeId } from './defaults'
+import { isSafeId, cleanRequiredReports } from './defaults'
+import type { Role } from './types'
 
 describe('virtual projects (Assistants)', () => {
   it('recognises exactly the three virtual ids, which still pass SAFE_ID', () => {
@@ -71,14 +72,23 @@ describe('tier-based model defaults', () => {
 import type { McpLibraryEntry } from './types'
 import { PERMISSION_MODE_OPTIONS, PERMISSION_MODES, TOOL_CATALOG, isPermissionMode } from './types'
 
+const proxyRec = (over: Partial<ProxyConnection> = {}): ProxyConnection => ({
+  id: 'litellm',
+  name: 'Gateway',
+  kind: 'litellm',
+  anthropicBaseUrl: 'http://localhost:4000',
+  enabled: true,
+  hasApiKey: true,
+  tierModels: {},
+  ...over
+})
+
 describe('creationConnection', () => {
-  const withConn = (defaultConnection: 'anthropic' | 'openai' | 'litellm', over: { openai?: boolean; litellm?: Record<string, unknown> } = {}) => {
+  const withConn = (defaultConnection: string, over: { openai?: boolean; proxy?: Partial<ProxyConnection> } = {}) => {
     const c = structuredClone(DEFAULT_APP_SETTINGS.connections)
     if (over.openai !== undefined) c.openai.enabled = over.openai
-    if (over.litellm) Object.assign(c.litellm, over.litellm)
-    return { defaultConnection, connections: c }
+    return { defaultConnection, connections: c, proxies: over.proxy ? [proxyRec(over.proxy)] : [] }
   }
-  const ready = { enabled: true, baseUrl: 'http://localhost:4000', hasApiKey: true }
 
   it('anthropic is always usable', () => {
     expect(creationConnection(withConn('anthropic'))).toBe('anthropic')
@@ -88,22 +98,23 @@ describe('creationConnection', () => {
     expect(creationConnection(withConn('openai', { openai: true }))).toBe('openai')
     expect(creationConnection(withConn('openai', { openai: false }))).toBe('anthropic')
   })
-  it('litellm needs enabled, a base URL and an API key', () => {
-    expect(creationConnection(withConn('litellm', { litellm: ready }))).toBe('litellm')
-    expect(creationConnection(withConn('litellm', { litellm: { ...ready, enabled: false } }))).toBe('anthropic')
-    expect(creationConnection(withConn('litellm', { litellm: { ...ready, baseUrl: ' ' } }))).toBe('anthropic')
-    expect(creationConnection(withConn('litellm', { litellm: { ...ready, hasApiKey: false } }))).toBe('anthropic')
+  it('a proxy needs enabled, a base URL and an API key, and must exist', () => {
+    expect(creationConnection(withConn('litellm', { proxy: {} }))).toBe('litellm')
+    expect(creationConnection(withConn('litellm', { proxy: { enabled: false } }))).toBe('anthropic')
+    expect(creationConnection(withConn('litellm', { proxy: { anthropicBaseUrl: ' ' } }))).toBe('anthropic')
+    expect(creationConnection(withConn('litellm', { proxy: { hasApiKey: false } }))).toBe('anthropic')
+    expect(creationConnection(withConn('proxy-0a1b2c3d', { proxy: {} }))).toBe('anthropic')
+    expect(creationConnection(withConn('proxy-0a1b2c3d', { proxy: { id: 'proxy-0a1b2c3d' } }))).toBe('proxy-0a1b2c3d')
   })
 })
 
 describe('connectionInUse', () => {
-  const settings = (defaultConnection: 'anthropic' | 'openai' | 'litellm', enabled: { openai?: boolean; litellm?: boolean } = {}) => {
+  const settings = (defaultConnection: string, enabled: { openai?: boolean; litellm?: boolean } = {}) => {
     const c = structuredClone(DEFAULT_APP_SETTINGS.connections)
     c.openai.enabled = enabled.openai ?? false
-    c.litellm.enabled = enabled.litellm ?? false
-    return { defaultConnection, connections: c }
+    return { defaultConnection, connections: c, proxies: [proxyRec({ enabled: enabled.litellm ?? false })] }
   }
-  const on = (connection: 'anthropic' | 'openai' | 'litellm') => ({ provider: { id: 'claude' as const, label: 'x', auth: { kind: 'subscription' as const }, connection } })
+  const on = (connection: string) => ({ provider: { id: 'claude' as const, label: 'x', auth: { kind: 'subscription' as const }, connection } })
   const mock = { provider: { id: 'mock' as const, label: 'Mock', auth: { kind: 'subscription' as const } } }
   const legacyCodex = { provider: { id: 'codex' as const, label: 'Codex', auth: { kind: 'subscription' as const } } }
 
@@ -332,29 +343,14 @@ describe('importTierForModel', () => {
 })
 
 describe('quick run tools and permissions', () => {
-  it('removes Edit, Write, Bash and NotebookEdit only with edits off', () => {
-    const tools = ['Read', 'Edit', 'Write', 'Bash', 'NotebookEdit', 'Grep', 'WebFetch'] as const
-    expect(quickRoleTools(tools, false)).toEqual(['Read', 'Grep', 'WebFetch'])
-    expect(quickRoleTools(tools, true)).toEqual([...tools])
-    const input = ['Read', 'Bash'] as ('Read' | 'Bash')[]
-    quickRoleTools(input, false)
-    expect(input).toEqual(['Read', 'Bash'])
+  it('gives the single assistant read, web and edit tools: edits ask instead of being missing', () => {
+    expect(quickRunTools('single')).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Edit', 'Write', 'Bash', 'NotebookEdit'] })
   })
 
-  it('gives the single assistant read and web tools, plus Edit, Write and Bash with edits on', () => {
-    expect(quickRunTools('single', false)).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'] })
-    expect(quickRunTools('single', true)).toEqual({ [QUICK_ASSISTANT_SLUG]: ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Edit', 'Write', 'Bash'] })
-  })
-
-  it('filters the default chart for the default team', () => {
-    const off = quickRunTools('default', false)
-    expect(Object.keys(off).sort()).toEqual(['implementer', 'orchestrator', 'researcher', 'reviewer'])
-    for (const tools of Object.values(off)) {
-      for (const t of ['Edit', 'Write', 'Bash', 'NotebookEdit']) expect(tools).not.toContain(t)
-    }
-    expect(off.researcher).toEqual(['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'])
-    const on = quickRunTools('default', true)
-    for (const role of defaultRoles()) expect(on[role.slug]).toEqual(role.tools)
+  it('gives each default role its own tools for the default team', () => {
+    const t = quickRunTools('default')
+    expect(Object.keys(t).sort()).toEqual(['implementer', 'orchestrator', 'researcher', 'reviewer'])
+    for (const role of defaultRoles()) expect(t[role.slug]).toEqual(role.tools)
   })
 
   it('always uses permission mode default', () => {
@@ -437,5 +433,19 @@ describe('singleRunProject', () => {
     expect(out.allowedDirectories).toEqual(['/extra'])
     expect(out.id).toBe(p.id)
     expect(p.roles).toHaveLength(2)
+  })
+})
+
+describe('cleanRequiredReports', () => {
+  const role = (over: Partial<Role>): Pick<Role, 'id' | 'canSpawn' | 'spawnable' | 'requiredReports'> => ({ id: 'm', canSpawn: true, spawnable: ['a', 'b'], ...over })
+  it('keeps spawnable, non-self, unique ids in order', () => {
+    expect(cleanRequiredReports(role({ requiredReports: ['b', 'x', 'a', 'b', 'm'] }))).toEqual(['b', 'a'])
+    expect(cleanRequiredReports(role({ spawnable: ['a', 'm'], requiredReports: ['m', 'a'] }))).toEqual(['a'])
+  })
+  it('is undefined when empty, missing or the role cannot spawn', () => {
+    expect(cleanRequiredReports(role({}))).toBeUndefined()
+    expect(cleanRequiredReports(role({ requiredReports: [] }))).toBeUndefined()
+    expect(cleanRequiredReports(role({ requiredReports: ['x'] }))).toBeUndefined()
+    expect(cleanRequiredReports(role({ canSpawn: false, requiredReports: ['a'] }))).toBeUndefined()
   })
 })

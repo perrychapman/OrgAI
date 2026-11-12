@@ -1,10 +1,11 @@
 import { render } from 'ink-testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { InputBus, InputBusContext } from './context'
+import { DEFAULT_TUI_ENV, InputBus, InputBusContext, TuiEnvContext } from './context'
 import { KeyParser } from './input/keys'
 import { SLASH_COMMANDS } from './slashCommands'
 import { SlashPalette } from './SlashPalette'
-import type { InputEvent, SlashPaletteProps, TuiState } from './types'
+import { textWidth } from './panes/text'
+import type { InputEvent, SlashPaletteProps, TuiEnv, TuiState } from './types'
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0))
 // eslint-disable-next-line no-control-regex
@@ -23,7 +24,7 @@ const state: TuiState = {
   cardSeq: 0
 }
 
-function setup(over: Partial<SlashPaletteProps> = {}) {
+function setup(over: Partial<SlashPaletteProps> = {}, env: Partial<TuiEnv> = {}) {
   const bus = new InputBus()
   const props: SlashPaletteProps = {
     width: 60,
@@ -37,9 +38,11 @@ function setup(over: Partial<SlashPaletteProps> = {}) {
     ...over
   }
   const r = render(
-    <InputBusContext.Provider value={bus}>
-      <SlashPalette {...props} />
-    </InputBusContext.Provider>
+    <TuiEnvContext.Provider value={{ ...DEFAULT_TUI_ENV, ...env }}>
+      <InputBusContext.Provider value={bus}>
+        <SlashPalette {...props} />
+      </InputBusContext.Provider>
+    </TuiEnvContext.Provider>
   )
   const send = async (s: string | InputEvent) => {
     const p = new KeyParser({ bracketedPaste: true })
@@ -56,6 +59,8 @@ const runCalls = (fn: SlashPaletteProps['onRun']) => (fn as ReturnType<typeof vi
 describe('SlashPalette', () => {
   it('lists the available commands and filters as you type', async () => {
     const t = setup()
+    expect(t.frame()).toContain('Commands')
+    expect(t.frame()).toContain('Type to search commands')
     expect(t.frame()).toContain('/help')
     expect(t.frame()).toContain('/quit')
     // interrupt / stop need an open active run.
@@ -86,7 +91,7 @@ describe('SlashPalette', () => {
     const t = setup()
     await t.send('ne')
     await t.send('\t')
-    expect(t.frame().split('\n')[0].trim()).toBe('/new')
+    expect(t.frame().split('\n')[0].trim()).toBe('Commands  /new _')
     await t.send('fix the build\r')
     expect(runCalls(t.props.onRun)).toEqual([['new', 'fix the build']])
     t.r.unmount()
@@ -106,7 +111,7 @@ describe('SlashPalette', () => {
     const u = setup({ query: '/h' })
     await u.send('\x7f')
     expect(u.props.onClose).not.toHaveBeenCalled()
-    expect(u.frame().split('\n')[0].trim()).toBe('/')
+    expect(u.frame().split('\n')[0]).toContain('Commands  /_')
     await u.send('\x7f')
     expect(u.props.onClose).toHaveBeenCalledTimes(1)
     t.r.unmount()
@@ -121,6 +126,48 @@ describe('SlashPalette', () => {
     t.r.unmount()
   })
 
+  it('an empty query lists /help and /new first, then the rest alphabetically', () => {
+    const t = setup({ height: 30 })
+    const names = t.frame().split('\n').slice(1).map((l) => /^[ ›>]\s*\/(\S+)/.exec(l)?.[1]).filter(Boolean) as string[]
+    expect(names.slice(0, 2)).toEqual(['help', 'new'])
+    const rest = names.slice(2)
+    expect(rest).toEqual([...rest].sort())
+    t.r.unmount()
+  })
+
+  it.each([120, 100, 80, 70])('at width %i: "N more" is honest and no row is wider than the width (Ink trims trailing blanks, so padding shows only when styled)', (width) => {
+    const t = setup({ width, height: 6 })
+    const lines = t.frame().split('\n')
+    expect(lines.length).toBe(6)
+    const available = SLASH_COMMANDS.filter((c) => !c.available || c.available(state)).length
+    const shownCmds = lines.filter((l) => /^[ ›>]\s*\//.test(l)).length
+    expect(lines[5]).toMatch(new RegExp(`^${available - shownCmds} more [·-] type to filter`))
+    for (const l of lines) expect(textWidth(l.replace(/\s+$/, ''))).toBeLessThanOrEqual(width)
+    t.r.unmount()
+  })
+
+  it('/retro on an open run answers with its reason instead of "No matching command"', async () => {
+    const t = setup({ query: '/retro' })
+    expect(t.frame()).not.toContain('No matching command')
+    expect(t.frame()).toMatch(/\/retro: .*(Follow an ended work run|not ended)/)
+    await t.send('\r')
+    expect(t.props.onRun).not.toHaveBeenCalled()
+    await t.send('zz')
+    expect(t.frame()).toContain('No matching command')
+    t.r.unmount()
+  })
+
+  it('shows the cursor as an underscore with colour off and in a screen-reader frame, and no SGR codes', () => {
+    for (const env of [{ color: false }, { color: false, screenReader: true }, { color: false, unicode: false, dumbTerminal: true }]) {
+      const t = setup({}, env)
+      const raw = t.r.lastFrame() ?? ''
+      expect(raw.split('\n')[0]).toContain('/_')
+      // eslint-disable-next-line no-control-regex
+      expect(raw).not.toMatch(/\x1b\[/)
+      t.r.unmount()
+    }
+  })
+
   it('keeps the selection visible in a short palette', async () => {
     const t = setup({ height: 3 })
     for (let i = 0; i < 5; i++) await t.send('\x1b[B')
@@ -128,5 +175,18 @@ describe('SlashPalette', () => {
     expect(rows.length).toBe(3)
     expect(rows.some((r) => r.includes('›') || r.includes('>'))).toBe(true)
     t.r.unmount()
+  })
+
+  it('honors one- and two-row palette heights', () => {
+    const one = setup({ height: 1 })
+    expect(one.frame().split('\n')).toHaveLength(1)
+    expect(one.frame()).toContain('/')
+    one.r.unmount()
+
+    const two = setup({ height: 2 })
+    expect(two.frame().split('\n')).toHaveLength(2)
+    expect(two.frame()).toContain('Commands')
+    expect(two.frame()).toContain('/help')
+    two.r.unmount()
   })
 })

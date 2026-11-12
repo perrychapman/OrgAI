@@ -5,10 +5,25 @@ import { costView, type CostInput } from '../../lib/cost'
  * One cost figure, worded by lib/cost.ts: "unknown" (never $0), "$0.42+" for a lower bound, and a tooltip that says
  * whether the provider reported it or OrgAI computed it (and whether it predates usage tracking).
  * `labelled` spells an unknown cost out ("Cost unknown") for places with no "Cost" column or label (meta line, strips).
- * Pass `hideEmpty` to render nothing when nothing was spent yet.
+ * Pass `hideEmpty` to render nothing when nothing was spent yet. `compact` rounds to cents (Dashboard only).
  */
-export function Cost({ value, hideEmpty, labelled, className }: { value: CostInput; hideEmpty?: boolean; labelled?: boolean; className?: string }): ReactElement | null {
-  const v = costView(value)
+export function Cost({
+  value,
+  hideEmpty,
+  labelled,
+  compact,
+  precision,
+  className
+}: {
+  value: CostInput
+  hideEmpty?: boolean
+  labelled?: boolean
+  compact?: boolean
+  /** 'page': the Usage page's one decimals rule (lib/cost.ts formatUsdPage). */
+  precision?: 'page'
+  className?: string
+}): ReactElement | null {
+  const v = costView(value, { compact, precision })
   if (hideEmpty && v.empty) return null
   return (
     <span className={`cost cost-${v.kind}${className ? ` ${className}` : ''}`} title={v.title || undefined}>

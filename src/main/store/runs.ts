@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join, relative, isAbsolute } from 'node:path'
+import { mapTranscriptImages } from '../runtime/transcriptMedia'
+import { sanitizeImages } from '../runtime/attachments'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
-import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, QUICK_PROJECT_ID, isPermissionMode } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, QUICK_PROJECT_ID, isEffort, isPermissionMode, isStaffingGoal } from '@shared/types'
 import type {
   ExecOutcome,
   HeadlessDecisionPolicy,
@@ -75,6 +77,8 @@ export function cleanRunOverrides(v: unknown): RunOverrides | undefined {
   for (const key of ['autoContinue', 'allowUnpricedBudget', 'allowUnmerged', 'allowPeerMessages', 'execMode', 'waitForReset'] as const) {
     if (typeof v[key] === 'boolean') out[key] = v[key] as boolean
   }
+  if (v.strictDelegation === true) out.strictDelegation = true
+  if (isStaffingGoal(v.goal)) out.goal = v.goal
   const mac = v.maxAutoContinues
   if (typeof mac === 'number' && Number.isInteger(mac) && mac >= 0 && mac <= MAX_AUTO_CONTINUES_LIMIT) out.maxAutoContinues = mac
   if (isNonNegative(v.maxBudgetUsd)) out.maxBudgetUsd = v.maxBudgetUsd
@@ -97,6 +101,8 @@ export function cleanRunOverrides(v: unknown): RunOverrides | undefined {
  */
 export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date.now()): RunSummary {
   const r: RunSummary = { ...input }
+  if (typeof r.conversationBudgetUsd !== 'number' || !Number.isFinite(r.conversationBudgetUsd) || r.conversationBudgetUsd <= 0) delete r.conversationBudgetUsd
+  if (r.modelAdapter !== 'claude' && r.modelAdapter !== 'codex' && r.modelAdapter !== 'mock') delete r.modelAdapter
   if (r.endedBy !== undefined && !ENDED_BY.includes(r.endedBy)) delete r.endedBy
   // endedWithApp is exactly true or absent. A record saved before endedBy existed has endedWithApp alone: the
   // app cut it, so it gets endedBy 'app' (the renderer trusts endedWithApp). Next to any other endedBy it is dropped.
@@ -108,6 +114,12 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
     delete r.endedWhile
   }
   if (r.execOutcome !== undefined && !EXEC_OUTCOMES.includes(r.execOutcome as ExecOutcome)) delete r.execOutcome
+  // Per-run choices (untrusted file): a known effort and mode only; the "chosen" flag is exactly true and needs a mode.
+  if (r.rootEffort !== undefined && !isEffort(r.rootEffort)) delete r.rootEffort
+  if (r.permissionMode !== undefined && !isPermissionMode(r.permissionMode)) delete r.permissionMode
+  if (r.permissionModeChosen !== undefined && ((r.permissionModeChosen as unknown) !== true || r.permissionMode === undefined)) delete r.permissionModeChosen
+  // A session's "accept edits" grant ended with the session: never on a loaded run.
+  delete r.sessionPermissionMode
   if (r.overrides !== undefined) {
     const overrides = cleanRunOverrides(r.overrides)
     if (overrides) r.overrides = overrides
@@ -205,8 +217,10 @@ export class RunStore {
    */
   setUsage(updates: readonly { id: string; usage: RunUsage }[]): void {
     let changed = false
+    // One index for the batch: the app-wide usage overview may normalize every legacy run at once.
+    const byId = new Map(this.runs.map((r) => [r.id, r]))
     for (const u of updates) {
-      const run = this.runs.find((r) => r.id === u.id)
+      const run = byId.get(u.id)
       if (!run || run.usage) continue
       run.usage = u.usage
       changed = true
@@ -269,13 +283,12 @@ export class RunStore {
   private externalizeImages(runId: string, transcript: TranscriptEntry[]): TranscriptEntry[] {
     return transcript.map((entry) => {
       const block = entry.block
-      if (block.kind !== 'user' || !block.images?.length) return entry
-      const images = block.images.map((img) => {
+      const mapped = mapTranscriptImages(block, (img) => {
         if (!img.data) return img // already a ref (or nothing to store)
         const ref = this.storeImage(runId, img)
         return ref ? { ...img, data: '', ref } : img
       })
-      return { ...entry, block: { ...block, images } }
+      return mapped === block ? entry : { ...entry, block: mapped }
     })
   }
 
@@ -284,14 +297,27 @@ export class RunStore {
     if (!Array.isArray(transcript)) return transcript
     return transcript.map((entry) => {
       const block = entry?.block
-      if (!block || block.kind !== 'user' || !Array.isArray(block.images) || !block.images.some((i) => i.ref !== undefined)) return entry
-      const images = block.images.map((img) => {
+      if (!block) return entry
+      let hydratedBytes = 0
+      let hydratedCount = 0
+      const mapped = mapTranscriptImages(block, (img) => {
         if (img.ref === undefined) return img
         const { ref, ...rest } = img
         let data = ''
         if (typeof ref === 'string' && IMAGE_REF.test(ref)) {
           try {
-            data = readFileSync(join(this.runDir(runId), 'images', ref)).toString('base64')
+            const file = join(this.runDir(runId), 'images', ref)
+            const rel = relative(realpathSync(this.recordsDir), realpathSync(file))
+            const stat = lstatSync(file)
+            if (stat.isFile() && !stat.isSymbolicLink() && !isAbsolute(rel) && !rel.startsWith('..') && stat.size <= 10 * 1024 * 1024 && hydratedCount < 8 && hydratedBytes + stat.size <= 10 * 1024 * 1024) {
+              const read = readFileSync(file).toString('base64')
+              const validated = sanitizeImages([{ ...rest, data: read }])[0]
+              if (validated && validated.mediaType === rest.mediaType) {
+                data = validated.data
+                hydratedBytes += stat.size
+                hydratedCount++
+              }
+            }
           } catch {
             /* missing or unreadable: warned below */
           }
@@ -299,7 +325,7 @@ export class RunStore {
         if (!data) console.warn(`Image ${String(ref)} of run ${runId} is missing from the image store`)
         return { ...rest, data }
       })
-      return { ...entry, block: { ...block, images } }
+      return mapped === block ? entry : { ...entry, block: mapped }
     })
   }
 

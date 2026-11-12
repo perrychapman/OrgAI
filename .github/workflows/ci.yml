@@ -1,6 +1,10 @@
 # Checks every push to main or dev (docs-only pushes, docs/** and Markdown, are skipped) and every pull request into
 # main or dev (always runs). Free: no smoke scripts and no token-spending e2e (setup, history and worktree need the
 # user's consent and never run here).
+# e2e scope (owner decision 2026-11-10, scripts/e2e-select.mjs): the full e2e:free chain runs for pull requests into main,
+# pushes to main, the nightly schedule (against dev) and manual dispatch; pushes and pull requests to dev run only the
+# scripts of the changed area plus a smoke set. Any doubt (unmapped path, shared file, missing base commit) runs everything.
+# The pack and npm jobs are skipped on the nightly run: every push to dev already ran them.
 name: CI
 
 on:
@@ -11,20 +15,54 @@ on:
       - '**.md'
   pull_request:
     branches: [main, dev]
+    # 'edited' fires when a PR is retargeted (dev to main), which must start a new, full run.
+    types: [opened, synchronize, reopened, edited]
+  schedule:
+    # 03:17 UTC every night. A scheduled workflow runs from the default branch's copy of this file, so the jobs check out dev.
+    # It only starts once this file is on main, and GitHub disables schedules on a public repo with no activity for 60 days.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The nightly and manual runs get their own groups so they never cancel (or are cancelled by) a push run of the same ref.
+  # cancel-in-progress is harmless for the e2e scope: a push run is diffed against the last SUCCESSFUL push run of the
+  # branch, so a cancelled or red run never loses its area.
+  group: ci-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && format('manual-{0}', github.run_id) || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+  # Only for `gh run list` (last green push run of dev, the e2e diff base).
+  actions: read
+
+env:
+  # What the npm tarball the CI installs is built with: 'full' ships npm-shrinkwrap.json, 'none' (the script's default).
+  # 'none' here and in release.yml (owner decision 2026-11-06, to revisit): a honoured shrinkwrap made npm 11.12.1
+  # install every platform's Claude runtime (about 2 GB per install). The npm job still dry-runs the full build, so the
+  # shrinkwrap derivation is checked on every PR. Change this and release.yml together to go back to 'full'.
+  NPM_SHRINKWRAP: none
 
 jobs:
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high --ignore-scripts
+
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # The maintenance e2e shells out to git a lot.
-    timeout-minutes: 30
+    # The maintenance e2e shells out to git a lot; the whole free e2e suite took 30 min on macos-15 once the CLI scripts joined it.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -36,8 +74,14 @@ jobs:
       GIT_COMMITTER_NAME: OrgAI CI
       GIT_COMMITTER_EMAIL: ci@orgai.local
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+        with:
+          persist-credentials: false
+          # Scheduled runs start on main's copy of the workflow but test dev. Empty ref: the event's own ref.
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
+          # The e2e selector diffs two commits; without history it falls back to the full chain.
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
         with:
           node-version: 22
           cache: npm
@@ -45,18 +89,51 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - name: e2e (free)
-        run: npm run e2e:free
+      # The CLI vault integration test needs out/cli, so `npm test` above skips it; run it again on the build, where a
+      # missing bundle fails instead of skipping. POSIX only: it skips itself on Windows.
+      - name: CLI vault integration test
+        run: npx vitest run src/cli/vaultCli.int.test.ts
         env:
+          ORGAI_REQUIRE_NODE_HOST_INT: '1'
+          # The CLI ignores ORGAI_DATA_DIR; this keeps a stray CLI run off the runner's profile.
+          ORGAI_CLI_DATA_DIR: ${{ runner.temp }}/orgai-cli-data
+      # Full chain: schedule, workflow_dispatch, a pull request into main, a push to main. Anything else: the selected
+      # scripts (scripts/e2e-select.mjs prints the decision and the reason per changed file). Event values reach the
+      # script only through env.
+      # Push to dev: the diff base is the head of the most recent successful CI push run on dev (not `event.before`, so work
+      # from cancelled or red runs is still covered). No result, or a base that is not an ancestor of HEAD: the script
+      # runs the full chain.
+      - name: Last green push run on dev (e2e diff base)
+        id: lastgreen
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        shell: bash
+        run: |
+          sha=$(gh run list --workflow ci.yml --branch dev --event push --status success --limit 1 --json headSha --jq '.[0].headSha' || true)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+      # Default shell on purpose (pwsh on Windows): under Git Bash GNU whoami shadows System32's and breaks the cli-* scripts.
+      # --ci reads the E2E_* variables below (see ciPlan in the script).
+      - name: e2e (free, selected or full)
+        run: node scripts/e2e-select.mjs --ci --run
+        env:
+          E2E_EVENT: ${{ github.event_name }}
+          E2E_LAST_GREEN: ${{ steps.lastgreen.outputs.sha }}
+          E2E_FULL: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'main') || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+          E2E_BASE: ${{ github.event.pull_request.base.sha }}
+          E2E_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           # The e2e scripts ignore this and give each script its own temp data dir (E2E_DATA_DIR overrides); this only keeps
-          # any stray launch off the runner's profile.
+          # any stray launch off the runner's profile. The desktop app reads ORGAI_DATA_DIR, the CLI only
+          # ORGAI_CLI_DATA_DIR, so both are set.
           # (The runner context is only available at step level.)
           ORGAI_DATA_DIR: ${{ runner.temp }}/orgai-data
+          ORGAI_CLI_DATA_DIR: ${{ runner.temp }}/orgai-cli-data
           # macOS only: the runner's work area is 1024x684, which clamps the 1600x1000 / 2400x1000 e2e windows.
           ORGAI_WINDOW_LARGER_THAN_SCREEN: ${{ runner.os == 'macOS' && '1' || '' }}
       - name: Upload e2e screenshots
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4
         with:
           name: e2e-shots-${{ runner.os }}
           path: e2e/shots/**
@@ -65,6 +142,7 @@ jobs:
 
   pack:
     name: pack (${{ matrix.os }})
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -75,8 +153,10 @@ jobs:
       # Unsigned: never look for a signing identity on the runner.
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
         with:
           node-version: 22
           cache: npm
@@ -84,12 +164,51 @@ jobs:
       # Unpacked app only, no installers: catches electron-builder config and asarUnpack breakage.
       # (`npm run pack`, not `npm pack`, which is npm's own tarball command.)
       - run: npm run pack
-      # The packaged orgai command (cli-spec 7): --version, doctor, and a mock exec (ORGAI_MOCK=1, no tokens) in-process
-      # and through the spawned background app, on a temp data folder. UNVERIFIED until CI runs it: the Windows
-      # launcher (cmd.exe running orgai.cmd) and the default-host step (the packaged app spawned with --headless-host).
-      # continue-on-error until it has passed once on both windows-latest and macos-14 (review H4): it has never run in
-      # CI, its Windows path has never run anywhere, and a first-run failure should not hide the rest of the pack job's
-      # result. A failure still shows on the step (and in the job's annotations). Drop this line once both legs are green.
+      # The packaged app must not contain the orgai CLI (cli-standalone-default.md 5.2): no out/cli in app.asar or beside it,
+      # no bin/orgai launcher. Token-free; check (e) also starts the packed app hidden on the mock adapter with a temp data
+      # folder and quits it. continue-on-error until (e) has passed once on both runners: the Windows quit (taskkill
+      # without /F on a process with only hidden windows) has never run.
       - name: pack:verify
+        continue-on-error: true
         run: npm run pack:verify
+
+  # The orgai npm package (cli-standalone.md 3.4): build it from this commit's CLI bundle and run verify-npm (steps 1-6,
+  # all token-free on the mock; step 7 skips without a codex on PATH) on three OSes. The installs download the pinned
+  # dependencies from the registry. continue-on-error until it has passed once on all three (it has not run in CI yet);
+  # with NPM_SHRINKWRAP 'full' step 1 fails (every platform's Claude runtime is installed; step 1b then skips).
+  npm:
+    name: npm (${{ matrix.os }})
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest, ubuntu-latest]
+    env:
+      GIT_AUTHOR_NAME: OrgAI CI
+      GIT_AUTHOR_EMAIL: ci@orgai.local
+      GIT_COMMITTER_NAME: OrgAI CI
+      GIT_COMMITTER_EMAIL: ci@orgai.local
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:scripts
+      - run: npx vite build -c vite.cli.config.ts
+      - name: build-npm-package
+        shell: bash
+        run: |
+          args=()
+          if [ "$NPM_SHRINKWRAP" = "full" ]; then args=(--shrinkwrap); fi
+          # the dry run always derives the full shrinkwrap (what release.yml ships), whatever is installed below
+          node scripts/build-npm-package.mjs --dry-run --shrinkwrap
+          node scripts/build-npm-package.mjs "${args[@]}"
+      - name: verify-npm
+        run: node scripts/verify-npm.mjs
         continue-on-error: true

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { CLI_RUNTIME_PACKAGES, isCliExternal } from './packaging'
+import { isCliExternal } from './packaging'
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const posixOnly = process.platform === 'win32' ? it.skip : it
@@ -75,93 +75,26 @@ describe('electron-builder.yml', () => {
     return out
   }
 
-  it('unpacks out/cli and every CLI runtime package (and keeps the native entries)', () => {
+  it('unpacks every runtime package the desktop loads (and keeps the native entries), but not out/cli', () => {
     const unpack = topList('asarUnpack')
-    expect(unpack).toContain('out/cli/**')
-    for (const p of CLI_RUNTIME_PACKAGES) expect(unpack, p).toContain(`node_modules/${p}/**`)
+    expect(unpack).not.toContain('out/cli/**')
+    // The desktop's own list (scripts/verify-pack.mjs DESKTOP_UNPACKED_PACKAGES says the same), not the npm bundle's.
+    for (const p of ['@anthropic-ai/claude-agent-sdk', '@openai/codex', 'zod']) expect(unpack, p).toContain(`node_modules/${p}/**`)
     expect(unpack).toContain('node_modules/@anthropic-ai/claude-agent-sdk-*/**')
     expect(unpack).toContain('node_modules/@openai/codex-*/**')
   })
 
-  it('copies the launchers to Resources/bin per platform', () => {
-    expect(extraResources('mac')).toEqual(['build/bin/orgai -> bin/orgai'])
-    expect(extraResources('linux')).toEqual(['build/bin/orgai -> bin/orgai'])
-    expect(extraResources('win')).toEqual(['build/bin/orgai.cmd -> bin/orgai.cmd'])
+  it('keeps the CLI out of the package: files exclude out/cli, no orgai launcher is copied', () => {
+    expect(topList('files')).toContain("'!out/cli/**'")
+    for (const platform of ['mac', 'linux', 'win']) expect(extraResources(platform), platform).toEqual([])
+    expect(yml).not.toMatch(/build\/bin/)
+    expect(existsSync(join(repo, 'build', 'bin'))).toBe(false)
   })
 
   it('adds no publish, signing identity or fuse settings', () => {
     expect(yml).not.toMatch(/^publish:/m)
     expect(yml).not.toMatch(/^\s*electronFuses:/m)
     expect(yml).not.toMatch(/^\s*identity:\s*\S/m)
-  })
-})
-
-describe('build/bin launchers', () => {
-  const sh = join(repo, 'build', 'bin', 'orgai')
-  const cmd = join(repo, 'build', 'bin', 'orgai.cmd')
-
-  it('orgai is a POSIX sh script running the app binary as Node on the unpacked bundle', () => {
-    const text = readFileSync(sh, 'utf8')
-    expect(text.startsWith('#!/bin/sh\n')).toBe(true)
-    expect(text).not.toContain('\r')
-    expect(text).toContain('ELECTRON_RUN_AS_NODE=1')
-    expect(text).toContain('app.asar.unpacked/out/cli/orgai.mjs')
-    expect(text).toContain('MacOS/OrgAI')
-    if (process.platform !== 'win32') expect(statSync(sh).mode & 0o111).toBe(0o111)
-  })
-
-  it('orgai.cmd has CRLF endings, runs OrgAI.exe and passes every argument', () => {
-    const text = readFileSync(cmd, 'utf8')
-    expect(text.split('\n').slice(0, -1).every((l) => l.endsWith('\r'))).toBe(true)
-    expect(text.endsWith('\r\n')).toBe(true)
-    expect(text).toContain('OrgAI.exe')
-    expect(text).toContain('%*')
-    expect(text).toContain('set ELECTRON_RUN_AS_NODE=1')
-    expect(text).toContain('app.asar.unpacked\\out\\cli\\orgai.mjs')
-  })
-
-  posixOnly('runs through a fake packaged layout: links are followed, arguments pass through intact', () => {
-    const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-launcher-')))
-    try {
-      const contents = join(base, 'Apps', 'OrgAI.app', 'Contents')
-      const res = join(contents, 'Resources')
-      mkdirSync(join(res, 'bin'), { recursive: true })
-      mkdirSync(join(res, 'app.asar.unpacked', 'out', 'cli'), { recursive: true })
-      mkdirSync(join(contents, 'MacOS'), { recursive: true })
-      writeFileSync(join(res, 'app.asar.unpacked', 'out', 'cli', 'orgai.mjs'), '')
-      const fakeApp = '#!/bin/sh\necho "RUN_AS_NODE=$ELECTRON_RUN_AS_NODE"\nfor a in "$@"; do echo "ARG=$a"; done\n'
-      // Darwin uses <res>/../MacOS/OrgAI, everything else <res>/../orgai.
-      for (const bin of [join(contents, 'MacOS', 'OrgAI'), join(contents, 'orgai')]) {
-        writeFileSync(bin, fakeApp)
-        chmodSync(bin, 0o755)
-      }
-      copyFileSync(sh, join(res, 'bin', 'orgai'))
-      chmodSync(join(res, 'bin', 'orgai'), 0o755)
-      // ~/.local/bin/orgai -> a relative link -> the launcher.
-      mkdirSync(join(base, 'home', '.local', 'bin'), { recursive: true })
-      mkdirSync(join(base, 'links'))
-      symlinkSync(join(res, 'bin', 'orgai'), join(base, 'links', 'absolute'))
-      symlinkSync('../../../links/absolute', join(base, 'home', '.local', 'bin', 'orgai'))
-      const env = { PATH: process.env.PATH ?? '/usr/bin:/bin' }
-      const out = execFileSync(join(base, 'home', '.local', 'bin', 'orgai'), ['runs list', "it's", '--json', ''], { env, encoding: 'utf8' })
-      const lines = out.trimEnd().split('\n')
-      expect(lines[0]).toBe('RUN_AS_NODE=1')
-      expect(lines[1]).toBe(`ARG=${join(res, 'app.asar.unpacked', 'out', 'cli', 'orgai.mjs')}`)
-      expect(lines.slice(2)).toEqual(['ARG=runs list', "ARG=it's", 'ARG=--json', 'ARG='])
-
-      // A missing bundle is a clear error, exit 1.
-      rmSync(join(res, 'app.asar.unpacked'), { recursive: true })
-      let failure: { status?: number; stderr?: string } = {}
-      try {
-        execFileSync(join(res, 'bin', 'orgai'), ['--version'], { env, encoding: 'utf8', stdio: 'pipe' })
-      } catch (e) {
-        failure = e as typeof failure
-      }
-      expect(failure.status).toBe(1)
-      expect(String(failure.stderr)).toContain('bundle is missing')
-    } finally {
-      rmSync(base, { recursive: true, force: true })
-    }
   })
 })
 

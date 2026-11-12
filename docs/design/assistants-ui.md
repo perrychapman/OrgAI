@@ -209,6 +209,71 @@ New test ids: `run-conversation`, `conversation-transcript`, `conversation-jump`
 `chat-folder-input`, `chat-folder-error`, `run-meta-workspace`, `proposal-next-skills`, `proposal-next-connectors`,
 `proposal-next-project-skills`, `proposal-next-project-mcp`.
 
+## Implementation notes: Chat asks for permissions (2026-11-07, `ux-review-chat-permissions.md`)
+
+Chat (quick) runs keep their edit and command tools and every such call raises the normal permission card (runtime:
+CLAUDE.md "Chat asks"). The renderer follows the walk's "What the ask path should read" (H1, H2, M1, M3, M4).
+
+- Wording lives in `lib/chatPermissions.ts` (pure, unit-tested; the project wording stays in `lib/permissionCopy.ts`).
+- Permission card: `scopeLimit(request)` reads `maxScope`. 'session' (Chat, MCP build sessions) shows no "Always allow
+  for project" button, no `perm-scope-project` and no settings link; the effect line is `perm-scope-session`
+  (`sessionScopeCopy`: "Allow for session: stops asking for edits in this chat's folder until you end this chat." for
+  the quick session edit offer, "... stops asking for "npm test" commands until you end this chat." for a rule; a build
+  session says "until you end this session") with the rule chips. 'once' keeps the reference-folder card. A Chat card
+  has `perm-location[data-kind=chat]` "Runs in <folder name>" (full path in the title, hidden characters shown) or "Runs
+  in this chat's scratch area", and with `quickReadOnly` the line `perm-quick-readonly` "This chat started read-only.
+  Allowing lets it change <the scratch area | folder>." (commands: "... lets it run this command in ...").
+- Install card with `runOnly`: title "Add a server: <name>", `mcp-install-run-only` "For this chat only. It is not added
+  to your library.", no scope radios (always 'run'), buttons `mcp-install-approve` "Add for this chat" and
+  `mcp-install-deny` "Don't add" (both testids on every install card), resolved "Added for this chat" / "Not added".
+- Rules request card (request_permission_rules): on a run with `quick` or `buildWorkspace` it offers Allow for this run
+  and Deny only (no "Always allow for project" or its sentence; main keeps a project grant on the run there).
+  `PermissionRuleRequest` has no `maxScope` yet, so the renderer reads the run summary.
+- Start page: the switch `chat-allow-edits` is the shared `ui/Switch` "Let it make changes", enabled for scratch too
+  (hint through aria-describedby: "Changes happen in a private scratch folder. You approve each one." / "Changes happen
+  in <folder>. You approve each one."); `chat-asks-line` "It asks before it changes anything." under the description;
+  `chat-summary` "Works in a private scratch area. Asks before it changes a file or runs a command." / "Works in <name>.
+  Reads freely, asks before it changes a file or runs a command." / with the switch on "... Ready to make changes; asks
+  before each edit and command.".
+- RunMeta chip `run-meta-access[data-state=asks|edits|session]`: "asks first", "edits allowed", "changes allowed this
+  session" (title explains). 'session' comes from store `RunState.sessionChanges`, set when `permission.resolved`
+  carries scope 'session' (or 'project') for a write or command tool (`QUICK_WRITE_TOOLS`) on a quick run; live only (a
+  continuation is a new session and starts again). The switch to 'session' is announced once through the frame's
+  `tray-announce` ("Changes allowed for the rest of this chat."), never on mount.
+- Needs-you captions (bell rows, Dashboard `dash-needs-row`): `decisionLocationLabel` reads "Chat, scratch" / "Chat,
+  <folder>" for a Chat decision. Save as project shows `save-as-project-permissions-note` "Permissions you gave this
+  chat do not carry over.".
+- e2e/assistants.mjs (mock, `[mock:chat-edit]` and `[mock:chat-mcp]`): the edit card's Chat location, read-only line,
+  session line and no project button; Allow for session reached by Tab and Enter, the chip turning to 'session' and the
+  announcement, the "You allowed" harness row, "I wrote notes.md.", the npm test card (Allow once) at 1024x640 dark; Deny
+  and "I did not change anything." with no second card at 1600x1000 light; the run-only install card and "The server
+  was added for this chat." at 1024x640 light; at all four size/theme pairs an open card is visible with no page scroll.
+- Not driven: the card at every size/theme pair (one full flow each), an MCP build session card (maxScope 'session'
+  without a working folder), a folder Chat card's location by e2e, the Needs-you Chat captions and the Save as project
+  note by eye, screen reader output, macOS and Linux. No UX re-walk yet.
+
+## Live conversation model selection implementation (2026-11-08)
+
+`LiveModelSwitch` sits with the composer in a shared, scrollable grid region for Chat, setup (including Team Design), MCP assistant, Skill assistant and work runs. One-shot recommendations and drafts have no run-backed model switch. The picker lists concrete models on connected connections and applies only to this conversation's root; defaults and other agents stay unchanged. Pending choices are labelled until applied. Ended selections say "Next message" and take effect when the composer sends a continuation.
+
+The compact model button sits immediately by the composer and remains mounted when ending a session changes the composer mode. Its bounded picker opens above the composer, focuses search, groups concrete choices by connection and shows friendly catalog labels with exact IDs as secondary text. Connection/model pairs remain distinct even when IDs or names match. The current model stays identifiable when its connection or catalog entry is unavailable. Search and selection do not change the applied model. Every switch passes its captured run ID as `expectedRunId`; main refuses a newly resolved chain successor instead of silently applying to it. Dismissal/navigation invalidate pending UI work.
+
+One action follows the current state: use the model at idle, interrupt and switch during a reply, or save it for the next message after the session ends. A connection or adapter handoff requires an explicit confirmation before ending the session; retained transcript text is distinguished from provider session memory. Sending remains a separate composer action. Open decisions and active reports block interruption/session termination for switching. Refresh the run before acting, wait for the intended boundary, and call switch once; a timeout or refusal requires an explicit retry. A successful stop followed by failed selection retains the pending choice and explains that the session ended but the model was not saved. The draft is retained throughout. Escape/cancel/apply return focus to the model button; accessible feedback must not add a persistent redundant success row.
+
+Verification (2026-11-10): `lib/liveModelSwitch.test.ts` has 11 tests covering connection-bound identities/search, same-connection adapter handoff, delayed idle, one-shot interruption, reports/decisions, bounded timeout, confirmation cancellation, partial stop/apply recovery, changed state/transcript/successor and dismissed operations. Typecheck and the combined renderer/runtime/dispatcher targeted suite pass (239 tests). The token-free `e2e/model-switch.mjs` passes with normal configuration and a fresh empty `CLAUDE_CONFIG_DIR` across all five run kinds at 1024x640 and 1600x1000 in dark/light: expanded picker bounds, draft/transcript retention, next-reply models, search focus/Escape, native radio arrows, duplicate IDs across connections, empty fresh catalog/stale current ID, native handoff Cancel, injected apply failure after stop, explicit retry without a second stop, trigger focus, staged Send and paused/error recovery. Direct initial-Chat handoff remains stable after teardown; a pending read dismissed/reopened by the user cannot apply or overwrite the new picker's error. Other fixtures route through a connected mock gateway independently of ambient login. The pre-change mock walk observed redundant persistent feedback and Escape failing to close; post-change probes caught and fixed closed-popover CSS, async geometry growth, modal dismissal and switcher unmount during stop. Run settings row (2026-11-10): `LiveModelSwitch` now renders as the first chip ("Model: …" with a chevron) of the live run settings row, in a fixed `live-settings-bar` at the top of the composer region so it stays mounted through composer mode changes; its search, grouped list, loading and retry come from `components/runSettings/ModelPickerList.tsx`, shared with the New run page's model chip. Every `live-model-*` test id and behaviour is unchanged. The footer adds that roles set to inherit follow the lead's model (`live-model-help`). See `docs/agent-notes/renderer.md` "Run settings row". A synthetic 2,400-model catalog opened in 137 ms and searched in 35 ms in the mock app (single local observation, not a performance guarantee). Live providers, screen-reader speech, 320 px reflow and browser zoom remain unverified.
+
+Model-switch walkthrough/review (2026-11-10): Product Designer accepted the interaction plan; pre/post mock UX walkthroughs and interactive accessibility/security source review approved the inspected flows with no remaining Critical/High findings. A clean direct initial-Chat handoff preserved its selection after 500 ms and 1.7 s, restored focus and kept the draft unsent. An earlier diagnostic incorrectly serialized a void stop response and was retired; it did not demonstrate an application overwrite. The trigger shows transient "Changing model…" feedback during an operation without adding a persistent success row. Reduced-motion-on was inspected; OS motion preferences, screen-reader speech, measured contrast and zoom were not verified. Final combined integration/CI remains the orchestrator's gate.
+
+## Model picker rapid-reopen focus correction (2026-11-10)
+
+Final empty-config integration exposed a native popover event-ordering defect. Electron tracing captured Escape closing the empty-catalog picker, followed by Enter reopening it before the queued `toggle` event: Chromium emitted both `beforetoggle` transitions but one coalesced `toggle` with `oldState: open`, `newState: open`. React retained `open=true` and its mounted search input, so mount-based focus and the shared `[open, placed]` focus effect did not run. The same coalescing could omit the close callback that invalidates a pending model operation.
+
+`Popover` now reports each close synchronously through `beforetoggle`, keeps its native listeners stable, and advances an opening revision for placement and focus on each delivered open event. The picker reloads its catalog on each opening, including a coalesced reopen, while preserving deliberate confirmation recovery. Exit presence, native dismissal, motion tokens and styles are unchanged. The e2e regression forces close and native trigger reactivation in one browser task, checks search focus/reset in both themes at both supported sizes with system/reduced motion, and gates an in-flight read to verify both Escape and coalesced dismissal cancel without applying or overwriting the reopened picker. Failure reports retain a bounded native-event/focus trace; the pending-operation assertion waits for actual busy settlement instead of a fixed delay.
+
+Verification on the correction: typecheck, build, 48 focused picker/motion/token unit tests, the strengthened model-switch e2e with normal configuration and a fresh empty `CLAUDE_CONFIG_DIR`, and `e2e/motion.mjs` passed. Reviewer inspected all 22 shared Popover uses across 18 consumers and approved the concrete product/e2e changes with no actionable findings or Critical/High blockers. No provider, adapter, IPC or proxy-setup code changed. Live providers, screen-reader speech, browser zoom and cross-platform behavior remain unverified.
+
+The focused UX follow-up reran the built mock model-switch matrix and reviewed picker screenshots; it was automated verification plus visual inspection, not a complete first-time keyboard walkthrough. The connection legend is partly clipped by the scrolled list in inspected images; this correction does not change list styling. Canvas checked-radio entry/reopen, Usage Projects-to-Kinds light dismissal, and Add Service More-to-custom-dialog focus handoff were not driven locally and were handed to root QA for the final shared-consumer gate.
+
 ## Open items
 
 - M5 (runtime): chats still get the plan nudge ("Continuing: asked the orchestrator to write a plan...", "Mock:
@@ -218,8 +283,6 @@ New test ids: `run-conversation`, `conversation-transcript`, `conversation-jump`
 - The MCP start page cannot name the build folder before the run starts (the data-folder wording is shown).
 - `proposalNextByRun` entries are cleared only by Dismiss; the pointer is untested at narrow toolbar widths, and the
   connectors and project links are not covered by e2e (the mock gives no MCP proposal on that path).
-- The scratch edits switch is a local `button[role=switch]` because `ui/Switch` takes no `aria-disabled`; fold that into
-  `Switch` later.
 - Not driven: the native folder picker, the Save as project 'existing' outcome, a default-team Chat in conversation
   mode, the project-scope `skill-ask-assistant` run.
 - Not addressed: L3 (Team disclosure wording), L4 ("Stopped" vs "Ended"), L6 (first-launch focus), L7 (brand lockup

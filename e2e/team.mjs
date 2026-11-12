@@ -53,6 +53,46 @@ async function sectionBlock(page) {
   check(!/Manage in Tools|MCP/.test(await block.innerText()), 'the block never says "Manage in Tools" or "MCP"')
 }
 
+/** Delegation enforcement 4.1, 6: a "Required" checkbox per spawnable report, persisted as Role.requiredReports. */
+async function sectionRequiredReports(page) {
+  const project = await findProject(page, NAME)
+  const lead = project.roles.find((r) => r.canSpawn && r.spawnable.length > 0)
+  if (!lead) {
+    log('SKIP required reports: no role can delegate')
+    return
+  }
+  const reportId = lead.spawnable[0]
+  const report = project.roles.find((r) => r.id === reportId)
+  await page.locator('.react-flow__node', { hasText: lead.name }).first().click()
+  await teamPanelTab(page, 'Role').waitFor()
+  const box = page.locator(`[data-testid=role-required-report-${report.slug}]`)
+  await box.waitFor({ state: 'attached', timeout: 10_000 })
+  check(await box.isEnabled(), 'the Required checkbox is enabled for a spawnable report')
+  check(!(await box.isChecked()), 'a report is not required by default')
+  await box.check({ force: true })
+  let saved
+  for (let i = 0; i < 30 && !saved?.requiredReports?.includes(reportId); i++) {
+    saved = (await findProject(page, NAME)).roles.find((r) => r.id === lead.id)
+    if (!saved?.requiredReports?.includes(reportId)) await sleep(200)
+  }
+  check(saved?.requiredReports?.includes(reportId) === true, 'ticking Required saves requiredReports on the role', JSON.stringify(saved?.requiredReports))
+  await page.reload()
+  await page.waitForSelector('.sidebar', { timeout: 30_000 })
+  await openProject(page, NAME)
+  await openTeam(page)
+  await page.locator('.react-flow__node', { hasText: lead.name }).first().click()
+  await teamPanelTab(page, 'Role').waitFor()
+  const again = page.locator(`[data-testid=role-required-report-${report.slug}]`)
+  await again.waitFor({ state: 'attached', timeout: 10_000 })
+  check(await again.isChecked(), 'the Required checkbox persists after a reload')
+  await again.uncheck({ force: true })
+  for (let i = 0; i < 30 && saved?.requiredReports; i++) {
+    saved = (await findProject(page, NAME)).roles.find((r) => r.id === lead.id)
+    if (saved?.requiredReports) await sleep(200)
+  }
+  check(!saved?.requiredReports, 'unticking Required clears requiredReports', JSON.stringify(saved?.requiredReports))
+}
+
 /** Open the role model fold and its Advanced details, re-opening them if a re-render (project.updated) remounts the panel, until Exact model is visible. */
 async function openAdvancedModel(page) {
   await page.waitForFunction(
@@ -110,6 +150,78 @@ async function sectionExactModel(page) {
     const d = document.querySelector('[data-testid=role-model-advanced]')
     if (d) d.open = false
   })
+}
+
+/**
+ * A project on a mixed-family proxy: the Exact model select sits in the main role panel (not under Advanced), grouped
+ * Claude / GPT / Other with the family in each option, and a GPT model is selectable. The project is moved back and the
+ * proxy removed afterwards. Checked at both sizes and themes.
+ */
+async function sectionProxyExactModel(page, app, shot) {
+  const NAME_PX = 'E2E gateway'
+  const project = await findProject(page, NAME)
+  const proxyId = await page.evaluate(async (name) => {
+    const made = await window.orgai.connections.createProxy({ name, anthropicBaseUrl: 'https://mock-proxy.example.com', apiKey: 'whatever' })
+    await window.orgai.connections.connect(made.connection.id)
+    return made.connection.id
+  }, NAME_PX)
+  try {
+    // A role edit from the earlier sections is saved 350 ms after the last change (the save indicator reads "Saving…"
+    // until then); remapping first would let that stale copy overwrite the project's new connection.
+    await page.waitForSelector('[data-testid=save-indicator].is-saving', { state: 'detached', timeout: 10_000 })
+    await page.evaluate(([pid, id]) => window.orgai.projects.remapModels({ projectId: pid, connection: id }), [project.id, proxyId])
+    await page.reload()
+    await page.waitForSelector('.sidebar', { timeout: 30_000 })
+    await openProject(page, NAME)
+    await openTeam(page)
+    await selectReviewer(page)
+    await page.evaluate(() => {
+      const fold = document.querySelector('[data-testid=role-model-fold]')
+      if (fold) fold.open = true
+    })
+    const exactSel = page.locator('[data-testid=role-exact-model]')
+    await exactSel.waitFor({ state: 'visible', timeout: 20_000 })
+    check(await exactSel.evaluate((el) => !el.closest('[data-testid=role-model-advanced]')), 'on a proxy project Exact model is in the main role panel, not under Advanced')
+    for (const [w, h] of SIZES) {
+      await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+      await sleep(500)
+      for (const theme of THEMES) {
+        await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+        await sleep(250)
+        const tag = `at ${w}x${h} ${theme}`
+        check(await exactSel.isVisible(), `Exact model is visible ${tag}`)
+        const m = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }))
+        check(m.sw <= m.cw, `no horizontal scroll with the proxy picker ${tag}`, JSON.stringify(m))
+        await shot(`proxy-exact-${w}x${h}-${theme}`)
+      }
+    }
+    const groups = await exactSel.evaluate((s) => [...s.querySelectorAll('optgroup')].map((g) => ({ label: g.label, options: [...g.querySelectorAll('option')].map((o) => o.textContent ?? '') })))
+    check(groups.map((g) => g.label).join() === 'Claude,GPT,Other', 'Exact model is grouped Claude, GPT, Other', groups.map((g) => g.label).join())
+    check(groups.every((g) => g.options.every((o) => o.endsWith(` · ${g.label}`))), 'each option names its family', JSON.stringify(groups))
+    check(/Any model E2E gateway serves\./.test(await page.locator('.model-select', { has: exactSel }).innerText()), 'the description names the proxy by its own name')
+    await exactSel.selectOption('gpt-6-sol')
+    await sleep(900)
+    const after = await reviewer(page)
+    check(after.role.model === 'gpt-6-sol', 'picking a GPT model pins it on the role', after.role.model)
+    check((await page.locator('[data-testid=role-model]').inputValue()) === 'custom', 'the Model select reads as an exact model')
+    const chip = await page.locator('.react-flow__node', { hasText: 'Reviewer' }).first().innerText()
+    check(/gpt-6-sol/.test(chip), 'the org chart node shows the GPT model', chip)
+    await exactSel.selectOption('')
+    await sleep(600)
+  } finally {
+    await page.evaluate(
+      async ([pid, id]) => {
+        await window.orgai.projects.remapModels({ projectId: pid, connection: 'anthropic' }).catch(() => {})
+        await window.orgai.connections.removeProxy(id).catch(() => {})
+      },
+      [project.id, proxyId]
+    )
+    await page.reload()
+    await page.waitForSelector('.sidebar', { timeout: 30_000 })
+    await openProject(page, NAME)
+    await openTeam(page)
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  }
 }
 
 async function sectionTools(page) {
@@ -276,32 +388,37 @@ async function sectionAssistant(page, shot) {
   await page.waitForFunction(() => document.querySelector('[data-testid=team-recommend-pane]')?.getAttribute('data-phase') === 'idle', null, { timeout: 20_000 })
   check((await tray.locator(`[data-testid=capability-card][data-name="${dname}"]`).count()) === 0, 'a dismissed card does not return after Re-check setup')
 
-  // Design mode: an Architect session that stays on the Team tab and off the Live strip.
-  await tray.locator('[data-testid=architect-open]').click()
-  const box = tray.locator('textarea').first()
-  await box.fill('Add a database specialist.')
-  await tray.getByRole('button', { name: 'Revise with the Architect' }).click()
-  await tray.locator('[data-testid=architect-session]').waitFor({ timeout: 15_000 })
-  check((await page.locator('[data-testid=tab-team]').getAttribute('aria-selected')) === 'true', 'the Architect session does not leave the Team tab')
-  check((await page.locator('.run-tab').count()) === 0, 'the Architect session has no run tab on the Live strip')
-  await tray.locator('[data-testid=team-mode-recommend]').click()
+  // Design mode (the Architect session is an ordinary run in Live) is covered by sectionDesignDecisions and
+  // e2e/org-change.mjs; starting one here would end a run before sectionDismiss, which changes its dismissed list.
 }
 
-/** Design mode hosts the Architect's permission card; the Needs-you pill brings the user back to it. */
-async function sectionDesignDecisions(page, shot) {
+async function startOrgChange(page) {
   const tray = page.locator('[data-testid=team-assistant]')
   await tray.locator('[data-testid=architect-open]').click()
-  const card = tray.locator('[data-testid=architect-decisions] .decision-card').first()
-  await card.waitFor({ timeout: 20_000 })
-  check(true, 'the Architect permission card shows in the Design tray')
-  check(!/R\?/.test(await tray.locator('[data-testid=architect-decisions]').innerText()), 'the Architect card is not labelled R?')
+  await tray.locator('textarea').first().fill('Add a database specialist.')
+  await tray.locator('[data-testid=org-change-start]').click()
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+}
+
+/** The Architect's permission card shows in the Live tray; the Needs-you pill brings the user back to it from Team. */
+async function sectionDesignDecisions(page, shot) {
+  const tray = page.locator('[data-testid=team-assistant]')
+  await startOrgChange(page)
+  check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the org change session opens in Live')
+  check((await page.locator('.run-tab').count()) >= 1, 'the org change session has its own run tab')
+  const card = page.locator('.frame-tray .decision-card').first()
+  await card.waitFor({ timeout: 20_000 }).catch(() => {})
+  check((await card.count()) === 1 && (await card.isVisible()), 'the Architect permission card shows in the Live tray')
+  check(!/R\?/.test(await page.locator('.frame-tray').innerText()), 'the Architect card is not labelled R?')
   await shot('design-permission')
-  await tray.locator('[data-testid=team-mode-recommend]').click()
+  await openTeam(page)
+  await tray.locator('[data-testid=architect-open]').click()
+  check((await tray.locator('[data-testid=org-change-pointer]').count()) === 1, 'Team > Design points at the open session')
   await page.locator('[data-testid=topbar-needs-you]').click()
-  await tray.locator('[data-testid=architect-decisions] .decision-card').first().waitFor({ timeout: 5_000 })
-  check((await tray.getAttribute('data-mode')) === 'design', 'the Needs-you pill switches the tray to Design')
-  await sleep(300)
-  check(await page.evaluate(() => !!document.activeElement?.closest('[data-testid=architect-decisions]')), 'the Needs-you pill focuses the Architect card')
+  await page.locator('.frame-tray .decision-card').first().waitFor({ timeout: 5_000 })
+  check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the Needs-you pill lands on the Architect card in Live')
+  await endSession(page)
+  await openTeam(page)
   await tray.locator('[data-testid=team-mode-recommend]').click()
 }
 
@@ -546,7 +663,19 @@ async function sectionRunsEnded(page) {
     await sleep(2000)
     await endSession(page)
   }
-  // The review runs 3 s after the last run ends; the Team tab badge shows its count.
+  const lastEndedAt = Date.now()
+  // The review runs 3 s after the LAST run ends (the debounce restarts per run). On a slow runner the first run's review
+  // can land before the second run ends, so a badge alone proves nothing: wait for a review written after the last end.
+  const projectId = (await findProject(page, NAME)).id
+  const deadline = Date.now() + 25_000
+  let reviewed = false
+  while (Date.now() < deadline && !reviewed) {
+    const r = await page.evaluate((id) => window.orgai.capabilities.lastReview(id), projectId).catch(() => null)
+    const at = r && typeof r.checkedAt === 'string' ? Date.parse(r.checkedAt) : NaN
+    reviewed = Number.isFinite(at) && at > lastEndedAt
+    if (!reviewed) await sleep(250)
+  }
+  check(reviewed, 'a review is written after the last run ended')
   await page.locator('[data-testid=team-tab-badge]').waitFor({ timeout: 20_000 })
   await sleep(500)
   await openTeam(page)
@@ -565,6 +694,31 @@ const { app, page, shot } = await launch({ shotPrefix: 'team' })
 try {
   await createProject(page, { path: repo, name: NAME })
   await openTeam(page)
+  for (const [w, h] of SIZES) {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    for (const theme of THEMES) {
+      await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      await teamPanelTab(page, 'Catalog').click()
+      await page.locator('[data-testid=team-catalog]').waitFor()
+      const scroll = await page.evaluate(() => {
+        const pane = document.querySelector('.team-panel-pane')
+        const side = pane.closest('.side-panel')
+        const tabs = document.querySelector('.team-panel-tabs')
+        const top = tabs.getBoundingClientRect().top
+        pane.scrollTop = pane.scrollHeight
+        return {
+          outerScrollable: /auto|scroll/.test(getComputedStyle(side).overflowY),
+          moved: pane.scrollTop > 0,
+          atBottom: Math.abs(pane.scrollHeight - pane.clientHeight - pane.scrollTop) <= 1,
+          tabsFixed: tabs.getBoundingClientRect().top === top
+        }
+      })
+      check(!scroll.outerScrollable, `Team has no outer scrollbar at ${w}x${h} ${theme}`, JSON.stringify(scroll))
+      check(scroll.moved && scroll.atBottom && scroll.tabsFixed, `Catalog scrolls to the end with fixed tabs at ${w}x${h} ${theme}`, JSON.stringify(scroll))
+      await shot(`catalog-scroll-${w}x${h}-${theme}`)
+    }
+  }
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
   await sectionFirstConnection(page, shot)
   await seed(page)
   await sectionBlock(page)
@@ -578,6 +732,11 @@ try {
   await sectionDismiss(page, shot, app)
   await sectionDesignDecisions(page, shot)
   await sectionExactModel(page)
+  await sectionProxyExactModel(page, app, shot)
+  // Last among the sections: it reloads the page, which would let the Team tray decide its "since your last run" line
+  // before sectionRunsEnded's runs end.
+  await sectionRequiredReports(page)
+  await selectReviewer(page)
   // Screenshots: both sizes in both themes, with the block holding content.
   await page.locator('[data-testid=role-capabilities] [data-testid=role-add-skill]').click()
   await page.locator('[data-testid=capability-chooser]').waitFor()

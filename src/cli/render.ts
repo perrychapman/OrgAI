@@ -1,17 +1,19 @@
 /**
- * Text renderers shared by the read commands (runs list / show, watch, status, inbox). Everything here builds on the
+ * Text renderers shared by the read commands (runs list / show, status). Everything here builds on the
  * shared view models (src/shared/view): status words come only from statusText, names from runName, costs from
  * costView, decision rows from waitingItems. Untrusted strings pass through safe / safeLine before any styling.
  */
-import { RUN_KIND_LABELS, type AgentInstance, type ImageAttachment, type PendingCards, type ProjectKind, type RunPlan, type RunRecord, type RunSummary, type TranscriptEntry } from '../shared/types'
+import { RUN_KIND_LABELS, type AgentInstance, type ImageAttachment, type PendingCards, type ProjectKind, type RunEvent, type RunPlan, type RunRecord, type RunStaffing, type RunSummary, type TranscriptEntry, type TranscriptMedia, type TranscriptContentPart } from '../shared/types'
 import { costView, formatTokens, runCostInput, agentCostInput } from '../shared/view/cost'
+import { compactionCount } from '../shared/view/compactionText'
 import { formatDateTime } from '../shared/view/dates'
-import { HIDDEN_OR_CONTROL_RUN } from '../shared/view/hiddenChars'
+import { AGENT_LABEL_MAX, agentLabel as sharedAgentLabel } from '../shared/view/agentTree'
 import { waitingItems, type WaitingItem } from '../shared/view/needsYou'
 import { runName } from '../shared/view/runLabels'
 import { runStatus, settleEndedAgents, statusOfRun, statusText, type RunStatusView } from '../shared/view/runStatus'
 import { bareToolName, humanizeToolResult, humanizeToolUse } from '../shared/view/transcriptRows'
 import { safe, safeLine, styleStatus, type Style } from './output'
+import { agentModelText, latestByAgent, rootModelOf, runConnections } from './staffingText'
 
 // ---------- Run facts ----------
 
@@ -59,15 +61,13 @@ export function statusWordOfSummary(s: RunSummary): string {
 
 // ---------- Agents ----------
 
-const UNSAFE_HANDLE = new RegExp(HIDDEN_OR_CONTROL_RUN.source, 'u')
-const AGENT_LABEL_MAX = 64
-
-/** How the app names an agent: its handle (when clean), else its role name; sanitized, one line. */
+/**
+ * How the app names an agent. The rule (handle when clean, else the role name, cut at AGENT_LABEL_MAX) is the shared
+ * view-model's `agentLabel`; this wrapper only makes it terminal-safe (sanitized, one line) and names a missing agent.
+ */
 export function agentLabel(a: Pick<AgentInstance, 'name' | 'handle'> | undefined): string {
   if (!a) return 'An agent'
-  const h = a.handle?.trim()
-  const pick = h && !UNSAFE_HANDLE.test(h) ? h : a.name
-  const text = safeLine(pick) || 'An agent'
+  const text = safeLine(sharedAgentLabel(a)) || 'An agent'
   const cs = [...text]
   return cs.length > AGENT_LABEL_MAX ? `${cs.slice(0, AGENT_LABEL_MAX - 1).join('')}…` : text
 }
@@ -79,9 +79,15 @@ export function agentLabelWithRole(a: Pick<AgentInstance, 'name' | 'handle'>): s
   return role && role !== label ? `${label} (${role})` : label
 }
 
-/** The agent tree as indented lines (root first, then reports by start order). */
-export function agentTreeLines(summary: RunSummary, agents: Record<string, AgentInstance>, st: Style): string[] {
+/**
+ * The agent tree as indented lines (root first, then reports by start order). Each agent names its model (the staffing
+ * label "everyday (claude-sonnet-5-5) / medium" when `staffing` has an assignment for it, else its live model id) and,
+ * when the run spans more than one connection, the connection it ran on.
+ */
+export function agentTreeLines(summary: RunSummary, agents: Record<string, AgentInstance>, st: Style, staffing?: Pick<RunStaffing, 'assignments'>): string[] {
   const settled = settleEndedAgents(summary, agents)
+  const picks = latestByAgent(staffing)
+  const multi = runConnections(summary, settled).length > 0
   const list = Object.values(settled)
   const children = new Map<string | null, AgentInstance[]>()
   const ids = new Set(list.map((a) => a.id))
@@ -99,7 +105,10 @@ export function agentTreeLines(summary: RunSummary, agents: Record<string, Agent
     if (seen.has(a.id) || depth > 50) return
     seen.add(a.id)
     const cost = costView(agentCostInput(a))
-    const facts = [safeLine(a.activity), cost.empty ? '' : cost.text].filter(Boolean).join(' · ')
+    const model = agentModelText(a, picks.get(a.id))
+    const on = multi ? safeLine(a.connection ?? summary.connection ?? '') : ''
+    const modelText = [model, on ? `on ${on}` : ''].filter(Boolean).join(' ')
+    const facts = [modelText, safeLine(a.activity), cost.empty ? '' : cost.text, compactionCount(a.compactions)].filter(Boolean).join(' · ')
     out.push(`${'  '.repeat(depth + 1)}${depth > 0 ? '└ ' : ''}${st.bold(agentLabelWithRole(a))}${facts ? st.dim(` · ${facts}`) : ''}`)
     for (const c of children.get(a.id) ?? []) walk(c, depth + 1)
   }
@@ -152,19 +161,41 @@ export function imageLabel(img: ImageLike): string {
   return n === undefined ? `[image ${safeLine(img.mediaType)}]` : `[image ${safeLine(img.mediaType)} ${n} bytes]`
 }
 
+export function mediaLabel(media: TranscriptMedia): string {
+  return media.kind === 'image' ? imageLabel(media.image) : `[unsupported media${media.mediaType ? ` ${safeLine(media.mediaType)}` : ''}${media.name ? ` ${safeLine(media.name)}` : ''}: ${safeLine(media.reason)}]`
+}
+
+export function resultPartsLabel(parts?: TranscriptContentPart[]): string {
+  return (parts ?? []).map((part) => part.type === 'media' ? mediaLabel(part.media) : safeLine(part.text)).filter(Boolean).join(' ')
+}
+
+function omittedImage(img: ImageAttachment): ImageAttachment {
+  const i = img as ImageLike
+  return { mediaType: img.mediaType, byteLength: typeof i.byteLength === 'number' ? i.byteLength : base64Bytes(img.data ?? ''), omittedBase64: true } as unknown as ImageAttachment
+}
+
 /** A record for JSON output: every image's base64 replaced by `{ mediaType, byteLength, omittedBase64: true }`. */
+export function entryWithoutImages(e: TranscriptEntry): TranscriptEntry {
+    const b = e.block
+    if (b.kind === 'user' && b.images?.length) {
+      return { ...e, block: { ...b, images: b.images.map(omittedImage) } }
+    }
+    if (b.kind === 'media' && b.media.kind === 'image') {
+      return { ...e, block: { ...b, media: { ...b.media, image: omittedImage(b.media.image) } } }
+    }
+    if (b.kind === 'tool_result' && b.parts?.some((p) => p.type === 'media' && p.media.kind === 'image')) {
+      return { ...e, block: { ...b, parts: b.parts.map((p) => p.type === 'media' && p.media.kind === 'image' ? { ...p, media: { ...p.media, image: omittedImage(p.media.image) } } : p) } }
+    }
+    return e
+}
+
+export function eventWithoutImages(event: RunEvent): RunEvent {
+  return event.type === 'transcript' ? { ...event, entry: entryWithoutImages(event.entry) } : event
+}
+
 export function recordWithoutImages(rec: RunRecord): RunRecord {
-  let changed = false
-  const transcript = rec.transcript.map((e) => {
-    if (e.block.kind !== 'user' || !e.block.images?.length) return e
-    changed = true
-    const images = e.block.images.map((img) => {
-      const i = img as ImageLike
-      return { mediaType: img.mediaType, byteLength: typeof i.byteLength === 'number' ? i.byteLength : base64Bytes(img.data ?? ''), omittedBase64: true as const }
-    })
-    return { ...e, block: { ...e.block, images: images as unknown as ImageAttachment[] } }
-  })
-  return changed ? { ...rec, transcript } : rec
+  const transcript = rec.transcript.map(entryWithoutImages)
+  return transcript.some((entry, i) => entry !== rec.transcript[i]) ? { ...rec, transcript } : rec
 }
 
 // ---------- Transcript ----------
@@ -220,10 +251,13 @@ export function transcriptLine(e: TranscriptEntry, o: TranscriptLineOpts): strin
     case 'tool_result': {
       if (!o.results && !b.isError) return null
       const row = humanizeToolResult(o.toolName?.(b.toolUseId), b.content, b.isError)
-      if (!row) return null
-      const line = `${pre}${who} ← ${safeLine(row.label)}`
-      return b.isError || row.failed ? st.red(line) : st.dim(line)
+      const parts = resultPartsLabel(b.parts)
+      if (!row && !parts) return null
+      const line = `${pre}${who} ← ${parts || safeLine(row!.label)}`
+      return b.isError || row?.failed ? st.red(line) : st.dim(line)
     }
+    case 'media':
+      return `${pre}${st.bold(`${who}:`)} ${mediaLabel(b.media)}`
     case 'user': {
       const text = safe(b.text).trim()
       const imgs = (b.images ?? []).map((i) => imageLabel(i as ImageLike))
@@ -322,6 +356,9 @@ export function summaryLines(s: RunSummary, o: SummaryBlockOpts): string[] {
   if (o.projectName) lines.push(`  ${st.dim('Project:')} ${safeLine(o.projectName)}${o.projectPath ? st.dim(` (${safeLine(o.projectPath)})`) : ''}`)
   const when = [`Started ${formatDateTime(s.startedAt)}`, s.endedAt ? `ended ${formatDateTime(s.endedAt)}` : ''].filter(Boolean).join(', ')
   lines.push(`  ${st.dim('Kind:')} ${kindLabel(s)} · ${when}`)
+  const rootModel = rootModelOf(s, o.record?.agents)
+  const rootOn = s.modelSelection?.connection ?? s.connection
+  if (rootModel) lines.push(`  ${st.dim('Model:')} ${rootModel}${rootOn ? st.dim(` (${safeLine(rootOn)})`) : ''}`)
   if (o.chain && o.chain.count > 1) {
     lines.push(`  ${st.dim('Chain:')} session ${o.chain.index} of ${o.chain.count}${o.chain.previousTag ? ` (continues ${o.chain.previousTag})` : ''}`)
   }

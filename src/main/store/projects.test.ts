@@ -434,6 +434,19 @@ describe('Role.model validation', () => {
     expect(sanitizeRoleModels(unchanged, undefined, log)).toEqual({ project: unchanged, changed: false })
   })
 
+  it('keeps Role.connection when it is a connection id and drops anything else', () => {
+    const roles = [
+      role({ id: 'a', slug: 'a', model: 'sonnet', connection: 'openai' }),
+      role({ id: 'b', slug: 'b', model: 'sonnet', connection: 'proxy-0123abcd' }),
+      role({ id: 'c', slug: 'c', model: 'sonnet', connection: '--evil' as never }),
+      role({ id: 'd', slug: 'd', model: 'sonnet', connection: 5 as never })
+    ]
+    const out = sanitizeRoleModels(project({ provider: claudeProvider(), roles }), undefined, () => {})
+    expect(out.changed).toBe(true)
+    expect(out.project.roles.map((r) => r.connection)).toEqual(['openai', 'proxy-0123abcd', undefined, undefined])
+    expect(Object.hasOwn(out.project.roles[2], 'connection')).toBe(false)
+  })
+
   it('uses the connection tier mapping given to it, and refuses an invalid mapped model', () => {
     const p = project({ provider: claudeProvider('litellm'), roles: [bad('--x1', 'everyday'), bad('--x2', 'deep')] })
     const tierContext = () => ({ connection: 'litellm' as const, tierModels: { everyday: 'claude-sonnet-4-5', deep: '--mapped-evil' } })
@@ -773,5 +786,57 @@ describe('ProjectStore folder config gate', () => {
     expect(store.get('junk')?.folderConfigTrust).toEqual({ state: 'untrusted' })
     expect(store.get('bad')?.folderConfigTrust).toEqual({ state: 'untrusted' })
     expect('folderConfigTrust' in store.get('legacy')!).toBe(false)
+  })
+})
+
+describe('run staffing fields', () => {
+  const lead = (over: Partial<Role> = {}): Role => role({ id: 'r-lead', slug: 'lead', name: 'Lead', tier: 'deep', model: 'deep', canSpawn: true, spawnable: ['r-eng'], requiredReports: ['r-eng'], ...over })
+  const eng = (over: Partial<Role> = {}): Role => role({ id: 'r-eng', slug: 'eng', name: 'Eng', tier: 'everyday', model: 'everyday', effort: 'medium', reportsTo: 'r-lead', ...over })
+
+  it('sanitizeRoleModels rebuilds Role.staffing and drops a malformed one, leaving every other field alone', () => {
+    const roles = [
+      lead({ staffing: { mode: 'auto', minTier: 'everyday', maxEffort: 'high' } }),
+      eng({ staffing: { mode: 'auto', minTier: 'colossal', maxEffort: 'ultra', extra: 1 } as never }),
+      role({ id: 'r-rev', slug: 'rev', reportsTo: 'r-lead', staffing: { mode: 'sometimes' } as never }),
+      role({ id: 'r-doc', slug: 'doc', reportsTo: 'r-lead', staffing: 'fixed' as never })
+    ]
+    const { project: out, changed } = sanitizeRoleModels(project({ roles }))
+    expect(changed).toBe(true)
+    expect(out.roles[0]).toEqual(roles[0])
+    expect(out.roles[1]).toEqual({ ...roles[1], staffing: { mode: 'auto' } })
+    expect('staffing' in out.roles[2]).toBe(false)
+    expect('staffing' in out.roles[3]).toBe(false)
+    expect({ ...out.roles[2], staffing: roles[2].staffing }).toEqual(roles[2])
+    // A clean chart is unchanged.
+    expect(sanitizeRoleModels(project({ roles: [lead({ staffing: { mode: 'fixed' } }), eng()] })).changed).toBe(false)
+  })
+
+  it('ProjectStore drops unknown staffing / staffingGoal / reviewPolicy on save and at boot, keeps known ones, never fills them', () => {
+    const dir = dataDir()
+    writeFileSync(
+      join(dir, 'projects.json'),
+      JSON.stringify({ version: 2, projects: [
+        { ...project({ id: 'p_ok' }), staffing: 'fixed', staffingGoal: 'cost', reviewPolicy: 'never' },
+        { ...project({ id: 'p_junk', roles: [lead({ staffing: { mode: 7 } as never }), eng()] }), staffing: 'manual', staffingGoal: 'warp', reviewPolicy: true },
+        project({ id: 'p_unset' })
+      ] })
+    )
+    const store = new ProjectStore(dir)
+    expect(store.get('p_ok')).toMatchObject({ staffing: 'fixed', staffingGoal: 'cost', reviewPolicy: 'never' })
+    const junk = store.get('p_junk')!
+    for (const k of ['staffing', 'staffingGoal', 'reviewPolicy'] as const) expect(k in junk, k).toBe(false)
+    expect('staffing' in junk.roles[0]).toBe(false)
+    expect(junk.roles[0].requiredReports).toEqual(['r-eng'])
+    const unset = store.get('p_unset')!
+    for (const k of ['staffing', 'staffingGoal', 'reviewPolicy'] as const) expect(k in unset, k).toBe(false)
+    // The boot cleanup was written back.
+    const raw = JSON.parse(readFileSync(join(dir, 'projects.json'), 'utf8')) as { projects: Project[] }
+    expect('staffingGoal' in raw.projects.find((p) => p.id === 'p_junk')!).toBe(false)
+    // Saves: a known value is kept, an unknown one dropped.
+    expect(store.save({ ...unset, staffingGoal: 'speed', reviewPolicy: 'always', staffing: 'auto' })).toMatchObject({ staffingGoal: 'speed', reviewPolicy: 'always', staffing: 'auto' })
+    const saved = store.save({ ...unset, staffingGoal: 'fastest' as never, roles: [lead({ staffing: { mode: 'fixed', maxEffort: 'low' } }), eng({ staffing: [] as never })] })
+    expect('staffingGoal' in saved).toBe(false)
+    expect(saved.roles[0].staffing).toEqual({ mode: 'fixed', maxEffort: 'low' })
+    expect('staffing' in saved.roles[1]).toBe(false)
   })
 })

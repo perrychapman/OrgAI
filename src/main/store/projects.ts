@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { basename, dirname, isAbsolute, join, posix, win32, type PlatformPath } from 'node:path'
 import type { AppSettings, ConnectionId, Project, ProjectCreateInput, ProjectPathCheck, Role } from '@shared/types'
 import { hiddenCharIn } from '../capabilities/sanitize'
-import { HARNESS_PROJECT_ID, PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isVirtualProjectId } from '@shared/types'
-import { isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
+import { HARNESS_PROJECT_ID, PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, isModelTier, isProjectKind, isReviewPolicy, isStaffingGoal, isStaffingMode, isVirtualProjectId } from '@shared/types'
+import { cleanRequiredReports, cleanRoleStaffing, isConnectionId, isSafeId, modelForTier, newProject, preferEverydayNearLimit, projectConnection, storedSkillEvaluation, teamReviewOf, type TierContext } from '@shared/defaults'
 import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
 import { isInsideEither, pathKey, samePath } from '../quick/scratch'
@@ -38,6 +38,30 @@ export function sanitizeRoleModels(
   if (!project || !Array.isArray(project.roles)) return { project, changed: false }
   let changed = false
   const roles = project.roles.map((role): Role => {
+    // Role.connection stays as saved when it names a connection id; anything else is dropped (never resolved or filled).
+    if (role && typeof role === 'object' && Object.hasOwn(role, 'connection') && !(typeof role.connection === 'string' && isConnectionId(role.connection))) {
+      const { connection: _drop, ...rest } = role
+      role = rest as Role
+      changed = true
+    }
+    // Role.requiredReports stays within the role's spawnable list (a hand-edited file or an older save may not).
+    if (role && typeof role === 'object' && Object.hasOwn(role, 'requiredReports')) {
+      const required = cleanRequiredReports({ ...role, spawnable: Array.isArray(role.spawnable) ? role.spawnable : [] })
+      if (JSON.stringify(required) !== JSON.stringify(role.requiredReports)) {
+        const { requiredReports: _drop, ...rest } = role
+        role = (required ? { ...rest, requiredReports: required } : rest) as Role
+        changed = true
+      }
+    }
+    // Role.staffing (run staffing) is rebuilt from its known members; a malformed value is dropped, nothing else changes.
+    if (role && typeof role === 'object' && Object.hasOwn(role, 'staffing')) {
+      const staffing = cleanRoleStaffing(role.staffing)
+      if (JSON.stringify(staffing) !== JSON.stringify(role.staffing)) {
+        const { staffing: _drop, ...rest } = role
+        role = (staffing ? { ...rest, staffing } : rest) as Role
+        changed = true
+      }
+    }
     if (!role || typeof role !== 'object' || acceptableRoleModel(role.model)) return role
     changed = true
     let connection: ConnectionId = 'anthropic'
@@ -299,8 +323,9 @@ export function cleanClient(raw: unknown): string | undefined {
 
 /**
  * The project with allowedDirectories and referenceDirectories normalized (each removed when it is not an array), a
- * reference entry that names the same place as an allowed one dropped (the folder stays writable), and a non-ProjectKind
- * `kind` removed (missing = 'code'); `changed` when anything differs.
+ * reference entry that names the same place as an allowed one dropped (the folder stays writable), a non-ProjectKind
+ * `kind` removed (missing = 'code') and an unknown staffing / staffingGoal / reviewPolicy removed; `changed` when
+ * anything differs.
  */
 function withCleanAllowedDirectories(project: Project, dataDir: string, home: string): { project: Project; changed: boolean } {
   if (!project || typeof project !== 'object') return { project, changed: false }
@@ -327,6 +352,20 @@ function withCleanAllowedDirectories(project: Project, dataDir: string, home: st
       next = { ...next }
       if (trust === undefined) delete next.folderConfigTrust
       else next.folderConfigTrust = trust
+      changed = true
+    }
+  }
+  // Run staffing: Project.staffing / staffingGoal / reviewPolicy keep only a known value; anything else is removed (the
+  // default then applies through staffingModeOf / staffingGoalOf / reviewPolicyOf). Never filled in here.
+  for (const [key, valid] of [
+    ['staffing', isStaffingMode],
+    ['staffingGoal', isStaffingGoal],
+    ['reviewPolicy', isReviewPolicy]
+  ] as const) {
+    if (key in project && !valid(project[key])) {
+      console.debug(`${key}: dropped an unknown value`)
+      next = { ...next }
+      delete next[key]
       changed = true
     }
   }

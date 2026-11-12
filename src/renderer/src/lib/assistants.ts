@@ -6,6 +6,7 @@ import type { Project, QuickRunInfo, RunSummary, VirtualProjectId } from '@share
 import { QUICK_PROJECT_ID, RUN_KIND_LABELS, VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from '@shared/types'
 import { newProject } from '@shared/defaults'
 import { folderName } from './paths'
+import { showHidden } from './hiddenChars'
 
 /** The sidebar order of the Assistants group. */
 export const ASSISTANT_ORDER: VirtualProjectId[] = ['quick', 'harness', 'skills']
@@ -55,8 +56,6 @@ export function quickFolderLabel(quick: QuickRunInfo | undefined): string {
   return folderName(quick.folder)
 }
 
-export const quickAccessLabel = (quick: Pick<QuickRunInfo, 'allowEdits'>): 'edits allowed' | 'read-only' => (quick.allowEdits ? 'edits allowed' : 'read-only')
-
 const PROMOTE_NAME_MAX = 80
 
 /** The name proposed in "Save as project": the folder's name, else the run title, else "Chat". */
@@ -86,11 +85,17 @@ export interface ChatSummaryInput {
 
 /** The muted line on the Chat start page: where it works, what it may do, what runs it, and what it costs. */
 export function chatSummaryLine(i: ChatSummaryInput): string {
-  const where = i.scratch || !i.folderName ? 'Works in a private scratch area' : `Works in ${i.folderName}`
-  const what = i.allowEdits && !i.scratch ? 'Reads and edits files, asks before each edit and command' : 'Reads files, asks before editing'
+  const scratch = i.scratch || !i.folderName
+  const where = scratch ? 'Works in a private scratch area' : `Works in ${showHidden(i.folderName ?? '')}`
   const model = i.model || 'the configured model'
   const runs = `Runs on ${model}${i.connection ? ` via ${i.connection}` : ''}`
-  return [where, what, runs, i.mock ? 'Mock run, no tokens' : 'Counts toward your usage'].map((s) => `${s}.`).join(' ')
+  const tail = [runs, i.mock ? 'Mock run, no tokens' : 'Counts toward your usage'].map((s) => `${s}.`).join(' ')
+  const what = i.allowEdits
+    ? `${where}. Ready to make changes; asks before each edit and command.`
+    : scratch
+      ? `${where}. Asks before it changes a file or runs a command.`
+      : `${where}. Reads freely, asks before it changes a file or runs a command.`
+  return `${what} ${tail}`
 }
 
 /** Start-page titles and descriptions. */
@@ -99,6 +104,16 @@ export const START_PAGE_COPY: Record<VirtualProjectId, { title: string; descript
   harness: { title: 'Set up MCP servers with the assistant', description: 'Describe what your agents should be able to do. The assistant finds, connects and tests servers for your library.' },
   skills: { title: 'Improve your skills with the assistant', description: 'Review the skills in your library and write new ones. Skills for one project start from that project’s Skills section.' }
 }
+
+/** The Chat start page's hint above its example questions (UX self-help rec 1). */
+export const CHAT_EXAMPLES_HINT = 'Ask how OrgAI works, where a setting is, or a shortcut. For example:'
+
+/** Example questions on the Chat start page; a click puts the text in the instruction field. */
+export const CHAT_EXAMPLES: readonly { id: string; text: string }[] = [
+  { id: 'theme', text: 'Where do I change the theme?' },
+  { id: 'plan-guard', text: 'What does the plan guard do?' },
+  { id: 'permission-mode', text: 'How do I make new projects ask before anything risky?' }
+]
 
 /** Button label of the ended-run replacement: "New chat" for Chat, else "New session". */
 export const newSessionLabel = (id: VirtualProjectId): string => (id === 'quick' ? 'New chat' : 'New session')

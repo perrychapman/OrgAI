@@ -1,12 +1,15 @@
-import type { ConnectionId, ModelFamily, ModelRef, ModelTier, ProviderModel, Project, RemapChange, RemapResult } from '@shared/types'
-import { MODEL_TIERS } from '@shared/types'
-import { adapterForFamily, mixedFamilyRefusal, modelFamily, tierForModel } from '@shared/defaults'
+import type { ConnectionId, ConnectionInfo, ModelFamily, ModelRef, ModelTier, ProviderModel, Project, RemapChange, RemapResult } from '@shared/types'
+import { MODEL_TIERS, MODEL_TIER_OPTIONS } from '@shared/types'
+import { adapterForFamily, adapterForProject, mixedFamilyRefusal, modelFamily, roleConnection, tierForModel } from '@shared/defaults'
+import { isPinned, ownConnection, roleProblems } from './roleConnection'
 
 /** One project's predicted or applied model changes, for the notice and the preview dialog. */
 export interface ProjectChanges {
   projectId: string
   projectName: string
   changes: { roleId: string; roleName: string; from: ModelRef; to: ModelRef; unmapped?: boolean; reason?: string }[]
+  /** Roles a switch leaves alone because they run on their own connection ("Reviewer stays on OpenAI"). */
+  kept?: { roleId: string; roleName: string; connection: ConnectionId }[]
 }
 
 /** The tier a role expresses: its stored tier, else derived from the model. 'inherit' roles have none. */
@@ -61,7 +64,18 @@ export function previewRemap(input: PreviewInput): ProjectChanges {
   const { project, tierModels, previousTierModels, catalog, switching } = input
   const known = new Set(catalog.map((m) => m.id))
   const changes: ProjectChanges['changes'] = []
+  const kept: NonNullable<ProjectChanges['kept']> = []
   for (const role of project.roles) {
+    // A role on its own connection does not follow the project: a switch keeps it and its model, and a tier mapping
+    // edit of another connection does not touch it.
+    // Same rule as main's remapOne: a switch keeps every non-root role that names a connection (even the target one);
+    // a mapping edit touches only roles that run on the edited connection.
+    const own = ownConnection(role)
+    if (switching && own) {
+      kept.push({ roleId: role.id, roleName: role.name, connection: own })
+      continue
+    }
+    if (!switching && roleConnection(role, project) !== input.connection) continue
     const tier = roleTier(role)
     if (!tier) continue
     const target = tierModels[tier]
@@ -70,15 +84,71 @@ export function previewRemap(input: PreviewInput): ProjectChanges {
     if (explicit) continue
     changes.push({ roleId: role.id, roleName: role.name, from: role.model, to: target })
   }
-  return { projectId: project.id, projectName: project.name, changes }
+  return { projectId: project.id, projectName: project.name, changes, ...(kept.length ? { kept } : {}) }
+}
+
+export interface TierMappingLine {
+  tier: ModelTier
+  tierLabel: string
+  /** The model this tier maps to on the target connection; undefined = no model. */
+  model: ModelRef | undefined
+  /** Roles whose tier this is. */
+  roles: number
+  /** One sentence per tier: "Top: model" or "Top has no model on X; roles on Top keep their current model". */
+  text: string
 }
 
 /**
- * Roles of a LiteLLM project whose model family differs from the orchestrator's. They are allowed: the orchestrator's
+ * What each tier maps to on the target connection, for the "Apply this mapping?" dialog. A tier with no model says so
+ * and, when roles use it, that those roles keep their current model (previewRemap never touches them).
+ */
+export function tierMappingLines(
+  tierModels: Partial<Record<ModelTier, ModelRef>>,
+  roles: readonly { model: ModelRef; tier?: ModelTier }[],
+  connectionName: string
+): TierMappingLine[] {
+  return MODEL_TIERS.map((tier) => {
+    const label = MODEL_TIER_OPTIONS.find((o) => o.value === tier)?.label ?? tier
+    const model = tierModels[tier]
+    const count = roles.filter((r) => roleTier(r) === tier).length
+    const text = model
+      ? `${label}: ${model}`
+      : count > 0
+        ? `${label} is not mapped on ${connectionName}, so ${count === 1 ? 'the role' : 'roles'} on ${label} ${count === 1 ? 'keeps its' : 'keep their'} current model. To change that, pick a ${label} model under Model tiers on its card in App settings > Connections.`
+        : `${label} is not mapped on ${connectionName}. No role uses it; pick a model under Model tiers on its card in App settings > Connections if you want one.`
+    return { tier, tierLabel: label, model, roles: count, text }
+  })
+}
+
+export interface RouteLine {
+  /** 'claude' = the Anthropic URL; 'other' = the OpenAI URL. */
+  route: 'claude' | 'other'
+  text: string
+  /** The base URL the mapped models are served through, when the catalog carries it. */
+  url?: string
+}
+
+/**
+ * Which route the mapped models take on a proxy: Claude-family models use the proxy's Anthropic URL, GPT and other
+ * models its OpenAI URL (ProviderModel.family / baseUrl). Empty for a connection with one route, or when nothing maps.
+ */
+export function routeLines(tierModels: Partial<Record<ModelTier, ModelRef>>, catalog: readonly ProviderModel[]): RouteLine[] {
+  const mapped = [...new Set(MODEL_TIERS.map((t) => tierModels[t]).filter((m): m is ModelRef => !!m && m !== 'inherit'))]
+  const find = (id: ModelRef): ProviderModel | undefined => catalog.find((m) => m.id === id)
+  const claude = mapped.map(find).filter((m) => m?.family === 'claude')
+  const other = mapped.map(find).filter((m) => m && m.family !== 'claude')
+  const out: RouteLine[] = []
+  if (claude.length) out.push({ route: 'claude', text: 'Claude models use the Anthropic URL.', url: claude[0]?.baseUrl })
+  if (other.length) out.push({ route: 'other', text: 'GPT and other models use the OpenAI URL.', url: other[0]?.baseUrl })
+  return out
+}
+
+/**
+ * Roles of a proxy project whose model family differs from the orchestrator's. They are allowed: the orchestrator's
  * family picks the adapter and the proxy serves the rest. Used only to word one informational notice.
  */
 export function otherFamilyRoles(
-  project: Pick<Project, 'roles'>,
+  project: Pick<Project, 'roles' | 'provider'>,
   catalog: readonly ProviderModel[]
 ): { roleId: string; roleName: string; model: ModelRef }[] {
   const familyOf = (m: ModelRef): ModelFamily => catalog.find((x) => x.id === m)?.family ?? modelFamily(m)
@@ -86,15 +156,15 @@ export function otherFamilyRoles(
   if (!root || root.model === 'inherit') return []
   const adapter = adapterForFamily(familyOf(root.model))
   return project.roles
-    .filter((r) => r.model !== 'inherit' && adapterForFamily(familyOf(r.model)) !== adapter)
+    .filter((r) => !isPinned(r, project) && r.model !== 'inherit' && adapterForFamily(familyOf(r.model)) !== adapter)
     .map((r) => ({ roleId: r.id, roleName: r.name, model: r.model }))
 }
 
-/** "Claude orchestrator; 2 roles on other model families run through the proxy." Null when no role differs. */
+/** "Claude orchestrator; 2 roles on other model families run as bridged reports in their own session." Null when no role differs. */
 export function proxyFamilyNotice(family: ModelFamily | undefined, count: number): string | null {
   if (count <= 0) return null
   const who = family ? FAMILY_LABEL[family] : 'The'
-  return `${who} orchestrator; ${count} ${count === 1 ? 'role on another model family runs' : 'roles on other model families run'} through the proxy.`
+  return `${who} orchestrator; ${count} ${count === 1 ? 'role on another model family runs as a bridged report' : 'roles on other model families run as bridged reports'} in ${count === 1 ? 'its' : 'their'} own session.`
 }
 
 /**
@@ -102,6 +172,26 @@ export function proxyFamilyNotice(family: ModelFamily | undefined, count: number
  * (`mixedFamilyRefusal` in src/shared/defaults.ts), re-exported so the banner and the start gate cannot drift.
  */
 export const startRefusal = mixedFamilyRefusal
+
+/**
+ * Why a work run on this project would be refused before it exists, as one text (null = it may start; mock projects
+ * never). Roles whose own connection cannot run them come first (the first sentence plus a count), then main's family
+ * rule. Roles on other model families on a proxy never refuse: they run as bridged reports.
+ */
+export function projectStartRefusal(
+  project: Pick<Project, 'provider' | 'roles'>,
+  connections: readonly ConnectionInfo[] | null | undefined,
+  catalog: readonly ProviderModel[]
+): string | null {
+  if (project.provider.id === 'mock') return null
+  const problems = roleProblems(project, connections)
+  if (problems.length) {
+    const more = problems.length - 1
+    return more > 0 ? `${problems[0].text} ${more} more ${more === 1 ? 'role has' : 'roles have'} the same kind of problem.` : problems[0].text
+  }
+  const kind = mixedFamilyRefusal(adapterForProject(project, catalog))
+  return kind ? START_REFUSAL_COPY[kind] : null
+}
 
 /** Danger-banner copy for a refused start (null when the project can start). */
 export const START_REFUSAL_COPY: Record<'no-root-family' | 'single-family-connection', string> = {

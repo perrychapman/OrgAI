@@ -206,3 +206,24 @@ Existing ids stay: `mcp-proposal-command`, `section.frame-tray[data-compact=true
 | L2 link without its command | This pass | 4 |
 | L3 three access vocabularies | This pass | 4, 5 |
 | L4 vendor alias in the org chart diff | This pass | 6 |
+
+## 12. Fix: long proposals (2026-11-07)
+
+Report: an org chart proposal with many changes could not be scrolled to its end, and Approve / Request changes / Not now
+sat in the middle of the list.
+
+- Cause: the Team tab's Architect tray (`team.css`, `.architect-decisions .decision-body`) sets `overflow: visible` and
+  `max-height: none` on card bodies so they scroll with the tray, but `.decision-card.kind-proposal .decision-body` in
+  `cards.css` is more specific and kept its `max-height: min(55cqh, 480px)`. A proposal body was therefore capped and
+  overflowing visibly: the list ran on under the footer and over the tray, and the body never scrolled. The Live tray was
+  not affected (its body keeps `overflow: auto`); checked with a 29-change proposal in every Live state (compact folded and
+  expanded, roomy stacked, docked beside the stage, conversation layout, every disclosure open).
+- Fix: the proposal body rule carries `overflow: auto` beside its cap (and so does the compact expanded rule), so a proposal
+  body is always the one scroller with the footer after it, wherever the card is mounted. While a proposal body overflows,
+  `DecisionCard` gives it one Tab stop (`tabindex=0`, `role=group`, "<Kind> details, scrollable", `data-scrolls`) with a
+  2 px inset `:focus-visible` ring, so the keyboard can scroll a list that has no controls of its own.
+- Checked by `e2e/proposals.mjs` scenario 4 (29 changes, a work run and an org change session in the Live tray,
+  1024x640 and 1600x1000, dark and light): the body is its own scroller, scrolls to its end, the last block ends inside
+  it, the footer sits below it, the page does not scroll, Tab reaches the body with a ring.
+- The Team tab's Architect tray this fix first covered is gone: org change sessions are ordinary setup runs whose cards
+  show in the Live tray (CLAUDE.md "Org change sessions"), so its 1024x640 tray-height open item no longer applies.

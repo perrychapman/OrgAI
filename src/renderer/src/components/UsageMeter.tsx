@@ -4,10 +4,11 @@ import type { ConnectionId, RateLimitWindow, UsageSpend, UsageStatus } from '@sh
 import { useAppStore } from '../store/useAppStore'
 
 import { formatUntil } from '../lib/layout'
+import { connectionLabel, isProxyId } from '../lib/connectionLabel'
 import type { SpendPeriodKey } from '../lib/usage'
 import {
-  CONNECTION_LABEL,
   connectionOrder,
+  reportsSpend,
   connectionsInUse,
   lifetimeText,
   money,
@@ -84,14 +85,20 @@ export type UsageLevel = '' | 'warn' | 'danger'
 
 /** The window closest to its limit (the one the footer bar shows), or null when no plan window is reported. */
 export function tightestWindow(usage: UsageStatus | null | undefined): { label: string; pct: number; level: UsageLevel } | null {
+  const t = tightestWindowRow(usage)
+  return t ? { label: t.label, pct: t.pct, level: t.level } : null
+}
+
+/** The same choice as `tightestWindow`, with the plan row itself (its `window.resetsAt` and `limited` flag) for the Dashboard's status bar. */
+export function tightestWindowRow(usage: UsageStatus | null | undefined): { label: string; pct: number; level: UsageLevel; row: Row } | null {
   if (!usage || usage.authMode === 'apiKey' || !usage.available) return null
-  let best: { label: string; pct: number; level: UsageLevel } | null = null
+  let best: { label: string; pct: number; level: UsageLevel; row: Row } | null = null
   for (const r of usageRows(usage)) {
     const pct = r.window.utilization
     if (pct === null) continue
     const level: UsageLevel = r.limited ? 'danger' : pct >= WARN_AT || usage.status === 'allowed_warning' ? 'warn' : ''
     // A limited window always wins; otherwise the highest utilization.
-    if (!best || (level === 'danger' && best.level !== 'danger') || (best.level !== 'danger' && pct > best.pct)) best = { label: r.label, pct, level }
+    if (!best || (level === 'danger' && best.level !== 'danger') || (best.level !== 'danger' && pct > best.pct)) best = { label: r.label, pct, level, row: r }
   }
   return best
 }
@@ -108,13 +115,13 @@ export function UsageBar({ usage }: { usage: UsageStatus | null | undefined }): 
   )
 }
 
-/** The 4 px footer bar for a LiteLLM key's spend against its budget; nothing without a budget. */
-export function SpendBar({ spend }: { spend: UsageSpend | undefined }): ReactElement | null {
+/** The 4 px footer bar for a proxy key's spend against its budget; nothing without a budget. */
+export function SpendBar({ spend, id }: { spend: UsageSpend | undefined; id: ConnectionId }): ReactElement | null {
   const pct = spend ? spendPct(spend) : null
   if (!spend || pct === null) return null
   const level = spendLevel(spend)
   return (
-    <span className={`usage-mini ${level}`} role="img" aria-label={spendAria(spend)} data-testid="usage-mini">
+    <span className={`usage-mini ${level}`} role="img" aria-label={spendAria(spend, id)} data-testid="usage-mini">
       <i style={{ width: `${level === 'danger' ? 100 : Math.min(100, Math.max(0, pct))}%` }} />
     </span>
   )
@@ -166,8 +173,17 @@ function SpendPeriods({ spend }: { spend: UsageSpend }): ReactElement | null {
   )
 }
 
-/** LiteLLM: the key's spend against its budget. Says "spend", never "usage" or "limit". */
-function SpendSection({ usage, now, reading }: { usage: UsageStatus | undefined; now: number; reading: boolean }): ReactElement {
+/** A proxy that cannot report spend (OpenAI-compatible, or a LiteLLM key the check found no spend for). Never $0. */
+function NoSpendSection({ id }: { id: ConnectionId }): ReactElement {
+  return (
+    <div className="usage-hint" data-testid="spend-not-reported" data-connection={id}>
+      Spend: not reported by this proxy
+    </div>
+  )
+}
+
+/** A proxy that reports spend: the key's spend against its budget. Says "spend", never "usage" or "limit". */
+function SpendSection({ id, usage, now, reading }: { id: ConnectionId; usage: UsageStatus | undefined; now: number; reading: boolean }): ReactElement {
   const spend = usage?.spend
   if (!usage?.available || !spend) {
     return (
@@ -188,7 +204,7 @@ function SpendSection({ usage, now, reading }: { usage: UsageStatus | undefined;
         </span>
       </div>
       {pct !== null && (
-        <div className="usage-bar" role="img" aria-label={spendAria(spend)}>
+        <div className="usage-bar" role="img" aria-label={spendAria(spend, id)}>
           <i style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
         </div>
       )}
@@ -257,8 +273,8 @@ function PlanSection({ usage, now, reading }: { usage: UsageStatus | undefined; 
 
 /**
  * Inside the account popover: the current connection first, then one quiet section per other connection
- * that is in use (`connectionInUse`) and has a report. A LiteLLM connection in use but without a report
- * still gets its section and says "Spend unavailable".
+ * that is in use (`connectionInUse`) and has a report. A spend-reporting proxy in use but without a report
+ * still gets its section and says "Spend unavailable"; a proxy that reports no spend says so in one quiet line.
  */
 export default function UsageMeter({ current }: { current: ConnectionId }): ReactElement {
   const byConnection = useAppStore((s) => s.usageByConnection)
@@ -293,17 +309,30 @@ export default function UsageMeter({ current }: { current: ConnectionId }): Reac
     }
   }, [current])
 
-  const order = connectionOrder(current, byConnection, (id) => inUse.has(id))
-  if (inUse.has('litellm') && !order.includes('litellm')) order.push('litellm')
+  const proxyIds = (connections ?? []).map((c) => c.connection.id).filter((id) => isProxyId(id))
+  const order = connectionOrder(current, byConnection, (id) => inUse.has(id), ['anthropic', 'openai', ...proxyIds])
+  // A proxy in use always gets its section, with or without a report (the list keeps its own order).
+  for (const id of proxyIds) if (inUse.has(id) && !order.includes(id)) order.push(id)
   const headed = order.length > 1
   return (
     <div className="usage-meter">
-      {order.map((id) => (
-        <section key={id} className="usage-section" aria-label={`${CONNECTION_LABEL[id]} ${id === 'litellm' ? 'spend' : 'plan usage'}`} data-testid={`usage-${id}`}>
-          {headed && <h3 className="usage-section-title">{CONNECTION_LABEL[id]}</h3>}
-          {id === 'litellm' ? <SpendSection usage={byConnection.litellm} now={now} reading={reading} /> : <PlanSection usage={byConnection[id]} now={now} reading={reading} />}
-        </section>
-      ))}
+      {order.map((id) => {
+        const proxy = isProxyId(id)
+        const info = connections?.find((c) => c.connection.id === id)
+        const spends = proxy && (info ? reportsSpend(info) : true)
+        return (
+          <section key={id} className="usage-section" aria-label={`${connectionLabel(id)} ${proxy ? 'spend' : 'plan usage'}`} data-testid={`usage-${id}`}>
+            {headed && <h3 className="usage-section-title">{connectionLabel(id)}</h3>}
+            {spends ? (
+              <SpendSection id={id} usage={byConnection[id]} now={now} reading={reading} />
+            ) : proxy ? (
+              <NoSpendSection id={id} />
+            ) : (
+              <PlanSection usage={byConnection[id]} now={now} reading={reading} />
+            )}
+          </section>
+        )
+      })}
     </div>
   )
 }

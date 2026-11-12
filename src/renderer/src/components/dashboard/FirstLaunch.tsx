@@ -9,7 +9,7 @@ type Start = 'project' | 'chat'
 
 const OPTIONS: { value: Start; title: string; text: string }[] = [
   { value: 'project', title: 'Start a project', text: 'The Architect sets up a team of agents for your project.' },
-  { value: 'chat', title: 'Chat now', text: 'Ask a question or hand over a task without making a project.' }
+  { value: 'chat', title: 'Chat now', text: 'Ask a question about OrgAI or your work, or hand over a task. No project needed.' }
 ]
 
 /**

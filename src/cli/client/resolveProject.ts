@@ -12,6 +12,7 @@ import path from 'node:path'
 import type { Project } from '../../shared/types'
 import { canonicalDeep } from '../../main/quick/scratch'
 import { gitExecutable, neutralCwd } from '../../main/host/systemBinaries'
+import { scrubControlEnv } from '../../main/runtime/childEnv'
 import type { ProjectResolution } from '../types'
 
 export interface ResolveProjectOptions {
@@ -35,7 +36,7 @@ function defaultGit(cwd: string, args: string[]): string | undefined {
   const bin = gitExecutable()
   if (!bin) return undefined
   try {
-    const out = execFileSync(bin, ['-C', cwd, ...args], { cwd: neutralCwd(), timeout: GIT_TIMEOUT_MS, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
+    const out = execFileSync(bin, ['-C', cwd, ...args], { cwd: neutralCwd(), env: scrubControlEnv(process.env), timeout: GIT_TIMEOUT_MS, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
     const t = out.trim()
     return t || undefined
   } catch {

@@ -64,6 +64,13 @@ describe('execQuiescent', () => {
     // With a plan the rule does not apply.
     expect(execQuiescent(input({ autoContinue: true, plan: plan() }))).toBe(true)
   })
+
+  it('a turn-1 direct answer (the driver reports the nudge rule met) settles as completed-unplanned, but never past a card or a working report', () => {
+    const direct = { ...settled, nudgeTurn1Sent: true }
+    expect(execNotQuiescentReason(input({ autoContinue: true, settlement: direct }))).toBeNull()
+    expect(execNotQuiescentReason(input({ autoContinue: true, settlement: direct, openCards: 1 }))).toBe('a decision card is open')
+    expect(execOutcomeFor({ plan: undefined, agents: [] })).toEqual({ outcome: 'completed-unplanned' })
+  })
 })
 
 describe('execOutcomeFor', () => {
@@ -88,6 +95,19 @@ describe('execOutcomeFor', () => {
     expect(execOutcomeFor({ plan: plan(), agents, allowUnmerged: true })).toEqual({ outcome: 'completed' })
     // Without a plan the conflict rule does not apply (spec table: plan done only).
     expect(execOutcomeFor({ plan: undefined, agents }).outcome).toBe('completed-unplanned')
+  })
+
+  it('delegation-incomplete comes after blocked and before the unplanned and plan checks', () => {
+    const policy = { outcome: 'delegation-incomplete', endedBy: 'policy' }
+    expect(execOutcomeFor({ plan: undefined, agents: [], rootVerdict: 'failed' })).toEqual(policy)
+    expect(execOutcomeFor({ plan: undefined, agents: [], subtreeFailed: true })).toEqual(policy)
+    expect(execOutcomeFor({ plan: undefined, agents: [], strictNativeSpawns: 1 })).toEqual(policy)
+    expect(execOutcomeFor({ plan: plan(), agents: [], rootVerdict: 'failed' })).toEqual(policy)
+    expect(execOutcomeFor({ plan: plan({ status: 'active' }), agents: [], subtreeFailed: true })).toEqual(policy)
+    expect(execOutcomeFor({ plan: plan({ status: 'blocked' }), agents: [], rootVerdict: 'failed' })).toEqual({ outcome: 'blocked', endedBy: 'policy' })
+    expect(execOutcomeFor({ plan: undefined, agents: [], rootVerdict: 'ok', strictNativeSpawns: 0 })).toEqual({ outcome: 'completed-unplanned' })
+    expect(execOutcomeFor({ plan: plan(), agents: [], rootVerdict: 'adaptive' })).toEqual({ outcome: 'completed' })
+    expect(defaultEndedBy('delegation-incomplete')).toBe('policy')
   })
 
   it('defaultEndedBy follows the table', () => {

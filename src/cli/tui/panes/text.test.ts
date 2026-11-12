@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { alignRight, clampInt, padToWidth, textWidth, truncateEnd, wrapText } from './text'
+import { alignRight, clampInt, graphemes, padToWidth, sliceToWidth, textWidth, truncateEnd, wrapText } from './text'
 
 describe('pane text helpers', () => {
   it('counts wide characters as two columns and combining marks as none', () => {
@@ -9,6 +9,33 @@ describe('pane text helpers', () => {
     expect(textWidth('Ａ')).toBe(2)
     expect(textWidth('é')).toBe(1)
     expect(textWidth('🎉')).toBe(2)
+  })
+
+  it('counts by grapheme cluster: VS16, ZWJ, flags and marks after wide characters', () => {
+    expect(textWidth('❤️')).toBe(2)
+    expect(textWidth('☀️')).toBe(2)
+    expect(textWidth('1️⃣')).toBe(2)
+    expect(textWidth('👨‍👩‍👧')).toBe(2)
+    expect(textWidth('🇩🇪')).toBe(2)
+    expect(textWidth('🇩🇪🇫🇷')).toBe(4)
+    expect(textWidth('漢́')).toBe(2)
+    expect(textWidth('é')).toBe(1)
+    expect(textWidth('a👨‍👩‍👧b')).toBe(4)
+    expect(graphemes('a👨‍👩‍👧🇩🇪')).toHaveLength(3)
+  })
+
+  it('never splits a cluster when cutting, padding or wrapping', () => {
+    const family = '👨‍👩‍👧'
+    expect(sliceToWidth(`a${family}b`, 2)).toBe('a')
+    expect(sliceToWidth(`a${family}b`, 3)).toBe(`a${family}`)
+    expect(sliceToWidth('🇩🇪🇫🇷', 3)).toBe('🇩🇪')
+    expect(sliceToWidth('漢́字', 2)).toBe('漢́')
+    expect(truncateEnd(`ab${family}cd`, 4)).toBe('ab…')
+    expect(truncateEnd(`${family}${family}`, 3)).toBe(`${family}…`)
+    expect(padToWidth(family, 4)).toBe(`${family}  `)
+    expect(wrapText(`${family}${family}${family}`, 3)).toEqual([family, family, family])
+    // Every cut piece is a whole number of clusters (no lone surrogate).
+    for (const piece of wrapText('🇩🇪🇫🇷👨‍👩‍👧x❤️', 3)) expect(piece).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
   })
 
   it('truncates, pads and right-aligns by columns', () => {

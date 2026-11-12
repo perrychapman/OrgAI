@@ -1,13 +1,14 @@
-import type { ReactElement } from 'react'
-import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, FolderPlus, History as HistoryIcon } from 'lucide-react'
+import type { CSSProperties, ReactElement } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { ChevronDown, ChevronRight, Files, FolderPlus, History as HistoryIcon } from 'lucide-react'
 import type { RunSummary } from '@shared/types'
 import { QUICK_PROJECT_ID, RUN_KIND_LABELS, isVirtualProjectId } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
 import { Cost } from './ui/Cost'
 import { runCostInput, sumCosts } from '../lib/cost'
 import { canContinueIn, chainGroups, isOpenStatus, lastActivityAt, needsYou, relativeTime, type ChainGroup } from '../lib/runChains'
-import { promptLine, runName, runTag, shortPrompt } from '../lib/runLabels'
+import { promptLine, runTag, shortPrompt } from '../lib/runLabels'
+import { displayRunName, isOrgChangeRun, runKindWord } from '../lib/orgChange'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { Button } from './ui/Button'
@@ -15,8 +16,10 @@ import { IconButton } from './ui/IconButton'
 import { Badge, type BadgeTone } from './ui/Badge'
 import { Icon } from './ui/Icon'
 import UsageTrends from './UsageTrends'
+import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
+import { revealOutputsTab } from './outputs/revealOutputsTab'
 import SaveAsProjectDialog from './assistants/SaveAsProjectDialog'
-import { canPromote, offersRetro, offersSaveAsProject, quickFolderLabel, runKindLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
+import { canPromote, offersRetro, offersSaveAsProject, quickFolderLabel, SCRATCH_PROMOTE_REASON } from '../lib/assistants'
 
 /** Untrusted prompt text in a tooltip is capped. */
 const TIP_CHARS = 300
@@ -54,6 +57,13 @@ export default function RunHistory(): ReactElement {
   const isChat = project?.id === QUICK_PROJECT_ID
   const [saving, setSaving] = useState<RunSummary | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+
+  // The outputs index feeds the "N outputs" chips; fetch it once when History opens and it is not loaded yet.
+  const outputsLoaded = useAppStore((s) => (project ? s.outputsByProject[project.id] !== undefined : true))
+  const loadOutputs = useAppStore((s) => s.loadOutputs)
+  useEffect(() => {
+    if (project && !outputsLoaded) void loadOutputs(project.id)
+  }, [project, outputsLoaded, loadOutputs])
 
   const groups = useMemo(() => chainGroups(summaries), [summaries])
   // The kind filter applies to a chain by its first member.
@@ -143,7 +153,7 @@ export default function RunHistory(): ReactElement {
                   viewed={viewedKey === g.key}
                   isExpanded={!!expanded[g.key]}
                   onToggle={() => setExpanded((e) => ({ ...e, [g.key]: !e[g.key] }))}
-                  onOpen={(id) => void openRun(id)}
+                  onOpen={(id) => openRun(id)}
                   onContinue={() => void continueFromHistory(g.newest.id)}
                   onRetro={() => void startRetro(g.newest.id)}
                   chat={isChat}
@@ -176,7 +186,7 @@ function HistoryChain({
   viewed: boolean
   isExpanded: boolean
   onToggle: () => void
-  onOpen: (id: string) => void
+  onOpen: (id: string) => Promise<void>
   onContinue: () => void
   onRetro: () => void
   chat: boolean
@@ -192,6 +202,18 @@ function HistoryChain({
   const open = isOpenStatus(newest.status)
   const tag = runTag(indexes.get(first.id))
   const cost = useMemo(() => sumCosts(members.map(runCostInput)), [members])
+  const orgChange = isOrgChangeRun(first)
+  // What the conversation produced (docs/design/outputs.md section 12): every member run, from the loaded index.
+  const outputCount = useAppStore((s) => (first.kind === 'work' && !first.quick ? outputsOfRuns(s.outputsByProject[first.projectId], members.map((m) => m.id)).length : 0))
+  const openOutputs = (): void => {
+    // Open the conversation (the Live view), then its Outputs side tab with the list showing.
+    void onOpen(newest.id)
+      .then(() => {
+        useAppStore.getState().openRunOutput(newest.id, null)
+        revealOutputsTab()
+      })
+      .catch(() => undefined)
+  }
   return (
     <>
       <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions}>
@@ -199,10 +221,10 @@ function HistoryChain({
           <div className="run-head">
             {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={`Sessions of ${tag}`} expanded={isExpanded} controls={isExpanded ? members.map((m) => memberRowId(m.id)).join(' ') : undefined} onClick={onToggle} testId="history-sessions-toggle" />}
             <div className="run-head-text">
-              {first.title ? (
+              {first.title || orgChange ? (
                 <>
-                  <div className="run-name" title={runName(first)}>
-                    <span className="run-index">{tag}</span> {runName(first)}
+                  <div className="run-name" title={displayRunName(first)}>
+                    <span className="run-index">{tag}</span> {displayRunName(first)}
                   </div>
                   <div className="prompt muted" title={shortPrompt(first.prompt, TIP_CHARS)}>
                     {promptLine(first.prompt)}
@@ -219,6 +241,11 @@ function HistoryChain({
                 {sessions} sessions
               </Badge>
             )}
+            {outputCount > 0 && (
+              <Button size="sm" variant="ghost" icon={Files} className="history-outputs" testId="history-outputs" ariaLabel={`Open ${outputCount} ${outputCount === 1 ? 'output' : 'outputs'} of ${tag}`} title="Open this conversation on its Outputs tab" onClick={openOutputs}>
+                {outputsCountLabel(outputCount)}
+              </Button>
+            )}
           </div>
         </td>
         <td>
@@ -234,8 +261,8 @@ function HistoryChain({
           {relativeTime(last)}
         </td>
         <td className="col-kind">
-          <span data-testid="run-kind" data-kind={first.quick ? 'chat' : first.team === 'single' ? 'ask' : first.kind === 'work' ? 'work' : first.kind}>
-            <Badge tone={first.kind === 'setup' ? 'accent' : 'neutral'}>{runKindLabel(first)}</Badge>
+          <span data-testid="run-kind" data-kind={first.quick ? 'chat' : first.team === 'single' ? 'ask' : first.kind === 'work' ? 'work' : orgChange ? 'org-change' : first.kind}>
+            <Badge tone={first.kind === 'setup' ? 'accent' : 'neutral'}>{runKindWord(first)}</Badge>
           </span>
         </td>
         {chat && (
@@ -245,7 +272,7 @@ function HistoryChain({
         )}
         <td>
           <div className="run-row-actions">
-            <Button size="sm" className="run-open" onClick={() => onOpen(newest.id)} title={open ? 'Open this live run' : 'Open this run'}>
+            <Button size="sm" className="run-open" onClick={() => void onOpen(newest.id)} title={open ? 'Open this live run' : 'Open this run'}>
               Open
             </Button>
             {viewed && (
@@ -281,7 +308,7 @@ function HistoryChain({
       </tr>
       {isExpanded &&
         members.map((m, i) => (
-          <MemberRow key={m.id} member={m} number={i + 1} chat={chat} onOpen={() => onOpen(m.id)} />
+          <MemberRow key={m.id} member={m} number={i + 1} chat={chat} onOpen={() => void onOpen(m.id)} />
         ))}
     </>
   )
@@ -294,7 +321,7 @@ function MemberRow({ member, number, chat, onOpen }: { member: RunSummary; numbe
   const status = statusOfRun(live ?? { summary: member }, proj, false)
   const started = new Date(member.startedAt)
   return (
-    <tr className="run-member-row" id={memberRowId(member.id)} data-run={member.id}>
+    <tr className="run-member-row motion-enter" style={{ '--i': Math.min(number - 1, 5) } as CSSProperties} id={memberRowId(member.id)} data-run={member.id}>
       <td className="col-prompt">
         <div className="run-member">
           <span className="run-member-no">Session {number}</span>

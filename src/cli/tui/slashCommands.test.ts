@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunSummary } from '../../shared/types'
-import { findSlash, matchSlash, parseSlash, resolveDiffTarget, runsTable, SLASH_COMMANDS } from './slashCommands'
+import { findSlash, HELP_TEXT, matchSlash, parseSlash, resolveDiffTarget, runsTable, SLASH_COMMANDS, unavailableFor, unavailableMessage } from './slashCommands'
 import type { SlashContext, TuiSessionApi, TuiState } from './types'
 
 const summary = (id: string, over: Partial<RunSummary> = {}): RunSummary =>
@@ -38,7 +38,7 @@ function fakeCtx(state: TuiState = stateWith()) {
     stop: vi.fn(async () => {}),
     listRuns: vi.fn(async () => [summary('a', { startedAt: 2, title: 'Second\x1b[31m run' }), summary('b', { startedAt: 1, status: 'finished' })]),
     worktreeDiff: vi.fn(async () => ({ stat: ' a.ts | 1 +', patch: '+x\x1b]52;c;QQ==\x07\n' })),
-    openInDesktop: vi.fn(async () => {})
+    listOutputs: vi.fn(async () => [{ id: 'out_1', projectId: 'p1', runId: 'r1', kind: 'markdown', title: 'Plan\x1b[31m', fileName: 'plan.md', path: '/w/plan.md', relPath: 'outputs/plan.md', bytes: 10, createdAt: 1, source: 'produced', version: 1 }, { id: 'out_2', projectId: 'p1', runId: 'other', kind: 'png', title: 'Elsewhere', fileName: 'e.png', path: '/w/e.png', relPath: 'e.png', bytes: 1, createdAt: 1, source: 'produced' }]),
   } as unknown as TuiSessionApi
   const ctx = {
     session,
@@ -75,7 +75,7 @@ describe('parseSlash', () => {
 describe('matchSlash', () => {
   it('prefix-matches names and aliases, exact first, ties by name', () => {
     const s = stateWith()
-    expect(matchSlash('/', s).length).toBe(SLASH_COMMANDS.length)
+    expect(matchSlash('/', s).length).toBe(SLASH_COMMANDS.filter((c) => !c.available || c.available(s)).length)
     expect(matchSlash('/r', s).map((c) => c.name)).toEqual(['run', 'runs'])
     expect(matchSlash('run', s).map((c) => c.name)).toEqual(['run', 'runs'])
     expect(matchSlash('/q', s)[0].name).toBe('quit')
@@ -93,6 +93,36 @@ describe('matchSlash', () => {
     expect(matchSlash('/new', ro)).toEqual([])
     expect(matchSlash('/ask', stateWith({ project: undefined }))).toEqual([])
     expect(findSlash('exit', ro)?.name).toBe('quit')
+  })
+})
+
+describe('unavailable commands (#29 M6) and the empty-query order (#30 L6)', () => {
+  it('every command with available() gives a reason, and /retro names why', () => {
+    const s = stateWith({}, 'running')
+    for (const c of SLASH_COMMANDS.filter((x) => x.available)) expect(c.unavailableReason, c.name).toBeTypeOf('function')
+    expect(unavailableMessage('retro', s)).toMatch(/^\/retro: .*not ended/)
+    expect(unavailableMessage('retrospective', s)).toMatch(/^\/retro: /)
+    expect(unavailableMessage('retro', stateWith({}, 'finished'))).toBeUndefined()
+    expect(unavailableMessage('run', s)).toBeUndefined()
+    expect(unavailableMessage('zzz', s)).toBeUndefined()
+    expect(unavailableMessage('new', stateWith({ readOnlyReason: 'read only' }))).toBe('/new: Read-only: read only')
+    expect(unavailableMessage('new', stateWith({ project: undefined }))).toBe('/new: Open a project folder first.')
+    expect(unavailableFor(SLASH_COMMANDS, '/ret', s)?.cmd.name).toBe('retro')
+  })
+
+  it('an empty query lists help and new first, then alphabetical', () => {
+    const names = matchSlash('/', stateWith()).map((c) => c.name)
+    expect(names.slice(0, 2)).toEqual(['help', 'new'])
+    const rest = names.slice(2)
+    expect(rest).toEqual([...rest].sort())
+    // A typed query keeps the old ranking.
+    expect(matchSlash('/r', stateWith()).map((c) => c.name)).toEqual(['run', 'runs'])
+  })
+
+  it('/help leads with the commands, then the keys, and every command is listed', () => {
+    expect(HELP_TEXT.indexOf('Commands')).toBe(0)
+    expect(HELP_TEXT.indexOf('/help')).toBeLessThan(HELP_TEXT.indexOf('\nKeys\n'))
+    for (const c of SLASH_COMMANDS) expect(HELP_TEXT).toContain(`/${c.name}`)
   })
 })
 
@@ -128,7 +158,7 @@ describe('commands', () => {
     expect(ctx.notify).toHaveBeenCalledWith(expect.stringContaining('/run R2'), 'warn')
   })
 
-  it('/interrupt, /stop (confirmed), /app, /quit, /inbox and pane toggles', async () => {
+  it('/interrupt, /stop (confirmed), /quit, /inbox and pane toggles', async () => {
     const { ctx, session } = fakeCtx()
     await cmd('interrupt').run(ctx, '')
     expect(session.interrupt).toHaveBeenCalled()
@@ -138,8 +168,6 @@ describe('commands', () => {
     ;(ctx.confirm as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false)
     await cmd('stop').run(ctx, '')
     expect(session.stop).toHaveBeenCalledTimes(1)
-    await cmd('app').run(ctx, '')
-    expect(session.openInDesktop).toHaveBeenCalledWith('r1')
     await cmd('inbox').run(ctx, '')
     expect(ctx.setFocus).toHaveBeenCalledWith('tray')
     await cmd('tree').run(ctx, '')
@@ -191,5 +219,38 @@ describe('helpers', () => {
 
   it('resolveDiffTarget without worktrees', () => {
     expect(resolveDiffTarget(stateWith(), '')).toEqual({ error: 'No agent in this run has a worktree.' })
+  })
+})
+
+describe('/outputs', () => {
+  it('opens the followed run\'s outputs only, cleaned', async () => {
+    const { ctx } = fakeCtx()
+    await cmd('outputs').run(ctx, '')
+    const [title, text] = (ctx.openText as ReturnType<typeof vi.fn>).mock.calls[0] as [string, string]
+    expect(title).toBe('Outputs')
+    expect(text).toContain('Plan [out_1] markdown')
+    expect(text).not.toContain('Elsewhere')
+    expect(text).not.toContain('\x1b')
+  })
+  it('needs a followed run', () => {
+    expect(cmd('outputs').available?.(stateWith({ activeRunId: undefined }))).toBe(false)
+  })
+})
+
+describe('/logs', () => {
+  it('opens the run\'s warnings and errors, and everything with all', async () => {
+    const st = stateWith()
+    st.runs.r1.logs = [{ at: 1, level: 'info', message: 'fyi' }, { at: 2, level: 'warn', message: 'careful' }]
+    const { ctx } = fakeCtx(st)
+    await cmd('logs').run(ctx, '')
+    expect(ctx.openText).toHaveBeenLastCalledWith('Logs', expect.stringContaining('careful'))
+    expect((ctx.openText as ReturnType<typeof vi.fn>).mock.calls[0][1]).not.toContain('fyi')
+    await cmd('logs').run(ctx, 'all')
+    expect((ctx.openText as ReturnType<typeof vi.fn>).mock.calls[1][1]).toContain('fyi')
+    await cmd('logs').run(ctx, 'loud')
+    expect(ctx.notify).toHaveBeenCalledWith('Use /logs, /logs info or /logs all.', 'warn')
+  })
+  it('needs a followed run', () => {
+    expect(cmd('logs').available?.(stateWith({ activeRunId: undefined }))).toBe(false)
   })
 })

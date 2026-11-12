@@ -18,7 +18,7 @@ export const ENTRY: CommandEntry = {
     { name: 'disable', takesValue: false, summary: 'update: keep the skill but do not pass it to runs' },
     { name: 'skill', takesValue: true, summary: 'import: only this skill (name or folder; repeatable)' },
     { name: 'yes', short: 'y', takesValue: false, summary: 'Confirm without asking' },
-    { name: 'library', takesValue: false, summary: 'assist: work on the app-wide skill library' },
+    { name: 'library', takesValue: false, summary: 'assist: work on the global skill library' },
     { name: 'inline', takesValue: false, summary: 'assist: draw in the normal scrollback' },
     { name: 'ax-screen-reader', takesValue: false, summary: 'assist: screen reader mode' }
   ],

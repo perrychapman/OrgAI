@@ -1,4 +1,5 @@
-import type { McpServerSpec, Proposal, Role, RunSummary } from '@shared/types'
+import type { McpServerSpec, ProjectKind, Proposal, Role, RunSummary } from '@shared/types'
+import { appSettingsSummary, projectSettingRows, projectSettingsSummary } from './appSettingsCard'
 import { diffOrgChart } from './orgDiff'
 import { diffMcpProposal, mcpRowVerb, mcpServerHidden } from './mcpProposal'
 import { hasHidden } from './hiddenChars'
@@ -11,6 +12,8 @@ export interface ProposalContext {
   /** The project's (or, in library scope, the library's) servers; null when unknown. */
   mcpServers: readonly McpServerSpec[] | null
   skills: SkillCurrent
+  /** The kind of the project a target 'settings' proposal changes (its wording differs for engagements). */
+  projectKind?: ProjectKind
 }
 
 /** Starts the fold summary of a proposal whose names or commands hold hidden characters. */
@@ -44,6 +47,11 @@ export function proposalFoldSummary(proposal: Proposal, ctx: ProposalContext): s
     }
     case 'orgChart':
       return diffOrgChart(ctx.roles, proposal.payload.roles).summary || undefined
+    case 'appSettings':
+      return appSettingsSummary(proposal.payload.changes) ?? (oneLine(proposal.title, 120) || undefined)
+    case 'settings':
+      if (proposal.target) return projectSettingsSummary(projectSettingRows(proposal.payload, ctx.projectKind ?? 'code', undefined), !!proposal.payload.brief, proposal.target.projectName) ?? (oneLine(proposal.title, 120) || undefined)
+      return oneLine(proposal.title, 120) || undefined
     default:
       return oneLine(proposal.title, 120) || undefined
   }

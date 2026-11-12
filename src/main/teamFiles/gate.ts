@@ -1,5 +1,6 @@
-import { AGENT_IMPORT_ELEVATED_TOOLS, TEAM_FILES_AGENTS_DIR, TEAM_FILES_JSON, TEAM_FILES_MCP_JSON, TEAM_FILES_SKILLS_DIR, DEFAULT_MAX_AUTO_CONTINUES, type ModelTier, type PermissionMode, type TeamFileChange, type TeamFileChangeKind } from '@shared/types'
-import { effectiveSubagentLimits, skillEvaluationOf, teamReviewOf } from '@shared/defaults'
+import { AGENT_IMPORT_ELEVATED_TOOLS, TEAM_FILES_AGENTS_DIR, TEAM_FILES_JSON, TEAM_FILES_MCP_JSON, TEAM_FILES_SKILLS_DIR, DEFAULT_MAX_AUTO_CONTINUES, type PermissionMode, type TeamFileChange, type TeamFileChangeKind } from '@shared/types'
+import { effectiveSubagentLimits, skillEvaluationOf, staffingModeOf, teamReviewOf } from '@shared/defaults'
+import { settleSpend, spendOf, spendRises } from '@shared/roleSpend'
 import { fullTarget, safeText } from '../kit/format'
 import type { TeamDoc, TeamMcpDoc, TeamRoleDoc, TeamSettingsDoc, TeamSkillDoc } from './doc'
 import { canonicalJson, normalizeDoc } from './digest'
@@ -10,7 +11,7 @@ import { chartProblem, skillScripts } from './parse'
  * files say into changes that apply at once and changes that wait for the user, and returns the `effective` document
  * (what becomes the new approved team). Anything that raises power stays at its approved value and is listed pending;
  * prompts, descriptions, removals and lowered power apply. Idempotent: gating the effective document against the same
- * disk again applies nothing and lists the same pending changes. Pure.
+ * disk again applies nothing and lists the same pending changes with the same text (gateTeam settles to a fixpoint). Pure.
  */
 
 export const FIRST_SEEN_REASON = "First time this repository's team is seen on this computer"
@@ -37,15 +38,34 @@ export interface LinkInfo {
 }
 export type LinkResolver = (m: TeamMcpDoc) => LinkInfo | null
 
-const TIER_RANK: Record<ModelTier, number> = { fast: 0, everyday: 1, deep: 2, top: 3 }
-const EFFORT_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
 
-/** Whether a role's model setting moves to something that may spend more: only a strictly lower tier is safe. */
-function modelMayCostMore(a: TeamRoleDoc, d: TeamRoleDoc): boolean {
-  if (a.tier !== undefined && d.tier !== undefined) return TIER_RANK[d.tier] > TIER_RANK[a.tier]
-  return true
+/**
+ * The project's staffing mode moving from `a` to `d`, judged against every role on both sides (whether or not its own
+ * staffing changed): each role as approved under the approved mode against the same role as it would settle under the
+ * new mode (settleSpend), with the parent tier known and unknown. Returns the names of the roles that would spend more.
+ * A role only spends more here by its effective mode flipping: in an unchanged mode settleSpend already keeps it at or
+ * below the approved role.
+ */
+function projectStaffingRises(a: TeamDoc, d: TeamDoc): string[] {
+  const dRoles = new Map(d.roles.map((r) => [r.slug, r]))
+  const out: string[] = []
+  for (const ar of a.roles) {
+    const dr = dRoles.get(ar.slug)
+    if (!dr) continue
+    const settled = settleSpend(ar, dr, [d.settings.staffing], '').role
+    const rises = [true, false].some((parentKnown) => spendRises(spendOf(ar, { project: a.settings.staffing, parentKnown }), spendOf(settled, { project: d.settings.staffing, parentKnown })).length > 0)
+    if (rises) out.push(dr.name)
+  }
+  return out
 }
-const effortRaised = (a: TeamRoleDoc, d: TeamRoleDoc): boolean => (d.effort === undefined ? false : (EFFORT_RANK[d.effort] ?? 99) > (a.effort === undefined ? -1 : (EFFORT_RANK[a.effort] ?? 99)))
+
+/** The sentence a held project staffing change adds: who would spend more, and how. */
+function projectStaffingSentence(names: string[], toFixed: boolean): string {
+  const one = names.length === 1
+  return toFixed
+    ? ` ${joinAnd(names)} would then always run at ${one ? 'its' : 'their'} configured model and effort, which may spend more.`
+    : ` ${joinAnd(names)} may then run at a higher effort or tier than ${one ? 'it does' : 'they do'} now.`
+}
 
 const MODE_RANK: Record<PermissionMode, number> = { plan: 0, dontAsk: 1, default: 2, acceptEdits: 3, auto: 4, bypassPermissions: 5 }
 /** plan < dontAsk < default < acceptEdits < auto < bypassPermissions. Unknown values rank highest. */
@@ -117,12 +137,19 @@ const SETTING_LABELS: Record<keyof TeamSettingsDoc, string> = {
   autoContinue: 'Auto-continue',
   maxAutoContinues: 'Auto-continue limit',
   runMessaging: 'Runs messaging each other',
+  staffing: 'Automatic staffing',
+  staffingGoal: 'Staffing goal',
+  reviewPolicy: 'Review policy',
   teamReview: 'Team assistant review',
   skillEvaluation: 'Skill evaluation'
 }
 const SETTING_ORDER = Object.keys(SETTING_LABELS) as (keyof TeamSettingsDoc)[]
 
 function showSetting(k: keyof TeamSettingsDoc, v: unknown): string {
+  if (v === undefined && k === 'staffing') return 'automatic'
+  if (v === undefined && k === 'staffingGoal') return 'balanced'
+  if (v === undefined && k === 'reviewPolicy') return 'by risk'
+  if (k === 'staffing' && v === 'fixed') return 'off (every role runs as configured)'
   if (v === undefined) return 'not set'
   if (typeof v === 'boolean') return v ? 'on' : 'off'
   if (typeof v === 'number') return String(v)
@@ -181,6 +208,13 @@ function loosens(k: keyof TeamSettingsDoc, a: TeamDoc, d: TeamDoc): boolean {
       const eff = (v: unknown): number => (typeof v === 'number' ? v : DEFAULT_MAX_AUTO_CONTINUES)
       return eff(dv) > eff(av)
     }
+    // Judged against every role: held when any role becomes fixed or may be picked up above what it ran at when fixed.
+    case 'staffing':
+      return projectStaffingRises(a, d).length > 0
+    // The goal and the review policy move spend only inside ceilings the user already approved.
+    case 'staffingGoal':
+    case 'reviewPolicy':
+      return false
     case 'teamReview': {
       const x = teamReviewOf({ teamReview: av as TeamSettingsDoc['teamReview'] })
       const y = teamReviewOf({ teamReview: dv as TeamSettingsDoc['teamReview'] })
@@ -219,13 +253,14 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
     if (same(av, dv)) continue
     const label = SETTING_LABELS[k]
     const needs = loosens(k, a, d)
-    const summary = k === 'brief' ? 'The project brief changed.' : `${label} changes from ${showSetting(k, av)} to ${showSetting(k, dv)}.`
+    let summary = k === 'brief' ? 'The project brief changed.' : `${label} changes from ${showSetting(k, av)} to ${showSetting(k, dv)}.`
+    if (k === 'staffing' && needs) summary += projectStaffingSentence(projectStaffingRises(a, d), staffingModeOf({ staffing: dv as TeamSettingsDoc['staffing'] }) === 'fixed')
     const draft: Draft = { id: `settings:${k}`, kind: 'settings', name: label, file: TEAM_FILES_JSON, action: 'changed', summary }
     if (k === 'brief') {
       draft.before = longText(String(av ?? ''))
       draft.after = longText(String(dv ?? ''))
     }
-    const takes = record(draft, needs, 'Loosens a limit or the permission mode')
+    const takes = record(draft, needs, k === 'staffing' ? 'May spend more' : 'Loosens a limit or the permission mode')
     // Remember which settings really loosen (also in the all-pending previews), for the power-first order.
     if (needs) LOOSENING.add((takes ? applied : pending)[(takes ? applied : pending).length - 1])
     if (takes) {
@@ -364,18 +399,16 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
     if ((ar.reportsTo === null) !== (dr.reportsTo === null)) {
       record({ ...base, id: `role:${slug}:root`, action: 'changed', summary: dr.reportsTo === null ? `${who} would become the top of the chart.` : `${who} would stop being the top of the chart.` }, true, 'Changes who is at the top of the chart')
     } else detailKeys.push('reportsTo')
-    // A model that may spend more waits: a higher tier, any pinned model, or leaving a tier for anything but a lower one.
-    if (!same([ar.tier, ar.model], [dr.tier, dr.model])) {
-      if (modelMayCostMore(ar, dr)) record({ ...base, id: `role:${slug}:model`, action: 'changed', summary: `${who}'s model changes and may spend more.` }, true, 'May spend more')
-      else detailKeys.push('tier', 'model')
-    }
-    if (!same(ar.effort, dr.effort)) {
-      if (effortRaised(ar, dr)) record({ ...base, id: `role:${slug}:effort`, action: 'changed', summary: `${who}'s reasoning effort is raised and may spend more.` }, true, 'May spend more')
-      else detailKeys.push('effort')
-    }
+    // Model, effort and staffing (settleSpend): anything that may make a run spend more waits, judged under the project's
+    // staffing mode as settled above (an applied project switch was already judged against this role) and, while a
+    // project switch waits, under the mode on disk too.
+    const modes = staffingModeOf(eff.settings) === staffingModeOf(d.settings) ? [eff.settings.staffing] : [eff.settings.staffing, d.settings.staffing]
+    const spend = settleSpend(ar, dr, modes, who)
+    for (const h of spend.held) record({ ...base, id: `role:${slug}:${h.id}`, action: 'changed', summary: h.summary }, true, 'May spend more')
+    detailKeys.push(...spend.apply)
     const changedDetails = detailKeys.filter((k) => !same(ar[k], dr[k]))
     if (changedDetails.length) {
-      const labels = changedDetails.map((k) => (k === 'reportsTo' ? 'reporting line' : k === 'tier' || k === 'model' ? 'model' : k))
+      const labels = changedDetails.map((k) => (k === 'reportsTo' ? 'reporting line' : k === 'staffing' ? 'staffing limits' : k === 'tier' || k === 'model' ? 'model' : k))
       if (record({ ...base, id: `role:${slug}:details`, action: 'changed', summary: `${who}'s ${joinAnd([...new Set(labels)])} changed.` }, false, '')) {
         for (const k of changedDetails) {
           const nr = next as unknown as Record<string, unknown>
@@ -409,6 +442,14 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
         if (spawnOff) next.canSpawn = false
         next.spawnable = inter(ar.spawnable, dr.spawnable)
       }
+    }
+    // Required reports (Role.requiredReports): any change goes the spawnable way, through approval (an added one adds an
+    // obligation, a removed one loosens enforcement). The final filter below keeps them within the effective spawnable.
+    const reqAdded = diff(dr.requiredReports ?? [], ar.requiredReports ?? [])
+    const reqRemoved = diff(ar.requiredReports ?? [], dr.requiredReports ?? [])
+    if (reqAdded.length || reqRemoved.length) {
+      const bits = [...(reqAdded.length ? [`must report through ${joinAnd(reqAdded)}`] : []), ...(reqRemoved.length ? [`no longer must report through ${joinAnd(reqRemoved)}`] : [])]
+      record({ ...base, id: `role:${slug}:required-reports`, action: 'changed', summary: `${who} ${bits.join(' and ')}.` }, true, 'Changes which agents it must delegate to')
     }
     // Skill and service grants.
     for (const [field, label, reason] of [
@@ -481,7 +522,14 @@ function engine(approvedIn: TeamDoc, diskIn: TeamDoc, force: string | null, link
     const roleSet = new Set(eff.roles.map((r) => r.slug))
     const skillSet = new Set(eff.skills.map((s) => s.name))
     const mcpSet = new Set(eff.mcp.map((m) => m.name))
-    eff.roles = eff.roles.map((r) => ({ ...r, spawnable: r.spawnable.filter((s) => roleSet.has(s) && s !== r.slug), skills: r.skills.filter((s) => skillSet.has(s)), mcpServers: r.mcpServers.filter((s) => mcpSet.has(s)) }))
+    eff.roles = eff.roles.map((r) => {
+      const spawnable = r.spawnable.filter((s) => roleSet.has(s) && s !== r.slug)
+      const out: TeamRoleDoc = { ...r, spawnable, skills: r.skills.filter((s) => skillSet.has(s)), mcpServers: r.mcpServers.filter((s) => mcpSet.has(s)) }
+      const required = r.canSpawn ? (r.requiredReports ?? []).filter((s) => spawnable.includes(s)) : []
+      if (required.length > 0) out.requiredReports = required
+      else delete out.requiredReports
+      return out
+    })
     eff.mcp = eff.mcp.map((m) => (m.roles ? { ...m, roles: m.roles.filter((s) => roleSet.has(s)) } : m))
   }
   return { effective: normalizeDoc(eff), pending, applied }
@@ -504,6 +552,9 @@ function byId(list: TeamFileChange[]): TeamFileChange[] {
   return list.sort((x, y) => powerGroup(x) - powerGroup(y) || cmp(x.id, y.id))
 }
 
+/** At most this many passes settle one gate (gateTeam); two or three are typical. */
+const GATE_MAX_PASSES = 8
+
 export interface GateOptions {
   firstSeen?: boolean
   /** What a connector or library server would link to on this computer; absent: the file's own target is shown. */
@@ -519,12 +570,23 @@ export function gateTeam(approved: TeamDoc, disk: TeamDoc, opts: GateOptions = {
     const r = engine(approved, disk, FIRST_SEEN_REASON, opts.link)
     return { effective: normalizeDoc(approved), pending: byId(r.pending), applied: [] }
   }
-  const r = engine(approved, disk, null, opts.link)
-  if (chartProblem(r.effective) !== null) {
-    const f = engine(approved, disk, CHART_REASON, opts.link)
-    return { effective: normalizeDoc(approved), pending: byId(f.pending), applied: [] }
+  // Settle to a fixpoint: a change held against the approved team may spend no more against the team the changes that
+  // applied leave (an effort lowered beside a cap), so pass again over the result until nothing more applies. Every pass
+  // only applies changes that spend no more and moves the team toward the disk, so it converges; the cap is a guard.
+  // The pending rows and their summaries are those of the last pass (the settled team against the disk), so gating the
+  // result again applies nothing and lists the same rows with the same text.
+  let r = engine(approved, disk, null, opts.link)
+  const applied = new Map(r.applied.map((c) => [c.id, c]))
+  for (let pass = 1; ; pass++) {
+    if (chartProblem(r.effective) !== null) {
+      const f = engine(approved, disk, CHART_REASON, opts.link)
+      return { effective: normalizeDoc(approved), pending: byId(f.pending), applied: [] }
+    }
+    if (!r.applied.length || pass >= GATE_MAX_PASSES) break
+    r = engine(r.effective, disk, null, opts.link)
+    for (const c of r.applied) if (!applied.has(c.id)) applied.set(c.id, c)
   }
-  return { effective: r.effective, pending: byId(r.pending), applied: byId(r.applied) }
+  return { effective: r.effective, pending: byId(r.pending), applied: byId([...applied.values()]) }
 }
 
 const EMPTY: TeamDoc = { settings: { brief: '', permissionMode: 'default' }, roles: [], skills: [], mcp: [] }

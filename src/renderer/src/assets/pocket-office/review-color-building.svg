@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600">
+<title>Pocket Office color building concept</title><desc>Three labeled departments surround a central orchestrator area, linked by corridors and doorways.</desc>
+<defs>
+<g id="desk" shape-rendering="crispEdges"><rect width="90" height="52" fill="#493037"/><rect x="5" y="5" width="80" height="37" fill="#dfae76"/><rect x="23" y="-12" width="43" height="35" fill="#303744"/><rect x="28" y="-7" width="33" height="23" fill="#8ed2c4"/><rect x="30" y="-5" width="16" height="3" fill="#e4f1d2"/></g>
+<g id="worker" shape-rendering="crispEdges"><rect x="9" width="22" height="19" fill="#443037"/><rect x="12" y="4" width="16" height="13" fill="#eac19a"/><rect x="7" y="19" width="26" height="25" fill="#303744"/><rect x="10" y="22" width="20" height="19" fill="#467c9c"/><rect x="9" y="44" width="9" height="8" fill="#443037"/><rect x="23" y="44" width="9" height="8" fill="#443037"/></g>
+<g id="plant" shape-rendering="crispEdges"><rect x="14" y="24" width="22" height="22" fill="#493037"/><rect x="10" y="3" width="17" height="24" fill="#4f9255"/><rect x="25" width="19" height="25" fill="#91c576"/></g>
+</defs>
+<rect width="960" height="600" fill="#ead6b1"/><rect x="16" y="16" width="928" height="568" fill="#f5e4bc" stroke="#493741" stroke-width="12"/>
+<path d="M480 22v118M480 224v105M16 329h175M281 329h398M769 329h175" fill="none" stroke="#493741" stroke-width="12"/>
+<path d="M16 338h928v64H16z" fill="#d9c4a2"/><path d="M434 22h92v307h-92z" fill="#d9c4a2"/>
+<rect x="40" y="34" width="168" height="32" rx="5" fill="#fff9ec"/><text x="52" y="56" font-family="Segoe UI, sans-serif" font-size="16" fill="#30283a">Product department</text>
+<rect x="550" y="34" width="184" height="32" rx="5" fill="#fff9ec"/><text x="562" y="56" font-family="Segoe UI, sans-serif" font-size="16" fill="#30283a">Engineering department</text>
+<rect x="40" y="421" width="164" height="32" rx="5" fill="#fff9ec"/><text x="52" y="443" font-family="Segoe UI, sans-serif" font-size="16" fill="#30283a">Review department</text>
+<rect x="398" y="402" width="164" height="32" rx="5" fill="#fff9ec"/><text x="410" y="424" font-family="Segoe UI, sans-serif" font-size="16" fill="#30283a">Orchestrator area</text>
+<use href="#desk" x="88" y="107"/><use href="#worker" x="113" y="163"/><use href="#desk" x="276" y="107"/><use href="#worker" x="301" y="163"/>
+<use href="#desk" x="558" y="107"/><use href="#worker" x="583" y="163"/><use href="#desk" x="746" y="107"/><use href="#worker" x="771" y="163"/>
+<use href="#desk" x="105" y="482"/><use href="#worker" x="130" y="538"/><use href="#desk" x="435" y="470"/><use href="#worker" x="460" y="526"/>
+<use href="#plant" x="364" y="242"/><use href="#plant" x="867" y="242"/><use href="#plant" x="355" y="490"/>
+<rect x="459" y="160" width="42" height="42" fill="#a45f3d" stroke="#493037" stroke-width="5"/><rect x="465" y="166" width="30" height="30" fill="#dfae76"/>
+<text x="480" y="303" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="14" fill="#493741">Connected corridor</text>
+</svg>

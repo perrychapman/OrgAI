@@ -2,8 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride, Project, Proposal, RunEvent, RunSummary, TokenUsage } from '@shared/types'
-import { setModelTokens } from './runUsage'
+import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride, Project, Proposal, ProxyConnection, RunEvent, RunSummary, TokenUsage } from '@shared/types'
+import { setModelTokens, type UsageOverviewNames } from './runUsage'
 import type { RunSkill, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { ROOT_AGENT_ID } from './types'
 import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, refreshRoleGrants, sessionChain, type RunManagerOptions } from './runManager'
@@ -11,7 +11,7 @@ import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
-import { project as makeProject, runSummary } from './testHelpers'
+import { project as makeProject, mcpSpec, runSummary } from './testHelpers'
 import { SET_PLAN_NUDGE, SET_PLAN_SUMMARY, limitReachedText } from './continuation'
 import { defaultConnections } from '@shared/defaults'
 import { log } from '../log'
@@ -85,6 +85,183 @@ afterEach(() => {
 })
 
 describe('RunManager stored records', () => {
+  it('refuses a stale expected run before switching or mutating the successor, and accepts a matching id', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'new-model', label: 'New', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'older', projectId: p.id, status: 'finished', startedAt: 1, connection: 'anthropic' }))
+    const run = await m.start({ project: p, prompt: '[mock:model-switch]', resumedFrom: 'older' })
+    if (m.summary(run.id)?.status !== 'idle') await waitFor(isType('run.status', (event) => event.runId === run.id && event.status === 'idle'))
+    const active = Reflect.get(m, 'runs').get(run.id)
+    const change = vi.spyOn(active.session, 'switchModel')
+    const before = structuredClone(m.summary(run.id)?.modelSelection)
+    const eventCount = events.length
+    const stale = await m.switchModel({ runId: 'older', expectedRunId: 'older', model: 'new-model' })
+    expect(stale).toMatchObject({ run: { id: run.id }, applied: false, reason: 'The conversation has continued; select the model again.' })
+    expect(change).not.toHaveBeenCalled()
+    expect(m.summary(run.id)?.modelSelection).toEqual(before)
+    expect(events.slice(eventCount).some((event) => event.type === 'run.model')).toBe(false)
+    await expect(m.switchModel({ runId: 'older', expectedRunId: '../bad', model: 'new-model' })).rejects.toThrow('Invalid expected run id')
+    const matched = await m.switchModel({ runId: 'older', expectedRunId: run.id, model: 'new-model' })
+    expect(matched.applied).toBe(true)
+    expect(change).toHaveBeenCalledOnce()
+    expect(m.summary(run.id)?.modelSelection).toEqual({ model: 'new-model', connection: 'anthropic' })
+    await m.stopAll()
+  })
+
+  it('refuses an unpriced live selection before adapter mutation and ignores forged model events', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p, {}, { catalog: () => [{ id: 'unpriced', label: 'Unpriced', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }] })
+    const run = await m.start({ project: p, prompt: '[mock:model-switch]' })
+    const active = Reflect.get(m, 'runs').get(run.id)
+    active.execBudget = 10
+    active.modelPriced = () => false
+    const change = vi.spyOn(active.session, 'switchModel')
+    const result = await m.switchModel({ runId: run.id, model: 'unpriced' })
+    expect(result.applied).toBe(false)
+    expect(result.reason).toContain('price')
+    expect(change).not.toHaveBeenCalled()
+    const before = m.summary(run.id)?.modelSelection
+    active.emit({ type: 'run.model', runId: run.id, selection: { model: 'forged', connection: 'openai' } })
+    expect(m.summary(run.id)?.modelSelection).toEqual(before)
+    expect(events.some((e) => e.type === 'run.model' && e.selection.model === 'forged')).toBe(false)
+    await m.stopAll()
+  })
+
+  it.each(['work', 'setup', 'mcp-assist', 'skill-assist'] as const)('continues %s across connections with transcript data, no native session id, and remaining budget', async (kind) => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 10, permissionMode: 'default' })
+    const catalog = [{ id: 'alternate', label: 'Alternate', connection: 'openai' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'builtin' as const }]
+    const { m, store } = manager(p, {}, { catalog: () => catalog })
+    const old = runSummary({ id: 'handoff-old', projectId: p.id, kind, status: 'error', sessionId: 'private-old-session', connection: 'anthropic', totalCostUsd: 3 })
+    store.saveRecord({ summary: old, agents: {}, transcript: [{ id: 'entry1', agentId: 'root', at: 1, block: { kind: 'user', text: 'Remember the blue notebook' } }], logs: [] })
+    store.upsert(old)
+    const staged = await m.switchModel({ runId: old.id, model: 'alternate', connection: 'openai' })
+    expect(staged.applied).toBe(false)
+    const start = vi.spyOn(m, 'start')
+    await m.continueRun(p, old.id, 'Continue the work')
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      resumeSessionId: undefined, resumedFrom: old.id,
+      project: expect.objectContaining({ maxBudgetUsd: 7, permissionMode: 'default' }),
+      modelSelection: { model: 'alternate', connection: 'openai' },
+      hiddenContext: expect.stringContaining('Remember the blue notebook')
+    }))
+    expect(start.mock.calls[0][0].hiddenContext).not.toContain('private-old-session')
+    await m.stopAll()
+  })
+
+  it('uses the successor native session on a later continuation despite unchanged project defaults', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'successor', projectId: p.id, status: 'finished', sessionId: 'new-native-session', connection: 'openai', modelAdapter: 'codex', modelSelection: { model: 'alternate', connection: 'openai' } }))
+    const start = vi.spyOn(m, 'start')
+    await m.continueRun(p, 'successor', 'Keep going')
+    expect(start.mock.calls[0][0].resumeSessionId).toBe('new-native-session')
+    expect(start.mock.calls[0][0].hiddenContext).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it.each([undefined, 0, -1])('keeps project budget %s unlimited on a provider handoff', async (maxBudgetUsd) => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'unlimited', projectId: p.id, status: 'error', connection: 'anthropic', modelSelection: { model: 'alternate', connection: 'openai' } }))
+    const next = await m.continueRun(p, 'unlimited', 'Continue')
+    expect(next.conversationBudgetUsd).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it.each(['work', 'setup', 'mcp-assist', 'skill-assist'] as const)('preserves exact budgets through repeated %s handoffs and native recovery', async (kind) => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 10, permissionMode: 'dontAsk', mcpServers: [mcpSpec()] })
+    p.roles[0].skills = ['granted-skill']
+    p.roles[0].mcpServers = ['mcp-1']
+    const { m, store } = manager(p, {}, { catalog: () => [
+      { id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' },
+      { id: 'original', label: 'Original', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }
+    ] })
+    // Start failures can occur before native init. Recovery must work without any session id.
+    const first = runSummary({ id: 'exact-first', projectId: p.id, kind, startedAt: 1, status: 'error', connection: 'anthropic', totalCostUsd: 3,
+      overrides: { permissionMode: 'plan', maxBudgetUsd: 10 }, modelSelection: { model: 'alternate', connection: 'openai' } })
+    store.upsert(first)
+    let sequence = 1
+    const start = vi.spyOn(m, 'start').mockImplementation(async (input) => {
+      const summary = runSummary({ id: `exact-${++sequence}`, projectId: p.id, kind: input.kind, startedAt: sequence,
+        status: 'error', connection: input.modelSelection!.connection,
+        modelAdapter: input.modelSelection!.connection === 'openai' ? 'codex' : 'claude',
+        resumedFrom: input.resumedFrom, modelSelection: input.modelSelection, conversationBudgetUsd: input.conversationBudgetUsd,
+        overrides: input.overrides, totalCostUsd: sequence === 2 ? 2 : sequence === 3 ? 1 : 0 })
+      store.upsert(summary)
+      return summary
+    })
+    const second = await m.continueRun(p, first.id, 'Retry after API error')
+    expect(start.mock.calls[0][0]).toMatchObject({ project: { maxBudgetUsd: 7, permissionMode: 'dontAsk', mcpServers: p.mcpServers },
+      overrides: { maxBudgetUsd: 7, permissionMode: 'plan' }, conversationBudgetUsd: 10 })
+    expect(start.mock.calls[0][0].resumeSessionId).toBeUndefined()
+    await m.switchModel({ runId: second.id, model: 'original', connection: 'anthropic' })
+    const third = await m.continueRun(p, second.id, 'Switch back')
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBe(5)
+    expect(start.mock.calls[1][0].overrides?.maxBudgetUsd).toBe(5)
+    expect(third.conversationBudgetUsd).toBe(10)
+    // Once the new provider supplies a native session, the next continuation keeps it.
+    store.upsert({ ...third, sessionId: 'new-native-session', status: 'finished' })
+    const fourth = await m.continueRun(p, third.id, 'Continue natively')
+    expect(start.mock.calls[2][0].resumeSessionId).toBe('new-native-session')
+    expect(start.mock.calls[2][0].project.maxBudgetUsd).toBe(4)
+    expect(start.mock.calls[2][0].overrides?.maxBudgetUsd).toBe(4)
+    expect(fourth.conversationBudgetUsd).toBe(10)
+    const tightened = await m.continueRun({ ...p, maxBudgetUsd: 8 }, fourth.id, 'Use lower project limit')
+    expect(start.mock.calls[3][0].project.maxBudgetUsd).toBe(2)
+    expect(start.mock.calls[3][0].overrides?.maxBudgetUsd).toBe(2)
+    expect(tightened.conversationBudgetUsd).toBe(8)
+    const narrowed = await m.continueRun(p, tightened.id, 'Use explicit remaining allowance', undefined, { overrides: { maxBudgetUsd: 1 } })
+    expect(start.mock.calls[4][0].project.maxBudgetUsd).toBe(1)
+    expect(start.mock.calls[4][0].overrides?.maxBudgetUsd).toBe(1)
+    expect(narrowed.conversationBudgetUsd).toBe(7)
+    await expect(m.continueRun({ ...p, maxBudgetUsd: 6 }, tightened.id, 'No allowance left')).rejects.toThrow('budget is spent')
+    expect(start).toHaveBeenCalledTimes(5)
+    for (const [input] of start.mock.calls) {
+      expect(input.project.roles).toEqual(p.roles)
+      expect(input.project.mcpServers).toEqual(p.mcpServers)
+      expect(input.project.permissionMode).toBe('dontAsk')
+      expect(input.overrides?.permissionMode).toBe('plan')
+    }
+    expect(p.maxBudgetUsd).toBe(10)
+  })
+
+  it('subtracts chain spend once on a repeated handoff and subsequent native continuation', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 10 })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'prior', projectId: p.id, status: 'finished', startedAt: 1, totalCostUsd: 3 }))
+    store.upsert(runSummary({ id: 'second', projectId: p.id, status: 'error', startedAt: 2, resumedFrom: 'prior', connection: 'anthropic', conversationBudgetUsd: 10, overrides: { maxBudgetUsd: 7 }, totalCostUsd: 2, modelSelection: { model: 'alternate', connection: 'openai' } }))
+    const start = vi.spyOn(m, 'start')
+    const next = await m.continueRun(p, 'second', 'Continue')
+    expect(start.mock.calls[0][0].project.maxBudgetUsd).toBe(5)
+    expect(next.conversationBudgetUsd).toBe(10)
+    await m.stopAll()
+    await m.continueRun(p, next.id, 'Keep going')
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBeLessThanOrEqual(5)
+    expect(start.mock.calls[1][0].project.maxBudgetUsd).toBeGreaterThan(2)
+    await m.stopAll()
+  })
+
+  it('switches the newest ended chain member and refuses to reset a spent budget', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), maxBudgetUsd: 2 })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'alternate', label: 'Alternate', connection: 'openai', family: 'openai', adapter: 'codex', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'older', projectId: p.id, status: 'error', sessionId: 's1', connection: 'anthropic', startedAt: 1 }))
+    store.upsert(runSummary({ id: 'newer', projectId: p.id, status: 'paused', sessionId: 's1', connection: 'anthropic', startedAt: 2, resumedFrom: 'older', totalCostUsd: 2 }))
+    const result = await m.switchModel({ runId: 'older', model: 'alternate', connection: 'openai' })
+    expect(result.run.id).toBe('newer')
+    await expect(m.continueRun(p, 'older', 'Continue')).rejects.toThrow('budget is spent')
+  })
+
+  it('persists a model for an ended session and refuses unavailable models and connections', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, {}, { catalog: () => [{ id: 'new-model', label: 'New', connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' }] })
+    store.upsert(runSummary({ id: 'run-switch', projectId: p.id, status: 'error', sessionId: 'session-1', connection: 'anthropic' }))
+    await expect(m.switchModel({ runId: 'run-switch', model: 'missing' })).rejects.toThrow('Model is not available')
+    await expect(m.switchModel({ runId: 'run-switch', model: 'new-model', connection: 'openai' })).rejects.toThrow('Model is not available')
+    const result = await m.switchModel({ runId: 'run-switch', model: 'new-model' })
+    expect(result.applied).toBe(false)
+    expect(store.get('run-switch')?.modelSelection).toEqual({ model: 'new-model', connection: 'anthropic' })
+    expect(events).toContainEqual({ type: 'run.model', runId: 'run-switch', selection: { model: 'new-model', connection: 'anthropic' } })
+  })
   it('breaks a parent cycle in a record read from the store', () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m, store } = manager(p)
@@ -368,6 +545,38 @@ describe('RunManager usage and pricing', () => {
     expect(m.get(run.id)!.agents.root!.usage!.costUsd).toBeCloseTo(5, 9)
   })
 
+  it('prices two live proxy runs from their own proxy prices', async () => {
+    const conns = [
+      { connection: 'proxy-aaaa1111', adapter: 'claude' as const, env: {}, pricing: { shared: { inputPerToken: 0.000001, outputPerToken: 0 } } },
+      { connection: 'proxy-bbbb2222', adapter: 'claude' as const, env: {}, pricing: { shared: { inputPerToken: 0.000003, outputPerToken: 0 } } }
+    ]
+    let n = 0
+    const { m, p, ctxs } = setup({ resolveConnection: () => conns[n++]! })
+    const r1 = await m.start({ project: p, prompt: 'one' })
+    const r2 = await m.start({ project: p, prompt: 'two' })
+    expect(m.summaryOf(r1.id)!.connection).toBe('proxy-aaaa1111')
+    expect(m.summaryOf(r2.id)!.connection).toBe('proxy-bbbb2222')
+    for (const [i, id] of [r1.id, r2.id].entries()) {
+      const a = agentWith()
+      setModelTokens(a, 'shared', tok(1_000_000))
+      ctxs[i]!.emit({ type: 'agent.upsert', runId: id, agent: a })
+    }
+    expect(m.get(r1.id)!.agents.root!.usage!.costUsd).toBeCloseTo(1, 9)
+    expect(m.get(r2.id)!.agents.root!.usage!.costUsd).toBeCloseTo(3, 9)
+    expect(m.get(r1.id)!.agents.root!.usage!.models[0]).toMatchObject({ priceSource: 'proxy' })
+  })
+
+  it('leaves a model unknown, never $0, on a proxy that reported no prices', async () => {
+    const { m, p, ctxs } = setup({ resolveConnection: () => ({ connection: 'proxy-cccc3333', adapter: 'claude', env: {} }) })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const a = agentWith()
+    setModelTokens(a, 'house-model-7', tok(100, 50))
+    ctxs[0]!.emit({ type: 'agent.upsert', runId: run.id, agent: a })
+    const s = m.summaryOf(run.id)!
+    expect(s.connection).toBe('proxy-cccc3333')
+    expect(s.usage).toMatchObject({ costUsd: null, costSource: 'unknown' })
+  })
+
   it('drops a run.usage an adapter sends', async () => {
     const { m, p, ctxs } = setup()
     const run = await m.start({ project: p, prompt: 'go' })
@@ -571,6 +780,38 @@ describe('RunManager.usageStats', () => {
     expect(stats.runs.map((r) => r.runId)).toContain(run.id)
     await m.stop(run.id)
   })
+
+  it('usageOverview covers every project, normalizes legacy runs once and includes live runs', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(p, { delayMs: 50 })
+    const day = (d: number): number => new Date(2026, 9, d, 12).getTime()
+    store.upsert(runSummary({ id: 'l1', projectId: p.id, status: 'finished', startedAt: day(1), totalCostUsd: 0.5 }))
+    store.upsert(runSummary({ id: 'q1', projectId: 'quick', status: 'finished', startedAt: day(2), usage: { ...computeEmpty(), tokens: tok(7), costUsd: null, costSource: 'unknown' } }))
+    store.upsert(runSummary({ id: 'g1', projectId: 'gone', kind: 'setup', status: 'finished', startedAt: day(3), usage: { ...computeEmpty(), costUsd: 2, costSource: 'computed', tokens: tok(1) } }))
+    const names: UsageOverviewNames = {
+      project: (id) => (id === p.id ? { name: p.name, kind: 'code' } : id === 'quick' ? { name: 'Chat', kind: 'assistant' } : null),
+      connection: (id) => id
+    }
+    const live = await m.start({ project: p, prompt: 'live' })
+
+    const o = m.usageOverview(undefined, names)
+    expect(o.runs.map((r) => r.runId)).toEqual([live.id, 'g1', 'q1', 'l1'])
+    expect(o.runs.find((r) => r.runId === 'g1')).toMatchObject({ projectRemoved: true, projectName: 'Removed project' })
+    expect(o.projects.map((x) => x.projectId).sort()).toEqual(['gone', p.id, 'quick'].sort())
+    expect(o.projects.find((x) => x.projectId === 'quick')).toMatchObject({ costUsd: null, costSource: 'unknown' })
+    expect(store.get('l1')!.usage).toMatchObject({ legacy: true, costUsd: 0.5 })
+
+    expect(m.usageOverview({ projectIds: ['quick'] }, names).runs.map((r) => r.runId)).toEqual(['q1'])
+    expect(m.usageOverview({ kinds: ['setup'] }, names).runs.map((r) => r.runId)).toEqual(['g1'])
+    expect(() => m.usageOverview({ projectIds: ['a/b'] }, names)).toThrow('Invalid project ids')
+    expect(() => m.usageOverview({ range: { month: 'x' } }, names)).toThrow('Invalid month')
+
+    const csv = m.usageOverviewCsv({ limit: 1 }, names)
+    expect(csv.split('\r\n')).toHaveLength(5)
+    expect(m.usageOverviewCsv(null, names).split('\r\n')).toHaveLength(5)
+    expect(() => m.usageOverviewCsv('x', names)).toThrow('Invalid usage query')
+    await m.stop(live.id)
+  })
 })
 
 function computeEmpty() {
@@ -579,6 +820,11 @@ function computeEmpty() {
 
 function defaultSettingsLite() {
   return { setupModel: 'opus', mcpAssistModel: 'opus', connections: defaultConnections({ kind: 'subscription' }) }
+}
+
+/** A proxy connection record for the settings the manager reads (example.com hosts only). */
+function proxyRecord(id: string, name: string, tierModels: ProxyConnection['tierModels'] = {}, kind: ProxyConnection['kind'] = 'litellm'): ProxyConnection {
+  return { id, name, kind, enabled: true, tierModels, anthropicBaseUrl: `https://${id}.proxy.example.com`, hasApiKey: true }
 }
 
 describe('RunManager with the mock adapter', () => {
@@ -771,7 +1017,7 @@ describe('RunManager with the mock adapter', () => {
     const req = await waitFor(isType('permission.request'))
     m.decide(run.id, req.request.id, decision as never)
     const resolved = await waitFor(isType('permission.resolved'))
-    expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id, ...(saved ? { savedToProject: true } : {}) })
+    expect(resolved).toEqual({ type: 'permission.resolved', runId: run.id, requestId: req.request.id, ...(saved ? { savedToProject: true } : {}), ...(decision.behavior === 'allow' && 'scope' in decision ? { scope: decision.scope } : {}) })
     expect('savedToProject' in resolved).toBe(saved)
     await m.stop(run.id)
   })
@@ -1014,7 +1260,8 @@ describe('RunManager with the mock adapter', () => {
 
       const continueRun = vi.spyOn(m, 'continueRun')
       vi.advanceTimersByTime(HOUR + 1000)
-      await vi.waitFor(() => expect(continueRun).toHaveBeenCalledWith(p, run.id, RESUME_TEXT))
+      // The timer acts for the desktop user, so a per-run permission mode they chose carries over (desktop: true).
+      await vi.waitFor(() => expect(continueRun).toHaveBeenCalledWith(p, run.id, RESUME_TEXT, undefined, { desktop: true }))
       const next = await continueRun.mock.results[0].value
       expect(next.resumedFrom).toBe(run.id)
       expect(store.get(run.id)).toMatchObject({ status: 'finished', autoResume: false })
@@ -1199,6 +1446,52 @@ describe('RunManager adapter selection, connections and MCP', () => {
   }
 
   describe('adapter selection', () => {
+    it.each((['work', 'setup', 'mcp-assist', 'skill-assist'] as const).flatMap((kind) => (['priced', 'unknown', 'provider-total'] as const).map((usage) => [kind, usage] as const)))('enforces a desktop %s handoff budget after refresh on %s usage', async (kind, usage) => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'gpt-5', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const refresh = vi.fn(() => ({ project: { ...p, maxBudgetUsd: 8 } }))
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { teamFiles: { beforeRun: refresh }, catalog: () => [{ id: 'gpt-5', label: 'GPT', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'budget-source', projectId: p.id, kind, status: 'error', connection: 'anthropic', totalCostUsd: 3, modelSelection: { model: 'gpt-5', connection: 'openai' } }))
+      const run = await m.continueRun(p, 'budget-source', 'Recover')
+      expect(codex.ctxs).toHaveLength(1)
+      const ctx = codex.ctxs[0]
+      const remaining = kind === 'work' || kind === 'setup' ? 5 : 7
+      expect(ctx.project.maxBudgetUsd).toBe(remaining)
+      expect(ctx.budgetUsd).toBe(remaining)
+      expect(ctx.resumeSessionId).toBeUndefined()
+      if (kind === 'work' || kind === 'setup') expect(refresh).toHaveBeenCalledOnce()
+      const agent: AgentInstance = { id: ROOT_AGENT_ID, roleId: p.roles[0].id, roleSlug: p.roles[0].slug, name: 'Root', parentId: null, spawnToolUseId: null, state: 'idle', activity: '', model: 'gpt-5', inputTokens: 1, outputTokens: 1, costUsd: 0, startedAt: 1 }
+      setModelTokens(agent, usage === 'unknown' ? 'unexpected-unpriced-model' : 'gpt-5', { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, usage === 'unknown' ? undefined : usage === 'provider-total' ? 0 : 7)
+      ctx.emit({ type: 'agent.upsert', runId: run.id, agent })
+      if (usage === 'provider-total') ctx.emit({ type: 'run.cost', runId: run.id, totalCostUsd: 7 })
+      await vi.waitFor(() => expect(m.summary(run.id)).toMatchObject({ status: 'finished', endedBy: 'budget' }))
+      expect(m.summary(run.id)?.execOutcome).toBeUndefined()
+      expect(events.some((e) => e.type === 'run.finalized' && e.runId === run.id)).toBe(false)
+    })
+
+    it('propagates a newly spent stored-project cap without starting the adapter', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'gpt-5', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { teamFiles: { beforeRun: () => ({ project: { ...p, maxBudgetUsd: 5 } }) }, catalog: () => [{ id: 'gpt-5', label: 'GPT', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'spent-source', projectId: p.id, status: 'error', connection: 'anthropic', totalCostUsd: 6, modelSelection: { model: 'gpt-5', connection: 'openai' } }))
+      await expect(m.continueRun(p, 'spent-source', 'Recover')).rejects.toThrow('budget is spent')
+      expect(codex.ctxs).toHaveLength(0)
+    })
+
+    it('refuses unpriced desktop recovery before starting Codex', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), provider: { id: 'claude', label: 'Claude', auth: { kind: 'subscription' } }, maxBudgetUsd: 10 })
+      p.roles = [{ ...p.roles[0], model: 'unpriced-model', canSpawn: false, spawnable: [] }]
+      const codex = recorder('codex')
+      const { m, store } = setupManager(p, { codex: codex.adapter }, { catalog: () => [{ id: 'unpriced-model', label: 'Unknown', connection: 'openai', adapter: 'codex', family: 'openai', source: 'builtin' }] })
+      store.upsert(runSummary({ id: 'unpriced-source', projectId: p.id, status: 'error', connection: 'anthropic', totalCostUsd: 3, modelSelection: { model: 'unpriced-model', connection: 'openai' } }))
+      const run = await m.continueRun(p, 'unpriced-source', 'Recover')
+      expect(codex.ctxs).toHaveLength(0)
+      expect(run).toMatchObject({ status: 'finished', endedBy: 'budget' })
+      expect(events.some((e) => e.type === 'log' && e.message.includes('no known price'))).toBe(true)
+    })
+
     it('picks the adapter by the root role family on LiteLLM', async () => {
       const claude = recorder('claude')
       const codex = recorder('codex')
@@ -1217,7 +1510,10 @@ describe('RunManager adapter selection, connections and MCP', () => {
       const claude = recorder('claude')
       const codex = recorder('codex')
       const p = litellm('sonnet', { engineer: 'gpt-5', reviewer: 'gpt-5' })
-      const { m } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
+      const appSettings = () => ({ ...defaultSettingsLite(), proxies: [proxyRecord('litellm', 'LiteLLM')] })
+      // Reports of the other family are bridged (child sessions start on delegation), so the run needs the role-connection resolver.
+      const resolveRoleConnection = (_p: Project, t: { connection: string; adapter: string }) => ({ connection: t.connection, adapter: t.adapter }) as never
+      const { m } = setupManager(p, { claude: claude.adapter, codex: codex.adapter }, { appSettings, resolveRoleConnection })
       await m.start({ project: p, prompt: 'go' })
       expect(claude.ctxs).toHaveLength(1)
       expect(codex.ctxs).toHaveLength(0)
@@ -1238,7 +1534,8 @@ describe('RunManager adapter selection, connections and MCP', () => {
       const claude = recorder('claude')
       const codex = recorder('codex')
       const p = litellm('inherit', { engineer: 'gpt-5' })
-      const { m, store } = setupManager(p, { claude: claude.adapter, codex: codex.adapter })
+      const appSettings = () => ({ ...defaultSettingsLite(), proxies: [proxyRecord('litellm', 'LiteLLM')] })
+      const { m, store } = setupManager(p, { claude: claude.adapter, codex: codex.adapter }, { appSettings })
       await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow(
         "Roles Engineer use OpenAI-family models, but this LiteLLM project's orchestrator has no model of its own, so OrgAI cannot tell which runtime to use. Give the orchestrator a model."
       )
@@ -1283,8 +1580,8 @@ describe('RunManager adapter selection, connections and MCP', () => {
         { id: 'gpt-5-mini', label: 'm', connection: 'litellm' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'discovered' as const }
       ]
       const connections = defaultConnections()
-      connections.litellm.tierModels = { deep: 'gpt-5', everyday: 'gpt-5-mini' }
-      const appSettings = () => ({ setupModel: 'gpt-5-mini', mcpAssistModel: 'claude-sonnet-4-5', connections })
+      const proxies = [proxyRecord('litellm', 'LiteLLM', { deep: 'gpt-5', everyday: 'gpt-5-mini' })]
+      const appSettings = () => ({ setupModel: 'gpt-5-mini', mcpAssistModel: 'claude-sonnet-4-5', connections, proxies })
       const { m } = setupManager(p, { codex: codex.adapter }, { catalog, appSettings })
       const setupRun = await m.start({ project: p, prompt: 'set up', kind: 'setup' })
       const assistRun = await m.start({ project: p, prompt: 'mcp', kind: 'mcp-assist' })
@@ -1304,6 +1601,45 @@ describe('RunManager adapter selection, connections and MCP', () => {
       // the catalog says gpt-5 is a Claude-family model here, so the Claude adapter is needed and absent
       await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow('No runtime adapter for provider "claude"')
       expect(catalog).toHaveBeenCalled()
+    })
+
+    it('refuses to start a project whose proxy was removed, with a readable message and no run record', async () => {
+      const claude = recorder('claude')
+      const p = litellm('sonnet')
+      p.provider.connection = 'proxy-deadbeef'
+      const resolveConnection = vi.fn()
+      const appSettings = () => ({ ...defaultSettingsLite(), proxies: [proxyRecord('proxy-aaaa1111', 'Team proxy')] })
+      const { m, store } = setupManager(p, { claude: claude.adapter }, { appSettings, resolveConnection })
+      await expect(m.start({ project: p, prompt: 'go' })).rejects.toThrow('That connection no longer exists. Pick another in Project settings > Connection.')
+      expect(resolveConnection).not.toHaveBeenCalled()
+      expect(store.list(p.id)).toEqual([])
+    })
+
+    it('names the project proxy in the mixed-family refusal and resolves the right proxy for two projects', async () => {
+      const claude = recorder('claude')
+      const appSettings = () => ({
+        ...defaultSettingsLite(),
+        proxies: [proxyRecord('proxy-aaaa1111', 'Team gateway', { deep: 'sonnet' }), proxyRecord('proxy-bbbb2222', 'Lab gateway', { deep: 'sonnet' }, 'openai-compatible')]
+      })
+      const a = litellm('sonnet')
+      a.provider.connection = 'proxy-aaaa1111'
+      const b = litellm('sonnet')
+      b.id = 'p-other'
+      b.provider.connection = 'proxy-bbbb2222'
+      const seen: string[] = []
+      const resolveConnection = vi.fn((_p: Project, choice: { connection: string }) => {
+        seen.push(choice.connection)
+        return { connection: choice.connection, adapter: 'claude' as const, env: { ANTHROPIC_BASE_URL: `https://${choice.connection}.example.com` } }
+      })
+      const { m } = setupManager(a, { claude: claude.adapter }, { appSettings, resolveConnection: resolveConnection as never })
+      await m.start({ project: a, prompt: 'go' })
+      await m.start({ project: b, prompt: 'go' })
+      expect(seen).toEqual(['proxy-aaaa1111', 'proxy-bbbb2222'])
+      expect(claude.ctxs.map((c) => c.connection?.env?.ANTHROPIC_BASE_URL)).toEqual(['https://proxy-aaaa1111.example.com', 'https://proxy-bbbb2222.example.com'])
+      const mixed = litellm('inherit', { engineer: 'gpt-5' })
+      mixed.provider.connection = 'proxy-bbbb2222'
+      await expect(m.start({ project: mixed, prompt: 'go' })).rejects.toThrow("this Lab gateway project's orchestrator")
+      await m.stopAll()
     })
 
     it('hands the resolved connection to the adapter, and a failure refuses the start', async () => {
@@ -2804,6 +3140,33 @@ describe('MCP library, OAuth preparation and the harness project', () => {
 })
 
 describe('run titles', () => {
+  it('preserves a staged model selection when a title arrives after natural teardown', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    let release!: (title: string) => void
+    const adapter: RuntimeAdapter = {
+      id: 'mock',
+      complete: () => new Promise<string>((resolve) => { release = resolve }),
+      start: async (ctx) => {
+        ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'finished' })
+        return { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: Promise.resolve() }
+      }
+    }
+    const store = new RunStore(join(dir, 'data'))
+    const catalog = [{ id: 'alternate', label: 'Alternate', connection: 'openai' as const, family: 'openai' as const, adapter: 'codex' as const, source: 'builtin' as const }]
+    const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100, { catalog: () => catalog })
+    const run = await m.start({ project: p, prompt: 'Ship the release' })
+    await vi.waitFor(() => expect(Reflect.get(m, 'runs').has(run.id)).toBe(false))
+    expect((await m.switchModel({ runId: run.id, model: 'alternate', connection: 'openai' })).applied).toBe(false)
+    release('Ship the release notes')
+    await waitFor(isType('run.title', (event) => event.runId === run.id))
+    const expected = { title: 'Ship the release notes', modelSelection: { model: 'alternate', connection: 'openai' } }
+    expect(store.get(run.id)).toMatchObject(expected)
+    const reloaded = new RunStore(join(dir, 'data'))
+    expect(reloaded.get(run.id)).toMatchObject(expected)
+    expect(reloaded.getRecord(run.id)?.summary).toMatchObject(expected)
+    expect(JSON.parse(readFileSync(join(dir, 'data', 'runs', `${run.id}.json`), 'utf8')).summary).toMatchObject(expected)
+  })
+
   it('a work run on the mock adapter gets run.title and a persisted summary.title', async () => {
     const p = makeProject({ path: join(dir, 'repo') })
     const { m, store } = manager(p)
@@ -3318,5 +3681,23 @@ describe('resolveAllowedDirectories through a linked home or project (review re-
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('RunManager: agent.compacted (compaction investigation 2026-11-10)', () => {
+  it('counts each compaction on the agent, records and broadcasts it, and the thrash guard stops the continues', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m } = manager(p)
+    const run = await m.start({ project: p, prompt: 'Read it all [mock:compact]' })
+    await waitFor(isType('log', (e) => e.runId === run.id && e.message.includes('compacted its context 3 times')))
+    expect(events.filter(isType('agent.compacted', (e) => e.runId === run.id))).toHaveLength(3)
+    const root = events.filter(isType('agent.upsert', (e) => e.runId === run.id && e.agent.id === 'root')).at(-1)!.agent
+    expect(root.compactions).toBe(3)
+    const rec = Reflect.get(m, 'runs').get(run.id).record
+    expect(rec.agents.root.compactions).toBe(3)
+    // An adapter's own value never wins over RunManager's count.
+    Reflect.get(m, 'runs').get(run.id).emit({ type: 'agent.upsert', runId: run.id, agent: { ...root, compactions: 99 } })
+    expect(rec.agents.root.compactions).toBe(3)
+    await m.stopAll()
   })
 })

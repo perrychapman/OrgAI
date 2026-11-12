@@ -9,6 +9,8 @@ import { DoneGroupNode } from '../DoneGroupNode'
 import { CanvasBackdrop } from './CanvasBackdrop'
 import { CanvasMinimap } from './CanvasMinimap'
 import { CANVAS_EDGE_TYPES } from './RadialEdge'
+import { OfficeSample } from './CanvasPresentationChoices'
+import '../../styles/office.css'
 
 const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
 
@@ -92,11 +94,16 @@ function PreviewFlow(): ReactElement {
  * inert so nothing in it takes focus or clicks.
  */
 export function CanvasPreview(): ReactElement {
+  const options = useCanvasOptions()
   return (
-    <div className="canvas-preview" data-testid="canvas-preview" role="img" aria-label="Sample canvas in the current style" inert>
+    <div className="canvas-preview" data-testid="canvas-preview" data-presentation={options.presentation} role="img" aria-label={options.presentation === 'pocket-office' ? 'Static sample office in the current style' : 'Sample canvas in the current style'} inert>
+      {options.presentation === 'pocket-office' ? (
+        <OfficeSample palette={options.scenePalette} />
+      ) : (
       <ReactFlowProvider>
         <PreviewFlow />
       </ReactFlowProvider>
+      )}
     </div>
   )
 }

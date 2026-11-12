@@ -24,6 +24,23 @@
   color-scheme: dark;
 
   --surface-0: #0b0d12;
+  --office-color-surface: #f8e8ca;
+  --office-step-duration: 120ms;
+  --office-arrival-duration: 240ms;
+  --office-delivery-max-duration: 10000ms;
+  --office-bubble-base: 1500ms;
+  --office-bubble-per-char: 45ms;
+  --office-bubble-max: 6000ms;
+  --office-find-duration: 3000ms;
+  --office-glance-duration: 600ms;
+  --office-color-ink: #382519;
+  --office-color-border: #795038;
+  --office-neutral-surface: #f2f0e9;
+  --office-neutral-ink: #252725;
+  --office-neutral-border: #666963;
+  --office-green-surface: #e1f2df;
+  --office-green-ink: #183a2a;
+  --office-green-border: #42755a;
   --surface-1: #12161f;
   --surface-2: #181c27;
   --surface-3: #20263a;
@@ -122,6 +139,24 @@
   --neural-node-mix: 88%;
   --neural-node-ink: #e8ebf3;
   --neural-dim-opacity: 0.22;
+
+  /* Usage charts (docs/design/usage-app.md section 5). Measured WCAG ratios (computed from these hex values):
+     dark fills on --surface-1 #12161f: s1 11.96, s2 3.35, s3 13.99, s4 3.55, s5 11.79, other 3.23 (s6 3.49, reserved).
+     Adjacent stack pairs s1-s2 3.57, s2-s3 4.17, s3-s4 3.94, s4-s5 3.32, s5-other 3.65 (all >= 3).
+     Fills alternate bright / mid so neighbours differ by lightness, not only hue. --chart-hatch is the --surface-1 gap
+     colour (it reaches the same ratios against every fill). */
+  --chart-s1: #d4ccff;
+  --chart-s2: #0d6cbc;
+  --chart-s3: #98f5c8;
+  --chart-s4: #9a6200;
+  --chart-s5: #ffc2ba;
+  --chart-s6: #0b7a74;
+  --chart-other: #5e687d;
+  --chart-unknown: var(--text-tertiary);
+  --chart-hatch: var(--surface-1);
+  --chart-grid: var(--border-subtle);
+  --chart-axis: var(--text-tertiary);
+  --chart-focus: var(--accent-text);
 }
 
 /* ---------- 2. Light ---------- */
@@ -130,6 +165,23 @@
   color-scheme: light;
 
   --surface-0: #f4f5f9;
+  --office-color-surface: #f8e8ca;
+  --office-step-duration: 120ms;
+  --office-arrival-duration: 240ms;
+  --office-delivery-max-duration: 10000ms;
+  --office-bubble-base: 1500ms;
+  --office-bubble-per-char: 45ms;
+  --office-bubble-max: 6000ms;
+  --office-find-duration: 3000ms;
+  --office-glance-duration: 600ms;
+  --office-color-ink: #382519;
+  --office-color-border: #795038;
+  --office-neutral-surface: #f2f0e9;
+  --office-neutral-ink: #252725;
+  --office-neutral-border: #666963;
+  --office-green-surface: #e1f2df;
+  --office-green-ink: #183a2a;
+  --office-green-border: #42755a;
   --surface-1: #fafbfd;
   --surface-2: #ffffff;
   --surface-3: #e9ecf4;
@@ -225,6 +277,21 @@
   --neural-node-mix: 50%;
   --neural-node-ink: #12151f;
   --neural-dim-opacity: 0.25;
+
+  /* Usage charts. Measured on --surface-1 #fafbfd: s1 12.53, s2 3.06, s3 12.35, s4 3.42, s5 10.33, other 3.09
+     (s6 4.32, reserved). Adjacent pairs s1-s2 4.10, s2-s3 4.04, s3-s4 3.61, s4-s5 3.02, s5-other 3.35 (all >= 3). */
+  --chart-s1: #2a1d86;
+  --chart-s2: #4796d9;
+  --chart-s3: #073a26;
+  --chart-s4: #c07800;
+  --chart-s5: #7a1620;
+  --chart-s6: #14857f;
+  --chart-other: #8890a4;
+  --chart-unknown: var(--text-tertiary);
+  --chart-hatch: var(--surface-1);
+  --chart-grid: var(--border-subtle);
+  --chart-axis: var(--text-tertiary);
+  --chart-focus: var(--accent);
 }
 
 /* ---------- 3. System: light values when the OS prefers light ---------- */
@@ -234,6 +301,23 @@
     color-scheme: light;
 
     --surface-0: #f4f5f9;
+    --office-color-surface: #f8e8ca;
+    --office-step-duration: 120ms;
+    --office-arrival-duration: 240ms;
+    --office-delivery-max-duration: 10000ms;
+    --office-bubble-base: 1500ms;
+    --office-bubble-per-char: 45ms;
+    --office-bubble-max: 6000ms;
+    --office-find-duration: 3000ms;
+    --office-glance-duration: 600ms;
+    --office-color-ink: #382519;
+    --office-color-border: #795038;
+    --office-neutral-surface: #f2f0e9;
+    --office-neutral-ink: #252725;
+    --office-neutral-border: #666963;
+    --office-green-surface: #e1f2df;
+    --office-green-ink: #183a2a;
+    --office-green-border: #42755a;
     --surface-1: #fafbfd;
     --surface-2: #ffffff;
     --surface-3: #e9ecf4;
@@ -327,6 +411,20 @@
     --neural-node-mix: 50%;
     --neural-node-ink: #12151f;
     --neural-dim-opacity: 0.25;
+
+    /* Usage charts: same measured values as the light block. */
+    --chart-s1: #2a1d86;
+    --chart-s2: #4796d9;
+    --chart-s3: #073a26;
+    --chart-s4: #c07800;
+    --chart-s5: #7a1620;
+    --chart-s6: #14857f;
+    --chart-other: #8890a4;
+    --chart-unknown: var(--text-tertiary);
+    --chart-hatch: var(--surface-1);
+    --chart-grid: var(--border-subtle);
+    --chart-axis: var(--text-tertiary);
+    --chart-focus: var(--accent);
   }
 }
 
@@ -394,6 +492,19 @@
   --dur-slow: 260ms;
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Motion system (docs/design/motion.md). Enter = --dur-base / --dur-slow with --ease-out; exit = --dur-fast with
+     --ease-in; the user's own press = --dur-instant / --dur-fast. --dur-fade is the length of an opacity-only fade. */
+  --dur-instant: 50ms;
+  --dur-fade: 80ms;
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  /* Overshoot for switch thumbs and popovers only (tune by eye); never on layout or page-level motion. */
+  --ease-spring: linear(0, 0.55 12%, 0.95 28%, 1.04 42%, 1 60%, 1);
+  /* Entry offset and start scale: reduced motion sets them to 0 / 1 so every entry degrades to a plain fade. */
+  --motion-distance: 8px;
+  --motion-distance-sm: 4px;
+  --motion-scale-from: 0.96;
+  /* Stagger step for lists (at most 6 items, spec 2). */
+  --motion-stagger: 30ms;
 
   /* Z-index (spec 4.7) plus the sticky header step. */
   --z-sticky: 2;
@@ -434,6 +545,12 @@
   --halo-warning: 0 0 0 3px color-mix(in oklab, var(--warning) 16%, transparent);
   --halo-dot-live: 0 0 0 4px var(--success-soft);
   --halo-dot-warning: 0 0 0 4px var(--warning-soft);
+  /* Dashboard (docs/design/dashboard-2.md 15): the working agent mark's halo, its breathing period, and the activity
+     strip's bars (today in the accent text colour). */
+  --halo-working: 0 0 0 3px color-mix(in oklab, var(--state-working) 28%, transparent);
+  --dur-pulse: 1800ms;
+  --dash-strip-bar: var(--text-tertiary);
+  --dash-strip-today: var(--accent-text);
   --inset-border-strong: inset 0 0 0 1px var(--border-strong);
 
   /* Brand gradients (docs/design/ui-review-2.md C.2). --gradient-mark is for the mark only; --gradient-ui is the
@@ -447,11 +564,44 @@
   --text-on-role: #ffffff;
 }
 
+/* Reduced motion (docs/design/motion.md 3): system preference or AppearanceSettings.reduceMotion = 'on'. Entries lose
+   their offset and scale so they are plain fades; the global rule in global.css still caps every duration at 0.01ms. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-distance: 0px;
+    --motion-distance-sm: 0px;
+    --motion-scale-from: 1;
+    --motion-stagger: 0ms;
+    --dur-instant: 0.01ms;
+    --dur-fast: 0.01ms;
+    --dur-base: 0.01ms;
+    --dur-slow: 0.01ms;
+    --dur-fade: 0.01ms;
+  }
+}
+:root[data-reduce-motion='on'] {
+  --motion-distance: 0px;
+  --motion-distance-sm: 0px;
+  --motion-scale-from: 1;
+  --motion-stagger: 0ms;
+  --dur-instant: 0.01ms;
+  --dur-fast: 0.01ms;
+  --dur-base: 0.01ms;
+  --dur-slow: 0.01ms;
+  --dur-fade: 0.01ms;
+}
+
 /* ---------- 5. Element-scoped composites (need the element's own --role) ---------- */
 
 .agent-node,
 .role-node {
   --glow-working: 0 0 0 1px color-mix(in oklab, var(--role) 50%, transparent), 0 0 24px color-mix(in oklab, var(--role) 22%, transparent);
+}
+
+/* Dashboard Right now band: reporting lines in the parent's role colour (--line-role set inline). */
+.dash-agent-row,
+.dash-run-head {
+  --dash-line: color-mix(in oklab, var(--line-role, var(--edge)) 70%, var(--border-default));
 }
 
 /* Glow is invisible on light surfaces; the working border stays. */

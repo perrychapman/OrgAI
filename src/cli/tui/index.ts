@@ -16,14 +16,12 @@ import { KeyParser } from './input/keys'
 import { sanitizeTty } from './sanitizeTty'
 import { connectTuiHost, openTuiSession } from './session'
 import { SEQ, chooseBufferMode, createTerminal, gateWrites } from './terminal'
+import { terminalThemeFor } from './theme'
 import type { BufferMode, InputEvent, OpenTuiSessionOptions, TuiEnv, TuiHostConnection, TuiLaunch } from './types'
 
 export const NO_TTY_MESSAGE = 'The terminal UI needs a terminal; use orgai exec for scripts.'
-export const DETACHED_MESSAGE = 'Detached; the run keeps going.'
 /** A lone ESC is a key of its own after this long without the rest of a sequence. */
 export const ESC_FLUSH_MS = 50
-/** Console lines kept while the TUI owns the screen (printed to stderr afterwards). */
-const CONSOLE_KEEP = 200
 
 export interface TuiFlags {
   inline: boolean
@@ -48,7 +46,9 @@ export function tuiEnvFor(ctx: Pick<CliContext, 'env' | 'globals' | 'platform'>,
     color: ctx.globals.color && !ctx.env.NO_COLOR,
     dumbTerminal: dumb,
     bracketedPaste: !dumb,
-    unicode: !dumb && (ctx.platform === 'win32' || /utf-?8/i.test(locale))
+    terminalTheme: terminalThemeFor(ctx.env),
+    unicode: !dumb && (ctx.platform === 'win32' || /utf-?8/i.test(locale)),
+    ...(ctx.env.ORGAI_REDUCED_MOTION === '1' ? { reducedMotion: true } : {})
   }
 }
 
@@ -82,25 +82,6 @@ export function keyInput(stdin: NodeJS.ReadStream, bracketedPaste: boolean, time
   }
 }
 
-type ConsoleMethod = 'log' | 'info' | 'warn' | 'error' | 'debug'
-const CONSOLE_METHODS: readonly ConsoleMethod[] = ['log', 'info', 'warn', 'error', 'debug']
-
-/** Nothing else may write to the screen while Ink draws: console output is held and printed after restoring. */
-function holdConsole(): () => string[] {
-  const saved = CONSOLE_METHODS.map((m) => [m, console[m]] as const)
-  const held: string[] = []
-  for (const m of CONSOLE_METHODS) {
-    console[m] = (...args: unknown[]): void => {
-      if (m === 'debug' || m === 'log' || m === 'info') return
-      if (held.length < CONSOLE_KEEP) held.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(' '))
-    }
-  }
-  return () => {
-    for (const [m, fn] of saved) console[m] = fn
-    return held
-  }
-}
-
 export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags, opts: RunTuiOptions = {}): Promise<number> {
   const stdin = opts.stdin ?? process.stdin
   const stdout = opts.stdout ?? process.stdout
@@ -119,7 +100,8 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
 
   // Connect before the alternate screen: refusals and errors print as usual.
   const conn = await connectTuiHost(ctx)
-  const stopInproc = conn.inproc !== undefined
+  // The host is this process's own: it ends with the terminal UI (runs end, continuable later).
+  const stopInproc = true
   let session
   let resolved: TuiLaunch
   try {
@@ -136,8 +118,6 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
     throw e
   }
 
-  // The in-process host already logs to its file only (context.ts quietInproc); anything else is held.
-  const releaseConsole = conn.inproc ? () => [] as string[] : holdConsole()
   const terminal = createTerminal({ stdout, stdin, bufferMode, bracketedPaste: env.bracketedPaste })
   const input = keyInput(stdin, env.bracketedPaste)
   let result: { code: number; info?: ExitInfo; error?: unknown } | undefined
@@ -166,7 +146,7 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
     }),
     {
       // Ink never paints while the pager (or a stop) owns the terminal; see gateWrites.
-      stdout: gateWrites(stdout, () => terminal.suspended),
+      stdout: gateWrites(stdout, () => terminal.suspended, env.bufferMode === 'fullscreen'),
       stdin: inkStdin,
       stderr: stdout,
       exitOnCtrlC: false,
@@ -195,8 +175,6 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
     // Already unmounted (a render error).
   }
   terminal.restore()
-  const held = releaseConsole()
-  for (const line of held) stderr.write(`orgai: ${sanitizeTty(line)}\n`)
   if (error) stderr.write(`orgai: ${sanitizeTty(error instanceof Error ? error.message : String(error))}\n`)
   const last = info?.session ?? session
   await last.close().catch(() => undefined)
@@ -205,6 +183,5 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
     stderr.write(`orgai: Could not stop the in-process host: ${sanitizeTty(e instanceof Error ? e.message : String(e))}\n`)
   })
   if (info?.message) stderr.write(`${sanitizeTty(info.message).replace(/\s+/g, ' ').trim()}\n`)
-  else if (info?.detachedLive && !stopInproc) stderr.write(`${DETACHED_MESSAGE}\n`)
   return code
 }

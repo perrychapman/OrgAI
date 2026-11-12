@@ -1,0 +1,97 @@
+.office-scene, .office-inspector { --office-surface: var(--office-color-surface); --office-ink: var(--office-color-ink); --office-border: var(--office-color-border); }
+.office-scene[data-palette='neutral'], .office-inspector[data-office-palette='neutral'] { --office-surface: var(--office-neutral-surface); --office-ink: var(--office-neutral-ink); --office-border: var(--office-neutral-border); }
+.office-scene[data-palette='green'], .office-inspector[data-office-palette='green'] { --office-surface: var(--office-green-surface); --office-ink: var(--office-green-ink); --office-border: var(--office-green-border); }
+.office-scene { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; color: var(--text-primary); background: var(--surface-1); }
+.office-scene > p { margin: var(--space-2); }
+/* Sized to its three 24 px rows plus the top border, reserved even when empty so the stage never jumps (QA F1). */
+.office-scene { --office-strip-row: 24px; }
+.office-scene[data-mode='live'] .office-message-strip { flex: 0 0 calc(3 * var(--office-strip-row) + 1px); height: calc(3 * var(--office-strip-row) + 1px); overflow: hidden; border-top: 1px solid var(--office-border); }
+.office-message-strip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.office-delivery-empty { margin: var(--space-2); color: var(--text-secondary); font-size: var(--text-caption); }
+
+/* S5b bubbles and strip */
+.office-strip-row { position: relative; display: flex; align-items: center; gap: var(--space-2); box-sizing: border-box; height: var(--office-strip-row); padding: 0 var(--space-2); color: var(--office-ink); background: var(--office-surface); box-shadow: inset 0 -1px 0 var(--office-border); font-size: var(--text-caption); line-height: 1.2; }
+/* The text keeps at least 12em; the Show button gives way first (its label ellipsises), so a long unbroken name cannot collapse the row (QA F3). */
+.office-strip-text { flex: 1 1 12em; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-strip-row .btn { display: block; flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box; min-height: 24px; padding: 0 var(--space-2); color: var(--office-ink); background: var(--office-surface); border: 2px solid var(--office-border); border-radius: 0; font-size: var(--text-caption); line-height: 1.2; }
+.office-strip-row .btn:hover { color: var(--office-surface); background: var(--office-ink); }
+.office-strip-row .btn:focus-visible { outline-offset: -4px; }
+
+/* Bubbles sit above the recipient's head in the world's pixel space (not scaled by zoom); OfficeBubbles.tsx places each one. */
+.office-bubbles { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+.office-bubble { position: absolute; box-sizing: border-box; width: max-content; max-width: 200px; padding: 2px var(--space-1); color: var(--office-ink); background: var(--office-surface); border: 2px solid var(--office-border); border-radius: 0; font-family: var(--font-sans); font-size: var(--text-caption); line-height: 1.25; overflow-wrap: anywhere; pointer-events: none; --office-bubble-tail: 50%; }
+.office-bubble-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.office-bubble::before, .office-bubble::after { content: ''; position: absolute; left: var(--office-bubble-tail); width: 0; height: 0; border-style: solid; border-color: transparent; transform: translateX(-50%); }
+.office-bubble[data-placement='above']::before { top: calc(100% + 2px); border-width: 8px 7px 0; border-top-color: var(--office-border); }
+.office-bubble[data-placement='above']::after { top: 100%; border-width: 7px 5px 0; border-top-color: var(--office-surface); }
+.office-bubble[data-placement='below']::before { bottom: calc(100% + 2px); border-width: 0 7px 8px; border-bottom-color: var(--office-border); }
+.office-bubble[data-placement='below']::after { bottom: 100%; border-width: 0 5px 7px; border-bottom-color: var(--office-surface); }
+.office-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2); }
+/* Chips shrink into the rest of the controls row and never wrap it, so a cue starting or ending never resizes the stage. */
+.office-offscreen { display: inline-flex; flex: 1 1 0; flex-wrap: nowrap; overflow: hidden; align-items: center; gap: var(--space-1); min-width: 0; }
+.office-offscreen .btn { max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-offscreen-more { color: var(--text-secondary); font-size: var(--text-caption); }
+/* A pressed toggle (Pause motion) reads as pressed without colour alone: a doubled ink edge and bolder label, like the roster's pressed row, with no size change. */
+.office-controls .btn[aria-pressed='true'] { color: var(--text-primary); background: var(--surface-2); border-color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--text-primary); font-weight: var(--font-weight-semibold, 600); }
+
+/* The stage is a native scroller over a plain surface; the building is centred in it when smaller. */
+.office-stage { position: relative; flex: 1 1 auto; min-height: 100px; overflow: auto; background: var(--surface-0); cursor: grab; user-select: none; }
+.office-stage[data-dragging='true'] { cursor: grabbing; }
+.office-stage:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.office-roster button:focus-visible, .office-person:focus-visible, .office-directory summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.office-map { position: relative; }
+.office-world { position: absolute; }
+.office-building { position: absolute; left: 0; top: 0; display: block; image-rendering: pixelated; }
+.office-pixels { position: absolute; left: 0; top: 0; transform-origin: 0 0; image-rendering: pixelated; }
+.office-sprite { position: absolute; display: block; image-rendering: pixelated; }
+.office-sprite[hidden] { display: none; }
+
+.office-directory { flex: none; border-top: 1px solid var(--border-default); }
+.office-directory summary { cursor: pointer; padding: var(--space-2); font-size: var(--text-caption); }
+.office-roster { display: flex; flex-direction: column; gap: var(--space-1); overflow: auto; max-height: 160px; padding: var(--space-2); }
+.office-roster button { min-height: 24px; text-align: left; color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border-default); font: inherit; }
+.office-roster button[aria-pressed='true'] { border: 3px double var(--text-primary); font-weight: var(--font-weight-semibold, 600); }
+
+/* Room labels sit on each room's north wall. */
+.office-room-label { position: absolute; z-index: 1; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px var(--space-1); color: var(--office-ink); background: var(--office-surface); border: 2px solid var(--office-border); border-radius: 0; font: inherit; font-size: var(--text-caption); line-height: 1.2; pointer-events: none; }
+.office-full-message { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+
+/* People: the layer lets the stage be dragged between targets; each target is a native button centred on its sprite. */
+.office-people { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.office-person { position: absolute; box-sizing: border-box; padding: 0; min-width: 24px; min-height: 24px; border: 2px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-primary); cursor: pointer; pointer-events: auto; }
+.office-person[aria-pressed='true'] { border-color: var(--text-primary); border-style: double; }
+.office-person[aria-pressed='true']::before { content: ''; position: absolute; inset: -5px; border: 2px solid var(--office-border); outline: 1px solid var(--office-surface); pointer-events: none; }
+.office-person[data-office-found='true'] { outline: 2px solid var(--focus-ring); outline-offset: 4px; }
+.office-person:active .office-person-label { border-style: double; }
+.office-person-art[data-office-motion-phase='settle']::after { content: ''; position: absolute; top: -4px; right: -4px; width: 4px; height: 4px; background: var(--office-ink); border: 2px solid var(--office-surface); }
+
+/* Nameplates: always at 2x and above; at 0.5x and 1x only on hover, focus, selection, an exchange or the Find ring. */
+.office-person-label { position: absolute; z-index: 1; display: none; flex-direction: column; box-sizing: border-box; left: 50%; top: calc(100% + 2px); transform: translateX(-50%); width: max-content; max-width: var(--office-label-width); padding: 1px var(--space-1); color: var(--office-ink); font-family: var(--font-sans); font-size: var(--text-caption); line-height: 1.2; text-align: center; background: var(--office-surface); border: 2px solid var(--office-border); border-radius: 0; pointer-events: none; }
+.office-scene[data-plates='always'] .office-person-label,
+.office-person:hover .office-person-label, .office-person:focus-visible .office-person-label, .office-person[aria-pressed='true'] .office-person-label,
+.office-person[data-office-found='true'] .office-person-label, .office-person[data-office-exchange='true'] .office-person-label { display: flex; }
+.office-person-name, .office-person-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.office-person-line { opacity: 0.85; }
+.office-person:hover .office-person-label, .office-person:focus-visible .office-person-label { z-index: 3; max-width: 200px; }
+.office-person:hover .office-person-label span, .office-person:focus-visible .office-person-label span { white-space: normal; overflow-wrap: anywhere; }
+.office-person[data-office-exchange='true'] .office-person-label { color: var(--office-surface); background: var(--office-ink); border-color: var(--office-surface); }
+
+.office-empty { align-self: center; max-width: 30em; padding: var(--space-3); background: var(--surface-1); }
+.office-inspector { border-inline-start: 2px solid var(--office-border); }
+.office-inspector-action { padding: var(--space-2); color: var(--office-ink); background: var(--office-surface); border-block: 2px solid var(--office-border); }
+.office-inspector-action .btn { color: var(--office-ink); background: var(--office-surface); border-color: var(--office-border); border-radius: 0; }
+.office-inspector-messages { flex: 0 1 30%; box-sizing: border-box; min-height: 0; max-height: 160px; overflow: auto; padding: var(--space-2); color: var(--office-ink); background: var(--office-surface); border-top: 2px solid var(--office-border); overflow-wrap: anywhere; }
+.office-inspector-messages:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.office-sample { align-items: center; justify-content: center; gap: var(--space-1); }
+.office-sample > p { margin: 0; }
+.office-sample-frame { width: 320px; height: 192px; flex: none; overflow: hidden; }
+.office-sample-art { position: relative; width: 160px; height: 96px; transform: scale(2); transform-origin: top left; image-rendering: pixelated; }
+.office-sample-art i { position: absolute; image-rendering: pixelated; }
+.office-sample .office-sample-label { padding: var(--space-1) var(--space-2); color: var(--office-ink); background: var(--office-surface); border: 2px solid var(--office-border); }
+
+/* S4 clock and cues */
+/* The clock (useOfficeClock) writes frames, positions and data-office-cue straight to these elements; nothing here animates by itself. */
+.office-mark { pointer-events: none; }
+/* Marks sit over the monitor behind the head: a 1 px paper edge keeps them apart from a lit or red screen in every palette. */
+.office-mark { filter: drop-shadow(1px 0 0 var(--office-surface)) drop-shadow(-1px 0 0 var(--office-surface)) drop-shadow(0 1px 0 var(--office-surface)) drop-shadow(0 -1px 0 var(--office-surface)); }
+.office-person-art[data-office-motion-phase='arrive'], .office-person-art[data-office-motion-phase='sit'] { pointer-events: none; }

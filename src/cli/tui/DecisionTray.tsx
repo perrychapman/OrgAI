@@ -7,7 +7,7 @@
  *   key that arrives before the new frame is drawn is still measured against the new card.
  * - Two-step actions (always allow / grant for project, discard a worktree, save an MCP install) open a confirmation
  *   bound to the card key. If that card leaves the tray or changes while it is open (or a note or secret field is
- *   open), it closes at once with a status line ("Resolved in another window (the desktop app)").
+ *   open), it closes at once with a status line ("Resolved by the headless decision policy").
  * - TERM=dumb: a single-key action is shown as pending and only Enter commits it (Esc clears).
  * - Secrets are typed into a masked field, never rendered, and dropped from memory when the call is made.
  * - One decision call at a time; the outcome becomes a status line.
@@ -22,20 +22,26 @@ import { boundCardClosedStatus, outcomeStatus, rejectionStatus, type TrayStatus 
 import { useFocusHandler, useTuiEnv } from './context'
 import {
   bindingsFor,
-  cardDetailLines,
-  cardFullText,
+  cardDetail,
+  cardFullView,
   cardKindWord,
   cardTitle,
   confirmQuestion,
   decisionFor,
+  hintPhrases,
+  proposalPreview,
   secretSlotsFor,
-  wrapLine,
+  wrapPhrases,
   type SecretSlotView,
   type TrayAction,
   type TrayBinding
 } from './decisions'
-import { glyphs, toneColor } from './theme'
-import type { DecisionTrayProps, InputEvent, KeyEvent, TrayCard, TuiEnv } from './types'
+import { UNFOCUSED_HINT } from './keymap'
+import { styleFor, type Seg } from './panes/lines'
+import { truncateEnd } from './panes/text'
+import { asciiOnly, glyphs, separatorFor, toneColor } from './theme'
+import { NEXT_CARDS_MAX, PROPOSAL_CARD_MAX_WIDTH } from './trayLayout'
+import type { DecisionTrayProps, InputEvent, KeyEvent, TrayCard } from './types'
 
 type Mode =
   | { t: 'idle' }
@@ -70,14 +76,22 @@ interface TrayState {
   guardHint: boolean
   scroll: number
   scrollKey?: string
+  /** The last line of the card body has been on screen (or v was used): permission keys y / s / a unlock. */
+  readAll: boolean
   question?: QuestionState
+  choice: number
 }
 
 const NAV_KEYS = new Set(['up', 'down', 'pageup', 'pagedown', 'home', 'end'])
-const NEXT_CARDS_MAX = 3
+/** The decision keys a long permission card holds back until its body was read. */
+const GATED_KEYS = new Set(['y', 's', 'a'])
+/** The shortest body worth showing beside the queue and hints. */
+const MIN_BODY_FOR_QUEUE = 3
 
-function keyLabel(k: string): string {
-  return k === 'space' ? 'Space' : k === 'enter' ? 'Enter' : k
+/** `cards` with the card of `key` moved to the front (unchanged when it is not there). */
+function orderFirst(cards: TrayCard[], key: string): TrayCard[] {
+  const at = cards.findIndex((c) => c.key === key)
+  return at <= 0 ? cards : [cards[at], ...cards.slice(0, at), ...cards.slice(at + 1)]
 }
 
 function bindingKeyOf(e: KeyEvent): string | undefined {
@@ -88,16 +102,10 @@ function bindingKeyOf(e: KeyEvent): string | undefined {
   return e.ch.toLowerCase()
 }
 
-/** Hint text for a card's bindings. */
-function hintsFor(card: TrayCard, env: TuiEnv): string {
-  const bs = bindingsFor(card)
-  const parts: string[] = []
-  const picks = bs.filter((b) => b.act === 'pick')
-  if (picks.length) parts.push(picks.length === 1 ? '1 Pick' : `1-${picks.length} Pick`)
-  for (const b of bs) if (b.act !== 'pick') parts.push(`${keyLabel(b.key)} ${b.label}`)
-  parts.push('Esc Back')
-  return parts.join(' · ') + (env.dumbTerminal ? ' (then Enter)' : '')
-}
+/** What a key inside the swap-guard window is told: the card was replaced, or it only just arrived (R2-L6). */
+export const GUARD_SWAPPED_NOTICE = 'The card just changed: wait a moment, then press the key again.'
+export const GUARD_ARRIVED_NOTICE = 'This card only just arrived: wait a moment, then press the key again.'
+
 
 function actionFor(card: TrayCard, b: TrayBinding, extra: { text?: string; secrets?: Record<string, string> } = {}): TrayAction | null {
   switch (card.kind) {
@@ -126,14 +134,16 @@ function actionFor(card: TrayCard, b: TrayBinding, extra: { text?: string; secre
   }
 }
 
-export function DecisionTray(props: DecisionTrayProps) {
+export function DecisionTray(props: DecisionTrayProps & { compact?: boolean }) {
   const env = useTuiEnv()
   const g = glyphs(env)
   const now = props.now ?? Date.now
   const guardRef = useRef<CardSwapGuard | null>(null)
   if (!guardRef.current) guardRef.current = new CardSwapGuard()
   const guard = guardRef.current
-  const st = useRef<TrayState>({ mode: { t: 'idle' }, busy: false, guardHint: false, scroll: 0 }).current
+  const sep = separatorFor(env)
+  const st = useRef<TrayState>({ mode: { t: 'idle' }, busy: false, guardHint: false, scroll: 0, readAll: false, choice: 0 }).current
+  const notice = (text: string, tone?: TrayStatus['tone']): void => props.onNotice?.(text, tone ?? 'warn')
   const [, setTick] = useState(0)
   const mounted = useRef(true)
   const bump = (): void => {
@@ -148,7 +158,8 @@ export function DecisionTray(props: DecisionTrayProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const cards = props.cards
+  // Enter on an agent row asks for that agent's card first; the rest keep their order. A key that is no longer open is ignored.
+  const cards = props.focusKey ? orderFirst(props.cards, props.focusKey) : props.cards
   const top: TrayCard | undefined = cards[0]
   const topKey = top?.key
 
@@ -182,7 +193,9 @@ export function DecisionTray(props: DecisionTrayProps) {
     if (st.scrollKey !== topKey) {
       st.scrollKey = topKey
       st.scroll = 0
+      st.readAll = false
       st.guardHint = false
+      st.choice = 0
     }
     if (top?.kind === 'question' && st.question?.key !== topKey) st.question = { key: top.key, cursor: 0, selected: [] }
     return changed
@@ -247,7 +260,13 @@ export function DecisionTray(props: DecisionTrayProps) {
   function runBinding(card: TrayCard, b: TrayBinding): void {
     if (b.act === 'view') {
       const title = cardTitle(card)
-      void props.onViewText(title, cardFullText(card)).catch((e: unknown) => {
+      const full = cardFullView(card)
+      if (full.cut && card.kind === 'permission') {
+        // The full view itself is cut: the rest of the command cannot be read here, so v does not unlock y / s / a.
+        st.status = { text: 'The full view is cut at 64 KB: the rest cannot be read here, so it can only be denied.', tone: 'warn' }
+        bump()
+      } else st.readAll = true
+      void props.onViewText(title, full.text).catch((e: unknown) => {
         st.status = rejectionStatus(e)
         bump()
       })
@@ -354,14 +373,52 @@ export function DecisionTray(props: DecisionTrayProps) {
 
   // ---------- Layout ----------
 
-  const width = Math.max(20, props.width)
-  const detail = top ? cardDetailLines(top, width - 2) : []
+  const proposalCard = props.compact && props.variant === 'full' && top && proposalPreview(top, props.width) !== undefined
+  const panelWidth = Math.min(props.width, PROPOSAL_CARD_MAX_WIDTH)
+  const width = Math.max(20, proposalCard ? panelWidth - 3 : props.width)
+  const height = Math.max(1, Math.floor(props.height))
+  const focused = props.focused
+  const choices = props.compact && props.variant === 'full' && !env.dumbTerminal && top?.kind !== 'question' && top ? bindingsFor(top) : []
+  const selectedChoice = choices[Math.min(st.choice, choices.length - 1)]
+  const ell = g.ellipsis
+  // Question lines carry a selection marker ("> [x] ") in front, so they wrap narrower and are never cut.
+  const detailView = top ? cardDetail(top, width - (top.kind === 'question' ? 8 : 2)) : undefined
+  const preview = props.compact && top ? proposalPreview(top, width - 2) : undefined
+  const detail = preview ?? detailView?.lines ?? []
   const statusRows = st.status ? 1 : 0
-  const hints = top ? wrapLine(hintsFor(top, env), width) : []
+  const modeRows = st.mode.t !== 'idle' || st.pending ? 1 : 0
+  const phrases = top ? hintPhrases(top, env.dumbTerminal, props.compact, focused && st.mode.t === 'idle' ? selectedChoice?.key : undefined) : []
+  if (props.compact) phrases.push(focused ? 'Esc to type' : props.focusHint ?? 'Shift+Tab to choose')
+  let hints = top ? (focused || props.compact ? wrapPhrases(phrases, sep, width, ell) : [UNFOCUSED_HINT]) : []
+  const maxHints = Math.max(1, height - 1 - statusRows - modeRows - 1)
+  if (hints.length > maxHints) {
+    hints = hints.slice(0, maxHints)
+    hints[maxHints - 1] = truncateEnd(`${hints[maxHints - 1]} ${ell}`, width, ell)
+  }
   const nextCards = cards.slice(1, 1 + NEXT_CARDS_MAX)
   const moreRows = cards.length - 1 > NEXT_CARDS_MAX ? 1 : 0
-  const modeRows = st.mode.t !== 'idle' || st.pending ? 1 : 0
-  const bodyRows = Math.max(1, props.height - 1 - statusRows - hints.length - nextCards.length - moreRows - modeRows)
+  const actionGap = proposalCard && height >= 6 ? 1 : 0
+  const avail = height - 1 - statusRows - modeRows - hints.length - actionGap
+  // Queued cards: listed while the body keeps room, else one count line, else nothing.
+  let queueMode: 'list' | 'count' | 'none' = 'none'
+  if (cards.length > 1) {
+    if (avail - (nextCards.length + moreRows) >= MIN_BODY_FOR_QUEUE) queueMode = 'list'
+    else if (avail - 1 >= 1) queueMode = 'count'
+  }
+  const queueRows = queueMode === 'list' ? nextCards.length + moreRows : queueMode === 'count' ? 1 : 0
+  const bodyAvail = Math.max(1, avail - queueRows)
+  const cut = detail.length > bodyAvail
+  const cueRows = cut && bodyAvail >= 2 ? 1 : 0
+  const bodyRows = Math.max(1, bodyAvail - cueRows)
+  st.scroll = Math.min(st.scroll, Math.max(0, detail.length - bodyRows))
+  // The body's last line is on screen: a long permission card may now be answered with y / s / a. A body that was
+  // cut (a long command) is never "on screen": only v, which shows all of it, unlocks. In the footer the body is printed
+  // into scrollback once, so the card counts as read when its key was printed (App passes the keys it printed).
+  if (top && !detailView?.capped) {
+    if (props.variant === 'footer') {
+      if (props.printed === undefined || props.printed.has(top.key)) st.readAll = true
+    } else if (st.scroll + bodyRows >= detail.length && 1 + bodyRows <= height) st.readAll = true
+  }
 
   function handle(e: InputEvent): boolean {
     guard.observe(topKey, now())
@@ -393,6 +450,17 @@ export function DecisionTray(props: DecisionTrayProps) {
     }
     if (e.type === 'paste') return true
 
+    if (e.name === 'char' && e.ch === '?' && !e.ctrl && !e.alt && props.onHelp) {
+      props.onHelp()
+      return true
+    }
+
+    if (mode.t === 'idle' && choices.length && !e.ctrl && !e.alt && (e.name === 'left' || e.name === 'right')) {
+      st.choice = (st.choice + (e.name === 'right' ? 1 : -1) + choices.length) % choices.length
+      bump()
+      return true
+    }
+
     if (NAV_KEYS.has(e.name)) {
       scrollBy(e, bodyRows, detail.length)
       return true
@@ -413,7 +481,9 @@ export function DecisionTray(props: DecisionTrayProps) {
       committed = true
     }
 
-    const k = bindingKeyOf(ev)
+    // Translate Enter into the selected shortcut, then use the exact same guards and action path.
+    const k = mode.t === 'idle' && selectedChoice && !ev.ctrl && !ev.alt && ev.name === 'enter'
+      ? choices[Math.min(st.choice, choices.length - 1)]?.key : bindingKeyOf(ev)
     if (!k) return true
 
     if (st.busy) {
@@ -424,12 +494,14 @@ export function DecisionTray(props: DecisionTrayProps) {
     if (!guard.accepts(now())) {
       st.guardHint = true
       st.pending = undefined
+      notice(guard.replaced ? GUARD_SWAPPED_NOTICE : GUARD_ARRIVED_NOTICE)
       bump()
       return true
     }
     st.guardHint = false
 
     if (mode.t === 'confirm') {
+      if (k !== 'y' && k !== mode.binding.key) notice(`Answer the confirm first: ${mode.binding.key === 'y' ? 'y' : `${mode.binding.key} or y`} confirms, Esc cancels.`)
       if (k === 'y' || k === mode.binding.key) {
         if (env.dumbTerminal && !committed) {
           st.pending = { key: card.key, event: ev }
@@ -445,7 +517,25 @@ export function DecisionTray(props: DecisionTrayProps) {
     }
 
     const b = bindingsFor(card).find((x) => x.key === k)
-    if (!b) return true
+    if (!b) {
+      if (card.kind === 'question' && /^[0-9]$/.test(k)) {
+        const n = Array.isArray(card.card.options) ? Math.min(card.card.options.length, 9) : 0
+        notice(n === 0 ? 'This question has no options to pick.' : n === 1 ? 'Pick 1.' : `Pick 1 to ${n}.`)
+      } else if (k !== 'enter' || card.kind !== 'question') {
+        notice(props.onHelp ? 'Not a key here. ? shows the keys.' : 'Not a key here.', 'dim')
+      }
+      return true
+    }
+    if (card.kind === 'permission' && GATED_KEYS.has(k) && !st.readAll) {
+      notice(
+        detailView?.capped
+          ? 'The command is cut here: press v to read all of it first.'
+          : props.variant === 'footer'
+            ? 'Read the whole command first: v shows it all.'
+            : 'Read the whole command first: Down scrolls, v shows it all.'
+      )
+      return true
+    }
     const gated = env.dumbTerminal && !committed && b.act !== 'pick' && b.act !== 'toggle' && b.act !== 'submit'
     if (gated) {
       st.pending = { key: card.key, event: ev }
@@ -460,10 +550,10 @@ export function DecisionTray(props: DecisionTrayProps) {
 
   // ---------- Render ----------
 
-  const color = (tone: TrayStatus['tone']): string | undefined => toneColor(tone, env)
+  // Every attribute goes through styleFor, which sets nothing when colour is off.
   const statusLine = st.status ? (
-    <Text color={color(st.status.tone)} dimColor={st.status.tone === 'dim' && !env.color} wrap="truncate-end">
-      {st.status.text}
+    <Text {...styleFor({ tone: st.status.tone }, env)} wrap="truncate-end">
+      {truncateEnd(st.status.text, width, ell)}
     </Text>
   ) : null
 
@@ -473,79 +563,99 @@ export function DecisionTray(props: DecisionTrayProps) {
     const m = st.mode
     if (m.t === 'confirm' && top) {
       const keys = m.binding.key === 'y' ? 'y' : `${m.binding.key}/y`
-      return `${confirmQuestion(top, m.binding)} ${keys} to confirm${env.dumbTerminal ? ' (then Enter)' : ''}, Esc to cancel`
+      return `${confirmQuestion(top, m.binding)} ${keys} to confirm${env.dumbTerminal ? ' (then Enter)' : ''}${sep}Esc cancels`
     }
     if (m.t === 'text') {
+      const note = m.binding.act !== 'revise' && m.binding.act !== 'custom'
       const label = m.binding.act === 'revise' ? 'What should change' : m.binding.act === 'custom' ? 'Your answer' : 'Note (optional)'
-      return `${label}: ${shownValue(m.value, false, width - label.length - 30)}_  Enter sends, Esc cancels`
+      return `${label}: ${shownValue(m.value, false, width - label.length - 40)}_  Enter sends${sep}Esc cancels${note ? ' the note' : ''}`
     }
     if (m.t === 'secrets') {
       const slot = m.slots[m.index]
       const n = `${m.index + 1}/${m.slots.length}`
-      return `Secret ${n} ${slot?.label ?? ''}${m.required ? '' : ' (optional)'}: ${shownValue(m.value, true, 24)}_  Enter next, Esc cancels`
+      return `Secret ${n} ${slot?.label ?? ''}${m.required ? '' : ' (optional)'}: ${shownValue(m.value, true, 24)}_  Enter next${sep}Esc cancels`
     }
-    if (st.pending) return `Pending: ${st.pending.event.ch ?? ''}. Enter commits, Esc clears`
+    if (st.pending) return `Pending: ${st.pending.event.ch ?? ''}. Enter commits${sep}Esc clears`
     return null
   }
 
   if (!top) {
-    if (props.variant === 'footer') return statusLine ?? <Text dimColor>No decisions waiting</Text>
+    if (props.variant === 'footer') return statusLine ?? <Text {...styleFor({ dim: true }, env)}>No decisions waiting</Text>
     return (
       <Box flexDirection="column" width={width}>
-        <Text dimColor>Needs you: nothing waiting</Text>
+        <Text {...styleFor({ dim: true }, env)}>Needs you: nothing waiting</Text>
         {statusLine}
       </Box>
     )
   }
 
   const title = cardTitle(top)
-  const guardMark = st.guardHint && !guard.accepts(now()) ? ` ${g.ellipsis}` : ''
+  const guardMark = st.guardHint && !guard.accepts(now()) ? ` ${ell}` : ''
 
   if (props.variant === 'footer') {
-    const text = modeLine ?? (st.status ? `${title} · ${st.status.text}` : `${top.runTag} ${title} · ${hintsFor(top, env)}`)
+    const who = top.agentLabel ? `${top.agentLabel}: ` : ''
+    const phrases = hintPhrases(top, env.dumbTerminal)
+    // With room for more than one row the keys get rows of their own, wrapped at separators, so none is cut off (R2-M2);
+    // with one row they follow the title on the same line as before.
+    const keyRows = focused && !modeLine && !st.status && height > 1 ? wrapPhrases(phrases, sep, width, ell).slice(0, height - 1) : []
+    const hintText = focused ? phrases.join(sep) : UNFOCUSED_HINT
+    const text =
+      modeLine ??
+      (st.status ? `${title}${sep}${st.status.text}` : keyRows.length > 0 ? `${top.runTag} ${who}${title}` : `${top.runTag} ${who}${title}${sep}${hintText}`)
     return (
-      <Box width={width}>
-        <Text wrap="truncate-end" color={modeLine ? toneColor('warn', env) : undefined}>
-          {text}
-          {guardMark}
+      <Box flexDirection="column" width={width}>
+        <Text wrap="truncate-end" {...styleFor(modeLine ? { tone: 'warn' } : {}, env)}>
+          {truncateEnd(`${text}${guardMark}`, width, ell)}
         </Text>
+        {keyRows.map((r, i) => (
+          <Text key={i} wrap="truncate-end" {...styleFor({ tone: 'accent' }, env)}>
+            {truncateEnd(r, width, ell)}
+          </Text>
+        ))}
       </Box>
     )
   }
 
   const shown = detail.slice(st.scroll, st.scroll + bodyRows)
   const q = top.kind === 'question' && st.question?.key === top.key ? st.question : undefined
-  const header = `Needs you (${cards.length}) ${g.bullet} ${top.runTag} ${cardKindWord(top)}: ${title}`
+  // A screen reader hears words, not marker glyphs: "Focused:" instead of ">" and the separator rule's commas.
+  const lead = env.screenReader ? (focused ? 'Focused: ' : '') : focused ? '> ' : '  '
+  const header = props.compact
+    ? `${proposalCard ? '' : lead}${top.kind === 'proposal' ? title.replace(/^Approve /, 'Review ').replace(/ proposal$/, '') : top.kind === 'permission' ? 'Approval needed' : 'Decision needed'}${cards.length > 1 ? ` (${cards.length})` : ''}${top.kind === 'proposal' ? '' : `${sep}${top.runTag}`}${top.agentLabel ? `${sep}${top.agentLabel}` : ''}`
+    : `${lead}Needs you (${cards.length})${sep}${top.runTag}${sep}${top.agentLabel ? `${top.agentLabel}${sep}` : ''}${cardKindWord(top)}: ${title}`
+  const hidden = detail.length - st.scroll - bodyRows
+  const canView = bindingsFor(top).some((b) => b.act === 'view')
+  const cue =
+    cueRows === 0
+      ? null
+      : hidden > 0
+        ? `${hidden} more ${hidden === 1 ? 'line' : 'lines'}${sep}Down scrolls${canView ? `${sep}v full view` : ''}`
+        : `End of card${sep}Up scrolls back${canView ? `${sep}v full view` : ''}`
+
+  const rows: { key: string; text: string; style: Omit<Seg, 'text'> }[] = []
+  rows.push({ key: 'head', text: `${header}${guardMark}`, style: proposalCard ? { tone: 'muted' } : focused ? { tone: 'warn', bold: true } : { dim: true } })
+  shown.forEach((l, i) => rows.push({ key: `d${st.scroll + i}`, text: `${proposalCard ? '' : ' '}${questionMark(l, q, top)}${l}`, style: proposalCard ? st.scroll + i === 0 ? { bold: true } : { tone: 'muted' } : {} }))
+  if (cue) rows.push({ key: 'cue', text: cue, style: { tone: 'dim' } })
+  if (modeLine) rows.push({ key: 'mode', text: modeLine, style: { tone: 'warn' } })
+  if (st.status) rows.push({ key: 'status', text: st.status.text, style: { tone: st.status.tone } })
+  if (actionGap) rows.push({ key: 'action-gap', text: '', style: {} })
+  hints.forEach((h, i) => rows.push({ key: `h${i}`, text: h, style: proposalCard ? {} : focused ? { tone: 'accent' } : { dim: true } }))
+  if (queueMode === 'list') {
+    for (const c of nextCards) rows.push({ key: `n${c.key}`, text: `${env.screenReader ? 'Next:' : g.arrow} ${c.runTag} ${cardTitle(c)}`, style: { dim: true } })
+    if (moreRows) rows.push({ key: 'more', text: `and ${cards.length - 1 - NEXT_CARDS_MAX} more`, style: { dim: true } })
+  } else if (queueMode === 'count') {
+    rows.push({ key: 'count', text: `+${cards.length - 1} more ${cards.length - 1 === 1 ? 'card' : 'cards'}`, style: { dim: true } })
+  }
   return (
-    <Box flexDirection="column" width={width}>
-      <Text bold color={toneColor('warn', env)} wrap="truncate-end">
-        {header}
-        {guardMark}
-      </Text>
-      {shown.map((l, i) => (
-        <Text key={`d${st.scroll + i}`} wrap="truncate-end">
-          {' '}
-          {questionMark(l, q, top)}
-          {l}
+    <Box flexDirection="column" width={proposalCard ? panelWidth : width} height={height} overflow="hidden"
+      {...(proposalCard ? { paddingLeft: 1, paddingRight: 1, ...(env.screenReader ? { paddingLeft: 2 } : { borderStyle: asciiOnly(env) ? 'classic' as const : 'single' as const, borderTop: false, borderRight: false, borderBottom: false, borderColor: toneColor(focused ? 'accent' : 'muted', env) }) } : {})}>
+      {rows.slice(0, height).map((r) => (
+        <Text key={r.key} {...styleFor(r.style, env)} wrap="truncate-end">
+          {proposalCard && r.key.startsWith('h') && r.key !== 'head'
+            ? truncateEnd(r.text, width, ell).split(/(\[[^\]]+\])/).map((part, i) => <Text key={i} {...styleFor(part.startsWith('[') ? { tone: 'accent', bold: true } : {}, env)}>{part}</Text>)
+            : truncateEnd(r.text, width, ell)}
         </Text>
       ))}
-      {modeLine ? (
-        <Text color={toneColor('warn', env)} wrap="truncate-end">
-          {modeLine}
-        </Text>
-      ) : null}
-      {statusLine}
-      {hints.map((h, i) => (
-        <Text key={`h${i}`} color={toneColor('accent', env)} wrap="truncate-end">
-          {h}
-        </Text>
-      ))}
-      {nextCards.map((c) => (
-        <Text key={c.key} dimColor wrap="truncate-end">
-          {g.arrow} {c.runTag} {cardTitle(c)}
-        </Text>
-      ))}
-      {moreRows ? <Text dimColor>and {cards.length - 1 - NEXT_CARDS_MAX} more</Text> : null}
     </Box>
   )
 }

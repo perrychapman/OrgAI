@@ -34,6 +34,7 @@ import {
   readDaemonFileState,
   protectSecretOnWindows,
   socketPathFor,
+  withStartupMutex,
   type HostOwnership,
   type OwnershipOptions
 } from './ownership'
@@ -139,7 +140,7 @@ function leftovers(runDir: string): string[] {
 describe.skipIf(!posix)('acquireHostOwnership', () => {
   it('creates run/ (0700), the secret (0600), the socket (0600) and daemon.json "starting"; markReady sets "ready"', async () => {
     const env = tempEnv()
-    const own = await acquire(env, { hostKind: 'headless-host', appVersion: '1.2.3' })
+    const own = await acquire(env, { hostKind: 'desktop', appVersion: '1.2.3' })
     expect(mode(env.runDir)).toBe(0o700)
     const secretPath = join(env.runDir, 'daemon.secret')
     expect(own.secretPath).toBe(secretPath)
@@ -150,7 +151,7 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(mode(own.endpoint)).toBe(0o600)
     expect(own.runtimeDir).toBeUndefined()
     const info = readDaemonInfo(env.dataDir)
-    expect(info).toMatchObject({ hostInstanceId: own.info.hostInstanceId, pid: process.pid, endpoint: own.endpoint, state: 'starting', hostKind: 'headless-host', appVersion: '1.2.3' })
+    expect(info).toMatchObject({ hostInstanceId: own.info.hostInstanceId, pid: process.pid, endpoint: own.endpoint, state: 'starting', hostKind: 'desktop', appVersion: '1.2.3' })
     expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
     expect(await canConnect(own.endpoint)).toBe(true)
     expect(own.markReady()).toBe(true)
@@ -323,6 +324,127 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(leftovers(env.runDir)).toEqual([])
   })
 
+  describe("wait: 'none' (the orgai CLI, cli-standalone-default.md 4.2)", () => {
+    const never = (): Promise<void> => {
+      throw new Error('slept: wait none must not wait')
+    }
+
+    it('refuses a live startup.mkdir owner at once, without sleeping, and leaves its mutex alone', async () => {
+      const env = tempEnv()
+      const child = spawnSleeper()
+      const startup = join(env.runDir, 'startup.mkdir')
+      mkdirSync(startup, { recursive: true, mode: 0o700 })
+      writeFileSync(join(startup, 'owner.json'), JSON.stringify({ pid: child.pid, processStartTime: processStartTime(child.pid!), hostInstanceId: 'cccccccccccc', createdAt: Date.now() }))
+      const began = Date.now()
+      const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostStartingOrBusyError)
+      expect((err as HostStartingOrBusyError).ownerPid).toBe(child.pid)
+      expect(Date.now() - began).toBeLessThan(1500)
+      expect(JSON.parse(readFileSync(join(startup, 'owner.json'), 'utf8')).pid).toBe(child.pid)
+      child.kill('SIGKILL')
+      await exited(child)
+      // A dead owner's mutex is provably stale: reclaimed as always.
+      const own = await acquire(env, { wait: 'none', sleep: never })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
+    it('refuses a young startup.mkdir with no owner.json at once, and reclaims an old one', async () => {
+      const env = tempEnv()
+      const startup = join(env.runDir, 'startup.mkdir')
+      mkdirSync(startup, { recursive: true, mode: 0o700 })
+      const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostStartingOrBusyError)
+      utimesSync(startup, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+      const own = await acquire(env, { wait: 'none', sleep: never })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
+    it('refuses a live incumbent with its record, and ownerCwd is written to daemon.json and parsed back', async () => {
+      const env = tempEnv()
+      const own = await acquire(env, { wait: 'none', ownerCwd: '/work/first' })
+      expect(readDaemonInfo(env.dataDir)?.ownerCwd).toBe('/work/first')
+      expect(own.markReady()).toBe(true)
+      expect(readDaemonInfo(env.dataDir)?.ownerCwd).toBe('/work/first')
+      const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never, ownerCwd: '/work/second' })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostAlreadyRunningError)
+      expect((err as HostAlreadyRunningError).info).toMatchObject({ pid: process.pid, ownerCwd: '/work/first' })
+      own.release()
+    })
+
+    it('two starts at once: exactly one wins, the other is refused without waiting', async () => {
+      const env = tempEnv()
+      const results = await Promise.all([0, 1, 2].map(() => acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).then((o) => o, (e: unknown) => e)))
+      const won = results.filter((r) => !(r instanceof Error))
+      expect(won).toHaveLength(1)
+      cleanups.push(() => (won[0] as HostOwnership).release())
+      for (const r of results) if (r instanceof Error) expect([HostAlreadyRunningError, HostStartingOrBusyError].some((c) => r instanceof c)).toBe(true)
+    })
+
+    it('a record whose pid is live but whose start time differs (pid reuse) is stale and reclaimed', async () => {
+      const env = tempEnv()
+      const child = spawnSleeper()
+      daemonJson(env, { hostInstanceId: 'dddddddddddd', pid: child.pid!, endpoint: join(env.runDir, 'gone.sock'), processStartTime: 'not-the-real-start-time' })
+      const own = await acquire(env, { wait: 'none', sleep: never })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
+    it.each(OWNERSHIP_BOUNDARIES)('a crash at %s: a young leftover mutex is refused at once, an old one and a dead owner are reclaimed', async (boundary) => {
+      const env = tempEnv()
+      let fault: unknown
+      try {
+        const crashed = await acquireHostOwnership(opts(env, { wait: 'none', faultAt: boundary }))
+        crashed.markReady()
+      } catch (e) {
+        fault = e
+      }
+      expect(fault).toBeInstanceOf(OwnershipFaultError)
+      await (fault as OwnershipFaultError).crash()
+      const startup = join(env.runDir, 'startup.mkdir')
+      if (existsSync(startup) && !existsSync(join(startup, 'owner.json'))) {
+        const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never, isLiveProcess: () => false })).catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(HostStartingOrBusyError)
+        utimesSync(startup, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
+      }
+      const own = await acquire(env, { wait: 'none', sleep: never, isLiveProcess: () => false })
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+    })
+
+    it('release racing a new start: refused or a clean win, never two owners, and a later start wins', async () => {
+      for (let i = 0; i < 5; i++) {
+        const env = tempEnv()
+        const first = await acquire(env, { wait: 'none', sleep: never })
+        first.markReady()
+        const [, second] = await Promise.all([
+          Promise.resolve().then(() => first.release()),
+          acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).then((o) => o, (e: unknown) => e)
+        ])
+        if (second instanceof Error) {
+          expect([HostAlreadyRunningError, HostStartingOrBusyError].some((c) => second instanceof c)).toBe(true)
+          const third = await acquire(env, { wait: 'none', sleep: never })
+          expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(third.info.hostInstanceId)
+        } else {
+          const won = second as HostOwnership
+          cleanups.push(() => won.release())
+          expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(won.info.hostInstanceId)
+          const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).catch((e: unknown) => e)
+          expect(err).toBeInstanceOf(Error)
+        }
+      }
+    })
+
+    it('a corrupt record is refused, and a record without ownerCwd still parses', async () => {
+      const env = tempEnv()
+      const first = await acquire(env, { wait: 'none' })
+      expect(readDaemonInfo(env.dataDir)?.ownerCwd).toBeUndefined()
+      first.release()
+      mkdirSync(env.runDir, { recursive: true })
+      writeFileSync(join(env.runDir, 'daemon.json'), '{ not json')
+      const err = await acquireHostOwnership(opts(env, { wait: 'none', sleep: never })).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostOwnershipError)
+      expect((err as HostOwnershipError).code).toBe('daemon_json_unreadable')
+    })
+  })
+
   it('waits on a young startup.mkdir with no owner.json and reclaims it only after startupYoungMs', async () => {
     const env = tempEnv()
     const startup = join(env.runDir, 'startup.mkdir')
@@ -448,8 +570,8 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(readdirSync(env.runDir)).toEqual([])
   })
 
-  // Review M11: Electron hosts bind and write the secret only while Terminal access is on.
-  it('listen: false writes no secret and binds nothing; setListening toggles both and daemon.json says so', async () => {
+  // Review M11: a host with listen: false writes no secret and binds nothing.
+  it('listen: false writes no secret and binds nothing, and daemon.json says so', async () => {
     const env = tempEnv()
     let got = 0
     const own = await acquire(env, {
@@ -468,49 +590,26 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     // A second host still sees a running one (live pid) and is refused.
     expect(await acquireHostOwnership(opts(env)).catch((e: unknown) => e)).toBeInstanceOf(HostAlreadyRunningError)
 
-    await own.setListening(true)
-    expect(own.listening).toBe(true)
-    expect(mode(secretPath)).toBe(0o600)
-    const secret = readFileSync(secretPath, 'utf8')
-    expect(secret).toMatch(/^[0-9a-f]{64}$/)
-    expect(mode(own.endpoint)).toBe(0o600)
-    expect(readDaemonInfo(env.dataDir)?.listening).toBeUndefined()
-    expect(await canConnect(own.endpoint)).toBe(true)
-    await new Promise((r) => setTimeout(r, 20))
-    expect(got).toBe(1)
-    // markReady keeps the listening state.
-    own.markReady()
-    expect(readDaemonInfo(env.dataDir)).toMatchObject({ state: 'ready' })
-    expect(readDaemonInfo(env.dataDir)?.listening).toBeUndefined()
-
-    await own.setListening(false)
-    expect(own.listening).toBe(false)
-    expect(existsSync(secretPath)).toBe(false)
-    expect(existsSync(own.endpoint)).toBe(false)
-    expect(await canConnect(own.endpoint)).toBe(false)
-    expect(readDaemonInfo(env.dataDir)).toMatchObject({ state: 'ready', listening: false })
-
-    // Back on: the same secret for this host instance (the socket server caches it).
-    await own.setListening(true)
-    expect(readFileSync(secretPath, 'utf8')).toBe(secret)
-    expect(await canConnect(own.endpoint)).toBe(true)
     own.release()
-    expect(readdirSync(env.runDir)).toEqual([])
-    expect(own.listening).toBe(false)
-    // After release it does nothing.
-    await own.setListening(true)
     expect(readdirSync(env.runDir)).toEqual([])
   })
 
-  it('setListening calls run in order and end in the last requested state; a repeat is a no-op', async () => {
+  it("a live host of the removed 'node' kind is reported as already running, with its pid", async () => {
     const env = tempEnv()
-    const own = await acquire(env, { listen: false })
-    await Promise.all([own.setListening(true), own.setListening(false), own.setListening(true), own.setListening(true)])
-    expect(own.listening).toBe(true)
-    expect(await canConnect(own.endpoint)).toBe(true)
-    await Promise.all([own.setListening(false), own.setListening(false)])
-    expect(own.listening).toBe(false)
-    expect(existsSync(join(env.runDir, 'daemon.secret'))).toBe(false)
+    const child = spawnSleeper()
+    try {
+      const id = newHostInstanceId()
+      daemonJson(env, { hostInstanceId: id, pid: child.pid!, endpoint: socketPathFor(env.dataDir, id), processStartTime: processStartTime(child.pid!), hostKind: 'node' as never })
+      const err = await acquireHostOwnership(opts(env)).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostAlreadyRunningError)
+      expect((err as HostAlreadyRunningError).info.legacyKind).toBe('node')
+      expect((err as Error).message).toContain('older OrgAI background process')
+      expect((err as Error).message).toContain(`pid ${child.pid}`)
+      expect((err as Error).message).toContain('Task Manager')
+    } finally {
+      child.kill('SIGKILL')
+      await exited(child)
+    }
   })
 
   it('a host whose listener is off and whose pid is dead is replaced', async () => {
@@ -525,7 +624,7 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
   })
 
-  it('listen: false with a long socket path names the runtime dir but creates it only when listening', async () => {
+  it('listen: false with a long socket path names the runtime dir and creates nothing', async () => {
     const env = tempEnv('y'.repeat(90))
     const id = newHostInstanceId()
     const own = await acquire(env, { hostInstanceId: id, listen: false })
@@ -533,13 +632,6 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(own.runtimeDir).toBe(rt)
     expect(own.endpoint).toBe(join(rt, 'd.sock'))
     expect(existsSync(rt)).toBe(false)
-    await own.setListening(true)
-    expect(mode(rt)).toBe(0o700)
-    expect(await canConnect(own.endpoint)).toBe(true)
-    await own.setListening(false)
-    expect(existsSync(rt)).toBe(false)
-    await own.setListening(true)
-    expect(await canConnect(own.endpoint)).toBe(true)
     own.release()
     expect(existsSync(rt)).toBe(false)
   })
@@ -583,7 +675,7 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     })
 
     it.each(['refused', 'enoent'] as const)(
-      'never takes over from an unconfirmed pid whose daemon.json says listening: false, endpoint %s (Terminal access off, review M9 + M11)',
+      'never takes over from an unconfirmed pid whose daemon.json says listening: false, endpoint %s (the app never listens, review M9 + M11)',
       async (answer) => {
         const env = tempEnv()
         daemonJson(env, { hostInstanceId: '0d0d0d0d0d0d', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0d0d0d0d0d0d'), hostKind: 'desktop', listening: false })
@@ -596,10 +688,10 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
       }
     )
 
-    it.each(['desktop', 'headless-host'] as const)(
+    it.each(['desktop'] as const)(
       'an Electron launch holding the single-instance lock takes over from an unconfirmed %s pid whose daemon.json says listening: false (review M9 follow-up)',
       async (hostKind) => {
-        // A crashed desktop host with Terminal access off; Windows reused its pid for an elevated process.
+        // A crashed desktop host (it never listens); Windows reused its pid for an elevated process.
         const env = tempEnv()
         daemonJson(env, { hostInstanceId: '0f0f0f0f0f0f', pid: process.pid, endpoint: socketPathFor(env.dataDir, '0f0f0f0f0f0f'), hostKind, listening: false })
         warnings.length = 0
@@ -726,6 +818,158 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
   })
 })
 
+describe.skipIf(!posix)('withStartupMutex (Wave 7, round 6 item 11)', () => {
+  it('runs fn under startup.mkdir with no host, publishes nothing and releases the mutex', async () => {
+    const env = tempEnv()
+    let sawMutex = false
+    const value = await withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase }, () => {
+      sawMutex = existsSync(join(env.runDir, 'startup.mkdir', 'owner.json'))
+      return 42
+    })
+    expect(value).toBe(42)
+    expect(sawMutex).toBe(true)
+    expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+    expect(existsSync(join(env.runDir, 'daemon.json'))).toBe(false)
+    expect(existsSync(join(env.runDir, 'daemon.secret'))).toBe(false)
+    // A host can take the folder right after.
+    await acquire(env)
+  })
+
+  it('refuses while a live host owns the folder, without calling fn', async () => {
+    const env = tempEnv()
+    await acquire(env, { hostKind: 'inproc' })
+    let called = false
+    await expect(
+      withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase }, () => {
+        called = true
+      })
+    ).rejects.toBeInstanceOf(HostAlreadyRunningError)
+    expect(called).toBe(false)
+    expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+  })
+
+  it('releases the mutex when fn throws', async () => {
+    const env = tempEnv()
+    await expect(
+      withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase }, () => {
+        throw new Error('boom')
+      })
+    ).rejects.toThrow('boom')
+    expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+  })
+
+  it('a host starting meanwhile waits for fn to finish', async () => {
+    const env = tempEnv()
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const order: string[] = []
+    const held = withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase }, async () => {
+      order.push('fn-start')
+      await gate
+      order.push('fn-end')
+    })
+    await new Promise((r) => setTimeout(r, 50))
+    const host = acquireHostOwnership(opts(env, { retryMs: 10 })).then((own) => {
+      order.push('host')
+      cleanups.push(() => own.release())
+      return own
+    })
+    await new Promise((r) => setTimeout(r, 100))
+    expect(order).toEqual(['fn-start'])
+    release()
+    await held
+    await host
+    expect(order).toEqual(['fn-start', 'fn-end', 'host'])
+  })
+})
+
+/**
+ * The same steps with injected liveness and probe, so they run on every OS (windows-latest included; review round 2):
+ * `orgai terminal-access` and the level write reach acquire's pre-publish steps only through withStartupMutex. Each case
+ * also runs with `platform: 'win32'` injected, which takes the win32 branches (assertSafeDir without the uid / mode
+ * checks, named-pipe endpoints, no socket sweep) on any machine.
+ */
+describe('withStartupMutex, platform-neutral (fake liveness and probe)', () => {
+  const plats = [...new Set<NodeJS.Platform>([process.platform, 'win32'])]
+  const daemonJson = (env: Env, pid: number, endpoint: string): void => {
+    mkdirSync(env.runDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(env.runDir, 'daemon.json'), JSON.stringify({ hostInstanceId: '0123456789ab', pid, endpoint, state: 'ready', startedAt: 1, hostKind: 'inproc' }))
+  }
+  const endpointFor = (platform: NodeJS.Platform, env: Env): string => (platform === 'win32' ? pipeNameFor(env.dataDir, '0123456789ab', 'win32') : join(env.runDir, 'd-0123456789ab.sock'))
+
+  for (const platform of plats) {
+    it(`${platform}: runs fn with no host, publishes nothing and releases the mutex`, async () => {
+      const env = tempEnv()
+      let probes = 0
+      const value = await withStartupMutex(
+        {
+          dataDir: env.dataDir,
+          runtimeBase: env.runtimeBase,
+          platform,
+          liveness: () => 'dead',
+          connectProbe: async () => (probes++, 'refused')
+        },
+        () => existsSync(join(env.runDir, 'startup.mkdir'))
+      )
+      expect(value).toBe(true)
+      expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+      expect(existsSync(join(env.runDir, 'daemon.json'))).toBe(false)
+      expect(existsSync(join(env.runDir, 'daemon.secret'))).toBe(false)
+      expect(probes).toBe(0)
+    })
+
+    it(`${platform}: a live incumbent (or one whose endpoint answers) refuses without calling fn`, async () => {
+      for (const [live, answer] of [
+        ['same', 'refused'],
+        ['dead', 'connected']
+      ] as const) {
+        const env = tempEnv()
+        daemonJson(env, 4242, endpointFor(platform, env))
+        let called = false
+        const err = await withStartupMutex(
+          { dataDir: env.dataDir, runtimeBase: env.runtimeBase, platform, liveness: () => live, connectProbe: async () => answer },
+          () => {
+            called = true
+          }
+        ).catch((e: unknown) => e)
+        expect(err).toBeInstanceOf(HostAlreadyRunningError)
+        expect((err as HostAlreadyRunningError).info.pid).toBe(4242)
+        expect(called).toBe(false)
+        expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+      }
+    })
+
+    it(`${platform}: a dead incumbent with a dead endpoint is reclaimed and fn runs`, async () => {
+      const env = tempEnv()
+      daemonJson(env, 4242, endpointFor(platform, env))
+      let called = false
+      await withStartupMutex({ dataDir: env.dataDir, runtimeBase: env.runtimeBase, platform, liveness: () => 'dead', connectProbe: async () => 'refused' }, () => {
+        called = true
+      })
+      expect(called).toBe(true)
+      expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+    })
+
+    it(`${platform}: a live process holding the mutex past the wait is HostStartingOrBusyError; fn never runs`, async () => {
+      const env = tempEnv()
+      const startup = join(env.runDir, 'startup.mkdir')
+      mkdirSync(startup, { recursive: true, mode: 0o700 })
+      writeFileSync(join(startup, 'owner.json'), JSON.stringify({ pid: 4242, hostInstanceId: '0f0f0f0f0f0f', createdAt: Date.now() }))
+      let called = false
+      const err = await withStartupMutex(
+        { dataDir: env.dataDir, runtimeBase: env.runtimeBase, platform, liveness: () => 'same', liveWaitMs: 60, retryMs: 10 },
+        () => {
+          called = true
+        }
+      ).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(HostStartingOrBusyError)
+      expect((err as HostStartingOrBusyError).ownerPid).toBe(4242)
+      expect(called).toBe(false)
+      expect(existsSync(join(startup, 'owner.json'))).toBe(true)
+    })
+  }
+})
+
 describe('readDaemonFileState', () => {
   it('tells missing, ok and unusable apart', () => {
     const base = mkdtempSync(join(tmpdir(), 'orgai-own-state-'))
@@ -763,7 +1007,7 @@ describe('protectSecretOnWindows (review M8, H1, H2 (3); UNVERIFIED on Windows)'
     const warned: string[] = []
     const w = await protectSecretOnWindows('D:\\data\\run', () => void wrote++, { mode: 'best-effort', restrict, warn: (m) => void warned.push(m) })
     expect(w).toMatch(/Could not restrict daemon\.secret to the current Windows user: icacls failed: No mapping/)
-    expect(w).toMatch(/Terminal access should stay off/)
+    expect(w).toMatch(/should not listen on this data folder/)
     expect(warned).toHaveLength(1)
     expect(wrote).toBe(1)
     // A throwing stand-in counts as a failure too.
@@ -798,6 +1042,13 @@ describe('readDaemonInfo / parseDaemonInfo', () => {
   const good = { hostInstanceId: '0123456789ab', pid: 42, endpoint: '/x/d.sock', state: 'ready', startedAt: 1 }
   it('accepts a valid record and drops unknown fields', () => {
     expect(parseDaemonInfo({ ...good, extra: 1, hostKind: 'desktop', appVersion: '1' })).toEqual({ ...good, hostKind: 'desktop', appVersion: '1' })
+  })
+  it("reads a record of the removed 'headless-host' kind as the desktop, and reads the removed 'node' kind as inproc", () => {
+    expect(parseDaemonInfo({ ...good, hostKind: 'headless-host' })).toEqual({ ...good, hostKind: 'desktop' })
+    expect(parseDaemonInfo({ ...good, hostKind: 'node' })?.hostKind).toBe('inproc')
+    expect(parseDaemonInfo({ ...good, hostKind: 'node' })?.legacyKind).toBe('node')
+    expect(parseDaemonInfo({ ...good, hostKind: 'inproc' })?.legacyKind).toBeUndefined()
+    expect(parseDaemonInfo({ ...good, hostKind: 'bogus' })).toBeNull()
   })
   it('keeps listening only as an explicit false (review M11)', () => {
     expect(parseDaemonInfo({ ...good, listening: false })).toEqual({ ...good, listening: false })

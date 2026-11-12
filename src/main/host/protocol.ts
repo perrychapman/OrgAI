@@ -222,7 +222,7 @@ function runFile(file: string, args: string[], opts: { cwd: string; timeoutMs: n
  * SID, then `icacls <path> /inheritance:r /grant:r *<SID>:F`, both by absolute System32 path with cwd os.tmpdir() (as
  * anthropicAuth.ts runs where.exe). Resolves undefined on success, else a short reason; never throws. This keeps other
  * Windows accounts out even when the data folder lives outside the profile; it cannot keep out programs of the same
- * user, which is what the Terminal access level (socketServer.ts grantScopes) and the self-control gate are for.
+ * user, which is what the owner proof (socketServer.ts) and the self-control gate are for.
  * UNVERIFIED on Windows: the whoami / icacls output was taken from Microsoft's documentation, never run from this code.
  */
 export async function restrictDaemonSecretAcl(path: string, opts: RestrictSecretAclOptions = {}): Promise<string | undefined> {
@@ -377,6 +377,7 @@ export const RPC_NUMERIC_CODE: Record<HostRpcErrorCode, number> = {
   unknown_channel: -32601,
   desktop_unavailable: -32000,
   agent_descendant_refused: -32000,
+  not_owner: -32000,
   stale_target_digest: -32000,
   stale_revision: -32000,
   scope_denied: -32000,

@@ -1,0 +1,181 @@
+/* A quiet empty Needs you stays mounted but hidden; a rule on .dash-section must not show it again. */
+.dash-section[hidden] {
+  display: none;
+}
+
+/* Needs you: warning tint. */
+.dash-needs-row {
+  background: var(--warning-soft);
+  border-color: var(--warning-border);
+  container: needs-row / inline-size;
+}
+.dash-needs-row:hover {
+  border-color: var(--warning);
+}
+.dash-needs-main {
+  align-items: flex-start;
+}
+.dash-needs-main > .dash-row-icon {
+  padding-top: 2px;
+}
+.dash-needs-place {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+}
+.dash-needs-project {
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.dash-needs-run {
+  color: var(--text-secondary);
+}
+.dash-needs-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.dash-needs-lead {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+/* Clamped only when the row cannot be allowed here: a command that can be allowed is shown whole (review H1). */
+.dash-needs-code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.dash-needs-code[data-clamp],
+.dash-needs-question {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.dash-needs-code[data-clamp='3'] {
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+/* L4: the chevron of a row answered in the run sits in the middle of the row, readable. */
+.dash-needs-main {
+  align-items: center;
+}
+.dash-needs-main > .dash-row-icon {
+  align-self: flex-start;
+}
+.dash-needs-main > svg:last-child {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+}
+/* L7: the Paused reason may use two lines. */
+.dash-row-paused .dash-row-detail {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.dash-needs-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  white-space: pre-wrap;
+}
+.dash-needs-object {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* What an inline Allow approves (a URL or query) is shown whole. */
+.dash-needs-object[data-whole] {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
+.dash-needs-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-1);
+  min-width: 0;
+}
+/* The file name and the location line wrap whole: they say what Allow once approves (re-check Lows). */
+.dash-needs-row .dash-needs-filename,
+.dash-needs-row .dash-needs-where {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+.dash-needs-where[data-attention] {
+  color: var(--warning-text);
+}
+.dash-needs-filename {
+  flex: none;
+  max-width: 100%;
+  font-weight: var(--weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The whole folder, left to right, wrapping (review H2: an rtl start-ellipsis cut the root and moved slashes). */
+.dash-needs-folder {
+  min-width: 0;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  unicode-bidi: isolate;
+}
+.dash-needs-reference {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.dash-needs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2) var(--space-2) 0;
+  max-width: 60cqi;
+}
+.dash-needs-deny {
+  color: var(--danger-text, var(--danger));
+}
+.dash-needs-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--danger-text, var(--danger));
+}
+/* Narrow rows stack the buttons under the ask. */
+@container needs-row (max-width: 360px) {
+  .dash-needs-row[data-has-action='true'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dash-needs-actions {
+    justify-content: flex-start;
+    padding: 0 var(--space-3) var(--space-2);
+    max-width: none;
+  }
+}
+
+/* Rows the user answers leave by fading and folding shut; the list gap folds away with them (cards.css .leave-collapse). */
+.dash-section[data-testid='dash-needs-you'] > .dash-rows {
+  --leave-gap: var(--space-2);
+}

@@ -162,6 +162,22 @@ describe('fetchLiteLLMModels', () => {
     expect((e2 as Error).message).toBe('Could not reach localhost:4000')
   })
 
+  it('drops hidden and control characters from remote error text before the cut', async () => {
+    const msg = `bad‮evil​\nline\u0007${'x'.repeat(200)}`
+    const f = (async () => json({ error: { message: msg } }, 500)) as unknown as typeof fetch
+    const err = (await fetchLiteLLMModels('http://localhost:4000', 'k', f).catch((e: Error) => e)) as Error
+    const reason = err.message.replace('500 from /v1/models: ', '')
+    expect(reason.startsWith('badevil line')).toBe(true)
+    expect(reason).not.toMatch(/[‮​\u0007\n]/)
+    expect(reason.length).toBe(120)
+  })
+
+  it('rejects credentials, query and link-local http in the base URL', () => {
+    expect(() => normalizeBaseUrl('https://u:p@x.com')).toThrow(/user name or password/)
+    expect(() => normalizeBaseUrl('https://x.com/?k=1')).toThrow(/query/)
+    expect(() => normalizeBaseUrl('http://169.254.169.254')).toThrow(/localhost/)
+  })
+
   it('rejects bad URLs before fetching', async () => {
     const fetchImpl = vi.fn()
     await expect(fetchLiteLLMModels('http://evil.example.com', 'k', fetchImpl as unknown as typeof fetch)).rejects.toThrow()
@@ -203,6 +219,65 @@ describe('proxy output bounds', () => {
     const big = (): Response => new Response('x'.repeat(LITELLM_MAX_BODY_BYTES + 10), { status: 200 })
     const fetchImpl = (async () => big()) as unknown as typeof fetch
     await expect(fetchLiteLLMModels('http://localhost:4000', 'k', fetchImpl)).rejects.toThrow(/too large/)
+  })
+
+  it('does not buffer a declared oversized error response', async () => {
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([0x78]))
+      },
+      cancel() {
+        cancelled = true
+      }
+    })
+    const fetchImpl = (async () => new Response(body, {
+      status: 500,
+      statusText: 'Internal Server Error',
+      headers: { 'content-length': String(LITELLM_MAX_BODY_BYTES + 1) }
+    })) as unknown as typeof fetch
+    const error = await fetchLiteLLMModels('http://localhost:4000', 'k', fetchImpl).catch((e: Error) => e)
+    expect((error as Error).message).toBe('500 from /v1/models: Internal Server Error')
+    expect(cancelled).toBe(true)
+  })
+
+  it('cancels a chunked oversized error response', async () => {
+    let cancelled = false
+    const fetchImpl = (async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(LITELLM_MAX_BODY_BYTES))
+        controller.enqueue(new Uint8Array([0x78]))
+      },
+      cancel() {
+        cancelled = true
+      }
+    }), { status: 500, statusText: 'Internal Server Error' })) as unknown as typeof fetch
+    const error = await fetchLiteLLMModels('http://localhost:4000', 'k', fetchImpl).catch((e: Error) => e)
+    expect((error as Error).message).toBe('500 from /v1/models: Internal Server Error')
+    expect(cancelled).toBe(true)
+  })
+
+  it('redacts the supplied key from a remote statusText when the error body is not JSON', async () => {
+    const key = 'synthetic-proxy-key-1234567890'
+    const fetchImpl = (async () => new Response('not json', {
+      status: 500,
+      statusText: `Proxy rejected ${key}`
+    })) as unknown as typeof fetch
+    const error = await fetchLiteLLMModels('http://localhost:4000', key, fetchImpl).catch((e: Error) => e)
+    expect((error as Error).message).toContain('Proxy rejected ***')
+    expect((error as Error).message).not.toContain(key)
+  })
+
+  it('redacts the supplied key from statusText when an error body is too large', async () => {
+    const key = 'synthetic-proxy-key-1234567890'
+    const fetchImpl = (async () => new Response('oversized', {
+      status: 500,
+      statusText: `Proxy rejected ${key}`,
+      headers: { 'content-length': String(LITELLM_MAX_BODY_BYTES + 1) }
+    })) as unknown as typeof fetch
+    const error = await fetchLiteLLMModels('http://localhost:4000', key, fetchImpl).catch((e: Error) => e)
+    expect((error as Error).message).toContain('Proxy rejected ***')
+    expect((error as Error).message).not.toContain(key)
   })
 })
 

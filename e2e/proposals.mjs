@@ -1,7 +1,8 @@
 // Token-free. Mock adapter, temp ORGAI_DATA_DIR. Proposal cards inside runs (docs/design/ux-review-proposals-in-runs.md:
 // H1 compact frame, M2 kind labels, M5 proposer, M7 roomy frame). A project MCP assistant proposes to narrow one server,
 // remove another and add a new one; a work run leaves two background permission cards, an ask_user question and then an
-// org chart proposal open together (the stepper). Checks at 1024x640 (dark and light) and 1600x1000.
+// org chart proposal open together (the stepper). Checks at 1024x640 (dark and light) and 1600x1000. Scenario 4 is a
+// 29-change org chart proposal in the Live tray of a work run and of an org change session (proposal-cards.md section 12).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, projectTab, sleep } from './lib.mjs'
@@ -453,6 +454,129 @@ try {
   }
   const settled = await page.evaluate(() => document.querySelectorAll('.decision-card.kind-proposal').length)
   check(settled === 0, 'no proposal card is left open', String(settled))
+
+  // ---- Scenario 4: a long org chart proposal (29 changes). Fix "long proposals" (proposal-cards.md): the body is the one
+  // scroller and reaches its end, the footer sits under it, nothing scrolls the page. In the Live tray of a work run and
+  // of an org change session (a setup run started from Team > Design). ----
+  await endSession(page)
+  const now = await page.evaluate(async (id) => (await window.orgai.projects.list()).find((p) => p.id === id)?.roles ?? [], pid)
+  const nameOfNow = (id) => now.find((r) => r.id === id)?.name ?? null
+  const longRoles = now.map((r, i) => ({
+    name: r.name,
+    description: r.description + (i % 2 ? ' Now also reviews the docs.' : ''),
+    responsibilities: r.responsibilities,
+    prompt: r.prompt,
+    tools: r.tools,
+    model: r.tier ?? r.model,
+    canSpawn: r.canSpawn,
+    spawnable: r.spawnable.map(nameOfNow).filter(Boolean),
+    reportsTo: nameOfNow(r.reportsTo)
+  }))
+  const longRoot = longRoles.find((r) => !r.reportsTo)?.name ?? null
+  for (let i = 1; i <= 26; i++) {
+    longRoles.push({ name: `Specialist ${i}`, description: `Specialist number ${i}`, responsibilities: ['Do the work'], prompt: `You are specialist ${i}.`, tools: ['Read'], model: 'everyday', canSpawn: false, spawnable: [], reportsTo: longRoot })
+  }
+  const longArgs = { title: 'Grow the team', rationale: 'Many specialists for a large change.', roles: longRoles }
+  writeScript({
+    delayMs: 200,
+    work: [{ type: 'text', text: 'Proposing a big team.' }, { type: 'harness', name: 'propose_org_change', retryOnRevise: false, args: longArgs }, { type: 'text', text: 'Carrying on.' }],
+    setup: [{ type: 'text', text: 'Designing.' }, { type: 'harness', name: 'propose_org_chart', retryOnRevise: false, args: longArgs }, { type: 'text', text: 'Done.' }]
+  })
+  /** Scrolls the shown proposal body to its end and reads where the body, its last block, the footer and the page are. */
+  const longGeometry = (cardSel) =>
+    page.evaluate((sel) => {
+      const card = document.querySelector(sel)
+      const body = card?.querySelector('.decision-body')
+      const footer = card?.querySelector('.decision-footer')
+      if (!card || !body || !footer || getComputedStyle(body).display === 'none') return null
+      body.scrollTop = body.scrollHeight
+      const b = body.getBoundingClientRect()
+      const f = footer.getBoundingClientRect()
+      const last = body.lastElementChild?.getBoundingClientRect()
+      return {
+        overflow: getComputedStyle(body).overflowY,
+        scrollable: body.scrollHeight > body.clientHeight + 1,
+        atEnd: body.scrollTop + body.clientHeight >= body.scrollHeight - 1,
+        tabIndex: body.getAttribute('tabindex'),
+        body: [Math.round(b.top), Math.round(b.bottom)],
+        footer: [Math.round(f.top), Math.round(f.bottom)],
+        lastBottom: last ? Math.round(last.bottom) : null,
+        pageScroll: document.documentElement.scrollHeight - window.innerHeight,
+        bodyScroll: document.body.scrollHeight - window.innerHeight
+      }
+    }, cardSel)
+  const checkLong = async (cardSel, tag) => {
+    // A compact frame folds the body behind Details: open it first.
+    const longDetails = page.locator(`${cardSel} .decision-details`)
+    if ((await longDetails.isVisible().catch(() => false)) && (await page.locator(cardSel).getAttribute('data-expanded')) !== 'true') {
+      await longDetails.click()
+      await sleep(600)
+    }
+    const lg = await longGeometry(cardSel)
+    check(!!lg, `the long proposal body is shown ${tag}`)
+    if (!lg) return
+    const detail = JSON.stringify(lg)
+    check(lg.scrollable && (lg.overflow === 'auto' || lg.overflow === 'scroll'), `the long proposal body is its own scroller ${tag}`, detail)
+    check(lg.atEnd, `the long proposal body scrolls to its end ${tag}`, detail)
+    check(lg.lastBottom !== null && lg.lastBottom <= lg.body[1] + 1, `at the end the last block sits inside the body, not under the footer ${tag}`, detail)
+    check(lg.footer[0] >= lg.body[1] - 1 && lg.footer[1] >= lg.body[1], `the footer sits below the body ${tag}`, detail)
+    check(lg.pageScroll <= 0 && lg.bodyScroll <= 0, `the page does not scroll ${tag}`, detail)
+    check(lg.tabIndex === '0', `the overflowing body takes a Tab stop ${tag}`, detail)
+    // Keyboard: Shift+Tab out of the body and Tab back lands on it with a visible ring.
+    await page.locator(`${cardSel} .decision-body`).focus()
+    await page.keyboard.press('Shift+Tab')
+    await page.keyboard.press('Tab')
+    const ring = await page.evaluate(() => {
+      const el = document.activeElement
+      return el?.classList.contains('decision-body') ? getComputedStyle(el).outlineStyle : null
+    })
+    check(ring !== null && ring !== 'none', `Tab reaches the body and shows a focus ring ${tag}`, String(ring))
+  }
+
+  // Live tray (work run).
+  await setSize(1024, 640)
+  await setTheme('dark')
+  await projectTab(page, 'Live').click()
+  await page.keyboard.press('Control+t').catch(() => {})
+  await ta.waitFor({ timeout: 10_000 })
+  await ta.fill('Grow the team')
+  await page.locator('.composer .btn.primary').click()
+  await page.locator('.decision-card.kind-proposal').waitFor({ timeout: 30_000 })
+  await sleep(600)
+  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+    await setSize(w, h)
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme)
+      await checkLong('section.frame-tray .decision-card.kind-proposal', `in the Live tray at ${w}x${h} ${theme}`)
+      await shot(`long-org-live-${w}-${theme}`)
+    }
+  }
+  await page.locator('[data-testid=proposal-decline]').click()
+  await page.locator('[data-testid=proposal-decline-send]').click()
+  await sleep(800)
+  await endSession(page)
+
+  // Org change session (setup run) started from Team > Design: its card shows in the Live tray like any run's.
+  await setSize(1024, 640)
+  await projectTab(page, 'Team').click()
+  const teamTray = page.locator('[data-testid=team-assistant]')
+  await teamTray.locator('[data-testid=architect-open]').click()
+  await teamTray.getByLabel('What should change').fill('Grow the team')
+  await teamTray.locator('[data-testid=org-change-start]').click()
+  const setupCard = 'section.frame-tray .decision-card.kind-proposal'
+  await page.locator(setupCard).first().waitFor({ timeout: 30_000 })
+  await sleep(600)
+  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+    await setSize(w, h)
+    for (const theme of ['dark', 'light']) {
+      await setTheme(theme)
+      await checkLong(setupCard, `in an org change session's Live tray at ${w}x${h} ${theme}`)
+      await shot(`long-org-change-${w}-${theme}`)
+    }
+  }
+  await setTheme('dark')
+  await page.locator(`${setupCard} .btn.primary`).click()
+  await sleep(1000)
 } finally {
   await cleanup(app, page, NAME)
   finish('proposals')

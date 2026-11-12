@@ -4,9 +4,10 @@
  * (colour, dim, inverse, bold) is ever set.
  */
 import { Box, Text } from 'ink'
-import { glyphs, toneColor } from '../theme'
+import { Shimmer } from '../Motion'
+import { asciiOnly, glyphs, toneColor } from '../theme'
 import type { InputEvent, Tone, TuiEnv } from '../types'
-import { padToWidth, textWidth, truncateEnd } from './text'
+import { graphemes, padToWidth, textWidth, truncateEnd } from './text'
 
 export interface Seg {
   text: string
@@ -14,12 +15,21 @@ export interface Seg {
   dim?: boolean
   bold?: boolean
   inverse?: boolean
+  shimmer?: boolean
 }
 
 /** One pane line: segments laid out left to right, already cut to the pane width by the caller. */
 export interface PaneLine {
   key: string
   segs: Seg[]
+}
+
+/** A consistent pane heading with a focus cue that survives NO_COLOR. */
+export function paneHeading(title: string, width: number, focused: boolean, env: TuiEnv): Seg[] {
+  const prefix = focused ? (env.screenReader ? 'Focused: ' : asciiOnly(env) ? '> ' : '› ') : ''
+  const label = `${prefix}${title}`
+  const rule = env.screenReader ? '' : ` ${glyphs(env).h.repeat(Math.max(0, width - textWidth(label) - 1))}`
+  return cutSegs([{ text: label, bold: true, tone: focused ? 'accent' : undefined }, { text: rule, dim: true }], width, env)
 }
 
 export interface StyleProps {
@@ -31,11 +41,12 @@ export interface StyleProps {
 
 /** Ink Text props for a segment; nothing at all when colour is off. */
 export function styleFor(seg: Omit<Seg, 'text'>, env: TuiEnv): StyleProps {
-  if (!env.color) return {}
+  if (!env.color || env.screenReader || env.dumbTerminal) return {}
   const out: StyleProps = {}
   const color = toneColor(seg.tone === 'dim' ? undefined : seg.tone, env)
   if (color) out.color = color
-  if (seg.dim || seg.tone === 'dim') out.dimColor = true
+  // An explicit semantic foreground already carries its hierarchy; don't dim it a second time.
+  if (!color && (seg.dim || seg.tone === 'dim')) out.dimColor = true
   if (seg.bold) out.bold = true
   if (seg.inverse) out.inverse = true
   return out
@@ -52,7 +63,7 @@ export function cutSegs(segs: Seg[], width: number, env: TuiEnv, pad = false): S
   const whole = segs.map((s) => s.text).join('')
   const cut = pad ? padToWidth(whole, width, ell) : truncateEnd(whole, width, ell)
   if (cut === whole) return segs
-  // Re-split the cut text over the segments by length (the cut keeps a prefix of `whole`, plus maybe the ellipsis).
+  // Re-split the cut text over the segments (the cut keeps a grapheme-aligned prefix of `whole`, plus maybe the ellipsis).
   const out: Seg[] = []
   let pos = 0
   const keep = cut.startsWith(whole) ? whole.length : commonPrefix(whole, cut)
@@ -92,27 +103,30 @@ export function alignSegs(left: Seg[], right: Seg | undefined, width: number, en
   return [...l, { ...fill, text: ' '.repeat(pad) }, right]
 }
 
+/** Length (UTF-16 units of `a`) of the grapheme clusters `a` and `b` share from the start, so a cut never lands inside one. */
 function commonPrefix(a: string, b: string): number {
-  let i = 0
-  while (i < a.length && i < b.length && a[i] === b[i]) i++
-  return i
+  const ga = graphemes(a)
+  const gb = graphemes(b)
+  let n = 0
+  for (let i = 0; i < ga.length && i < gb.length && ga[i] === gb[i]; i++) n += ga[i]!.length
+  return n
 }
 
 /** Renders lines into a Box of exactly width x height (never more lines than height). */
-export function PaneLines(props: { width: number; height: number; lines: PaneLine[]; env: TuiEnv }) {
+export function PaneLines(props: { width: number; height: number; lines: PaneLine[]; env: TuiEnv; phase?: number; align?: 'top' | 'bottom' }) {
   const width = Math.max(0, Math.floor(props.width))
   const height = Math.max(0, Math.floor(props.height))
   if (width === 0 || height === 0) return <Box width={width} height={height} />
   const lines = props.lines.slice(0, height)
   return (
-    <Box flexDirection="column" width={width} height={height} overflow="hidden">
+    <Box flexDirection="column" justifyContent={props.align === 'bottom' ? 'flex-end' : 'flex-start'} width={width} height={height} overflow="hidden">
       {lines.map((l) => (
         <Text key={l.key} wrap="truncate-end">
           {l.segs.length === 0
             ? ' '
             : l.segs.map((s, i) => (
                 <Text key={i} {...styleFor(s, props.env)}>
-                  {s.text}
+                  {s.shimmer && !s.inverse ? <Shimmer text={s.text} active={false} phase={props.phase ?? 0} /> : s.text}
                 </Text>
               ))}
         </Text>

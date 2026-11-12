@@ -1,5 +1,16 @@
 # OrgAI CLI & Local Daemon (`orgai`): Design and Architecture Specification
 
+> **Superseded in part (2026-11-08, `docs/design/cli-standalone-default.md`):** the desktop app and the `orgai` CLI share
+> nothing. The app has no socket, no `--headless-host` mode, no handoff and no Terminal access setting; the packaged app
+> does not contain the CLI; `orgai` runs in-process on its own data folder. The CLI's data folder is `orgai-cli`
+> (override `--data-dir` / `ORGAI_CLI_DATA_DIR`; `ORGAI_DATA_DIR` is ignored) and its vault custody is `OrgAI CLI Vault` /
+> `ORGAI_CLI_VAULT_*` (cli-standalone-default.md 3.1 and 3.2), which replaces the shared vault design and any
+> `ORGAI_DATA_DIR` / `ORGAI_VAULT_*` / "OrgAI Vault" text below. Removed commands and flags (cli-standalone-default.md 4.1, 4.3): `--host`,
+> `daemon`, `app`, `terminal-access`, `watch`, `inbox`, `decide`, `attach`, `runs send|interrupt|stop` and the `wait`
+> decision policies. See cli-standalone-default.md 4.3 for the current command table; use the sections below for the
+> shared host code only. Anything about the app serving terminals, a background host, the handoff or Terminal access
+> is history, and `HostKind 'headless-host'` survives only as a legacy value read as `desktop` (cli-standalone-default.md section 13).
+
 Status: **Revision 4 (Final Sign-Off)** — Refined after three rounds of architectural, security, and codebase reviews by **GPT Astra (`gpt-6-astra`)** and **Claude Opus (`claude-opus-4-6`)**.
 Related: `.orgai/ARCHITECTURE.md`, `CLAUDE.md`, `docs/design/spec.md`, `docs/design/providers-and-mcp.md`, `docs/design/quick-runs.md`, `docs/design/knowledge.md`.
 
@@ -91,7 +102,7 @@ Rather than running two competing host binaries (a Node daemon vs. an Electron D
     - On macOS, clicking the Dock icon or relaunching from Finder fires `app.on('activate')`, which shows the Dock icon and creates the main `BrowserWindow` when `BrowserWindow.getAllWindows().length === 0`.
   - **Window Close vs Explicit Quit**:
     - On `window-all-closed` (review H3, PR #18): a host launched with `--headless-host` clears `windowScopes`, hides the Dock icon on macOS and stays in the background until its idle exit, while no run is working. With runs working it is treated like a desktop launch (review follow-up: an `orgai` command may have spawned it and the user then opened OrgAI from the Start menu, whose window lives in that host): macOS stays, Windows and Linux ask. A desktop launch on macOS stays (Dock behaviour). A desktop launch on Windows and Linux quits through `quitGate` (stopping its runs), as before the host work; only while runs are working without the user (`RunManager.workingRunCount`: not idle runs, runs with an open card, runs held by an interrupt or a usage limit, or paused runs waiting for an auto-resume) it first asks "Keep working in the background / Stop and quit / Cancel" (Cancel brings a window back). It never goes to the background without that answer.
-    - On explicit application Quit (`Cmd+Q` / File > Quit) while CLI-started runs or TUI clients are active, `quitGate` (`src/main/index.ts:569-579`) offers `"Keep background host running for N terminal run(s)"` alongside `"Stop all runs and quit"`.
+    - On explicit application Quit (`Cmd+Q` / File > Quit) while CLI-started runs or TUI clients are active, `quitGate` (`src/main/index.ts:569-579`; replaced in Wave 7 by the `ShutdownCoordinator`, see Wave 7 below) offers `"Keep background host running for N terminal run(s)"` alongside `"Stop all runs and quit"`.
 - **Pure-Node In-Process Host (`--host inproc`)**:
   - Boots `OrgAIHost` directly inside the Node >= 22 CLI process without Electron, sharing the exact universal `<dataDir>/run/` ownership protocol below (refusing with exit code `6` if an Electron or Node host already owns `dataDir`), binding its per-instance socket so `orgai watch` / `orgai decide` can attach, and using `OverlaySecretStore` for environment-supplied secrets.
 
@@ -245,13 +256,13 @@ Every single channel constant across `IPC`, `TEMPLATE_ENGAGEMENT_IPC`, `KNOWLEDG
 
 | Direction & Scope | Channels (`src/shared/types.ts` + `HOST_IPC` + `host.*`) |
 | --- | --- |
-| **`request: read`** | `host.status`, `host.subscribe`, `app:info`, `app:logPath`, `settings:get`, `auth:status`, `projects:list`, `projects:get`, `projects:checkPath`, `projects:previewRemap`, `projects:scanAgents`, `projects:previewImport`, `projects:removePreview`, `projects:engagementDocument`, `projects:listNotes`, `projects:getNote`, `runs:list`, `runs:get`, `runs:listLive`, `runs:pendingCards`, `runs:usageStats`, `runs:usageCsv`, `runs:subscribe`, `permissions:list`, `permissions:ignored`, `connections:list`, `models:list`, `models:prices`, `mcp:list`, `mcp:registrySearch`, `mcpLibrary:list`, `connectors:list`, `connectorPresets:list`, `skills:list`, `skills:read`, `skills:previewImport`, `skills:lastEvaluation`, `skillLibrary:list`, `skillLibrary:read`, `capabilities:lastReview`, `maintenance:listWorktrees`, `maintenance:diff`, `templates:list`, `knowledge:get`, `knowledge:inferredLinks`, `kit:previewBundle`, `projects:folderConfig`, `teamFiles:listAttention` |
+| **`request: read`** | `host.status`, `host.subscribe`, `app:info`, `app:logPath`, `settings:get`, `auth:status`, `projects:list`, `projects:get`, `projects:checkPath`, `projects:previewRemap`, `projects:scanAgents`, `projects:previewImport`, `projects:removePreview`, `projects:engagementDocument`, `projects:listNotes`, `projects:getNote`, `runs:list`, `runs:get`, `runs:listLive`, `runs:pendingCards`, `runs:usageStats`, `runs:usageCsv`, `runs:usageOverview`, `runs:usageOverviewCsv` (app-wide usage, 2026-11-07), `runs:subscribe`, `permissions:list`, `permissions:ignored`, `connections:list`, `models:list`, `models:prices`, `mcp:list`, `mcp:registrySearch`, `mcpLibrary:list`, `connectors:list`, `connectorPresets:list`, `skills:list`, `skills:read`, `skills:previewImport`, `skills:lastEvaluation`, `skillLibrary:list`, `skillLibrary:read`, `capabilities:lastReview`, `maintenance:listWorktrees`, `maintenance:diff`, `templates:list`, `knowledge:get`, `knowledge:inferredLinks`, `kit:previewBundle`, `projects:folderConfig`, `teamFiles:listAttention`, `app:reference` (self-knowledge, 2026-11-07: the secret-free reference and status snapshot) |
 | **`request: operate`** | `runs:start`, `runs:startQuick`, `runs:continue`, `runs:send`, `runs:interrupt`, `runs:stop`, `runs:resumeNow`, `runs:cancelAutoResume`, `setup:start`, `setup:retro`, `mcp:startAssist`, `skills:startAssist`, `usage:refresh`, `connections:test`, `models:refresh`, `mcp:test`, `mcpLibrary:test`, `capabilities:discover`, `capabilities:recommend`, `capabilities:cancel`, `capabilities:review`, `skills:evaluate`, `draft:orgChart`, `window:openRun` *(refused with `code: 'desktop_unavailable'` when running under `--host inproc`)* |
 | **`request: decide`** | `runs:decide`, `permissions:decideRequest`, `setup:decide`, `setup:answer`, `merges:decide`, `mcp:answerInstall` *(Note: `'decide'` authorizes resolving an active run's pending cards—including run-raised project rule grants, library/project MCP installs, or setup proposals—whereas direct out-of-band store mutations require `'configure'`.)* |
 | **`request: configure`** | `host.stop`, `settings:set`, `projects:create`, `projects:save`, `projects:remove`, `projects:remapModels`, `projects:applyImport`, `projects:exportOrg`, `projects:updateEngagementDocument`, `projects:saveNote`, `projects:removeNote`, `runs:promoteQuick`, `permissions:add`, `permissions:remove`, `connections:connect` *(enables disabled connections & remaps project models in `src/main/connections/service.ts:588`)*, `connections:update`, `connections:setSecret`, `connections:login`, `connections:cancelLogin`, `connections:logout`, `connections:setDefault`, `mcp:upsert`, `mcp:remove`, `mcp:setSecret`, `mcp:linkLibrary`, `mcp:promote`, `mcp:authorize`, `mcp:cancelAuthorize`, `mcp:revokeAuth`, `mcp:copyFromLibrary`, `mcp:setProjectOverrides`, `mcpLibrary:upsert`, `mcpLibrary:remove`, `mcpLibrary:setSecret`, `connectors:add`, `connectors:setToken`, `connectorPresets:upsert`, `connectorPresets:remove`, `plugins:upsert`, `plugins:remove`, `skills:create`, `skills:update`, `skills:remove`, `skills:linkLibrary`, `skills:promote`, `skills:applyImport`, `skills:undoImport`, `skills:applySuggestion`, `skillLibrary:create`, `skillLibrary:addFromBundle`, `skillLibrary:update`, `skillLibrary:remove`, `capabilities:apply`, `capabilities:undo`, `capabilities:dismiss`, `capabilities:restore`, `maintenance:integrateWorktree`, `maintenance:discardWorktree`, `maintenance:uninstallRepo`, `templates:saveFromProject`, `templates:remove`, `templates:apply`, `knowledge:saveNode`, `knowledge:removeNode`, `knowledge:saveEdge`, `knowledge:removeEdge`, `knowledge:clear`, `knowledge:dismissLink`, `kit:exportBundle`, `kit:applyBundle`, `teamFiles:status` *(can write the team files on a code project's first call)* |
 | **`request: desktop_only`** (refused over socket) | `projects:pickDirectory`, `skillLibrary:addFromFolder`, `kit:pickExportPath`, `kit:pickImportPath`, `kit:export`, `kit:previewImport`, `kit:applyImport`, `menu:setState`, `app:openPath`, `app:openLogs`, `app:setNotifications`, `app:cliShimStatus`, `app:installCliShim`, `app:uninstallCliShim` *(Wave 6)*, `projects:parseRepoSource`, `projects:repoTools`, `projects:cloneRepo`, `projects:cancelClone`, `projects:setFolderConfigTrust` *(only the user can trust a folder's config)*, `teamFiles:approve`, `teamFiles:reject`, `teamFiles:undo`, `teamFiles:enable`, `teamFiles:commit` *(review-card decisions on a repository's team files)* *(dev's repository clone, merged 2026-11-05: the IPC sender carries progress and cancel-on-close)* |
 | **`push: socket_subscribable`** (server -> client push only; never RPC-callable) | `runs:event` *(via `runs:subscribe`)*, `settings:changed`, `connections:event` *(carries `connection.login` device-code URL/code and status changes)*, `mcpLibrary:changed`, `skillLibrary:changed`, `capabilities:progress`, `capabilities:reviewUpdated`, `projects:engagementChanged` *(via `host.subscribe({ topics })`)* |
-| **`push: desktop_only`** (Electron window routing push only; never sent over socket) | `app:focusRun` (`src/main/notifications.ts:186`), `menu:action` (`src/main/appMenu.ts`), `projects:cloneProgress` (`src/main/ipc.ts` `registerRepoIpc`, to the window that started the clone; merged 2026-11-05), `teamFiles:changed` (`DesktopHooks.teamFilesChanged`, every window; never on the bus a socket can subscribe to) |
+| **`push: desktop_only`** (Electron window routing push only; never sent over socket) | `app:focusRun` (`src/main/notifications.ts:186`), `menu:action` (`src/main/appMenu.ts`), `projects:cloneProgress` (`src/main/ipc.ts` `registerRepoIpc`, to the window that started the clone; merged 2026-11-05), `teamFiles:changed` (`DesktopHooks.teamFilesChanged`, every window; never on the bus a socket can subscribe to), `app:navigate` (self-knowledge, 2026-11-07: an agent's `open_in_app`, `DesktopHooks.navigate` = appMenu.ts `navigateSender`, the main window only) |
 
 #### 4. Lossless Subscriptions (`runs:subscribe` & `host.subscribe`), Chain Following & Outbound Coalescing
 
@@ -522,6 +533,7 @@ Because `claude.ts:3155-3165` and `codex.ts:765-766` emit `run.status: 'idle'` b
 | `plan === undefined` (single-agent / `autoContinue: false`, or after turn-1 `set-plan` nudge completed with no plan needed) | `'completed-unplanned'` | `'finished'` | `undefined` | `Finished` | **`0`** |
 | `plan?.status === 'done'`, but `unmergedConflictBranches.length > 0` (and `!allowUnmerged`) | `'unmerged-conflicts'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
 | `plan?.status === 'blocked'` | `'blocked'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
+| Required delegation failed: root verdict `failed`, an unresolved failed subtree, preflight problems, or (`--strict-delegation`) any Codex native multi-agent use (docs/design/delegation-enforcement.md) | `'delegation-incomplete'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
 | `plan?.status === 'active'` with `remainingSteps(plan).length > 0` (`pending \| in_progress \| blocked`) | `'incomplete-plan'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
 | `maxAutoDenials` reached, or card arrived under `policy: 'fail'` / `waitTimeoutMs` expired | `'needs-decision'` | `'finished'` | `'policy'` | `Finished` | **`3`** |
 | `maxBudgetUsd` reached (`>=`), `error_max_budget_usd`, or unpriced model when `maxBudgetUsd !== undefined && !allowUnpricedBudget` | `'budget-exceeded'` | `'finished'` | `'budget'` | `Finished` | **`3`** |
@@ -576,6 +588,31 @@ Because `claude.ts:3155-3165` and `codex.ts:765-766` emit `run.status: 'idle'` b
 6. **`orgai daemon <status|start|stop|restart|logs>`**:
    - Supports `status`, `start`, `stop [--force]`, `restart [--force]`, and `logs`.
    - `host.status` (`'read'` scope) and `host.stop` (`'configure'` scope) are version-independent RPC methods supported across all `protocolVersion >= 1` builds, so even when `clientVersion !== appVersion`, `orgai daemon status`, `orgai daemon stop`, `orgai daemon restart`, `orgai runs list`, `orgai watch`, and `orgai decide` work cleanly!
+
+### 6.4 Commands added after Wave 7 (cli-parity, `docs/design/cli-parity.md`)
+
+Each command below is a row of the command table (`src/cli/commandTable.ts`, entries in `src/cli/entries/`), so it appears in `orgai --help` with its summary, in `orgai help <command>` and in the generated shell completions. Scopes are what the command asks the host for.
+
+| Command | Scope | What it does |
+| --- | --- | --- |
+| `orgai settings [list] \| get <key> \| set <key> <value>` | read / configure | The app settings that matter in a terminal (project defaults, assistant and setup models), one validated field per `settings:set`. |
+| `orgai connections tier <id> [<tier>=<model> ...] [--reset <tier>] [--force] [--dry-run]` | read / configure | Show or change which model a tier maps to on one connection; lists the roles a change touches. |
+| `orgai models list \| resolve \| refresh \| prices \| remap` | read / operate / configure | The model catalog (connections shown by display name), each tier and role resolved to a model, prices and role remaps. |
+| `orgai models prices set <model> --input <usd> --output <usd> [--cache-read] [--cache-write] [--connection <id>]` / `prices unset <model>` | configure | Price overrides per million tokens (`AppSettings.modelPrices`). |
+| `orgai team role add \| set \| rm \| move` | read / configure | Edit one role of the current project with the desktop editor's save and checks; spend-raising changes ask first (`--yes` without a terminal). |
+| `orgai team roles` / `orgai org show` | read | The chart; each role line carries effort, staffing in words and the connection it runs on. |
+| `orgai org draft "<text>" [--apply [--yes]] \| draft --from <file> --apply` | operate / configure | Draft an org chart with the Team assistant; apply it now or from a draft file saved earlier. |
+| `orgai org revise "<instruction>"` | operate | Ask the Team assistant to revise the chart. |
+| `orgai runs show <run> [--logs [--level warn\|info\|all]]` | read | A saved run; `--logs` adds the harness log; the number of outputs the run made shows when not zero. |
+| `orgai runs model <run> [<tier\|model id>] [--connection <id>] [--yes]` | read / operate | Show or switch a run's model behind the desktop's guard. |
+| `orgai resume <run> --now \| --cancel-auto-resume` | operate | Resume a run paused for a usage limit now, or keep it paused. |
+| `orgai exec --image <file>` (also `resume --exec`, repeatable) | operate | Attach images (PNG, JPEG, GIF, WebP; 5 MB each, at most 10) to the first message. |
+| `orgai outputs list [--run <run>]` | read | The project's run outputs (id, title, kind, version, size, open notes, path). |
+| `orgai outputs show <output>` | read | One output's metadata and a text preview for text-like kinds; the path for the rest. |
+| `orgai outputs revise <output> "<instruction>" [--run <run> \| --new]` | operate | `outputs:revise` for the whole current version, to the run that made it when live or continuable, else a new run. |
+| `orgai outputs note <output> "<text>" [--version <n>]` | operate | `outputs:noteAdd`, anchored to the whole version. Opening, saving, forgetting and deleting outputs stay desktop-only or configure channels and have no command. |
+
+The terminal UI has `/model` (a picker; connections by display name), `/logs` and `/outputs` (the followed run's outputs in the pager overlay).
 
 ---
 
@@ -957,6 +994,14 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   the two-step discard), `v` through the real pager, permission `s` and a confirmed `a` are unit-tested only
   (decisions.test.ts, DecisionTray.test.tsx, pager.test.ts). The pager signal handling is unit-tested with a fake
   process, not with a real `less` in a PTY.
+- **Usability fixes (2026-11-06, issues #25-#32, `docs/design/ux-review-tui.md` "Implementation notes").** Deviation
+  from 5.1: full-screen now starts at 70x24 (`FULLSCREEN_MIN_COLS` 70; stacked below `SPLIT_MIN_COLS` 110), so 80x24
+  shows the panes; inline stays for `--inline`, `--ax-screen-reader`, TERM=dumb, a non-TTY and smaller windows. Esc on
+  the composer interrupts only when pressed twice within `ESC_INTERRUPT_MS` 1.5 s. Permission cards hold y / s / a
+  until the card body's last line was shown or `v` (full view, new) was used. Status-line notices last
+  `TUI_NOTICE_TTL_MS` 5 s. Input that arrives while a focus change is pending is queued (at most 512 events) and
+  replayed once the new target is registered. Verified by unit and ink-testing-library tests only; the pty steps of
+  `e2e/cli-tui.mjs` were updated (an unfocused tray reads "Alt+D to answer") but not run (Windows SKIP).
 
 ### Wave 5 (landed on dev, 2026-11-05; contracts c2e7a1a, merges db3de45..dd33778, integration fix 565c479, review fix-up after it)
 
@@ -1016,8 +1061,8 @@ Resolved `R1`–`R10` (single-host daemon vs Desktop ownership, socket authentic
   removes and refreshes the PATH shim (`~/.local/bin/orgai`, `%LOCALAPPDATA%\OrgAI\bin\orgai.cmd`), only from a
   packaged app without ORGAI_DATA_DIR, never over a file without the `orgai-shim v1` marker, a symlink or a non-regular
   file. An install never turns Terminal access on by itself (review H2): the row asks ("Turn on Terminal access?") and
-  names the same-user trust model. App settings > General > Advanced settings > Terminal has the
-  `CliShimRow` (`lib/cliShim.ts`). The preload is CommonJS (`out/preload/index.cjs`) and every window runs with
+  names the same-user trust model (SUPERSEDED: no Terminal access setting remains). App settings > General > Advanced settings > Terminal has the
+  `CliShimRow` (`lib/cliShim.ts`; SUPERSEDED, replaced by `CliCommandRow`, standalone default spec 5.3). The preload is CommonJS (`out/preload/index.cjs`) and every window runs with
   `sandbox: true` (7(1)). `orgai doctor` gained the install and shim checks; the launcher finds a packaged app.
   `npm run pack` builds the CLI bundle too; `npm run pack:verify` (`scripts/verify-pack.mjs`) checks a local unpacked
   pack token-free: (a) files, (b) unpacked imports, (c) `--version`, (d) doctor, (e) a mock exec on `--host inproc`,
@@ -1173,7 +1218,7 @@ Each item is unit-tested on macOS unless it says otherwise; nothing here was run
   time comes from Node's time origin (no PowerShell before the first window), other pids are read asynchronously. A
   secret-ACL failure is fatal only for headless / inproc acquires and setListening(true); a desktop launch with
   Terminal access off never fails on it (M8). UNVERIFIED on Windows (pid reuse, Get-Process, start-time skew).
-- **Window close (H3, group C).** Off macOS the desktop quits through quitGate as before; only while runs are working
+- **Window close (H3, group C).** Off macOS the desktop quits through quitGate as before (Wave 7: through the `ShutdownCoordinator`); only while runs are working
   without the user (`RunManager.workingRunCount`) it asks Keep working in the background / Stop and quit / Cancel. A
   `--headless-host` launch goes to the background only while no run is working (3ffaa89). The `liveRuns` activity
   source is `busyRunCount`: idle runs, runs with an open card and held runs do not count. The prompt is unverified by
@@ -1198,6 +1243,31 @@ Each item is unit-tested on macOS unless it says otherwise; nothing here was run
   bodies live in `src/shared/view`; reexports.test.ts compares export names and values of every stub.
 - **Lows.** Conservative question policy never follows an agent's "(Recommended)" option; `execStallTimeoutMs` <= 0 is
   dropped on read; 'policy' / 'budget' endings read Stopped; kit `targetDigest` covers secret and sign-in presence;
-  CliShimRow live region, announced load failure and aria-describedby hint; `build/bin/orgai` stops after 40 link
+  CliShimRow (since removed) live region, announced load failure and aria-describedby hint; `build/bin/orgai` stops after 40 link
   hops and `.gitattributes` pins LF / CRLF; doctor caps daemon.json at 64 KB; the rest are in group B above.
 - **Owner decisions kept.** The RunAsNode fuse stays on; no PATH shim on Linux (AppImage).
+
+### Wave 7 (standalone `orgai`; on branch `wave7/standalone-cli`, PR open against dev; spec `docs/design/cli-standalone.md`, its section 13 Round 6 binding)
+
+- **Landed.** (1) The npm package `orgai-cli` (bin `orgai`): `scripts/build-npm-package.mjs`, `install.json` channel, `engines.node`, `scripts/verify-npm.mjs` (spec 3.4 steps 1-7), release.yml `npm-package` / `verify-npm` / `publish-npm` (environment `npm-publish`, OIDC provenance, `NPM_PUBLISH_ENABLED` guard). (2) Hosts without the app: `--host auto` falls back to an in-process host, `--host daemon` starts the app or a detached Node host (`HostKind 'node'`, `daemon start --runtime`), `orgai terminal-access`, the Terminal-access level question, shared in-process hosts (marker file). (3) The `ShutdownCoordinator` for every exit path (`quitGate.ts` deleted), mutation leases on every host path, the 60 s hard limit that kills the host's descendants, and the desktop handoff from a Node host (`handoff.ts`, `host.stop` with `handoff`). (4) The vault (`<data>/vault.json`, AES-256-GCM, reconciliation with the app's `secrets.json`), the key custodians (keychain, DPAPI, Secret Service, key file), the `secrets:*` channels and `orgai secrets status | init | reset | undelete`, `connections set-secret` / `mcp set-secret` / `mcp authorize` on Node and inproc hosts. (5) The Claude and Codex resolvers (`claudeBinary.ts`, `codexBinary.ts`), `ORGAI_VAULT_*` scrubbed from children, the self-control gate additions (spec 8.4 plus review rounds), doctor install / runtime / secrets checks, and the Terminal row naming an npm `orgai`. The Wave 7 text in CLAUDE.md "CLI & host" lists the constants and files.
+- **Gate (on the branch, macOS only).** Per package: `npm run typecheck` clean, targeted vitest and the whole `npx vitest run` green (last package runs: 397-402 files, 7168-7311 passed, 0 failed, 7-9 skipped), `npm run test:scripts` (68 of 68 for packaging). Integration commits ran the real-piece tests (`openSecretStoreCustodians`, `secretChannelsReal`, `daemonNodeHost.int`, `vaultCli.int`, `doctorVault.int`, `shutdown.int`, `handoff.int`, `hostSelection.int`) and the e2e scripts for the area (cli-mcp). The full e2e:free chain and CI were not run on the branch.
+- **Deviations / decisions beyond the spec.**
+  - **Package name `orgai-cli`** (D1, owner 2026-11-06; npm refused `orgai`); the gate keeps denying `orgai` and `@orgai/cli`.
+  - **No shrinkwrap** (D10, owner 2026-11-06, to revisit): `NPM_SHRINKWRAP=none` in release.yml and ci.yml. With npm 11.12.1 a honoured shrinkwrap installed every platform's Claude runtime (about 2 GB) and verify-npm step 1 failed. CI dry-runs the full derivation; step 1b is skipped after any failed step 1.
+  - **Publishing is gated twice**: the environment's required reviewers and the environment variable `NPM_PUBLISH_ENABLED`; nothing stops that variable being set at repository level by mistake.
+  - **Other commands' in-process hosts** (review): instead of refusing every 'inproc' host, a host is "shared" only when `daemon start --host inproc` wrote `run/inproc-shared-<id>`; any other inproc host is waited out (up to 15 s), then exit 6. A host from an older CLI has no marker.
+  - **Explicit clears vs removals**: `set(key, null|'')` / `clear()` throw, `delete()` / `deletePrefix()` never do (spec 5.5).
+  - **Unreadable files**: an unreadable `vault.json` follows the corrupt rules but reports 'locked' with the I/O reason; an unreadable `secrets.json` refuses value writes on every host, which is stricter than the spec.
+  - **Key-file ACL on macOS**: only allow entries are refused (`ls -le`); deny entries are accepted.
+  - **Gate**: the name "OrgAI Vault" is denied only after `security` and the keyring front ends (not in any word), all-wildcard program words are not read as a custodian name, and the scan-cost test checks linearity.
+  - **Claude runtime**: `.js` / `.mjs` / `.cjs` are refused in `ORGAI_CLAUDE_PATH`; a POSIX `#!` wrapper in `ORGAI_CODEX_PATH` that maps to no package is used as is.
+  - **Handoff**: the start-time recheck is 30 s (not 5 s); only a forced, user-confirmed stop treats an unanswered call as stopping; an empty `handoffBlockers` means the facts could not be read.
+  - **Not built**: the portable archive (phase C), the RunAsNode fuse change and retirement of the app-bundled CLI (phase D), retirement of `secrets.json`, the app notice for soft-deleted secrets, a cap on a running Node host's log.
+- **Unverified.** Windows and Linux entirely; any real OS key store (`scripts/probe-custodian.mjs` written, not run); the real `security` stderr shape; the real npm registry, provenance and the environment variable guard; verify-npm on any runner (it ran locally against the built bundle for step 6 only); packaged builds and the new pack:verify status / stop checks against a real pack; the engines floor; a real Electron Quit and the handoff window by eye; a real Node host that takes more than 5 s to drain under a forced handoff.
+
+### TUI org chart (2026-11-06)
+
+The TUI's Agents pane follows the desktop org chart: folded finished subtrees, one-line rows, waiting-agent chips and jump keys,
+an agent inspector, subtree focus, run chips, `/usage`, `/retro`, and a single `keymap.ts` for hints, `/help` and the `?` overlay.
+No new channel and no change to `src/shared/types.ts`. See `docs/design/ux-review-tui-org.md` "Implementation notes" for what was
+checked and what is open (no pty or real-console run; save-as-project needs the configure scope the TUI lacks).

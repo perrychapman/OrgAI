@@ -1,5 +1,6 @@
 import type {
   ConnectionId,
+  DelegationVerdict,
   EngagementNote,
   EngagementNoteContent,
   KnowledgeEdgeSaveInput,
@@ -13,6 +14,7 @@ import type {
   KnowledgeRetireResult,
   KnowledgeSource,
   ModelRef,
+  Effort,
   ModelTier,
   ImageAttachment,
   McpInstallDecision,
@@ -24,6 +26,9 @@ import type {
   MergeDecision,
   MergeReview,
   ModelPrice,
+  OutputProduceInput,
+  OutputReadInput,
+  OutputRegisterInput,
   PermissionDecision,
   PermissionRuleDecision,
   PermissionRuleRequest,
@@ -41,8 +46,10 @@ import type {
   RunKind,
   RunPeer,
   RunPlan,
+  RunStaffing,
   RunSummary,
   ProjectPeek,
+  StaffingGoal,
   SkillContent,
   SkillEvaluationReport,
   SkillFileInfo,
@@ -52,6 +59,31 @@ import type {
   UsageStatus,
   UserQuestion
 } from '@shared/types'
+import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
+import type { StaffingProfile } from '../store/staffingProfile'
+import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId, PermissionMode } from '@shared/types'
+
+/**
+ * RunManagerOptions.selfKnowledge (types.ts "Self-knowledge and self-configuration"), wired in host/bootstrap.ts.
+ * Missing = no app_reference answers, no open_in_app and no appSettings apply.
+ */
+export interface SelfKnowledgeHooks {
+  /** The reference service (src/main/reference/appReference.ts). `status: false` makes a status query answer "not available". */
+  reference(query: AppReferenceQuery, opts: { status: boolean }): Promise<AppReferenceResult>
+  /**
+   * Deliver an AppNavigateEvent to the desktop main window (index.ts DesktopHooks). false when no desktop window can
+   * show it (a headless or in-process host): the tool then says so.
+   */
+  navigate(event: AppNavigateEvent): boolean
+  /** The stored app settings. */
+  settings(): AppSettings
+  /**
+   * Apply an approved appSettings proposal through the settings:set path (args.ts settingsSetArgs semantics,
+   * SettingsStore normalization, which also applies the theme and broadcasts settings:changed). Throws a readable
+   * sentence on refusal; nothing is saved then.
+   */
+  applyAppSettings(payload: AppSettingsProposalPayload): void
+}
 
 /** Harness id of the root orchestrator's AgentInstance, shared by every adapter. */
 export const ROOT_AGENT_ID = 'root'
@@ -72,13 +104,15 @@ export function isSetupLikeRun(kind: RunKind): boolean {
  */
 export interface RunConnection {
   connection: ConnectionId
+  /** The connection's display name (a proxy's own name), for messages. Not a secret. */
+  name?: string
   /** The adapter adapterForProject chose; equals the adapter receiving this context. */
   adapter: ProviderId
   /**
    * Extra environment for the adapter's child process. The Claude adapter merges it over an isolated copy of
    * process.env (childEnv.ts isolateClaudeEnv: a user's gateway, model and cloud-provider variables never reach a
    * run), so this is the only source of routing variables.
-   * Claude adapter on LiteLLM: ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and
+   * Claude adapter on a proxy: ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN and
    * ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL. On the anthropic connection: ANTHROPIC_API_KEY (copied from
    * the project's auth.envVar) for an API-key project whose variable is set, else empty (the Claude Code login or
    * CLAUDE_CODE_OAUTH_TOKEN authenticates). Secret values here are redacted from logs (collectSecrets).
@@ -88,12 +122,12 @@ export interface RunConnection {
   env?: Record<string, string>
   /** Codex adapter: how it authenticates. 'chatgpt' = the login Codex keeps in CODEX_HOME. */
   codexAuth?: 'chatgpt' | 'apiKey'
-  /** Codex adapter with an API key (OpenAI env var or LiteLLM key). Secret. */
+  /** Codex adapter with an API key (OpenAI env var or proxy key). Secret. */
   apiKey?: string
-  /** Codex adapter on LiteLLM: the OpenAI-compatible base URL ("<litellm baseUrl>/v1"). */
+  /** Codex adapter on a proxy: the OpenAI-compatible base URL ("<proxy baseUrl>/v1"). */
   openaiBaseUrl?: string
   /**
-   * LiteLLM only: token prices by model id from the catalog (ProviderModel.price, read from /model/info). Keys are
+   * Proxy only (a litellm-kind proxy that reported prices): token prices by model id from the catalog (ProviderModel.price, read from /model/info). Keys are
    * the proxy's model names, plus the bare upstream model (litellm_params.model without its "provider/" prefix) when
    * no model name already has it, since a proxy may answer with the upstream name. Look up with pricing.ts
    * `priceFor` (date suffixes and provider prefixes are tolerated). Missing or no match = no estimate (cost 0;
@@ -101,7 +135,7 @@ export interface RunConnection {
    */
   pricing?: Record<string, ModelPrice>
   /**
-   * The connection's tier mapping at run start (AppSettings.connections[connection].tierModels), for tier-driven
+   * The connection's tier mapping at run start (the connection's record, connectionRecord(settings, connection).tierModels), for tier-driven
    * choices inside a run: steering deep/top spawns to the everyday tier near a plan limit, and mapping the tier names
    * of proposed org chart roles. Missing on mock runs. Not secret.
    */
@@ -331,6 +365,27 @@ export interface RuntimeContext {
     retire(input: KnowledgeRetireInput, caller: KnowledgeCaller): KnowledgeRetireResult
   }
   /**
+   * produce_output / register_output (OUTPUT_TOOLS; types.ts "Run outputs"). RunManager provides it on work runs of a
+   * stored project (team 'default' or 'single', code or engagement; never bare, quick, trust-restricted, setup-like or
+   * virtual-project runs); missing = the tools answer "Outputs are not available in this run.". On each call RunManager
+   * resolves the folder scope from the stored project (path, allowed and reference folders) at call time, fills the
+   * OutputSource from the run's agent record (never a value the agent supplied), counts it toward OUTPUTS_RUN_MAX (past
+   * it the call throws "The output limit for this run (200) is reached; nothing was saved."), and on success emits
+   * `output.created`, writes one quiet harness transcript row on the calling agent and pushes outputs:changed. Every
+   * refusal (path rules, caps, hidden characters, an unrenderable document) throws with the sentence the tool shows
+   * after "REFUSED: ".
+   */
+  outputs?: {
+    /**
+     * Identity rule (outputs 2): a path that is an indexed output adds a version (`versioned`), an unchanged result
+     * changes nothing (`created` and `versioned` both false). RunManager emits `output.created` or `output.versioned`.
+     */
+    produce(input: OutputProduceInput, caller: KnowledgeCaller): Promise<OutputWriteResult>
+    register(input: OutputRegisterInput, caller: KnowledgeCaller): Promise<OutputWriteResult>
+    /** read_output (list / read / notes) over the service; a refusal throws a sentence the tool shows after "REFUSED: ". Read-only, no cap. */
+    read(input: OutputReadInput, caller: KnowledgeCaller): Promise<OutputReadResult>
+  }
+  /**
    * knowledge_recall (KNOWLEDGE_RECALL_TOOL): one budgeted, ranked answer as fenced data. RunManager provides it on
    * engagement work runs and single (Ask) engagement runs of a stored project; never on bare, quick, setup-like or
    * trust-restricted runs. It keeps the per-agent "already shown" state (only for a named agent: `caller.agentId` must
@@ -412,10 +467,22 @@ export interface RuntimeContext {
   allowDirectories?(dirs: string[]): string[]
   /**
    * "Always allow for project" on a setMode acceptEdits suggestion: set Project.permissionMode to 'acceptEdits' only
-   * while it is 'default' (never from auto, plan, dontAsk or bypassPermissions); ctx.project follows. Returns true
-   * when it switched. Logs it. Missing on trust-restricted runs: nothing persists.
+   * while it is 'default' (never from auto, plan, dontAsk or bypassPermissions). Returns true when it switched. Logs
+   * it. ctx.project follows the saved project only on a run without a per-run mode choice (the choice is laid back
+   * over it); what keeps ctx.project in step with the provider session is acceptEditsGranted below, not this.
+   * Missing on trust-restricted runs: nothing persists.
    */
   acceptEditsForProject?(): boolean
+  /**
+   * The adapter calls this exactly where it applies a session or project allow's setMode acceptEdits suggestion to the
+   * session it runs (Claude: where it returns updatedPermissions holding a setMode acceptEdits; Codex / mock: where they
+   * set sessionAcceptEdits), and never when it falls back to an allow-once. RunManager then lays acceptEdits over a
+   * narrower mode in force (ctx.project, RunSummary.sessionPermissionMode, a run.permissionMode event) for the rest of
+   * this session; the run's own mode and what continuations carry are untouched. Set only on work runs that are not
+   * trust-restricted. A bridged child context gets a local one from bridge.ts that only marks the child (counted by
+   * BridgedSessions.liveWiderThan) and never reaches the parent, because a child's grant moves only the child session.
+   */
+  acceptEditsGranted?(): void
   /**
    * Folders never offered or granted as extra directories (addDirectories suggestions, session dirs): OrgAI's data
    * folder, both spellings. Set on every run, restricted ones included. ruleMatch.ts matchOptionsFor carries it as
@@ -445,8 +512,35 @@ export interface RuntimeContext {
   getPlan(): RunPlan | undefined
   /** Store the plan on the run, persist it and tell the renderer (plan.updated). */
   updatePlan(plan: RunPlan): Promise<void>
+  /** Work runs: the run's staffing record (shared/types.ts "Run staffing"), if anything was recorded. Nothing writes it yet. */
+  getStaffing(): RunStaffing | undefined
+  /**
+   * Store the run's whole staffing record, persist it and tell the renderer (staffing.updated), like updatePlan.
+   * RunManager cleans it first (defaults.ts cleanRunStaffing: malformed rows dropped, the newest
+   * RUN_STAFFING_ASSIGNMENTS_MAX kept); a value that is not an object is ignored with a warning.
+   */
+  updateStaffing(staffing: RunStaffing): Promise<void>
+  /**
+   * The goal this run staffs for: defaults.ts staffingGoalOf(project, RunOverrides.goal), the per-run override on top
+   * of Project.staffingGoal, fixed at run start. RunManager sets it on every run; missing (fakes, older callers) =
+   * staffingGoalOf(ctx.project, ctx.run.overrides?.goal). staffing.ts recordStaffing reads it for a run's first record.
+   */
+  staffingGoal?: StaffingGoal
+  /**
+   * The project's staffing profile (store/staffingProfile.ts, docs/design/orchestration-efficiency.md 4.5), read once when
+   * RunManager builds the context: a snapshot for the life of the run. Set only on runs it applies to
+   * (staffingProfileApplies: work runs of a stored project with automatic staffing, not quick, Ask, setup-like or build
+   * runs); bridged child sessions never get it. Adapters feed it to their StaffingBook (profileDefaultsFor) and the
+   * root's first message (withRootStaffingBrief). Missing (fakes, older callers) = no profile.
+   */
+  staffingProfile?(): StaffingProfile | undefined
   /** Cards waiting for the user: pending permissions, proposals, questions and merge reviews. */
   pendingInteractions(): number
+  /**
+   * Reports running now (subagent threads and bridged reports of this session, any depth). The plan tools subtract it
+   * from the project's concurrency limit to say how many agent slots are free. Missing = none running.
+   */
+  liveReports?(): number
   /** Work runs: keep the orchestrator going until the plan is complete (project.autoContinue). Default true. */
   autoContinue?: boolean
   /** Automatic continues allowed in this run (project.maxAutoContinues). */
@@ -460,6 +554,12 @@ export interface RuntimeContext {
   onRootTurnEnded?(e: RootTurnEnd): void
   /** Adapter-internal activity that should keep an exec run from settling or stalling (bumps activityGen). */
   noteActivity?(reason: ExecActivityReason): void
+  /**
+   * Required delegation (docs/design/delegation-enforcement.md 5.2): the run's ledger gate, implemented by RunManager on
+   * work runs only (missing on setup, assistant, quick and single-agent runs: nothing is enforced). Adapters call it at
+   * each spawn, completion, delivery and native-spawn attempt and act on the answer.
+   */
+  delegation?: DelegationGate
   /**
    * Set by RunManager on exec runs with a budget: the effective budget minus the exec chain's prior cost (0 allowed).
    * Claude passes it as options.maxBudgetUsd instead of project.maxBudgetUsd; a restart subtracts this run's cost from it.
@@ -532,6 +632,36 @@ export interface RuntimeContext {
    */
   listProjects?(): ProjectPeek[]
   /**
+   * Chat (quick) runs only: true once the user answered "Allow for session" on a card for an edit inside the chat's
+   * folder that offered the quick session-edit suggestion (quick/sessionEdits.ts `quickSessionEditSuggestion`).
+   * RunManager owns the flag (decide() re-checks the card's tool and path) and binds this only on quick runs.
+   * Adapters read it through `quickEditPreApproved` and never pass the setMode suggestion on to a provider: the
+   * provider stays in its asking mode, and only edits `quickFolderEditCovered` accepts (inside the folder, by lexical
+   * and real path, never under .git, .claude, .codex, .agents, .orgai, .vscode, .idea, .github or the listed config
+   * files) become free. Missing = no session edit grant.
+   */
+  quickSessionEdits?(): boolean
+  /**
+   * app_reference (every run kind; types.ts "Self-knowledge and self-configuration"): RunManager binds
+   * RunManagerOptions.selfKnowledge.reference with `status` allowed only on quick (Chat), 'mcp-assist' and
+   * 'skill-assist' runs; elsewhere a status query answers that status is not available in this run. Missing = the
+   * tool says the reference is unavailable.
+   */
+  appReference?(query: AppReferenceQuery): Promise<AppReferenceResult>
+  /**
+   * open_in_app (quick, setup, 'mcp-assist' and 'skill-assist' runs only; never work or single runs). RunManager
+   * checks the surface id (isAtlasSurfaceId), the project (a stored, non-virtual project; required for project and
+   * engagement surfaces, an engagement for engagement surfaces, dropped for app and assistant surfaces), the per-run
+   * limits (OPEN_IN_APP_PER_RUN_MAX, OPEN_IN_APP_MIN_INTERVAL_MS), then sends AppNavigateEvent through
+   * RunManagerOptions.selfKnowledge.navigate and writes one harness transcript row "Opened <path> for you" on the
+   * calling agent. Missing = the tool says it cannot open the app from this run.
+   */
+  navigate?(target: { surfaceId: AtlasSurfaceId; projectId?: string }, caller: { agentId?: string }): AppNavigateOutcome
+  /** Quick runs only: the stored app settings (secret-free), for an appSettings proposal's `from` values. */
+  appSettings?(): AppSettings
+  /** Quick runs only: a stored, non-virtual project by id (propose_project_settings target). undefined otherwise. */
+  storedProject?(projectId: string): Project | undefined
+  /**
    * Skill assistant runs ('skill-assist'): the skill library and, in a project session, the project's skills with
    * the role ids that load them (SkillInfo.grantedTo; resolve to slugs through ctx.project.roles). `project` is empty
    * on the virtual SKILLS_PROJECT_ID. Missing = the skill tools say the library is unavailable.
@@ -542,6 +672,100 @@ export interface RuntimeContext {
    * session's project (a linked skill reads its entry). null = unknown id. Never reads outside OrgAI's own copies.
    */
   readSkill?(ref: { libraryId?: string; skillId?: string }): SkillContent | null
+  /**
+   * Multi-provider org charts (bridged reports, runtime/bridge.ts): present on a work run of a stored project whose
+   * chart has bridged roles (AdapterChoice.bridged), never on setup-like, quick, single or trust-restricted runs and
+   * never inside a bridged child session (no nested bridging in phase 1). Read at call time.
+   * - `roles()`: the bridged roles (id, slug, name, connection and its display name, adapter). Adapters must not
+   *   offer these roles through their native spawn path (Claude: no AgentDefinition, PreToolUse denies Agent / Task
+   *   for their subagent_type; Codex: spawn_agent routes them to `spawn`).
+   * - `spawn(input)`: start the role in a child session on its own adapter and RunConnection and resolve with its
+   *   final text once its root's first turn ends (or the child fails / the run stops: `ok: false` with an error text).
+   *   RunManager enforces spawnable (the caller's role may spawn it; unknown caller = the root role), depth and
+   *   concurrency (effectiveSubagentLimits, counting native and bridged agents) and refuses with a thrown Error whose
+   *   message the caller returns to the model. The child's agents reach the run as ordinary agent.upsert events (root
+   *   remapped to a fresh id under `parentAgentId`, `connection` set), so adapters emit nothing for it themselves.
+   *   Never rejects for a child failure; rejects only for a refusal before the child exists.
+   */
+  bridge?: {
+    roles(): BridgedRole[]
+    spawn(input: BridgeSpawnInput): Promise<BridgeSpawnResult>
+  }
+  /** The connection a role's agents run on in this run (defaults.ts roleConnection), for adapters that label agents. Missing = the run's connection. */
+  agentConnection?(roleId: string): ConnectionId | undefined
+  /**
+   * Setup runs (propose_org_chart drafts with a `connection`): every connection a role may name right now
+   * (connectionConfigured, the anthropic connection included), with its display name, tier mapping and catalog ids,
+   * so a draft's tier maps through ITS connection. Read at call time. Missing = drafts may not name a connection
+   * other than the run's (the tool answers REVISE). Never secrets.
+   */
+  connectionModels?(): { connection: ConnectionId; name: string; tierModels: Partial<Record<ModelTier, ModelRef>>; models: ModelRef[] }[]
+  /**
+   * Set only on the RuntimeContext of a bridged child session (runtime/bridge.ts). The child's root (`roles` holds the
+   * bridged role with reportsTo null plus the roles reachable through its spawnable chain) is NOT the run's root:
+   * harnessToolsFor gives it no 'root'-audience tools (no plan, proposal, org-change, messaging or ask_user tools),
+   * adapters pass PromptFlags.bridged so it gets a report's prompt, the ContinuationDriver never nudges it
+   * (autoContinue false), and its run.status / run.title / run.finalized / run.usage / run.cost / plan.updated /
+   * staffing.updated events are dropped by the wrapper (it reads 'idle' and the end of the session as "the report is
+   * done"). Its getStaffing / updateStaffing are stubs, like getPlan / updatePlan: nothing reaches the parent run.
+   */
+  bridgedChild?: {
+    /** The harness agent id the child's root appears under in the parent run. */
+    agentId: string
+    /** The parent agent that delegated (ROOT_AGENT_ID or a report's id). */
+    parentAgentId: string
+    roleId: string
+  }
+}
+
+/** RuntimeContext.bridge.roles() entry. */
+export interface BridgedRole {
+  roleId: string
+  slug: string
+  name: string
+  connection: ConnectionId
+  /** connectionName(connection, settings), e.g. "OpenAI" or a proxy's name. Not a secret. */
+  connectionName: string
+  adapter: ProviderId
+}
+
+/** RuntimeContext.bridge.spawn input. `brief` is the delegating agent's text, passed to the child as its first message. */
+export interface BridgeSpawnInput {
+  /** Role id or slug of a bridged role. */
+  role: string
+  brief: string
+  /** Requested handle (unique across the run; generated as <slug>-<n> when missing, network.ts spawnHandle). */
+  name?: string
+  /** One line shown as the agent's first activity. */
+  description?: string
+  /** The delegating agent (HarnessToolCaller.agentId); missing = the root. */
+  parentAgentId?: string
+  /** The delegating agent's role (HarnessToolCaller.roleId); missing = the root role. */
+  parentRoleId?: string
+  /** The delegating tool call's id when the adapter knows it (AgentInstance.spawnToolUseId). */
+  toolUseId?: string
+  /**
+   * Staffing intent from the call (delegate_agent `tier` / `effort`). Resolved through resolveStaffing against the
+   * bridged connection's tier map and the role's bounds, so it can never go past the role's ceilings; a fixed role or
+   * project ignores it.
+   */
+  tier?: ModelTier
+  effort?: Effort
+  /**
+   * Called synchronously once the child's agent exists (before its first turn), so an asynchronous caller (Codex
+   * spawn_agent) can answer its tool call with the handle at once.
+   */
+  onStarted?(info: { agentId: string; handle: string }): void
+}
+
+/** RuntimeContext.bridge.spawn result. `text` is the child's final text (at most BRIDGE_RESULT_MAX_CHARS) or the failure text. */
+export interface BridgeSpawnResult {
+  agentId: string
+  handle: string
+  text: string
+  ok: boolean
+  /** Set when the harness stopped the child (an interrupt or the run's end, BridgedSessions.stopAll), not the child itself. */
+  stopped?: boolean
 }
 
 /** RuntimeContext.skillCatalog: what list_skill_library reports. */
@@ -554,6 +778,33 @@ export interface SkillAssistCatalog {
 }
 
 export interface RuntimeSession {
+  /** Change only the root model at a safe boundary; refuse without changing state when unsafe. */
+  switchModel?(input: { model: string; connection?: RunConnection }): Promise<void>
+  /**
+   * Change the live session's permission mode (RunManager.setPermissionMode, desktop runs:setPermissionMode only).
+   * `mode` is already validated by RunManager (runPermissionModeChoices, never on setup-like or exec runs). The adapter
+   * derives everything from the `mode` argument (its existing mapping, Claude: claudePermissionMode /
+   * claudeAllowsBypass; Codex: its sandbox / approval mapping, applied to that mode), never from ctx.project: RunManager
+   * sets ctx.project before the call only when the mode narrows the one in force, and after an applied answer when it
+   * widens, so no call is ever allowed under a wider mode that did not take effect. On a refusal RunManager re-derives
+   * ctx.project from the live project and the earlier choice. Calls are serialized per run (a second call while one is
+   * pending is refused by RunManager). The adapter applies the mapped mode to the root session and to agents it spawns
+   * from now on. Open permission cards stay open for the user. Session rules and session folders stay; a session-scope
+   * acceptEdits grant does not: when `mode` is not acceptEdits, auto or bypassPermissions the adapter drops it (Codex /
+   * mock: sessionAcceptEdits = false; Claude: the SDK's single session mode is replaced by `mode`), so edits ask again
+   * as `mode` says. Bridged children are separate sessions: RunManager adds their live count to reportsUnchanged on a
+   * narrowing, so the adapter counts only its own native reports.
+   * Answers: true = applied everywhere (no live report stays wider than `mode`). `{ applied: true, reportsUnchanged: n }`
+   * = applied to the root and future agents while n native reports may still run wider than `mode` (the adapter must not
+   * answer plain true then). What counts differs: Claude counts every report, finished (resumable) ones and approved spawns
+   * not yet started included, unless all modes it may run under are no wider; a Codex thread counts only until its turn
+   * ends (its next turn/start carries the new policy). false (or throw) = refused, e.g. the
+   * provider cannot switch now. A thrown message is only logged, never shown, except a thrown
+   * PermissionModeRefusal (permissionModeRefusal.ts, plain path-free OrgAI-written text only, never provider / SDK / CLI
+   * text): RunManager shows its message (control characters stripped, at most 300 characters) as the reason. Missing = this session cannot switch live
+   * (RunManager answers applied: false and changes nothing).
+   */
+  setPermissionMode?(mode: PermissionMode): Promise<boolean | { applied: true; reportsUnchanged: number }>
   /**
    * Send a follow-up user message to the orchestrator. `images` are already validated; `text` may be
    * empty when images are present. The user transcript block records both.
@@ -572,8 +823,41 @@ export interface RuntimeSession {
    * cannot receive (message_run answers NOT LIVE).
    */
   receive?(message: PeerMessage): Promise<void>
+  /**
+   * Deliver a harness message to the root orchestrator and wake it if idle, through the adapter's existing harness-message
+   * path (Claude: notifyOrchestrator). It is not an auto-continue and writes no user block. RunManager uses it for the
+   * exec root's one delegation correction. Missing = the adapter cannot, and no correction is sent.
+   */
+  nudge?(text: string): Promise<void>
   /** Headless exec settlement view (cli-spec 6.2(2)). Missing = the adapter cannot report it (treated as not settled). */
   settlement?(): SessionSettlement
+}
+
+/** What a completion check answers (DelegationLedger.completion). */
+export interface DelegationCompletion {
+  action: 'allow' | 'wait' | 'correct' | 'fail' | 'none'
+  /** The correction / wait text to send the agent. */
+  text?: string
+  verdict?: DelegationVerdict
+  /** On 'fail': what is missing, in words ("policy never spawned; evidence ended without a report"). */
+  missing?: string
+}
+
+/** RuntimeContext.delegation: the host-owned ledger as the adapters see it. RunManager forces canCorrect / canWait false while the run is held, limited or stopping. */
+export interface DelegationGate {
+  noteSpawn(childId: string, parentId: string, roleId: string): void
+  /** An agent tries to finish. `provisional`: decide without recording the agent as done (the root's complete_plan). */
+  completion(agentId: string, opts: { canCorrect: boolean; canWait: boolean; reportText: string; provisional?: boolean }): DelegationCompletion
+  /** The agent ended (interrupted, failed, removed) without completing. */
+  ended(agentId: string): void
+  /** A done or ended agent was resumed (its lead messaged it): it works again and its next completion is evaluated afresh. */
+  resumed(agentId: string): void
+  /** The adapter confirmed the child's report reached its parent. */
+  delivered(childId: string): void
+  /** The receipt (+ failure) line to place before the child's report; undefined when the child has no obligations. */
+  receiptText(childId: string): string | undefined
+  /** A native (non-harness) spawn attempt: returns the agent's strike count. */
+  nativeStrike(agentId: string): number
 }
 
 /** One root turn end, reported through RuntimeContext.onRootTurnEnded. */

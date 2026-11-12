@@ -5,8 +5,15 @@ import { mergeUsage } from './runtime/usage'
 const BOOT_DELAY_MS = 1500
 const IDLE_INTERVAL_MS = 10 * 60_000
 
+/**
+ * What an extra probe answers: one status, null (nothing to report, the previous report stays), or a list (the
+ * proxies' spend: one status per connection; the list replaces the probe's earlier one, so the report of a removed
+ * proxy is dropped at the next probe).
+ */
+export type ExtraProbeResult = UsageStatus | UsageStatus[] | null
+
 /** An extra usage probe. The keyed form can also be run on its own (refreshProbe). */
-export type ExtraProbe = (() => Promise<UsageStatus | null>) | { key: string; probe: () => Promise<UsageStatus | null> }
+export type ExtraProbe = (() => Promise<ExtraProbeResult>) | { key: string; probe: () => Promise<ExtraProbeResult> }
 
 /**
  * Keeps the plan usage meter fresh when no run is open. Live runs report usage themselves every
@@ -21,7 +28,7 @@ export class UsageMonitor {
   private timer: ReturnType<typeof setInterval> | null = null
   private inFlight: Promise<UsageStatus | null> | null = null
   private last: UsageStatus | null = null
-  private extraLast: (UsageStatus | null)[] = []
+  private extraLast: UsageStatus[][] = []
   /** At most one call in flight per extra probe, shared by refresh() and refreshProbe(). */
   private extraInFlight = new Map<number, Promise<void>>()
 
@@ -32,7 +39,7 @@ export class UsageMonitor {
       broadcast: (e: RunEvent) => void
       liveRuns: () => number
       /**
-       * Additional probes (the Codex rate limits, the LiteLLM key spend). Each runs on every refresh and is broadcast
+       * Additional probes (the Codex rate limits, the proxies' key spend). Each runs on every refresh and is broadcast
        * as usage.status with its own provider/connection. They never affect latest() or the return value of refresh().
        */
       extraProbes?: ExtraProbe[]
@@ -71,7 +78,7 @@ export class UsageMonitor {
 
   /** The latest report of every probe, Claude first. */
   latestAll(): UsageStatus[] {
-    return [this.last, ...this.extraLast].filter((u): u is UsageStatus => !!u)
+    return [this.last, ...this.extraLast.flat()].filter((u): u is UsageStatus => !!u)
   }
 
   /** Probe now. Concurrent callers share one probe. */
@@ -97,7 +104,7 @@ export class UsageMonitor {
     return this.inFlight
   }
 
-  /** Run one keyed extra probe now (e.g. 'litellm' after a LiteLLM run ended). Shares a call already in flight. */
+  /** Run one keyed extra probe now (e.g. 'proxies' after a proxy run ended). Shares a call already in flight. */
   refreshProbe(key: string): Promise<void> {
     const i = (this.opts.extraProbes ?? []).findIndex((p) => typeof p !== 'function' && p.key === key)
     return i < 0 ? Promise.resolve() : this.runExtra(i)
@@ -117,10 +124,13 @@ export class UsageMonitor {
     const probe = typeof entry === 'function' ? entry : entry.probe
     const p = Promise.resolve()
       .then(() => probe())
-      .then((usage) => {
-        if (usage) {
-          this.extraLast[i] = usage
-          this.opts.broadcast({ type: 'usage.status', runId: '', usage })
+      .then((result) => {
+        if (Array.isArray(result)) {
+          this.extraLast[i] = result.filter((u) => !!u)
+          for (const usage of this.extraLast[i]) this.opts.broadcast({ type: 'usage.status', runId: '', usage })
+        } else if (result) {
+          this.extraLast[i] = [result]
+          this.opts.broadcast({ type: 'usage.status', runId: '', usage: result })
         }
       })
       .catch(() => {

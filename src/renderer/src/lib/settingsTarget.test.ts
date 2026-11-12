@@ -161,3 +161,22 @@ describe('project settings panes', () => {
     expect(normalizeProjectPane(undefined)).toBe('general')
   })
 })
+
+// The renderer re-exports the atlas's deep-link tables and the shared shortcuts table: the same objects, never copies.
+describe('re-exports of the shared tables', () => {
+  it('settingsTarget values are the atlas objects', async () => {
+    const atlas = await import('@shared/view/atlas')
+    const target = await import('./settingsTarget')
+    expect(target.APP_SETTINGS_SECTIONS).toBe(atlas.APP_SETTINGS_SECTIONS)
+    expect(target.APP_SETTINGS_PANES).toBe(atlas.APP_SETTINGS_PANES)
+    expect(target.ADVANCED_SECTIONS).toBe(atlas.ADVANCED_SECTIONS)
+    expect(target.PROJECT_SETTINGS_PANES).toBe(atlas.PROJECT_SETTINGS_PANES)
+    expect(target.PROJECT_SETTINGS_SECTIONS).toBe(atlas.PROJECT_SETTINGS_SECTIONS)
+    expect(target.PROJECT_ADVANCED_SECTIONS).toBe(atlas.PROJECT_ADVANCED_SECTIONS)
+    expect(target.PROJECT_SECTION_EVENT).toBe(atlas.PROJECT_SECTION_EVENT)
+    expect(target.advancedPaneForSection).toBe(atlas.advancedPaneForSection)
+    expect(target.appPaneForSection).toBe(atlas.appPaneForSection)
+    expect(target.projectPaneForSection).toBe(atlas.projectPaneForSection)
+    expect(target.normalizeProjectPane).toBe(atlas.normalizeProjectPane)
+  })
+})

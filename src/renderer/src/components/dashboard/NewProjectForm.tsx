@@ -1,9 +1,12 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { FolderOpen, Lock, Plus, X } from 'lucide-react'
-import type { Project, ProjectKind, ProjectPathCheck, RepoSourceParse, SetupKind } from '@shared/types'
+import type { ConnectionId, Project, ProjectKind, ProjectPathCheck, RepoSourceParse, SetupKind } from '@shared/types'
 import { PROJECT_CLIENT_MAX_CHARS } from '@shared/types'
+import { projectConnection } from '@shared/defaults'
+import { connectionLabel, isProxyId } from '../../lib/connectionLabel'
 import { useAppStore } from '../../store/useAppStore'
+import { useReducedMotion } from '../../lib/canvas'
 import { cleanIpcError } from '../../lib/ipcError'
 import { examplePath } from '../../lib/platform'
 import { effectiveSetupChoice, foundLine, otherToolAgents, setupChoiceLabel, setupSubmitLabel, templateChoiceHint, totalAgents, type SetupChoice } from '../../lib/agentImport'
@@ -12,7 +15,7 @@ import { TeamFoundPanel } from './TeamFoundPanel'
 import { groupTemplatesByKind, initialTemplateId, readLastTemplateId, templateOptionLabel, writeLastTemplateId } from '../../lib/templates'
 import { REFERENCE_FOLDERS_HINT } from '../settings/AllowedDirectoriesSection'
 import { firstWorkingFolderConflict } from '../../lib/folderLists'
-import { addReferenceFolder, effectiveName, isFullPath, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
+import { PROXY_TIER_NOTE, addReferenceFolder, chosenConnection, connectionChoices, effectiveName, isFullPath, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from '../../lib/projectsForm'
 import { cloneTarget, emptyRepoFields, readLastCloneParent, repoBridge, setupChoiceAnnouncement, type RepoFields, type StartKind } from '../../lib/repoStart'
 import { clearRepoFailure, forgetRepoClone, repoSession, useRepoSession } from '../../lib/repoCloneSession'
 import { Button } from '../ui/Button'
@@ -61,6 +64,8 @@ interface NewProjectDraft {
   architect: boolean
   picked: SetupChoice | null
   useMock: boolean
+  /** The Connection Select's pick (null = the default). */
+  connection: ConnectionId | null
   repo: RepoFields
   /** The form is using the finished clone. */
   adopted: boolean
@@ -105,7 +110,7 @@ export function NewProjectForm({
     void useAppStore.getState().loadTemplates()
   }, [])
   const uid = useId()
-  const ids = { client: `${uid}-client`, ref: `${uid}-ref`, refErr: `${uid}-ref-err`, extrasErr: `${uid}-extras-err`, name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, foundMsg: `${uid}-found-msg`, dupMsg: `${uid}-dup-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
+  const ids = { client: `${uid}-client`, ref: `${uid}-ref`, refErr: `${uid}-ref-err`, extrasErr: `${uid}-extras-err`, conn: `${uid}-conn`, connHint: `${uid}-conn-hint`, name: `${uid}-name`, brief: `${uid}-brief`, path: `${uid}-path`, pathMsg: `${uid}-path-msg`, foundMsg: `${uid}-found-msg`, dupMsg: `${uid}-dup-msg`, pathErr: `${uid}-path-err`, why: `${uid}-why` }
 
   const [draft] = useState(() => {
     const d = parkedDraft
@@ -119,7 +124,7 @@ export function NewProjectForm({
   const [refInput, setRefInput] = useState('')
   const [refError, setRefError] = useState<string | null>(null)
   /** Set when the project was created but its client / reference folders did not save: the form waits for the user. */
-  const [pending, setPending] = useState<{ project: Project; message: string } | null>(null)
+  const [pending, setPending] = useState<{ project: Project; message: string; noSetup?: boolean } | null>(null)
   const engagement = projectKind === 'engagement'
   const session = useRepoSession()
   const cloning = session.status === 'running'
@@ -143,6 +148,14 @@ export function NewProjectForm({
   const [picked, setPicked] = useState<SetupChoice | null>(draft?.picked ?? null)
   const [useMock, setUseMock] = useState(draft?.useMock ?? true)
   const connectionView = newProjectConnectionView(connections, mockAvailable && useMock)
+  const mockOn = mockAvailable && useMock
+  const choices = connectionChoices(connections)
+  const [wantedConnection, setWantedConnection] = useState<ConnectionId | null>(draft?.connection ?? null)
+  const showConnectionSelect = !mockOn && choices.length >= 2
+  const selectedConnection = chosenConnection(choices, wantedConnection)
+  // Only a Select the user can see decides the connection; otherwise main's default stands.
+  const pickedConnection = showConnectionSelect ? selectedConnection : null
+  const pickedProxy = isProxyId(pickedConnection)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [check, setCheck] = useState<{ path: string; result: ProjectPathCheck } | null>(null)
@@ -248,6 +261,7 @@ export function NewProjectForm({
   const current = check && check.path === checkKey ? check.result : null
   // Before the clone exists the check only answers "may it go there": no setup choice, name or status from it.
   const folderCheck = github && !cloned ? null : current
+  const reducedMotion = useReducedMotion()
   // Only when the clone lands and when its folder check answers, never on every render (it would fight the user's scrolling).
   useEffect(() => {
     if (!cloned || !revealChoice.current) return undefined
@@ -255,7 +269,9 @@ export function NewProjectForm({
     const form = line?.closest('form')
     const choice = form?.querySelector<HTMLElement>('.form-options')
     if (!line || !form || !choice) return undefined
-    const raf = requestAnimationFrame(() => {
+    // The cloned block rises in over --dur-base; scroll once it has settled (never delayed under reduced motion).
+    let raf = 0
+    const scrollToCloned = (): void => {
       scrollWithin(line, 'start')
       const box = scrollContainerOf(line)
       const bar = form.querySelector<HTMLElement>('.form-submit')
@@ -265,10 +281,19 @@ export function NewProjectForm({
         // Never push the cloned line out of the top for it.
         if (over > 0) box.scrollTop += Math.min(over, Math.max(0, c.top - box.getBoundingClientRect().top))
       }
-    })
+    }
+    const run = (): void => {
+      raf = requestAnimationFrame(scrollToCloned)
+    }
+    const wait = reducedMotion ? 0 : 160 + 50 // --dur-base + 50 ms
+    const timer = wait > 0 ? window.setTimeout(run, wait) : undefined
+    if (timer === undefined) run()
     // Keep revealing until the folder check has answered (the choice grows then); once it has, stop.
     if (folderCheck) revealChoice.current = false
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      window.clearTimeout(timer)
+      cancelAnimationFrame(raf)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloned, folderCheck])
   const status = github && !cloned ? null : pathStatus(kind, folder, folderCheck, projectKind ?? 'code')
@@ -281,6 +306,20 @@ export function NewProjectForm({
   const found = engagement && !hasAgents ? null : foundLine(folderCheck)
   const templateList = templates ?? []
   const hasTemplates = templateList.length > 0
+  // Entry motion (spec 3.15): regions that appear after the form was first shown rise in; what is there at first paint,
+  // or comes back with a parked draft, never animates. Regions still unmount (tests and submit read their absence).
+  const formReady = useRef(false)
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      formReady.current = true
+    })
+    return () => cancelAnimationFrame(id)
+  }, [])
+  const showsChoice = !team && (hasAgents || hasTemplates)
+  const [choiceEnter, setChoiceEnter] = useState(false)
+  useEffect(() => {
+    setChoiceEnter(showsChoice && formReady.current)
+  }, [showsChoice])
   const choice: SetupChoice = team ? (teamArchitect ? 'architect' : 'team') : effectiveSetupChoice(hasAgents, picked, architect, hasTemplates)
   // The Brief field is for the Architect; a team that is used as it is needs none.
   const askBrief = team ? choice === 'architect' : !hasAgents || choice === 'architect'
@@ -333,7 +372,7 @@ export function NewProjectForm({
     if (text) setLiveText(text)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folderCheck, cloned])
-  snapshot.current = { projectKind, client, refs, kind: pickedKind, name, path, brief, architect, picked, useMock, repo, adopted, cloneRunning: cloning }
+  snapshot.current = { projectKind, client, refs, kind: pickedKind, name, path, brief, architect, picked, useMock, connection: wantedConnection, repo, adopted, cloneRunning: cloning }
 
   const setPathValue = (v: string): void => {
     setPath(v)
@@ -383,7 +422,9 @@ export function NewProjectForm({
     try {
       useAppStore.getState().selectProject(pending.project.id)
       useAppStore.getState().setView('team')
-      await finish(pending.project)
+      if (pending.noSetup) {
+        if (choice === 'import') useAppStore.getState().requestImport({ projectId: pending.project.id, fresh: true })
+      } else await finish(pending.project)
     } catch (err) {
       setError(cleanIpcError(err))
     } finally {
@@ -440,12 +481,27 @@ export function NewProjectForm({
       // The clone is a project now: nothing left to offer next time.
       if (cloned && github) forgetRepoClone()
       if (input.templateId) writeLastTemplateId(window.localStorage, input.templateId)
-      if (extras.failed) {
-        // The project exists; wait for the user rather than leaving the form with the problem unseen.
-        setPending({ project: created, message: extras.failed })
+      // ProjectCreateInput has no connection field: main puts the project on the default connection, and a different
+      // pick is applied with the same projects:remapModels switch Project settings uses, before setup starts.
+      let remapFailed: string | null = null
+      let target = created
+      if (pickedConnection && pickedConnection !== projectConnection(created)) {
+        try {
+          const out = await window.orgai.projects.remapModels({ projectId: created.id, connection: pickedConnection })
+          useAppStore.getState().replaceProject(out.project)
+          target = out.project
+        } catch (err) {
+          remapFailed = `Could not put ${created.name} on ${connectionLabel(pickedConnection)}: ${cleanIpcError(err)} The project is on the default connection; change it in Project settings. The setup interview was not started.`
+        }
+      }
+      const problem = [extras.failed, remapFailed].filter(Boolean).join(' ')
+      if (problem) {
+        // The project exists; wait for the user rather than leaving the form with the problem unseen. A failed
+        // connection switch never starts a run on a connection the user did not pick.
+        setPending({ project: target, message: problem, noSetup: remapFailed !== null })
         return
       }
-      await finish(created)
+      await finish(target)
     } catch (err) {
       setError(cleanIpcError(err))
       // From GitHub has no folder field to land on; the message itself takes focus there.
@@ -532,7 +588,7 @@ export function NewProjectForm({
   )
 
   const teamPanel = team ? (
-    <TeamFoundPanel found={team} existingName={existingId ? current?.existingProjectName : undefined} blocker={teamBlocker} otherToolAgents={otherToolAgents(folderCheck)} />
+    <TeamFoundPanel animate={formReady.current} found={team} existingName={existingId ? current?.existingProjectName : undefined} blocker={teamBlocker} otherToolAgents={otherToolAgents(folderCheck)} />
   ) : null
 
   return (
@@ -682,6 +738,7 @@ export function NewProjectForm({
       ) : projectKind === null ? null : github ? (
         <>
           <RepoStartPanel
+            animate={formReady.current}
             uid={uid}
             fields={repo}
             onFields={(patch) => setRepo((r) => ({ ...r, ...patch }))}
@@ -779,7 +836,7 @@ export function NewProjectForm({
             />
           )
         ) : hasAgents || hasTemplates ? (
-          <fieldset className="import-choice" data-testid="setup-choice">
+          <fieldset className={choiceEnter ? 'import-choice motion-enter' : 'import-choice'} data-testid="setup-choice">
             <legend>How should the team start?</legend>
             {(hasTemplates
               ? hasAgents
@@ -853,6 +910,47 @@ export function NewProjectForm({
       </div>
       )}
 
+      {showConnectionSelect ? (
+        <div className="form-connection field" data-testid="new-project-connection">
+          <label htmlFor={ids.conn}>Connection</label>
+          <select
+            id={ids.conn}
+            className="select"
+            data-testid="new-project-connection-select"
+            value={selectedConnection ?? ''}
+            aria-describedby={ids.connHint}
+            onChange={(e) => setWantedConnection(e.target.value)}
+          >
+            <optgroup label="Built in">
+              {choices.filter((c) => !c.proxy).map((c) => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </optgroup>
+            {choices.some((c) => c.proxy) && (
+              <optgroup label="Proxies">
+                {choices.filter((c) => c.proxy).map((c) => (
+                  <option key={c.id} value={c.id}>{c.label}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          <span id={ids.connHint} className="hint" data-testid="new-project-connection-hint">
+            {pickedProxy ? PROXY_TIER_NOTE : 'Roles start on this connection’s models.'}{' '}
+            <button
+              type="button"
+              className="link-btn"
+              data-testid="new-project-connection-change"
+              onClick={() => {
+                parkedDraft = snapshot.current
+                requestAppSettingsSection(APP_SETTINGS_SECTIONS.connections)
+                useAppStore.getState().setView('appSettings')
+              }}
+            >
+              Manage connections
+            </button>
+          </span>
+        </div>
+      ) : (
       <p className="form-connection muted" data-testid="new-project-connection">
         {connectionView.text}
         {connectionView.link && (
@@ -873,6 +971,7 @@ export function NewProjectForm({
           </>
         )}
       </p>
+      )}
 
       {pending && (
         <p id={ids.extrasErr} className="field-msg error" role="alert" data-testid="new-project-extras-error">

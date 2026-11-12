@@ -2,6 +2,7 @@
  * Shared domain types used by the main process, preload bridge and renderer.
  * Everything that crosses IPC is defined here.
  */
+import type { AtlasSurfaceId } from './view/atlas'
 
 // ---------- Providers ----------
 
@@ -34,15 +35,42 @@ export interface ProviderConfig {
 
 // ---------- Connections and model catalog ----------
 
-/**
- * Where model access comes from, independent of the adapter that drives it. 'anthropic' = Claude Code login
- * or an Anthropic API key; 'openai' = ChatGPT (Codex) login or an OpenAI API key; 'litellm' = a LiteLLM proxy
- * that serves Claude-family and OpenAI-family models behind one base URL and key.
- */
-export type ConnectionId = 'anthropic' | 'openai' | 'litellm'
+/** The two built-in connections: 'anthropic' = Claude Code login or an Anthropic API key; 'openai' = ChatGPT (Codex) login or an OpenAI API key. */
+export type BuiltinConnectionId = 'anthropic' | 'openai'
 
-/** Every connection id, in settings display order. */
-export const CONNECTION_IDS: readonly ConnectionId[] = ['anthropic', 'openai', 'litellm']
+/**
+ * Where model access comes from, independent of the adapter that drives it. A built-in id, or the id of one proxy
+ * connection (ProxyConnection: any number of named proxies behind one base URL and key each). Proxy ids are
+ * 'litellm' (the original single LiteLLM record, migrated, id kept so stored projects and run records stay valid) or
+ * `proxy-<8 hex>` (main-generated, stable, `isProxyConnectionId`). The `string & {}` keeps autocomplete for the
+ * built-ins; the type cannot tell you whether a proxy id still exists, so look it up in AppSettings.proxies (a run
+ * record or usage row may name a proxy that was removed).
+ */
+export type ConnectionId = BuiltinConnectionId | (string & {})
+
+/**
+ * The built-in connection ids, in settings display order. NOT every connection: proxies are dynamic. Use
+ * defaults.ts `connectionIds(settings)` for the full list (built-ins first, then proxies in AppSettings.proxies order).
+ */
+export const BUILTIN_CONNECTION_IDS: readonly BuiltinConnectionId[] = ['anthropic', 'openai']
+
+/** True for 'anthropic' and 'openai'. Anything else is a proxy id (adapters use `!isBuiltinConnectionId(id)` for "is a proxy"). */
+export function isBuiltinConnectionId(v: unknown): v is BuiltinConnectionId {
+  return v === 'anthropic' || v === 'openai'
+}
+
+/** @deprecated Built-ins only since proxies became dynamic; kept so old imports compile. Use connectionIds(settings). */
+export const CONNECTION_IDS: readonly BuiltinConnectionId[] = BUILTIN_CONNECTION_IDS
+
+/** Proxy ids: the migrated 'litellm', or `proxy-` + 8 lowercase hex. Shape check only (does not say the proxy exists). */
+export const PROXY_ID_RE = /^(litellm|proxy-[0-9a-f]{8})$/
+export function isProxyConnectionId(v: unknown): v is string {
+  return typeof v === 'string' && PROXY_ID_RE.test(v)
+}
+/** Most proxy connections one profile may hold. */
+export const PROXIES_MAX = 20
+/** Longest proxy display name, in characters. */
+export const PROXY_NAME_MAX = 40
 
 /**
  * The intent behind a role's model, so the model can be remapped when the project's connection changes.
@@ -78,6 +106,24 @@ export interface ConnectionStatus {
   account?: string
   /** When the status was last checked, epoch ms. */
   checkedAt?: number
+  /**
+   * What a proxy probe / test / connect found out (proxies only; never persisted, no secrets). null = not
+   * determined. reached: false on a network failure (DNS, refused, timeout); keyAccepted: false on 401 / 403, true
+   * when the models list answered; modelCount: models in the answer; reportsPrices: any discovered model carries a
+   * price (null until discovery has run: a status probe lists only); reportsSpend: LiteLLM reporting enabled and /key/info
+   * answered (false otherwise, null when not checked). The mock proxy host fills sensible values (key
+   * 'mock-bad-key' => reached true, keyAccepted false).
+   */
+  checks?: ConnectionChecks
+}
+
+/** ConnectionStatus.checks. */
+export interface ConnectionChecks {
+  reached: boolean
+  keyAccepted: boolean | null
+  modelCount: number | null
+  reportsPrices: boolean | null
+  reportsSpend: boolean | null
 }
 
 /** Fields every connection record has. */
@@ -117,26 +163,69 @@ export interface OpenAIConnection extends ConnectionBase {
 }
 
 /**
- * A LiteLLM proxy. Claude-family models run on the Claude adapter (ANTHROPIC_BASE_URL = baseUrl), other
- * models on the Codex adapter (openai_base_url). The key lives in Electron safeStorage and is set only with
- * connections:setSecret; this record carries only whether one is stored.
+ * Legacy proxy reporting default, immutable after create. litellmFeatures explicitly overrides this default:
+ * 'litellm' enables /model/info prices and /key/info + daily spend, while 'openai-compatible' lists models only.
  */
-export interface LiteLLMConnection extends ConnectionBase {
-  id: 'litellm'
-  /** Proxy root, e.g. "http://localhost:4000". '' until the user sets it. */
-  baseUrl: string
-  /** A LiteLLM key is stored in safeStorage. Read-only for the renderer: the main process sets it. */
+export type ProxyKind = 'litellm' | 'openai-compatible'
+export const PROXY_KINDS: readonly ProxyKind[] = ['litellm', 'openai-compatible']
+
+/**
+ * One proxy connection (a gateway that serves Claude-family models on an Anthropic-style endpoint and other models on
+ * an OpenAI-style one, behind one key). Persisted in AppSettings.proxies, never with secrets: the key lives in
+ * SecretStore under the proxy id (connections:setSecret) and this record carries only `hasApiKey` (main-owned; the
+ * renderer echoes it back and main ignores it). Claude-family root models run on the Claude adapter
+ * (ANTHROPIC_BASE_URL = anthropicBaseUrl, ANTHROPIC_AUTH_TOKEN = the key), others on the Codex adapter (the `orgai`
+ * provider at effective openaiBaseUrl). `id` and `kind` cannot change; `connections:update` ignores edits to them.
+ * Every URL: https, or http only for loopback / private-network hosts; no credentials, query or fragment in the URL;
+ * at most 2,048 chars; trailing slashes dropped (main refuses with a readable message otherwise).
+ */
+export interface ProxyConnection extends ConnectionBase {
+  /** 'litellm' (migrated original) or `proxy-<8 hex>`. Main-generated at create, never reused after a remove. */
+  id: string
+  /** Display name: trimmed, 1..PROXY_NAME_MAX chars, no control or hidden characters, unique (case-insensitive). */
+  name: string
+  kind: ProxyKind
+  /** Enable optional LiteLLM metadata/pricing/spend endpoints. Missing preserves legacy kind === 'litellm' behavior. */
+  litellmFeatures?: boolean
+  /** The Anthropic / Claude Code base URL (ANTHROPIC_BASE_URL), e.g. "https://proxy.example.com". '' until set. */
+  anthropicBaseUrl: string
+  /** The OpenAI / Codex base URL. Unset or '' = `<anthropicBaseUrl>/v1` (defaults.ts `proxyOpenAIBase`). */
+  openaiBaseUrl?: string
+  /** The model list endpoint (GET, Bearer key). Unset or '' = `<effective openaiBaseUrl>/models` (defaults.ts `proxyModelsUrl`). */
+  modelsUrl?: string
+  /** A key is stored in SecretStore. Read-only for the renderer: the main process sets it. */
   hasApiKey: boolean
 }
 
-/** One app-wide connection record, discriminated by id. Persisted in settings.json; never holds secrets. */
-export type ProviderConnection = AnthropicConnection | OpenAIConnection | LiteLLMConnection
+/** One app-wide connection record. Persisted in settings.json; never holds secrets. Narrow with `isProxyConnection`. */
+export type ProviderConnection = AnthropicConnection | OpenAIConnection | ProxyConnection
 
-/** All connection records, one per ConnectionId. */
+/** The built-in connection records. Proxies are the separate AppSettings.proxies list. */
 export interface ProviderConnections {
   anthropic: AnthropicConnection
   openai: OpenAIConnection
-  litellm: LiteLLMConnection
+}
+
+/** Type guard: a proxy record (it alone has `anthropicBaseUrl`). */
+export function isProxyConnection(c: ProviderConnection | undefined | null): c is ProxyConnection {
+  return !!c && typeof (c as ProxyConnection).anthropicBaseUrl === 'string'
+}
+
+/**
+ * connections:createProxy input. `id` is generated by main. `apiKey` (optional) is stored exactly like
+ * connections:setSecret (at most 4,000 chars, no control or hidden characters) and never echoed back. The new proxy
+ * is `enabled: true` but not connected: call connections:connect (or test) next. Refused with a readable message at
+ * PROXIES_MAX, on a duplicate name, or on an invalid name / URL.
+ */
+export interface ProxyCreateInput {
+  name: string
+  kind?: ProxyKind
+  /** Explicit opt-in to LiteLLM metadata/pricing/spend endpoints; missing follows kind for legacy callers. */
+  litellmFeatures?: boolean
+  anthropicBaseUrl: string
+  openaiBaseUrl?: string
+  modelsUrl?: string
+  apiKey?: string
 }
 
 /** connections:list entry: the persisted record plus its live status. */
@@ -158,6 +247,11 @@ export interface ConnectionInfo {
    * connections:list has it. The renderer reads this instead of guessing from AppSettings.defaultConnection.
    */
   isDefault: boolean
+  /**
+   * Proxy entries only: the projects whose connection is this proxy (id and name, at most 50, in project order), so
+   * the UI can show them before a removal (which is refused while any exist). Computed at list time, never stored.
+   */
+  usedBy?: { id: string; name: string }[]
 }
 
 /**
@@ -169,10 +263,21 @@ export interface ConnectionInfo {
  */
 export type ConnectionDefaultInput = ConnectionId | null
 
-/** connections:setSecret. Only LiteLLM has a stored secret today. null clears the stored key. */
+/** connections:setSecret. Only proxies have a stored secret; `id` must be an existing proxy id. null clears the stored key. */
 export interface ConnectionSecretInput {
-  id: 'litellm'
+  id: string
   apiKey: string | null
+}
+
+/**
+ * connections:removeProxy result. Removal is refused (the promise rejects with a readable message naming up to 5
+ * projects) while any project's connection is this proxy: move them first (projects:remapModels with a connection).
+ * Otherwise it deletes the record, its stored key, its models.json entries and its connection status; a chosen
+ * default that was this proxy returns to automatic. Run records and usage rows that name the id are kept (history).
+ * `connections` is the list after the removal (the same shape as connections:list).
+ */
+export interface ProxyRemoveResult {
+  connections: ConnectionInfo[]
 }
 
 /**
@@ -233,6 +338,18 @@ export interface ProviderModel {
   price?: ModelPrice
   /** LiteLLM: the upstream model the proxy routes this name to (litellm_params.model, e.g. "anthropic/claude-sonnet-4-5"). */
   upstream?: string
+  /**
+   * Proxies: the `owned_by` the models endpoint reported (sanitized: printable, at most 64 chars, untrusted text).
+   * Feeds `family` when the id alone is ambiguous (defaults.ts `proxyModelFamily`); a claude-* id stays Claude family
+   * whatever owned_by says (a gateway may list claude-*-high under 'antigravity').
+   */
+  ownedBy?: string
+  /**
+   * Proxy models only: the base URL the model is served through. Family 'claude' -> the proxy's anthropicBaseUrl,
+   * any other family -> defaults.ts `proxyOpenAIBase`. Set at discovery and re-derived from the proxy's current URLs
+   * at catalog-read time (ConnectionService.catalogFor), so a URL change shows at once without a rediscovery.
+   */
+  baseUrl?: string
 }
 
 /**
@@ -303,17 +420,52 @@ export interface AdapterChoice {
   /** Family of the root role's model, when it is known. */
   family?: ModelFamily
   /**
-   * Ids of roles whose model family differs from the adapter's. Informational on 'litellm' (show it as a notice);
-   * a work run is refused only per mixedFamilyRefusal: on LiteLLM when the root has no family, and on the
+   * Ids of roles ON THE ROOT'S CONNECTION whose model family differs from the adapter's (roles on another connection
+   * are never listed here). Informational on a proxy (those roles are also in `bridged`, since they need the other
+   * adapter); a work run is refused only per mixedFamilyRefusal: on a proxy when the root has no family, and on the
    * single-family connections (anthropic, openai), where their catalogs make it unreachable.
    */
   mismatched: string[]
+  /**
+   * Bridged reports (multi-provider org charts): non-root roles whose (connection, adapter) differs from the root's
+   * (adapter, connection): a role with its own Role.connection, or a role on the root's proxy whose model family needs
+   * the other adapter. Each runs in a child session the harness starts (runtime/bridge.ts) with its own RunConnection.
+   * adapterForProject always fills it (empty = every role is native); optional so older constructors stay valid
+   * (missing = none). Mock projects: a role whose connection differs from the project's is bridged on 'mock'.
+   */
+  bridged?: BridgedRoleChoice[]
+}
+
+/** AdapterChoice.bridged entry: one role that runs in its own child session. */
+export interface BridgedRoleChoice {
+  roleId: string
+  connection: ConnectionId
+  adapter: ProviderId
+}
+
+/**
+ * defaults.ts roleConnectionProblems entry: a non-root role whose connection cannot run it. 'unknown': the id names no
+ * connection (a removed proxy); 'not-configured': connectionConfigured is false (turned off, no key or base URL);
+ * 'disconnected': the live status (when the caller passes statuses) is definitely 'disconnected'. `message` is one
+ * readable sentence naming the role and the connection, for the UI and the work-run refusal.
+ */
+export interface RoleConnectionProblem {
+  roleId: string
+  roleName: string
+  connection: ConnectionId
+  problem: 'unknown' | 'not-configured' | 'disconnected'
+  message: string
 }
 
 /** Push events on the connections:event channel (main -> renderer). */
 export type ConnectionEvent =
   | { type: 'connection.status'; connection: ConnectionId; status: ConnectionStatus }
   | { type: 'connection.login'; login: ConnectionLoginUpdate }
+  /**
+   * The set of connections or a proxy record changed (connections:createProxy / removeProxy / update of a proxy /
+   * setSecret / a migration). Re-fetch connections:list. Other windows learn of a create or remove only from this.
+   */
+  | { type: 'connections.changed' }
   /**
    * A connection's catalog was (re)discovered: boot, the 24 h schedule, connect, login or models:refresh. Sent after
    * every successful discovery, even when the list is unchanged; `changed` says whether the model ids differ.
@@ -354,6 +506,13 @@ export const CLAUDE_MODEL_OPTIONS: { value: ModelRef; label: string; hint: strin
 ]
 
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/** Every effort level, least first (the order defaults.ts `compareEffort` uses). */
+export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+export function isEffort(v: unknown): v is Effort {
+  return typeof v === 'string' && (EFFORTS as readonly string[]).includes(v)
+}
 
 // ---------- Tools ----------
 
@@ -406,6 +565,8 @@ export interface Role {
   canSpawn: boolean
   /** Which role ids this role may spawn. Enforced by the harness. */
   spawnable: string[]
+  /** Role ids this role must delegate to every time one of its agents completes. Subset of `spawnable`; missing = adaptive. Enforced by the harness. */
+  requiredReports?: string[]
   /** Parent in the org chart. null for the root orchestrator. */
   reportsTo: string | null
   /** Editor canvas position. */
@@ -423,6 +584,25 @@ export interface Role {
    * Codex and mock: list_skills / load_skill answer only with the caller's grants).
    */
   skills?: string[]
+  /**
+   * Multi-provider org charts (bridged reports): the connection this role's agents run on. Missing = the project's
+   * connection. Read ONLY through defaults.ts `roleConnection(role, project)`, which ignores it on the root (the root
+   * always runs on the project's connection, Project.provider.connection) and on mock projects' root. The role's
+   * model / tier resolves against THIS connection's tierModels and catalog. A role whose (connection, adapter) differs
+   * from the root's is a bridged report (AdapterChoice.bridged): it runs in its own child session started by the
+   * harness (delegate_agent), never through the root's native spawn tool. Stored as saved when it passes
+   * `isConnectionId` (a built-in id or a proxy id shape; a removed proxy's id is kept and reported by
+   * roleConnectionProblems); anything else is dropped on read and save. Never filled or resolved by a store.
+   */
+  connection?: ConnectionId
+  /**
+   * Run staffing (section "Run staffing"): whether automatic staffing may pick this role's tier and effort per
+   * assignment, and its bounds. Missing = automatic with the role's `tier` and `effort` as the ceiling, except a role
+   * on a concrete model with no tier (an explicit user pick), which is fixed. Read it only through defaults.ts
+   * `effectiveRoleStaffing(role, project)`. ProjectStore rebuilds it on read and save (`cleanRoleStaffing`): a value
+   * without a valid `mode` is dropped whole, an unknown `minTier` or `maxEffort` is dropped alone.
+   */
+  staffing?: RoleStaffing
 }
 
 /**
@@ -589,6 +769,24 @@ export interface Project {
    * shared/knowledge.ts; never fill a default in a store or newProject. Saved through projects:save.
    */
   knowledgeAutoContext?: boolean
+  /**
+   * Run staffing (section "Run staffing"): 'fixed' turns automatic staffing off for every role, so each agent runs on
+   * its role's model and effort exactly as before staffing existed. Missing = 'auto'. Read it through defaults.ts
+   * `staffingModeOf`. ProjectStore drops any other value on read and save.
+   */
+  staffing?: StaffingMode
+  /**
+   * Run staffing: what automatic staffing optimizes for after the quality floor. Missing = 'balanced'. A run may
+   * override it (RunOverrides.goal). Read it through defaults.ts `staffingGoalOf(project, override)`. ProjectStore drops
+   * any other value on read and save.
+   */
+  staffingGoal?: StaffingGoal
+  /**
+   * When the orchestrator asks for review (docs/design/orchestration-efficiency.md 4.4). Missing = 'risk'. Not `review`:
+   * `teamReview` and `reviewMerges` already mean other things. Required reports always win. Read it through defaults.ts
+   * `reviewPolicyOf`. ProjectStore drops any other value on read and save.
+   */
+  reviewPolicy?: ReviewPolicy
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -1539,6 +1737,12 @@ export interface McpInstallRequest {
   /** Secret names (from spec.secretEnv and spec.secretHeaders) the user must fill to approve. */
   requiredSecrets: string[]
   createdAt: number
+  /**
+   * Set by RunManager on a Chat (quick) run: the server can only be added for this run. An approval with scope
+   * 'project' or 'library' is narrowed to 'run' (nothing is saved to any project or the library), so the card should
+   * offer only "For this chat only" and Deny.
+   */
+  runOnly?: true
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
 }
@@ -1617,6 +1821,19 @@ export const RUN_PEER_PROMPT_CHARS = 120
 /** RunSummary.title and the run.title event: at most this many characters (cut on a word boundary with …). */
 export const RUN_TITLE_MAX_CHARS = 32
 
+// ---------- Multi-provider org charts (bridged reports) ----------
+
+/**
+ * delegate_agent (audience 'spawners', blocking, work runs whose chart has bridged roles only): start a bridged
+ * report (a role on another connection or adapter, AdapterChoice.bridged) in its own child session and return its
+ * final text as fenced data. Codex hands bridged roles to the same child path from spawn_agent.
+ */
+export const BRIDGE_HARNESS_TOOLS = { delegate: 'delegate_agent' } as const
+/** delegate_agent brief: at most this many characters (longer is refused, never cut). */
+export const BRIDGE_BRIEF_MAX_CHARS = 32_000
+/** A bridged report's final text handed back to its parent: cut to this many characters with a note. */
+export const BRIDGE_RESULT_MAX_CHARS = 16_000
+
 // ---------- App settings (global) ----------
 
 /** 'system' follows the OS (Electron nativeTheme); the renderer resolves it with matchMedia('(prefers-color-scheme: dark)'). */
@@ -1637,6 +1854,12 @@ export const CANVAS_NODE_STYLES: readonly CanvasNodeStyle[] = ['card', 'compact'
 export type CanvasEdgeStyle = 'curved' | 'orthogonal' | 'straight'
 export const CANVAS_EDGE_STYLES: readonly CanvasEdgeStyle[] = ['curved', 'orthogonal', 'straight']
 
+/** Presentation is independent of the saved graph layout, pattern and node preferences. */
+export type CanvasPresentation = 'graph' | 'pocket-office'
+export const CANVAS_PRESENTATIONS: readonly CanvasPresentation[] = ['graph', 'pocket-office']
+export type CanvasScenePalette = 'color' | 'neutral' | 'green'
+export const CANVAS_SCENE_PALETTES: readonly CanvasScenePalette[] = ['color', 'neutral', 'green']
+
 /** App-wide look. Main applies `theme` to nativeTheme.themeSource at startup and on every settings:set. */
 export interface AppearanceSettings {
   /** Default 'dark' until the light theme is signed off (docs/design/plan.md section 2). */
@@ -1644,6 +1867,10 @@ export interface AppearanceSettings {
   /** Accent color '#rrggbb' (lowercase). Default '#7c5cff'. */
   accent: string
   canvas: {
+    /** Missing on legacy inputs; normalization fills 'graph' without changing graph preferences. */
+    presentation?: CanvasPresentation
+    /** Scene artwork palette, independent of app theme. Normalization fills full 'color'. */
+    scenePalette?: CanvasScenePalette
     pattern: CanvasPattern
     /** Tint the canvas background with the accent. */
     tint: boolean
@@ -1656,6 +1883,14 @@ export interface AppearanceSettings {
   }
   /** 'system' honours prefers-reduced-motion; 'on' always reduces motion. */
   reduceMotion: 'system' | 'on'
+}
+
+/** DEFAULT_APPEARANCE and normalizeAppearance guarantee the new fields; legacy input literals stay valid. */
+export interface NormalizedAppearanceSettings extends AppearanceSettings {
+  canvas: AppearanceSettings['canvas'] & {
+    presentation: CanvasPresentation
+    scenePalette: CanvasScenePalette
+  }
 }
 
 /** Global defaults applied to new projects, plus app-wide auth. Persisted as settings.json in the data dir. */
@@ -1695,6 +1930,13 @@ export interface AppSettings {
   providerAuth: ProviderAuth
   /** App-wide connection records (no secrets). Filled with defaults for settings saved before connections existed. */
   connections: ProviderConnections
+  /**
+   * Proxy connections, in display order (at most PROXIES_MAX). Main-owned like `connections`: settings:set keeps the
+   * stored list; change it only through connections:createProxy / update / removeProxy / setSecret. A settings.json
+   * saved before proxies existed holds `connections.litellm`; store/settings.ts loads it as the first proxy (id
+   * 'litellm', name "LiteLLM", kind 'litellm', anthropicBaseUrl = its old baseUrl) and drops the old key on the next save.
+   */
+  proxies: ProxyConnection[]
   /**
    * Connection new projects, Chat and the MCP and Skill assistants use. Default 'anthropic'. Consumers read the
    * effective value (ConnectionService `effectiveDefault()`, defaults.ts `effectiveDefaultConnection`), never this
@@ -1754,31 +1996,6 @@ export interface AppSettings {
    * runs re-price on their next usage update); persisted runs keep the cost they were saved with.
    */
   modelPrices?: ModelPriceOverride[]
-  /**
-   * Terminal access: external CLI / TUI clients (host.hello from clientKind 'cli' | 'tui' over the host socket,
-   * cli-spec 3.3) are accepted only while this is true; otherwise host.hello answers 'terminal_server_disabled'.
-   * Default false (normalized: only a boolean true stays true). A host booted as 'headless-host' or 'inproc' accepts
-   * terminal clients for that session only (OrgAIHost.terminalAccess, bootstrap.ts), never saving true, unless the user
-   * has chosen a value (terminalServerChosen). A stored true without terminalServerChosen (an older build saved it on
-   * a headless boot) is read as false (store/settings.ts).
-   */
-  terminalServer: boolean
-  /**
-   * What Terminal access lets a terminal client do: host.hello grants at most these scopes (socketServer.ts
-   * scopesForAccessLevel). Missing = 'operate': read and operate (watch, start, send to, interrupt and stop runs);
-   * 'full' adds decide (answer decision cards) and configure (settings, projects, MCP, permissions, connections).
-   * Only the desktop window changes it in practice: settings:set needs 'configure', which a socket client gets only
-   * when this is already 'full', so the socket can lower it but never raise it. A `--host inproc` host applies it to
-   * every client too; only the CLI process that started it gets every scope, through RpcHelloParams.ownerProof (an
-   * in-memory key). Normalized: only 'full' is stored.
-   */
-  terminalAccessLevel?: TerminalAccessLevel
-  /**
-   * Main-owned: true once a settings:set changed terminalServer (the user's choice in App settings, or a configure
-   * client). A headless or in-process boot then never turns terminal access on by itself. settings:set never writes
-   * it directly (args.ts settingsSetArgs).
-   */
-  terminalServerChosen?: boolean
 }
 
 /**
@@ -1984,7 +2201,7 @@ export interface SkillsProposalPayload {
   rationale: string
 }
 
-export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills'
+export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills' | 'appSettings'
 
 interface ProposalBase {
   id: string
@@ -2001,6 +2218,12 @@ interface ProposalBase {
   effect?: ProposalEffect
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
+  /**
+   * The stored project a Chat proposal changes (section "Self-knowledge and self-configuration"): set on a 'settings'
+   * proposal from propose_project_settings, whose run (a quick run) has no project of its own. Main fills it from the
+   * stored project (never from agent text); the card names `projectName`. Absent = the run's own project.
+   */
+  target?: ProposalTarget
 }
 
 /** When an approved proposal takes effect (Proposal.effect). */
@@ -2012,6 +2235,7 @@ export type Proposal =
   | (ProposalBase & { kind: 'settings'; payload: SettingsProposalPayload })
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
   | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
+  | (ProposalBase & { kind: 'appSettings'; payload: AppSettingsProposalPayload })
 
 /**
  * The user's answer to a proposal card (setup:decide). 'approve' applies it; 'revise' sends feedback and the agent may
@@ -2239,6 +2463,15 @@ export interface RunUsage {
   agents: number
   agentsWithoutResult: number
   noResultTokens: number
+  /**
+   * Cost of the agents counted in agentsWithoutResult (mergeCosts over them): null = unknown, never 0 for spent tokens;
+   * noResultCostPartial = a lower bound. Absent when no agent ended without a result, and on runs saved before
+   * 2026-11-07 (computeRunUsage fills it on the next update of a live run only).
+   */
+  noResultCostUsd?: number | null
+  noResultCostPartial?: true
+  /** Those agents, in agent order, at most RUN_NO_RESULT_AGENTS_MAX (20). Absent when none, and on older runs. */
+  noResultAgents?: NoResultAgent[]
   /** Automatic continues the harness sent (RunPlan.autoContinues of this run; 0 without a plan). */
   nudges: number
   /** Time with at least one decision card open (permission, question, proposal, rules, merge, MCP install), ms. */
@@ -2253,7 +2486,73 @@ export interface RunUsage {
   skills?: SkillUseCount[]
   /** Knowledge graph reads served to agents (knowledge_recall and auto context). Missing = none (or an older run). */
   knowledge?: KnowledgeServedUsage
+  /** Timing of the root's direct reports (computeRunEfficiency). Missing = no report started (or a run saved before it existed). */
+  efficiency?: RunEfficiency
+  /**
+   * Multi-provider runs only (at least one agent with AgentInstance.connection other than the run's): cost and agent
+   * count per connection, each agent priced with its own connection's pricing. costUsd null = unknown (never $0).
+   * Missing = every agent ran on the run's connection. `costPartial` (absent = false): some of that connection's agents
+   * had no price, so costUsd is a lower bound (records saved before it existed never carry it).
+   */
+  connections?: Partial<Record<ConnectionId, { costUsd: number | null; agents: number; costPartial?: true }>>
   updatedAt: number
+}
+
+/**
+ * Timing shape of a run that used reports (docs/design/orchestration-efficiency.md 4.2 and 7). Computed by runUsage.ts
+ * from the agents' startedAt / endedAt. "Reports" here are the root's DIRECT reports only (agents whose parentId is the
+ * root agent's id), so a lead's own subtree is never double counted. Absent on a run where no direct report started
+ * and on runs saved before it existed. The lead's active time needs no field: it is wallMs - idleMs.
+ */
+export interface RunEfficiency {
+  /** Direct reports that started. */
+  reports: number
+  /** Run start to the first direct report's start, ms. */
+  firstSpawnMs: number
+  /** Sum of the direct reports' wall time (a live report counts to now), ms. */
+  reportSumMs: number
+  /** Time with at least one direct report running (union of their intervals), ms. reportSumMs / reportBusyMs is the overlap ratio. */
+  reportBusyMs: number
+  /** Most direct reports running at once. */
+  maxParallel: number
+  /**
+   * From the end of the first wave to the run's end (or now while live), ms. The first wave is every direct report
+   * that started before any direct report ended; it ends when its last member ends.
+   */
+  tailMs: number
+  /**
+   * Run staffing (docs/design/orchestration-efficiency.md 4.2): time a ready plan step (pending, every `after` step done
+   * or skipped) sat with a free agent slot and nobody working on it, summed over steps, ms. Absent = not computed:
+   * nothing computes it yet (computeRunEfficiency leaves it out); cleanRunEfficiency keeps a stored finite value >= 0.
+   */
+  readyIdleMs?: number
+  /**
+   * Run end (or now while live) minus the end of the last direct report to finish, ms. Unlike tailMs it counts from the
+   * LAST report, so it is the lead's handover time after all the reports are in. Optional: absent on runs saved before
+   * it existed; cleanRunEfficiency keeps a stored finite value >= 0.
+   */
+  afterLastReportMs?: number
+  /**
+   * Median over the direct reports that wrote a file of (time of the report's first file-writing tool use, i.e. a
+   * transcript tool_use named Edit, Write, MultiEdit or NotebookEdit, minus the report's startedAt), ms. Reports that
+   * never wrote are left out; absent when none did, when the transcript was not available, and on older runs.
+   */
+  reportStartMs?: number
+}
+
+/** RunUsage.noResultAgents cap per run. */
+export const RUN_NO_RESULT_AGENTS_MAX = 20
+
+/** A report that ended (done or error) without result text (RunUsage.noResultAgents). */
+export interface NoResultAgent {
+  agentId: string
+  /** The agent's label as the canvas shows it: its handle, else its name (agentTree.ts agentLabel). */
+  name: string
+  /** The role's display name (the agent's name without a -n suffix). */
+  roleName: string
+  tokens: TokenUsage
+  /** The agent's cost: null = unknown. */
+  costUsd: number | null
 }
 
 /** RunUsage.knowledge: counted by RunManager, never by an adapter. */
@@ -2350,6 +2649,243 @@ export interface UsageStats {
   truncated?: true
 }
 
+// ---------- App-wide usage overview (runs:usageOverview, runs:usageOverviewCsv) ----------
+
+/**
+ * runs:usageOverview input: usage across every project (stored projects, the three virtual assistant projects and
+ * runs left behind by a removed project). Every field is optional; main rebuilds the input (sanitizeUsageOverviewQuery
+ * in runUsage.ts) and refuses a malformed month or project id list.
+ */
+export interface UsageOverviewQuery {
+  /** Only runs started at or after this time (epoch ms). */
+  since?: number
+  /** Only runs started before this time (epoch ms). */
+  until?: number
+  /** A local calendar month; replaces since / until when set (UsageStatsRange). A malformed month is refused. */
+  range?: UsageStatsRange
+  /** Run kinds to include. Default (absent or empty): every RunKind, so assistant runs count. Unknown kinds are dropped. */
+  kinds?: RunKind[]
+  /**
+   * Trend bucket size: local calendar day, ISO week (Monday start) or local calendar month. Default 'day'. A 'month'
+   * bucket's label is the 1st of the month (YYYY-MM-01).
+   */
+  bucket?: 'day' | 'week' | 'month'
+  /**
+   * Only these projects (ids, virtual ids such as QUICK_PROJECT_ID included; a removed project's id still matches its
+   * leftover runs). Absent or empty = every project. At most USAGE_OVERVIEW_MAX_PROJECT_IDS; each must match
+   * [A-Za-z0-9_-]{1,128}, else the query is refused. Duplicates are dropped.
+   */
+  projectIds?: string[]
+  /**
+   * Most rows in UsageOverview.runs (the newest runs win). Default USAGE_STATS_DEFAULT_LIMIT (500), clamped to
+   * 1..USAGE_STATS_MAX_LIMIT (2000). Unlike UsageStats, the rollups (projects, models, roles, connections, trend,
+   * totals) always cover EVERY matched run, not only the returned rows.
+   */
+  limit?: number
+}
+
+/** UsageOverviewQuery.projectIds cap. */
+export const USAGE_OVERVIEW_MAX_PROJECT_IDS = 200
+
+/**
+ * What a usage row's project is: a stored project's ProjectKind, or 'assistant' for the virtual projects (Chat, MCP
+ * assistant, Skill assistant; isVirtualProjectId). A removed project reads as 'code' with `projectRemoved: true`.
+ */
+export type UsageProjectKind = ProjectKind | 'assistant'
+
+/**
+ * The display name main gives runs whose project no longer exists (`projectRemoved`). Run records do not keep the
+ * project's name, so this is the best name available.
+ */
+export const USAGE_REMOVED_PROJECT_NAME = 'Removed project'
+
+/**
+ * How many runs of a rollup have a cost the UI can state ("cost from 3 of 4 runs"). Known: the run's costUsd is
+ * non-null and not partial (a run that spent nothing, costSource 'none', counts as known). Unknown: costUsd null or
+ * costPartial. costKnownRuns + costUnknownRuns = the runs counted by that rollup. For a model or role the run's own
+ * share of that model or role decides; for a connection, its part of a multi-provider run.
+ */
+export interface UsageCostCoverage {
+  costKnownRuns: number
+  costUnknownRuns: number
+}
+
+/**
+ * One run in UsageOverview.runs: a RunUsageRow plus its project and connection. Per-model rows (tokens incl.
+ * cacheRead / cacheWrite, costUsd | null, priceSource) are `usage.models`; the reports that ended without a result are
+ * `usage.noResultAgents` (absent on older runs); `usage.legacy` is mirrored as `legacy`.
+ *
+ * Cache tokens: adapters write 0 when the provider reports nothing, so 0 and "not reported" cannot be told apart from
+ * the data. What is known: Claude runs report both cacheRead and cacheWrite; Codex runs (the openai connection, and a
+ * proxy root on a GPT family) report cached input as cacheRead and never report cacheWrite; legacy runs carry 0 for
+ * both (their input already includes cache).
+ */
+export interface UsageOverviewRow extends RunUsageRow {
+  projectId: string
+  /** The project's name now (Chat / MCP assistant / Skill assistant for virtual ids; USAGE_REMOVED_PROJECT_NAME when gone). */
+  projectName: string
+  projectKind: UsageProjectKind
+  /** Project.client of an engagement; absent otherwise. */
+  client?: string
+  /** The project was removed; its runs were kept. */
+  projectRemoved?: true
+  /** RunSummary.connection (absent on runs recorded before it existed). */
+  connection?: ConnectionId
+  /** The run is live in this host right now (RunManager holds it; endedAt is then absent). */
+  live?: true
+  /** RunSummary.endedBy (who ended it). */
+  endedBy?: RunEndedBy
+  /** RunSummary.quick (Chat runs only). */
+  quick?: QuickRunInfo
+  /** usage.legacy mirrored: figures from a record saved before usage tracking, approximate. */
+  legacy?: true
+}
+
+/** Per-project rollup in UsageOverview.projects, over every matched run of that project. */
+export interface UsageProjectRollup extends UsageCostCoverage {
+  projectId: string
+  projectName: string
+  projectKind: UsageProjectKind
+  client?: string
+  projectRemoved?: true
+  runs: number
+  /** Runs per kind; 'ask' counts work runs with team 'single' (and they are not counted under 'work'). Zero counts are absent. */
+  runsByKind: Partial<Record<RunKind | 'ask', number>>
+  /** Oldest and newest run start among the matched runs (epoch ms). */
+  firstStartedAt: number
+  lastStartedAt: number
+  tokens: TokenUsage
+  /** mergeCosts over the runs: null = unknown (never 0 for spent tokens); costPartial = a lower bound. */
+  costUsd: number | null
+  costSource: CostSource
+  costPartial?: true
+  turns: number
+  toolCalls: number
+  retries: number
+  nudges: number
+  wallMs: number
+  waitingMs: number
+  idleMs: number
+  limitHoldMs: number
+  /** Agent instances across the runs, roots included. */
+  agents: number
+  agentsWithoutResult: number
+  noResultTokens: number
+  /**
+   * Cost of the agents that ended without a result, summed over the runs that record it (RunUsage.noResultCostUsd):
+   * null = unknown; noResultCostPartial = a lower bound, also set when a run with such agents predates the field.
+   * 0 when no agent ended without a result.
+   */
+  noResultCostUsd: number | null
+  noResultCostPartial?: true
+  /** Distinct RunSummary.connection values of the runs (plus RunUsage.connections keys of multi-provider runs). */
+  connections: ConnectionId[]
+}
+
+/** One model across every matched run (UsageOverview.models). Coverage counts runs that used the model. */
+export interface UsageOverviewModel extends UsageCostCoverage {
+  model: string
+  tokens: TokenUsage
+  /** Sum of the known costs; null when no run priced this model's tokens. */
+  costUsd: number | null
+  /** Some runs' tokens of this model had no price: costUsd is a lower bound. */
+  costPartial?: true
+  /** The best price source seen (override > proxy > builtin > community > provider > unknown). */
+  priceSource: PriceSource
+  /** Provider-reported cost summed, when any (> 0). */
+  providerCostUsd?: number
+  /** Runs that used this model. */
+  runs: number
+  /** Distinct projects that used this model. */
+  projects: number
+}
+
+/** One role of one project across its matched runs (UsageOverview.roles); keyed by projectId + (roleId ?? roleSlug). */
+export interface UsageOverviewRole extends RoleUsage, UsageCostCoverage {
+  projectId: string
+  projectName: string
+  /** Runs in which the role had at least one agent. */
+  runs: number
+}
+
+/**
+ * One connection across every matched run (UsageOverview.connections). A multi-provider run (RunUsage.connections
+ * set) splits its cost and agents per connection; any other run counts whole under RunSummary.connection. `connection`
+ * null = runs recorded before RunSummary.connection existed.
+ */
+export interface UsageOverviewConnection extends UsageCostCoverage {
+  connection: ConnectionId | null
+  /** Display name: Anthropic, OpenAI, a proxy's name, "Removed proxy" for an id no longer configured, "Unknown connection" for null. */
+  name: string
+  /** 'builtin' (anthropic, openai), 'proxy' (any other id, configured or removed), null for `connection` null. */
+  kind: 'builtin' | 'proxy' | null
+  /** Runs with at least one agent on this connection. */
+  runs: number
+  agents: number
+  costUsd: number | null
+  costSource: CostSource
+  costPartial?: true
+}
+
+/** One project's share of a trend bucket (UsageOverviewTrendPoint.byProject). */
+export interface UsageTrendProjectSlice extends UsageCostCoverage {
+  projectId: string
+  runs: number
+  /** Tokens of the project's runs in the bucket, all four kinds (cache included). */
+  tokens: TokenUsage
+  /** Sum of the project's known run costs in the bucket; null when none of its runs there had a known cost. */
+  costUsd: number | null
+  wallMs: number
+  waitingMs: number
+}
+
+/**
+ * A trend bucket of the overview: UsageTrendPoint (bucket = local date of the start, start = local midnight epoch ms in
+ * the main process's zone) plus coverage and the per-project breakdown for a stacked chart.
+ */
+export interface UsageOverviewTrendPoint extends UsageTrendPoint, UsageCostCoverage {
+  /** Projects with runs in the bucket, highest known cost first, then most tokens. */
+  byProject: UsageTrendProjectSlice[]
+}
+
+/**
+ * runs:usageOverview result. Built from persisted summaries (legacy ones normalized once and written back, as in
+ * runs:usageStats) and, for live runs, their current usage. Unknown cost is null, never 0; costPartial marks a lower
+ * bound everywhere. Rollups cover every matched run; only `runs` is limited.
+ */
+export interface UsageOverview extends UsageCostCoverage {
+  /** Newest first, at most the query's limit. */
+  runs: UsageOverviewRow[]
+  /** Highest known cost first, then most tokens, then name. */
+  projects: UsageProjectRollup[]
+  /** Most tokens first. */
+  models: UsageOverviewModel[]
+  /** Highest known cost first, then most tokens. */
+  roles: UsageOverviewRole[]
+  /** Highest known cost first, then most agents. */
+  connections: UsageOverviewConnection[]
+  /** Oldest first, only buckets with runs. */
+  trend: UsageOverviewTrendPoint[]
+  /** Every matched run summed (sumRunUsage; totals.roles merges roles by id across projects, use `roles` instead). */
+  totals: RunUsage
+  /** Runs that matched (before the limit). */
+  matchedRuns: number
+  /** The query main actually ran (after defaults and clamping), so the UI can show what it is looking at. */
+  query: {
+    since?: number
+    until?: number
+    kinds: RunKind[]
+    bucket: 'day' | 'week' | 'month'
+    projectIds?: string[]
+    limit: number
+  }
+  generatedAt: number
+  /** More runs matched than `limit`; the oldest rows were left out of `runs` (the rollups still count them). */
+  truncated?: true
+  /** startedAt of the oldest row in `runs` (absent when `runs` is empty); with `truncated`, older runs are rolled up only. */
+  oldestIncludedAt?: number
+}
+
 // ---------- Runs ----------
 
 export type AgentState =
@@ -2363,6 +2899,8 @@ export type AgentState =
   | 'error'
 
 export interface AgentInstance {
+  /** Required-delegation display state (set by RunManager from the ledger). */
+  delegation?: { verdict?: DelegationVerdict; missing: string[]; corrected: boolean; nativeSpawns: number }
   /** Harness id. "root" for the orchestrator, otherwise the SDK agent_id. */
   id: string
   roleId: string | null
@@ -2386,6 +2924,11 @@ export interface AgentInstance {
    * first usage report.
    */
   usage?: AgentUsage
+  /**
+   * Times the provider compacted this agent's conversation (agent.compacted). Owned by RunManager, which counts the
+   * events and sets it on every agent.upsert (an adapter's own value is replaced). Absent = none.
+   */
+  compactions?: number
   startedAt: number
   endedAt?: number
   /** Last text the agent produced (truncated for the node card). */
@@ -2395,6 +2938,12 @@ export interface AgentInstance {
   worktree?: WorktreeInfo
   /** Name other agents use to address it (SendMessage), e.g. "implementer-2". */
   handle?: string
+  /**
+   * The connection this agent ran on. Set by RunManager on every agent.upsert (adapter values are replaced): the
+   * root and native reports get the run's connection (RunSummary.connection), a bridged report and the agents of its
+   * child session get the bridged role's connection. Missing on older records (= the run's connection).
+   */
+  connection?: ConnectionId
 }
 
 /** One agent-to-agent message (SendMessage), as drawn on the live canvas. */
@@ -2432,6 +2981,11 @@ export interface WorktreeInfo {
   parentAgentId?: string
   /** Nested isolation: the parent's branch this one was cut from and merges into. */
   parentBranch?: string
+  /**
+   * With status 'held': who held it. 'delegation' = the harness held it because the agent failed its required delegation
+   * (WorktreeIntegrator.holdFailed); the integrate tool skips such a branch. Absent = the user held it (merge review).
+   */
+  heldBy?: 'delegation'
 }
 
 /** A report branch still sitting in the repository, as shown by the maintenance panel. */
@@ -2503,11 +3057,22 @@ export interface ImageAttachment {
   ref?: string
 }
 
+/** Returned media is data only: raster bytes or a bounded explanation; never a fetchable URL/path. */
+export type TranscriptMedia =
+  | { kind: 'image'; image: ImageAttachment }
+  | { kind: 'unsupported'; mediaType?: string; name?: string; reason: string }
+
+/** Ordered provider output. `content` remains the text fallback for older transcript readers. */
+export type TranscriptContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'media'; media: TranscriptMedia }
+
 export type TranscriptBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool_use'; id: string; name: string; input: unknown }
-  | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean }
+  | { kind: 'tool_result'; toolUseId: string; content: string; isError: boolean; parts?: TranscriptContentPart[] }
+  | { kind: 'media'; media: TranscriptMedia }
   /** `text` may be empty when the message is only images. */
   | { kind: 'user'; text: string; images?: ImageAttachment[] }
   /**
@@ -2591,7 +3156,7 @@ export const VIRTUAL_PROJECT_LABELS: Record<VirtualProjectId, string> = {
 
 /**
  * Who works on a quick run: 'single' = one built-in assistant (default, model AppSettings.quickRunModel);
- * 'default' = the app's default org chart (defaultRoles), tools filtered through quickRoleTools.
+ * 'default' = the app's default org chart (defaultRoles), each role with its own tools (see quickRunTools).
  */
 export type QuickRunTeam = 'single' | 'default'
 export const QUICK_RUN_TEAMS: readonly QuickRunTeam[] = ['single', 'default']
@@ -2600,8 +3165,9 @@ export const QUICK_RUN_MAX_PROMPT_CHARS = 100_000
 
 /**
  * runs:startQuick input. A project-less work run on the virtual project QUICK_PROJECT_ID (RunSummary.kind 'work',
- * RunSummary.quick set). Never permission mode 'auto' (see quickRunPermissionMode); read-only unless allowEdits;
- * no project MCP servers, plugins or skills; run messaging off.
+ * RunSummary.quick set). Permission mode always 'default' (see quickRunPermissionMode), so every edit and command
+ * asks; the roles keep their edit and command tools whatever allowEdits says. No project MCP servers, plugins or
+ * skills (run-scoped installs through request_mcp_install only, McpInstallRequest.runOnly); run messaging off.
  */
 export interface QuickRunInput {
   prompt: string
@@ -2612,7 +3178,13 @@ export interface QuickRunInput {
   folder?: string
   /** Default 'single'. */
   team?: QuickRunTeam
-  /** Allow Edit, Write and Bash in the folder (each still asks). Default false. A git folder with edits on isolates writers. */
+  /**
+   * The user's up-front declaration. false (default, "read-only start"): the assistant is told the chat is read-only
+   * by default, but an edit or command may still be needed; it makes the call, OrgAI asks the user (the card carries
+   * PermissionRequest.quickReadOnly) and the user may decline. true ("edits allowed"): the assistant is told it may
+   * change files and run commands here; each edit or command still asks, and a git folder isolates writers.
+   * Either way the tools are the same and nothing runs without a card or a grant the user gave in this run.
+   */
   allowEdits?: boolean
   images?: ImageAttachment[]
   /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
@@ -2711,7 +3283,53 @@ export interface SetupStartInput {
   surface?: RunSurface
 }
 
+/** Explicit root-model selection for a running or recoverable conversation. */
+export interface SwitchRunModelInput {
+  runId: string
+  /** Refuse if the latest conversation run no longer matches this captured id. */
+  expectedRunId?: string
+  model: string
+  connection?: ConnectionId
+}
+
+export interface SwitchRunModelResult {
+  /** May be a successor run after an explicit provider handoff; callers must follow its id. */
+  run: RunSummary
+  /** True only when the returned run is using the selection. False may also mean saved for continuation (reason explains). */
+  applied: boolean
+  reason?: string
+}
+
 export interface RunSummary {
+  /** Required-delegation outcome (delegation-enforcement spec 4.3). Set by RunManager once a ledger exists. */
+  delegation?: { failed: number; corrected: number; nativeSpawns: number; rootVerdict?: DelegationVerdict; subtreeFailed?: boolean }
+  /** Runtime actually used by this run, retained when selecting a different adapter for continuation. */
+  modelAdapter?: ProviderId
+  /** Main-owned original desktop conversation cap for model handoff accounting (positive USD only). */
+  conversationBudgetUsd?: number
+  /** Root selection; on an ended/paused run applies to its next continuation. Never alters project defaults. */
+  modelSelection?: { model: string; connection: ConnectionId }
+  /** Root reasoning effort chosen at start (StartRunInput.effort); continuations keep it. Absent = the root role's own. Main-owned. */
+  rootEffort?: Effort
+  /**
+   * The run's own permission mode (project mode, exec override or the user's per-run choice; while
+   * sessionPermissionMode is set, the session runs wider than this); on an ended / paused run with
+   * permissionModeChosen, the mode its next continuation uses. Recorded only for runs that take a per-run mode
+   * (runPermissionModeChoices non-empty): absent on setup-like runs (Architect, MCP / Skill assistants, build sessions),
+   * which pin their own mode. On a Chat (quick) run a project mode its adapter downgrades to asking is recorded as
+   * 'default'. Main-owned; absent on runs saved before it existed.
+   */
+  permissionMode?: PermissionMode
+  /** True when permissionMode is the user's per-run choice (runs:start / runs:setPermissionMode), which continuations carry. */
+  permissionModeChosen?: true
+  /**
+   * Live runs only: 'acceptEdits' while a session or project allow of an "accept edits" suggestion has the provider
+   * session accepting edits past a narrower permissionMode. Show this as the mode in force while it is set. Never
+   * carried by a continuation (a session grant ends with its session), cleared at session end and by an applied
+   * runs:setPermissionMode (the exception: a change that raced twice with a new grant answers applied false and leaves
+   * the grant set), dropped when a stored run is loaded. Main-owned; run.permissionMode events carry it.
+   */
+  sessionPermissionMode?: 'acceptEdits'
   id: string
   projectId: string
   kind: RunKind
@@ -2819,6 +3437,19 @@ export interface PlanStep {
   note?: string
   /** Role or handle expected to do the step. */
   owner?: string
+  /**
+   * Run staffing ("The plan is a graph"): ids of the steps this one waits for. Absent or empty = it can start now. Only
+   * ids of OTHER steps of the same plan, unique, at most PLAN_STEP_AFTER_MAX (defaults.ts `cleanPlanStepGraph`, which
+   * also breaks a dependency cycle). RunManager applies it to stored records on read; the plan tools do not call it yet.
+   */
+  after?: string[]
+  /**
+   * Files or folders the step will change, project-relative as the orchestrator wrote them (never resolved). Trimmed,
+   * unique, at most PLAN_STEP_PATHS_MAX of at most PLAN_STEP_PATH_MAX_CHARS each (`cleanPlanStepGraph`).
+   */
+  paths?: string[]
+  /** The orchestrator's pick for who does the step (role, tier, effort). The harness clamps it before it applies. */
+  staff?: PlanStepStaff
 }
 
 /**
@@ -2841,14 +3472,154 @@ export interface RunPlan {
 /** Automatic continues per run when a project sets none. */
 export const DEFAULT_MAX_AUTO_CONTINUES = 40
 
+// ---------- Run staffing ----------
+//
+// Who does each piece of a work run, on which tier and effort, and why (docs/design/orchestration-efficiency.md 4.2 to
+// 4.5, contract in section 5). The orchestrator proposes (PlanStep.staff), the harness clamps to the role's bounds and
+// records the result (RunStaffing on RunRecord, written through RuntimeContext.updateStaffing, broadcast as
+// `staffing.updated`). Tiers, never vendor names. Normalizers and effective values live in defaults.ts
+// (cleanRoleStaffing, cleanPlanStepGraph, cleanRunStaffing, staffingModeOf, staffingGoalOf, reviewPolicyOf,
+// effectiveRoleStaffing). Everything here is structured-clone safe. Coexists with RunRecord.delegation: the ledger
+// says whether obligations were met, staffing says who was chosen and why.
+
+/**
+ * What automatic staffing optimizes for after the quality floor. 'balanced' (the default): time on the critical path,
+ * then cost elsewhere. 'speed': every step is treated as on the critical path. 'cost': no step is.
+ */
+export type StaffingGoal = 'balanced' | 'speed' | 'cost'
+export const STAFFING_GOALS: readonly StaffingGoal[] = ['balanced', 'speed', 'cost']
+export function isStaffingGoal(v: unknown): v is StaffingGoal {
+  return typeof v === 'string' && (STAFFING_GOALS as readonly string[]).includes(v)
+}
+
+/**
+ * When the orchestrator asks for review. 'always': after every change; 'risk' (the default): when a role prompt or the
+ * brief demands it, or the change touches sensitive paths, has a large diff or failed verification once; 'never': only when required reports demand it (they always win).
+ */
+export type ReviewPolicy = 'always' | 'risk' | 'never'
+export const REVIEW_POLICIES: readonly ReviewPolicy[] = ['always', 'risk', 'never']
+export function isReviewPolicy(v: unknown): v is ReviewPolicy {
+  return typeof v === 'string' && (REVIEW_POLICIES as readonly string[]).includes(v)
+}
+
+/**
+ * 'auto': the harness picks tier and effort per assignment within the role's bounds. 'fixed': the role's model and
+ * effort exactly as configured (today's behaviour). Missing = 'auto' on Project.staffing; on a role see Role.staffing.
+ */
+export type StaffingMode = 'auto' | 'fixed'
+export const STAFFING_MODES: readonly StaffingMode[] = ['auto', 'fixed']
+export function isStaffingMode(v: unknown): v is StaffingMode {
+  return typeof v === 'string' && (STAFFING_MODES as readonly string[]).includes(v)
+}
+
+/** Role.staffing: a role's staffing mode and bounds. The role's own tier is the tier ceiling. */
+export interface RoleStaffing {
+  mode: StaffingMode
+  /** Automatic staffing never goes below this tier for the role. Ignored when it is above the role's own tier. */
+  minTier?: ModelTier
+  /** Automatic staffing never goes above this effort for the role (the role's own effort is the default ceiling). */
+  maxEffort?: Effort
+}
+
+/** PlanStep.staff: the orchestrator's pick for one step. Absent tier or effort = the resolver's default. */
+export interface PlanStepStaff {
+  /** The role expected to do the step (its slug or name, as the orchestrator wrote it). Never empty. */
+  role: string
+  tier?: ModelTier
+  effort?: Effort
+}
+
+/**
+ * Where an assignment's tier and effort came from. 'orchestrator': its pick (PlanStep.staff or the spawn call);
+ * 'profile': the project's staffing profile; 'role': the role's own setting or the rubric's default for it; 'clamped':
+ * a pick moved into the role's bounds; 'plan-guard': lowered by the plan guard near a usage limit; 'escalated': raised
+ * after a failed or unresolved attempt.
+ */
+export type StaffingSource = 'orchestrator' | 'profile' | 'role' | 'clamped' | 'plan-guard' | 'escalated'
+export const STAFFING_SOURCES: readonly StaffingSource[] = ['orchestrator', 'profile', 'role', 'clamped', 'plan-guard', 'escalated']
+export function isStaffingSource(v: unknown): v is StaffingSource {
+  return typeof v === 'string' && (STAFFING_SOURCES as readonly string[]).includes(v)
+}
+
+/** One staffing decision: who got a piece of work, on which tier, model and effort, and why. */
+export interface StaffingAssignment {
+  /** The agent the decision applied to (AgentInstance.id), once it exists. */
+  agentId?: string
+  /** The plan step it was bound to (PlanStep.id), when one matched. */
+  stepId?: string
+  /** Role.id of the agent's role. */
+  roleId: string
+  /** The resolved tier. Absent for a fixed role on a concrete model, or an inherit role whose tier was not known. */
+  tier?: ModelTier
+  /** The model actually used (an alias or the connection's model id for the tier). */
+  model: string
+  /** The effort actually used. Absent = the adapter's default. */
+  effort?: Effort
+  source: StaffingSource
+  /** Why, in words shown to the user ("capped by the role"), at most STAFFING_NOTE_MAX_CHARS. */
+  note?: string
+  /** When the decision was made, epoch ms. */
+  at: number
+}
+
+/**
+ * RunRecord.staffing: the run's effective goal and its staffing decisions, oldest first, at most
+ * RUN_STAFFING_ASSIGNMENTS_MAX (the newest kept). Written only through RuntimeContext.updateStaffing.
+ */
+export interface RunStaffing {
+  goal: StaffingGoal
+  assignments: StaffingAssignment[]
+}
+
 /** A finished or live run as persisted on disk: everything needed to redraw it later. */
+export type DelegationVerdict = 'ok' | 'adaptive' | 'failed'
+
+export interface DelegationReceipt {
+  childId: string
+  parentId: string
+  roleId: string
+  completedAt: number
+  verdict: DelegationVerdict
+  reportChars: number
+  /** Set only when the adapter confirms the report reached parentId. */
+  delivered: boolean
+}
+
+export interface DelegationAgentState {
+  roleId: string
+  /** The agent that spawned this one (absent for the root). */
+  parentId?: string
+  required: string[]
+  phase: 'working' | 'waiting' | 'correcting' | 'done' | 'ended'
+  /** Whole run, never reset, never in RunPlan. */
+  corrections: 0 | 1
+  verdict?: DelegationVerdict
+  missing: { roleId: string; why: string }[]
+  nativeStrikes: number
+}
+
+export interface DelegationLedgerState {
+  strict: boolean
+  obligations: Record<string, string[]>
+  problems: string[]
+  agents: Record<string, DelegationAgentState>
+  receipts: DelegationReceipt[]
+}
+
 export interface RunRecord {
+  /** Required-delegation ledger, persisted with the run. */
+  delegation?: DelegationLedgerState
   summary: RunSummary
   agents: Record<string, AgentInstance>
   transcript: TranscriptEntry[]
   logs: { at: number; level: 'info' | 'warn' | 'error'; message: string }[]
   /** Work runs: the orchestrator's plan, once it set one. */
   plan?: RunPlan
+  /**
+   * Work runs: who was staffed on what and why (RunStaffing), once anything was recorded. Not carried to a
+   * continuation (its agents are new). RunManager cleans a stored value on read (`cleanRunStaffing`).
+   */
+  staffing?: RunStaffing
 }
 
 export interface PermissionRequest {
@@ -2871,9 +3642,36 @@ export interface PermissionRequest {
    * the card offers Allow once and Deny only ("Touches a reference folder (read only)").
    */
   referenceFolder?: string
+  /**
+   * Set by RunManager (never by an adapter; an adapter's value is dropped) on a Chat (quick) run started read-only
+   * (`QuickRunInfo.allowEdits` false) when the call is an edit or a command (QUICK_WRITE_TOOLS: Edit, Write,
+   * MultiEdit, NotebookEdit, Bash, PowerShell), so the card can say the chat started read-only. Nothing else about the
+   * card changes: the same Allow once / Allow for session / Deny answers apply.
+   */
+  quickReadOnly?: true
+  /**
+   * The widest scope an allow can have, set by RunManager (an adapter's value is dropped): 'session' on
+   * trust-restricted runs (Chat runs and MCP build sessions: a 'project' answer is narrowed to 'session', nothing is
+   * saved), 'once' when `referenceFolder` is set. Absent = 'project' is possible. The card must not offer a scope
+   * wider than this or claim a saved rule.
+   */
+  maxScope?: 'once' | 'session'
+  /**
+   * Chat (quick) runs only, set by RunManager: the chat's working folder (QuickRunInfo.folder, the scratch dir
+   * included; `workingFolderScratch: true` when it is a scratch dir OrgAI made), so the card can say where the call
+   * runs. Agents in a worktree still work under this folder.
+   */
+  workingFolder?: string
+  workingFolderScratch?: true
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
   revision?: number
 }
+
+/**
+ * Tools whose calls count as "an edit or a command" on a Chat (quick) run: PermissionRequest.quickReadOnly is set only
+ * for these.
+ */
+export const QUICK_WRITE_TOOLS: readonly string[] = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'PowerShell']
 
 /** How long an allow decision lasts: this call only, the rest of this run, or every future run of the project. */
 export type PermissionScope = 'once' | 'session' | 'project'
@@ -3055,6 +3853,13 @@ export interface UsageStatus {
 // ---------- Run events (main -> renderer) ----------
 
 export type RunEvent =
+  | { type: 'run.model'; runId: string; selection: { model: string; connection: ConnectionId } }
+  /**
+   * RunManager only (an adapter's is dropped): the run's permission mode fields after any change on a live run
+   * (runs:setPermissionMode, an approved project change, an "accept edits" grant, session end). A snapshot: an absent
+   * field is absent on RunSummary too. The renderer replaces all three on the run's summary.
+   */
+  | { type: 'run.permissionMode'; runId: string; permissionMode?: PermissionMode; permissionModeChosen?: true; sessionPermissionMode?: 'acceptEdits' }
   | {
       type: 'run.status'
       runId: string
@@ -3087,6 +3892,8 @@ export type RunEvent =
    * after the run ended. The summary in runs:list / runs:get carries it from then on.
    */
   | { type: 'run.title'; runId: string; title: string }
+  /** The required-delegation ledger changed (summary and per-agent display state). */
+  | { type: 'run.delegation'; runId: string; summary: NonNullable<RunSummary['delegation']>; agents: Record<string, NonNullable<AgentInstance['delegation']>> }
   /**
    * A run moved to another project (a quick run promoted with runs:promoteQuick). One event per moved run; from now
    * on runs:list(projectId) returns it and RunSummary.projectId is `projectId`.
@@ -3097,6 +3904,12 @@ export type RunEvent =
   | { type: 'transcript'; runId: string; entry: TranscriptEntry }
   /** Text the agent is streaming right now; '' clears it once the completed message lands. Never persisted. */
   | { type: 'agent.partial'; runId: string; agentId: string; text: string }
+  /**
+   * The provider compacted an agent's conversation (Claude: compact_boundary, the orchestrator only; Codex: a
+   * contextCompaction item on the agent's thread). Token sizes when the provider said them. RunManager counts it into
+   * AgentInstance.compactions and re-sends the agent.
+   */
+  | { type: 'agent.compacted'; runId: string; agentId: string; at: number; trigger?: 'auto' | 'manual'; tokensBefore?: number; tokensAfter?: number }
   | { type: 'permission.request'; runId: string; request: PermissionRequest }
   /**
    * The card is answered or gone. `cancelled`: the run ended (finished, stopped, failed or paused) before the
@@ -3113,6 +3926,11 @@ export type RunEvent =
        * rules, allowed folders or permission mode may have changed. Absent on deny, once, session and cancelled.
        */
       savedToProject?: true
+      /**
+       * The allow's scope after RunManager's narrowing ('once', 'session' or 'project'); absent on deny and cancelled.
+       * A Chat card answered "Allow for project" reads 'session' here.
+       */
+      scope?: PermissionScope
       /** Who decided (cli-spec 3.4(4)); absent on cancelled cards and older events. */
       decidedBy?: DecidedBy
     }
@@ -3139,6 +3957,8 @@ export type RunEvent =
   | { type: 'usage.status'; runId: string; usage: UsageStatus }
   /** The orchestrator's plan changed (plan tools, or the harness counting an automatic continue). */
   | { type: 'plan.updated'; runId: string; plan: RunPlan }
+  /** The run's staffing changed (RuntimeContext.updateStaffing); carries the whole RunStaffing, like plan.updated. */
+  | { type: 'staffing.updated'; runId: string; staffing: RunStaffing }
   /** One agent messaged another (SendMessage). Live only; the sender's transcript carries a persisted copy. */
   | ({ type: 'agent.message'; runId: string } & AgentMessage)
   /**
@@ -3171,6 +3991,10 @@ export type RunEvent =
    * knowledge_recall, 'auto' = knowledgeContext; a merged event carries the newest call's `via`. `at` is epoch ms.
    */
   | { type: 'knowledge.recalled'; runId: string; agentId: string; nodeIds: string[]; at: number; via: 'recall' | 'auto' }
+  /** An agent produced or registered a deliverable (types.ts "Run outputs"); RunManager emits it after the index write. */
+  | { type: 'output.created'; runId: string; output: RunOutput }
+  /** An agent added a version to an output it (or another run) made before (outputs-2 identity rule); `output` is the entry after it. */
+  | { type: 'output.versioned'; runId: string; output: RunOutput }
   /** An agent asked to install an MCP server (request_mcp_install); the run waits for mcp:answerInstall. */
   | { type: 'mcpInstall.request'; runId: string; request: McpInstallRequest }
   /** The install request was answered (or dropped when the run ended: approved false). Never carries secrets. */
@@ -3221,7 +4045,11 @@ export const MENU_ACTIONS = [
   'save-chat-as-project',
   'open-run-window',
   'canvas-zoom-in',
-  'canvas-zoom-out'
+  'canvas-zoom-out',
+  /** Help > "Ask OrgAI about itself…": opens Chat ready for a question about the app (section "Self-knowledge"). */
+  'ask-about-orgai',
+  /** View > Usage: the app-wide Usage page (docs/design/usage-app.md). No accelerator; always enabled. */
+  'show-usage'
 ] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
@@ -3524,6 +4352,72 @@ export interface StartRunInput {
   team?: RunTeam
   /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
   overrides?: RunOverrides
+  /**
+   * Desktop only (socket / inproc clients are refused with bad_request). The root agent's model for this run and its
+   * continuations; the project's defaults are untouched. Reports keep their own model, except roles set to 'inherit':
+   * they follow the root's model, and staffing (runtime/staffing.ts parentTier) uses the root's tier as the tier
+   * ceiling of an 'inherit' role with no tier of its own. `model` must be a catalog entry (models:list) on
+   * `connection`, else the start is refused before a run exists. Wins over the single assistant's quick-run model.
+   * Recorded as RunSummary.modelSelection.
+   */
+  modelSelection?: { model: string; connection: ConnectionId }
+  /**
+   * Desktop only (socket / inproc clients are refused). The root agent's reasoning effort for this run and its
+   * continuations; reports keep their own effort (runtime/staffing.ts). Must be one of `effortOptionsFor(adapter)`
+   * (shared/defaults.ts) for the adapter of the chosen (or project) model, else the start is refused. Recorded as
+   * RunSummary.rootEffort.
+   */
+  effort?: Effort
+  /**
+   * Desktop only (socket / inproc clients are refused; they keep overrides.permissionMode). This run's permission mode
+   * and its continuations'; never the project default. Any mode may be chosen (widening included) on a work run;
+   * `runPermissionModeChoices` lists what a run accepts. Recorded as RunSummary.permissionMode with
+   * permissionModeChosen true.
+   */
+  permissionMode?: PermissionMode
+}
+
+/**
+ * runs:setPermissionMode (desktop only): change a run's permission mode. Main owns the state; the run's adapter applies
+ * it live when it can. Refusals (unknown run, setup-like or exec run, a mode outside runPermissionModeChoices) throw.
+ */
+export interface SetRunPermissionModeInput {
+  runId: string
+  mode: PermissionMode
+}
+
+/**
+ * Shaped like SwitchRunModelResult. `applied` true: the live session now runs in `mode` (run.permissionMode); with
+ * `reportsUnchanged` > 0, that many running reports keep their earlier mode until they finish and `reason` says so in
+ * a plain sentence. `applied` false on an ended / paused run: saved for its next continuation (run.permissionMode is
+ * updated). `applied` false on a live run: nothing changed (the session cannot switch now, or another change of this
+ * run's mode is still in progress; `reason` is a fixed plain sentence saying what to do, never a provider message),
+ * with one exception: a change that raced twice with an "accept edits" grant (the grant landed after the session applied
+ * `mode`, both times) is also `applied` false, but main records `mode` as the run's choice with the grant on top
+ * (permissionModeChosen, sessionPermissionMode), so run.permissionMode IS updated, and `reason` asks to choose again.
+ */
+export interface SetRunPermissionModeResult {
+  run: RunSummary
+  applied: boolean
+  reason?: string
+  /**
+   * Running reports that keep their earlier mode until they finish (absent when none). Arrives with `applied` true, and
+   * also with that raced `applied` false (the session did apply `mode`, so its reports are counted the same way).
+   */
+  reportsUnchanged?: number
+}
+
+/**
+ * The permission modes a run accepts from the user (runs:start permissionMode, runs:setPermissionMode). Setup-like runs
+ * pin their mode (empty list). Chat runs (trust-restricted) only take modes that ask or deny, because their adapters
+ * downgrade the others to asking. Every other work run takes any mode. Pure; main enforces the same list.
+ */
+export function runPermissionModeChoices(run: Pick<RunSummary, 'kind' | 'quick' | 'buildWorkspace'>): PermissionMode[] {
+  if (run.kind !== 'work') return []
+  // buildWorkspace: defensive only. A build session is an mcp-assist run (RunManager.start refuses a build workspace on
+  // any other kind), so it already got [] above; a work run with one would stay ask-only like a Chat run.
+  if (run.quick || typeof run.buildWorkspace === 'string') return ['default', 'dontAsk', 'plan']
+  return [...PERMISSION_MODES]
 }
 
 /** runs:send: a follow-up message to a live run's orchestrator. */
@@ -4046,8 +4940,12 @@ export interface OrgAIApi {
      * tierModels remaps the projects on that connection (a projects.remapped event follows).
      */
     update(connection: ProviderConnection): Promise<ConnectionInfo>
-    /** Store or clear the LiteLLM key in safeStorage. Write-only: the key never comes back. */
+    /** Store or clear one proxy's key in safeStorage. Write-only: the key never comes back. */
     setSecret(input: ConnectionSecretInput): Promise<ConnectionInfo>
+    /** Add a proxy connection (see ProxyCreateInput). Resolves to its ConnectionInfo (not yet connected). */
+    createProxy(input: ProxyCreateInput): Promise<ConnectionInfo>
+    /** Delete a proxy connection (see ProxyRemoveResult for what is refused and what goes). */
+    removeProxy(id: string): Promise<ProxyRemoveResult>
     /** Probe the connection (auth, reachability) without changing its enabled flag or catalog. */
     test(id: ConnectionId): Promise<ConnectionStatus>
     /** Enable and connect: probe, discover models, fill tierModels, remap projects. */
@@ -4297,6 +5195,9 @@ export interface OrgAIApi {
     decideMerge(input: { runId: string; reviewId: string; decision: MergeDecision }): Promise<void>
     /** A paused run: continue it now instead of waiting for the usage window to reset. */
     resumeNow(runId: string): Promise<RunSummary>
+    switchModel(input: SwitchRunModelInput): Promise<SwitchRunModelResult>
+    /** Change a run's permission mode (live when the session can, else saved for its continuation). See SetRunPermissionModeResult. */
+    setPermissionMode(input: SetRunPermissionModeInput): Promise<SetRunPermissionModeResult>
     /** A paused run: keep it paused; the user continues it by hand. */
     cancelAutoResume(runId: string): Promise<void>
     /**
@@ -4317,6 +5218,18 @@ export interface OrgAIApi {
     usageStats(query: UsageStatsQuery): Promise<UsageStats>
     /** The same rows as usageStats as CSV text (USAGE_CSV_COLUMNS), at most USAGE_STATS_MAX_LIMIT rows. */
     usageCsv(query: UsageStatsQuery): Promise<string>
+    /**
+     * Usage across every project (stored, virtual assistant projects and a removed project's leftover runs): per-run
+     * rows (newest first, limited), rollups per project, model, role and connection, trend buckets with a per-project
+     * breakdown, and totals over every matched run (see UsageOverview). Rejects a malformed month or project id list.
+     * Never spends tokens. The query may be omitted (every project, every kind, all time).
+     */
+    usageOverview(query?: UsageOverviewQuery): Promise<UsageOverview>
+    /**
+     * The overview's runs as CSV text (USAGE_OVERVIEW_CSV_COLUMNS, same quoting as usageCsv), each row with its own
+     * project and client names, newest first, at most USAGE_STATS_MAX_LIMIT rows (the query's limit is ignored).
+     */
+    usageOverviewCsv(query?: UsageOverviewQuery): Promise<string>
     /**
      * Start a quick run (the Chat assistant): a project-less work run on QUICK_PROJECT_ID (RunSummary.quick set).
      * Rejects on an empty or too long prompt (QUICK_RUN_MAX_PROMPT_CHARS) or an invalid folder.
@@ -4389,12 +5302,20 @@ export interface OrgAIApi {
     logPath(): Promise<string>
     /** Version, platform, data and logs folders, and whether the token-free mock adapter is available. */
     info(): Promise<AppInfo>
-    /** The orgai command shim's state (cli-spec 7(3)). Never rejects. */
-    cliShimStatus(): Promise<CliShimStatus>
-    /** Write or refresh the orgai command shim. Never rejects; failures come back as ok: false with a message. */
-    installCliShim(): Promise<CliShimResult>
-    /** Remove the orgai command shim (only OrgAI's own). Never rejects; failures come back as ok: false. */
-    uninstallCliShim(): Promise<CliShimResult>
+    /** The orgai command's state (5.3), from file metadata only. Never rejects. */
+    cliCommandStatus(): Promise<CliCommandStatus>
+    /** Run `npm install -g orgai-cli@<tag> --ignore-scripts` in the main process. One at a time. Never rejects. */
+    installCliCommand(): Promise<CliCommandResult>
+    /** Cancel the running install; true when one was running. */
+    cancelCliInstall(): Promise<boolean>
+    /** Remove the old app shim (only OrgAI's own file). Never rejects; failures come back as ok: false. */
+    removeOldCliShim(): Promise<CliCommandResult>
+    /**
+     * app:reference: search or read OrgAI's own reference (the atlas of screens and settings, menus, shortcuts,
+     * harness tools, host channels, CLI commands, connectors and bundled docs), locate a setting or feature, or a
+     * secret-free status snapshot. Everything in `text` is fenced data.
+     */
+    reference(query: AppReferenceQuery): Promise<AppReferenceResult>
   }
 }
 
@@ -4649,6 +5570,13 @@ export const USAGE_CSV_COLUMNS = [
   'cost_partial'
 ] as const
 
+/**
+ * runs:usageOverviewCsv columns, in order: USAGE_CSV_COLUMNS (unchanged; cache is already in tokens_cache_read /
+ * tokens_cache_write) followed by project_kind (UsageProjectKind), connection (the id, blank when unknown), retries,
+ * nudges, no_result_tokens and idle_ms. One row per UsageOverview.runs entry with its own project and client; same
+ * quoting, time formats and BOM as runs:usageCsv. Declared after USAGE_CSV_COLUMNS on purpose (module order).
+ */
+export const USAGE_OVERVIEW_CSV_COLUMNS = [...USAGE_CSV_COLUMNS, 'project_kind', 'connection', 'retries', 'nudges', 'no_result_tokens', 'idle_ms'] as const
 /** Channels of this section; spread into IPC. */
 export const TEMPLATE_ENGAGEMENT_IPC = {
   templatesList: 'templates:list',
@@ -5170,38 +6098,47 @@ export interface AppInfo {
   packaged: boolean
 }
 
-// ---- orgai command shim (cli-spec 7(3), Wave 6) ----
+// ---- Install the orgai command (cli-standalone-default.md 5.3) ----
 
 /**
- * Where the orgai command shim stands. 'unavailable': this OrgAI cannot install it (a dev build, ORGAI_DATA_DIR set,
- * a translocated / disk-image / AppImage / portable copy; `reason` says which). 'not-installed': no file at `path`.
- * 'installed': OrgAI's shim runs this install's launcher. 'outdated': OrgAI's shim runs another launcher (`target`).
- * 'foreign': a file at `path` that OrgAI did not write; OrgAI never overwrites or removes it.
+ * What the Terminal row shows. Read from file metadata only; no `orgai` found on PATH is ever run.
+ * 'npm': the first orgai on the login PATH is an npm-installed orgai-cli (`version` from its package.json).
+ * 'old-shim': an older OrgAI app's command (no longer works). 'other': another program named orgai.
  */
-export type CliShimState = 'unavailable' | 'not-installed' | 'installed' | 'outdated' | 'foreign'
+export type CliCommandState = 'npm' | 'old-shim' | 'other' | 'not-installed'
 
-/** The orgai command shim (app:cliShimStatus). Structured-clone safe. */
-export interface CliShimStatus {
-  state: CliShimState
-  /** The shim file (~/.local/bin/orgai or %LOCALAPPDATA%\OrgAI\bin\orgai.cmd); '' when unknown. */
-  path: string
-  /** The shim's folder; '' when unknown. */
-  binDir: string
-  /** The launcher an OrgAI shim runs now (for 'outdated': the other install's). */
-  target?: string
-  /** True when binDir is on the login shell PATH; undefined when unknown. */
-  onPath?: boolean
-  /** One plain sentence for 'unavailable' and 'foreign'. */
-  reason?: string
+/** The answer of app:cliCommandStatus. Structured-clone safe. */
+export interface CliCommandStatus {
+  state: CliCommandState
+  /** The first orgai on the login PATH, when there is one. */
+  path?: string
+  /** The installed orgai-cli version (state 'npm'). */
+  version?: string
+  /** An old app shim file sits at its usual place and can be removed (it may be shadowed by an npm install). */
+  oldShim: boolean
+  /** An absolute npm was found on the login PATH. */
+  npmFound: boolean
+  /** The dist-tag the install uses: 'latest' for a stable app, 'next' for a prerelease. */
+  tag: 'latest' | 'next'
+  /** `npm install -g orgai-cli@<tag>`: what Install runs (plus --ignore-scripts) and what Copy puts on the clipboard. */
+  command: string
+  /** An install is running now. */
+  installing: boolean
 }
 
-/** The answer of app:installCliShim / app:uninstallCliShim. Never a rejection: failures are ok: false. */
-export interface CliShimResult {
+/** The answer of app:installCliCommand, app:removeOldCliShim. Never a rejection: failures are ok: false. */
+export interface CliCommandResult {
   ok: boolean
   /** One plain sentence for the user. */
   message: string
+  /** npm's output: the last 200 lines, at most 64 KB, control characters removed. */
+  output?: string
+  /** The `--prefix` hint after a permission failure. */
+  hint?: string
+  /** True when the user cancelled the install. */
+  cancelled?: boolean
   /** The status after the change (or the unchanged status after a failure). */
-  status: CliShimStatus
+  status: CliCommandStatus
 }
 
 /**
@@ -5225,7 +6162,16 @@ export const FOLDER_CONFIG_IPC = {
   projectsSetFolderConfigTrust: 'projects:setFolderConfigTrust'
 } as const
 
+/** Channels of "Self-knowledge and self-configuration" (section at the end of this file). Declared here for the same reason. */
+export const SELF_KNOWLEDGE_IPC = {
+  /** AppReferenceQuery -> AppReferenceResult (host scope 'read'). Rejects only for a malformed query. */
+  appReference: 'app:reference',
+  /** main -> renderer push of AppNavigateEvent (desktop only): an agent's open_in_app, sent to the live main window. */
+  appNavigate: 'app:navigate'
+} as const
+
 export const IPC = {
+  ...SELF_KNOWLEDGE_IPC,
   ...TEMPLATE_ENGAGEMENT_IPC,
   ...KNOWLEDGE_IPC,
   ...REPO_CLONE_IPC,
@@ -5251,6 +6197,8 @@ export const IPC = {
   runsDecide: 'runs:decide',
   runsContinue: 'runs:continue',
   runsResumeNow: 'runs:resumeNow',
+  runsSwitchModel: 'runs:switchModel',
+  runsSetPermissionMode: 'runs:setPermissionMode',
   runsCancelAutoResume: 'runs:cancelAutoResume',
   runEvent: 'runs:event',
   setupStart: 'setup:start',
@@ -5279,12 +6227,14 @@ export const IPC = {
   appOpenLogs: 'app:openLogs',
   appLogPath: 'app:logPath',
   appInfo: 'app:info',
-  /** Desktop only (cli-spec 7(3)): the orgai command shim's CliShimStatus. Refused over the socket. */
-  appCliShimStatus: 'app:cliShimStatus',
-  /** Desktop only (cli-spec 7(3)): write or refresh the orgai command shim; answers CliShimResult. */
-  appInstallCliShim: 'app:installCliShim',
-  /** Desktop only (cli-spec 7(3)): remove the orgai command shim when it is OrgAI's; answers CliShimResult. */
-  appUninstallCliShim: 'app:uninstallCliShim',
+  /** Desktop only (5.3): the orgai command's CliCommandStatus. */
+  appCliCommandStatus: 'app:cliCommandStatus',
+  /** Desktop only (5.3): run the npm install of orgai-cli; answers CliCommandResult. */
+  appInstallCliCommand: 'app:installCliCommand',
+  /** Desktop only (5.3): cancel the running install; answers boolean. */
+  appCancelCliInstall: 'app:cancelCliInstall',
+  /** Desktop only (5.3): remove the old app shim when it is OrgAI's; answers CliCommandResult. */
+  appRemoveOldCliShim: 'app:removeOldCliShim',
   permissionsList: 'permissions:list',
   permissionsIgnored: 'permissions:ignored',
   permissionsRemove: 'permissions:remove',
@@ -5295,6 +6245,8 @@ export const IPC = {
   connectionsList: 'connections:list',
   connectionsUpdate: 'connections:update',
   connectionsSetSecret: 'connections:setSecret',
+  connectionsCreateProxy: 'connections:createProxy',
+  connectionsRemoveProxy: 'connections:removeProxy',
   connectionsTest: 'connections:test',
   connectionsConnect: 'connections:connect',
   connectionsLogin: 'connections:login',
@@ -5333,6 +6285,10 @@ export const IPC = {
   runsListLive: 'runs:listLive',
   runsPendingCards: 'runs:pendingCards',
   runsUsageStats: 'runs:usageStats',
+  /** UsageOverviewQuery -> UsageOverview (read scope). */
+  runsUsageOverview: 'runs:usageOverview',
+  /** UsageOverviewQuery -> CSV text (USAGE_OVERVIEW_CSV_COLUMNS, one row per run with its own project / client) (read scope). */
+  runsUsageOverviewCsv: 'runs:usageOverviewCsv',
   runsStartQuick: 'runs:startQuick',
   runsPromoteQuick: 'runs:promoteQuick',
   modelsPrices: 'models:prices',
@@ -5680,6 +6636,14 @@ export interface KitPreviewRole {
   slug: string
   prompt: string
   elevatedTools: ('Bash' | 'Edit' | 'Write' | 'NotebookEdit' | 'canSpawn' | 'mcp')[]
+  /**
+   * What the role may spend, so nobody imports a team without seeing it: the model as the template wrote it (a tier
+   * name, an alias or an id, at most 80 characters), its effort and its staffing. Each is absent when the template
+   * gives none.
+   */
+  model?: string
+  effort?: Effort
+  staffing?: RoleStaffing
 }
 
 export interface KitImportPreview {
@@ -5796,13 +6760,14 @@ export const HOST_PROTOCOL_VERSION = 1
 export type HostScope = 'read' | 'operate' | 'decide' | 'configure'
 export const HOST_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
 
-/** AppSettings.terminalAccessLevel: 'operate' grants read + operate, 'full' every scope. */
-export type TerminalAccessLevel = 'operate' | 'full'
-
+/** Who says host.hello: the orgai command ('tui' counts as interactive). The OrgAI app is never a socket client. */
 export type HostClientKind = 'tui' | 'cli'
 
-/** 'desktop': the Electron app with a window. 'headless-host': the Electron app started with --headless-host. 'inproc': pure Node inside the CLI. */
-export type HostKind = 'desktop' | 'headless-host' | 'inproc'
+/**
+ * 'desktop': the Electron app with a window (it owns its data folder but serves no socket). 'inproc': pure Node inside
+ * the CLI command that started it. Capabilities per kind: HOST_KIND_CAPABILITIES.
+ */
+export type HostKind = 'desktop' | 'inproc'
 
 export type HostState = 'starting' | 'ready' | 'draining'
 
@@ -5816,8 +6781,8 @@ export interface DaemonInfo {
   /** Socket path (unix) or pipe name (win32). */
   endpoint: string
   /**
-   * false while the host binds no listener and has no daemon.secret (Terminal access off, review M11): clients answer
-   * "Terminal access is off" without connecting. Absent = listening.
+   * false while the host binds no listener and has no daemon.secret (the desktop app never listens): clients do not
+   * connect to it. Absent = listening.
    */
   listening?: false
   state: HostState
@@ -5825,6 +6790,10 @@ export interface DaemonInfo {
   startedAt: number
   hostKind?: HostKind
   appVersion?: string
+  /** The owning process's cwd at boot (written by the orgai CLI; absent for older records and the desktop). */
+  ownerCwd?: string
+  /** Set when the record said hostKind 'node' (a background host of an older version, read as 'inproc'). Never written. */
+  legacyKind?: 'node'
 }
 
 /** Step 1 of the handshake: host -> client, sent immediately on socket connect. */
@@ -5856,10 +6825,10 @@ export interface RpcHelloParams {
    */
   clientProof: string
   /**
-   * Only from the CLI process that started a `--host inproc` host: HMAC-SHA256(that host's in-memory owner key,
+   * Only from the CLI process that started its in-process host: HMAC-SHA256(that host's in-memory owner key,
    * JSON.stringify(['owner:v1', hostInstanceId, hostNonce, clientNonce, clientProof])) (protocol.ts ownerProof). A
-   * matching one is granted every requested scope; any other client of that host is capped by Terminal access like
-   * on every other host. Never on disk, so a process that read daemon.secret still cannot make it.
+   * matching one is granted every requested scope; any other client of that host is refused not_owner before any
+   * method runs. Never on disk, so a process that read daemon.secret still cannot make it.
    */
   ownerProof?: string
 }
@@ -5898,6 +6867,8 @@ export type HostRpcErrorCode =
   | 'unknown_channel'
   | 'desktop_unavailable'
   | 'agent_descendant_refused'
+  /** host.hello: an in-process (orgai CLI) host serves only the process that started it; no valid owner proof. */
+  | 'not_owner'
   | 'stale_target_digest'
   | 'stale_revision'
   | 'scope_denied'
@@ -6046,6 +7017,13 @@ export const DEFAULT_HEADLESS_DECISION_POLICY: Readonly<Required<HeadlessDecisio
 }
 
 export interface RunOverrides {
+  /** Every role that canSpawn requires its whole spawnable list this run (--strict-delegation). Only adds requirements. */
+  strictDelegation?: true
+  /**
+   * Overrides Project.staffingGoal for this run (run staffing). Never widens: every pick stays inside the roles' own
+   * ceilings, so any scope may set it (no overridesWidening rule). Continuations keep it like strictDelegation.
+   */
+  goal?: StaffingGoal
   /** Overrides Project.permissionMode. Under 'operate' scope, must satisfy canNarrowPermissionMode(projectMode, overrideMode). */
   permissionMode?: PermissionMode
   /** Overrides Project.autoContinue for this run (under 'operate', cannot change false -> true). */
@@ -6082,6 +7060,7 @@ export type ExecOutcome =
   | 'unmerged-conflicts'
   | 'blocked'
   | 'incomplete-plan'
+  | 'delegation-incomplete'
   | 'needs-decision'
   | 'budget-exceeded'
   | 'rate-limited'
@@ -6096,6 +7075,7 @@ export const EXEC_OUTCOMES: readonly ExecOutcome[] = [
   'unmerged-conflicts',
   'blocked',
   'incomplete-plan',
+  'delegation-incomplete',
   'needs-decision',
   'budget-exceeded',
   'rate-limited',
@@ -6112,6 +7092,7 @@ export const EXEC_OUTCOME_EXIT_CODE: Record<ExecOutcome, number> = {
   'unmerged-conflicts': 3,
   blocked: 3,
   'incomplete-plan': 3,
+  'delegation-incomplete': 3,
   'needs-decision': 3,
   'budget-exceeded': 3,
   'rate-limited': 4,
@@ -6294,6 +7275,10 @@ export interface HostStatusResult {
   /** Epoch ms. */
   startedAt: number
   activity: HostActivitySnapshot
+  /**
+   * The host-wide run counts (the TUI's quit confirm counts them). Absent when the host has no run state to report.
+   */
+  handoff?: HostHandoffFacts
 }
 
 /** host.stop input (scope 'configure'). Without force the host refuses while any lease is held. */
@@ -6330,6 +7315,288 @@ export interface RunsEventParams {
 
 /** ORGAI_DAEMON_IDLE_MINUTES default: an idle background host exits after this long. */
 export const DEFAULT_DAEMON_IDLE_MINUTES = 30
+
+// ---------- Wave 7 (standalone CLI) ----------
+//
+// Contracts of docs/design/cli-standalone.md (cli-spec Wave 7): host capabilities, the install channel and secure
+// storage's host channels (the Node background host and the app's handoff from it are gone). Everything here is
+// structured-clone and JSON safe; no secret value or data key ever appears in these shapes. The vault file format,
+// the key custodians and the SecretStore API live in src/main/store/vaultTypes.ts (main only).
+
+/** Every HostKind, in a stable order (ownership.ts parseDaemonInfo, hostClient.ts parseHelloResult). */
+export const HOST_KINDS: readonly HostKind[] = ['desktop', 'inproc']
+
+/** Every HostClientKind (socketServer.ts helloProblem). */
+export const HOST_CLIENT_KINDS: readonly HostClientKind[] = ['cli', 'tui']
+
+/** What a host kind can do (cli-standalone.md 4.2): replaces `hostKind === 'inproc'` checks. */
+export interface HostKindCapabilities {
+  /** It can open an OrgAI window: registry entries with `desktopRequired` (window:openRun) are served. */
+  canOpenWindows: boolean
+  /** It is the CLI command's own host: it lives only as long as that command and serves it every scope. */
+  inProcess: boolean
+}
+
+export const HOST_KIND_CAPABILITIES: Readonly<Record<HostKind, HostKindCapabilities>> = {
+  desktop: { canOpenWindows: true, inProcess: false },
+  inproc: { canOpenWindows: false, inProcess: true }
+}
+
+/** HOST_KIND_CAPABILITIES[kind].canOpenWindows; false for an unknown value. */
+export function hostCanOpenWindows(kind: HostKind): boolean {
+  return Object.prototype.hasOwnProperty.call(HOST_KIND_CAPABILITIES, kind) ? HOST_KIND_CAPABILITIES[kind].canOpenWindows : false
+}
+
+// ---- Install channel (cli-standalone.md 3.5) ----
+
+/**
+ * How this orgai was installed: 'npm' (`npm i -g orgai`), 'app' (bundled with the OrgAI app), 'archive' (the portable
+ * archive, phase C), 'dev' (no install.json: a checkout or a hand-made bundle).
+ */
+export type InstallChannel = 'npm' | 'app' | 'archive' | 'dev'
+
+export const INSTALL_CHANNELS: readonly InstallChannel[] = ['npm', 'app', 'archive', 'dev']
+
+/** The file each builder writes next to the CLI bundle: `out/cli/install.json`. Absent means channel 'dev'. */
+export const INSTALL_INFO_FILE = 'install.json'
+
+/** `out/cli/install.json` as read (src/cli/installInfo.ts readInstallInfo). */
+export interface InstallInfo {
+  channel: InstallChannel
+  /** The version the builder stamped (the app's version of the same commit). */
+  version?: string
+  /** The commit the builder stamped (short or full sha). */
+  commit?: string
+  /**
+   * 'file': read from install.json. 'absent': no file (channel 'dev'). 'invalid': a file that could not be read or
+   * did not validate (channel 'dev' with `problem`): HostLauncher must not treat that as a dev checkout (4.1 step 3).
+   */
+  source: 'file' | 'absent' | 'invalid'
+  /** Why an 'invalid' file was refused. */
+  problem?: string
+}
+
+// ---- Host-wide run counts ----
+
+/** host.status `handoff`: the host-wide run counts. */
+export interface HostHandoffFacts {
+  /** Runs starting, running or stopping. */
+  workingRuns: number
+  /** Live runs waiting on the user: idle or with a card open. */
+  waitingRuns: number
+  /** Live runs held by an interrupt or a usage limit. */
+  heldRuns: number
+  /** Paused runs with an auto-resume pending. */
+  pausedRuns: number
+  /** Open decision cards across every run. */
+  openCards: number
+  /** Authenticated terminal sessions (cli and tui sockets). */
+  terminalSessions: number
+}
+
+// ---- Secret vault (cli-standalone.md 5) ----
+
+/**
+ * The vault's state on this host (5.4). 'absent': no vault.json. 'open': the data key is in memory and `check`
+ * passed. 'locked': the custodian answered locked, timeout or unavailable. 'missing-key': missing or denied.
+ * 'key-mismatch': a key was found but `check` failed (another key, or a damaged check record). 'corrupt': vault.json
+ * does not parse or validate.
+ */
+export type VaultState = 'absent' | 'open' | 'locked' | 'missing-key' | 'key-mismatch' | 'corrupt'
+
+export const VAULT_STATES: readonly VaultState[] = ['absent', 'open', 'locked', 'missing-key', 'key-mismatch', 'corrupt']
+
+/** Who holds the vault's data key (5.3). A vault opens only with its recorded scheme. */
+export type VaultCustodyScheme = 'keychain' | 'dpapi-user' | 'secret-service' | 'key-file'
+
+export const VAULT_CUSTODY_SCHEMES: readonly VaultCustodyScheme[] = ['keychain', 'dpapi-user', 'secret-service', 'key-file']
+
+/** A custodian's classified failure (5.3 CustodyFailure.kind). */
+export type CustodyFailureKind = 'unavailable' | 'locked' | 'missing' | 'denied' | 'timeout'
+
+/**
+ * SecretStore.status(key) (5.4): 'set' (readable here), 'unset' (stored nowhere, or deleted), or unreadable with the
+ * reason to show ("This saved secret cannot be decrypted on this computer account. Enter it again", "Secure storage is locked: ..."). Never the value.
+ */
+export type SecretStatus = 'set' | 'unset' | { unreadable: string }
+
+/**
+ * The legacy `<data>/secrets.json` (5.5 Legacy file states): 'ok' parses with a `secrets` object, 'missing' no file,
+ * 'corrupt' anything else (never rewritten by a host of this wave), 'retired' gone after retirement
+ * (`legacyRetired` set; retirement stays off this release).
+ */
+export type LegacySecretsFileState = 'ok' | 'missing' | 'corrupt' | 'retired'
+
+/** A deleted secret kept for `orgai secrets undelete` (key name only, never a value). */
+export interface SecretsSoftDelete {
+  key: string
+  /** 'vault': a delete made through this wave. 'legacy': it disappeared from secrets.json (an older app). */
+  by: 'vault' | 'legacy'
+  /** Epoch ms of the delete. */
+  at: number
+  /**
+   * 'here': this host can restore it. 'app': only the OrgAI app can (the kept value is a secrets.json ciphertext,
+   * `prevLegacy`). 'none': nothing restorable is kept.
+   */
+  restorable: 'here' | 'app' | 'none'
+  /** Epoch ms after which a `by: 'vault'` delete's kept value goes (30 days); absent for 'legacy' (never on a timer). */
+  expiresAt?: number
+}
+
+/** An OS key item left behind by `secrets reset` (5.6): the moved-aside vault names it. Never a key. */
+export interface SecretsOrphanVault {
+  vaultId: string
+  scheme: VaultCustodyScheme
+  /** The moved-aside file's name in the data folder (`vault.json.reset-<time>` / `vault.json.corrupt-<time>`). */
+  file: string
+}
+
+/** secrets:status input (optional). */
+export interface SecretsStatusInput {
+  /** Also run the custodian's probe (a child process, up to 10 s) and report it in `probe`. */
+  probe?: boolean
+}
+
+/** secrets:status (scope 'read'): everything `orgai secrets status` and doctor print. Never a value or a key. */
+export interface SecretsStatusResult {
+  state: VaultState
+  /** The vault's recorded scheme; for an absent vault the scheme a new one would use; null when none is usable. */
+  scheme: VaultCustodyScheme | null
+  /** Why the vault is not open (states other than 'open' and 'absent'); a sentence to show as is. */
+  reason?: string
+  /** The custodian's probe for `scheme`, when this call ran one. */
+  probe?: { ok: true } | { ok: false; kind: CustodyFailureKind; reason: string }
+  /** custody.keyFile (canonical) or ORGAI_VAULT_KEY_FILE, for the key-file scheme. A path, never the key. */
+  keyFile?: string
+  /** The vault id, when vault.json parses. */
+  vaultId?: string
+  counts: {
+    /** Entries in vault.json. */
+    vault: number
+    /** Keys in secrets.json (0 when it is missing, corrupt or retired). */
+    legacy: number
+    /** Keys whose status() is unreadable here (pending-legacy included). */
+    unreadable: number
+    /** ORGAI_SECRET_* / --secret-env values in memory (inproc only). */
+    overlay: number
+  }
+  /** Keys in secrets.json this host cannot read and the vault does not hold yet ("open the app once"). */
+  pendingLegacy: number
+  /** Deleted secrets kept for undelete, newest first. Key names only. */
+  softDeletes: SecretsSoftDelete[]
+  /** Keys a removal had to leave where they were (5.5 Deletes), counted by doctor. */
+  orphanedKeys: number
+  /** OS key items of moved-aside vaults (5.6 Reset). */
+  orphanedVaults: SecretsOrphanVault[]
+  legacyFile: LegacySecretsFileState
+  /**
+   * vault.json or secrets.json could not be read just now (an I/O error such as EIO or EACCES, not damage; WP-G1 review
+   * round 2): the sentence to show. An unreadable vault.json reports `state` 'locked' with this reason; an unreadable
+   * secrets.json reports `legacyFile` 'corrupt' (never written while it lasts). The store reads both again on the next
+   * save and on secrets:status / init; secrets:reset refuses (nothing is moved aside) while either cannot be read.
+   */
+  readError?: string
+  /** This host can encrypt with the app's safeStorage (5.5 "can write back"). */
+  canWriteBack: boolean
+}
+
+/**
+ * secrets:init (scope 'configure'): create a vault (absent), or retry opening it (locked, or missing-key with a key
+ * file). Without keyFile the platform's OS scheme (or ORGAI_VAULT_KEY_FILE when set).
+ */
+export interface SecretsInitInput {
+  /** Absolute path of a key file (5.3.1). Created new (O_EXCL) unless `importKeyFile`. */
+  keyFile?: string
+  /** `--import`: use an existing key file instead of creating one. Only with keyFile. */
+  importKeyFile?: boolean
+}
+
+export interface SecretsInitResult {
+  /** 'created' a new vault, 'opened' an existing one that was not open, 'unchanged' it was already open. */
+  action: 'created' | 'opened' | 'unchanged'
+  status: SecretsStatusResult
+}
+
+/** secrets:reset (scope 'configure', served in every vault state). The CLI asks first (`--yes`). */
+export interface SecretsResetInput {
+  /** Must be true: the caller confirmed that secrets saved only through the orgai command are lost. */
+  confirm: true
+}
+
+export interface SecretsResetResult {
+  /** The moved-aside file's name (`vault.json.reset-<time>` or `vault.json.corrupt-<time>`), or null when no vault existed. */
+  movedTo: string | null
+  /**
+   * A secrets.json that did not parse is moved aside too (`secrets.json.corrupt-<time>`, WP-G1 review round 1), so the
+   * app can save again in legacy-only mode; absent when the file was fine or missing.
+   */
+  legacyMovedTo?: string
+  status: SecretsStatusResult
+}
+
+/** secrets:undelete (scope 'configure'): restore one soft-deleted key. */
+export interface SecretsUndeleteInput {
+  key: string
+}
+
+export interface SecretsUndeleteResult {
+  restored: boolean
+  /** Why it was not restored ("This deleted secret cannot be restored here"). */
+  reason?: string
+}
+
+/**
+ * secrets:confirmDelete (scope 'configure'): the "Keep removed" answer to soft deletes (5.5 Deletes; the app notice
+ * "N saved secrets were removed by an older version of OrgAI. Restore / Keep removed"). Each named key's soft delete
+ * is confirmed: its kept value (`prev` / `prevLegacy`) is dropped, it no longer lists in `softDeletes`, it can no longer
+ * be undeleted, and a confirmed `by: 'legacy'` delete no longer holds back Retirement. A key with no soft delete is
+ * skipped (left out of `confirmed`). The store may keep a `by: 'vault'` tombstone's metadata (`legacyHash`) that rows 1
+ * and 2 of 5.5 still need. Metadata only: served in every state in which vault.json parses, no data key needed.
+ */
+export interface SecretsConfirmDeleteInput {
+  /** Key names (never values), as listed in SecretsStatusResult.softDeletes. */
+  keys: string[]
+}
+
+export interface SecretsConfirmDeleteResult {
+  /** The keys whose soft delete was confirmed, in input order. */
+  confirmed: string[]
+}
+
+/**
+ * Channels of secure storage (cli-standalone.md 5.6). Served by the host dispatcher on every surface (the app's
+ * window and the socket); `secrets:status` needs 'read', the others 'configure'. None ever returns a value.
+ */
+export const SECRETS_IPC = {
+  secretsStatus: 'secrets:status',
+  secretsInit: 'secrets:init',
+  secretsReset: 'secrets:reset',
+  secretsUndelete: 'secrets:undelete',
+  secretsConfirmDelete: 'secrets:confirmDelete'
+} as const
+
+export type SecretsIpcChannel = (typeof SECRETS_IPC)[keyof typeof SECRETS_IPC]
+
+/** A secret slot that holds a value this host cannot read (5.4), with the reason to show instead of "unset". */
+export interface UnreadableSecretSlot {
+  /** The slot name (an env var or header name). Never a value. */
+  name: string
+  /** SecretStatus.unreadable: "This saved secret cannot be decrypted on this computer account. Enter it again", ... */
+  reason: string
+}
+
+export interface McpServerInfo {
+  /**
+   * Wave 7 (5.4): slots whose stored value cannot be read on this host, with why. They are also in missingSecrets
+   * (a run cannot use them) and never in envSet / headersSet. Absent when there are none.
+   */
+  unreadableSecrets?: UnreadableSecretSlot[]
+}
+
+export interface McpLibraryInfo {
+  /** Wave 7 (5.4): as McpServerInfo.unreadableSecrets, for the entry's own slots. */
+  unreadableSecrets?: UnreadableSecretSlot[]
+}
 
 // ---- Start a project from a repository (clone or fork) ----
 //
@@ -6826,6 +8093,11 @@ export interface TeamFilesStatus {
   undo?: TeamFilesUndoInfo
   /** The last Undo that ran: which files it rewrote. */
   lastUndo?: TeamFilesUndoInfo
+  /**
+   * teamFiles:listAttention only, with `undo`: what Undo would bring back, as every difference from the team in use to the
+   * team Undo restores (TeamFilesService.undoChanges). Read-only; the terminal shows it.
+   */
+  undoChanges?: TeamFileChange[]
 }
 
 /** teamFiles:approve and teamFiles:reject input. A digest other than the current one is refused ("Review them again."). */
@@ -6926,4 +8198,987 @@ export interface OrgAIApi {
     enable(input: TeamFilesProjectInput): Promise<TeamFilesActionResult>
   }
   onTeamFilesChanged(cb: (status: TeamFilesStatus) => void): () => void
+  /** The secure storage's notices (Dashboard): status, restore, keep removed, try again, start over. Never a value. */
+  secrets: {
+    status(input?: SecretsStatusInput): Promise<SecretsStatusResult>
+    undelete(input: SecretsUndeleteInput): Promise<SecretsUndeleteResult>
+    confirmDelete(input: SecretsConfirmDeleteInput): Promise<SecretsConfirmDeleteResult>
+    /** Open a locked vault again (or create an absent one). */
+    init(input?: SecretsInitInput): Promise<SecretsInitResult>
+    /** Move a damaged vault (and a damaged secrets.json) aside. The caller confirms first. */
+    reset(input: SecretsResetInput): Promise<SecretsResetResult>
+  }
+}
+
+// ---- Self-knowledge and self-configuration ----
+//
+// OrgAI answers questions about itself and configures itself from its own registries, so the answers stay true as the
+// app grows. The atlas (src/shared/view/atlas.ts: every screen with its path and how to reach it, a doc per AppSettings
+// and Project field, a doc per MenuAction) is typed against these contracts, so a new field, screen or menu action
+// without a doc fails typecheck or atlas.test.ts. The main-process reference service (src/main/reference/) builds a
+// fenced corpus from the atlas and the code's registries (harness tool defs, HOST_CHANNEL_REGISTRY, CLI COMMANDS,
+// CONNECTORS) plus bundled docs. Channels: SELF_KNOWLEDGE_IPC (declared before IPC and spread into it).
+
+/** The atlas surface id union (the literal ids of ATLAS_SURFACE_IDS in src/shared/view/atlas.ts). */
+export type { AtlasSurfaceId } from './view/atlas'
+
+/** Harness tool: read OrgAI's own reference. Audience 'all', read-only, non-blocking, every run kind. */
+export const APP_REFERENCE_TOOL = 'app_reference'
+/** Harness tool: show the user a place in the app (an atlas surface). Chat, setup, MCP and Skill assistant roots only. */
+export const OPEN_IN_APP_TOOL = 'open_in_app'
+/** Harness tool: propose app-wide settings changes (Proposal kind 'appSettings'). Chat only. */
+export const PROPOSE_APP_SETTINGS_TOOL = 'propose_app_settings'
+/** Harness tool: propose a stored project's settings (Proposal kind 'settings' with `target`). Chat only. */
+export const PROPOSE_PROJECT_SETTINGS_TOOL = 'propose_project_settings'
+/** The self-knowledge and self-configuration tools Chat (quick runs) gets, in addition to list_projects. */
+export const CHAT_CONFIG_TOOLS = [APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL] as const
+
+/** app_reference / app:reference actions. 'status' is answered only on Chat, MCP and Skill assistant runs and over IPC. */
+export const APP_REFERENCE_ACTIONS = ['search', 'read', 'locate', 'status'] as const
+export type AppReferenceAction = (typeof APP_REFERENCE_ACTIONS)[number]
+
+/** Default and largest character budget of a search or locate answer (`AppReferenceResult.text.length <= budget`). */
+export const APP_REFERENCE_BUDGET_DEFAULT = 2000
+export const APP_REFERENCE_BUDGET_MIN = 400
+export const APP_REFERENCE_BUDGET_MAX = 8000
+/** Longest `query`; longer is refused (never cut). */
+export const APP_REFERENCE_QUERY_MAX_CHARS = 500
+/** Longest `id` (a section id, e.g. 'surface:app-settings-general-appearance', 'doc:how-it-works#asking-orgai'). */
+export const APP_REFERENCE_ID_MAX_CHARS = 200
+/** Most characters one `read` returns; a longer section is cut and says so. */
+export const APP_REFERENCE_READ_MAX_CHARS = 8000
+
+/**
+ * A request to the reference. search: `query` required, ranked sections within `budget` (default
+ * APP_REFERENCE_BUDGET_DEFAULT, clamped to APP_REFERENCE_BUDGET_MIN..APP_REFERENCE_BUDGET_MAX). read: `id` required (a
+ * section id from a hit). locate: `query` required, answered with atlas paths ("App settings › General › Appearance")
+ * and how to reach them plus the setting fields there. status: no other field. Hidden characters in `query` or `id`
+ * are refused. Inputs are rebuilt in main (host/args.ts appReferenceArgs); unknown fields are dropped.
+ */
+export interface AppReferenceQuery {
+  action: AppReferenceAction
+  query?: string
+  id?: string
+  budget?: number
+}
+
+/** What a reference section is built from. */
+export type AppReferenceSectionKind = 'surface' | 'setting' | 'menu' | 'shortcut' | 'tool' | 'channel' | 'command' | 'connector' | 'doc' | 'status'
+
+/** One ranked section of a search or locate answer. `id` is what `read` takes. */
+export interface AppReferenceHit {
+  id: string
+  kind: AppReferenceSectionKind
+  title: string
+  /** Relative score, 0 < score <= 1 (1 = the best hit of this answer). */
+  score: number
+}
+
+/**
+ * The answer. `text` is the whole answer for a model or a reader: ids, counts and the service's own sentences outside
+ * fences, every value from a registry or doc inside a fence (`<<<` `>>>`, look-alike substitution, like harnessTools
+ * `datum` / `fencedBlock`). Never secrets, keys, tokens or URLs with credentials. `hits` (search, locate) in rank order.
+ */
+export interface AppReferenceResult {
+  text: string
+  hits?: AppReferenceHit[]
+}
+
+/**
+ * main -> renderer push on SELF_KNOWLEDGE_IPC.appNavigate (desktop only): an agent asked to show the user a place.
+ * index.ts sends it to the live unscoped main window (restored and focused, created when closed), like menu actions.
+ * The renderer opens `surfaceId` (for project / engagement / run surfaces, in `projectId`) and announces "<agentLabel>
+ * opened <path>". `runId` is the run that asked (the renderer may link back to it). Main validated every field.
+ */
+export interface AppNavigateEvent {
+  surfaceId: AtlasSurfaceId
+  /** A stored (never virtual) project; present for project, engagement and (optionally) run surfaces, else absent. */
+  projectId?: string
+  runId: string
+  /** Who asked, for the announcement: the calling role's name ("Assistant", "Architect"), plain text, at most 80 chars. */
+  agentLabel: string
+}
+
+/** open_in_app limits per run (RunManager): at most this many navigations, and at most one per interval. */
+export const OPEN_IN_APP_PER_RUN_MAX = 20
+export const OPEN_IN_APP_MIN_INTERVAL_MS = 2000
+
+/** open_in_app's answer from RuntimeContext.navigate. `path` is atlasPath(surfaceId). */
+export type AppNavigateOutcome = { ok: true; path: string } | { ok: false; refusal: string }
+
+/**
+ * AppSettings fields an agent may propose (propose_app_settings), as dotted paths into AppSettings. Never main-owned
+ * fields, connections, proxies, auth, model prices or the default connection (change those in App
+ * settings). Each path's top-level key has `proposable: true` in APP_SETTING_DOCS (atlas.test.ts checks).
+ */
+export const APP_SETTINGS_PROPOSABLE_FIELDS = [
+  'appearance.theme',
+  'appearance.accent',
+  'appearance.reduceMotion',
+  'appearance.canvas.pattern',
+  'appearance.canvas.tint',
+  'appearance.canvas.edges',
+  'appearance.canvas.layout',
+  'appearance.canvas.nodeStyle',
+  'appearance.canvas.minimap',
+  'notifications',
+  'defaultPermissionMode',
+  'defaultMaxBudgetUsd',
+  'defaultKeepRuns',
+  'defaultIsolateWriters',
+  'defaultRootModel',
+  'defaultReportModel',
+  'setupModel',
+  'mcpAssistModel',
+  'skillAssistModel',
+  'quickRunModel',
+  'opusGuardThreshold',
+  'communityPrices',
+  'defaultAutoContinue',
+  'defaultMaxAutoContinues'
+] as const
+export type AppSettingsProposableField = (typeof APP_SETTINGS_PROPOSABLE_FIELDS)[number]
+
+export function isAppSettingsProposableField(value: unknown): value is AppSettingsProposableField {
+  return typeof value === 'string' && (APP_SETTINGS_PROPOSABLE_FIELDS as readonly string[]).includes(value)
+}
+
+/** A proposable setting's value: null only clears an optional number (defaultMaxBudgetUsd = no cap). */
+export type AppSettingValue = string | number | boolean | null
+
+/** At most this many changes in one appSettings proposal. */
+export const APP_SETTINGS_PROPOSAL_MAX_CHANGES = 20
+
+/**
+ * One change of an appSettings proposal. `from` is the stored value when the card was created (main reads it; never
+ * the agent's), `to` the proposed value (validated per field by src/shared/appSettingsProposal.ts
+ * `appSettingValueProblem`), `label` the field's human name (from the atlas doc, never agent text).
+ */
+export interface AppSettingChange {
+  field: AppSettingsProposableField
+  from: AppSettingValue
+  to: AppSettingValue
+  label: string
+}
+
+/**
+ * Proposal kind 'appSettings' (propose_app_settings, Chat only): app-wide settings changes, each field at most once.
+ * Approval applies them through the settings:set path (args.ts settingsSetArgs, SettingsStore normalization, theme,
+ * settings:changed broadcast); Proposal.effect 'now'.
+ */
+export interface AppSettingsProposalPayload {
+  changes: AppSettingChange[]
+  rationale: string
+}
+
+/** ProposalBase.target: the stored project a Chat proposal changes, filled by main from the stored project. */
+export interface ProposalTarget {
+  projectId: string
+  /** The stored project's name when the card was created (display only). */
+  projectName: string
+}
+
+/**
+ * SettingsProposalPayload fields propose_project_settings may set (Chat). Not allowRules (saved permission rules are
+ * granted on permission cards and in Settings only), and permissionMode never 'bypassPermissions'.
+ */
+export const PROJECT_SETTINGS_PROPOSABLE_FIELDS = [
+  'brief',
+  'permissionMode',
+  'maxBudgetUsd',
+  'maxSubagentDepth',
+  'maxConcurrentSubagents',
+  'isolateWriters',
+  'reviewMerges',
+  'autoContinue',
+  'maxAutoContinues',
+  'client'
+] as const satisfies readonly (keyof SettingsProposalPayload & keyof Project)[]
+export type ProjectSettingsProposableField = (typeof PROJECT_SETTINGS_PROPOSABLE_FIELDS)[number]
+
+export interface OrgAIApi {
+  /** An agent's open_in_app asked to show a place (SELF_KNOWLEDGE_IPC.appNavigate). Returns an unsubscribe function. */
+  onAppNavigate(cb: (event: AppNavigateEvent) => void): () => void
+}
+
+// ---- Run outputs ----
+//
+// Deliverables agents make for the user (documents, workbooks, diagrams, text files, images, any file they wrote) and
+// that OrgAI shows inside its window. Produced files are written by main into `<project folder>/outputs/`; registered
+// files stay where the agent wrote them. The index lives in OrgAI's data folder (`<data>/projects/<id>/outputs.json`),
+// so an engagement's working folder holds only the deliverables. Agents reach this through the produce_output and
+// register_output harness tools (work runs of stored projects, team 'default' and 'single'; never quick, setup-like or
+// trust-restricted runs); the user through the outputs:* channels. Everything here is structured-clone safe.
+
+/**
+ * What an output is. docx, xlsx, pptx, mermaid, markdown, text, csv, json, svg and image preview inline; pdf and other
+ * are open-only. pptx (outputs-2 Phase B) is a PowerPoint deck: produced from a SlideDeckInput or registered.
+ */
+export type OutputKind = 'docx' | 'xlsx' | 'pptx' | 'mermaid' | 'markdown' | 'text' | 'csv' | 'json' | 'svg' | 'image' | 'pdf' | 'other'
+
+export const OUTPUT_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'pptx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image', 'pdf', 'other']
+
+/** Kinds the renderer previews inline (outputs:preview answers kind 'none' for the rest). */
+export const OUTPUT_PREVIEW_KINDS: readonly OutputKind[] = ['docx', 'xlsx', 'pptx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg', 'image']
+
+/** Kinds produce_output writes (main renders docx / xlsx / pptx; the rest are the text written as the file). */
+export const OUTPUT_PRODUCE_KINDS = ['docx', 'xlsx', 'pptx', 'mermaid', 'markdown', 'text', 'csv', 'json', 'svg'] as const
+export type OutputProduceKind = (typeof OUTPUT_PRODUCE_KINDS)[number]
+
+/** Kinds the user edits as text inside OrgAI (outputs:readSource / outputs:saveEdit). */
+export const OUTPUT_EDITABLE_KINDS: readonly OutputKind[] = ['markdown', 'text', 'csv', 'json', 'mermaid', 'svg']
+
+/** File extension main forces per produced kind (without the dot). */
+export const OUTPUT_PRODUCE_EXTENSIONS: Readonly<Record<OutputProduceKind, string>> = {
+  docx: 'docx',
+  xlsx: 'xlsx',
+  pptx: 'pptx',
+  mermaid: 'mmd',
+  markdown: 'md',
+  text: 'txt',
+  csv: 'csv',
+  json: 'json',
+  svg: 'svg'
+}
+
+/** Folder (inside the project folder) produced files land in. */
+export const OUTPUTS_DIR_NAME = 'outputs'
+/** Index entries per project; past it the oldest entry is forgotten (its file stays) with a log line. */
+export const OUTPUTS_MAX = 2000
+/** produce_output + register_output successes per run; past it both answer REFUSED. */
+export const OUTPUTS_RUN_MAX = 200
+/** Largest file register_output accepts. */
+export const OUTPUT_FILE_MAX_BYTES = 50 * 1024 * 1024
+/** RunOutput.title length (1..this), one line, no hidden characters. */
+export const OUTPUT_TITLE_MAX_CHARS = 120
+/** RunOutput.description length, no hidden characters (prose: line breaks allowed). */
+export const OUTPUT_DESCRIPTION_MAX_CHARS = 500
+/** Path length cap for a registered path and for the produced `fileName`. */
+export const OUTPUT_PATH_MAX_CHARS = 1024
+/** produce_output text content cap (mermaid, markdown, text, csv, json, svg and the docx Markdown source), UTF-8 bytes. */
+export const OUTPUT_TEXT_MAX_BYTES = 1024 * 1024
+/** produce_output xlsx caps. A string cell starting with '=' is written as text (never a formula). */
+export const OUTPUT_XLSX_MAX_SHEETS = 20
+export const OUTPUT_XLSX_MAX_ROWS = 10_000
+export const OUTPUT_XLSX_MAX_COLUMNS = 256
+export const OUTPUT_XLSX_CELL_MAX_CHARS = 32 * 1024
+/** Excel's own sheet name limit; forbidden characters (: \ / ? * [ ]) are replaced. */
+export const OUTPUT_XLSX_SHEET_NAME_MAX_CHARS = 31
+/** Preview caps. */
+export const OUTPUT_PREVIEW_TEXT_MAX_BYTES = 256 * 1024
+export const OUTPUT_PREVIEW_SHEETS_MAX = 20
+export const OUTPUT_PREVIEW_ROWS_MAX = 500
+export const OUTPUT_PREVIEW_COLUMNS_MAX = 64
+/** One embedded image in a document preview, and all of them together. */
+export const OUTPUT_PREVIEW_DOC_IMAGE_MAX_BYTES = 2 * 1024 * 1024
+export const OUTPUT_PREVIEW_DOC_IMAGES_TOTAL_BYTES = 10 * 1024 * 1024
+/** An image (or svg) file previewed whole. */
+export const OUTPUT_PREVIEW_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+/** RunOutput.id shape. */
+export const OUTPUT_ID_RE = /^out_[0-9a-f]{16}$/
+
+// Outputs 2 (docs/design/outputs-2.md section 16): versions, notes, revise, decks, compare, watch.
+/** Versions kept per output; past it the oldest version that is not v1, not current and not named is dropped (log line). */
+export const OUTPUT_VERSIONS_MAX = 100
+/** Snapshot bytes kept per project; past it the oldest droppable versions across outputs go first (same rule). */
+export const OUTPUT_VERSIONS_BYTES_MAX = 500 * 1024 * 1024
+/** OutputVersion.label length (a user name for a version; a named version is never pruned). */
+export const OUTPUT_VERSION_LABEL_MAX_CHARS = 60
+/** OutputNote.text length (1..this), no hidden characters (prose: line breaks allowed). */
+export const OUTPUT_NOTE_TEXT_MAX = 2000
+/** Notes per output (all versions together). */
+export const OUTPUT_NOTES_MAX = 500
+/** Quote / label caps inside a note anchor (untrusted document text; cut, never refused). */
+export const OUTPUT_NOTE_QUOTE_MAX_CHARS = 400
+export const OUTPUT_NOTE_LABELS_MAX = 20
+export const OUTPUT_NOTE_LABEL_MAX_CHARS = 80
+/** OutputReviseInput.instruction length, no hidden characters (prose). */
+export const OUTPUT_REVISE_TEXT_MAX = 4000
+/** Revision requests kept per output (oldest dropped). */
+export const OUTPUT_REVISIONS_MAX = 50
+/** produce_output pptx caps (SlideDeckInput). */
+export const OUTPUT_PPTX_MAX_SLIDES = 100
+export const OUTPUT_PPTX_ELEMENTS_PER_SLIDE = 40
+export const OUTPUT_PPTX_TEXT_MAX_CHARS = 5000
+export const OUTPUT_PPTX_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+export const OUTPUT_PPTX_TOTAL_MAX_BYTES = 40 * 1024 * 1024
+export const OUTPUT_PPTX_FONT_MAX_CHARS = 64
+/** pptx preview caps (SlidePreview). */
+export const OUTPUT_PREVIEW_SLIDES_MAX = 200
+export const OUTPUT_PPTX_PREVIEW_XML_MAX_BYTES = 8 * 1024 * 1024
+export const OUTPUT_PREVIEW_DECK_IMAGES_TOTAL_BYTES = 20 * 1024 * 1024
+/** Shapes drawn per previewed slide (more are dropped; the slide carries truncatedShapes). */
+export const OUTPUT_PREVIEW_SLIDE_SHAPES_MAX = 200
+/** In-OrgAI text editing cap (outputs:readSource / outputs:saveEdit). */
+export const OUTPUT_EDIT_MAX_BYTES = OUTPUT_TEXT_MAX_BYTES
+/** outputs:saveImage payload cap (decoded bytes). */
+export const OUTPUT_EXPORT_IMAGE_MAX_BYTES = 25 * 1024 * 1024
+/** An external change is accepted once size and mtime held still this long. */
+export const OUTPUT_EXTERNAL_SETTLE_MS = 1500
+/** Outputs one window may watch at once, and how long a watch lives after its last outputs:watch / outputs:open. */
+export const OUTPUT_WATCH_MAX = 8
+export const OUTPUT_WATCH_TTL_MS = 600_000
+/** outputs:compare caps. */
+export const OUTPUT_DIFF_TEXT_LINES_MAX = 5000
+export const OUTPUT_DIFF_SLIDES_MAX = 200
+/** Thumbnail caps (OutputThumb). */
+export const OUTPUT_THUMB_IMAGE_MAX_BYTES = 24 * 1024
+export const OUTPUT_THUMB_LINES_MAX_CHARS = 240
+/** OutputNote.id / OutputRevisionRequest.id shapes. */
+export const OUTPUT_NOTE_ID_RE = /^note_[0-9a-f]{16}$/
+export const OUTPUT_REVISION_ID_RE = /^rev_[0-9a-f]{16}$/
+
+/** Who made a version: an agent (produce / register, a revision too: then `answers` is set), the user's save in OrgAI, a change seen on disk, a restore. */
+export type OutputVersionSource = 'agent' | 'edit' | 'external' | 'restore'
+
+/**
+ * One version of an output (newest has the highest n). Versions are never edited (except `label`); each has a snapshot
+ * in OrgAI's data folder (`<data>/projects/<id>/outputs/<outputId>/v<n>.<ext>`). runId / agentId / role only for
+ * source 'agent' (from the run's agent record, never the agent). `title` is the output title when this version was made.
+ */
+export interface OutputVersion {
+  n: number
+  source: OutputVersionSource
+  createdAt: number
+  runId?: string
+  agentId?: string
+  role?: string
+  title: string
+  label?: string
+  bytes: number
+  /** sha256 hex of the snapshot. */
+  digest: string
+  /** The revision request (rev_...) this version answers. */
+  answers?: string
+  /** source 'restore': the version restored. */
+  restoredFrom?: number
+  noteCount: number
+  openNoteCount: number
+}
+
+/** Where a note points (offsets and fractions are of the version it belongs to). quote / labels are untrusted document text. */
+export type OutputNoteAnchor =
+  /** text, markdown (source offsets), json, csv as text, mermaid / svg source: UTF-16 offsets, end exclusive. */
+  | { type: 'text'; start: number; end: number; quote: string }
+  /** docx: a preview block index and a character range inside that block's text. */
+  | { type: 'block'; index: number; start: number; end: number; quote: string }
+  /** sheet / csv grid, 0-based inclusive; sheet '' for csv. */
+  | { type: 'cells'; sheet: string; r1: number; c1: number; r2: number; c2: number; quote?: string }
+  /** slide (1-based `slide`), image, svg, diagram: x, y, w, h fractions 0..1 of the drawing; labels are shape texts the region covers. */
+  | { type: 'region'; slide?: number; shape: 'box' | 'ellipse'; x: number; y: number; w: number; h: number; labels?: string[] }
+  /** A whole slide (1-based). */
+  | { type: 'slide'; slide: number }
+  | { type: 'whole' }
+
+export type OutputNoteStatus = 'open' | 'resolved' | 'sent'
+
+/** A user's note on one version of an output. Agents never write notes. */
+export interface OutputNote {
+  id: string
+  outputId: string
+  version: number
+  anchor: OutputNoteAnchor
+  text: string
+  status: OutputNoteStatus
+  createdAt: number
+  resolvedAt?: number
+  /** The revision request (rev_...) it was sent in. */
+  sentIn?: string
+}
+
+/** A request to the team to revise an output (outputs:revise), kept per output (at most OUTPUT_REVISIONS_MAX). */
+export interface OutputRevisionRequest {
+  id: string
+  outputId: string
+  /** The version the user looked at when asking. */
+  version: number
+  /** The run that got the request (a continuation's new run id for 'continued', the new run for 'started'). */
+  runId: string
+  mode: 'sent' | 'continued' | 'started'
+  scope: 'whole' | 'selection' | 'notes'
+  noteIds?: string[]
+  createdAt: number
+  /** The version that answered it (set when that run produced or registered a version of this output). */
+  answeredBy?: number
+  /** Set when the run reached an outcome without answering. */
+  endedAt?: number
+}
+
+/**
+ * One deliverable in the project's index. `path` is absolute (inside the project folder or one of
+ * Project.allowedDirectories; produced ones under `<project>/outputs/`); `relPath` is what the user sees (relative to
+ * the project folder, or the absolute path for an allowed folder outside it), forward slashes. `agentId` / `role` come
+ * from RunManager (the run's agent record), never from the agent. `missing` is set by outputs:list when the file is
+ * gone; the entry is kept until the user forgets it.
+ *
+ * Outputs 2: an output is one file (identity = the case-folded real path on win32 / darwin). `runId` / `agentId` /
+ * `role` are of the run that made v1; the current version's maker is in `current` and outputs:versions. The version
+ * fields are optional in the type only so older renderer fixtures compile: main always sets them (index format 2).
+ */
+export interface RunOutput {
+  id: string
+  projectId: string
+  runId: string
+  agentId?: string
+  role?: string
+  kind: OutputKind
+  title: string
+  description?: string
+  /** Base name of the file (for a produced file with a sub-path: the last segment only). */
+  fileName: string
+  path: string
+  relPath: string
+  bytes: number
+  /** Epoch ms of the first index write (a new version keeps it and sets updatedAt). */
+  createdAt: number
+  /** The current version's createdAt. */
+  updatedAt?: number
+  source: 'produced' | 'registered'
+  missing?: true
+  /** Current version number (1-based). */
+  version?: number
+  /** Versions kept (after pruning; can be lower than `version`). */
+  versionCount?: number
+  /** sha256 hex of the current version's snapshot (equality only). */
+  contentDigest?: string
+  /** Open notes over all versions. */
+  openNoteCount?: number
+  /** Who made the current version and when. */
+  current?: { source: OutputVersionSource; at: number; runId?: string; agentId?: string; role?: string }
+  /** Set once versions were pruned by a cap. */
+  versionsPruned?: true
+}
+
+/** produce_output xlsx content: one entry per sheet. */
+export interface OutputSheetInput {
+  name: string
+  columns?: { header: string; width?: number }[]
+  rows: (string | number | boolean | null)[][]
+  /** Excel number formats by column index (e.g. '#,##0.00', '0%', 'yyyy-mm-dd'); a missing entry = General. */
+  numberFormat?: (string | null)[]
+}
+
+export interface OutputWorkbookInput {
+  sheets: OutputSheetInput[]
+}
+
+/**
+ * produce_output input (what the tool hands RuntimeContext.outputs.produce after its own shape checks). `content` is
+ * Markdown (docx; a subset: headings, paragraphs, bold, italic, code, lists one level deep, GFM tables, fenced code,
+ * rules), an OutputWorkbookInput (xlsx), a SlideDeckInput (pptx), or the file's text (the rest). `fileName` is
+ * relative to `<project>/outputs/` (sub-folders allowed, never `..`, absolute, device or UNC; the kind's extension is
+ * forced); missing = a safe name from the title.
+ *
+ * Identity rule (outputs-2 section 3): a target path that is an indexed output of this project (any run) adds a version
+ * to it (no version when the content digest is unchanged); a path that exists but is not indexed gets a " (2)" style
+ * suffix and becomes a new output; `separate: true` always takes the suffix route. `overwrite` is accepted and ignored.
+ */
+export interface OutputProduceInput {
+  kind: OutputProduceKind
+  title: string
+  fileName?: string
+  description?: string
+  /** Ignored since outputs 2 (kept so older prompts validate). */
+  overwrite?: boolean
+  separate?: boolean
+  content: string | OutputWorkbookInput | SlideDeckInput
+}
+
+/** A colour in deck input and slide previews: lowercase or uppercase `#rrggbb` only. */
+export const OUTPUT_COLOR_RE = /^#[0-9a-fA-F]{6}$/
+
+/** A block in a two-content slide column. */
+export type SlideBlock =
+  | { type: 'bullets'; bullets: { text: string; level?: 0 | 1 | 2 }[] }
+  | { type: 'body'; text: string }
+  | { type: 'image'; path: string; alt: string; caption?: string }
+  | { type: 'table'; rows: string[][]; header?: boolean }
+
+/**
+ * One slide of produce_output pptx. Strings are plain text (never markup). `image.path` follows register_output's
+ * confinement (inside the project or an allowed folder, regular file, no link, png / jpeg / gif / webp, at most
+ * OUTPUT_PPTX_IMAGE_MAX_BYTES); no URLs.
+ */
+export interface SlideInput {
+  layout: 'title' | 'section' | 'content' | 'two-content' | 'image' | 'blank'
+  title?: string
+  subtitle?: string
+  bullets?: { text: string; level?: 0 | 1 | 2 }[]
+  body?: string
+  left?: SlideBlock[]
+  right?: SlideBlock[]
+  image?: { path: string; alt: string; caption?: string }
+  table?: { rows: string[][]; header?: boolean }
+  /** Speaker notes. */
+  notes?: string
+}
+
+/** produce_output pptx content. Fonts are names only (printable, at most OUTPUT_PPTX_FONT_MAX_CHARS). */
+export interface SlideDeckInput {
+  size?: '16:9' | '4:3'
+  theme?: { accent?: string; fontHeading?: string; fontBody?: string }
+  slides: SlideInput[]
+}
+
+/**
+ * register_output input: a file the agent wrote itself. `path` absolute or relative to the project folder; it must
+ * be a regular file (no link or junction) whose real path is inside the project folder or an allowed folder, never a
+ * reference folder, OrgAI's data folder or under `.git`, at most OUTPUT_FILE_MAX_BYTES. `kind` missing = from the
+ * extension (outputKindForPath). A path already in the index (any run) adds a version when its content changed, else
+ * changes nothing but title / description. `.pptm` (macro-bearing) is refused.
+ */
+export interface OutputRegisterInput {
+  path: string
+  title: string
+  kind?: OutputKind
+  description?: string
+}
+
+/** outputs:preview input. `version` missing = the current version (read from its snapshot when not current). */
+export interface OutputPreviewInput {
+  projectId: string
+  outputId: string
+  version?: number
+}
+
+/** outputs:open / reveal / saveAs / forget / delete input. */
+export interface OutputRef {
+  projectId: string
+  outputId: string
+}
+
+/** outputs:readSource / thumb / restore input. */
+export interface OutputVersionRef {
+  projectId: string
+  outputId: string
+  version: number
+}
+
+/** A run of text in a document preview. `href` only http:, https: or mailto:. */
+export interface DocumentRun {
+  text: string
+  bold?: true
+  italic?: true
+  underline?: true
+  strike?: true
+  code?: true
+  href?: string
+}
+
+/** A block of a document preview. Never HTML: the renderer builds elements from these. */
+export type DocumentBlock =
+  | { type: 'heading'; level: 1 | 2 | 3 | 4 | 5 | 6; runs: DocumentRun[] }
+  | { type: 'paragraph'; runs: DocumentRun[] }
+  | { type: 'list'; ordered: boolean; items: DocumentRun[][] }
+  /** rows -> cells -> runs. `headerRows` = how many leading rows are header rows. */
+  | { type: 'table'; rows: DocumentRun[][][]; headerRows?: number }
+  /** dataUrl only data:image/(png|jpeg|gif|webp);base64, within the image caps. */
+  | { type: 'image'; dataUrl: string; alt: string }
+  | { type: 'code'; text: string }
+  | { type: 'rule' }
+  | { type: 'pageBreak' }
+
+/** A cell of a sheet preview: the value (a formula cell's cached result), its formula text and number format. Dates are ISO strings. */
+export interface SheetCell {
+  v: string | number | boolean | null
+  f?: string
+  fmt?: string
+}
+
+export interface SheetPreview {
+  name: string
+  rows: SheetCell[][]
+  /** Rows / columns beyond the preview caps that are not shown (counts). */
+  truncatedRows?: number
+  truncatedCols?: number
+}
+
+/**
+ * outputs:preview result. Never raw HTML, never a throw for a bad file: a corrupt, oversized, missing or open-only
+ * file answers kind 'none' with a plain sentence. 'text' covers markdown, text, csv, json and mermaid source (the
+ * renderer renders markdown and mermaid itself); 'svg' is the SVG source as text (the renderer decides how to show it
+ * safely); 'image' is a data URL of a png / jpeg / gif / webp file.
+ */
+export type OutputPreview =
+  | { kind: 'document'; blocks: DocumentBlock[]; truncated?: true }
+  | { kind: 'sheets'; sheets: SheetPreview[]; truncatedSheets?: number }
+  | { kind: 'text'; text: string; truncated?: true }
+  | { kind: 'svg'; text: string }
+  | { kind: 'image'; dataUrl: string }
+  /** pptx: `size` in points; `truncatedSlides` = slides past OUTPUT_PREVIEW_SLIDES_MAX not shown (a lower bound). */
+  | { kind: 'slides'; size: { w: number; h: number }; slides: SlidePreview[]; truncatedSlides?: number }
+  | { kind: 'none'; reason: string }
+
+/** A run in a slide preview: DocumentRun plus size (pt), colour (`#rrggbb` only) and a font name used only as a hint. */
+export interface SlideRun extends DocumentRun {
+  sizePt?: number
+  color?: string
+  font?: string
+}
+
+export interface SlideParagraph {
+  runs: SlideRun[]
+  level?: number
+  bullet?: 'disc' | 'number'
+  align?: 'left' | 'center' | 'right'
+}
+
+/** Geometry of every shape: fractions (0..1, may overflow slightly) of the slide width / height. */
+export interface SlideBox {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** One drawable thing on a slide. Colours `#rrggbb` only; images only safe data URLs within the deck image caps. */
+export type SlideShape =
+  | (SlideBox & { type: 'text'; paragraphs: SlideParagraph[]; anchor?: 'top' | 'middle' | 'bottom'; fill?: string; line?: string })
+  | (SlideBox & { type: 'image'; dataUrl: string; alt?: string })
+  | (SlideBox & { type: 'shape'; geometry: 'rect' | 'roundRect' | 'ellipse' | 'other'; fill?: string; line?: string })
+  | (SlideBox & { type: 'table'; rows: DocumentRun[][][] })
+  | (SlideBox & { type: 'placeholder'; label: 'Chart' | 'SmartArt' | 'Video' | 'Picture' | 'Object'; alt?: string })
+
+/** One slide of a deck preview (`n` 1-based). `notes` = speaker notes as plain text. */
+export interface SlidePreview {
+  n: number
+  title?: string
+  background?: string
+  shapes: SlideShape[]
+  notes?: string
+  /** Shapes past OUTPUT_PREVIEW_SLIDE_SHAPES_MAX not drawn. */
+  truncatedShapes?: number
+}
+
+/**
+ * outputs:thumb result (small, lazy; the renderer caches it by id + version). 'svg' carries the checked SVG text (the
+ * renderer rasterizes it); 'image' a data URL of at most OUTPUT_THUMB_IMAGE_MAX_BYTES (else 'none'); 'lines' at most
+ * 4 lines / OUTPUT_THUMB_LINES_MAX_CHARS; 'cells' the top-left 4 x 6 block of the first sheet.
+ */
+export type OutputThumb =
+  | { kind: 'slide'; size: { w: number; h: number }; slide: SlidePreview }
+  | { kind: 'image'; dataUrl: string }
+  | { kind: 'svg'; text: string }
+  | { kind: 'lines'; lines: string[] }
+  | { kind: 'cells'; rows: (string | number | boolean | null)[][] }
+  | { kind: 'none' }
+
+/** A changed span inside a line or block text: [start, end) UTF-16 offsets. */
+export type OutputDiffMark = [number, number]
+
+export interface OutputDiffLine {
+  op: 'eq' | 'add' | 'del'
+  /** 1-based line numbers in A / B. */
+  a?: number
+  b?: number
+  text: string
+  marks?: OutputDiffMark[]
+}
+
+export interface OutputDiffHunk {
+  aStart: number
+  aCount: number
+  bStart: number
+  bCount: number
+  lines: OutputDiffLine[]
+}
+
+export interface OutputDiffCellChange {
+  r: number
+  c: number
+  op: 'add' | 'del' | 'chg'
+  was?: string | number | boolean | null
+  now?: string | number | boolean | null
+}
+
+/**
+ * outputs:compare result. Data only (no HTML). 'text' for text kinds (3 lines of context; `truncated` past
+ * OUTPUT_DIFF_TEXT_LINES_MAX changed lines), 'blocks' for docx (by preview block, word marks on changed ones; a/b are
+ * block indexes), 'cells' for xlsx and csv (per sheet, within the preview caps), 'slides' for pptx (aligned pairs, a/b
+ * 1-based slide numbers), 'none' for kinds with no text form or a failed read.
+ */
+export type OutputDiff =
+  | { kind: 'text'; hunks: OutputDiffHunk[]; added: number; removed: number; truncated?: true }
+  | { kind: 'blocks'; rows: { op: 'eq' | 'add' | 'del' | 'chg'; a?: number; b?: number; marks?: { a?: OutputDiffMark[]; b?: OutputDiffMark[] } }[]; truncated?: true }
+  | {
+      kind: 'cells'
+      sheets: { name: string; status: 'same' | 'changed' | 'added' | 'removed'; changes: OutputDiffCellChange[]; rowOps: { r: number; op: 'add' | 'del' }[]; truncated?: true }[]
+    }
+  | { kind: 'slides'; pairs: { a?: number; b?: number; status: 'same' | 'changed' | 'added' | 'removed' }[]; truncated?: true }
+  | { kind: 'none'; reason: string }
+
+/** outputs:compare input: two version numbers of one output. */
+export interface OutputCompareInput {
+  projectId: string
+  outputId: string
+  a: number
+  b: number
+}
+
+/** outputs:readSource result (editable kinds, at most OUTPUT_EDIT_MAX_BYTES). */
+export type OutputSourceResult = { text: string; digest: string } | { refused: string }
+
+/** outputs:saveEdit input: the whole new text of an editable output, based on `baseVersion`. `forceNew` saves even when a newer version exists. */
+export interface OutputSaveEditInput {
+  projectId: string
+  outputId: string
+  baseVersion: number
+  text: string
+  forceNew?: boolean
+}
+
+export type OutputSaveEditResult = { ok: true; output: RunOutput; version: number } | { stale: true; currentVersion: number } | { refused: string }
+
+/** outputs:restore result. */
+export type OutputRestoreResult = { ok: true; output: RunOutput; version: number } | { refused: string }
+
+/** outputs:update input: rename / describe the output, name a version. No file change, no new version. Absent = unchanged; description '' clears; label '' clears. */
+export interface OutputUpdateInput {
+  projectId: string
+  outputId: string
+  title?: string
+  description?: string
+  versionLabel?: { n: number; label: string }
+}
+
+/** outputs:deletePreview result: what a delete would remove, for the renderer's confirm. */
+export interface OutputDeletePreview {
+  path: string
+  relPath: string
+  outsideOutputsFolder: boolean
+  /** Stored versions (snapshots) the delete removes. */
+  versions: number
+  /** The OS trash is available (else the file is deleted for good). */
+  trash: boolean
+  missing: boolean
+}
+
+/**
+ * outputs:delete input. `expectedVersionCount` is the preview's `versions`; main refuses ("This output changed. Check it
+ * and delete again.") when it differs. It may be left out only for a produced output with one version (the pre-outputs-2
+ * delete); every other delete must send it.
+ */
+export interface OutputDeleteInput {
+  projectId: string
+  outputId: string
+  expectedVersionCount?: number
+}
+
+/** outputs:noteAdd input. */
+export interface OutputNoteAddInput {
+  projectId: string
+  outputId: string
+  version: number
+  anchor: OutputNoteAnchor
+  text: string
+}
+
+/** outputs:noteUpdate input: new text and / or status ('sent' is main-only and refused here). */
+export interface OutputNoteUpdateInput {
+  projectId: string
+  outputId: string
+  noteId: string
+  text?: string
+  status?: 'open' | 'resolved'
+}
+
+export interface OutputNoteRemoveInput {
+  projectId: string
+  outputId: string
+  noteId: string
+}
+
+/** Where a revise request goes: an existing run (live: a message; ended and continuable: a continuation) or a new run. */
+export type OutputReviseTarget = { type: 'run'; runId: string } | { type: 'new' }
+
+/** outputs:revise input. `anchor` with scope 'selection'; `noteIds` with scope 'notes'. instruction may be '' only for 'notes'. */
+export interface OutputReviseInput {
+  projectId: string
+  outputId: string
+  version: number
+  scope: 'whole' | 'selection' | 'notes'
+  anchor?: OutputNoteAnchor
+  noteIds?: string[]
+  instruction: string
+  target: OutputReviseTarget
+}
+
+/**
+ * outputs:reviseOptions result, in the order the renderer offers them: the run that made the current version when live
+ * ('live') or held by an interrupt / limit / open card ('held'; sending is refused until the user answers), or ended
+ * and continuable ('continuable'); then other live runs of the project; `newRunAllowed` for "A new run".
+ */
+export interface OutputReviseOptions {
+  runs: { runId: string; label: string; state: 'live' | 'continuable' | 'held'; madeCurrent: boolean }[]
+  newRunAllowed: boolean
+}
+
+export type OutputReviseResult = { requestId: string; runId: string; mode: 'sent' | 'continued' | 'started' } | { refused: string }
+
+/** outputs:watch / unwatch result: watched = now polled; `refused` a plain sentence (cap, path rules). */
+export type OutputWatchResult = { watched: boolean } | { refused: string }
+
+/** outputs:saveImage input (an exported diagram picture). Desktop only; the path comes from the native save dialog. */
+export interface OutputSaveImageInput {
+  projectId: string
+  outputId: string
+  suggestedName: string
+  mime: 'image/png' | 'image/svg+xml'
+  dataBase64: string
+}
+
+/** outputs:saveAs result. */
+export type OutputSaveAsResult = { path: string } | { cancelled: true }
+
+/**
+ * outputs:changed push: an agent or the user changed a project's outputs. 'version' = a new version (agent, edit,
+ * external, restore); 'notes' = notes added / changed / removed; 'watch' = a watched output's state changed (a
+ * missing file, a watch expired); 'revision' = a revise request was made, answered or ended.
+ */
+export interface OutputsChangedEvent {
+  projectId: string
+  ids: string[]
+  what: 'added' | 'removed' | 'updated' | 'version' | 'notes' | 'watch' | 'revision'
+}
+
+/** The kind a file's extension implies (register_output without a kind). `.pptm`, `.ppt` and `.odp` are 'other'. */
+export function outputKindForPath(path: string): OutputKind {
+  const m = /\.([A-Za-z0-9]+)$/.exec(path)
+  switch (m ? m[1].toLowerCase() : '') {
+    case 'docx':
+      return 'docx'
+    case 'xlsx':
+      return 'xlsx'
+    case 'pptx':
+      return 'pptx'
+    case 'md':
+    case 'markdown':
+      return 'markdown'
+    case 'txt':
+      return 'text'
+    case 'csv':
+      return 'csv'
+    case 'json':
+      return 'json'
+    case 'svg':
+      return 'svg'
+    case 'mmd':
+    case 'mermaid':
+      return 'mermaid'
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'webp':
+      return 'image'
+    case 'pdf':
+      return 'pdf'
+    default:
+      return 'other'
+  }
+}
+
+/** Harness tool names. read_output (outputs 2) lets agents read an output's text and its open notes. */
+export const OUTPUT_TOOLS = { produce: 'produce_output', register: 'register_output', read: 'read_output' } as const
+
+/** read_output input (RuntimeContext.outputs.read). */
+export interface OutputReadInput {
+  action: 'list' | 'read' | 'notes'
+  outputId?: string
+  version?: number
+}
+
+/** Channels of this section. Not spread into IPC (declared after it); host lists name OUTPUTS_IPC like TEAM_FILES_IPC. */
+export const OUTPUTS_IPC = {
+  /** (projectId) -> RunOutput[] newest first; entries whose file is gone carry missing: true. Scope read. */
+  outputsList: 'outputs:list',
+  /** (OutputPreviewInput) -> OutputPreview. Never rejects for a bad file. Scope read. */
+  outputsPreview: 'outputs:preview',
+  /** (OutputRef) -> '' or an error sentence (shell.openPath). Path re-checked every call; extends an active watch. Desktop only. */
+  outputsOpen: 'outputs:open',
+  /** (OutputRef) -> '' or an error sentence (shell.showItemInFolder). Desktop only. */
+  outputsReveal: 'outputs:reveal',
+  /** (OutputRef) -> OutputSaveAsResult (main save dialog, copies the file). Desktop only. */
+  outputsSaveAs: 'outputs:saveAs',
+  /** (OutputRef) -> RunOutput[] afterwards; removes the entry, its stored versions, notes and revision requests; the file stays. Scope configure. */
+  outputsForget: 'outputs:forget',
+  /**
+   * (OutputDeleteInput) -> RunOutput[] afterwards. Every source: moves the file to the OS trash (permanent delete when
+   * there is none), removes the entry, versions, notes and requests; a missing file just removes the entry. Scope configure.
+   */
+  outputsDelete: 'outputs:delete',
+  /** (OutputRef) -> OutputDeletePreview. Scope read. */
+  outputsDeletePreview: 'outputs:deletePreview',
+  /** (OutputRef) -> OutputVersion[] newest first. Scope read. */
+  outputsVersions: 'outputs:versions',
+  /** (OutputVersionRef) -> OutputSourceResult (editable kinds only). Scope read. */
+  outputsReadSource: 'outputs:readSource',
+  /** (OutputVersionRef) -> OutputThumb (main queue: 2 at a time). Never rejects for a bad file ('none'). Scope read. */
+  outputsThumb: 'outputs:thumb',
+  /** (OutputCompareInput) -> OutputDiff. Never rejects for a bad file ('none'). Scope read. */
+  outputsCompare: 'outputs:compare',
+  /** (OutputRef) -> OutputNote[] (all versions, oldest first). Scope read. */
+  outputsNotes: 'outputs:notes',
+  /** (OutputRef) -> OutputRevisionRequest[] newest first. Scope read. */
+  outputsRevisions: 'outputs:revisions',
+  /** (OutputRef) -> OutputReviseOptions. Scope read. */
+  outputsReviseOptions: 'outputs:reviseOptions',
+  /** (OutputSaveEditInput) -> OutputSaveEditResult. Scope configure. */
+  outputsSaveEdit: 'outputs:saveEdit',
+  /** (OutputVersionRef) -> OutputRestoreResult (a new version with the old content; the file is rewritten). Scope configure. */
+  outputsRestore: 'outputs:restore',
+  /** (OutputUpdateInput) -> RunOutput. No file change. Scope configure. */
+  outputsUpdate: 'outputs:update',
+  /** (OutputNoteAddInput) -> OutputNote. Scope operate. */
+  outputsNoteAdd: 'outputs:noteAdd',
+  /** (OutputNoteUpdateInput) -> OutputNote. Scope operate. */
+  outputsNoteUpdate: 'outputs:noteUpdate',
+  /** (OutputNoteRemoveInput) -> OutputNote[] afterwards. Scope operate. */
+  outputsNoteRemove: 'outputs:noteRemove',
+  /** (OutputReviseInput) -> OutputReviseResult (through RunManager send / continue / start; a gate answers { refused }). Scope operate. */
+  outputsRevise: 'outputs:revise',
+  /** (OutputRef) -> OutputWatchResult: poll the file for outside edits (OUTPUT_WATCH_MAX per caller, OUTPUT_WATCH_TTL_MS). Scope operate. */
+  outputsWatch: 'outputs:watch',
+  /** (OutputRef) -> OutputWatchResult ({ watched: false }). Scope operate. */
+  outputsUnwatch: 'outputs:unwatch',
+  /** (OutputSaveImageInput) -> OutputSaveAsResult (native save dialog; PNG magic and SVG active-content checks). Desktop only. */
+  outputsSaveImage: 'outputs:saveImage',
+  /** main -> renderer push carrying OutputsChangedEvent. */
+  outputsChanged: 'outputs:changed'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  outputs: {
+    list(projectId: string): Promise<RunOutput[]>
+    preview(input: OutputPreviewInput): Promise<OutputPreview>
+    /** '' when opened, else a plain sentence. */
+    open(ref: OutputRef): Promise<string>
+    /** '' when shown, else a plain sentence. */
+    reveal(ref: OutputRef): Promise<string>
+    saveAs(ref: OutputRef): Promise<OutputSaveAsResult>
+    /** Removes the entry, its versions and notes; the file stays. Resolves to the list afterwards. */
+    forget(ref: OutputRef): Promise<RunOutput[]>
+    /** Trashes the file and removes the output (send the preview's version count). The renderer confirms first. An OutputRef still works for a produced one-version output. */
+    delete(input: OutputDeleteInput): Promise<RunOutput[]>
+    deletePreview(ref: OutputRef): Promise<OutputDeletePreview>
+    versions(ref: OutputRef): Promise<OutputVersion[]>
+    readSource(ref: OutputVersionRef): Promise<OutputSourceResult>
+    thumb(ref: OutputVersionRef): Promise<OutputThumb>
+    compare(input: OutputCompareInput): Promise<OutputDiff>
+    notes(ref: OutputRef): Promise<OutputNote[]>
+    revisions(ref: OutputRef): Promise<OutputRevisionRequest[]>
+    reviseOptions(ref: OutputRef): Promise<OutputReviseOptions>
+    saveEdit(input: OutputSaveEditInput): Promise<OutputSaveEditResult>
+    restore(ref: OutputVersionRef): Promise<OutputRestoreResult>
+    update(input: OutputUpdateInput): Promise<RunOutput>
+    noteAdd(input: OutputNoteAddInput): Promise<OutputNote>
+    noteUpdate(input: OutputNoteUpdateInput): Promise<OutputNote>
+    noteRemove(input: OutputNoteRemoveInput): Promise<OutputNote[]>
+    revise(input: OutputReviseInput): Promise<OutputReviseResult>
+    watch(ref: OutputRef): Promise<OutputWatchResult>
+    unwatch(ref: OutputRef): Promise<OutputWatchResult>
+    saveImage(input: OutputSaveImageInput): Promise<OutputSaveAsResult>
+  }
+  onOutputsChanged(cb: (event: OutputsChangedEvent) => void): () => void
 }

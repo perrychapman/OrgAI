@@ -1,7 +1,9 @@
-import type { Effort, ModelFamily, ModelRef, ModelTier, ProviderId, ProviderModel, Role } from '@shared/types'
+import { connectionTag } from './roleConnection'
+import type { ConnectionId, Effort, ModelFamily, ModelRef, ModelTier, ProviderId, ProviderModel, Role } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { effortOptionsFor } from '@shared/defaults'
-import { groupByFamily, FAMILY_LABEL, roleTier } from './remap'
+import { groupByFamily, roleTier } from './remap'
+import { FAMILY_WORD } from './modelFamily'
 
 type TierModels = Partial<Record<ModelTier, ModelRef>>
 
@@ -29,12 +31,12 @@ export function roleModelChoice(role: Pick<Role, 'model' | 'tier'>, tierModels: 
   return other ? other.value : 'custom'
 }
 
-/** The fold summary: the tier label, "Inherited" or "Custom". */
-export function roleModelSummary(role: Pick<Role, 'model' | 'tier'>, tierModels: TierModels): string {
+/** The fold summary: the tier label, "Inherited" or "Custom", plus " · <connection>" when the role is pinned (`on` its connection, `base` the project's). */
+export function roleModelSummary(role: Pick<Role, 'model' | 'tier'>, tierModels: TierModels, on?: ConnectionId, base?: ConnectionId): string {
   const choice = roleModelChoice(role, tierModels)
-  if (choice === 'inherit') return 'Inherited'
-  if (choice === 'custom') return 'Custom'
-  return TIER_LABEL[choice]
+  const word = choice === 'inherit' ? 'Inherited' : choice === 'custom' ? 'Custom' : TIER_LABEL[choice]
+  const tag = connectionTag(on, base)
+  return tag ? `${word} · ${tag}` : word
 }
 
 /** What picking a Model option writes: inherit, or the tier's model with the tier recorded. */
@@ -69,11 +71,12 @@ export function exactModelValue(role: Pick<Role, 'model' | 'tier'>, tierModels: 
   return roleModelChoice(role, tierModels) === 'custom' ? role.model : ''
 }
 
-/** The org chart node's model chip: the tier word (the id goes in its title), "Inherit", or the custom id. */
-export function roleChipLabel(role: Pick<Role, 'model' | 'tier'>): string {
-  if (role.model === 'inherit') return 'Inherit'
+/** The org chart node's model chip: the tier word (the id goes in its title), "Inherit", or the custom id; " · <connection>" when pinned to another connection than the project's. */
+export function roleChipLabel(role: Pick<Role, 'model' | 'tier'>, on?: ConnectionId, base?: ConnectionId): string {
   const tier = roleTier(role)
-  return tier ? TIER_LABEL[tier] : role.model
+  const word = role.model === 'inherit' ? 'Inherit' : tier ? TIER_LABEL[tier] : role.model
+  const tag = connectionTag(on, base)
+  return tag ? `${word} · ${tag}` : word
 }
 
 export interface ExactGroup {
@@ -82,13 +85,17 @@ export interface ExactGroup {
 }
 
 /**
- * Concrete ids for the Advanced "Exact model" select. A LiteLLM project lists the whole proxy catalog grouped by
- * family (other roles may run any model the proxy serves); other connections list their catalog in one group.
+ * Concrete ids for the "Exact model" select. A proxy project lists the whole catalog grouped by family (Claude, GPT,
+ * Other), each option naming its family (any role may run any model the proxy serves); other connections list their
+ * catalog in one group.
  */
-export function exactModelGroups(catalog: readonly ProviderModel[], litellm: boolean, current: ModelRef): ExactGroup[] {
-  const option = (m: ProviderModel): { value: string; label: string } => ({ value: m.id, label: m.recommended ? `${m.id} (recommended)` : m.id })
-  const groups: ExactGroup[] = litellm
-    ? groupByFamily(catalog).map((g) => ({ label: FAMILY_LABEL[g.family as ModelFamily], options: g.models.map(option) }))
+export function exactModelGroups(catalog: readonly ProviderModel[], proxy: boolean, current: ModelRef): ExactGroup[] {
+  const option = (m: ProviderModel): { value: string; label: string } => ({
+    value: m.id,
+    label: proxy ? `${m.id}${m.recommended ? ' (recommended)' : ''} · ${FAMILY_WORD[m.family]}` : m.recommended ? `${m.id} (recommended)` : m.id
+  })
+  const groups: ExactGroup[] = proxy
+    ? groupByFamily(catalog).map((g) => ({ label: FAMILY_WORD[g.family as ModelFamily], options: g.models.map(option) }))
     : catalog.length > 0
       ? [{ label: 'Models', options: catalog.map(option) }]
       : []
@@ -105,15 +112,15 @@ export interface EffortView {
   note?: string
 }
 
-/** Effort options for an adapter. A saved unsupported value stays selected as "xhigh (not used on OpenAI)". */
-export function effortView(effort: Effort | undefined, adapter: ProviderId | null | undefined): EffortView {
+/** Effort options for an adapter. `where` is the connection's display name; a saved unsupported value stays selected as "xhigh (not used on OpenAI)". */
+export function effortView(effort: Effort | undefined, adapter: ProviderId | null | undefined, where?: string): EffortView {
   const supported = effortOptionsFor(adapter)
   const options = [{ value: '', label: 'Default' }, ...supported.map((v) => ({ value: v as string, label: v as string }))]
   if (!effort || supported.includes(effort)) return { options }
-  const where = adapter === 'codex' ? 'OpenAI' : 'this adapter'
+  const name = where ?? (adapter === 'codex' ? 'OpenAI' : 'this provider')
   return {
-    options: [...options, { value: effort, label: `${effort} (not used on ${where})` }],
+    options: [...options, { value: effort, label: `${effort} (not used on ${name})` }],
     unsupported: effort,
-    note: `${effort} is ignored on ${where}; Default applies.`
+    note: `${effort} is not used on ${name}; Default applies.`
   }
 }

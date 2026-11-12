@@ -110,6 +110,7 @@ describe('encodeRequest / decodeRequest', () => {
     const cases: [string, unknown[]][] = [
       ['connections:setDefault', [null]],
       ['connections:setSecret', [{ id: 'litellm', apiKey: null }]],
+      ['connections:removeProxy', ['proxy-0a1b2c3d']],
       ['connectors:setToken', [{ connectorId: 'github', token: null }]],
       ['mcp:setSecret', [{ projectId: 'p', serverId: 's', kind: 'env', name: 'K', value: null }]],
       ['mcpLibrary:setSecret', [{ libraryId: 'l', kind: 'header', name: 'H', value: null }]]
@@ -131,21 +132,21 @@ describe('encodeRequest / decodeRequest', () => {
 
   it('does not mutate its input', () => {
     const inner = { top: undefined, deep: 'm' }
-    const arg = { id: 'litellm', baseUrl: undefined, tierModels: inner }
+    const arg = { id: 'litellm', openaiBaseUrl: undefined, tierModels: inner }
     const args = [arg]
     const snapshot = JSON.stringify(args)
     const out = encodeRequest('connections:update', args)
     expect(out).not.toBe(args)
     expect(args[0]).toBe(arg)
-    expect(arg.baseUrl).toBeUndefined()
-    expect(Object.hasOwn(arg, 'baseUrl')).toBe(true)
+    expect(arg.openaiBaseUrl).toBeUndefined()
+    expect(Object.hasOwn(arg, 'openaiBaseUrl')).toBe(true)
     expect(inner.top).toBeUndefined()
     expect(JSON.stringify(args)).toBe(snapshot)
-    expect((out[0] as { baseUrl: unknown }).baseUrl).toBeNull()
+    expect((out[0] as { openaiBaseUrl: unknown }).openaiBaseUrl).toBeNull()
 
-    const wire = [{ id: 'litellm', baseUrl: null }]
+    const wire = [{ id: 'litellm', openaiBaseUrl: null }]
     decodeRequest('connections:update', wire)
-    expect(wire[0].baseUrl).toBeNull()
+    expect(wire[0].openaiBaseUrl).toBeNull()
   })
 
   it('leaves other nulls alone on decode', () => {

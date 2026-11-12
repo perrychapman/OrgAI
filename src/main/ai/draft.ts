@@ -1,6 +1,6 @@
 import type { ConnectionId, DraftRequest, DraftResult, ModelRef, ModelTier, Project, Role, ToolName } from '@shared/types'
 import { TOOL_CATALOG } from '@shared/types'
-import { ROLE_COLORS, modelForTier, newId, settingTier, slugify, tierForModel, type TierContext } from '@shared/defaults'
+import { ROLE_COLORS, cleanRequiredReports, modelForTier, nearestTiers, newId, settingTier, slugify, tierForModel, type TierContext } from '@shared/defaults'
 import type { RuntimeAdapter } from '../runtime/types'
 
 export interface DraftRole {
@@ -9,9 +9,13 @@ export interface DraftRole {
   responsibilities: string[]
   prompt: string
   tools: string[]
-  model: string
+  model?: string
+  /** Optional: a configured connection id the role runs on (omit for the project's). */
+  connection?: string
   canSpawn: boolean
   spawnable: string[]
+  /** Optional: names of spawnable roles this role must delegate to every time (Role.requiredReports). */
+  requiredReports?: string[]
   reportsTo: string | null
 }
 
@@ -47,6 +51,7 @@ Respond with a single JSON object and nothing else, no code fences, matching:
       "model": "everyday",
       "canSpawn": false,
       "spawnable": ["Name of a direct report", "..."],
+      "requiredReports": ["Optional: names from spawnable this role must always delegate to"],
       "reportsTo": "Name of manager role or null"
     }
   ]
@@ -94,27 +99,89 @@ export interface DraftModelContext {
   tierModels: Partial<Record<ModelTier, ModelRef>>
   /** Exact model ids the connection lists as available; a proposed id in this list is kept. */
   models?: string[]
+  /** The current chart root's concrete model: the last choice before 'inherit' for a NEW role whose tier maps nothing. */
+  fallback?: { model: ModelRef; tier?: ModelTier }
 }
 
+export type ResolvedModel = { model: ModelRef; tier?: ModelTier }
+
+const tierContextOf = (ctx: DraftModelContext | undefined): TierContext =>
+  ctx ? { connection: ctx.connection, tierModels: ctx.tierModels } : { connection: 'anthropic', tierModels: {} }
+
 /**
- * A proposed role model onto a connection: a tier name or legacy Claude alias maps through modelForTier (nearest
- * mapped tier; nothing mapped = 'inherit'); a listed id is kept; anything else becomes the everyday tier.
+ * Strict resolution of a proposed model: 'inherit' stays; a tier name or legacy alias maps through modelForTier
+ * (nearest mapped tier); a concrete id the connection lists is kept with its tier. Anything else (empty, omitted, an
+ * unlisted id, a tier nothing maps) is undefined, so the caller decides (keep the current model, or fall back).
  */
-function mapModel(raw: unknown, ctx: DraftModelContext | undefined): { model: ModelRef; tier?: ModelTier } {
+export function resolveDraftModel(raw: unknown, ctx: DraftModelContext | undefined): ResolvedModel | undefined {
   const value = typeof raw === 'string' ? raw.trim() : ''
+  if (!value) return undefined
   if (value === 'inherit') return { model: 'inherit' }
-  const tc: TierContext = ctx ? { connection: ctx.connection, tierModels: ctx.tierModels } : { connection: 'anthropic', tierModels: {} }
-  const viaTier = (tier: ModelTier): { model: ModelRef; tier?: ModelTier } => modelForTier(tier, tc) ?? { model: 'inherit' }
   const asTier = settingTier(value)
-  if (asTier) return viaTier(asTier)
+  if (asTier) {
+    const hit = modelForTier(asTier, tierContextOf(ctx))
+    return hit ? { model: hit.model, tier: hit.tier } : undefined
+  }
   if (ctx?.models?.includes(value)) {
     const tier = tierForModel(value)
     return { model: value, ...(tier ? { tier } : {}) }
   }
-  return viaTier('everyday')
+  return undefined
 }
 
-export function toRoles(payload: DraftPayload, models?: DraftModelContext): Role[] {
+/**
+ * A proposed model for a NEW role. Strict resolution first (resolveDraftModel). Otherwise, for an unmapped tier or an
+ * omitted / unlisted value (an unlisted value is first tried as the everyday tier; wanted tier: the named one, else
+ * 'everyday'): (a) a listed model whose tier matches,
+ * trying the nearest tiers in order; (b) ctx.fallback (the chart root's concrete model); (c) 'inherit'. Inherit is
+ * the last resort because a subagent that inherits runs its parent's model, which silently changes the role's cost
+ * and ability; an arbitrary unrelated listed model is never picked. An explicit 'inherit' stays 'inherit'.
+ */
+function mapModel(raw: unknown, ctx: DraftModelContext | undefined): ResolvedModel {
+  const hit = resolveDraftModel(raw, ctx)
+  if (hit) return hit
+  const named = settingTier(typeof raw === 'string' ? raw : undefined)
+  const wanted = named ?? 'everyday'
+  // An omitted or unlisted value is the everyday tier, when the connection maps it (or a tier near it).
+  if (!named) {
+    const everyday = resolveDraftModel('everyday', ctx)
+    if (everyday) return everyday
+  }
+  for (const t of nearestTiers(wanted)) {
+    const id = ctx?.models?.find((m) => tierForModel(m) === t)
+    if (id) return { model: id, tier: t }
+  }
+  if (ctx?.fallback && ctx.fallback.model && ctx.fallback.model !== 'inherit') return { ...ctx.fallback }
+  return { model: 'inherit' }
+}
+
+/**
+ * The model of a draft that matches an existing role. KEEP the current model (and tier, only if it has one) when the
+ * draft omits it, says inherit, names the current id or tier, does not resolve, or resolves to the current tier (a
+ * role already deep keeps its pinned model when 'top' falls back to deep). CHANGE only for a different tier that
+ * resolves, or a listed id that differs.
+ */
+export function revisedRoleModel(raw: unknown, current: Pick<Role, 'model' | 'tier'>, ctx: DraftModelContext | undefined): ResolvedModel {
+  const keep: ResolvedModel = { model: current.model, ...(current.tier ? { tier: current.tier } : {}) }
+  const value = typeof raw === 'string' ? raw.trim() : ''
+  if (!value || value === 'inherit' || value === current.model) return keep
+  const asTier = settingTier(value)
+  if (asTier && current.tier && asTier === current.tier) return keep
+  const hit = resolveDraftModel(value, ctx)
+  if (!hit || hit.model === 'inherit') return keep
+  if (hit.model === current.model) return keep
+  if (hit.tier && current.tier && hit.tier === current.tier && asTier) return keep
+  return hit
+}
+
+/**
+ * `others` maps a connection id to its DraftModelContext: a draft naming one of them maps its tier / model through it
+ * and the Role carries `connection` (omitted when it equals the run's connection, `models.connection`).
+ */
+export function toRoles(payload: DraftPayload, models?: DraftModelContext, others?: Record<string, DraftModelContext>): Role[] {
+  const own = models?.connection ?? 'anthropic'
+  const ctxOf = (d: DraftRole): DraftModelContext | undefined =>
+    typeof d.connection === 'string' && others && Object.hasOwn(others, d.connection) ? others[d.connection] : models
   const validTools = new Set<string>(TOOL_CATALOG)
   const drafts = payload.roles
 
@@ -126,13 +193,18 @@ export function toRoles(payload: DraftPayload, models?: DraftModelContext): Role
     responsibilities: Array.isArray(d.responsibilities) ? d.responsibilities.map(String) : [],
     prompt: d.prompt?.trim() || '',
     tools: (Array.isArray(d.tools) ? d.tools : []).filter((t): t is ToolName => validTools.has(t)),
-    ...mapModel(d.model, models),
+    ...mapModel(d.model, ctxOf(d)),
     canSpawn: !!d.canSpawn,
     spawnable: [],
     reportsTo: null,
     position: { x: 0, y: 0 },
     color: ROLE_COLORS[i % ROLE_COLORS.length]
   }))
+
+  drafts.forEach((d, i) => {
+    const c = ctxOf(d)?.connection
+    if (c && c !== own) roles[i].connection = c
+  })
 
   // De-duplicate slugs.
   const seen = new Map<string, number>()
@@ -158,6 +230,7 @@ export function toRoles(payload: DraftPayload, models?: DraftModelContext): Role
   const roots = roles.filter((r) => r.reportsTo === null)
   const root = roots[0] ?? roles[0]
   root.reportsTo = null
+  delete root.connection // the root always runs on the project's connection
   for (const r of roles) if (r !== root && (r.reportsTo === null || !roles.some((x) => x.id === r.reportsTo))) r.reportsTo = root.id
 
   // Any manager implicitly may spawn its direct reports.
@@ -169,6 +242,15 @@ export function toRoles(payload: DraftPayload, models?: DraftModelContext): Role
     }
   }
 
+  // Required reports: names resolved like spawnable, then kept only within the final spawnable list.
+  drafts.forEach((d, i) => {
+    if (!Array.isArray(d.requiredReports)) return
+    const role = roles[i]
+    const ids = d.requiredReports.map((n) => byName.get(String(n).trim().toLowerCase())).filter((r): r is Role => !!r).map((r) => r.id)
+    const required = cleanRequiredReports({ ...role, requiredReports: ids })
+    if (required) role.requiredReports = required
+  })
+
   layout(roles)
   return roles
 }
@@ -178,7 +260,9 @@ export async function draftOrgChart(
   project: Project,
   req: DraftRequest,
   /** The project's connection (ConnectionService.importModelContext): its deep tier drafts, its tiers map the result. */
-  tiers?: TierContext
+  tiers?: TierContext,
+  /** Aborted when the host shuts down (HostDispatcher.quiesce): the model call stops and this rejects. */
+  signal?: AbortSignal
 ): Promise<DraftResult> {
   const existing =
     req.mode === 'revise'
@@ -192,6 +276,7 @@ export async function draftOrgChart(
             model: r.model,
             canSpawn: r.canSpawn,
             spawnable: r.spawnable.map((id) => project.roles.find((x) => x.id === id)?.name).filter(Boolean),
+            ...(r.requiredReports?.length ? { requiredReports: r.requiredReports.map((id) => project.roles.find((x) => x.id === id)?.name).filter(Boolean) } : {}),
             reportsTo: r.reportsTo ? project.roles.find((x) => x.id === r.reportsTo)?.name ?? null : null
           })),
           null,
@@ -208,7 +293,13 @@ ${req.instruction}${existing}
 
 Design the org chart now. Return only the JSON object.`
 
-  const text = await adapter.complete({ system: SYSTEM, prompt, cwd: project.path, model: tiers ? modelForTier('deep', tiers)?.model : undefined })
+  const text = await adapter.complete({
+    system: SYSTEM,
+    prompt,
+    cwd: project.path,
+    model: tiers ? modelForTier('deep', tiers)?.model : undefined,
+    ...(signal ? { signal } : {})
+  })
   const payload = extractJson(text)
   const context: DraftModelContext | undefined = tiers
     ? { connection: tiers.connection, tierModels: tiers.tierModels, ...(tiers.catalog ? { models: tiers.catalog.map((m) => m.id) } : {}) }

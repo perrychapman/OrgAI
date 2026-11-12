@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { ProjectPathCheck } from '@shared/types'
-import { LAST_PROJECT_KIND_KEY, addReferenceFolder, effectiveName, isFullPath, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from './projectsForm'
+import { LAST_PROJECT_KIND_KEY, addReferenceFolder, chosenConnection, connectionChoices, effectiveName, isFullPath, newProjectConnectionView, pathStatus, readLastProjectKind, submitBlocker, writeLastProjectKind } from './projectsForm'
 
 describe('newProjectConnectionView', () => {
   const info = (id: 'anthropic' | 'openai' | 'litellm', state: string, isDefault: boolean, auth?: object): never =>
-    ({ connection: { id, enabled: true, tierModels: {}, auth: auth ?? { kind: 'subscription' }, baseUrl: 'http://x', hasApiKey: true }, status: { state }, modelCount: 0, isDefault }) as never
+    ({ connection: { id, enabled: true, tierModels: {}, auth: auth ?? { kind: 'subscription' }, ...(id === 'litellm' ? { name: 'LiteLLM', kind: 'litellm', anthropicBaseUrl: 'http://x' } : {}), hasApiKey: true }, status: { state }, modelCount: 0, isDefault }) as never
   it('names the effective default with its auth method and offers Change', () => {
-    expect(newProjectConnectionView([info('anthropic', 'connected', true)])).toEqual({ text: 'Runs on Anthropic (Claude Code login).', link: 'Change' })
+    expect(newProjectConnectionView([info('anthropic', 'connected', true)])).toEqual({ text: 'Runs on Anthropic (Claude Code login).', link: 'Manage connections' })
     expect(newProjectConnectionView([info('anthropic', 'disconnected', false), info('openai', 'connected', true, { kind: 'chatgpt' })])).toEqual({
       text: 'Runs on OpenAI (ChatGPT sign-in).',
-      link: 'Change'
+      link: 'Manage connections'
     })
     expect(newProjectConnectionView([info('litellm', 'connected', true)]).text).toBe('Runs on LiteLLM (proxy key).')
   })
@@ -20,7 +20,7 @@ describe('newProjectConnectionView', () => {
   it('names a chosen default that is not connected while another connection is', () => {
     expect(newProjectConnectionView([info('anthropic', 'connected', false), info('openai', 'disconnected', true, { kind: 'chatgpt' })])).toEqual({
       text: 'Runs on OpenAI (ChatGPT sign-in), which is not connected.',
-      link: 'Change'
+      link: 'Manage connections'
     })
   })
   it('says the mock adapter when it is ticked, with no link', () => {
@@ -28,6 +28,26 @@ describe('newProjectConnectionView', () => {
   })
   it('is empty until the list loads', () => {
     expect(newProjectConnectionView(null)).toEqual({ text: '', link: null })
+  })
+})
+
+describe('connectionChoices', () => {
+  const mk = (id: string, state: string, isDefault = false, proxy?: { name: string; kind: string }): never =>
+    ({
+      connection: { id, enabled: true, tierModels: {}, ...(proxy ? { ...proxy, anthropicBaseUrl: 'http://x', hasApiKey: true } : { auth: { kind: 'subscription' } }) },
+      status: { state },
+      modelCount: 1,
+      isDefault
+    }) as never
+  it('lists only connected ones: Anthropic, OpenAI, then proxies by name', () => {
+    const list = [mk('proxy-bbbbbbbb', 'connected', false, { name: 'Zed', kind: 'litellm' }), mk('openai', 'disconnected'), mk('anthropic', 'connected', true), mk('proxy-aaaaaaaa', 'connected', false, { name: 'Alpha', kind: 'openai-compatible' })]
+    expect(connectionChoices(list).map((c) => c.label)).toEqual(['Anthropic · default', 'Alpha (Proxy)', 'Zed (Proxy)'])
+  })
+  it('keeps the pick while connected, else the default', () => {
+    const choices = connectionChoices([mk('anthropic', 'connected', true), mk('proxy-aaaaaaaa', 'connected', false, { name: 'Alpha', kind: 'litellm' })])
+    expect(chosenConnection(choices, 'proxy-aaaaaaaa')).toBe('proxy-aaaaaaaa')
+    expect(chosenConnection(choices, 'proxy-gone')).toBe('anthropic')
+    expect(chosenConnection([], null)).toBeNull()
   })
 })
 

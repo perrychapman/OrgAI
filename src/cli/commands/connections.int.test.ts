@@ -1,36 +1,31 @@
 /**
- * Integration: `orgai connections | models | usage | notes` against a real in-process mock host over its real socket
+ * Integration: `orgai connections | models | usage | notes` against a real in-process mock host (one per command) over its real socket
  * (cli-spec Wave 5, W5-T3). Only calls the mock host answers without spawning a provider CLI or touching the network:
  * connections list / show (cached statuses), models list / prices (the builtin catalog), usage show / csv
  * (persisted summaries), notes and the engagement plan (files in the data dir), and a set-default refusal.
  * Skipped here: connections test / connect / login (they spawn `claude auth status` or the Codex app-server) and
  * usage refresh (the Claude usage probe spawns the CLI). No tokens.
  */
+import { writeProductMarker } from '../../main/store/productMarker'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { allowFullTerminalAccess } from '../testing/terminalAccess'
+import { withSeedHost } from '../testing/seedHost'
 import type { Project } from '../../shared/types'
-import { connectHost } from '../client/hostClient'
 import { main } from '../index'
-import { startInprocHost, type InprocHost } from '../inprocHost'
-import type { HostClient } from '../types'
-import { CLI_VERSION } from '../version'
 
 describe('connections, models, usage and notes against a real inproc host', () => {
   let userDataDir: string
   let dataDir: string
   let engDir: string
-  let host: InprocHost
-  let seed: HostClient
   let eng: Project
 
   async function cli(args: string[], cwd = engDir): Promise<{ code: number; out: string; err: string }> {
     let out = ''
     let err = ''
     const io = { stdout: { write: (s: string) => ((out += s), true), isTTY: false, columns: 120 }, stderr: { write: (s: string) => ((err += s), true), isTTY: false }, stdinIsTTY: false }
-    const code = await main(['--data-dir', userDataDir, '--host', 'daemon', '--no-color', ...args], { io, cwd, env: { PATH: process.env.PATH } })
+    const code = await main(['--data-dir', userDataDir, '--no-color', ...args], { io, cwd, env: { PATH: process.env.PATH, ORGAI_MOCK: '1' } })
     return { code, out, err }
   }
 
@@ -39,18 +34,12 @@ describe('connections, models, usage and notes against a real inproc host', () =
     dataDir = join(userDataDir, 'data')
     engDir = join(userDataDir, 'engagement')
     mkdirSync(engDir)
-    // Clients of this host other than its starting context have no owner key: allow them decide / configure (review H2).
-    allowFullTerminalAccess(join(userDataDir, 'data'))
-    host = await startInprocHost({ userDataDir, dataDir, env: { ORGAI_MOCK: '1', ORGAI_DAEMON_IDLE_MINUTES: '0' }, mock: true, overlay: new Map(), logging: false, startBackground: false })
-    const res = await connectHost({ dataDir, scopes: ['read', 'operate', 'configure'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
-    if (!res.ok) throw new Error(res.message)
-    seed = res.client
-    eng = await seed.call<Project>('projects:create', [{ name: 'Acme review', path: engDir, brief: '', kind: 'engagement', mock: true }])
+    writeProductMarker(userDataDir, 'orgai-cli')
+    // Each cli() call below starts its own host on this folder; a project made by a seed host first.
+    eng = await withSeedHost(userDataDir, (seed) => seed.call<Project>('projects:create', [{ name: 'Acme review', path: engDir, brief: '', kind: 'engagement', mock: true }]))
   }, 60_000)
 
   afterAll(async () => {
-    seed?.close()
-    await host?.stop(true).catch(() => undefined)
     rmSync(userDataDir, { recursive: true, force: true })
   })
 
@@ -58,11 +47,17 @@ describe('connections, models, usage and notes against a real inproc host', () =
     const r = await cli(['connections', 'list', '--output-format', 'json'])
     expect(r.code).toBe(0)
     const j = JSON.parse(r.out)
-    expect(j.connections.map((c: { id: string }) => c.id)).toEqual(['anthropic', 'openai', 'litellm'])
+    const ids = j.connections.map((c: { id: string }) => c.id) as string[]
+    // Built-ins first, then the proxies (a fresh profile has none; an old settings file migrates its LiteLLM as 'litellm').
+    expect(ids.slice(0, 2)).toEqual(['anthropic', 'openai'])
+    for (const id of ids.slice(2)) expect(id).toMatch(/^(litellm|proxy-[0-9a-f]{8})$/)
     expect(j.connections.filter((c: { isDefault: boolean }) => c.isDefault)).toHaveLength(1)
-    const show = await cli(['connections', 'show', 'litellm'])
-    expect(show.code).toBe(0)
-    expect(show.out).toContain('API key: not set')
+    for (const id of ids.slice(2)) {
+      const show = await cli(['connections', 'show', id])
+      expect(show.code).toBe(0)
+      expect(show.out).toContain('API key: not set')
+    }
+    expect(JSON.stringify(j)).not.toMatch(/apiKey|sk-/)
   })
 
   it('set-default to a connection that is not connected exits 1 with the host sentence', async () => {
@@ -105,7 +100,7 @@ describe('connections, models, usage and notes against a real inproc host', () =
     expect(show.out).toContain('We met the sponsor.')
     // Someone else saves in between: the CLI edit based on the old revision is refused.
     await new Promise((r) => setTimeout(r, 5))
-    await seed.call('projects:saveNote', [{ projectId: eng.id, noteId: id, title: 'Kickoff call', text: 'Edited in the app.' }])
+    await withSeedHost(userDataDir, (seed) => seed.call('projects:saveNote', [{ projectId: eng.id, noteId: id, title: 'Kickoff call', text: 'Edited in the app.' }]))
     const stale = await cli(['notes', 'edit', id, '--text', 'Mine', '--expected-updated-at', String(rev)])
     expect(stale.code).toBe(1)
     expect(stale.err).toContain('The note changed since you read it')
@@ -124,7 +119,7 @@ describe('connections, models, usage and notes against a real inproc host', () =
     expect(show.code).toBe(0)
     expect(show.out).toContain('Scope: billing.')
     await new Promise((r) => setTimeout(r, 5))
-    await seed.call('projects:updateEngagementDocument', [{ projectId: eng.id, text: 'Theirs', expectedUpdatedAt: rev }])
+    await withSeedHost(userDataDir, (seed) => seed.call('projects:updateEngagementDocument', [{ projectId: eng.id, text: 'Theirs', expectedUpdatedAt: rev }]))
     const stale = await cli(['notes', 'plan', 'set', '--text', 'Mine', '--expected-updated-at', String(rev)])
     expect(stale.code).toBe(1)
     expect((await cli(['notes', 'plan'])).out).toContain('Theirs')

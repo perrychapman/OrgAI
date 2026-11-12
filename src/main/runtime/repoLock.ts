@@ -7,6 +7,8 @@ import { renameSyncRetry } from '../host/fsRetry'
 import { currentHostInstanceId } from '../host/identity'
 import { processLivenessCachedAsync, selfStartTime } from '../host/processInfo'
 import { gitExecutable } from '../host/systemBinaries'
+import { trackChildProcess } from '../host/shutdown'
+import { scrubControlEnv } from './childEnv'
 
 /**
  * The repository lock (cli-spec 3.2 (5)). One lock per git repository, keyed by its common git dir, so the main
@@ -147,9 +149,11 @@ function gitOut(cwd: string, args: string[]): Promise<string | null> {
   const git = gitExecutable()
   if (!git) return Promise.resolve(null)
   return new Promise((done) => {
-    execFile(git, args, { cwd, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+    const child = execFile(git, args, { cwd, env: scrubControlEnv(process.env), windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
       done(error ? null : String(stdout).trim())
     })
+    // Ended with the host at the shutdown's hard limit (cli-standalone.md 4.3).
+    trackChildProcess(child, 'git')
   })
 }
 
@@ -160,6 +164,7 @@ export function gitPathSync(checkout: string, rel: string): string | null {
   try {
     const out = execFileSync(git, ['rev-parse', '--git-path', rel], {
       cwd: checkout,
+      env: scrubControlEnv(process.env),
       windowsHide: true,
       timeout: 10_000,
       encoding: 'utf8',

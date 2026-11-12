@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { neutralCwd, windowsPowerShellPath } from './systemBinaries'
+import { neutralCwd, psExecutable, windowsPowerShellPath } from './systemBinaries'
 
 /**
  * Process liveness and start time, for the host ownership protocol and the repo lock owner file (cli-spec 3.2).
@@ -39,7 +39,9 @@ export function processStartTime(pid: number, platform: NodeJS.Platform = proces
   if (!validPid(pid)) return undefined
   try {
     if (platform === 'darwin') {
-      const out = execFileSync('ps', psArgs(pid), {
+      const ps = psExecutable()
+      if (!ps) return undefined
+      const out = execFileSync(ps, psArgs(pid), {
         encoding: 'utf8',
         env: fixedPsEnv(),
         cwd: neutralCwd(),
@@ -81,7 +83,8 @@ export function processStartTimeAsync(pid: number, platform: NodeJS.Platform = p
     }
   }
   if (platform !== 'darwin' && platform !== 'win32') return Promise.resolve(undefined)
-  const file = platform === 'darwin' ? 'ps' : windowsPowerShellPath()
+  const file = platform === 'darwin' ? psExecutable() : windowsPowerShellPath()
+  if (!file) return Promise.resolve(undefined)
   const args = platform === 'darwin' ? psArgs(pid) : winPsArgs(pid)
   return new Promise((done) => {
     try {

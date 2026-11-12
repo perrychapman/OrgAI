@@ -1,0 +1,314 @@
+/* Run outputs, run surfaces (docs/design/outputs.md sections 3 to 7): the Outputs side tab, the shared detail and
+   menu, the RunMeta chip and the transcript row. Tokens only. */
+
+/* ---------- Side tab ---------- */
+.run-outputs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  min-width: 0;
+}
+.run-outputs[data-mode='split'] {
+  height: 100%;
+  box-sizing: border-box;
+}
+.output-notice {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.output-notice:empty {
+  display: none;
+}
+.run-output-backbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.run-output-stepbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-1);
+}
+.output-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+.output-position {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  min-width: 4.5em;
+  text-align: center;
+}
+.run-outputs-empty {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-body-lh);
+  color: var(--text-tertiary);
+}
+.run-outputs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.run-outputs-list[data-split='true'] {
+  flex: 0 1 40%;
+  min-height: 96px;
+  overflow-y: auto;
+}
+.run-output-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+.run-output-row[aria-current='true'] {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+.run-output-row[data-missing='true'] .run-output-title {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+.run-output-icon {
+  flex: none;
+  display: inline-flex;
+  padding-top: var(--space-0h);
+  color: var(--text-secondary);
+}
+.run-output-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-output-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.run-output-meta,
+.run-output-prov {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.run-output-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.run-output-detail {
+  min-width: 0;
+}
+.run-outputs[data-mode='split'] .run-output-detail {
+  flex: 1 1 60%;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-2);
+}
+
+/* ---------- Detail ---------- */
+.output-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.output-detail-heading {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--text-h3, var(--text-body));
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.output-detail-heading:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.output-detail-meta,
+.output-detail-prov {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+.output-missing {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-small);
+  line-height: var(--text-body-lh);
+  color: var(--warning-text);
+  overflow-wrap: anywhere;
+}
+.output-detail-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ---------- More actions menu ---------- */
+.output-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 180px;
+}
+.output-menuitem {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.output-menuitem:hover {
+  background: var(--surface-3);
+}
+.output-menuitem:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.output-menuitem.danger {
+  color: var(--danger-text, var(--danger));
+}
+.output-menu-hint {
+  margin: 0;
+  max-width: 240px;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+
+/* ---------- RunMeta chip: under 1100 px of window only the icon and count ---------- */
+@media (max-width: 1099px) {
+  .run-meta-outputs-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+.run-meta-outputs-label::before {
+  content: ' ';
+  white-space: pre;
+}
+@container frame (max-width: 420px) {
+  .run-meta-outputs {
+    display: none;
+  }
+}
+
+/* ---------- Transcript row ---------- */
+.output-write-row[data-state='refused'] .entry-plain {
+  color: var(--warning-text);
+}
+
+/* ---------- Detail head, extension badge, hint, Larger view (docs/design/outputs.md section 12) ---------- */
+.output-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.output-detail-head .output-detail-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.output-detail-head .icon-btn {
+  flex: none;
+}
+.output-detail-heading .badge,
+.run-output-head .badge,
+.outputs-row-head .badge {
+  flex: none;
+}
+.output-detail-hint {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.run-output-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.run-output-head .run-output-title {
+  min-width: 0;
+}
+
+/* The Larger view dialog takes nearly the whole window; the preview fills it. */
+.dialog.size-lg:has(.output-dialog-body) {
+  max-width: none;
+  width: calc(100vw - var(--space-8));
+  height: calc(100vh - var(--space-8));
+}
+.dialog.size-lg:has(.output-dialog-body) .dialog-panel {
+  flex: 1 1 auto;
+}
+.dialog.size-lg:has(.output-dialog-body) .dialog-body {
+  flex: 1 1 auto;
+}
+.output-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.output-dialog-body .outputs-notice:empty {
+  display: none;
+}
+
+/* History: the quiet "N outputs" chip. */
+.history-outputs {
+  flex: none;
+  color: var(--text-secondary);
+}

@@ -6,6 +6,7 @@
  */
 import { connect as netConnect, type Socket } from 'node:net'
 import {
+  HOST_KINDS,
   HOST_PROTOCOL_VERSION,
   RPC_BULK_FRAME_MAX_BYTES,
   RPC_MAX_INFLIGHT_PER_SOCKET,
@@ -69,9 +70,8 @@ export interface ConnectHostOptions {
   /** Default call timeout of the returned client. Default 30000. */
   callTimeoutMs?: number
   /**
-   * The in-memory owner key of the `--host inproc` host this process started (InprocHostHandle.ownerKey): the hello
-   * then carries an ownerProof, the only way to get decide / configure from an in-process host past its Terminal
-   * access level. Sent only to a host whose hostInstanceId equals `ownerHostInstanceId`.
+   * The in-memory owner key of the in-process host this process started (InprocHostHandle.ownerKey): the hello
+   * then carries an ownerProof, the only way to be served by an in-process host. Sent only to a host whose hostInstanceId equals `ownerHostInstanceId`.
    */
   ownerKey?: string
   ownerHostInstanceId?: string
@@ -219,12 +219,9 @@ function openSocket(opts: ConnectHostOptions, endpoint: string, timeoutMs: numbe
   })
 }
 
-/** A host that binds no listener while Terminal access is off says so in daemon.json (review M11); same text as the host's refusal. */
-const LISTENER_OFF_MESSAGE = 'Terminal access is off. Turn it on in OrgAI: App settings > General > Advanced settings > Terminal access.'
-
 async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive: (pid: number, start?: string) => boolean): Promise<Attempt> {
   const done = (result: ConnectResult): Attempt => ({ kind: 'done', result })
-  if (daemon.listening === false) return done(fail('disabled', LISTENER_OFF_MESSAGE, daemon))
+  if (daemon.listening === false) return done(fail('refused', 'The host at this data folder has no listener.', daemon))
   const connectTimeoutMs = opts.connectTimeoutMs ?? 1500
   const opened = await openSocket(opts, daemon.endpoint, connectTimeoutMs)
   if ('error' in opened) {
@@ -310,8 +307,8 @@ async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive:
         return { kind: 'starting', message: data.message || 'OrgAI is still starting.', ...(data.retryAfterMs !== undefined ? { retryAfterMs: data.retryAfterMs } : {}) }
       case 'host_draining':
         return abort(fail('draining', data.message || 'OrgAI is shutting down for this data folder.', daemon))
-      case 'terminal_server_disabled':
-        return abort(fail('disabled', data.message, daemon))
+      case 'not_owner':
+        return abort(fail('not_owner', data.message, daemon))
       case 'agent_descendant_refused':
       case 'too_many_connections':
         return abort(fail('refused', data.message, daemon))
@@ -350,7 +347,7 @@ async function attemptOnce(opts: ConnectHostOptions, daemon: DaemonInfo, isLive:
   return done({ ok: true, client })
 }
 
-const KINDS = new Set(['desktop', 'headless-host', 'inproc'])
+const KINDS: ReadonlySet<string> = new Set<string>(HOST_KINDS)
 const SCOPES = new Set(['read', 'operate', 'decide', 'configure'])
 
 function parseHelloResult(v: unknown): RpcHelloResult | null {

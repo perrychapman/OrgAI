@@ -51,7 +51,7 @@ const host: HostProofFields = {
   hostInstanceId: '0123456789ab',
   clientNonce: 'b'.repeat(64),
   hostNonce: 'a'.repeat(64),
-  hostKind: 'headless-host',
+  hostKind: 'desktop',
   appVersion: '0.1.6',
   dataDir: '/data',
   mock: false,
@@ -92,7 +92,7 @@ describe('nonces and proofs', () => {
     expect(p).toMatch(/^[0-9a-f]{64}$/)
     expect(hostProof(SECRET, { ...host })).toBe(p)
     const changes: Partial<HostProofFields>[] = [
-      { hostKind: 'desktop' },
+      { hostKind: 'inproc' },
       { dataDir: '/data2' },
       { mock: true },
       { grantedScopes: ['read', 'operate'] },

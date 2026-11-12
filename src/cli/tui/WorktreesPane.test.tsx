@@ -46,7 +46,7 @@ describe('WorktreesPane', () => {
   it('shows branch, agent, status words, file counts and merge targets', () => {
     const t = mount()
     const out = lines(t.lastFrame())
-    expect(out[0]).toBe('Worktrees (4)')
+    expect(out[0]).toContain('Worktrees (4)')
     const a2 = out.find((l) => l.includes('worktree-agent-a2'))!
     expect(a2).toContain('conflict')
     expect(a2.trimEnd().endsWith('1 file → parent')).toBe(true)

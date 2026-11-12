@@ -9,7 +9,7 @@
  *
  * Electron-free; relative imports only. Only registry.ts (and its tests) read these.
  */
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
 import type { ParamSpec } from './registry'
 
 /** Ids from the renderer (newId() output, virtual project ids, older hand-made ids): windowScope.ts ID_PATTERN. */
@@ -72,6 +72,8 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   // ---- runs ----
   [IPC.runsStart]: OBJECT,
   [IPC.runsSend]: OBJECT,
+  [IPC.runsSwitchModel]: OBJECT,
+  [IPC.runsSetPermissionMode]: OBJECT,
   [IPC.runsInterrupt]: ID,
   [IPC.runsStop]: ID,
   [IPC.runsList]: ID,
@@ -83,6 +85,9 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.runsListLive]: NONE,
   [IPC.runsPendingCards]: ID,
   [IPC.runsUsageStats]: OBJECT,
+  // UsageOverviewQuery or nothing (every project, every kind); sanitizeUsageOverviewQuery does the deep check.
+  [IPC.runsUsageOverview]: OPTIONAL_NULLABLE_OBJECT,
+  [IPC.runsUsageOverviewCsv]: OPTIONAL_NULLABLE_OBJECT,
   [IPC.runsStartQuick]: OBJECT,
   [IPC.runsPromoteQuick]: OBJECT,
   [IPC.windowOpenRun]: OBJECT,
@@ -111,10 +116,13 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.appOpenLogs]: NONE,
   [IPC.appLogPath]: NONE,
   [IPC.appInfo]: NONE,
-  // Desktop only (cli-spec 7(3), shimInstaller.ts); the socket refuses them before params.
-  [IPC.appCliShimStatus]: NONE,
-  [IPC.appInstallCliShim]: NONE,
-  [IPC.appUninstallCliShim]: NONE,
+  // appReferenceArgs rebuilds the query.
+  [IPC.appReference]: OBJECT,
+  // Desktop only (cli-spec 7(3), cliInstaller.ts); the socket refuses them before params.
+  [IPC.appCliCommandStatus]: NONE,
+  [IPC.appInstallCliCommand]: NONE,
+  [IPC.appCancelCliInstall]: NONE,
+  [IPC.appRemoveOldCliShim]: NONE,
   // Desktop only (REPO_CLONE_IPC, ipc.ts registerRepoIpc); the socket refuses them before params. The handlers coerce
   // or rebuild their input (parseSource takes any value, repoCloneArgs / repoCancelArg refuse a bad one).
   [IPC.projectsParseRepoSource]: [{ kind: 'any' }],
@@ -135,6 +143,33 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [TEAM_FILES_IPC.teamFilesCommit]: OBJECT,
   [TEAM_FILES_IPC.teamFilesEnable]: OBJECT,
 
+  // ---- OUTPUTS_IPC ---- (outputArgs rebuilds each input: safe project id, OUTPUT_ID_RE output id)
+  [OUTPUTS_IPC.outputsList]: ID,
+  [OUTPUTS_IPC.outputsPreview]: OBJECT,
+  [OUTPUTS_IPC.outputsOpen]: OBJECT,
+  [OUTPUTS_IPC.outputsReveal]: OBJECT,
+  [OUTPUTS_IPC.outputsSaveAs]: OBJECT,
+  [OUTPUTS_IPC.outputsForget]: OBJECT,
+  [OUTPUTS_IPC.outputsDelete]: OBJECT,
+  [OUTPUTS_IPC.outputsDeletePreview]: OBJECT,
+  [OUTPUTS_IPC.outputsVersions]: OBJECT,
+  [OUTPUTS_IPC.outputsReadSource]: OBJECT,
+  [OUTPUTS_IPC.outputsThumb]: OBJECT,
+  [OUTPUTS_IPC.outputsCompare]: OBJECT,
+  [OUTPUTS_IPC.outputsNotes]: OBJECT,
+  [OUTPUTS_IPC.outputsRevisions]: OBJECT,
+  [OUTPUTS_IPC.outputsReviseOptions]: OBJECT,
+  [OUTPUTS_IPC.outputsSaveEdit]: OBJECT,
+  [OUTPUTS_IPC.outputsRestore]: OBJECT,
+  [OUTPUTS_IPC.outputsUpdate]: OBJECT,
+  [OUTPUTS_IPC.outputsNoteAdd]: OBJECT,
+  [OUTPUTS_IPC.outputsNoteUpdate]: OBJECT,
+  [OUTPUTS_IPC.outputsNoteRemove]: OBJECT,
+  [OUTPUTS_IPC.outputsRevise]: OBJECT,
+  [OUTPUTS_IPC.outputsWatch]: OBJECT,
+  [OUTPUTS_IPC.outputsUnwatch]: OBJECT,
+  [OUTPUTS_IPC.outputsSaveImage]: OBJECT,
+
   // ---- permissions ----
   [IPC.permissionsList]: ID,
   [IPC.permissionsIgnored]: ID,
@@ -146,7 +181,9 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [IPC.connectionsList]: NONE,
   [IPC.connectionsUpdate]: OBJECT,
   [IPC.connectionsSetSecret]: OBJECT,
-  // connectionIdArg checks the id against CONNECTION_IDS.
+  [IPC.connectionsCreateProxy]: OBJECT,
+  [IPC.connectionsRemoveProxy]: STRING,
+  // connectionIdArg checks the id's shape (built-in or PROXY_ID_RE); ConnectionService checks it exists.
   [IPC.connectionsTest]: STRING,
   [IPC.connectionsConnect]: STRING,
   // (id, method?): the preload always passes both, so method may arrive as null over JSON.
@@ -240,6 +277,14 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [HOST_IPC.kitApplyBundle]: OBJECT,
   // [requestId]
   [HOST_IPC.runsFindDecision]: STRING,
+
+  // ---- SECRETS_IPC (Wave 7, cli-standalone.md 5.6) ----
+  // SecretsStatusInput / SecretsInitInput: every field optional, so the input may be left out.
+  [SECRETS_IPC.secretsStatus]: OPTIONAL_NULLABLE_OBJECT,
+  [SECRETS_IPC.secretsInit]: OPTIONAL_NULLABLE_OBJECT,
+  [SECRETS_IPC.secretsReset]: OBJECT,
+  [SECRETS_IPC.secretsUndelete]: OBJECT,
+  [SECRETS_IPC.secretsConfirmDelete]: OBJECT,
 
   // ---- host.* request methods (a plain-object params is normalized to [object] by the gate) ----
   [HOST_METHODS.hostStatus]: OPTIONAL_NULLABLE_OBJECT,

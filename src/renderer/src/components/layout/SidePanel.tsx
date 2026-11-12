@@ -2,8 +2,10 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
-import { PANEL_W, nextWide, panelBudget, usePersistedWidth } from '../../lib/panelWidth'
+import { PANEL_W, arrivalWidth, nextWide, panelBudget, usePersistedWidth } from '../../lib/panelWidth'
 import { ResizeHandle } from './ResizeHandle'
+import { beginLayoutMotion } from '../../lib/layoutMotion'
+import { tokenMs } from '../../lib/useExitPresence'
 
 const PREF_PREFIX = 'orgai.sidePanel.'
 const WIDTH_PREFIX = 'orgai.sidePanelW.'
@@ -30,6 +32,9 @@ function readPref(key: string | undefined): 'open' | 'closed' | null {
  * `default` without one) as `orgai.sidePanelW.<key>`, clamped to 280 px up to whatever leaves the canvas 280 px (no fixed max); when 280 px does not fit it shows as its rail. It drives
  * `--side-panel-w` on the parent grid; with no saved width the grid's own CSS default applies.
  * `revealOn`: when this value changes to a non-null value (a selected node), the panel opens without saving.
+ * `arrival`: a non-null value (a run id, on arrival from the Usage page) opens the panel expanded at its wide width (at
+ * least 480 px) when it first appears or changes. Nothing is saved: the choice and the width stay the user's, and the
+ * user's own drag or reset ends it.
  */
 export function SidePanel({
   label,
@@ -41,7 +46,8 @@ export function SidePanel({
   onOpenChange,
   autoCollapseBelow,
   persistKey,
-  revealOn
+  revealOn,
+  arrival
 }: {
   label: string
   children: ReactNode
@@ -54,6 +60,7 @@ export function SidePanel({
   autoCollapseBelow?: number
   persistKey?: string
   revealOn?: string | null
+  arrival?: string | null
 }): ReactElement {
   const ref = useRef<HTMLElement>(null)
   const [inner, setInner] = useState(() => {
@@ -63,7 +70,10 @@ export function SidePanel({
   const collapsed = open === undefined ? inner : !open
   const [saved, setSaved] = usePersistedWidth(WIDTH_PREFIX + (persistKey ?? 'default'))
   const [sizes, setSizes] = useState({ panel: 0, parent: 0 })
-  const budget = panelBudget(sizes.parent, saved)
+  // An arrival that needs room widens the panel for this visit only (never written to storage).
+  const [arrivedFor, setArrivedFor] = useState<string | null>(null)
+  const arrivedWide = !!arrival && arrivedFor === arrival
+  const budget = panelBudget(sizes.parent, arrivedWide ? arrivalWidth(saved) : saved)
   const max = budget.max
   // The grid column follows the saved width, re-clamped when the container shrinks (the saved value is kept).
   useLayoutEffect(() => {
@@ -122,6 +132,18 @@ export function SidePanel({
     else parent.removeAttribute('data-side-wide')
     return () => parent.removeAttribute('data-side-wide')
   }, [wide])
+  // A user collapse or expand (the Hide and Show buttons) glides the column (layout.css,
+  // gated on html[data-columns-moving]); canvases skip refits while it moves and refit once at the end. Drags, first
+  // layout, window resizes, the auto-collapse and the budget rail never glide.
+  const glide = (): void => beginLayoutMotion(tokenMs('--dur-slow'), { columns: true })
+  // Declared after the auto-collapse layout effect, so on mount the arrival wins over "collapsed below 1100 px".
+  useLayoutEffect(() => {
+    if (!arrival) return
+    setArrivedFor(arrival)
+    setInner(false)
+    onOpenChange?.(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrival])
   const first = useRef(true)
   useEffect(() => {
     if (first.current) {
@@ -135,6 +157,7 @@ export function SidePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revealOn])
   const setCollapsed = (c: boolean): void => {
+    glide()
     setInner(c)
     onOpenChange?.(!c)
     if (persistKey) {
@@ -184,8 +207,14 @@ export function SidePanel({
           value={sizes.panel}
           min={PANEL_W.min}
           max={max}
-          onChange={setSaved}
-          onReset={() => setSaved(null)}
+          onChange={(w) => {
+            setArrivedFor(null)
+            setSaved(w)
+          }}
+          onReset={() => {
+            setArrivedFor(null)
+            setSaved(null)
+          }}
           testId="side-panel-resize"
         />
       )}

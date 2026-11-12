@@ -1,0 +1,267 @@
+/* In-window previews of run outputs (docs/design/outputs.md section 4). Tokens only; both themes. */
+
+.output-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.output-preview > *,
+.output-doc,
+.output-sheets,
+.output-text,
+.output-mermaid,
+.output-image-wrap {
+  min-width: 0;
+}
+.output-doc,
+.output-sheets,
+.output-text,
+.output-mermaid,
+.output-image-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+.output-preview-lead,
+.output-preview-note,
+.output-quiet {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.output-preview-problem {
+  color: var(--danger-text);
+}
+
+.output-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Every scrolling region is a focusable stop with a visible ring. */
+.output-scroll {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+.output-scroll:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.output-pre {
+  margin: 0;
+  padding: var(--space-3);
+  flex: 1 1 auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  line-height: var(--text-mono-lh);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--code-bg);
+}
+
+.output-md {
+  flex: 1 1 auto;
+  padding: var(--space-3) var(--space-4);
+}
+
+/* ---------- Document ---------- */
+
+.output-doc-body {
+  flex: 1 1 auto;
+  padding: var(--space-4);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  overflow-wrap: anywhere;
+}
+.output-doc-body > :first-child,
+.output-doc-body > .output-doc-block:first-child > :first-child {
+  margin-top: 0;
+}
+/* A block wrapper carries data-block for notes and draws no box of its own. */
+.output-doc-block {
+  display: contents;
+}
+.output-doc-body p,
+.output-doc-body ul,
+.output-doc-body ol {
+  margin: 0 0 var(--space-3);
+  max-width: 90ch;
+}
+.output-doc-body ul,
+.output-doc-body ol {
+  padding-left: var(--space-6);
+}
+.output-doc-heading {
+  margin: var(--space-4) 0 var(--space-2);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+}
+h5.output-doc-heading,
+h6.output-doc-heading {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+.output-doc-body a {
+  color: var(--accent-text);
+  text-decoration: underline;
+}
+.output-doc-body a:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.output-doc-body code {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-xs);
+  background: var(--code-bg);
+}
+.output-doc-code {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+}
+.output-doc-code code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+}
+.output-doc-body hr {
+  border: 0;
+  border-top: 1px solid var(--border-default);
+  margin: var(--space-4) 0;
+}
+.output-doc-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 0 var(--space-3);
+}
+.output-doc-pagebreak {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+.output-doc-pagebreak::before,
+.output-doc-pagebreak::after {
+  content: '';
+  flex: 1 1 0;
+  border-top: 1px dashed var(--border-strong);
+}
+.output-doc-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+}
+.output-doc-table {
+  border-collapse: collapse;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.output-doc-table th,
+.output-doc-table td {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  text-align: left;
+  vertical-align: top;
+}
+.output-doc-table th {
+  background: var(--surface-2);
+  font-weight: var(--weight-semibold);
+}
+.output-doc-table tbody tr:nth-child(even) td {
+  background: var(--surface-2);
+}
+
+/* ---------- Sheets and CSV ---------- */
+
+.output-sheet-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.output-sheet-region {
+  flex: 0 1 auto;
+}
+.output-sheet-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-variant-numeric: tabular-nums;
+}
+.output-sheet-table th,
+.output-sheet-table td {
+  padding: var(--space-1) var(--space-3);
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  max-width: 40ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+.output-sheet-table td[data-num] {
+  text-align: right;
+}
+.output-sheet-table thead th,
+.output-sheet-corner {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+  text-align: center;
+}
+.output-sheet-table tbody th[scope='row'] {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  font-weight: var(--weight-regular);
+  text-align: right;
+}
+.output-sheet-corner {
+  left: 0;
+  z-index: calc(var(--z-sticky) + 1);
+}
+.output-sheet-table tbody tr:nth-child(even) td {
+  background: var(--surface-2);
+}
+/* A CSV table has its header as the first row, not letters and numbers. */
+.output-csv-table thead th {
+  text-align: left;
+}
+
+/* The diagram, SVG and image viewers live in outputs-diagram.css. */
+/* A transparent image still reads on both themes. */
+.output-image {
+  background: var(--surface-0);
+}

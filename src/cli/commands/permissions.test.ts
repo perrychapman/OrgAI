@@ -1,13 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { resolve } from 'node:path'
 import type { HostScope, Project } from '../../shared/types'
-import { resetSkewWarning } from '../runRef'
 import { fakeContext, FakeHostClient, project, rpcError, type Answer } from '../testing/fakeContext'
 import { CliError } from '../types'
 import { runPermissions } from './permissions'
 
 const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate', 'decide', 'configure'] }
-afterEach(() => resetSkewWarning())
 
 const P = project('p1', '/work', { name: 'App', allowedDirectories: ['/data/shared'], referenceDirectories: ['/data/ref'] } as Partial<Project>)
 

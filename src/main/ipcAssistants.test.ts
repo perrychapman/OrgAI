@@ -247,7 +247,7 @@ describe('registered handlers', () => {
     quick.projectFor.mockReturnValue(rebuilt)
     await call(IPC.runsContinue, { runId: 'run_q', text: 'more' })
     expect(quick.projectFor).toHaveBeenCalledWith(summary)
-    expect(runs.continueRun).toHaveBeenCalledWith(rebuilt, 'run_q', 'more', undefined)
+    expect(runs.continueRun).toHaveBeenCalledWith(rebuilt, 'run_q', 'more', undefined, { desktop: true })
   })
 
   it('runs:continue and runs:send refuse an over-long quick message and a quick folder that is now the data dir', async () => {

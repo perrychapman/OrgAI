@@ -1,15 +1,17 @@
 import { normalizeView } from '../lib/teamView'
+import { applyRunDelegation } from '@shared/delegationView'
 import { droppedExtrasMessage } from '../lib/folderLists'
 import { rulesChangedProject } from '../lib/rulesChange'
+import { applyPermissionModePatch, permissionModeEventPatch } from '../lib/runSettings'
 import { clearKnowledgePrefs } from '../lib/knowledgePrefs'
-import { isTeamSurfaceRun } from '../lib/runSurface'
-import { useTeamAssistantStore } from './teamAssistant'
 import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
 import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
 import type { KnowledgeFocusRequest } from '../lib/knowledge'
+import { forgetPreviewCache, mergeOutput } from '../lib/outputs'
+import type { OutputsChangedEvent, RunOutput, StaffingGoal, StartRunInput } from '@shared/types'
 import { addRecalled, cleanRecalledEvent, type RecalledEvent } from '../lib/runKnowledge'
 import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
@@ -49,6 +51,7 @@ import type {
   Role,
   RunEvent,
   RunPlan,
+  RunStaffing,
   RunSummary,
   SetupKind,
   TranscriptEntry,
@@ -60,6 +63,35 @@ import { projectKindOf } from '@shared/defaults'
 import type { ProjectKind, QuickRunInput, QuickRunPromoteResult, SkillAssistInput, VirtualProjectId } from '@shared/types'
 import type { OrgTemplateInfo, OrgTemplateSaveInput, ProjectRemoveResult, RunTeam, TeamFilesStatus } from '@shared/types'
 import { displayProject, type RunLayout } from '../lib/assistants'
+import { countsAsSessionChange } from '../lib/chatPermissions'
+import { connectionLabel, setConnectionRegistry } from '../lib/connectionLabel'
+import { bucketPickOf, defaultUsageFilters, parseStoredUsage, storedUsage, type UsageFilters, type UsagePeriod } from '../lib/usageOverview'
+
+/** localStorage key of the Usage page's period and bucket (docs/design/usage-app.md 3.5). */
+const USAGE_STORAGE_KEY = 'orgai.usage.v1'
+
+function initialUsageFilters(): UsageFilters {
+  try {
+    return { ...defaultUsageFilters(), ...parseStoredUsage(window.localStorage.getItem(USAGE_STORAGE_KEY), Date.now()) }
+  } catch {
+    return defaultUsageFilters()
+  }
+}
+
+/** Where the Usage page should land after `openUsage` (a section heading), bumped per request. */
+export interface UsageFocusRequest {
+  section?: 'usage-efficiency' | 'usage-runs'
+  seq: number
+}
+
+export interface OpenUsageOptions {
+  /** Narrow to these projects (replaces the project selection; other narrowings are cleared). */
+  projectIds?: string[]
+  period?: UsagePeriod
+  /** A local day (any time in it): opens on 30 days with the Day chip (Dashboard strip). */
+  day?: number
+  section?: 'usage-efficiency' | 'usage-runs'
+}
 
 /** Project tabs: run (Live), history, knowledge (engagements only), team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
 /** The Banner after an agent import: what came in, and what Undo restores. */
@@ -75,9 +107,38 @@ export interface ImportNotice {
   error?: string
 }
 
-export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'knowledge' | 'appSettings'
+export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'outputs' | 'knowledge' | 'appSettings' | 'usage'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
-export type SideTab = 'transcript' | 'plan' | 'usage' | 'knowledge' | 'logs'
+export type SideTab = 'transcript' | 'plan' | 'usage' | 'outputs' | 'knowledge' | 'logs'
+
+/** A request to open the project's Outputs tab, on one output when it names one (docs/design/outputs.md section 2). */
+export interface OutputsFocusRequest {
+  projectId: string
+  outputId?: string
+}
+
+/** A revise request this window sent (outputs-2 11.4), kept until the team's version lands or the run ends. Session only. */
+export interface PendingRevision {
+  requestId: string
+  runId: string
+  projectId: string
+  outputId: string
+  title: string
+  /** The version the user looked at when asking. */
+  version: number
+  at: number
+}
+
+/** An unsaved editor draft of one output (outputs-2 9: kept in memory per output id for the session). */
+export interface OutputDraft {
+  baseVersion: number
+  text: string
+}
+
+/** The run Outputs side tab's state per chain: the output shown in the detail, if any. */
+export interface RunOutputsUi {
+  openId: string | null
+}
 
 /** What a request to open one item in a run's Knowledge side tab names (ids first, else kind and name, else a note title). */
 export interface RunKnowledgeRequest {
@@ -141,6 +202,8 @@ export interface RunState {
   messages: AgentMessage[]
   /** Work runs: the orchestrator's plan, once it set one. */
   plan?: RunPlan
+  /** Work runs: the latest staffing record (staffing.updated, or the run record), once one exists. Not shown yet. */
+  staffing?: RunStaffing
   /** Open request_mcp_install approvals. */
   mcpInstalls: McpInstallRequest[]
   /** Answered installs (secret-free outcomes), keyed by request id, kept so the card shows its resolution. */
@@ -150,6 +213,8 @@ export interface RunState {
    * agents were settled). Only meaningful for a run cut by OrgAI closing.
    */
   cutWhile?: 'working' | 'waiting'
+  /** Chat runs: the user allowed a change or command for the session in this run (RunMeta's access chip). Live only. */
+  sessionChanges?: true
 }
 
 /** A model-change notice (Banner). Per project it keeps the pre-change copy so Undo can restore it. */
@@ -205,6 +270,37 @@ interface AppState {
   /** Open the project's Knowledge tab, on one item when the request names one (ids first, else kind and name, else a note title). */
   openKnowledgeItem(req: KnowledgeFocusRequest): void
   clearKnowledgeFocus(): void
+  /** Run outputs per project, newest first (outputs:list; docs/design/outputs.md section 2). Absent = not loaded yet. */
+  outputsByProject: Record<string, RunOutput[]>
+  /** Fetch a project's outputs (outputs:list). A failure keeps the old list. */
+  loadOutputs(projectId: string): Promise<void>
+  /** Replace a project's list (after forget / delete, which answer the list afterwards). */
+  setOutputs(projectId: string, list: RunOutput[]): void
+  /** A pending request to select one output on the project's Outputs tab; OutputsView resolves and clears it. */
+  outputsFocus: OutputsFocusRequest | null
+  openOutputItem(req: OutputsFocusRequest): void
+  clearOutputsFocus(): void
+  /** The run Outputs side tab's state per chain (key: the chain's first run id). */
+  runOutputsByChain: Record<string, RunOutputsUi>
+  /** Show the run's Outputs side tab, on one output when `outputId` is given (null closes the detail). */
+  openRunOutput(runId: string, outputId?: string | null): void
+  /**
+   * Bumped per output id on every outputs:changed push naming it (any `what`) and on output.versioned / output.created,
+   * so hooks that fetch versions, notes, revisions or a preview of one output refetch (components/outputs/useOutputData.ts).
+   */
+  outputTick: Record<string, number>
+  /** The newest outputs:changed push per output id (what changed), for status lines that react to a kind of change. */
+  outputChange: Record<string, { what: OutputsChangedEvent['what']; at: number }>
+  /** The version the user last saw per output id (session only; drives the "New" badge). Set on first list load and by markOutputSeen. */
+  outputSeenVersion: Record<string, number>
+  markOutputSeen(outputId: string, version: number): void
+  /** Unsaved editor drafts per output id (session only). null clears. */
+  outputDrafts: Record<string, OutputDraft>
+  setOutputDraft(outputId: string, draft: OutputDraft | null): void
+  /** Revise requests sent from this window, per run id (RunMeta `run-meta-revision`). */
+  pendingRevisionsByRun: Record<string, PendingRevision[]>
+  addPendingRevision(p: PendingRevision): void
+  removePendingRevision(requestId: string): void
   /** Selected project-settings pane per project id (lib/settingsTarget PROJECT_SETTINGS_PANES); absent means General. */
   projectSettingsPane: Record<string, string>
   setProjectSettingsPane(projectId: string, pane: string): void
@@ -217,6 +313,20 @@ interface AppState {
   startLibraryAssist(instruction?: string, allowBuild?: boolean): Promise<RunSummary>
   selectedProjectId: string | null
   view: View
+  /**
+   * The app-wide Usage page's filters (docs/design/usage-app.md 3.5): kept in memory for the window's session; only
+   * period and bucket persist (localStorage orgai.usage.v1).
+   */
+  usageFilters: UsageFilters
+  /** Replace the Usage filters (persists period and bucket). */
+  setUsageFilters(next: UsageFilters): void
+  usageFocus: UsageFocusRequest | null
+  /** Show the Usage page (never changes the selected project); options narrow it (entry points 2, 13). */
+  openUsage(opts?: OpenUsageOptions): void
+  /** A run was opened from the Usage page (7.3); its Usage tab opens wide. Cleared when the user leaves the run view. */
+  usageReturn: { runId: string } | null
+  /** Open a run from the Usage page in its project, on its Usage side tab (7.3). */
+  openUsageRun(projectId: string, runId: string): Promise<void>
   /** Bumped by openNewProject(); the Dashboard opens its New project form when it changes. */
   newProjectRequest: number
   saveStatus: SaveStatus
@@ -410,7 +520,7 @@ interface AppState {
   applyTemplate(projectId: string, template: Pick<OrgTemplateInfo, 'id' | 'name'>): Promise<void>
 
   /** `team: 'single'` starts an Ask run (one assistant, conversation layout). */
-  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam }): Promise<void>
+  startRun(prompt: string, opts?: { scaffold?: boolean; images?: ImageAttachment[]; team?: RunTeam; goal?: StaffingGoal } & Pick<StartRunInput, 'modelSelection' | 'effort' | 'permissionMode'>): Promise<void>
   /** Start an Architect session for the selected project. */
   startSetup(instruction?: string): Promise<void>
   /** Start the MCP assistant run (kind 'mcp-assist') for the selected project and show it. */
@@ -438,6 +548,10 @@ interface AppState {
   interrupt(): Promise<void>
   stopRun(): Promise<void>
   decide(requestId: string, decision: PermissionDecision): Promise<void>
+  /** Answer a permission card of a given run (the Dashboard's inline Allow once / Deny; `decide` acts on the active run). */
+  decideIn(runId: string, requestId: string, decision: PermissionDecision): Promise<void>
+  /** Answer a question card of a given run (the Dashboard's inline options). */
+  answerQuestionIn(runId: string, questionId: string, answer: QuestionAnswer): Promise<void>
   decideProposal(proposalId: string, decision: ProposalDecision): Promise<void>
   answerQuestion(questionId: string, answer: QuestionAnswer): Promise<void>
   /** Answer a request_permission_rules card. */
@@ -457,6 +571,8 @@ interface AppState {
 }
 
 let unsubscribeEvents: (() => void) | null = null
+/** outputs:list request counter per project (loadOutputs keeps only the newest answer; a merged event invalidates older ones). */
+const outputsLoadSeq = new Map<string, number>()
 /** Bumped by every setTabNotice call; only the newest call may show or clear the notice. */
 let tabNoticeSeq = 0
 /** Runs whose real summary is being fetched after an event created a placeholder. */
@@ -502,7 +618,7 @@ export const isRunLive = (run: RunState): boolean => LIVE_RUN_STATUSES.has(run.s
 /** Every run of a project known to the renderer: live runs first, then newest first. */
 export const runsOfProject = (s: AppState, projectId: string): RunState[] =>
   Object.values(s.runs)
-    .filter((r) => r.summary.projectId === projectId && !isTeamSurfaceRun(r.summary))
+    .filter((r) => r.summary.projectId === projectId)
     .sort((a, b) => Number(isRunLive(b)) - Number(isRunLive(a)) || b.summary.startedAt - a.summary.startedAt)
 
 /** Runs of the selected project. Returns a fresh array: use with `useShallow`. */
@@ -518,7 +634,7 @@ export function useProjectSummaries(): RunSummary[] {
   const projectId = useAppStore((s) => s.selectedProjectId)
   return useMemo(() => {
     const byId = new Map<string, RunSummary>(history.map((h) => [h.id, h]))
-    for (const r of Object.values(runs)) if (r.summary.projectId === projectId && !isTeamSurfaceRun(r.summary)) byId.set(r.summary.id, r.summary)
+    for (const r of Object.values(runs)) if (r.summary.projectId === projectId) byId.set(r.summary.id, r.summary)
     return [...byId.values()].sort((a, b) => b.startedAt - a.startedAt)
   }, [history, runs, projectId])
 }
@@ -542,7 +658,7 @@ function showRunPatch(s: AppState, projectId: string, requestedId: string): Part
 function summariesOf(s: AppState, projectId: string): RunSummary[] {
   const byId = new Map<string, RunSummary>()
   for (const h of s.historyByProject[projectId] ?? (s.selectedProjectId === projectId ? s.history : [])) byId.set(h.id, h)
-  for (const r of Object.values(s.runs)) if (r.summary.projectId === projectId && !isTeamSurfaceRun(r.summary)) byId.set(r.summary.id, r.summary)
+  for (const r of Object.values(s.runs)) if (r.summary.projectId === projectId) byId.set(r.summary.id, r.summary)
   return [...byId.values()]
 }
 
@@ -586,7 +702,7 @@ function tabEntriesOf(s: AppState, projectId: string): { run: RunState; group: C
       .reverse()
       .map((m) => s.runs[m.id])
       .find((r): r is RunState => !!r)
-    if (!run || isTeamSurfaceRun(run.summary)) continue
+    if (!run) continue
     if (s.dismissedRuns[run.summary.id] && s.activeRunByProject[projectId] !== run.summary.id) continue
     out.push({ run, group: g })
   }
@@ -625,8 +741,7 @@ function reloadHistoryAfterEnd(projectId: string): void {
       endReloads.delete(projectId)
       void window.orgai.runs
         .list(projectId)
-        .then((rows) => {
-          const history = rows.filter((h) => !isTeamSurfaceRun(h))
+        .then((history) => {
           useAppStore.setState((s) => ({
             historyByProject: { ...s.historyByProject, [projectId]: history },
             ...(s.selectedProjectId === projectId ? { history } : {}),
@@ -769,6 +884,8 @@ async function showStartedAssistant(summary: RunSummary, home: string): Promise<
   if (getState().selectedProjectId !== home) getState().selectProject(home)
   setState((s) => showRunPatch(s, summary.projectId || home, summary.id))
   void getState().loadHistory()
+  // The start page's Start button had focus and is gone: put the keyboard in the live reply box, as a project start does.
+  requestAnimationFrame(() => requestAnimationFrame(() => getState().focusComposer()))
 }
 
 /** Store a usage report under its connection, so one provider's probe never replaces another's. */
@@ -803,9 +920,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   assistantSeed: {},
   mcpFocus: null,
   knowledgeFocus: null,
+  outputsByProject: {},
+  outputsFocus: null,
+  runOutputsByChain: {},
+  outputTick: {},
+  outputChange: {},
+  outputSeenVersion: {},
+  outputDrafts: {},
+  pendingRevisionsByRun: {},
   projectSettingsPane: {},
   selectedProjectId: null,
   view: 'projects',
+  usageFilters: initialUsageFilters(),
+  usageFocus: null,
+  usageReturn: null,
   newProjectRequest: 0,
   saveStatus: { state: 'idle' },
   selectedRoleId: null,
@@ -1097,6 +1225,87 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
 
+  openRunOutput(runId, outputId) {
+    set((s) => {
+      const projectId = s.runs[runId]?.summary.projectId ?? ''
+      const key = chainKeyOf(summariesOf(s, projectId), runId)
+      const cur = s.runOutputsByChain[key] ?? { openId: null }
+      const openId = outputId === undefined ? cur.openId : outputId
+      return {
+        runOutputsByChain: { ...s.runOutputsByChain, [key]: { ...cur, openId } },
+        sideTabByRun: { ...s.sideTabByRun, [runId]: 'outputs' }
+      }
+    })
+  },
+
+  async loadOutputs(projectId) {
+    if (!projectId || isVirtualProjectId(projectId) || !window.orgai.outputs) return
+    // Every push refetches, so answers can arrive out of order: only the newest request per project may land.
+    const mine = (outputsLoadSeq.get(projectId) ?? 0) + 1
+    outputsLoadSeq.set(projectId, mine)
+    try {
+      const list = await window.orgai.outputs.list(projectId)
+      if (outputsLoadSeq.get(projectId) !== mine) return
+      if (Array.isArray(list)) get().setOutputs(projectId, list)
+    } catch (e) {
+      console.warn('outputs:list failed', e)
+    }
+  },
+
+  setOutputs(projectId, list) {
+    set((s) => {
+      // The first sight of an output counts as seen, so only versions that arrive while the window is open read "New".
+      let seen = s.outputSeenVersion
+      for (const o of list) {
+        if (seen[o.id] === undefined) {
+          if (seen === s.outputSeenVersion) seen = { ...seen }
+          seen[o.id] = o.version ?? 1
+        }
+      }
+      return { outputsByProject: { ...s.outputsByProject, [projectId]: list }, outputSeenVersion: seen }
+    })
+  },
+
+  markOutputSeen(outputId, version) {
+    if (get().outputSeenVersion[outputId] === version) return
+    set((s) => ({ outputSeenVersion: { ...s.outputSeenVersion, [outputId]: version } }))
+  },
+
+  setOutputDraft(outputId, draft) {
+    set((s) => {
+      if (draft) return { outputDrafts: { ...s.outputDrafts, [outputId]: draft } }
+      if (!(outputId in s.outputDrafts)) return {}
+      const { [outputId]: _gone, ...rest } = s.outputDrafts
+      return { outputDrafts: rest }
+    })
+  },
+
+  addPendingRevision(p) {
+    set((s) => ({ pendingRevisionsByRun: { ...s.pendingRevisionsByRun, [p.runId]: [...(s.pendingRevisionsByRun[p.runId] ?? []).filter((x) => x.requestId !== p.requestId), p] } }))
+  },
+
+  removePendingRevision(requestId) {
+    set((s) => {
+      const next: Record<string, PendingRevision[]> = {}
+      let changed = false
+      for (const [runId, list] of Object.entries(s.pendingRevisionsByRun)) {
+        const kept = list.filter((x) => x.requestId !== requestId)
+        if (kept.length !== list.length) changed = true
+        if (kept.length > 0) next[runId] = kept
+      }
+      return changed ? { pendingRevisionsByRun: next } : {}
+    })
+  },
+
+  openOutputItem(req) {
+    if (get().selectedProjectId !== req.projectId) get().selectProject(req.projectId)
+    set({ view: 'outputs', outputsFocus: req })
+  },
+
+  clearOutputsFocus() {
+    set({ outputsFocus: null })
+  },
+
   openRunKnowledge(runId, request) {
     get().patchRunKnowledge(runId, request ? { request, query: '', openId: null, stack: [] } : {})
     set((s) => ({ sideTabByRun: { ...s.sideTabByRun, [runId]: 'knowledge' } }))
@@ -1210,11 +1419,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async jumpToDecision(projectId, runId, requestId) {
     await get().focusRun(projectId, runId)
-    if (isTeamSurfaceRun(get().runs[runId]?.summary)) {
-      // A Team-tab Architect session: the Team tray switches to Design and focuses that card.
-      useTeamAssistantStore.getState().requestDesign(projectId, runId, requestId ?? null)
-      return
-    }
     set({ pendingDecisionFocus: runId, pendingDecisionRequest: requestId ?? null })
   },
 
@@ -1235,6 +1439,25 @@ export const useAppStore = create<AppState>((set, get) => ({
     window.orgai.onConnectionEvent((e) => get().handleConnectionEvent(e))
     // Team files: the push keeps every known status fresh; listAttention seeds the ones that need the user.
     window.orgai.onTeamFilesChanged?.((status) => get().setTeamFilesStatus(status))
+    // Outputs: refetch a project's list on any change, only once something has loaded it.
+    window.orgai.onOutputsChanged?.((ev) => {
+      if (!ev?.projectId) return
+      const ids = Array.isArray(ev.ids) ? ev.ids.filter((id): id is string => typeof id === 'string') : []
+      if (ids.length > 0) {
+        const at = Date.now()
+        set((s) => {
+          const tick = { ...s.outputTick }
+          const change = { ...s.outputChange }
+          for (const id of ids) {
+            tick[id] = (tick[id] ?? 0) + 1
+            change[id] = { what: ev.what, at }
+          }
+          return { outputTick: tick, outputChange: change }
+        })
+      }
+      // Notes and revision changes leave the list's version fields alone except openNoteCount, so every push refetches.
+      if (get().outputsByProject[ev.projectId]) void get().loadOutputs(ev.projectId)
+    })
     void get().loadTeamFilesAttention()
     await get().loadProjects()
     void get().loadAllHistory()
@@ -1268,6 +1491,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(changed ? { history: get().historyByProject[id ?? ''] ?? [] } : {})
     })
     if (id) void settleWorkspace(id)
+    if (id && changed && !isVirtualProjectId(id)) void get().loadOutputs(id)
   },
 
   setView(requested) {
@@ -1275,10 +1499,42 @@ export const useAppStore = create<AppState>((set, get) => ({
     const view = normalizeView<View>(requested)
     set((s) => {
       const id = view === 'run' ? activeRun(s)?.summary.id : undefined
-      if (!id || !s.unreadByRun[id]) return { view }
+      const leave = view !== 'run' && s.usageReturn ? { usageReturn: null } : {}
+      if (!id || !s.unreadByRun[id]) return { view, ...leave }
       const { [id]: _read, ...unreadByRun } = s.unreadByRun
-      return { view, unreadByRun }
+      return { view, unreadByRun, ...leave }
     })
+  },
+
+  setUsageFilters(next) {
+    set({ usageFilters: next })
+    try {
+      window.localStorage.setItem(USAGE_STORAGE_KEY, storedUsage(next))
+    } catch {
+      // storage unavailable: the choice is kept for this window only
+    }
+  },
+
+  openUsage(opts = {}) {
+    const cur = get().usageFilters
+    let next = cur
+    if (opts.projectIds || opts.day !== undefined || opts.period) {
+      // An entry point that narrows starts from a clean view (only its own narrowing), keeping the bucket choice.
+      next = { ...defaultUsageFilters(), bucket: cur.bucket, period: opts.period ?? (opts.day !== undefined ? { kind: 'days', days: 30 } : cur.period) }
+      if (opts.projectIds) next.projectIds = [...opts.projectIds]
+      if (opts.day !== undefined) next.bucketPick = bucketPickOf({ start: opts.day }, 'day')
+      get().setUsageFilters(next)
+    }
+    const seq = (get().usageFocus?.seq ?? 0) + 1
+    set({ view: 'usage', usageReturn: null, usageFocus: opts.section ? { section: opts.section, seq } : { seq } })
+  },
+
+  async openUsageRun(projectId, runId) {
+    await get().focusRun(projectId, runId)
+    const s = get()
+    const shown = s.selectedProjectId ? s.activeRunByProject[s.selectedProjectId] : undefined
+    if (!shown) return
+    set((st) => ({ view: 'run', usageReturn: { runId: shown }, sideTabByRun: { ...st.sideTabByRun, [shown]: 'usage' } }))
   },
 
   setSaveStatus(status) {
@@ -1404,6 +1660,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   async removeProject(id) {
     const result = await window.orgai.projects.remove(id)
     clearKnowledgePrefs(id)
+    forgetPreviewCache(id)
     set((s) => {
       // H2: the project's runs go with it, so the Dashboard (attention column, hero, tiles, Cost card) stops counting them.
       const gone = new Set<string>()
@@ -1412,6 +1669,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [id]: _hist, ...historyByProject } = s.historyByProject
       const { [id]: _active, ...activeRunByProject } = s.activeRunByProject
       const { [id]: _draft, ...draftPage } = s.draftPage
+      const { [id]: _outputs, ...outputsByProject } = s.outputsByProject
+      const runOutputsByChain = Object.fromEntries(Object.entries(s.runOutputsByChain).filter(([chain]) => !gone.has(chain)))
       const runs = Object.fromEntries(Object.entries(s.runs).filter(([runId]) => !gone.has(runId)))
       const dismissedRuns = Object.fromEntries(Object.entries(s.dismissedRuns).filter(([runId]) => !gone.has(runId))) as Record<string, true>
       const knowledgeRecalledByRun = Object.fromEntries(Object.entries(s.knowledgeRecalledByRun).filter(([runId]) => !gone.has(runId)))
@@ -1431,6 +1690,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         knowledgeRecalledByRun,
         sideTabByRun,
         runKnowledgeByChain,
+        outputsByProject,
+        runOutputsByChain,
         ...(wasSelected ? { history: [] } : {})
       }
     })
@@ -1445,7 +1706,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ history: [] })
       return
     }
-    const history = (await window.orgai.runs.list(project.id)).filter((h) => !isTeamSurfaceRun(h))
+    const history = await window.orgai.runs.list(project.id)
     // The selection may have moved while the list was loading.
     set((s) => ({
       historyByProject: { ...s.historyByProject, [project.id]: history },
@@ -1456,7 +1717,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async loadAllHistory() {
     const ids = [...get().projects.map((p) => p.id), ...VIRTUAL_PROJECT_IDS]
-    const entries = await Promise.all(ids.map(async (id) => [id, (await window.orgai.runs.list(id).catch(() => [] as RunSummary[])).filter((h) => !isTeamSurfaceRun(h))] as const))
+    const entries = await Promise.all(ids.map(async (id) => [id, await window.orgai.runs.list(id).catch(() => [] as RunSummary[])] as const))
     set((s) => ({ historyByProject: { ...s.historyByProject, ...Object.fromEntries(entries) }, ...adoptRowsPatch(s, entries.flatMap(([, rows]) => rows)) }))
   },
 
@@ -1517,7 +1778,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       prompt,
       scaffold: opts?.scaffold,
       images: opts?.images,
-      ...(opts?.team === 'single' ? { team: 'single' as const } : {})
+      ...(opts?.team === 'single' ? { team: 'single' as const } : {}),
+      ...(opts?.goal ? { overrides: { goal: opts.goal } } : {}),
+      // Start-time choices (run settings row): main refuses a bad one before a run exists, the page keeps the draft.
+      ...(opts?.modelSelection ? { modelSelection: opts.modelSelection } : {}),
+      ...(opts?.effort ? { effort: opts.effort } : {}),
+      ...(opts?.permissionMode ? { permissionMode: opts.permissionMode } : {})
     })
     get().handleEvent({ type: 'run.status', runId: summary.id, status: summary.status })
     set((s) => ({
@@ -1525,6 +1791,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       runs: { ...s.runs, [summary.id]: { ...(s.runs[summary.id] ?? emptyRun(summary)), summary: { ...summary, ...s.runs[summary.id]?.summary, kind: summary.kind, prompt: summary.prompt, projectId: summary.projectId, team: summary.team } } },
       ...showRunPatch(s, project.id, summary.id)
     }))
+    // The Start button that had focus is gone with the New run page: put the keyboard in the live composer (UX review M8).
+    // The live composer mounts with the current token, so the request goes out once it is on screen.
+    requestAnimationFrame(() => requestAnimationFrame(() => get().focusComposer()))
   },
 
   async startSetup(instruction) {
@@ -1597,7 +1866,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(s.runs[run.id] ? { runs: { ...s.runs, [run.id]: { ...s.runs[run.id], summary: { ...s.runs[run.id].summary, ...run } } } } : {})
     }))
     const history = await window.orgai.runs.list(project.id).catch(() => [run])
-    set((s) => ({ historyByProject: { ...s.historyByProject, [project.id]: history.filter((h) => !isTeamSurfaceRun(h)) } }))
+    set((s) => ({ historyByProject: { ...s.historyByProject, [project.id]: history } }))
     get().selectProject(project.id)
     set({ view: 'run' })
     await get().openRun(run.id)
@@ -1673,6 +1942,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (run) await window.orgai.runs.decide({ runId: run.summary.id, requestId, decision })
   },
 
+  async decideIn(runId, requestId, decision) {
+    await window.orgai.runs.decide({ runId, requestId, decision })
+  },
+
+  async answerQuestionIn(runId, questionId, answer) {
+    await window.orgai.setup.answer({ runId, questionId, answer })
+  },
+
   async decideProposal(proposalId, decision) {
     const run = activeRun(get())
     if (run) await window.orgai.setup.decide({ runId: run.summary.id, proposalId, decision })
@@ -1705,6 +1982,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       case 'connection.login':
         set({ login: e.login })
         return
+      case 'connections.changed':
+        // A proxy was created, removed or edited (here or in another window): re-read the list now.
+        void get().loadConnections()
+        return
       case 'models.updated':
         // `changed === false`: same model ids as before, so keep the existing list (no re-render); only the
         // refresh time moves. (Remap notices come from projects.remapped, which main sends only on a real change.)
@@ -1730,7 +2011,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           manual: 'after a manual update on'
         }
         const first = results[0]
-        const name = { anthropic: 'Anthropic', openai: 'OpenAI', litellm: 'LiteLLM' }[first.connection]
+        const name = connectionLabel(first.connection)
         void get()
           .loadProjects()
           .then(() => get().pushRemapNotice(`${cause[first.reason] ?? 'after a change to'} ${name}`, results, before))
@@ -1749,6 +2030,34 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (e.type === 'project.updated') {
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
       return
+    }
+    // A new or updated output (docs/design/outputs.md section 2): merged into a loaded list, else the list is fetched.
+    if (e.type === 'output.created' || e.type === 'output.versioned') {
+      const pid = e.output?.projectId
+      const oid = e.output?.id
+      if (!pid || !oid) return
+      set((s) => ({ outputTick: { ...s.outputTick, [oid]: (s.outputTick[oid] ?? 0) + 1 } }))
+      if (get().outputsByProject[pid]) {
+        // A list requested before this event would undo the merge: drop answers to requests already in flight.
+        outputsLoadSeq.set(pid, (outputsLoadSeq.get(pid) ?? 0) + 1)
+        set((s) => ({ outputsByProject: { ...s.outputsByProject, [pid]: mergeOutput(s.outputsByProject[pid], e.output) } }))
+      } else void get().loadOutputs(pid)
+      // A new version of an output this window asked the team to revise answers that request (the run's own record says
+      // exactly which; RevisionStatus re-reads outputs:revisions on the tick).
+      if (e.type === 'output.versioned') {
+        // Only an agent's version from the run that got the request answers it (the user's own save or an outside edit
+        // leaves the request waiting).
+        const byAgent = !e.output.current || e.output.current.source === 'agent'
+        if (byAgent) for (const p of Object.values(get().pendingRevisionsByRun).flat()) if (p.outputId === oid && p.runId === e.runId) get().removePendingRevision(p.requestId)
+      }
+      return
+    }
+    // A run that ended without answering drops its pending revisions (the detail's RevisionStatus says so from outputs:revisions).
+    if (e.type === 'run.status' && (e.status === 'finished' || e.status === 'error') && get().pendingRevisionsByRun[e.runId]) {
+      set((s) => {
+        const { [e.runId]: _ended, ...rest } = s.pendingRevisionsByRun
+        return { pendingRevisionsByRun: rest }
+      })
     }
     // What agents looked up or were given: ids and time only, kept per run for the Knowledge side tab.
     if (e.type === 'knowledge.recalled') {
@@ -1807,6 +2116,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
       return
     }
+    // A run's permission mode snapshot (RunManager only): replaces all three mode fields on a loaded run's summary.
+    const modePatch = permissionModeEventPatch(e)
+    if (modePatch) {
+      set((s) => {
+        const held = s.runs[modePatch.runId]
+        return held ? { runs: { ...s.runs, [modePatch.runId]: { ...held, summary: applyPermissionModePatch(held.summary, modePatch.fields) } } } : {}
+      })
+      return
+    }
     set((s) => {
       const existing = s.runs[e.runId]
       // A title for a run the store never loaded: the record already carries it when fetched. No placeholder run.
@@ -1823,6 +2141,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // A run nobody opened yet (another run of this project, or another project's): fetch its real summary.
       if (!existing) queueMicrotask(() => void get().fillSummary(e.runId))
       switch (e.type) {
+        case 'run.model':
+          run.summary = { ...run.summary, modelSelection: e.selection }
+          break
         case 'run.status':
           run.summary = {
             ...run.summary,
@@ -1874,9 +2195,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'permission.request':
           run.permissions = [...run.permissions, e.request]
           break
-        case 'permission.resolved':
+        case 'permission.resolved': {
+          const resolved = run.permissions.find((p) => p.id === e.requestId)
+          if (run.summary.quick && !e.cancelled && countsAsSessionChange(resolved?.toolName, e.scope)) run.sessionChanges = true
           run.permissions = run.permissions.filter((p) => p.id !== e.requestId)
           break
+        }
         case 'proposal.request':
           run.proposals = [...run.proposals, e.proposal]
           break
@@ -1914,6 +2238,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         case 'plan.updated':
           run.plan = e.plan
           break
+        case 'staffing.updated':
+          run.staffing = e.staffing
+          break
+        case 'run.delegation': {
+          const applied = applyRunDelegation(run.summary, run.agents, e)
+          run.summary = applied.summary
+          run.agents = applied.agents
+          break
+        }
         case 'mcpInstall.request':
           run.mcpInstalls = [...(run.mcpInstalls ?? []).filter((r) => r.id !== e.request.id), e.request]
           break
@@ -2003,12 +2336,6 @@ export const useAppStore = create<AppState>((set, get) => ({
       const record = await window.orgai.runs.get(runId).catch(() => null)
       if (record) set((st) => (st.runs[runId] ? {} : { runs: { ...st.runs, [runId]: stateFromRecord(record) } }))
     }
-    if (isTeamSurfaceRun(get().runs[runId]?.summary)) {
-      // A Team-tab Architect session lives in the Team tray, not on the Live strip: land on the Team tab.
-      set({ view: 'team' })
-      await seedPendingCards(runId)
-      return
-    }
     await get().openRun(runId)
     await seedPendingCards(runId)
   },
@@ -2025,7 +2352,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         const { projectId, kind, prompt, startedAt, resumedFrom, surface } = record.summary
         // Keep live fields (status, cost) from events; take identity fields from the main process.
         const title = run.summary.title ?? record.summary.title
-        const summary = { ...run.summary, projectId, kind, prompt, startedAt, ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
+        const summary = { ...run.summary, projectId, kind, prompt, startedAt,
+          connection: record.summary.connection,
+          modelAdapter: record.summary.modelAdapter,
+          modelSelection: run.summary.modelSelection ?? record.summary.modelSelection,
+          ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]
@@ -2076,7 +2407,7 @@ export function useRunIndexes(): Map<string, number> {
   const key = useAppStore((s) => {
     const seen = new Map<string, string>()
     for (const [projectId, list] of Object.entries(s.historyByProject)) for (const h of list) seen.set(h.id, `${projectId}/${h.id}@${h.startedAt}`)
-    for (const r of Object.values(s.runs)) if (r.summary.projectId && !isTeamSurfaceRun(r.summary)) seen.set(r.summary.id, `${r.summary.projectId}/${r.summary.id}@${r.summary.startedAt}`)
+    for (const r of Object.values(s.runs)) if (r.summary.projectId) seen.set(r.summary.id, `${r.summary.projectId}/${r.summary.id}@${r.summary.startedAt}`)
     return [...seen.values()].sort().join('|')
   })
   return useMemo(() => {
@@ -2136,4 +2467,9 @@ useAppStore.subscribe((s, prev) => {
     if (newest && newest.id !== viewed && newest.startedAt > s.runs[viewed].summary.startedAt) next = { ...(next ?? s.activeRunByProject), [projectId]: newest.id }
   }
   if (next) useAppStore.setState({ activeRunByProject: next })
+})
+
+// Keeps the pure label helpers (lib/connectionLabel.ts) in step with the loaded connection list.
+useAppStore.subscribe((s, prev) => {
+  if (s.connections !== prev.connections) setConnectionRegistry(s.connections)
 })

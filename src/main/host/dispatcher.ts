@@ -3,10 +3,15 @@
  * ipc.ts) and to RPC clients (Wave 2's socket server, the CLI's inproc host). Electron-free; relative imports only
  * (noElectronImport.test.ts).
  *
- * - `invoke` is the trusted in-process desktop path: no gate, no lease (the window is the interactiveClients lease),
- *   and the handler's result is returned as is, so a sync handler stays sync and a sync throw stays a sync throw.
+ * - `invoke` is the trusted in-process desktop path: no gate, and the handler's result is returned as is, so a sync
+ *   handler stays sync and a sync throw stays a sync throw. Wave 7 (cli-standalone.md 4.3): a mutating channel (the
+ *   registry's scope above 'read') is refused with host_draining while the host drains and holds an
+ *   inFlightRpcMutations lease until its promise settles (mutationLease.ts runLeased), like the wire path.
  * - `invokeRpc` is the untrusted wire path: gate (scope, params), refuse transport-owned channels, refuse mutations
- *   while draining, hold an inFlightRpcMutations lease for mutations, map coded errors to HostRpcFailure.
+ *   while draining, hold an inFlightRpcMutations lease for mutations, await SecretStore.prepareWrite() when the
+ *   channel's storesSecret predicate is true (Wave 7), map coded errors to HostRpcFailure.
+ * - mcp:authorize (both paths) is refused while draining but holds no lease for its browser wait; McpService leases
+ *   only its final commit (round 6 item 9, COMMIT_LEASED_CHANNELS).
  *
  * Pushes the handlers make (projects:engagementChanged) go on `events`; the desktop shell forwards them to windows.
  */
@@ -32,6 +37,7 @@ import type {
   ConnectionLoginMethod,
   ConnectionLoginStart,
   ConnectionStatus,
+  ProxyRemoveResult,
   ConnectorInfo,
   ContinueRunInput,
   DraftRequest,
@@ -80,6 +86,11 @@ import type {
   RemapResult,
   RunOverrides,
   RunSummary,
+  SecretsConfirmDeleteResult,
+  SecretsInitResult,
+  SecretsResetResult,
+  SecretsStatusResult,
+  SecretsUndeleteResult,
   SetupStartInput,
   SkillApplySuggestionInput,
   SkillContent,
@@ -97,22 +108,26 @@ import type {
   SkillUpdateInput,
   TeamRecommendations,
   TeamReview,
+  UsageOverview,
+  UsageOverviewQuery,
   UsageStats,
   UsageStatsQuery
 } from '../../shared/types'
 import {
-  CONNECTION_IDS,
   HARNESS_PROJECT_ID,
   HOST_IPC,
   HOST_METHODS,
   IPC,
   MCP_SCOPE_IPC,
   QUICK_PROJECT_ID,
+  SECRETS_IPC,
   SKILLS_PROJECT_ID,
   TEAM_FILES_IPC,
+  VIRTUAL_PROJECT_LABELS,
   isVirtualProjectId
 } from '../../shared/types'
-import { projectConnection, projectKindOf } from '../../shared/defaults'
+import { connectionName, isKnownConnection, projectConnection, projectKindOf } from '../../shared/defaults'
+import type { UsageOverviewNames } from '../runtime/runUsage'
 import { emptyKnowledgeGraph } from '../../shared/knowledge'
 import { draftOrgChart } from '../ai/draft'
 import { buildAppInfo, buildSettingsInfo } from '../appInfo'
@@ -127,7 +142,7 @@ import type { QuickRunService } from '../quick/quickRuns'
 import { createScratchDir } from '../quick/scratch'
 import { folderConfigReview } from '../runtime/folderConfigTrust'
 import { addRules, listIgnoredRules, listRules, removeRule } from '../runtime/permissionRules'
-import type { RunManager } from '../runtime/runManager'
+import type { RunManager, StartUserChoice } from '../runtime/runManager'
 import { overridesWidening } from '../runtime/runOverrides'
 import type { TeamFilesService } from '../teamFiles/service'
 import type { TemplateService } from '../setup/templates'
@@ -149,6 +164,7 @@ import {
 } from '../store/projectData'
 import { checkProjectPath, type ProjectStore } from '../store/projects'
 import type { SettingsStore } from '../store/settings'
+import { VAULT_MESSAGES, type SecretStoreApi } from '../store/vaultTypes'
 import { checkRunTarget, isValidId } from '../windowScope'
 import { noopActivity } from './activity'
 import {
@@ -161,6 +177,7 @@ import {
   continueRunArgs,
   runMessageArgs,
   startRunArgs,
+  setPermissionModeArgs,
   checkQuickContinue,
   connectionIdArg,
   folderConfigProjectArg,
@@ -168,6 +185,8 @@ import {
   projectCreateInput,
   teamFilesArgs,
   connectionSecretArgs,
+  proxyCreateArgs,
+  proxyIdArg,
   connectorArgs,
   effectiveRemoveRuns,
   harnessProjectFor,
@@ -188,12 +207,16 @@ import {
   quickArgs,
   removalFacts,
   settingsSetArgs,
+  appReferenceArgs,
   skillAssistArgs,
   templateEngagementArgs,
   withEffectiveDefault
 } from './args'
 import { HostEventBus } from './events'
-import { HostRpcFailure, gateRequest, type GateFn } from './registry'
+import { COMMIT_LEASED_CHANNELS, LIFECYCLE_CHANNELS, drainingFailure, runLeased } from './mutationLease'
+import { secretsConfirmDeleteArgs, secretsInitArgs, secretsResetArgs, secretsStatusArgs, secretsUndeleteArgs } from './secretsArgs'
+import { HostRpcFailure, channelEntry, gateRequest, type GateFn, type StoresSecretHostView } from './registry'
+import { registerOutputsHandlers } from './outputsHandlers'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices, InvokeContext, RpcInvokeContext } from './types'
 
 /** One request handler: the call context, then the positional arguments (what ipcRenderer.invoke passed). */
@@ -212,6 +235,7 @@ const RPC_ERROR_CODES: ReadonlySet<string> = new Set<HostRpcErrorCode>([
   'unknown_channel',
   'desktop_unavailable',
   'agent_descendant_refused',
+  'not_owner',
   'stale_target_digest',
   'stale_revision',
   'scope_denied',
@@ -222,9 +246,6 @@ const RPC_ERROR_CODES: ReadonlySet<string> = new Set<HostRpcErrorCode>([
   'too_many_connections',
   'too_many_requests'
 ])
-
-/** How long a client should wait before retrying a mutation refused while the host drains. */
-const DRAINING_RETRY_MS = 1000
 
 /** Used when no env is given (unit tests that only exercise other channels): app:info reports placeholders. */
 const FALLBACK_ENV: HostDispatchEnv = {
@@ -245,6 +266,14 @@ export class HostDispatcher {
   private readonly env: HostDispatchEnv
   private readonly gate: GateFn
   private readonly handlers: Record<string, Handler>
+  /** Aborted by quiesce(): the model calls handlers make for a caller (draft:orgChart) stop when the host drains. */
+  private readonly quiesced = new AbortController()
+  /**
+   * Wave 7 (cli-standalone.md 5.6 Reset): RPC calls whose storesSecret predicate fired, from the start of their
+   * prepareWrite() until their handler settled. secrets:reset is refused while any is in flight: a reset between the
+   * preparation and the handler's set() would move secure storage aside under it (VaultNotReady on a Node host).
+   */
+  private secretWritesInFlight = 0
 
   constructor(
     private readonly services: HostServices,
@@ -254,17 +283,35 @@ export class HostDispatcher {
     this.activity = services.activity ?? noopActivity()
     this.env = services.env ?? FALLBACK_ENV
     this.gate = opts.gate ?? gateRequest
-    this.handlers = buildHandlers(services, this.env, this.events)
+    this.handlers = buildHandlers(services, this.env, this.events, this.quiesced.signal, { secretWritesInFlight: () => this.secretWritesInFlight })
+    // Wave 7 integration (5.6 Reset): the store itself refuses resetVault while an MCP sign-in, a token refresh or a
+    // predicate-prepared secret write is in flight, whoever calls it (the secrets:reset handler checks the same first).
+    const busy = (): boolean =>
+      this.secretWritesInFlight > 0 || (services.mcp?.activeAuthorizationCount?.() ?? 0) > 0 || (services.mcp?.refreshingCount?.() ?? 0) > 0
+    ;(services.secrets as { setResetBusyCheck?: (check: () => boolean) => void } | undefined)?.setResetBusyCheck?.(busy)
+  }
+
+  /**
+   * The drain's quiesce step (bootstrap; round 6 item 9): abort the model calls a handler runs for a caller and nothing
+   * else stops (draft:orgChart: a deep-tier completion with no timeout of its own), so a Quit never waits on one; its
+   * mutation lease ends with the rejection. Later calls of those channels are refused anyway (host_draining).
+   * Idempotent.
+   */
+  quiesce(): void {
+    this.quiesced.abort()
   }
 
   /**
    * Desktop path: run the channel's handler with already-structured-cloned args. Returns the handler's result as is
    * (sync stays sync, a sync throw stays a sync throw). An unknown channel throws an Error with code 'unknown_channel'.
+   * A mutating channel (isMutatingChannel) is refused with host_draining while the host drains and holds an
+   * inFlightRpcMutations lease until its result settles (Wave 7, cli-standalone.md 4.3).
    */
   invoke(channel: string, args: unknown[], ctx: InvokeContext): unknown {
     const handler = this.lookup(channel)
     if (!handler) throw unknownChannel(channel)
-    return handler(ctx, ...args)
+    if (!isMutatingChannel(channel)) return handler(ctx, ...args)
+    return runLeased(this.activity, channel, () => handler(ctx, ...args), { lease: !COMMIT_LEASED_CHANNELS.has(channel) })
   }
 
   /**
@@ -276,18 +323,30 @@ export class HostDispatcher {
     if (g.entry.transport) throw new HostRpcFailure('bad_request', `${channel} is handled by the socket server.`)
     // host.stop is a lifecycle call, not store work: it holds no inFlightRpcMutations lease (its own lease would make
     // every drain without force refuse itself) and is never refused while draining (requestDrain joins the drain).
-    const leased = g.mutation && g.channel !== HOST_METHODS.hostStop
-    if (leased && this.activity.state() === 'draining') {
-      throw new HostRpcFailure('host_draining', 'OrgAI is shutting down; try again in a moment.', DRAINING_RETRY_MS)
-    }
+    const mutation = g.mutation && !LIFECYCLE_CHANNELS.has(g.channel)
+    if (mutation && this.activity.state() === 'draining') throw drainingFailure()
     const handler = this.lookup(g.channel)
     if (!handler) throw new HostRpcFailure('unknown_channel', `Unknown channel: ${channel}`)
+    // mcp:authorize leases only its final commit (McpService), not its browser wait (round 6 item 9).
+    const leased = mutation && !COMMIT_LEASED_CHANNELS.has(g.channel)
     const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
+    let writing = false
     try {
+      // Wave 7 (cli-standalone.md 5.6): a call that will store a non-empty secret value prepares the vault first (Node /
+      // inproc hosts create it lazily), inside the mutation lease, so the handler stays synchronous. Clears and calls
+      // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts. From the prepare until the
+      // handler settles the call counts as a secret write in flight (secrets:reset refuses meanwhile).
+      const secrets = this.services.secrets
+      if (secrets && g.entry.storesSecret?.(g.args, this.storesSecretView(secrets))) {
+        writing = true
+        this.secretWritesInFlight += 1
+        await secrets.prepareWrite()
+      }
       return await handler(ctx, ...g.args)
     } catch (err) {
       throw rpcError(err)
     } finally {
+      if (writing) this.secretWritesInFlight -= 1
       release?.()
     }
   }
@@ -303,9 +362,38 @@ export class HostDispatcher {
     return Object.keys(this.handlers)
   }
 
+  /** Read-only host state for the storesSecret predicates (never a secret value). */
+  private storesSecretView(secrets: SecretStoreApi): StoresSecretHostView {
+    const { projects, mcp, runs } = this.services
+    return {
+      project: (projectId) => projects.get(projectId),
+      libraryEntry: (entryId) => mcp.libraryEntries().find((e) => e.id === entryId),
+      secretKeys: (prefix) => secrets.keys(prefix),
+      secretStatus: (key) => secrets.status(key),
+      pendingProposal: (runId, proposalId) => runs.pendingCards(runId).proposals.find((p) => p.id === proposalId),
+      pendingInstall: (runId, requestId) => {
+        const request = runs.pendingCards(runId).mcpInstalls.find((r) => r.id === requestId)
+        const projectId = runs.summary(runId)?.projectId
+        return request && projectId ? { request, projectId } : undefined
+      },
+      authorizeTarget: (target) => mcp.authorizeTargetKind(target as unknown as McpAuthTarget)
+    }
+  }
+
   private lookup(channel: string): Handler | undefined {
     return typeof channel === 'string' && Object.prototype.hasOwnProperty.call(this.handlers, channel) ? this.handlers[channel] : undefined
   }
+}
+
+/**
+ * A channel whose call changes host state (Wave 7, cli-standalone.md 4.3): a registry request entry with a scope above
+ * 'read' that is not a lifecycle call (host.stop). Desktop-only channels are leased by ipc.ts's own wrapper.
+ */
+export function isMutatingChannel(channel: string): boolean {
+  const entry = channelEntry(channel)
+  if (!entry || entry.direction !== 'request') return false
+  if (entry.scope === 'read' || entry.scope === 'desktop_only') return false
+  return !LIFECYCLE_CHANNELS.has(channel)
 }
 
 /** HostRpcFailure as is; an Error coded with a wire code becomes one; anything else is rethrown unchanged. */
@@ -335,8 +423,8 @@ export function decisionOpts(ctx: InvokeContext, input: { expectedRevision?: num
 }
 
 /**
- * Headless run overrides at the RPC boundary (cli-spec 2 item 2, 6.2(1)). The desktop surface never sets them (the
- * renderer has no such field), so they are dropped there. From a socket / inproc client every widening field needs the
+ * Headless run overrides at the RPC boundary (cli-spec 2 item 2, 6.2(1)). The desktop surface may set only `goal`; the
+ * rest are dropped there. From a socket / inproc client every widening field needs the
  * 'configure' scope ('operate', the channel's own scope, may only narrow): without it the call is refused as
  * scope_denied naming the fields. `allowWidening` tells RunManager whether a widening value may apply.
  */
@@ -345,7 +433,9 @@ export function checkRunOverrides(
   project: Project,
   overrides: RunOverrides | undefined
 ): { overrides?: RunOverrides; allowWidening: boolean } {
-  if (ctx.surface === 'desktop' || !overrides) return { allowWidening: false }
+  if (!overrides) return { allowWidening: false }
+  // The desktop sets only the run goal (it never widens: picks stay inside the roles' ceilings); every other override is dropped.
+  if (ctx.surface === 'desktop') return overrides.goal ? { overrides: { goal: overrides.goal }, allowWidening: false } : { allowWidening: false }
   const configure = !!ctx.grantedScopes?.includes('configure')
   if (!configure) {
     const widening = overridesWidening(project, overrides)
@@ -358,7 +448,13 @@ export function checkRunOverrides(
  * Every request handler registerIpc and its register*Ipc helpers had, moved verbatim (same sync / async shape, same
  * error messages). The first handler argument is the InvokeContext instead of the IpcMainInvokeEvent.
  */
-function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus): Record<string, Handler> {
+/** Dispatcher state a handler may read (never a secret). */
+interface DispatcherState {
+  /** RPC calls between their predicate-driven prepareWrite() and the end of their handler (HostDispatcher.invokeRpc). */
+  secretWritesInFlight(): number
+}
+
+function buildHandlers(services: HostServices, env: HostDispatchEnv, events: HostEventBus, quiesced: AbortSignal, state: DispatcherState): Record<string, Handler> {
   const table: Record<string, Handler> = Object.create(null) as Record<string, Handler>
   const handle = (channel: string, fn: Handler): void => {
     table[channel] = fn
@@ -367,6 +463,11 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   const mock = adapterIds.includes('mock')
   // Always served: without a usage monitor the answer is null (nothing to refresh).
   handle(IPC.usageRefresh, () => usage?.refresh() ?? Promise.resolve(null))
+  // app:reference (read scope): the user and terminal clients may see the secret-free status snapshot.
+  handle(IPC.appReference, (_e, raw: unknown) => {
+    const q = appReferenceArgs(raw)
+    return services.reference ? services.reference.query(q, { status: true }) : Promise.resolve({ text: 'The reference is not available in this host.' })
+  })
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
    * projects:list. The Chat's display project has no roles and creates no directory.
@@ -444,7 +545,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.draftOrgChart, async (_e, req: DraftRequest) => {
     const project = projects.get(req.projectId)
     if (!project) throw new Error('Project not found')
-    return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)))
+    // Stopped by the drain's quiesce (HostDispatcher.quiesce), so Quit never waits on the model.
+    return draftOrgChart(runs.adapterFor(project), project, req, connections.importModelContext(projectConnection(project)), quiesced)
   })
 
   handle(IPC.runsStart, async (ctx, raw: unknown) => {
@@ -452,13 +554,22 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const project = projects.get(input.projectId)
     if (!project) throw new Error('Project not found')
     const o = checkRunOverrides(ctx, project, input.overrides)
+    // Per-run root choices are the desktop's alone: any other surface that sends one is refused (fail closed), never ignored.
+    const choice: StartUserChoice = {
+      ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.permissionMode ? { permissionMode: input.permissionMode } : {})
+    }
+    const chosen = Object.keys(choice)
+    if (chosen.length && ctx.surface !== 'desktop') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app only: ${chosen.join(', ')}.`)
     return runs.start({
       project,
       prompt: input.prompt,
       scaffold: input.scaffold,
       images: input.images,
       ...(input.team === 'single' ? { team: 'single' as const } : {}),
-      ...(o.overrides ? { overrides: o.overrides, allowWidening: o.allowWidening } : {})
+      ...(o.overrides ? { overrides: o.overrides, allowWidening: o.allowWidening } : {}),
+      ...(chosen.length ? { userChoice: choice } : {})
     })
   })
   handle(IPC.runsGet, (_e, runId: string) => runs.get(runId))
@@ -503,7 +614,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       project,
       kind: 'setup',
       prompt: setup.retroPrompt(record),
-      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record)}`
+      hiddenContext: `${setup.hiddenContext(project)}\n\n${setup.retroContext(record, project)}`
     })
   })
   handle(
@@ -526,9 +637,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     // Setup runs re-profile the repo like setup:start so the Architect's hidden context is current.
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
     // Headless fields only from socket / inproc clients; overrides are checked against the project the run continues as.
-    if (ctx.surface === 'desktop' || (!input.overrides && input.exec === undefined)) {
-      return runs.continueRun(project, input.runId, input.text, input.images)
-    }
+    if (ctx.surface === 'desktop') return runs.continueRun(project, input.runId, input.text, input.images, { desktop: true })
+    if (!input.overrides && input.exec === undefined) return runs.continueRun(project, input.runId, input.text, input.images)
     const o = checkRunOverrides(ctx, project, input.overrides)
     return runs.continueRun(project, input.runId, input.text, input.images, {
       ...(o.overrides ? { overrides: o.overrides } : {}),
@@ -536,7 +646,13 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       allowWidening: !!ctx.grantedScopes?.includes('configure')
     })
   })
-  handle(IPC.runsResumeNow, (_e, runId: string) => runs.resumeNow(runId))
+  handle(IPC.runsResumeNow, (ctx, runId: string) => (ctx.surface === 'desktop' ? runs.resumeNow(runId, { desktop: true }) : runs.resumeNow(runId)))
+  handle(IPC.runsSwitchModel, (_e, raw: unknown) => runs.switchModel(raw as import('@shared/types').SwitchRunModelInput))
+  // Desktop only: the registry scope ('configure') only gates the params; this refusal comes first, before any parsing.
+  handle(IPC.runsSetPermissionMode, (ctx, raw: unknown) => {
+    if (ctx.surface !== 'desktop') throw new HostRpcFailure('scope_denied', "Changing a run's permission mode is available in the desktop app only.")
+    return runs.setPermissionMode(setPermissionModeArgs(raw))
+  })
   handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))
   handle(
     IPC.setupAnswer,
@@ -570,6 +686,22 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     if (!project) throw new Error('Project not found')
     return runs.usageCsv(q, { project: project.name, client: project.client ?? '' })
   })
+  /** Project and connection names for the app-wide usage overview (stored projects read as they are now). */
+  const usageNames = (): UsageOverviewNames => {
+    const view = connections.effectiveSettings()
+    return {
+      project: (id) => {
+        if (isVirtualProjectId(id)) return { name: VIRTUAL_PROJECT_LABELS[id], kind: 'assistant' }
+        const p = projects.get(id)
+        if (!p) return null
+        const kind = projectKindOf(p)
+        return kind === 'engagement' && typeof p.client === 'string' && p.client ? { name: p.name, kind, client: p.client } : { name: p.name, kind }
+      },
+      connection: (id) => (isKnownConnection(view, id) ? connectionName(id, view) : 'Removed proxy')
+    }
+  }
+  handle(IPC.runsUsageOverview, (_e, query?: UsageOverviewQuery): UsageOverview => runs.usageOverview(query, usageNames()))
+  handle(IPC.runsUsageOverviewCsv, (_e, query?: UsageOverviewQuery): string => runs.usageOverviewCsv(query, usageNames()))
   registerTemplateEngagementIpc(handle, { projects, templates, dataDir: settings.dataDir, events })
   registerKnowledgeIpc(handle, { projects, dataDir: settings.dataDir, events })
   handle(IPC.windowOpenRun, (_e, input: FocusRunTarget): void => {
@@ -617,7 +749,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       }
     }
     // Only the AuthStatusResult fields cross IPC.
-    const s = await claudeAuthStatus()
+    const s = await claudeAuthStatus({ dataDir: settings.dataDir, signal: quiesced })
     return { loggedIn: s.loggedIn, method: s.method, detail: s.detail, mode: 'subscription' }
   })
 
@@ -671,6 +803,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerCapabilityIpc(handle, capabilities)
   if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
   if (kit) registerKitBundleIpc(handle, kit)
+  registerSecretsIpc(handle, services.secrets, mcp, state)
+  registerOutputsHandlers(handle, { outputs: services.outputs, projects, events, dataDir: settings.dataDir, runs, watcher: services.outputWatcher })
 
   // ---- Host protocol methods the dispatcher answers (socket only; runs:subscribe / host.subscribe are transport) ----
   handle(HOST_METHODS.hostStatus, () => {
@@ -879,7 +1013,7 @@ function registerCapabilityIpc(handle: Register, capabilities: CapabilityService
 /** Connections, model catalog and remaps: ConnectionService 1:1. */
 function registerConnectionIpc(handle: Register, projects: ProjectStore, connections: ConnectionService): void {
   handle(IPC.connectionsSetDefault, (_e, raw: unknown): Promise<ConnectionInfo[]> => {
-    if (raw !== null && !(typeof raw === 'string' && (CONNECTION_IDS as readonly string[]).includes(raw))) throw new Error('Unknown connection')
+    if (raw !== null) connectionIdArg(raw)
     return connections.setDefault(raw as ConnectionId | null)
   })
   handle(IPC.connectionsList, (): Promise<ConnectionInfo[]> => connections.list())
@@ -889,6 +1023,8 @@ function registerConnectionIpc(handle: Register, projects: ProjectStore, connect
     return connections.update(connection)
   })
   handle(IPC.connectionsSetSecret, (_e, input: unknown): Promise<ConnectionInfo> => connections.setSecret(connectionSecretArgs(input)))
+  handle(IPC.connectionsCreateProxy, (_e, input: unknown): Promise<ConnectionInfo> => connections.createProxy(proxyCreateArgs(input)))
+  handle(IPC.connectionsRemoveProxy, (_e, id: unknown): Promise<ProxyRemoveResult> => connections.removeProxy(proxyIdArg(id)))
   handle(IPC.connectionsTest, (_e, id: unknown): Promise<ConnectionStatus> => connections.test(connectionIdArg(id)))
   handle(IPC.connectionsConnect, (_e, id: unknown): Promise<ConnectionInfo> => connections.connect(connectionIdArg(id)))
   handle(IPC.connectionsLogin, (_e, id: 'openai', method?: ConnectionLoginMethod): Promise<ConnectionLoginStart> =>
@@ -900,7 +1036,7 @@ function registerConnectionIpc(handle: Register, projects: ProjectStore, connect
   handle(IPC.modelsRefresh, (_e, query?: unknown): Promise<ProviderModel[]> => connections.refresh(modelsQueryArg(query)))
   handle(IPC.modelsPrices, (_e, query?: ModelPricesQuery): ModelPriceInfo[] => {
     const connection = query && typeof query === 'object' ? query.connection : undefined
-    if (connection !== undefined && !CONNECTION_IDS.includes(connection)) throw new Error('Unknown connection')
+    if (connection !== undefined) connectionIdArg(connection)
     return connections.prices(connection ? { connection } : undefined)
   })
   handle(IPC.projectsRemapModels, (_e, input: RemapModelsInput): RemapModelsOutput => {
@@ -978,6 +1114,38 @@ function registerMcpIpc(
 
 
 /**
+ * secrets:* (Wave 7, cli-standalone.md 5.6, 5.7) over the host's SecretStore: inputs rebuilt by secretsArgs.ts, never a
+ * secret value either way. secrets:reset is refused while an MCP sign-in, a token refresh or a predicate-prepared secret
+ * write (invokeRpc) is in flight (the store itself refuses while one of its own writes is, and takes its write queue for
+ * the move).
+ */
+function registerSecretsIpc(
+  handle: Register,
+  secrets: SecretStoreApi | undefined,
+  mcp: Partial<Pick<McpService, 'activeAuthorizationCount' | 'refreshingCount'>>,
+  state: DispatcherState
+): void {
+  const store = (): SecretStoreApi => {
+    if (!secrets) throw new HostRpcFailure('bad_request', 'This OrgAI host has no secret store.')
+    return secrets
+  }
+  handle(SECRETS_IPC.secretsStatus, (_e, input?: unknown): Promise<SecretsStatusResult> => store().statusReport(secretsStatusArgs(input)))
+  handle(SECRETS_IPC.secretsInit, (_e, input?: unknown): Promise<SecretsInitResult> => store().initVault(secretsInitArgs(input)))
+  handle(SECRETS_IPC.secretsReset, (_e, input: unknown): Promise<SecretsResetResult> => {
+    const i = secretsResetArgs(input)
+    const s = store()
+    // 5.6 Reset: refused while an OAuth flow, a token refresh or a secret write is in flight (a call whose storesSecret
+    // predicate prepared the vault and whose handler has not settled yet); the store refuses while its own writes are.
+    if ((mcp.activeAuthorizationCount?.() ?? 0) > 0 || (mcp.refreshingCount?.() ?? 0) > 0 || state.secretWritesInFlight() > 0) {
+      throw new Error(VAULT_MESSAGES.resetBusy)
+    }
+    return s.resetVault(i)
+  })
+  handle(SECRETS_IPC.secretsUndelete, (_e, input: unknown): SecretsUndeleteResult => store().undelete(secretsUndeleteArgs(input)))
+  handle(SECRETS_IPC.secretsConfirmDelete, (_e, input: unknown): SecretsConfirmDeleteResult => store().confirmDeletes(secretsConfirmDeleteArgs(input)))
+}
+
+/**
  * kit:*Bundle (socket only, cli-spec 3.6): the kit's bytes travel with the call as base64, so no main-process file
  * dialog is involved; the inputs are rebuilt by kit/service.ts. The dialog-backed kit channels stay in ipc.ts.
  */
@@ -986,8 +1154,16 @@ function registerMcpIpc(
  * undo, enable, commit) are desktop only and live in ipc.ts. No service = the channels are not served.
  */
 function registerTeamFilesIpc(handle: Register, svc: TeamFilesService): void {
-  handle(TEAM_FILES_IPC.teamFilesStatus, async (_e, input: unknown): Promise<TeamFilesStatus> => svc.withGit(svc.status(teamFilesArgs(input).projectId)))
-  handle(TEAM_FILES_IPC.teamFilesListAttention, async (): Promise<TeamFilesStatus[]> => Promise.all(svc.listAttention().map((s) => svc.withGit(s))))
+  handle(TEAM_FILES_IPC.teamFilesStatus, async (_e, input: unknown): Promise<TeamFilesStatus> => svc.statusWithGit(teamFilesArgs(input).projectId))
+  // With undo open, what Undo would bring back (read-only; the terminal's /approvals and `team files status` show it).
+  handle(TEAM_FILES_IPC.teamFilesListAttention, async (): Promise<TeamFilesStatus[]> =>
+    Promise.all(
+      svc.listAttention().map((s) => {
+        const back = s.undo ? svc.undoChanges(s.projectId) : []
+        return svc.withGit(back.length ? { ...s, undoChanges: back } : s)
+      })
+    )
+  )
 }
 
 function registerKitBundleIpc(handle: Register, kit: KitService): void {

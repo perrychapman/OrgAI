@@ -10,6 +10,38 @@
   grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
 }
 
+/*
+ * Sidebar full <-> rail glide (docs/design/motion.md 3.5). App sets data-sidebar-motion only for a user toggle
+ * (Ctrl/Cmd+B, the buttons), so the first layout, the 1180 px breakpoint, a window resize and a ResizeHandle drag
+ * never transition. While it moves the sidebar is clipped and its content keeps the full width, so nothing wraps;
+ * a collapse keeps the full content until the column has arrived (lib/useSidebarCollapsed contentIsRail), an expand
+ * fades the labels in after the column has started to open.
+ */
+.app[data-sidebar-motion] {
+  transition: grid-template-columns var(--dur-slow) var(--ease-in-out);
+}
+html[data-resizing] .app {
+  transition: none;
+}
+.app[data-sidebar-motion] .sidebar {
+  overflow: hidden;
+}
+.app[data-sidebar-motion] .sidebar > :not(.resize-handle) {
+  min-width: var(--sidebar-w);
+}
+.app[data-sidebar-motion='expanding'] .sidebar :is(.sidebar-label, .nav-text, .nav-client-header, .nav-client-label, .brand-lockup-word, .account-label) {
+  animation: motion-fade var(--dur-fade) var(--ease-out) var(--dur-fast) backwards;
+}
+
+/* Project view root: keyed by the view; .motion-view only after a user tab change (App.tsx). */
+.view-root {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Sidebar and topbar sit on --surface-1; the one 1 px --border-default is on the edge that touches --surface-0. */
 .sidebar {
   position: relative;
@@ -53,6 +85,9 @@
   cursor: pointer;
   text-align: left;
   width: 100%;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 .nav-item:hover {
   background: var(--surface-2);
@@ -78,7 +113,7 @@
 .nav-item .dot.is-running {
   background: var(--success);
   box-shadow: var(--halo-dot-live);
-  animation: breathe 1.6s ease-in-out infinite;
+  animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
 }
 .nav-item .dot.warn {
   background: var(--warning);
@@ -112,7 +147,7 @@
 .nav-item.needs-row {
   color: var(--text-primary);
 }
-.nav-item.needs-row > svg:first-child {
+.nav-item.needs-row > .needs-bell {
   color: var(--warning-text);
 }
 .nav-rail-count {
@@ -187,6 +222,9 @@
   font-size: var(--text-small);
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 .nav-run:hover {
   background: var(--surface-2);
@@ -283,6 +321,9 @@
   font-size: var(--text-small);
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 .account-row:hover {
   background: var(--surface-2);
@@ -448,7 +489,7 @@
 }
 .pill.is-running .dot {
   background: var(--success);
-  animation: breathe 1.4s ease-in-out infinite;
+  animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
 }
 .pill.idle .dot {
   background: var(--info);
@@ -458,9 +499,15 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .pill.live .dot,
+  .pill.is-running .dot,
   .nav-item .dot.is-running {
     animation: none;
   }
+}
+:root[data-reduce-motion='on'] .pill.live .dot,
+:root[data-reduce-motion='on'] .pill.is-running .dot,
+:root[data-reduce-motion='on'] .nav-item .dot.is-running {
+  animation: none;
 }
 
 .main {
@@ -573,6 +620,41 @@
   }
 }
 
+/* Underline tabs (components/ui/Tabs.tsx): one indicator slides to the selected tab (docs/design/motion.md 3.3).
+   It replaces the static ::after underline once measured (data-ready); first paint and a resize snap. */
+.tabs-list {
+  position: relative;
+}
+.tabs-indicator {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 2px;
+  background: var(--gradient-ui);
+  transform-origin: 0 0;
+  transform: translateX(var(--tab-x, 0px)) scaleX(var(--tab-w, 0));
+  pointer-events: none;
+}
+.tabs-list[data-ready] .tabs-tab[aria-selected='true']::after {
+  content: none;
+}
+.tabs-list[data-ready]:not([data-snap]) .tabs-indicator {
+  transition: transform var(--dur-slow) var(--ease-in-out);
+}
+
+/* Needs-you bell cue (docs/design/motion.md 3.9): the ring sits on the bell, the ping on the count. */
+.needs-bell {
+  display: inline-grid;
+  flex: none;
+  border-radius: var(--radius-full);
+}
+.needs-count {
+  display: inline-block;
+  align-self: flex-start;
+  transform-origin: left center;
+}
+
 .tabs {
   display: inline-flex;
   background: var(--surface-2);
@@ -633,6 +715,13 @@
 }
 .nav-client-header > svg {
   flex: none;
+}
+/* One chevron that turns (Down open, Right closed); the rows stay mounted inside .motion-collapse. */
+.nav-client-header > svg:first-child {
+  transition: rotate var(--dur-fast) var(--ease-out);
+}
+.nav-client-header[aria-expanded='false'] > svg:first-child {
+  rotate: -90deg;
 }
 .nav-client-count {
   flex: none;

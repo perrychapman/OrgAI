@@ -3,7 +3,7 @@ import { teamAttentionItems, type TeamAttentionItem } from './teamFiles'
 import { EMPTY_MENU_STATE, isMenuAction, isVirtualProjectId, type MenuAction, type MenuState } from '@shared/types'
 import { isRunLive, openNewChat, openNewProject, useAppStore, type RunState } from '../store/useAppStore'
 import { menuHandlerFor, runMenuAction } from './menuRegistry'
-import { offersSaveAsProject } from './assistants'
+import { assistantLabel, offersSaveAsProject } from './assistants'
 import { waitingItems } from './needsYou'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestSkillLibrary } from './settingsTarget'
 import { toggleSidebar } from './useSidebarCollapsed'
@@ -92,7 +92,7 @@ function anyDecision(runs: Record<string, RunState>, team: readonly TeamAttentio
 /** What the window shows, as the five booleans main needs to grey out menu items. */
 export function menuStateFor(s: MenuSource): MenuState {
   const pid = s.selectedProjectId
-  const hasProject = !!pid && s.view !== 'projects' && s.view !== 'appSettings' && (isVirtualProjectId(pid) || s.projects.some((p) => p.id === pid))
+  const hasProject = !!pid && s.view !== 'projects' && s.view !== 'appSettings' && s.view !== 'usage' && (isVirtualProjectId(pid) || s.projects.some((p) => p.id === pid))
   const run = hasProject ? viewedRunOf(s) : undefined
   return {
     hasProject,
@@ -282,7 +282,40 @@ function fallback(action: MenuAction): string | void {
     case 'canvas-zoom-in':
     case 'canvas-zoom-out':
       return NO_CANVAS
+    case 'ask-about-orgai':
+      return void askOrgAI()
+    case 'show-usage':
+      st.openUsage({})
+      announceMenu(usageMenuAnnouncement(st))
+      return
   }
+}
+
+/** "Usage, all projects." unless the page keeps a project narrowing: then the name, or the count (L4). */
+export function usageMenuAnnouncement(st: { usageFilters: { projectIds: readonly string[] }; projects: readonly { id: string; name: string }[] }): string {
+  const ids = st.usageFilters.projectIds
+  if (ids.length === 0) return 'Usage, all projects.'
+  if (ids.length === 1) {
+    const id = ids[0]!
+    const name = isVirtualProjectId(id) ? assistantLabel(id) : (st.projects.find((p) => p.id === id)?.name ?? 'one project')
+    return `Usage, ${name}.`
+  }
+  return `Usage, ${ids.length} projects.`
+}
+
+/** The seed Help > Ask OrgAI about itself puts in a fresh Chat (UX rec 2: a start, not a full question). */
+export const ASK_ORGAI_SEED = 'How do I '
+
+/**
+ * Help > Ask OrgAI about itself, the About pane's and the shortcuts dialog's "Ask OrgAI": a fresh Chat start page with
+ * the seed in the instruction field and focus there (the start page selects nothing, the caret sits after the seed).
+ */
+export async function askOrgAI(): Promise<void> {
+  closeKeyboardShortcuts()
+  await useAppStore.getState().openAssistant('quick', { instruction: ASK_ORGAI_SEED, fresh: true })
+  // After the dialog's own focus return (review L6).
+  await new Promise<void>((r) => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => r()) : setTimeout(r, 0)))
+  useAppStore.getState().focusComposer()
 }
 
 /** Routes one menu action; ignores unknown names and never throws. */
@@ -299,32 +332,10 @@ export function routeMenuAction(action: unknown): void {
 
 export { runMenuAction }
 
-// ---- keyboard shortcuts table (the dialog reads this one table) ----
+// ---- keyboard shortcuts table (the dialog and the app atlas read this one shared table) ----
 
-export interface ShortcutDef {
-  group: 'General' | 'Runs' | 'Canvas'
-  label: string
-  /** Alternatives; each is the keys pressed together. 'Mod' is Ctrl, or Cmd on a Mac. */
-  combos: string[][]
-  /** Extra condition, shown as a caption. */
-  note?: string
-}
-
-export const SHORTCUTS: readonly ShortcutDef[] = [
-  { group: 'General', label: 'New project', combos: [['Mod', 'N']] },
-  { group: 'General', label: 'New chat', combos: [['Mod', 'Shift', 'N']] },
-  { group: 'General', label: 'App settings', combos: [['Mod', ',']] },
-  { group: 'General', label: 'Collapse or expand the sidebar', combos: [['Mod', 'B']] },
-  { group: 'General', label: 'Live, History, Team, Project settings', combos: [['Mod', '1'], ['Mod', '2'], ['Mod', '3'], ['Mod', '4']] },
-  { group: 'Runs', label: 'New run', combos: [['Mod', 'T']] },
-  { group: 'Runs', label: 'Close tab', combos: [['Mod', 'W']] },
-  { group: 'Runs', label: 'Go to decision', combos: [['Mod', '.'], ['Alt', 'D']] },
-  { group: 'Runs', label: 'Open the tab menu', combos: [['Shift', 'F10']], note: 'on a focused tab' },
-  { group: 'Runs', label: 'Hide a finished tab', combos: [['Delete']], note: 'on a focused tab' },
-  { group: 'Canvas', label: 'Zoom in', combos: [['+']], note: 'with the canvas focused' },
-  { group: 'Canvas', label: 'Zoom out', combos: [['-']], note: 'with the canvas focused' },
-  { group: 'Canvas', label: 'Fit to view', combos: [['0']], note: 'with the canvas focused' }
-]
+export { SHORTCUTS } from '@shared/view/shortcuts'
+export type { ShortcutDef } from '@shared/view/shortcuts'
 
 export function isMacPlatform(): boolean {
   if (typeof navigator === 'undefined') return false

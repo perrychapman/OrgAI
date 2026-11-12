@@ -139,6 +139,27 @@ function stdio(command: string, args: string[], over: Partial<McpServerSpec> = {
   return { id: 'm1', name: 'srv', transport: 'stdio', command, args, enabled: true, source: 'user', addedAt: '', ...over }
 }
 
+describe('variable references (review 2)', () => {
+  const ref = '$' + '{ORGAI_MCP_OTHER_TOKEN}'
+  const refused = (field: string): string => `${field} contains "$` + `{"; OrgAI does not pass variable references to servers.`
+  it('refuses a variable reference in plain args, command, env and header values and the url', () => {
+    expect(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3', `--k=${ref}`]))).toContain(refused('Argument 3'))
+    expect(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3'], { env: { MODE: ref } }))).toContain(refused('Environment variable "MODE"'))
+    expect(validateSpec(stdio(`run-${ref}`, ['x']))).toContain(refused('The command'))
+    const http: McpServerSpec = { id: 'm2', name: 'web', transport: 'http', url: `https://example.com/${ref}`, headers: { 'X-Mode': ref }, enabled: true, source: 'user', addedAt: '' }
+    const errors = validateSpec(http)
+    expect(errors).toContain(refused('The URL'))
+    expect(errors).toContain(refused('Header "X-Mode"'))
+  })
+  it('a dollar sign without a brace is fine, and secret slots carry no value to check', () => {
+    expect(validateSpec(stdio('npx', ['-y', 'pkg@1.2.3', '--price=$5'], { secretEnv: ['TOKEN'] }))).toEqual([])
+  })
+  it('refuses it in a per-project override', () => {
+    expect(() => cleanOverrides({ A: ref }, ['A'], 'env')).toThrow(/does not pass variable references/)
+    expect(() => cleanOverrides({ H: ref }, ['H'], 'header')).toThrow(/does not pass variable references/)
+  })
+})
+
 describe('validateSpec hidden characters', () => {
   const hidden = (errors: string[], field: string, code: string): boolean => errors.some((e) => e.startsWith(`${field} contains a hidden character (${code}`))
 
