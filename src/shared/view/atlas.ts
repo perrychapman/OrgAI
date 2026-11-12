@@ -1374,7 +1374,9 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
     summary: 'Your own per-model prices; they win over every other price source.',
     surface: 'app-settings-connections-model-prices',
     control: 'user'
-  }
+  },
+  // PLACEHOLDER (Schedules contract): the renderer engineer points this at the Schedules surface. Never proposable.
+  schedulesPaused: { summary: 'Pause every schedule at once. Nothing fires while it is on.', surface: 'none', control: 'user' }
 }
 
 export const PROJECT_SETTING_DOCS: Readonly<Record<keyof Project, AtlasSettingDoc>> = {

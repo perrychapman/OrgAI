@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { IPC, TEAM_FILES_IPC, type RunEvent } from '../../shared/types'
+import { IPC, SCHEDULES_IPC, TEAM_FILES_IPC, type RunEvent } from '../../shared/types'
 import { HOST_PUSH_CHANNELS, HostEventBus } from './events'
 import { PUSH_CHANNELS } from './jsonCodec'
 
@@ -79,7 +79,7 @@ describe('HostEventBus', () => {
 
 describe('HOST_PUSH_CHANNELS', () => {
   it('plus the five window-targeted channels equals every push channel', () => {
-    expect(new Set([...HOST_PUSH_CHANNELS, IPC.appFocusRun, IPC.menuAction, IPC.projectsCloneProgress, TEAM_FILES_IPC.teamFilesChanged, IPC.appNavigate])).toEqual(new Set(PUSH_CHANNELS))
+    expect(new Set([...HOST_PUSH_CHANNELS, IPC.appFocusRun, IPC.menuAction, IPC.projectsCloneProgress, TEAM_FILES_IPC.teamFilesChanged, IPC.appNavigate, SCHEDULES_IPC.schedulesChanged])).toEqual(new Set(PUSH_CHANNELS))
     expect(HOST_PUSH_CHANNELS).toHaveLength(9)
     expect(HOST_PUSH_CHANNELS).not.toContain(IPC.appFocusRun)
     expect(HOST_PUSH_CHANNELS).not.toContain(IPC.menuAction)

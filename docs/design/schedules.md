@@ -34,7 +34,12 @@ Scope of v1: the desktop app only, and only while the app is running (window ope
 
 ## 3. Shared contract (`src/shared/types.ts` section "Schedules", `src/shared/schedule.ts` pure helpers)
 
-All types are structured-clone safe. Append the section at the end of types.ts; `SCHEDULES_IPC` is spread into `IPC`.
+All types are structured-clone safe. The section is at the end of types.ts. `SCHEDULES_IPC` is NOT spread into `IPC` (IPC is
+declared earlier in the file and a const cannot be read before it is initialised); like `OUTPUTS_IPC` it is listed
+separately in `jsonCodec.allChannels`, the registry and the tests. Landed (2026-11-12): the code below plus
+`SCHEDULE_NAME_MAX_CHARS` 80, `SCHEDULE_PROMPT_MAX_CHARS` 8,000, `SCHEDULE_CRON_MAX_CHARS` 120, `LIST_SCHEDULES_TOOL`,
+`PROPOSE_SCHEDULE_TOOL`, `ScheduleProposalItem`, `SchedulesProposalPayload` and `OrgAIApi.schedules` / `onSchedulesChanged`.
+`'show-schedules'` is not yet in `MENU_ACTIONS` (adding it forces menu and renderer behaviour; the renderer engineer adds it).
 
 ```ts
 export type ScheduleTiming =
@@ -142,8 +147,16 @@ recorded as skipped `paused-globally` (one entry per schedule per pause, not one
   ("Every day at 00:00", "Weekdays at 09:30", "Every 2 hours", "Once on 14 Nov 2026 at 08:00", "Cron: 0 0 * * 1").
 - `parseCron(expression)` - hand-written, 5 fields, `*`, lists, ranges, steps; day-of-month and day-of-week combine
   like Vixie cron (either matches when both are restricted). No dependency is added.
-- `cleanScheduleInput(input)` - shape and limit checks shared by IPC and the proposal tool; returns the problem or the
-  cleaned value. `SCHEDULE_PERMISSION_MODES` = every PermissionMode except 'bypassPermissions'.
+- `cleanScheduleInput(input: unknown)` - shape and limit checks shared by IPC and the proposal tool; returns
+  `{ ok: true, value: ScheduleSaveInput }` or `{ ok: false, problem }`. It rebuilds from known fields (main-owned fields
+  are dropped), trims name and prompt, refuses hidden characters (`view/hiddenChars.hasHidden`; the name also any control
+  character) and keeps `null` on the clearable fields. It does not know projects, folders, models or the clock.
+  `parseCron` returns `{ ok, cron } | { ok: false, problem }`. `SCHEDULE_PERMISSION_MODES` = every PermissionMode except
+  'bypassPermissions'.
+- `interval` slots are `anchor + k * everyMinutes` for k >= 1 (the anchor, the save time, is not itself a slot); without
+  an anchor the first slot is `after + everyMinutes`. `nextScheduleRun` also searches strictly after `lastSlotAt`.
+- `scheduleTimingProblem` also refuses a cron that never matches a date (`0 0 31 2 *`), judged over a fixed four-year
+  calendar; `nextScheduleRun` returns null for it. It does not look at the clock, so a `once` in the past is main's check.
 
 ### IPC (`SCHEDULES_IPC`; preload `window.orgai.schedules`)
 
@@ -157,8 +170,12 @@ recorded as skipped `paused-globally` (one entry per schedule per pause, not one
 | `schedules:runNow` | (scheduleId) -> ScheduleHistoryEntry (trigger 'manual'; works while paused; overlap rule applies) | operate, desktop only |
 | `schedules:changed` | push SchedulesChangedEvent to every window | |
 
-Every write channel rebuilds its input through `cleanScheduleInput` and refuses unknown ids. On the CLI's in-process
-host the write channels and runNow are refused (desktop only) and nothing ticks.
+Every write channel rebuilds its input through `cleanScheduleInput` and refuses unknown ids. "Desktop only" means: the
+registry scope is `configure` / `operate` (it only gates the params) and the dispatcher handler refuses any surface but
+`'desktop'` with `scope_denied`, like `runs:setPermissionMode`; so a socket client and the CLI's in-process host cannot
+save, remove, enable or run a schedule, and nothing ticks there. `schedules:changed` is a desktop-only push (registry).
+Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,128}$`), `save` / `setEnabled` an object.
+`schedules:save` lists `modelSelection`, `permissionMode`, `budgetUsd` and `expiresAt` as nullable in the JSON codec.
 
 ## 4. Main (`src/main/schedules/`)
 

@@ -9,7 +9,7 @@
  *
  * Electron-free; relative imports only. Only registry.ts (and its tests) read these.
  */
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
 import type { ParamSpec } from './registry'
 
 /** Ids from the renderer (newId() output, virtual project ids, older hand-made ids): windowScope.ts ID_PATTERN. */
@@ -169,6 +169,14 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [OUTPUTS_IPC.outputsWatch]: OBJECT,
   [OUTPUTS_IPC.outputsUnwatch]: OBJECT,
   [OUTPUTS_IPC.outputsSaveImage]: OBJECT,
+
+  // ---- SCHEDULES_IPC ---- (cleanScheduleInput rebuilds save; the id arguments are rechecked against the store)
+  [SCHEDULES_IPC.schedulesList]: NONE,
+  [SCHEDULES_IPC.schedulesHistory]: ID,
+  [SCHEDULES_IPC.schedulesSave]: OBJECT,
+  [SCHEDULES_IPC.schedulesRemove]: ID,
+  [SCHEDULES_IPC.schedulesSetEnabled]: OBJECT,
+  [SCHEDULES_IPC.schedulesRunNow]: ID,
 
   // ---- permissions ----
   [IPC.permissionsList]: ID,

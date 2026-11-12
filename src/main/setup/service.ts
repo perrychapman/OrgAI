@@ -345,6 +345,9 @@ export class SetupService {
       case 'appSettings':
         // App-wide settings are not a project's: RunManager applies them through RunManagerOptions.selfKnowledge.
         throw new Error('App settings proposals do not change a project.')
+      case 'schedules':
+        // PLACEHOLDER (Schedules contract landing): the main-process engineer applies these through ScheduleService.applyProposal.
+        throw new Error('Schedule proposals are not available yet.')
     }
   }
 

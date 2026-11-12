@@ -48,7 +48,9 @@ const APPLY_NOTE: Record<Proposal['kind'], string> = {
   mcpServers: 'Approving saves these MCP servers to the project. Secrets are stored encrypted.',
   // The skills card picks its own note by scope (skillsApplyNote).
   skills: 'Approving writes these skills to this project and grants them to the listed roles.',
-  appSettings: 'Approving changes these app settings for every project.'
+  appSettings: 'Approving changes these app settings for every project.',
+  // PLACEHOLDER (Schedules contract landing): the renderer engineer replaces this with the schedules card body and note.
+  schedules: 'Schedule proposals are not available yet.'
 }
 
 /** Helper line of the skills card: library-only proposals write to the library, any project item writes to the project. */
