@@ -1,7 +1,7 @@
 {
   "name": "orgai",
   "productName": "OrgAI",
-  "version": "0.1.7-dev1",
+  "version": "0.1.7",
   "description": "A provider-agnostic harness that runs a project's org chart of AI agents and visualizes the work live.",
   "license": "MIT",
   "author": "Cybrid Software LLC",
