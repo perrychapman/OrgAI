@@ -296,6 +296,11 @@ export interface NudgeInput {
   lastReadySignature?: string
   /** An agent's compactions stopped the automatic continues (compactionThrash) until the user replies. */
   compactionThrash?: boolean
+  /**
+   * The turn that just ended was a pure direct answer: the root made no tool call, started no report and owes no
+   * required delegation. With no plan, the turn-1 set-plan nudge is skipped (nothing to plan). Missing = false.
+   */
+  directAnswerOnly?: boolean
 }
 
 export interface NudgeDecision {
@@ -352,6 +357,7 @@ export function nextNudge(input: NudgeInput): NudgeDecision {
   }
   if (blocked) return { kind: 'none' }
   const { plan } = input
+  if (!plan && input.directAnswerOnly && input.turnsWithoutPlan === 1 && input.liveReports === 0 && input.pendingInteractions === 0) return { kind: 'none' }
   if (!plan) return input.turnsWithoutPlan === 1 ? { kind: 'set-plan', text: SET_PLAN_NUDGE, summary: SET_PLAN_SUMMARY } : { kind: 'none' }
   if (plan.status !== 'active') return { kind: 'none' }
   if (plan.autoContinues >= Math.max(0, input.maxAutoContinues)) return { kind: 'none', limitReached: true }
@@ -393,6 +399,11 @@ export interface ContinuationHost {
   projectKind?: ProjectKind
   getPlan(): RunPlan | undefined
   updatePlan(plan: RunPlan): Promise<void>
+  /**
+   * True when the root's turn that just ended was a pure direct answer: zero tool calls, and the root has no required
+   * delegation (obligationsFor empty for it). Optional; missing = false, so every turn-1 plan-less turn is nudged.
+   */
+  directAnswerTurn?(): boolean
   liveReports(): number
   /**
    * Agent slots free now and the project's concurrency limit. Optional: without it the `ready` nudge never fires.
@@ -446,6 +457,8 @@ export class ContinuationDriver {
   /** The newest generation evaluated without a nudge (or skipped); -1 = none yet, or unsettled by a user message. */
   private lastEvaluatedTurnGen = -1
   private setPlanNudgeSent = false
+  /** Turn 1 ended as a pure direct answer and the set-plan nudge was skipped for it. */
+  private directAnswerSettled = false
   /** Signature of the last ready set a `ready` nudge was sent for. */
   private lastReadySignature: string | undefined
   /** Per agent id: compactions since the plan last progressed (noteCompaction). */
@@ -462,7 +475,8 @@ export class ContinuationDriver {
 
   /** The turn-1 set-plan nudge was sent in this session. */
   get nudgeTurn1Sent(): boolean {
-    return this.setPlanNudgeSent
+    // A direct answer needs no set-plan nudge, so the exec rule "nudge before an unplanned end" is met without one.
+    return this.setPlanNudgeSent || this.directAnswerSettled
   }
 
   /** The generation of the newest root turn end the driver heard of. */
@@ -542,6 +556,7 @@ export class ContinuationDriver {
   userMessage(): void {
     this.cancel()
     this.held = false
+    this.directAnswerSettled = false
     this.thrashStopped = false
     this.compactionTracks.clear()
     this.lastEvaluatedTurnGen = -1
@@ -605,6 +620,7 @@ export class ContinuationDriver {
       stopping: this.held || this.host.stopping(),
       turnsWithoutPlan: this.turnsWithoutPlan,
       orchestratorBusy: this.host.orchestratorBusy(),
+      ...(this.host.directAnswerTurn?.() ? { directAnswerOnly: true } : {}),
       ...(this.host.slots ? { slots: this.host.slots() } : {}),
       ...(this.host.ownRoles ? { ownRoles: this.host.ownRoles() } : {}),
       ...(this.lastReadySignature !== undefined ? { lastReadySignature: this.lastReadySignature } : {}),
@@ -613,6 +629,12 @@ export class ContinuationDriver {
     }
     if (!plan && !nudgeBlocked(input)) input.turnsWithoutPlan = ++this.turnsWithoutPlan
     const decision = nextNudge(input)
+    if (!plan && input.directAnswerOnly && decision.kind === 'none' && input.turnsWithoutPlan === 1) {
+      // A direct answer is not a plan-less work turn: the next plan-less turn (the user asking for work after a question)
+      // is still the first one, so it gets the set-plan nudge.
+      this.turnsWithoutPlan = 0
+      this.directAnswerSettled = true
+    }
     if (decision.limitReached && !this.limitWarned) {
       this.limitWarned = true
       this.host.log('warn', `Automatic-continue limit reached (${input.maxAutoContinues}); the orchestrator waits for you.`)

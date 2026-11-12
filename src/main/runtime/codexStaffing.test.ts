@@ -193,13 +193,13 @@ describe('Codex run staffing', () => {
     expect(efforts(s, 'th-2')).toEqual(['high'])
   })
 
-  it('a bridged role keeps its chart tier and effort: tier and effort on the call are ignored and the result says so', async () => {
+  it('a bridged role gets the tier and effort of the call through the bridge (which bounds them on its own connection)', async () => {
     const spawnBridge = vi.fn((input: BridgeSpawnInput) => new Promise<BridgeSpawnResult>(() => input.onStarted?.({ agentId: 'b1', handle: 'analyst-1' })))
     const { ctx, s } = await start({ bridge: { roles: () => [BRIDGED], spawn: spawnBridge } })
     const out = await spawn(s, 'c1', { role: 'analyst', tier: 'top', effort: 'max' })
     expect(out.success).toBe(true)
-    expect(out.contentItems[0].text).toContain('ignored')
-    expect(spawnBridge.mock.calls[0]![0]).not.toHaveProperty('tier')
+    expect(out.contentItems[0].text).not.toContain('ignored')
+    expect(spawnBridge.mock.calls[0]![0]).toMatchObject({ tier: 'top', effort: 'max' })
     expect(ctx.updateStaffing).not.toHaveBeenCalled()
   })
 
