@@ -80,11 +80,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.schedule-row-name:focus-visible {
-  outline: none;
-  box-shadow: var(--ring);
-  border-radius: var(--radius-sm);
-}
 .schedule-unread {
   display: inline-flex;
   align-items: center;
@@ -237,10 +232,10 @@
 .schedule-day input {
   accent-color: var(--accent);
 }
-.schedule-radio input:focus-visible,
-.schedule-day input:focus-visible {
-  outline: none;
-  box-shadow: var(--ring);
+.schedule-edits-hint {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
 }
 .schedule-folder {
   display: flex;

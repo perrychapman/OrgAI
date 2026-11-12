@@ -45,7 +45,7 @@ export function useSchedules(): SchedulesState & { reload: () => Promise<void>; 
         if (live) setState((st) => ({ ...st, paused: !!s.schedulesPaused }))
       },
       () => {
-        if (live) setState((st) => ({ ...st, paused: false }))
+        // Unknown stays unknown (null): the switch is off-limits rather than claiming "not paused".
       }
     )
     const offSettings = window.orgai.onSettingsChanged((s: AppSettingsInfo) => setState((st) => ({ ...st, paused: !!s.schedulesPaused })))

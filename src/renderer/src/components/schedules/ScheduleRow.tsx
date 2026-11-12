@@ -6,6 +6,7 @@ import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import ScheduleHistory from './ScheduleHistory'
+import { showHidden } from '../../lib/hiddenChars'
 
 /**
  * One schedule on the Schedules page: name, unread mark, state chip, target and timing, next run, last result, the
@@ -41,8 +42,8 @@ export default function ScheduleRow({
   return (
     <li className="schedule-row" data-testid="schedule-row" data-schedule-id={row.id} data-state={row.chip.label} aria-labelledby={headingId}>
       <div className="schedule-row-head">
-        <h2 className="schedule-row-name" id={headingId} tabIndex={-1} title={row.name}>
-          {row.name}
+        <h2 className="schedule-row-name" id={headingId} tabIndex={-1} title={showHidden(row.name)}>
+          {showHidden(row.name)}
         </h2>
         {row.unread > 0 && (
           <span className="schedule-unread" data-testid="schedule-unread" title={`${row.unread} new in the history`}>
@@ -63,7 +64,7 @@ export default function ScheduleRow({
       <dl className="schedule-row-facts">
         <div>
           <dt>Runs as</dt>
-          <dd data-testid="schedule-target">{row.target}</dd>
+          <dd data-testid="schedule-target">{showHidden(row.target)}</dd>
         </div>
         <div>
           <dt>When</dt>
@@ -82,18 +83,18 @@ export default function ScheduleRow({
         </div>
       </dl>
       <div className="schedule-row-actions" role="group" aria-label={`Actions for ${row.name}`}>
-        <Button size="sm" icon={Zap} disabled={busy} onClick={onRunNow} testId="schedule-run-now" ariaLabel={`Run ${row.name} now`}>
+        <Button size="sm" icon={Zap} inert={busy} onClick={onRunNow} testId="schedule-run-now" ariaLabel={`Run ${row.name} now`}>
           Run now
         </Button>
         {row.toggle && (
-          <Button size="sm" icon={row.toggle === 'Pause' ? Pause : Play} disabled={busy} onClick={onToggle} testId="schedule-toggle" ariaLabel={`${row.toggle} ${row.name}`}>
+          <Button size="sm" icon={row.toggle === 'Pause' ? Pause : Play} inert={busy} onClick={onToggle} testId="schedule-toggle" ariaLabel={`${row.toggle} ${row.name}`}>
             {row.toggle}
           </Button>
         )}
-        <Button size="sm" icon={Pencil} disabled={busy} onClick={onEdit} testId="schedule-edit" ariaLabel={`Edit ${row.name}`}>
+        <Button size="sm" icon={Pencil} inert={busy} onClick={onEdit} testId="schedule-edit" ariaLabel={`Edit ${row.name}`}>
           Edit
         </Button>
-        <Button size="sm" variant="ghost" icon={Trash2} disabled={busy} onClick={onDelete} testId="schedule-delete" ariaLabel={`Delete ${row.name}`}>
+        <Button size="sm" variant="ghost" icon={Trash2} inert={busy} onClick={onDelete} testId="schedule-delete" ariaLabel={`Delete ${row.name}`}>
           Delete
         </Button>
         <button
@@ -103,9 +104,7 @@ export default function ScheduleRow({
           aria-controls={historyId}
           data-testid="schedule-history-toggle"
           onClick={() => {
-            const next = !open
-            setOpen(next)
-            if (next) onHistoryOpened()
+            setOpen(!open)
           }}
         >
           <Icon icon={open ? ChevronDown : ChevronRight} size="xs" />
@@ -113,7 +112,7 @@ export default function ScheduleRow({
         </button>
       </div>
       <div id={historyId} className="schedule-row-history" hidden={!open}>
-        {open && <ScheduleHistory scheduleId={row.id} scheduleName={row.name} reloadKey={historyKey} announce={announce} />}
+        {open && <ScheduleHistory scheduleId={row.id} scheduleName={row.name} reloadKey={historyKey} announce={announce} onLoaded={onHistoryOpened} />}
       </div>
     </li>
   )

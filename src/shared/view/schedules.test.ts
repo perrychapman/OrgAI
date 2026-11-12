@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { Schedule, ScheduleHistoryEntry, ScheduleSkipReason } from '../types'
 import {
   SKIP_REASON_TEXT,
+  budgetText,
+  schedulePermissionChoices,
   formNextRuns,
   formProblems,
   formTiming,
@@ -143,7 +145,7 @@ describe('history wording', () => {
   it('never shows an unknown cost as $0', () => {
     expect(historyCost(entry())).toBeNull()
     expect(historyCost(entry({ costUsd: null }))).toEqual({ costUsd: null, costSource: 'unknown' })
-    expect(historyCost(entry({ costUsd: 0.42 }))).toEqual({ costUsd: 0.42, costSource: 'computed', sourceMixed: true })
+    expect(historyCost(entry({ costUsd: 0.42 }))).toEqual({ costUsd: 0.42, costSource: 'provider', sourceMixed: true })
   })
   it('builds a row with trigger, tone and run link data', () => {
     const r = historyRow(entry({ trigger: 'catch-up', runId: 'run_1', projectId: 'p1', outcome: 'error', costUsd: 1 }))
@@ -270,6 +272,26 @@ describe('editor mapping', () => {
     expect(localInstant('2026-02-30', '08:00')).toBeNull()
     expect(localInstant('2026-02-28', '24:00')).toBeNull()
     expect(localInstant('2026-02-28', '08:05')).toBe(new Date(2026, 1, 28, 8, 5).getTime())
+  })
+})
+
+describe('permission choices', () => {
+  it('offers Chat targets only the Chat modes and never bypass', () => {
+    expect(schedulePermissionChoices('ask').sort()).toEqual(['default', 'dontAsk', 'plan'])
+    const team = schedulePermissionChoices('team')
+    expect(team).not.toContain('bypassPermissions')
+    expect(team).toEqual(expect.arrayContaining(['auto', 'acceptEdits', 'default', 'dontAsk', 'plan']))
+  })
+  it('refuses a work-only mode on a Chat target', () => {
+    const f = { ...newScheduleForm({ now: NOW }), name: 'n', prompt: 'p', targetKind: 'ask' as const, permissionMode: 'acceptEdits' as const }
+    expect(formProblems(f, NOW).permission).toMatch(/Chat runs cannot use/)
+    expect(formToSaveInput(f, NOW)).toMatchObject({ ok: false, field: 'permission' })
+    expect(formProblems({ ...f, permissionMode: 'plan' }, NOW).permission).toBeUndefined()
+  })
+  it('words the default cap per target', () => {
+    expect(budgetText(undefined)).toBe("The project's own cap, if any")
+    expect(budgetText(null, false)).toBe('No cap of its own')
+    expect(budgetText(5)).toBe('$5.00 per run')
   })
 })
 

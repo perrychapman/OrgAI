@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { settleRunFocus } from '../outputs/OutputDetail'
 import type { ScheduleHistoryEntry } from '@shared/types'
 import { historyRow, resultWhy, resultWord, sortHistory } from '@shared/view/schedules'
 import { cleanIpcError } from '../../lib/ipcError'
@@ -27,9 +28,25 @@ async function openScheduledRun(runId: string, projectId: string | undefined): P
  * One schedule's history, newest first (docs/design/schedules.md section 5). Loading it clears the schedule's unread
  * count (schedules:history does that in main). Reloads when `reloadKey` changes (a schedules:changed push for it).
  */
-export default function ScheduleHistory({ scheduleId, scheduleName, reloadKey, announce }: { scheduleId: string; scheduleName: string; reloadKey: number; announce: (text: string) => void }): ReactElement {
+export default function ScheduleHistory({
+  scheduleId,
+  scheduleName,
+  reloadKey,
+  announce,
+  onLoaded
+}: {
+  scheduleId: string
+  scheduleName: string
+  reloadKey: number
+  announce: (text: string) => void
+  /** The history was read (main has cleared the unread count): the page reloads its list. */
+  onLoaded: () => void
+}): ReactElement {
   const [entries, setEntries] = useState<ScheduleHistoryEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [openError, setOpenError] = useState<string | null>(null)
+  const loaded = useRef(onLoaded)
+  loaded.current = onLoaded
 
   useEffect(() => {
     let live = true
@@ -38,6 +55,7 @@ export default function ScheduleHistory({ scheduleId, scheduleName, reloadKey, a
         if (!live) return
         setEntries(sortHistory(Array.isArray(list) ? list : []))
         setError(null)
+        loaded.current()
       },
       (e) => {
         if (live) setError(cleanIpcError(e, 'The history could not be loaded.'))
@@ -64,6 +82,12 @@ export default function ScheduleHistory({ scheduleId, scheduleName, reloadKey, a
     )
   }
   return (
+    <>
+    {openError && (
+      <p className="field-error schedule-history-note" data-testid="schedule-history-open-error">
+        {openError}
+      </p>
+    )}
     <table className="schedule-history" data-testid="schedule-history">
       <caption className="sr-only">History of {scheduleName}, newest first</caption>
       <thead>
@@ -102,9 +126,13 @@ export default function ScheduleHistory({ scheduleId, scheduleName, reloadKey, a
                     className="link-btn"
                     data-testid="schedule-history-open"
                     onClick={() => {
-                      void openScheduledRun(row.runId as string, row.projectId).then((ok) => {
-                        if (!ok) announce('That run could not be opened. It may have been deleted.')
-                      })
+                      setOpenError(null)
+                      const fail = (): void => {
+                        const msg = 'That run could not be opened. It may have been deleted.'
+                        setOpenError(msg)
+                        announce(msg)
+                      }
+                      openScheduledRun(row.runId as string, row.projectId).then((ok) => (ok ? settleRunFocus() : fail()), fail)
                     }}
                   >
                     Open run<span className="sr-only"> from {row.when}</span>
@@ -116,5 +144,6 @@ export default function ScheduleHistory({ scheduleId, scheduleName, reloadKey, a
         })}
       </tbody>
     </table>
+    </>
   )
 }

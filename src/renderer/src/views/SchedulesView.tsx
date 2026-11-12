@@ -73,7 +73,8 @@ export default function SchedulesView(): ReactElement {
   // Land on the page heading, or on one schedule's row (the run meta's "Scheduled:" label).
   useEffect(() => {
     if (!focus || focus.seq === handledFocusSeq) return
-    if (focus.scheduleId && !data.list) return
+    // Wait for the list when a row is the target, unless it failed to load (then land on the heading).
+    if (focus.scheduleId && !data.list && !data.error) return
     handledFocusSeq = focus.seq
     requestAnimationFrame(() => {
       const row = focus.scheduleId ? document.querySelector<HTMLElement>(`[data-testid="schedule-row"][data-schedule-id="${CSS.escape(focus.scheduleId)}"]`) : null
@@ -82,7 +83,7 @@ export default function SchedulesView(): ReactElement {
         row.querySelector<HTMLElement>('.schedule-row-name')?.focus({ preventScroll: true })
       } else h1Ref.current?.focus({ preventScroll: true })
     })
-  }, [focus, data.list])
+  }, [focus, data.list, data.error])
 
   const act = async (id: string, what: () => Promise<string>, failText: string): Promise<void> => {
     setBusy((b) => ({ ...b, [id]: true }))
@@ -91,9 +92,8 @@ export default function SchedulesView(): ReactElement {
       say(await what())
       await data.reload()
     } catch (e) {
-      const msg = cleanIpcError(e, failText)
-      setFailure(msg)
-      say(msg)
+      // The danger Banner is role=alert: it is the one announcement of a failure.
+      setFailure(cleanIpcError(e, failText))
     } finally {
       setBusy((b) => {
         const { [id]: _done, ...rest } = b
@@ -147,18 +147,19 @@ export default function SchedulesView(): ReactElement {
   }
 
   const setPausedAll = async (v: boolean): Promise<void> => {
+    // The switch stays focusable while saving (a disabled control drops keyboard focus); a second press waits.
+    if (pauseBusy) return
     const before = !!data.paused
     data.setPausedLocal(v)
     setPauseBusy(true)
     setFailure(null)
     try {
       await saveSchedulesPaused(v)
-      say(v ? 'All schedules paused.' : 'Schedules resumed.')
+      // Pausing shows the status banner, which announces itself; resuming removes it, so say that.
+      if (!v) say('Schedules resumed.')
     } catch (e) {
       data.setPausedLocal(before)
-      const msg = cleanIpcError(e, 'The setting could not be saved.')
-      setFailure(msg)
-      say(msg)
+      setFailure(cleanIpcError(e, 'The setting could not be saved.'))
     } finally {
       setPauseBusy(false)
     }
@@ -175,7 +176,14 @@ export default function SchedulesView(): ReactElement {
         </h1>
         <div className="spacer" />
         <div className="schedules-pause-all">
-          <Switch checked={!!data.paused} onChange={(v) => void setPausedAll(v)} label="Pause all schedules" disabled={data.paused === null || pauseBusy} testId="schedules-pause-all" />
+          <Switch
+            checked={!!data.paused}
+            onChange={(v) => void setPausedAll(v)}
+            label="Pause all schedules"
+            disabled={data.paused === null}
+            title={data.paused === null ? 'The pause setting could not be read.' : undefined}
+            testId="schedules-pause-all"
+          />
           <span aria-hidden="true">Pause all</span>
         </div>
         <Button variant="primary" size="sm" icon={Plus} onClick={openNew} testId="schedules-new">
@@ -254,8 +262,8 @@ export default function SchedulesView(): ReactElement {
                       onEdit={() => setEditor({ open: true, editing: s })}
                       onDelete={() => void remove(s)}
                       onHistoryOpened={() => {
-                        // Main clears unread when the history is read; the next list shows it.
-                        window.setTimeout(() => void data.reload(), 300)
+                        // Main cleared unread while answering schedules:history; only then is a reload worth it.
+                        if (row.unread > 0) void data.reload()
                       }}
                       announce={say}
                     />

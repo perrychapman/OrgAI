@@ -15,7 +15,8 @@ describe('scheduleItemView', () => {
     const v = scheduleItemView(create, undefined, projects)
     expect(v.actionText).toBe('New schedule')
     expect(v.name).toBe('Nightly review')
-    expect(v.rows.map((r) => r.key)).toEqual(['prompt', 'target', 'timing', 'next', 'missed', 'permission', 'budget'])
+    expect(v.rows.map((r) => r.key)).toEqual(['prompt', 'target', 'timing', 'next', 'missed', 'model', 'permission', 'budget'])
+    expect(v.rows.find((r) => r.key === 'model')?.value).toBe("The project's model")
     expect(v.rows.find((r) => r.key === 'target')?.value).toBe('Team run on Notes API')
     expect(v.rows.find((r) => r.key === 'permission')?.value).toBe("The project's mode")
     expect(v.rows.find((r) => r.key === 'budget')?.value).toBe('$5.00 per run')
@@ -23,6 +24,13 @@ describe('scheduleItemView', () => {
     expect((v.rows.find((r) => r.key === 'next')?.value as string[]).length).toBe(2)
     expect(v.unattended).toBe(true)
     expect(v.hidden).toBe(false)
+  })
+  it('shows a Chat target with its full folder, model and Chat defaults', () => {
+    const v = scheduleItemView({ ...create, schedule: { ...create.schedule!, target: { kind: 'ask', folder: 'C:/work/reports' }, modelSelection: { model: 'm-1', connection: 'default' }, budgetUsd: undefined } }, undefined, projects)
+    expect(v.rows.find((r) => r.key === 'folder')?.value).toBe('C:/work/reports')
+    expect(v.rows.find((r) => r.key === 'model')?.value).toMatch(/^m-1 \(/)
+    expect(v.rows.find((r) => r.key === 'permission')?.value).toBe('Chat default')
+    expect(v.rows.find((r) => r.key === 'budget')?.value).toBe('No cap of its own')
   })
   it('names the permission mode and the missed policy', () => {
     const v = scheduleItemView({ ...create, schedule: { ...create.schedule!, permissionMode: 'plan', missed: 'skip' } }, undefined, projects)

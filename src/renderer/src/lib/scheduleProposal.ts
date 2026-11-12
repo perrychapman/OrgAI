@@ -4,9 +4,10 @@ import { PROPOSAL_ACTION_TEXT, budgetText, missedText, safeDescribe, targetText,
 import { hasHidden } from './hiddenChars'
 import { permissionModeName } from './runSettings'
 import { folderName } from './paths'
+import { connectionLabel } from './connectionLabel'
 
 /** One label / value pair of a schedule block. Values are raw text: the component shows them through showHidden. */
-export type ScheduleRowKey = 'prompt' | 'target' | 'timing' | 'next' | 'missed' | 'permission' | 'budget'
+export type ScheduleRowKey = 'prompt' | 'target' | 'folder' | 'timing' | 'next' | 'missed' | 'model' | 'permission' | 'budget'
 export interface ScheduleRow {
   key: ScheduleRowKey
   label: string
@@ -54,6 +55,8 @@ export function scheduleItemView(item: ScheduleProposalItem, existing: ExistingS
   if (showFields && s) {
     rows.push({ key: 'prompt', label: 'What to do', value: s.prompt })
     rows.push({ key: 'target', label: 'Runs as', value: targetText(s.target, projects, folderName) })
+    // The full folder of a Chat target: the user approves unattended work in a place they must be able to see.
+    if (s.target.kind === 'ask' && s.target.folder) rows.push({ key: 'folder', label: 'Folder', value: s.target.folder })
     rows.push({ key: 'timing', label: 'When', value: safeDescribe(s.timing) })
   }
   if (showFields || item.action === 'resume') {
@@ -62,9 +65,12 @@ export function scheduleItemView(item: ScheduleProposalItem, existing: ExistingS
   }
   if (showFields && s) {
     rows.push({ key: 'missed', label: 'If a run is missed', value: missedText(s.missed) })
+    const team = s.target.kind === 'team'
+    const model = s.modelSelection
+    rows.push({ key: 'model', label: 'Model', value: model ? `${model.model} (${connectionLabel(model.connection)})` : team ? "The project's model" : 'The Chat model' })
     const mode: PermissionMode | null | undefined = s.permissionMode
-    rows.push({ key: 'permission', label: 'Permission mode', value: mode ? permissionModeName(mode) : "The project's mode" })
-    rows.push({ key: 'budget', label: 'Spend cap', value: budgetText(s.budgetUsd) })
+    rows.push({ key: 'permission', label: 'Permission mode', value: mode ? permissionModeName(mode) : team ? "The project's mode" : 'Chat default' })
+    rows.push({ key: 'budget', label: 'Spend cap', value: budgetText(s.budgetUsd, team) })
   }
   return {
     action: item.action,

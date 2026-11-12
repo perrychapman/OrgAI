@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { PermissionMode, Schedule } from '@shared/types'
-import { SCHEDULE_NAME_MAX_CHARS, SCHEDULE_PERMISSION_MODES, SCHEDULE_PROMPT_MAX_CHARS, isVirtualProjectId } from '@shared/types'
+import { SCHEDULE_NAME_MAX_CHARS, SCHEDULE_PROMPT_MAX_CHARS, isVirtualProjectId } from '@shared/types'
 import { describeScheduleTiming } from '@shared/schedule'
 import { formatDateTime, formatFullDateTime } from '@shared/view/dates'
 import {
@@ -13,6 +13,7 @@ import {
   formTiming,
   formToSaveInput,
   newScheduleForm,
+  schedulePermissionChoices,
   scheduleToForm,
   type FormField,
   type ScheduleForm,
@@ -21,8 +22,8 @@ import {
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { scrollWithin } from '../../lib/scrollWithin'
-import { CHAT_CHANGES_SWITCH } from '../../lib/chatPermissions'
-import { adapterOfModel, isWideningMode, newRunPermissionChoices, permissionModeHelp, permissionModeName, wideningConfirmOptions, type RunModel } from '../../lib/runSettings'
+import { CHAT_CHANGES_SWITCH, chatChangesHint } from '../../lib/chatPermissions'
+import { adapterOfModel, isWideningMode, permissionModeHelp, permissionModeName, scheduleWideningConfirmOptions, type RunModel } from '../../lib/runSettings'
 import { Dialog } from '../ui/Dialog'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
@@ -50,7 +51,18 @@ const FIELD_TEST_ID: Record<FormField, string> = {
   project: 'schedule-field-project',
   folder: 'schedule-field-folder',
   timing: 'schedule-field-preset',
+  permission: 'schedule-field-permission',
   budget: 'schedule-field-budget'
+}
+
+/** The input a timing problem is about, per preset (M3): the time, count, date or cron field, else Repeat. */
+const TIMING_FIELD: Record<TimingPreset, string> = {
+  daily: 'schedule-field-time',
+  weekdays: 'schedule-field-time',
+  weekly: 'schedule-field-day-1',
+  every: 'schedule-field-every',
+  once: 'schedule-field-once-date',
+  custom: 'schedule-field-cron'
 }
 
 /**
@@ -118,7 +130,10 @@ export default function ScheduleEditor({
   const nextRuns = formNextRuns(form, now)
   const project = form.targetKind === 'team' ? projects.find((p) => p.id === form.projectId) : undefined
   const baselineMode: PermissionMode = project?.permissionMode ?? 'default'
-  const modeChoices = newRunPermissionChoices().filter((m) => (SCHEDULE_PERMISSION_MODES as readonly string[]).includes(m))
+  const modeChoices = schedulePermissionChoices(form.targetKind)
+  // Switching the target drops a mode the new target does not accept (Chat runs take fewer modes than team runs).
+  const setTarget = (kind: ScheduleForm['targetKind']): void =>
+    setForm((f) => ({ ...f, targetKind: kind, permissionMode: f.permissionMode && !schedulePermissionChoices(kind).includes(f.permissionMode) ? '' : f.permissionMode }))
   const mockProject = project?.provider.id === 'mock'
   const picked: RunModel | null = form.model
     ? { model: form.model.model, connection: form.model.connection, adapter: adapterOfModel(form.model.model, form.model.connection, undefined, mockProject), label: form.model.model }
@@ -134,8 +149,12 @@ export default function ScheduleEditor({
     }
   }
 
-  const focusField = (field: FormField): void => {
-    requestAnimationFrame(() => bodyRef.current?.querySelector<HTMLElement>(`[data-testid="${FIELD_TEST_ID[field]}"]`)?.focus())
+  /** Focus the field a problem is about; with nothing to focus (no projects yet) the problem is shown as the save error. */
+  const focusField = (field: FormField, problem: string): void => {
+    const q = (tid: string): HTMLElement | null | undefined => bodyRef.current?.querySelector<HTMLElement>(`[data-testid="${tid}"]`)
+    const el = (field === 'timing' ? q(TIMING_FIELD[form.preset]) : null) ?? q(FIELD_TEST_ID[field])
+    if (el) requestAnimationFrame(() => el.focus())
+    else setSaveError(problem)
   }
 
   const save = async (): Promise<void> => {
@@ -145,13 +164,16 @@ export default function ScheduleEditor({
     setNow(t)
     const result = formToSaveInput(form, t, editing ?? undefined)
     if (!result.ok) {
-      if (result.field) focusField(result.field)
+      if (result.field) focusField(result.field, result.problem)
       else setSaveError(result.problem)
       return
     }
+    // A mode that asks less than the target's own is standing consent: confirm it unless nothing about it changed
+    // (same mode on the same target as the stored schedule).
     const mode = form.permissionMode
-    if (mode && mode !== editing?.permissionMode && isWideningMode(baselineMode, mode)) {
-      const ok = await confirm(wideningConfirmOptions(baselineMode, mode))
+    const sameTarget = !!editing && JSON.stringify(editing.target) === JSON.stringify(result.value.target)
+    if (mode && !(sameTarget && mode === editing?.permissionMode) && isWideningMode(baselineMode, mode)) {
+      const ok = await confirm(scheduleWideningConfirmOptions(baselineMode, mode, form.targetKind === 'team'))
       if (!ok) return
     }
     setSaving(true)
@@ -178,7 +200,8 @@ export default function ScheduleEditor({
     ) : null
   }
 
-  const describedTiming = typeof timing === 'string' || problems.timing ? null : describeScheduleTiming(timing)
+  const timingDesc = problems.timing ? id('timing-error') : id('next-runs')
+  const describedTiming =typeof timing === 'string' || problems.timing ? null : describeScheduleTiming(timing)
 
   return (
     <>
@@ -229,11 +252,11 @@ export default function ScheduleEditor({
             <legend>Run as</legend>
             <div className="schedule-radios">
               <label className="schedule-radio">
-                <input type="radio" name={id('target')} data-testid="schedule-field-target-team" checked={form.targetKind === 'team'} onChange={() => set('targetKind', 'team')} />
+                <input type="radio" name={id('target')} data-testid="schedule-field-target-team" checked={form.targetKind === 'team'} onChange={() => setTarget('team')} />
                 Team run on a project
               </label>
               <label className="schedule-radio">
-                <input type="radio" name={id('target')} data-testid="schedule-field-target-ask" checked={form.targetKind === 'ask'} onChange={() => set('targetKind', 'ask')} />
+                <input type="radio" name={id('target')} data-testid="schedule-field-target-ask" checked={form.targetKind === 'ask'} onChange={() => setTarget('ask')} />
                 Chat
               </label>
             </div>
@@ -290,9 +313,12 @@ export default function ScheduleEditor({
                   )}
                 </div>
                 <div className="schedule-switch-row">
-                  <Switch checked={form.allowEdits} onChange={(v) => set('allowEdits', v)} label={CHAT_CHANGES_SWITCH} testId="schedule-field-allow-edits" />
+                  <Switch checked={form.allowEdits} onChange={(v) => set('allowEdits', v)} label={CHAT_CHANGES_SWITCH} describedBy={id('edits-hint')} testId="schedule-field-allow-edits" />
                   <span aria-hidden="true">{CHAT_CHANGES_SWITCH}</span>
                 </div>
+                <p className="hint schedule-edits-hint" id={id('edits-hint')}>
+                  {chatChangesHint(!form.folder.trim(), form.folder.trim() || undefined)}
+                </p>
               </>
             )}
           </fieldset>
@@ -321,14 +347,14 @@ export default function ScheduleEditor({
               {(form.preset === 'daily' || form.preset === 'weekdays' || form.preset === 'weekly') && (
                 <div className="field">
                   <label htmlFor={id('time')}>At</label>
-                  <Input id={id('time')} type="time" data-testid="schedule-field-time" value={form.time} onChange={(v) => set('time', v)} invalid={!!problems.timing} />
+                  <Input id={id('time')} type="time" data-testid="schedule-field-time" value={form.time} onChange={(v) => set('time', v)} invalid={!!problems.timing} aria-describedby={timingDesc} />
                 </div>
               )}
               {form.preset === 'every' && (
                 <>
                   <div className="field">
                     <label htmlFor={id('every')}>Every</label>
-                    <Input id={id('every')} type="number" min={1} step={1} inputMode="numeric" data-testid="schedule-field-every" value={form.everyCount} onChange={(v) => set('everyCount', v)} invalid={!!problems.timing} />
+                    <Input id={id('every')} type="number" min={1} step={1} inputMode="numeric" data-testid="schedule-field-every" value={form.everyCount} onChange={(v) => set('everyCount', v)} invalid={!!problems.timing} aria-describedby={timingDesc} />
                   </div>
                   <div className="field">
                     <label htmlFor={id('every-unit')}>Unit</label>
@@ -343,18 +369,18 @@ export default function ScheduleEditor({
                 <>
                   <div className="field">
                     <label htmlFor={id('once-date')}>On</label>
-                    <Input id={id('once-date')} type="date" data-testid="schedule-field-once-date" value={form.onceDate} onChange={(v) => set('onceDate', v)} invalid={!!problems.timing} />
+                    <Input id={id('once-date')} type="date" data-testid="schedule-field-once-date" value={form.onceDate} onChange={(v) => set('onceDate', v)} invalid={!!problems.timing} aria-describedby={timingDesc} />
                   </div>
                   <div className="field">
                     <label htmlFor={id('once-time')}>At</label>
-                    <Input id={id('once-time')} type="time" data-testid="schedule-field-once-time" value={form.onceTime} onChange={(v) => set('onceTime', v)} invalid={!!problems.timing} />
+                    <Input id={id('once-time')} type="time" data-testid="schedule-field-once-time" value={form.onceTime} onChange={(v) => set('onceTime', v)} invalid={!!problems.timing} aria-describedby={timingDesc} />
                   </div>
                 </>
               )}
               {form.preset === 'custom' && (
                 <div className="field schedule-cron">
                   <label htmlFor={id('cron')}>Cron expression</label>
-                  <Input id={id('cron')} mono data-testid="schedule-field-cron" value={form.cron} spellCheck={false} autoComplete="off" onChange={(v) => set('cron', v)} invalid={!!problems.timing} aria-describedby={id('cron-hint')} />
+                  <Input id={id('cron')} mono data-testid="schedule-field-cron" value={form.cron} spellCheck={false} autoComplete="off" onChange={(v) => set('cron', v)} invalid={!!problems.timing} aria-describedby={`${id('cron-hint')} ${timingDesc}`} />
                   <span className="hint" id={id('cron-hint')}>
                     Five fields in local time: minute, hour, day of month, month, day of week. At least 15 minutes apart.
                   </span>
@@ -438,7 +464,8 @@ export default function ScheduleEditor({
                 className="select"
                 data-testid="schedule-field-permission"
                 value={form.permissionMode}
-                aria-describedby={id('permission-hint')}
+                aria-describedby={err('permission').describedBy ? `${err('permission').describedBy} ${id('permission-hint')}` : id('permission-hint')}
+                aria-invalid={err('permission').invalid || undefined}
                 onChange={(e) => set('permissionMode', e.target.value as PermissionMode | '')}
               >
                 <option value="">{form.targetKind === 'team' ? "The project's mode" : 'Chat default'}</option>
@@ -452,6 +479,7 @@ export default function ScheduleEditor({
                 {form.permissionMode ? `${permissionModeHelp(form.permissionMode)} ` : ''}
                 {SCHEDULE_APPROVAL_NOTE}
               </span>
+              {errorText('permission')}
             </div>
             <div className="field">
               <label htmlFor={id('budget')}>Spend cap per run, USD (optional)</label>

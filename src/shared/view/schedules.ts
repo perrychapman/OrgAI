@@ -20,7 +20,7 @@ import type {
   ScheduleTarget,
   ScheduleTiming
 } from '../types'
-import { SCHEDULE_BUDGET_MAX_USD, SCHEDULE_FAILURES_TO_PAUSE, SCHEDULE_MAX_CONCURRENT_RUNS, SCHEDULE_PERMISSION_MODES } from '../types'
+import { SCHEDULE_BUDGET_MAX_USD, SCHEDULE_FAILURES_TO_PAUSE, SCHEDULE_MAX_CONCURRENT_RUNS, SCHEDULE_PERMISSION_MODES, runPermissionModeChoices } from '../types'
 import { cleanScheduleInput, describeScheduleTiming, scheduleTimingProblem, upcomingScheduleRuns } from '../schedule'
 import { formatDateTime, formatFullDateTime } from './dates'
 import type { CostInput } from './cost'
@@ -187,7 +187,8 @@ export function outcomeText(e: Pick<ScheduleHistoryEntry, 'result' | 'outcome' |
 export function historyCost(e: Pick<ScheduleHistoryEntry, 'costUsd' | 'outcome'>): CostInput | null {
   if (e.costUsd === undefined) return null
   if (e.costUsd === null || !Number.isFinite(e.costUsd)) return { costUsd: null, costSource: 'unknown' }
-  return { costUsd: e.costUsd, costSource: 'computed', sourceMixed: true }
+  // The entry does not say who priced it: 'provider' + sourceMixed reads "reported by the provider or computed by OrgAI".
+  return { costUsd: e.costUsd, costSource: 'provider', sourceMixed: true }
 }
 
 export interface HistoryRowView {
@@ -466,7 +467,16 @@ export function formTiming(f: ScheduleForm): ScheduleTiming | string {
   }
 }
 
-export type FormField = 'name' | 'prompt' | 'project' | 'folder' | 'timing' | 'budget'
+/**
+ * The permission modes a schedule may choose for its target: a team run takes every work-run mode, a Chat run only the
+ * modes Chat runs accept (runPermissionModeChoices: default, dontAsk, plan); never bypass.
+ */
+export function schedulePermissionChoices(targetKind: ScheduleTarget['kind']): PermissionMode[] {
+  const allowed = runPermissionModeChoices(targetKind === 'ask' ? { kind: 'work', quick: { scratch: true } as never } : { kind: 'work' })
+  return allowed.filter((m) => (SCHEDULE_PERMISSION_MODES as readonly string[]).includes(m))
+}
+
+export type FormField = 'name' | 'prompt' | 'project' | 'folder' | 'timing' | 'permission' | 'budget'
 export type FormProblems = Partial<Record<FormField, string>>
 
 /** Per-field problems, live. `now` is used only for a single run in the past (main checks it again). */
@@ -481,6 +491,9 @@ export function formProblems(f: ScheduleForm, now: number): FormProblems {
     const p = scheduleTimingProblem(timing)
     if (p) out.timing = p
     else if (timing.kind === 'once' && timing.at <= now) out.timing = 'Choose a time in the future.'
+  }
+  if (f.permissionMode && !schedulePermissionChoices(f.targetKind).includes(f.permissionMode)) {
+    out.permission = f.targetKind === 'ask' ? 'Chat runs cannot use that permission mode. Choose another.' : 'Choose a valid permission mode.'
   }
   const b = f.budget.trim()
   if (b) {
@@ -552,8 +565,9 @@ export function schedulesFoldVerbs(items: readonly ScheduleProposalItem[], names
 }
 
 /** The spend cap in words: "$5.00 per run", or the default. */
-export function budgetText(budgetUsd: number | null | undefined): string {
-  return typeof budgetUsd === 'number' && Number.isFinite(budgetUsd) ? `$${budgetUsd.toFixed(2)} per run` : "The project's own cap, if any"
+export function budgetText(budgetUsd: number | null | undefined, team = true): string {
+  if (typeof budgetUsd === 'number' && Number.isFinite(budgetUsd)) return `$${budgetUsd.toFixed(2)} per run`
+  return team ? "The project's own cap, if any" : 'No cap of its own'
 }
 
 /** "Run once when OrgAI is next open" / "Skip". */

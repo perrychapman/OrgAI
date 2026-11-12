@@ -164,6 +164,10 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.sched-prop-field dd.sched-prop-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-mono);
+}
 .sched-prop-field dd .mcp-prop-text {
   margin: 0;
 }

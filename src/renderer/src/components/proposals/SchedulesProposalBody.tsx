@@ -72,6 +72,10 @@ function ScheduleItem({ view }: { view: ScheduleItemView }): ReactElement {
                 </dd>
               ) : row.key === 'next' ? (
                 <dd data-testid="proposal-schedule-next">{Array.isArray(row.value) && row.value.length > 0 ? row.value.join(', ') : 'No upcoming runs'}</dd>
+              ) : row.key === 'folder' || row.key === 'model' ? (
+                <dd className="sched-prop-path" title={showHidden(String(row.value))}>
+                  {showHidden(String(row.value))}
+                </dd>
               ) : (
                 <dd>{showHidden(String(row.value))}</dd>
               )}
