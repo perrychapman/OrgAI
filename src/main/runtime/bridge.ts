@@ -15,10 +15,11 @@
  * option descriptions and reasons). Card fields decisions depend on (tool input, rules, option labels, MCP specs) are
  * forwarded exactly.
  */
-import type { AgentInstance, BridgedRoleChoice, ConnectionId, PermissionMode, ProviderId, Project, Role, RunEvent, RunSummary, TranscriptEntry } from '@shared/types'
+import type { AgentInstance, BridgedRoleChoice, ConnectionId, ModelTier, PermissionMode, ProviderId, Project, Role, RunEvent, RunSummary, TranscriptEntry } from '@shared/types'
 import { canNarrowPermissionMode, overlaidByAcceptEdits } from './runOverrides'
 import { BRIDGE_RESULT_MAX_CHARS, PERMISSION_MODE_OPTIONS } from '@shared/types'
-import { effectiveSubagentLimits, newId } from '@shared/defaults'
+import { effectiveSubagentLimits, effortOptionsFor, newId, staffingGoalOf } from '@shared/defaults'
+import { resolveStaffing } from './staffing'
 import { HandleNamer, spawnHandle } from './network'
 import { settleAgent, isLiveAgent, type RunOutcome } from './activity'
 import {
@@ -285,7 +286,7 @@ export class BridgedSessions {
     // The child's own adapter reads limits from its project and chart: hand it what is left of the run's budget.
     const childDepthBudget = limits.depth - (depth + 1)
     const childLimits = { depth: Math.max(1, childDepthBudget), concurrency: Math.max(1, limits.concurrency - live - 1) }
-    const childRoles = this.childRoles(role, choice, parent.roles, childDepthBudget <= 0)
+    const childRoles = this.childRoles(this.staffedRole(role, choice, conn, input, parent), choice, parent.roles, childDepthBudget <= 0)
     const child: Child = {
       agentId,
       handle,
@@ -333,6 +334,31 @@ export class BridgedSessions {
 
     void this.run(child, adapter, ctx)
     return result
+  }
+
+  /**
+   * The bridged role as the child's root runs it: with the tier and effort the delegating call asked for, resolved
+   * through resolveStaffing on the bridged connection (its tier map, its adapter's efforts, the role's own bounds and the
+   * project's staffing mode), so a request never goes past a ceiling and a fixed role keeps its chart values.
+   */
+  private staffedRole(role: Role, choice: BridgedRoleChoice, conn: RunConnection, input: BridgeSpawnInput, parent: RuntimeContext): Role {
+    // Nothing asked for and no cost goal to apply: the role runs as configured.
+    if (!input.tier && !input.effort && staffingGoalOf(parent.project, parent.staffingGoal) !== 'cost') return role
+    const resolved = resolveStaffing({
+      role,
+      project: parent.project,
+      requested: { ...(input.tier ? { tier: input.tier } : {}), ...(input.effort ? { effort: input.effort } : {}) },
+      tierModels: Object.fromEntries(Object.entries(conn.tierModels ?? {}).filter(([, m]) => typeof m === 'string')) as Partial<Record<ModelTier, string>>,
+      adapterEfforts: effortOptionsFor(choice.adapter),
+      goal: staffingGoalOf(parent.project, parent.staffingGoal)
+    })
+    if (!resolved.overrides) return role
+    return {
+      ...role,
+      ...(resolved.tierChanged && resolved.model ? { model: resolved.model } : {}),
+      ...(resolved.tierChanged && resolved.tier ? { tier: resolved.tier } : {}),
+      ...(resolved.effortChanged && resolved.effort ? { effort: resolved.effort } : {})
+    }
   }
 
   /** The child's roles: the bridged role (as root) plus roles reachable through its spawnable chain on the same (connection, adapter). */

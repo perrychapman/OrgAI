@@ -64,6 +64,13 @@ describe('execQuiescent', () => {
     // With a plan the rule does not apply.
     expect(execQuiescent(input({ autoContinue: true, plan: plan() }))).toBe(true)
   })
+
+  it('a turn-1 direct answer (the driver reports the nudge rule met) settles as completed-unplanned, but never past a card or a working report', () => {
+    const direct = { ...settled, nudgeTurn1Sent: true }
+    expect(execNotQuiescentReason(input({ autoContinue: true, settlement: direct }))).toBeNull()
+    expect(execNotQuiescentReason(input({ autoContinue: true, settlement: direct, openCards: 1 }))).toBe('a decision card is open')
+    expect(execOutcomeFor({ plan: undefined, agents: [] })).toEqual({ outcome: 'completed-unplanned' })
+  })
 })
 
 describe('execOutcomeFor', () => {

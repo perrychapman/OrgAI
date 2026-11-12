@@ -149,6 +149,27 @@ describe('rule 1: fixed roles', () => {
   })
 })
 
+describe('goal cost', () => {
+  it('steps an unrequested auto role one tier down and to medium effort, never past the ceiling', () => {
+    const base = run({ role: DEEP, goal: 'cost' })
+    expect(base.tier).toBe('everyday')
+    expect(base.effort).toBe('high') // the role's own effort stays
+    const noEffort = run({ role: { model: 'opus', tier: 'deep' }, goal: 'cost' })
+    expect(noEffort).toMatchObject({ tier: 'everyday', effort: 'medium' })
+    expect(run({ role: { model: 'opus', tier: 'deep', staffing: { mode: 'auto', maxEffort: 'low' } }, goal: 'cost' }).effort).toBe('low')
+    expect(run({ role: DEEP, goal: 'balanced' }).tier).toBe('deep')
+    expect(run({ role: DEEP }).tier).toBe('deep')
+  })
+  it('respects minTier, a request, a profile value, fixed roles and fixed projects', () => {
+    expect(run({ role: { ...DEEP, staffing: { mode: 'auto', minTier: 'deep' } }, goal: 'cost' }).tier).toBe('deep')
+    expect(run({ role: DEEP, goal: 'cost', requested: { tier: 'deep' } }).tier).toBe('deep')
+    expect(run({ role: DEEP, goal: 'cost', profile: { tier: 'deep' } }).tier).toBe('deep')
+    expect(run({ role: { ...DEEP, staffing: { mode: 'fixed' } }, goal: 'cost' }).tier).toBe('deep')
+    expect(run({ role: DEEP, project: { staffing: 'fixed' }, goal: 'cost' }).tier).toBe('deep')
+    expect(run({ role: { model: 'haiku', tier: 'fast' }, goal: 'cost' }).tier).toBe('fast')
+  })
+})
+
 describe('rule 2: ceilings and floors', () => {
   it('inherit with parentTier: the parent tier is the ceiling and the chart tier', () => {
     const role: R = { model: 'inherit' }

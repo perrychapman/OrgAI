@@ -289,7 +289,7 @@ export interface SpawnRequest extends SpawnPlan {
   description?: string
   /** The dynamic tool call id that spawned it (AgentInstance.spawnToolUseId). */
   callId: string
-  /** The tier and / or effort stated on the spawn_report call (run staffing); the host resolves them, bridged hosts ignore them. */
+  /** The tier and / or effort stated on the spawn_report call (run staffing); the host resolves them; a bridged host forwards them to the bridge, which resolves them on the child's connection. */
   onCall?: { tier?: ModelTier; effort?: Effort }
   /** Context pack (split-execution 3.2): paths the lead read, inlined by the host into the first message (contextPack.ts). */
   files?: string[]
@@ -392,7 +392,7 @@ export async function callNetworkTool(
         let started: { agentId: string; handle: string }
         try {
           const name = parsed.data.name?.trim()
-          started = await host.spawnBridged({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId, ...(name ? { name } : {}) })
+          started = await host.spawnBridged({ ...check, brief: parsed.data.brief, description: parsed.data.description, callId, ...(name ? { name } : {}), ...(parsed.data.tier || parsed.data.effort ? { onCall: { ...(parsed.data.tier ? { tier: parsed.data.tier } : {}), ...(parsed.data.effort ? { effort: parsed.data.effort } : {}) } } : {}) })
         } catch (e) {
           net.abort(check.id)
           return fail(`Could not start ${check.role.slug}: ${(e as Error).message}`)
@@ -400,7 +400,7 @@ export async function callNetworkTool(
         // The host already moved the reservation to the harness's agent id (CodexAgentNetwork.adopt) when the child started.
         const unpacked = parsed.data.files?.length ? ` The files you named were not inlined: it runs in its own session on ${bridged.connectionName}; put what it needs in the brief.` : ''
         return {
-          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.${parsed.data.tier || parsed.data.effort ? ' It keeps its chart tier and effort; the tier and effort you gave were ignored.' : ''}${unpacked}${afterSpawnLine(host, callerId, check.role.id)}`,
+          text: `Spawned ${started.handle} (${check.role.slug}) on ${bridged.connectionName}. It works in the background in its own session; its final report arrives as a message from the harness. It cannot receive message_agent while it runs.${unpacked}${afterSpawnLine(host, callerId, check.role.id)}`,
           success: true
         }
       }
@@ -445,11 +445,29 @@ function afterSpawnLine(host: NetworkHost, callerId: string, roleId: string): st
 
 // ---------- report delivery ----------
 
+/** A report longer than this is delivered as its head and tail with a notice of what was left out. */
+export const REPORT_HANDBACK_MAX_CHARS = 16_000
+
+/** `text` as is when it fits REPORT_HANDBACK_MAX_CHARS, else its first and last part around a one-line notice (no surrogate pair is split). */
+export function capHandback(text: string): string {
+  if (text.length <= REPORT_HANDBACK_MAX_CHARS) return text
+  const half = Math.floor((REPORT_HANDBACK_MAX_CHARS - 200) / 2)
+  const safe = (t: string, end: 'head' | 'tail'): string => {
+    const c = end === 'head' ? t.charCodeAt(t.length - 1) : t.charCodeAt(0)
+    if (end === 'head' && c >= 0xd800 && c <= 0xdbff) return t.slice(0, -1)
+    if (end === 'tail' && c >= 0xdc00 && c <= 0xdfff) return t.slice(1)
+    return t
+  }
+  const head = safe(text.slice(0, half), 'head')
+  const tail = safe(text.slice(text.length - half), 'tail')
+  return `${head}\n\n[... ${text.length - head.length - tail.length} characters of the report left out; the beginning and the end are shown ...]\n\n${tail}`
+}
+
 /** The harness message that carries a finished report to the agent that spawned it. */
 export function reportMessage(child: { handle?: string; name: string; roleSlug: string }, outcome: { status: 'completed' | 'failed'; result?: string; error?: string }): string {
   const who = `${child.handle ?? child.roleSlug} (${child.name})`
-  if (outcome.status === 'failed') return `Harness: report from ${who}: it failed${outcome.error ? ` (${outcome.error})` : ''}. ${outcome.result ? `Its last words:\n${outcome.result}` : 'It left no result.'}`
-  return `Harness: report from ${who}:\n\n${outcome.result?.trim() || '(it finished without a written report)'}`
+  if (outcome.status === 'failed') return `Harness: report from ${who}: it failed${outcome.error ? ` (${outcome.error})` : ''}. ${outcome.result ? `Its last words:\n${capHandback(outcome.result)}` : 'It left no result.'}`
+  return `Harness: report from ${who}:\n\n${capHandback(outcome.result?.trim() ?? '') || '(it finished without a written report)'}`
 }
 
 /** First message of a child's thread. */

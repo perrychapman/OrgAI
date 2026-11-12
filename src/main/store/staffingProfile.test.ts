@@ -119,9 +119,9 @@ describe('profileCells', () => {
 })
 
 describe('profileDefault', () => {
-  it('needs 5 assignments', () => {
-    expect(profileDefault(prof(many(4)), 'impl', 'balanced')).toBeUndefined()
-    expect(profileDefault(prof(many(5)), 'impl', 'balanced')).toEqual({ tier: 'everyday', effort: 'medium' })
+  it('needs 3 assignments', () => {
+    expect(profileDefault(prof(many(2)), 'impl', 'balanced')).toBeUndefined()
+    expect(profileDefault(prof(many(3)), 'impl', 'balanced')).toEqual({ tier: 'everyday', effort: 'medium' })
   })
   it('needs 80% first pass at the edge', () => {
     expect(profileDefault(prof(many(5, {}, 1)), 'impl', 'balanced')).toEqual({ tier: 'everyday', effort: 'medium' }) // 4/5

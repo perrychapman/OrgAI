@@ -822,11 +822,11 @@ describe('list_skills and load_skill', () => {
     return { ctx, tools: harnessToolsFor(ctx, {}, opts) }
   }
 
-  it('is absent with nativeSkills and in setup, present with no skills at start', () => {
+  it('is absent with nativeSkills and in setup; present with no skills at start (a skill approved mid-run must be loadable)', () => {
     const names = (t: HarnessTool[]) => t.map((x) => x.name)
     expect(names(toolsFor([mkSkill()]).tools)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
     expect(names(toolsFor([mkSkill()], { nativeSkills: true }).tools)).not.toContain('load_skill')
-    // Present without skills at start: they read ctx.skills() at call time.
+    // propose_skills says a new grant is usable at once, and Codex fixes a thread's tools at thread/start.
     expect(names(toolsFor([]).tools)).toEqual(expect.arrayContaining(['list_skills', 'load_skill']))
     expect(names(setupTools(fakeCtx({ skills: () => [mkSkill()] })))).not.toContain('load_skill')
     expect(isBlockingHarnessTool('load_skill')).toBe(false)
@@ -1388,7 +1388,8 @@ describe('work run: propose_skills', () => {
 
 describe('list_skills / load_skill read ctx.skills() at call time', () => {
   it('shows a skill that was granted after the tools were bound, and drops a removed one', async () => {
-    let skills: RunSkill[] = []
+    const first = { id: 'sk0', name: 'other', description: 'd', dir: '/nowhere', files: [], roleIds: ['r-eng'] } as RunSkill
+    let skills: RunSkill[] = [first]
     const ctx = fakeCtx({ skills: () => skills })
     const tools = harnessToolsFor(ctx)
     const list = byName(tools, 'list_skills')
