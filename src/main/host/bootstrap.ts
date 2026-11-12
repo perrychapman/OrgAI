@@ -613,7 +613,10 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     // opened ('not-written' = a code project nobody opened yet: nothing was written, and evolving does not open it).
     syncTeamFiles: async (project) => {
       try {
-        return teamFiles.check(project.id).state !== 'off'
+        // Written only when the files are in use and readable: 'problem' never overwrites a file, 'rejected' keeps the
+        // refused content, and 'off' writes nothing.
+        const state = teamFiles.check(project.id).state
+        return state === 'in-sync' || state === 'pending'
       } catch {
         return false
       }
@@ -776,7 +779,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   activity.addSource('liveRuns', () => rm.busyRunCount())
   activity.addSource('pausedAutoResumes', () => rm.activeResumeTimerCount() + rm.inFlightResumeCount())
   activity.addSource('activeWorktreeOps', () => repoLockActivity())
-  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + caps.inFlightCount() + skillEvaluation.inFlightCount())
+  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + rm.evolvePassCount() + caps.inFlightCount() + skillEvaluation.inFlightCount())
   activity.addSource('activeOAuthFlows', () => mcp.activeAuthorizationCount() + connections.pendingLoginCount())
 
   const hostControl: HostControl = {

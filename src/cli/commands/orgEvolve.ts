@@ -257,7 +257,7 @@ async function applyAndPrint(ctx: CliContext, client: HostClient, project: Proje
         lines.push(`Applied ${safeLine(g.id)} as a trial: ${safeLine(g.summary)}`)
         lines.push(`It is measured over the next ${g.evalWindowRuns} finished work run${g.evalWindowRuns === 1 ? '' : 's'}; a regression rolls it back automatically (orgai org evolve history).`)
         lines.push(`Undo it now with: orgai org evolve rollback ${safeLine(g.id)}`)
-        lines.push(res.teamFilesSynced ? 'The .orgai/ team files were updated.' : 'The .orgai/ team files were not written (team files are not active for this project).')
+        lines.push(res.teamFilesSynced ? 'The .orgai/ team files were updated.' : 'The .orgai/ team files were not written (team files are off for this project, or its .orgai/ folder needs attention).')
       } else lines.push(`Nothing was applied${res.reason ? `: ${safeLine(res.reason)}` : '.'}`)
       return lines
     }
@@ -287,7 +287,7 @@ async function evolveRollback(ctx: CliContext, args: string[]): Promise<number> 
     const res = await hostCall<EvolveRollbackResult>(client, EVOLVE_IPC.orgEvolveRollback, [{ projectId: project.id, ...(gen ? { generationId: gen } : {}), reason: 'rolled back from the command line' }])
     emit(ctx, { project: projectJson(project), rolledBack: res.rolledBack, reason: res.reason ?? null, generation: (res.generation ?? null) as unknown as Json, teamFilesSynced: res.teamFilesSynced }, () =>
       res.rolledBack && res.generation
-        ? [res.reason ? `Rolled back ${safeLine(res.generation.id)}, except: ${safeLine(res.reason)}.` : `Rolled back ${safeLine(res.generation.id)}: the team is as it was before it.`, res.teamFilesSynced ? 'The .orgai/ team files were updated.' : 'The .orgai/ team files were not written (team files are not active for this project).']
+        ? [res.reason ? `Rolled back ${safeLine(res.generation.id)}, except: ${safeLine(res.reason)}.` : `Rolled back ${safeLine(res.generation.id)}: the team is as it was before it.`, res.teamFilesSynced ? 'The .orgai/ team files were updated.' : 'The .orgai/ team files were not written (team files are off for this project, or its .orgai/ folder needs attention).']
         : [`Nothing was rolled back${res.reason ? `: ${safeLine(res.reason)}` : '.'}`]
     )
     return res.rolledBack ? EXIT.ok : EXIT.failure

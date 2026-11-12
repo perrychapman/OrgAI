@@ -136,6 +136,22 @@ describe('apply and the single-trial rule', () => {
     expect(h.svc.history('p1').trialId).toBeUndefined()
     expect(h.svc.history('p1').generations).toHaveLength(1)
   })
+  it('a plan is not applied when the team changed while it was being made (a stale hybrid plan)', async () => {
+    let h!: ReturnType<typeof harness>
+    const complete = vi.fn(async () => {
+      // The user fixes the dev role while the model call is in flight.
+      h.proj = { ...h.proj, roles: h.proj.roles.map((r) => (r.slug === 'dev' ? { ...r, staffing: { mode: 'fixed' as const } } : r)) }
+      return { text: '{}' }
+    })
+    h = harness({ complete })
+    const before = structuredClone(h.proj.roles.find((r) => r.slug === 'dev'))
+    const res = await h.svc.apply({ projectId: 'p1', strategy: 'hybrid' })
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(res.applied).toBe(false)
+    expect(res.reason).toContain('the team changed while the plan was being made')
+    expect(h.proj.roles.find((r) => r.slug === 'dev')?.effort).toBe(before?.effort)
+    expect(h.svc.history('p1').generations).toEqual([])
+  })
   it('a trial still short of its window refuses with how many runs it has', async () => {
     const h = harness()
     await h.svc.apply({ projectId: 'p1' })
@@ -337,17 +353,22 @@ describe('skills', () => {
   const withOld = (): Project => project({ skills: [{ id: 's_old', name: 'old', description: 'd' } as SkillSpec] }, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: 'deep', model: 'deep', effort: 'high', skills: ['s_old'] }), role('review', { tools: ['Read'] })])
   const never = () => [{ id: 'n', kind: 'neverLoaded' as const, severity: 'info' as const, skillIds: ['s_old'], title: '', detail: '' }]
 
-  it('adds skills DISABLED, only for non-root non-review roles, prunes through the port, and a rollback undoes both', async () => {
+  it('adds skills DISABLED, only for non-root non-review roles; reports a skill removal without applying it; a rollback undoes the addition', async () => {
     const h = harness({ proj: withOld(), skills: true, skillFindings: never, complete: async () => ({ text: modelAnswer }) })
     const res = await h.svc.apply({ projectId: 'p1', strategy: 'hybrid' })
     expect(res.applied).toBe(true)
     expect(h.disabled).toEqual(['sk_run-tests'])
-    expect(h.proj.skills?.map((s) => s.name)).toEqual(['run-tests'])
+    // The unused skill stays: its folder may hold more than a snapshot can restore, so removing it is the user's call.
+    expect(h.proj.skills?.map((s) => s.name)).toEqual(['old', 'run-tests'])
+    expect(res.plan.pruneSkillIds).toEqual([])
+    expect(res.plan.gate.violations.some((v) => v.rule === 'skill_prune_needs_review' && v.message.includes('s_old'))).toBe(true)
+    expect(h.skills.remove).not.toHaveBeenCalled()
+    // Taking the unused grant off a role is applied (a rollback restores the grant).
     expect(h.proj.roles.find((r) => r.slug === 'dev')?.skills).toEqual(['sk_run-tests'])
     expect(h.proj.roles.find((r) => r.slug === 'lead')?.skills).toBeUndefined()
     const rb = await h.svc.rollback({ projectId: 'p1' })
     expect(rb.rolledBack).toBe(true)
-    expect(h.proj.skills?.map((s) => s.name)).toEqual(['old-s-old']) // restored from its stored text (new id)
+    expect(h.proj.skills?.map((s) => s.name)).toEqual(['old'])
     expect(h.proj.roles.find((r) => r.slug === 'dev')?.effort).toBe('high')
   })
   it('without a setEnabled port new skills are not applied, only reported', async () => {

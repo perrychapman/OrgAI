@@ -143,6 +143,10 @@ const pub = (g: StoredGeneration): EvolutionGeneration => {
   return rest
 }
 
+/** What a plan reads and changes of a project: the roles, the staffing mode and goal, the concurrency limit and the skills. */
+const teamKey = (p: Project): string =>
+  JSON.stringify([p.roles, p.staffing ?? null, p.staffingGoal ?? null, p.maxConcurrentSubagents ?? null, (p.skills ?? []).map((s) => s.id)])
+
 export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
   const now = deps.now ?? Date.now
   const log = (level: 'info' | 'warn', m: string): void => {
@@ -206,17 +210,20 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     const cooldownSlugs = cooldownOf(ledger, records, now())
     const gate = { rejected: ledger.rejectedHypotheses, diagnosis, cooldownSlugs }
     let plan = await synthesize({ project, diagnosis, strategy, rejected: ledger.rejectedHypotheses, minWaste, complete: deps.complete, onUsage: deps.onUsage, cooldownSlugs })
+    // Deleting a project skill is reported, never applied: a skill's folder can hold more than SKILL.md (scripts,
+    // references) and an enabled flag, which a generation's snapshot does not keep, so a rollback could not put it back
+    // as it was. Removing it stays the user's call.
+    if (plan.pruneSkillIds.length) {
+      const dropped = plan.pruneSkillIds
+      plan = validateEvolutionPlan(project, { ...plan, pruneSkillIds: [] }, gate)
+      plan.gate.violations.push({ rule: 'skill_prune_needs_review', message: `Unused skills not removed (remove them yourself if you agree): ${dropped.join(', ').slice(0, 160)}`, action: 'trimmed' })
+    }
     // New skills are always created DISABLED (the skills service has an `enabled` flag, so a person turns one on after
     // reading it). Without the setEnabled port they cannot be made safe, so they are dropped and only reported.
     if (plan.newSkills.length && !deps.skills?.setEnabled) {
       const dropped = plan.newSkills.map((s) => s.name)
       plan = validateEvolutionPlan(project, { ...plan, newSkills: [] }, gate)
       plan.gate.violations.push({ rule: 'skill_needs_review', message: `Suggested skills not applied (they need review): ${dropped.join(', ').slice(0, 160)}`, action: 'trimmed' })
-    }
-    if (!deps.skills && plan.pruneSkillIds.length) plan = validateEvolutionPlan(project, { ...plan, pruneSkillIds: [] }, gate)
-    else if (deps.skills && plan.pruneSkillIds.length) {
-      const ok = plan.pruneSkillIds.filter((id) => !!deps.skills?.readDraft(project.id, id))
-      if (ok.length !== plan.pruneSkillIds.length) plan = validateEvolutionPlan(project, { ...plan, pruneSkillIds: ok }, gate)
     }
     return { diagnosis, plan, minWaste }
   }
@@ -274,6 +281,9 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     writeLedger(deps.dataDir, ledger)
     try {
       deps.updateProject(project.id, (p) => {
+        // The plan (and the snapshot already on disk) were made from `project`, perhaps around a model call: if the team
+        // changed meanwhile (a save, a fixed role, a lower effort), nothing is applied.
+        if (teamKey(p) !== teamKey(project)) throw new Error('the team changed while the plan was being made; run evolve again')
         const out = applyPlan(p, plan)
         const bad = chartProblems(p, out)
         if (bad.length) throw new Error(`safety gate: ${bad.map((v) => v.rule).join(', ')}`)

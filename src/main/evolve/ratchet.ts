@@ -205,29 +205,58 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
         else trim('effort_raise', `${slug} may raise effort only by one step and only when under-provisioned`, slug)
       } else out.effort = e
     }
+    // The effort ceiling automatic staffing uses for the role today (staffing.ts: staffing.maxEffort, else the role's
+    // effort, else high).
+    const curMax: Effort = role.staffing?.maxEffort ?? role.effort ?? 'high'
+    const curFloor = role.staffing?.minTier
     if (!fixed && rawPatch.staffing !== undefined) {
       const s = (rawPatch.staffing ?? {}) as Record<string, unknown>
       const curMode = role.staffing?.mode ?? 'auto'
-      const next: RoleStaffing = { mode: curMode }
+      // Start from the role's own bounds: a field that is trimmed keeps its current value, never drops it.
+      const next: RoleStaffing = { mode: curMode, ...(curFloor ? { minTier: curFloor } : {}), ...(role.staffing?.maxEffort ? { maxEffort: role.staffing.maxEffort } : {}) }
       if (s.mode !== undefined && s.mode !== curMode) trim('staffing_mode_changed', 'staffing mode is not changed by an evolution', slug)
       const ceiling = out.tier ?? cur
       if (s.minTier !== undefined) {
         if (s.minTier === 'top') trim('tier_top', 'staffing floor "top" is never set', slug)
         else if (!isTier(s.minTier)) trim('tier_invalid', 'unknown minTier', slug)
-        else if (ceiling && compareTier(s.minTier, ceiling) > 0) trim('tier_raise', 'staffing floor above the role tier', slug)
-        else if (role.staffing?.minTier && compareTier(s.minTier, role.staffing.minTier) > 0 && !under) trim('tier_raise', 'staffing floor raised without an under-provisioned finding', slug)
-        else if (!role.staffing?.minTier && !under && compareTier(s.minTier, 'fast') > 0) trim('tier_raise', 'staffing floor raised without an under-provisioned finding', slug)
+        else if (!ceiling) trim('tier_unknown_base', `${slug} has no known tier, so its staffing floor stays as it is`, slug)
+        else if (compareTier(s.minTier, ceiling) > 0) trim('tier_raise', 'staffing floor above the role tier', slug)
+        else if (compareTier(s.minTier, curFloor ?? 'fast') > 0 && !under) trim('tier_raise', 'staffing floor raised without an under-provisioned finding', slug)
         else next.minTier = s.minTier
-      } else if (role.staffing?.minTier) next.minTier = role.staffing.minTier
-      const curMax = role.staffing?.maxEffort ?? role.effort
+      }
       if (s.maxEffort !== undefined) {
         if (s.maxEffort === 'xhigh' || s.maxEffort === 'max') trim('effort_xhigh', 'staffing maxEffort "xhigh"/"max" is never set', slug)
         else if (!isEff(s.maxEffort)) trim('effort_invalid', 'unknown maxEffort', slug)
-        else if (curMax && compareEffort(s.maxEffort, curMax) > 0 && (!under || s.maxEffort !== stepEffort(curMax, 1))) trim('effort_raise', 'staffing maxEffort may rise only one step and only with an under-provisioned finding', slug)
-        else if (!curMax && compareEffort(s.maxEffort, 'high') > 0) trim('effort_raise', 'staffing maxEffort above high', slug)
+        else if (compareEffort(s.maxEffort, curMax) > 0 && (!under || s.maxEffort !== stepEffort(curMax, 1))) trim('effort_raise', 'staffing maxEffort may rise only one step and only with an under-provisioned finding', slug)
         else next.maxEffort = s.maxEffort
-      } else if (role.staffing?.maxEffort) next.maxEffort = role.staffing.maxEffort
-      if (next.minTier !== role.staffing?.minTier || next.maxEffort !== role.staffing?.maxEffort) out.staffing = next
+      }
+      if (next.minTier !== curFloor || next.maxEffort !== role.staffing?.maxEffort) out.staffing = next
+    }
+    // Spend rises by one step on one field per role: a second raise in the same patch is dropped (tier first, then
+    // effort, then the staffing floor, then the effort ceiling).
+    const raises: ('tier' | 'effort' | 'floor' | 'ceiling')[] = []
+    if (out.tier !== undefined && cur && compareTier(out.tier, cur) > 0) raises.push('tier')
+    if (out.effort !== undefined && compareEffort(out.effort, curEffort) > 0) raises.push('effort')
+    if (out.staffing?.minTier && compareTier(out.staffing.minTier, curFloor ?? 'fast') > 0) raises.push('floor')
+    if (out.staffing?.maxEffort && compareEffort(out.staffing.maxEffort, curMax) > 0) raises.push('ceiling')
+    for (const extra of raises.slice(1)) {
+      trim('one_raise_per_role', `${slug} may rise on one of tier, effort or staffing per generation; the ${extra} raise was dropped`, slug)
+      if (extra === 'effort') delete out.effort
+      else if (out.staffing) {
+        const st: RoleStaffing = { ...out.staffing }
+        if (extra === 'floor') {
+          if (curFloor) st.minTier = curFloor
+          else delete st.minTier
+        } else if (role.staffing?.maxEffort) st.maxEffort = role.staffing.maxEffort
+        else delete st.maxEffort
+        if (st.minTier === curFloor && st.maxEffort === role.staffing?.maxEffort) delete out.staffing
+        else out.staffing = st
+      }
+    }
+    // A lower tier never leaves the staffing floor above it (effectiveRoleStaffing would drop such a floor silently).
+    if (out.tier !== undefined) {
+      const floor = (out.staffing ?? role.staffing)?.minTier
+      if (floor && compareTier(floor, out.tier) > 0) out.staffing = { ...(out.staffing ?? role.staffing ?? { mode: 'auto' }), minTier: out.tier }
     }
     const adds: ToolName[] = []
     for (const t of Array.isArray(rawPatch.addTools) ? rawPatch.addTools : []) {

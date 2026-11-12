@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { MAX_CONCURRENT_SUBAGENTS_LIMIT, DEFAULT_MAX_CONCURRENT_SUBAGENTS, cleanRoleStaffing, effectiveRoleStaffing, settingTier } from '../../shared/defaults'
+import { MAX_CONCURRENT_SUBAGENTS_LIMIT, DEFAULT_MAX_CONCURRENT_SUBAGENTS, effectiveRoleStaffing, settingTier } from '../../shared/defaults'
 import type { EvolutionPlan, EvolutionRolePatch, EvolutionSkillPatch, Project, Role, Effort, ModelTier, ToolName } from '../../shared/types'
 import { EFFORTS, MODEL_TIERS } from '../../shared/types'
 
@@ -163,13 +163,13 @@ export function patchChanges(role: Pick<Role, 'tier' | 'model' | 'effort' | 'sta
 }
 
 /**
- * A role the user fixed on purpose: the project runs `staffing: 'fixed'`, or the role carries `staffing.mode: 'fixed'`.
- * It runs as configured, so an evolution never changes its tier, effort or staffing bounds (the gate trims such a
- * patch; the synthesizer does not propose one). A role that is only implicitly fixed (a concrete model, no tier) is not
- * this: nobody chose that mode, and tierMoves already keeps a tier change off it.
+ * A role that runs as configured (effectiveRoleStaffing mode 'fixed'): the project runs `staffing: 'fixed'`, the role
+ * carries `staffing.mode: 'fixed'`, or it is on a concrete model with no tier (an explicit pick of the user's). An
+ * evolution never changes its tier, effort or staffing bounds: the gate trims such a patch and the synthesizer does not
+ * propose one.
  */
-export function isFixedRole(project: Pick<Project, 'staffing'>, role: Pick<Role, 'staffing'>): boolean {
-  return project.staffing === 'fixed' || cleanRoleStaffing(role.staffing)?.mode === 'fixed'
+export function isFixedRole(project: Pick<Project, 'staffing'>, role: Pick<Role, 'model' | 'tier' | 'effort' | 'staffing'>): boolean {
+  return effectiveRoleStaffing(role, project).mode === 'fixed'
 }
 
 /** Whether a tier change on this role changes what it runs on (auto staffing reads the tier; a tier-named model follows it). */

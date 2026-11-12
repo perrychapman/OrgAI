@@ -31,9 +31,10 @@ function rig(options: RunManagerOptions = {}) {
 
 const RESULT: EvolvePostRunResult = { projectId: 'x', ratchet: 'promoted', ratchetReason: 'cheaper' }
 
+/** Ends a run the way a headless exec run ends on its own (finalized 'completed'), not stopped by the user. */
 async function endRun(m: RunManager, id: string): Promise<void> {
   await vi.waitFor(() => expect(['idle', 'finished']).toContain(m.summary(id)?.status))
-  await m.stop(id)
+  await m.finalizeExecRun(id, 'completed')
   await vi.waitFor(() => expect(m.summaryOf(id)).toBeUndefined())
 }
 
@@ -66,6 +67,36 @@ describe('RunManager post-run evolve pass', () => {
       return { tokens: x.tokens, costUsd: x.costUsd, costSource: x.costSource, turns: x.turns, toolCalls: x.toolCalls, agents: x.agents }
     }
     expect(stable(seen?.usage)).toEqual(stable(seen?.live))
+  })
+
+  it('a run the user stopped (or interrupted) gets no pass: nothing is spent or changed after a stop', async () => {
+    const afterRun = vi.fn(async () => RESULT)
+    const { m, p } = rig({ evolveAfterRun: afterRun })
+    const run = await m.start({ project: p, prompt: '[mock:model-switch]', evolve: 'hybrid' })
+    await vi.waitFor(() => expect(['idle', 'finished']).toContain(m.summary(run.id)?.status))
+    await m.stop(run.id)
+    await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+    expect(await m.awaitEvolvePass(run.id)).toBeUndefined()
+    expect(afterRun).not.toHaveBeenCalled()
+    const second = await m.start({ project: p, prompt: '[mock:model-switch]', evolve: true })
+    await vi.waitFor(() => expect(['idle', 'finished']).toContain(m.summary(second.id)?.status))
+    await m.finalizeExecRun(second.id, 'interrupted', { endedBy: 'user' })
+    await vi.waitFor(() => expect(m.summaryOf(second.id)).toBeUndefined())
+    expect(afterRun).not.toHaveBeenCalled()
+    expect(m.evolvePassCount()).toBe(0)
+  })
+
+  it('a pass still running counts as background work, so shutdown waits for it before letting go of the folder', async () => {
+    let release!: (r: EvolvePostRunResult) => void
+    const afterRun = vi.fn(() => new Promise<EvolvePostRunResult>((r) => (release = r)))
+    const { m, p } = rig({ evolveAfterRun: afterRun })
+    const run = await m.start({ project: p, prompt: '[mock:model-switch]', evolve: true })
+    await endRun(m, run.id)
+    await vi.waitFor(() => expect(afterRun).toHaveBeenCalledTimes(1))
+    expect(m.evolvePassCount()).toBe(1)
+    release(RESULT)
+    expect(await m.awaitEvolvePass(run.id)).toEqual(RESULT)
+    expect(m.evolvePassCount()).toBe(0)
   })
 
   it('evolve: true passes no strategy', async () => {

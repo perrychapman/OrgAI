@@ -67,8 +67,11 @@ describe('validateEvolutionPlan: tiers and effort', () => {
     expect(rules(validateEvolutionPlan(lowRole, mkPlan({ rolePatches: [patch('dev', { effort: 'high' })] }), { diagnosis: under('dev') }))).toContain('effort_raise')
     expect(validateEvolutionPlan(lowRole, mkPlan({ rolePatches: [patch('dev', { effort: 'medium' })] }), { diagnosis: under('dev') }).rolePatches).toHaveLength(1)
     expect(rules(validateEvolutionPlan(lowRole, mkPlan({ rolePatches: [patch('dev', { effort: 'medium' })] })))).toContain('effort_raise')
-    const unknown = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: undefined, model: 'some-model-9' })])
+    // A concrete model with no tier runs as configured (fixed); made auto on purpose, its unknown tier still fails closed.
+    const unknown = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: undefined, model: 'some-model-9', staffing: { mode: 'auto' } })])
     expect(rules(validateEvolutionPlan(unknown, mkPlan({ rolePatches: [patch('dev', { tier: 'fast' })] })))).toContain('tier_unknown_base')
+    const implicit = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: undefined, model: 'some-model-9' })])
+    expect(rules(validateEvolutionPlan(implicit, mkPlan({ rolePatches: [patch('dev', { tier: 'fast', effort: 'low' })] })))).toContain('staffing_fixed')
   })
 
   it('fixed staffing: a patch never changes the tier, effort or staffing of a role the user fixed; its other fields still apply', () => {
@@ -92,7 +95,7 @@ describe('validateEvolutionPlan: tiers and effort', () => {
     const concrete = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'claude-sonnet-4-5', tier: undefined })])
     const out = validateEvolutionPlan(concrete, mkPlan({ rolePatches: [patch('dev', { tier: 'fast' })] }))
     expect(out.rolePatches).toHaveLength(0)
-    expect(rules(out).some((r) => r === 'tier_no_effect' || r === 'tier_unknown_base')).toBe(true)
+    expect(rules(out).some((r) => r === 'tier_no_effect' || r === 'tier_unknown_base' || r === 'staffing_fixed')).toBe(true)
   })
   it('staffing: floors never above top or the role tier, no mode flips, maxEffort capped', () => {
     const dev = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: 'everyday', model: 'everyday', effort: 'medium' })])
@@ -321,16 +324,45 @@ describe('validateEvolutionPlan: prompts, skills, limits, rejected', () => {
     expect(lim(8, f(10))).toBeUndefined() // unchanged
   })
   it('spend probes: floor above fast on an unknown-tier role, multi-step effort, root-only raises', () => {
-    const unknown = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: undefined, model: 'some-model-9', effort: 'low' })])
+    // An auto role with no known tier: a floor fails closed, even with an under-provisioned finding (no ceiling to bound it).
+    const unknown = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: undefined, model: 'some-model-9', effort: 'low', staffing: { mode: 'auto' } })])
     const floor = (d?: ReturnType<typeof under>) => validateEvolutionPlan(unknown, mkPlan({ rolePatches: [patch('dev', { staffing: { mode: 'auto', minTier: 'deep' } })] }), { diagnosis: d })
-    expect(rules(floor())).toContain('tier_raise')
-    expect(floor(under('dev')).rolePatches).toHaveLength(1)
+    expect(rules(floor())).toContain('tier_unknown_base')
+    expect(floor(under('dev')).rolePatches).toHaveLength(0)
     expect(floor(under('other')).rolePatches).toHaveLength(0)
+    const known = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: 'deep', model: 'deep', effort: 'low' })])
+    const kfloor = (d?: ReturnType<typeof under>) => validateEvolutionPlan(known, mkPlan({ rolePatches: [patch('dev', { staffing: { mode: 'auto', minTier: 'deep' } })] }), { diagnosis: d })
+    expect(rules(kfloor())).toContain('tier_raise')
+    expect(kfloor(under('dev')).rolePatches).toHaveLength(1)
     const eff = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { effort: 'medium', staffing: { mode: 'auto', maxEffort: 'low' } })])
     const mx = (e: 'medium' | 'high', d?: ReturnType<typeof under>) => validateEvolutionPlan(eff, mkPlan({ rolePatches: [patch('dev', { staffing: { mode: 'auto', maxEffort: e } })] }), { diagnosis: d })
     expect(rules(mx('medium'))).toContain('effort_raise')
     expect(mx('medium', under('dev')).rolePatches).toHaveLength(1)
     expect(rules(mx('high', under('dev')))).toContain('effort_raise') // two steps
+  })
+  it('a trimmed staffing raise keeps the role\'s existing ceiling and floor (it never drops them)', () => {
+    const capped = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: 'deep', model: 'deep', effort: undefined, staffing: { mode: 'auto', minTier: 'everyday', maxEffort: 'low' } })])
+    const out = validateEvolutionPlan(capped, mkPlan({ rolePatches: [patch('dev', { staffing: { mode: 'auto', maxEffort: 'high' } })] }))
+    expect(rules(out)).toContain('effort_raise')
+    expect(out.rolePatches).toHaveLength(0)
+    expect(applyPlan(capped, out).roles[1].staffing).toEqual({ mode: 'auto', minTier: 'everyday', maxEffort: 'low' })
+    // Lowering the ceiling alone keeps the floor.
+    const lower = validateEvolutionPlan(capped, mkPlan({ rolePatches: [patch('dev', { staffing: { mode: 'auto' } })] }))
+    expect(lower.rolePatches).toHaveLength(0)
+  })
+  it('one raise per role per generation: a tier raise drops an effort or staffing raise in the same patch', () => {
+    const p0 = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: 'everyday', model: 'everyday', effort: 'medium' })])
+    const out = validateEvolutionPlan(p0, mkPlan({ rolePatches: [patch('dev', { tier: 'deep', effort: 'high', staffing: { mode: 'auto', minTier: 'deep', maxEffort: 'high' } })] }), { diagnosis: under('dev') })
+    expect(out.rolePatches[0]).toMatchObject({ tier: 'deep' })
+    expect(out.rolePatches[0].effort).toBeUndefined()
+    expect(out.rolePatches[0].staffing?.minTier).toBeUndefined()
+    expect(out.rolePatches[0].staffing?.maxEffort).toBeUndefined()
+    expect(rules(out).filter((r) => r === 'one_raise_per_role')).toHaveLength(3)
+  })
+  it('a lower tier clamps a staffing floor that would sit above it', () => {
+    const p0 = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { tier: 'deep', model: 'deep', effort: 'medium', staffing: { mode: 'auto', minTier: 'deep' } })])
+    const out = validateEvolutionPlan(p0, mkPlan({ rolePatches: [patch('dev', { tier: 'everyday' })] }))
+    expect(out.rolePatches[0]).toMatchObject({ tier: 'everyday', staffing: { mode: 'auto', minTier: 'everyday' } })
   })
   it('a role patched in a recent generation is left alone (cooldown)', () => {
     const out = validateEvolutionPlan(project(), mkPlan({ rolePatches: [patch('dev', { effort: 'low' }), patch('review', { effort: 'low' })] }), { cooldownSlugs: ['dev'] })

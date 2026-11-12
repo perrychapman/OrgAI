@@ -1258,6 +1258,8 @@ export class RunManager {
   private runs = new Map<string, ActiveRun>()
   /** Run id -> its post-run evolve pass (bounded; startEvolvePass / awaitEvolvePass). */
   private evolvePasses = new Map<string, Promise<EvolvePostRunResult | undefined>>()
+  /** Post-run evolve passes not settled yet: shutdown waits for them (evolvePassCount) before it lets go of the folder. */
+  private evolvePassesInFlight = 0
   /** Paused run id -> its auto-resume timer. Lives only as long as the app process. */
   /** Every pending title query, live run or not, with its project id; stopAll and removeProject abort them. */
   private titleAborts = new Map<AbortController, string>()
@@ -1987,8 +1989,9 @@ export class RunManager {
           if (settled !== agent) emit({ type: 'agent.upsert', runId: summary.id, agent: settled })
         }
       }
-      // Team evolution: one post-run pass per run, once its record is on disk (the engine decides which runs it measures).
-      if (outcome && active.evolve) this.startEvolvePass(active)
+      // Team evolution: one post-run pass per run that finished or failed on its own, once its record is on disk (the
+      // engine decides which runs it measures). A run the user stopped, or one ended by quitting, gets none.
+      if ((outcome === 'finished' || outcome === 'failed') && !active.userStopped && !this.quitting && active.evolve) this.startEvolvePass(active)
       if (exec) this.execEventSeen(active, e)
       else if (summary.conversationBudgetUsd !== undefined && (e.type === 'agent.upsert' || e.type === 'run.cost')) this.checkExecBudget(active, e.type === 'agent.upsert' ? e.agent : undefined)
     }
@@ -3810,14 +3813,20 @@ export class RunManager {
     active.evolve = undefined
     if (!afterRun || this.evolvePasses.has(runId) || !strategy) return
     // The record (transcript, usage, plan) is what the engine measures; the closing usage refresh lands right after this event.
+    this.evolvePassesInFlight++
     const pass = Promise.resolve()
       .then(() => {
+        // Quitting began between the run's end and this microtask: no pass (it would write the team while the folder is let go).
+        if (this.quitting) return undefined
         this.flush(active)
         return afterRun({ projectId: active.summary.projectId, evolve: true, ...(strategy === true ? {} : { strategy }), ...(evalWindowRuns !== undefined ? { evalWindowRuns } : {}) })
       })
       .catch((e: unknown) => {
         log.warn(`Run ${runId}: the post-run evolve pass failed: ${logText(String((e as Error)?.message ?? e))}`)
         return undefined
+      })
+      .finally(() => {
+        this.evolvePassesInFlight--
       })
     this.evolvePasses.set(runId, pass)
     while (this.evolvePasses.size > EVOLVE_PASSES_KEPT) this.evolvePasses.delete(this.evolvePasses.keys().next().value as string)
@@ -5051,6 +5060,9 @@ export class RunManager {
 
   /** Activity (backgroundTasks): pending run-title queries, live run or not. */
   titleTaskCount(): number { return this.titleAborts.size }
+
+  /** Activity (backgroundTasks): post-run evolve passes still running (they write the team and the ledger). */
+  evolvePassCount(): number { return this.evolvePassesInFlight }
 
   /** Is an auto-resume timer pending for this run? */
   hasAutoResume(runId: string): boolean {
