@@ -14,6 +14,7 @@ import type {
   KnowledgeRetireResult,
   KnowledgeSource,
   ModelRef,
+  Effort,
   ModelTier,
   ImageAttachment,
   McpInstallDecision,
@@ -743,6 +744,13 @@ export interface BridgeSpawnInput {
   parentRoleId?: string
   /** The delegating tool call's id when the adapter knows it (AgentInstance.spawnToolUseId). */
   toolUseId?: string
+  /**
+   * Staffing intent from the call (delegate_agent `tier` / `effort`). Resolved through resolveStaffing against the
+   * bridged connection's tier map and the role's bounds, so it can never go past the role's ceilings; a fixed role or
+   * project ignores it.
+   */
+  tier?: ModelTier
+  effort?: Effort
   /**
    * Called synchronously once the child's agent exists (before its first turn), so an asynchronous caller (Codex
    * spawn_agent) can answer its tool call with the handle at once.

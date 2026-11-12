@@ -5,8 +5,6 @@ import {
   Files,
   Bot,
   CheckCircle2,
-  Circle,
-  CircleDot,
   Database,
   ExternalLink,
   FileText,
@@ -16,7 +14,6 @@ import {
   ArrowDown,
   ListChecks,
   MessageSquare,
-  MinusCircle,
   Search,
   ShieldQuestion,
   Sparkles,
@@ -25,40 +22,32 @@ import {
   XCircle,
   type LucideIcon
 } from 'lucide-react'
-import type { AgentInstance, PlanStep, RunPlan, RunStaffing, TranscriptEntry, TranscriptMedia, TranscriptContentPart } from '@shared/types'
-import { DEFAULT_MAX_AUTO_CONTINUES, isVirtualProjectId } from '@shared/types'
-import { projectKindOf } from '@shared/defaults'
-import RunKnowledge from './knowledge/RunKnowledge'
+import type { AgentInstance, TranscriptEntry, TranscriptMedia, TranscriptContentPart } from '@shared/types'
 import { isRunWindow } from '../lib/runKnowledge'
 import '../styles/knowledge-run.css'
-import { selectedProject, useAppStore, useProjectSummaries, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
-import { chainOf } from '../lib/runChains'
-import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
+import { useAppStore, useRunIndexes, type LogLine, type SideTab } from '../store/useAppStore'
 import { runTag } from '../lib/runLabels'
 import { parsePeerNote, type PeerNote } from '../lib/peerNotes'
-import { formatElapsed, formatTokens, planProgress } from '../lib/layout'
-import { planHasGraph, stepViews, waitingOnText } from '../lib/planGraph'
-import { agentStaffingView, assignmentOf, stepRanLabel } from '../lib/runStaffing'
+import { formatElapsed, formatTokens } from '../lib/layout'
+import { agentStaffingView, assignmentOf } from '../lib/runStaffing'
 import { Cost } from './ui/Cost'
 import { agentCostInput } from '../lib/cost'
 import { connectionTag, connectionTagTitle } from '../lib/roleConnection'
-import UsagePanel from './UsagePanel'
+import { RunTabBody, useRunTabs } from './RunDetailTabs'
 import { Markdown } from './Markdown'
 import { TranscriptImages } from './ImageAttachments'
 import { usableTranscriptImage } from '../lib/transcriptMedia'
 import FinishedList, { type FinishedGroup } from './FinishedList'
-import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
-import { TabPanel, Tabs, type TabItem } from './ui/Tabs'
-import { autoContinueLine, bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
+import { TabPanel, Tabs } from './ui/Tabs'
+import { bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
 import { arriveClass, followBehavior } from '../lib/transcriptFollow'
 import { useArrival } from '../lib/useArrival'
 import { useReducedMotion } from '../lib/canvas'
 import { collapseSelfHelp, type SelfHelpRow } from '../lib/selfHelpRows'
 import { collapseKnowledgeWrites, readRowText, recallOutputText, type KnowledgeRow } from '../lib/knowledgeRun'
-import RunOutputs from './outputs/RunOutputs'
 import { revealOutputsTab } from './outputs/revealOutputsTab'
 import ReviseDialog from './outputs/ReviseDialog'
 import { canRevise } from '../lib/outputRevise'
@@ -83,14 +72,8 @@ interface Props {
   tagRunId?: string
   /** Shown above the feed (the chain's "Load earlier sessions" row); only with `feed`. */
   lead?: ReactNode
-}
-
-const STEP_ICONS: Record<PlanStep['status'], LucideIcon> = {
-  pending: Circle,
-  in_progress: CircleDot,
-  done: CheckCircle2,
-  blocked: AlertTriangle,
-  skipped: MinusCircle
+  /** Held by the caller when the "Show thinking" control sits outside this component (the assistant stage strip). */
+  showThinking?: boolean
 }
 
 const TOOL_ICONS: Record<ToolKind, LucideIcon> = {
@@ -106,85 +89,6 @@ const TOOL_ICONS: Record<ToolKind, LucideIcon> = {
   message: MessageSquare,
   knowledge: Database,
   other: Wrench
-}
-
-const STEP_LABELS: Record<PlanStep['status'], string> = {
-  pending: 'Not started',
-  in_progress: 'In progress',
-  done: 'Done',
-  blocked: 'Blocked',
-  skipped: 'Skipped'
-}
-
-/** The orchestrator's plan: goal, steps with status, and how the automatic continuation stands. */
-function PlanView({ plan, staffing }: { plan: RunPlan | undefined; staffing?: RunStaffing }): ReactElement {
-  const project = useAppStore(selectedProject)
-  if (!plan) {
-    return (
-      <div className="plan-view">
-        <p className="panel-note">No plan yet. On work runs the orchestrator writes a plan first; it appears here, and OrgAI keeps the run going until every step is done.</p>
-      </div>
-    )
-  }
-  const { done, total } = planProgress(plan)
-  const max = project?.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
-  const auto = project?.autoContinue !== false
-  const cont = autoContinueLine(auto, plan.autoContinues, max)
-  const status = plan.status === 'active' ? 'In progress' : plan.status === 'done' ? 'Done' : 'Blocked'
-  // Ready / waiting lines only for a plan that uses the graph (after, paths or staff); older plans look as they always did.
-  const views = planHasGraph(plan) ? stepViews(plan) : null
-  return (
-    <div className="plan-view">
-      <div className="plan-head">
-        <div className="plan-goal">{plan.goal}</div>
-        <div className="row plan-pills">
-          <Badge tone={plan.status === 'done' ? 'success' : plan.status === 'blocked' ? 'attention' : 'info'}>{status}</Badge>
-          <Badge>
-            {done} of {total} steps done
-          </Badge>
-          <Badge title={cont.explain}>{cont.pill}</Badge>
-        </div>
-        <p className="panel-note">{cont.explain}</p>
-      </div>
-      {plan.status === 'blocked' && plan.blockedReason && <div className="plan-blocked">Blocked: {plan.blockedReason}</div>}
-      <ol className="plan-steps">
-        {plan.steps.map((s, i) => {
-          const view = views?.[i]
-          const stateText =
-            view?.state === 'running' ? 'Running now' : view?.state === 'ready' ? 'Ready to start' : view?.state === 'waiting' ? waitingOnText(plan, view.waitingOn) : ''
-          return (
-          <li key={s.id} className={`plan-step ${s.status}`}>
-            <span className="plan-icon" title={STEP_LABELS[s.status]} role="img" aria-label={STEP_LABELS[s.status]}>
-              <Icon icon={STEP_ICONS[s.status]} size="sm" />
-            </span>
-            <div className="plan-body">
-              <div className="plan-title">
-                {s.title}
-                {s.owner && <span className="plan-owner">{s.owner}</span>}
-              </div>
-              {s.note && <div className="plan-note">{s.note}</div>}
-              {stateText && (
-                <div className="plan-state" data-testid="plan-step-state" data-state={view?.state} title={view?.state === 'waiting' ? stateText : undefined}>
-                  {stateText}
-                </div>
-              )}
-              {s.staff && (
-                <div className="plan-staff" data-testid="plan-step-staff">
-                  {stepRanLabel(s.staff, staffing, s.id)}
-                </div>
-              )}
-            </div>
-          </li>
-          )
-        })}
-      </ol>
-      {plan.summary && (
-        <div className="plan-summary">
-          <Markdown text={plan.summary} />
-        </div>
-      )}
-    </div>
-  )
 }
 
 /**
@@ -419,39 +323,18 @@ function SelfHelpRowView({ row, arrive }: { row: SelfHelpRow; arrive?: boolean }
   )
 }
 
-export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead }: Props): ReactElement {
-  const selectedTab = useAppStore((s) => s.sideTabByRun[runId] ?? 'transcript')
+export default function TranscriptPanel({ runId, agent, entries: ownEntries, feed, logs, finished, variant = 'panel', tagRunId, lead, showThinking: heldThinking }: Props): ReactElement {
   const projectId = useAppStore((s) => s.runs[runId]?.summary.projectId)
-  const setTab = useAppStore((s) => s.setSideTab)
-  const [showThinking, setShowThinking] = useState(false)
+  const [ownThinking, setShowThinking] = useState(false)
+  const showThinking = heldThinking ?? ownThinking
   const bottom = useRef<HTMLDivElement>(null)
   const partial = useAppStore((s) => (agent ? s.runs[runId]?.partial[agent.id] : undefined))
-  const plan = useAppStore((s) => s.runs[runId]?.plan)
-  const runStaffing = useAppStore((s) => s.runs[runId]?.staffing)
   const agentAssignment = useAppStore((s) => (agent ? assignmentOf(s.runs[runId]?.staffing, agent.id) : undefined))
   const agentStaffing = agentStaffingView(agentAssignment)
-  const isWork = useAppStore((s) => s.runs[runId]?.summary.kind === 'work')
   const runConnection = useAppStore((s) => s.runs[runId]?.summary.connection)
   const index = useRunIndexes().get(tagRunId ?? runId)
-  // Setup runs have no plan tab; fall back to the transcript there.
-  const planTab = selectedTab === 'plan' && !isWork && !plan ? 'transcript' : selectedTab
-  // The Knowledge tab: work runs of engagements (Ask runs too), never setup runs or the assistants.
-  const showKnowledgeTab = useAppStore((s) => {
-    const run = s.runs[runId]?.summary
-    if (!run || run.kind !== 'work' || run.quick || isVirtualProjectId(run.projectId)) return false
-    const project = s.projects.find((p) => p.id === run.projectId)
-    return !!project && projectKindOf(project) === 'engagement'
-  })
-  // The Outputs tab: work runs of stored projects, never setup runs, quick runs or the assistants.
-  const showOutputsTab = useAppStore((s) => {
-    const run = s.runs[runId]?.summary
-    return !!run && run.kind === 'work' && !run.quick && !isVirtualProjectId(run.projectId)
-  })
-  // The Outputs tab's count: the same list RunOutputs shows (every member run of the chain).
-  const outputsAll = useAppStore((s) => (projectId ? s.outputsByProject[projectId] : undefined))
-  const chainSummaries = useProjectSummaries()
-  const outputsCount = useMemo(() => outputsOfRuns(outputsAll, chainOf(chainSummaries, runId).map((m) => m.id)).length, [outputsAll, chainSummaries, runId])
-  const tab: SideTab = (planTab === 'knowledge' && !showKnowledgeTab) || (planTab === 'outputs' && !showOutputsTab) ? 'transcript' : planTab
+  // The tab list and the fallback for a stored tab this run does not have: lib/runTabs.ts (shared with RunStageTabs).
+  const { tabs, tab, setTab } = useRunTabs(runId, logs, { label: 'Transcript', testId: 'side-tab-transcript' })
 
   // One list for both shapes: the merged feed, or this run's entries as feed items.
   const items = useMemo<FeedItem[]>(() => feed ?? ownEntries.map((entry) => ({ kind: 'entry' as const, runId, entry })), [feed, ownEntries, runId])
@@ -686,16 +569,6 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   }
 
   const headerTitle = agent ? agent.name : finished ? 'Finished reports' : 'Transcript'
-  const errorCount = logs.filter((l) => l.level === 'error').length
-  const showPlanTab = isWork || !!plan
-  const tabs: TabItem[] = [
-    { id: 'transcript', label: 'Transcript', testId: 'side-tab-transcript' },
-    ...(showPlanTab ? [{ id: 'plan', label: 'Plan', icon: plan?.status === 'blocked' ? AlertTriangle : undefined, testId: 'side-tab-plan' }] : []),
-    { id: 'usage', label: 'Usage', testId: 'side-tab-usage' },
-    ...(showOutputsTab ? [{ id: 'outputs', label: 'Outputs', count: outputsCount, countLabel: outputsCountLabel(outputsCount), countTestId: 'side-tab-outputs-count', testId: 'side-tab-outputs' }] : []),
-    ...(showKnowledgeTab ? [{ id: 'knowledge', label: 'Knowledge', testId: 'side-tab-knowledge' }] : []),
-    { id: 'logs', label: 'Logs', count: errorCount, testId: 'side-tab-logs' }
-  ]
   const idPrefix = `side-${runId}`
   return (
     <div className="side-run">
@@ -713,26 +586,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
         </div>
         <Tabs tabs={tabs} value={tab} onChange={(id) => setTab(id as SideTab)} label={`Run ${runTag(index)} details`} idPrefix={idPrefix} compact />
       </div>
-      {tab === 'plan' && (
-        <TabPanel idPrefix={idPrefix} id="plan" value={tab}>
-          <PlanView plan={plan} staffing={runStaffing} />
-        </TabPanel>
-      )}
-      {tab === 'usage' && (
-        <TabPanel idPrefix={idPrefix} id="usage" value={tab}>
-          <UsagePanel runId={runId} agent={agent} />
-        </TabPanel>
-      )}
-      {tab === 'outputs' && projectId && (
-        <TabPanel idPrefix={idPrefix} id="outputs" value={tab} className="run-outputs-panel">
-          <RunOutputs runId={runId} projectId={projectId} />
-        </TabPanel>
-      )}
-      {tab === 'knowledge' && projectId && (
-        <TabPanel idPrefix={idPrefix} id="knowledge" value={tab} className="run-knowledge-panel">
-          <RunKnowledge runId={runId} projectId={projectId} />
-        </TabPanel>
-      )}
+      <RunTabBody runId={runId} tab={tab} idPrefix={idPrefix} agent={agent} logs={logs} />
       {tab === 'transcript' && finished && !agent && (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab}>
           <FinishedList group={finished} />
@@ -775,7 +629,7 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           <Checkbox checked={showThinking} onChange={setShowThinking} label="Show thinking" />
         </div>
       )}
-      {tab === 'plan' || tab === 'usage' || tab === 'outputs' || tab === 'knowledge' || (tab === 'transcript' && finished && !agent) ? null : tab === 'transcript' ? (
+      {tab === 'transcript' && !(finished && !agent) && (
         <TabPanel idPrefix={idPrefix} id="transcript" value={tab} className="transcript">
           {!agent && <p className="panel-note">Select an agent on the chart to read its transcript.</p>}
           {agent && visible.length === 0 && !partial && <p className="panel-note">Nothing yet.</p>}
@@ -786,17 +640,6 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
               <Markdown text={partial} />
             </div>
           )}
-          <div ref={bottom} />
-        </TabPanel>
-      ) : (
-        <TabPanel idPrefix={idPrefix} id="logs" value={tab} className="logs">
-          {logs.length === 0 && <span>No log lines yet.</span>}
-          {logs.map((l, i) => (
-            <div key={i} className={l.level}>
-              <span className="log-time">{new Date(l.at).toLocaleTimeString()} </span>
-              {l.message}
-            </div>
-          ))}
           <div ref={bottom} />
         </TabPanel>
       )}

@@ -47,6 +47,7 @@ export function SidePanel({
   autoCollapseBelow,
   persistKey,
   revealOn,
+  revealOnMount,
   arrival
 }: {
   label: string
@@ -60,6 +61,8 @@ export function SidePanel({
   autoCollapseBelow?: number
   persistKey?: string
   revealOn?: string | null
+  /** Read at mount only: open now, as `revealOn` would on a change (unless auto-collapse says no room). */
+  revealOnMount?: boolean
   arrival?: string | null
 }): ReactElement {
   const ref = useRef<HTMLElement>(null)
@@ -144,6 +147,16 @@ export function SidePanel({
     onOpenChange?.(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [arrival])
+  // `revealOnMount`: the panel comes back (a layout switch remounted it) with a node still selected, so it opens as a
+  // selection would, nothing saved, unless the width-based auto-collapse says there is no room.
+  useLayoutEffect(() => {
+    if (!revealOnMount) return
+    const parent = ref.current?.parentElement
+    if (autoCollapseBelow !== undefined && parent && parent.clientWidth < autoCollapseBelow) return
+    setInner(false)
+    onOpenChange?.(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const first = useRef(true)
   useEffect(() => {
     if (first.current) {

@@ -34,7 +34,7 @@ import {
 import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, ModelTier, PluginSpec, Project, RunSummary, Role, RunEvent, StaffingAssignment, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionMode, PermissionSuggestion, ProviderAuth } from '@shared/types'
 import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
-import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingModeOf, tierForModel } from '@shared/defaults'
+import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingGoalOf, staffingModeOf, tierForModel } from '@shared/defaults'
 import { CLAUDE_TIER_ALIAS, recordStaffing, roleModelTier } from './staffing'
 import { StaffingBook } from './staffingBook'
 import { PermissionModeRefusal } from './permissionModeRefusal'
@@ -1435,6 +1435,8 @@ export class ClaudeSession implements RuntimeSession {
   private liveGrants?: GrantSnapshot
   /** Built options -> their whitelists, read when that query starts. */
   private optionGrants = new WeakMap<Options, GrantSnapshot>()
+  /** Tool calls the root made this session (built-in, harness or spawn); a pure direct-answer turn 1 has none. */
+  private rootToolCalls = 0
   /** Skill tool_use ids the gate allowed, until PostToolUse confirms the call ran (then skill.used is emitted). */
   private gatedSkillCalls = new Map<string, { agentId: string; skill: RunSkill }>()
   /** The harness tools of this run, bound once (prepare()); a restart re-serves the same tools. */
@@ -1606,6 +1608,7 @@ export class ClaudeSession implements RuntimeSession {
       tierModels: () => claudeStaffingTierModels(ctx),
       adapterEfforts: effortOptionsFor('claude'),
       plan: () => ctx.getPlan(),
+      goal: () => staffingGoalOf(ctx.project, ctx.staffingGoal),
       // The project profile's default pick for an unrequested spawn (spec 4.5); none on a fixed project.
       ...staffingProfileDep(ctx)
     })
@@ -1643,6 +1646,11 @@ export class ClaudeSession implements RuntimeSession {
       getPlan: () => ctx.getPlan(),
       updatePlan: (plan) => ctx.updatePlan(plan),
       liveReports: live,
+      // Interactive work runs only: a headless exec run has nobody to read a turn-1 text-only reply ("I'll look at the
+      // tests"), so it keeps the set-plan nudge rather than settling as completed-unplanned.
+      directAnswerTurn: () =>
+        ctx.run.kind === 'work' && !ctx.run.overrides?.execMode && !this.isSetup && this.continuation.turnGen === 1 && this.rootToolCalls === 0 && live() === 0 && ctx.pendingInteractions() === 0 &&
+        (obligationsFor(ctx.roles, ctx.run.overrides?.strictDelegation === true)[this.root.id]?.length ?? 0) === 0,
       slots: () => agentSlots(ctx, live()),
       ownRoles: () => rootRoleNames(ctx.roles),
       lastReportEndedAt: () => {
@@ -4851,6 +4859,7 @@ export class ClaudeSession implements RuntimeSession {
             if (this.seenToolUses.has(block.id)) continue
             this.seenToolUses.add(block.id)
             countUsage(a, 'toolCalls')
+            if (agentId === ROOT_ID) this.rootToolCalls++
             this.seenBlocks.add(blockKey)
             this.toolUseIssuer.set(block.id, agentId)
             this.transcript(agentId, { kind: 'tool_use', id: block.id, name: block.name, input: block.input })

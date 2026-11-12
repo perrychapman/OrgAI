@@ -17,7 +17,7 @@ import { DurableFsError, errorCode, writeFileDurable } from './durableFs'
 /** Entries kept per project. */
 export const STAFFING_PROFILE_MAX_ENTRIES = 200
 /** A cell needs this many assignments before it can supply a default. */
-export const PROFILE_MIN_ASSIGNMENTS = 5
+export const PROFILE_MIN_ASSIGNMENTS = 3
 /** ... and at least this share of them passed first time. */
 export const PROFILE_MIN_FIRST_PASS = 0.8
 /** A profile file larger than this is treated as unreadable. */

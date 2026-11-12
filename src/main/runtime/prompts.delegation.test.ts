@@ -53,10 +53,11 @@ describe('required delegation prompts', () => {
     const own = buildRolePrompt(chart[0], chart, project({ roles: chart }), flags)
     expect(own).toContain('You must delegate to mgr and wait')
     expect(own).toContain('Required reports still go out')
-    // Without obligations the root gets the plain variant; a lead below the root with obligations gets none.
+    // Without obligations the root gets the plain variant; a lead below the root gets the sizing text too, in the
+    // required variant when its own role has obligations (mgr must reach policy and evidence).
     expect(prompt('lead')).toContain(teamSizingText({ isolation: false }))
     expect(prompt('lead')).not.toContain('Required reports still go out')
-    expect(prompt('mgr')).not.toContain('Required reports still go out')
+    expect(prompt('mgr')).toContain(teamSizingText({ required: true, isolation: false, split: false }))
     expect(prompt('mgr')).toContain('You must delegate to policy and evidence')
   })
 
