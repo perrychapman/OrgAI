@@ -1,7 +1,7 @@
 # Parallel `orgai` sessions: design spec
 
-Status: draft 4, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2 and 3 by GPT Astra and Gemini
-Carbon; all six reviews BLOCKED. Resolutions are in section 14. Owner direction (2026-11-11): "mirror Claude Code / Codex":
+Status: draft 5, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2-4 by GPT Astra and Gemini
+Carbon; all eight reviews BLOCKED. Resolutions are in section 14. Owner direction (2026-11-11): "mirror Claude Code / Codex":
 any number of `orgai` processes at once, in any projects, on one CLI data folder, each terminal its own session. This
 reverses `cli-standalone-default.md` G4 ("one `orgai` host process per CLI data folder") and promotes its non-goal
 "parallel independent sessions like Claude Code" to a goal. Written against `pr/team-evolution` at b08d534f (the tip of
@@ -134,34 +134,36 @@ dependency) on a lock file that is never written. Measured (Node 26; Electron 45
 Protocol:
 
 - **Files are always 0 bytes.** A missing lock file is created `open(O_CREAT|O_EXCL, 0600)` and closed before SQLite
-  opens it (no SQLite connection to it can exist yet in this process if the create succeeded; if it failed with
-  `EEXIST` nothing was opened). It is never written. Before each SQLite open, `lstat` (no descriptor) must show a
-  regular, non-link file of size 0 owned by this user (POSIX), with no `-journal`/`-wal` sibling; anything else fails
-  closed naming the path. Lock files are never opened, read or closed outside SQLite (closing a raw descriptor would
-  drop the process's POSIX locks on the inode, SQLite "how to corrupt" 2.2).
+  opens it; it is never written. Before each SQLite open, `lstat` (no descriptor) must show a regular, non-link file of
+  size 0 owned by this user (POSIX), with no `-journal`/`-wal` sibling; anything else fails closed naming the path.
+  Lock files are never opened, read or closed outside SQLite (closing a raw descriptor would drop the process's POSIX
+  locks on the inode, SQLite "how to corrupt" 2.2).
 - **Exclusive**: `BEGIN EXCLUSIVE`. **Shared**: `BEGIN` + `SELECT count(*) FROM sqlite_schema`. **Release**:
   `ROLLBACK`, then close. **Probe** (`'held' | 'free' | 'missing'`): open read-only (never creates), shared read; busy
   means an exclusive holder exists. Hostless readers use only probes.
-- **In-process coordinator** (one per path, reader-writer aware): shared acquisitions from several tasks share one
-  connection with a reference count; an exclusive acquisition waits for in-process shared holders and other exclusive
-  holders in FIFO order; **claims** (`waitMs = 0`) never queue: they fail at once on any conflict, in-process or
-  OS; **probes** never enter the coordinator. **Reentrancy**: a lock already held by the current async context
-  (`AsyncLocalStorage` held-set) is reused, never re-acquired, so a coordinator that pre-acquires its lock set (4.2)
-  can call services that ask for the same locks. Async children inherit the held-set; an operation must not run
-  sibling mutations concurrently under one held-set (a test asserts the services' operations are sequential).
+- **In-process coordinator** (one per path, reader-writer aware): shared acquisitions share one connection with a
+  reference count; an exclusive acquisition waits for in-process holders in FIFO order; **claims** (`waitMs = 0`) never
+  queue and fail at once on any conflict, in-process or OS; **probes** bypass the coordinator.
+- **Reentrancy is mode-checked.** A lock the current async context already holds (`AsyncLocalStorage` held-set) is
+  reused: held exclusive satisfies shared and exclusive; held shared satisfies only shared, and an exclusive request in
+  that context throws (an assertion). Async children inherit the held-set; operations do not run sibling mutations
+  concurrently under one held-set (tested).
+- **Upgrading a session hold.** Removing a project and uninstalling a repository need the exclusive form of a lock the
+  session itself holds shared (`project-<pid>`, `repo-usage-<repo>`). `upgradeHold(key)` succeeds only when this
+  process's hold is the only in-process holder and no run or operation of this process uses the resource: on the
+  coordinator's connection `ROLLBACK`, `BEGIN EXCLUSIVE` (`waitMs = 0`); on busy it re-takes shared at once and
+  reports busy (exit 6). `downgradeHold` reverses it after the operation.
 - **Waiting**: try; on `SQLITE_BUSY` close the connection, sleep (5 ms doubling to 100 ms, ±25 % jitter), reopen by
   path, retry until `waitMs`. On Windows, `EACCES`/`EPERM`/`SQLITE_CANTOPEN` from a sharing violation are retried the
-  same way once the folder check (below) has passed. Every other error fails closed; there is no in-process fallback.
-  Cancellation (shutdown) aborts waiters.
+  same way once folder trust (below) has passed. Every other error fails closed; no in-process fallback. Shutdown
+  aborts waiters.
 - **Never by pid**: no pid, start time, heartbeat or age decides that a holder is gone. A suspended holder keeps its
   lock (`SIGSTOP` test).
-- **Deletion**: only lock files whose key is never reused may be deleted: `host-<hostId>`, `chain-<chainId>`, and
-  per-project locks of a removed project (project ids are never reused). They are deleted by housekeeping (5.4) after
-  `ROLLBACK` and close, when a probe says 'free' and the subject is gone; every acquirer of such a lock re-verifies its
-  subject after acquiring and gives up when it is gone, so a racer that locked an unlinked or re-created file finds
-  nothing to act on. On Windows an unlink that fails is left for a later pass. Locks with reusable keys (`admission`,
-  `config`, `vault`, `library`, `execchain-*`, `oauth-*`, `plan-usage-*` and every cache lock: `repo-*`,
-  `repo-usage-*`, `worktree-*`, `permissions-*`) are never deleted.
+- **Lock files are kept.** No lock file is ever deleted, except a host lock by its own host at a clean exit (no other
+  process ever acquires a host lock; probers that open a deleted path see 'missing', which means the host is gone,
+  which it is). Chain, project, exec-chain, session-binding and every other lock file stay (0 bytes each; a sweep for
+  them is not needed and would reintroduce the unlink race of SQLite "how to corrupt" 2.4). A crashed host's lock file
+  is removed by housekeeping together with its registry entry (5.4); no process other than that host ever acquires it.
 - **Advisory info**: `<lock>.json` beside a lock may hold `{ pid, hostInstanceId, ownerCwd, since }` for messages; it
   never decides anything (section 9); every string from it passes `sanitizeTty` with a length cap before display.
 - **Network file systems**: SQLite's locks are not reliable over NFS/SMB (SQLite documentation, unverified here). The
@@ -171,98 +173,141 @@ Protocol:
 **Lock folders**: `<dataDir>/control/locks/` (data-folder locks; `control/` is never copied or published, 4.7) and
 `<user cache>/orgai/locks/` for locks keyed by a path outside the data folder (`~/Library/Caches`, `%LOCALAPPDATA%`,
 `${XDG_CACHE_HOME:-~/.cache}`), named `<kind>-<sha256(pathKey(path))[0..32]>.lock` (`pathKey`, `repoLock.ts:122`,
-code). **Folder trust**, checked once per process before the first lock and failing closed: the lock folder and every
-ancestor up to the user's home (POSIX) or profile folder (Windows), after `realpath`, must be owned by the user or
-root/SYSTEM, must not be writable by group or others (POSIX; a sticky shared ancestor such as `/tmp` is refused), and
-on Windows must grant write, delete or delete-child only to the user's SID, SYSTEM (`S-1-5-18`) and Administrators
-(`S-1-5-32-544`), with no reparse point. The lock folders themselves are created 0700, or on Windows with
-`icacls /inheritance:r /grant:r *<userSid>:(OI)(CI)F *S-1-5-18:(OI)(CI)F` (absolute `icacls` path as
-`restrictDaemonSecretAcl` does today, `ownership.ts:1091-1118`) and verified by SID. Unverified on Windows; CI tests a
-permissive ancestor and a rename attempt by another principal where the runner allows it.
+code).
+
+**Folder trust**, checked once per process before the first lock and failing closed:
+
+- The lock folder itself: owned by the user, mode 0700 (POSIX), created so; on Windows created with
+  `icacls /inheritance:r /grant:r *<userSid>:(OI)(CI)F *S-1-5-18:(OI)(CI)F` (absolute `icacls` path as
+  `restrictDaemonSecretAcl` does, `ownership.ts:1091-1118`) and verified by SID.
+- Ancestors, walking up from `realpath(lockFolder)` to `realpath(home)` when inside it, else to the file-system root:
+  - POSIX: owned by the user or root; not group/other writable, **except** a root-owned directory with the sticky bit
+    (such as `/tmp`, `/private/tmp`) whose child on the path is a real directory owned by the user (sticky semantics:
+    nobody else can rename or remove it).
+  - macOS: also no ACL entry (`ls -led`, parsed with `parseLsAcl`, the approach `custodians/keyFile.ts:493-557`
+    already uses for key files) that grants another principal `add_file`, `add_subdirectory`, `delete_child`,
+    `write`, `writesecurity` or `chown` on an ancestor, or that is inherited into the lock folder.
+  - Windows: no reparse point; no ACE granting `FILE_DELETE_CHILD`, `GENERIC_ALL`, `WRITE_DAC` or `WRITE_OWNER` to a
+    principal other than the user, SYSTEM and Administrators (`S-1-5-32-544`); a create-subdirectory grant to others
+    on a shared parent is allowed (it gives no rights over the protected child).
+- Unverified on Windows; CI tests a permissive ancestor, a sticky `/tmp` parent, a macOS ACL grant on an ancestor, and
+  (where the runner allows) an ancestor rename by another principal.
 
 ### 4.2 Claims, session holds, transaction locks and their order
 
 - **Claims** never wait (`waitMs = 0`): they succeed at once or the operation is refused, so they cannot take part
   in a deadlock and are exempt from the order. Claims: `host-<id>`, exclusive `admission` (4.6), `chain-<chainId>`,
-  `execchain-<projectId>-<execChainId>`, `setup-<pid>`, exclusive `project-<pid>`, `worktree-<repo>-<branch>`,
-  exclusive `repo-usage-<repo>`, `housekeeping`.
-- **Session holds** are shared locks that never wait either (they conflict only with an exclusive claim, which is a
-  refusal): shared `project-<pid>` (taken when a session opens, creates, promotes into or runs in a project, at any
-  point in the session), shared `repo-usage-<repo>`. The one waiting session hold is shared `admission`, taken first
-  at process start before anything else (4.6).
+  `execchain-<projectId>-<execChainId>`, `setup-<pid>`, exclusive `project-<pid>` and `repo-usage-<repo>` (through
+  `upgradeHold`, 4.1), `worktree-<repo>-<branch>`, `housekeeping`.
+- **Session holds** are shared locks that never wait (they conflict only with an exclusive claim, which is a refusal):
+  shared `project-<pid>` (taken when a session opens, creates, promotes into or runs in a stored project, at any point),
+  shared `repo-usage-<repo>`, shared `mcp-build-use-<entryId>-<buildId>` (held while a server of that build runs,
+  6.3). Shared `admission` is the one waiting hold, taken first at process start (4.6).
 - **Transaction locks** wait (bounded) and are acquired in this order; several locks of one row in sorted key order.
-  **Coordinators** (the operations named in the last column) compute the set of locks they will need from a read,
-  acquire the whole set in order, re-read and check the set is unchanged (else release all and retry, at most 3
-  times), then do their work; services called inside reuse the held locks (4.1 reentrancy). A debug assertion throws
-  on an out-of-order acquisition of a lock not already held.
+  **Coordinators** compute the lock set they need from a read, acquire it in order, re-read and check the set is
+  unchanged (else release all and retry, at most 3 times), then work; services called inside reuse the held locks.
+  A debug assertion throws on an out-of-order acquisition of a lock not already held.
 
-| Order | Transaction lock | Wait | Covers | Coordinators |
-|---|---|---|---|---|
-| 1 | `library` | 60 s | skill library, MCP library, connector presets, org templates, kit import | library edits, kit import, connection remapping |
-| 2 | `team-<pid>` (sorted) | 60 s | everything that composes a project: team files (all entry points, 3.5) and `.orgai/` writes, project skills, project MCP servers, capability reviews/apply/undo, evolution ledger commit, skill-evaluation commit, setup proposals, the project save hook and its cleanup | team-files operations, project skill/server edits, capability, evolution, setup proposals, uninstall, project removal |
-| 3 | `repo-<repo>` (sorted; legacy `mkdir` lock inside, 6.2) | 60 s | git operations, `CLAUDE.md` / `ARCHITECTURE.md` writes | worktree integration, maintenance |
-| 4 | `oauth-<credentialOwner>` (sorted) | 60 s | refresh, revoke, retarget, authorise commit (network inside) | OAuth service |
-| 5 | `plan-usage-<key>`, `models-discovery`, `codex-start` | 60 s | single-flight network or process start | usage monitor, model discovery, Codex start |
-| 6 | `outputs-<pid>` | 15 s | every outputs mutation (3.5) | outputs service |
-| 7 | `knowledge-<pid>` | 15 s | knowledge graph | knowledge service |
-| 8 | `notes-<pid>`, `engagement-<pid>`, `staffing-<pid>` | 15 s | per-project data | their services |
-| 9 | `permissions-<rules file>` (cache, keyed by `pathKey(rulesFileOf(target))`, so a project folder's `.claude/settings.local.json` and a data-folder `permission-rules.json` each have their own) | 15 s | permission rules, taken inside `permissionRules.ts` | `addRules`, `removeRule` |
-| 10 | `vault` | 15 s | every vault read-decide-commit (6.7) | secret store |
-| 11 | `config` | 15 s | every `SharedJsonFile` update (4.4) | stores |
+| Order | Transaction lock | Wait | Covers |
+|---|---|---|---|
+| 1 | `library` | 60 s | skill library, MCP library and its builds (`v2/mcp-builds/`), connector presets, org templates |
+| 2 | `team-<pid>` (sorted) | 60 s | everything that composes a stored project: team files (every entry point, 3.5) and `.orgai/` writes, project skills and their undo, project MCP servers, capability reviews/apply/undo, evolution ledger, skill-evaluation commit, setup proposals, the save hook and its cleanup |
+| 3 | `repo-<repo>` (sorted; legacy `mkdir` lock inside, 6.2) | 60 s | git operations, `CLAUDE.md` / `ARCHITECTURE.md` writes |
+| 4 | `oauth-<credentialOwner>` (sorted) | 60 s | refresh, revoke, retarget, authorise commit (network inside) |
+| 5 | `plan-usage-<key>`, `models-discovery` | 60 s | single-flight network |
+| 6 | `codex-start` | 60 s | Codex app-server start (may be taken under order 5) |
+| 7 | `outputs-<pid>` | 15 s | every outputs mutation |
+| 8 | `knowledge-<pid>` | 15 s | knowledge graph |
+| 9 | `notes-<pid>`, `engagement-<pid>`, `staffing-<pid>` | 15 s | per-project data (staffing: `recordRunInStaffingProfile`) |
+| 10 | `permissions-<rules file>` (cache, keyed by `pathKey(rulesFileOf(target))`) | 15 s | permission rules, taken inside `permissionRules.ts` |
+| 11 | `vault` | 15 s | every vault read-decide-commit (6.7) |
+| 12 | `config` | 15 s | every `SharedJsonFile` update (4.4) |
 
-No transaction lock is held across a model call. Evolution's hybrid synthesis, capability reviews and skill
+No transaction lock is held across a model call: evolution's hybrid synthesis, capability reviews and skill
 evaluations run their model step outside `team-<pid>` on a snapshot and commit under it only if the generation they
-started from is unchanged (else "changed meanwhile, run again", never an overwrite). Only orders 4 and 5 are held
-across a network call or a process start, and nothing after them is waited for while that call is in flight.
+started from is unchanged. Only orders 4-6 are held across a network call or a process start.
 
-Flows, each an integration test through the real services with a recording lock layer (3 retries of the coordinator
-set included): kit import 1 → 2 (affected linked projects) → 3 → 4 → 10 → 11; library skill or MCP entry change with
-linked projects 1 → 2 → 4 → 10 → 11; team-files operation 2 → 3 → 4 (server secrets) → 10 → 11; project skill edit
-2 → 11; evolution commit 2 → 3 → 11; setup proposal (every kind) 2 → 3 → 9 → 10 → 11; uninstall 2 → 3; project removal
-claim → 2 → 6/7/8 → 10 → 11; OAuth refresh 4 → 10 → 11; plan usage 5 → 11; knowledge adding a note 7 → 8; worktree
-integrate: claim (exempt) → 3.
+**Lock sets per operation** (each an integration test through the real services with a recording lock layer,
+coordinator retry included):
+
+| Operation | Lock set |
+|---|---|
+| kit import | 1 → 2 (affected and linked projects) → 3 → 4 → 11 → 12 |
+| library skill/MCP/preset/template edit or removal with linked projects; `skills:promote`, `mcp:promote`, `persistInstall` with scope `library` (MCP install card), template save-from-project and apply | 1 → 2 (source and linked projects) → 4 (when credentials move) → 11 → 12 |
+| setup proposal | by kind: `mcpServers`/`skills` that are not project-only 1 → 2 (target and linked projects); project-only 2; then 3 for `.orgai/`/`CLAUDE.md`, 9 (`engagement-<pid>`) for an engagement `architecture`, 10 for `settings` permission rules, 11, 12 |
+| capability apply / undo | 1 when a connector entry is added or removed → 2 (target, and linked projects on undo) → 11 → 12 |
+| team-files operation | 2 → 3 → 4 (server secrets) → 11 → 12 |
+| project skill edit | 2 → 12 |
+| evolution commit | 2 → 3 → 12 |
+| uninstall | 2 → 3 (with the `repo-usage` upgrade, 4.1) |
+| project removal | `project` upgrade → 2 → 7, 8, 9 → 11 → 12 |
+| OAuth refresh/revoke/authorise | 4 → 11 → 12; the config's OAuth display fields (`expiresAt`, `authorizedAt`) are patched by `SharedJsonFile.update` / `mutateProject` under 12 only (they have no team-file effects), never through `library` or `team` saves |
+| model discovery | 5 (`models-discovery`) → 6 (Codex) → 12 (`models.json`); release; then project remapping as its own coordinator 2 (affected projects) → 12 |
+| plan usage | 5 → 6 (Codex) → 12 |
+| knowledge adding a note | 8 → 9 |
+| staffing record at run end | 9 (`staffing-<pid>`) |
+| worktree integrate | claim (exempt) → 3 |
+| journal recovery | the journal's recorded `requiredLocks` (4.9) |
 
 ### 4.3 Chains and the chain claim
 
 - **Chain identity.** New persisted `RunSummary.chainId`: a new run's own id; a continuation copies its predecessor's.
   Conversion (4.7) computes it with today's membership rules: connected components over `resumedFrom` edges and shared
   non-empty `sessionId`s (union-find), id = the component's oldest member (`startedAt`, then id). Validated
-  `^run_[A-Za-z0-9_-]{1,80}$`. After conversion the persisted `chainId` is authoritative (pruning does not change it).
-- **Provider session binding.** Every point that records a provider session id for a run (`session.started`, a
-  `run.status` that sets or changes `sessionId`, continuation, restart; `runManager.ts:1883-1938, 4995-4998`, code)
-  binds it: create `control/sessions/<sha256(provider + sessionId)>.json` with `{ chainId }` using `O_EXCL`; if it
-  exists with another `chainId`, the binding is refused and the run ends with an error ("This provider session belongs
-  to another conversation"). Bindings are removed with their chain.
+  `^run_[A-Za-z0-9_-]{1,80}$`. After conversion the persisted `chainId` is authoritative and immutable: a `ChainWrite`
+  for chain C refuses to write a summary whose on-disk or new `chainId` differs from C.
+- **Chain ownership record.** `control/chains/<chainId>.json` `{ hostId, state: 'open' | 'clean', since }`, written
+  under the chain claim (durable) **before** anything for the chain is spawned or written, and set to `clean` only
+  after the chain is settled in that process (below). Whoever next claims the chain (resume, prune, promotion,
+  stored-run writes, housekeeping) reads it first, under the claim:
+  - `clean`, or a chain with no runs that ever started in format 2 and no legacy crash leftover: normal.
+  - `open` (its host's claim was released without a clean settlement, so that host died): **unclean**; the consumer
+    check (4.8) runs inline before anything else, whatever the run statuses say (a host can die after writing
+    `finished`).
+  - missing for a chain that has format-2 runs: **uncertain** (4.8).
+  - Conversion writes `{ hostId: 'legacy', state: 'clean' }` for chains whose runs were all terminal or deliberately
+    paused in format 1, and `state: 'legacy-unclean'` for chains with a format-1 crash leftover; `legacy-unclean`
+    counts as uncertain unless the conversion's cwd scan (4.8) of their scratch folders and worktrees found nothing
+    and the legacy host recorded in `run/daemon.json` (if any) is dead, in which case it is `clean`.
+- **Provider session binding.** Every point that records a provider session id (`session.started`, a `run.status`
+  that sets or changes `sessionId`, continuation, restart; `runManager.ts:1883-1938, 4995-4998`, code) binds it under
+  the chain claim: key `sha256("<adapter>\0<sessionId>")` with `<adapter>` = `claude` or `codex` (the provider whose
+  session store holds it); the binding file `control/sessions/<key>.json` `{ chainId }` is published atomically (write
+  `<key>.json.tmp-<hostId>-<random>` with `wx`, fsync, `link` to `<key>.json`, unlink the tmp; `EEXIST` → read the
+  existing file: same `chainId` is success (idempotent), another `chainId` refuses the binding and ends the run with an
+  error, "This provider session belongs to another conversation"). Conversion creates the bindings of migrated
+  summaries after its commit (4.7 step 7). Bindings are removed with their chain (5.2) and swept when their chain has
+  no summary and its claim is free (5.4).
 - **One writer per chain.** The process that starts or continues a run claims `chain-<chainId>` before it chooses what
   to start and holds it until the chain is settled in that process: the run is terminal or deliberately paused without
   auto-resume, its late title arrived or was abandoned (60 s cap), evolution flush and exec finalisation are done, no
-  auto-resume timer is armed, and the per-chain write queue drained with every write succeeded. `RunManager`
-  serialises summary and record writes on that queue and awaits it (and `recordRunInStaffingProfile`,
-  `outputs.runEnded`) before releasing; shutdown drains the queues. A failed final write keeps the claim until exit.
+  auto-resume timer is armed, and the per-chain write queue drained with every write durable. Then it writes the
+  ownership record `clean` and releases. `RunManager` serialises summary and record writes on that queue and awaits it
+  (and `recordRunInStaffingProfile`, `outputs.runEnded`) before settling; shutdown drains the queues. A failed final
+  write keeps the claim (and `open`) until exit.
 - **Exec chains.** A run with `overrides.execChainId` also claims `execchain-<projectId>-<execChainId>` (the budget is
-  per project, `runManager.ts:2652-2662`, code) on start and on `continueRun`, after the chain claim, and holds it as
-  long as the chain claim (including `waitForReset` timers).
+  per project, `runManager.ts:2652-2662`, code) on start and on `continueRun`, after the chain claim, held as long as
+  the chain claim (including `waitForReset` timers).
 - **RunStore enforces it.** Every mutation (`create`, `upsert`, `patchSummary`, `setUsage`, `saveRecord`,
   `saveImage`, `moveToProject` (summary **and** the record's embedded summary), `remove`) takes a `ChainWrite` token,
-  created only by a held claim or by `withChainClaim(chainId, fn)` (claim, re-read the chain from disk, verify it
-  exists, run `fn`, release). `usageSummaries` back-fill is in memory only. `getRecord` returns null when the summary is
-  missing (no fallback to the record's embedded summary).
+  created only by a held claim or by `withChainClaim(chainId, fn)` (claim, read the ownership record and classify,
+  re-read the chain from disk, verify it exists, run `fn`, release). `usageSummaries` back-fill is in memory only.
+  `getRecord` returns null when the summary is missing.
 - **Continue, resume, `exec --continue`, auto-resume, `resume --now`, `resume --cancel-auto-resume`, `tui <run>` with
   input**: claim the chain; busy refuses with exit 6: "This conversation (R3, run_abc) is live in another orgai
-  (<cwd>, pid). Use that one, or quit it first." Under the claim, re-read the chain and recompute the target with
-  today's rules (`newestContinuable` / `canContinueIn`) and the remaining budget. A quarantined chain (4.8) runs the
-  consumer check first.
+  (<cwd>, pid). Use that one, or quit it first." Under the claim, classify (above), re-read the chain and recompute the
+  target with today's rules (`newestContinuable` / `canContinueIn`) and the remaining budget.
 - **Stored-run writes from another session** (`runs model`, permission mode, `stop` of a paused run, delete, move):
   `withChainClaim`; busy refuses with the same text.
 - **Scratch folders** (quick runs, Chat, MCP `allowBuild` assistants, `dispatcher.ts:1106-1117`): one allocator,
-  `allocateScratch(chainWrite)`, which requires a held chain claim and creates `v2/quick/<chainId>/` (continuations
-  share it). Both start paths (`QuickRunService.start`, `mcp:startAssist`) mint the run and chain ids and claim the
-  chain before calling it. `SCRATCH_NAME` / `scratchDirFor` / `McpService.genuineWorkspace` accept the new form;
-  `quick.folder` and `buildWorkspace` point to it.
-- **Promotion** claims every chain of the runs it moves (sorted), re-reads membership, refuses if any member is live
-  or paused with auto-resume, journals (4.9), creates the project with `pending: true` under an exclusive
-  `project-<newId>` claim (pending projects are hidden and cannot be opened), moves summaries and records, clears
-  `pending`, releases.
+  `allocateScratch(chainWrite)`, requiring a held chain claim, creates `v2/quick/<chainId>/` (continuations share it).
+  Both start paths (`QuickRunService.start`, `mcp:startAssist`) mint run and chain ids and claim the chain first.
+  `SCRATCH_NAME` / `scratchDirFor` / `McpService.genuineWorkspace` accept the new form; `quick.folder` and
+  `buildWorkspace` point to it.
+- **Promotion** claims every chain of the runs it moves (sorted), classifies each, re-reads membership, refuses if any
+  member is live or paused with auto-resume, journals (4.9), creates the project with `pending: true` under an
+  exclusive `project-<newId>` claim (pending projects are hidden and cannot be opened), moves summaries and records,
+  clears `pending`, releases.
 
 ### 4.4 Shared JSON files: `SharedJsonFile<T>`
 
@@ -274,8 +319,8 @@ For `v2/` `projects.json`, `settings.json`, `skill-library.json`, `mcp-library.j
   copies (`ConnectionService.discovered`, `CommunityPrices`, settings listeners, the project tier context) read
   through it and re-derive on change.
 - `update(fn): Promise<T>` takes `config` (order 11), re-reads from disk, applies `fn`, writes
-  `<file>.tmp-<hostId>-<random>` (`wx`, fsync where the store fsyncs today), renames. `durableFs` no longer unlinks a
-  shared fixed tmp name.
+  `<file>.tmp-<hostId>-<random>` (`wx`, fsync, rename, fsync the directory). `durableFs.writeFileDurable` uses the
+  same unique tmp names everywhere (no fixed `<file>.tmp`, no unlinking another writer's tmp).
 - A parse failure keeps the last good copy for reads and refuses `update` naming the file.
 - **Projects** carry `revision` (+1 per write). `mutateProject(id, fn)` applies `fn` to the fresh copy and **refuses
   an id that is no longer present** (fan-out callers such as `relinkProjects`, `remapConnectionProjects` and library
@@ -358,19 +403,28 @@ anything, the desktop the same at start):
    `<dataDir>/v2.staging-<hostId>/` (clone where the file system supports it, else copy) and transform there:
    `runs.json` → per-run summaries (sanitised, non-terminal ones normalised, `chainId`s); records into `runs/`;
    scratch folders into `quick/<chainId>/`; `<userDataDir>/tui-hints.json` into `tui-hints.json`.
-   **Path relocation**: every persisted absolute path into the old data folder is rewritten to its new location by a
-   typed relocation table (MCP server `command`/`args`/`cwd`/`env` in projects and MCP library entries,
-   `RunSummary.quick.folder`, `buildWorkspace`, the summaries embedded in records, project paths of quick and
-   assistant projects, skill and template asset paths); then a generic scan of every JSON file in staging fails the
-   conversion, listing the field paths, if any string still starts with the old data folder. Paths outside the data
-   folder are left alone.
-5. Fsync every written file and directory; write `MANIFEST.json` (counts, SHA-256 of every JSON file) and
-   `FORMAT.json`; re-read and validate everything. Re-check the source manifest, the fence content and the mutex owner
+   **Path relocation**: every persisted operational path into a legacy location is rewritten to its new location by a
+   typed relocation table (MCP server `command`/`args`/`cwd`/`env` in projects and MCP library entries, installed MCP
+   build paths (into `v2/mcp-builds/<entryId>/<buildId>/`, 6.3), `RunSummary.quick.folder`, `buildWorkspace`, the
+   summaries embedded in records, project paths of quick and assistant projects, skill and template asset paths).
+   A legacy location is a path whose components, after `<dataDir>`, start with a format-1 top-level name (anything
+   but `v2`, `v2.staging-*` and `control`), compared component by component. The fail-closed check scans the
+   operational stores and fields only (`projects.json`, `settings.json`, the libraries, presets, templates, summaries
+   and records' embedded summaries, excluding `title`, `prompt`, `error`, `transcript`, `logs` and other free text)
+   and fails the conversion, listing the field paths, if a legacy location remains. Transcripts and logs are copied
+   as history, unchanged. Paths outside the data folder are left alone. A unit test runs the exhaustive scan over
+   synthetic fixtures with the free-text exclusion list, so a new operational field is caught.
+   **Legacy crash leftovers**: for chains with a non-terminal format-1 run, a cwd scan (4.8) of their scratch folders
+   and worktrees decides `clean` or `legacy-unclean` for their ownership records (4.3).
+5. Fsync every written file and directory; write `MANIFEST.json` (counts, SHA-256 of every JSON file) and then
+   `FORMAT.json`, fsync both and the staging directory; re-read and validate everything. Re-check the source manifest, the fence content and the mutex owner
    token: any difference means an old process touched the folder: discard the staging folder and refuse ("Another
    OrgAI changed this folder during the upgrade; quit it and start again").
 6. Rename `v2.staging-<hostId>` to `v2` (it does not exist yet), fsync `<dataDir>`. This is the commit point.
-7. Write the format-2 product marker (durable). Release the mutex, then turn the exclusive `admission` claim into the
-   process's normal shared hold (release, then take shared like any other start).
+7. Write the chain ownership records and provider session bindings of the migrated runs (4.3) in `control/`, then
+   the format-2 product marker (durable). Release the mutex, then turn the exclusive `admission` claim into the
+   process's normal shared hold (release, then take shared like any other start). A crash during step 7 is finished
+   by the next start (both writes are idempotent).
 
 Recovery: a committed `v2/` (valid `FORMAT.json`) → format 2, with missing fences re-written. A `v2/` without a valid
 `FORMAT.json` cannot be produced by this procedure; if found, it is refused naming it. A leftover `v2.staging-*` whose
@@ -381,51 +435,63 @@ supported; `doctor` says so.
 
 ### 4.8 Consumers: processes a host started
 
-The OS frees a dead host's locks, but agents, shells, git or Codex processes it started may still run.
+The OS frees a dead host's locks, but agents, shells, git, MCP servers or Codex processes it started may still run.
 
 - **Evidence**: each host keeps `control/hosts/<hostId>.children.json` current (written empty before the first spawn,
-  then on every spawn and every 5 s): its descendants (pid and start time) from the process-table reader `shutdown.ts`
-  already uses (`ps -A -o pid=,ppid=,stat=,lstart=`; Windows CIM `Win32_Process`, code), and each live run's chain id
-  and worktree paths.
-- **Quarantine**: when housekeeping settles a crashed host's chain (5.3), it records `crashedHost: <hostId>` on the
-  summaries. A quarantined chain, and every resource of a dead host (its worktrees, owner-scoped dirs, journals, the
-  scratch folders of its chains), is acted on only after the **consumer check**: the evidence file exists and is
-  readable, none of its recorded descendants is alive with the same start time, and (macOS/Linux) no process has its
-  working directory inside an affected worktree or scratch folder (`lsof -a -d cwd -Fn`, measured on macOS). Missing or
-  unreadable evidence counts as **uncertain**.
-- **Outcomes**: check passes → act. Check finds a process → refuse ("Processes started by an earlier orgai session
-  are still running here (pid …). Stop them or wait, then try again."). Uncertain, or Windows (no cwd check) → no
-  automatic action; a user action asks for confirmation in a TUI, and in non-interactive commands (`exec --continue`,
-  `resume`) refuses with exit 6 unless `--after-crash` is given.
+  then on every spawn and every 5 s, durable): its descendants (pid and start time) from the process-table reader
+  `shutdown.ts` already uses (`ps -A -o pid=,ppid=,stat=,lstart=`; Windows CIM `Win32_Process`, code), and each live
+  run's chain id, scratch folder, worktree paths and MCP build directories in use.
+- **Where it applies**: an unclean or uncertain chain (4.3), and every resource of a dead host (its worktrees,
+  owner-scoped dirs, journals, the scratch folders of its chains, MCP build use-holds it held).
+- **Consumer check**: the dead host's evidence file exists and is readable; none of its recorded descendants is alive
+  with the same start time; and (macOS/Linux) no process has its working directory inside an affected worktree or
+  scratch folder (`lsof -a -d cwd -Fn`, measured on macOS). Missing or unreadable evidence, or an ownership record that
+  names no host, is **uncertain**.
+- **Outcomes**: passes → act, and the chain's ownership record becomes `clean`. Finds a process → refuse ("Processes
+  started by an earlier orgai session are still running here (pid …). Stop them or wait, then try again.").
+  Uncertain, or Windows (no cwd check) → no automatic action; a user action asks for confirmation in a TUI, and
+  non-interactive commands (`exec --continue`, `resume`, `projects remove`) refuse with exit 6 unless `--after-crash`
+  is given. Prune, scratch sweeps and promotion skip uncertain chains.
 - **Evidence retention**: a dead host's `children.json`, registry entry and lock file are removed only when every
-  recorded descendant is gone; quarantine marks are cleared when the consumer check passes. Settlement, prune
-  (5.2), scratch sweeps, project removal and resume all apply the check to quarantined chains.
+  recorded descendant is gone.
 - **Limits** (stated, tested where possible): a grandchild started and orphaned between two snapshots, whose cwd is
-  outside the resources, escapes the evidence; OrgAI does not contain processes (no OS job or cgroup control here).
-  Tests kill only the host while a mock child keeps writing and assert refusal, run housekeeping twice, delete the
-  evidence file, and settle-then-prune. Unverified: that the Claude CLI and Codex app-server exit when their host's
-  pipes close.
+  outside the resources, escapes the evidence; OrgAI does not contain processes (no OS job or cgroup control). Tests
+  kill only the host while a mock child keeps writing and assert refusal, run housekeeping twice, delete the evidence,
+  resume before housekeeping, crash after a `finished` summary, and settle-then-prune. Unverified: that the Claude CLI
+  and Codex app-server exit when their host's pipes close.
 
 ### 4.9 Journals for multi-file operations
 
-- A journaled operation writes `control/journal/<resourceKey>/<opId>.json` (durable: tmp, fsync, rename, fsync dir)
-  under its locks before its first change: `{ op, hostId, resource, steps, expected: { before, after } }` where
-  `before`/`after` are the resource generations (project revision, ledger generation, output version list digest,
-  build id, ...). It deletes it (unlink, fsync dir) after the commit point. Resource keys: `project-<pid>`,
-  `mcp-build-<entryId>`, `library`, `outputs-<pid>`, `notes-<pid>`, `templates`, `chain-<chainId>` (promotion).
-- **Fencing**: every operation on a journaled resource, after acquiring its locks and before reading or validating,
-  looks for pending journals under its resource keys. One whose host lock is held cannot exist (that host holds the
-  locks). One whose host is dead is recovered **inline, under the same locks**, after its consumer check: if the
-  resource is at `expected.before` it is undone or rolled forward per the operation's rule; at `expected.after` the
-  journal is just removed; at anything else the journal is kept as "needs attention", the operation refuses, and
-  `doctor` / the TUI show it. Recovery is idempotent and never re-creates a retired chain or project (subject existence
-  is checked first). Housekeeping runs the same recovery by taking the same locks.
-- Commit points and recovery rules, per operation (each with kill-point tests between every pair of file changes, and
-  a test where a live session touches the resource before housekeeping runs): quick promotion (project un-pended),
-  MCP build install and rollback (new dir in place; old dir kept until then), skill proposal apply and rollback, kit
+- **Record**: a journaled operation writes `control/journal/<resourceKey>/<opId>.json` under its locks before its
+  first change: `{ op, hostId, resource, requiredLocks, steps, expected: { before, after }, state: 'active' }`.
+  `requiredLocks` is the operation's full lock set (4.2); `before`/`after` are the resource generations (project
+  revision, ledger generation, outputs digest, build id, ...). Resource keys: `project-<pid>`, `library`,
+  `mcp-build-<entryId>`, `outputs-<pid>`, `notes-<pid>`, `templates`, `chain-<chainId>` (promotion).
+- **Durable ordering** (every journaled operation): (1) journal written, fsynced, its directory fsynced; (2) every
+  resource file written by tmp + fsync + rename and every affected directory fsynced (one shared atomic-write helper,
+  so notes, templates and the other stores that do not fsync today do so here); (3) the commit state (the resource's
+  new generation) durable; (4) journal unlinked and its directory fsynced. Recovery treats a journal as pending until
+  step 4.
+- **Fencing and recovery**: every operation on a journaled resource, after acquiring its locks and before reading or
+  validating, looks for pending journals under its resource keys. For each:
+  - its `requiredLocks` not all held by this operation: release everything, run a recovery coordinator that acquires
+    `requiredLocks` in order (and, if the journal's host is dead, runs its consumer check), recover, release, and
+    restart the operation from the beginning;
+  - recover: resource at `expected.before` → undo or roll forward per the operation's rule; at `expected.after` →
+    only remove the journal; anything else → keep it as `needs-attention`, refuse the operation, show it in `doctor` and
+    `/sessions`. Recovery is idempotent and never re-creates a retired chain or project (existence checked first).
+  - A journal can be pending while its own host is alive (the operation threw, or its finally-handler could not finish
+    or undo): the host marks it `abandoned` before releasing the locks when it can; either way, whoever holds
+    `requiredLocks` next recovers it the same way (the host liveness only decides whether the consumer check runs).
+  Housekeeping runs the same recovery through the same coordinator.
+- **Operations**, each with its commit point and kill-point tests between every pair of file changes, a test where a
+  live session touches the resource before housekeeping runs, a test with the host alive after a thrown error, and
+  power-loss tests (un-fsynced writes dropped after journal removal): quick promotion (project un-pended), MCP build
+  install, replacement and removal (new immutable version in place, 6.3), skill proposal apply and rollback, kit
   import, evolution apply and rollback, team-files apply (companion files after `projects.json`), output version
-  commit, notes (index after body), templates (index after `org.json`), project removal (removed from `projects.json`
+  commit, notes (index after body), templates (index after `org.json`), project removal (out of `projects.json`
   first, then data).
+- Journals become active in the activation phase together with host claims and consumer evidence (12).
 
 ## 5. Runs
 
@@ -473,8 +539,9 @@ sweeping: skip). Each row takes the locks or claims of what it touches and re-re
 | orphan records / image dirs | entries without a summary (never live, 5.1) |
 | scratch folders `v2/quick/<chainId>/` | chain claim free, no summary of that chain references it, consumer check if quarantined |
 | owner-scoped dirs and files (4.5), `.undo-<hostId>`, `v2.staging-*` | host lock free and consumer check passes |
-| host registry, `children.json`, host lock files | host lock free and every recorded descendant gone |
-| memberless chain locks, locks of removed projects | probe free and subject gone (4.1) |
+| host registry, `children.json`, host lock files | host lock free and every recorded descendant gone (the only lock files ever deleted, 4.1) |
+| provider session bindings | the binding's chain has no summary and its claim is free |
+| quarantine of unclean chains | consumer check (4.8); passes → ownership record `clean` |
 | worktree markers | branch no longer exists |
 | logs | 6.8 |
 
@@ -525,6 +592,22 @@ sweeping: skip). Each row takes the locks or claims of what it touches and re-re
 - Outputs: every mutation (3.5) under `outputs-<pid>`; version numbers chosen inside the lock.
 - Kit import: a coordinator (4.2) over `library`, the affected projects' `team-<pid>`, their repos, OAuth owners,
   `vault`, `config`, taken before validating the target digest and held through the writes.
+- **Virtual projects** (`quick`, `harness`, `skills`, `VIRTUAL_PROJECT_IDS`, code) are reserved ids that are never in
+  `projects.json` and are never removed: they take no `project-` hold and no existence check; their resources are
+  chain-scoped (scratch folders, 4.3) or host-scoped (`harness-workspace`, 4.5). Promotion out of `quick` is 4.3.
+- **MCP builds are immutable versions**: `v2/mcp-builds/<entryId>/<buildId>/`; the library entry points at its current
+  `buildId` (written under `library`). A running server holds the session hold `mcp-build-use-<entryId>-<buildId>`
+  (and it is in its host's consumer evidence); replacing a build adds a new version and repoints the entry, never
+  touching the old directory; an old version is deleted by housekeeping only with an exclusive claim on its use lock
+  (no live user) and, for versions a dead host used, its consumer check. Removing a library entry removes it from the
+  library at once and leaves its versions to that sweep.
+- **Skills**: `SkillService`'s constructor no longer removes `.undo` folders (housekeeping does, 5.4); undo backups
+  live at `v2/project-skills/<pid>/.undo-<hostId>/<undoId>`. `snapshotForProposal` stages its backup in
+  `v2/tmp/skills-snap-<hostId>-<random>` (not the OS temp dir) and snapshots and restores only the locked target
+  project's skills (and the affected library entries), never other projects.
+- **Staffing**: `recordRunInStaffingProfile` becomes async under `staffing-<pid>`.
+- **Evolution ledger**: `readLedger` is pure on read paths (`evolve:history`, `analyze`); a corrupt ledger is set aside
+  only by a writer holding `team-<pid>`.
 - Two work runs in one project are allowed; starting one prints a notice when another session has a live run there.
 
 ### 6.4 Spend and plan usage
@@ -555,11 +638,16 @@ releases; a crash releases the lock (OS). Each process still probes only when it
 - Reads revalidate `vault.json` by stat and reload when it changed; if a vault appears that this process has no key
   open for (another session created it), the next read that needs it opens the key through the custodian
   (`ensureFreshVault`, async) first.
-- Every mutation (`set`, `setMany`, `clear`, `delete`, `deletePrefix`, `undelete`, `confirmDeletes`) becomes async:
+- **Refresh boundaries**: `ensureFreshVault()` (async) runs at every dispatcher RPC entry, before `RunManager`
+  resolves secrets for a run start or a probe, and before connection and MCP operations; it stat-checks `vault.json`,
+  reloads it when changed, and re-opens the key through the custodian when this process has none or when the vault's
+  `vaultId` changed. Synchronous reads (`get`, `has`, `keys`, `status`) then serve the refreshed state.
+- Every mutation (`set`, `setMany`, `clear`, `delete`, `deletePrefix`, `purge`, `undelete`, `confirmDeletes`) becomes async:
   take `vault` (order 10), reload from disk, apply its delta to the fresh vault, commit, release. Creation of the first
   vault runs under `vault` with a fresh "still absent" check. Open-time reconcile and legacy retirement run under it.
 - Exclusive operations hold `admission` exclusive from before the store opens (4.6). Phase 2 converts every caller
-  (`McpService`, `ConnectionService`, `TeamFilesService`, `SetupService`, `KitService`) to the async API.
+  (`McpService`, `ConnectionService`, `TeamFilesService`, `SetupService`, `KitService`, `RunManager` (install cards),
+  `dispatcher.ts` (project removal)) to the async API.
 
 ### 6.8 Logs
 
@@ -581,7 +669,7 @@ the TUI `/logs` (run logs) is unchanged.
 | `projects remove` | own short host | `project-<pid>` exclusive |
 | `secrets init|reset|undelete|keep-removed` | own short host with `admission` exclusive instead of shared | `admission` busy |
 | `status`, `runs list|show`, `projects list|show`, `usage show`, `secrets status`, `completions`, `help`, `--version` | none (hostless reader: reads files and probes locks; never writes, converts, settles or cleans) | never |
-| `doctor` | metadata hostless; connection checks in an own short host | never |
+| `doctor` | metadata hostless; connection checks in an own short host | never: if `admission` is held exclusive past the wait, the connection checks are reported as a warning ("skipped: another orgai is upgrading or resetting this folder") |
 
 A hostless reader on a folder without a committed `v2/` reads format 1. The `SNAPSHOT_NOTE` and "another orgai owns
 this folder" texts go.
@@ -622,14 +710,16 @@ writers are covered by the operation tests of section 11, not by the scanner.
   authorise a destructive, settling or integrating action; only acquiring the OS lock does, plus the consumer check,
   whose evidence can only refuse or, when missing, make the case uncertain (4.8). Automatic actions never touch
   worktrees this process does not hold (6.2).
-- **Protected paths** (the self-control gate's control entries, `selfControlGate.ts:149-166`, code): today's entries
-  (`run`, `secrets.json`, `codex`, `settings.json`, `auth-cwd`, `evolution`) are applied under `v2/` as well as at
-  the folder root, plus `control`, `v2/vault.json`, the realpath of the cache lock folder,
-  `realpath(gitCommonDir)/orgai-worktrees` and `orgai-repo.lock`, and each report worktree's `.git` file. Agent
-  workspaces stay usable: `v2/quick/<chainId>/`, `v2/harness-workspace/<hostId>/`, `v2/tmp/skills/<hostId>-*` and
-  `v2/mcp-builds/` are not protected as a whole; a run's protected set additionally includes every
-  `v2/quick/<other chainId>/` except its own scratch folder. **Unverified** that the permission rules cover `.git`
-  internals in every adapter and mode; phase 3 adds a test per adapter.
+- **Protected paths** (the self-control gate, `selfControlGate.ts:149-166`, code): the whole of `control/` and `v2/`
+  is protected, with these carve-outs that stay usable by agents: the run's own scratch folder
+  `v2/quick/<its chainId>/`, its host's `v2/harness-workspace/<hostId>/` and `v2/tmp/skills/<hostId>-*`. Everything
+  else under `v2/` (stores, `runs/`, `projects/`, `FORMAT.json`, `MANIFEST.json`, `mcp-builds/`, `codex/`, other
+  chains' scratch folders, vault files) and today's entries at the folder root stay protected, plus the realpath of the
+  cache lock folder, `realpath(gitCommonDir)/orgai-worktrees` and `orgai-repo.lock`, and each report worktree's `.git`
+  file. The gate needs a carve-out form ("protected root except these subtrees for this run"), added in phase 3 with
+  tests per adapter that an agent can use its own workspace while edits to a summary's `chainId` or status, another
+  chain's scratch folder, `control/` and the vault are denied. **Unverified** that the permission rules cover `.git`
+  internals in every adapter and mode.
 - Ids and names in paths are validated (run and chain ids, branch names, `HOST_INSTANCE_ID_RE`); file name and payload
   id must match or the entry is ignored. Every advisory string displayed goes through `sanitizeTty` with a cap.
 - Lock files and folders: 0-byte check and folder trust (4.1).
@@ -702,7 +792,24 @@ Unit and integration (vitest, real child processes, mock adapter, no tokens):
   change; MCP build rollback only its own staged dir; concurrent evolution commits in two processes; a capability
   review committed after another's change refused; notes index and bodies consistent; kit import paused after
   validation versus a library edit and an OAuth sign-in: the other side waits, no overwrite.
-- Plan usage: two cold probes make one request; a probe owner killed mid-request releases.
+- Plan usage: two cold probes make one request; a probe owner killed mid-request releases; OpenAI model discovery and
+  Codex plan usage take `codex-start` under order 5 and then remap projects as a separate coordinator.
+- Draft-5 cases: mode-checked reentrancy (held shared never satisfies exclusive); `worktrees uninstall` and desktop
+  project removal succeed when only this host holds the session hold and exit 6 when a second host holds it; a project
+  skill edit meeting a dead host's kit-import journal releases, recovers through the journal's `requiredLocks` and
+  restarts; a journal left by a live host after a thrown error is recovered by the next holder; resume before
+  housekeeping and a crash after a `finished` summary both run the consumer check (ownership record `open`); a deleted
+  ownership record is uncertain; a new chain being published is never affected by any sweep (lock files kept);
+  provider session binding killed mid-publish, the same chain rebinding idempotently, migrated bindings present after
+  conversion, orphan bindings swept; a live MCP server keeps reading its build while another session replaces and
+  removes the library entry; relocation of quick-run and installed-MCP fixtures passes the component-wise check while
+  transcripts mentioning old paths do not fail the conversion; folder trust accepts a 0700 folder under sticky `/tmp`
+  and refuses a macOS ACL grant on an ancestor; virtual-project starts (quick, MCP build, skills assistant) beside
+  housekeeping; setup proposals that create library entries beside a library fan-out with a second linked project;
+  capability connector apply/undo, `skills:promote`, `mcp:promote`, MCP install card with library scope, OAuth display
+  update, all through the recording lock layer; `SkillService` construction in a second session leaves the first
+  session's undo folders; staffing records from two runs ending at once both kept; an agent's file-tool edit of a
+  summary's `chainId` denied; `doctor` during an exclusive admission reports the warning.
 - Write-path inventory (section 8). `message_run` `other-session`, `list_runs` notice, setup claim, admission wait,
   registry and status JSON, per-process logs, network-FS warning (simulated `statfs`), advisory strings sanitised.
 - Removed or changed: CLI `wait: 'none'` ownership tests; `inprocHost.test.ts` "second host refused";
@@ -739,9 +846,9 @@ its area, the Reviewer). Hot files take one claim at a time (CLAUDE.md).
 2. **Stores and operations on the new locks, still single-owner, still format 1**: the lock root is
    `<dataDir>/control/locks` from this phase on (never inside a data tree); every 4.4 store on `SharedJsonFile` (async,
    `revision`, `mutateProject`, save hook, undo rules, TUI hints union), the vault (6.7), all transaction locks of 4.2
-   in their services, OAuth with `setMany`, per-chain write queue awaited, journals for 4.9 operations, permission rules
-   async with tmp + rename. The single-owner gate is still in force; behaviour is unchanged.
-3. **Activation (one change)**: `v2/` layout and conversion with relocation and both fences, per-run summaries and
+   in their services, OAuth with `setMany`, per-chain write queue awaited, durable atomic-write helper, permission rules
+   async with tmp + rename. Multi-file operations keep today's behaviour here; their journals come in phase 3. The single-owner gate is still in force; behaviour is unchanged.
+3. **Activation (one change)**: journals and recovery (4.9), `v2/` layout and conversion with relocation and both fences, per-run summaries and
    `chainId`, session bindings, chain and exec-chain claims in `RunManager` and `RunStore`, scratch allocation, quick
    runs and promotion, housekeeping, owner-scoped resources, consumer evidence and quarantine, worktree claims and
    own-only automation, project and setup claims, protected paths, `message_run` / `list_runs`, hostless readers for
@@ -858,3 +965,33 @@ its area, the Reviewer). Hot files take one claim at a time (CLAUDE.md).
 | M10 | permission lock keying and truncating writes | 4.2 order 9, 6.3 |
 | M11 | `tui-hints.json` outside `v2/`, whole-snapshot writes | 4.4, 4.7 |
 | L12 | phase 2 lock root; missing tests | 12 phase 2 uses `control/`; 11 |
+
+### 14.6 Draft 4, Astra (round 4)
+
+| # | Finding | Resolution (draft 5) |
+|---|---|---|
+| 1 | quarantine bypassed before housekeeping or without metadata | 4.3 chain ownership record written before spawning, `clean` only after settlement, classified inline by every claimer; missing = uncertain; legacy leftovers classified at conversion |
+| 2 | lock cleanup races a chain being published | 4.1 lock files are kept (only a host deletes its own lock; a dead host's by housekeeping, never acquired by others) |
+| 3 | setup proposals need `library` | 4.2 lock sets by proposal kind |
+| 4 | run metadata writable by agents | 9 whole `control/` and `v2/` protected with workspace carve-outs; `ChainWrite` refuses a changed `chainId` |
+| 5 | MCP build replaced under a live server | 6.3 immutable build versions, use holds, sweep by exclusive claim |
+| 6 | relocation validator rejects `v2/` paths | 4.7 component-wise legacy namespaces, operational fields only |
+| 7 | journal removal before durable resource writes; conversion metadata | 4.9 durable ordering and a shared fsyncing helper; 4.7 step 5 |
+| 8 | macOS ACLs | 4.1 folder trust with `ls -led` ACL checks |
+| 9 | virtual projects fail existence checks | 6.3 reserved ids, chain- or host-scoped |
+| 10 | journals before their prerequisites; live-host exceptions | 12 journals in phase 3; 4.9 `abandoned` and recovery by the next holder |
+
+### 14.7 Draft 4, Carbon (round 4)
+
+| # | Finding | Resolution (draft 5) |
+|---|---|---|
+| F1 | order-5 row, discovery remapping, setup, capability, promotions, OAuth display fields | 4.2: `codex-start` its own order after 5; remapping a separate coordinator; lock sets per operation; OAuth display fields under `config` only |
+| F2 | mode-blind reentrancy; self-conflicting session holds | 4.1 mode-checked reentrancy, `upgradeHold` / `downgradeHold` |
+| F3 | inline recovery with too few locks; `mcp-build` unranked | 4.9 `requiredLocks` and a recovery coordinator; builds under `library` and immutable (6.3) |
+| F4 | generic scan fails on transcripts | 4.7 operational fields only; exhaustive scan in a unit test |
+| F5 | sticky `/tmp`, walk boundary, Windows ancestors | 4.1 folder trust rules |
+| F6 | session binding atomicity, idempotence, migration, orphans, key | 4.3 `link` publication, same-chain success, created at conversion, swept (5.4), key `adapter\0sessionId` |
+| F7 | `SkillService` constructor sweep; `snapshotForProposal` scope and temp dir | 6.3 |
+| F8 | vault `purge`, refresh boundaries, `vaultId`, callers | 6.7 |
+| F9 | staffing profile writer; `readLedger` rename on read | 4.2 order 9, 6.3 |
+| F10 | `doctor` and exclusive admission; tests | 7.1; 11 |
