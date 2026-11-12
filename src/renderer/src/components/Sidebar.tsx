@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { BellRing, Briefcase, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { BellRing, Briefcase, CalendarClock, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject } from '../lib/assistants'
 import { decisionLocationLabel } from '../lib/chatPermissions'
 import { useShallow } from 'zustand/react/shallow'
@@ -117,6 +117,7 @@ export default function Sidebar({
   const view = useAppStore((s) => s.view)
   const setView = useAppStore((s) => s.setView)
   const openUsage = useAppStore((s) => s.openUsage)
+  const openSchedules = useAppStore((s) => s.openSchedules)
   const openProject = useAppStore((s) => s.openProject)
   const openAssistant = useAppStore((s) => s.openAssistant)
   const virtualProjects = useAppStore((s) => s.virtualProjects)
@@ -408,6 +409,18 @@ export default function Sidebar({
         >
           <Icon icon={ChartColumn} size="sm" />
           {!rail && 'Usage'}
+        </button>
+        <button
+          type="button"
+          className={`nav-item ${view === 'schedules' ? 'active' : ''}`}
+          data-testid="nav-schedules"
+          aria-current={view === 'schedules' ? 'page' : undefined}
+          aria-label={rail ? 'Schedules' : undefined}
+          title={rail ? 'Schedules' : undefined}
+          onClick={() => openSchedules()}
+        >
+          <Icon icon={CalendarClock} size="sm" />
+          {!rail && 'Schedules'}
         </button>
         {needsCount > 0 && (
           <Popover

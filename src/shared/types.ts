@@ -4054,7 +4054,9 @@ export const MENU_ACTIONS = [
   /** Help > "Ask OrgAI about itself…": opens Chat ready for a question about the app (section "Self-knowledge"). */
   'ask-about-orgai',
   /** View > Usage: the app-wide Usage page (docs/design/usage-app.md). No accelerator; always enabled. */
-  'show-usage'
+  'show-usage',
+  /** View > Schedules: the app-wide Schedules page (docs/design/schedules.md section 5). No accelerator; always enabled. */
+  'show-schedules'
 ] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
@@ -9245,6 +9247,8 @@ export interface Schedule {
   consecutiveFailures: number
   /** History entries the user has not seen. */
   unread: number
+  /** The newest history entry, for list rows (main-owned; absent before the first slot is handled). */
+  lastEntry?: Pick<ScheduleHistoryEntry, 'at' | 'slotAt' | 'trigger' | 'result' | 'reason' | 'outcome' | 'runId'>
 }
 
 export type ScheduleRunResult = 'started' | 'skipped' | 'failed'

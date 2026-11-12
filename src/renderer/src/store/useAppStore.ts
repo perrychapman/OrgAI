@@ -84,6 +84,12 @@ export interface UsageFocusRequest {
   seq: number
 }
 
+/** Where the Schedules page should land after `openSchedules` (one schedule's row), bumped per request. */
+export interface SchedulesFocusRequest {
+  scheduleId?: string
+  seq: number
+}
+
 export interface OpenUsageOptions {
   /** Narrow to these projects (replaces the project selection; other narrowings are cleared). */
   projectIds?: string[]
@@ -107,7 +113,7 @@ export interface ImportNotice {
   error?: string
 }
 
-export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'outputs' | 'knowledge' | 'appSettings' | 'usage'
+export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'outputs' | 'knowledge' | 'appSettings' | 'usage' | 'schedules'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
 export type SideTab = 'transcript' | 'plan' | 'usage' | 'outputs' | 'knowledge' | 'logs'
 
@@ -327,6 +333,10 @@ interface AppState {
   usageReturn: { runId: string } | null
   /** Open a run from the Usage page in its project, on its Usage side tab (7.3). */
   openUsageRun(projectId: string, runId: string): Promise<void>
+  /** The Schedules page's landing request (docs/design/schedules.md section 5). */
+  schedulesFocus: SchedulesFocusRequest | null
+  /** Show the app-wide Schedules page (never changes the selected project); `scheduleId` lands on that row. */
+  openSchedules(opts?: { scheduleId?: string }): void
   /** Bumped by openNewProject(); the Dashboard opens its New project form when it changes. */
   newProjectRequest: number
   saveStatus: SaveStatus
@@ -934,6 +944,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   usageFilters: initialUsageFilters(),
   usageFocus: null,
   usageReturn: null,
+  schedulesFocus: null,
   newProjectRequest: 0,
   saveStatus: { state: 'idle' },
   selectedRoleId: null,
@@ -1527,6 +1538,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     const seq = (get().usageFocus?.seq ?? 0) + 1
     set({ view: 'usage', usageReturn: null, usageFocus: opts.section ? { section: opts.section, seq } : { seq } })
+  },
+
+  openSchedules(opts = {}) {
+    const seq = (get().schedulesFocus?.seq ?? 0) + 1
+    set({ view: 'schedules', usageReturn: null, schedulesFocus: opts.scheduleId ? { scheduleId: opts.scheduleId, seq } : { seq } })
   },
 
   async openUsageRun(projectId, runId) {

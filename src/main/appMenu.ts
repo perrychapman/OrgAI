@@ -184,6 +184,7 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
       item('show-project-settings', 'Project settings', 'CmdOrCtrl+4'),
       sep,
       item('show-usage', 'Usage'),
+      item('show-schedules', 'Schedules'),
       sep,
       item('toggle-sidebar', 'Toggle sidebar', 'CmdOrCtrl+B', true),
       {
@@ -366,7 +367,8 @@ const MENU_ACTION_TARGETS: Record<MenuAction, 'main' | 'focused'> = {
   'canvas-zoom-in': 'focused',
   'canvas-zoom-out': 'focused',
   'ask-about-orgai': 'main',
-  'show-usage': 'main'
+  'show-usage': 'main',
+  'show-schedules': 'main'
 }
 
 export function menuActionTarget(action: MenuAction): 'main' | 'focused' {
