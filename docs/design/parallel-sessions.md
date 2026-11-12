@@ -1,7 +1,7 @@
 # Parallel `orgai` sessions: design spec
 
-Status: draft 13, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2-12 by GPT Astra and Gemini
-Carbon; all twenty-four reviews BLOCKED. Owner decision (2026-11-12): after draft 13 and one more review round,
+Status: draft 14, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2-13 by GPT Astra and Gemini
+Carbon; all twenty-six reviews BLOCKED. Owner decision (2026-11-12): after draft 13 and one more review round,
 implementation starts with phase 1; later findings are folded into phases 2 and 3 as spec changes and tests. Resolutions are in section 14. Owner direction (2026-11-11): "mirror Claude Code / Codex":
 any number of `orgai` processes at once, in any projects, on one CLI data folder, each terminal its own session. This
 reverses `cli-standalone-default.md` G4 ("one `orgai` host process per CLI data folder") and promotes its non-goal
@@ -82,10 +82,11 @@ From the code (three research passes and four reviews):
    skills, `undoImport` and proposal rollback restoring whole in-memory snapshots, `skills/service.ts:500-758`); MCP
    builds (install renames the old dir aside, `mcp/builds.ts:153-173`); notes (`context/index.json` + `note_<id>.md`);
    engagement document; org templates (`templates.json` + `<id>/org.json`); quick-run promotion (project first, then
-   runs; `moveToProject` updates only the summary, `quick/quickRuns.ts:284-299`, `runs.ts:340-360`); kit import
+   runs; `moveToProject` updates only the summary, `quick/quickRuns.ts:284-299`, `runs.ts:408-420`); kit import
    (digest check then several services, `kit/service.ts:339-355, 666-738`); setup (`writeArchitecture` plain
    `writeFileSync` of `.orgai/ARCHITECTURE.md` and `CLAUDE.md`, `applyProposal` adding permission rules,
-   `setup/service.ts:336, 448-465`); permission grants (`permission-rules.json` and the project folder's
+   `setup/service.ts:336, 448-465`); permission grants (`projects/<id>/permissions.local.json` through `appRulesFile`
+   in `store/projectData.ts`, and the project folder's
    `.claude/settings.local.json`, plain `writeFileSync`, `permissionRules.ts:13-155`).
 6. **Run files written outside a live run**: late title (`runManager.ts:3689-3750`), `usageSummaries` back-fill
    (3973-3988), post-run evolution flush (3817-3822), `stopPaused` (4737-4764), stranded exec finalisation
@@ -143,7 +144,8 @@ Protocol:
   locks on the inode, SQLite "how to corrupt" 2.2).
 - **Exclusive**: `BEGIN EXCLUSIVE`. **Shared**: `BEGIN` + `SELECT count(*) FROM sqlite_schema`. **Release**:
   `ROLLBACK`, then close. **Probe** (`'held' | 'free' | 'missing'`): open read-only (never creates), shared read; busy
-  means an exclusive holder exists. Hostless readers use only probes.
+  means an exclusive holder exists. Hostless readers use only probes in the data folder; the one exception is
+  `usage csv --out <file>`, which takes its destination's cache lock (`output-file-<hash>`, 4.2).
 - **In-process coordinator** (one per path, reader-writer aware): shared acquisitions share one connection with a
   reference count; an exclusive acquisition waits for in-process holders in FIFO order; **claims** (`waitMs = 0`) never
   queue and fail at once on any conflict, in-process or OS; **probes** bypass the coordinator.
@@ -237,6 +239,11 @@ code).
   from the library (`connectorEntryForTeam` /
   `connectorsAdd` / `discardConnectorEntryForTeam`, `mcp/service.ts:1743-1768`, code); if one is possible, `library`
   is in the set. A lock-contract assertion is never caught and turned into an ordinary lookup failure.
+  **Registerable files**: any write by OrgAI to a file that could be registered as an output (`checkRegisteredPath`
+  would accept it; for example a project's `CLAUDE.md`, written by setup's `writeArchitecture` and by maintenance)
+  also takes that file's `output-file-<hash>` (order 7b, after the repository lock) and checks its locators as the
+  writers outside the outputs service do (row below), so an output delete or a pending output journal is never
+  bypassed.
 
 | Order | Transaction lock | Wait | Covers |
 |---|---|---|---|
@@ -274,7 +281,7 @@ coordinator retry included):
 | team-files operation (approve, reject, enable, remove, undo, overwrite, commit, `createFromFolder`, `evaluate`'s auto-apply) | 1 when a connector entry may be added or removed → 2 → 3 → 4 (server secrets) → 11 → 12 |
 | team-files read checks (`status`, `focused`, `beforeRun`, each project of `listAttention` / `checkAll`) | inspect read-only first; when a change is needed, release and run the team-files operation's coordinator |
 | project MCP server add, edit, remove; `persistInstall` with scope `project` | 2 → 3 → 4 (when credentials move or clear) → 11 → 12 |
-| `mcp:copyFromLibrary`, `mcp:linkLibrary`, `skills:linkLibrary` | 1 → 2 → 3 → 11 → 12 |
+| `mcp:copyFromLibrary`, `mcp:linkLibrary`, `skills:linkLibrary` | 1 → 2 → 3 → 4 (`copyFromLibrary` replacing a link with its own credentials: that owner, and its OAuth flow is aborted) → 11 → 12 |
 | setup lifecycle saves (`prepare`, `complete`, `markScaffolded`, `markArchitectureUpdated`, `applyOrg`) | 2 → 3 → 9 (`engagement-<pid>` for an engagement architecture) → 12 |
 | accept edits for a project (`acceptEditsForProject` sets `permissionMode`, a team-owned field) | 2 → 3 → 12 |
 | capability apply / undo, setup proposals, kit import, evolution | as listed, with the save-hook closure |
@@ -301,6 +308,7 @@ coordinator retry included):
 | `projects:save` (`projects edit`), `skills:applyImport`, `skills:undoImport`, `plugins:upsert`, `plugins:remove` | 2 → 12 (closure added) |
 | `mcp:setProjectOverrides`; `mcp:upsert` of a linked server | 1 → 2 → 11 → 12 |
 | `mcp:setSecret` | 1 (when the server is linked) → 2 → 11 → 12 |
+| `connectors:add` (also through capability apply) | 1 → 2 (linked projects, when an unconnected entry's variant is rewritten) → 3 → 4 (the library owner and linked `perProjectSecrets` owners whose credentials it clears) → 11 → 12 |
 | `mcpLibrary:setSecret`, `connectors:setToken` | 1 → 11 → 12 |
 | staffing record at run end | 9 (`staffing-<pid>`) |
 | worktree integrate | claim (exempt) → 3 |
@@ -453,6 +461,10 @@ For `v2/` `projects.json`, `settings.json`, `skill-library.json`, `mcp-library.j
   `harness-workspace/`, `auth-cwd/`, the vault files, `tui-hints.json`.
 - The format-1 files in `<dataDir>/` (and `<userDataDir>/tui-hints.json`) are left exactly as they were and never
   written again by new code.
+- **No marker before the host**: the CLI's `buildContext` stops writing the product marker; it only checks (a pure
+  `cliFolderRefusal`, like the desktop's read-only check). Hostless commands never create or write anything in the
+  data folder (a missing folder stays missing). A new host writes the marker only at conversion step 7, as
+  `"orgai-cli/2"`; a new binary never writes the format-1 `"orgai-cli"` marker.
 - Old code (any version) reads and sweeps only format-1 paths, so it can neither read, sweep nor overwrite format-2 data,
   whatever fences it honours. A downgraded desktop that follows its own "delete `<dataDir>/run`" advice
   (`ownership.ts:136-138`, code) sees the frozen format-1 state. Released CLI v0.1.6 (tag 2026-11-05, code) uses the
@@ -532,12 +544,24 @@ The OS frees a dead host's locks, but agents, shells, git, MCP servers or Codex 
   start time (durable); an unresolved pending spawn makes the evidence uncertain. **Claude**: the SDK accepts a spawn
   function (`spawnClaudeCodeProcess?: (options: SpawnOptions) => SpawnedProcess`, `sdk.d.ts:2553, 9990-10060` of
   `@anthropic-ai/claude-agent-sdk` 0.3.318, code: typings). Every Claude `query()` the adapter makes (runs, restarted
-  queries, `complete`, title, probes, model listing) passes one: it records the pending spawn, spawns `options.command`
-  with `options.args`, `cwd` and `env` through `child_process.spawn`, records the child's pid and start time
-  synchronously (`writeFileSync` + `fsyncSync`) and returns the child. There is no process-table fallback: every
-  Claude child is identified at its own spawn. (The SDK notes that custom spawners emit a plain `exit` without its
-  built-in stderr grace; the adapter keeps its own stderr tail.) A pending spawn is cleared only when its own spawn
-  records a child or fails to start; a snapshot that cannot be read never clears anything. Read-only probes that run before the host is registered (shell environment, system
+  queries, `complete`, title, probes, model listing) passes one. It records the pending spawn; calls
+  `child_process.spawn(options.command, options.args, { cwd, env, signal: options.signal, stdio: ['pipe', 'pipe',
+  'pipe'], windowsHide: true })` (as the SDK's own `spawnLocalProcess` does); always reads `child.stderr` (a UTF-8
+  decoder forwarding to the query's stderr sink when there is one, draining otherwise, so the pipe never fills; the
+  remainder is flushed on `close`); and records the child's pid and start token. `child.pid` undefined (the process
+  never started) clears the pending spawn; a start token that cannot be read yet records `{ pid, start: null }`, which
+  counts as uncertain until the child's `exit` marks it. There is no process-table fallback: every Claude child is
+  identified at its own spawn. A pending spawn is cleared only by its own spawn; a snapshot that cannot be read never
+  clears anything.
+- **One evidence state per host**: an in-memory state mutated synchronously by spawns, resolutions and the periodic
+  merge, and written to `children.json` only through the atomic-write helper (temp, fsync, rename; never an in-place
+  write); the 5 s merge applies its table to the current state at commit time, so a spawn recorded while the table
+  read was in flight is never lost.
+- **One start token per platform**: spawn-time recording, the periodic table, the consumer check and `processInfo.ts`
+  liveness all use the same canonical token: macOS the `ps` `lstart` text with whitespace collapsed; Linux
+  `/proc/<pid>/stat` field 22 as `ticks:<n>` (table read from `/proc` too); Windows the creation time as UTC FILETIME
+  `ft:<n>` (a missing or zero creation date is no token, never equal to another). Tokens of different kinds never
+  compare equal. Read-only probes that run before the host is registered (shell environment, system
   certificates, folder-trust `ls`/`icacls`, the host's own start-time `ps`) are exempt: they run in a neutral folder
   and finish before anything is opened. Every 5 s it adds
   newly seen descendants and keeps every descendant it has ever recorded until it has seen that process exit (a
@@ -851,6 +875,11 @@ releases; a crash releases the lock (OS). Each process still probes only when it
     the format-1 secret keys; the first OAuth write copies the format-1 `clientSecret` and unrotated `refreshToken`
     into `oauth g1` before purging. Metadata-only edits that keep the destination leave the generation absent, so a
     locked vault is never needed for them; a secret change on a locked vault is refused as today.
+  - **Cross-owner transfers** (`mcp:promote` moving a project server's credentials to a new library entry,
+    `mcp:copyFromLibrary` copying credentials into a new project-only server): read the source owner's verified values
+    (format-1 or its current generation matching its digest), write them as `g1` of the destination owner bound to the
+    destination's digest in one `setMany` (with `secretGeneration: 1`, and `oauthGeneration: 1` when OAuth moves), save
+    the destination definition, then purge the source owner's keys.
   - CLI `--secret-env` MCP values (`ORGAI_SECRET_MCP_*`, `ORGAI_SECRET_MCPLIB_*`, `secretOverlay.ts`, code) are bound at
     process start to their owner's `destinationDigest` then, and refused after it changes.
   - Housekeeping purges MCP credential generations no definition names, under `11 → 12` with the vault, `projects.json`
@@ -933,7 +962,7 @@ A connection's endpoint (in `settings.json`) and its key (in the vault) are boun
 | `projects edit`, `org`, `team`, `permissions`, project `mcp`/`skills`, `knowledge`, `notes`, `kit` (per affected project), `outputs`, `worktrees`, `runs model` | own short host; `project-<pid>` shared | `setup-` claim, chain claim for `runs model`, `repo-usage` for uninstall, a stale project revision, a project being removed |
 | `projects remove` | own short host | `project-<pid>` exclusive |
 | `secrets init|reset|undelete|keep-removed` | own short host with `admission` exclusive instead of shared | `admission` busy |
-| `status`, `runs list|show`, `projects list|show`, `usage show`, `usage csv` (to standard output), `completions`, `help`, `--version` | none (hostless reader: reads files and probes locks; never writes, converts, settles or cleans) | never |
+| `status`, `runs list|show`, `projects list|show`, `usage show` (including `--overview`, read from the files: runs, projects, settings, prices, plan usage; any legacy back-fill in memory), `usage csv` (to standard output), `completions`, `help`, `--version` (`secretOverlay.ts` `HOSTLESS_SUBCOMMANDS` gains `usage: ['show', 'csv']`) | none (hostless reader: reads files and probes locks; never writes, converts, settles or cleans) | never |
 | `usage csv --out <file>` | none; takes the destination's output-file lock (4.2), never removes a locator | the file's lock busy, or a pending output journal for it |
 | `secrets status [--probe]` | file checks hostless; custodian state and `--probe` in an own short host, read-only (never reconciles or writes); during an exclusive admission the custodian part is reported as a warning | never |
 | `doctor` | metadata hostless; connection checks in an own short host | never: if `admission` is held exclusive past the wait, the connection checks are reported as a warning ("skipped: another orgai is upgrading or resetting this folder") |
@@ -1200,6 +1229,17 @@ Unit and integration (vitest, real child processes, mock adapter, no tokens):
   proposals clearing credentials, `mcp:setSecret`, `mcpLibrary:setSecret`, `connectors:setToken`,
   `setProjectOverrides`; staged-skill scripts under `skills/<skillName>/` on Bash and PowerShell (`python.exe`, `py`);
   a crash in commit step 4 between locator and journal removal finishes the removal.
+- Draft-14 cases: a registered `CLAUDE.md` (registered from another project) deleted with the deletion paused after
+  its check while setup and maintenance update it, and setup meeting a pending output journal for it (also from
+  another data folder); a real spawn-function integration test whose child writes more than 256 KiB to stderr before
+  answering (no deadlock, stderr tail kept), a spawn while the periodic table read is in flight (both records kept),
+  an `ENOENT` and an immediately exiting child; on the CI runners, a direct child recorded at spawn and a grandchild
+  recorded by the table both read as alive in the live-host loop and the dead-host check, and dead only after exit;
+  `connectors:add` rewriting a variant with a second linked project (direct and through capability apply) and
+  `copyFromLibrary` racing an OAuth refresh, through the recording lock layer; credentials resolve after `mcp:promote`
+  and `copyFromLibrary` with link overrides, on converted and format-2 servers; every hostless command against a
+  missing `--data-dir` leaves it missing, and a new host never writes the format-1 marker; `usage show`,
+  `usage show --overview` and `usage csv` during an exclusive admission start no host.
 - Write-path inventory (section 8). `message_run` `other-session`, `list_runs` notice, setup claim, admission wait,
   registry and status JSON, per-process logs, network-FS warning (simulated `statfs`), advisory strings sanitised.
 - Removed or changed: CLI `wait: 'none'` ownership tests; `inprocHost.test.ts` "second host refused";
@@ -1563,3 +1603,20 @@ its area, the Reviewer). Hot files take one claim at a time (CLAUDE.md).
 | H3 | kit exports; same-folder locators; hostless `usage csv` | 4.2 row covers every locator; 7.1 splits `usage csv` and `usage csv --out` |
 | M1 | staged path uses the skill name | 9 |
 | L1 | locator re-creation scope | 4.9 |
+
+### 14.24 Draft 13, Astra (round 13)
+
+| # | Finding | Resolution (draft 14) |
+|---|---|---|
+| 1 | setup and maintenance `CLAUDE.md` writes bypass the output-file lock | 4.2 rule for every write to a registerable file |
+
+### 14.25 Draft 13, Carbon (round 13)
+
+| # | Finding | Resolution (draft 14) |
+|---|---|---|
+| 1 | spawn function: stderr unread, signal and `windowsHide` dropped, spawn failures, in-place evidence writes | 4.8 spawn function details; one evidence state written atomically |
+| 2 | incompatible start-time formats | 4.8 one canonical start token per platform for every reader (fixed in the phase-1 code) |
+| 3 | `connectors:add`, `copyFromLibrary` OAuth, cross-owner transfers | 4.2 rows; 6.6 cross-owner transfers |
+| 4 | CLI writes a format-1 marker before any host | 4.7 no marker before the host; hostless commands write nothing |
+| 5 | hostless `usage` | 4.1 exception for `usage csv --out`; 7.1 `usage show --overview` from files, `HOSTLESS_SUBCOMMANDS` |
+| 6 | citations | 3.5 |
