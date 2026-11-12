@@ -43,6 +43,7 @@ describe('formatters', () => {
     const p = plan({ gate: { ok: true, violations: Array.from({ length: 6 }, (_, i) => ({ rule: 'tier_top', message: `m${i}`, action: 'trimmed' as const })) }, usage: { inputTokens: 2000, outputTokens: 300, costUsd: 0.01 } })
     const lines = applyText({ applied: true, generation: gen(), project: {} as never, diagnosis: diagnosis(1), plan: p, teamFilesSynced: true }, 'hybrid')
     expect(lines).toContain('Applied gen_1')
+    expect(lines).toContain('Undo it now with /evolve rollback gen_1.')
     expect(lines).toContain('+2 more')
     expect(lines).toContain('Synthesis used 2.0k input')
     expect(lines).toContain('were synced')

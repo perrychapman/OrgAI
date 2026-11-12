@@ -699,7 +699,7 @@ export interface ExecRunResult {
 export function evolveLine(r: EvolvePostRunResult | null | undefined, error?: string): string {
   if (!r) return error ? `Team evolution: the post-run pass failed (${safeLine(error)}).` : 'Team evolution: no post-run pass ran for this run.'
   const parts: string[] = [`ratchet ${r.ratchet}${r.ratchetReason ? ` (${safeLine(r.ratchetReason)})` : ''}`]
-  if (r.applied) parts.push(`applied ${safeLine(r.applied.id)} as a trial: ${safeLine(r.applied.summary)}`)
+  if (r.applied) parts.push(`applied ${safeLine(r.applied.id)} as a trial: ${safeLine(r.applied.summary)} (details: orgai org evolve history; undo: orgai org evolve rollback ${safeLine(r.applied.id)})`)
   else if (r.wasteScore !== undefined) parts.push(`waste score ${r.wasteScore}, no new generation`)
   return `Team evolution: ${parts.join('; ')}.`
 }

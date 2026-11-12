@@ -60,6 +60,7 @@ import {
   type Session
 } from './exec'
 import { intFlag } from './runs'
+import { effectiveConcurrency, patchChanges } from '../../main/evolve/plan'
 
 /** Analysis and the hybrid model call can take a while. */
 const EVOLVE_CALL_TIMEOUT_MS = 10 * 60_000
@@ -119,22 +120,16 @@ export function planDeltaText(plan: Pick<EvolutionPlan, 'rolePatches' | 'newSkil
   return parts.join(', ')
 }
 
-export function planLines(plan: EvolutionPlan): string[] {
+/** The plan as text. With `before` (the project as it was), each change reads `field before → after`. */
+export function planLines(plan: EvolutionPlan, before?: Project): string[] {
   const lines = [`Proposed changes (strategy ${plan.strategy}${plan.empty ? ', nothing to change' : ''}):`]
   for (const p of plan.rolePatches) {
-    const bits: string[] = []
-    if (p.tier) bits.push(`tier ${p.tier}`)
-    if (p.effort) bits.push(`effort ${p.effort}`)
-    if (p.staffing) bits.push(`staffing ${safeLine(JSON.stringify(p.staffing))}`)
-    if (p.prompt !== undefined) bits.push(`prompt rewritten (${p.prompt.length} chars)`)
-    if (p.addTools?.length) bits.push(`+tools ${p.addTools.join(', ')}`)
-    if (p.removeTools?.length) bits.push(`-tools ${p.removeTools.join(', ')}`)
-    if (p.removeSkills?.length) bits.push(`-skills ${p.removeSkills.map(safeLine).join(', ')}`)
+    const bits = patchChanges(before?.roles.find((r) => r.slug === p.slug), p).map(safeLine)
     lines.push(`  role ${safeLine(p.slug)}: ${bits.join('; ') || 'no change'} (${safeLine(p.reason)})`)
   }
   for (const s of plan.newSkills) lines.push(`  new skill ${safeLine(s.name)} for ${s.grantTo.map(safeLine).join(', ') || 'no role'} (${safeLine(s.reason)})`)
   for (const id of plan.pruneSkillIds) lines.push(`  remove skill ${safeLine(id)}`)
-  if (plan.maxConcurrentSubagents !== undefined) lines.push(`  max concurrent subagents: ${plan.maxConcurrentSubagents}`)
+  if (plan.maxConcurrentSubagents !== undefined) lines.push(`  max concurrent subagents: ${before ? `${effectiveConcurrency(before)} → ` : ''}${plan.maxConcurrentSubagents}`)
   if (plan.rationale) lines.push(`Rationale: ${safeLine(plan.rationale)}`)
   const g = plan.gate
   lines.push(`Safety gate: ${g.ok ? 'passed' : 'REFUSED'}${g.violations.length ? ` · ${g.violations.length} violation${g.violations.length === 1 ? '' : 's'}` : ''}`)
@@ -234,7 +229,7 @@ export async function orgEvolve(ctx: CliContext, args: string[]): Promise<number
     emit(ctx, { project: projectJson(project), dryRun: true, diagnosis: res.diagnosis as unknown as Json, plan: res.plan as unknown as Json, digest: res.digest }, () => [
       ...diagnosisLines(res.diagnosis, project.name),
       '',
-      ...planLines(res.plan),
+      ...planLines(res.plan, project),
       '',
       res.plan.empty || !res.plan.gate.ok ? 'Nothing would be applied.' : 'Dry run: nothing was changed. Apply it as a trial generation with: orgai org evolve --apply'
     ])
@@ -256,11 +251,12 @@ async function applyAndPrint(ctx: CliContext, client: HostClient, project: Proje
       plan: res.plan as unknown as Json
     },
     () => {
-      const lines = [...diagnosisLines(res.diagnosis, project.name), '', ...planLines(res.plan), '']
+      const lines = [...diagnosisLines(res.diagnosis, project.name), '', ...planLines(res.plan, project), '']
       if (res.applied && res.generation) {
         const g = res.generation
         lines.push(`Applied ${safeLine(g.id)} as a trial: ${safeLine(g.summary)}`)
-        lines.push(`It is measured over the next ${g.evalWindowRuns} finished work run${g.evalWindowRuns === 1 ? '' : 's'}; a regression rolls it back automatically (orgai org evolve history, orgai org evolve rollback).`)
+        lines.push(`It is measured over the next ${g.evalWindowRuns} finished work run${g.evalWindowRuns === 1 ? '' : 's'}; a regression rolls it back automatically (orgai org evolve history).`)
+        lines.push(`Undo it now with: orgai org evolve rollback ${safeLine(g.id)}`)
         lines.push(res.teamFilesSynced ? 'The .orgai/ team files were updated.' : 'The .orgai/ team files were not written (team files are not active for this project).')
       } else lines.push(`Nothing was applied${res.reason ? `: ${safeLine(res.reason)}` : '.'}`)
       return lines
@@ -530,7 +526,7 @@ export async function retroUnattended(ctx: CliContext, ref: string, flags: { app
       '',
       ...diagnosisLines(res.diagnosis, project.name),
       '',
-      ...planLines(res.plan),
+      ...planLines(res.plan, project),
       '',
       res.plan.empty || !res.plan.gate.ok ? 'Nothing would be applied.' : `Dry run: nothing was changed. Apply what passes the safety gate with: orgai org retro ${safeLine(ref)} --unattended --apply`
     ])

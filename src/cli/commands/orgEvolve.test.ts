@@ -19,6 +19,7 @@ import { CliError, EXIT } from '../types'
 import { execIo, runExec } from './exec'
 import { runOrg } from './org'
 import { evolveLoopIo, EVOLVE_LOOP_MAX_ITERATIONS } from './orgEvolve'
+import { evolveLine } from './exec'
 
 const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate', 'decide', 'configure'] }
 const realDeps = { ...manageDeps }
@@ -107,7 +108,7 @@ describe('org evolve (dry run)', () => {
     expect(out).toContain('first-pass 50%')
     expect(out).toContain('tier_overprovisioned [researcher]')
     expect(out).toContain('est. saving per run: $0.1200, 9000 tokens')
-    expect(out).toContain('role researcher: tier fast; prompt rewritten (5 chars)')
+    expect(out).toContain('role researcher: tier fast; prompt 5 characters')
     expect(out).toContain('remove skill skl_old')
     expect(out).toContain('Safety gate: passed · 1 violation')
     expect(out).toContain('trimmed tier_top [implementer]')
@@ -157,7 +158,23 @@ describe('org evolve --apply', () => {
       expect(f.connectCalls[0].scopes).toEqual(['read', 'configure'])
       expect(f.out()).toContain('Applied gen_1 as a trial: researcher to fast')
       expect(f.out()).toContain('The .orgai/ team files were updated.')
+      expect(f.out()).toContain('Undo it now with: orgai org evolve rollback gen_1')
     }
+  })
+
+  it('exec --evolve names the undo command when the post-run pass applied a generation', () => {
+    const line = evolveLine({ projectId: 'p1', ratchet: 'none', applied: GEN })
+    expect(line).toContain('applied gen_1 as a trial: researcher to fast')
+    expect(line).toContain('undo: orgai org evolve rollback gen_1')
+  })
+
+  it('prints each change as before → after, read from the project as it was', async () => {
+    const before = { ...P, maxConcurrentSubagents: 3, roles: [{ id: 'r_res', slug: 'researcher', name: 'Researcher', tier: 'deep', model: 'deep', effort: 'high', prompt: 'a much longer prompt' }] } as unknown as Project
+    const plan: EvolutionPlan = { ...PLAN, rolePatches: [{ slug: 'researcher', tier: 'everyday', effort: 'medium', prompt: 'short', reason: 'cheaper' }], maxConcurrentSubagents: 5 }
+    const { f } = setup({ 'projects:list': () => [before], 'projects:get': () => before, 'org:evolveApply': () => ({ ...applied, plan }) })
+    await runOrg(f.ctx, ['evolve', '--apply'])
+    expect(f.out()).toContain('role researcher: tier deep → everyday (model deep → everyday); effort high → medium; prompt 20 → 5 characters (cheaper)')
+    expect(f.out()).toContain('max concurrent subagents: 3 → 5')
   })
 
   it('says when team files were not written and when nothing was applied (exit 0, the plan said why)', async () => {

@@ -666,13 +666,13 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
           return
         }
         if (req.kind === 'analyze') {
-          await ctx.openText('Team evolution', analyzeText(await ctx.session.evolveAnalyze({ projectId })))
+          await ctx.openText('Team evolution', analyzeText(await ctx.session.evolveAnalyze({ projectId }), project))
         } else if (req.kind === 'history') {
           await ctx.openText('Team evolution history', historyText(await ctx.session.evolveHistory(projectId)))
         } else if (req.kind === 'apply') {
           if (req.strategy === 'hybrid') ctx.notify('Hybrid makes one tracked model call on the host to draft the plan.')
           const res = await ctx.session.evolveApply({ projectId, strategy: req.strategy })
-          const text = applyText(res, req.strategy)
+          const text = applyText(res, req.strategy, project)
           ctx.notify(res.applied ? `Evolved the team${res.generation ? ` (${cleanLine(res.generation.id, 20)})` : ''}. The org tree shows the new chart.` : `Nothing applied: ${cleanLine(res.reason, 120) || 'no change'}.`, res.applied ? 'ok' : 'warn')
           await ctx.openText('Team evolution applied', text)
         } else {

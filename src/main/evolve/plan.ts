@@ -138,6 +138,30 @@ export function nextModelFor(role: Pick<Role, 'model'>, tier: ModelTier): string
   return aliasTier !== undefined && aliasTier !== tier ? CLAUDE_ALIAS_FOR_TIER[tier] : undefined
 }
 
+const staffingText = (s: Role['staffing']): string =>
+  s ? [s.mode, s.minTier ? `floor ${s.minTier}` : '', s.maxEffort ? `max effort ${s.maxEffort}` : ''].filter(Boolean).join(', ') : 'none'
+
+/**
+ * What one role patch changes, one `field before → after` item per field, for the text an apply prints. `role` is the
+ * role as it was before the patch; without it only the new values are shown. Plain text: callers sanitize it for their
+ * terminal (slugs, tool and skill ids come from the project).
+ */
+export function patchChanges(role: Pick<Role, 'tier' | 'model' | 'effort' | 'staffing' | 'prompt'> | undefined, p: EvolutionRolePatch): string[] {
+  const from = (v: string | undefined): string => (role ? `${v ?? 'unset'} → ` : '')
+  const out: string[] = []
+  if (p.tier !== undefined) {
+    const model = role ? nextModelFor(role, p.tier) : undefined
+    out.push(`tier ${from(role?.tier ?? settingTier(role?.model ?? ''))}${p.tier}${model ? ` (model ${role?.model ?? 'unset'} → ${model})` : ''}`)
+  }
+  if (p.effort !== undefined) out.push(`effort ${from(role?.effort)}${p.effort}`)
+  if (p.staffing) out.push(`staffing ${role ? `${staffingText(role.staffing)} → ` : ''}${staffingText(p.staffing)}`)
+  if (p.prompt !== undefined) out.push(`prompt ${role ? `${Array.from(role.prompt ?? '').length} → ` : ''}${Array.from(p.prompt).length} characters`)
+  if (p.addTools?.length) out.push(`+tools ${p.addTools.join(', ')}`)
+  if (p.removeTools?.length) out.push(`-tools ${p.removeTools.join(', ')}`)
+  if (p.removeSkills?.length) out.push(`-skills ${p.removeSkills.join(', ')}`)
+  return out
+}
+
 /**
  * A role the user fixed on purpose: the project runs `staffing: 'fixed'`, or the role carries `staffing.mode: 'fixed'`.
  * It runs as configured, so an evolution never changes its tier, effort or staffing bounds (the gate trims such a

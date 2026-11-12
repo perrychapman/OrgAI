@@ -12,8 +12,10 @@ import type {
   EvolveApplyResult,
   EvolveRollbackResult,
   EvolveStrategy,
+  Project,
   TeamEvolutionDiagnosis
 } from '../../shared/types'
+import { effectiveConcurrency, patchChanges } from '../../main/evolve/plan'
 import { cleanLine } from './slashCommands'
 
 export type EvolveRequest =
@@ -101,24 +103,18 @@ export function diagnosisLines(d: TeamEvolutionDiagnosis): string[] {
   return lines
 }
 
-export function planLines(p: EvolutionPlan): string[] {
+/** The plan as text. With `before` (the project as it was), each change reads `field before → after`. */
+export function planLines(p: EvolutionPlan, before?: Project): string[] {
   const lines: string[] = []
   const changes: string[] = []
   for (const r of list(p.rolePatches)) {
-    const bits: string[] = []
-    if (r.tier) bits.push(`tier ${cleanLine(r.tier, 20)}`)
-    if (r.effort) bits.push(`effort ${cleanLine(r.effort, 20)}`)
-    if (r.staffing) bits.push('staffing')
-    if (r.prompt !== undefined) bits.push(`prompt ${Array.from(r.prompt).length} chars`)
-    if (r.addTools?.length) bits.push(`+tools ${r.addTools.map((t) => cleanLine(t, 30)).join(',')}`)
-    if (r.removeTools?.length) bits.push(`-tools ${r.removeTools.map((t) => cleanLine(t, 30)).join(',')}`)
-    if (r.removeSkills?.length) bits.push(`-skills ${r.removeSkills.length}`)
+    const bits = patchChanges(before?.roles?.find((x) => x.slug === r.slug), r).map((b) => cleanLine(b, 160))
     changes.push(`  ${cleanLine(r.slug, 40)}: ${bits.join(', ') || 'no change'}${r.reason ? ` - ${cleanLine(r.reason, 100)}` : ''}`)
   }
   for (const s of list(p.newSkills)) changes.push(`  new skill ${cleanLine(s.name, 40)} for ${list(s.grantTo).map((g) => cleanLine(g, 40)).join(', ') || 'no one'}`)
   const pruned = list(p.pruneSkillIds).length
   if (pruned) changes.push(`  prune ${pruned} skill${pruned === 1 ? '' : 's'}`)
-  if (p.maxConcurrentSubagents !== undefined) changes.push(`  max concurrent subagents ${num(p.maxConcurrentSubagents)}`)
+  if (p.maxConcurrentSubagents !== undefined) changes.push(`  max concurrent subagents ${before?.roles ? `${num(effectiveConcurrency(before))} → ` : ''}${num(p.maxConcurrentSubagents)}`)
   if (p.empty || changes.length === 0) lines.push('Proposed change: none.')
   else {
     lines.push(`Proposed change (${cleanLine(p.strategy, 20)}):`)
@@ -137,8 +133,8 @@ export function planLines(p: EvolutionPlan): string[] {
   return lines
 }
 
-export function analyzeText(r: EvolveAnalyzeResult): string {
-  return ['Team evolution analysis (no tokens spent)', ...diagnosisLines(r.diagnosis), ...planLines(r.plan), 'Apply with /evolve apply.'].join('\n')
+export function analyzeText(r: EvolveAnalyzeResult, before?: Project): string {
+  return ['Team evolution analysis (no tokens spent)', ...diagnosisLines(r.diagnosis), ...planLines(r.plan, before), 'Apply with /evolve apply.'].join('\n')
 }
 
 const genChange = (g: EvolutionGeneration): string => {
@@ -152,17 +148,19 @@ function generationLine(g: EvolutionGeneration): string {
   return `${cleanLine(g.id, 20)} ${cleanLine(g.status, 20)}: ${cleanLine(g.summary, 90)}; ${genChange(g)}`
 }
 
-export function applyText(r: EvolveApplyResult, strategy: EvolveStrategy): string {
+/** `before`: the project as it was before the apply, so each change reads `field before → after`. */
+export function applyText(r: EvolveApplyResult, strategy: EvolveStrategy, before?: Project): string {
   const lines: string[] = []
   if (!r.applied || !r.generation) {
     lines.push(`Nothing applied: ${cleanLine(r.reason, 200) || 'no reason given'}.`)
-    lines.push(...planLines(r.plan))
+    lines.push(...planLines(r.plan, before))
     return lines.join('\n')
   }
   const g = r.generation
   lines.push(`Applied ${cleanLine(g.id, 20)} (${cleanLine(g.status, 20)}, ${strategy}): ${cleanLine(g.summary, 160)}`)
-  lines.push(...planLines(r.plan))
+  lines.push(...planLines(r.plan, before))
   lines.push(`Trial: measured over the next ${num(g.evalWindowRuns)} work runs, then promoted or rolled back.`)
+  lines.push(`Undo it now with /evolve rollback ${cleanLine(g.id, 20)}.`)
   lines.push(r.teamFilesSynced ? 'Team files in .orgai/ were synced.' : 'Team files in .orgai/ were not changed.')
   return lines.join('\n')
 }
