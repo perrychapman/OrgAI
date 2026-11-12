@@ -713,8 +713,8 @@ button.run-meta-item:focus-visible {
   border-top: 1px solid var(--border-default);
   background: var(--surface-1);
 }
-/* An assistant session (Chat, MCP assistant, Skill assistant) in the conversation layout has no side panel
-   (hasRunSidePanel): one column, and the panel's tabs sit in a strip above the conversation (RunStageTabs). */
+/* Any run in the conversation layout has no side panel (hasRunSidePanel is true only on the canvas): one column, and the
+   panel's tabs sit in a strip above the conversation (RunStageTabs). */
 .run-body[data-side-panel='none'] {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -756,7 +756,7 @@ button.run-meta-item:focus-visible {
 .run-stage-conversation[hidden] {
   display: none;
 }
-/* Plan, Usage and Logs in the stage: the tab panel is the only scroller, its content in the same 90ch column. */
+/* Plan, Usage, Outputs, Knowledge and Logs in the stage: the tab panel is the only scroller, its content in the same 90ch column. */
 .run-stage-panel {
   position: relative;
   flex: 1;
@@ -773,10 +773,6 @@ button.run-meta-item:focus-visible {
 .run-body.run-body[data-layout='conversation'] > .canvas-frame {
   grid-row: 1;
   grid-column: 1;
-}
-.run-body.run-body[data-layout='conversation'] > .side-panel {
-  grid-row: 1 / span 2;
-  grid-column: 2;
 }
 .run-body.run-body[data-layout='conversation'] > .live-composer-region {
   grid-row: 2;

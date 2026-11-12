@@ -1,7 +1,7 @@
 /**
  * The run detail tabs, one implementation for both places they appear: the run side panel (TranscriptPanel, first tab
- * "Transcript") and the strip above an assistant session's conversation (RunStageTabs, first tab "Conversation"; that
- * session has no side panel, see hasRunSidePanel). The tab list and fallback rule are lib/runTabs.ts; the selection is
+ * "Transcript"; only while the stage is the org chart) and the strip above the conversation (RunStageTabs, first tab
+ * "Conversation"; the conversation layout of any run kind has no side panel, see hasRunSidePanel). The tab list and fallback rule are lib/runTabs.ts; the selection is
  * `sideTabByRun` in the store either way, so Plan buttons, navigation targets and the Usage return land in both.
  */
 import type { ReactElement, ReactNode } from 'react'
@@ -212,7 +212,7 @@ export function RunTabBody({ runId, tab, idPrefix, agent, logs, className }: { r
 }
 
 /**
- * An assistant session's stage without a side panel (hasRunSidePanel): one tab strip above the conversation.
+ * The conversation stage of any run, which has no side panel (hasRunSidePanel): one tab strip above the conversation.
  * "Conversation" shows `conversation` (the stage's own transcript, which has its own focusable scroll area, so its tab
  * panel is not a tab stop); every other tab replaces it with the same body the side panel shows.
  */

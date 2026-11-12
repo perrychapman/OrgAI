@@ -2,7 +2,7 @@
 // Ctrl+Shift+N, the Projects view entry points, App settings > General > Advanced rows, and (when the main-process handlers for
 // runs.startQuick / skills.startAssist are merged) the Chat, MCP assistant and Skill assistant runs end to end.
 import path from 'node:path'
-import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, removeFixture, sleep, teamPanelTab, windowShift } from './lib.mjs'
+import { TMP, check, cleanup, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, removeFixture, sleep, teamPanelTab, windowShift } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const NAME = 'E2E assistants (orgai test)'
@@ -670,6 +670,47 @@ try {
     await sleep(500)
     check(await visible('[data-testid=run-conversation]'), 'the layout toggle shows the conversation for a default-team chat')
     check((await page.locator('.run-body aside.side-panel').count()) === 0 && (await page.locator('[data-testid=run-stage-tabs]').count()) === 1, 'a default-team chat in the conversation has no side panel either')
+    await endSession(page)
+
+    // A team work run of a stored project: the panel exists only on the canvas; in "Show conversation" the stage strip
+    // carries every tab the panel offered (Outputs here; Knowledge only for an engagement, see engagement2.mjs).
+    await openProject(page, NAME)
+    await projectTab(page, 'Live').click()
+    if (!(await page.locator('.new-run').count())) await page.keyboard.press('Control+t')
+    await page.locator('.new-run').waitFor({ timeout: 10_000 })
+    await page.locator('.composer textarea').fill('Say hello in one short sentence.')
+    await page.locator('.composer .btn.primary').click()
+    await page.locator('.run-body').first().waitFor({ timeout: 20_000 })
+    await sleep(800)
+    check((await page.locator('.run-body').first().getAttribute('data-layout')) === 'canvas', 'a team work run opens on the canvas')
+    check((await page.locator('.run-body aside.side-panel').count()) === 1 && (await page.locator('[data-testid=run-stage-tabs]').count()) === 0, 'a team work run on the canvas has the run side panel and no stage strip')
+    check((await page.locator('.run-body aside.side-panel [data-testid=side-tab-transcript]').count()) === 1 && (await page.locator('.run-body aside.side-panel [data-testid=side-tab-outputs]').count()) === 1, 'the canvas panel has Transcript and Outputs tabs')
+    await page.locator('[data-testid=run-layout-toggle]').click()
+    await sleep(500)
+    check(await visible('[data-testid=run-conversation]'), '"Show conversation" shows the conversation of a team work run')
+    const workShape = await page.evaluate(() => ({
+      flag: document.querySelector('.run-body')?.getAttribute('data-side-panel') ?? null,
+      panels: document.querySelectorAll('.run-body aside.side-panel, aside[aria-label="run panel"]').length,
+      rails: document.querySelectorAll('.run-body .side-rail').length,
+      handles: document.querySelectorAll('[data-testid=side-panel-resize]').length,
+      tabs: [...document.querySelectorAll('[data-testid=run-stage-tabs] [role=tablist] [role=tab]')].map((t) => t.getAttribute('data-testid'))
+    }))
+    check(workShape.flag === 'none' && workShape.panels === 0 && workShape.rails === 0 && workShape.handles === 0, 'a team work run in Show conversation has no panel, rail or resize handle', JSON.stringify(workShape))
+    check(workShape.tabs[0] === 'run-tab-conversation' && ['side-tab-usage', 'side-tab-outputs', 'side-tab-logs'].every((t) => workShape.tabs.includes(t)) && !workShape.tabs.includes('side-tab-knowledge') && !workShape.tabs.includes('side-tab-transcript'), 'the work run stage strip has Conversation, Usage, Outputs and Logs (no Knowledge for a code project)', JSON.stringify(workShape.tabs))
+    await setSize(1024, 640)
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=side-tab-outputs]').click()
+    await sleep(300)
+    const outputsFit = await page.evaluate(() => {
+      const p = document.querySelector('[data-testid=run-stage-tabs] [role=tabpanel][id*=outputs]')
+      const r = p?.getBoundingClientRect()
+      return { open: !!document.querySelector('[data-testid=run-stage-tabs] [data-testid=run-outputs]'), over: p ? p.scrollWidth - p.clientWidth : -1, inside: !!r && r.left >= 0 && r.right <= window.innerWidth + 0.5 }
+    })
+    check(outputsFit.open && outputsFit.over <= 1 && outputsFit.inside, 'the Outputs tab opens in the stage without horizontal overflow', JSON.stringify(outputsFit))
+    await setSize(1600, 1000)
+    await page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]').click()
+    await page.locator('[data-testid=run-layout-toggle]').click()
+    await sleep(500)
+    check((await page.locator('.run-body').first().getAttribute('data-layout')) === 'canvas' && (await page.locator('.run-body aside.side-panel').count()) === 1 && (await page.locator('[data-testid=run-stage-tabs]').count()) === 0, 'back on the canvas the team work run has its panel again')
     await endSession(page)
 
     // Project-scope Skill assistant from Team > Catalog > Skills: opens in that project's Live tab with a role listed.

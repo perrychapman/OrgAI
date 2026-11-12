@@ -154,22 +154,13 @@ export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'> & Parti
 }
 
 /**
- * A session of one of the three conversational assistants: a Chat (a quick run still in the Chat project), an MCP
- * assistant or a Skill assistant run (by kind, library or project scope). A Chat saved as a project, Ask runs, work,
- * setup and org change runs are not.
- */
-export function isAssistantSession(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId'>): boolean {
-  if (summary.quick) return summary.projectId === QUICK_PROJECT_ID
-  return summary.kind === 'mcp-assist' || summary.kind === 'skill-assist'
-}
-
-/**
- * Whether the Live view shows the run side panel. An assistant session in the conversation layout has none: its
+ * Whether the Live view shows the run side panel: only while the stage is the org chart (the canvas layout, the Pocket
+ * Office included), for every run kind. In the conversation layout there is no panel, rail or resize handle: its
  * Transcript tab only repeated the stage, so the other tabs sit in a strip above the conversation instead
  * (RunStageTabs). On the canvas the panel stays, it is where a selected agent's transcript is read.
  */
-export function hasRunSidePanel(summary: Pick<RunSummary, 'kind' | 'quick' | 'projectId'>, layout: RunLayout): boolean {
-  return !(layout === 'conversation' && isAssistantSession(summary))
+export function hasRunSidePanel(layout: RunLayout): boolean {
+  return layout === 'canvas'
 }
 
 /**

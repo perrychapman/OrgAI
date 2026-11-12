@@ -1,7 +1,8 @@
 /**
  * The run detail tabs (Transcript or Conversation, Plan, Usage, Outputs, Knowledge, Logs): which ones a run gets and
  * which one shows. Pure: no store, no IPC. One rule for both places the tabs appear: the run side panel
- * (TranscriptPanel) and the tab strip above an assistant session's conversation (RunStageTabs).
+ * (TranscriptPanel, only while the stage is the org chart) and the tab strip above the conversation (RunStageTabs, the
+ * conversation layout of every run kind).
  */
 import type { ProjectKind, RunSummary } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
@@ -16,7 +17,8 @@ export interface RunTabFlags {
 
 /**
  * Plan: every work run in the side panel (the orchestrator writes one), else only a run that has a plan. The stage
- * strip of an assistant session (`stage`) follows the "only with a plan" rule for every kind, a Chat included.
+ * strip (`stage`) follows the "only with a plan" rule for every kind, a team work run included: before the plan exists
+ * only its "No plan yet" note is missing, and RunMeta's steps chip and the blocked-plan banner both need a plan.
  */
 export function showsPlanTab(i: { kind: RunSummary['kind']; hasPlan: boolean; stage?: boolean }): boolean {
   return (i.kind === 'work' && !i.stage) || i.hasPlan
