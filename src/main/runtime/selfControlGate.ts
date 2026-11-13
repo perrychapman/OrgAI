@@ -846,8 +846,6 @@ const LEX_HIDDEN = 0
 const LEX_LITERAL = 1
 const LEX_ACTIVE = 2
 const LEX_DROP = 3
-/** `<<WORD` / `<<-WORD` / `<<'WORD'` at the lexer's position (sticky: never a sliced copy). */
-const HEREDOC_START = /<<(-?)[ \t]*([^\s;&|<>()]+)/y
 
 const WHITESPACE = /\s/
 /** Characters that end a shell word or start another construct: a `${...}` body holding one is never absorbed. */
@@ -867,31 +865,131 @@ function closeAfter(text: string, marker: string, from: number): number {
   return at < 0 ? text.length : at + marker.length
 }
 
-/** A lexer context of lexClasses' full grammar. */
+/**
+ * A lexer context of lexClasses' full grammar: shell code (`closer` ends a `$(...)` / backtick body; `arith` for
+ * `$((...))` / `((...))`; `cmd` while the next word is in command position; `cases` open `case` statements), double
+ * quotes, single quotes, `$'...'`, `${...}` (with nested braces) and an unquoted here-document body up to `end`.
+ */
 type LexContext =
-  | { k: 'code'; closer: ')' | '`' | null; depth: number; cases: number }
+  | { k: 'code'; closer: ')' | '`' | null; depth: number; cases: number; arith: boolean; cmd: boolean }
   | { k: 'dq' }
   | { k: 'sq' }
   | { k: 'ansi' }
-  | { k: 'param'; inDq: boolean }
+  | { k: 'param'; inDq: boolean; braces: number }
+  | { k: 'hd'; end: number }
+
+/** One here-document body: [start, end) is the body, [end, next) the delimiter line. */
+interface HeredocBody {
+  start: number
+  end: number
+  next: number
+  quoted: boolean
+}
+
+/** lexClasses' result: the character classes, and whether the full grammar ended inside an open construct. */
+interface Lexed {
+  classes: Uint8Array
+  open: boolean
+}
 
 /** Characters before a `#` that start a comment (bash and zsh blanks are space and tab only). */
 const COMMENT_BEFORE: ReadonlySet<string> = new Set([' ', '\t', '\n', ';', '&', '|', '(', '<', '>'])
+/** After one of these the next word is in command position. */
+const COMMAND_START: ReadonlySet<string> = new Set([';', '&', '|', '(', '\n'])
+/** Reserved words after which the next word is still in command position. */
+const KEYWORD_THEN_COMMAND = /(?:then|do|else|elif|if|while|until|time|!|\{)(?![A-Za-z0-9_])/y
 const isWordChar = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9_]/.test(ch)
+const newCode = (closer: ')' | '`' | null, arith = false): LexContext => ({ k: 'code', closer, depth: 0, cases: 0, arith, cmd: true })
+
+/**
+ * The here-document word at `from` (after `<<` / `<<-` and blanks), read the way bash does: quotes removed, a
+ * backslash escaping one character, ended by an unquoted blank or operator. Null when a quote does not close.
+ */
+function heredocWord(text: string, from: number): { delim: string; quoted: boolean } | null {
+  let delim = ''
+  let quoted = false
+  let j = from
+  while (j < text.length) {
+    const c = text[j]
+    if (c === "'") {
+      const e = text.indexOf("'", j + 1)
+      if (e < 0) return null
+      delim += text.slice(j + 1, e)
+      quoted = true
+      j = e + 1
+    } else if (c === '"') {
+      let e = j + 1
+      let part = ''
+      while (e < text.length && text[e] !== '"') {
+        if (text[e] === '\\' && e + 1 < text.length) e++
+        part += text[e++]
+      }
+      if (e >= text.length) return null
+      delim += part
+      quoted = true
+      j = e + 1
+    } else if (c === '\\') {
+      if (j + 1 < text.length) delim += text[j + 1]
+      quoted = true
+      j += 2
+    } else if (isSpace(c) || ';&|<>()'.includes(c)) break
+    else {
+      delim += c
+      j++
+    }
+  }
+  return delim ? { delim, quoted } : null
+}
 
 /**
  * One linear pass classifying each character for a reading: LEX_ACTIVE for shell syntax; LEX_LITERAL inside double
- * quotes, `${...}` and for escaped characters; LEX_HIDDEN inside single quotes (also `$'...'`) and comments; LEX_DROP
- * for a backslash-newline (bash joins the lines) and, in the full grammar, here-document bodies (the other readings
- * check those as commands). The full grammar keeps a context stack, so `"$(echo "'")"` and `"${x:-"'"}"` nest.
+ * quotes, `${...}`, unquoted here-document bodies and for escaped characters; LEX_HIDDEN inside single quotes (also
+ * `$'...'`) and comments; LEX_DROP for a backslash-newline (bash joins the lines) and quoted here-document bodies (the
+ * other readings check those as commands). The full grammar keeps a context stack, so `"$(echo "'")"`,
+ * `"${x:-"'"}"` and `$(...)` inside an unquoted here-document body nest. `open` (full grammar only) is set when the
+ * text ends inside a context or a here-document whose delimiter never came: a reading that misread the text.
  */
-function lexClasses(text: string, reading: SegmentReading): Uint8Array {
+function lexClasses(text: string, reading: SegmentReading): Lexed {
   const n = text.length
   const out = new Uint8Array(n)
   const { esc, full } = reading
-  const stack: LexContext[] = [{ k: 'code', closer: null, depth: 0, cases: 0 }]
-  const heredocs: { delim: string; dash: boolean }[] = []
+  const stack: LexContext[] = [newCode(null)]
+  const heredocs: { delim: string; dash: boolean; quoted: boolean }[] = []
+  let bodies: HeredocBody[] = []
+  let unterminated = false
+  let backticks = 0
   let dollars = 0
+  const push = (ctx: LexContext): void => {
+    if (ctx.k === 'code' && ctx.closer === '`') backticks++
+    stack.push(ctx)
+  }
+  const pop = (): void => {
+    const ctx = stack.pop()
+    if (ctx?.k === 'code' && ctx.closer === '`') backticks--
+    if (!stack.length) stack.push(newCode(null))
+  }
+  /** Where reading resumes after the last body: the newline after its delimiter line (or the end). */
+  let afterBodies = n
+  /** Enter the next here-document body (or, past the last, resume after it); returns the index before the next one to read. */
+  const nextBody = (): number => {
+    while (bodies.length) {
+      const b = bodies.shift()!
+      // The newline between one delimiter line and the next body belongs to neither.
+      if (bodies.length && b.next < n) out[b.next] = LEX_DROP
+      if (b.quoted) {
+        out.fill(LEX_DROP, b.start, b.next)
+        continue
+      }
+      out.fill(LEX_DROP, b.end, b.next)
+      if (b.start < b.end) {
+        push({ k: 'hd', end: b.end })
+        return b.start - 1
+      }
+    }
+    // The newline after the last delimiter ends the command line as usual.
+    if (afterBodies < n) out[afterBodies] = LEX_ACTIVE
+    return afterBodies
+  }
   // PowerShell also reads U+2018-U+201B as a single quote and U+201C-U+201E as a double quote.
   const isSq = (c: string): boolean => c === "'" || (esc === '`' && c >= '‘' && c <= '‛')
   const isDq = (c: string): boolean => c === '"' || (esc === '`' && c >= '“' && c <= '„')
@@ -905,14 +1003,49 @@ function lexClasses(text: string, reading: SegmentReading): Uint8Array {
   }
   for (let i = 0; i < n; i++) {
     const ch = text[i]
-    const ctx = stack[stack.length - 1]
+    let ctx = stack[stack.length - 1]
+    if (ctx.k === 'hd' && i >= ctx.end) {
+      pop()
+      i = nextBody()
+      continue
+    }
     const prevDollars = dollars
     dollars = 0
+    // Inside backticks the first unescaped backtick ends them, whatever quotes are open (bash manual).
+    if (full && esc === '\\' && ch === '`' && backticks > 0 && text[i - 1] !== '\\') {
+      while (stack.length > 1) {
+        const top = stack[stack.length - 1]
+        pop()
+        if (top.k === 'code' && top.closer === '`') break
+      }
+      out[i] = LEX_ACTIVE
+      continue
+    }
     if (ctx.k === 'sq' || ctx.k === 'ansi') {
       out[i] = LEX_HIDDEN
       if (ctx.k === 'ansi' && ch === '\\') {
         if (i + 1 < n) out[++i] = LEX_HIDDEN
-      } else if (ctx.k === 'ansi' ? ch === "'" : isSq(ch)) stack.pop()
+      } else if (ctx.k === 'ansi' ? ch === "'" : isSq(ch)) pop()
+      continue
+    }
+    if (ctx.k === 'hd') {
+      // An unquoted here-document body: literal text, but `$(...)`, `${...}` and backticks are expanded.
+      out[i] = LEX_LITERAL
+      if (ch === '\\' && text[i + 1] === '\n') {
+        out[i] = out[i + 1] = LEX_DROP
+        i++
+      } else if (ch === '\\' && (text[i + 1] === '$' || text[i + 1] === '`' || text[i + 1] === '\\')) out[++i] = LEX_LITERAL
+      else if (ch === '$' && text[i + 1] === '(') {
+        out[i] = out[i + 1] = LEX_ACTIVE
+        i++
+        push(newCode(')', text[i + 1] === '('))
+      } else if (ch === '$' && text[i + 1] === '{') {
+        out[++i] = LEX_LITERAL
+        push({ k: 'param', inDq: true, braces: 0 })
+      } else if (ch === '`') {
+        out[i] = LEX_ACTIVE
+        push(newCode('`'))
+      }
       continue
     }
     if (ctx.k === 'dq' || ctx.k === 'param') {
@@ -921,24 +1054,25 @@ function lexClasses(text: string, reading: SegmentReading): Uint8Array {
         continue
       }
       out[i] = LEX_LITERAL
-      if (ctx.k === 'dq' && isDq(ch)) stack.pop()
-      else if (ctx.k === 'param' && ch === '}') stack.pop()
+      if (ctx.k === 'dq' && isDq(ch)) pop()
+      else if (ctx.k === 'param' && ch === '}' && ctx.braces > 0) ctx.braces--
+      else if (ctx.k === 'param' && ch === '}') pop()
       else if (!full) continue
-      else if (ctx.k === 'param' && isDq(ch)) stack.push({ k: 'dq' })
+      else if (ctx.k === 'param' && ch === '{') ctx.braces++
+      else if (ctx.k === 'param' && isDq(ch)) push({ k: 'dq' })
       else if (ctx.k === 'param' && isSq(ch) && !ctx.inDq) {
         out[i] = LEX_HIDDEN
-        stack.push({ k: 'sq' })
+        push({ k: 'sq' })
       } else if (ch === '$' && text[i + 1] === '(') {
         out[i] = out[i + 1] = LEX_ACTIVE
         i++
-        stack.push({ k: 'code', closer: ')', depth: 0, cases: 0 })
+        push(newCode(')', text[i + 1] === '('))
       } else if (ch === '$' && text[i + 1] === '{') {
-        out[i + 1] = LEX_LITERAL
-        i++
-        stack.push({ k: 'param', inDq: ctx.k === 'dq' || ctx.inDq })
+        out[++i] = LEX_LITERAL
+        push({ k: 'param', inDq: ctx.k === 'dq' || ctx.inDq, braces: 0 })
       } else if (ch === '`' && esc !== '`') {
         out[i] = LEX_ACTIVE
-        stack.push({ k: 'code', closer: '`', depth: 0, cases: 0 })
+        push(newCode('`'))
       }
       continue
     }
@@ -949,12 +1083,12 @@ function lexClasses(text: string, reading: SegmentReading): Uint8Array {
     }
     if (isSq(ch)) {
       out[i] = LEX_HIDDEN
-      stack.push({ k: 'sq' })
+      push({ k: 'sq' })
       continue
     }
     if (isDq(ch)) {
       out[i] = LEX_LITERAL
-      stack.push({ k: 'dq' })
+      push({ k: 'dq' })
       continue
     }
     if (!full) {
@@ -965,7 +1099,7 @@ function lexClasses(text: string, reading: SegmentReading): Uint8Array {
     if (esc === '\\' && ch === '$' && text[i + 1] === "'" && prevDollars % 2 === 0) {
       out[i] = out[i + 1] = LEX_HIDDEN
       i++
-      stack.push({ k: 'ansi' })
+      push({ k: 'ansi' })
       continue
     }
     if (ch === '$') dollars = prevDollars + 1
@@ -973,9 +1107,18 @@ function lexClasses(text: string, reading: SegmentReading): Uint8Array {
       out[i] = LEX_ACTIVE
       out[++i] = LEX_LITERAL
       dollars = 0
-      stack.push({ k: 'param', inDq: false })
+      push({ k: 'param', inDq: false, braces: 0 })
       continue
     }
+    if (ch === '$' && text[i + 1] === '(' && prevDollars % 2 === 0) {
+      out[i] = out[i + 1] = LEX_ACTIVE
+      i++
+      dollars = 0
+      if (ctx.k === 'code') ctx.cmd = false
+      push(newCode(')', text[i + 1] === '('))
+      continue
+    }
+    ctx = stack[stack.length - 1]
     // PowerShell block comments `<# ... #>` and here-strings `@'<newline> ... <newline>'@` / `@"..."@`.
     if (esc === '`') {
       let end = -1
@@ -999,50 +1142,110 @@ function lexClasses(text: string, reading: SegmentReading): Uint8Array {
     }
     out[i] = LEX_ACTIVE
     if (ctx.k !== 'code') continue
-    // `case ... esac` inside a nested `$(...)`: a pattern's `)` does not close it.
-    if (!isWordChar(text[i - 1]) && !isWordChar(text[i + 4])) {
-      if (text.startsWith('case', i)) ctx.cases++
-      else if (text.startsWith('esac', i) && ctx.cases > 0) ctx.cases--
-    }
-    if (ch === '(') ctx.depth++
-    else if (ch === ')' && ctx.closer === ')') {
-      if (ctx.depth > 0) ctx.depth--
-      else if (ctx.cases === 0) stack.pop()
-    } else if (ch === '`' && esc === '\\') {
-      if (ctx.closer === '`') stack.pop()
-      else stack.push({ k: 'code', closer: '`', depth: 0, cases: 0 })
-    } else if (esc === '\\' && ch === '<' && text[i + 1] === '<' && text[i + 2] !== '<' && text[i - 1] !== '<') {
-      // A here-document: its body starts after the next newline (read below).
-      HEREDOC_START.lastIndex = i
-      const m = HEREDOC_START.exec(text)
-      const delim = m ? m[2].replace(/['"\\]/g, '') : ''
-      if (m && delim) heredocs.push({ delim, dash: m[1] === '-' })
-    } else if (ch === '\n' && heredocs.length) {
+    if (ch === '\n' && heredocs.length) {
+      // The bodies of the here-documents opened on this line, one after another.
       let p = i + 1
+      bodies = []
       for (const h of heredocs.splice(0)) {
+        const start = p
+        let found = false
         while (p < n) {
           const nl = text.indexOf('\n', p)
           const end = nl < 0 ? n : nl
           let line = text.slice(p, end)
           if (line.endsWith('\r')) line = line.slice(0, -1)
-          out.fill(LEX_DROP, p, end)
-          p = end
-          if ((h.dash ? line.replace(/^\t+/, '') : line) === h.delim) break
-          if (p < n) out[p++] = LEX_DROP
+          if ((h.dash ? line.replace(/^\t+/, '') : line) === h.delim) {
+            bodies.push({ start, end: p, next: end, quoted: h.quoted })
+            found = true
+            p = end + 1
+            break
+          }
+          p = end + 1
+        }
+        if (!found) {
+          // No delimiter line: the text after it is read as commands (the backstop treats the text as left open).
+          unterminated = true
+          bodies = []
+          break
         }
       }
-      // The newline after the last delimiter ends the command line as usual.
-      if (p < n) out[p] = LEX_ACTIVE
-      i = p
+      ctx.cmd = true
+      if (!bodies.length) continue
+      afterBodies = bodies[bodies.length - 1].next
+      i = nextBody()
+      continue
     }
+    if (ch === '(') {
+      // `((...))` in command position is arithmetic (its `<<` is a shift, never a here-document).
+      if (ctx.cmd && text[i + 1] === '(') push(newCode(')', true))
+      else {
+        ctx.depth++
+        ctx.cmd = true
+      }
+      continue
+    }
+    if (COMMAND_START.has(ch)) {
+      ctx.cmd = true
+      continue
+    }
+    if (ch === ')') {
+      if (ctx.depth > 0) ctx.depth--
+      else if (ctx.cases > 0) ctx.cmd = true // a `case` pattern
+      else if (ctx.closer === ')') pop()
+      continue
+    }
+    if (ch === '`' && esc === '\\') {
+      ctx.cmd = false
+      push(newCode('`'))
+      continue
+    }
+    if (esc === '\\' && !ctx.arith && ch === '<' && text[i + 1] === '<' && text[i + 2] !== '<' && text[i - 1] !== '<') {
+      // A here-document: its body starts after the next newline (read above).
+      let j = i + 2
+      const dash = text[j] === '-'
+      if (dash) j++
+      while (text[j] === ' ' || text[j] === '\t') j++
+      const word = heredocWord(text, j)
+      if (word) heredocs.push({ delim: word.delim, dash, quoted: word.quoted })
+      ctx.cmd = false
+      continue
+    }
+    if (ch === ' ' || ch === '\t') continue
+    // A word start: `case` / `esac` and the reserved words that keep the next word in command position.
+    if (i === 0 || ' \t\n;&|()'.includes(text[i - 1])) {
+      if (ctx.cmd && text.startsWith('case', i) && !isWordChar(text[i + 4])) {
+        ctx.cases++
+        ctx.cmd = false
+        continue
+      }
+      if (ctx.cases > 0 && text.startsWith('esac', i) && !isWordChar(text[i + 4])) {
+        ctx.cases--
+        ctx.cmd = false
+        continue
+      }
+      if (ctx.cmd) {
+        KEYWORD_THEN_COMMAND.lastIndex = i
+        if (KEYWORD_THEN_COMMAND.test(text)) continue
+      }
+    }
+    ctx.cmd = false
   }
-  return out
+  return { classes: out, open: full && (stack.length > 1 || unterminated) }
+}
+
+/**
+ * The fail-closed backstop of the segment readings (PR 47 review): the full grammar of the tool's shell ends inside an
+ * open quote, substitution, parameter or here-document. The shell would refuse such a text, so a reading that sees it
+ * closed (and checks what it then splits off) misread it; the command is not checked further.
+ */
+function readingLeftOpen(text: string, shell: 'bash' | 'powershell'): boolean {
+  return lexClasses(text, { esc: shell === 'bash' ? '\\' : '`', full: true, groups: 'safe' }).open
 }
 
 /** The segments of one reading (cliSegments). Linear: every lookahead is precomputed in one pass. */
 function cliSegmentsIn(text: string, keepBraces: boolean, reading: SegmentReading): CliSegment[] {
   const n = text.length
-  const lex = lexClasses(text, reading)
+  const lex = lexClasses(text, reading).classes
   const active = (k: number): boolean => k < n && lex[k] === LEX_ACTIVE
   // The matching `)` of every active `(`, whether a `|` sits directly inside it, and a prefix count of unsafe characters.
   const groups = text.includes('(')
@@ -1427,23 +1630,41 @@ function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget,
     // Every command-text flag is read (PR 47 review: `-ExecutionPolicy x -Command ...`, `bash -ce`, `bash -c -e '...'`),
     // as given and with the options after it skipped; Windows PowerShell 5.1 also runs a first positional as -Command.
     const inners: string[] = []
+    const powershell = POWERSHELLS.includes(bare)
     if (bare === 'eval') inners.push(rest.join(' '))
     else {
-      if (POWERSHELLS.includes(bare) && rest[0] !== undefined && !rest[0].startsWith('-') && !rest[0].startsWith('/')) inners.push(rest.join(' '))
+      // Windows PowerShell 5.1 runs its first positional argument as -Command: read the first two words that are not
+      // a parameter (a parameter's value may come first, `-ExecutionPolicy Bypass 'code'`).
+      if (powershell) {
+        let found = 0
+        for (let m = 0; m < rest.length && found < 2; m++) {
+          if (/^[-/]/.test(rest[m])) continue
+          inners.push(rest.slice(m).join(' '))
+          found++
+        }
+      }
       for (let k = 0; k < rest.length && inners.length <= 8; k++) {
         if (!NESTING_FLAGS.test(rest[k])) continue
         inners.push(rest.slice(k + 1).join(' '))
+        // The first operand after the options (`bash -c -o pipefail -- 'code'`).
         let m = k + 1
-        while (m < rest.length && /^[-+]/.test(rest[m]) && rest[m] !== '-') m++
-        if (rest[m - 1] === '--' || m > k + 1) inners.push(rest.slice(m).join(' '))
+        while (m < rest.length && /^[-+]/.test(rest[m]) && rest[m] !== '-') {
+          if (rest[m] === '--') {
+            m++
+            break
+          }
+          m += SHELL_OPTION_WITH_VALUE.test(rest[m]) ? 2 : 1
+        }
+        if (m > k + 1) inners.push(rest.slice(m).join(' '))
       }
       if (inners.length > 8) return (budget.limited = true)
     }
+    const innerShell = powershell ? 'powershell' : bare === 'eval' || SCRIPT_SHELLS.has(bare) || bare === 'mksh' ? 'bash' : null
     for (const inner of inners) {
       if (!inner.trim()) continue
       // A shell text nested deeper than MAX_NEST is not read: fail closed.
       if (depth >= MAX_NEST) return (budget.limited = true)
-      if (textRunsCli(inner, depth + 1, budget, check)) return true
+      if (textRunsCli(inner, depth + 1, budget, check, innerShell)) return true
     }
   }
   return false
@@ -1614,6 +1835,10 @@ function programIsCli(word: string, check: CliCheck): boolean {
   if (word.includes('$')) {
     const glob = binName(word.replace(/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\d|\$[@*#?$!-]/g, '*'))
     if (glob.includes('*') && globNamesCli(glob)) return true
+    // A default or alternative word (`${x:-orgai}`), and `$'orgai'` / `$"orgai"` read as `$orgai` once unquoted.
+    for (const v of [word.replace(/\$\{[^}]*?:?[-=+?]([^}]*)\}/g, '$1'), word.replace(/\$/g, '')]) {
+      if (v !== word && (CLI_NAME.test(binName(v)) || SCOPED_CLI.test(v))) return true
+    }
   }
   for (const w of spellings(word)) {
     const zshName = w.startsWith('=') ? w.slice(1) : w
@@ -1846,7 +2071,13 @@ function assignsElectronAsNode(segment: string): boolean {
   return false
 }
 
-function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
+/**
+ * `shell` names the grammar a whole shell program `text` is in (the tool's command, a `bash -c` / `pwsh -Command` text):
+ * if that grammar leaves it open (readingLeftOpen) the scan stops unchecked. Null for word-sized pieces (a substitution's
+ * words, qualifier code, runner texts), which are not whole programs.
+ */
+function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliCheck, shell: 'bash' | 'powershell' | null = null): boolean {
+  if (shell !== null && readingLeftOpen(text, shell)) return (budget.limited = true)
   // Inspect each command segment with pattern parentheses intact: cliSegments splits shell operators, but keeps a
   // zsh `(a|b)` or extglob group inside its word. This also catches a later command after `;` / `&&`.
   for (const seg of cliSegments(text)) {
@@ -2002,13 +2233,15 @@ function shellHasScriptFile(rest: readonly string[]): boolean {
   return false
 }
 
-type CliScanOptions = { cwd?: string; cliRoots?: readonly string[]; platform?: NodeJS.Platform }
+type CliScanOptions = { cwd?: string; cliRoots?: readonly string[]; platform?: NodeJS.Platform; shell?: 'bash' | 'powershell'; original?: string }
 
 /** 'runs' when a shell command runs the OrgAI CLI, 'limit' when the scan stopped before reading all of it, else null. */
 function cliScan(command: string, opts: CliScanOptions): 'runs' | 'limit' | null {
   if (typeof command !== 'string' || !command.trim()) return null
   // The path scan's 256 KB limit applies here too, before any reading (PR 47 review).
   if (command.length > MAX_CLI_SCAN_CHARS) return 'limit'
+  // The backstop reads the command as given (`original`: before data here-documents were cut out of it).
+  if (readingLeftOpen(opts.original ?? command, opts.shell ?? 'bash')) return 'limit'
   const budget: CliBudget = { n: 0, limited: false }
   const runs = textRunsCli(command, 0, budget, { cwd: opts.cwd, roots: opts.cliRoots ?? configuredCliRoots, platform: opts.platform ?? process.platform })
   return budget.limited ? 'limit' : runs ? 'runs' : null
@@ -2556,7 +2789,7 @@ export function checkSelfControlDenial(toolName: string, input: unknown, ctx: Se
       for (const t of texts) {
         // PowerShell text naming DPAPI (Wave 7): the PowerShell tool's own command or an encoded one.
         if (t.shell === 'powershell' && PS_DPAPI.test(t.text)) return SELF_CONTROL_DENIAL_MESSAGE
-        const cli = cliScan(t.text, { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform })
+        const cli = cliScan(t.text, { cwd: ctx.cwd, cliRoots: ctx.cliRoots, platform, shell: t.shell, original: t === texts[0] ? command : undefined })
         if (cli === 'runs') return SELF_CONTROL_DENIAL_MESSAGE
         if (cli === 'limit') limited = true
       }

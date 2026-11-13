@@ -1017,11 +1017,39 @@ describe('segment splitting gaps (PR 47 review)', () => {
       "tcsh -c 'orgai status'",
       "busybox sh -c 'orgai status'",
       // PowerShell smart quotes.
-      "echo ’'; orgai status"
+      "echo \u2019'; orgai status",
+      // Review round 3: an unquoted here-document body is expanded; nested braces in `${...}`; option values.
+      "cat <<EOF\n'$(orgai status)\nEOF",
+      "echo $'\\'' ${x:-{a} #}; orgai status",
+      "$'orgai' status",
+      '$"orgai" status',
+      '${x:-orgai} status',
+      "bash -c -o pipefail 'orgai status'",
+      "bash -O extglob -c 'orgai status'",
+      "powershell -NoProfile 'orgai status'",
+      "powershell /Command 'orgai status'"
     ]) {
-      expect(bash(command), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      // Denied, or not checked when bash's grammar leaves it open (the PowerShell items through the Bash tool).
+      expect(bash(command), command).not.toBeNull()
       expect(commandRunsOrgaiCli(command), command).toBe(true)
     }
+    // The PowerShell-only items through the PowerShell tool are read and denied.
+    for (const command of ["echo `'; orgai status", "<# ' #> ; orgai status", "@'\nit's\n'@; orgai status", 'Get-Content "C:\\dir\\"; orgai status', "echo \u2019'; orgai status"]) {
+      expect(checkSelfControlDenial('PowerShell', { command }, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    // Texts the full grammar reads as left open (a misreading reading would split them): not checked further.
+    for (const command of [
+      "echo $((1 << 2)) $'\\''\norgai status",
+      ": <<'EO F'\n'\nEO F\norgai status",
+      "echo $'\\'' \"$(echo case)\"; orgai status",
+      "echo \"${x:-'\"'}\"; orgai status",
+      "echo `echo '`; orgai status",
+      "echo ${a'b}; orgai status"
+    ]) {
+      expect(bash(command), command).not.toBeNull()
+      expect(commandRunsOrgaiCli(command), command).toBe(true)
+    }
+    expect(checkSelfControlDenial('PowerShell', { command: "echo ${a'b}; orgai status" }, ctx)).not.toBeNull()
   })
 
   it('still allows ordinary commands with brackets, parameters, escapes, comments and groups', () => {
@@ -1059,9 +1087,21 @@ describe('segment splitting gaps (PR 47 review)', () => {
       '"$PYTHON" -m pytest',
       'node -e "console.log(require(\'os\').cpus().length)"',
       "python3 - <<'PY'\nprint('it''s (fine')\nPY",
-      'pwsh -NoProfile -Command Get-ChildItem'
+      'pwsh -NoProfile -Command Get-ChildItem',
+      // The full grammar must not leave these open (the fail-closed backstop).
+      "git commit -F - <<'EOF'\nDon't (wip): it's \"done\"\nEOF",
+      'git commit -m "$(cat <<\'EOF\'\nFix: don\'t crash (again)\n\nRefs #47\nEOF\n)"',
+      "cat > notes.txt <<EOF\nit's $(date) and ${HOME}\nEOF\necho done",
+      'echo $(( 1 << 2 )); (( x = 1 << 3 ))',
+      'v=$(case "$1" in a) echo x;; b) echo y;; esac); echo "$v"',
+      "echo `date`; echo \"`whoami` it's\"",
+      "ls # don't (care)",
+      'echo "${x:-{a}}" ${y:-b}'
     ]) {
       expect(bash(command), command).toBeNull()
+    }
+    for (const command of ['Remove-Item "C:\\temp\\"; Get-ChildItem', 'Write-Host "a`"b"', "$s = @\"\nit's \"quoted\"\n\"@"]) {
+      expect(checkSelfControlDenial('PowerShell', { command }, ctx), command).toBeNull()
     }
   })
 })
