@@ -206,16 +206,20 @@ try {
   await rowA.locator('[data-testid=schedule-toggle]').click()
   await until(async () => (await rowA.getAttribute('data-state')) === 'Paused', 10_000)
   check((await rowA.getAttribute('data-state')) === 'Paused', '4 Pause moves the row to Paused', String(await rowA.getAttribute('data-state')))
+  await until(async () => clean(await rowA.locator('[data-testid=schedule-toggle]').innerText()) === 'Resume', 10_000, 100)
   check(clean(await rowA.locator('[data-testid=schedule-toggle]').innerText()) === 'Resume', '4 the action reads Resume while paused')
   check((await list())[0].enabled === false, '4 the stored schedule is disabled')
   await rowA.locator('[data-testid=schedule-toggle]').click()
   await until(async () => (await rowA.getAttribute('data-state')) === 'Active', 10_000)
   check((await rowA.getAttribute('data-state')) === 'Active', '4 Resume moves the row back to Active')
+  await until(async () => clean(await rowA.locator('[data-testid=schedule-toggle]').innerText()) === 'Pause', 10_000, 100)
   check(clean(await rowA.locator('[data-testid=schedule-toggle]').innerText()) === 'Pause', '4 the action reads Pause again')
 
   const beforeNext = clean(await rowA.locator('[data-testid=schedule-next]').innerText())
   await rowA.locator('[data-testid=schedule-edit]').click()
   await T('schedule-editor').waitFor({ timeout: 10_000 })
+  // The editor fills its fields in an effect after it opens: wait for the stored values before reading them.
+  await until(async () => (await T('schedule-field-name').inputValue()) === 'E2E nightly team' && (await T('schedule-field-time').inputValue()) === '09:30', 10_000, 100)
   check((await T('schedule-field-name').inputValue()) === 'E2E nightly team', '4 Edit loads the stored name')
   check((await T('schedule-field-time').inputValue()) === '09:30', '4 Edit loads the stored time')
   await T('schedule-field-time').fill('21:45')
@@ -303,6 +307,7 @@ try {
   await goSchedules()
   await row('Nightly PR monitor').waitFor({ timeout: 10_000 }).catch(() => {})
   check((await row('Nightly PR monitor').count()) === 1, '6 the Schedules page lists "Nightly PR monitor"')
+  await until(async () => /Added from a chat/.test(await row('Nightly PR monitor').innerText()), 10_000, 100)
   check(/Added from a chat/.test(await row('Nightly PR monitor').innerText().catch(() => '')), '6 the row says it was added from a chat')
 
   // Decline once: nothing saved.
@@ -331,6 +336,7 @@ try {
   check(await visible('[data-testid=schedules-paused-banner]'), '8 the Pause all switch shows the banner')
   check(/All schedules are paused/.test(await T('schedules-paused-banner').innerText().catch(() => '')), '8 the banner explains the pause')
   check((await page.evaluate(() => window.orgai.settings.get())).schedulesPaused === true, '8 the pause is saved in settings (schedulesPaused)')
+  await until(async () => /Held: all schedules paused/.test(await rowA.locator('[data-testid=schedule-next]').innerText()), 10_000, 100)
   check(/Held: all schedules paused/.test(await rowA.locator('[data-testid=schedule-next]').innerText()), '8 rows read "Held: all schedules paused"', clean(await rowA.locator('[data-testid=schedule-next]').innerText()))
   await shot('paused-all')
 
