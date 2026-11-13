@@ -165,10 +165,12 @@ Notation: **Trigger** / **Props** (what changes) / **Timing** / **Enter-exit** /
 ### 3.11 Transcript rows, follow and Jump to latest (inventory 7)
 
 - New rows: `.motion-enter` at `--dur-fade` plus `--motion-distance-sm` rise, only for rows appended while the user is at the bottom (following). Cap: at most 6 rows animate per animation frame batch; when more arrive at once (a burst, a chain load, a history prepend) none animate. No stagger. Rows loaded on mount, via `chain-load-earlier` or on a run switch never animate. Streaming text growth inside a row never animates.
-- Smooth follow: when following, scroll with `scrollTo({ top, behavior: 'smooth' })` only if the delta is under one viewport and the user did not scroll in the last 300 ms; otherwise jump instantly. Reduced motion and `data-reduce-motion='on'` force `behavior: 'auto'` (the CSS `scroll-behavior: auto !important` does not cover script, so the follow code reads `useReducedMotion()`).
+- Smooth follow: when following, the list glides to the end only if the delta is under one viewport and the user did not scroll in the last 300 ms; otherwise it jumps instantly. The glide is one requestAnimationFrame ease (a share of the remaining distance per frame, time constant `--dur-base` / 3, at least 1 px) that reads the end afresh every frame, so streaming growth extends it and never restarts it; native `scrollTo({ behavior: 'smooth' })` is not used. Reduced motion and `data-reduce-motion='on'` make every follow and return instant (the CSS `scroll-behavior: auto !important` does not cover script, so the follow code reads `useReducedMotion()`).
+- Opening: a list (conversation, side panel transcript, Logs) opens at its end instantly, with no scroll from the top, when it attaches, when the run or agent it shows changes, and when it is shown again after being hidden (stage tab, collapsed panel). Layout that settles within 0.8 s (Markdown, images) is pinned instantly. A hidden list (`display: none`) is never written to. Exceptions: chain focus puts a member's divider at the top, and "Load earlier sessions" keeps the reading position; both count as the user's scroll below.
+- Release and return (`FOLLOW_RESUME_IDLE_MS` = 10 s in `lib/transcriptFollow.ts`): any user scroll away from the end (wheel up, finger down, PageUp / ArrowUp / Home, scrollbar drag, opening a disclosure) releases the follow at once, even for a notch inside `STICK_PX`. While released, nothing moves the list: not rows, not streamed text, within 10 s of the last user scroll gesture. Scrolling back within `STICK_PX` of the end, or "Jump to latest", follows again immediately. After 10 s with no user scroll, the next row or streamed text glides the list back to the end (any distance) and following resumes; the 10 s running out on its own moves nothing, and a layout change with no new content never resumes. Reduced: the return is instant. The follow's own scrolls are told apart from the user's by position, so they never release.
 - Jump to latest (`conversation-jump`): opacity + translateY 4 px `--dur-base` in, `--dur-fast` out, kept mounted and toggled by `data-visible` (so the exit is CSS). It never steals focus.
 - Reduced: rows instant; follow instant.
-- Owner: `components/TranscriptPanel.tsx` (REACT: arrival tracking with batch cap, follow behaviour), `styles/transcript.css`. Kind: REACT.
+- Owner: `components/TranscriptPanel.tsx` (REACT: arrival tracking with batch cap), `lib/useTranscriptFollow.ts` (REACT: the follow, shared with the Logs tab in `RunDetailTabs.tsx`), `lib/transcriptFollow.ts` (pure decisions), `styles/transcript.css`. Kind: REACT.
 
 ### 3.12 Canvas nodes: pop-in for new ids, glide on layout (inventory 5, 6)
 
@@ -345,7 +347,8 @@ Per surface (what landed, and deviations):
 - 3.10 Banners: `BannerPresence` exists in `ui/Banner.tsx` but no banner uses it yet (open). Needs-you rows rise in
   after the page settled; answered inline rows and Clear fold out; other removals are instant.
 - 3.11 Transcript: arrivals at `--dur-fade` while following, at most 6 per batch; smooth follow per
-  `lib/transcriptFollow.ts`, and its own scroll events are ignored until `scrollend` so follow is never lost.
+  `lib/transcriptFollow.ts` and `lib/useTranscriptFollow.ts` (its own writes are recognised by position, so follow is
+  never lost; release and 10 s return as in the section above).
   `conversation-jump` is entry-only (still unmounted when hidden).
 - 3.12-3.13 Canvas: pop-in on inner node roots for new ids; glide on auto-layout up to 60 nodes; edges fade out and
   back in around a glide instead of racing ahead; fit durations from tokens and both reduced switches.

@@ -17,6 +17,8 @@ import { planProgress } from '../lib/layout'
 import { planHasGraph, stepViews, waitingOnText } from '../lib/planGraph'
 import { stepRanLabel } from '../lib/runStaffing'
 import { autoContinueLine } from '../lib/transcriptRows'
+import { useTranscriptFollow } from '../lib/useTranscriptFollow'
+import { useReducedMotion } from '../lib/canvas'
 import { countReplies, replyArrived, resolveRunTab, runTabIds, showsKnowledgeTab, showsOutputsTab, showsPlanTab, type ReplyMark } from '../lib/runTabs'
 import RunKnowledge from './knowledge/RunKnowledge'
 import RunOutputs from './outputs/RunOutputs'
@@ -162,11 +164,16 @@ export function RunTabBody({ runId, tab, idPrefix, agent, logs, className }: { r
   const plan = useAppStore((s) => s.runs[runId]?.plan)
   const staffing = useAppStore((s) => s.runs[runId]?.staffing)
   const bottom = useRef<HTMLDivElement>(null)
-  // The log list follows its end; only the tab panel scrolls (scrollIntoView would also scroll every ancestor).
-  useEffect(() => {
-    const body = bottom.current?.parentElement
-    if (body) body.scrollTop = body.scrollHeight
-  }, [logs.length, tab])
+  // The log list follows its end like the transcript (lib/useTranscriptFollow.ts): any user scroll releases it, and it
+  // resumes after a quiet spell. Only the tab panel scrolls (scrollIntoView would also scroll every ancestor).
+  const reduced = useReducedMotion()
+  useTranscriptFollow({
+    find: () => (tab === 'logs' ? bottom.current?.parentElement ?? null : null),
+    attachKey: tab === 'logs' ? 'logs' : 'off',
+    resetKey: runId,
+    contentKey: String(logs.length),
+    reducedMotion: reduced
+  })
   const cls = (own?: string): string | undefined => [own, className].filter(Boolean).join(' ') || undefined
   switch (tab) {
     case 'plan':
