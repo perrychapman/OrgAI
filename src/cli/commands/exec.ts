@@ -733,12 +733,44 @@ export interface ExecRunResult {
   evolve: EvolvePostRunResult | null | undefined
 }
 
+/** The role / tier delta of a plan on one line: `researcher→fast, implementer→everyday/high` (shared with org evolve). */
+export function planDeltaText(plan: Pick<NonNullable<EvolvePostRunResult['applied']>['plan'], 'rolePatches' | 'newSkills' | 'pruneSkillIds' | 'maxConcurrentSubagents'>): string {
+  const parts: string[] = []
+  for (const p of plan.rolePatches) {
+    const bits = [p.tier ? p.tier : '', p.effort ? p.effort : '', p.prompt !== undefined ? 'prompt' : '', p.addTools?.length || p.removeTools?.length ? 'tools' : '', p.staffing ? 'staffing' : '', p.removeSkills?.length ? 'skills' : ''].filter(Boolean)
+    parts.push(`${safeLine(p.slug)}→${bits.join('/') || 'unchanged'}`)
+  }
+  if (plan.newSkills.length) parts.push(`+${plan.newSkills.length} skill${plan.newSkills.length === 1 ? '' : 's'}`)
+  if (plan.pruneSkillIds.length) parts.push(`-${plan.pruneSkillIds.length} skill${plan.pruneSkillIds.length === 1 ? '' : 's'}`)
+  if (plan.maxConcurrentSubagents !== undefined) parts.push(`subagents≤${plan.maxConcurrentSubagents}`)
+  return parts.join(', ')
+}
+
+/**
+ * What a post-run pass changed, as parts for one line: the applied generation with its changes, then every held
+ * raise (a part that may spend more; an unattended pass never applies one) in full.
+ */
+export function evolveChangeParts(r: EvolvePostRunResult): string[] {
+  const parts: string[] = []
+  if (r.applied) {
+    const delta = r.applied.plan ? planDeltaText(r.applied.plan) : ''
+    parts.push(`applied ${safeLine(r.applied.id)} as a trial: ${safeLine(r.applied.summary)}${delta ? ` (changes: ${delta})` : ''}`)
+  }
+  for (const h of r.heldSpendRaises ?? []) parts.push(`held, may spend more, not applied: ${safeLine(h.summary)}`)
+  if (r.heldSpendRaises?.length) parts.push('approve them with: orgai org evolve --apply, in a terminal')
+  return parts
+}
+
 /** The one stderr line `exec --evolve` prints in text mode. */
 export function evolveLine(r: EvolvePostRunResult | null | undefined, error?: string): string {
   if (!r) return error ? `Team evolution: the post-run pass failed (${safeLine(error)}).` : 'Team evolution: no post-run pass ran for this run.'
-  const parts: string[] = [`ratchet ${r.ratchet}${r.ratchetReason ? ` (${safeLine(r.ratchetReason)})` : ''}`]
-  if (r.applied) parts.push(`applied ${safeLine(r.applied.id)} as a trial: ${safeLine(r.applied.summary)} (details: orgai org evolve history; undo: orgai org evolve rollback ${safeLine(r.applied.id)})`)
-  else if (r.wasteScore !== undefined) parts.push(`waste score ${r.wasteScore}, no new generation`)
+  const parts: string[] = [`ratchet ${safeLine(r.ratchet)}${r.ratchetReason ? ` (${safeLine(r.ratchetReason)})` : ''}`]
+  const changes = evolveChangeParts(r)
+  if (r.applied) parts.push(...changes.map((c, i) => (i === 0 ? `${c} (details: orgai org evolve history; undo: orgai org evolve rollback ${safeLine(r.applied?.id)})` : c)))
+  else {
+    if (r.wasteScore !== undefined) parts.push(`waste score ${r.wasteScore}, no new generation`)
+    parts.push(...changes)
+  }
   return `Team evolution: ${parts.join('; ')}.`
 }
 

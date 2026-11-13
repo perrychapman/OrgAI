@@ -4,6 +4,7 @@ import type {
   EvolutionHistory,
   EvolutionMetrics,
   EvolutionPlan,
+  EvolutionSpendRaise,
   EvolvePostRunResult,
   ExecOutcome,
   HostScope,
@@ -18,7 +19,7 @@ import { fakeContext, FakeHostClient, project, record, summary, type Answer } fr
 import { CliError, EXIT } from '../types'
 import { execIo, runExec } from './exec'
 import { runOrg } from './org'
-import { evolveLoopIo, EVOLVE_LOOP_MAX_ITERATIONS } from './orgEvolve'
+import { diagnosisLines, evolveLoopIo, EVOLVE_LOOP_MAX_ITERATIONS, historyLines, planLines } from './orgEvolve'
 import { evolveLine } from './exec'
 
 const ALL: { grantedScopes: HostScope[] } = { grantedScopes: ['read', 'operate', 'decide', 'configure'] }
@@ -149,46 +150,176 @@ describe('org evolve (dry run)', () => {
 
 describe('org evolve --apply', () => {
   const applied = { applied: true, generation: GEN, project: P, diagnosis: DIAGNOSIS, plan: PLAN, teamFilesSynced: true }
+  const RAISE_A: EvolutionSpendRaise = { roleSlug: 'researcher', field: 'tier', summary: `researcher may move to the deep tier and cost more per run ${'a'.repeat(300)} END-A` }
+  const RAISE_B: EvolutionSpendRaise = { field: 'concurrency', summary: 'the subagent limit rises from 3 to 5, so more agents may run at once' }
+  const RAISING: EvolutionPlan = { ...PLAN, spendRaises: [RAISE_A, RAISE_B] }
+  const analysisOf = (plan: EvolutionPlan = PLAN) => ({ diagnosis: DIAGNOSIS, plan, digest: 'd' })
+  const hist = { ...HISTORY, generations: [{ ...GEN, id: 'gen_1' }, { ...GEN, id: 'gen_3' }], trialId: undefined }
+  const flow = (plan: EvolutionPlan = PLAN, apply: unknown = applied, tty = false) =>
+    setup({ 'org:evolveAnalyze': () => analysisOf(plan), 'org:evolveHistory': () => hist, 'org:evolveApply': () => apply }, { tty })
+  const order = (client: FakeHostClient) => client.calls.map((c) => c.method).filter((m) => m.startsWith('org:evolve'))
 
-  it('applies with --apply or -y (configure scope), passes the window and prints the trial', async () => {
-    for (const flag of ['--apply', '-y']) {
-      const { f, client } = setup({ 'org:evolveApply': () => applied })
-      expect(await runOrg(f.ctx, ['evolve', flag, '--eval-window', '2', '--strategy', 'deterministic'])).toBe(0)
-      expect(client.callsOf('org:evolveApply')[0]).toEqual([{ projectId: 'p1', strategy: 'deterministic', evalWindowRuns: 2 }])
-      expect(f.connectCalls[0].scopes).toEqual(['read', 'configure'])
-      expect(f.out()).toContain('Applied gen_1 as a trial: researcher to fast')
-      expect(f.out()).toContain('The .orgai/ team files were updated.')
-      expect(f.out()).toContain('Undo it now with: orgai org evolve rollback gen_1')
+  it('--apply --yes analyzes, then applies the reviewed fingerprint (configure scope), passes the window and prints the plan and the trial', async () => {
+    const { f, client } = flow()
+    expect(await runOrg(f.ctx, ['evolve', '--apply', '--yes', '--eval-window', '2', '--strategy', 'deterministic'])).toBe(0)
+    expect(order(client)).toEqual(['org:evolveAnalyze', 'org:evolveHistory', 'org:evolveApply'])
+    expect(client.callsOf('org:evolveAnalyze')[0]).toEqual([{ projectId: 'p1', strategy: 'deterministic' }])
+    expect(client.callsOf('org:evolveApply')[0]).toEqual([{ projectId: 'p1', strategy: 'deterministic', evalWindowRuns: 2, expectedFingerprint: PLAN.fingerprint }])
+    expect(f.connectCalls[0].scopes).toEqual(['read', 'configure'])
+    const out = f.out()
+    expect(out).toContain('Waste score: 61/100')
+    expect(out).toContain('role researcher: tier fast; prompt 5 characters')
+    expect(out.indexOf('Safety gate')).toBeLessThan(out.indexOf('Applied gen_1'))
+    expect(out).toContain('Applied gen_1 as a trial: researcher to fast')
+    expect(out).toContain('The .orgai/ team files were updated.')
+    expect(out).toContain('Undo it now with: orgai org evolve rollback gen_1')
+    expect(out).not.toContain('rolls back by itself')
+  })
+
+  it('-y alone is a usage error, and --yes without --apply too (no host started)', async () => {
+    for (const args of [['-y'], ['--yes'], ['-y', '--runs', '5']]) {
+      const { f } = flow()
+      expect(await exitOf(runOrg(f.ctx, ['evolve', ...args])), args.join(' ')).toBe(2)
+      expect(f.connectCalls).toHaveLength(0)
     }
   })
 
-  it('exec --evolve names the undo command when the post-run pass applied a generation', () => {
+  it('--apply without --yes and without a terminal is exit 2 before any host call (no model call is spent)', async () => {
+    for (const args of [['--apply'], ['--apply', '--strategy', 'hybrid']]) {
+      const { f, client } = flow(PLAN, applied, false)
+      await expect(runOrg(f.ctx, ['evolve', ...args])).rejects.toMatchObject({ exitCode: 2, message: expect.stringContaining('--yes') })
+      expect(f.connectCalls).toHaveLength(0)
+      expect(client.calls).toHaveLength(0)
+    }
+  })
+
+  it('with raises: lists every one in full, --yes holds them (no allowSpendRaise) and prints the held ones with how to approve', async () => {
+    const held = { ...applied, plan: RAISING, heldSpendRaises: [RAISE_A, RAISE_B] }
+    const { f, client } = flow(RAISING, held)
+    manageDeps.ttyConfirm = vi.fn(async () => true)
+    expect(await runOrg(f.ctx, ['evolve', '--apply', '--yes'])).toBe(0)
+    const call = client.callsOf('org:evolveApply')[0] as [Record<string, unknown>]
+    expect(call[0].allowSpendRaise).toBeUndefined()
+    expect(call[0].expectedFingerprint).toBe(PLAN.fingerprint)
+    expect(manageDeps.ttyConfirm).not.toHaveBeenCalled()
+    const out = f.out()
+    expect(out).toContain('May spend more:')
+    expect(out).toContain(RAISE_A.summary)
+    expect(out).toContain(RAISE_B.summary)
+    expect(out).toContain('will be held, not applied')
+    expect(out).toContain('Held, not applied (2 changes may spend more):')
+    expect(out.split(RAISE_A.summary).length - 1).toBe(2) // shown in the plan and again as held, never truncated
+    expect(out).toContain('in a terminal')
+  })
+
+  it('a terminal confirmation names the next id and the raise count, and with raises sends allowSpendRaise', async () => {
+    const { f, client } = flow(RAISING, { ...applied, plan: RAISING }, true)
+    const ask = vi.fn(async (_q: string) => true)
+    manageDeps.ttyConfirm = ask
+    expect(await runOrg(f.ctx, ['evolve', '--apply'])).toBe(0)
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask.mock.calls[0][0]).toContain('Apply this plan as trial gen_4?')
+    expect(ask.mock.calls[0][0]).toContain('2 changes may spend more')
+    expect(client.callsOf('org:evolveApply')[0]).toEqual([{ projectId: 'p1', expectedFingerprint: PLAN.fingerprint, allowSpendRaise: true }])
+    // The analysis printed before the question, not after.
+    expect(f.out()).toContain(RAISE_B.summary)
+  })
+
+  it('a terminal confirmation without raises sends no allowSpendRaise', async () => {
+    const { f, client } = flow(PLAN, applied, true)
+    manageDeps.ttyConfirm = vi.fn(async () => true)
+    expect(await runOrg(f.ctx, ['evolve', '--apply'])).toBe(0)
+    expect(client.callsOf('org:evolveApply')[0]).toEqual([{ projectId: 'p1', expectedFingerprint: PLAN.fingerprint }])
+  })
+
+  it('a declined terminal confirmation applies nothing and exits 1', async () => {
+    const { f, client } = flow(RAISING, applied, true)
+    manageDeps.ttyConfirm = vi.fn(async () => false)
+    expect(await runOrg(f.ctx, ['evolve', '--apply'])).toBe(1)
+    expect(client.callsOf('org:evolveApply')).toHaveLength(0)
+    expect(f.out()).toContain('Nothing was applied')
+  })
+
+  it('an empty or gate-refused plan never reaches apply, with or without --yes', async () => {
+    for (const plan of [{ ...PLAN, empty: true }, { ...PLAN, gate: { ok: false, violations: [] } }]) {
+      const { f, client } = flow(plan)
+      expect(await runOrg(f.ctx, ['evolve', '--apply', '--yes'])).toBe(0)
+      expect(client.callsOf('org:evolveApply')).toHaveLength(0)
+      expect(f.out()).toContain('Nothing would be applied.')
+    }
+  })
+
+  it('a fingerprint mismatch refusal reads as nothing applied and the plan changed', async () => {
+    const { f } = flow(PLAN, { applied: false, reason: 'the plan changed since it was shown (fingerprint mismatch)', project: P, diagnosis: DIAGNOSIS, plan: PLAN, teamFilesSynced: false })
+    expect(await runOrg(f.ctx, ['evolve', '--apply', '--yes'])).toBe(0)
+    expect(f.out()).toContain('The plan changed since it was shown; nothing was applied.')
+  })
+
+  it('json carries the analysis plan, the apply result and heldSpendRaises, and no prompt text goes to stdout', async () => {
+    const res = { ...applied, plan: RAISING, heldSpendRaises: [RAISE_A] }
+    const { f } = setup({ 'org:evolveAnalyze': () => analysisOf(RAISING), 'org:evolveHistory': () => hist, 'org:evolveApply': () => res }, { format: 'json' })
+    expect(await runOrg(f.ctx, ['evolve', '--apply', '--yes'])).toBe(0)
+    const v = JSON.parse(f.out())
+    expect(v).toMatchObject({ applied: true, generation: { id: 'gen_1' }, analysisPlan: { fingerprint: PLAN.fingerprint }, heldSpendRaises: [{ field: 'tier' }] })
+    expect(v.analysisPlan.spendRaises).toHaveLength(2)
+    expect(v.spendRaises).toHaveLength(2)
+  })
+
+  it('json with a terminal: the question goes to the terminal and the plan to stderr, stdout stays one document', async () => {
+    const { f } = setup({ 'org:evolveAnalyze': () => analysisOf(RAISING), 'org:evolveHistory': () => hist, 'org:evolveApply': () => ({ ...applied, plan: RAISING }) }, { format: 'json', tty: true })
+    const ask = vi.fn(async (_q: string) => true)
+    manageDeps.ttyConfirm = ask
+    expect(await runOrg(f.ctx, ['evolve', '--apply'])).toBe(0)
+    expect(() => JSON.parse(f.out())).not.toThrow()
+    expect(f.err()).toContain(RAISE_B.summary)
+    expect(ask).toHaveBeenCalled()
+  })
+
+  it('wraps host strings in safeLine (no escape sequences reach the terminal)', () => {
+    const lines = [
+      ...diagnosisLines({ ...DIAGNOSIS, goal: 'bal\x1b[31manced' as never, findings: [{ ...DIAGNOSIS.findings[0], kind: 'k\x1b[2Jind' as never }] }, 'App'),
+      ...planLines({ ...PLAN, strategy: 'det\x1b[1mx' as never, spendRaises: [{ field: 'tier', summary: 'a\x1b[31mb' }], gate: { ok: true, violations: [{ rule: 'r', message: 'm', action: 'tr\x1b[0mm' as never }] } }),
+      ...historyLines({ ...HISTORY, generations: [{ ...GEN, status: 'tr\x1b[1mial' as never, strategy: 'st\x1b[1mr' as never }] }, 'App')
+    ].join('\n')
+    expect(lines).not.toContain('\x1b')
+  })
+
+  it('exec --evolve names the undo command, the applied changes and every held raise on one line', () => {
     const line = evolveLine({ projectId: 'p1', ratchet: 'none', applied: GEN })
     expect(line).toContain('applied gen_1 as a trial: researcher to fast')
+    expect(line).toContain('changes: researcher→fast/prompt, -1 skill')
     expect(line).toContain('undo: orgai org evolve rollback gen_1')
+    const held = evolveLine({ projectId: 'p1', ratchet: 'none', wasteScore: 40, heldSpendRaises: [{ field: 'effort', summary: `effort rises ${'e'.repeat(300)} END` }, { field: 'concurrency', summary: 'limit up' }] })
+    expect(held).toContain(`effort rises ${'e'.repeat(300)} END`)
+    expect(held).toContain('limit up')
+    expect(held).toContain('orgai org evolve --apply')
+    expect(held.split('\n')).toHaveLength(1)
+    const both = evolveLine({ projectId: 'p1', ratchet: 'promoted', applied: GEN, heldSpendRaises: [{ field: 'tier', summary: 'tier up' }] })
+    expect(both).toContain('applied gen_1')
+    expect(both).toContain('tier up')
   })
 
   it('prints each change as before → after, read from the project as it was', async () => {
     const before = { ...P, maxConcurrentSubagents: 3, roles: [{ id: 'r_res', slug: 'researcher', name: 'Researcher', tier: 'deep', model: 'deep', effort: 'high', prompt: 'a much longer prompt' }] } as unknown as Project
     const plan: EvolutionPlan = { ...PLAN, rolePatches: [{ slug: 'researcher', tier: 'everyday', effort: 'medium', prompt: 'short', reason: 'cheaper' }], maxConcurrentSubagents: 5 }
-    const { f } = setup({ 'projects:list': () => [before], 'projects:get': () => before, 'org:evolveApply': () => ({ ...applied, plan }) })
-    await runOrg(f.ctx, ['evolve', '--apply'])
+    const { f } = setup({ 'projects:list': () => [before], 'projects:get': () => before, 'org:evolveAnalyze': () => analysisOf(plan), 'org:evolveHistory': () => hist, 'org:evolveApply': () => ({ ...applied, plan }) })
+    await runOrg(f.ctx, ['evolve', '--apply', '--yes'])
     expect(f.out()).toContain('role researcher: tier deep → everyday (model deep → everyday); effort high → medium; prompt 20 → 5 characters (cheaper)')
     expect(f.out()).toContain('max concurrent subagents: 3 → 5')
   })
 
   it('says when team files were not written and when nothing was applied (exit 0, the plan said why)', async () => {
-    const a = setup({ 'org:evolveApply': () => ({ ...applied, teamFilesSynced: false }) })
-    await runOrg(a.f.ctx, ['evolve', '--apply'])
+    const a = flow(PLAN, { ...applied, teamFilesSynced: false })
+    await runOrg(a.f.ctx, ['evolve', '--apply', '--yes'])
     expect(a.f.out()).toContain('team files were not written')
-    const b = setup({ 'org:evolveApply': () => ({ applied: false, reason: 'a trial is already active', project: P, diagnosis: DIAGNOSIS, plan: PLAN, teamFilesSynced: false }) })
-    expect(await runOrg(b.f.ctx, ['evolve', '--apply'])).toBe(0)
+    const b = flow(PLAN, { applied: false, reason: 'a trial is already active', project: P, diagnosis: DIAGNOSIS, plan: PLAN, teamFilesSynced: false })
+    expect(await runOrg(b.f.ctx, ['evolve', '--apply', '--yes'])).toBe(0)
     expect(b.f.out()).toContain('Nothing was applied: a trial is already active')
   })
 
   it('json has applied, generation and teamFilesSynced', async () => {
-    const { f } = setup({ 'org:evolveApply': () => applied }, { format: 'json' })
-    await runOrg(f.ctx, ['evolve', '--apply'])
+    const { f } = setup({ 'org:evolveAnalyze': () => analysisOf(), 'org:evolveHistory': () => hist, 'org:evolveApply': () => applied }, { format: 'json' })
+    await runOrg(f.ctx, ['evolve', '--apply', '--yes'])
     expect(JSON.parse(f.out())).toMatchObject({ applied: true, generation: { id: 'gen_1', status: 'trial' }, teamFilesSynced: true })
   })
 })
@@ -247,14 +378,52 @@ describe('org retro --unattended', () => {
     expect(f.out()).toContain('Waste score: 61/100')
   })
 
-  it('--unattended --apply applies through the evolve gate; --apply alone is a usage error; a virtual run is refused', async () => {
-    const { f, client } = setup({ ...base, 'org:evolveApply': () => ({ applied: true, generation: GEN, project: P, diagnosis: DIAGNOSIS, plan: PLAN, teamFilesSynced: false }) })
-    expect(await runOrg(f.ctx, ['retro', 'R1', '--unattended', '--apply'])).toBe(0)
-    expect(client.callsOf('org:evolveApply')).toHaveLength(1)
+  const RAISE: EvolutionSpendRaise = { roleSlug: 'researcher', field: 'tier', summary: `researcher may cost more ${'r'.repeat(250)} END` }
+  const retroApply = (plan: EvolutionPlan = PLAN, result: unknown = { applied: true, generation: GEN, project: P, diagnosis: DIAGNOSIS, plan, teamFilesSynced: false }, tty = false) =>
+    setup({ ...base, 'org:evolveAnalyze': () => ({ diagnosis: DIAGNOSIS, plan, digest: 'd' }), 'org:evolveHistory': () => HISTORY, 'org:evolveApply': () => result }, { tty })
+
+  it('--unattended --apply --yes analyzes then applies the reviewed fingerprint without allowSpendRaise; --apply alone is a usage error; a virtual run is refused', async () => {
+    const { f, client } = retroApply({ ...PLAN, spendRaises: [RAISE] }, { applied: true, generation: GEN, project: P, diagnosis: DIAGNOSIS, plan: PLAN, teamFilesSynced: false, heldSpendRaises: [RAISE] })
+    expect(await runOrg(f.ctx, ['retro', 'R1', '--unattended', '--apply', '--yes'])).toBe(0)
+    expect(client.callsOf('org:evolveAnalyze')).toHaveLength(1)
+    expect(client.callsOf('org:evolveApply')).toEqual([[{ projectId: 'p1', expectedFingerprint: PLAN.fingerprint }]])
+    expect(f.out()).toContain(RAISE.summary)
+    expect(f.out()).toContain('Held, not applied')
     expect(await exitOf(runOrg(f.ctx, ['retro', 'R1', '--apply']))).toBe(2)
     const quick = summary('run_q', { projectId: 'quick', kind: 'work', quick: true } as never)
     const q = setup({ 'runs:list': () => [quick], 'runs:get': () => record(quick) })
     expect(await exitOf(runOrg(q.f.ctx, ['retro', 'R1', '--unattended']))).toBe(2)
+  })
+
+  it('--apply without --yes and without a terminal, or --yes without --apply, is exit 2 and makes no host call', async () => {
+    for (const args of [['--unattended', '--apply'], ['--unattended', '--yes']]) {
+      const { f, client } = retroApply()
+      expect(await exitOf(runOrg(f.ctx, ['retro', 'R1', ...args])), args.join(' ')).toBe(2)
+      expect(f.connectCalls).toHaveLength(0)
+      expect(client.calls).toHaveLength(0)
+    }
+  })
+
+  it('on a terminal it asks (raise count, next id) and with raises sends allowSpendRaise; declined applies nothing', async () => {
+    const plan = { ...PLAN, spendRaises: [RAISE] }
+    const yes = retroApply(plan, undefined, true)
+    const ask = vi.fn(async (_q: string) => true)
+    manageDeps.ttyConfirm = ask
+    expect(await runOrg(yes.f.ctx, ['retro', 'R1', '--unattended', '--apply'])).toBe(0)
+    expect(ask.mock.calls[0][0]).toContain('Apply this plan as trial gen_2?')
+    expect(ask.mock.calls[0][0]).toContain('1 change may spend more')
+    expect(yes.client.callsOf('org:evolveApply')[0]).toEqual([{ projectId: 'p1', expectedFingerprint: PLAN.fingerprint, allowSpendRaise: true }])
+    const no = retroApply(plan, undefined, true)
+    manageDeps.ttyConfirm = vi.fn(async () => false)
+    expect(await runOrg(no.f.ctx, ['retro', 'R1', '--unattended', '--apply'])).toBe(1)
+    expect(no.client.callsOf('org:evolveApply')).toHaveLength(0)
+  })
+
+  it('an empty plan never reaches apply', async () => {
+    const { f, client } = retroApply({ ...PLAN, empty: true })
+    expect(await runOrg(f.ctx, ['retro', 'R1', '--unattended', '--apply', '--yes'])).toBe(0)
+    expect(client.callsOf('org:evolveApply')).toHaveLength(0)
+    expect(f.out()).toContain('Nothing would be applied.')
   })
 })
 
@@ -387,7 +556,7 @@ describe('org evolve loop', () => {
     const doc = JSON.parse(g.f.out())
     expect(doc).toMatchObject({ iterations: 2, completed: 2, stoppedEarly: false, exitCode: 0, strategy: 'deterministic' })
     expect(doc.rows).toHaveLength(2)
-    expect(doc.rows[0]).toMatchObject({ iteration: 1, gen: 'gen_0', inputTokens: 1500, outcome: 'completed', ratchet: 'applied gen_1 (trial)' })
+    expect(doc.rows[0]).toMatchObject({ iteration: 1, gen: 'gen_0', inputTokens: 1500, outcome: 'completed', ratchet: 'applied gen_1 (trial): researcher→fast/prompt, -1 skill' })
   })
 
   it('stops early on a failed run with its exit code, and on a refused start', async () => {
