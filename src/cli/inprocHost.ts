@@ -19,7 +19,7 @@ import { dirname, join, posix, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type HostBackgroundOptions, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
-import { HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, acquireHostOwnership, type HostOwnership } from '../main/host/ownership'
+import { HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, acquireHostOwnership, runDirHint, runDirOf, type HostOwnership } from '../main/host/ownership'
 import { LineReader, newNonce } from '../main/host/protocol'
 import { ShutdownRefusedError } from '../main/host/shutdown'
 import { HostSocketServer } from '../main/host/socketServer'
@@ -164,7 +164,7 @@ export function inprocCliRoots(moduleDir: string, platform: NodeJS.Platform = pr
  * returns false), the writer's callback waits until the reader asks for more (its read()), so a writer that respects
  * write() / 'drain' (the host's outbound queue) never has more than one buffer of unread data in flight.
  */
-export function memoryStreamPair(highWaterMark = 64 * 1024 * 1024): [Duplex, Duplex] {
+export function memoryStreamPair(highWaterMark = 1024 * 1024): [Duplex, Duplex] {
   /** Per reader: the write callback of its peer, waiting for this side to read. */
   const waiting = new Map<Duplex, () => void>()
   const make = (peer: () => Duplex): Duplex =>
@@ -253,10 +253,12 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   } catch (e) {
     server.close()
     for (const m of heldWarnings) process.stderr.write(`${m}\n`)
-    if (e instanceof HostAlreadyRunningError) throw new CliError(ownedMessage(ownerWordsOf(e.info)), EXIT.hostBusy)
-    if (e instanceof HostStartingOrBusyError) throw new CliError(ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {}), EXIT.hostBusy)
+    // Each "owned" refusal names the way out when nothing is really running: delete the run folder (review M2 on PR 49).
+    const runDir = runDirOf(dataDir)
+    if (e instanceof HostAlreadyRunningError) throw new CliError(`${ownedMessage(ownerWordsOf(e.info))} ${runDirHint(runDir)}`, EXIT.hostBusy)
+    if (e instanceof HostStartingOrBusyError) throw new CliError(`${ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {})} ${runDirHint(runDir)}`, EXIT.hostBusy)
     // An unreadable record that is not provably stale is "owned" (spec 4.2); other ownership failures keep their message.
-    if (e instanceof HostOwnershipError && e.code === 'daemon_json_unreadable') throw new CliError(ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {}), EXIT.hostBusy)
+    if (e instanceof HostOwnershipError && e.code === 'daemon_json_unreadable') throw new CliError(`${ownedMessage(e.ownerPid ? { pid: e.ownerPid } : {})} ${runDirHint(runDir)}`, EXIT.hostBusy)
     if (e instanceof HostOwnershipError) throw new CliError(e.message, EXIT.hostBusy)
     throw e
   }
