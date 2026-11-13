@@ -11,6 +11,8 @@ import {
   expandShellGlobAlternatives,
   globMayStartWith,
   localDrivePathOf,
+  matchGlobTokens,
+  type GlobToken,
   pathAtOrUnder,
   referenceCommandMessage,
   referenceEditDenial,
@@ -284,10 +286,26 @@ describe('prefix protection (definite mode, selfControlGate.ts Wave 7)', () => {
     const component = `${'[z-a]'.repeat(80)}x`
     const protectedRun = posix.join(linuxRoot, `${'a'.repeat(80)}y`, 'run')
     const pattern = `${component}/run/daemon.secret`
-    const started = Date.now()
     expect(searchReaches(linuxRoot, pattern, [protectedRun], linuxWork, { platform: 'linux' })).toBe(protectedRun)
     expect(commandControlScan(`cat '${linuxRoot}'/${pattern}`, linuxWork, [protectedRun], { platform: 'linux' })).toBe('touch')
-    expect(Date.now() - started).toBeLessThan(1000)
+  })
+
+  it('matches glob components without backtracking (PR 47 review M2)', () => {
+    const tokens = (glob: string): GlobToken[] => [...glob].map((ch) => (ch === '*' ? { star: true } : { star: false, test: (x: string) => x === ch }))
+    // A RegExp `.*` per star backtracks combinatorially here; the state set is linear in name length times stars.
+    expect(matchGlobTokens(tokens(`${'*'.repeat(5_000)}x`), 'a'.repeat(200))).toBe(false)
+    expect(matchGlobTokens(tokens(`${'*a'.repeat(2_000)}x`), 'a'.repeat(200))).toBe(false)
+    expect(matchGlobTokens(tokens('*a*b'), 'xxaxxb')).toBe(true)
+    expect(matchGlobTokens(tokens('a*'), 'b')).toBe(false)
+    expect(matchGlobTokens(tokens(''), '')).toBe(true)
+    expect(matchGlobTokens(tokens('**'), '')).toBe(true)
+    const linuxRoot = '/tmp/orgai-reference-posix-fixture'
+    const protectedRun = posix.join(linuxRoot, 'data', 'run')
+    for (const pattern of [`${'*'.repeat(5_000)}a/run/x`, `d${'*'.repeat(5_000)}a/run/x`]) {
+      expect(searchReaches(linuxRoot, pattern, [protectedRun], linuxRoot, { platform: 'linux' }), pattern.slice(0, 8)).toBe(protectedRun)
+    }
+    // A mismatching component (the case a backtracking RegExp explodes on) leaves the command unmatched.
+    expect(commandControlScan(`cat ${linuxRoot}/${'*'.repeat(5_000)}z/run/x`, linuxRoot, [protectedRun], { platform: 'linux' })).toBeNull()
   })
 
   it('expands bounded zsh and optional extglob path groups before scanning protected paths', () => {
@@ -315,10 +333,14 @@ describe('prefix protection (definite mode, selfControlGate.ts Wave 7)', () => {
   it('bounds work on deeply nested and unmatched shell glob groups', () => {
     const deep = `x(a|${'('.repeat(8_000)}b${')'.repeat(8_000)})`
     const unmatched = `x(a|${'('.repeat(16_000)}`
-    const started = Date.now()
     expect(expandShellGlobAlternatives(deep)).toBeNull()
     expect(expandShellGlobAlternatives(unmatched)).toBeNull()
-    expect(Date.now() - started).toBeLessThan(1000)
+  })
+
+  it('never reads zsh =(...) process substitution as a glob group', () => {
+    expect(expandShellGlobAlternatives('=(orgai|cat)')).toEqual(['=(orgai|cat)'])
+    expect(expandShellGlobAlternatives('x=(a|b)')).toEqual(['x=(a|b)'])
+    expect(expandShellGlobAlternatives('orga(i|x)')?.sort()).toEqual(['orgai', 'orgax'])
   })
 
   it('pathAtOrUnder / searchReaches / commandControlScan honour `prefixed`, and only in definite mode', () => {

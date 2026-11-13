@@ -105,7 +105,20 @@
 import { join, posix, resolve, win32 } from 'node:path'
 import { canonicalDeep } from '../quick/scratch'
 import { LEGACY_SECRETS_FILE, VAULT_FILE } from '../store/vaultTypes'
-import { commandControlScan, expandShellGlobAlternatives, parseGlobBracketClass, pathAtOrUnder, searchReaches, type PrefixProtection } from './referenceDirectories'
+import {
+  classTest,
+  commandControlScan,
+  expandShellGlobAlternatives,
+  MATCH_ANY,
+  matchGlobTokens,
+  parseGlobBracketClass,
+  pathAtOrUnder,
+  searchReaches,
+  type GlobToken,
+  type PrefixProtection
+} from './referenceDirectories'
+
+type GlobMatcher = { test(s: string): boolean }
 import { segmentWords } from './ruleMatch'
 
 export const SELF_CONTROL_DENIAL_MESSAGE = "OrgAI: Agent tools may not invoke the OrgAI CLI or access OrgAI's internal control and secret files."
@@ -288,8 +301,6 @@ const PACKAGE_RUNNERS: readonly string[] = ['npx', 'npm', 'pnpm', 'pnpx', 'yarn'
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 const MAX_NEST = 3
 const MAX_SEGMENTS = 2000
-/** Bound shell-group nesting before any helper scans for a matching close delimiter. */
-const MAX_CLI_GROUP_DEPTH = 64
 
 /**
  * The npm package in a word (Wave 7, cli-standalone 8.4; the published name is `orgai-cli`, owner decision 2026-11-06,
@@ -310,9 +321,9 @@ const RUNNER_SUBCOMMANDS: readonly (readonly [string, readonly string[]])[] = [
 const RUNNER_SUB_NAMES: readonly string[] = ['exec', 'x', 'dlx']
 
 /** Compiled glob names (wordMayBe), at most 256 kept. */
-const globCache = new Map<string, RegExp>()
+const globCache = new Map<string, GlobMatcher>()
 
-function cachedGlobRegex(glob: string): RegExp {
+function cachedGlobRegex(glob: string): GlobMatcher {
   let re = globCache.get(glob)
   if (!re) {
     if (globCache.size >= 256) globCache.clear()
@@ -800,132 +811,162 @@ interface CliSegment {
   text: string
   pipeIn: boolean
   producer: boolean
-  limited?: boolean
-}
-
-function matchingParenEnd(text: string, open: number): number {
-  let depth = 0
-  let quote: string | null = null
-  for (let i = open; i < text.length; i++) {
-    const ch = text[i]
-    if (quote) {
-      if (quote === '"' && ch === '\\') i++
-      else if (ch === quote) quote = null
-      continue
-    }
-    if (ch === '\\') {
-      i++
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      continue
-    }
-    if (ch === '[') {
-      const cls = parseGlobBracketClass(text, i)
-      if (cls) {
-        i = cls.end
-        continue
-      }
-    }
-    if (ch === '(') depth++
-    else if (ch === ')' && --depth === 0) return i
-  }
-  return -1
-}
-
-/** A linear preflight prevents repeated matching-close scans on deeply nested or unmatched input. */
-function shellGroupsReadable(text: string): boolean {
-  let quote: string | null = null
-  let depth = 0
-  let caseDepth = 0
-  let casePattern = false
-  let commandPosition = true
-  let word = ''
-  const flushWord = (): void => {
-    const token = word
-    if (token === 'case' && commandPosition) {
-      caseDepth++
-      casePattern = false
-      commandPosition = false
-    } else if (token === 'esac' && caseDepth > 0) {
-      caseDepth--
-      casePattern = false
-      commandPosition = false
-    } else if (token === 'in' && caseDepth > 0) {
-      casePattern = true
-      commandPosition = false
-    } else if (['if', 'then', 'else', 'elif', 'while', 'until', 'do', '!'].includes(token)) commandPosition = true
-    else if (token) commandPosition = false
-    word = ''
-  }
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (quote) {
-      if (quote === '"' && ch === '\\') i++
-      else if (ch === quote) quote = null
-      continue
-    }
-    if (ch === '\\') {
-      i++
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      flushWord()
-      quote = ch
-      continue
-    }
-    if (ch === '[') {
-      flushWord()
-      let end = i + 1
-      if (text[end] === '!' || text[end] === '^') end++
-      if (text[end] === ']') end++
-      while (end < text.length) {
-        if (text[end] === '\\') end += 2
-        else if (text[end] === ']') break
-        else end++
-      }
-      if (end < text.length) {
-        i = end
-        continue
-      }
-    }
-    if (ch === '(') {
-      flushWord()
-      if (++depth > MAX_CLI_GROUP_DEPTH) return false
-    } else if (ch === ')') {
-      flushWord()
-      if (depth === 0) {
-        if (caseDepth > 0 && casePattern) {
-          casePattern = false
-          commandPosition = true
-          continue
-        }
-        return false
-      }
-      depth--
-    } else if (/\s/.test(ch) || /[;|&{}]/.test(ch)) {
-      flushWord()
-      if (/[;|&{}\n\r]/.test(ch)) commandPosition = true
-      if (ch === ';' && caseDepth > 0 && !casePattern && text[i + 1] === ';') casePattern = true
-    } else word += ch
-  }
-  flushWord()
-  return depth === 0
 }
 
 /**
- * Split on `;`, `&`, `|`, newlines, parentheses and braces outside quotes (more eagerly than ruleMatch splitCommand:
- * pipes and subshells start a new program too), plus the bodies of `$(...)`, `<(...)` / `>(...)` and backtick
- * substitutions outside single quotes as segments of their own. With `keepBraces` a `{` / `}` never splits, so a
- * brace expansion (`orga{i,}`) stays one word for expandBraces.
+ * One way cliSegments reads quotes and escapes. The shell is not known here (the Bash tool may run bash, zsh or Git
+ * Bash; the PowerShell tool PowerShell), so cliSegments takes the union of every reading's segments: a command any
+ * reading splits off is checked (fail closed).
+ * - escape 'backslash' (bash, zsh): `\x` outside single quotes, `$'...'` with its own escapes, `#` comments.
+ * - escape 'backtick' (PowerShell): `` `x `` outside single quotes, `#` comments.
+ * - escape 'none': quotes only, the reading before PR 47 (keeps `"C:\dir\"` closed for PowerShell).
+ * - groups 'safe' absorbs a zsh `(a|b)` / extglob `?(a)` group into its word only when the group holds no whitespace or
+ *   shell operator; 'all' absorbs every such group (a shell that reads the group as one word).
  */
-function cliSegments(text: string, keepBraces = false): CliSegment[] {
-  if (!shellGroupsReadable(text)) return [{ text: '', pipeIn: false, producer: false, limited: true }]
+interface SegmentReading {
+  escape: 'backslash' | 'backtick' | 'none'
+  groups: 'safe' | 'all'
+}
+
+/** Character classes of activeMask: excluded from the substitution pass, literal (quoted or escaped), shell syntax. */
+const LEX_HIDDEN = 0
+const LEX_LITERAL = 1
+const LEX_ACTIVE = 2
+
+const WHITESPACE = /\s/
+/** Characters that end a shell word or start another construct: a `${...}` body holding one is never absorbed. */
+const SHELL_STOP_CHARS: ReadonlySet<string> = new Set([...';&|<>()`\'"\\$[]{}'])
+/** A group holding one of these (unquoted) may not be one word to the shell: 'safe' readings never absorb it. */
+const GROUP_UNSAFE_CHARS: ReadonlySet<string> = new Set([...';&<>`'])
+const isSpace = (ch: string): boolean => {
+  const c = ch.charCodeAt(0)
+  return c === 32 || (c >= 9 && c <= 13) || (c > 127 && WHITESPACE.test(ch))
+}
+const isShellStop = (ch: string): boolean => SHELL_STOP_CHARS.has(ch) || isSpace(ch)
+const isGroupUnsafe = (ch: string): boolean => GROUP_UNSAFE_CHARS.has(ch) || isSpace(ch)
+
+/**
+ * One linear pass: LEX_ACTIVE for unquoted, unescaped shell syntax; LEX_LITERAL inside double quotes and for escaped
+ * characters; LEX_HIDDEN inside single quotes (also `$'...'`) and comments.
+ */
+/** The index just past the first `marker` at or after `from`, or the text's length when there is none. */
+function closeAfter(text: string, marker: string, from: number): number {
+  const at = text.indexOf(marker, from)
+  return at < 0 ? text.length : at + marker.length
+}
+
+function lexClasses(text: string, escape: SegmentReading['escape']): Uint8Array {
+  const out = new Uint8Array(text.length)
+  const esc = escape === 'backslash' ? '\\' : escape === 'backtick' ? '`' : ''
+  let quote: '"' | "'" | 'ansi' | null = null
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (quote === "'" || quote === 'ansi') {
+      out[i] = LEX_HIDDEN
+      if (quote === 'ansi' && ch === '\\') {
+        if (i + 1 < text.length) out[++i] = LEX_HIDDEN
+      } else if (ch === "'") quote = null
+      continue
+    }
+    if (quote === '"') {
+      out[i] = LEX_LITERAL
+      if (esc && ch === esc) {
+        if (i + 1 < text.length) out[++i] = LEX_LITERAL
+      } else if (ch === '"') quote = null
+      continue
+    }
+    if (esc && ch === esc) {
+      out[i] = LEX_LITERAL
+      if (i + 1 < text.length) out[++i] = LEX_LITERAL
+      continue
+    }
+    if (ch === "'") {
+      out[i] = LEX_HIDDEN
+      quote = "'"
+      continue
+    }
+    if (ch === '"') {
+      out[i] = LEX_LITERAL
+      quote = '"'
+      continue
+    }
+    if (escape === 'backslash' && ch === '$' && text[i + 1] === "'") {
+      out[i] = LEX_HIDDEN
+      out[++i] = LEX_HIDDEN
+      quote = 'ansi'
+      continue
+    }
+    // PowerShell block comments `<# ... #>` and here-strings `@'<newline> ... <newline>'@` / `@"..."@`.
+    if (escape === 'backtick') {
+      let end = -1
+      let cls = LEX_HIDDEN
+      if (ch === '<' && text[i + 1] === '#') end = closeAfter(text, '#>', i + 2)
+      else if (ch === '@' && (text[i + 1] === "'" || text[i + 1] === '"') && /^\r?\n/.test(text.slice(i + 2, i + 4))) {
+        end = closeAfter(text, `\n${text[i + 1]}@`, i + 2)
+        if (text[i + 1] === '"') cls = LEX_LITERAL
+      }
+      if (end >= 0) {
+        out.fill(cls, i, end)
+        i = end - 1
+        continue
+      }
+    }
+    // A comment starts at a word start only (`a#b` is one word).
+    if (escape !== 'none' && ch === '#' && (i === 0 || (out[i - 1] === LEX_ACTIVE && (isSpace(text[i - 1]) || ';&|()<>'.includes(text[i - 1]))))) {
+      while (i < text.length && text[i] !== '\n' && text[i] !== '\r') out[i++] = LEX_HIDDEN
+      i--
+      continue
+    }
+    out[i] = LEX_ACTIVE
+  }
+  return out
+}
+
+/** The segments of one reading (cliSegments). Linear: every lookahead is precomputed in one pass. */
+function cliSegmentsIn(text: string, keepBraces: boolean, reading: SegmentReading): CliSegment[] {
+  const n = text.length
+  const lex = lexClasses(text, reading.escape)
+  const active = (k: number): boolean => k < n && lex[k] === LEX_ACTIVE
+  // The matching `)` of every active `(`, whether a `|` sits directly inside it, and a prefix count of unsafe characters.
+  const groups = text.includes('(')
+  const close = new Int32Array(groups ? n : 0).fill(-1)
+  const pipeInside = new Uint8Array(groups ? n : 0)
+  const unsafe = new Uint32Array(groups ? n + 1 : 0)
+  if (groups) {
+    const stack: number[] = []
+    for (let k = 0; k < n; k++) {
+      const ch = text[k]
+      const on = lex[k] === LEX_ACTIVE
+      unsafe[k + 1] = unsafe[k] + (on && isGroupUnsafe(ch) ? 1 : 0)
+      if (!on) continue
+      if (ch === '(') stack.push(k)
+      else if (ch === ')') {
+        const open = stack.pop()
+        if (open !== undefined) close[open] = k
+      } else if (ch === '|' && stack.length) pipeInside[stack[stack.length - 1]] = 1
+    }
+  }
+  // The first index at or after k that is not plain word text (not active, or a shell stop character).
+  const params = text.includes('${')
+  const plainEnd = new Int32Array(params ? n + 1 : 0)
+  if (params) {
+    plainEnd[n] = n
+    for (let k = n - 1; k >= 0; k--) plainEnd[k] = lex[k] !== LEX_ACTIVE || isShellStop(text[k]) ? k : plainEnd[k + 1]
+  }
+  /** A zsh alternation (`orga(i|x)`) or extglob (`?(o)rgai`) group the reading keeps inside its word. */
+  const globGroupEnd = (open: number): number => {
+    const end = close[open]
+    if (end < 0 || open === 0) return -1
+    const before = text[open - 1]
+    const extglob = /[?*+@!]/.test(before)
+    if (!extglob && (isSpace(before) || ';$|&()<>=`'.includes(before) || !pipeInside[open])) return -1
+    if (reading.groups === 'safe' && unsafe[end] - unsafe[open] > 0) return -1
+    return end
+  }
+
   const out: CliSegment[] = []
   let cur = ''
   let pipeIn = false
-  let quote: string | null = null
   // An empty piece (`a | (sh)`, `(a) | sh`) passes its pipe on to the next one.
   const push = (nextPipe: boolean): void => {
     if (cur.trim() === '') pipeIn ||= nextPipe
@@ -935,54 +976,45 @@ function cliSegments(text: string, keepBraces = false): CliSegment[] {
     }
     cur = ''
   }
-  for (let i = 0; i < text.length; i++) {
+  for (let i = 0; i < n; i++) {
     const ch = text[i]
-    if (quote) {
-      cur += ch
-      if (ch === quote) quote = null
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
+    if (lex[i] !== LEX_ACTIVE) {
       cur += ch
       continue
     }
-    if (ch === '$' && text[i + 1] === '{') {
-      const end = text.indexOf('}', i + 2)
-      if (end < 0) return [{ text, pipeIn: false, producer: false }]
-      cur += text.slice(i, end + 1)
-      i = end
-      continue
-    }
-    if (ch === '[') {
-      const cls = parseGlobBracketClass(text, i)
-      if (cls) {
-        cur += text.slice(i, cls.end + 1)
-        i = cls.end
-        continue
-      }
-    }
-    if (ch === '(') {
-      const end = matchingParenEnd(text, i)
-      const probe = end < 0 ? '' : cur + text.slice(i, end + 1)
-      const variants = probe ? expandShellGlobAlternatives(probe) : null
-      if (end >= 0 && variants && variants.some((variant) => variant !== probe)) {
+    // `${name}`, `${x:-y}`: one word, but only a plain body (a quote, escape, space or operator inside keeps the split).
+    if (ch === '$' && text[i + 1] === '{' && active(i + 1)) {
+      const end = plainEnd[i + 2]
+      if (end < n && text[end] === '}' && active(end)) {
         cur += text.slice(i, end + 1)
         i = end
         continue
       }
     }
+    if (ch === '(') {
+      const end = globGroupEnd(i)
+      if (end >= 0) {
+        if (unsafe[end] === unsafe[i]) cur += text.slice(i, end + 1)
+        else {
+          // ('all' reading) zsh keeps `orga(i|x y)` one word: a space or operator inside stands as `?` so word
+          // splitting downstream keeps the group whole and its alternatives still match (`orgai`).
+          for (let k = i; k <= end; k++) cur += lex[k] === LEX_ACTIVE && isGroupUnsafe(text[k]) ? '?' : text[k]
+        }
+        i = end
+        continue
+      }
+    }
     if (ch === '|') {
-      if (text[i + 1] === '|') {
+      if (text[i + 1] === '|' && active(i + 1)) {
         i++
         push(false)
       } else {
-        if (text[i + 1] === '&') i++
+        if (text[i + 1] === '&' && active(i + 1)) i++
         push(true)
       }
       continue
     }
-    if (ch === '&' && text[i + 1] === '&') {
+    if (ch === '&' && text[i + 1] === '&' && active(i + 1)) {
       i++
       push(false)
       continue
@@ -1006,23 +1038,44 @@ function cliSegments(text: string, keepBraces = false): CliSegment[] {
     cur += ch
   }
   push(false)
-  // Substitutions inside double quotes ("$(orgai status)", "`orgai x`") and process substitutions.
+  // Substitutions inside double quotes ("$(orgai status)", "`orgai x`"), process substitutions and zsh `=(...)`.
   let outside = ''
-  quote = null
-  for (const ch of text) {
-    if (quote === "'") {
-      if (ch === "'") quote = null
-      continue
+  for (let k = 0; k < n; k++) if (lex[k] !== LEX_HIDDEN) outside += text[k]
+  for (const m of outside.matchAll(/[$<>=]\(([^()]*)\)|`([^`]*)`/g)) out.push({ text: m[1] ?? m[2] ?? '', pipeIn: false, producer: true })
+  return out
+}
+
+/**
+ * Split on `;`, `&`, `|`, newlines, parentheses and braces outside quotes (more eagerly than ruleMatch splitCommand:
+ * pipes and subshells start a new program too), plus the bodies of `$(...)`, `<(...)` / `>(...)` and backtick
+ * substitutions outside single quotes as segments of their own. With `keepBraces` a `{` / `}` never splits, so a
+ * brace expansion (`orga{i,}`) stays one word for expandBraces. The result is the union of every SegmentReading,
+ * deduplicated; every caller denies when any segment matches, so a further reading only adds checks.
+ */
+function cliSegments(text: string, keepBraces = false): CliSegment[] {
+  const readings: SegmentReading[] = [
+    { escape: 'backslash', groups: 'safe' },
+    { escape: 'none', groups: 'safe' }
+  ]
+  if (text.includes('(')) readings.push({ escape: 'backslash', groups: 'all' })
+  if (/`|<#|@['"]/.test(text)) readings.push({ escape: 'backtick', groups: 'safe' })
+  // bash and zsh drop a backslash-newline before reading words (`orga\<newline>i` is `orgai`).
+  const joined = text.includes('\\\n') || text.includes('\\\r\n') ? text.replace(/\\\r?\n/g, '') : text
+  const out: CliSegment[] = []
+  // A segment an earlier reading already gave is dropped; repeats within one reading stay (MAX_SEGMENTS counts them).
+  const seen = new Set<string>()
+  for (const reading of readings) {
+    const keys: string[] = []
+    for (const s of cliSegmentsIn(reading.escape === 'backslash' ? joined : text, keepBraces, reading)) {
+      const t = s.text.trim()
+      const key = `${s.pipeIn ? 1 : 0}${s.producer ? 1 : 0}${t}`
+      if (t === '' || seen.has(key)) continue
+      keys.push(key)
+      out.push({ ...s, text: t })
     }
-    if (ch === "'" && quote === null) {
-      quote = "'"
-      continue
-    }
-    if (ch === '"') quote = quote === '"' ? null : '"'
-    outside += ch
+    for (const key of keys) seen.add(key)
   }
-  for (const m of outside.matchAll(/[$<>]\(([^()]*)\)|`([^`]*)`/g)) out.push({ text: m[1] ?? m[2] ?? '', pipeIn: false, producer: true })
-  return out.map((s) => ({ ...s, text: s.text.trim() })).filter((s) => s.text !== '')
+  return out
 }
 
 /** Index of the program word after env assignments and wrappers (env, command, exec, nohup, time, npx, npm exec...). */
@@ -1189,7 +1242,8 @@ function wordsRunCli(words: readonly string[], depth: number, budget: CliBudget,
     if (textRunsCli(split, depth + 1, budget, check)) return true
   }
   // util-linux `script -c 'security -i' /dev/null`: the -c text is a command of its own.
-  for (const t of scriptCommandTexts(words)) {
+  // zsh glob qualifiers run code too: `*(e:'orgai status':)`, `*(+orgai)` (PR 47 review).
+  for (const t of [...scriptCommandTexts(words), ...zshQualifierCode(words)]) {
     if (depth >= MAX_NEST) return (budget.limited = true)
     if (textRunsCli(t, depth + 1, budget, check)) return true
   }
@@ -1374,30 +1428,32 @@ function spellings(word: string): string[] {
   return unescaped === word ? [word] : [word, unescaped]
 }
 
-/** A glob component (`orga?`, `*`, `[o]rgai`, `[!x]*`) as a whole-string, case-insensitive pattern. */
-function globRegex(pattern: string): RegExp {
+/**
+ * A glob component (`orga?`, `*`, `[o]rgai`, `[!x]*`) as a whole-string, case-insensitive matcher. Linear
+ * (matchGlobTokens), never a backtracking RegExp: a word of many `*` is attacker text (review M2).
+ */
+function globRegex(pattern: string): GlobMatcher {
   // Variable expansion inside a glob and shell extglob depend on shell state or quoting that the
   // scanner does not model. Treat them as matching any name; callers still require enough literal name characters.
-  if (SHELL_GLOB_AMBIGUITY.test(pattern)) return /^.*$/i
-  let re = ''
+  if (SHELL_GLOB_AMBIGUITY.test(pattern)) return MATCH_ANY
+  const toks: GlobToken[] = []
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i]
-    if (ch === ']') return /^.*$/i // Quote removal or an invalid bracket expression made this spelling ambiguous.
-    if (ch === '*') re += '.*'
-    else if (ch === '?') re += '.'
+    if (ch === ']') return MATCH_ANY // Quote removal or an invalid bracket expression made this spelling ambiguous.
+    if (ch === '*') toks.push({ star: true })
+    else if (ch === '?') toks.push({ star: false, test: (x) => x !== '\n' && x !== '\r' })
     else if (ch === '[') {
       const cls = parseGlobBracketClass(pattern, i)
       if (cls) {
-        re += cls.unclosed ? '.*' : cls.source
+        toks.push(cls.unclosed ? { star: true } : { star: false, test: classTest(cls.source, 'i') })
         i = cls.end
       }
-    } else re += ch.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+    } else {
+      const lower = ch.toLowerCase()
+      toks.push({ star: false, test: (x) => x === ch || x.toLowerCase() === lower })
+    }
   }
-  try {
-    return new RegExp(`^${re}$`, 'i')
-  } catch {
-    return /^.*$/
-  }
+  return { test: (s) => matchGlobTokens(toks, s) }
 }
 
 /**
@@ -1561,6 +1617,42 @@ function insideCliRoot(value: string, check: CliCheck): boolean {
   return false
 }
 
+/** zsh qualifier delimiters that pair with a different closing character. */
+const QUALIFIER_CLOSE: Readonly<Record<string, string>> = { '(': ')', '[': ']', '{': '}', '<': '>' }
+/** The command name after a `+` qualifier (sticky: read in place, never on a sliced copy). */
+const QUALIFIER_COMMAND = /[^\s:+()[\]{}<>|]+/y
+
+/**
+ * Code a zsh glob qualifier in one of the words runs (`*(e:'code':)`, `*(e[code])`, `*(+cmd)`). Read loosely from every
+ * parenthesised piece of a word, so a non-qualifier group may add a text; it is checked like any other (fail closed).
+ */
+function zshQualifierCode(words: readonly string[]): string[] {
+  const out: string[] = []
+  for (const w of words) {
+    const open = w.indexOf('(')
+    if (open < 0 || out.length > 16) continue
+    const body = w.slice(open + 1)
+    for (let k = 0; k < body.length && out.length <= 16; k++) {
+      if (body[k] === 'e' && k + 1 < body.length) {
+        const delim = body[k + 1]
+        if (/[\w\s]/.test(delim)) continue
+        const end = body.indexOf(QUALIFIER_CLOSE[delim] ?? delim, k + 2)
+        out.push(body.slice(k + 2, end < 0 ? body.length : end))
+        if (end < 0) break
+        k = end
+      } else if (body[k] === '+') {
+        QUALIFIER_COMMAND.lastIndex = k + 1
+        const m = QUALIFIER_COMMAND.exec(body)
+        if (m) {
+          out.push(m[0])
+          k += m[0].length
+        }
+      }
+    }
+  }
+  return out
+}
+
 /** Quoted spans replaced by a placeholder, so only unquoted text is read as an assignment. */
 function unquoted(text: string): string {
   let out = ''
@@ -1598,7 +1690,6 @@ function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliC
   // Inspect each command segment with pattern parentheses intact: cliSegments splits shell operators, but keeps a
   // zsh `(a|b)` or extglob group inside its word. This also catches a later command after `;` / `&&`.
   for (const seg of cliSegments(text)) {
-    if (seg.limited) return (budget.limited = true)
     const words = segmentWords(seg.text)
     const program = words[programIndex(words)]
     if (program && hasShellGlobGroup(program)) {

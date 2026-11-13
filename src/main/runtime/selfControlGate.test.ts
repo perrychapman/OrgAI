@@ -919,20 +919,107 @@ describe('commandRunsOrgaiCli', () => {
     expect(commandRunsOrgaiCli('npm install')).toBe(false)
   })
 
-  it('bounds deep and unmatched shell group scanning and fails closed', () => {
+  it('reads deep and unmatched shell groups (linear cost: Wave 7 scan cost)', () => {
     const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work', platform: 'linux', cliRoots: [] }
+    // A subshell nested any depth still splits off the command inside it.
     const deep = `echo ${'('.repeat(16_000)}orgai status${')'.repeat(16_000)}`
-    const unmatched = `echo (${'x'.repeat(16_000)}`
-    const started = Date.now()
-    for (const command of [deep, unmatched]) {
-      expect(commandRunsOrgaiCli(command), 'unreadable group structure').toBe(true)
-      expect(checkSelfControlDenial('Bash', { command }, ctx), 'unreadable group structure').toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
-    }
-    expect(Date.now() - started).toBeLessThan(1000)
+    expect(commandRunsOrgaiCli(deep)).toBe(true)
+    expect(checkSelfControlDenial('Bash', { command: deep }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    // An unmatched `(` is a syntax error to the shell; it splits as before PR 47 and names nothing.
+    expect(commandRunsOrgaiCli(`echo (${'x'.repeat(16_000)}`)).toBe(false)
+    expect(commandRunsOrgaiCli(`echo (${'x'.repeat(100)}; orgai status`)).toBe(true)
 
     expect(commandRunsOrgaiCli('true; (ls|true)')).toBe(false)
     expect(commandRunsOrgaiCli('echo hi; (false|true)')).toBe(false)
     expect(commandRunsOrgaiCli("echo '((((not shell groups))))'")).toBe(false)
+  })
+})
+
+describe('segment splitting gaps (PR 47 review)', () => {
+  const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work', home: '/home/u', platform: 'linux', cliRoots: [] }
+  const bash = (command: string): string | null => checkSelfControlDenial('Bash', { command }, ctx)
+
+  it('splits off a command hidden behind a bracket, a ${, an escape, a comment or zsh =(...)', () => {
+    for (const command of [
+      // A bracket expression never spans an operator or a space.
+      'echo [;orgai status;]',
+      'echo [; orgai status',
+      'echo [|orgai status|]',
+      'echo [&&orgai status&&]',
+      'echo x[;orgai status;]y',
+      // `${...}` stays one word only with a plain body.
+      'echo \\${; orgai status',
+      "echo ${x:-'}'}; orgai status",
+      'echo ${x:-"}"}; orgai status',
+      'echo ${x:-\\}}; orgai status',
+      'echo ${x; orgai status; }',
+      // zsh process substitution.
+      'cat =(orgai status|cat)',
+      'cat =(orgai|cat)',
+      'diff =(orgai status) x',
+      // Backslash escapes outside quotes and inside double quotes, and $'...' strings.
+      "echo \\'; orgai status",
+      'echo \\"; orgai status',
+      'echo "\\"" ; orgai status',
+      "echo $'\\''; orgai status",
+      "echo $'\\'' && orgai status",
+      // A quote in a comment does not open a string.
+      "echo hi # it's\norgai status",
+      'echo hi # "\norgai status',
+      // PowerShell: a backtick escape, and a backslash that escapes nothing.
+      "echo `'; orgai status",
+      'Get-Content "C:\\dir\\"; orgai status',
+      // PowerShell block comments and here-strings.
+      "<# ' #> ; orgai status",
+      "@'\nit's\n'@; orgai status",
+      // A backslash-newline joins a word.
+      'orga\\\ni status',
+      // zsh glob qualifiers that run code.
+      "ls *(e:'orgai status':)",
+      'ls *(e[orgai status])',
+      'ls *(+orgai)',
+      // A glob group holding a space or an operator: both readings are checked.
+      'echo x(a|;orgai status;)',
+      'echo x(a|b c); orgai status',
+      '~/.local/bin/orga(i|x y) status'
+    ]) {
+      expect(bash(command), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+      expect(commandRunsOrgaiCli(command), command).toBe(true)
+    }
+  })
+
+  it('still allows ordinary commands with brackets, parameters, escapes, comments and groups', () => {
+    for (const command of [
+      'echo [',
+      'grep -c [ f',
+      'grep -n "[" f',
+      'test [ -f x ]',
+      'if [ -f x ]; then echo y; fi',
+      'echo [abc] [!x] [[:alpha:]]',
+      'printf "%s" "${HOME}"',
+      'echo ${HOME} ${x:-y} ${x#*.}',
+      'echo \\$HOME \\( \\) \\;',
+      "find . \\( -name a -o -name b \\) -print",
+      "echo $'a\\'b'",
+      'echo hi # (unmatched in a comment',
+      'echo hi # it\'s fine',
+      'cat <<EOF\n# 1)\nEOF',
+      'node x.js <<EOF\n# 1)\n2) item\nEOF',
+      'echo $(case x in x) echo ok;; esac)',
+      'case x in x) echo ok;; esac',
+      'echo )',
+      './bin/(lint|test)',
+      'echo =(ls)',
+      'git commit -m "fix (wip"',
+      'ls ./scripts/*.sh',
+      'ls *(.om[1])',
+      'echo "(e.g. a note)"',
+      "<# a comment #> Get-ChildItem",
+      "$t = @'\nline (one\n'@",
+      'echo a \\\n  b'
+    ]) {
+      expect(bash(command), command).toBeNull()
+    }
   })
 })
 
@@ -2052,7 +2139,18 @@ describe('Wave 7 scan cost', () => {
       ['runner words', (n) => `npx ${'np\\x e?ec '.repeat(n)}`, 2_500],
       ['security options', (n) => `echo ${'security -v -- -pX '.repeat(n)}`, 2_500],
       ['vault env', (n) => `echo ${'ORGAI_'.repeat(n)}`, 10_000],
-      ['vault label words', (n) => `echo ${'keyring OrgAI '.repeat(n)}`, 2_500]
+      ['vault label words', (n) => `echo ${'keyring OrgAI '.repeat(n)}`, 2_500],
+      // PR 47 review (M2, M3): unclosed `[`, parentheses, glob groups and runs of `*` in a program word or path.
+      ['open brackets', (n) => `echo ${'['.repeat(n)}`, 10_000],
+      ['open brackets before a stop', (n) => `echo ${'[a'.repeat(n)};x`, 10_000],
+      ['open parens', (n) => `echo ${'('.repeat(n)}`, 10_000],
+      ['close parens', (n) => `echo ${')'.repeat(n)}`, 10_000],
+      ['sibling groups', (n) => `echo x${'(a|b)'.repeat(n)}`, 2_500],
+      ['nested groups', (n) => `echo ${'x('.repeat(n)}a|b${')'.repeat(n)}`, 2_500],
+      ['parameter braces', (n) => `echo ${'${x'.repeat(n)}`, 10_000],
+      ['star program', (n) => `~/.local/bin/${'*'.repeat(n)}x status`, 2_000],
+      ['star-letter program', (n) => `~/.local/bin/${'*o'.repeat(n)}x status`, 1_000],
+      ['star path', (n) => `cat ${data}/${'*'.repeat(n)}x/daemon.secret`, 2_000]
     ]
     const best = (command: string): number => {
       let min = Infinity
