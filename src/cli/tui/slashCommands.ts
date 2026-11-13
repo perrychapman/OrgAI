@@ -601,7 +601,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     name: 'mode',
     args: '[default|acceptEdits|plan|auto]',
-    summary: 'Show or change the permission mode (Shift+Tab cycles it from the composer)',
+    summary: 'Show or change the permission mode (widening a live run asks first; Shift+Tab from the composer only narrows it)',
     available: (s) => !s.readOnlyReason,
     unavailableReason: readOnlyText,
     run: (ctx, args) =>

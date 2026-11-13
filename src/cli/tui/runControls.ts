@@ -2,6 +2,10 @@
  * Pure logic behind /model, /effort, /mode and /goal and Shift+Tab: resolving what the user typed against the model
  * catalog, which permission modes a run offers, and when a live model switch must wait (CLAUDE.md live-switch rules:
  * an idle safe boundary, no open decisions, and a different connection needs the session ended first).
+ *
+ * Shift+Tab on the composer never widens a followed run's mode: it steps down auto > acceptEdits > default > plan and
+ * stops at plan. Only /mode widens, and it asks first. With no run followed it cycles default, acceptEdits, plan
+ * for the next run (`auto` only through /mode auto).
  */
 import {
   EFFORTS,
@@ -16,13 +20,14 @@ import {
   type RunSummary,
   type StaffingGoal
 } from '../../shared/types'
+import { canNarrowPermissionMode } from '../../main/runtime/runOverrides'
 import { sanitizeTty } from './sanitizeTty'
 import type { TuiState } from './types'
 
 export const EFFORT_WORDS: readonly Effort[] = EFFORTS
 export const GOAL_WORDS: readonly StaffingGoal[] = STAFFING_GOALS
 export const TIER_WORDS: readonly ModelTier[] = ['fast', 'everyday', 'deep', 'top'].filter((t): t is ModelTier => (MODEL_TIERS as readonly string[]).includes(t))
-/** The modes /mode and Shift+Tab cycle through, safest first. dontAsk and bypassPermissions stay explicit-only. */
+/** The modes /mode accepts, safest first (Shift+Tab uses subsets of it, see below). dontAsk and bypassPermissions stay explicit-only. */
 export const CYCLE_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto']
 
 export const isTier = (w: string): w is ModelTier => (TIER_WORDS as readonly string[]).includes(w)
@@ -82,6 +87,31 @@ export function nextMode(current: PermissionMode | undefined, choices: readonly 
   if (choices.length === 0) return undefined
   const at = current === undefined ? -1 : choices.indexOf(current)
   return choices[(at + 1) % choices.length]
+}
+
+/** The modes Shift+Tab cycles for the NEXT run (no run followed). `auto` is reachable only through /mode auto. */
+export const STAGED_CYCLE_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan']
+
+/** What Shift+Tab steps through on a followed run, widest first: it only ever moves down this ladder, never wraps. */
+export const NARROW_LADDER: readonly PermissionMode[] = ['auto', 'acceptEdits', 'default', 'plan']
+
+/** The mode Shift+Tab selects for the next run: the cycle after `current`, without `auto`. */
+export function nextStagedMode(current: PermissionMode | undefined, choices: readonly PermissionMode[]): PermissionMode | undefined {
+  return nextMode(current, choices.filter((m) => STAGED_CYCLE_MODES.includes(m)))
+}
+
+/**
+ * The next narrower mode for a followed live run, or undefined at the narrowest step (or when the run offers nothing
+ * narrower). Uses the host's own narrowing matrix (main/runtime/runOverrides.ts `canNarrowPermissionMode`), so a step
+ * is never wider. An unknown current mode only steps to plan, which narrows every mode.
+ */
+export function narrowerMode(current: PermissionMode | undefined, choices: readonly PermissionMode[]): PermissionMode | undefined {
+  return NARROW_LADDER.filter((m) => m !== current && choices.includes(m)).find((m) => (current === undefined ? m === 'plan' : canNarrowPermissionMode(current, m)))
+}
+
+/** True when switching a run from `current` to `target` is not a narrowing (so /mode asks first). */
+export function widensMode(current: PermissionMode | undefined, target: PermissionMode): boolean {
+  return current === undefined ? target !== 'plan' : !canNarrowPermissionMode(current, target)
 }
 
 /** The sentence that lists what /mode accepts right now. */

@@ -8,7 +8,7 @@ import { render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionRequest, RunEvent } from '../../shared/types'
 import { project, record, summary } from '../testing/fakeContext'
-import { App, KEY_DROPPED_NOTICE, INPUT_QUEUE_FULL_NOTICE, overlayCue, placeholderFor, wrapOverlayLines } from './App'
+import { App, KEY_DROPPED_NOTICE, INPUT_QUEUE_FULL_NOTICE, SHIFT_TAB_AFTER_CARDS_MS, SHIFT_TAB_NARROWS_ONLY, overlayCue, placeholderFor, wrapOverlayLines } from './App'
 import { DEFAULT_TUI_ENV } from './context'
 import { KeyParser } from './input/keys'
 import { textWidth } from './panes/text'
@@ -48,10 +48,11 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
     state = next
     for (const f of [...subs]) f()
   }
+  const staged: Record<string, unknown> = {}
   const session = {
     getState: () => state,
-    getStaged: () => ({}),
-    stage: vi.fn(),
+    getStaged: () => staged,
+    stage: vi.fn((patch: Record<string, unknown>) => void Object.assign(staged, patch)),
     setPermissionMode: vi.fn(async () => ({ run: {}, applied: true })),
     setState,
     subscribe: (cb: () => void) => (subs.add(cb), () => void subs.delete(cb)),
@@ -730,5 +731,104 @@ describe('re-walk fixes (R2, issue #25 and #26 follow-ups)', () => {
     const joined = f.replace(/[│\n ]+/g, '')
     expect(joined).toContain(summaryLine.replace(/ /g, '').slice(0, 100))
     expect(joined).toContain(summaryLine.replace(/ /g, '').slice(-24))
+  })
+})
+
+describe('Shift+Tab and /mode never widen a live run by accident (PR 49 M1)', () => {
+  const backtab: InputEvent = { type: 'key', name: 'backtab', ctrl: false, alt: false, shift: true, raw: '' }
+  const modeState = (mode: 'default' | 'acceptEdits' | 'plan' | 'auto', waiting = false): TuiState => {
+    const s = stateWith({ waiting })
+    return applyRecord(s, record(summary('run1', { status: 'idle', prompt: 'Build the thing', permissionMode: mode })))
+  }
+  const type = (text: string): InputEvent[] => [...text].map((ch) => key(ch))
+  const modesSet = (m: ReturnType<typeof mount>): unknown[] => m.session.setPermissionMode.mock.calls.map((c) => (c as unknown[])[0])
+  const bare = (): TuiState => ({ ...createInitialState('/work'), project: project('p1', '/work', { name: 'Demo' }), connection: 'live' })
+
+  it('steps a live run narrower only: auto to acceptEdits, default to plan, and plan changes nothing but says why', async () => {
+    const auto = mount({ cols: 120, rows: 40, state: modeState('auto') })
+    await tick()
+    await auto.send(backtab)
+    expect(modesSet(auto)).toEqual(['acceptEdits'])
+
+    const def = mount({ cols: 120, rows: 40, state: modeState('default') })
+    await tick()
+    await def.send(backtab)
+    expect(modesSet(def)).toEqual(['plan'])
+
+    const plan = mount({ cols: 120, rows: 40, state: modeState('plan') })
+    await tick()
+    await plan.send(backtab, backtab)
+    expect(plan.session.setPermissionMode).not.toHaveBeenCalled()
+    expect(plan.session.notify).toHaveBeenCalledWith(SHIFT_TAB_NARROWS_ONLY, undefined)
+  })
+
+  it('walks the whole ladder down and never calls setPermissionMode with a wider mode', async () => {
+    const m = mount({ cols: 120, rows: 40, state: modeState('auto') })
+    await tick()
+    // The fake host applies each change to the run, as the real one does.
+    m.session.setPermissionMode.mockImplementation((async (mode: string) => {
+      m.session.setState(modeState(mode as 'default'))
+      return { run: {}, applied: true }
+    }) as never)
+    await m.send(backtab, backtab, backtab, backtab, backtab)
+    expect(modesSet(m)).toEqual(['acceptEdits', 'default', 'plan'])
+  })
+
+  it('stages default, acceptEdits, plan and back to default for the next run, never auto', async () => {
+    const m = mount({ cols: 120, rows: 40, state: bare() })
+    await tick()
+    await m.send(backtab, backtab, backtab, backtab, backtab)
+    expect(m.session.stage.mock.calls.map((c) => (c as unknown[])[0])).toEqual([
+      { permissionMode: 'default' }, { permissionMode: 'acceptEdits' }, { permissionMode: 'plan' }, { permissionMode: 'default' }, { permissionMode: 'acceptEdits' }
+    ])
+    expect(m.session.setPermissionMode).not.toHaveBeenCalled()
+  })
+
+  it('/mode auto on a live default run asks first: no changes nothing, yes switches', async () => {
+    const m = mount({ cols: 120, rows: 40, state: modeState('default') })
+    await tick()
+    await m.send(...type('/mode auto'), named('enter'))
+    expect(m.frame()).toContain('Switch this run to auto mode? It asks you less often than default.')
+    expect(m.session.setPermissionMode).not.toHaveBeenCalled()
+    await m.send(key('n'))
+    expect(m.session.setPermissionMode).not.toHaveBeenCalled()
+    expect(m.session.notify).toHaveBeenCalledWith('Mode unchanged: default.', undefined)
+
+    await m.send(...type('/mode auto'), named('enter'))
+    await m.send(key('y'))
+    expect(modesSet(m)).toEqual(['auto'])
+  })
+
+  it('/mode plan on a live default run needs no question', async () => {
+    const m = mount({ cols: 120, rows: 40, state: modeState('default') })
+    await tick()
+    await m.send(...type('/mode plan'), named('enter'))
+    expect(m.frame()).not.toContain('Switch this run to')
+    expect(modesSet(m)).toEqual(['plan'])
+  })
+
+  it('/mode on a staged (no run) composer needs no question', async () => {
+    const m = mount({ cols: 120, rows: 40, state: bare() })
+    await tick()
+    await m.send(...type('/mode auto'), named('enter'))
+    expect(m.frame()).not.toContain('Switch this run to')
+    expect(m.session.stage).toHaveBeenCalledWith({ permissionMode: 'auto' })
+  })
+
+  it('ignores a Shift+Tab within 750 ms of the last decision going away, and acts after that', async () => {
+    const clock = { t: 1_000_000 }
+    const m = mount({ cols: 120, rows: 40, state: modeState('default', true), now: () => clock.t })
+    await tick()
+    await m.send(named('escape')) // back to typing with the card still open
+    // The card is answered elsewhere just before the Shift+Tab meant for it.
+    m.session.setState(modeState('default'))
+    await tick()
+    clock.t += SHIFT_TAB_AFTER_CARDS_MS - 100
+    await m.send(backtab)
+    expect(m.session.setPermissionMode).not.toHaveBeenCalled()
+    expect(m.session.notify).not.toHaveBeenCalled()
+    clock.t += 200
+    await m.send(backtab)
+    expect(modesSet(m)).toEqual(['plan'])
   })
 })

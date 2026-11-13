@@ -14,7 +14,7 @@ import { statusOfRun, statusText } from '../../shared/view/runStatus'
 import { Composer } from './Composer'
 import { copyToClipboard } from './clipboard'
 import { editInExternalEditor } from './externalEditor'
-import { modeChoices, modeInForce, modeSwitchHint, nextMode } from './runControls'
+import { modeChoices, modeInForce, modeSwitchHint, narrowerMode, nextStagedMode, widensMode } from './runControls'
 import { teamMessageRows, withTeamMilestones } from './collaboration'
 import { Welcome } from './Welcome'
 import { RunActivity, runTokenCount } from './RunActivity'
@@ -80,6 +80,9 @@ export const COMPOSER_ROWS = 3
 export const PANE_ORDER: readonly PaneId[] = ['tree', 'transcript', 'plan', 'worktrees']
 
 export const NOTHING_NEEDS_YOU = 'Nothing needs you'
+export const SHIFT_TAB_NARROWS_ONLY = "Shift+Tab only narrows a running session's mode. Use /mode <mode> to widen it (it asks first)."
+/** A composer Shift+Tab this soon after the last decision card went away is ignored (it was meant for that card). */
+export const SHIFT_TAB_AFTER_CARDS_MS = 750
 export const KEY_DROPPED_NOTICE = 'Keys typed before the card had focus were ignored. Read the card, then answer.'
 /** The input queue (held while a focus change commits) overflowed and later input was dropped. */
 export const INPUT_QUEUE_FULL_NOTICE = 'Some input typed while the screen was changing was dropped.'
@@ -344,6 +347,8 @@ export function App(props: AppProps) {
   const inputQueue = useRef<InputEvent[]>([])
   const composerDraft = useRef('')
   const lastInputAt = useRef(Number.NEGATIVE_INFINITY)
+  const prevCardCount = useRef(0)
+  const cardsEmptiedAt = useRef(Number.NEGATIVE_INFINITY)
   const queueOverflowNoted = useRef(false)
   const lastEsc = useRef<number | undefined>(undefined)
   const panesNoticeShown = useRef(false)
@@ -450,6 +455,10 @@ export function App(props: AppProps) {
   // `partials`) does not recompute the tray, transcript, plan or worktrees on every render.
   const { runs: stateRuns, activeChain: stateChain, activeRunId: stateActiveRun, project: stateProject } = state
   const cards = useMemo(() => trayCards(state), [stateRuns, stateChain, stateProject]) // eslint-disable-line react-hooks/exhaustive-deps
+  // When the last decision went away (answered, expired or resolved elsewhere): a Shift+Tab right after it was probably
+  // meant for that decision and is ignored on the composer (SHIFT_TAB_AFTER_CARDS_MS). A ref write, no re-render.
+  if (prevCardCount.current > 0 && cards.length === 0) cardsEmptiedAt.current = now()
+  prevCardCount.current = cards.length
   const top = topCard(state)
   const summary = { ...statusSummary(state), ...(launch.title ? { title: sanitizeTty(launch.title).replace(/\s+/g, ' ').trim() } : {}) }
   const activeStatus = state.activeRunId ? state.runs[state.activeRunId]?.summary.status : undefined
@@ -1067,7 +1076,8 @@ export function App(props: AppProps) {
 
   /**
    * /mode and Shift+Tab: the followed run's permission mode (applied live when the host can; otherwise saved for its
-   * next continuation), or staged for the next run when none is followed. Never sends a message.
+   * next continuation), or staged for the next run when none is followed. Never sends a message. A switch that
+   * widens a followed run's mode (it asks less often) is confirmed first.
    */
   const setMode = async (mode: PermissionMode): Promise<void> => {
     const st = session.getState()
@@ -1086,6 +1096,15 @@ export function App(props: AppProps) {
       notify(`This run does not take ${mode} mode.${modeSwitchHint(st) ? ` ${modeSwitchHint(st)}` : ''}`, 'warn')
       return
     }
+    // Widening a live run's mode (it asks less often) always asks first; narrowing and staging do not.
+    const current = modeInForce(run)
+    if (widensMode(current, mode)) {
+      const yes = await confirm(current ? `Switch this run to ${mode} mode? It asks you less often than ${current}.` : `Switch this run to ${mode} mode? It may ask you less often than it does now.`)
+      if (!yes) {
+        notify(`Mode unchanged${current ? `: ${current}` : ''}.`)
+        return
+      }
+    }
     const res = await session.setPermissionMode(mode)
     const more = res.reportsUnchanged ? ` ${res.reportsUnchanged} running ${res.reportsUnchanged === 1 ? 'report keeps' : 'reports keep'} the earlier mode until done.` : ''
     if (res.applied) notify(`Mode: ${mode}.${more}`)
@@ -1100,8 +1119,16 @@ export function App(props: AppProps) {
       return
     }
     if (st.readOnlyReason !== undefined) return
-    const next = nextMode(modeInForce(run, session.getStaged?.()?.permissionMode), modeChoices(st))
-    if (next) setMode(next).catch((err: unknown) => notify(errText(err), 'danger'))
+    // A followed run only ever steps narrower (auto, acceptEdits, default, plan; no wrap), so a stray Shift+Tab cannot
+    // widen it; /mode widens, after a confirmation. Staging for the next run cycles default, acceptEdits, plan.
+    const next = run
+      ? narrowerMode(modeInForce(run), modeChoices(st))
+      : nextStagedMode(modeInForce(undefined, session.getStaged?.()?.permissionMode), modeChoices(st))
+    if (!next) {
+      if (run) notify(SHIFT_TAB_NARROWS_ONLY)
+      return
+    }
+    setMode(next).catch((err: unknown) => notify(errText(err), 'danger'))
   }
   /** Ctrl+G: the draft in $VISUAL / $EDITOR; the terminal is handed over like it is for the pager. */
   const editDraft = async (draft: string): Promise<string | undefined> => {
@@ -1365,8 +1392,13 @@ export function App(props: AppProps) {
       return
     }
     if (named(e, 'backtab')) {
-      // The composer's Shift+Tab chooses a waiting decision; with none it cycles the permission mode.
-      if (focus === 'composer') (cards.length > 0 ? focusTray() : cycleMode())
+      // The composer's Shift+Tab chooses a waiting decision; with none it steps the permission mode narrower (live run)
+      // or cycles the next run's mode. Right after the last decision went away it is ignored: it was likely meant for
+      // that decision, and must not change the mode instead.
+      if (focus === 'composer') {
+        if (cards.length > 0) focusTray()
+        else if (now() - cardsEmptiedAt.current >= SHIFT_TAB_AFTER_CARDS_MS) cycleMode()
+      }
       else if (focus !== 'palette') cycle(-1)
       else bus.dispatch(e, focus)
       return
