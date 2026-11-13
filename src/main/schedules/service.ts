@@ -517,6 +517,7 @@ export class ScheduleService {
     if (target.kind === 'team' && (!project || isVirtualProjectId(target.projectId))) {
       const entry = this.record(schedule.id, { slotAt, at: now(), trigger, result: 'skipped', reason: 'project-missing' }, (s) => {
         s.enabled = false
+        s.updatedAt = this.deps.now()
         s.state = 'error'
         s.stateReason = PROJECT_MISSING_REASON
         delete s.nextRunAt
@@ -593,7 +594,13 @@ export class ScheduleService {
     }
     const entry = this.record(schedule.id, { slotAt, at: now(), trigger, result: 'started', runId: run.id, projectId: run.projectId })
     this.tracked.set(run.id, { scheduleId: schedule.id, entryId: entry.id })
-    return entry
+    // A run that already ended inside start() (refused before launch by its budget, an adapter that failed to start)
+    // broadcast its end before it was tracked (review recheck M-a): replay that end now.
+    const after = this.deps.runSummary(run.id)
+    if (after && (after.status === 'error' || after.status === 'finished')) {
+      this.onRunEvent({ type: 'run.status', runId: run.id, status: after.status, ...(after.endedBy ? { endedBy: after.endedBy } : {}), ...(after.pausedUntil ? { pausedUntil: after.pausedUntil } : {}) } as RunEvent)
+    }
+    return this.deps.store.history(schedule.id).find((h) => h.id === entry.id) ?? entry
   }
 
   /** A failed entry with a fixed sentence; counts toward the auto-pause. */
@@ -631,6 +638,8 @@ export class ScheduleService {
   private countFailure(s: Schedule): boolean {
     s.consecutiveFailures = (s.consecutiveFailures ?? 0) + 1
     if (s.consecutiveFailures < SCHEDULE_FAILURES_TO_PAUSE || !s.enabled) return false
+    // A main-owned disable is a change: a card or form built before it is stale (review recheck L-a).
+    s.updatedAt = this.deps.now()
     s.enabled = false
     s.state = 'error'
     s.stateReason = ERROR_REASON

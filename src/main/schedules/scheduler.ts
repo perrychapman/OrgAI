@@ -153,6 +153,8 @@ export class Scheduler {
   /** Handle due schedules; returns when to wake next (epoch ms). */
   private async pass(): Promise<number> {
     const svc = this.opts.service
+    // Backstop of the service's idle re-checks: settle scheduled runs whose work ended without an event.
+    svc.sweep()
     let wakeAt = Infinity
     const due = (s: Schedule): boolean => s.enabled && s.nextRunAt !== undefined && s.nextRunAt <= this.clock.now()
     // The order and planned slot come from one snapshot; everything else is re-read on every iteration, because an

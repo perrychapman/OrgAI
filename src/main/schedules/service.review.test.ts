@@ -233,6 +233,110 @@ describe('L9: a start that never returns', () => {
   })
 })
 
+describe('Recheck H-new: an idle run whose work settles without an event still finishes', () => {
+  it('the idle re-check records finished and resets the failure count once the run stops working', async () => {
+    env = fakeEnv({ idleRecheckMs: 10 })
+    const s = env.service.save(base())
+    env.store.update((d) => {
+      d.schedules[0].consecutiveFailures = 2
+    })
+    const e = await env.service.runNow(s.id)
+    env.facts.set(e.runId!, { status: 'idle', limitHold: false, pendingCards: 0, working: true })
+    env.service.onRunEvent(status(e.runId!, 'idle'))
+    expect(env.store.history(s.id)[0].outcome).toBeUndefined()
+    // The continuation driver settles later and sends nothing.
+    env.facts.set(e.runId!, { status: 'idle', limitHold: false, pendingCards: 0, working: false })
+    await new Promise((r) => setTimeout(r, 60))
+    expect(env.store.history(s.id).find((h) => h.runId === e.runId)?.outcome).toBe('finished')
+    expect(env.service.get(s.id)?.consecutiveFailures).toBe(0)
+  })
+
+  it('sweep() (every scheduler pass) settles it too, once', async () => {
+    env = fakeEnv({ idleRecheckMs: 60_000 })
+    const s = env.service.save(base())
+    const e = await env.service.runNow(s.id)
+    env.facts.set(e.runId!, { status: 'idle', limitHold: false, pendingCards: 0, working: true })
+    env.service.onRunEvent(status(e.runId!, 'idle'))
+    env.facts.set(e.runId!, { status: 'idle', limitHold: false, pendingCards: 0, working: false })
+    const before = env.changed.length
+    env.service.sweep()
+    expect(env.store.history(s.id)[0].outcome).toBe('finished')
+    env.service.sweep()
+    expect(env.changed.length).toBe(before + 1)
+  })
+})
+
+describe('Recheck M-a: a run that ended inside start() is not left "started"', () => {
+  it('a pre-launch budget refusal records error and counts a failure', async () => {
+    env = fakeEnv({
+      startTeam: async () => {
+        const run = { ...runOf('run_refused'), status: 'finished', endedBy: 'budget' } as RunSummary
+        env.summaries.set(run.id, run)
+        return run
+      }
+    })
+    const s = env.service.save(base())
+    const e = await env.service.runNow(s.id)
+    expect(e).toMatchObject({ result: 'started', outcome: 'error' })
+    expect(env.service.get(s.id)?.consecutiveFailures).toBe(1)
+    expect(env.service.liveScheduledRuns()).toBe(0)
+  })
+})
+
+describe('Recheck L-a: an auto-pause makes an older update card stale', () => {
+  it('bumps updatedAt when main disables the schedule', async () => {
+    env = fakeEnv()
+    const s = env.service.save(base())
+    env.failStart.message = 'x'
+    env.clock.now += 1000
+    for (let i = 0; i < 3; i++) await env.service.runNow(s.id)
+    expect(env.service.get(s.id)?.enabled).toBe(false)
+    const payload: SchedulesProposalPayload = { rationale: 'r', items: [{ action: 'update', scheduleId: s.id, schedule: { ...base(), id: s.id, enabled: true, expectedUpdatedAt: s.updatedAt }, summary: 's', nextRuns: [] }] }
+    expect(() => env.service.applyProposal(payload, { projectId: null })).toThrow(SCHEDULE_CHANGED_SINCE_PROPOSED)
+  })
+})
+
+describe('Recheck L-c: live runs carrying the schedule id count even when untracked', () => {
+  it('blocks the schedule and counts toward the cap; a start in flight is not counted twice', async () => {
+    const live: { runId: string; scheduleId: string }[] = []
+    const d = deferred()
+    let hold = false
+    env = fakeEnv({ liveScheduleRuns: () => live, startTeam: async (p) => (hold ? d.promise : runOf(`run_${p.id}_${live.length}`)) })
+    const a = env.service.save(base({ name: 'A' }))
+    const b = env.service.save(base({ name: 'B' }))
+    live.push({ runId: 'run_hung', scheduleId: a.id })
+    env.facts.set('run_hung', { status: 'starting', limitHold: false, pendingCards: 0, working: true })
+    expect((await env.service.runNow(a.id)).reason).toBe('previous-running')
+    expect(env.service.liveScheduledRuns()).toBe(1)
+    live.length = 0
+    env.facts.clear()
+    // B starting: its RunManager run is already live and untracked while the start is awaited.
+    hold = true
+    const inFlight = env.service.runNow(b.id)
+    live.push({ runId: 'run_b', scheduleId: b.id })
+    env.facts.set('run_b', { status: 'starting', limitHold: false, pendingCards: 0, working: true })
+    expect(env.service.liveScheduledRuns()).toBe(1)
+    d.resolve(runOf('run_b'))
+    await inFlight
+  })
+})
+
+describe('Recheck L-f: a paused scheduled run the user takes over', () => {
+  it('paused without auto-resume reads needs-you; a user continuation ends it as stopped', async () => {
+    env = fakeEnv()
+    const s = env.service.save(base())
+    const e = await env.service.runNow(s.id)
+    env.facts.delete(e.runId!)
+    env.service.onRunEvent(status(e.runId!, 'paused', { autoResume: false }))
+    expect(env.store.history(s.id)[0].outcome).toBe('needs-you')
+    env.service.onRunEvent(status(e.runId!, 'finished', { pausedUntil: env.clock.now + 1000, autoResume: false }))
+    env.summaries.set('run_user2', { ...runOf('run_user2'), resumedFrom: e.runId! })
+    env.service.onRunEvent(status('run_user2', 'starting'))
+    expect(env.store.history(s.id)[0].outcome).toBe('stopped')
+    expect(env.service.liveScheduledRuns()).toBe(0)
+  })
+})
+
 describe('L3 / L4: scheduledRunCap', () => {
   it('is min(budget, project cap), ignoring missing or non-positive values', () => {
     expect(scheduledRunCap(3, 5)).toBe(3)

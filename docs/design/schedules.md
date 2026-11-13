@@ -218,7 +218,9 @@ Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,
     main enforces the cap on every unattended run, not only the adapter. An ask target calls
     `QuickRunService.start(input, { schedule })` (a main-only `QuickStartOptions.schedule`), which does the same on the
     quick project. A consequence: a capped scheduled run on a model with no known price is refused before launch (the
-    existing priced-model-under-a-cap rule), like a capped desktop continuation. A user's own runs are unchanged.
+    existing priced-model-under-a-cap rule), like a capped desktop continuation. A user's own new runs are unchanged;
+    a user's continuation of a scheduled run inherits that cap as the conversation's total cap (it narrows, never
+    widens: once spent, the continuation is refused).
     `modelSelection` / `permissionMode` go in as `StartInput.userChoice`, so `checkStartChoice` (catalog model,
     `runPermissionModeChoices`) applies. `StartInput.schedule` is set only by the service (never from IPC input) and
     becomes `RunSummary.scheduleId` / `scheduleName`; RunManager passes it on only to its own usage-limit auto-resume
@@ -228,14 +230,22 @@ Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,
     state 'working' / 'ending': reports at work, peer messages queued or flushing, a continuation nudge due) or waits
     with an open card or a usage-limit hold; a run paused at a usage limit whose auto-resume is armed
     (`RunManager.hasAutoResume`); and a start still in flight (a per-schedule "starting" count taken before the start
-    is awaited and released when it settles, so a double Run now or Run now racing the timer cannot start two). An idle
-    run with nothing left counts as done (outcome 'finished'). Only runs this process started are tracked (memory
-    only); a deleted schedule's runs stay counted until they end.
+    is awaited and released when it settles, so a double Run now or Run now racing the timer cannot start two); and any
+    live RunManager run carrying the schedule id that the service does not track (yet), e.g. a start past its timeout
+    or an auto-resume between its timer and its tracking (per schedule the larger of that and the starting count, so a
+    start in flight is never counted twice). An idle run with nothing left counts as done (outcome 'finished'). Only
+    runs this process started are tracked (memory only); a deleted schedule's runs stay counted until they end.
   - Outcomes: a card request sets 'needs-you'; idle with nothing left (not working, no card, no hold) or 'finished'
-    sets 'finished' (an idle run that still works is looked at again on its next idle or its end); `error` sets
-    'error'; `endedBy` 'user' / 'app' / 'policy' set 'stopped'; `endedBy` 'budget' sets 'error' (it counts toward
-    auto-pause). A run paused at a usage limit is not an outcome: its auto-resume continuation carries the schedule id,
-    is tracked in its place (same history entry) and its end fills that entry.
+    sets 'finished'. Every adapter reports idle before its continuation driver settles, and that settling sends no
+    event, so an idle run that still works is looked at again every `IDLE_RECHECK_MS` (5 s) until it is done or starts
+    a new turn, and every scheduler pass sweeps tracked idle runs as a backstop. `error` sets 'error'; `endedBy` 'user'
+    / 'app' / 'policy' set 'stopped'; `endedBy` 'budget' sets 'error' (it counts toward auto-pause). A run that already
+    ended inside `start()` (refused before launch by its cap, an adapter that failed to start) gets that outcome at
+    once. A run paused at a usage limit is not an outcome: its auto-resume continuation carries the schedule id, is
+    tracked in its place (same history entry) and its end fills that entry; paused without an auto-resume it reads
+    'needs-you', and a user's own continuation of it ends the entry as 'stopped'. RunManager itself refuses to start a
+    run with a schedule id in bypass mode, so an auto-resume after the project switched to bypass does not start.
+  - Main-owned disables (auto-pause, project missing) bump `updatedAt`, so a card or form built before them is stale.
   - A start that throws records result 'failed', reason 'start-refused' and the fixed sentence `START_FAILED_DETAIL`;
     the thrown message goes to the main log only (it may carry provider text). A start that has not returned after
     `SCHEDULE_START_TIMEOUT_MS` (5 minutes) records 'failed' with `START_TIMED_OUT_DETAIL` and the pass moves on; a run
@@ -456,8 +466,13 @@ globally paused while an earlier start is awaited does not start; "catch-up walk
 six months back resolves in milliseconds, 22.8 s before), `schedule.test.ts` (`compileScheduleTiming` agrees with
 `nextScheduleRun`), `harnessToolsSchedules.test.ts` (merged update items with explicit nulls and
 `expectedUpdatedAt`, resolved mode / model / cap in summaries, bypass refusal, quote-safe names, full resume summary),
-`runManagerOutputs.test.ts` (`liveRunFacts.working`), `noElectronImport.test.ts` (the schedules modules load in plain
-Node). Not verified: the RunManager auto-resume passing `SCHEDULED_RESUME` on a real usage-limit pause (the service
-side is tested with fake events; the RunManager branch is checked by typecheck and reading only), the
-`liveRunFacts.working` value for an idle root with live reports on a real adapter, and the 5-minute timeout on a real
-hung start.
+`runManagerOutputs.test.ts` and `runManagerActivity.test.ts` (`liveRunFacts.working`, also true for an idle root
+with a working report), `runManager.test.ts` (the mock usage-limit timer resume of a scheduled run keeps the schedule,
+a user's Resume now does not; a scheduled start on a bypass project is refused), `boot.test.ts` (a booted mock Chat
+schedule's run reaches 'finished' through the idle re-check and resets the failure count, which failed before the
+re-check; the conversation budget is min(schedule cap, project cap), also with no schedule cap; only the desktop host
+wires the schedule tools), `noElectronImport.test.ts` (the schedules modules load in plain Node). Reviewer recheck
+items closed with tests in `service.review.test.ts` ("Recheck ..." blocks). Not verified: live Claude / Codex
+adapters (the idle re-check timing against their real continuation settling), the 5-minute timeout on a real hung
+start. Known gap left for the renderer owner: the proposal card's "Spend cap" row (`scheduleProposal.ts`) shows the
+schedule's own budget while the main-written summary shows min(budget, project cap).

@@ -1290,6 +1290,15 @@ describe('RunManager with the mock adapter', () => {
       await m.stopAll()
     })
 
+    it('Schedules review recheck L-d: a scheduled run never starts with bypass, a user run still may', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), permissionMode: 'bypassPermissions' })
+      const { m } = manager(p, { work: [{ type: 'text', text: 'hi' }] }, { resolveProject: () => p })
+      await expect(m.start({ project: p, prompt: 'Go', schedule: { id: 'sch_00aa11bb', name: 'Nightly' } })).rejects.toThrow(/scheduled run cannot use bypass/)
+      const own = await m.start({ project: p, prompt: 'Go' })
+      expect(own.scheduleId).toBeUndefined()
+      await m.stopAll()
+    })
+
     it('falls back to a short pause when the limit gives no reset time', async () => {
       const p = makeProject({ path: join(dir, 'repo') })
       const { m } = manager(p, { work: [{ type: 'rateLimit' }] }, { resolveProject: () => p })

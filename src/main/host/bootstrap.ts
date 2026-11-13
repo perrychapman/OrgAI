@@ -607,6 +607,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       ),
     liveRunFacts: (runId) => rm.liveRunFacts(runId),
     autoResumePending: (runId) => rm.hasAutoResume(runId),
+    liveScheduleRuns: () => rm.liveRuns().flatMap((s) => (s.scheduleId ? [{ runId: s.id, scheduleId: s.scheduleId }] : [])),
     stopRun: (runId) => rm.stop(runId),
     runSummary: (runId) => rm.summary(runId),
     globallyPaused: () => settings.get().schedulesPaused === true,

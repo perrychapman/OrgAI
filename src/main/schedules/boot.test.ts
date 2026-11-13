@@ -5,7 +5,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SCHEDULES_IPC } from '@shared/types'
 import type { RunSummary, Schedule, ScheduleHistoryEntry, SchedulesChangedEvent } from '@shared/types'
 import { bootOrgAIHost, type OrgAIHost } from '../host/bootstrap'
@@ -84,6 +84,20 @@ describe('schedules on a booted mock host', () => {
     expect(h.runs.summary(a.runId!)).toMatchObject({ conversationBudgetUsd: 5 })
     expect(h.runs.summary(b.runId!)).toMatchObject({ conversationBudgetUsd: 5 })
   })
+
+  it('review recheck H-new: a mock run that ends its turn records finished and resets the failure count', async () => {
+    const h = boot()
+    // A Chat (ask) run: the mock answers in one turn without a card (the mock team demo raises cards).
+    const saved = h.services.schedules!.save({ name: 'Ask', prompt: 'hello', target: { kind: 'ask' }, timing: { kind: 'interval', everyMinutes: 60 } })
+    ;(h.services.schedules as unknown as { deps: { store: { update(fn: (d: { schedules: { consecutiveFailures: number }[] }) => void): void } } }).deps.store.update((d) => {
+      d.schedules[0].consecutiveFailures = 2
+    })
+    const entry = await h.services.schedules!.runNow(saved.id)
+    expect(entry.result).toBe('started')
+    await vi.waitFor(() => expect(h.services.schedules!.get(saved.id)?.lastEntry?.outcome).toBe('finished'), { timeout: 20_000, interval: 200 })
+    expect(h.services.schedules!.get(saved.id)?.consecutiveFailures).toBe(0)
+    expect(h.runs.summary(entry.runId!)?.status).toBe('idle')
+  }, 30_000)
 
   it('review L8: only the desktop host wires the schedule harness hooks', () => {
     const hooks = (x: OrgAIHost): unknown => (x.runs as unknown as { options: { schedules?: unknown } }).options.schedules
