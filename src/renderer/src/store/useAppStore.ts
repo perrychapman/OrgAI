@@ -2372,6 +2372,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           connection: record.summary.connection,
           modelAdapter: record.summary.modelAdapter,
           modelSelection: run.summary.modelSelection ?? record.summary.modelSelection,
+          // A run a schedule started reaches the renderer as events first: take the schedule marks (RunMeta's label) too.
+          ...(record.summary.scheduleId ? { scheduleId: record.summary.scheduleId, scheduleName: record.summary.scheduleName } : {}),
           ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
