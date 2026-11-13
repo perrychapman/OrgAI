@@ -27,7 +27,16 @@ import type {
   SchedulesProposalPayload
 } from '@shared/types'
 import type { ScheduleStore } from './store'
-import { mergeScheduleInput, modeWithinTarget, scheduleFieldsProblem, targetBaseMode, type ScheduleCheckEnv, type ScheduleUserFields } from './validate'
+import {
+  SCHEDULE_BYPASS_NOT_STARTED,
+  effectiveScheduleMode,
+  mergeScheduleInput,
+  modeWithinTarget,
+  scheduleFieldsProblem,
+  targetBaseMode,
+  type ScheduleCheckEnv,
+  type ScheduleUserFields
+} from './validate'
 import type { RuntimeScheduleAccess } from '../runtime/types'
 
 /** How a scheduled run is started (bootstrap wires RunManager.start / QuickRunService.start). */
@@ -61,6 +70,12 @@ export interface ScheduleServiceDeps {
   startTeam(project: Project, input: ScheduleStartInput & { team?: 'single' }): Promise<RunSummary>
   startAsk(input: ScheduleStartInput & { folder?: string; allowEdits?: boolean }): Promise<RunSummary>
   liveRunFacts(runId: string): ScheduleRunFacts | null
+  /** A paused run's auto-resume is still armed (RunManager.hasAutoResume): it will continue without the user. Missing = never. */
+  autoResumePending?(runId: string): boolean
+  /** End a run (RunManager.stop): used only for a start that returned after its timeout (review L9). Missing = not stopped. */
+  stopRun?(runId: string): Promise<void>
+  /** How long a start may take before the slot is recorded as failed (default SCHEDULE_START_TIMEOUT_MS). */
+  startTimeoutMs?: number
   /** The stored or live summary of a run (cost and how it ended). */
   runSummary(runId: string): RunSummary | null
   /** AppSettings.schedulesPaused. */
@@ -76,15 +91,24 @@ export interface ScheduleServiceDeps {
 export const START_FAILED_DETAIL = 'The run could not start. Check the model, the connection and the folder, then try Run now.'
 const ERROR_REASON = `Paused after ${SCHEDULE_FAILURES_TO_PAUSE} failed runs in a row. Check the history, then turn it back on.`
 const PROJECT_MISSING_REASON = 'Its project no longer exists. Edit it to choose another project.'
+/** A start that did not return in time (review L9): the slot is recorded as failed and the pass moves on. */
+export const START_TIMED_OUT_DETAIL = 'The run took too long to start, so this run was counted as failed. Check the model and the connection, then try Run now.'
+export const SCHEDULE_START_TIMEOUT_MS = 5 * 60_000
+/** A proposal update built on a schedule that changed afterwards (review M4). */
+export const SCHEDULE_CHANGED_SINCE_PROPOSED = 'The schedule changed since this was proposed; ask again.'
 
-/** Live and blocking a next run: working, or waiting on the user (a card open, a usage-limit hold). An idle run without cards is done. */
+/**
+ * Live and blocking a next run: working (also an idle root whose reports, peer flush or continuation nudge still run,
+ * review H1), or waiting on the user (a card open, a usage-limit hold). An idle run with nothing left is done.
+ */
 export function runBlocks(facts: ScheduleRunFacts | null): boolean {
   if (!facts) return false
-  if (facts.status === 'idle') return facts.pendingCards > 0 || facts.limitHold
+  if (facts.status === 'idle') return facts.pendingCards > 0 || facts.limitHold || facts.working
   return true
 }
 
-const clampName = (s: string): string => (s.length > 80 ? `${s.slice(0, 79)}…` : s)
+/** A name for main-written text: clamped, and its double quotes neutralised so it cannot close the quotes around it (review L5). */
+const clampName = (s: string): string => (s.length > 80 ? `${s.slice(0, 79)}…` : s).replace(/"/g, "'")
 
 /** The newest entry of a schedule as Schedule.lastEntry. */
 function lastEntryOf(e: ScheduleHistoryEntry): NonNullable<Schedule['lastEntry']> {
@@ -107,8 +131,13 @@ interface Tracked {
 }
 
 export class ScheduleService {
-  /** Runs this service started, by run id, until they end. */
+  /**
+   * Runs this service started, by run id, until they end. An entry outlives the schedule's deletion (review L2): a
+   * deleted schedule's live run still counts toward SCHEDULE_MAX_CONCURRENT_RUNS until it ends.
+   */
   private readonly tracked = new Map<string, Tracked>()
+  /** Starts in flight per schedule (review M2): counted by the overlap check and the global cap before the run exists. */
+  private readonly starting = new Map<string, number>()
   /** What an approved proposal saved, by the payload object (propose_schedule's outcome text). */
   private readonly appliedResults = new WeakMap<SchedulesProposalPayload, Schedule[]>()
 
@@ -247,7 +276,7 @@ export class ScheduleService {
       d.schedules = d.schedules.filter((s) => s.id !== id)
       d.history = d.history.filter((h) => h.scheduleId !== id)
     })
-    for (const [runId, t] of this.tracked) if (t.scheduleId === id) this.tracked.delete(runId)
+    // Its live runs stay tracked (they still count toward the cap until they end; their bookkeeping finds no schedule).
     this.emit([], [id])
   }
 
@@ -301,6 +330,10 @@ export class ScheduleService {
         const existing = action === 'update' ? (item.scheduleId ? this.deps.store.get(item.scheduleId) : undefined) : undefined
         if (action === 'update' && !existing) throw new Error('A schedule in the proposal no longer exists.')
         if (existing && !own(existing)) throw new Error('A project run can only change its own project\'s schedules.')
+        // The card showed the merged schedule as it was when proposed (review M4): a later change makes it stale.
+        if (existing && action === 'update' && (cleaned.value.expectedUpdatedAt === undefined || cleaned.value.expectedUpdatedAt !== existing.updatedAt)) {
+          throw new Error(SCHEDULE_CHANGED_SINCE_PROPOSED)
+        }
         const fields = mergeScheduleInput(cleaned.value, existing, now)
         if (!own(fields)) throw new Error('A project run can only schedule runs of its own project.')
         const project = fields.target.kind === 'team' ? env.project(fields.target.projectId) : undefined
@@ -359,20 +392,34 @@ export class ScheduleService {
 
   // ---------- firing (scheduler.ts and runNow) ----------
 
-  /** Live scheduled runs this service started that still block (runBlocks). */
+  /** Does a tracked run block: live and working or waiting on the user, or paused with its auto-resume armed (review L1). */
+  private trackedBlocks(runId: string): boolean {
+    if (runBlocks(this.deps.liveRunFacts(runId))) return true
+    try {
+      return this.deps.autoResumePending?.(runId) === true
+    } catch {
+      return false
+    }
+  }
+
+  /** Scheduled runs this service started that still block (trackedBlocks), plus starts in flight (review M2). */
   liveScheduledRuns(): number {
     let n = 0
-    for (const runId of this.tracked.keys()) if (runBlocks(this.deps.liveRunFacts(runId))) n++
+    for (const runId of this.tracked.keys()) if (this.trackedBlocks(runId)) n++
+    for (const c of this.starting.values()) n += c
     return n
   }
 
   /** Enabled schedules with a next run (the quit gate's "scheduled runs are due"). */
   pendingCount(): number {
+    // Nothing fires under the global pause (review L7): no pending schedule then.
+    if (this.deps.globallyPaused()) return 0
     return this.deps.store.list().filter((s) => s.enabled && s.nextRunAt !== undefined).length
   }
 
   private previousBlocks(scheduleId: string): boolean {
-    for (const [runId, t] of this.tracked) if (t.scheduleId === scheduleId && runBlocks(this.deps.liveRunFacts(runId))) return true
+    if ((this.starting.get(scheduleId) ?? 0) > 0) return true
+    for (const [runId, t] of this.tracked) if (t.scheduleId === scheduleId && this.trackedBlocks(runId)) return true
     return false
   }
 
@@ -404,7 +451,8 @@ export class ScheduleService {
     const now = this.deps.now()
     const out = this.deps.store.update((d) => {
       const s = d.schedules.find((x) => x.id === scheduleId)
-      if (!s) return undefined
+      // A schedule deleted or paused since the pass read it is not claimed (review M1).
+      if (!s || !s.enabled) return undefined
       s.lastSlotAt = Math.max(slotAt, s.lastSlotAt ?? 0)
       const next = nextScheduleRun(s.timing, now, s.lastSlotAt)
       if (next === null || (s.expiresAt !== undefined && next > s.expiresAt)) {
@@ -448,6 +496,10 @@ export class ScheduleService {
       this.notify(`Schedule "${clampName(schedule.name)}" stopped`, PROJECT_MISSING_REASON)
       return entry
     }
+    // No bypass, also not inherited from a project changed after the save (review M3): not started, counted as a failure.
+    if (target.kind === 'team' && effectiveScheduleMode(schedule, project) === 'bypassPermissions') {
+      return this.recordStartFailure(schedule, slotAt, trigger, SCHEDULE_BYPASS_NOT_STARTED)
+    }
     if (this.previousBlocks(schedule.id)) return this.record(schedule.id, { slotAt, at: now(), trigger, result: 'skipped', reason: 'previous-running' })
     if (this.liveScheduledRuns() >= SCHEDULE_MAX_CONCURRENT_RUNS) return this.record(schedule.id, { slotAt, at: now(), trigger, result: 'skipped', reason: 'too-many-running' })
     const input: ScheduleStartInput = {
@@ -457,28 +509,86 @@ export class ScheduleService {
       ...(schedule.permissionMode ? { permissionMode: schedule.permissionMode } : {}),
       ...(schedule.budgetUsd !== undefined ? { budgetUsd: schedule.budgetUsd } : {})
     }
+    // Counted before the await (review M2): a second Run now or a timer pass sees this start at once.
+    this.starting.set(schedule.id, (this.starting.get(schedule.id) ?? 0) + 1)
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      const left = (this.starting.get(schedule.id) ?? 1) - 1
+      if (left > 0) this.starting.set(schedule.id, left)
+      else this.starting.delete(schedule.id)
+    }
+    let timedOut = false
+    /** A start that returned after the timeout and the failed entry the timeout wrote; whichever comes second acts. */
+    const late: { run?: RunSummary; entryId?: string } = {}
+    let timer: ReturnType<typeof setTimeout> | undefined
     let run: RunSummary
     try {
-      if (target.kind === 'team') run = await this.deps.startTeam(project!, { ...input, ...(target.team === 'single' ? { team: 'single' as const } : {}) })
+      let started: Promise<RunSummary>
+      if (target.kind === 'team') started = this.deps.startTeam(project!, { ...input, ...(target.team === 'single' ? { team: 'single' as const } : {}) })
       else {
         // The folder is checked again at every fire (it may have moved or become unsafe).
         const folderProblem = target.folder !== undefined ? this.deps.folderProblem(target.folder) : null
         if (folderProblem) throw new Error(folderProblem)
-        run = await this.deps.startAsk({ ...input, ...(target.folder !== undefined ? { folder: target.folder } : {}), ...(target.allowEdits ? { allowEdits: true } : {}) })
+        started = this.deps.startAsk({ ...input, ...(target.folder !== undefined ? { folder: target.folder } : {}), ...(target.allowEdits ? { allowEdits: true } : {}) })
       }
+      // A start that never returns must not hang the pass (review L9). A run that arrives after the timeout is tracked
+      // (it counts toward the overlap rule and the cap until it ends) and stopped: nobody is waiting for it any more.
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true
+          reject(new Error('timed out'))
+        }, this.deps.startTimeoutMs ?? SCHEDULE_START_TIMEOUT_MS)
+      })
+      started.then(
+        (arrived) => {
+          if (!timedOut) return
+          late.run = arrived
+          if (late.entryId !== undefined) this.lateStart(schedule, arrived, late.entryId)
+        },
+        () => undefined
+      )
+      run = await Promise.race([started, timeout])
     } catch (e) {
       this.deps.log?.(`Schedule ${schedule.id}: the run did not start: ${(e as Error)?.message ?? String(e)}`)
-      let paused = false
-      const entry = this.record(schedule.id, { slotAt, at: now(), trigger, result: 'failed', reason: 'start-refused', detail: START_FAILED_DETAIL }, (s) => {
-        paused = this.countFailure(s)
-      })
-      if (paused) this.notify(`Schedule "${clampName(schedule.name)}" paused`, ERROR_REASON)
-      else this.notify(`Schedule "${clampName(schedule.name)}"`, START_FAILED_DETAIL)
+      release()
+      const entry = this.recordStartFailure(schedule, slotAt, trigger, timedOut ? START_TIMED_OUT_DETAIL : START_FAILED_DETAIL)
+      if (timedOut) {
+        late.entryId = entry.id
+        if (late.run) this.lateStart(schedule, late.run, entry.id)
+      }
       return entry
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+      release()
     }
     const entry = this.record(schedule.id, { slotAt, at: now(), trigger, result: 'started', runId: run.id, projectId: run.projectId })
     this.tracked.set(run.id, { scheduleId: schedule.id, entryId: entry.id })
     return entry
+  }
+
+  /** A failed entry with a fixed sentence; counts toward the auto-pause. */
+  private recordStartFailure(schedule: Schedule, slotAt: number, trigger: ScheduleHistoryEntry['trigger'], detail: string): ScheduleHistoryEntry {
+    let paused = false
+    const entry = this.record(schedule.id, { slotAt, at: this.deps.now(), trigger, result: 'failed', reason: 'start-refused', detail }, (s) => {
+      paused = this.countFailure(s)
+    })
+    if (paused) this.notify(`Schedule "${clampName(schedule.name)}" paused`, ERROR_REASON)
+    else this.notify(`Schedule "${clampName(schedule.name)}"`, detail)
+    return entry
+  }
+
+  /** A run whose start returned after the timeout: tracked against the newest entry (already failed) and stopped. */
+  private lateStart(schedule: Schedule, run: RunSummary, entryId: string): void {
+    try {
+      // counted 'fail': the timeout already raised the failure count; its end must not count again or reset it.
+      this.tracked.set(run.id, { scheduleId: schedule.id, entryId, counted: 'fail' })
+      this.deps.log?.(`Schedule ${schedule.id}: run ${run.id} started after the timeout; stopping it.`)
+      void this.deps.stopRun?.(run.id).catch((e: unknown) => this.deps.log?.(`Schedule ${schedule.id}: could not stop run ${run.id}: ${(e as Error)?.message ?? String(e)}`))
+    } catch (e) {
+      this.deps.log?.(`Schedule ${schedule.id}: late start bookkeeping failed: ${(e as Error)?.message ?? String(e)}`)
+    }
   }
 
   /** schedules:runNow: trigger 'manual', works while paused (the schedule's or the global pause); the overlap rules apply. */
@@ -504,8 +614,19 @@ export class ScheduleService {
 
   /** Every broadcast RunEvent (bootstrap's bus listener). Only runs this service started are looked at. */
   onRunEvent(event: RunEvent): void {
-    const t = this.tracked.get(event.runId)
-    if (!t) return
+    let t = this.tracked.get(event.runId)
+    if (!t) {
+      // A usage-limit auto-resume of a tracked run (review L1): RunManager carries the schedule id on that continuation
+      // only, so the successor is tracked in its predecessor's place (same entry, same failure bookkeeping).
+      if (event.type !== 'run.status' || event.status !== 'starting' || this.tracked.size === 0) return
+      const s = this.deps.runSummary(event.runId)
+      const prev = s?.scheduleId && s.resumedFrom ? this.tracked.get(s.resumedFrom) : undefined
+      if (!prev || prev.scheduleId !== s?.scheduleId) return
+      t = { ...prev }
+      this.tracked.delete(s.resumedFrom!)
+      this.tracked.set(event.runId, t)
+      return
+    }
     try {
       if (event.type.endsWith('.request')) {
         this.setOutcome(event.runId, t, 'needs-you')
@@ -514,8 +635,10 @@ export class ScheduleService {
       if (event.type !== 'run.status') return
       if (event.status === 'idle') {
         // The turn ended and nothing waits on the user: done for the schedule (the session may still take a message).
+        // Reports, a peer flush or a continuation nudge still at work (review H1): not done yet; the next idle or the
+        // finished status looks again.
         const facts = this.deps.liveRunFacts(event.runId)
-        if (!facts || facts.pendingCards > 0 || facts.limitHold) return
+        if (!facts || facts.pendingCards > 0 || facts.limitHold || facts.working) return
         this.setOutcome(event.runId, t, 'finished')
         return
       }

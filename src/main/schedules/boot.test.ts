@@ -70,6 +70,41 @@ describe('schedules on a booted mock host', () => {
     expect(again.reason).toBe('previous-running')
   })
 
+  it('review L3 / L4: a scheduled run records min(schedule cap, project cap) as its conversation budget, also with no schedule cap', async () => {
+    const h = boot()
+    const folder = join(root, 'repo')
+    mkdirSync(folder)
+    const created = h.services.projects.create({ name: 'Mock', path: folder, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    const project = h.services.projects.update(created.id, (p) => ({ ...p, maxBudgetUsd: 5 }))
+    const timing = { kind: 'daily' as const, time: '00:00' }
+    const noCap = h.services.schedules!.save({ name: 'No cap', prompt: 'hello', target: { kind: 'team', projectId: project.id }, timing })
+    const high = h.services.schedules!.save({ name: 'High cap', prompt: 'hello', target: { kind: 'team', projectId: project.id }, timing, budgetUsd: 8 })
+    const a = await h.services.schedules!.runNow(noCap.id)
+    const b = await h.services.schedules!.runNow(high.id)
+    expect(h.runs.summary(a.runId!)).toMatchObject({ conversationBudgetUsd: 5 })
+    expect(h.runs.summary(b.runId!)).toMatchObject({ conversationBudgetUsd: 5 })
+  })
+
+  it('review L8: only the desktop host wires the schedule harness hooks', () => {
+    const hooks = (x: OrgAIHost): unknown => (x.runs as unknown as { options: { schedules?: unknown } }).options.schedules
+    expect(hooks(boot())).toBeDefined()
+    host!.dispose()
+    host = bootOrgAIHost({
+      env: { userDataDir: root, logsDir: join(root, 'logs'), appVersion: '9.9.9-test', isPackaged: false },
+      dataDir: join(root, 'data2'),
+      hostKind: 'desktop',
+      ownership: { info: { hostInstanceId: 'abcdef012346', pid: 1, endpoint: '/tmp/y.sock', state: 'starting', startedAt: 1, hostKind: 'desktop' }, markReady: () => true, markDraining: () => true, release: () => {} },
+      safeStorage: { isEncryptionAvailable: () => false, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
+      openExternal: () => {},
+      mock: true,
+      startBackground: false,
+      housekeeping: { sweepStaleSkillDirs: () => {} },
+      processEnv: {},
+      homeDir: join(root, 'home')
+    })
+    expect(hooks(host)).toBeUndefined()
+  })
+
   it('an ask schedule starts a Chat run marked with the schedule', async () => {
     const h = boot()
     const saved = h.services.schedules!.save({ name: 'Ask', prompt: 'hi there', target: { kind: 'ask' }, timing: { kind: 'interval', everyMinutes: 60 } })

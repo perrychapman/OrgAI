@@ -99,6 +99,16 @@ export const SCHEDULE_INHERITS_BYPASS =
 export const SCHEDULE_BYPASS_NOT_STARTED =
   'Not started: its project now runs with bypass permissions, which a schedule cannot use. Choose a permission mode for the schedule.'
 
+/**
+ * The spend cap a scheduled run really gets (review L3, L4): min(schedule budget, project cap), ignoring a missing or
+ * non-positive value; undefined when neither caps it. Recorded as the run's conversation budget so main enforces it.
+ */
+export function scheduledRunCap(budgetUsd: number | undefined, projectCapUsd: number | undefined): number | undefined {
+  const ok = (v: number | undefined): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0
+  const total = Math.min(ok(budgetUsd) ? budgetUsd : Infinity, ok(projectCapUsd) ? projectCapUsd : Infinity)
+  return Number.isFinite(total) ? total : undefined
+}
+
 /** True when `mode` is no wider than the target's own mode (an agent may only propose such a mode). */
 export function modeWithinTarget(mode: PermissionMode, target: ScheduleTarget, project: Project | undefined): boolean {
   return canNarrowPermissionMode(targetBaseMode(target, project), mode)

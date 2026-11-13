@@ -52,6 +52,10 @@ const PURE_NODE_MODULES = [
   '../setup/service',
   '../capabilities/service',
   '../quick/quickRuns',
+  '../schedules/store',
+  '../schedules/validate',
+  '../schedules/service',
+  '../schedules/scheduler',
   '../maintenance',
   '../usageMonitor'
 ]

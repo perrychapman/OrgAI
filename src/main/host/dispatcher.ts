@@ -471,7 +471,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   })
   // Schedules (docs/design/schedules.md 3): list / history are readable on every surface; save, remove, setEnabled and
   // runNow are the desktop's alone (the registry scope 'configure' / 'operate' only gates the params): a socket client or
-  // the CLI's in-process host is refused with scope_denied before anything is parsed. Every write rebuilds its input
+  // the CLI's in-process host is refused with scope_denied as the handler's first step, before the handler parses its
+  // input (on the RPC path the registry's scope and params gate in invokeRpc runs earlier). Every write rebuilds its input
   // (ScheduleService: cleanScheduleInput, then validate.ts) and refuses unknown ids.
   const scheduleService = (): NonNullable<HostServices['schedules']> => {
     if (!services.schedules) throw new Error('Schedules are not available in this host.')

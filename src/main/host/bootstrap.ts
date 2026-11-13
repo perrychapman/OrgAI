@@ -59,7 +59,8 @@ import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
 import { createAppReference, type ShortcutRow } from '../reference/appReference'
 import { withAppSettingChanges } from '../../shared/appSettingsProposal'
-import type { AppSettingsProposalPayload, CliCommandStatus } from '../../shared/types'
+import type { AppSettingsProposalPayload, CliCommandStatus, SchedulesProposalPayload } from '../../shared/types'
+import { scheduledRunCap } from '../schedules/validate'
 import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
 import { HostEventBus } from './events'
@@ -436,16 +437,21 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
     // Schedules: list_schedules / propose_schedule read through access(); an approved card applies through the service.
-    schedules: {
-      access: () => {
-        if (!scheduleService) throw new Error('Schedules are not ready yet.')
-        return scheduleService.access()
-      },
-      apply: (payload, origin) => {
-        if (!scheduleService) throw new Error('Schedules are not ready yet.')
-        return scheduleService.applyProposal(payload, origin)
-      }
-    },
+    // Desktop only (review L8): the CLI's in-process host never fires a schedule, so it offers no schedule tools.
+    ...(opts.desktop
+      ? {
+          schedules: {
+            access: () => {
+              if (!scheduleService) throw new Error('Schedules are not ready yet.')
+              return scheduleService.access()
+            },
+            apply: (payload: SchedulesProposalPayload, origin: { projectId: string | null }) => {
+              if (!scheduleService) throw new Error('Schedules are not ready yet.')
+              return scheduleService.applyProposal(payload, origin)
+            }
+          }
+        }
+      : {}),
     selfKnowledge: {
       reference: (q, o) => reference.query(q, o),
       navigate: (e) => opts.desktop?.navigate?.(e) ?? false,
@@ -574,15 +580,17 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       }
     },
     startTeam: (project, i) => {
-      const cap = project.maxBudgetUsd && project.maxBudgetUsd > 0 ? project.maxBudgetUsd : Infinity
       const choice = { ...(i.modelSelection ? { modelSelection: i.modelSelection } : {}), ...(i.permissionMode ? { permissionMode: i.permissionMode } : {}) }
+      // The enforced cap is min(schedule budget, project cap), recorded as the conversation budget so main enforces it
+      // on every scheduled run, not only the adapter (review L3, L4). No cap at all leaves both unset.
+      const total = scheduledRunCap(i.budgetUsd, project.maxBudgetUsd)
       return rm.start({
-        project: i.budgetUsd !== undefined ? { ...project, maxBudgetUsd: Math.min(i.budgetUsd, cap) } : project,
+        project: total !== undefined ? { ...project, maxBudgetUsd: total } : project,
         prompt: i.prompt,
         schedule: i.schedule,
         ...(i.team === 'single' ? { team: 'single' as const } : {}),
         ...(Object.keys(choice).length ? { userChoice: choice } : {}),
-        ...(i.budgetUsd !== undefined ? { conversationBudgetUsd: i.budgetUsd } : {})
+        ...(total !== undefined ? { conversationBudgetUsd: total } : {})
       })
     },
     startAsk: (i) =>
@@ -598,6 +606,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
         }
       ),
     liveRunFacts: (runId) => rm.liveRunFacts(runId),
+    autoResumePending: (runId) => rm.hasAutoResume(runId),
+    stopRun: (runId) => rm.stop(runId),
     runSummary: (runId) => rm.summary(runId),
     globallyPaused: () => settings.get().schedulesPaused === true,
     // A desktop-only push (like teamFiles:changed): never on the socket bus.

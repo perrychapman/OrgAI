@@ -209,21 +209,50 @@ Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,
     `mergeScheduleInput` (on update an absent optional field keeps the stored value, `null` clears it; an interval's
     anchor is set at save and kept while the interval is unchanged) and `scheduleFieldsProblem` (stored project, ask
     folder through `validateQuickFolder`, an ask target only takes Ask / Never ask / Plan, a `once` or end date in the
-    past, a next run before the end date).
+    past, a next run before the end date, and no bypass: a team schedule without its own mode whose project runs with
+    bypassPermissions is refused with `SCHEDULE_INHERITS_BYPASS`, "Its project runs with bypass permissions, which a
+    schedule cannot use. Choose a permission mode for the schedule."; `effectiveScheduleMode` resolves the mode).
   - Start paths: a team target calls `RunManager.start({ project, prompt, schedule, team?, userChoice, conversationBudgetUsd })`
-    with the stored project's `maxBudgetUsd` lowered to `min(budgetUsd, project cap)`; an ask target calls
-    `QuickRunService.start(input, { schedule })` (a new main-only `QuickStartOptions.schedule`), which does the same
-    on the quick project. `modelSelection` / `permissionMode` go in as `StartInput.userChoice`, so `checkStartChoice`
-    (catalog model, `runPermissionModeChoices`) and the priced-model-under-a-cap check apply. `StartInput.schedule`
-    is set only by the service (never from IPC input) and becomes `RunSummary.scheduleId` / `scheduleName`.
-  - "Live" for the overlap rule and the global cap (`runBlocks`): starting, running, stopping, or idle with an open
-    card or a usage-limit hold. An idle run with nothing waiting counts as done (outcome 'finished'), so a run left
-    idle by its last turn does not block the next slot. Only runs this process started are tracked (memory only).
-  - Outcomes: a card request sets 'needs-you'; idle without cards or 'finished' sets 'finished'; `error` sets 'error';
-    `endedBy` 'user' / 'app' / 'policy' set 'stopped'; `endedBy` 'budget' sets 'error' (it counts toward auto-pause).
-    A run paused at a usage limit (finished with `pausedUntil`) is not an outcome; its continuation is not tracked.
+    with the stored project's `maxBudgetUsd` and the run's `conversationBudgetUsd` both set to `scheduledRunCap` =
+    `min(budgetUsd, project cap)` (the project cap alone when the schedule has none; neither when nothing caps it), so
+    main enforces the cap on every unattended run, not only the adapter. An ask target calls
+    `QuickRunService.start(input, { schedule })` (a main-only `QuickStartOptions.schedule`), which does the same on the
+    quick project. A consequence: a capped scheduled run on a model with no known price is refused before launch (the
+    existing priced-model-under-a-cap rule), like a capped desktop continuation. A user's own runs are unchanged.
+    `modelSelection` / `permissionMode` go in as `StartInput.userChoice`, so `checkStartChoice` (catalog model,
+    `runPermissionModeChoices`) applies. `StartInput.schedule` is set only by the service (never from IPC input) and
+    becomes `RunSummary.scheduleId` / `scheduleName`; RunManager passes it on only to its own usage-limit auto-resume
+    of a scheduled run (`SCHEDULED_RESUME`), never to a user's continuation.
+  - "Live" for the overlap rule and the global cap (`runBlocks` plus the service's own counts): starting, running,
+    stopping, or idle while it still works without the user (`ScheduleRunFacts.working`, RunManager's `runActivity`
+    state 'working' / 'ending': reports at work, peer messages queued or flushing, a continuation nudge due) or waits
+    with an open card or a usage-limit hold; a run paused at a usage limit whose auto-resume is armed
+    (`RunManager.hasAutoResume`); and a start still in flight (a per-schedule "starting" count taken before the start
+    is awaited and released when it settles, so a double Run now or Run now racing the timer cannot start two). An idle
+    run with nothing left counts as done (outcome 'finished'). Only runs this process started are tracked (memory
+    only); a deleted schedule's runs stay counted until they end.
+  - Outcomes: a card request sets 'needs-you'; idle with nothing left (not working, no card, no hold) or 'finished'
+    sets 'finished' (an idle run that still works is looked at again on its next idle or its end); `error` sets
+    'error'; `endedBy` 'user' / 'app' / 'policy' set 'stopped'; `endedBy` 'budget' sets 'error' (it counts toward
+    auto-pause). A run paused at a usage limit is not an outcome: its auto-resume continuation carries the schedule id,
+    is tracked in its place (same history entry) and its end fills that entry.
   - A start that throws records result 'failed', reason 'start-refused' and the fixed sentence `START_FAILED_DETAIL`;
-    the thrown message goes to the main log only (it may carry provider text).
+    the thrown message goes to the main log only (it may carry provider text). A start that has not returned after
+    `SCHEDULE_START_TIMEOUT_MS` (5 minutes) records 'failed' with `START_TIMED_OUT_DETAIL` and the pass moves on; a run
+    that arrives later is tracked (it counts toward the overlap rule and the cap until it ends, without counting a
+    second failure) and stopped through `RunManager.stop`. A team schedule whose project was switched to bypass after
+    the save is not started: 'failed' with `SCHEDULE_BYPASS_NOT_STARTED` (counts toward auto-pause).
+  - The scheduler acts on fresh state: every iteration of a pass re-reads the schedule and the global pause and skips
+    a schedule that was deleted, paused or re-timed while an earlier start was awaited; `claimSlot` refuses a disabled
+    or missing schedule. The catch-up walk compiles the timing once (`compileScheduleTiming` in `src/shared/schedule.ts`)
+    and starts at `now - SCHEDULE_CATCH_UP_WINDOW_MS - LATE_MS`; when no slot lies in that window the reported missed
+    slot is the first missed one (harmless: the next run is computed from now and such a slot is never caught up).
+  - Proposal updates: an `update` item's `schedule` holds the fully merged schedule (explicit `null` for a cleared
+    optional field) and `expectedUpdatedAt` (the stored `updatedAt` when the card was built); `applyProposal` refuses
+    when the stored schedule changed since ("The schedule changed since this was proposed; ask again."). Main-written
+    summaries name the resolved permission mode, the model and the real cap ("No spend cap" when nothing caps it); a
+    `resume` item's summary carries target, timing, mode, model and cap; double quotes in a name are replaced with `'`
+    in main-written titles, summaries and notifications.
   - `unread` grows by one per history entry; `lastEntry` mirrors the newest entry and its outcome.
   - Earlier slots passed over by an on-time fire (a short sleep) get one 'app-closed' entry. An expired schedule whose
     next slot is past `expiresAt` goes to 'done' without an entry.
@@ -245,8 +274,10 @@ Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,
   "Keep working in the background" question (`hostLifecycle.windowAllClosedAction` `pendingSchedules`; the message reads
   "A scheduled run is due later." or "<n> runs are still working, or scheduled runs are due."). While in the
   background the pending schedules count under the activity kind `pausedAutoResumes` (a timer-like wait, never a
-  writer the quit drain settles), so the idle exit does not quit before they run. The scheduler stops at the drain's
-  quiesce and on will-quit.
+  writer the quit drain settles), so the idle exit does not quit before they run; `pendingCount()` is 0 while the
+  global pause is on. The scheduler stops at the drain's quiesce and on will-quit.
+- The schedule harness hooks (`RunManagerOptions.schedules`) are wired only on the desktop host: the CLI's in-process
+  host never fires a schedule, so it offers neither `list_schedules` nor `propose_schedule`.
 
 ### Conversational creation
 
@@ -367,10 +398,15 @@ in the app (mock projects run Unattended), screen-reader speech.
   both show the timing, the next runs and the unattended / token sentence. Agents cannot enable, widen or re-time a
   schedule without a card; scheduled runs cannot touch schedules at all.
 - The prompt is user-approved text stored locally; it is delivered as the run's first user message like any prompt.
-- No permission widening: no bypass mode, no auto-approve, no carried session grants; an ask target stays
-  trust-restricted like every Chat run. An ask target's folder goes through `validateQuickFolder` at each fire.
-- Bounds: minimum interval 15 minutes, one run per schedule at a time, two scheduled runs at once, one catch-up, auto
-  disable after three consecutive failures, optional per-run cap, a global pause, 50 schedules.
+- No permission widening: no bypass mode, neither chosen nor inherited from the project (checked at save, at proposal
+  apply and again at each fire against the project as it is then), no auto-approve, no carried session grants; an ask
+  target stays trust-restricted like every Chat run. An ask target's folder goes through `validateQuickFolder` at each
+  fire.
+- Bounds: minimum interval 15 minutes, one run per schedule at a time, two scheduled runs at once (both counting
+  starts in flight, idle runs whose reports still work, runs paused with an armed auto-resume and its continuation,
+  and runs of deleted schedules), one catch-up, auto disable after three consecutive failures, a per-run cap of
+  min(schedule cap, project cap) enforced by main, a global pause, 50 schedules, a 5-minute start timeout.
+- An approved update card applies exactly what it showed: the merged schedule, refused if the schedule changed since.
 - The history `detail` and notifications carry only OrgAI-written sentences.
 
 ## 7. Tests
@@ -408,3 +444,20 @@ tests are `runtime/harnessToolsSchedules.test.ts`. Not verified: a live provider
 packed app (index.ts wiring), OS notifications, the close prompt and the background idle exit, sleep / resume of a
 real machine, DST transitions on a live clock, the RunManager apply branch of an approved card end to end (applied
 through ScheduleService directly in the tests).
+
+Security and spend review fixes (2026-11-12, unit tests only, no tokens): `service.review.test.ts` (H1 an idle run
+that still works blocks and keeps its outcome open; M2 a double Run now and starts in flight against the cap; M3 save,
+apply and fire refuse an inherited bypass; M4 a stale or unstamped update card is refused; claimSlot refuses a paused
+or deleted schedule; L1 a paused run with an armed auto-resume blocks and its scheduled continuation is tracked into
+the same entry, a user continuation is not; L2 a deleted schedule's run still counts; L5 quotes in notification
+titles; L7 no pending count under the global pause; L9 the start timeout and a late run tracked and stopped;
+`scheduledRunCap`), `scheduler.test.ts` ("Scheduler re-reads state between starts": a schedule deleted, paused or
+globally paused while an earlier start is awaited does not start; "catch-up walk over a long gap": a 15-minute cron
+six months back resolves in milliseconds, 22.8 s before), `schedule.test.ts` (`compileScheduleTiming` agrees with
+`nextScheduleRun`), `harnessToolsSchedules.test.ts` (merged update items with explicit nulls and
+`expectedUpdatedAt`, resolved mode / model / cap in summaries, bypass refusal, quote-safe names, full resume summary),
+`runManagerOutputs.test.ts` (`liveRunFacts.working`), `noElectronImport.test.ts` (the schedules modules load in plain
+Node). Not verified: the RunManager auto-resume passing `SCHEDULED_RESUME` on a real usage-limit pause (the service
+side is tested with fake events; the RunManager branch is checked by typecheck and reading only), the
+`liveRunFacts.working` value for an idle root with live reports on a real adapter, and the 5-minute timeout on a real
+hung start.
