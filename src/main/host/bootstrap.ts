@@ -228,7 +228,13 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     await opts.openExternal(url)
   }
   const events = new HostEventBus()
-  const emitRun = (event: RunEvent): void => events.emit(IPC.runEvent, event)
+  // Set once the usage monitor exists: reconciles every Claude usage.status onto the newest known one (or drops an
+  // unchanged repeat) before it goes out, so no consumer sees a stale or differently rounded snapshot win.
+  let usageGate: ((event: RunEvent) => RunEvent | null) | undefined
+  const emitRun = (event: RunEvent): void => {
+    const out = usageGate ? usageGate(event) : event
+    if (out) events.emit(IPC.runEvent, out)
+  }
   const emitProject = (project: Project): void => emitRun({ type: 'project.updated', runId: '', project })
 
   const projects = new ProjectStore(dataDir)
@@ -666,10 +672,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     liveRuns: () => rm.liveRunCount(),
     extraProbes: [() => connections.probeCodexUsage(), { key: 'proxies', probe: () => connections.probeProxyUsages() }]
   })
-  // Every usage.status a run or probe sends is merged onto the monitor's newest Claude status.
-  const unobserve = events.on((channel, payload) => {
-    if (channel === IPC.runEvent) monitor.observe(payload as RunEvent)
-  })
+  // Every usage.status a run or probe sends is reconciled onto the monitor's newest Claude status in emitRun.
+  usageGate = (event) => monitor.gate(event)
   refreshProxySpend = () => void monitor.refreshProbe('proxies')
   if (background.usageMonitor) monitor.start()
 
@@ -826,7 +830,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     spendTimer = undefined
     monitor.stop()
     activity.disarmIdleExit()
-    unobserve()
+    usageGate = undefined
     // Wave 7 (cli-standalone.md 5.6): the vault's background retry timer (legacy-only app hosts).
     secrets.dispose()
   }
