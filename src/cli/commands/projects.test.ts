@@ -158,26 +158,22 @@ describe('projects create', () => {
     } as NonNullable<ProjectPathCheck['teamFiles']>
     const withTeam = () => host({ 'projects:checkPath': () => check({ teamFiles: found }) })
 
-    it('by default sends NO digest and says the team files are pending review', async () => {
+    it('never sends a digest: the team files stay pending, and the note says where they are listed (cli-parity 3.4 / 7)', async () => {
       const a = run(['create', '/work/new'], { cwd: '/work', client: withTeam() })
       expect(await a.done).toBe(0)
       expect(created(a.client)).not.toHaveProperty('teamFiles')
-      expect(a.f.err()).toContain('pending review')
-      expect(a.f.err()).toContain('--adopt-team-files')
-    })
-
-    it('--adopt-team-files prints everything it adopts first, then sends the digest', async () => {
-      const a = run(['create', '/work/new', '--adopt-team-files'], { cwd: '/work', client: withTeam() })
-      expect(await a.done).toBe(0)
-      expect(created(a.client)).toMatchObject({ teamFiles: { digest: found.digest } })
       const err = a.f.err()
-      for (const want of ['evil: npx -y evil-server --flag', 'secrets: TOKEN', 'Roles: 2', 'Skills: 1', 'run.sh', 'Permission mode: bypassPermissions', 'Budget: $500', 'elevated tools: Bash']) expect(err).toContain(want)
+      expect(err).toContain('stay pending')
+      expect(err).toContain('orgai team files status')
+      expect(err).toContain('Approving is not available in the terminal yet')
+      // Nothing claims the app or the terminal UI can review them (the app shares no data with orgai; /approvals is read-only).
+      expect(err).not.toMatch(/OrgAI app|terminal UI|--adopt-team-files/)
     })
 
-    it('--adopt-team-files is refused without team files, with a template, and for an engagement', async () => {
-      expect((await caught(run(['create', '/work/new', '--adopt-team-files'], { cwd: '/work' }).done)).exitCode).toBe(EXIT.usage)
-      expect((await caught(run(['create', '/work/new', '--adopt-team-files', '--template', 'tpl_1'], { cwd: '/work', client: withTeam() }).done)).exitCode).toBe(EXIT.usage)
-      expect((await caught(run(['create', '/work/new', '--adopt-team-files', '--kind', 'engagement'], { cwd: '/work', client: withTeam() }).done)).exitCode).toBe(EXIT.usage)
+    it('there is no flag to adopt them at a terminal: --adopt-team-files is an unknown option (exit 2, nothing created)', async () => {
+      const a = run(['create', '/work/new', '--adopt-team-files'], { cwd: '/work', client: withTeam() })
+      expect((await caught(a.done)).exitCode).toBe(EXIT.usage)
+      expect(a.client.callsOf('projects:create')).toHaveLength(0)
     })
   })
 

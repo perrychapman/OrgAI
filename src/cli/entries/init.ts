@@ -13,7 +13,6 @@ export const ENTRY: CommandEntry = {
     { name: 'skip-architect', takesValue: false, summary: 'Create the project without the setup interview and exit' },
     { name: 'template', takesValue: true, summary: 'Start from this team template id' },
     { name: 'import-agents', takesValue: false, summary: 'Start with the agent definitions found in the folder' },
-    { name: 'adopt-team-files', takesValue: false, summary: "Start from the folder's own .orgai team files (prints everything they contain first; otherwise they wait for review)" },
     { name: 'inline', takesValue: false, summary: 'Draw in the normal scrollback instead of the full screen' },
     { name: 'ax-screen-reader', takesValue: false, summary: 'Screen reader mode: inline, plain text, no animation' }
   ],

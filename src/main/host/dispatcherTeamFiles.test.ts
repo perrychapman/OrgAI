@@ -83,6 +83,20 @@ describe('team files over the socket (invokeRpc)', () => {
     await expect(rpc(IPC.projectsCreate, { name: 'E', path: repo, brief: '', kind: 'engagement', teamFiles: { digest: 'ab'.repeat(32) } })).rejects.toThrow(/code projects only/)
   })
 
+  it.each(['socket', 'inproc'] as const)('projects:create with a team-files digest is refused from a %s client holding every scope (cli-parity 3.4 / 7)', async (surface) => {
+    const { c, dispatcher } = setup()
+    const first = createProject(c)
+    const digest = 'ab'.repeat(32)
+    const before = c.projects.list().length
+    const ctx: RpcInvokeContext = { surface, grantedScopes: HOST_SCOPES, clientKind: 'cli' }
+    await expect(dispatcher.invokeRpc(IPC.projectsCreate, [{ name: 'Adopt', path: repo, brief: '', teamFiles: { digest } }], ctx)).rejects.toMatchObject({ code: 'scope_denied' })
+    expect(c.projects.list().length).toBe(before)
+    expect(c.projects.list().map((p) => p.id)).toContain(first.id)
+    // Without the digest the same client creates the project; the team files then wait (nothing adopted).
+    const plain = (await dispatcher.invokeRpc(IPC.projectsCreate, [{ name: 'Plain', path: repo, brief: '' }], ctx)) as Project
+    expect(plain.name).toBe('Plain')
+  })
+
   it('projects:setFolderConfigTrust and the teamFiles decisions are refused over the socket as desktop-only', async () => {
     const { rpc } = setup()
     for (const ch of [IPC.projectsSetFolderConfigTrust, TEAM_FILES_IPC.teamFilesApprove, TEAM_FILES_IPC.teamFilesReject, TEAM_FILES_IPC.teamFilesUndo, TEAM_FILES_IPC.teamFilesEnable, TEAM_FILES_IPC.teamFilesCommit]) {

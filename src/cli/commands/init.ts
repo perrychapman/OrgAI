@@ -19,7 +19,7 @@ import { runInteractiveRun, type InteractiveRunSpec } from './interactive'
 import { CREATE_FLAGS, checkFolder, createOptionsOf, createProjectIn, folderArg, projectFacts, projectLines } from './projects'
 import { hasTty, managedOf, worktreeRefusal } from './tui'
 
-export const INIT_NO_TTY_MESSAGE = 'orgai init needs a terminal for the Architect interview; pass --skip-architect to create the project with the default team (team files in the folder wait for review unless you pass --adopt-team-files).'
+export const INIT_NO_TTY_MESSAGE = 'orgai init needs a terminal for the Architect interview; pass --skip-architect to create the project with the default team.'
 export const ARCHITECT_LABEL = 'Architect setup'
 
 /** Swappable in tests: the interactive run (commands/interactive.ts). */
