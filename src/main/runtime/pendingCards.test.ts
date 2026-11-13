@@ -72,6 +72,10 @@ describe('cancelPending', () => {
 
 describe('proposalEffect', () => {
   const work = { kind: 'work' as const, projectId: 'p1' }
+  it('schedules are saved at once, from Chat and from a project run', () => {
+    expect(proposalEffect('schedules', work, 'claude')).toBe('now')
+    expect(proposalEffect('schedules', { kind: 'work', projectId: 'quick', quick: { folder: '/x', team: 'single', allowEdits: false, gitRepo: false } }, 'codex')).toBe('now')
+  })
   it('work-run MCP and skills changes reach the live run: now on the mock, after the turn elsewhere', () => {
     expect(proposalEffect('mcpServers', work, 'mock')).toBe('now')
     expect(proposalEffect('skills', work, 'mock')).toBe('now')

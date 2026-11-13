@@ -469,11 +469,41 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const q = appReferenceArgs(raw)
     return services.reference ? services.reference.query(q, { status: true }) : Promise.resolve({ text: 'The reference is not available in this host.' })
   })
-  // PLACEHOLDER (Schedules contract landing): the main-process engineer replaces these with ScheduleService calls. The write
-  // channels and runNow must keep refusing any surface but 'desktop' (registry scope 'configure' / 'operate' only gates params).
-  for (const channel of [SCHEDULES_IPC.schedulesList, SCHEDULES_IPC.schedulesHistory, SCHEDULES_IPC.schedulesSave, SCHEDULES_IPC.schedulesRemove, SCHEDULES_IPC.schedulesSetEnabled, SCHEDULES_IPC.schedulesRunNow]) {
-    handle(channel, () => Promise.reject(new Error('Schedules are not available yet.')))
+  // Schedules (docs/design/schedules.md 3): list / history are readable on every surface; save, remove, setEnabled and
+  // runNow are the desktop's alone (the registry scope 'configure' / 'operate' only gates the params): a socket client or
+  // the CLI's in-process host is refused with scope_denied before anything is parsed. Every write rebuilds its input
+  // (ScheduleService: cleanScheduleInput, then validate.ts) and refuses unknown ids.
+  const scheduleService = (): NonNullable<HostServices['schedules']> => {
+    if (!services.schedules) throw new Error('Schedules are not available in this host.')
+    return services.schedules
   }
+  const desktopOnly = (ctx: InvokeContext): void => {
+    if (ctx.surface !== 'desktop') throw new HostRpcFailure('scope_denied', 'Schedules can be changed and run in the desktop app only.')
+  }
+  const scheduleId = (raw: unknown): string => {
+    if (typeof raw !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(raw)) throw new HostRpcFailure('bad_request', 'That schedule id is not valid.')
+    return raw
+  }
+  handle(SCHEDULES_IPC.schedulesList, () => scheduleService().list())
+  handle(SCHEDULES_IPC.schedulesHistory, (_ctx, raw: unknown) => scheduleService().history(scheduleId(raw)))
+  handle(SCHEDULES_IPC.schedulesSave, (ctx, raw: unknown) => {
+    desktopOnly(ctx)
+    return scheduleService().save(raw)
+  })
+  handle(SCHEDULES_IPC.schedulesRemove, (ctx, raw: unknown) => {
+    desktopOnly(ctx)
+    scheduleService().remove(scheduleId(raw))
+  })
+  handle(SCHEDULES_IPC.schedulesSetEnabled, (ctx, raw: unknown) => {
+    desktopOnly(ctx)
+    const o = (raw && typeof raw === 'object' ? raw : {}) as { id?: unknown; enabled?: unknown }
+    if (typeof o.enabled !== 'boolean') throw new HostRpcFailure('bad_request', 'Enabled must be on or off.')
+    return scheduleService().setEnabled(scheduleId(o.id), o.enabled)
+  })
+  handle(SCHEDULES_IPC.schedulesRunNow, (ctx, raw: unknown) => {
+    desktopOnly(ctx)
+    return scheduleService().runNow(scheduleId(raw))
+  })
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
    * projects:list. The Chat's display project has no roles and creates no directory.

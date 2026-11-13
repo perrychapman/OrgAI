@@ -106,6 +106,34 @@ export class Notifier {
     notification.show()
   }
 
+  /**
+   * A notice that is not a run event (Schedules: a start that failed, a schedule paused after failures or a lost
+   * project). OrgAI-written text only. Honours AppSettings.notifications; shown whether or not a window is focused,
+   * since nobody was there when it happened. A click focuses the run when one is named, else the main window.
+   */
+  notice(input: { title: string; body: string; target?: FocusRunTarget }): void {
+    if (!this.deps.enabled() || !Notification.isSupported()) return
+    const notification = new Notification({ title: input.title.slice(0, 120), body: input.body.slice(0, 240), urgency: 'normal' })
+    const release = (): void => {
+      this.alive.delete(notification)
+    }
+    notification.on('click', () => {
+      release()
+      if (input.target) this.focus(input.target)
+      else {
+        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+        if (win) {
+          if (win.isMinimized()) win.restore()
+          win.show()
+          win.focus()
+        }
+      }
+    })
+    notification.on('close', release)
+    this.alive.add(notification)
+    notification.show()
+  }
+
   private lookup(runId: string): NotifierRun | undefined {
     let run = this.runs.get(runId)
     if (!run) {
