@@ -31,15 +31,11 @@ export async function withSeedHost<T>(userDataDir: string, fn: (client: HostClie
   })
   const opened: HostClient[] = []
   const open = async (): Promise<HostClient> => {
-    const res = await connectHost({
-      dataDir: `${userDataDir}/data`,
-      scopes: opts.scopes ?? ['read', 'operate', 'configure'],
-      clientVersion: CLI_VERSION,
-      cwd: userDataDir,
-      pid: process.pid,
-      ownerKey: host.ownerKey!,
-      ownerHostInstanceId: host.hostInstanceId!
-    })
+    const scopes = opts.scopes ?? ['read', 'operate', 'configure']
+    // The in-memory client the CLI itself gets (no socket) unless the test asked for a listening host.
+    const res = host.connectLocal
+      ? await host.connectLocal(scopes, { cwd: userDataDir })
+      : await connectHost({ dataDir: `${userDataDir}/data`, scopes, clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid, ownerKey: host.ownerKey!, ownerHostInstanceId: host.hostInstanceId! })
     if (!res.ok) throw new Error(res.message)
     opened.push(res.client)
     return res.client

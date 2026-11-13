@@ -30,7 +30,7 @@ describe('controlProtectedPaths', () => {
     const data = join(base, 'data')
     mkdirSync(data)
     const paths = controlProtectedPaths(data)
-    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), join(data, 'auth-cwd')])
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), join(data, 'auth-cwd'), join(data, 'evolution')])
     expect(paths).toContain(join(data, 'settings.json'))
     expect(paths).toContain(join(data, 'auth-cwd'))
     // agents cannot write into or replace the auth probe's folder
@@ -48,7 +48,7 @@ describe('controlProtectedPaths', () => {
     mkdirSync(data)
     const key = join(base, 'keys', 'orgai.key')
     const paths = controlProtectedPaths(data, undefined, { vaultKeyFiles: [key, ''] })
-    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), join(data, 'auth-cwd'), key])
+    expect(paths).toEqual([join(data, 'run'), join(data, 'secrets.json'), join(data, 'codex'), join(data, 'settings.json'), join(data, 'auth-cwd'), join(data, 'evolution'), key])
     expect(controlProtectedPaths(data, undefined, { vaultKeyFiles: [] })).toEqual(controlProtectedPaths(data))
   })
 
@@ -88,7 +88,7 @@ describe('controlProtectedPaths', () => {
       expect(paths).toContain(join(real, p))
     }
     expect(new Set(paths).size).toBe(paths.length)
-    expect(paths).toHaveLength(10)
+    expect(paths).toHaveLength(12)
   })
 
   it('never includes the data dir itself, quick/, project-skills/ or skills/', () => {
@@ -2006,5 +2006,17 @@ describe('wave 7 K6 / K7', () => {
   })
   it.each(['yarn test', 'pnpm install', 'bun run build', 'deno run main.ts', 'yarn run lint'])('allows %s', (cmd) => {
     expect(checkSelfControlDenial('Bash', { command: cmd }, { protectedPaths: [], cwd: '/work/repo', platform: 'darwin', cliRoots: [] })).toBeNull()
+  })
+})
+
+describe('the team-evolution ledger is a control entry', () => {
+  it('denies writes under <data>/evolution (the ledger holds snapshots)', () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-scg-evo-')))
+    dirs.push(base)
+    const data = join(base, 'data')
+    mkdirSync(join(data, 'evolution'), { recursive: true })
+    const ctx: SelfControlContext = { protectedPaths: controlProtectedPaths(data), cwd: base, home: base }
+    expect(checkSelfControlDenial('Write', { file_path: join(data, 'evolution', 'p1.json'), content: '{}' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(checkSelfControlDenial('Bash', { command: `echo x > ${data}/evolution/p.json` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
   })
 })

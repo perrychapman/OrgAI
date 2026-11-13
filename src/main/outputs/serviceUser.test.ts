@@ -375,6 +375,8 @@ describe('heavy queue and thumb queue (M1, L7)', () => {
     const held = Array.from({ length: 8 }, () => svc.compare(scope, { outputId: o.id, a: 1, b: 1 }))
     await expect(svc.readForAgent(scope, { action: 'read', outputId: o.id })).rejects.toThrow('Too many previews are loading. Try again in a moment.')
     expect(textStarted).toBe(false)
+    // The format layer loads on first use (a dynamic import), so the first heavy job starts a tick later.
+    await vi.waitFor(() => expect(gates.length).toBe(1))
     gates[0]()
     await vi.waitFor(() => expect(gates.length).toBe(2))
     // one slot is free again, but the new read still queues behind the 7 pending jobs
@@ -399,7 +401,7 @@ describe('heavy queue and thumb queue (M1, L7)', () => {
     const calls = Array.from({ length: 52 }, () => svc.thumb(scope, o.id, 1))
     expect(await svc.thumb(scope, o.id, 1)).toEqual({ kind: 'none' })
     for (let i = 0; i < 52; i++) {
-      await vi.waitFor(() => expect(gates.length).toBeGreaterThan(i))
+      await vi.waitFor(() => expect(gates.length).toBeGreaterThan(i), { interval: 1, timeout: 5000 })
       gates[i]()
     }
     expect((await Promise.all(calls)).every((c) => c.kind === 'lines')).toBe(true)

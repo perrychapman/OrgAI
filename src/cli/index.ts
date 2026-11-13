@@ -7,29 +7,7 @@
 import './inspectorSignal'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { runCompletions } from './commands/completions'
-import { runConnections } from './commands/connections'
-import { runDoctor } from './commands/doctor'
-import { runExec, runResume } from './commands/exec'
-import { runInit } from './commands/init'
-import { runKit } from './commands/kit'
-import { runKnowledge } from './commands/knowledge'
-import { runMcp } from './commands/mcp'
-import { runModels } from './commands/models'
-import { runNotes } from './commands/notes'
-import { runOrg } from './commands/org'
-import { runPermissions } from './commands/permissions'
-import { runProjects } from './commands/projects'
-import { runRuns } from './commands/runs'
-import { runSecrets } from './commands/secrets'
-import { runSettings } from './commands/settings'
-import { runOutputs } from './commands/outputs'
-import { runSkills } from './commands/skills'
-import { runStatus } from './commands/status'
-import { runTeam } from './commands/team'
 import { defaultTuiPrintsHelp, PROMPT_HINT, runDefaultTui, runTuiCommand } from './commands/tui'
-import { runUsage } from './commands/usage'
-import { runWorktrees } from './commands/worktrees'
 import { COMMANDS, DEFAULT_TUI_FLAGS, GLOBAL_FLAGS, findCommand, type CommandEntry, type CommandFlag } from './commandTable'
 import { buildContext } from './context'
 import { splitGlobalFlags } from './flags'
@@ -40,32 +18,35 @@ import { CLI_VERSION } from './version'
 import { readInstallInfo } from './installInfo'
 import { versionLine } from './versionLine'
 
-/** Command name -> its CommandFn; every COMMANDS entry has one (index.test.ts). */
+/**
+ * Command name -> its CommandFn; every COMMANDS entry has one (index.test.ts). Each command module loads on first use, so
+ * `orgai --version` and a single command never parse the rest.
+ */
 export const ROUTES: Record<string, CommandFn> = {
-  status: runStatus,
-  runs: runRuns,
-  doctor: runDoctor,
-  completions: runCompletions,
-  exec: runExec,
-  resume: runResume,
+  status: async (ctx, argv) => (await import('./commands/status')).runStatus(ctx, argv),
+  runs: async (ctx, argv) => (await import('./commands/runs')).runRuns(ctx, argv),
+  doctor: async (ctx, argv) => (await import('./commands/doctor')).runDoctor(ctx, argv),
+  completions: async (ctx, argv) => (await import('./commands/completions')).runCompletions(ctx, argv),
+  exec: async (ctx, argv) => (await import('./commands/exec')).runExec(ctx, argv),
+  resume: async (ctx, argv) => (await import('./commands/exec')).runResume(ctx, argv),
   tui: runTuiCommand,
-  init: runInit,
-  org: runOrg,
-  team: runTeam,
-  worktrees: runWorktrees,
-  permissions: runPermissions,
-  connections: runConnections,
-  models: runModels,
-  mcp: runMcp,
-  skills: runSkills,
-  knowledge: runKnowledge,
-  notes: runNotes,
-  usage: runUsage,
-  kit: runKit,
-  projects: runProjects,
-  secrets: runSecrets,
-  settings: runSettings,
-  outputs: runOutputs
+  init: async (ctx, argv) => (await import('./commands/init')).runInit(ctx, argv),
+  org: async (ctx, argv) => (await import('./commands/org')).runOrg(ctx, argv),
+  team: async (ctx, argv) => (await import('./commands/team')).runTeam(ctx, argv),
+  worktrees: async (ctx, argv) => (await import('./commands/worktrees')).runWorktrees(ctx, argv),
+  permissions: async (ctx, argv) => (await import('./commands/permissions')).runPermissions(ctx, argv),
+  connections: async (ctx, argv) => (await import('./commands/connections')).runConnections(ctx, argv),
+  models: async (ctx, argv) => (await import('./commands/models')).runModels(ctx, argv),
+  mcp: async (ctx, argv) => (await import('./commands/mcp')).runMcp(ctx, argv),
+  skills: async (ctx, argv) => (await import('./commands/skills')).runSkills(ctx, argv),
+  knowledge: async (ctx, argv) => (await import('./commands/knowledge')).runKnowledge(ctx, argv),
+  notes: async (ctx, argv) => (await import('./commands/notes')).runNotes(ctx, argv),
+  usage: async (ctx, argv) => (await import('./commands/usage')).runUsage(ctx, argv),
+  kit: async (ctx, argv) => (await import('./commands/kit')).runKit(ctx, argv),
+  projects: async (ctx, argv) => (await import('./commands/projects')).runProjects(ctx, argv),
+  secrets: async (ctx, argv) => (await import('./commands/secrets')).runSecrets(ctx, argv),
+  settings: async (ctx, argv) => (await import('./commands/settings')).runSettings(ctx, argv),
+  outputs: async (ctx, argv) => (await import('./commands/outputs')).runOutputs(ctx, argv)
 }
 
 export interface MainOverrides {
@@ -240,7 +221,7 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
     // warning). Only an explicit --secret-env is still refused, as for every read-only command.
     if (command.name === 'completions') {
       if (globals.secretEnv.length > 0) throw new CliError(SECRET_ENV_REFUSAL, EXIT.usage)
-      return await runCompletions({ io }, args)
+      return await (await import('./commands/completions')).runCompletions({ io }, args)
     }
     return await ROUTES[command.name](prepareContext(command.name, args), args)
   } catch (e) {

@@ -106,6 +106,11 @@ import type {
   SkillLinkLibraryInput,
   SkillMutationResult,
   SkillUpdateInput,
+  EvolutionHistory,
+  EvolveAnalyzeResult,
+  EvolveApplyResult,
+  EvolvePostRunResult,
+  EvolveRollbackResult,
   TeamRecommendations,
   TeamReview,
   UsageOverview,
@@ -123,6 +128,7 @@ import {
   SECRETS_IPC,
   SKILLS_PROJECT_ID,
   TEAM_FILES_IPC,
+  EVOLVE_IPC,
   VIRTUAL_PROJECT_LABELS,
   isVirtualProjectId
 } from '../../shared/types'
@@ -143,6 +149,8 @@ import { createScratchDir } from '../quick/scratch'
 import { folderConfigReview } from '../runtime/folderConfigTrust'
 import { addRules, listIgnoredRules, listRules, removeRule } from '../runtime/permissionRules'
 import type { RunManager, StartUserChoice } from '../runtime/runManager'
+import type { EvolveService } from '../evolve/service'
+import { EVOLVE_AFTER_RUN_CHANNEL } from './jsonCodec'
 import { overridesWidening } from '../runtime/runOverrides'
 import type { TeamFilesService } from '../teamFiles/service'
 import type { TemplateService } from '../setup/templates'
@@ -158,6 +166,7 @@ import {
   removeNote,
   removeProjectData,
   removeSkillEvaluation,
+  removeEvolutionLedger,
   retainRunProject,
   saveNote,
   updateEngagementDocument
@@ -184,6 +193,10 @@ import {
   pathCheckWithTeamFiles,
   projectCreateInput,
   teamFilesArgs,
+  evolveAnalyzeArgs,
+  evolveHistoryArgs,
+  evolveRollbackArgs,
+  evolveAfterRunArgs,
   connectionSecretArgs,
   proxyCreateArgs,
   proxyIdArg,
@@ -386,6 +399,14 @@ export class HostDispatcher {
 }
 
 /**
+ * A decision only the user's own surfaces make: the window or the in-process CLI / TUI (surface 'desktop' / 'inproc').
+ * Any other surface (a socket client) is refused first, whatever scopes it holds.
+ */
+function refuseSocketDecision(ctx: InvokeContext, what: string): void {
+  if (ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('scope_denied', `${what} is the user's own decision, made in the OrgAI window or the terminal UI.`)
+}
+
+/**
  * A channel whose call changes host state (Wave 7, cli-standalone.md 4.3): a registry request entry with a scope above
  * 'read' that is not a lifecycle call (host.stop). Desktop-only channels are leased by ipc.ts's own wrapper.
  */
@@ -533,6 +554,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     projects.remove(id)
     removeProjectData(settings.dataDir, id)
     removeSkillEvaluation(settings.dataDir, id)
+    removeEvolutionLedger(settings.dataDir, id)
     return { ...facts, runsRemoved: typeof removed === 'number' ? removed : facts.runsRemoved }
   })
   handle(IPC.projectsRemovePreview, (_e, input: unknown): ProjectRemoveResult => {
@@ -561,7 +583,16 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       ...(input.permissionMode ? { permissionMode: input.permissionMode } : {})
     }
     const chosen = Object.keys(choice)
-    if (chosen.length && ctx.surface !== 'desktop') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app only: ${chosen.join(', ')}.`)
+    // The desktop and the in-process CLI / TUI (surface 'inproc': the user's own process) may choose them; a socket client may not.
+    if (chosen.length && ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app and the terminal UI only: ${chosen.join(', ')}.`)
+    // They can raise spend (model, effort) or widen what the run may do (permission mode): in-process, 'configure' only.
+    if (chosen.length && ctx.surface === 'inproc' && !ctx.grantedScopes?.includes('configure')) throw new HostRpcFailure('scope_denied', `Choosing ${chosen.join(', ')} for a run needs the configure scope.`)
+    // Team evolution after the run changes the team: the user's own surfaces only (an agent or another process must never
+    // evolve it), and in-process only with 'configure', like org:evolveApply (the pass may apply, roll back or spend a model call).
+    if (input.evolve !== undefined && input.evolve !== false) {
+      if (ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('scope_denied', 'Evolving the team is the user\'s own decision, made in the OrgAI window or the terminal.')
+      if (ctx.surface === 'inproc' && !ctx.grantedScopes?.includes('configure')) throw new HostRpcFailure('scope_denied', 'Evolving the team after a run needs the configure scope.')
+    }
     return runs.start({
       project,
       prompt: input.prompt,
@@ -569,7 +600,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       images: input.images,
       ...(input.team === 'single' ? { team: 'single' as const } : {}),
       ...(o.overrides ? { overrides: o.overrides, allowWidening: o.allowWidening } : {}),
-      ...(chosen.length ? { userChoice: choice } : {})
+      ...(chosen.length ? { userChoice: choice } : {}),
+      ...(input.evolve !== undefined && input.evolve !== false ? { evolve: input.evolve, ...(input.evolveWindowRuns !== undefined ? { evolveWindowRuns: input.evolveWindowRuns } : {}) } : {})
     })
   })
   handle(IPC.runsGet, (_e, runId: string) => runs.get(runId))
@@ -638,7 +670,11 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
     // Headless fields only from socket / inproc clients; overrides are checked against the project the run continues as.
     if (ctx.surface === 'desktop') return runs.continueRun(project, input.runId, input.text, input.images, { desktop: true })
-    if (!input.overrides && input.exec === undefined) return runs.continueRun(project, input.runId, input.text, input.images)
+    if (!input.overrides && input.exec === undefined) {
+      // A per-run permission mode the user chose in the terminal UI is carried only for an in-process client holding 'configure'.
+      if (ctx.surface === 'inproc' && ctx.grantedScopes?.includes('configure')) return runs.continueRun(project, input.runId, input.text, input.images, { allowWidening: true })
+      return runs.continueRun(project, input.runId, input.text, input.images)
+    }
     const o = checkRunOverrides(ctx, project, input.overrides)
     return runs.continueRun(project, input.runId, input.text, input.images, {
       ...(o.overrides ? { overrides: o.overrides } : {}),
@@ -650,7 +686,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.runsSwitchModel, (_e, raw: unknown) => runs.switchModel(raw as import('@shared/types').SwitchRunModelInput))
   // Desktop only: the registry scope ('configure') only gates the params; this refusal comes first, before any parsing.
   handle(IPC.runsSetPermissionMode, (ctx, raw: unknown) => {
-    if (ctx.surface !== 'desktop') throw new HostRpcFailure('scope_denied', "Changing a run's permission mode is available in the desktop app only.")
+    if (ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('scope_denied', "Changing a run's permission mode is available in the desktop app and the terminal UI only.")
     return runs.setPermissionMode(setPermissionModeArgs(raw))
   })
   handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))
@@ -803,6 +839,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   registerCapabilityIpc(handle, capabilities)
   if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
   if (kit) registerKitBundleIpc(handle, kit)
+  if (services.evolve) registerEvolveIpc(handle, services.evolve, runs)
   registerSecretsIpc(handle, services.secrets, mcp, state)
   registerOutputsHandlers(handle, { outputs: services.outputs, projects, events, dataDir: settings.dataDir, runs, watcher: services.outputWatcher })
 
@@ -1164,6 +1201,39 @@ function registerTeamFilesIpc(handle: Register, svc: TeamFilesService): void {
       })
     )
   )
+}
+
+/**
+ * Team evolution (src/main/evolve/service.ts). Analyze and history are reads; apply, rollback and the post-run pass
+ * change the team, so (like the team files decisions) a socket client is refused whatever scopes it holds.
+ * `org:evolveAfterRun` returns the memoised pass RunManager started when a run begun with `evolve` ended (undefined when
+ * the run was not started with evolve or no pass ran: a stopped run, a run still live).
+ */
+function registerEvolveIpc(handle: Register, svc: EvolveService, runs: RunManager): void {
+  handle(EVOLVE_IPC.orgEvolveAnalyze, async (ctx, input: unknown): Promise<EvolveAnalyzeResult> => {
+    const args = evolveAnalyzeArgs(input)
+    // A hybrid analysis spends a model call: only the user's own surfaces holding 'configure' (the desktop window has every
+    // scope) may ask for it. A read-only or socket client is refused, never silently downgraded.
+    if (args.strategy === 'hybrid') {
+      const own = ctx.surface === 'desktop' || (ctx.surface === 'inproc' && !!ctx.grantedScopes?.includes('configure'))
+      if (!own) throw new HostRpcFailure('scope_denied', 'A hybrid analysis spends a model call: it needs the configure scope from the terminal or the OrgAI window.')
+    }
+    return svc.analyze(args)
+  })
+  handle(EVOLVE_IPC.orgEvolveHistory, async (_e, input: unknown): Promise<EvolutionHistory> => svc.history(evolveHistoryArgs(input).projectId))
+  handle(EVOLVE_IPC.orgEvolveApply, async (ctx, input: unknown): Promise<EvolveApplyResult> => {
+    refuseSocketDecision(ctx, 'Evolving the team')
+    return svc.apply(evolveAnalyzeArgs(input, true))
+  })
+  handle(EVOLVE_IPC.orgEvolveRollback, async (ctx, input: unknown): Promise<EvolveRollbackResult> => {
+    refuseSocketDecision(ctx, 'Rolling back a team evolution')
+    return svc.rollback(evolveRollbackArgs(input))
+  })
+  handle(EVOLVE_AFTER_RUN_CHANNEL, async (ctx, input: unknown): Promise<EvolvePostRunResult | null> => {
+    refuseSocketDecision(ctx, 'Evolving the team')
+    const { runId } = evolveAfterRunArgs(input)
+    return (await runs.awaitEvolvePass(runId)) ?? null
+  })
 }
 
 function registerKitBundleIpc(handle: Register, kit: KitService): void {

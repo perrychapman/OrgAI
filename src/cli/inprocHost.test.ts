@@ -15,7 +15,7 @@ import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../mai
 import { fakeCustody } from '../main/store/vaultTesting'
 import { VaultNotReady } from '../main/store/vaultTypes'
 import { connectHost } from './client/hostClient'
-import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, startInprocHost, type InprocHost } from './inprocHost'
+import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, memoryStreamPair, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
 import { CLI_VERSION } from './version'
 
@@ -78,7 +78,7 @@ describe('startInprocHost', () => {
   })
 
   it('serves only its own process: a hello without the in-memory owner proof is refused not_owner (spec 4.1)', async () => {
-    const h = await start()
+    const h = await start(new Map(), { listen: true })
     expect(h.ownerKey).toMatch(/^[0-9a-f]{64}$/)
     expect(h.hostInstanceId).toBe(JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')).hostInstanceId)
     // The key is never written to the run folder.
@@ -100,6 +100,26 @@ describe('startInprocHost', () => {
     if (!owner.ok) throw new Error(owner.message)
     expect(owner.client.hello.grantedScopes).toEqual([...all])
     owner.client.close()
+  })
+
+  it('listens on nothing by default and serves its own process through connectLocal (surface inproc)', async () => {
+    const h = await start()
+    const daemon = JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
+    expect(daemon.listening).toBe(false)
+    expect(existsSync(join(dataDir, 'run', 'daemon.secret'))).toBe(false)
+    // A foreign process finds no listener.
+    const foreign = await connectHost({ dataDir, scopes: ['read'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
+    expect(foreign).toMatchObject({ ok: false, reason: 'refused' })
+    const c = await h.connectLocal!(['read', 'operate', 'configure'], { clientKind: 'tui' })
+    if (!c.ok) throw new Error(c.message)
+    expect(c.client.hello.grantedScopes).toEqual(['read', 'operate', 'configure'])
+    const status = await c.client.call<{ state: string }>('host.status')
+    expect(status.state).toBe('ready')
+    // Scopes still gate: no 'decide' was granted.
+    await expect(c.client.call('runs:decide', [{}])).rejects.toMatchObject({ data: { code: 'scope_denied' } })
+    // The single-owner guarantee does not depend on a socket.
+    await expect(startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false })).rejects.toMatchObject({ exitCode: 6 })
+    c.client.close()
   })
 
   it('a second host on the same data dir is refused at once with exit 6, naming the owner (spec 4.2)', async () => {
@@ -236,5 +256,50 @@ describe('inprocHardLimitExit (cli-standalone.md 4.3)', () => {
     }
     inprocHardLimitExit(proc as unknown as Pick<NodeJS.Process, 'once' | 'exit'>, (s) => void order.push(`write:${s.trim()}`))
     expect(order).toEqual(['once:exit', 'exit:1', `write:${INPROC_HARD_LIMIT_MESSAGE}`])
+  })
+})
+
+describe('memoryStreamPair', () => {
+  const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
+  it('a writer waits while the reader is full, and goes on once the reader reads (socket-like backpressure)', async () => {
+    const [a, b] = memoryStreamPair(16)
+    b.pause()
+    let written = 0
+    a.write(Buffer.alloc(32, 1), () => written++)
+    await tick()
+    expect(written).toBe(0)
+    const got: Buffer[] = []
+    b.on('data', (c: Buffer) => got.push(c))
+    b.resume()
+    await tick()
+    await tick()
+    expect(written).toBe(1)
+    expect(Buffer.concat(got).length).toBe(32)
+    a.destroy()
+  })
+  it('a write parked on a full reader settles when either side is destroyed', async () => {
+    const [a, b] = memoryStreamPair(16)
+    b.pause()
+    let settled = 0
+    a.on('error', () => undefined)
+    a.write(Buffer.alloc(32, 1), () => settled++)
+    await tick()
+    expect(settled).toBe(0)
+    b.destroy()
+    await tick()
+    await tick()
+    expect(settled).toBe(1)
+  })
+  it('a small write completes at once, and ending one side ends the other', async () => {
+    const [a, b] = memoryStreamPair()
+    let written = 0
+    const got: Buffer[] = []
+    b.on('data', (c: Buffer) => got.push(c))
+    const ended = new Promise<void>((r) => b.on('end', () => r()))
+    a.write(Buffer.from('hi'), () => written++)
+    a.end()
+    await ended
+    expect(written).toBe(1)
+    expect(Buffer.concat(got).toString()).toBe('hi')
   })
 })

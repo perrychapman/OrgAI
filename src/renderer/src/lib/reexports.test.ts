@@ -93,7 +93,7 @@ const EXPECTED_EXPORTS: Readonly<Record<string, readonly string[]>> = {
     'CHAIN_EAGER_MEMBERS', 'CHAIN_FETCH_CONCURRENCY', 'CHAIN_WALK_MAX_HOPS', 'adoptEndFacts', 'canContinue',
     'canContinueIn', 'chainGroups', 'chainIdsToLoad', 'chainKeyOf', 'chainOf', 'continuationDivider', 'continuedBy',
     'continuedByIn', 'earlierMembersToLoad', 'endedComposerCopy', 'gapLabel', 'isOpenStatus', 'lastActivityAt',
-    'needsYou', 'newestOf', 'predecessorOf', 'projectCounts', 'relativeTime', 'runBatched', 'sessionOpenRunId',
+    'needsYou', 'newestContinuable', 'newestOf', 'predecessorOf', 'projectCounts', 'relativeTime', 'runBatched', 'sessionOpenRunId',
     'statusEventEndFacts'
   ],
   runLabels: [

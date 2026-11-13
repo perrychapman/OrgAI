@@ -521,6 +521,29 @@ function resultDetail(entry: TranscriptEntry, content: string): string {
   return text
 }
 
+/** A tool_use detail is capped like resultDetail, so one huge command cannot grow a row without bound. */
+export const TOOL_DETAIL_MAX = 4000
+
+interface CachedRow {
+  runId: string
+  who: string
+  toolName: string | undefined
+  identityTone: Tone | undefined
+  row: TranscriptRow | null
+}
+// Entries survive streaming updates: an unchanged entry reuses the exact same row object (and skips safe() /
+// humanizeToolUse()), so memoized row components downstream see stable references.
+const entryRows = new WeakMap<TranscriptEntry, CachedRow>()
+
+function cachedEntryRow(e: TranscriptEntry, runId: string, who: string, toolName: string | undefined, identityTone: Tone | undefined): TranscriptRow | null {
+  const hit = entryRows.get(e)
+  if (hit && hit.runId === runId && hit.who === who && hit.toolName === toolName && hit.identityTone === identityTone) return hit.row
+  const base = entryRow(e, runId, who, () => toolName)
+  const row = base ? { ...base, identityTone } : null
+  entryRows.set(e, { runId, who, toolName, identityTone, row })
+  return row
+}
+
 function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id: string) => string | undefined): TranscriptRow | null {
   const key = `${runId}|${e.id}`
   const harness = e.source === 'harness'
@@ -542,7 +565,7 @@ function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id:
       const summary = command === undefined ? view.label : `Ran ${commandSummary(command)}`
       const pendingSummary = command === undefined ? undefined : safeLine(`Command: ${commandSummary(command)}`)
       const detail = command === undefined ? `${view.label}\n${view.details}` : `Command: ${command}`
-      return { ...base, kind: 'tool', toolUseId: b.id, text: safeLine(view.label), summary: safeLine(summary), pendingSummary, detail: safe(detail), tone: 'dim' }
+      return { ...base, kind: 'tool', toolUseId: b.id, text: safeLine(view.label), summary: safeLine(summary), pendingSummary, detail: safe(detail.slice(0, TOOL_DETAIL_MAX) + (detail.length > TOOL_DETAIL_MAX ? '\n… (command truncated)' : '')), tone: 'dim' }
     }
     case 'tool_result': {
       const row = humanizeToolResult(toolName(b.toolUseId), b.content, b.isError)
@@ -589,8 +612,10 @@ export function transcriptRows(s: TuiState, filter: TranscriptFilter = {}): { ro
       rows.push({ key: `divider|${item.divider.runId}`, runId: item.divider.runId, kind: 'divider', text: safeLine(item.divider.label), tone: 'dim' })
     } else {
       const agents = s.runs[item.runId]?.agents ?? {}
-      const row = entryRow(item.entry, item.runId, agentLabel(agents[item.entry.agentId]), (id) => tools.get(id))
-      if (row) rows.push({ ...row, identityTone: agentIdentityTone(s.project?.roles ?? [], agents[item.entry.agentId]) })
+      const b = item.entry.block
+      const toolName = b.kind === 'tool_result' ? tools.get(b.toolUseId) : undefined
+      const row = cachedEntryRow(item.entry, item.runId, agentLabel(agents[item.entry.agentId]), toolName, agentIdentityTone(s.project?.roles ?? [], agents[item.entry.agentId]))
+      if (row) rows.push(row)
     }
   }
   const only = filter.agentIds
@@ -614,10 +639,26 @@ export function partialRows(s: TuiState, filter: TranscriptFilter = {}): Partial
 // ---------- Agent inspector (F4) ----------
 
 /** The facts the inspector shows for one agent of the active run; a fact the agent does not have is left out. */
-export function agentDetail(s: TuiState, agentId: string, now: number = Date.now()): InspectorView | undefined {
-  const run = activeRun(s)
-  const a = run?.agents[agentId]
-  if (!run || !a) return undefined
+/**
+ * The run and raw agent id an inspector id names: an agent of the active run, or an agent of an earlier member of the
+ * followed chain (tree row ids `<runId>:<agentId>`).
+ */
+export function inspectRef(s: TuiState, id: string): { run: TuiRun; agentId: string; earlier: boolean } | undefined {
+  const active = activeRun(s)
+  if (active?.agents[id]) return { run: active, agentId: id, earlier: false }
+  for (const r of chainRuns(s)) {
+    if (r === active || !id.startsWith(`${r.summary.id}:`)) continue
+    const agentId = id.slice(r.summary.id.length + 1)
+    if (r.agents[agentId]) return { run: r, agentId, earlier: true }
+  }
+  return undefined
+}
+
+export function agentDetail(s: TuiState, id: string, now: number = Date.now()): InspectorView | undefined {
+  const ref = inspectRef(s, id)
+  if (!ref) return undefined
+  const { run, agentId, earlier } = ref
+  const a = run.agents[agentId]
   const u = a.usage
   const promptTokens = u ? u.tokens.input + u.tokens.cacheRead + u.tokens.cacheWrite : a.inputTokens
   const outTokens = u ? u.tokens.output : a.outputTokens
@@ -649,7 +690,7 @@ export function agentDetail(s: TuiState, agentId: string, now: number = Date.now
     ...(wt
       ? { worktree: { branch: safeLine(wt.branch), status: wt.status, files: Array.isArray(wt.changedFiles) ? wt.changedFiles.length : 0, mergeTarget: wt.mergeTarget === 'parent' ? ('parent' as const) : ('main' as const) } }
       : {}),
-    waiting: cardsByAgent(s)[agentId]?.length ?? 0,
+    waiting: earlier ? 0 : cardsByAgent(s)[agentId]?.length ?? 0,
     msgOut: traffic?.out ?? [],
     msgIn: traffic?.in ?? [],
     ...(staffed ? { staffing: { label: staffingLabel(staffed), reason: staffingReason(staffed), model: safeLine(staffed.model) } } : {})

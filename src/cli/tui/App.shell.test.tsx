@@ -50,6 +50,9 @@ function mount(opts: { cols: number; rows: number; env?: Partial<TuiEnv>; inline
   }
   const session = {
     getState: () => state,
+    getStaged: () => ({}),
+    stage: vi.fn(),
+    setPermissionMode: vi.fn(async () => ({ run: {}, applied: true })),
     setState,
     subscribe: (cb: () => void) => (subs.add(cb), () => void subs.delete(cb)),
     hostKind: 'daemon',

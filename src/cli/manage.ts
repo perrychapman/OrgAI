@@ -118,18 +118,33 @@ export function readStdinText(maxBytes: number, label?: string): Promise<string>
  * when that fails). The host boots with MANAGEMENT_INPROC: connection probes and system certificates on, model
  * discovery, community prices and the usage monitor off.
  */
-export async function withHost<T>(ctx: CliContext, scopes: HostScope[], fn: (client: HostClient) => Promise<T>): Promise<T> {
-  const host = await ensureHost(ctx, scopes, { interactive: false, inproc: MANAGEMENT_INPROC })
-  const cleanup = async (): Promise<void> => {
-    host.client.close()
+export async function withHost<T>(
+  ctx: CliContext,
+  scopes: HostScope[],
+  fn: (client: HostClient) => Promise<T>,
+  opts: {
+    /**
+     * Leave the host running when `fn` succeeds (the command goes on to use it: ctx.startInproc hands the same host to
+     * the next ensureHost, so `orgai init` boots once for the project step and the Architect). The caller or the next
+     * step stops it. A failure still stops it. Boots with the default (everything on) background work then.
+     */
+    keepHost?: boolean
+  } = {}
+): Promise<T> {
+  const host = await ensureHost(ctx, scopes, { interactive: false, ...(opts.keepHost ? {} : { inproc: MANAGEMENT_INPROC }) })
+  const stop = async (): Promise<void> => {
     await host.inproc.stop(true).catch((e: unknown) => warn(ctx, `Could not stop the in-process host: ${e instanceof Error ? e.message : String(e)}`))
   }
+  let ok = false
   try {
     const missing = missingScopesError(host.client, scopes)
     if (missing) throw missing
-    return await fn(host.client)
+    const out = await fn(host.client)
+    ok = true
+    return out
   } finally {
-    await cleanup()
+    host.client.close()
+    if (!(opts.keepHost && ok)) await stop()
   }
 }
 

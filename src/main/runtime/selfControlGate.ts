@@ -146,7 +146,7 @@ export interface ControlProtectedExtras {
 }
 
 /** The control entries of a data folder. */
-const CONTROL_ENTRIES = ['run', 'secrets.json', 'codex', 'settings.json', 'auth-cwd'] as const
+const CONTROL_ENTRIES = ['run', 'secrets.json', 'codex', 'settings.json', 'auth-cwd', 'evolution'] as const
 
 /**
  * The paths the gate protects, each in its lexical (path.resolve) and canonical (canonicalDeep: real path of the

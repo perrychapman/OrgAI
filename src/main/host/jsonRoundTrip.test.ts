@@ -13,6 +13,7 @@ import {
   MCP_SCOPE_IPC,
   SECRETS_IPC,
   TEAM_FILES_IPC,
+  EVOLVE_IPC,
   OUTPUTS_IPC,
   type AppSettings,
   type DecisionOutcome,
@@ -28,7 +29,7 @@ import {
   type SkillBundleInput
 } from '../../shared/types'
 import { outputArgs } from './args'
-import { CHANNEL_JSON_FIELDS, decodeRequest, encodeRequest, parseJsonSafe, PUSH_CHANNELS, requestChannels, stringifyJson } from './jsonCodec'
+import { CHANNEL_JSON_FIELDS, EVOLVE_AFTER_RUN_CHANNEL, decodeRequest, encodeRequest, parseJsonSafe, PUSH_CHANNELS, requestChannels, stringifyJson } from './jsonCodec'
 
 /** Request over the wire: encode, JSON (safe parse on the host), decode. */
 function overWire(channel: string, args: unknown[]): unknown[] {
@@ -49,7 +50,7 @@ function dropUndefined(v: unknown): unknown {
 describe('(a) completeness', () => {
   const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC)]
   // HOST_IPC (socket only) and SECRETS_IPC (Wave 7, every surface): channels added for the host.
-  const host: string[] = [...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
+  const host: string[] = [...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC), ...Object.values(EVOLVE_IPC), EVOLVE_AFTER_RUN_CHANNEL]
 
   it('matches the spec counts: 212 existing channels (198 request + 14 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
@@ -59,7 +60,7 @@ describe('(a) completeness', () => {
     expect(existing.filter((c) => !push.has(c)).length).toBe(198)
     expect(Object.values(HOST_IPC).length).toBe(6)
     expect(Object.values(SECRETS_IPC).length).toBe(5)
-    expect(requestChannels().length).toBe(209)
+    expect(requestChannels().length).toBe(214)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {
