@@ -137,9 +137,12 @@ Protocol:
 
 - **Files are always 0 bytes.** A missing lock file is created `open(O_CREAT|O_EXCL, 0600)` and closed before SQLite
   opens it; it is never written. Before each SQLite open, `lstat` (no descriptor) must show a regular, non-link file of
-  size 0 owned by this user (POSIX), with no `-wal` or `-shm` sibling; anything else fails closed naming the path. A
-  `-journal` sibling is expected: an exclusive hold creates one (512 bytes, zeroed header) and a crashed holder leaves
-  it; it is never hot because nothing is written, and the next holder's `ROLLBACK` removes it (measured, phase 1).
+  size 0 owned by this user (POSIX), with no `-wal` or `-shm` sibling; anything else fails closed naming the path.
+  Connections set `journal_mode = MEMORY`, so a hold never creates a `-journal` (unit test: none exists while an
+  exclusive hold is held). A `-journal` written by a holder in SQLite's default mode (an older build; it is 512 bytes,
+  zeroed header, and a crashed holder leaves it) is never hot because nothing is written, and SQLite removes it when the
+  database is empty (measured, phase 1); a `-journal` that is a link or not a regular file fails closed, because SQLite
+  opens, writes and deletes it by name.
   Lock files are never opened, read or closed outside SQLite (closing a raw descriptor would drop the process's POSIX
   locks on the inode, SQLite "how to corrupt" 2.2).
 - **Exclusive**: `BEGIN EXCLUSIVE`. **Shared**: `BEGIN` + `SELECT count(*) FROM sqlite_schema`. **Release**:
@@ -612,7 +615,11 @@ The OS frees a dead host's locks, but agents, shells, git, MCP servers or Codex 
   journal present and not committed → refuse ("An unfinished change to this file from <folder> must be finished
   there first; start OrgAI on that folder."); X unreadable → refuse with `doctor` guidance. A folder's own recovery
   also removes its shared locators whose canonical journal is absent. Ids are validated and `dataFolder` is shown
-  through `sanitizeTty` with a cap.
+  through `sanitizeTty` with a cap. The canonical journal is data: reading it validates every name that becomes a path
+  or a lookup (operation id, resource keys, `requiredLocks` against the lock-key pattern, step ids and kinds, the shared
+  locators' keys and folder id; a kind is looked up as an own property only), and the cache journal directory is never
+  stored in it: recovery and `--resolve-journal` take it from the caller (`cachePaths().journal`) and refuse a journal
+  with shared locators when it is not given.
 - **Durable ordering**: (1) locators (local, and shared for output files) written and fsynced, then the canonical
   journal (files and directories fsynced); a locator whose canonical journal is absent is stale and any contender
   removes it; (2) for each step: mark it `started` (durable), make its effect durable (tmp + fsync + rename + directory
@@ -1000,6 +1007,13 @@ with write flags, `fs/promises` `FileHandle` writes) and fails on any call site 
 lock, claim or ownership rule covering it. It catches new unclassified writers; check-to-write gaps and deferred
 writers are covered by the operation tests of section 11, not by the scanner.
 
+The allow-list (`src/main/writePathInventory.allowlist.ts`) is exact both ways: a new write site fails "every file-write
+call site is classified" until its key (`file:function:callee`, printed by the failure) is added with the rule that
+covers it, and a removed or renamed site fails "has no stale allow-list entries" until its key is removed. Renaming the
+enclosing function, or switching a call to a wrapper (`renameSync` to `renameSyncRetry`), changes the key. Labels for
+pre-existing sites that are not covered by data-folder ownership (the ownership and repository-lock primitives, writes
+inside `withRepoLock`, project files shared with other tools) are defined in the allow-list's header.
+
 ## 9. Security and trust
 
 - **Metadata only restricts.** Advisory files (lock `.json`, host registry, worktree markers, `liveElsewhere`) never
@@ -1285,10 +1299,32 @@ its area, the Reviewer). Hot files take one claim at a time (CLAUDE.md).
    both formats, host claim and admission replacing `acquireHostOwnership` in CLI and desktop, the CLI matrix,
    `cli-parallel.mjs`, `cli-upgrade.mjs`, updated e2e scripts and the docs of 7.4.
 
+**Before activation** (open review findings on the phase 1 primitives, Reviewer, PR 55; each must be resolved in the
+change that first calls these modules in production):
+
+- M3: `<dataDir>/control/` and the user cache root `<user cache>/orgai/` are not in the self-control gate's protected
+  set (`selfControlGate.ts`), while every new module trusts what it reads there (host registry pids, children evidence
+  feeding `collectExcludedPids` in `consumers.ts`, chain records, journals, session bindings). Add both to the gate.
+- M6: `startTokenOfSync` (`startTokens.ts`) runs PowerShell and CIM synchronously with a 15 s timeout, and
+  `defaultIsAlive` (`consumers.ts`) runs it once per descendant; on the Electron main thread that blocks the app. Make
+  it asynchronous or batch it (one table read per check) before the desktop calls it.
+- M7: `node:sqlite` is unflagged only from Node 22.13 / 23.4 while `engines` says `>=22`; its availability and any
+  experimental warning under Electron 45 are the author's own measurement. Raise `engines` or feature-check at start,
+  and verify under the packaged Electron.
+- L4: lock keys that differ only in case collide on case-insensitive NTFS and APFS (one file) while the in-process
+  `states` map in `osLock.ts` keeps them apart (two coordinators for one OS lock). Keys must be case-unique, or the map
+  keyed by a case-folded path on those platforms.
+- L6: temp files of `atomicWrite` (`<file>.tmp-<hostId>-<random>`) left by a crash are not swept; housekeeping (5.4)
+  must remove those whose host is dead.
+- L7: `startTokens.ts` passes the full `process.env` to `ps` / PowerShell (scrub it like other children), and the macOS
+  `lstart` token has one-second granularity (a pid reused within the same second compares equal).
+
 ## 13. Unverified
 
-- Windows: SQLite locking through `node:sqlite`, DACL setup and ancestor checks, `GetDriveType`, lock-file unlink
-  behaviour, no cwd check for consumers.
+- Windows: DACL setup and ancestor checks, `GetDriveType`, no cwd check for consumers. SQLite locking through
+  `node:sqlite` across processes is exercised by the phase 1 unit tests on a local Windows 11 machine (osLock,
+  lockOrder, sharedJsonFile, hostRegistry, chainClaim, sessionBinding; repeated runs), CI windows-latest pending; the
+  sharing-violation retry (EACCES / EPERM / SQLITE_CANTOPEN) is unit tested by classification only, never provoked.
 - Linux: lock behaviour on CI only.
 - Network file systems: SQLite's own warning; detected and reported only.
 - Concurrent bundled Codex app-servers on one home; Claude CLI and Codex exiting on host pipe close.
