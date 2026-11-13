@@ -1,4 +1,5 @@
-// Parser: rolldown's oxc parseSync (a vite 8 dependency); the repo's TypeScript 7 has no JS compiler API.
+// Parser: rolldown's oxc parseSync, imported through vite 8's own re-export (vite is a declared devDependency;
+// rolldown is only a transitive one); the repo's TypeScript 7 has no JS compiler API.
 // Write-path inventory (docs/design/parallel-sessions.md 8). Statically scans src/main and src/cli for file-write call
 // sites and fails on any site that is not classified in writePathInventory.allowlist.ts (and on stale entries).
 //
@@ -22,7 +23,7 @@ import { describe, expect, it } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseSync } from 'rolldown/utils'
+import { parseSync } from 'vite'
 import { WRITE_SITES } from './writePathInventory.allowlist'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
