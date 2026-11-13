@@ -184,7 +184,7 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     if (fixed && (rawPatch.tier !== undefined || rawPatch.effort !== undefined || rawPatch.staffing !== undefined)) trim('staffing_fixed', `${slug} has fixed staffing, so its tier, effort and staffing stay as configured`, slug)
     // A value only the user sets (tier top, effort xhigh / max, as the role's own or a staffing bound) is never moved by an
     // evolution: a rollback never restores it (restoreSnapshot), so such a cut could not be undone.
-    const userOnly = cur === 'top' || role.effort === 'xhigh' || role.effort === 'max' || role.staffing?.minTier === 'top' || role.staffing?.maxEffort === 'xhigh' || role.staffing?.maxEffort === 'max'
+    const userOnly = cur === 'top' || role.tier === 'top' || settingTier(role.model ?? '') === 'top' || role.effort === 'xhigh' || role.effort === 'max' || role.staffing?.minTier === 'top' || role.staffing?.maxEffort === 'xhigh' || role.staffing?.maxEffort === 'max'
 
     if (!fixed && userOnly && (rawPatch.tier !== undefined || rawPatch.effort !== undefined || rawPatch.staffing !== undefined)) trim('user_only_value', `${slug} holds a value only you set (tier top, effort xhigh or max), so its tier, effort and staffing stay as they are`, slug)
     else if (!fixed && rawPatch.tier !== undefined) {

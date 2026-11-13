@@ -380,8 +380,9 @@ describe('validateEvolutionPlan: prompts, skills, limits, rejected', () => {
     expect(out.rolePatches[0]).toMatchObject({ tier: 'everyday', staffing: { mode: 'auto', minTier: 'everyday' } })
   })
   it('tiers are compared as staffing reads them: a tier alias in the model wins, so a raise is never read as a cut', () => {
-    // { model: 'haiku', tier: 'top' } runs on fast; a patch to deep is a two-step raise, not a cut from top.
-    const mixed = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'haiku', tier: 'top', effort: 'medium' })])
+    // { model: 'haiku', tier: 'deep' } runs on fast; a patch to deep is a two-step raise, not a no-op. (A stored tier
+    // 'top' is a user-only value the gate never touches: see the user_only_value test.)
+    const mixed = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'haiku', tier: 'deep', effort: 'medium' })])
     const out = validateEvolutionPlan(mixed, mkPlan({ rolePatches: [patch('dev', { tier: 'deep' })] }))
     expect(rules(out)).toContain('tier_raise')
     expect(out.rolePatches).toHaveLength(0)
@@ -427,7 +428,7 @@ describe('validateEvolutionPlan: prompts, skills, limits, rejected', () => {
       expect(effectiveRoleStaffing(after, odd).minTier, minTier).toBeUndefined()
     }
     // A role on top (or with a top floor, or xhigh / max effort) is never resized: a rollback could not restore it.
-    for (const over of [{ model: 'top', tier: 'fast' as const }, { model: 'deep', tier: 'deep' as const, staffing: { mode: 'auto' as const, minTier: 'top' as const } }, { model: 'deep', tier: 'deep' as const, effort: 'xhigh' as const }, { model: 'deep', tier: 'deep' as const, staffing: { mode: 'auto' as const, maxEffort: 'max' as const } }]) {
+    for (const over of [{ model: 'top', tier: 'fast' as const }, { model: 'opus', tier: 'top' as const }, { model: 'fable', tier: 'deep' as const },{ model: 'deep', tier: 'deep' as const, staffing: { mode: 'auto' as const, minTier: 'top' as const } }, { model: 'deep', tier: 'deep' as const, effort: 'xhigh' as const }, { model: 'deep', tier: 'deep' as const, staffing: { mode: 'auto' as const, maxEffort: 'max' as const } }]) {
       const userSet = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { effort: 'medium', ...over })])
       const cut = validateEvolutionPlan(userSet, mkPlan({ rolePatches: [patch('dev', { tier: 'everyday', effort: 'low' })] }))
       expect(cut.rolePatches, JSON.stringify(over)).toEqual([])

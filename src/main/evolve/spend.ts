@@ -40,8 +40,15 @@ export function spendRaisesOf(project: Project, plan: Pick<EvolutionPlan, 'roleP
       }
     }
     for (const h of settled.held) {
-      // The model row is decided above (settleSpend compares only the `tier` fields).
-      if (h.id === 'model' || h.id === 'tier') continue
+      // The model row is decided above (settleSpend compares only the `tier` fields), unless settleSpend attached other
+      // rises of the whole change to it (a floor switched on, a role turning automatic): those are still a raise.
+      if (h.id === 'model' || h.id === 'tier') {
+        if (h.states.length && !seen.has('tier')) {
+          seen.add('tier')
+          out.push({ roleSlug: role.slug, field: 'tier', summary: clip(h.summary) })
+        }
+        continue
+      }
       const field = FIELD[h.id]
       if (seen.has(field)) continue
       seen.add(field)
