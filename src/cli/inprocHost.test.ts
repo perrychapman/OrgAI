@@ -14,6 +14,7 @@ vi.mock('../main/systemCerts', () => ({
 import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../main/store/secrets'
 import { fakeCustody } from '../main/store/vaultTesting'
 import { VaultNotReady } from '../main/store/vaultTypes'
+import { connectProbe } from '../main/host/ownership'
 import { connectHost } from './client/hostClient'
 import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, memoryStreamPair, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
@@ -128,8 +129,23 @@ describe('startInprocHost', () => {
     const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CliError)
     expect((err as CliError).exitCode).toBe(6)
-    expect((err as CliError).message).toBe(`orgai is already running in another terminal (/work/first, pid ${process.pid}). Use that one, or quit it first.`)
+    const message = (err as CliError).message
+    expect(message.startsWith(`orgai is already running in another terminal (/work/first, pid ${process.pid}). Use that one, or quit it first.`)).toBe(true)
+    // Review M2 (PR 49): the way out when nothing is really running names the run folder.
+    expect(message).toContain('If you are sure no OrgAI (and no orgai terminal host) is running')
+    expect(message).toContain(join(dataDir, 'run'))
     expect(Date.now() - began).toBeLessThan(2000)
+  })
+
+  it('a host that listens on nothing binds a liveness-only endpoint: livenessProbe in daemon.json, accepts and closes, no daemon.secret, gone on stop', async () => {
+    const h = await start()
+    const daemon = JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
+    expect(daemon).toMatchObject({ listening: false, livenessProbe: true, hostKind: 'inproc' })
+    expect(existsSync(join(dataDir, 'run', 'daemon.secret'))).toBe(false)
+    expect(await connectProbe(daemon.endpoint as string, 1000)).toBe('connected')
+    await h.stop(true)
+    expect(existsSync(join(dataDir, 'run', 'daemon.json'))).toBe(false)
+    expect(await connectProbe(daemon.endpoint as string, 1000)).not.toBe('connected')
   })
 
   it('an unreadable daemon.json is the owned refusal (exit 6), not the raw ownership error (spec 4.2)', async () => {
@@ -289,6 +305,21 @@ describe('memoryStreamPair', () => {
     await tick()
     await tick()
     expect(settled).toBe(1)
+  })
+  it('defaults to a 1 MiB high-water mark, which is backpressure and not a cap: a frame of several MiB still flows whole', async () => {
+    const [a, b] = memoryStreamPair()
+    expect(a.writableHighWaterMark).toBe(1024 * 1024)
+    expect(b.readableHighWaterMark).toBe(1024 * 1024)
+    const frame = Buffer.alloc(5 * 1024 * 1024 + 123, 7)
+    const chunks: Buffer[] = []
+    b.on('data', (c: Buffer) => chunks.push(c))
+    const done = new Promise<void>((r) => b.on('end', () => r()))
+    await new Promise<void>((ok) => a.write(frame, () => ok()))
+    a.end()
+    await done
+    const got = Buffer.concat(chunks)
+    expect(got.length).toBe(frame.length)
+    expect(got.equals(frame)).toBe(true)
   })
   it('a small write completes at once, and ending one side ends the other', async () => {
     const [a, b] = memoryStreamPair()
