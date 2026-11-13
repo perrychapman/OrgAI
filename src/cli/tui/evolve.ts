@@ -8,6 +8,7 @@ import type {
   EvolutionHistory,
   EvolutionMetrics,
   EvolutionPlan,
+  EvolutionSpendRaise,
   EvolveAnalyzeResult,
   EvolveApplyResult,
   EvolveRollbackResult,
@@ -127,14 +128,36 @@ export function planLines(p: EvolutionPlan, before?: Project): string[] {
   const violations = list(p.gate?.violations)
   if (p.gate && !p.gate.ok) lines.push(`Safety gate: refused (${violations.length} violation${violations.length === 1 ? '' : 's'}).`)
   else lines.push(violations.length ? `Safety gate: passed, ${violations.length} trimmed.` : 'Safety gate: passed.')
-  for (const v of violations.slice(0, MAX_VIOLATIONS)) lines.push(`  ${cleanLine(v.action, 12)} ${cleanLine(v.rule, 40)}${v.roleSlug ? ` [${cleanLine(v.roleSlug, 40)}]` : ''}: ${cleanLine(v.message, 120)}`)
+  for (const v of violations.slice(0, MAX_VIOLATIONS)) lines.push(`  ${cleanLine(v.action, 12)} ${cleanLine(v.rule, 40)}${v.roleSlug ? ` [${cleanLine(v.roleSlug, 40)}]` : ''}: ${full(v.message)}`)
   more(lines, violations.length, MAX_VIOLATIONS)
   if (p.usage) lines.push(`Synthesis used ${toks(p.usage.inputTokens)} input and ${toks(p.usage.outputTokens)} output tokens${p.usage.costUsd !== undefined ? ` (${usd(p.usage.costUsd)})` : ''}.`)
+  lines.push(...raiseLines(p.spendRaises))
   return lines
 }
 
+/** Sanitized, whitespace folded, never cut: text a person decides on is shown whole. */
+const full = (s: string | undefined): string => cleanLine(s, Number.POSITIVE_INFINITY)
+
+/** Every part that may make runs spend more, in full (no bound, no "+N more"). */
+export function raiseLines(raises: readonly EvolutionSpendRaise[] | undefined): string[] {
+  const l = list(raises as EvolutionSpendRaise[] | undefined)
+  return l.length ? ['May spend more:', ...l.map((r) => `  - ${full(r.summary)}`)] : []
+}
+
+function heldLines(held: readonly EvolutionSpendRaise[] | undefined): string[] {
+  const l = list(held as EvolutionSpendRaise[] | undefined)
+  if (!l.length) return []
+  return [`Held, not applied (${l.length} change${l.length === 1 ? '' : 's'} may spend more):`, ...l.map((r) => `  - ${full(r.summary)}`), 'Run /evolve apply again and press Enter on the question to approve them.']
+}
+
+/** The short notify line for held raises (the opened text lists them whole). */
+export function heldNotice(held: readonly EvolutionSpendRaise[] | undefined): string {
+  const n = list(held as EvolutionSpendRaise[] | undefined).length
+  return n ? ` ${n} change${n === 1 ? '' : 's'} that may spend more ${n === 1 ? 'was' : 'were'} held.` : ''
+}
+
 export function analyzeText(r: EvolveAnalyzeResult, before?: Project): string {
-  return ['Team evolution analysis (no tokens spent)', ...diagnosisLines(r.diagnosis), ...planLines(r.plan, before), 'Apply with /evolve apply.'].join('\n')
+  return [r.plan?.strategy === 'hybrid' ? 'Team evolution analysis (one tracked model call)' : 'Team evolution analysis (no tokens spent)',...diagnosisLines(r.diagnosis), ...planLines(r.plan, before), 'Apply with /evolve apply.'].join('\n')
 }
 
 const genChange = (g: EvolutionGeneration): string => {
@@ -152,14 +175,16 @@ function generationLine(g: EvolutionGeneration): string {
 export function applyText(r: EvolveApplyResult, strategy: EvolveStrategy, before?: Project): string {
   const lines: string[] = []
   if (!r.applied || !r.generation) {
-    lines.push(`Nothing applied: ${cleanLine(r.reason, 200) || 'no reason given'}.`)
+    lines.push(`Nothing applied: ${full(r.reason) || 'no reason given'}.`)
     lines.push(...planLines(r.plan, before))
+    lines.push(...heldLines(r.heldSpendRaises))
     return lines.join('\n')
   }
   const g = r.generation
   lines.push(`Applied ${cleanLine(g.id, 20)} (${cleanLine(g.status, 20)}, ${strategy}): ${cleanLine(g.summary, 160)}`)
   lines.push(...planLines(r.plan, before))
-  lines.push(`Trial: measured over the next ${num(g.evalWindowRuns)} work runs, then promoted or rolled back.`)
+  lines.push(...heldLines(r.heldSpendRaises))
+  lines.push(`Trial: measured over the next ${num(g.evalWindowRuns)} work runs, then a later evolve pass (exec --evolve, org evolve --apply, loop) promotes it or, on a regression, rolls it back.`)
   lines.push(`Undo it now with /evolve rollback ${cleanLine(g.id, 20)}.`)
   lines.push(r.teamFilesSynced ? 'Team files in .orgai/ were synced.' : 'Team files in .orgai/ were not changed.')
   return lines.join('\n')

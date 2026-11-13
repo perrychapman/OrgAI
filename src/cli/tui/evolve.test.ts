@@ -58,14 +58,14 @@ describe('formatters', () => {
   })
 })
 
-function ctxFor(s: TuiState) {
+function ctxFor(s: TuiState, answer = true, p: EvolutionPlan = plan()) {
   const session = {
-    evolveAnalyze: vi.fn(async () => ({ diagnosis: diagnosis(1), plan: plan(), digest: '' })),
+    evolveAnalyze: vi.fn(async () => ({ diagnosis: diagnosis(1), plan: p, digest: '' })),
     evolveHistory: vi.fn(async () => ({ projectId: 'p1', generations: [], rejectedHypotheses: [] })),
     evolveApply: vi.fn(async () => ({ applied: true, generation: gen(), project: { id: 'p1' }, diagnosis: diagnosis(1), plan: plan(), teamFilesSynced: true })),
     evolveRollback: vi.fn(async () => ({ rolledBack: true, generation: gen(), project: { id: 'p1' }, teamFilesSynced: false }))
   }
-  const ctx = { session: session as unknown as TuiSessionApi, state: () => s, notify: vi.fn(), openText: vi.fn(async () => {}) } as unknown as SlashContext
+  const ctx = { session: session as unknown as TuiSessionApi, state: () => s, notify: vi.fn(), openText: vi.fn(async () => {}), confirm: vi.fn(async () => answer) } as unknown as SlashContext
   return { ctx, session }
 }
 const evolve = SLASH_COMMANDS.find((c) => c.name === 'evolve')!
@@ -79,10 +79,53 @@ describe('/evolve command', () => {
     await evolve.run(ctx, 'history')
     expect(session.evolveHistory).toHaveBeenCalledWith('p1')
     await evolve.run(ctx, 'apply hybrid')
-    expect(session.evolveApply).toHaveBeenCalledWith({ projectId: 'p1', strategy: 'hybrid' })
+    expect(session.evolveAnalyze).toHaveBeenLastCalledWith({ projectId: 'p1', strategy: 'hybrid' })
+    expect(session.evolveApply).toHaveBeenCalledWith({ projectId: 'p1', strategy: 'hybrid', expectedFingerprint: 'f' })
     await evolve.run(ctx, 'rollback gen_1')
     expect(session.evolveRollback).toHaveBeenCalledWith({ projectId: 'p1', generationId: 'gen_1' })
-    expect(ctx.openText).toHaveBeenCalledTimes(3)
+    // analyze, history, the plan before the apply, the applied text
+    expect(ctx.openText).toHaveBeenCalledTimes(4)
+  })
+  it('apply analyzes, shows every spend raise in full, asks with the next id and the count, and applies that fingerprint with allowSpendRaise', async () => {
+    const long = `dev may move to the deep tier and cost more per run: ${'x'.repeat(400)} END`
+    const p = plan({ fingerprint: 'fp9', spendRaises: [{ roleSlug: 'dev', field: 'tier', summary: long }, { field: 'concurrency', summary: 'more subagents at once' }] })
+    const { ctx, session } = ctxFor(withProject(), true, p)
+    session.evolveHistory.mockResolvedValueOnce({ projectId: 'p1', generations: [gen({ id: 'gen_2' }), gen({ id: 'gen_4' })], rejectedHypotheses: [] } as never)
+    await evolve.run(ctx, 'apply')
+    expect(session.evolveAnalyze).toHaveBeenCalledWith({ projectId: 'p1', strategy: 'deterministic' })
+    const shown = (ctx.openText as ReturnType<typeof vi.fn>).mock.calls[0][1] as string
+    expect(shown).toContain('May spend more:')
+    expect(shown).toContain(long)
+    expect(shown).toContain('more subagents at once')
+    expect(ctx.confirm).toHaveBeenCalledWith('Apply this plan as trial gen_5? 2 changes may spend more.')
+    expect(session.evolveApply).toHaveBeenCalledWith({ projectId: 'p1', strategy: 'deterministic', expectedFingerprint: 'fp9', allowSpendRaise: true })
+  })
+  it('Esc (a declined question) applies nothing', async () => {
+    const p = plan({ spendRaises: [{ field: 'effort', summary: 'raises effort' }] })
+    const { ctx, session } = ctxFor(withProject(), false, p)
+    await evolve.run(ctx, 'apply')
+    expect(session.evolveAnalyze).toHaveBeenCalled()
+    expect(ctx.confirm).toHaveBeenCalled()
+    expect(session.evolveApply).not.toHaveBeenCalled()
+    expect(ctx.notify).toHaveBeenCalledWith('Nothing applied.')
+  })
+  it('an empty or gate-refused plan never asks and never applies', async () => {
+    for (const p of [plan({ empty: true }), plan({ gate: { ok: false, violations: [] } })]) {
+      const { ctx, session } = ctxFor(withProject(), true, p)
+      await evolve.run(ctx, 'apply')
+      expect(ctx.confirm).not.toHaveBeenCalled()
+      expect(session.evolveApply).not.toHaveBeenCalled()
+      expect(ctx.notify).toHaveBeenCalledWith(expect.stringMatching(/Nothing to change|refused/), 'warn')
+    }
+  })
+  it('lists held raises and the whole refusal reason in the applied text', () => {
+    const reason = `the plan changed since it was shown ${'y'.repeat(300)} DONE`
+    const held = [{ roleSlug: 'dev', field: 'tier' as const, summary: `held sentence ${'z'.repeat(300)} END` }]
+    const refused = applyText({ applied: false, reason, project: {} as never, diagnosis: diagnosis(1), plan: plan(), teamFilesSynced: false, heldSpendRaises: held }, 'deterministic')
+    expect(refused).toContain(reason)
+    expect(refused).toContain(held[0].summary)
+    const ok = applyText({ applied: true, generation: gen(), project: {} as never, diagnosis: diagnosis(1), plan: plan(), teamFilesSynced: true, heldSpendRaises: held }, 'deterministic')
+    expect(ok).toContain(held[0].summary)
   })
   it('refuses without a project, on bad args, and while a run works', async () => {
     const none = ctxFor(createInitialState('/tmp/p'))
@@ -95,6 +138,7 @@ describe('/evolve command', () => {
     Object.assign(s, { activeRunId: 'r1', runs: { r1: { summary: { id: 'r1', status: 'running' } } } })
     const busy = ctxFor(s)
     await evolve.run(busy.ctx, 'apply')
+    expect(busy.session.evolveAnalyze).not.toHaveBeenCalled()
     expect(busy.session.evolveApply).not.toHaveBeenCalled()
     expect(busy.ctx.notify).toHaveBeenCalledWith(expect.stringContaining('run is working'), 'warn')
   })

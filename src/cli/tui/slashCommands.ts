@@ -15,7 +15,7 @@ import { sanitizeTty } from './sanitizeTty'
 import { offersRetro } from './selectors'
 import { usageText } from './usageText'
 import { approvalsText } from './approvals'
-import { analyzeText, applyText, historyText, parseEvolve, rollbackText } from './evolve'
+import { analyzeText, applyText, heldNotice, historyText, parseEvolve, rollbackText } from './evolve'
 import { MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE } from '../../shared/liveModelSwitch'
 import type { ConnectionId, Effort, PermissionMode, ProviderModel, RunOverrides, RunSummary, StaffingGoal } from '../../shared/types'
 import { projectConnection } from '../../shared/defaults'
@@ -709,9 +709,29 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
           await ctx.openText('Team evolution history', historyText(await ctx.session.evolveHistory(projectId)))
         } else if (req.kind === 'apply') {
           if (req.strategy === 'hybrid') ctx.notify('Hybrid makes one tracked model call on the host to draft the plan.')
-          const res = await ctx.session.evolveApply({ projectId, strategy: req.strategy })
+          // Analyze first and show the whole plan (every part that may spend more, in full); apply exactly that plan.
+          const analysis = await ctx.session.evolveAnalyze({ projectId, strategy: req.strategy })
+          await ctx.openText('Team evolution plan', analyzeText(analysis, project))
+          const plan = analysis.plan
+          if (plan.empty || !plan.gate.ok) {
+            ctx.notify(plan.empty ? 'Nothing to change: the plan is empty.' : 'The safety gate refused this plan. Nothing would be applied.', 'warn')
+            return
+          }
+          const raises = plan.spendRaises ?? []
+          const history = await ctx.session.evolveHistory(projectId)
+          let max = 0
+          for (const g of history?.generations ?? []) {
+            const m = /^gen_(\d{1,9})$/.exec(g.id)
+            if (m) max = Math.max(max, Number(m[1]))
+          }
+          const ok = await ctx.confirm(`Apply this plan as trial gen_${max + 1}?${raises.length ? ` ${raises.length} change${raises.length === 1 ? '' : 's'} may spend more.` : ''}`)
+          if (!ok) {
+            ctx.notify('Nothing applied.')
+            return
+          }
+          const res = await ctx.session.evolveApply({ projectId, strategy: req.strategy, expectedFingerprint: plan.fingerprint, ...(raises.length ? { allowSpendRaise: true } : {}) })
           const text = applyText(res, req.strategy, project)
-          ctx.notify(res.applied ? `Evolved the team${res.generation ? ` (${cleanLine(res.generation.id, 20)})` : ''}. The org tree shows the new chart.` : `Nothing applied: ${cleanLine(res.reason, 120) || 'no change'}.`, res.applied ? 'ok' : 'warn')
+          ctx.notify(`${res.applied ? `Evolved the team${res.generation ? ` (${cleanLine(res.generation.id, 20)})` : ''}. The org tree shows the new chart.` : `Nothing applied: ${cleanLine(res.reason, 120) || 'no change'}.`}${heldNotice(res.heldSpendRaises)}`, res.applied ? 'ok' : 'warn')
           await ctx.openText('Team evolution applied', text)
         } else {
           const res = await ctx.session.evolveRollback({ projectId, ...(req.generationId ? { generationId: req.generationId } : {}) })

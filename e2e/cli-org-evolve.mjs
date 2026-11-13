@@ -197,7 +197,15 @@ try {
   check(r.code === 2, 'org evolve --eval-window without --apply is exit 2', show(r))
 
   // ---------- 2. apply ----------
-  const applied = await jsonAt(['org', 'evolve', '--apply', '--eval-window', '10'])
+  // Without a terminal and without --yes the apply asks nobody: exit 2 before any host call, nothing written.
+  r = await at(['org', 'evolve', '--apply'])
+  check(r.code === 2 && /--yes/.test(r.err), 'org evolve --apply without --yes and without a terminal is exit 2', show(r))
+  r = await at(['org', 'evolve', '-y'])
+  check(r.code === 2, 'org evolve -y alone (no --apply) is exit 2', show(r))
+  r = await at(['org', 'retro', A.runIds[0], '--unattended', '--apply'])
+  check(r.code === 2, 'org retro --unattended --apply without --yes and without a terminal is exit 2', show(r))
+  check(!fs.existsSync(ledgerPath(A.project.id)) && JSON.stringify(storedProject(A.project.id).roles) === JSON.stringify(before.roles), 'the refused applies wrote nothing (no ledger, same chart)')
+  const applied = await jsonAt(['org', 'evolve', '--apply', '--yes', '--eval-window', '10'])
   check(applied.r.code === 0 && applied.v?.applied === true && applied.v.generation?.id === 'gen_1' && applied.v.generation.status === 'trial', 'org evolve --apply (non-TTY) applies gen_1 as a trial', show(applied.r))
   const ledger = readLedger(A.project.id)
   const gens = ledger?.generations ?? []
@@ -215,8 +223,8 @@ try {
   check(leaked.length === 0, 'no role prompt contains a directory or file name from the seeded conflict paths', leaked.map((s) => `${s}: ${(roleOf(after, s).prompt.match(/.{0,60}(routes|notes\.js).{0,60}/is) ?? [''])[0]}`).join(' | '))
   const orgaiDir = path.join(A.repo, '.orgai')
   check(typeof applied.v?.teamFilesSynced === 'boolean' && applied.v.teamFilesSynced === fs.existsSync(orgaiDir), `.orgai/ sync state matches the fixture (teamFilesSynced=${applied.v?.teamFilesSynced}, folder ${fs.existsSync(orgaiDir) ? 'present' : 'absent'})`)
-  r = await at(['org', 'evolve', '--apply'])
-  check(r.code === 0 && /Nothing was applied/.test(r.out), 'a second --apply while a trial is active applies nothing', show(r))
+  r = await at(['org', 'evolve', '--apply', '--yes'])
+  check(r.code === 0 && /Nothing (was|would be) applied/.test(r.out), 'a second --apply --yes while a trial is active applies nothing', show(r))
 
   // ---------- 3. loop and exec --evolve ----------
   r = await at(['org', 'evolve', 'loop', '--prompt', MOCK_TASK, '--iterations', '2'])
@@ -244,7 +252,7 @@ try {
   repos.push(B.repo)
   const atB = (args, opts = {}) => cli(args, { cwd: B.repo, timeoutMs: 180_000, ...opts })
   const beforeB = storedProject(B.project.id)
-  const appliedB = json((await atB(['--output-format', 'json', 'org', 'evolve', '--apply', '--eval-window', '2'])).out)
+  const appliedB = json((await atB(['--output-format', 'json', 'org', 'evolve', '--apply', '--yes', '--eval-window', '2'])).out)
   check(appliedB?.applied === true && appliedB.generation?.id === 'gen_1', 'fixture B: gen_1 applied as a 2-run trial', JSON.stringify(appliedB ?? {}).slice(0, 300))
   const appliedAt = readLedger(B.project.id)?.generations?.find((g) => g.id === 'gen_1')?.appliedAt
   check(typeof appliedAt === 'number', 'fixture B: the ledger records appliedAt', String(appliedAt))

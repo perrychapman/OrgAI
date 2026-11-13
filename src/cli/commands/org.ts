@@ -351,6 +351,7 @@ const orgRetro: SubcommandFn = async (ctx, args) => {
     'ax-screen-reader': { type: 'boolean' },
     unattended: { type: 'boolean' },
     apply: { type: 'boolean' },
+    yes: { type: 'boolean', short: 'y' },
     strategy: { type: 'string' },
     goal: { type: 'string' },
     runs: { type: 'string' },
@@ -361,7 +362,7 @@ const orgRetro: SubcommandFn = async (ctx, args) => {
   if (values.apply === true && values.unattended !== true) throw new CliError('--apply belongs to the unattended retrospective: orgai org retro <runRef> --unattended --apply.', EXIT.usage)
   // No terminal needed: the unattended form reads the project's recent work runs through the team-evolution analysis (orgEvolve.ts).
   if (values.unattended === true) {
-    return retroUnattended(ctx, ref, { apply: values.apply === true, ...(values.strategy ? { strategy: values.strategy } : {}), ...(values.goal ? { goal: values.goal } : {}), ...(values.runs ? { runs: values.runs } : {}), ...(values['min-waste'] ? { 'min-waste': values['min-waste'] } : {}) })
+    return retroUnattended(ctx, ref, { apply: values.apply === true, ...(values.yes === true ? { yes: true } : {}),...(values.strategy ? { strategy: values.strategy } : {}), ...(values.goal ? { goal: values.goal } : {}), ...(values.runs ? { runs: values.runs } : {}), ...(values['min-waste'] ? { 'min-waste': values['min-waste'] } : {}) })
   }
   // The run lives only inside the orgai that starts it, so it needs a terminal to follow it in.
   if (!(ctx.io.stdinIsTTY && ctx.io.stdout.isTTY === true) || isJsonOutput(ctx)) {
