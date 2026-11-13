@@ -203,14 +203,49 @@ Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,
   6. Catch-up runs after boot start no earlier than 30 s after startup and 10 s apart.
   The scheduler starts only in the desktop shell (`index.ts`), after stores and RunManager, and stops in the quit path.
   The desktop's single-instance lock is the "one scheduler" guard.
-- Run end: the service listens to run events, fills the history entry's `outcome` / `costUsd`, bumps `unread` and
-  notifies through `notifications.ts` (respecting `AppSettings.notifications`): always on failure and on "needs you"
-  (the run is waiting on a card), on success only for a catch-up or when the user is not focused on that run.
+- As built (2026-11-12, unit-tested, see 9):
+  - `validate.ts` holds the main-side checks shared by `schedules:save`, `applyProposal` and `propose_schedule`:
+    `mergeScheduleInput` (on update an absent optional field keeps the stored value, `null` clears it; an interval's
+    anchor is set at save and kept while the interval is unchanged) and `scheduleFieldsProblem` (stored project, ask
+    folder through `validateQuickFolder`, an ask target only takes Ask / Never ask / Plan, a `once` or end date in the
+    past, a next run before the end date).
+  - Start paths: a team target calls `RunManager.start({ project, prompt, schedule, team?, userChoice, conversationBudgetUsd })`
+    with the stored project's `maxBudgetUsd` lowered to `min(budgetUsd, project cap)`; an ask target calls
+    `QuickRunService.start(input, { schedule })` (a new main-only `QuickStartOptions.schedule`), which does the same
+    on the quick project. `modelSelection` / `permissionMode` go in as `StartInput.userChoice`, so `checkStartChoice`
+    (catalog model, `runPermissionModeChoices`) and the priced-model-under-a-cap check apply. `StartInput.schedule`
+    is set only by the service (never from IPC input) and becomes `RunSummary.scheduleId` / `scheduleName`.
+  - "Live" for the overlap rule and the global cap (`runBlocks`): starting, running, stopping, or idle with an open
+    card or a usage-limit hold. An idle run with nothing waiting counts as done (outcome 'finished'), so a run left
+    idle by its last turn does not block the next slot. Only runs this process started are tracked (memory only).
+  - Outcomes: a card request sets 'needs-you'; idle without cards or 'finished' sets 'finished'; `error` sets 'error';
+    `endedBy` 'user' / 'app' / 'policy' set 'stopped'; `endedBy` 'budget' sets 'error' (it counts toward auto-pause).
+    A run paused at a usage limit (finished with `pausedUntil`) is not an outcome; its continuation is not tracked.
+  - A start that throws records result 'failed', reason 'start-refused' and the fixed sentence `START_FAILED_DETAIL`;
+    the thrown message goes to the main log only (it may carry provider text).
+  - `unread` grows by one per history entry; `lastEntry` mirrors the newest entry and its outcome.
+  - Earlier slots passed over by an on-time fire (a short sleep) get one 'app-closed' entry. An expired schedule whose
+    next slot is past `expiresAt` goes to 'done' without an entry.
+  - `ORGAI_SCHEDULE_TEST_TICK_MS` (50 ms .. 60 s, only with `ORGAI_MOCK=1`) replaces the 60 s maximum sleep.
+  - `schedules:changed` is not on the host event bus: like `teamFiles:changed` it goes through
+    `DesktopHooks.schedulesChanged` to every window (index.ts), which also re-plans the timer. A settings change
+    re-plans too (the global pause).
+  - 'usage-limited' is never recorded in v1 (a run at a usage limit is reported by its own outcome).
+- Run end: the service listens to run events (bootstrap's bus listener), fills the history entry's `outcome` /
+  `costUsd` and updates `consecutiveFailures`. Notifications: the existing run Notifier already notifies an unfocused
+  user about a scheduled run's cards, end and failure (title = project name), so the service adds only what it alone
+  knows, through `Notifier.notice` (respects `AppSettings.notifications`, shown even while focused): a start that
+  failed, a schedule paused after `SCHEDULE_FAILURES_TO_PAUSE` failures, a schedule stopped because its project is gone.
+  No separate "success" notice (deviation from the first draft: it would duplicate the Notifier's "Run finished").
 - Unattended behaviour: nothing is auto-approved. A scheduled run that needs an approval waits with its card exactly
   like a run the user started, shows in Needs-you and notifies. Session-only grants do not exist at start; project
   allow rules apply. Plan nudges apply as for any work run.
-- Background: a pending enabled schedule counts as activity for the quit gate's "Keep working in the background"
-  question (the existing dialog; wording gains "or scheduled runs are due").
+- Background: an enabled schedule with a next run (and no global pause) makes the last-window close ask the existing
+  "Keep working in the background" question (`hostLifecycle.windowAllClosedAction` `pendingSchedules`; the message reads
+  "A scheduled run is due later." or "<n> runs are still working, or scheduled runs are due."). While in the
+  background the pending schedules count under the activity kind `pausedAutoResumes` (a timer-like wait, never a
+  writer the quit drain settles), so the idle exit does not quit before they run. The scheduler stops at the drain's
+  quiesce and on will-quit.
 
 ### Conversational creation
 
@@ -226,7 +261,15 @@ Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,
   text). An agent can never set `bypassPermissions`, and a proposed `permissionMode` wider than the target project's
   own mode is refused (the user can widen it in the form).
 - Approval applies through `ScheduleService.applyProposal` (validate all, then write), effect 'now'. The proposal
-  outcome tells the agent the saved ids and next run times.
+  outcome tells the agent the saved ids and next run times (the tool reads them through
+  `RuntimeContext.schedules.applied(payload)`, keyed by the payload object, so `ProposalOutcome` is unchanged).
+- As built: the tools are offered on Chat, team work and single runs, audience 'root'. On a run with
+  `RunSummary.scheduleId` both tools (list too) answer "REFUSED: A scheduled run cannot create or change schedules.",
+  and RunManager refuses such an apply again. From a work run an ask target is refused like another project. The card
+  title and each item's `summary` are written by main from the merged fields; `nextRuns` holds three slots. The two
+  tool definitions add about 2,400 characters to every work and single run request (`toolDefinitionSize.test.ts`
+  bounds raised). `CHAT_CONFIG_TOOLS` lists the two names as string literals (the constants are declared later in
+  types.ts; a test checks they match).
 - `app_reference` / atlas: a `schedules` surface so "where are my schedules" works and `open_in_app` can open the page.
 
 ## 5. Renderer
@@ -281,3 +324,20 @@ Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,
 Event triggers, running while the app is closed (OS task scheduler / a daemon), a worktree per scheduled run beyond
 what the project's isolation already does, schedules in the CLI, time zones other than the system's, chaining a run's
 output into the next run, per-schedule run-count caps.
+
+## 9. Implementation notes, main process (2026-11-12)
+
+Checked by unit tests only (`npx vitest run src/main/schedules`, no tokens): `store.test.ts` (atomic write, `.bak`,
+unreadable file never overwritten and the store read-only, junk dropped, caps), `scheduler.test.ts` (fake clock: one
+fire per slot, mark before start, crash between mark and start, one catch-up after a sleep with the boot delay and
+the 10 s gap, app-closed skips, on-time within 5 minutes, global pause one entry per pause, once / expiry to done,
+overlap, stop), `service.test.ts` (save / update / clear, refusals, enable / pause, history and unread, fire with
+model, mode, budget and single team, folder re-check, overlap, global cap, project missing, auto-pause with an OrgAI
+sentence only, run-end outcomes and cost, proposal apply with origin and mode-widening refusals, all or nothing),
+`boot.test.ts` (a booted host on the mock adapter: a team schedule's run carries `scheduleId`, `scheduleName`, mode
+'plan' and `conversationBudgetUsd`; an ask schedule starts a Chat run; a refused model records a failed start;
+socket and in-process surfaces get `scope_denied` on every write and runNow, list and history answer). The tool
+tests are `runtime/harnessToolsSchedules.test.ts`. Not verified: a live provider run, the desktop timer in the
+packed app (index.ts wiring), OS notifications, the close prompt and the background idle exit, sleep / resume of a
+real machine, DST transitions on a live clock, the RunManager apply branch of an approved card end to end (applied
+through ScheduleService directly in the tests).
