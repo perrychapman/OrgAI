@@ -85,7 +85,7 @@ feature notes to the matching file there (or a new one listed here), not to CLAU
 - `docs/agent-notes/engagements-knowledge.md`: engagement kind, reference folders, engagement document and notes,
   knowledge graph, retrieval and inferred links, Knowledge tab and graph view.
 - `docs/agent-notes/project-features.md`: agent import, run outputs (and Outputs 2), team files, practice kit,
-  repository clone and From GitHub start, folder config trust.
+  repository clone and From GitHub start, folder config trust, team evolution spend gate.
 - `docs/agent-notes/cli-host.md`: CLI and host. The `orgai` CLI and the desktop app share nothing
   (docs/design/cli-standalone-default.md): ownership, dispatcher, owner-only socket, self-control gate, exec, TUI, npm CLI,
   Install row, vault and custodians per product, shutdown, repository lock, doctor; older Wave notes are history.
