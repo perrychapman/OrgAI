@@ -3,6 +3,7 @@ import type { Schedule, ScheduleHistoryEntry, ScheduleSkipReason } from '../type
 import {
   SKIP_REASON_TEXT,
   budgetText,
+  chatPermissionChoices,
   schedulePermissionChoices,
   formNextRuns,
   formProblems,
@@ -276,6 +277,9 @@ describe('editor mapping', () => {
 })
 
 describe('permission choices', () => {
+  it('chatPermissionChoices lists the three Chat modes', () => {
+    expect([...chatPermissionChoices()].sort()).toEqual(['default', 'dontAsk', 'plan'])
+  })
   it('offers Chat targets only the Chat modes and never bypass', () => {
     expect(schedulePermissionChoices('ask').sort()).toEqual(['default', 'dontAsk', 'plan'])
     const team = schedulePermissionChoices('team')

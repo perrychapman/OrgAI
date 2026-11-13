@@ -155,8 +155,8 @@ export default function SchedulesView(): ReactElement {
     setFailure(null)
     try {
       await saveSchedulesPaused(v)
-      // Pausing shows the status banner, which announces itself; resuming removes it, so say that.
-      if (!v) say('Schedules resumed.')
+      // The paused banner is a labelled region, not a live region: this is the one announcement.
+      say(v ? 'All schedules paused.' : 'Schedules resumed.')
     } catch (e) {
       data.setPausedLocal(before)
       setFailure(cleanIpcError(e, 'The setting could not be saved.'))
@@ -181,10 +181,15 @@ export default function SchedulesView(): ReactElement {
             onChange={(v) => void setPausedAll(v)}
             label="Pause all schedules"
             disabled={data.paused === null}
-            title={data.paused === null ? 'The pause setting could not be read.' : undefined}
+            describedBy={data.paused === null ? 'schedules-pause-hint' : undefined}
             testId="schedules-pause-all"
           />
           <span aria-hidden="true">Pause all</span>
+          {data.paused === null && (
+            <span id="schedules-pause-hint" className="muted" data-testid="schedules-pause-hint">
+              The pause setting could not be read.
+            </span>
+          )}
         </div>
         <Button variant="primary" size="sm" icon={Plus} onClick={openNew} testId="schedules-new">
           New schedule
@@ -194,7 +199,7 @@ export default function SchedulesView(): ReactElement {
       <div className="schedules-scroll" ref={scrollRef}>
         <div className="schedules-page">
           {data.paused && (
-            <Banner tone="warning" title="Schedules are paused" testId="schedules-paused-banner">
+            <Banner tone="warning" title="Schedules are paused" label="Schedules paused" testId="schedules-paused-banner">
               {SCHEDULES_PAUSED_BANNER}
             </Banner>
           )}

@@ -83,67 +83,67 @@ export default function ScheduleHistory({
   }
   return (
     <>
-    {openError && (
-      <p className="field-error schedule-history-note" data-testid="schedule-history-open-error">
-        {openError}
-      </p>
-    )}
-    <table className="schedule-history" data-testid="schedule-history">
-      <caption className="sr-only">History of {scheduleName}, newest first</caption>
-      <thead>
-        <tr>
-          <th scope="col">When</th>
-          <th scope="col">Trigger</th>
-          <th scope="col">Result</th>
-          <th scope="col">Outcome</th>
-          <th scope="col" className="num">
-            Cost
-          </th>
-          <th scope="col">
-            <span className="sr-only">Run</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {entries.map((e) => {
-          const row = historyRow(e)
-          return (
-            <tr key={row.id} data-testid="schedule-history-row" data-result={e.result} data-reason={e.reason}>
-              <td title={row.whenTitle}>{row.when}</td>
-              <td>{row.trigger}</td>
-              <td className="schedule-history-result">
-                <Badge tone={row.tone === 'danger' ? 'danger' : row.tone === 'warning' ? 'warning' : row.tone === 'success' ? 'success' : 'neutral'}>
-                  {resultWord(e.result)}
-                </Badge>
-                {e.result !== 'started' && <span className="schedule-history-why">{resultWhy(e)}</span>}
-              </td>
-              <td>{row.outcome || <span className="muted">—</span>}</td>
-              <td className="num">{row.cost ? <Cost value={row.cost} /> : <span className="muted" title="Not ended yet, or no run">—</span>}</td>
-              <td>
-                {row.runId && (
-                  <button
-                    type="button"
-                    className="link-btn"
-                    data-testid="schedule-history-open"
-                    onClick={() => {
-                      setOpenError(null)
-                      const fail = (): void => {
-                        const msg = 'That run could not be opened. It may have been deleted.'
-                        setOpenError(msg)
-                        announce(msg)
-                      }
-                      openScheduledRun(row.runId as string, row.projectId).then((ok) => (ok ? settleRunFocus() : fail()), fail)
-                    }}
-                  >
-                    Open run<span className="sr-only"> from {row.when}</span>
-                  </button>
-                )}
-              </td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
-    </>
+      {openError && (
+        <p className="field-error schedule-history-note" data-testid="schedule-history-open-error">
+          {openError}
+        </p>
+      )}
+      <table className="schedule-history" data-testid="schedule-history">
+        <caption className="sr-only">History of {scheduleName}, newest first</caption>
+        <thead>
+          <tr>
+            <th scope="col">When</th>
+            <th scope="col">Trigger</th>
+            <th scope="col">Result</th>
+            <th scope="col">Outcome</th>
+            <th scope="col" className="num">
+              Cost
+            </th>
+            <th scope="col">
+              <span className="sr-only">Run</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((e) => {
+            const row = historyRow(e)
+            return (
+              <tr key={row.id} data-testid="schedule-history-row" data-result={e.result} data-reason={e.reason}>
+                <td title={row.whenTitle}>{row.when}</td>
+                <td>{row.trigger}</td>
+                <td className="schedule-history-result">
+                  <Badge tone={row.tone === 'danger' ? 'danger' : row.tone === 'warning' ? 'warning' : row.tone === 'success' ? 'success' : 'neutral'}>
+                    {resultWord(e.result)}
+                  </Badge>
+                  {e.result !== 'started' && <span className="schedule-history-why">{resultWhy(e)}</span>}
+                </td>
+                <td>{row.outcome || <span className="muted">—</span>}</td>
+                <td className="num">{row.cost ? <Cost value={row.cost} /> : <span className="muted" title="Not ended yet, or no run">—</span>}</td>
+                <td>
+                  {row.runId && (
+                    <button
+                      type="button"
+                      className="link-btn"
+                      data-testid="schedule-history-open"
+                      onClick={() => {
+                        setOpenError(null)
+                        const fail = (): void => {
+                          const msg = 'That run could not be opened. It may have been deleted.'
+                          setOpenError(msg)
+                          announce(msg)
+                        }
+                        openScheduledRun(row.runId as string, row.projectId).then((ok) => (ok ? settleRunFocus() : fail()), fail)
+                      }}
+                    >
+                      Open run<span className="sr-only"> from {row.when}</span>
+                    </button>
+                  )}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+      </>
   )
 }

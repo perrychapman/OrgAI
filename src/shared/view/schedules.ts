@@ -12,6 +12,7 @@ import type {
   PermissionMode,
   Schedule,
   ScheduleHistoryEntry,
+  QuickRunInfo,
   ScheduleMissedPolicy,
   ScheduleProposalItem,
   ScheduleRunResult,
@@ -467,12 +468,18 @@ export function formTiming(f: ScheduleForm): ScheduleTiming | string {
   }
 }
 
+/** The modes a Chat (quick) run accepts, from runPermissionModeChoices with a typed quick marker. */
+export function chatPermissionChoices(): PermissionMode[] {
+  const quick: QuickRunInfo = { folder: '', scratch: true, team: 'single', allowEdits: false, gitRepo: false }
+  return runPermissionModeChoices({ kind: 'work', quick })
+}
+
 /**
  * The permission modes a schedule may choose for its target: a team run takes every work-run mode, a Chat run only the
  * modes Chat runs accept (runPermissionModeChoices: default, dontAsk, plan); never bypass.
  */
 export function schedulePermissionChoices(targetKind: ScheduleTarget['kind']): PermissionMode[] {
-  const allowed = runPermissionModeChoices(targetKind === 'ask' ? { kind: 'work', quick: { scratch: true } as never } : { kind: 'work' })
+  const allowed = targetKind === 'ask' ? chatPermissionChoices() : runPermissionModeChoices({ kind: 'work' })
   return allowed.filter((m) => (SCHEDULE_PERMISSION_MODES as readonly string[]).includes(m))
 }
 
