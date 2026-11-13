@@ -1780,7 +1780,10 @@ export class RunManager {
     }
     // Display facts, set before the first save: the mode in force (only runs that take a per-run mode; see
     // recordedRunPermissionMode) and the user's per-run choices.
-    const recordedMode = recordedRunPermissionMode(summary, chosenMode ?? effectiveRunProject(project, overrides, { allowWidening }).permissionMode)
+    const modeInForce = chosenMode ?? effectiveRunProject(project, overrides, { allowWidening }).permissionMode
+    // Schedules (docs/design/schedules.md 6): a scheduled run, its auto-resume included, never runs with bypass.
+    if (summary.scheduleId && modeInForce === 'bypassPermissions') throw new Error('A scheduled run cannot use bypass permissions. Choose a permission mode for the schedule.')
+    const recordedMode = recordedRunPermissionMode(summary, modeInForce)
     if (recordedMode) summary.permissionMode = recordedMode
     if (chosenMode) summary.permissionModeChosen = true
     if (rootEffort) summary.rootEffort = rootEffort

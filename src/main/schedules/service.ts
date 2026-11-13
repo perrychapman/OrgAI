@@ -76,6 +76,13 @@ export interface ScheduleServiceDeps {
   stopRun?(runId: string): Promise<void>
   /** How long a start may take before the slot is recorded as failed (default SCHEDULE_START_TIMEOUT_MS). */
   startTimeoutMs?: number
+  /** Re-check delay of an idle run that still works (default IDLE_RECHECK_MS). */
+  idleRecheckMs?: number
+  /**
+   * Live RunManager runs that carry a schedule id (RunSummary.scheduleId), tracked or not: a start past its timeout or
+   * an auto-resume between its timer and its tracking still counts (review recheck L-c). Missing = tracked runs only.
+   */
+  liveScheduleRuns?(): { runId: string; scheduleId: string }[]
   /** The stored or live summary of a run (cost and how it ended). */
   runSummary(runId: string): RunSummary | null
   /** AppSettings.schedulesPaused. */
@@ -128,7 +135,12 @@ interface Tracked {
   entryId: string
   /** The failure count already reflects this run: 'ok' reset it, 'fail' raised it. */
   counted?: 'ok' | 'fail'
+  /** An idle with nothing left already recorded 'finished'; cleared by the next turn. */
+  settled?: boolean
 }
+
+/** How often an idle scheduled run that still works is looked at again (review recheck H-new). */
+export const IDLE_RECHECK_MS = 5_000
 
 export class ScheduleService {
   /**
@@ -138,6 +150,8 @@ export class ScheduleService {
   private readonly tracked = new Map<string, Tracked>()
   /** Starts in flight per schedule (review M2): counted by the overlap check and the global cap before the run exists. */
   private readonly starting = new Map<string, number>()
+  /** Re-check timers of idle tracked runs that still work (settleIdle). */
+  private readonly rechecks = new Map<string, ReturnType<typeof setTimeout>>()
   /** What an approved proposal saved, by the payload object (propose_schedule's outcome text). */
   private readonly appliedResults = new WeakMap<SchedulesProposalPayload, Schedule[]>()
 
@@ -406,8 +420,21 @@ export class ScheduleService {
   liveScheduledRuns(): number {
     let n = 0
     for (const runId of this.tracked.keys()) if (this.trackedBlocks(runId)) n++
-    for (const c of this.starting.values()) n += c
+    // A start in flight is usually already a live (untracked) run in RunManager: per schedule, count the larger of the
+    // two so the same run is never counted twice.
+    const untracked = new Map<string, number>()
+    for (const r of this.untrackedLive()) if (runBlocks(this.deps.liveRunFacts(r.runId))) untracked.set(r.scheduleId, (untracked.get(r.scheduleId) ?? 0) + 1)
+    for (const id of new Set([...this.starting.keys(), ...untracked.keys()])) n += Math.max(this.starting.get(id) ?? 0, untracked.get(id) ?? 0)
     return n
+  }
+
+  /** Live runs with a schedule id this service does not track (yet). */
+  private untrackedLive(): { runId: string; scheduleId: string }[] {
+    try {
+      return (this.deps.liveScheduleRuns?.() ?? []).filter((r) => !this.tracked.has(r.runId))
+    } catch {
+      return []
+    }
   }
 
   /** Enabled schedules with a next run (the quit gate's "scheduled runs are due"). */
@@ -420,6 +447,7 @@ export class ScheduleService {
   private previousBlocks(scheduleId: string): boolean {
     if ((this.starting.get(scheduleId) ?? 0) > 0) return true
     for (const [runId, t] of this.tracked) if (t.scheduleId === scheduleId && this.trackedBlocks(runId)) return true
+    for (const r of this.untrackedLive()) if (r.scheduleId === scheduleId && runBlocks(this.deps.liveRunFacts(r.runId))) return true
     return false
   }
 
@@ -620,11 +648,22 @@ export class ScheduleService {
       // only, so the successor is tracked in its predecessor's place (same entry, same failure bookkeeping).
       if (event.type !== 'run.status' || event.status !== 'starting' || this.tracked.size === 0) return
       const s = this.deps.runSummary(event.runId)
-      const prev = s?.scheduleId && s.resumedFrom ? this.tracked.get(s.resumedFrom) : undefined
-      if (!prev || prev.scheduleId !== s?.scheduleId) return
-      t = { ...prev }
+      const prev = s?.resumedFrom ? this.tracked.get(s.resumedFrom) : undefined
+      if (!s || !prev) return
+      this.clearRecheck(s.resumedFrom!)
+      if (s.scheduleId && prev.scheduleId === s.scheduleId) {
+        t = { ...prev, settled: false }
+        this.tracked.delete(s.resumedFrom!)
+        this.tracked.set(event.runId, t)
+        return
+      }
+      // The user continued it themselves (no schedule id): the schedule's run ends here (review recheck L-f).
+      try {
+        this.setOutcome(s.resumedFrom!, prev, 'stopped')
+      } catch (e) {
+        this.deps.log?.(`Schedule ${prev.scheduleId}: run-end bookkeeping failed: ${(e as Error).message}`)
+      }
       this.tracked.delete(s.resumedFrom!)
-      this.tracked.set(event.runId, t)
       return
     }
     try {
@@ -635,19 +674,31 @@ export class ScheduleService {
       if (event.type !== 'run.status') return
       if (event.status === 'idle') {
         // The turn ended and nothing waits on the user: done for the schedule (the session may still take a message).
-        // Reports, a peer flush or a continuation nudge still at work (review H1): not done yet; the next idle or the
-        // finished status looks again.
-        const facts = this.deps.liveRunFacts(event.runId)
-        if (!facts || facts.pendingCards > 0 || facts.limitHold || facts.working) return
-        this.setOutcome(event.runId, t, 'finished')
+        // Reports, a peer flush or a continuation nudge still at work (review H1): not done yet. The adapters report
+        // idle before the continuation driver settles and that settling sends no event, so settleIdle re-checks on a
+        // timer (and the scheduler sweeps every pass) until the run is done or turns busy again.
+        this.settleIdle(event.runId)
+        return
+      }
+      if (event.status === 'starting' || event.status === 'running') {
+        // A new turn: an earlier idle 'finished' may be followed by more work; the next idle settles again.
+        t.settled = false
+        this.clearRecheck(event.runId)
+        return
+      }
+      if (event.status === 'paused') {
+        // Paused and waiting on the user (no auto-resume): that is what the history says until it moves on.
+        if (event.autoResume === false) this.setOutcome(event.runId, t, 'needs-you')
         return
       }
       if (event.status === 'error') {
+        this.clearRecheck(event.runId)
         this.setOutcome(event.runId, t, 'error')
         this.tracked.delete(event.runId)
         return
       }
       if (event.status === 'finished') {
+        this.clearRecheck(event.runId)
         // A run paused at a usage limit hands over to its continuation: not an outcome of the schedule.
         if (event.pausedUntil) return
         const summary = this.deps.runSummary(event.runId)
@@ -659,6 +710,53 @@ export class ScheduleService {
       }
     } catch (e) {
       this.deps.log?.(`Schedule ${t.scheduleId}: run-end bookkeeping failed: ${(e as Error).message}`)
+    }
+  }
+
+  /**
+   * An idle tracked run: 'finished' once nothing blocks it any more (not working, no card, no hold); while it still
+   * works, look again after IDLE_RECHECK_MS. A run that is no longer idle (a new turn, an end) stops the re-checks.
+   */
+  private settleIdle(runId: string): void {
+    const t = this.tracked.get(runId)
+    this.clearRecheck(runId)
+    if (!t || t.settled) return
+    const facts = this.deps.liveRunFacts(runId)
+    if (!facts || facts.status !== 'idle') return
+    if (!runBlocks(facts)) {
+      t.settled = true
+      this.setOutcome(runId, t, 'finished')
+      return
+    }
+    // A card or a usage-limit hold waits on the user: their answer brings a new turn and a new idle.
+    if (!facts.working) return
+    const timer = setTimeout(() => {
+      this.rechecks.delete(runId)
+      try {
+        this.settleIdle(runId)
+      } catch (e) {
+        this.deps.log?.(`Schedule ${t.scheduleId}: run-end bookkeeping failed: ${(e as Error).message}`)
+      }
+    }, this.deps.idleRecheckMs ?? IDLE_RECHECK_MS)
+    ;(timer as { unref?: () => void }).unref?.()
+    this.rechecks.set(runId, timer)
+  }
+
+  private clearRecheck(runId: string): void {
+    const timer = this.rechecks.get(runId)
+    if (timer !== undefined) clearTimeout(timer)
+    this.rechecks.delete(runId)
+  }
+
+  /** The scheduler's backstop at every pass: settle tracked idle runs whose work ended without an event. */
+  sweep(): void {
+    for (const [runId, t] of [...this.tracked]) {
+      if (t.settled) continue
+      try {
+        this.settleIdle(runId)
+      } catch (e) {
+        this.deps.log?.(`Schedule ${t.scheduleId}: run-end bookkeeping failed: ${(e as Error).message}`)
+      }
     }
   }
 
