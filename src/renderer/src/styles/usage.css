@@ -39,6 +39,48 @@
 .sidebar-footer {
   container: sidebar-footer / inline-size;
 }
+
+/*
+ * Plan figures in the account row ("5h 22%  7d 18%"): never clipped (the bar beside them yields first), tabular
+ * numerals and a fixed value width so a number changing width does not move its neighbour. A figure at 80 percent or
+ * over, or limited, turns semibold and takes the state colour; the dot, the popover and the accessible name carry
+ * the same state in words.
+ */
+.account-label.account-figures {
+  display: inline-flex;
+  flex: none;
+  align-items: baseline;
+  gap: var(--space-2);
+  overflow: visible;
+  font-variant-numeric: tabular-nums;
+}
+.account-fig {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+.account-fig-name {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+.account-fig-value {
+  min-width: 4ch;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  text-align: right;
+  color: var(--text-primary);
+}
+.account-fig[data-level='warn'] .account-fig-value,
+.account-fig[data-level='danger'] .account-fig-value {
+  font-weight: var(--weight-semibold);
+}
+.account-fig[data-level='warn'] .account-fig-value {
+  color: var(--warning);
+}
+.account-fig[data-level='danger'] .account-fig-value {
+  color: var(--danger);
+}
 @container sidebar-footer (max-width: 240px) {
   .account-name {
     position: absolute;

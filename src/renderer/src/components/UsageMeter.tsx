@@ -18,6 +18,7 @@ import {
   spendAria,
   spendLevel,
   spendPct,
+  spendRowFigure,
   spendText
 } from '../lib/usage'
 
@@ -101,6 +102,67 @@ export function tightestWindowRow(usage: UsageStatus | null | undefined): { labe
     if (!best || (level === 'danger' && best.level !== 'danger') || (best.level !== 'danger' && pct > best.pct)) best = { label: r.label, pct, level, row: r }
   }
   return best
+}
+
+/** One figure in the account row: `5h 22%`. `sr` is the same fact in words. */
+export type RowFigure = { key: string; name: string; value: string; sr: string; level: UsageLevel }
+
+/**
+ * The plan figures the account row shows: the five-hour and seven-day windows (whichever are reported), else the
+ * tightest other window (Opus, Sonnet or a model weekly) under a short name. Whole percents. A limited window is
+ * danger, 80 percent and over is warn; an `allowed_warning` report marks the tightest figure warn.
+ */
+export function rowFigures(usage: UsageStatus | null | undefined): RowFigure[] {
+  if (!usage || usage.authMode === 'apiKey' || !usage.available) return []
+  const tight = tightestWindowRow(usage)
+  const make = (r: Row, name: string, spoken: string): RowFigure | null => {
+    const pct = r.window.utilization
+    if (pct === null) return null
+    let level: UsageLevel = r.limited ? 'danger' : pct >= WARN_AT ? 'warn' : ''
+    if (level === '' && tight?.row.key === r.key) level = tight.level
+    const whole = Math.round(pct)
+    return { key: r.key, name, value: `${whole}%`, sr: r.limited ? `${spoken} ${whole} percent, limit reached` : `${spoken} ${whole} percent`, level }
+  }
+  const rows = usageRows(usage)
+  const main = [make(rows.find((r) => r.key === 'fiveHour') ?? NONE, '5h', 'five-hour'), make(rows.find((r) => r.key === 'sevenDay') ?? NONE, '7d', 'seven-day')].filter((f): f is RowFigure => f !== null)
+  if (main.length > 0) return main
+  const t = tight && make(tight.row, tight.label.replace(/ weekly$/, ''), tight.label.toLowerCase())
+  return t ? [t] : []
+}
+const NONE: Row = { key: '', label: '', window: { utilization: null, resetsAt: null }, limited: false }
+
+/** What the account row shows. `figures` win over `text`; `text` is one or two words. */
+export type AccountRowInput = {
+  mock: boolean
+  name: string
+  /** Connection state; 'checking' before the first status. */
+  state: 'connected' | 'connecting' | 'error' | 'disconnected' | 'checking'
+  isProxy: boolean
+  /** A proxy that reports spend. */
+  spends: boolean
+  apiKey: boolean
+  keyMissing?: boolean
+  usage: UsageStatus | null | undefined
+}
+export type AccountRowView = { figures: RowFigure[]; text: string; spend: boolean; words: string }
+
+export function accountRowView(i: AccountRowInput): AccountRowView {
+  const only = (text: string): AccountRowView => ({ figures: [], text, spend: false, words: '' })
+  if (i.mock) return only('Mock adapter')
+  if (i.state === 'checking') return only('Checking…')
+  if (i.state === 'error') return only('Error')
+  if (i.state === 'connecting') return only('Connecting…')
+  if (i.state === 'disconnected') return only('Not connected')
+  if (i.isProxy) {
+    if (!i.spends) return only(i.name)
+    const spend = i.usage?.spend
+    if (!spend) return only('Spend unavailable')
+    return { figures: [], text: spendRowFigure(spend), spend: true, words: '' }
+  }
+  if (i.apiKey) return only(i.keyMissing ? 'Key not set' : 'API key')
+  const figures = rowFigures(i.usage)
+  if (figures.length === 0) return only(i.name)
+  return { figures, text: '', spend: false, words: figures.map((f) => f.sr).join(', ') }
 }
 
 /** The 4 px footer bar: the brand gradient, solid warning from 80 percent, solid danger at the limit. */
