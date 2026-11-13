@@ -147,10 +147,12 @@ describe('runs:continue and runs:resumeNow desktop flag', () => {
     expect(runs.continueRun.mock.calls[2][4]).not.toHaveProperty('desktop')
   })
 
-  it('a plain in-process continue carries a chosen permission mode only with configure', async () => {
+  it('a plain in-process continue carries a chosen permission mode only with configure, never with allowWidening', async () => {
     const { d, runs } = setup()
     await d.invokeRpc(IPC.runsContinue, [{ runId: 'run_1', text: 'more' }], rpc(['read', 'operate', 'configure'], 'inproc'))
-    expect(runs.continueRun.mock.calls[0][4]).toEqual({ allowWidening: true })
+    // The desktop-equivalent flag trusts only the permissionModeChosen carry; stored overrides re-clamp to the project.
+    expect(runs.continueRun.mock.calls[0][4]).toEqual({ desktop: true })
+    expect(runs.continueRun.mock.calls[0][4]).not.toHaveProperty('allowWidening')
     await d.invokeRpc(IPC.runsContinue, [{ runId: 'run_1', text: 'more' }], rpc(['read', 'operate'], 'inproc'))
     expect(runs.continueRun.mock.calls[1]).toHaveLength(4)
   })

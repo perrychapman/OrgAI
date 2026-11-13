@@ -439,6 +439,60 @@ describe('continuations carry the per-run choices', () => {
   })
 })
 
+/**
+ * PR 49 review H2: a plain terminal-UI continue (dispatcher: inproc + configure -> `{ desktop: true }`) of a run an
+ * `orgai exec` started with widening overrides (allowWidening) re-clamps them to the project as it is now. Only a chosen
+ * per-run mode (permissionModeChosen) is trusted by that flag; stored overrides never are.
+ */
+describe('a desktop-equivalent continue re-clamps the stored exec overrides to a narrowed project', () => {
+  const WIDE = { permissionMode: 'bypassPermissions' as const, autoContinue: true, maxAutoContinues: 40, maxBudgetUsd: 50, allowUnpricedBudget: true, allowPeerMessages: true }
+  const startWide = async (r: ReturnType<typeof rig>): Promise<RunSummary> => {
+    const wide = team({ permissionMode: 'bypassPermissions', autoContinue: true, maxBudgetUsd: 50 })
+    const run = await r.m.start({ project: wide, prompt: 'go', overrides: { ...WIDE }, allowWidening: true })
+    expect(r.ctx(0).project.permissionMode).toBe('bypassPermissions')
+    finish(r.ctx(0))
+    return run
+  }
+  const narrowed = (): Project => team({ permissionMode: 'default', autoContinue: false, maxAutoContinues: 2, maxBudgetUsd: 5 })
+
+  it('permissionMode: the narrowed project mode applies, not the stored bypassPermissions', async () => {
+    const r = rig()
+    const first = await startWide(r)
+    const next = await r.m.continueRun(narrowed(), first.id, 'more', undefined, { desktop: true })
+    expect(r.ctx(1).project.permissionMode).toBe('default')
+    expect(next.permissionModeChosen).toBeUndefined()
+    await r.m.stopAll()
+  })
+
+  it('autoContinue / maxAutoContinues / maxBudgetUsd: the narrowed project values apply', async () => {
+    const r = rig()
+    const first = await startWide(r)
+    await r.m.continueRun(narrowed(), first.id, 'more', undefined, { desktop: true })
+    expect(r.ctx(1).project.autoContinue).toBe(false)
+    expect(r.ctx(1).project.maxAutoContinues).toBe(2)
+    expect(r.ctx(1).project.maxBudgetUsd).toBe(5)
+    await r.m.stopAll()
+  })
+
+  it('allowUnpricedBudget / allowPeerMessages: not carried onto the continuation', async () => {
+    const r = rig()
+    const first = await startWide(r)
+    const next = await r.m.continueRun(narrowed(), first.id, 'more', undefined, { desktop: true })
+    expect(next.overrides?.allowUnpricedBudget).toBeUndefined()
+    expect(next.overrides?.allowPeerMessages).toBeUndefined()
+    expect(r.store.get(next.id)?.overrides?.allowUnpricedBudget).toBeUndefined()
+    await r.m.stopAll()
+  })
+
+  it('contrast: allowWidening (what the PR passed) would have kept bypassPermissions on the narrowed project', async () => {
+    const r = rig()
+    const first = await startWide(r)
+    await r.m.continueRun(narrowed(), first.id, 'more', undefined, { allowWidening: true })
+    expect(r.ctx(1).project.permissionMode).toBe('bypassPermissions')
+    await r.m.stopAll()
+  })
+})
+
 describe('setPermissionMode', () => {
   it('applies on a live session that can switch: ctx.project, summary and an info line change', async () => {
     const r = rig()
