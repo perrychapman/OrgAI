@@ -62,7 +62,9 @@ jobs:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # The maintenance e2e shells out to git a lot; the whole free e2e suite took 30 min on macos-15 once the CLI scripts joined it.
-    timeout-minutes: 50
+    # 80: the full chain passed in 44 to 49 minutes on macos-15 before schedules and cli-org-evolve joined it, and the chain now
+    # runs every selected script after a failure (scripts/e2e-select.mjs --run) instead of stopping at the first red one.
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
