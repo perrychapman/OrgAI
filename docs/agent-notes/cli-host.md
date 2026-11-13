@@ -81,6 +81,23 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     drive path in definite (self-control) mode on win32 only (reference mode still treats every UNC word as touching). They are text
     checks, a speed bump, not a boundary. The scan-cost test checks linearity (best of 3, 2n under 3x n plus 100 ms), not a wall clock.
     Unit tests and pure-function probes only; never run in a real shell against the real tools or on Windows.
+  - PR 47 (self-control boundaries, outside contributor; fixes from its review, 2026-11-12): the gate also protects each
+    project's team-files approval state (`<data>/projects/<id>/team-files/`, both spellings, project ids re-read on every
+    check; the sibling product's existing project folders are enumerated, a linked or unreadable `projects` folder fails
+    closed at its parent; `src/main/teamFiles/protection.ts`, wired in `bootstrap.ts`). `cliSegments` takes the union of
+    several readings of the text (`SegmentReading`: bash/zsh backslash escapes with `$'...'` and `#` comments; PowerShell
+    backtick escapes; quotes only, the pre-PR reading; zsh glob groups absorbed only when they hold no space or operator,
+    and a second bash reading that absorbs every group), so a command any reading splits off is checked. A bracket
+    expression never spans an operator, `${...}` stays one word only with a plain body, zsh `=(...)` is a process
+    substitution (never a glob group), unmatched `)` and unclosed `[` split as before and are no longer "unchecked".
+    Glob names and path components match through `matchGlobTokens` (a state set, linear in name length times pattern
+    length), never a RegExp built from `*`. Every lookahead in `cliSegmentsIn` is precomputed, so the scan stays linear
+    (the scan-cost suite covers `[`, `(`, `)`, groups, `${` and runs of `*`). Checked by unit tests only
+    (`selfControlGate.test.ts` "segment splitting gaps (PR 47 review)", `referenceDirectories.test.ts`); never run in a real
+    zsh, bash or PowerShell. Open limits, not fixed: approval state can still be forged by writing to a parent folder
+    (`cp -r <forged>/. <data>/projects/<id>/` rewrites `team-files/approved.json`), because definite mode counts only
+    paths at or under a protected folder and the scanner does not know which word a command writes to; heredoc bodies and
+    nested quotes inside `${...}` within double quotes are not modelled (the quotes-only reading still checks the old split).
   - Agent runtimes: `runtime/claudeBinary.ts` `claudeExecutable(env)` is the one resolver (claude.ts runs, probes, completions and
     `anthropicAuth.ts`), evaluated per call: `ORGAI_CLAUDE_PATH` (absolute, existing regular file, not .cmd / .bat / .ps1 / .js /
     .mjs / .cjs; when set it decides), the app.asar.unpacked native package, the SDK per-platform package via `createRequire` from
@@ -320,7 +337,16 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     `projects:setFolderConfigTrust` stay `desktop_only`.
   - The CLI starts Node with the inspector signal disabled (`src/cli/inspectorSignal.ts`; `src/cli/bin.ts` is the
     bundle's entry and loads it before the rest of the CLI, which comes in as its own chunk; `npm run cli` also passes
-    `--disable-sigusr1`; `inspectorSignal.test.ts`).
+    `--disable-sigusr1`; `inspectorSignal.test.ts`). PR 47 adds the `#!/usr/bin/env -S node --disable-sigusr1` banner and a
+    startup refusal at the top of `runCli()` (`sigusr1Disabled`: the exact flag in `process.execArgv` or as a whole word in
+    `NODE_OPTIONS`, else exit 1 with "refusing to start without Node.js --disable-sigusr1"); e2e scripts and `npm run cli`
+    pass the flag. Checked by `packaging.test.ts` against the built bundle (refused without the flag, runs with it in argv
+    and in NODE_OPTIONS, and through the shebang on POSIX); npm's Windows `.cmd` shim carrying the flag is unverified.
+    The packaged desktop app flips Electron fuses (`electron-builder.yml` `electronFuses`: no `--inspect` arguments,
+    RunAsNode kept for `systemCerts.ts`, `resetAdHocDarwinSignature: true` because flipping fuses breaks the unsigned
+    arm64 macOS binary's ad hoc signature); `packaging.test.ts` checks the exact block. Dev builds (`npm run dev`,
+    `out/`) have no fuses. The packed app was not built or launched for this change; the macOS ad hoc re-signing is
+    unverified (no Mac).
   - Why approving was held: an approval path at the terminal was built and reviewed twice. Both independent reviews
     found that a terminal session cannot be told apart from one an agent drives, so an agent could approve its own change.
     Approving from a terminal needs a confirmation from the operating system that an agent cannot produce, and a record of
