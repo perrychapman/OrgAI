@@ -137,7 +137,12 @@ interface Tracked {
   counted?: 'ok' | 'fail'
   /** An idle with nothing left already recorded 'finished'; cleared by the next turn. */
   settled?: boolean
+  /** When a usage-limit pause was handed over to a continuation (finished with pausedUntil). */
+  handedOverAt?: number
 }
+
+/** How long a handed-over paused run waits for its successor before sweep() ends its entry. */
+export const HANDOVER_GRACE_MS = 60_000
 
 /** How often an idle scheduled run that still works is looked at again (review recheck H-new). */
 export const IDLE_RECHECK_MS = 5_000
@@ -661,7 +666,7 @@ export class ScheduleService {
       if (!s || !prev) return
       this.clearRecheck(s.resumedFrom!)
       if (s.scheduleId && prev.scheduleId === s.scheduleId) {
-        t = { ...prev, settled: false }
+        t = { ...prev, settled: false, handedOverAt: undefined }
         this.tracked.delete(s.resumedFrom!)
         this.tracked.set(event.runId, t)
         return
@@ -709,7 +714,11 @@ export class ScheduleService {
       if (event.status === 'finished') {
         this.clearRecheck(event.runId)
         // A run paused at a usage limit hands over to its continuation: not an outcome of the schedule.
-        if (event.pausedUntil) return
+        if (event.pausedUntil) {
+          // Handed over: its successor normally arrives at once; sweep() ends the entry if none ever does.
+          t.handedOverAt = this.deps.now()
+          return
+        }
         const summary = this.deps.runSummary(event.runId)
         const endedBy = event.endedBy ?? summary?.endedBy
         // A budget end counts as a failure (a schedule that keeps hitting its cap pauses itself).
@@ -762,6 +771,15 @@ export class ScheduleService {
     for (const [runId, t] of [...this.tracked]) {
       if (t.settled) continue
       try {
+        // A paused run handed over to a continuation whose start then failed (e.g. its cap is spent): no successor
+        // will ever take the entry, so it ends as 'stopped' after HANDOVER_GRACE_MS (review recheck Low 2).
+        if (t.handedOverAt !== undefined) {
+          if (this.deps.now() - t.handedOverAt >= HANDOVER_GRACE_MS && !this.trackedBlocks(runId)) {
+            this.setOutcome(runId, t, 'stopped')
+            this.tracked.delete(runId)
+          }
+          continue
+        }
         this.settleIdle(runId)
       } catch (e) {
         this.deps.log?.(`Schedule ${t.scheduleId}: run-end bookkeeping failed: ${(e as Error).message}`)

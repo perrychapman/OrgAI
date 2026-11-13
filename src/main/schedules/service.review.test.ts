@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { SCHEDULE_MAX_CONCURRENT_RUNS } from '@shared/types'
 import type { Project, RunEvent, RunSummary, ScheduleSaveInput, SchedulesProposalPayload } from '@shared/types'
-import { SCHEDULE_CHANGED_SINCE_PROPOSED, START_TIMED_OUT_DETAIL } from './service'
+import { HANDOVER_GRACE_MS, SCHEDULE_CHANGED_SINCE_PROPOSED, START_TIMED_OUT_DETAIL } from './service'
 import { SCHEDULE_BYPASS_NOT_STARTED, SCHEDULE_INHERITS_BYPASS, scheduledRunCap } from './validate'
 import { fakeEnv, fakeProject, type FakeEnv } from './testkit'
 
@@ -334,6 +334,21 @@ describe('Recheck L-f: a paused scheduled run the user takes over', () => {
     env.service.onRunEvent(status('run_user2', 'starting'))
     expect(env.store.history(s.id)[0].outcome).toBe('stopped')
     expect(env.service.liveScheduledRuns()).toBe(0)
+  })
+})
+
+describe('Recheck Low 2: a handed-over pause whose continuation never starts', () => {
+  it('sweep() ends the entry as stopped after the grace, not before', async () => {
+    env = fakeEnv()
+    const s = env.service.save(base())
+    const e = await env.service.runNow(s.id)
+    env.facts.delete(e.runId!)
+    env.service.onRunEvent(status(e.runId!, 'finished', { pausedUntil: env.clock.now, autoResume: false }))
+    env.service.sweep()
+    expect(env.store.history(s.id)[0].outcome).toBeUndefined()
+    env.clock.now += HANDOVER_GRACE_MS
+    env.service.sweep()
+    expect(env.store.history(s.id)[0].outcome).toBe('stopped')
   })
 })
 

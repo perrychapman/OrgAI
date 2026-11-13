@@ -243,7 +243,11 @@ Params: `schedules:history` / `remove` / `runNow` take an id (`^[A-Za-z0-9_-]{1,
     ended inside `start()` (refused before launch by its cap, an adapter that failed to start) gets that outcome at
     once. A run paused at a usage limit is not an outcome: its auto-resume continuation carries the schedule id, is
     tracked in its place (same history entry) and its end fills that entry; paused without an auto-resume it reads
-    'needs-you', and a user's own continuation of it ends the entry as 'stopped'. RunManager itself refuses to start a
+    'needs-you', and a user's own continuation of it ends the entry as 'stopped'; a handed-over pause whose
+    continuation never starts (its start threw, e.g. a spent cap) is ended as 'stopped' by the scheduler's sweep after
+    `HANDOVER_GRACE_MS` (60 s). Accepted: once an idle run recorded 'finished', a later turn the user drives in the same
+    live session that ends in error still sets 'error' and counts toward auto-pause; a card raised before `start()`
+    returned shows 'needs-you' only from the next event. RunManager itself refuses to start a
     run with a schedule id in bypass mode, so an auto-resume after the project switched to bypass does not start.
   - Main-owned disables (auto-pause, project missing) bump `updatedAt`, so a card or form built before them is stale.
   - A start that throws records result 'failed', reason 'start-refused' and the fixed sentence `START_FAILED_DETAIL`;
