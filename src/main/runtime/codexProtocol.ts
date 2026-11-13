@@ -8,7 +8,10 @@ import type { ResolvedMcpServer, RunConnection } from './types'
  * Every Codex app-server method name, notification and request shape the adapter uses, in one place,
  * with defensive parsers (a field the server leaves out or renames degrades to a default, never a crash).
  *
- * Source of truth: `codex app-server generate-ts --experimental` of @openai/codex 0.166.0 (token-free).
+ * Source of truth: `codex app-server generate-ts --experimental` of @openai/codex 0.166.0 (token-free), re-generated
+ * for 0.167.0 and diffed (2026-11-12): no shape used here changed; 0.167.0 adds the `humanCommand` command-approval
+ * kind (parseCommandApproval), `InitializeCapabilities.requiredHumanApproval` (not sent), `thread/guardianReview`,
+ * `thread/section/changed`, a `fileId` form of audio input and `ThreadSampleParams.interruptOnCancel` (none used).
  * VERIFIED against that schema: names and field shapes below. UNVERIFIED (needs a model turn, see
  * scripts/smoke-codex.mjs): the order and exact content of notifications during a real turn.
  */
@@ -189,13 +192,37 @@ export interface CommandApproval {
   command: string
   cwd?: string
   reason?: string
+  /**
+   * CommandExecutionApprovalKind when the server names one ("command", "writeStdin"; 0.167.0 adds "humanCommand", a
+   * managed command checkpoint that needs a one-time decision from a person). Absent = "command" (older servers).
+   */
+  kind?: string
 }
 export function parseCommandApproval(params: unknown): CommandApproval | null {
   if (!isRec(params)) return null
   const threadId = str(params.threadId)
   const itemId = str(params.itemId)
   if (!threadId || !itemId) return null
-  return { threadId, itemId, command: str(params.command) ?? '', ...(str(params.cwd) ? { cwd: str(params.cwd) } : {}), ...(str(params.reason) ? { reason: str(params.reason) } : {}) }
+  const kind = str(params.kind)
+  return {
+    threadId,
+    itemId,
+    command: str(params.command) ?? '',
+    ...(str(params.cwd) ? { cwd: str(params.cwd) } : {}),
+    ...(str(params.reason) ? { reason: str(params.reason) } : {}),
+    ...(kind ? { kind } : {})
+  }
+}
+
+/**
+ * True when a command approval must be put to a person and answered for this call only: never by a saved or session
+ * rule and never with acceptForSession. That is 0.167.0's "humanCommand" (managed command policy requires a fresh
+ * human approval) and, failing closed, any kind this adapter does not know. "command", "writeStdin" and no kind keep
+ * the normal path. OrgAI does not send InitializeCapabilities.requiredHumanApproval, and strings in the 0.167.0 binary
+ * suggest Codex then refuses such a command itself ("requires automatic review"), so this is a guard (UNVERIFIED live).
+ */
+export function commandApprovalNeedsPerson(req: Pick<CommandApproval, 'kind'>): boolean {
+  return req.kind !== undefined && req.kind !== 'command' && req.kind !== 'writeStdin'
 }
 
 export interface FileApproval {
