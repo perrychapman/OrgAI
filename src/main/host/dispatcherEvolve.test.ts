@@ -15,6 +15,7 @@ vi.mock('../log', () => ({ log: { debug: () => {}, info: () => {}, warn: () => {
 const { HostDispatcher, isMutatingChannel } = await import('./dispatcher')
 const { HostRpcFailure } = await import('./registry')
 const { EVOLVE_AFTER_RUN_CHANNEL } = await import('./jsonCodec')
+const { evolveAnalyzeArgs } = await import('./args')
 const { project: makeProject } = await import('../runtime/testHelpers')
 type HostServices = import('./types').HostServices
 type RpcInvokeContext = import('./types').RpcInvokeContext
@@ -146,6 +147,30 @@ describe('org:evolve* channels', () => {
     expect(evolve.history).toHaveBeenCalledWith('proj_a')
   })
 
+  it('through invokeRpc (the scope gate): an in-process client without configure is refused apply, rollback and the post-run pass; read scope serves analyze and history', async () => {
+    const { d, evolve, runs } = setup()
+    for (const scopes of [['read'], ['read', 'operate', 'decide']] as HostScope[][]) {
+      for (const [channel, params] of [
+        [EVOLVE_IPC.orgEvolveApply, [{ projectId: 'proj_a' }]],
+        [EVOLVE_IPC.orgEvolveRollback, [{ projectId: 'proj_a' }]],
+        [EVOLVE_AFTER_RUN_CHANNEL, [{ runId: 'run_1' }]]
+      ] as const) {
+        const f = await failure(d.invokeRpc(channel, params, rpc(scopes, 'inproc')))
+        expect(f.code, `${channel} ${scopes.join(',')}`).toBe('scope_denied')
+      }
+    }
+    expect(evolve.apply).not.toHaveBeenCalled()
+    expect(evolve.rollback).not.toHaveBeenCalled()
+    expect(runs.awaitEvolvePass).not.toHaveBeenCalled()
+    await d.invokeRpc(EVOLVE_IPC.orgEvolveAnalyze, [{ projectId: 'proj_a' }], rpc(['read'], 'inproc'))
+    await d.invokeRpc(EVOLVE_IPC.orgEvolveHistory, [{ projectId: 'proj_a' }], rpc(['read'], 'inproc'))
+    expect(evolve.analyze).toHaveBeenCalledTimes(1)
+    expect(evolve.history).toHaveBeenCalledWith('proj_a')
+    // With configure the same in-process client is served.
+    await d.invokeRpc(EVOLVE_IPC.orgEvolveApply, [{ projectId: 'proj_a' }], rpc(['read', 'configure'], 'inproc'))
+    expect(evolve.apply).toHaveBeenCalledTimes(1)
+  })
+
   it('rollback validates the generation id and trims the reason', async () => {
     const { d, evolve } = setup()
     await d.invoke(EVOLVE_IPC.orgEvolveRollback, [{ projectId: 'proj_a', generationId: 'gen_2', reason: '  too\nslow  ' }], DESKTOP)
@@ -157,6 +182,36 @@ describe('org:evolve* channels', () => {
     const { d } = setup()
     expect(await d.invoke(EVOLVE_AFTER_RUN_CHANNEL, [{ runId: 'run_1' }], DESKTOP)).toEqual({ projectId: 'proj_a', ratchet: 'none' })
     expect(await d.invoke(EVOLVE_AFTER_RUN_CHANNEL, [{ runId: 'run_9' }], DESKTOP)).toBeNull()
+  })
+})
+
+describe('evolveAnalyzeArgs: expectedFingerprint and allowSpendRaise (apply only)', () => {
+  const base = { projectId: 'proj_a' }
+  it('apply keeps a well-formed fingerprint and allowSpendRaise: true', () => {
+    expect(evolveAnalyzeArgs({ ...base, expectedFingerprint: 'abc_DEF-123', allowSpendRaise: true }, true)).toEqual({ ...base, expectedFingerprint: 'abc_DEF-123', allowSpendRaise: true })
+    expect(evolveAnalyzeArgs({ ...base, expectedFingerprint: 'a'.repeat(128) }, true)).toEqual({ ...base, expectedFingerprint: 'a'.repeat(128) })
+  })
+  it('apply refuses allowSpendRaise: true without a fingerprint', () => {
+    expect(() => evolveAnalyzeArgs({ ...base, allowSpendRaise: true }, true)).toThrow('expectedFingerprint')
+    expect(() => evolveAnalyzeArgs({ ...base, allowSpendRaise: true, expectedFingerprint: null }, true)).toThrow('expectedFingerprint')
+  })
+  it('apply refuses a non-string, empty, malformed or over-long fingerprint and a non-boolean allowSpendRaise', () => {
+    for (const bad of [5, true, {}, [], '', 'a b', 'a/b', '../x', 'a'.repeat(129)]) {
+      expect(() => evolveAnalyzeArgs({ ...base, expectedFingerprint: bad }, true), JSON.stringify(bad)).toThrow('expectedFingerprint')
+    }
+    for (const bad of ['true', 1, 0, {}, []]) {
+      expect(() => evolveAnalyzeArgs({ ...base, expectedFingerprint: 'fp1', allowSpendRaise: bad }, true), JSON.stringify(bad)).toThrow('allowSpendRaise')
+    }
+  })
+  it('apply drops allowSpendRaise: false and keeps the fingerprint', () => {
+    const out = evolveAnalyzeArgs({ ...base, expectedFingerprint: 'fp1', allowSpendRaise: false }, true)
+    expect(out).toEqual({ ...base, expectedFingerprint: 'fp1' })
+    expect(out).not.toHaveProperty('allowSpendRaise')
+    expect(evolveAnalyzeArgs({ ...base, allowSpendRaise: false }, true)).toEqual(base)
+  })
+  it('analyze (no window) drops both fields, even malformed ones', () => {
+    expect(evolveAnalyzeArgs({ ...base, expectedFingerprint: 'fp1', allowSpendRaise: true })).toEqual(base)
+    expect(evolveAnalyzeArgs({ ...base, expectedFingerprint: 5, allowSpendRaise: 'yes' })).toEqual(base)
   })
 })
 

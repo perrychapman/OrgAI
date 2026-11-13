@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { EvolutionGeneration, EvolutionMetrics, EvolutionPlan, EvolutionRolePatch, Project, SkillSpec } from '../../shared/types'
+import type { EvolutionGeneration, EvolutionMetrics, EvolutionPlan, EvolutionRolePatch, Project, Role, SkillSpec } from '../../shared/types'
 import { project, role, run } from './fixtures'
 import { effectiveRoleStaffing } from '../../shared/defaults'
 import { enforcedStaffingFloor } from '../runtime/staffing'
@@ -622,7 +622,12 @@ describe('promote vs rollback thresholds (boundary values)', () => {
 })
 
 describe('restoreSnapshot', () => {
-  const p = project({ maxConcurrentSubagents: 4 })
+  // Another role also holds Bash, so a rollback may give it back to dev (a write tool nobody holds is not restored).
+  const p = project({ maxConcurrentSubagents: 4 }, [
+    role('lead', { id: 'r_lead', reportsTo: null, canSpawn: true, spawnable: ['r_dev', 'r_review'], tier: 'deep', model: 'deep' }),
+    role('dev', { id: 'r_dev', tools: ['Read', 'Edit', 'Write', 'Bash'], tier: 'deep', model: 'deep', effort: 'high' }),
+    role('review', { id: 'r_review', name: 'Reviewer', tools: ['Read', 'Grep', 'Bash'] })
+  ])
   const diagnosis = { findings: [
     { kind: 'tool_friction' as const, roleSlug: 'dev', severity: 10, summary: '', evidence: [] },
     { kind: 'serial_bottleneck' as const, severity: 10, summary: '', evidence: [], data: { limitThrottled: 1, peakReady: 6, limit: 4 } }
