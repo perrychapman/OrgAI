@@ -26,11 +26,20 @@ const CONTROL_MKDIR = 'control folder creation: idempotent recursive mkdir, mode
 const JOURNAL = "journal: written only by the holder of the journal's requiredLocks (caller-held osLocks), atomicWrite or durable unlink"
 const JOURNAL_SHARED_CHECK =
   'journal: stale foreign shared locator removed under the caller-held output-file-<hash> osLock'
+// Added after Phase 1 by Schedules and team evolution: <dataDir>/schedules.json (and .bak) and <dataDir>/evolution/<projectId>.json
+// are written by whichever host owns that data folder (the desktop or the CLI's in-process host, each on its own folder;
+// host/ownership.ts refuses a second owner). No shared-store osLock covers them yet: ownership, not a file lock, keeps a
+// second process out.
+const DATA_FOLDER_OWNER = 'data-folder owner: written only by the host holding host/ownership.ts for that folder (durable write, mkdir or corrupt-file rename); no osLock yet'
+// exec --output-last-message: a user-chosen path outside the data folder that other tools may also write; written to a
+// private temp file and renamed over the destination (never through a link); no OrgAI lock covers it.
+const EXEC_OUTPUT_FILE = 'outside data folder: user-chosen --output-last-message file, temp file + rename, no OrgAI lock'
+const TEST_TEMP = 'test helper: private mkdtemp folder under the OS temp dir, never the data folder'
 export const WRITE_SITES: Record<string, string> = {
-  'src/cli/commands/exec.ts:writeLastMessage:openSync': 'single owner',
-  'src/cli/commands/exec.ts:writeLastMessage:renameSync': 'single owner',
-  'src/cli/commands/exec.ts:writeLastMessage:rmSync': 'single owner',
-  'src/cli/commands/exec.ts:writeLastMessage:writeSync': 'single owner',
+  'src/cli/commands/exec.ts:writeLastMessage:openSync': EXEC_OUTPUT_FILE,
+  'src/cli/commands/exec.ts:writeLastMessage:renameSync': EXEC_OUTPUT_FILE,
+  'src/cli/commands/exec.ts:writeLastMessage:rmSync': EXEC_OUTPUT_FILE,
+  'src/cli/commands/exec.ts:writeLastMessage:writeSync': EXEC_OUTPUT_FILE,
   'src/cli/commands/kit.ts:<module>:link#ref': 'single owner',
   'src/cli/commands/kit.ts:<module>:rename#ref': 'single owner',
   'src/cli/commands/kit.ts:<module>:unlink#ref': 'single owner',
@@ -75,8 +84,8 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/connections/service.ts:ConnectionService.persistModels:mkdirSync': 'single owner',
   'src/main/connections/service.ts:ConnectionService.persistModels:renameSync': 'single owner',
   'src/main/connections/service.ts:ConnectionService.persistModels:writeFileSync': 'single owner',
-  'src/main/evolve/ratchet.ts:readLedger:renameSync': 'single owner',
-  'src/main/evolve/ratchet.ts:writeLedger:writeFileDurable': 'single owner',
+  'src/main/evolve/ratchet.ts:readLedger:renameSync': DATA_FOLDER_OWNER,
+  'src/main/evolve/ratchet.ts:writeLedger:writeFileDurable': DATA_FOLDER_OWNER,
   'src/main/host/consumers.ts:ConsumerEvidence.flush:writeFileAtomic':
     'consumers: per-host evidence file owned by its own host, atomicWrite',
   'src/main/host/fsRetry.ts:renameSyncRetry:fsRenameSync#ref': 'single owner',
@@ -252,6 +261,10 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/skills/files.ts:writeFolder:mkdirSync': 'single owner',
   'src/main/skills/files.ts:writeFolder:renameSync': 'single owner',
   'src/main/skills/files.ts:writeFolder:rmSync': 'single owner',
+  'src/main/schedules/store.ts:ScheduleStore.persist:this.fs.mkdirSync': DATA_FOLDER_OWNER,
+  'src/main/schedules/store.ts:ScheduleStore.persist:writeFileDurable': DATA_FOLDER_OWNER,
+  'src/main/schedules/testkit.ts:cleanup:rmSync': TEST_TEMP,
+  'src/main/schedules/testkit.ts:fakeEnv:mkdtempSync': TEST_TEMP,
   'src/main/skills/files.ts:writeFolder:writeFileSync': 'single owner',
   'src/main/skills/service.ts:copy:cpSync': 'single owner',
   'src/main/skills/service.ts:discard:rmSync': 'single owner',
