@@ -183,7 +183,7 @@ export const COMMANDS: readonly CommandEntry[] = [
     flags: [PROMPT_FILE_FLAG, ...EXEC_RUN_FLAGS, ...EXEC_START_FLAGS],
     available: true,
     notes: [
-      'With a prompt argument and piped stdin (git diff | orgai exec "review this"), the piped text is given to the run inside <stdin> tags before the prompt; a stdin that sends nothing for 3 seconds is ignored. Without a prompt argument (or with -), stdin is the prompt.',
+      'With a prompt argument and piped stdin (git diff | orgai exec "review this"), the piped text is given to the run before the prompt, fenced between two lines holding a random STDIN-<hex> marker and labelled as data; a stdin that sends nothing for 3 seconds is ignored. Without a prompt argument (or with -), stdin is the prompt.',
       UNTRUSTED_PROMPT_NOTE
     ]
   },
