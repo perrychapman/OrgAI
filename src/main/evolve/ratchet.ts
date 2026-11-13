@@ -422,6 +422,8 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     const n = plan.maxConcurrentSubagents
     const cur = effectiveConcurrency(project)
     if (!Number.isInteger(n) || n < 1 || n > MAX_CONCURRENT_SUBAGENTS_LIMIT) trim('concurrency_cap', `concurrency must be an integer from 1 to ${MAX_CONCURRENT_SUBAGENTS_LIMIT}`)
+    // A cut could not be rolled back (a rollback never raises the limit), so an evolution never lowers it.
+    else if (n < cur) trim('concurrency_cut', 'an evolution does not lower the concurrency limit; only you can lower it')
     else if (n > cur && !throttle) trim('concurrency_cap', 'concurrency rises only with a throttled serial_bottleneck finding')
     else if (n > cur && n > Math.max(cur, Number(throttle?.data?.peakReady) || 0)) trim('concurrency_cap', 'concurrency stays within the widest ready set the finding saw')
     else if (n > cur + MAX_CONCURRENCY_RAISE) trim('concurrency_cap', `concurrency rises by at most ${MAX_CONCURRENCY_RAISE} per generation`)
@@ -518,8 +520,11 @@ function sanitizeLedger(raw: unknown, projectId: string): Ledger | null {
   return { version: 1, projectId, generations: gens.filter((g) => keep.has(g)), rejectedHypotheses: rej.slice(-MAX_REJECTED) }
 }
 
-/** Read the ledger. Missing = empty. Corrupt = empty, with the corrupt file moved aside (`.corrupt-<ms>`). Never throws. */
-export function readLedger(dataDir: string, projectId: string, now: () => number = Date.now, log?: (level: 'info' | 'warn', m: string) => void): Ledger {
+/**
+ * Read the ledger. Missing = empty. Corrupt = empty, with the corrupt file moved aside (`.corrupt-<ms>`). Never throws.
+ * With `readOnly` (read-scope paths) nothing is ever renamed or written: a corrupt file stays where it is and reads as empty.
+ */
+export function readLedger(dataDir: string, projectId: string, now: () => number = Date.now, log?: (level: 'info' | 'warn', m: string) => void, opts?: { readOnly?: boolean }): Ledger {
   let file: string
   try {
     file = ledgerPath(dataDir, projectId)
@@ -533,6 +538,10 @@ export function readLedger(dataDir: string, projectId: string, now: () => number
     if (parsed) return parsed
   } catch {
     // fall through to the corrupt handling
+  }
+  if (opts?.readOnly) {
+    log?.('warn', `Evolution ledger for ${projectId} was unreadable; read as empty.`)
+    return emptyLedger(projectId)
   }
   try {
     renameSync(file, `${file}.corrupt-${now()}`)
@@ -631,7 +640,19 @@ export interface RestoreResult {
   reason?: string
 }
 
-const ALLOWED_FIELDS: readonly PatchedField[] = ['tier', 'model', 'effort', 'staffing', 'prompt', 'tools', 'skills']
+/** The value (as text) a rollback must not restore for this field, or '' when it may. */
+function neverRestored(f: PatchedField, pre: unknown): string {
+  if (f === 'tier' && pre === 'top') return '"top"'
+  if (f === 'model' && typeof pre === 'string' && settingTier(pre) === 'top') return '"top"'
+  if (f === 'effort' && (pre === 'xhigh' || pre === 'max')) return `"${pre}"`
+  if (f === 'staffing' && isObj(pre)) {
+    if (pre.minTier === 'top') return '"top"'
+    if (pre.maxEffort === 'xhigh' || pre.maxEffort === 'max') return `"${pre.maxEffort}"`
+  }
+  return ''
+}
+
+const ALLOWED_FIELDS: readonly PatchedField[]= ['tier', 'model', 'effort', 'staffing', 'prompt', 'tools', 'skills']
 const MAX_RESTORED_PROMPT = 200_000
 
 /**
@@ -704,6 +725,12 @@ export function restoreSnapshot(project: Project, snap: GenerationSnapshot, plan
           continue
         }
         const pre = edit.pre[f]
+        // A rollback never sets what an evolution could never set (top, xhigh, max): the field keeps its current value.
+        const never = neverRestored(f, pre)
+        if (never) {
+          notes.push(`kept ${r.slug}.${f}: restoring would set ${never}, which only you can set`)
+          continue
+        }
         if (f === 'tier') {
           if (pre === null) delete next.tier
           else if (isTier(pre)) next.tier = pre
@@ -732,7 +759,15 @@ export function restoreSnapshot(project: Project, snap: GenerationSnapshot, plan
           const added = new Set<string>(patch.addTools ?? [])
           const back = (patch.removeTools ?? []).filter((t) => before.includes(t))
           const tools = r.tools.filter((t) => !added.has(t))
-          for (const t of back) if (!tools.includes(t)) tools.push(t)
+          for (const t of back) {
+            if (tools.includes(t)) continue
+            // A write or exec tool comes back only where the project already trusts it with some role.
+            if (WRITE_EXEC_TOOLS.has(t) && !project.roles.some((x) => x.tools.includes(t))) {
+              notes.push(`${t} was not given back to ${r.slug}; add it yourself if you want it`)
+              continue
+            }
+            tools.push(t)
+          }
           next.tools = tools
         } else if (f === 'skills') {
           if (!Array.isArray(pre)) throw new Error('skills are malformed')
