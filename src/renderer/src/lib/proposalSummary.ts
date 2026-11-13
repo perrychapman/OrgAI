@@ -5,6 +5,7 @@ import { diffMcpProposal, mcpRowVerb, mcpServerHidden } from './mcpProposal'
 import { hasHidden } from './hiddenChars'
 import { diffSkillsProposal, skillRowVerb, type SkillCurrent } from './skillProposal'
 import { oneLine } from './decisionTitle'
+import { schedulesFoldVerbs } from '@shared/view/schedules'
 
 /** What the summary and the cards compare a proposal against. */
 export interface ProposalContext {
@@ -14,6 +15,8 @@ export interface ProposalContext {
   skills: SkillCurrent
   /** The kind of the project a target 'settings' proposal changes (its wording differs for engagements). */
   projectKind?: ProjectKind
+  /** A stored schedule's name by id (schedules proposals); unknown ids read "a schedule". */
+  scheduleNames?: (id: string) => string | undefined
 }
 
 /** Starts the fold summary of a proposal whose names or commands hold hidden characters. */
@@ -44,6 +47,10 @@ export function proposalFoldSummary(proposal: Proposal, ctx: ProposalContext): s
       const verbs = d.rows.map((r) => skillRowVerb(r.item, r.view))
       const hidden = proposal.payload.items.some((i) => hasHidden(i.draft.name))
       return verbs.length > 0 ? `${hidden ? HIDDEN_PREFIX : ''}${foldList(verbs)}` : undefined
+    }
+    case 'schedules': {
+      const verbs = schedulesFoldVerbs(proposal.payload.items, (id) => ctx.scheduleNames?.(id))
+      return verbs.length > 0 ? `${hasHidden(verbs.join(' ')) ? HIDDEN_PREFIX : ''}${foldList(verbs)}` : undefined
     }
     case 'orgChart':
       return diffOrgChart(ctx.roles, proposal.payload.roles).summary || undefined

@@ -1895,6 +1895,8 @@ export interface NormalizedAppearanceSettings extends AppearanceSettings {
 
 /** Global defaults applied to new projects, plus app-wide auth. Persisted as settings.json in the data dir. */
 export interface AppSettings {
+  /** Global pause of Schedules (kill switch): while true nothing fires and due slots are recorded as skipped. */
+  schedulesPaused?: boolean
   defaultPermissionMode: PermissionMode
   /** undefined = no cap. */
   defaultMaxBudgetUsd?: number
@@ -2201,7 +2203,7 @@ export interface SkillsProposalPayload {
   rationale: string
 }
 
-export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills' | 'appSettings'
+export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills' | 'appSettings' | 'schedules'
 
 interface ProposalBase {
   id: string
@@ -2236,6 +2238,7 @@ export type Proposal =
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
   | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
   | (ProposalBase & { kind: 'appSettings'; payload: AppSettingsProposalPayload })
+  | (ProposalBase & { kind: 'schedules'; payload: SchedulesProposalPayload })
 
 /**
  * The user's answer to a proposal card (setup:decide). 'approve' applies it; 'revise' sends feedback and the agent may
@@ -3301,6 +3304,8 @@ export interface SwitchRunModelResult {
 }
 
 export interface RunSummary {
+  /** Main-owned: the schedule that started this run, and its name then (section "Schedules"). Continuations do not carry them. */
+  scheduleId?: string; scheduleName?: string
   /** Required-delegation outcome (delegation-enforcement spec 4.3). Set by RunManager once a ledger exists. */
   delegation?: { failed: number; corrected: number; nativeSpawns: number; rootVerdict?: DelegationVerdict; subtreeFailed?: boolean }
   /** Runtime actually used by this run, retained when selecting a different adapter for continuation. */
@@ -4049,7 +4054,9 @@ export const MENU_ACTIONS = [
   /** Help > "Ask OrgAI about itself…": opens Chat ready for a question about the app (section "Self-knowledge"). */
   'ask-about-orgai',
   /** View > Usage: the app-wide Usage page (docs/design/usage-app.md). No accelerator; always enabled. */
-  'show-usage'
+  'show-usage',
+  /** View > Schedules: the app-wide Schedules page (docs/design/schedules.md section 5). No accelerator; always enabled. */
+  'show-schedules'
 ] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
@@ -8231,7 +8238,8 @@ export const PROPOSE_APP_SETTINGS_TOOL = 'propose_app_settings'
 /** Harness tool: propose a stored project's settings (Proposal kind 'settings' with `target`). Chat only. */
 export const PROPOSE_PROJECT_SETTINGS_TOOL = 'propose_project_settings'
 /** The self-knowledge and self-configuration tools Chat (quick runs) gets, in addition to list_projects. */
-export const CHAT_CONFIG_TOOLS = [APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL] as const
+// The two schedule tools are literals: LIST_SCHEDULES_TOOL / PROPOSE_SCHEDULE_TOOL are declared at the end of the file (a const cannot be read before it is initialised).
+export const CHAT_CONFIG_TOOLS = [APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, 'list_schedules', 'propose_schedule'] as const
 
 /** app_reference / app:reference actions. 'status' is answered only on Chat, MCP and Skill assistant runs and over IPC. */
 export const APP_REFERENCE_ACTIONS = ['search', 'read', 'locate', 'status'] as const
@@ -9181,4 +9189,192 @@ export interface OrgAIApi {
     saveImage(input: OutputSaveImageInput): Promise<OutputSaveAsResult>
   }
   onOutputsChanged(cb: (event: OutputsChangedEvent) => void): () => void
+}
+
+// ---- Schedules (docs/design/schedules.md; pure helpers in ./schedule.ts) ----
+
+/** When a schedule fires. All times are the system's local time. */
+export type ScheduleTiming =
+  /** One run at a wall-clock instant (epoch ms). The schedule disables itself after firing or being missed. */
+  | { kind: 'once'; at: number }
+  /** Every n minutes from `anchor` (epoch ms, set by main at save). SCHEDULE_MIN_INTERVAL_MINUTES..SCHEDULE_MAX_INTERVAL_MINUTES. */
+  | { kind: 'interval'; everyMinutes: number; anchor?: number }
+  /** Local time 'HH:MM' on the given weekdays (0 = Sunday; absent or empty = every day). */
+  | { kind: 'daily'; time: string; days?: number[] }
+  /** 5-field cron in local time (minute hour day-of-month month day-of-week; lists, ranges and steps; names are not supported). */
+  | { kind: 'cron'; expression: string }
+
+export type ScheduleTarget =
+  /** A work run of a stored project; `team: 'single'` runs one assistant instead of the org chart (StartRunInput.team). */
+  | { kind: 'team'; projectId: string; team?: RunTeam }
+  /** A Chat (quick) run. No folder = a scratch folder per run. `allowEdits` as QuickRunInput. */
+  | { kind: 'ask'; folder?: string; allowEdits?: boolean }
+
+export type ScheduleMissedPolicy = 'run-once' | 'skip'
+export type ScheduleState = 'active' | 'paused' | 'error' | 'done'
+
+export interface Schedule {
+  /** 'sch_<hex>', main-owned. */
+  id: string
+  /** 1..SCHEDULE_NAME_MAX_CHARS, no hidden characters. */
+  name: string
+  /** 1..SCHEDULE_PROMPT_MAX_CHARS. */
+  prompt: string
+  target: ScheduleTarget
+  timing: ScheduleTiming
+  enabled: boolean
+  /** Default 'run-once'. */
+  missed: ScheduleMissedPolicy
+  /** Root model for each run (StartRunInput.modelSelection). Absent = the project's / Chat's default. */
+  modelSelection?: { model: string; connection: ConnectionId }
+  /** Permission mode of each run. Absent = the project's mode. Never 'bypassPermissions' (refused on save). */
+  permissionMode?: PermissionMode
+  /** Spend cap per run in USD (the run's conversation budget). Absent = the project's own cap, if any. */
+  budgetUsd?: number
+  /** Disable after this instant (epoch ms). */
+  expiresAt?: number
+  // ---- main-owned from here on; ignored on save ----
+  state: ScheduleState
+  /** Why the state is 'error' or 'done', one plain sentence. */
+  stateReason?: string
+  createdAt: number
+  updatedAt: number
+  /** 'agent' = an approved proposal. */
+  createdBy: 'user' | 'agent'
+  /** Absent when not enabled / done. */
+  nextRunAt?: number
+  /** The last slot handled (started, skipped or missed), so no slot fires twice. */
+  lastSlotAt?: number
+  consecutiveFailures: number
+  /** History entries the user has not seen. */
+  unread: number
+  /** The newest history entry, for list rows (main-owned; absent before the first slot is handled). */
+  lastEntry?: Pick<ScheduleHistoryEntry, 'at' | 'slotAt' | 'trigger' | 'result' | 'reason' | 'outcome' | 'runId'>
+}
+
+export type ScheduleRunResult = 'started' | 'skipped' | 'failed'
+export type ScheduleSkipReason =
+  | 'previous-running'
+  | 'too-many-running'
+  | 'app-closed'
+  | 'paused-globally'
+  | 'project-missing'
+  | 'usage-limited'
+  | 'start-refused'
+
+export interface ScheduleHistoryEntry {
+  id: string
+  scheduleId: string
+  /** The due time this entry answers. */
+  slotAt: number
+  /** When it was handled. */
+  at: number
+  trigger: 'timer' | 'catch-up' | 'manual'
+  result: ScheduleRunResult
+  reason?: ScheduleSkipReason
+  /** A plain OrgAI-written sentence for 'failed' / 'start-refused' (never a raw provider message). */
+  detail?: string
+  runId?: string
+  /** The run's project id (a virtual id for ask runs). */
+  projectId?: string
+  /** Filled when the run ends: how it ended and what it cost (null = unknown). */
+  outcome?: 'finished' | 'error' | 'stopped' | 'needs-you'
+  costUsd?: number | null
+}
+
+/** schedules:save input. No id = create. `null` clears an optional field on update. */
+export interface ScheduleSaveInput {
+  id?: string
+  name: string
+  prompt: string
+  target: ScheduleTarget
+  timing: ScheduleTiming
+  enabled?: boolean
+  missed?: ScheduleMissedPolicy
+  modelSelection?: { model: string; connection: ConnectionId } | null
+  permissionMode?: PermissionMode | null
+  budgetUsd?: number | null
+  expiresAt?: number | null
+  /** Refuse when the stored schedule changed since the form loaded it. */
+  expectedUpdatedAt?: number
+}
+
+/** Push on SCHEDULES_IPC.schedulesChanged (every window). */
+export interface SchedulesChangedEvent {
+  scheduleIds: string[]
+  removed?: string[]
+}
+
+export const SCHEDULES_MAX = 50
+/** History entries kept per schedule. */
+export const SCHEDULE_HISTORY_MAX = 50
+export const SCHEDULE_MIN_INTERVAL_MINUTES = 15
+/** 30 days. */
+export const SCHEDULE_MAX_INTERVAL_MINUTES = 43_200
+export const SCHEDULE_MAX_CONCURRENT_RUNS = 2
+export const SCHEDULE_FAILURES_TO_PAUSE = 3
+/** A missed slot older than this is never caught up (24 h). */
+export const SCHEDULE_CATCH_UP_WINDOW_MS = 24 * 60 * 60 * 1000
+export const SCHEDULE_BUDGET_MAX_USD = 1000
+export const SCHEDULE_PROPOSAL_MAX_ITEMS = 5
+export const SCHEDULE_NAME_MAX_CHARS = 80
+export const SCHEDULE_PROMPT_MAX_CHARS = 8000
+/** Longest cron expression text accepted. */
+export const SCHEDULE_CRON_MAX_CHARS = 120
+/** Every PermissionMode except 'bypassPermissions' (a schedule never runs unattended with it). */
+export const SCHEDULE_PERMISSION_MODES = ['auto', 'acceptEdits', 'default', 'dontAsk', 'plan'] as const satisfies readonly PermissionMode[]
+
+/** Harness tool names (harnessTools.ts; the main-process side adds them to CHAT_CONFIG_TOOLS). */
+export const LIST_SCHEDULES_TOOL = 'list_schedules'
+export const PROPOSE_SCHEDULE_TOOL = 'propose_schedule'
+
+/** One change of a schedules proposal. */
+export interface ScheduleProposalItem {
+  action: 'create' | 'update' | 'remove' | 'pause' | 'resume'
+  /** Required for update / remove / pause / resume. */
+  scheduleId?: string
+  /** Required for create and update (cleaned through cleanScheduleInput). */
+  schedule?: ScheduleSaveInput
+  /** Main-written description of the change (never agent text). */
+  summary: string
+  /** Next run times (epoch ms), at most 3, computed by main. */
+  nextRuns: number[]
+}
+
+/** Schedules proposal (propose_schedule): at most SCHEDULE_PROPOSAL_MAX_ITEMS items. */
+export interface SchedulesProposalPayload {
+  items: ScheduleProposalItem[]
+  rationale: string
+}
+
+/** Channels of this section. Not spread into IPC (IPC is declared earlier in the file); jsonCodec.allChannels lists it. */
+export const SCHEDULES_IPC = {
+  /** () -> Schedule[] by name. Scope read. */
+  schedulesList: 'schedules:list',
+  /** (scheduleId) -> ScheduleHistoryEntry[] newest first; clears `unread`. Scope read. */
+  schedulesHistory: 'schedules:history',
+  /** (ScheduleSaveInput) -> Schedule. Scope configure, desktop only. */
+  schedulesSave: 'schedules:save',
+  /** (scheduleId) -> void; the history goes, runs stay. Scope configure, desktop only. */
+  schedulesRemove: 'schedules:remove',
+  /** ({ id, enabled }) -> Schedule; enabling clears 'error' and the failure count. Scope configure, desktop only. */
+  schedulesSetEnabled: 'schedules:setEnabled',
+  /** (scheduleId) -> ScheduleHistoryEntry (trigger 'manual'; works while paused; the overlap rule applies). Scope operate, desktop only. */
+  schedulesRunNow: 'schedules:runNow',
+  /** main -> renderer push carrying SchedulesChangedEvent (every window). */
+  schedulesChanged: 'schedules:changed'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  schedules: {
+    list(): Promise<Schedule[]>
+    /** Newest first; clears the schedule's unread count. */
+    history(scheduleId: string): Promise<ScheduleHistoryEntry[]>
+    save(input: ScheduleSaveInput): Promise<Schedule>
+    remove(scheduleId: string): Promise<void>
+    setEnabled(input: { id: string; enabled: boolean }): Promise<Schedule>
+    runNow(scheduleId: string): Promise<ScheduleHistoryEntry>
+  }
+  onSchedulesChanged(cb: (event: SchedulesChangedEvent) => void): () => void
 }

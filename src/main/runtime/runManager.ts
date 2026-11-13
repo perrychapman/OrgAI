@@ -114,7 +114,7 @@ import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { runModelLogs } from './runModels'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
-import type { DelegationGate, SelfKnowledgeHooks } from './types'
+import type { DelegationGate, RunManagerScheduleHooks, SelfKnowledgeHooks } from './types'
 import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
 import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
 import { clampText } from '../capabilities/sanitize'
@@ -860,6 +860,8 @@ export interface RunManagerOptions {
   orgTemplate?: (templateId: string, project: Project) => { name: string; roles: Role[] } | null
   /** Self-knowledge and self-configuration (app_reference, open_in_app, appSettings apply). See SelfKnowledgeHooks. */
   selfKnowledge?: SelfKnowledgeHooks
+  /** Schedules (schedules/service.ts): RuntimeContext.schedules and the apply of an approved 'schedules' proposal. Missing = neither. */
+  schedules?: RunManagerScheduleHooks
 }
 
 /** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
@@ -995,6 +997,12 @@ export interface StartInput {
    * runPermissionModeChoices and refuses (throws) before a run exists.
    */
   userChoice?: StartUserChoice
+  /**
+   * Set only by ScheduleService (never from IPC input): the schedule starting this work run, recorded as
+   * RunSummary.scheduleId / scheduleName. Continuations pass it only on RunManager's own usage-limit auto-resume of a
+   * scheduled run (SCHEDULED_RESUME); a user's continuation never does.
+   */
+  schedule?: { id: string; name: string }
   /** Set by continueRun only (a symbol key, so no caller input can carry it): the per-run choices of the continued run. */
   [CARRIED_CHOICES]?: CarriedChoices
 }
@@ -1072,6 +1080,8 @@ export function checkStartEffort(effort: Effort, adapter: ProviderId): void {
 
 /** Internal ContinueRunOptions key: the automatic rate-limit resume (keeps the exec fields like `exec`). */
 const AUTO_RESUME = Symbol('autoResume')
+/** Internal ContinueRunOptions key: the schedule of a run RunManager's own auto-resume continues (never a user continuation). */
+const SCHEDULED_RESUME = Symbol('scheduledResume')
 
 /** continueRun options (cli-spec 6.2(1)). */
 export interface ContinueRunOptions {
@@ -1085,6 +1095,8 @@ export interface ContinueRunOptions {
   desktop?: true
   /** Set only by RunManager's own auto-resume. */
   [AUTO_RESUME]?: true
+  /** Set only by RunManager's own auto-resume of a scheduled run: the continuation stays the schedule's (ScheduleService tracks it). */
+  [SCHEDULED_RESUME]?: { id: string; name: string }
 }
 
 /** Narrowing overrides a continuation always keeps (goal never widens: picks stay inside the roles' ceilings). */
@@ -1633,6 +1645,7 @@ export class RunManager {
     overrides: rawOverrides,
     allowWidening,
     userChoice,
+    schedule,
     [CARRIED_CHOICES]: carried
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
@@ -1757,13 +1770,20 @@ export class RunManager {
     if (quick) summary.quick = { ...quick }
     if (buildWorkspace) summary.buildWorkspace = buildWorkspace
     if (team === 'single') summary.team = 'single'
+    if (schedule && kind === 'work') {
+      summary.scheduleId = schedule.id
+      summary.scheduleName = schedule.name
+    }
     if (overrides) {
       if (overrides.execMode && !overrides.execChainId) overrides.execChainId = summary.id
       summary.overrides = overrides
     }
     // Display facts, set before the first save: the mode in force (only runs that take a per-run mode; see
     // recordedRunPermissionMode) and the user's per-run choices.
-    const recordedMode = recordedRunPermissionMode(summary, chosenMode ?? effectiveRunProject(project, overrides, { allowWidening }).permissionMode)
+    const modeInForce = chosenMode ?? effectiveRunProject(project, overrides, { allowWidening }).permissionMode
+    // Schedules (docs/design/schedules.md 6): a scheduled run, its auto-resume included, never runs with bypass.
+    if (summary.scheduleId && modeInForce === 'bypassPermissions') throw new Error('A scheduled run cannot use bypass permissions. Choose a permission mode for the schedule.')
+    const recordedMode = recordedRunPermissionMode(summary, modeInForce)
     if (recordedMode) summary.permissionMode = recordedMode
     if (chosenMode) summary.permissionModeChosen = true
     if (rootEffort) summary.rootEffort = rootEffort
@@ -2511,6 +2531,9 @@ export class RunManager {
                 : {})
             }
           : {}),
+        // Schedules: Chat runs and work runs (team or single) of a stored project; never setup-like, build or other
+        // virtual-project runs. A scheduled run keeps the access so the tools refuse it in words (summary.scheduleId).
+        ...(this.options.schedules && kind === 'work' && (isQuick || !bare) ? { schedules: this.options.schedules.access() } : {}),
         ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(project.id),
@@ -3377,10 +3400,11 @@ export class RunManager {
   }
 
   /** Revise routing (outputs/revise.ts): how a live run stands, or null when it is not live. */
-  liveRunFacts(runId: string): { status: RunSummary['status']; limitHold: boolean; pendingCards: number } | null {
+  liveRunFacts(runId: string): { status: RunSummary['status']; limitHold: boolean; pendingCards: number; working: boolean } | null {
     const a = this.runs.get(runId)
     if (!a || !LIVE_STATUSES.has(a.summary.status)) return null
-    return { status: a.summary.status, limitHold: !!a.limitHold, pendingCards: pendingCount(a) }
+    // working: runActivity's 'working' or 'ending' (an idle root whose reports, peer flush or nudge still run).
+    return { status: a.summary.status, limitHold: !!a.limitHold, pendingCards: pendingCount(a), working: this.activityStateOf(a) !== 'waiting' }
   }
 
   /** Revise routing: OrgAI is quitting, so nothing starts, continues or takes a message. */
@@ -4224,7 +4248,15 @@ export class RunManager {
         const secrets = proposal.kind === 'mcpServers' && decision.secrets ? { secrets: decision.secrets } : {}
         {
           try {
-            if (proposal.kind === 'appSettings') {
+            if (proposal.kind === 'schedules') {
+              // Schedules: Chat (any target) or a stored project's work run (that project only); ScheduleService
+              // validates every item again and writes all or nothing. A scheduled run never gets here (the tool refuses).
+              if (!this.options.schedules) throw new Error('Schedules are not available in this run.')
+              if (active.summary.scheduleId) throw new Error('A scheduled run cannot create or change schedules.')
+              const quick = !!active.summary.quick
+              if (active.summary.kind !== 'work' || (!quick && isVirtualProjectId(active.summary.projectId))) throw new Error('Schedules can only be proposed from Chat or a project run.')
+              this.options.schedules.apply(proposal.payload, { projectId: quick ? null : active.summary.projectId })
+            } else if (proposal.kind === 'appSettings') {
               // App-wide settings: Chat only, applied through the settings path (RunManagerOptions.selfKnowledge).
               if (!active.summary.quick || !this.options.selfKnowledge) throw new Error('App settings can only be changed from Chat.')
               this.options.selfKnowledge.applyAppSettings(proposal.payload)
@@ -4922,6 +4954,7 @@ export class RunManager {
       ...(target.quick ? { quick: target.quick } : {}),
       ...(target.buildWorkspace ? { buildWorkspace: target.buildWorkspace } : {}),
       ...(target.team === 'single' ? { team: target.team } : {}),
+      ...(opts[SCHEDULED_RESUME] ? { schedule: { ...opts[SCHEDULED_RESUME] } } : {}),
       resumeSessionId: switching ? undefined : sessionId,
       ...(target.modelSelection ? { modelSelection: target.modelSelection } : {}),
       ...(carriedBudget !== undefined ? { conversationBudgetUsd: carriedBudget } : {}),
@@ -5198,10 +5231,12 @@ export class RunManager {
       // A chain a 'configure' caller widened stays widened across its own automatic resume only.
       const o = from.overrides
       const keepExec = !!o?.execMode && !!o.waitForReset && !from.execOutcome
+      // Schedules (review L1): only the timer's resume of a scheduled run stays the schedule's.
+      const scheduled = opts.auto === true && from.scheduleId ? { [SCHEDULED_RESUME]: { id: from.scheduleId, name: from.scheduleName ?? '' } } : {}
       return await (keepExec
-        ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}) })
+        ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}), ...scheduled })
         : opts.desktop || opts.auto
-          ? this.continueRun(project, runId, RESUME_TEXT, undefined, { desktop: true })
+          ? this.continueRun(project, runId, RESUME_TEXT, undefined, { desktop: true, ...scheduled })
           : this.continueRun(project, runId, RESUME_TEXT))
     } catch (e) {
       // The timer is gone; a run still paused must not claim it will resume by itself.

@@ -120,6 +120,9 @@ async function perform(plan: Extract<NavigationPlan, { ok: true }>, event: AppNa
     case 'usage':
       st.openUsage(t.section ? { section: t.section } : {})
       break
+    case 'schedules':
+      st.openSchedules()
+      break
     case 'dashboard':
       st.setView('projects')
       if (t.newProject) openNewProject()

@@ -103,6 +103,12 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
   const r: RunSummary = { ...input }
   if (typeof r.conversationBudgetUsd !== 'number' || !Number.isFinite(r.conversationBudgetUsd) || r.conversationBudgetUsd <= 0) delete r.conversationBudgetUsd
   if (r.modelAdapter !== 'claude' && r.modelAdapter !== 'codex' && r.modelAdapter !== 'mock') delete r.modelAdapter
+  // Schedules (untrusted file): a schedule id and a one-line name of at most 80 characters, both or neither.
+  // eslint-disable-next-line no-control-regex
+  if (typeof r.scheduleId !== 'string' || !/^sch_[0-9a-f]{4,64}$/.test(r.scheduleId) || typeof r.scheduleName !== 'string' || r.scheduleName.length > 80 || /[\u0000-\u001f\u007f]/.test(r.scheduleName)) {
+    delete r.scheduleId
+    delete r.scheduleName
+  }
   if (r.endedBy !== undefined && !ENDED_BY.includes(r.endedBy)) delete r.endedBy
   // endedWithApp is exactly true or absent. A record saved before endedBy existed has endedWithApp alone: the
   // app cut it, so it gets endedBy 'app' (the renderer trusts endedWithApp). Next to any other endedBy it is dropped.

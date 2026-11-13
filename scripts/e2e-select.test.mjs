@@ -93,6 +93,15 @@ test('a changed e2e script selects itself plus the smoke set', () => {
   assert.deepEqual(sel('e2e/setup.mjs').scripts, [])
 })
 
+test('Schedules files select schedules.mjs; the broad shared rule still forces full for other shared files', () => {
+  for (const p of ['src/shared/schedule.ts', 'src/shared/view/schedules.ts', 'src/main/schedules/scheduler.ts', 'src/renderer/src/components/schedules/ScheduleRow.tsx', 'src/renderer/src/views/SchedulesView.tsx', 'src/renderer/src/components/proposals/SchedulesProposalBody.tsx', 'e2e/schedules.mjs']) {
+    const r = sel(p)
+    assert.equal(r.mode, 'selected', p)
+    assert.ok(r.scripts.includes('schedules'), p)
+  }
+  assert.equal(sel('src/shared/types.ts', 'src/shared/schedule.ts').mode, 'full')
+})
+
 test('e2e helper parts map to the script that calls them', () => {
   assert.deepEqual(sel('e2e/outputs-revise.part.mjs').scripts.filter((s) => !SMOKE.includes(s)), ['outputs-notes'])
   assert.deepEqual(sel('e2e/pocket-office.mjs').scripts.filter((s) => !SMOKE.includes(s)), ['canvas'])

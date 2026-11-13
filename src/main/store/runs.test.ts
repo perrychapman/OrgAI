@@ -412,6 +412,15 @@ describe('RunStore exec fields (cli-spec Wave 0)', () => {
     }
   })
 
+  it('keeps scheduleId / scheduleName only as a valid pair (Schedules)', () => {
+    const n = (over: Record<string, unknown>): RunSummary => normalizeCrashedRunSummary(run('s', over as Partial<RunSummary>))
+    expect(n({ scheduleId: 'sch_00ff', scheduleName: 'Nightly' })).toMatchObject({ scheduleId: 'sch_00ff', scheduleName: 'Nightly' })
+    for (const bad of [{ scheduleId: 'sch_00ff' }, { scheduleName: 'x' }, { scheduleId: 'run_1', scheduleName: 'x' }, { scheduleId: 'sch_00ff', scheduleName: 'a\nb' }, { scheduleId: 'sch_00ff', scheduleName: 'x'.repeat(81) }]) {
+      const r = n(bad)
+      expect('scheduleId' in r || 'scheduleName' in r).toBe(false)
+    }
+  })
+
   it('keeps rootEffort and permissionMode only when valid, and permissionModeChosen only as true next to a mode', () => {
     const bad = (over: Record<string, unknown>): RunSummary => run('x', over as Partial<RunSummary>)
     const kept = normalizeCrashedRunSummary(run('ok', { status: 'finished', rootEffort: 'xhigh', permissionMode: 'plan', permissionModeChosen: true }))

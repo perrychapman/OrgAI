@@ -30,6 +30,7 @@ import {
   reportsUnchangedText,
   retryNeedsConfirm,
   runPermissionMode,
+  scheduleWideningConfirmOptions,
   showsModeInMeta,
   startChoicesToSend,
   wideningConfirmOptions,
@@ -272,6 +273,17 @@ describe('Interrupt and change asks again when the mode in force moved', () => {
   it('uses one confirmation wording and test id everywhere', () => {
     const o = wideningConfirmOptions('plan', 'bypassPermissions')
     expect(o).toMatchObject({ danger: true, confirmTestId: 'run-permission-confirm', cancelLabel: 'Keep current mode' })
+  })
+  it('words a schedule widening as standing consent for every run, never "this run only"', () => {
+    const o = scheduleWideningConfirmOptions('default', 'acceptEdits', true)
+    expect(o.title).toMatch(/^Let every run of this schedule use /)
+    expect(o.body).toMatch(/Each run this schedule starts uses it, including while you are away/)
+    expect(o.body).not.toMatch(/this run only/)
+    expect(o).toMatchObject({ danger: false, confirmTestId: 'schedule-permission-confirm', cancelLabel: "Keep the project's mode" })
+    expect(o.confirmLabel).toMatch(/for this schedule$/)
+    expect(scheduleWideningConfirmOptions('default', 'auto', false).cancelLabel).toBe('Keep the Chat default')
+    // The shared run wording is unchanged by the extraction.
+    expect(wideningCopy('default', 'acceptEdits').body).toMatch(/^File edits inside the project .* This applies to this run only/)
   })
 })
 

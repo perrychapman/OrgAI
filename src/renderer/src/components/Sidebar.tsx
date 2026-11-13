@@ -2,7 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { BellRing, Briefcase, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { BellRing, Briefcase, CalendarClock, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject } from '../lib/assistants'
 import { decisionLocationLabel } from '../lib/chatPermissions'
 import { useShallow } from 'zustand/react/shallow'
@@ -23,9 +23,9 @@ import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/setting
 import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import { contentIsRail, useSidebarCollapsed } from '../lib/useSidebarCollapsed'
 import { useBellCue } from '../lib/useBellCue'
-import UsageMeter, { SpendBar, tightestWindow, UsageBar } from './UsageMeter'
+import UsageMeter, { accountRowView, SpendBar, UsageBar, type AccountRowInput } from './UsageMeter'
 import { connectionLabel, isProxyId } from '../lib/connectionLabel'
-import { currentConnection, reportsSpend, spendLevel, spendRowFigure, spendRowLabel, spendRowPrefix, spendSentence } from '../lib/usage'
+import { currentConnection, reportsSpend, spendLevel, spendRowFigure, spendRowLabel, spendSentence } from '../lib/usage'
 import { BrandLockup } from './layout/BrandLockup'
 import { ResizeHandle } from './layout/ResizeHandle'
 import { Icon } from './ui/Icon'
@@ -117,6 +117,7 @@ export default function Sidebar({
   const view = useAppStore((s) => s.view)
   const setView = useAppStore((s) => s.setView)
   const openUsage = useAppStore((s) => s.openUsage)
+  const openSchedules = useAppStore((s) => s.openSchedules)
   const openProject = useAppStore((s) => s.openProject)
   const openAssistant = useAppStore((s) => s.openAssistant)
   const virtualProjects = useAppStore((s) => s.virtualProjects)
@@ -190,8 +191,21 @@ export default function Sidebar({
   /** The rail's accessible name and tooltip: a proxy's whole spend sentence (the rail shows no figure), else the label. */
   const railName = currentSpends && account.title ? account.title : account.label
   /** The full row's tooltip: the proxy's spend sentence (the one-figure label can clip at narrow widths); other rows keep none. */
-  const rowTitle = rail ? railName : currentSpends && !mockAdapter ? account.title : undefined
-  const tight = mockAdapter || onProxy ? null : tightestWindow(currentUsage)
+  const rowTitle = rail ? railName : mockAdapter ? undefined : currentSpends ? (account.title ?? account.label) : account.label
+  const rowState: AccountRowInput['state'] =
+    current === 'anthropic' && !currentStatus ? (auth == null ? 'checking' : auth.mode === 'apiKey' || auth.loggedIn ? 'connected' : 'disconnected') : (currentStatus?.state ?? 'disconnected')
+  const rowView = accountRowView({
+    mock: mockAdapter,
+    name: connectionLabel(current),
+    state: rowState,
+    isProxy: onProxy,
+    spends: currentSpends,
+    apiKey: current === 'anthropic' && (auth?.mode === 'apiKey' || currentUsage?.authMode === 'apiKey'),
+    keyMissing: current === 'anthropic' && auth?.mode === 'apiKey' && !auth.envVarSet && !currentStatus,
+    usage: currentUsage
+  })
+  /** The row's accessible name and tooltip: the old full sentence, then the figures in words. */
+  const rowFull = rowView.words ? `${account.label.replace(/ · /g, ', ')}, ${rowView.words}` : railName
   const needsLabel = `Needs you · ${needsCount}`
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
 
@@ -409,6 +423,18 @@ export default function Sidebar({
           <Icon icon={ChartColumn} size="sm" />
           {!rail && 'Usage'}
         </button>
+        <button
+          type="button"
+          className={`nav-item ${view === 'schedules' ? 'active' : ''}`}
+          data-testid="nav-schedules"
+          aria-current={view === 'schedules' ? 'page' : undefined}
+          aria-label={rail ? 'Schedules' : undefined}
+          title={rail ? 'Schedules' : undefined}
+          onClick={() => openSchedules()}
+        >
+          <Icon icon={CalendarClock} size="sm" />
+          {!rail && 'Schedules'}
+        </button>
         {needsCount > 0 && (
           <Popover
             trigger={
@@ -556,21 +582,24 @@ export default function Sidebar({
           trigger={
             <>
               <span className={`dot ${account.tone}`} aria-hidden="true" />
-              <span className="account-label">
-                {account.figure ? (
-                  <>
-                    <span className="account-name">{spendRowPrefix(current)}</span>
-                    {account.figure}
-                  </>
-                ) : (
-                  account.label
-                )}
-              </span>
-              {tight && !rail && <span className="account-pct">{Math.round(tight.pct)}%</span>}
+              {rowView.figures.length > 0 ? (
+                <span className="account-label account-figures" data-testid="account-figures">
+                  {rowView.figures.map((f) => (
+                    <span key={f.key} className="account-fig" data-level={f.level || undefined} data-window={f.key}>
+                      <span className="account-fig-name">{f.name}</span> <span className="account-fig-value">{f.value}</span>
+                      {f.level ? <span className="sr-only">{f.level === 'danger' ? ' (limit reached)' : ' (high)'}</span> : null}
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                <span className="account-label" data-testid="account-text">
+                  {rowView.text}
+                </span>
+              )}
               {!rail && !mockAdapter && (onProxy ? currentSpends ? <SpendBar spend={currentUsage?.spend} id={current} /> : null : <UsageBar usage={currentUsage} />)}
             </>
           }
-          triggerLabel={rail ? railName : undefined}
+          triggerLabel={rail ? railName : mockAdapter ? undefined : rowFull}
           triggerTitle={rowTitle}
           triggerClassName="account-row"
           triggerTestId="auth-pill"

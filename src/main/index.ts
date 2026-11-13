@@ -5,7 +5,8 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, FocusRunTarget, RunEvent } from '@shared/types'
-import { IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
+import { IPC, SCHEDULES_IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
+import { Scheduler, testTickMs } from './schedules/scheduler'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
 import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
@@ -81,6 +82,8 @@ function canonicalUserData(dir: string): string {
 /** The booted host (stores, services, runs, the event bus; host/bootstrap.ts); set once whenReady has built it. */
 let host: OrgAIHost | undefined
 let notifier: Notifier | undefined
+/** Schedules' timer (schedules/scheduler.ts): the desktop shell only; stopped as soon as a quit drains the host. */
+let scheduler: Scheduler | undefined
 /** This process's ownership of <dataDir>/run (cli-spec 3.2(2)); released by the shutdown and on process exit. */
 let ownership: HostOwnership | undefined
 /** True once whenReady has built the stores and the first window: the window handlers below wait for it. */
@@ -422,6 +425,13 @@ app.whenReady().then(async () => {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)
         }
+      },
+      // Schedules: every window hears about a change; the timer re-plans.
+      schedulesChanged: (event) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(SCHEDULES_IPC.schedulesChanged, event)
+        }
+        scheduler?.poke()
       }
     },
     mock: process.env.ORGAI_MOCK === '1',
@@ -429,6 +439,8 @@ app.whenReady().then(async () => {
     // anywhere (Quit, a last window on Windows / Linux, idle exit, a signal) only leaves once it got here.
     // Repository clones the windows started are cancelled as soon as the drain starts (round 6 item 9).
     quiesce: () => {
+      // A draining host starts no scheduled run.
+      scheduler?.stop()
       repoClone?.dispose()
       // A running install holds a mutation lease; cancel it now so the drain does not wait for npm.
       cliInstallForStatus?.cancel()
@@ -475,6 +487,26 @@ app.whenReady().then(async () => {
   })
   // Open windows keep the desktop host busy (cli-spec 3.2(4) interactiveClients).
   h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
+  // Schedules (docs/design/schedules.md 4): one timer, in this process only (the single-instance lock is the "one
+  // scheduler" guard; the orgai CLI never starts one). Started after the stores and RunManager (the boot above).
+  const schedules = h.services.schedules
+  if (schedules) {
+    schedules.setNotify((n) => notifier?.notice(n))
+    const tick = testTickMs(process.env)
+    scheduler = new Scheduler({
+      service: schedules,
+      globallyPaused: () => settings.get().schedulesPaused === true,
+      ...(tick !== undefined ? { maxSleepMs: tick } : {}),
+      log: (m) => log.info(m)
+    })
+    // The global pause is read at every wake; a change re-plans at once.
+    settings.onChange(() => scheduler?.poke())
+    // A pending schedule keeps a background app alive (the user chose "Keep working in the background"): counted as a
+    // timer-like wait, never as a writer the quit drain settles. 0 once the scheduler stopped.
+    h.activity.addSource('pausedAutoResumes', () => (scheduler && !quitting ? schedules.pendingCount() : 0))
+    scheduler.start()
+    app.once('will-quit', () => scheduler?.stop())
+  }
   const cliInstall = buildCliInstall()
   cliInstallForStatus = cliInstall
   // An install still running when the app quits is stopped with it.
@@ -574,12 +606,12 @@ app.on(
  * The last window closed on Windows or Linux while runs are working without the user (review H3): ask before going
  * to the background. Cancel (or Esc) brings a window back.
  */
-async function askClose(workingRuns: number): Promise<void> {
+async function askClose(workingRuns: number, pendingSchedules = 0): Promise<void> {
   if (closePromptOpen) return
   closePromptOpen = true
   let choice: ClosePromptChoice = 'cancel'
   try {
-    const { message, detail } = closePromptText(workingRuns)
+    const { message, detail } = closePromptText(workingRuns, pendingSchedules)
     const { response } = await dialog.showMessageBox({
       type: 'question',
       buttons: [...CLOSE_PROMPT_BUTTONS],
@@ -615,9 +647,10 @@ app.on('window-all-closed', () => {
   // Nothing quits before boot.
   if (!booted) return
   const workingRuns = host ? host.runs.workingRunCount() : 0
-  const action = windowAllClosedAction({ platform: process.platform, quitting, workingRuns })
+  const pendingSchedules = host?.settings.get().schedulesPaused ? 0 : (host?.services.schedules?.pendingCount() ?? 0)
+  const action = windowAllClosedAction({ platform: process.platform, quitting, workingRuns, pendingSchedules })
   if (action === 'quit') {
     quitReason = 'window-closed'
     app.quit()
-  } else if (action === 'ask') void askClose(workingRuns)
+  } else if (action === 'ask') void askClose(workingRuns, pendingSchedules)
 })

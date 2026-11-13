@@ -103,7 +103,11 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     Mock markers (quick runs, default script): `[mock:chat-edit]` (list_projects, Edit `<folder>/notes.md` asks;
     allow writes it and says "I wrote notes.md.", deny says "I did not change anything." and stops; then Bash
     `npm test` asks, then idle) and `[mock:chat-mcp]` (request_mcp_install of a pinned stdio server, says the answer,
-    idle). Codex (source-read at rust-v0.166.0, not run live): under approval policy `untrusted`, `safety.rs`
+    idle). `[mock:schedule]` / `[mock:schedule-once]` (any work run, Chat or project, default script): one
+    propose_schedule create "Nightly PR monitor" (Chat: ask target, no folder; project run: team target on it), daily
+    00:00 or once 10 s ahead of the schedules clock; replies "APPROVED: the schedule is saved." / "REVISE: tell me what
+    to change in the schedule." / "DECLINED: I left your schedules alone.", else the tool's first line (a refusal);
+    `mockSchedule.test.ts` checks it with a real ScheduleService. Codex (source-read at rust-v0.166.0, not run live): under approval policy `untrusted`, `safety.rs`
     `assess_patch_safety` returns AskUser before the writable-path check, so every apply_patch (in-workspace too)
     raises a file-change approval, and `exec_policy.rs` prompts for every command no execpolicy allow rule matches
     (no bundled "known safe" list found); an ApprovedForSession apply_patch approval is keyed per exact file path

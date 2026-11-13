@@ -11,6 +11,7 @@ import {
   IPC,
   KIT_IPC,
   MCP_SCOPE_IPC,
+  SCHEDULES_IPC,
   SECRETS_IPC,
   TEAM_FILES_IPC,
   OUTPUTS_IPC,
@@ -47,19 +48,20 @@ function dropUndefined(v: unknown): unknown {
 }
 
 describe('(a) completeness', () => {
-  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC)]
+  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC)]
   // HOST_IPC (socket only) and SECRETS_IPC (Wave 7, every surface): channels added for the host.
   const host: string[] = [...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 
-  it('matches the spec counts: 212 existing channels (198 request + 14 push) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
+  it('matches the spec counts: 219 existing channels (204 request + 15 push, including the 7 SCHEDULES_IPC) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
     expect(new Set(existing).size).toBe(existing.length)
-    expect(existing.length).toBe(212)
-    expect(existing.filter((c) => push.has(c)).length).toBe(14)
-    expect(existing.filter((c) => !push.has(c)).length).toBe(198)
+    expect(existing.length).toBe(219)
+    expect(existing.filter((c) => push.has(c)).length).toBe(15)
+    expect(existing.filter((c) => !push.has(c)).length).toBe(204)
+    expect(Object.values(SCHEDULES_IPC).length).toBe(7)
     expect(Object.values(HOST_IPC).length).toBe(6)
     expect(Object.values(SECRETS_IPC).length).toBe(5)
-    expect(requestChannels().length).toBe(209)
+    expect(requestChannels().length).toBe(215)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {
@@ -341,6 +343,21 @@ describe('(d) outputs:* channels over the wire', () => {
     'outputs:watch': { arg: ref, build: outputArgs.ref },
     'outputs:unwatch': { arg: ref, build: outputArgs.ref }
   }
+
+  it('schedules:save keeps null on its clearable fields over the wire (cleanScheduleInput reads null as "clear")', () => {
+    const input = {
+      id: 'sch_0123abcd',
+      name: 'PR monitor',
+      prompt: 'Review.',
+      target: { kind: 'ask' },
+      timing: { kind: 'daily', time: '00:00' },
+      modelSelection: null,
+      permissionMode: null,
+      budgetUsd: null,
+      expiresAt: null
+    }
+    expect(overWire('schedules:save', [input])).toEqual([input])
+  })
 
   it('covers every outputs request channel', () => {
     const channels = Object.values(OUTPUTS_IPC).filter((c) => c !== OUTPUTS_IPC.outputsChanged)

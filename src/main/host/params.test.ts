@@ -232,6 +232,13 @@ const PAYLOADS: Record<string, unknown[]> = {
   'outputs:watch': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
   'outputs:unwatch': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
   'outputs:saveImage': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef', suggestedName: 'a', mime: 'image/png', dataBase64: 'AAAA' }],
+  // SCHEDULES_IPC
+  'schedules:list': [],
+  'schedules:history': ['sch_0123abcd'],
+  'schedules:save': [{ name: 'PR monitor', prompt: 'Review new pull requests.', target: { kind: 'team', projectId: 'p_abc123' }, timing: { kind: 'daily', time: '00:00' } }],
+  'schedules:remove': ['sch_0123abcd'],
+  'schedules:setEnabled': [{ id: 'sch_0123abcd', enabled: false }],
+  'schedules:runNow': ['sch_0123abcd'],
   // HOST_IPC
   'runs:subscribe': [{ projectIds: ['p_abc123'], followChains: true, sinceSeq: 12 }],
   'skillLibrary:addFromBundle': [{ name: 'review', files: [{ path: 'SKILL.md', base64: 'IyBSZXZpZXc=' }] }],

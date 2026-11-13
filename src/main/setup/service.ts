@@ -345,6 +345,9 @@ export class SetupService {
       case 'appSettings':
         // App-wide settings are not a project's: RunManager applies them through RunManagerOptions.selfKnowledge.
         throw new Error('App settings proposals do not change a project.')
+      case 'schedules':
+        // Schedules are not a project's: RunManager applies them through RunManagerOptions.schedules (ScheduleService.applyProposal).
+        throw new Error('Schedule proposals do not change a project.')
     }
   }
 
