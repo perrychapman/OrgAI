@@ -871,7 +871,7 @@ function closeAfter(text: string, marker: string, from: number): number {
  * quotes, single quotes, `$'...'`, `${...}` (with nested braces) and an unquoted here-document body up to `end`.
  */
 type LexContext =
-  | { k: 'code'; closer: ')' | '`' | null; depth: number; cases: number; arith: boolean; cmd: boolean }
+  | { k: 'code'; closer: ')' | '`' | ']' | null; depth: number; cases: number; arith: boolean; cmd: boolean }
   | { k: 'dq' }
   | { k: 'sq' }
   | { k: 'ansi' }
@@ -899,7 +899,7 @@ const COMMAND_START: ReadonlySet<string> = new Set([';', '&', '|', '(', '\n'])
 /** Reserved words after which the next word is still in command position. */
 const KEYWORD_THEN_COMMAND = /(?:then|do|else|elif|if|while|until|time|!|\{)(?![A-Za-z0-9_])/y
 const isWordChar = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9_]/.test(ch)
-const newCode = (closer: ')' | '`' | null, arith = false): LexContext => ({ k: 'code', closer, depth: 0, cases: 0, arith, cmd: true })
+const newCode = (closer: ')' | '`' | ']' | null, arith = false): LexContext => ({ k: 'code', closer, depth: 0, cases: 0, arith, cmd: true })
 
 /**
  * The here-document word at `from` (after `<<` / `<<-` and blanks), read the way bash does: quotes removed, a
@@ -911,6 +911,8 @@ function heredocWord(text: string, from: number): { delim: string; quoted: boole
   let j = from
   while (j < text.length) {
     const c = text[j]
+    // `$'EOF'` / `$"EOF"`: bash's reading is not modelled; no here-document is read (the text after it is code).
+    if (c === '$' && (text[j + 1] === "'" || text[j + 1] === '"')) return null
     if (c === "'") {
       const e = text.indexOf("'", j + 1)
       if (e < 0) return null
@@ -968,6 +970,12 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
     if (ctx?.k === 'code' && ctx.closer === '`') backticks--
     if (!stack.length) stack.push(newCode(null))
   }
+  /** True when the character at i follows an odd run of backslashes. */
+  const escapedAt = (i: number): boolean => {
+    let k = i - 1
+    while (k >= 0 && text[k] === '\\') k--
+    return (i - 1 - k) % 2 === 1
+  }
   /** Where reading resumes after the last body: the newline after its delimiter line (or the end). */
   let afterBodies = n
   /** Enter the next here-document body (or, past the last, resume after it); returns the index before the next one to read. */
@@ -1006,13 +1014,21 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
     let ctx = stack[stack.length - 1]
     if (ctx.k === 'hd' && i >= ctx.end) {
       pop()
-      i = nextBody()
+      if (i === ctx.end) {
+        i = nextBody()
+        continue
+      }
+      // Something in the body ran past its delimiter line: never read backwards (that is quadratic); the text is
+      // left open (refused unchecked) and the rest is read as code.
+      unterminated = true
+      bodies = []
+      i--
       continue
     }
     const prevDollars = dollars
     dollars = 0
     // Inside backticks the first unescaped backtick ends them, whatever quotes are open (bash manual).
-    if (full && esc === '\\' && ch === '`' && backticks > 0 && text[i - 1] !== '\\') {
+    if (full && esc === '\\' && ch === '`' && backticks > 0 && !escapedAt(i)) {
       while (stack.length > 1) {
         const top = stack[stack.length - 1]
         pop()
@@ -1045,6 +1061,15 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
       } else if (ch === '`') {
         out[i] = LEX_ACTIVE
         push(newCode('`'))
+      }
+      continue
+    }
+    if (ctx.k === 'param' && esc === '`') {
+      // PowerShell `${name}`: any characters up to the first `}` not escaped with a backtick, quotes included.
+      if (ch === esc) i = escapePair(i, LEX_LITERAL)
+      else {
+        out[i] = LEX_LITERAL
+        if (ch === '}') pop()
       }
       continue
     }
@@ -1118,6 +1143,15 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
       push(newCode(')', text[i + 1] === '('))
       continue
     }
+    // `$[...]`: old-style arithmetic (its `<<` is a shift).
+    if (ch === '$' && text[i + 1] === '[' && prevDollars % 2 === 0) {
+      out[i] = out[i + 1] = LEX_ACTIVE
+      i++
+      dollars = 0
+      if (ctx.k === 'code') ctx.cmd = false
+      push(newCode(']', true))
+      continue
+    }
     ctx = stack[stack.length - 1]
     // PowerShell block comments `<# ... #>` and here-strings `@'<newline> ... <newline>'@` / `@"..."@`.
     if (esc === '`') {
@@ -1142,6 +1176,13 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
     }
     out[i] = LEX_ACTIVE
     if (ctx.k !== 'code') continue
+    if (ch === '\n' && heredocs.length && backticks > 0) {
+      // Inside backticks bash ends the substitution at the first backtick, even in a body: not modelled, left open.
+      unterminated = true
+      heredocs.length = 0
+      ctx.cmd = true
+      continue
+    }
     if (ch === '\n' && heredocs.length) {
       // The bodies of the here-documents opened on this line, one after another.
       let p = i + 1
@@ -1175,9 +1216,13 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
       i = nextBody()
       continue
     }
+    if (ch === ']' && ctx.closer === ']') {
+      pop()
+      continue
+    }
     if (ch === '(') {
-      // `((...))` in command position is arithmetic (its `<<` is a shift, never a here-document).
-      if (ctx.cmd && text[i + 1] === '(') push(newCode(')', true))
+      // `((...))` is arithmetic (`(( x << 2 ))`, `for ((i=0; i<<2; i++))`): its `<<` is a shift, never a here-document.
+      if (text[i + 1] === '(') push(newCode(')', true))
       else {
         ctx.depth++
         ctx.cmd = true
@@ -1218,7 +1263,7 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
         ctx.cmd = false
         continue
       }
-      if (ctx.cases > 0 && text.startsWith('esac', i) && !isWordChar(text[i + 4])) {
+      if (ctx.cmd && ctx.cases > 0 && text.startsWith('esac', i) && !isWordChar(text[i + 4])) {
         ctx.cases--
         ctx.cmd = false
         continue
@@ -1230,7 +1275,8 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
     }
     ctx.cmd = false
   }
-  return { classes: out, open: full && (stack.length > 1 || unterminated) }
+  const top = stack[0]
+  return { classes: out, open: full && (stack.length > 1 || unterminated || (top.k === 'code' && top.cases > 0)) }
 }
 
 /**
@@ -1372,13 +1418,14 @@ function cliSegmentsIn(text: string, keepBraces: boolean, reading: SegmentReadin
  * check that looks back at earlier pieces (a pipe into a shell) must look within one reading (cliSegmentReadings).
  */
 function cliSegmentReadings(text: string, keepBraces = false): CliSegment[][] {
+  // The PowerShell reading always runs: the scan does not know which tool's text it reads (review round 4).
   const readings: SegmentReading[] = [
     { esc: '\\', full: true, groups: 'safe' },
     { esc: '\\', full: false, groups: 'safe' },
-    { esc: '', full: false, groups: 'safe' }
+    { esc: '', full: false, groups: 'safe' },
+    { esc: '`', full: true, groups: 'safe' }
   ]
   if (text.includes('(')) readings.push({ esc: '\\', full: true, groups: 'all' })
-  if (/[`"‘-„]|<#|@'/.test(text)) readings.push({ esc: '`', full: true, groups: 'safe' })
   return readings.map((reading) =>
     cliSegmentsIn(text, keepBraces, reading)
       .map((s) => ({ ...s, text: s.text.trim() }))
@@ -1829,14 +1876,36 @@ function globRegex(pattern: string): GlobMatcher {
  * install's CLI folders (`<Resources>/bin/<anything>`), or a glob that may expand to either (`<Resources>/bin/orga?`,
  * `~/.local/bin/orga*`, `./o*`). Brace expansions arrive expanded (expandWords).
  */
+/** bash `$'...'` escapes decoded: `\xHH`, `\NNN` octal, `\uHHHH`, `\UHHHHHHHH`, `\cX`, and the letter escapes. */
+function decodeAnsiC(s: string): string {
+  const letters: Readonly<Record<string, string>> = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v' }
+  return s.replace(/\\(x[0-9a-fA-F]{1,2}|[0-7]{1,3}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|c.|.)/g, (_, e: string) => {
+    const code = (hex: string): string => {
+      const cp = parseInt(hex, 16)
+      return cp <= 0x10ffff ? String.fromCodePoint(cp) : ''
+    }
+    if (e[0] === 'x' || e[0] === 'u' || e[0] === 'U') return e.length > 1 ? code(e.slice(1)) : e
+    if (/^[0-7]+$/.test(e)) return String.fromCharCode(parseInt(e, 8) & 0xff)
+    if (e[0] === 'c' && e.length === 2) return String.fromCharCode(e.charCodeAt(1) & 0x1f)
+    return letters[e] ?? e
+  })
+}
+
 function programIsCli(word: string, check: CliCheck): boolean {
   // A variable in the program's name may expand to anything (`${x}orgai`, `$p/orgai`): read it as `*`, and require
   // three of the letters of "orgai" (globNamesCli) so `$EDITOR file` is not read as the CLI (PR 47 review).
   if (word.includes('$')) {
     const glob = binName(word.replace(/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\d|\$[@*#?$!-]/g, '*'))
     if (glob.includes('*') && globNamesCli(glob)) return true
-    // A default or alternative word (`${x:-orgai}`), and `$'orgai'` / `$"orgai"` read as `$orgai` once unquoted.
-    for (const v of [word.replace(/\$\{[^}]*?:?[-=+?]([^}]*)\}/g, '$1'), word.replace(/\$/g, '')]) {
+    // A default or alternative word (`${x:-orgai}`), a replacement (`${x/#/orgai}`), and `$'orgai'` / `$"orgai"`
+    // (read as `$orgai` once unquoted), with ANSI-C escapes decoded (`$'\x6frgai'`).
+    const unDollared = word.replace(/\$/g, '')
+    for (const v of [
+      word.replace(/\$\{[^}]*?:?[-=+?]([^}]*)\}/g, '$1'),
+      word.replace(/\$\{[^}/]*\/\/?[#%]?[^}/]*\/([^}]*)\}/g, '$1'),
+      unDollared,
+      decodeAnsiC(unDollared)
+    ]) {
       if (v !== word && (CLI_NAME.test(binName(v)) || SCOPED_CLI.test(v))) return true
     }
   }

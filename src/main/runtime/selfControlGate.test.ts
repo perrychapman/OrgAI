@@ -1027,7 +1027,16 @@ describe('segment splitting gaps (PR 47 review)', () => {
       "bash -c -o pipefail 'orgai status'",
       "bash -O extglob -c 'orgai status'",
       "powershell -NoProfile 'orgai status'",
-      "powershell /Command 'orgai status'"
+      "powershell /Command 'orgai status'",
+      // Review round 4.
+      'echo "$(case y in x) echo esac;; y) : ; orgai status;; esac)"',
+      "echo $[1 << 2] $'\\''\n: ; orgai status\n2]",
+      "for ((i=0; i<<2; i++)); do :; done; echo $'\\''\n: ; orgai status\n2",
+      "echo $'\\'' `cat <<'EOF'\n`; orgai status #\nEOF\n`",
+      ": <<$'EOF'\n'\nEOF\norgai status\n$EOF",
+      "$'\\x6frgai' status",
+      "$'\\157rgai' status",
+      '${x/#/orgai} status'
     ]) {
       // Denied, or not checked when bash's grammar leaves it open (the PowerShell items through the Bash tool).
       expect(bash(command), command).not.toBeNull()
@@ -1050,6 +1059,7 @@ describe('segment splitting gaps (PR 47 review)', () => {
       expect(commandRunsOrgaiCli(command), command).toBe(true)
     }
     expect(checkSelfControlDenial('PowerShell', { command: "echo ${a'b}; orgai status" }, ctx)).not.toBeNull()
+    expect(checkSelfControlDenial('PowerShell', { command: "echo ${a'b}; orgai status #'}" }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
   })
 
   it('still allows ordinary commands with brackets, parameters, escapes, comments and groups', () => {
@@ -2267,10 +2277,16 @@ describe('Wave 7 scan cost', () => {
       }
       return min
     }
-    const make = (n: number): string => `node ${'<<a '.repeat(n)}\nx`
-    const t1 = best(make(5_000))
-    const t2 = best(make(10_000))
-    expect(t2, `${t1.toFixed(1)} ms at n, ${t2.toFixed(1)} ms at 2n`).toBeLessThan(3 * t1 + 100)
+    const makes: [string, (n: number) => string][] = [
+      ['starts', (n) => `node ${'<<a '.repeat(n)}\nx`],
+      // Bodies whose `$(` closes only after later bodies (review round 4: never read backwards).
+      ['crossing bodies', (n) => `cat ${'<<A '.repeat(n)}\n${'$(\nA\n'.repeat(n)}${')'.repeat(n)}`]
+    ]
+    for (const [name, make] of makes) {
+      const t1 = best(make(5_000))
+      const t2 = best(make(10_000))
+      expect(t2, `${name}: ${t1.toFixed(1)} ms at n, ${t2.toFixed(1)} ms at 2n`).toBeLessThan(3 * t1 + 100)
+    }
   })
 })
 
