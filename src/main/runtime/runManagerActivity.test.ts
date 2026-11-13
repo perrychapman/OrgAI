@@ -218,6 +218,18 @@ describe('RunManager working and busy run counts', () => {
     await m.stopAll()
   })
 
+  it('Schedules review H1: liveRunFacts.working is false for an idle run and true while a report still works', async () => {
+    const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
+    const { m } = rig(p, idleScript)
+    const run = await m.start({ project: p, prompt: 'Hi', kind: 'work' })
+    await vi.waitFor(() => expect(m.liveRunFacts(run.id)).toMatchObject({ status: 'idle', working: false }))
+    // White box: a report still at work under an idle root (what the adapter's agent.upsert would record).
+    const active = (m as unknown as { runs: Map<string, { record: { agents: Record<string, unknown> } }> }).runs.get(run.id)!
+    active.record.agents['rep_1'] = { id: 'rep_1', state: 'tool' }
+    expect(m.liveRunFacts(run.id)).toMatchObject({ status: 'idle', working: true })
+    await m.stopAll()
+  })
+
   it('a run in a turn is working and busy', async () => {
     const p = makeProject({ path: join(dir, 'repo'), autoContinue: false })
     const { m } = rig(p, { delayMs: 300, work: [{ type: 'text', text: 'one' }, { type: 'text', text: 'two' }] })

@@ -236,22 +236,42 @@ function searchDays(
  * invalid timing, or nothing within about five years). `lastSlotAt` pushes the search past a slot already handled.
  */
 export function nextScheduleRun(timing: ScheduleTiming, after: number, lastSlotAt?: number): number | null {
-  if (!Number.isFinite(after) || scheduleTimingProblem(timing) !== null) return null
-  const from = typeof lastSlotAt === 'number' && Number.isFinite(lastSlotAt) ? Math.max(after, lastSlotAt) : after
+  const next = compileScheduleTiming(timing)
+  return next === null ? null : next(after, lastSlotAt)
+}
+
+/**
+ * The fast path for callers that ask for many slots of one timing (the scheduler's catch-up walk): validates and parses
+ * the timing once and returns a function with exactly the results of `nextScheduleRun(timing, after, lastSlotAt)`.
+ * Returns null for an invalid timing (the returned function is then never needed: nextScheduleRun answers null too).
+ */
+export function compileScheduleTiming(timing: ScheduleTiming): ((after: number, lastSlotAt?: number) => number | null) | null {
+  if (scheduleTimingProblem(timing) !== null) return null
+  const fromOf = (after: number, lastSlotAt?: number): number =>
+    typeof lastSlotAt === 'number' && Number.isFinite(lastSlotAt) ? Math.max(after, lastSlotAt) : after
   switch (timing.kind) {
-    case 'once':
-      return timing.at > from ? timing.at : null
+    case 'once': {
+      const at = timing.at
+      return (after, lastSlotAt) => (Number.isFinite(after) && at > fromOf(after, lastSlotAt) ? at : null)
+    }
     case 'interval': {
       const step = timing.everyMinutes * MINUTE_MS
-      const anchor = timing.anchor ?? from
-      if (from < anchor) return anchor + step
-      return anchor + (Math.floor((from - anchor) / step) + 1) * step
+      const fixedAnchor = timing.anchor
+      return (after, lastSlotAt) => {
+        if (!Number.isFinite(after)) return null
+        const from = fromOf(after, lastSlotAt)
+        const anchor = fixedAnchor ?? from
+        if (from < anchor) return anchor + step
+        return anchor + (Math.floor((from - anchor) / step) + 1) * step
+      }
     }
     case 'daily': {
       const m = TIME_RE.exec(timing.time)
       if (!m) return null
       const days = timing.days && timing.days.length > 0 ? timing.days : null
-      return searchDays(from, (_mo, _dom, dow) => days === null || days.includes(dow), [[Number(m[1]), Number(m[2])]])
+      const times: [number, number][] = [[Number(m[1]), Number(m[2])]]
+      return (after, lastSlotAt) =>
+        Number.isFinite(after) ? searchDays(fromOf(after, lastSlotAt), (_mo, _dom, dow) => days === null || days.includes(dow), times) : null
     }
     case 'cron': {
       const parsed = parseCron(timing.expression)
@@ -259,8 +279,11 @@ export function nextScheduleRun(timing: ScheduleTiming, after: number, lastSlotA
       const c = parsed.cron
       const times: [number, number][] = []
       for (const h of c.hours) for (const mi of c.minutes) times.push([h, mi])
-      return searchDays(from, (mo, dom, dow) => cronDayMatches(c, mo, dom, dow), times)
+      return (after, lastSlotAt) =>
+        Number.isFinite(after) ? searchDays(fromOf(after, lastSlotAt), (mo, dom, dow) => cronDayMatches(c, mo, dom, dow), times) : null
     }
+    default:
+      return null
   }
 }
 

@@ -999,7 +999,8 @@ export interface StartInput {
   userChoice?: StartUserChoice
   /**
    * Set only by ScheduleService (never from IPC input): the schedule starting this work run, recorded as
-   * RunSummary.scheduleId / scheduleName. Continuations never pass it.
+   * RunSummary.scheduleId / scheduleName. Continuations pass it only on RunManager's own usage-limit auto-resume of a
+   * scheduled run (SCHEDULED_RESUME); a user's continuation never does.
    */
   schedule?: { id: string; name: string }
   /** Set by continueRun only (a symbol key, so no caller input can carry it): the per-run choices of the continued run. */
@@ -1079,6 +1080,8 @@ export function checkStartEffort(effort: Effort, adapter: ProviderId): void {
 
 /** Internal ContinueRunOptions key: the automatic rate-limit resume (keeps the exec fields like `exec`). */
 const AUTO_RESUME = Symbol('autoResume')
+/** Internal ContinueRunOptions key: the schedule of a run RunManager's own auto-resume continues (never a user continuation). */
+const SCHEDULED_RESUME = Symbol('scheduledResume')
 
 /** continueRun options (cli-spec 6.2(1)). */
 export interface ContinueRunOptions {
@@ -1092,6 +1095,8 @@ export interface ContinueRunOptions {
   desktop?: true
   /** Set only by RunManager's own auto-resume. */
   [AUTO_RESUME]?: true
+  /** Set only by RunManager's own auto-resume of a scheduled run: the continuation stays the schedule's (ScheduleService tracks it). */
+  [SCHEDULED_RESUME]?: { id: string; name: string }
 }
 
 /** Narrowing overrides a continuation always keeps (goal never widens: picks stay inside the roles' ceilings). */
@@ -1775,7 +1780,10 @@ export class RunManager {
     }
     // Display facts, set before the first save: the mode in force (only runs that take a per-run mode; see
     // recordedRunPermissionMode) and the user's per-run choices.
-    const recordedMode = recordedRunPermissionMode(summary, chosenMode ?? effectiveRunProject(project, overrides, { allowWidening }).permissionMode)
+    const modeInForce = chosenMode ?? effectiveRunProject(project, overrides, { allowWidening }).permissionMode
+    // Schedules (docs/design/schedules.md 6): a scheduled run, its auto-resume included, never runs with bypass.
+    if (summary.scheduleId && modeInForce === 'bypassPermissions') throw new Error('A scheduled run cannot use bypass permissions. Choose a permission mode for the schedule.')
+    const recordedMode = recordedRunPermissionMode(summary, modeInForce)
     if (recordedMode) summary.permissionMode = recordedMode
     if (chosenMode) summary.permissionModeChosen = true
     if (rootEffort) summary.rootEffort = rootEffort
@@ -3392,10 +3400,11 @@ export class RunManager {
   }
 
   /** Revise routing (outputs/revise.ts): how a live run stands, or null when it is not live. */
-  liveRunFacts(runId: string): { status: RunSummary['status']; limitHold: boolean; pendingCards: number } | null {
+  liveRunFacts(runId: string): { status: RunSummary['status']; limitHold: boolean; pendingCards: number; working: boolean } | null {
     const a = this.runs.get(runId)
     if (!a || !LIVE_STATUSES.has(a.summary.status)) return null
-    return { status: a.summary.status, limitHold: !!a.limitHold, pendingCards: pendingCount(a) }
+    // working: runActivity's 'working' or 'ending' (an idle root whose reports, peer flush or nudge still run).
+    return { status: a.summary.status, limitHold: !!a.limitHold, pendingCards: pendingCount(a), working: this.activityStateOf(a) !== 'waiting' }
   }
 
   /** Revise routing: OrgAI is quitting, so nothing starts, continues or takes a message. */
@@ -4945,6 +4954,7 @@ export class RunManager {
       ...(target.quick ? { quick: target.quick } : {}),
       ...(target.buildWorkspace ? { buildWorkspace: target.buildWorkspace } : {}),
       ...(target.team === 'single' ? { team: target.team } : {}),
+      ...(opts[SCHEDULED_RESUME] ? { schedule: { ...opts[SCHEDULED_RESUME] } } : {}),
       resumeSessionId: switching ? undefined : sessionId,
       ...(target.modelSelection ? { modelSelection: target.modelSelection } : {}),
       ...(carriedBudget !== undefined ? { conversationBudgetUsd: carriedBudget } : {}),
@@ -5221,10 +5231,12 @@ export class RunManager {
       // A chain a 'configure' caller widened stays widened across its own automatic resume only.
       const o = from.overrides
       const keepExec = !!o?.execMode && !!o.waitForReset && !from.execOutcome
+      // Schedules (review L1): only the timer's resume of a scheduled run stays the schedule's.
+      const scheduled = opts.auto === true && from.scheduleId ? { [SCHEDULED_RESUME]: { id: from.scheduleId, name: from.scheduleName ?? '' } } : {}
       return await (keepExec
-        ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}) })
+        ? this.continueRun(project, runId, RESUME_TEXT, undefined, { [AUTO_RESUME]: true, ...(widened ? { allowWidening: true } : {}), ...scheduled })
         : opts.desktop || opts.auto
-          ? this.continueRun(project, runId, RESUME_TEXT, undefined, { desktop: true })
+          ? this.continueRun(project, runId, RESUME_TEXT, undefined, { desktop: true, ...scheduled })
           : this.continueRun(project, runId, RESUME_TEXT))
     } catch (e) {
       // The timer is gone; a run still paused must not claim it will resume by itself.

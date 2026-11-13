@@ -17,6 +17,7 @@ import type {
 import { PROJECT_PEEK_BRIEF_CHARS, QUICK_PROJECT_ID, isVirtualProjectId, QUICK_RUN_MAX_PROMPT_CHARS, VIRTUAL_PROJECT_LABELS } from '@shared/types'
 import { QUICK_ASSISTANT_SLUG, ROLE_COLORS, newId, newProject, quickRunPermissionMode, quickRunTools } from '@shared/defaults'
 import { createScratchDir, isReferencedScratch, referencedScratch, removeScratchDir, samePath, validateQuickFolder } from './scratch'
+import { scheduledRunCap } from '../schedules/validate'
 
 /**
  * Chat (quick runs): project-less work runs on the virtual project QUICK_PROJECT_ID. Folder validation and scratch
@@ -258,8 +259,10 @@ export class QuickRunService {
       const overrides = input.overrides
       const allowWidening = overrides ? (opts.checkOverrides?.(project) ?? false) : false
       const s = opts.schedule
-      const budget = s?.budgetUsd !== undefined && Number.isFinite(s.budgetUsd) && s.budgetUsd > 0 ? s.budgetUsd : undefined
-      if (budget !== undefined) project = { ...project, maxBudgetUsd: Math.min(budget, project.maxBudgetUsd && project.maxBudgetUsd > 0 ? project.maxBudgetUsd : Infinity) }
+      // A scheduled run's cap is min(its budget, the quick project's cap), recorded as the conversation budget so main
+      // enforces it (Schedules review L3, L4). A user's own Chat run is unchanged.
+      const budget = s ? scheduledRunCap(s.budgetUsd, project.maxBudgetUsd) : undefined
+      if (budget !== undefined) project = { ...project, maxBudgetUsd: budget }
       const userChoice = s && (s.modelSelection || s.permissionMode)
         ? { ...(s.modelSelection ? { modelSelection: s.modelSelection } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}) }
         : undefined
