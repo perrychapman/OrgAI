@@ -820,6 +820,7 @@ describe('Shift+Tab and /mode never widen a live run by accident (PR 49 M1)', ()
     const m = mount({ cols: 120, rows: 40, state: modeState('default', true), now: () => clock.t })
     await tick()
     await m.send(named('escape')) // back to typing with the card still open
+    m.session.notify.mockClear()
     // The card is answered elsewhere just before the Shift+Tab meant for it.
     m.session.setState(modeState('default'))
     await tick()
