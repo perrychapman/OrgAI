@@ -18,6 +18,7 @@ import {
 } from './consumers'
 import { hostLockPath } from './hostRegistry'
 import { readStartTokenTable, startTokenOfSync, type StartTokenTable } from './startTokens'
+import { skipIfTokenReadTimedOut, timed } from './testing/startTokenTimeout'
 
 let dir: string
 let file: string
@@ -169,16 +170,22 @@ describe('consumerCheck', () => {
     expect(await consumerCheck({ evidenceFile: file, isAlive: () => false, cwdHolders: noCwd })).toBe('uncertain')
   })
 
-  it('is live while a recorded descendant is alive with the same start time (real child), then passes after it exits', async () => {
+  it('is live while a recorded descendant is alive with the same start time (real child), then passes after it exits', async (ctx) => {
     const c = sleeper()
     const ev = evidence()
-    ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'claude' }), { pid: c.pid! })
-    const r = await consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd })
-    expect(r).toEqual({ status: 'live', pids: [c.pid] })
+    // Recording reads the child's start token; a read that timed out records null (no information).
+    const rec = await timed(() => ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'claude' }), { pid: c.pid! }))
+    const recorded = readEvidence(file)!.descendants.find((d) => d.pid === c.pid)
+    skipIfTokenReadTimedOut(ctx, recorded?.start === null, rec.ms, "Recording the child's start token")
+    const r = await timed(() => consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd }))
+    skipIfTokenReadTimedOut(ctx, r.value === 'uncertain', r.ms, 'The liveness check of the live child')
+    expect(r.value).toEqual({ status: 'live', pids: [c.pid] })
     c.kill('SIGKILL')
     await exited(c)
-    expect(await consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd })).toBe('pass')
-  })
+    const after = await timed(() => consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd }))
+    skipIfTokenReadTimedOut(ctx, after.value === 'uncertain', after.ms, 'The liveness check of the exited child')
+    expect(after.value).toBe('pass')
+  }, 90_000)
 
   it('does not count a reused pid with a different start time as alive', async () => {
     const c = sleeper()
@@ -242,16 +249,20 @@ describe('helpers', () => {
     expect([...set].sort((a, b) => a - b)).toEqual([1, 20, 30, 555, 999])
   })
 
-  it('a null recorded token is uncertain while the pid exists, and passes once it is gone', async () => {
+  it('a null recorded token is uncertain while the pid exists, and passes once it is gone', async (ctx) => {
     const c = sleeper()
     const ev = evidence()
     ev.resolvePendingSpawn(ev.recordPendingSpawn({ kind: 'x' }), { pid: c.pid!, startToken: null })
     expect(await consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd })).toBe('uncertain')
     c.kill('SIGKILL')
     await exited(c)
-    expect(startTokenOfSync(c.pid!)).toBe('gone')
-    expect(await consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd })).toBe('pass')
-  })
+    const gone = await timed(() => startTokenOfSync(c.pid!))
+    skipIfTokenReadTimedOut(ctx, gone.value === null, gone.ms, 'The token read of the exited child')
+    expect(gone.value).toBe('gone')
+    const after = await timed(() => consumerCheck({ evidenceFile: file, isAlive: defaultIsAlive, cwdHolders: noCwd }))
+    skipIfTokenReadTimedOut(ctx, after.value === 'uncertain', after.ms, 'The liveness check of the exited child')
+    expect(after.value).toBe('pass')
+  }, 90_000)
 })
 
 describe('canRemoveDeadHostEvidence', () => {

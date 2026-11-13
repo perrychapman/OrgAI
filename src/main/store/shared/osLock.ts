@@ -325,7 +325,7 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 /**
  * Acquire `mode` on the lock file at `path` (created if missing). `waitMs: 0` is a claim: one try, LockBusyError on any
  * conflict. Otherwise waits in FIFO order behind this process's other waiters and retries the OS lock with backoff
- * (5 ms doubling to 100 ms, ±25 % jitter) until `waitMs`, closing the connection between tries. Fails closed on every
+ * (2 ms doubling to 50 ms, ±50 % jitter; see BACKOFF_CAP_MS) until `waitMs`, closing the connection between tries. Fails closed on every
  * error other than busy.
  */
 export async function acquireOsLock(path: string, mode: LockMode, opts: AcquireOptions): Promise<OsLockHandle> {
@@ -378,7 +378,7 @@ export async function acquireOsLock(path: string, mode: LockMode, opts: AcquireO
     })
   }
 
-  let delay = 5
+  let delay = BACKOFF_START_MS
   for (;;) {
     if (opts.signal?.aborted) {
       wakeNext(path)
@@ -391,10 +391,24 @@ export async function acquireOsLock(path: string, mode: LockMode, opts: AcquireO
       wakeNext(path)
       throw new LockBusyError(path, mode)
     }
-    const jittered = delay * (0.75 + random() * 0.5)
-    await sleep(Math.min(jittered, left))
-    delay = Math.min(delay * 2, 100)
+    await sleep(Math.min(backoffDelay(delay, random), left))
+    delay = Math.min(delay * 2, BACKOFF_CAP_MS)
   }
+}
+
+/**
+ * Cross-process waiting is polling: SQLite gives no queue across processes. A holder that releases and re-takes the
+ * lock in a loop leaves only the short gap of its re-take (closing, re-checking and re-opening the file) free, so a
+ * waiter must poll often enough to land in it: a short start and a low cap keep it from starving (measured on a loaded
+ * Windows machine with a 100 ms cap: 6 of 21 runs of the two-process counter test timed out). The ±50 % jitter keeps
+ * two waiters from polling in step.
+ */
+export const BACKOFF_START_MS = 2
+export const BACKOFF_CAP_MS = 50
+
+/** One jittered sleep for the current backoff step (0.5x to 1.5x). */
+export function backoffDelay(step: number, random: () => number = Math.random): number {
+  return step * (0.5 + random())
 }
 
 /** Restoring a shared hold failed during an upgrade or downgrade: the caller no longer holds anything on the path. */

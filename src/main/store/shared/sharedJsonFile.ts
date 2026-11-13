@@ -28,6 +28,8 @@ export interface SharedJsonFileOptions<T> {
   empty: () => T
   /** Default: 2-space JSON plus a newline. */
   serialize?: (value: T) => string
+  /** How long `update` waits for the `config` lock; default the order's budget (waitFor(ORDER.config), 15 s). */
+  waitMs?: number
 }
 
 /** `missing` for an absent file, else size:mtimeNs:ino. */
@@ -51,6 +53,7 @@ export class SharedJsonFile<T> {
   private readonly parseFn: (raw: unknown) => T
   private readonly emptyFn: () => T
   private readonly serializeFn: (value: T) => string
+  private readonly waitMs: number | undefined
   private readonly listeners = new Set<(value: T) => void>()
 
   /** Stamp the cache (or the recorded failure) corresponds to; null before the first read. */
@@ -66,6 +69,7 @@ export class SharedJsonFile<T> {
     this.parseFn = opts.parse
     this.emptyFn = opts.empty
     this.serializeFn = opts.serialize ?? ((v) => JSON.stringify(v, null, 2) + '\n')
+    this.waitMs = opts.waitMs
   }
 
   /** The parse error of the current on-disk content, or null when it is readable. */
@@ -108,7 +112,8 @@ export class SharedJsonFile<T> {
       path: dataLockPath(this.controlDir, 'config'),
       mode: 'exclusive',
       kind: 'transaction',
-      order: ORDER.config
+      order: ORDER.config,
+      ...(this.waitMs !== undefined ? { waitMs: this.waitMs } : {})
     }
     return withLocks([spec], async () => {
       const current = this.readFresh()

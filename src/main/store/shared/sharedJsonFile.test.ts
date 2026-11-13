@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ORDER, dataLockPath, withLocks, type LockSpec } from './lockOrder'
+import { acquireOsLock } from './osLock'
 import { SharedJsonFile } from './sharedJsonFile'
 import { killAndWait, spawnViteNode } from './testing/viteNode'
 import type { ChildProcess } from 'node:child_process'
@@ -125,6 +126,20 @@ describe('SharedJsonFile locking', () => {
     expect(f.read()).toEqual({ n: 3 })
   })
 
+  it('update honours its waitMs option for the config lock', async () => {
+    const f = new SharedJsonFile<Doc>({ file, controlDir: control, parse, empty: () => ({ n: 0 }), waitMs: 50 })
+    // Held directly (not through withLocks), so update cannot reuse it: it waits about 50 ms and gives up.
+    const held = await acquireOsLock(dataLockPath(control, 'config'), 'exclusive', { waitMs: 0 })
+    const started = Date.now()
+    try {
+      await expect(f.update(async (c) => ({ n: c.n + 1 }))).rejects.toThrow(/held by another holder/)
+    } finally {
+      held.release()
+    }
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(f.read().n).toBe(0)
+  })
+
   it('concurrent updates in one process serialize', async () => {
     const f = make()
     await Promise.all(Array.from({ length: 20 }, () => f.update(async (c) => ({ n: c.n + 1 }))))
@@ -135,6 +150,11 @@ describe('SharedJsonFile locking', () => {
 // Children cannot import the TS module through plain node, so they run under the vite-node CLI (testing/viteNode.ts),
 // with the script placed in the test's temp dir and the module imported by absolute path.
 const modulePath = resolve(__dirname, 'sharedJsonFile.ts')
+// The children's wait for the config lock. Cross-process waiting is polling, so one child can starve the other while it
+// loops; on a loaded Windows machine one child's 200 updates took longer than the 15 s default budget (the waiter then
+// fails closed with LockBusyError: nothing is lost, but the count cannot be checked). The test checks the counting
+// property, not the default budget, so it gives the children a budget well above any measured run.
+const CHILD_WAIT_MS = 240_000
 
 const children: ChildProcess[] = []
 
@@ -153,7 +173,7 @@ function childScript(body: string): string {
     p,
     `import { SharedJsonFile } from ${JSON.stringify(modulePath)}
 const [file, control, tag, count] = process.argv.slice(2)
-const f = new SharedJsonFile<any>({ file, controlDir: control, parse: (r) => r as any, empty: () => ({ n: 0 }) })
+const f = new SharedJsonFile<any>({ file, controlDir: control, parse: (r) => r as any, empty: () => ({ n: 0 }), waitMs: ${CHILD_WAIT_MS} })
 ;(async () => {
 ${body}
 })().then(() => process.exit(0), (e) => { console.error(e); process.exit(1) })
@@ -168,11 +188,11 @@ describe('SharedJsonFile across processes', () => {
     await Promise.all([runChild(script, [file, control, 'a', '200']), runChild(script, [file, control, 'b', '200'])])
     expect(JSON.parse(readFileSync(file, 'utf8')).n).toBe(400)
     expect(readdirSync(dir).filter((x) => x.includes('.tmp-'))).toEqual([])
-  }, 120_000)
+  }, 300_000)
 
   it('two processes editing different fields both survive', async () => {
     const script = childScript(`for (let i = 0; i < Number(count); i++) await f.update((c) => ({ ...c, [tag]: String(i) }))`)
     await Promise.all([runChild(script, [file, control, 'a', '30']), runChild(script, [file, control, 'b', '30'])])
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ n: 0, a: '29', b: '29' })
-  }, 120_000)
+  }, 300_000)
 })

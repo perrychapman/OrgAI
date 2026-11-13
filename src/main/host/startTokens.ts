@@ -22,7 +22,9 @@ export interface StartTokenRow {
 }
 export type StartTokenTable = Map<number, StartTokenRow>
 
-const TIMEOUT_MS = 15_000
+/** How long one token read (ps / PowerShell) may take; a read that hits it reports null (no information). */
+export const START_TOKEN_TIMEOUT_MS = 15_000
+const TIMEOUT_MS = START_TOKEN_TIMEOUT_MS
 const ENV = (): NodeJS.ProcessEnv => ({ ...process.env, LC_ALL: 'C', TZ: 'UTC' })
 
 /** True only when both tokens are non-null strings that are identical, tag included. */

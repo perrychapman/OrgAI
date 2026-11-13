@@ -10,6 +10,7 @@ import {
   sameStartToken,
   startTokenOfSync
 } from './startTokens'
+import { skipIfTokenReadTimedOut, timed } from './testing/startTokenTimeout'
 
 const kids: ChildProcess[] = []
 afterEach(() => {
@@ -23,11 +24,15 @@ const sleeper = (): ChildProcess => {
 const exited = (c: ChildProcess): Promise<void> => new Promise((ok) => (c.exitCode !== null || c.signalCode ? ok() : c.once('exit', () => ok())))
 
 describe('real processes on this platform', () => {
-  it('the single-pid token equals the table token, and a dead child disappears', async () => {
+  it('the single-pid token equals the table token, and a dead child disappears', async (ctx) => {
     const c = sleeper()
-    const single = startTokenOfSync(c.pid!)
+    const s = await timed(() => startTokenOfSync(c.pid!))
+    skipIfTokenReadTimedOut(ctx, s.value === null, s.ms, 'The single-pid token read')
+    const single = s.value
     expect(typeof single).toBe('string')
-    const table = await readStartTokenTable()
+    const t = await timed(() => readStartTokenTable())
+    skipIfTokenReadTimedOut(ctx, t.value === null, t.ms, 'The process table read')
+    const table = t.value
     expect(table).not.toBeNull()
     const row = table!.get(c.pid!)
     expect(row?.ppid).toBe(process.pid)
@@ -37,14 +42,20 @@ describe('real processes on this platform', () => {
     // the reader's own process is not in the table
     c.kill('SIGKILL')
     await exited(c)
-    expect(startTokenOfSync(c.pid!)).toBe('gone')
-    const after = await readStartTokenTable()
-    expect(after!.has(c.pid!)).toBe(false)
-  }, 60_000)
+    const gone = await timed(() => startTokenOfSync(c.pid!))
+    skipIfTokenReadTimedOut(ctx, gone.value === null, gone.ms, 'The token read of the exited child')
+    expect(gone.value).toBe('gone')
+    const a = await timed(() => readStartTokenTable())
+    skipIfTokenReadTimedOut(ctx, a.value === null, a.ms, 'The second process table read')
+    expect(a.value).not.toBeNull()
+    expect(a.value!.has(c.pid!)).toBe(false)
+  }, 90_000)
 
-  it('a pid that never existed is gone', () => {
-    expect(startTokenOfSync(2_000_000_000)).toBe('gone')
-  })
+  it('a pid that never existed is gone', async (ctx) => {
+    const r = await timed(() => startTokenOfSync(2_000_000_000))
+    skipIfTokenReadTimedOut(ctx, r.value === null, r.ms, 'The token read of a pid that never existed')
+    expect(r.value).toBe('gone')
+  }, 30_000)
 })
 
 describe('parsers', () => {

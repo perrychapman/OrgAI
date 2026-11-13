@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  BACKOFF_CAP_MS,
+  BACKOFF_START_MS,
+  backoffDelay,
   LockAbortedError,
   LockBusyError,
   LockFileUnsafeError,
@@ -175,6 +178,30 @@ describe('osLock across processes', () => {
     await killed(child)
     expect(probeOsLock(p)).toBe('free')
     ;(await acquireOsLock(p, 'exclusive', { waitMs: 0 })).release()
+  })
+
+  it('polls a lock held in another process with a short jittered backoff: 2 ms doubling, capped at 50 ms', async () => {
+    const p = join(dir, 'bo.lock')
+    ensureLockFile(p)
+    await holder(p, 'exclusive')
+    const sleeps: number[] = []
+    let t = 0
+    await expect(
+      acquireOsLock(p, 'exclusive', {
+        waitMs: 1000,
+        now: () => t,
+        random: () => 0.5, // no jitter: exactly the step
+        sleep: async (ms) => {
+          sleeps.push(ms)
+          t += ms
+        }
+      })
+    ).rejects.toBeInstanceOf(LockBusyError)
+    expect(sleeps.slice(0, 6)).toEqual([2, 4, 8, 16, 32, 50])
+    expect(Math.max(...sleeps)).toBe(BACKOFF_CAP_MS)
+    expect(sleeps.reduce((a, b) => a + b, 0)).toBe(1000)
+    expect(backoffDelay(BACKOFF_START_MS, () => 0)).toBe(1)
+    expect(backoffDelay(BACKOFF_CAP_MS, () => 0.999999)).toBeLessThan(75)
   })
 
   it('a waiter gets the lock when the other process dies', async () => {

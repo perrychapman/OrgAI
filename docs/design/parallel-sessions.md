@@ -168,7 +168,7 @@ Protocol:
   `downgradeHold(key)` after a declined or failed operation, still inside the transaction lock: `ROLLBACK`, re-take
   shared, re-read that the resource still exists. After a completed removal the hold is simply released and the
   session leaves the project (onboarding in the TUI).
-- **Waiting**: try; on `SQLITE_BUSY` close the connection, sleep (5 ms doubling to 100 ms, ±25 % jitter), reopen by
+- **Waiting**: try; on `SQLITE_BUSY` close the connection, sleep (2 ms doubling to 50 ms, ±50 % jitter), reopen by
   path, retry until `waitMs`. On Windows, `EACCES`/`EPERM`/`SQLITE_CANTOPEN` from a sharing violation are retried the
   same way once folder trust (below) has passed. Every other error fails closed; no in-process fallback. Shutdown
   aborts waiters.
@@ -1316,13 +1316,13 @@ change that first calls these modules in production):
   keyed by a case-folded path on those platforms.
 - L6: temp files of `atomicWrite` (`<file>.tmp-<hostId>-<random>`) left by a crash are not swept; housekeeping (5.4)
   must remove those whose host is dead.
-- Fairness (found while fixing PR 55's Windows check): waiting across processes is polling with backoff up to 100 ms,
-  so a process that releases and re-takes a lock in a tight loop can starve another process's waiter past its budget
-  (`LockBusyError`; fails closed, nothing is lost). On a heavily loaded Windows 11 machine (about 100 node processes
-  of parallel agent runs) the `sharedJsonFile` test "two processes x 200 updates" failed this way in 6 of 21 repeated
-  runs, each time together with PowerShell start-token reads timing out (M6); an earlier loop of 6 runs passed every
-  time.
-  Decide before activation
+- Fairness (found while fixing PR 55's Windows check): waiting across processes is polling, so a process that releases
+  and re-takes a lock in a tight loop can starve another process's waiter past its budget (`LockBusyError`; fails
+  closed, nothing is lost). On a heavily loaded Windows 11 machine the `sharedJsonFile` test "two processes x 200
+  updates" (default 15 s budget) failed this way in 6 of 21 runs with the original backoff (5 ms doubling to 100 ms).
+  With the shorter backoff now in `osLock.ts` (2 ms doubling to 50 ms, ±50 % jitter) it still failed 7 of 30 runs
+  with two other vitest runs going. The test now gives its children a 240 s budget (it checks counting, not the
+  default budget) and passed 30 of 30 runs under the same load (14 s to 191 s each). Decide before activation
   whether hot locks need a fairness hand-off (for example a ticket file) or larger budgets.
 - L7: `startTokens.ts` passes the full `process.env` to `ps` / PowerShell (scrub it like other children), and the macOS
   `lstart` token has one-second granularity (a pid reused within the same second compares equal).
