@@ -32,7 +32,7 @@ export interface KeyDef {
 export const KEYMAP: readonly KeyDef[] = [
   // ---- Anywhere ----
   { scope: 'global', keys: 'Alt+D, F2, Ctrl+.', label: 'Focus the Decision Tray (Shift+Tab from the composer too)' },
-  { scope: 'global', keys: 'Tab, Shift+Tab', label: 'Cycle the panes' },
+  { scope: 'global', keys: 'Tab, Shift+Tab', label: 'Cycle the panes (outside the composer; the composer uses Shift+Tab differently)' },
   { scope: 'global', keys: 'Esc', label: 'From a pane: back to the composer. On the composer: press Esc twice to interrupt the running turn' },
   { scope: 'global', keys: 'Ctrl+C', label: 'Clear the composer; twice on an empty composer quits (active runs stop)' },
   { scope: 'global', keys: 'Ctrl+Z', label: 'Suspend (fg to come back)' },
@@ -65,7 +65,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'composer', keys: 'Up, Down', label: 'Earlier / later prompts (on the first / last line); your draft stays at the bottom' },
   { scope: 'composer', keys: 'Alt+B, Alt+F', label: 'Jump a word back / forward' },
   { scope: 'composer', keys: 'Ctrl+G', label: 'Edit the prompt in $VISUAL / $EDITOR' },
-  { scope: 'composer', keys: 'Shift+Tab', label: 'Cycle the permission mode (default, acceptEdits, plan, auto) when no decision waits' },
+  { scope: 'composer', keys: 'Shift+Tab', label: "Choose the waiting decision; with none, step the permission mode narrower (live run) or cycle the next run's mode" },
   { scope: 'transcript', keys: 'Ctrl+O', label: 'Expand / collapse tool details' },
   { scope: 'transcript', keys: 'Enter', label: 'Expand / collapse completed tool activity', hint: { order: 4, text: 'Enter tools' } },
   // ---- Plan ----

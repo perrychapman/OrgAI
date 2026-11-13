@@ -45,7 +45,10 @@ Short conversations align to the bottom, keeping the latest message
 near the composer; scrolling up preserves the reading position. Agent inspection replaces the
 conversation and keeps the agent room visible. Narrow terminals keep the stacked layout. The composer
 uses a single footer row for run status, notices and essential shortcuts, with no separate hint row or gap below the input. Approval choices and their command details appear inline above the composer. A new request for the active run focuses its choices only when the prompt is empty and idle for at least 750 ms, with no overlay open and decision access available. Drafts and other panes retain focus; dismissed cards do not reclaim it. Shift+Tab from the composer or F2 from another pane selects
-the inline choices. Left/Right selects an action and Enter confirms it; letter shortcuts remain available. Esc returns to typing. Persistent grants still require their explicit second confirmation. Long permission bodies must still be read
+the inline choices. With no decision waiting, the composer's Shift+Tab never widens a running session: it steps the
+permission mode narrower (auto, acceptEdits, default, plan; no wrap, and at plan it only says to use `/mode`), or, with no
+run followed, cycles default, acceptEdits and plan for the next run. `/mode <mode>` widens a live run only after a yes/no
+question (`auto` is reachable only that way). A Shift+Tab within 750 ms of the last decision going away is ignored. Left/Right selects an action and Enter confirms it; letter shortcuts remain available. Esc returns to typing. Persistent grants still require their explicit second confirmation. Long permission bodies must still be read
 before approval, and the arrival guard prevents buffered keys from answering a new request.
 A single-agent sidebar shows only the name and state until focused. The fullscreen footer omits
 duplicate single-run titles, zero-decision counts and lone run chips; multiple-run navigation and
