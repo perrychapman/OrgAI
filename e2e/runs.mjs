@@ -849,6 +849,146 @@ try {
   await resizeTo(1424, 881, 'full')
   await endSession(page)
 
+  // Transcript follow (motion.md 3.11): the conversation opens at the end, a user scroll releases the follow, and ten quiet
+  // seconds let the next streamed text bring the list back. Mock stream: 16 rows, then one long streamed text.
+  await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
+  {
+    const para = (i) => `Paragraph ${i}. ` + 'The quick brown fox jumps over the lazy dog. '.repeat(6)
+    const rowsScript = Array.from({ length: 16 }, (_, i) => ({ type: 'text', text: para(i) }))
+    let acc = ''
+    const chunks = Array.from({ length: 160 }, (_, i) => (acc += `Streaming sentence ${i} goes on for a while. `))
+    fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 150, work: [...rowsScript, { type: 'text', text: acc, partials: chunks }] }))
+    const LIST = '[data-testid=run-conversation] .conversation-list'
+    const topOf = () => page.evaluate((sel) => document.querySelector(sel)?.scrollTop ?? null, LIST)
+    const jump = () => page.locator('[data-testid=conversation-jump]').count()
+    const jumpGone = () => page.waitForFunction(() => !document.querySelector('[data-testid=conversation-jump]'), null, { timeout: 2000 }).then(() => true, () => false)
+    const waitDist = (max, ms = 3000) => page.waitForFunction(([sel, m]) => { const el = document.querySelector(sel); return !!el && el.scrollHeight - el.scrollTop - el.clientHeight <= m }, [LIST, max], { timeout: ms }).then(() => true, () => false)
+    // Clicks, then reads the list two frames later (resize observers run after the first frame's callbacks and before its
+    // paint, so the second frame sees what was painted); a later stream update would be too slow to repair it by then.
+    const clickThenDist = (testId) => page.evaluate(([id, sel]) => new Promise((resolve) => {
+      document.querySelector(`[data-testid=${id}]`).click()
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const el = document.querySelector(sel)
+        resolve(el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : null)
+      }))
+    }), [testId, LIST])
+    // Samples the distance from the end once per frame until it is back (or 3 s pass).
+    const watchReturn = () => page.evaluate(([sel]) => new Promise((resolve) => {
+      const el = document.querySelector(sel)
+      const seen = []
+      const start = performance.now()
+      const tick = () => {
+        seen.push(Math.round(el.scrollHeight - el.scrollTop - el.clientHeight))
+        if ((seen.at(-1) <= 2 && seen.length > 1) || performance.now() - start > 3000) resolve(seen)
+        else requestAnimationFrame(tick)
+      }
+      tick()
+    }), [LIST])
+    // A run's tab, from the strip or from the "+n" menu when many runs are open.
+    const openRunTab = async (title) => {
+      const tab = page.locator('.run-tablist [role="tab"]', { hasText: title })
+      if (await tab.count()) return tab.first().click()
+      await page.locator('.run-tab-more').click()
+      await page.locator('.run-tab-menu [role=menuitem]', { hasText: title }).first().click()
+    }
+    // The clock moves forward instead of waiting ten seconds (the app reads Date.now; no hook in the product).
+    const shiftClock = () => page.evaluate(() => { const real = Date.now.bind(Date); window.__realNow = real; Date.now = () => real() + 11_000 })
+    const restoreClock = () => page.evaluate(() => { if (window.__realNow) Date.now = window.__realNow })
+
+    await page.keyboard.press('Control+t')
+    await page.locator('.new-run').waitFor({ timeout: 5000 })
+    await startOnPage('Follow one')
+    await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+    await page.locator('[data-testid=run-layout-toggle]').click()
+    await page.locator(LIST).waitFor({ timeout: 5000 })
+    // Away to the Plan stage tab while rows keep arriving, then back: already at the end in the painted frame.
+    await page.getByText('Paragraph 3.').first().waitFor({ timeout: 30_000 })
+    await page.locator('[data-testid=run-stage-tabs] [role=tab]').nth(1).click()
+    await page.waitForFunction(() => document.querySelectorAll('.run-stage-conversation .entry').length >= 12, null, { timeout: 30_000 })
+    const backDist = await clickThenDist('run-tab-conversation')
+    check(backDist !== null && backDist <= 2, 'returning to the Conversation stage tab lands on the newest message', String(backDist))
+    await page.locator('.entry.streaming').first().waitFor({ timeout: 30_000 })
+    check(await waitDist(2), 'the conversation follows streamed text to the end')
+
+    // Another run, then back: opens at the end.
+    await page.keyboard.press('Control+t')
+    await page.locator('.new-run').waitFor({ timeout: 5000 })
+    await startOnPage('Follow two')
+    await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+    await sleep(500)
+    await openRunTab('Follow one')
+    await page.locator(LIST).waitFor({ timeout: 5000 })
+    check(await waitDist(2, 1500), 'switching back to a run opens its conversation at the end')
+
+    // A short wheel notch up (inside the stick distance) is not undone by the next token.
+    await page.locator(LIST).hover()
+    await page.mouse.wheel(0, -20)
+    await sleep(150)
+    const t1 = await topOf()
+    await sleep(1200)
+    const t2 = await topOf()
+    check(t1 !== null && t2 !== null && Math.abs(t2 - t1) <= 1, 'a small wheel notch up releases the follow: streamed text does not pull the list back', `${t1} -> ${t2}`)
+    check((await jump()) === 1, '"Jump to latest" shows once the user is away')
+    await page.mouse.wheel(0, -400)
+    await sleep(200)
+    const t3 = await topOf()
+    await sleep(1500)
+    const t4 = await topOf()
+    check(t3 !== null && t4 !== null && Math.abs(t4 - t3) <= 1, 'scrolling up during a stream holds the viewport still', `${t3} -> ${t4}`)
+    // Back to the end by wheel: following resumes at once.
+    await page.mouse.wheel(0, 5000)
+    check(await waitDist(2, 2000), 'scrolling back to the end follows the stream again')
+    check(await jumpGone(), '"Jump to latest" is gone at the end')
+    // Away again; "Jump to latest" follows again.
+    await page.mouse.wheel(0, -300)
+    await sleep(300)
+    await page.locator('[data-testid=conversation-jump]').click()
+    check(await waitDist(2, 2000), '"Jump to latest" returns to the end')
+    check(await jumpGone(), '"Jump to latest" hides after use')
+
+    // Ten quiet seconds: the next streamed text glides the list back (several frames), or jumps under reduced motion.
+    await page.mouse.wheel(0, -400)
+    await sleep(300)
+    const t5 = await topOf()
+    await shiftClock()
+    const glide = await watchReturn()
+    check(glide.at(-1) <= 2, 'after ten quiet seconds the next streamed text brings the list back to the end', `${t5} -> ${glide.slice(-3)}`)
+    check(glide.length > 3, 'the return glides over several frames', String(glide.length))
+    check(await jumpGone(), 'following resumed after the quiet spell')
+    await restoreClock()
+    await shot('follow')
+    await page.evaluate(() => document.documentElement.setAttribute('data-reduce-motion', 'on'))
+    await page.mouse.wheel(0, -400)
+    await sleep(300)
+    await shiftClock()
+    const instant = await watchReturn()
+    check(instant.at(-1) <= 2 && instant.slice(1, -1).filter((d) => d > 2 && d < instant[0] - 60).length <= 1, 'reduced motion: the return to the end is instant', instant.slice(0, 6).join(','))
+    await restoreClock()
+    await page.evaluate(() => document.documentElement.removeAttribute('data-reduce-motion'))
+
+    // The side panel transcript (canvas layout, an agent selected) opens at the end and a scroll up holds there too.
+    await page.locator('[data-testid=run-layout-toggle]').click()
+    await page.locator('.react-flow__node').first().click()
+    const PANEL = '.side-run [role=tabpanel].transcript'
+    const panelDist = () => page.evaluate((sel) => { const el = document.querySelector(sel); return el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : null }, PANEL)
+    await page.locator(PANEL).waitFor({ timeout: 10_000 })
+    await sleep(400)
+    const pd = await panelDist()
+    check(pd !== null && pd <= 2, 'the side panel transcript opens at the newest message', String(pd))
+    await page.locator(PANEL).hover()
+    await page.mouse.wheel(0, -300)
+    await sleep(300)
+    const pt1 = await page.evaluate((sel) => document.querySelector(sel).scrollTop, PANEL)
+    await sleep(1200)
+    const pt2 = await page.evaluate((sel) => document.querySelector(sel).scrollTop, PANEL)
+    check(Math.abs(pt2 - pt1) <= 1 && (await panelDist()) > 2, 'the side panel transcript stays where the user scrolled to', `${pt1} -> ${pt2}`)
+
+    await endSession(page)
+    await openRunTab('Follow two')
+    await endSession(page)
+    fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
+  }
+
   // Closing OrgAI while a run is live: after relaunch the run reads Ended when OrgAI closed and Send continues it in the same tab.
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')
