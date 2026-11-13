@@ -44,6 +44,11 @@ export interface ScheduleRunFacts {
   status: RunSummary['status']
   limitHold: boolean
   pendingCards: number
+  /**
+   * The run still does work without the user (runActivity.ts state 'working' or 'ending'): an idle root whose reports
+   * work, peer messages queued or flushing, a continuation nudge due (review H1).
+   */
+  working: boolean
 }
 
 export interface ScheduleServiceDeps {

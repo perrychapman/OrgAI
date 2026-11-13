@@ -84,6 +84,21 @@ export function targetBaseMode(target: ScheduleTarget, project: Project | undefi
   return project?.permissionMode ?? 'default'
 }
 
+/**
+ * The mode a schedule's runs actually use (review M3): the schedule's own, else the target's (the project's own mode for
+ * a team target, read at the moment of the call, so a project changed later is seen at fire time).
+ */
+export function effectiveScheduleMode(fields: Pick<ScheduleUserFields, 'permissionMode' | 'target'>, project: Project | undefined): PermissionMode {
+  return fields.permissionMode ?? targetBaseMode(fields.target, project)
+}
+
+/** Save / apply refusal when the effective mode would be bypass (the schedule names no mode, the project bypasses). */
+export const SCHEDULE_INHERITS_BYPASS =
+  'Its project runs with bypass permissions, which a schedule cannot use. Choose a permission mode for the schedule.'
+/** History detail of a fire refused because the effective mode is bypass (the project changed after the save). */
+export const SCHEDULE_BYPASS_NOT_STARTED =
+  'Not started: its project now runs with bypass permissions, which a schedule cannot use. Choose a permission mode for the schedule.'
+
 /** True when `mode` is no wider than the target's own mode (an agent may only propose such a mode). */
 export function modeWithinTarget(mode: PermissionMode, target: ScheduleTarget, project: Project | undefined): boolean {
   return canNarrowPermissionMode(targetBaseMode(target, project), mode)
@@ -107,6 +122,8 @@ export function scheduleFieldsProblem(fields: ScheduleUserFields, env: ScheduleC
     if (!(SCHEDULE_PERMISSION_MODES as readonly string[]).includes(fields.permissionMode)) return 'A schedule cannot run with bypass permissions. Choose another permission mode.'
     if (t.kind === 'ask' && !ASK_PERMISSION_MODES.includes(fields.permissionMode)) return 'An ask run can only use Ask, Never ask or Plan. Choose one of those permission modes.'
   }
+  // No bypass mode, also not inherited from the project (docs/design/schedules.md 6).
+  if (t.kind === 'team' && effectiveScheduleMode(fields, env.project(t.projectId)) === 'bypassPermissions') return SCHEDULE_INHERITS_BYPASS
   if (fields.expiresAt !== undefined && fields.expiresAt <= env.now) return 'The end date is in the past. Choose a later date or remove it.'
   if (fields.timing.kind === 'once' && fields.enabled && fields.timing.at <= env.now) return 'That time has already passed. Choose a time in the future.'
   if (fields.enabled) {

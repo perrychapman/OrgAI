@@ -3392,10 +3392,11 @@ export class RunManager {
   }
 
   /** Revise routing (outputs/revise.ts): how a live run stands, or null when it is not live. */
-  liveRunFacts(runId: string): { status: RunSummary['status']; limitHold: boolean; pendingCards: number } | null {
+  liveRunFacts(runId: string): { status: RunSummary['status']; limitHold: boolean; pendingCards: number; working: boolean } | null {
     const a = this.runs.get(runId)
     if (!a || !LIVE_STATUSES.has(a.summary.status)) return null
-    return { status: a.summary.status, limitHold: !!a.limitHold, pendingCards: pendingCount(a) }
+    // working: runActivity's 'working' or 'ending' (an idle root whose reports, peer flush or nudge still run).
+    return { status: a.summary.status, limitHold: !!a.limitHold, pendingCards: pendingCount(a), working: this.activityStateOf(a) !== 'waiting' }
   }
 
   /** Revise routing: OrgAI is quitting, so nothing starts, continues or takes a message. */

@@ -54,7 +54,7 @@ export function fakeEnv(over: Partial<ScheduleServiceDeps> = {}): FakeEnv {
     if (env.failStart.message) throw new Error(env.failStart.message)
     const run = { id: `run_${++runSeq}`, projectId, status: 'running', kind: 'work', prompt: '', startedAt: env.clock.now, totalCostUsd: 0 } as RunSummary
     env.summaries.set(run.id, run)
-    env.facts.set(run.id, { status: 'running', limitHold: false, pendingCards: 0 })
+    env.facts.set(run.id, { status: 'running', limitHold: false, pendingCards: 0, working: true })
     return run
   }
   const service = new ScheduleService({
