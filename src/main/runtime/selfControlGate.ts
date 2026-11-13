@@ -871,7 +871,18 @@ function closeAfter(text: string, marker: string, from: number): number {
  * quotes, single quotes, `$'...'`, `${...}` (with nested braces) and an unquoted here-document body up to `end`.
  */
 type LexContext =
-  | { k: 'code'; closer: ')' | '`' | ']' | null; depth: number; cases: number; arith: boolean; cmd: boolean }
+  | {
+      k: 'code'
+      closer: ')' | '`' | ']' | null
+      depth: number
+      cases: number
+      arith: boolean
+      cmd: boolean
+      /** The next word is a `case` pattern or `esac` (after `in`, `;;`, `;&`, `;;&`). */
+      pattern: boolean
+      /** Between `case` and its `in`. */
+      caseSubject: boolean
+    }
   | { k: 'dq' }
   | { k: 'sq' }
   | { k: 'ansi' }
@@ -897,22 +908,32 @@ const COMMENT_BEFORE: ReadonlySet<string> = new Set([' ', '\t', '\n', ';', '&', 
 /** After one of these the next word is in command position. */
 const COMMAND_START: ReadonlySet<string> = new Set([';', '&', '|', '(', '\n'])
 /** Reserved words after which the next word is still in command position. */
-const KEYWORD_THEN_COMMAND = /(?:then|do|else|elif|if|while|until|time|!|\{)(?![A-Za-z0-9_])/y
+// `time -p` / `time --` keep it too (bash's TIMEOPT / TIMEIGN; review round 5).
+const KEYWORD_THEN_COMMAND = /(?:then|do|else|elif|if|while|until|time|!|\{|-p|--)(?![A-Za-z0-9_-])/y
 const isWordChar = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9_]/.test(ch)
-const newCode = (closer: ')' | '`' | ']' | null, arith = false): LexContext => ({ k: 'code', closer, depth: 0, cases: 0, arith, cmd: true })
+const newCode = (closer: ')' | '`' | ']' | null, arith = false): LexContext => ({
+  k: 'code',
+  closer,
+  depth: 0,
+  cases: 0,
+  arith,
+  cmd: true,
+  pattern: false,
+  caseSubject: false
+})
 
 /**
  * The here-document word at `from` (after `<<` / `<<-` and blanks), read the way bash does: quotes removed, a
  * backslash escaping one character, ended by an unquoted blank or operator. Null when a quote does not close.
  */
-function heredocWord(text: string, from: number): { delim: string; quoted: boolean } | null {
+function heredocWord(text: string, from: number): { delim: string; quoted: boolean } | 'unmodelled' | null {
   let delim = ''
   let quoted = false
   let j = from
   while (j < text.length) {
     const c = text[j]
-    // `$'EOF'` / `$"EOF"`: bash's reading is not modelled; no here-document is read (the text after it is code).
-    if (c === '$' && (text[j + 1] === "'" || text[j + 1] === '"')) return null
+    // `$'EOF'` / `$"EOF"`: bash's reading is not modelled (the caller leaves the text open).
+    if (c === '$' && (text[j + 1] === "'" || text[j + 1] === '"')) return 'unmodelled'
     if (c === "'") {
       const e = text.indexOf("'", j + 1)
       if (e < 0) return null
@@ -940,7 +961,8 @@ function heredocWord(text: string, from: number): { delim: string; quoted: boole
       j++
     }
   }
-  return delim ? { delim, quoted } : null
+  // `<<''` is a here-document ending at the first empty line.
+  return delim || quoted ? { delim, quoted } : null
 }
 
 /**
@@ -959,6 +981,7 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
   const heredocs: { delim: string; dash: boolean; quoted: boolean }[] = []
   let bodies: HeredocBody[] = []
   let unterminated = false
+  let heredocsOff = false
   let backticks = 0
   let dollars = 0
   const push = (ctx: LexContext): void => {
@@ -1204,8 +1227,10 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
           p = end + 1
         }
         if (!found) {
-          // No delimiter line: the text after it is read as commands (the backstop treats the text as left open).
+          // No delimiter line: the text after it is read as commands (the backstop treats the text as left open), and
+          // no later here-document is looked for (each would scan the rest again: quadratic, review round 5).
           unterminated = true
+          heredocsOff = true
           bodies = []
           break
         }
@@ -1216,8 +1241,11 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
       i = nextBody()
       continue
     }
-    if (ch === ']' && ctx.closer === ']') {
-      pop()
+    if (ctx.closer === ']' && (ch === '[' || ch === ']')) {
+      // `$[x[0] << 2]`: brackets nest.
+      if (ch === '[') ctx.depth++
+      else if (ctx.depth > 0) ctx.depth--
+      else pop()
       continue
     }
     if (ch === '(') {
@@ -1231,6 +1259,8 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
     }
     if (COMMAND_START.has(ch)) {
       ctx.cmd = true
+      // After `;;`, `;&` or `;;&` inside a `case` comes a pattern (or `esac`).
+      if (ctx.cases > 0 && text[i - 1] === ';' && (ch === ';' || ch === '&')) ctx.pattern = true
       continue
     }
     if (ch === ')') {
@@ -1244,33 +1274,56 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
       push(newCode('`'))
       continue
     }
-    if (esc === '\\' && !ctx.arith && ch === '<' && text[i + 1] === '<' && text[i + 2] !== '<' && text[i - 1] !== '<') {
+    if (esc === '\\' && !ctx.arith && !heredocsOff && ch === '<' && text[i + 1] === '<' && text[i + 2] !== '<' && text[i - 1] !== '<') {
       // A here-document: its body starts after the next newline (read above).
       let j = i + 2
       const dash = text[j] === '-'
       if (dash) j++
       while (text[j] === ' ' || text[j] === '\t') j++
       const word = heredocWord(text, j)
-      if (word) heredocs.push({ delim: word.delim, dash, quoted: word.quoted })
+      // A delimiter bash reads in a way not modelled here (`$'EOF'`) leaves the text open.
+      if (word === 'unmodelled') unterminated = true
+      else if (word) heredocs.push({ delim: word.delim, dash, quoted: word.quoted })
       ctx.cmd = false
       continue
     }
     if (ch === ' ' || ch === '\t') continue
     // A word start: `case` / `esac` and the reserved words that keep the next word in command position.
     if (i === 0 || ' \t\n;&|()'.includes(text[i - 1])) {
-      if (ctx.cmd && text.startsWith('case', i) && !isWordChar(text[i + 4])) {
-        ctx.cases++
+      const isWord = (w: string): boolean => text.startsWith(w, i) && !isWordChar(text[i + w.length])
+      if (ctx.pattern) {
+        // A pattern position: `esac` ends the `case`, anything else is a pattern.
+        ctx.pattern = false
         ctx.cmd = false
+        if (isWord('esac')) ctx.cases--
         continue
       }
-      if (ctx.cmd && ctx.cases > 0 && text.startsWith('esac', i) && !isWordChar(text[i + 4])) {
+      if (ctx.cmd && isWord('case')) {
+        ctx.cases++
+        ctx.cmd = false
+        ctx.caseSubject = true
+        continue
+      }
+      if (ctx.cases > 0 && ctx.caseSubject && !ctx.cmd && isWord('in')) {
+        // `case x in`: the next word is a pattern or `esac` (`case x in esac`).
+        ctx.caseSubject = false
+        ctx.pattern = true
+        continue
+      }
+      if (ctx.cmd && ctx.cases > 0 && isWord('esac')) {
         ctx.cases--
         ctx.cmd = false
         continue
       }
       if (ctx.cmd) {
         KEYWORD_THEN_COMMAND.lastIndex = i
-        if (KEYWORD_THEN_COMMAND.test(text)) continue
+        if (KEYWORD_THEN_COMMAND.test(text)) {
+          // The whole reserved word is read here, so the next word is still in command position.
+          const end = KEYWORD_THEN_COMMAND.lastIndex
+          out.fill(LEX_ACTIVE, i, end)
+          i = end - 1
+          continue
+        }
       }
     }
     ctx.cmd = false
@@ -1463,6 +1516,16 @@ function earlierPieces(segments: readonly CliSegment[], test: (text: string) => 
   }
 }
 
+/** Programs that run the next word as a program (after their own options). */
+const WRAPPERS: readonly string[] = ['command', 'exec', 'nohup', 'time', 'builtin', 'sudo', 'doas', 'stdbuf', 'caffeinate', 'call', 'start', 'xargs', 'nice', 'ionice', 'chrt', 'setsid', 'bunx', 'pnpx', 'watch', 'busybox']
+/** Wrapper options that take the next word as their value, beyond the shared `-n -p -c -u -I -L -P`. */
+const WRAPPER_VALUE_OPTIONS: Readonly<Record<string, RegExp>> = {
+  exec: /^-a$/,
+  stdbuf: /^-[ioe]$/,
+  sudo: /^-[gCDhrtTUR]$/,
+  doas: /^-C$/
+}
+
 /** Index of the program word after env assignments and wrappers (env, command, exec, nohup, time, npx, npm exec...). */
 function programIndex(words: readonly string[]): number {
   let i = 0
@@ -1483,23 +1546,29 @@ function programIndex(words: readonly string[]): number {
       i++
       while (i < words.length && (words[i].startsWith('-') || ASSIGNMENT.test(words[i]))) {
         // `env -u NAME` / `env -C dir` take a value.
-        if (/^-[uCS]$/.test(words[i]) || /^--(?:unset|chdir|split-string)$/.test(words[i])) i++
+        if (/^-[uCSP]$/.test(words[i]) || /^--(?:unset|chdir|split-string)$/.test(words[i])) i++
         i++
       }
       continue
     }
-    if (['command', 'exec', 'nohup', 'time', 'builtin', 'sudo', 'doas', 'stdbuf', 'caffeinate', 'call', 'start', 'xargs', 'nice', 'ionice', 'chrt', 'setsid', 'bunx', 'pnpx', 'watch', 'busybox'].some(is)) {
+    const wrapper = WRAPPERS.find(is)
+    if (wrapper !== undefined) {
       i++
-      // Options of the wrapper (and a value after nice -n / timeout's duration).
+      // Options of the wrapper (and a value after nice -n, exec -a, stdbuf -o, sudo -g, ...; review round 5).
+      const extra = WRAPPER_VALUE_OPTIONS[wrapper]
       while (i < words.length && words[i].startsWith('-')) {
-        if (/^-(?:n|p|c|u|I|L|P)$/.test(words[i])) i++
+        if (/^-(?:n|p|c|u|I|L|P)$/.test(words[i]) || extra?.test(words[i])) i++
         i++
       }
       continue
     }
     if (is('timeout')) {
       i++
-      while (i < words.length && words[i].startsWith('-')) i++
+      while (i < words.length && words[i].startsWith('-')) {
+        // `timeout -s KILL 5 cmd`, `-k 2`: a signal or kill-after value.
+        if (/^(?:-[sk]|--signal|--kill-after)$/.test(words[i])) i++
+        i++
+      }
       i++ // duration
       continue
     }

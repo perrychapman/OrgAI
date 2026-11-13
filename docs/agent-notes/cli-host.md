@@ -109,14 +109,18 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     `matchGlobTokens` (a state set, linear), never a RegExp built from `*`. Checked by unit tests only
     (`selfControlGate.test.ts` "segment splitting gaps (PR 47 review)" with the Reviewer's candidates, "Wave 7 scan cost",
     `referenceDirectories.test.ts`); never run in a real zsh, bash or PowerShell, and the zsh / PowerShell grammar facts
-    are from memory. Open limits, not fixed (pre-existing on dev): approval state can be forged by writing into a parent
-    folder (`cp -r <forged>/. <data>/projects/<id>/`), because definite mode counts only paths at or under a protected
-    folder and the scanner does not know which word a command writes to; `segmentWords` ignores backslashes, so a nested
-    `bash -c` / `eval` text with escaped quotes is misread; cmd's own quoting (`'` literal, `^` escapes) and PowerShell
-    `--%` are not modelled; wrapper options that take a value (`exec -a x`, `timeout -s KILL`, `env -P`, `stdbuf -o L`) can
-    hide the program; case folding reads a negated class (`[!O]rgai`) wider than bash; a zsh group without `|` (`orga(i)`)
-    is not expanded; the path scan's here-document handling grows faster than linear on many `<<` starts (thousands
-    take seconds).
+    are from memory. This is still a text check: crafted shell syntax gets past it, and neither the union of readings nor
+    the backstop is a guarantee (Reviewer, four rounds; each round found new bypasses, the later ones all also bypass
+    origin/dev). Known open classes (pre-existing on dev, not fixed here): approval state forged by writing into a
+    parent folder (`cp -r <forged>/. <data>/projects/<id>/`; definite mode counts only paths at or under a protected
+    folder and the scanner does not know which word a command writes to); more `case` / reserved-word corner cases in
+    the full grammar; unusual here-document delimiters; `segmentWords` ignores backslashes, so a nested `bash -c` /
+    `eval` text with escaped quotes is misread; cmd's own quoting (`'` literal, `^` escapes) and PowerShell `--%`; wrapper
+    options with values beyond the ones listed in `WRAPPER_VALUE_OPTIONS` / timeout `-s` / `-k` / env `-P`; negated
+    bracket classes in program names and paths are compared after case folding (`/usr/bin/[!S]ecurity` passes; macOS
+    reaches the vault key that way); a zsh group without `|` (`orga(i)`); the path scan's here-document handling grows
+    faster than linear on many `<<` starts (thousands take seconds). Tracking is private (SECURITY.md), not a public
+    issue.
   - Agent runtimes: `runtime/claudeBinary.ts` `claudeExecutable(env)` is the one resolver (claude.ts runs, probes, completions and
     `anthropicAuth.ts`), evaluated per call: `ORGAI_CLAUDE_PATH` (absolute, existing regular file, not .cmd / .bat / .ps1 / .js /
     .mjs / .cjs; when set it decides), the app.asar.unpacked native package, the SDK per-platform package via `createRequire` from

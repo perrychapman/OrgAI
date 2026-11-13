@@ -1036,7 +1036,17 @@ describe('segment splitting gaps (PR 47 review)', () => {
       ": <<$'EOF'\n'\nEOF\norgai status\n$EOF",
       "$'\\x6frgai' status",
       "$'\\157rgai' status",
-      '${x/#/orgai} status'
+      '${x/#/orgai} status',
+      // Review round 5.
+      'echo "$(time -p case y in y) : ; orgai status;; esac)"',
+      "echo $'\\'' \"$(case x in esac)\"; orgai status; echo \"\nesac)\"",
+      "echo $[x[0] << 2] $'\\''\n: ; orgai status\n2]",
+      ": <<''\n'\n\n: ; orgai status #'",
+      ": <<$'EOF'\n'\nEOF\n: ; orgai status #'",
+      'exec -a x orgai status',
+      'timeout -s KILL 5 orgai status',
+      'env -P /usr/bin orgai status',
+      'stdbuf -o L orgai status'
     ]) {
       // Denied, or not checked when bash's grammar leaves it open (the PowerShell items through the Bash tool).
       expect(bash(command), command).not.toBeNull()
@@ -2280,7 +2290,9 @@ describe('Wave 7 scan cost', () => {
     const makes: [string, (n: number) => string][] = [
       ['starts', (n) => `node ${'<<a '.repeat(n)}\nx`],
       // Bodies whose `$(` closes only after later bodies (review round 4: never read backwards).
-      ['crossing bodies', (n) => `cat ${'<<A '.repeat(n)}\n${'$(\nA\n'.repeat(n)}${')'.repeat(n)}`]
+      ['crossing bodies', (n) => `cat ${'<<A '.repeat(n)}\n${'$(\nA\n'.repeat(n)}${')'.repeat(n)}`],
+      // Here-documents whose delimiter never comes (review round 5).
+      ['missing delimiters', (n) => ': <<A\n'.repeat(n)]
     ]
     for (const [name, make] of makes) {
       const t1 = best(make(5_000))
