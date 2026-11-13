@@ -231,7 +231,7 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'runs:continue': { note: IMAGES_NOTE }, // runs.continueRun(project, runId, text, images)
   'runs:resumeNow': {}, // runs.resumeNow(runId)
   'runs:switchModel': {},
-  'runs:setPermissionMode': {}, // desktop surface only (the handler refuses socket / inproc); runs.setPermissionMode({ runId, mode })
+  'runs:setPermissionMode': {}, // desktop and inproc (the TUI, with configure); the handler refuses socket; runs.setPermissionMode({ runId, mode })
   'runs:cancelAutoResume': {}, // runs.cancelAutoResume(runId)
   'runs:listLive': {}, // runs.liveRuns()
   'runs:pendingCards': { note: 'Response cards may carry SettingsProposalPayload.maxBudgetUsd: null (domain null, kept by JSON).' },

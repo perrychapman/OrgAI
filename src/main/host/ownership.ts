@@ -651,6 +651,8 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
         try {
           bound = await bindListener((socket) => socket.destroy())
           bound.server.unref() // never keeps a finished command's process alive
+          // An accept error (EMFILE, say) after the bind must never crash the host mid-run: warn and keep serving.
+          bound.server.on('error', (e) => warn(`OrgAI host ownership: the liveness endpoint failed (${errCode(e) ?? (e as Error).message}).`))
         } catch (e) {
           warn(`OrgAI host ownership: could not bind the liveness endpoint (${errCode(e) ?? (e as Error).message}); if this process crashes, a later orgai on this data folder may refuse to start until ${runDir} is deleted.`)
         }

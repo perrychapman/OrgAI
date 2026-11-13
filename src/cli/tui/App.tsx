@@ -83,6 +83,7 @@ export const NOTHING_NEEDS_YOU = 'Nothing needs you'
 export const SHIFT_TAB_NARROWS_ONLY = "Shift+Tab only narrows a running session's mode. Use /mode <mode> to widen it (it asks first)."
 /** A composer Shift+Tab this soon after the last decision card went away is ignored (it was meant for that card). */
 export const SHIFT_TAB_AFTER_CARDS_MS = 750
+export const SHIFT_TAB_IGNORED = 'Shift+Tab ignored: the decision just closed. The mode is unchanged.'
 export const KEY_DROPPED_NOTICE = 'Keys typed before the card had focus were ignored. Read the card, then answer.'
 /** The input queue (held while a focus change commits) overflowed and later input was dropped. */
 export const INPUT_QUEUE_FULL_NOTICE = 'Some input typed while the screen was changing was dropped.'
@@ -1096,9 +1097,12 @@ export function App(props: AppProps) {
       notify(`This run does not take ${mode} mode.${modeSwitchHint(st) ? ` ${modeSwitchHint(st)}` : ''}`, 'warn')
       return
     }
-    // Widening a live run's mode (it asks less often) always asks first; narrowing and staging do not.
-    const current = modeInForce(run)
-    if (widensMode(current, mode)) {
+    // Widening a live run's mode (it asks less often) always asks first; narrowing and staging do not. Compared with the
+    // run's own (persistent) mode as well as the mode in force: a session-only accept-edits grant must not become the
+    // run's saved mode, which a continuation carries, without the question.
+    const inForce = modeInForce(run)
+    const current = run.permissionMode ?? inForce
+    if (widensMode(current, mode) || widensMode(inForce, mode)) {
       const yes = await confirm(current ? `Switch this run to ${mode} mode? It asks you less often than ${current}.` : `Switch this run to ${mode} mode? It may ask you less often than it does now.`)
       if (!yes) {
         notify(`Mode unchanged${current ? `: ${current}` : ''}.`)
@@ -1121,8 +1125,9 @@ export function App(props: AppProps) {
     if (st.readOnlyReason !== undefined) return
     // A followed run only ever steps narrower (auto, acceptEdits, default, plan; no wrap), so a stray Shift+Tab cannot
     // widen it; /mode widens, after a confirmation. Staging for the next run cycles default, acceptEdits, plan.
+    // Stepped from the run's own mode when it has one (a session grant only widens it), so the step is narrower than both.
     const next = run
-      ? narrowerMode(modeInForce(run), modeChoices(st))
+      ? narrowerMode(run.permissionMode ?? modeInForce(run), modeChoices(st))
       : nextStagedMode(modeInForce(undefined, session.getStaged?.()?.permissionMode), modeChoices(st))
     if (!next) {
       if (run) notify(SHIFT_TAB_NARROWS_ONLY)
@@ -1398,6 +1403,8 @@ export function App(props: AppProps) {
       if (focus === 'composer') {
         if (cards.length > 0) focusTray()
         else if (now() - cardsEmptiedAt.current >= SHIFT_TAB_AFTER_CARDS_MS) cycleMode()
+        // Said, not silent, so a keyboard or screen-reader user knows the key was not lost.
+        else notify(SHIFT_TAB_IGNORED)
       }
       else if (focus !== 'palette') cycle(-1)
       else bus.dispatch(e, focus)

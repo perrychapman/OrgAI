@@ -130,7 +130,7 @@ import { breakParentCycles } from './agentTree'
 import { describePlanChange, peerDeliveryBlocked, planNudgesApply } from './continuation'
 import { PermissionModeRefusal } from './permissionModeRefusal'
 import { isAuthFailure, isLiveAgent, runOutcome, settleAgent, withSkillActivity, type RunOutcome } from './activity'
-import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, overlaidByAcceptEdits, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
+import { canNarrowPermissionMode, effectiveRunProject, execBudgetUsd, overlaidByAcceptEdits, overridesWidening, projectBudgetUsd, withoutWaitPolicy } from './runOverrides'
 import { modelHandoff } from './modelHandoff'
 import { defaultEndedBy, execOutcomeFor, execQuiescent } from './execSettle'
 import { delegationPreflight, obligationsFor, subtreeFailed } from './delegation'
@@ -1101,14 +1101,20 @@ const CONFIGURE_ONLY_EXEC_KEYS: ReadonlySet<string> = new Set(['allowPeerMessage
  * on top. allowPeerMessages / allowUnpricedBudget carry over only with allowWidening (an 'operate'-only resume never
  * inherits a 'configure' grant). A decisionPolicy merges per field over the carried one (opts.overrides may give only
  * the fields the client set) and the remaining choices take the defaults. undefined when nothing is left.
+ * With `project` (the project the run continues as) and neither `exec` nor the automatic resume, a carried narrowing
+ * key that would widen that project now (overridesWidening) is dropped, so the project's value applies: `allowWidening`
+ * then widens only the fields this call supplied (PR 49 review H2: a TUI continue with a staged /goal must not bring
+ * back an earlier exec's bypassPermissions, autoContinue or budget on a project narrowed since).
  */
-export function continuedOverrides(prev: RunOverrides | undefined, opts: ContinueRunOptions): RunOverrides | undefined {
+export function continuedOverrides(prev: RunOverrides | undefined, opts: ContinueRunOptions, project?: Project): RunOverrides | undefined {
   const out: Record<string, unknown> = {}
   const keepExec = opts.exec === true || opts[AUTO_RESUME] === true
   for (const k of [...NARROWING_KEYS, ...(keepExec ? EXEC_KEYS : [])]) {
     if (CONFIGURE_ONLY_EXEC_KEYS.has(k) && opts.allowWidening !== true) continue
     const v = prev?.[k]
-    if (v !== undefined) out[k] = typeof v === 'object' ? structuredClone(v) : v
+    if (v === undefined) continue
+    if (project && !keepExec && overridesWidening(project, { [k]: v } as RunOverrides).length > 0) continue
+    out[k] = typeof v === 'object' ? structuredClone(v) : v
   }
   for (const [k, v] of Object.entries(opts.overrides ?? {})) {
     if (v === undefined) continue
@@ -4857,7 +4863,7 @@ export class RunManager {
 
     const selectedAdapter = this.options.catalog?.().find((m) => m.id === target.modelSelection?.model && m.connection === target.modelSelection?.connection)?.adapter
     const switching = target.modelSelection && (!target.sessionId || target.modelSelection.connection !== target.connection || (selectedAdapter && selectedAdapter !== (target.modelAdapter ?? project.provider.id) && (target.modelAdapter ?? project.provider.id) !== 'mock'))
-    const overrides = continuedOverrides(target.overrides ?? from.overrides, switching ? { ...opts, exec: !!target.overrides?.execMode } : opts)
+    const overrides = continuedOverrides(target.overrides ?? from.overrides, switching ? { ...opts, exec: !!target.overrides?.execMode } : opts, project)
     // A new provider session must not regain the conversation's already spent desktop budget.
     let carriedBudget = target.conversationBudgetUsd
     if ((switching || carriedBudget !== undefined) && !overrides?.execMode) {
@@ -5044,8 +5050,8 @@ export class RunManager {
   }
 
   /**
-   * runs:setPermissionMode (desktop only; the desktop handler is the only caller, so no peer, harness tool or agent can
-   * reach it). Contract: SetRunPermissionModeInput / SetRunPermissionModeResult. The desktop user owns the run, so
+   * runs:setPermissionMode (the desktop window and the in-process TUI holding 'configure' only; the dispatcher refuses
+   * socket clients, so no peer, harness tool or agent can reach it; both user surfaces confirm a widening first). Contract: SetRunPermissionModeInput / SetRunPermissionModeResult. The desktop user owns the run, so
    * narrowing and widening are treated alike; everything else is checked here. A refusal changes nothing, with one
    * exception: when the session applied `mode` twice and an "accept edits" grant landed after each, the session really
    * runs `mode` under the grant, so chosenMode, permissionModeChosen and the overlay record that (applied: false, with the

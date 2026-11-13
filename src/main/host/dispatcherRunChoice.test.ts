@@ -153,8 +153,13 @@ describe('runs:continue and runs:resumeNow desktop flag', () => {
     // The desktop-equivalent flag trusts only the permissionModeChosen carry; stored overrides re-clamp to the project.
     expect(runs.continueRun.mock.calls[0][4]).toEqual({ desktop: true })
     expect(runs.continueRun.mock.calls[0][4]).not.toHaveProperty('allowWidening')
+    // With its own overrides (a staged /goal) the call goes through the overrides branch; RunManager's continuedOverrides
+    // then widens only these fields, never the carried ones (runManager.startChoice.test.ts "re-clamps").
+    await d.invokeRpc(IPC.runsContinue, [{ runId: 'run_1', text: 'more', overrides: { goal: 'speed' } }], rpc(['read', 'operate', 'configure'], 'inproc'))
+    expect(runs.continueRun.mock.calls[1][4]).toMatchObject({ overrides: { goal: 'speed' } })
+    expect((runs.continueRun.mock.calls[1][4] as { overrides?: object }).overrides).not.toHaveProperty('permissionMode')
     await d.invokeRpc(IPC.runsContinue, [{ runId: 'run_1', text: 'more' }], rpc(['read', 'operate'], 'inproc'))
-    expect(runs.continueRun.mock.calls[1]).toHaveLength(4)
+    expect(runs.continueRun.mock.calls[2]).toHaveLength(4)
   })
 
   it('resumeNow passes { desktop: true } on the desktop only', async () => {

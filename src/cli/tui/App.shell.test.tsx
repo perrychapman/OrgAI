@@ -8,7 +8,7 @@ import { render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PermissionRequest, RunEvent } from '../../shared/types'
 import { project, record, summary } from '../testing/fakeContext'
-import { App, KEY_DROPPED_NOTICE, INPUT_QUEUE_FULL_NOTICE, SHIFT_TAB_AFTER_CARDS_MS, SHIFT_TAB_NARROWS_ONLY, overlayCue, placeholderFor, wrapOverlayLines } from './App'
+import { App, KEY_DROPPED_NOTICE, INPUT_QUEUE_FULL_NOTICE, SHIFT_TAB_AFTER_CARDS_MS, SHIFT_TAB_IGNORED, SHIFT_TAB_NARROWS_ONLY, overlayCue, placeholderFor, wrapOverlayLines } from './App'
 import { DEFAULT_TUI_ENV } from './context'
 import { KeyParser } from './input/keys'
 import { textWidth } from './panes/text'
@@ -827,9 +827,28 @@ describe('Shift+Tab and /mode never widen a live run by accident (PR 49 M1)', ()
     clock.t += SHIFT_TAB_AFTER_CARDS_MS - 100
     await m.send(backtab)
     expect(m.session.setPermissionMode).not.toHaveBeenCalled()
-    expect(m.session.notify).not.toHaveBeenCalled()
+    // Ignored, but said (not silent), so a keyboard or screen-reader user knows the key was not lost.
+    expect(m.session.notify).toHaveBeenCalledWith(SHIFT_TAB_IGNORED, undefined)
     clock.t += 200
     await m.send(backtab)
     expect(modesSet(m)).toEqual(['plan'])
+  })
+
+  it('a session-only accept-edits grant: /mode acceptEdits asks (it would save the wider mode), Shift+Tab steps below the run\'s own mode', async () => {
+    const granted = (): TuiState => {
+      const s = modeState('default')
+      const run = s.runs.run1!
+      return { ...s, runs: { ...s.runs, run1: { ...run, summary: { ...run.summary, sessionPermissionMode: 'acceptEdits' } } } }
+    }
+    const m = mount({ cols: 120, rows: 40, state: granted() })
+    await tick()
+    await m.send(...type('/mode acceptEdits'), named('enter'))
+    expect(m.frame()).toContain('Switch this run to acceptEdits mode? It asks you less often than default.')
+    await m.send(key('n'))
+    expect(m.session.setPermissionMode).not.toHaveBeenCalled()
+    const s = mount({ cols: 120, rows: 40, state: granted() })
+    await tick()
+    await s.send(backtab)
+    expect(modesSet(s)).toEqual(['plan'])
   })
 })

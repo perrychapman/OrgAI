@@ -440,9 +440,11 @@ describe('continuations carry the per-run choices', () => {
 })
 
 /**
- * PR 49 review H2: a plain terminal-UI continue (dispatcher: inproc + configure -> `{ desktop: true }`) of a run an
- * `orgai exec` started with widening overrides (allowWidening) re-clamps them to the project as it is now. Only a chosen
- * per-run mode (permissionModeChosen) is trusted by that flag; stored overrides never are.
+ * PR 49 review H2: a terminal-UI continue of a run an `orgai exec` started with widening overrides (allowWidening)
+ * re-clamps them to the project as it is now: a plain continue (dispatcher: inproc + configure -> `{ desktop: true }`)
+ * and one with its own overrides (allowWidening: continuedOverrides drops carried keys that widen the project). Only a
+ * chosen per-run mode (permissionModeChosen) and the caller's own fields are trusted; stored overrides never are,
+ * except on `resume --exec` and the automatic resume.
  */
 describe('a desktop-equivalent continue re-clamps the stored exec overrides to a narrowed project', () => {
   const WIDE = { permissionMode: 'bypassPermissions' as const, autoContinue: true, maxAutoContinues: 40, maxBudgetUsd: 50, allowUnpricedBudget: true, allowPeerMessages: true }
@@ -484,10 +486,29 @@ describe('a desktop-equivalent continue re-clamps the stored exec overrides to a
     await r.m.stopAll()
   })
 
-  it('contrast: allowWidening (what the PR passed) would have kept bypassPermissions on the narrowed project', async () => {
+  it('a configure continue with its own overrides (a staged /goal) still re-clamps the carried values; only its own fields widen', async () => {
     const r = rig()
     const first = await startWide(r)
-    await r.m.continueRun(narrowed(), first.id, 'more', undefined, { allowWidening: true })
+    const next = await r.m.continueRun(narrowed(), first.id, 'more', undefined, { overrides: { goal: 'speed' }, allowWidening: true })
+    expect(r.ctx(1).project.permissionMode).toBe('default')
+    expect(r.ctx(1).project.autoContinue).toBe(false)
+    expect(r.ctx(1).project.maxAutoContinues).toBe(2)
+    expect(r.ctx(1).project.maxBudgetUsd).toBe(5)
+    expect(next.overrides).toMatchObject({ goal: 'speed' })
+    expect(next.overrides?.permissionMode).toBeUndefined()
+    // A widening field the caller itself sends (it holds configure) still applies.
+    const r2 = rig()
+    const again = await startWide(r2)
+    await r2.m.continueRun(narrowed(), again.id, 'more', undefined, { overrides: { permissionMode: 'acceptEdits' }, allowWidening: true })
+    expect(r2.ctx(1).project.permissionMode).toBe('acceptEdits')
+    await r.m.stopAll()
+    await r2.m.stopAll()
+  })
+
+  it('a resume with exec keeps the exec chain as configured (unchanged)', async () => {
+    const r = rig()
+    const first = await startWide(r)
+    await r.m.continueRun(narrowed(), first.id, 'more', undefined, { exec: true, allowWidening: true })
     expect(r.ctx(1).project.permissionMode).toBe('bypassPermissions')
     await r.m.stopAll()
   })
