@@ -1512,15 +1512,34 @@ export function evolveAnalyzeArgs(input: unknown, withWindow = false): EvolveApp
     minWaste = input.minWaste
   }
   const evalWindowRuns = withWindow ? evolveInt(input.evalWindowRuns, 'evalWindowRuns', 1, 10) : undefined
+  let expectedFingerprint: string | undefined
+  let allowSpendRaise: boolean | undefined
+  if (withWindow) {
+    if (input.expectedFingerprint !== undefined && input.expectedFingerprint !== null) {
+      if (typeof input.expectedFingerprint !== 'string' || !EVOLVE_FINGERPRINT_RE.test(input.expectedFingerprint)) throw new Error('expectedFingerprint must be the fingerprint of an analysed plan.')
+      expectedFingerprint = input.expectedFingerprint
+    }
+    if (input.allowSpendRaise !== undefined && input.allowSpendRaise !== null) {
+      if (typeof input.allowSpendRaise !== 'boolean') throw new Error('allowSpendRaise must be true or false.')
+      // Approving a raise means approving a reviewed plan: without its fingerprint there is nothing that was reviewed.
+      if (input.allowSpendRaise && expectedFingerprint === undefined) throw new Error('allowSpendRaise needs the expectedFingerprint of the plan that was reviewed.')
+      if (input.allowSpendRaise) allowSpendRaise = true
+    }
+  }
   return {
     projectId,
     ...(runs !== undefined ? { runs } : {}),
     ...(isStaffingGoal(input.goal) ? { goal: input.goal } : {}),
     ...(strategy ? { strategy } : {}),
     ...(minWaste !== undefined ? { minWaste } : {}),
-    ...(evalWindowRuns !== undefined ? { evalWindowRuns } : {})
+    ...(evalWindowRuns !== undefined ? { evalWindowRuns } : {}),
+    ...(expectedFingerprint !== undefined ? { expectedFingerprint } : {}),
+    ...(allowSpendRaise ? { allowSpendRaise } : {})
   }
 }
+
+/** A plan fingerprint as plan.ts planFingerprint makes it (hex or word characters, bounded). */
+const EVOLVE_FINGERPRINT_RE = /^[A-Za-z0-9_-]{1,128}$/
 
 /** org:evolveHistory: { projectId }, rebuilt. */
 export function evolveHistoryArgs(input: unknown): { projectId: string } {

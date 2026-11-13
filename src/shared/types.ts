@@ -4358,6 +4358,8 @@ export interface StartRunInput {
    * inproc clients only.
    */
   evolve?: boolean | EvolveStrategy
+  /** With `evolve` only: runs a trial generation applied by the post-run pass is measured over (1..10, default 3). */
+  evolveWindowRuns?: number
   /**
    * Desktop only (socket / inproc clients are refused with bad_request). The root agent's model for this run and its
    * continuations; the project's defaults are untouched. Reports keep their own model, except roles set to 'inherit':
@@ -9285,8 +9287,23 @@ export interface EvolutionSkillPatch {
   reason: string
 }
 
+/**
+ * One part of a plan that may make runs spend more, judged by the team files gate's rule (shared/roleSpend.ts
+ * settleSpend for a role's tier, effort and staffing; a higher effective subagent limit for concurrency, as
+ * teamFiles/gate.ts judges `maxConcurrentSubagents`). Such a part is applied only with
+ * EvolveApplyInput.allowSpendRaise; otherwise it is held (gate violation rule 'spend_held') and the rest applies.
+ */
+export interface EvolutionSpendRaise {
+  /** Role.slug; absent for the project's concurrency limit. */
+  roleSlug?: string
+  /** The plan field that raises spend ('tier' also moves the role's model). */
+  field: 'tier' | 'effort' | 'staffing' | 'concurrency'
+  /** The plain "may spend more" sentence (settleSpend's held summary), at most 600 chars. Shown in full, never truncated by clients. */
+  summary: string
+}
+
 export interface EvolutionGateViolation {
-  /** Stable rule id, e.g. 'permission_widened', 'write_tool_to_readonly', 'tier_top', 'effort_xhigh', 'required_reports_dropped', 'chart_broken', 'prompt_bloat', 'rejected_hypothesis'. */
+  /** Stable rule id, e.g. 'permission_widened', 'write_tool_to_readonly', 'tier_top', 'effort_xhigh', 'required_reports_dropped', 'chart_broken', 'prompt_bloat', 'rejected_hypothesis', 'spend_held' (a part that may spend more was not applied: no allowSpendRaise). */
   rule: string
   roleSlug?: string
   message: string
@@ -9314,6 +9331,11 @@ export interface EvolutionPlan {
   empty: boolean
   /** Hybrid only: tokens the one synthesis call used. */
   usage?: { inputTokens: number; outputTokens: number; costUsd?: number }
+  /**
+   * The parts of this plan that may make runs spend more (filled by the host on analyze and apply; not part of the
+   * fingerprint). Empty or absent = nothing in it raises spend. Clients list every entry in full before asking to apply.
+   */
+  spendRaises?: EvolutionSpendRaise[]
 }
 
 export type EvolutionGenerationStatus = 'trial' | 'promoted' | 'rolled_back'
@@ -9381,6 +9403,18 @@ export interface EvolveAnalyzeResult {
 export interface EvolveApplyInput extends EvolveAnalyzeInput {
   /** Runs a trial is measured over (default 3, 1..10). */
   evalWindowRuns?: number
+  /**
+   * The fingerprint of the plan the person reviewed (EvolveAnalyzeResult.plan.fingerprint). When set, the host refuses
+   * (nothing written) if the plan it builds at apply time has another fingerprint. With strategy 'hybrid' the host reuses
+   * the plan its own recent analysis made (no second model call) and refuses when it has none with this fingerprint.
+   * At most 128 chars.
+   */
+  expectedFingerprint?: string
+  /**
+   * The person approved the plan's spendRaises after they were shown. Only honoured with `expectedFingerprint` (refused
+   * otherwise). Absent or false: the parts that may spend more are held (gate rule 'spend_held') and only the rest applies.
+   */
+  allowSpendRaise?: boolean
 }
 
 export interface EvolveApplyResult {
@@ -9394,6 +9428,8 @@ export interface EvolveApplyResult {
   plan: EvolutionPlan
   /** Whether `.orgai/` team files were written. */
   teamFilesSynced: boolean
+  /** The parts that may spend more and were NOT applied (no allowSpendRaise). Absent or empty = none held. */
+  heldSpendRaises?: EvolutionSpendRaise[]
 }
 
 export interface EvolveRollbackInput {
@@ -9424,4 +9460,6 @@ export interface EvolvePostRunResult {
   /** Set when a new generation was applied by this pass. */
   applied?: EvolutionGeneration
   wasteScore?: number
+  /** The post-run pass is unattended: parts of its plan that may spend more are never applied; they are listed here. */
+  heldSpendRaises?: EvolutionSpendRaise[]
 }
