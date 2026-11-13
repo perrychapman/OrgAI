@@ -652,7 +652,7 @@ function neverRestored(f: PatchedField, pre: unknown): string {
   return ''
 }
 
-const ALLOWED_FIELDS: readonly PatchedField[]= ['tier', 'model', 'effort', 'staffing', 'prompt', 'tools', 'skills']
+const ALLOWED_FIELDS: readonly PatchedField[] = ['tier', 'model', 'effort', 'staffing', 'prompt', 'tools', 'skills']
 const MAX_RESTORED_PROMPT = 200_000
 
 /**
