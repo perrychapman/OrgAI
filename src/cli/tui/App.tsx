@@ -7,11 +7,14 @@
 import { Box, Text } from 'ink'
 import { basename } from 'node:path'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import type { Project, ProjectPathCheck, RunOverrides, RunStatus, RunSummary, RunTeam } from '../../shared/types'
+import type { PermissionMode, Project, ProjectPathCheck, RunOverrides, RunStatus, RunSummary, RunTeam } from '../../shared/types'
 import { nextSettleAt, settleTimerDelay } from '../../shared/view/foldFinished'
 import { isOpenStatus } from '../../shared/view/runChains'
 import { statusOfRun, statusText } from '../../shared/view/runStatus'
 import { Composer } from './Composer'
+import { copyToClipboard } from './clipboard'
+import { editInExternalEditor } from './externalEditor'
+import { modeChoices, modeInForce, modeSwitchHint, nextMode } from './runControls'
 import { teamMessageRows, withTeamMilestones } from './collaboration'
 import { Welcome } from './Welcome'
 import { RunActivity, runTokenCount } from './RunActivity'
@@ -36,9 +39,9 @@ import { sanitizeTty } from './sanitizeTty'
 import { agentLabel } from '../render'
 import { PaneLines, cutSegs, styleFor } from './panes/lines'
 import { runPickLines, runPickRows, type RunPickRow } from './runPick'
-import { adjacentLiveRun, agentDetail, cardsByAgent, collapseTarget, composerMode, offersRetro, orgTreeRows, partialRows, planView, resolveSelectedRow, runTagOf, statusSummary, subtreeIds, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
+import { adjacentLiveRun, agentDetail, cardsByAgent, collapseTarget, composerMode, inspectRef, offersRetro, orgTreeRows, partialRows, planView, resolveSelectedRow, runTagOf, statusSummary, subtreeIds, topCard, transcriptRows, trayCards, worktreeRows } from './selectors'
 import { usageText } from './usageText'
-import { SLASH_COMMANDS } from './slashCommands'
+import { NO_PROJECT_STAGE, SLASH_COMMANDS } from './slashCommands'
 import { SlashPalette } from './SlashPalette'
 import { StatusBar } from './StatusBar'
 import type { TuiTerminal } from './terminal'
@@ -101,7 +104,7 @@ export interface InputSource {
 
 export interface AppProps {
   session: TuiSessionApi
-  terminal: TerminalController & Partial<Pick<TuiTerminal, 'onResume' | 'stopSelf' | 'suspendForChild' | 'resumeFromChild' | 'suspended'>>
+  terminal: TerminalController & Partial<Pick<TuiTerminal, 'onResume' | 'stopSelf' | 'suspendForChild' | 'resumeFromChild' | 'suspended' | 'write'>>
   env: TuiEnv
   launch: TuiLaunch
   conn: TuiHostConnection
@@ -197,10 +200,20 @@ export function runForRef(s: TuiState, ref: string): string | undefined {
  * Inline mode prints into primary scrollback through one append-only list (Ink keeps a single Static): transcript rows
  * as they arrive, plus each NEW top tray card's detail lines once, so the card can be read above the 3-line footer.
  */
-function useScrollback(enabled: boolean, rows: TranscriptRow[], card: TrayCard | undefined, cols: number): { rows: TranscriptRow[]; printed: ReadonlySet<string> } {
-  const ref = useRef<{ list: TranscriptRow[]; seen: Set<string>; printed: Set<string> }>({ list: [], seen: new Set(), printed: new Set() })
+/** Rows the inline scrollback list keeps; older ones were already written to the terminal. */
+const SCROLLBACK_MAX = 1000
+
+function useScrollback(enabled: boolean, rows: TranscriptRow[], card: TrayCard | undefined, cols: number, scope?: string): { rows: TranscriptRow[]; printed: ReadonlySet<string> } {
+  const ref = useRef<{ list: TranscriptRow[]; seen: Set<string>; printed: Set<string>; scope?: string }>({ list: [], seen: new Set(), printed: new Set(), scope })
   if (!enabled) return { rows, printed: ref.current.printed }
   const st = ref.current
+  // A different chain (not a continuation, which stays in the same chain): start the printed list over.
+  if (st.scope !== scope) {
+    st.scope = scope
+    st.list = []
+    st.seen = new Set()
+    st.printed = new Set()
+  }
   let changed = false
   for (const r of rows) {
     if (st.seen.has(r.key)) continue
@@ -226,7 +239,8 @@ function useScrollback(enabled: boolean, rows: TranscriptRow[], card: TrayCard |
       }
     }
   }
-  if (changed) st.list = [...st.list]
+  if (changed) st.list = st.list.length > SCROLLBACK_MAX ? st.list.slice(-SCROLLBACK_MAX) : [...st.list]
+  if (st.seen.size > rows.length + SCROLLBACK_MAX * 4) st.seen = new Set([...rows.map((r) => r.key), ...st.list.map((r) => r.key)])
   return { rows: st.list, printed: st.printed }
 }
 
@@ -359,7 +373,7 @@ export function App(props: AppProps) {
   const [zoomStack, setZoomStack] = useState<string[]>([])
   /** The transcript maximised (F13: `m`, /focus). */
   const [maximised, setMaximised] = useState(false)
-  const [, setFoldTick] = useState(0)
+  const [foldTick, setFoldTick] = useState(0)
   const [, setRedraw] = useState(0)
   const setFocusState = useCallback((t: FocusTarget): void => {
     if (focusRef.current === t && pendingFocus.current === undefined) return
@@ -432,13 +446,17 @@ export function App(props: AppProps) {
     if (was !== undefined && state.activeRunId !== was) dismissNotices()
   }, [state.activeRunId, dismissNotices])
 
-  const cards = trayCards(state)
+  // Selector results memoized on the state slices they read, so a streaming delta that touches none of them (or only
+  // `partials`) does not recompute the tray, transcript, plan or worktrees on every render.
+  const { runs: stateRuns, activeChain: stateChain, activeRunId: stateActiveRun, project: stateProject } = state
+  const cards = useMemo(() => trayCards(state), [stateRuns, stateChain, stateProject]) // eslint-disable-line react-hooks/exhaustive-deps
   const top = topCard(state)
   const summary = { ...statusSummary(state), ...(launch.title ? { title: sanitizeTty(launch.title).replace(/\s+/g, ' ').trim() } : {}) }
   const activeStatus = state.activeRunId ? state.runs[state.activeRunId]?.summary.status : undefined
   const inline = env.bufferMode === 'inline'
   const readOnly = state.readOnlyReason !== undefined
-  const welcoming = !state.activeRunId && transcriptRows(state).rows.length === 0
+  const plainTranscript = useMemo(() => transcriptRows(state), [stateRuns, stateChain, stateActiveRun, stateProject]) // eslint-disable-line react-hooks/exhaustive-deps
+  const welcoming = !state.activeRunId && plainTranscript.rows.length === 0
   const messages = teamMessageRows(state)
   const connectionNotice = state.connection === 'gone' ? 'Connection lost. Reconnect to continue.' : state.connection === 'reconnecting' ? 'Reconnecting to the host.' : undefined
   const ordinaryNotice = state.notices.at(-1)?.text
@@ -457,8 +475,8 @@ export function App(props: AppProps) {
     : cards.length ? trayHeight(focusedCard ? [focusedCard, ...cards.filter((c) => c !== focusedCard)] : cards, size.cols, size.rows, inline, focus === 'tray', trayFocusHint) : !inline && (isWorking(activeStatus) || activeStatus === 'finished') ? 1 : 0
 
   // Keep the run checklist visible; worktrees appear when they need attention.
-  const planData = planView(state)
-  const worktreeData = worktreeRows(state)
+  const planData = useMemo(() => planView(state), [stateRuns, stateActiveRun]) // eslint-disable-line react-hooks/exhaustive-deps
+  const worktreeData = useMemo(() => worktreeRows(state), [stateRuns, stateActiveRun]) // eslint-disable-line react-hooks/exhaustive-deps
   const activePlan = state.activeRunId ? state.runs[state.activeRunId]?.plan : undefined
   const autoPlan = (planData?.total ?? 0) > 0 && (size.cols >= SPLIT_MIN_COLS || activePlan?.status === 'blocked')
   const autoWorktrees = worktreeData.some((w) => w.status === 'review' || w.status === 'conflict' || w.reviewId !== undefined)
@@ -471,7 +489,11 @@ export function App(props: AppProps) {
   const clock = now()
   const runAgents = state.activeRunId ? state.runs[state.activeRunId]?.agents : undefined
   const zoomRoot = [...zoomStack].reverse().find((id) => runAgents?.[id] !== undefined)
-  const treeRows = orgTreeRows(state, { includeRoles: true, collapse: foldOn, expanded: expandedGroups, now: clock, ...(zoomRoot ? { rootId: zoomRoot } : {}) })
+  // `foldTick` (the settle / traffic timers) stands in for the clock, which would change on every render.
+  const treeRows = useMemo(
+    () => orgTreeRows(state, { includeRoles: true, collapse: foldOn, expanded: expandedGroups, now: clock, ...(zoomRoot ? { rootId: zoomRoot } : {}) }),
+    [stateRuns, stateChain, stateActiveRun, stateProject, foldOn, expandedGroups, zoomRoot, foldTick] // eslint-disable-line react-hooks/exhaustive-deps
+  )
   const selectedRow = resolveSelectedRow(treeRows, selectedAgent)
   // The pane's own default when nothing was chosen: the first agent that needs you, else the first row.
   const orderedRows = [...treeRows.filter((r) => !r.earlier), ...treeRows.filter((r) => r.earlier)]
@@ -486,7 +508,7 @@ export function App(props: AppProps) {
     }
     return names.join(' > ')
   })()
-  const zoomIds = zoomRoot && runAgents ? subtreeIds(runAgents, zoomRoot) : undefined
+  const zoomIds = useMemo(() => (zoomRoot && runAgents ? subtreeIds(runAgents, zoomRoot) : undefined), [zoomRoot, runAgents])
   const inspectorView = inspectorId && state.activeRunId ? agentDetail(state, inspectorId, clock) : undefined
   const inspecting = inspectorView !== undefined && !onboarding
   const lastMessageAt = state.activeRunId ? state.runs[state.activeRunId]?.messages?.at(-1)?.at : undefined
@@ -980,7 +1002,8 @@ export function App(props: AppProps) {
   }
   const viewAgentDiff = (): void => {
     const st = session.getState()
-    const branch = inspectorId && st.activeRunId ? st.runs[st.activeRunId]?.agents[inspectorId]?.worktree?.branch : undefined
+    const ref = inspectorId ? inspectRef(st, inspectorId) : undefined
+    const branch = ref?.run.agents[ref.agentId]?.worktree?.branch
     if (!branch) {
       notify('This agent has no worktree.')
       return
@@ -1042,8 +1065,66 @@ export function App(props: AppProps) {
     [session]
   )
 
+  /**
+   * /mode and Shift+Tab: the followed run's permission mode (applied live when the host can; otherwise saved for its
+   * next continuation), or staged for the next run when none is followed. Never sends a message.
+   */
+  const setMode = async (mode: PermissionMode): Promise<void> => {
+    const st = session.getState()
+    // A composer starting a new run (/new, /ask) follows no run: the mode is staged for the new one.
+    const run = st.activeRunId && st.composeTarget !== 'new' ? st.runs[st.activeRunId]?.summary : undefined
+    if (!run) {
+      if (!st.project) {
+        notify(NO_PROJECT_STAGE, 'warn')
+        return
+      }
+      session.stage?.({ permissionMode: mode })
+      notify(`The next run starts in ${mode} mode.`)
+      return
+    }
+    if (!modeChoices(st).includes(mode)) {
+      notify(`This run does not take ${mode} mode.${modeSwitchHint(st) ? ` ${modeSwitchHint(st)}` : ''}`, 'warn')
+      return
+    }
+    const res = await session.setPermissionMode(mode)
+    const more = res.reportsUnchanged ? ` ${res.reportsUnchanged} running ${res.reportsUnchanged === 1 ? 'report keeps' : 'reports keep'} the earlier mode until done.` : ''
+    if (res.applied) notify(`Mode: ${mode}.${more}`)
+    else notify(`${res.reason ? sanitizeTty(res.reason).replace(/\s+/g, ' ').slice(0, 200) : `${mode} is saved for the next message.`}${more}`, 'warn')
+  }
+  const cycleMode = (): void => {
+    const st = session.getState()
+    // A composer starting a new run (/new, /ask) follows no run: the mode is staged for the new one.
+    const run = st.activeRunId && st.composeTarget !== 'new' ? st.runs[st.activeRunId]?.summary : undefined
+    if (run && st.readOnlyReason === undefined && modeChoices(st).length === 0) {
+      notify('This run pins its own permission mode.', 'warn')
+      return
+    }
+    if (st.readOnlyReason !== undefined) return
+    const next = nextMode(modeInForce(run, session.getStaged?.()?.permissionMode), modeChoices(st))
+    if (next) setMode(next).catch((err: unknown) => notify(errText(err), 'danger'))
+  }
+  /** Ctrl+G: the draft in $VISUAL / $EDITOR; the terminal is handed over like it is for the pager. */
+  const editDraft = async (draft: string): Promise<string | undefined> => {
+    const res = await editInExternalEditor(draft, {
+      env: processEnv,
+      suspend: () => (terminal.suspendForChild ? terminal.suspendForChild() : terminal.suspend()),
+      resume: () => (terminal.resumeFromChild ? terminal.resumeFromChild() : terminal.resume())
+    })
+    if (res.status === 'edited') return res.text
+    if (res.status === 'no-editor') notify('Set $VISUAL or $EDITOR to edit the prompt in an editor.', 'warn')
+    else if (res.status === 'failed') notify(`Could not run the editor: ${sanitizeTty(res.message).slice(0, 120)}`, 'warn')
+    return undefined
+  }
+  const copyText = (text: string): Promise<string[]> =>
+    copyToClipboard(text, { ...(terminal.write ? { write: (out: string) => terminal.write?.(out) } : {}), env: processEnv })
+
   const slashCtx: SlashContext = {
     session: slashSession,
+    setMode,
+    copyText,
+    openProject: async (project, runId) => {
+      await switchSession({ project, ...(runId ? { runId } : {}), folder: state.folder })
+    },
     state: () => session.getState(),
     notify,
     setFocus,
@@ -1259,7 +1340,7 @@ export function App(props: AppProps) {
       bus.dispatch(e, 'onboarding')
       return
     }
-    if (!inline && ctrl(e, 'o') && (focus === 'composer' || focus === 'transcript')) {
+    if (!inline && ctrl(e, 'o') && (focus === 'composer' || focus === 'transcript' || focus === 'inspector')) {
       toggleDetails()
       return
     }
@@ -1284,7 +1365,8 @@ export function App(props: AppProps) {
       return
     }
     if (named(e, 'backtab')) {
-      if (focus === 'composer') focusTray()
+      // The composer's Shift+Tab chooses a waiting decision; with none it cycles the permission mode.
+      if (focus === 'composer') (cards.length > 0 ? focusTray() : cycleMode())
       else if (focus !== 'palette') cycle(-1)
       else bus.dispatch(e, focus)
       return
@@ -1358,11 +1440,18 @@ export function App(props: AppProps) {
 
   // ---------- Render ----------
 
-  const zoomFilter = zoomIds ? { agentIds: zoomIds } : {}
-  const rawTranscript = transcriptRows(state, zoomFilter)
-  const transcript = { ...rawTranscript, rows: zoomIds ? rawTranscript.rows : withTeamMilestones(state, rawTranscript.rows) }
+  const zoomFilter = useMemo(() => (zoomIds ? { agentIds: zoomIds } : {}), [zoomIds])
+  const rawTranscript = useMemo(
+    () => (zoomIds ? transcriptRows(state, zoomFilter) : plainTranscript),
+    [plainTranscript, zoomIds, zoomFilter] // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  const transcript = useMemo(
+    () => ({ ...rawTranscript, rows: zoomIds ? rawTranscript.rows : withTeamMilestones(state, rawTranscript.rows) }),
+    [rawTranscript, zoomIds, stateRuns, stateActiveRun] // eslint-disable-line react-hooks/exhaustive-deps
+  )
+  const mainPartials = useMemo(() => partialRows(state, zoomFilter), [stateRuns, stateActiveRun, stateProject, zoomFilter]) // eslint-disable-line react-hooks/exhaustive-deps
   // The footer shows the focused card (the inspector's `d` and Enter on a waiting row move it), so that is the one printed.
-  const { rows: scrollback, printed: printedCards } = useScrollback(inline, transcript.rows, focusedCard, size.cols)
+  const { rows: scrollback, printed: printedCards } = useScrollback(inline, transcript.rows, focusedCard, size.cols, state.activeChain[0] ?? state.activeRunId)
   const latestNotice = state.notices.at(-1)
   const notice = latestNotice === dismissedNotice ? undefined : latestNotice
   const hintRow: RowKind = focus === 'inspector' ? (inspectorView?.waiting ? 'waiting' : inspectorView?.worktree ? 'agent' : 'bare') : rowKind
@@ -1376,7 +1465,8 @@ export function App(props: AppProps) {
 
   const inspectorNode = (() => {
     if (!inspecting || !inspectorView || !inspectorId) return null
-    const mine = transcriptRows(state, { agentIds: new Set([inspectorId]) })
+    const rawId = inspectRef(state, inspectorId)?.agentId ?? inspectorId
+    const mine = transcriptRows(state, { agentIds: new Set([rawId]) })
     const rows = showThinking ? mine.rows : mine.rows.filter((r) => r.kind !== 'thinking')
     return (
       <InspectorPane
@@ -1387,9 +1477,11 @@ export function App(props: AppProps) {
         view={inspectorView}
         messages={messages}
         rows={rows}
-        partials={partialRows(state, { agentIds: new Set([inspectorId]) })}
+        partials={partialRows(state, { agentIds: new Set([rawId]) })}
         omitted={mine.omitted}
         showThinking={showThinking}
+        detailsExpanded={detailsExpanded}
+        onToggleDetails={toggleDetails}
         onDecide={() => focusAgentCard({ id: inspectorId })}
         onDiff={viewAgentDiff}
         onToggleThinking={() => setShowThinking((t) => !t)}
@@ -1436,8 +1528,7 @@ export function App(props: AppProps) {
               if (row.kind === 'role') {
                 const role = state.project?.roles.find(role => role.id === row.configuredRoleId)
                 if (role) void openText(role.name, [role.description, '', 'Available — not started in this run.', '', ...role.responsibilities.map(item => `• ${item}`)].join('\n'))
-              } else if (row.earlier) notify('Agents of an earlier session have no inspector; open that run to see them.')
-              else openInspector(row.id)
+              } else openInspector(row.id)
             }}
             onZoom={zoomTo}
             onUnzoom={unzoom}
@@ -1454,7 +1545,7 @@ export function App(props: AppProps) {
           const completed = activeStatus === 'finished' || activeStatus === 'error' || activeStatus === 'paused'
           const completionHeight = completed && height >= 10 ? 5 : 0
           return <Box key="transcript" width={box.width} height={height} flexDirection="column">
-            <TranscriptPane {...common} compact detailsExpanded={detailsExpanded} onToggleDetails={toggleDetails} height={height - completionHeight} mode={env.bufferMode} rows={transcript.rows} partials={partialRows(state, zoomFilter)} omitted={transcript.omitted} />
+            <TranscriptPane {...common} compact detailsExpanded={detailsExpanded} onToggleDetails={toggleDetails} height={height - completionHeight} mode={env.bufferMode} rows={transcript.rows} partials={mainPartials} omitted={transcript.omitted} />
             {completionHeight ? <RunCompletion width={box.width} height={completionHeight} state={state} /> : null}
           </Box>
         }
@@ -1545,6 +1636,8 @@ export function App(props: AppProps) {
       placeholder={welcoming && mode === 'start' ? 'What would you like your team to work on?' : placeholderFor(mode, state, plan.composer.width || size.cols, env)}
       {...(state.readOnlyReason ? { disabledReason: state.readOnlyReason } : {})}
       onSubmit={submit}
+      draftKey={state.activeRunId ?? 'new'}
+      onExternalEdit={editDraft}
       onDraftChange={(text) => { composerDraft.current = text }}
       onOpenPalette={(initial) => {
         setPaletteQuery(initial)
@@ -1685,7 +1778,7 @@ export function App(props: AppProps) {
   } else if (inline) {
     body = (
       <Box flexDirection="column">
-        <TranscriptPane mode="inline" width={size.cols} height={0} focused={focus === 'transcript'} rows={scrollback} partials={partialRows(state, zoomFilter)} omitted={transcript.omitted} />
+        <TranscriptPane mode="inline" width={size.cols} height={0} focused={focus === 'transcript'} scope={state.activeChain[0] ?? state.activeRunId} detailsExpanded={detailsExpanded} rows={scrollback} partials={mainPartials} omitted={transcript.omitted} />
         {overlayNode}
         {inspectorNode}
         {tray}

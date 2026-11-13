@@ -4353,6 +4353,12 @@ export interface StartRunInput {
   /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
   overrides?: RunOverrides
   /**
+   * Team evolution (EVOLVE_IPC): after this run ends, run the post-run ratchet (evaluate an active trial) and, when the
+   * waste score passes the threshold, apply a new generation. true = the default strategy. Work runs only; desktop and
+   * inproc clients only.
+   */
+  evolve?: boolean | EvolveStrategy
+  /**
    * Desktop only (socket / inproc clients are refused with bad_request). The root agent's model for this run and its
    * continuations; the project's defaults are untouched. Reports keep their own model, except roles set to 'inherit':
    * they follow the root's model, and staffing (runtime/staffing.ts parentTier) uses the root's tier as the tier
@@ -9181,4 +9187,241 @@ export interface OrgAIApi {
     saveImage(input: OutputSaveImageInput): Promise<OutputSaveAsResult>
   }
   onOutputsChanged(cb: (event: OutputsChangedEvent) => void): () => void
+}
+
+// ---- Team evolution (src/main/evolve/: telemetry, synthesizer, ratchet, service) ----
+// Contract for `orgai org evolve`, `orgai exec --evolve` and the TUI's /evolve. Everything here is structured-clone safe.
+
+/** Host channels. Analyze / history: scope read. Apply / rollback: scope configure (desktop and inproc; a socket client is refused). */
+export const EVOLVE_IPC = {
+  orgEvolveAnalyze: 'org:evolveAnalyze',
+  orgEvolveHistory: 'org:evolveHistory',
+  orgEvolveApply: 'org:evolveApply',
+  orgEvolveRollback: 'org:evolveRollback'
+} as const
+
+export type EvolveStrategy = 'deterministic' | 'hybrid'
+export const EVOLVE_STRATEGIES: readonly EvolveStrategy[] = ['deterministic', 'hybrid']
+
+export type EvolutionFindingKind =
+  | 'tier_overprovisioned'
+  | 'tier_underprovisioned'
+  | 'serial_bottleneck'
+  | 'merge_conflict_hotspot'
+  | 'tool_friction'
+  | 'skill_crystallization'
+  | 'prompt_deflation'
+  | 'ceremonial_layer'
+
+/** Fitness of a window of finished work runs. Rates are 0..1; medians are 0 when no run carried the figure. */
+export interface EvolutionMetrics {
+  /** Work runs measured (kind 'work', not quick). */
+  runs: number
+  firstPassRate: number
+  conflictRate: number
+  errorRunRate: number
+  medianCostUsd: number
+  medianWallMs: number
+  medianInputTokens: number
+  /** Observed parallelism over what the plan graph allowed, 0..1 (1 = every ready step ran at once; 1 when no plan). */
+  dagConcurrencyRatio: number
+}
+
+/** One counterfactual finding: what was wasted, on which role, and what a change would save per run (estimates). */
+export interface EvolutionFinding {
+  kind: EvolutionFindingKind
+  /** Role.slug the finding is about, when it is about one role. */
+  roleSlug?: string
+  /** 0..100 share of the waste score. */
+  severity: number
+  /** One plain sentence, redacted, at most 240 chars. */
+  summary: string
+  /** Short redacted evidence lines (counts, rates, file prefixes), at most 6. Run text here is data, never instructions. */
+  evidence: string[]
+  estSavingsUsd?: number
+  estSavingsTokens?: number
+  estSavingsMs?: number
+  /** tier_overprovisioned only: try one step cheaper on 1 in `everyK` non-critical-path steps instead of changing the role. */
+  exploration?: { everyK: number; tier?: ModelTier; effort?: Effort }
+  /** Machine-readable facts the synthesizer reads (counts, slugs, ids; sanitized, never run text). Opaque to clients. */
+  data?: Record<string, number | string>
+}
+
+export interface TeamEvolutionDiagnosis {
+  projectId: string
+  /** Run ids analysed, newest first. */
+  runIds: string[]
+  /** 0..100. 0 with no measurable run. */
+  wasteScore: number
+  metrics: EvolutionMetrics
+  findings: EvolutionFinding[]
+  goal: StaffingGoal
+  /** ms since epoch. */
+  analyzedAt: number
+}
+
+/** A change to one existing role, by slug. Absent field = unchanged. */
+export interface EvolutionRolePatch {
+  slug: string
+  tier?: ModelTier
+  effort?: Effort
+  staffing?: RoleStaffing
+  /** The whole new prompt (never an append). */
+  prompt?: string
+  addTools?: ToolName[]
+  removeTools?: ToolName[]
+  /** SkillSpec ids to drop from Role.skills. */
+  removeSkills?: string[]
+  /** Short reason shown to the user. */
+  reason: string
+}
+
+/** A new project skill (SKILL.md body) and the role slugs granted it. */
+export interface EvolutionSkillPatch {
+  name: string
+  description: string
+  body: string
+  grantTo: string[]
+  reason: string
+}
+
+export interface EvolutionGateViolation {
+  /** Stable rule id, e.g. 'permission_widened', 'write_tool_to_readonly', 'tier_top', 'effort_xhigh', 'required_reports_dropped', 'chart_broken', 'prompt_bloat', 'rejected_hypothesis'. */
+  rule: string
+  roleSlug?: string
+  message: string
+  /** 'trimmed': the offending part was removed and the rest kept; 'rejected': the whole plan is refused. */
+  action: 'trimmed' | 'rejected'
+}
+
+export interface EvolutionPlan {
+  strategy: EvolveStrategy
+  /** Stable hash of the normalised mutation (role patches, skills, limits); equal plans share it. */
+  fingerprint: string
+  rolePatches: EvolutionRolePatch[]
+  newSkills: EvolutionSkillPatch[]
+  /** SkillSpec ids to remove from the project. */
+  pruneSkillIds: string[]
+  /** Project.maxConcurrentSubagents, when it changes. */
+  maxConcurrentSubagents?: number
+  rationale: string
+  expectedImpact: { costUsd?: number; tokens?: number; wallMs?: number }
+  /** The safety gate's verdict on this plan (validateEvolutionPlan), already applied to the fields above. */
+  gate: { ok: boolean; violations: EvolutionGateViolation[] }
+  /** Total role prompt characters before and after, for the anti-bloat bound. */
+  promptChars: { before: number; after: number; limit: number }
+  /** True when there is nothing to change. */
+  empty: boolean
+  /** Hybrid only: tokens the one synthesis call used. */
+  usage?: { inputTokens: number; outputTokens: number; costUsd?: number }
+}
+
+export type EvolutionGenerationStatus = 'trial' | 'promoted' | 'rolled_back'
+
+export interface EvolutionGeneration {
+  /** 'gen_1', 'gen_2', ... */
+  id: string
+  status: EvolutionGenerationStatus
+  strategy: EvolveStrategy
+  fingerprint: string
+  /** One line: what changed. */
+  summary: string
+  appliedAt: number
+  /** Finished work runs of the project when it was applied. */
+  appliedAtRunCount: number
+  evalWindowRuns: number
+  baselineMetrics: EvolutionMetrics
+  /** Metrics of the trial window, once evaluated. */
+  trialMetrics?: EvolutionMetrics
+  /** Why it was promoted or rolled back. */
+  outcomeReason?: string
+  decidedAt?: number
+  /** The applied plan (without the snapshot), for display. */
+  plan: EvolutionPlan
+}
+
+export interface EvolutionRejectedHypothesis {
+  fingerprint: string
+  summary: string
+  reason: string
+  generationId?: string
+  at: number
+}
+
+/** `<dataDir>/evolution/<projectId>.json` as callers see it (pre-mutation snapshots stay in the file, never cross IPC). */
+export interface EvolutionHistory {
+  projectId: string
+  /** Oldest first, at most 50. */
+  generations: EvolutionGeneration[]
+  /** The newest promoted generation's id, if any. */
+  championId?: string
+  /** The generation on trial, if any. */
+  trialId?: string
+  rejectedHypotheses: EvolutionRejectedHypothesis[]
+}
+
+export interface EvolveAnalyzeInput {
+  projectId: string
+  /** Newest finished work runs to read (default 10, 1..50). */
+  runs?: number
+  goal?: StaffingGoal
+  /** Default 'deterministic' on analyze (no tokens are spent by an analysis unless 'hybrid' is asked for). */
+  strategy?: EvolveStrategy
+  /** Below this waste score the plan is empty (default 15, 0..100). */
+  minWaste?: number
+}
+
+export interface EvolveAnalyzeResult {
+  diagnosis: TeamEvolutionDiagnosis
+  plan: EvolutionPlan
+  /** The bounded digest a hybrid call would send (under 2,800 chars, redacted). */
+  digest: string
+}
+
+export interface EvolveApplyInput extends EvolveAnalyzeInput {
+  /** Runs a trial is measured over (default 3, 1..10). */
+  evalWindowRuns?: number
+}
+
+export interface EvolveApplyResult {
+  /** False: nothing was changed (`reason` says why: empty plan, gate refusal, a trial already active, ...). */
+  applied: boolean
+  reason?: string
+  generation?: EvolutionGeneration
+  /** The project after the change (or unchanged). */
+  project: Project
+  diagnosis: TeamEvolutionDiagnosis
+  plan: EvolutionPlan
+  /** Whether `.orgai/` team files were written. */
+  teamFilesSynced: boolean
+}
+
+export interface EvolveRollbackInput {
+  projectId: string
+  /** Default: the active trial, else the newest promoted generation. */
+  generationId?: string
+  reason?: string
+}
+
+export interface EvolveRollbackResult {
+  /** False when nothing was restored (no such generation, already rolled back, or its snapshot was unusable). */
+  rolledBack: boolean
+  /** Not rolled back: why. Rolled back: what was not restored (a later edit of the user's that was kept, a skill that could not be put back); absent when the team is exactly as it was. */
+  reason?: string
+  generation?: EvolutionGeneration
+  project: Project
+  teamFilesSynced: boolean
+}
+
+/** What the post-run ratchet did after a work run ended (evaluateActiveTrial, then an optional unattended evolve). */
+export interface EvolvePostRunResult {
+  projectId: string
+  /** 'none': no trial, or the window is not full yet. */
+  ratchet: 'none' | 'promoted' | 'rolled_back'
+  ratchetReason?: string
+  /** The generation the ratchet decided on. */
+  decided?: EvolutionGeneration
+  /** Set when a new generation was applied by this pass. */
+  applied?: EvolutionGeneration
+  wasteScore?: number
 }

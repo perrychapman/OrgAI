@@ -9,11 +9,14 @@
  *
  * Electron-free (noElectronImport.test.ts lists it); relative imports only.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary } from '../../shared/types'
+import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunRecord, RunSummary } from '../../shared/types'
 import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
-import { connectionConfigured, connectionIds } from '../../shared/defaults'
+import { connectionConfigured, connectionIds, staffingGoalOf, staffingModeOf } from '../../shared/defaults'
+import { createEvolveService, type EvolveCompleteRequest, type EvolveService } from '../evolve/service'
+import { isMeasuredRun } from '../evolve/telemetry'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -55,7 +58,8 @@ import { SecretStore, type SecretCipher, type SecretStoreOptions } from '../stor
 import { SettingsStore } from '../store/settings'
 import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
-import { createAppReference, type ShortcutRow } from '../reference/appReference'
+import { createAppReference, type AppReferenceDeps, type AppReferenceService, type ShortcutRow } from '../reference/appReference'
+import { loadBundledDocs } from '../reference/docs'
 import { withAppSettingChanges } from '../../shared/appSettingsProposal'
 import type { AppSettingsProposalPayload, CliCommandStatus } from '../../shared/types'
 import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
@@ -398,7 +402,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   /** Set once the dispatcher exists (below); the drain's quiesce aborts its model calls (draft:orgChart). */
   let dispatcherRef: HostDispatcher | undefined
   // Self-knowledge: OrgAI answers about itself (reference service, built lazily on first query) and can configure itself.
-  const reference = createAppReference({
+  const referenceDeps: AppReferenceDeps = {
     shortcuts: opts.referenceShortcuts,
     status: {
       appVersion: env.appVersion,
@@ -413,7 +417,16 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       skillLibraryCount: () => skills.libraryList().length,
       ...(opts.cliShimStatus ? { cliShim: opts.cliShimStatus } : {})
     }
-  })
+  }
+  // The bundled docs are separate lazy chunks: they load with the first query, never at boot.
+  let referenceService: AppReferenceService | undefined
+  const reference = {
+    query: async (...args: Parameters<AppReferenceService['query']>): ReturnType<AppReferenceService['query']> => {
+      const docs = await loadBundledDocs()
+      referenceService ??= createAppReference({ ...referenceDeps, docs })
+      return referenceService.query(...args)
+    }
+  }
   // Run outputs (types.ts "Run outputs"): one service for the harness tools (RunManager) and the outputs:* channels.
   // The OS trash only on the desktop (Electron shell.trashItem); every other host deletes for good. The service raises
   // outputs:changed itself for the versions the watcher captures and the revision ends it settles.
@@ -429,8 +442,11 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     emit: (event) => events.emit(OUTPUTS_IPC.outputsChanged, event)
   })
+  // Team evolution (src/main/evolve/): the service is built right after RunManager (it completes through it); the post-run hook reads it lazily.
+  let evolveService: EvolveService | undefined
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    evolveAfterRun: (input) => (evolveService ? evolveService.afterRun(input) : Promise.reject(new Error('Team evolution is not available.'))),
     selfKnowledge: {
       reference: (q, o) => reference.query(q, o),
       navigate: (e) => opts.desktop?.navigate?.(e) ?? false,
@@ -554,6 +570,93 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     complete: (project, input) => rm.completeForProject(project, input)
   })
   skillEvaluationService = skillEvaluation
+  // The engine's single hybrid completion names no project; the call chain carries it (AsyncLocalStorage), so the
+  // completion runs on the connection of the project being analysed.
+  const evolveProject = new AsyncLocalStorage<string>()
+  const evolveEngine = createEvolveService({
+    dataDir,
+    getProject: (id) => projects.get(id) ?? undefined,
+    // ProjectStore.update saves through the team files hook, so `.orgai/` follows the change on its own.
+    updateProject: (id, fn) => {
+      const saved = projects.update(id, fn)
+      if (!saved) throw new Error('Project not found')
+      // Open windows and terminals see the new team at once, as for every other service that saves a project.
+      emitProject(saved)
+      return saved
+    },
+    teamFilesState: (projectId) => teamFiles.check(projectId).state,
+    listRunRecords: (projectId, limit) => {
+      const out: RunRecord[] = []
+      // Only runs the engine measures count toward the limit (a stopped run or a chat must not crowd out a team run).
+      for (const s of runStore.list(projectId)) {
+        if (out.length >= limit) break
+        // The engine's own rule (finished, failed or paused on a usage limit; not stopped or cut by quitting).
+        if (!isMeasuredRun({ summary: s })) continue
+        const rec = runStore.getRecord(s.id)
+        if (rec) out.push(rec)
+      }
+      return out
+    },
+    staffingProfile: (projectId) => {
+      const p = projects.get(projectId)
+      return { mode: staffingModeOf(p), goal: staffingGoalOf(p) }
+    },
+    skillFindings: (projectId) => skillEvaluation.last(projectId)?.findings ?? [],
+    skills: {
+      create: (input) => skills.create(input, 'suggestion'),
+      remove: (input) => skills.remove(input),
+      readDraft: (projectId, skillId) => {
+        try {
+          const info = skills.list(projectId).find((s) => s.spec.id === skillId)
+          if (!info) return null
+          return { name: info.spec.name, description: info.spec.description, body: skills.read({ projectId, skillId }).body }
+        } catch {
+          return null
+        }
+      }
+    },
+    // The project save already wrote `.orgai/` through the team files hook, but only for a project whose team files were
+    // opened ('not-written' = a code project nobody opened yet: nothing was written, and evolving does not open it).
+    syncTeamFiles: async (project) => {
+      try {
+        // Written only when the files are in use and readable: 'problem' never overwrites a file, 'rejected' keeps the
+        // refused content, and 'off' writes nothing.
+        const state = teamFiles.check(project.id).state
+        return state === 'in-sync' || state === 'pending'
+      } catch {
+        return false
+      }
+    },
+    // Without a project in scope there is no connection to complete on, and the engine falls back to its deterministic plan.
+    complete: async (req: EvolveCompleteRequest) => {
+      const id = evolveProject.getStore()
+      const project = id ? projects.get(id) : undefined
+      if (!project) throw new Error('No project to complete for.')
+      let usage: { inputTokens: number; outputTokens: number; costUsd?: number } | undefined
+      const done = await rm.completeForProject(project, {
+        system: req.system,
+        prompt: req.prompt,
+        kind: 'draft',
+        tier: 'fast',
+        ...(req.signal ? { signal: req.signal } : {}),
+        onUsage: (u) => {
+          usage = { inputTokens: Number(u?.tokens?.input) || 0, outputTokens: Number(u?.tokens?.output) || 0, ...(typeof u?.costUsd === 'number' ? { costUsd: u.costUsd } : {}) }
+          // No app-level usage ledger exists for helper calls (run titles are only logged too): log with project and model.
+          log.info(`Evolve: hybrid call for ${project.id} used ${usage.inputTokens} input + ${usage.outputTokens} output tokens${u?.model ? ` on ${u.model}` : ''}${usage.costUsd !== undefined ? ` ($${usage.costUsd})` : ''}`)
+        }
+      })
+      // The engine copies this usage into plan.usage.
+      return { text: done.text, ...(usage ? { usage } : {}) }
+    },
+    log: (level, message) => (level === 'warn' ? log.warn(`Evolve: ${message}`) : log.info(`Evolve: ${message}`))
+  })
+  evolveService = {
+    analyze: (i) => evolveProject.run(i.projectId, () => evolveEngine.analyze(i)),
+    apply: (i) => evolveProject.run(i.projectId, () => evolveEngine.apply(i)),
+    history: (id) => evolveEngine.history(id),
+    rollback: (i) => evolveProject.run(i.projectId, () => evolveEngine.rollback(i)),
+    afterRun: (i) => evolveProject.run(i.projectId, () => evolveEngine.afterRun(i))
+  }
   if (mockAdapter) seedMockHome(join(dataDir, 'mock-home'))
   const caps = new CapabilityService({
     projects,
@@ -682,7 +785,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   activity.addSource('liveRuns', () => rm.busyRunCount())
   activity.addSource('pausedAutoResumes', () => rm.activeResumeTimerCount() + rm.inFlightResumeCount())
   activity.addSource('activeWorktreeOps', () => repoLockActivity())
-  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + caps.inFlightCount() + skillEvaluation.inFlightCount())
+  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + rm.evolvePassCount() + caps.inFlightCount() + skillEvaluation.inFlightCount())
   activity.addSource('activeOAuthFlows', () => mcp.activeAuthorizationCount() + connections.pendingLoginCount())
 
   const hostControl: HostControl = {
@@ -725,6 +828,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     templates,
     kit,
     teamFiles,
+    evolve: evolveService,
     outputs,
     outputWatcher,
     events,
