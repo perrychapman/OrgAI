@@ -86,16 +86,21 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     check; the sibling product's existing project folders are enumerated, a linked or unreadable `projects` folder fails
     closed at its parent; `src/main/teamFiles/protection.ts`, wired in `bootstrap.ts`). `cliSegmentReadings` reads the
     text several ways (`SegmentReading`): bash/zsh full grammar (backslash escapes and backslash-newline joins, `#`
-    comments only after a blank or operator, `$'...'` but not `$$'`, here-document bodies, `$(...)` / `${...}` / backticks
-    nesting inside double quotes with a context stack, `case` patterns inside them); bash plain (escapes only, no
+    comments only after a blank or operator, `$'...'` but not `$$'`, here-document words read as bash reads them, quoted
+    bodies dropped and unquoted bodies expanded, arithmetic `$((...))` / `((...))`, `$(...)` / `${...}` (nested braces) /
+    backticks nesting with a context stack, backticks ending at the first unescaped backtick, `case` patterns counted
+    only in command position); a fail-closed backstop refuses (as unchecked) a command the tool's shell grammar leaves
+    inside an open quote, substitution, parameter or here-document (`readingLeftOpen`, read before data here-documents
+    are cut; nested `bash -c` / `pwsh -Command` texts too); bash plain (escapes only, no
     comments, strings or bodies); quotes only (the pre-PR reading); full grammar absorbing every zsh glob group (zsh keeps
     `orga(i|x y)` one word); PowerShell (backtick escapes, block comments, here-strings, smart quotes). Every segment of
     every reading is checked; a pipe's look-back stays within its own reading; a segment text an earlier reading already
     checked is skipped. A bracket expression never spans an operator, `${...}` stays one word only with a plain body,
     zsh `=(...)` is a process substitution, zsh glob qualifier code (`*(e:'...':)`, `*(+cmd)`) is read from the raw text
     (past 256 texts the command is unchecked), a variable in a program word reads as `*` with three letters of "orgai"
-    kept, `programIndex` reads any number of wrappers, every `-c`-style flag (clusters, `-com`, `//c`, `/r`, Windows
-    PowerShell's first positional) and csh / tcsh / mksh / `busybox` nest, the CLI scan refuses texts over 256 KB, and an
+    kept (and as its `${x:-word}` default; `$'orgai'` / `$"orgai"` as `orgai`), `programIndex` reads any number of
+    wrappers, every `-c`-style flag (clusters, `-com`, `//c`, `/r`; option values skipped) and Windows PowerShell's first
+    two positional words nest, as do csh / tcsh / mksh / `busybox`, the CLI scan refuses texts over 256 KB, and an
     unmatched `)` or unclosed `[` no longer refuses a command. Glob names and path components match through
     `matchGlobTokens` (a state set, linear), never a RegExp built from `*`. Checked by unit tests only
     (`selfControlGate.test.ts` "segment splitting gaps (PR 47 review)" with the Reviewer's candidates, "Wave 7 scan cost",
