@@ -721,8 +721,8 @@ shim is never spawned (`spawn` of a `.cmd` without a shell fails, and a shell wo
 
 Version: the native binary's `--version` (async, cached by realpath + mtime + size) runs in `CodexAppServer.start`
 (so login, logout, discovery and runs are all covered) and in the OpenAI connection probe for every auth kind,
-never in the synchronous resolver. Outside the tested range (today exactly 0.166.x; package.json pins
-0.166.0, code): refused with "Codex <found> is not supported; install @openai/codex@0.166.0" when it came from steps
+never in the synchronous resolver. Outside the tested range (today exactly 0.167.x; package.json pins
+0.167.0 since 2026-11-12, previously 0.166.0, code): refused with "Codex <found> is not supported; install @openai/codex@0.167.0" when it came from steps
 2-3; a run warning only when the user chose it through `ORGAI_CODEX_PATH`.
 
 ### 6.3 Environment

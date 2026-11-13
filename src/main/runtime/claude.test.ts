@@ -1175,6 +1175,22 @@ describe('ClaudeSession MCP mid-run attach (fake query)', () => {
     await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
   }, 10_000)
 
+  it('SDK 0.3.319 mcp_task (and any unknown task type) is a background task: never on the chart, blocks the restart until its notification', async () => {
+    const { ctx, q1 } = await attached()
+    q1.emit({ type: 'system', subtype: 'task_started', task_id: 'mcp-1', task_type: 'mcp_task', tool_use_id: 'tu-mcp', description: 'pg query', session_id: 'sess-1', uuid: 'u1' })
+    q1.emit({ type: 'system', subtype: 'task_started', task_id: 'odd-1', task_type: 'some_future_type', description: 'x', session_id: 'sess-1', uuid: 'u2' })
+    q1.emit(result)
+    await sleep(MCP_RESTART_DELAY_MS + 300)
+    expect(sdk.queries).toHaveLength(1)
+    // Only the root is ever upserted: neither task reaches the chart.
+    expect(ctx.events.filter((e) => e.type === 'agent.upsert' && e.agent.id !== 'root')).toHaveLength(0)
+    q1.emit({ type: 'system', subtype: 'task_notification', task_id: 'mcp-1', tool_use_id: 'tu-mcp', status: 'completed', output_file: '', summary: 'ok', session_id: 'sess-1', uuid: 'u3' })
+    await sleep(MCP_RESTART_DELAY_MS + 300)
+    expect(sdk.queries).toHaveLength(1)
+    q1.emit({ type: 'system', subtype: 'task_notification', task_id: 'odd-1', status: 'completed', output_file: '', summary: 'ok', session_id: 'sess-1', uuid: 'u4' })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+  }, 15_000)
+
   it('L1: a result while the attach notice is prepared never starts a second restart', async () => {
     const { q1 } = await attached()
     q1.emit(result)

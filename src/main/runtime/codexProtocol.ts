@@ -535,6 +535,9 @@ export interface FolderTrustConfig {
  * the repo's model and mcp_servers), while this whole-table form keeps the project layer disabled (repo model and
  * mcp_servers absent, nothing written to CODEX_HOME/config.toml), also for a path with dots, with the path already
  * trusted in CODEX_HOME/config.toml and for a linked worktree thread; with "trusted" the layer loads (positive control).
+ * Re-run on codex 0.167.0 (2026-11-12, same probe): the whole-table form still keeps the layer disabled in every case
+ * (a path with dots, a path already trusted on disk, a linked worktree thread), and the positive control and the
+ * no-override danger-full-access hazard behave as before. The dotted form was not re-checked.
  * Keys and values are TOML basic strings (tomlString), so backslashes and quotes in a path are escaped. Not checked on
  * macOS or Linux. Returns undefined when there is nothing to pin.
  */
