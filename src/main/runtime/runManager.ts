@@ -114,7 +114,7 @@ import { isQuickSessionEditGrant, isQuickWriteTool } from '../quick/sessionEdits
 import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL_ASSIST_MODEL_LABEL, resolveBuiltinModel, type ResolvedBuiltinModel } from './builtinModel'
 import { runModelLogs } from './runModels'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
-import type { DelegationGate, SelfKnowledgeHooks } from './types'
+import type { DelegationGate, RunManagerScheduleHooks, SelfKnowledgeHooks } from './types'
 import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
 import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
 import { clampText } from '../capabilities/sanitize'
@@ -860,6 +860,8 @@ export interface RunManagerOptions {
   orgTemplate?: (templateId: string, project: Project) => { name: string; roles: Role[] } | null
   /** Self-knowledge and self-configuration (app_reference, open_in_app, appSettings apply). See SelfKnowledgeHooks. */
   selfKnowledge?: SelfKnowledgeHooks
+  /** Schedules (schedules/service.ts): RuntimeContext.schedules and the apply of an approved 'schedules' proposal. Missing = neither. */
+  schedules?: RunManagerScheduleHooks
 }
 
 /** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
@@ -995,6 +997,11 @@ export interface StartInput {
    * runPermissionModeChoices and refuses (throws) before a run exists.
    */
   userChoice?: StartUserChoice
+  /**
+   * Set only by ScheduleService (never from IPC input): the schedule starting this work run, recorded as
+   * RunSummary.scheduleId / scheduleName. Continuations never pass it.
+   */
+  schedule?: { id: string; name: string }
   /** Set by continueRun only (a symbol key, so no caller input can carry it): the per-run choices of the continued run. */
   [CARRIED_CHOICES]?: CarriedChoices
 }
@@ -1633,6 +1640,7 @@ export class RunManager {
     overrides: rawOverrides,
     allowWidening,
     userChoice,
+    schedule,
     [CARRIED_CHOICES]: carried
   }: StartInput): Promise<RunSummary> {
     this.refuseWhileQuitting()
@@ -1757,6 +1765,10 @@ export class RunManager {
     if (quick) summary.quick = { ...quick }
     if (buildWorkspace) summary.buildWorkspace = buildWorkspace
     if (team === 'single') summary.team = 'single'
+    if (schedule && kind === 'work') {
+      summary.scheduleId = schedule.id
+      summary.scheduleName = schedule.name
+    }
     if (overrides) {
       if (overrides.execMode && !overrides.execChainId) overrides.execChainId = summary.id
       summary.overrides = overrides
@@ -2511,6 +2523,9 @@ export class RunManager {
                 : {})
             }
           : {}),
+        // Schedules: Chat runs and work runs (team or single) of a stored project; never setup-like, build or other
+        // virtual-project runs. A scheduled run keeps the access so the tools refuse it in words (summary.scheduleId).
+        ...(this.options.schedules && kind === 'work' && (isQuick || !bare) ? { schedules: this.options.schedules.access() } : {}),
         ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(project.id),
@@ -4225,8 +4240,13 @@ export class RunManager {
         {
           try {
             if (proposal.kind === 'schedules') {
-              // PLACEHOLDER (Schedules contract landing): the main-process engineer applies it through ScheduleService.applyProposal.
-              throw new Error('Schedule proposals are not available yet.')
+              // Schedules: Chat (any target) or a stored project's work run (that project only); ScheduleService
+              // validates every item again and writes all or nothing. A scheduled run never gets here (the tool refuses).
+              if (!this.options.schedules) throw new Error('Schedules are not available in this run.')
+              if (active.summary.scheduleId) throw new Error('A scheduled run cannot create or change schedules.')
+              const quick = !!active.summary.quick
+              if (active.summary.kind !== 'work' || (!quick && isVirtualProjectId(active.summary.projectId))) throw new Error('Schedules can only be proposed from Chat or a project run.')
+              this.options.schedules.apply(proposal.payload, { projectId: quick ? null : active.summary.projectId })
             } else if (proposal.kind === 'appSettings') {
               // App-wide settings: Chat only, applied through the settings path (RunManagerOptions.selfKnowledge).
               if (!active.summary.quick || !this.options.selfKnowledge) throw new Error('App settings can only be changed from Chat.')

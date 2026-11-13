@@ -8238,7 +8238,8 @@ export const PROPOSE_APP_SETTINGS_TOOL = 'propose_app_settings'
 /** Harness tool: propose a stored project's settings (Proposal kind 'settings' with `target`). Chat only. */
 export const PROPOSE_PROJECT_SETTINGS_TOOL = 'propose_project_settings'
 /** The self-knowledge and self-configuration tools Chat (quick runs) gets, in addition to list_projects. */
-export const CHAT_CONFIG_TOOLS = [APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL] as const
+// The two schedule tools are literals: LIST_SCHEDULES_TOOL / PROPOSE_SCHEDULE_TOOL are declared at the end of the file (a const cannot be read before it is initialised).
+export const CHAT_CONFIG_TOOLS = [APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, 'list_schedules', 'propose_schedule'] as const
 
 /** app_reference / app:reference actions. 'status' is answered only on Chat, MCP and Skill assistant runs and over IPC. */
 export const APP_REFERENCE_ACTIONS = ['search', 'read', 'locate', 'status'] as const

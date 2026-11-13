@@ -9,6 +9,8 @@ import type {
   QuickRunPromoteResult,
   Role,
   RunEvent,
+  ConnectionId,
+  PermissionMode,
   RunOverrides,
   RunSummary
 } from '@shared/types'
@@ -163,6 +165,10 @@ export interface QuickRunDeps {
       images?: QuickRunInput['images']
       overrides?: RunOverrides
       allowWidening?: boolean
+      /** Scheduled starts only (QuickStartOptions.schedule): RunManager checks them like the desktop user's choices. */
+      userChoice?: { modelSelection?: { model: string; connection: ConnectionId }; permissionMode?: PermissionMode }
+      conversationBudgetUsd?: number
+      schedule?: { id: string; name: string }
     }): Promise<RunSummary>
     summary(runId: string): RunSummary | null
     /** The run's session chain with live runs' current summaries (RunManager.chain). */
@@ -196,6 +202,18 @@ export interface QuickStartOptions {
    * the project's mode is 'default', so only narrowing values can matter.
    */
   checkOverrides?: (project: Project) => boolean
+  /**
+   * A schedule's start (ScheduleService only, never IPC input): the run is marked with the schedule, its model and
+   * permission mode go through RunManager's start-choice checks (an ask run accepts only Ask, Never ask or Plan), and
+   * `budgetUsd` caps the run (the project's cap lowered to it, and the run's conversation budget).
+   */
+  schedule?: {
+    id: string
+    name: string
+    modelSelection?: { model: string; connection: ConnectionId }
+    permissionMode?: PermissionMode
+    budgetUsd?: number
+  }
 }
 
 /** Chat: start, rebuild the project of a continued run, and promote a run chain to a project. */
@@ -236,16 +254,25 @@ export class QuickRunService {
       info = { folder: createScratchDir(this.deps.dataDir), scratch: true, team, allowEdits, gitRepo: false }
     }
     try {
-      const project = quickProject(this.deps.settings(), info, this.projectOpts())
+      let project = quickProject(this.deps.settings(), info, this.projectOpts())
       const overrides = input.overrides
       const allowWidening = overrides ? (opts.checkOverrides?.(project) ?? false) : false
+      const s = opts.schedule
+      const budget = s?.budgetUsd !== undefined && Number.isFinite(s.budgetUsd) && s.budgetUsd > 0 ? s.budgetUsd : undefined
+      if (budget !== undefined) project = { ...project, maxBudgetUsd: Math.min(budget, project.maxBudgetUsd && project.maxBudgetUsd > 0 ? project.maxBudgetUsd : Infinity) }
+      const userChoice = s && (s.modelSelection || s.permissionMode)
+        ? { ...(s.modelSelection ? { modelSelection: s.modelSelection } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}) }
+        : undefined
       return await this.deps.runs.start({
         project,
         prompt,
         kind: 'work',
         quick: info,
         ...(hasImages ? { images: input.images } : {}),
-        ...(overrides ? { overrides, allowWidening } : {})
+        ...(overrides ? { overrides, allowWidening } : {}),
+        ...(s ? { schedule: { id: s.id, name: s.name } } : {}),
+        ...(userChoice ? { userChoice } : {}),
+        ...(budget !== undefined ? { conversationBudgetUsd: budget } : {})
       })
     } catch (e) {
       if (info.scratch) this.removeScratch(info.folder)

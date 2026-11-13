@@ -27,7 +27,9 @@ import { TeamFilesService } from '../teamFiles/service'
 import { harnessProject } from '../mcp/assist'
 import { McpService } from '../mcp/service'
 import { QuickRunService, projectPeeks } from '../quick/quickRuns'
-import { sweepScratchDirs } from '../quick/scratch'
+import { sweepScratchDirs, validateQuickFolder } from '../quick/scratch'
+import { ScheduleService } from '../schedules/service'
+import { ScheduleStore } from '../schedules/store'
 import { ClaudeAdapter } from '../runtime/claude'
 import { sweepStaleSkillDirs } from '../runtime/claudeSkills'
 import { CodexAdapter } from '../runtime/codex'
@@ -276,6 +278,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const harness = (): Project => harnessProject(connections.effectiveSettings(), dataDir, { mock: mockAdapter })
   // Set once RunManager exists (below); only read when a run or a window asks for a project.
   let quickRuns: QuickRunService | undefined
+  /** Schedules (schedules/service.ts); built after RunManager and QuickRunService, which it starts runs through. */
+  let scheduleService: ScheduleService | undefined
   let skillEvaluationService: SkillEvaluationService | undefined
   const projectOrHarness = (projectId: string): Project | null | undefined =>
     projectId === HARNESS_PROJECT_ID ? harness()
@@ -431,6 +435,17 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   })
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    // Schedules: list_schedules / propose_schedule read through access(); an approved card applies through the service.
+    schedules: {
+      access: () => {
+        if (!scheduleService) throw new Error('Schedules are not ready yet.')
+        return scheduleService.access()
+      },
+      apply: (payload, origin) => {
+        if (!scheduleService) throw new Error('Schedules are not ready yet.')
+        return scheduleService.applyProposal(payload, origin)
+      }
+    },
     selfKnowledge: {
       reference: (q, o) => reference.query(q, o),
       navigate: (e) => opts.desktop?.navigate?.(e) ?? false,
@@ -543,6 +558,56 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     mock: mockAdapter
   })
   quickRuns = quick
+  // Schedules (docs/design/schedules.md 4): every scheduled start goes through the user's own start paths, RunManager.start
+  // (team) and QuickRunService.start (ask), so their checks apply. budgetUsd lowers the project's cap for that run and
+  // is the run's conversation budget. The timer (scheduler.ts) is started only by the desktop shell (index.ts).
+  const schedules = new ScheduleService({
+    store: new ScheduleStore(dataDir, { log: (m) => log.info(m) }),
+    now: () => Date.now(),
+    project: (id) => (isVirtualProjectId(id) ? undefined : (projects.get(id) ?? undefined)),
+    folderProblem: (folder) => {
+      try {
+        validateQuickFolder(folder, dataDir)
+        return null
+      } catch (e) {
+        return (e as Error).message
+      }
+    },
+    startTeam: (project, i) => {
+      const cap = project.maxBudgetUsd && project.maxBudgetUsd > 0 ? project.maxBudgetUsd : Infinity
+      const choice = { ...(i.modelSelection ? { modelSelection: i.modelSelection } : {}), ...(i.permissionMode ? { permissionMode: i.permissionMode } : {}) }
+      return rm.start({
+        project: i.budgetUsd !== undefined ? { ...project, maxBudgetUsd: Math.min(i.budgetUsd, cap) } : project,
+        prompt: i.prompt,
+        schedule: i.schedule,
+        ...(i.team === 'single' ? { team: 'single' as const } : {}),
+        ...(Object.keys(choice).length ? { userChoice: choice } : {}),
+        ...(i.budgetUsd !== undefined ? { conversationBudgetUsd: i.budgetUsd } : {})
+      })
+    },
+    startAsk: (i) =>
+      quick.start(
+        { prompt: i.prompt, ...(i.folder !== undefined ? { folder: i.folder } : {}), ...(i.allowEdits ? { allowEdits: true } : {}) },
+        {
+          schedule: {
+            ...i.schedule,
+            ...(i.modelSelection ? { modelSelection: i.modelSelection } : {}),
+            ...(i.permissionMode ? { permissionMode: i.permissionMode } : {}),
+            ...(i.budgetUsd !== undefined ? { budgetUsd: i.budgetUsd } : {})
+          }
+        }
+      ),
+    liveRunFacts: (runId) => rm.liveRunFacts(runId),
+    runSummary: (runId) => rm.summary(runId),
+    globallyPaused: () => settings.get().schedulesPaused === true,
+    // A desktop-only push (like teamFiles:changed): never on the socket bus.
+    changed: (event) => opts.desktop?.schedulesChanged?.(event),
+    log: (m) => log.info(m)
+  })
+  scheduleService = schedules
+  events.on((channel, payload) => {
+    if (channel === IPC.runEvent) schedules.onRunEvent(payload as RunEvent)
+  })
   // A pruned or deleted quick run takes its scratch dir with it when no other run uses it.
   runStore.onRunsRemoved = (removed: RunSummary[]) => quick.runsRemoved(removed)
   const skillEvaluation = new SkillEvaluationService({
@@ -722,6 +787,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     skillEvaluation,
     capabilities: caps,
     quick,
+    schedules,
     templates,
     kit,
     teamFiles,

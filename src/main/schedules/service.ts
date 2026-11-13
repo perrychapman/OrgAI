@@ -1,0 +1,593 @@
+/**
+ * ScheduleService (docs/design/schedules.md 4): the schedule records, their history and the one place a schedule
+ * starts a run. Validation (cleanScheduleInput, then validate.ts), save / remove / setEnabled / runNow / history / list,
+ * fire(), the apply of an approved 'schedules' proposal and the run-end bookkeeping (outcome, cost, unread, consecutive
+ * failures, auto-pause). It never talks to an adapter: a team target starts through RunManager.start and an ask target
+ * through QuickRunService.start (the deps below, wired in host/bootstrap.ts), so every check of a user's own start
+ * applies. History details and notifications are OrgAI-written sentences only.
+ */
+import { cleanScheduleInput, nextScheduleRun } from '@shared/schedule'
+import { newId } from '@shared/defaults'
+import {
+  SCHEDULES_MAX,
+  SCHEDULE_FAILURES_TO_PAUSE,
+  SCHEDULE_MAX_CONCURRENT_RUNS,
+  SCHEDULE_PROPOSAL_MAX_ITEMS,
+  isVirtualProjectId
+} from '@shared/types'
+import type {
+  Project,
+  RunEvent,
+  RunSummary,
+  Schedule,
+  ScheduleHistoryEntry,
+  ScheduleProposalItem,
+  ScheduleSkipReason,
+  SchedulesChangedEvent,
+  SchedulesProposalPayload
+} from '@shared/types'
+import type { ScheduleStore } from './store'
+import { mergeScheduleInput, modeWithinTarget, scheduleFieldsProblem, targetBaseMode, type ScheduleCheckEnv, type ScheduleUserFields } from './validate'
+import type { RuntimeScheduleAccess } from '../runtime/types'
+
+/** How a scheduled run is started (bootstrap wires RunManager.start / QuickRunService.start). */
+export interface ScheduleStartInput {
+  schedule: { id: string; name: string }
+  prompt: string
+  modelSelection?: Schedule['modelSelection']
+  permissionMode?: Schedule['permissionMode']
+  budgetUsd?: number
+}
+
+/** How a live run stands (RunManager.liveRunFacts); null = not live. */
+export interface ScheduleRunFacts {
+  status: RunSummary['status']
+  limitHold: boolean
+  pendingCards: number
+}
+
+export interface ScheduleServiceDeps {
+  store: ScheduleStore
+  now(): number
+  /** A stored, non-virtual project. */
+  project(projectId: string): Project | undefined
+  /** validateQuickFolder as a sentence, or null. */
+  folderProblem(folder: string): string | null
+  startTeam(project: Project, input: ScheduleStartInput & { team?: 'single' }): Promise<RunSummary>
+  startAsk(input: ScheduleStartInput & { folder?: string; allowEdits?: boolean }): Promise<RunSummary>
+  liveRunFacts(runId: string): ScheduleRunFacts | null
+  /** The stored or live summary of a run (cost and how it ended). */
+  runSummary(runId: string): RunSummary | null
+  /** AppSettings.schedulesPaused. */
+  globallyPaused(): boolean
+  /** Push schedules:changed. */
+  changed(event: SchedulesChangedEvent): void
+  /** An OS notification (notifications.ts; it honours AppSettings.notifications). Missing = none. */
+  notify?(notice: { title: string; body: string; target?: { projectId: string; runId: string } }): void
+  log?(message: string): void
+}
+
+/** A plain sentence for a start that threw: the real error goes to the log only (it may carry provider text). */
+export const START_FAILED_DETAIL = 'The run could not start. Check the model, the connection and the folder, then try Run now.'
+const ERROR_REASON = `Paused after ${SCHEDULE_FAILURES_TO_PAUSE} failed runs in a row. Check the history, then turn it back on.`
+const PROJECT_MISSING_REASON = 'Its project no longer exists. Edit it to choose another project.'
+
+/** Live and blocking a next run: working, or waiting on the user (a card open, a usage-limit hold). An idle run without cards is done. */
+export function runBlocks(facts: ScheduleRunFacts | null): boolean {
+  if (!facts) return false
+  if (facts.status === 'idle') return facts.pendingCards > 0 || facts.limitHold
+  return true
+}
+
+const clampName = (s: string): string => (s.length > 80 ? `${s.slice(0, 79)}…` : s)
+
+/** The newest entry of a schedule as Schedule.lastEntry. */
+function lastEntryOf(e: ScheduleHistoryEntry): NonNullable<Schedule['lastEntry']> {
+  return {
+    at: e.at,
+    slotAt: e.slotAt,
+    trigger: e.trigger,
+    result: e.result,
+    ...(e.reason ? { reason: e.reason } : {}),
+    ...(e.outcome ? { outcome: e.outcome } : {}),
+    ...(e.runId ? { runId: e.runId } : {})
+  }
+}
+
+interface Tracked {
+  scheduleId: string
+  entryId: string
+  /** The failure count already reflects this run: 'ok' reset it, 'fail' raised it. */
+  counted?: 'ok' | 'fail'
+}
+
+export class ScheduleService {
+  /** Runs this service started, by run id, until they end. */
+  private readonly tracked = new Map<string, Tracked>()
+  /** What an approved proposal saved, by the payload object (propose_schedule's outcome text). */
+  private readonly appliedResults = new WeakMap<SchedulesProposalPayload, Schedule[]>()
+
+  constructor(private readonly deps: ScheduleServiceDeps) {}
+
+  /** The desktop shell's notifier (index.ts), set after boot. */
+  setNotify(notify: ScheduleServiceDeps['notify']): void {
+    this.deps.notify = notify
+  }
+
+  private env(): ScheduleCheckEnv {
+    return { now: this.deps.now(), project: (id) => this.deps.project(id), folderProblem: (f) => this.deps.folderProblem(f) }
+  }
+
+  private emit(ids: string[], removed?: string[]): void {
+    try {
+      this.deps.changed({ scheduleIds: ids, ...(removed?.length ? { removed } : {}) })
+    } catch (e) {
+      this.deps.log?.(`schedules:changed failed: ${(e as Error).message}`)
+    }
+  }
+
+  private notify(title: string, body: string, target?: { projectId: string; runId: string }): void {
+    try {
+      this.deps.notify?.({ title, body, ...(target ? { target } : {}) })
+    } catch (e) {
+      this.deps.log?.(`A schedule notification failed: ${(e as Error).message}`)
+    }
+  }
+
+  // ---------- reads ----------
+
+  list(): Schedule[] {
+    return this.deps.store.list()
+  }
+
+  get(id: string): Schedule | undefined {
+    return this.deps.store.get(id)
+  }
+
+  /** Newest first; clears the schedule's unread count (skipped silently while the store is read-only). */
+  history(scheduleId: string): ScheduleHistoryEntry[] {
+    const s = this.deps.store.get(scheduleId)
+    if (!s) throw new Error('That schedule no longer exists.')
+    if (s.unread > 0 && this.deps.store.readOnlyReason() === null) {
+      this.deps.store.update((d) => {
+        const t = d.schedules.find((x) => x.id === scheduleId)
+        if (t) t.unread = 0
+      })
+      this.emit([scheduleId])
+    }
+    return this.deps.store.history(scheduleId)
+  }
+
+  /** RuntimeContext.schedules for list_schedules / propose_schedule. */
+  access(): RuntimeScheduleAccess {
+    return {
+      list: () => this.list(),
+      storedProject: (id) => (isVirtualProjectId(id) ? undefined : this.deps.project(id)),
+      folderProblem: (f) => this.deps.folderProblem(f),
+      now: () => this.deps.now(),
+      applied: (payload) => this.appliedResults.get(payload)?.map((s) => ({ ...s }))
+    }
+  }
+
+  // ---------- writes ----------
+
+  /** Next run and state of an enabled / disabled schedule after a user or proposal change. */
+  private placed(fields: ScheduleUserFields, lastSlotAt: number | undefined, now: number): Pick<Schedule, 'state' | 'nextRunAt'> {
+    if (!fields.enabled) return { state: 'paused' }
+    const next = nextScheduleRun(fields.timing, now, lastSlotAt)
+    return next === null ? { state: 'paused' } : { state: 'active', nextRunAt: next }
+  }
+
+  /** The record of merged fields onto `existing` (or a new one). */
+  private build(fields: ScheduleUserFields, existing: Schedule | undefined, createdBy: Schedule['createdBy'], now: number): Schedule {
+    const placed = this.placed(fields, existing?.lastSlotAt, now)
+    const out: Schedule = {
+      id: existing?.id ?? newScheduleId(),
+      ...fields,
+      state: placed.state,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      createdBy: existing?.createdBy ?? createdBy,
+      consecutiveFailures: fields.enabled ? 0 : (existing?.consecutiveFailures ?? 0),
+      unread: existing?.unread ?? 0
+    }
+    if (placed.nextRunAt !== undefined) out.nextRunAt = placed.nextRunAt
+    if (existing?.lastSlotAt !== undefined) out.lastSlotAt = existing.lastSlotAt
+    if (existing?.lastEntry) out.lastEntry = { ...existing.lastEntry }
+    // A schedule the user turned off keeps its error reason so the page can still say why it stopped.
+    if (!fields.enabled && existing?.state === 'error' && existing.stateReason) {
+      out.state = 'error'
+      out.stateReason = existing.stateReason
+    }
+    return out
+  }
+
+  private writable(): void {
+    const ro = this.deps.store.readOnlyReason()
+    if (ro) throw new Error(ro)
+  }
+
+  /** schedules:save. Throws a plain sentence on any problem; nothing is written then. */
+  save(raw: unknown): Schedule {
+    this.writable()
+    const cleaned = cleanScheduleInput(raw)
+    if (!cleaned.ok) throw new Error(cleaned.problem)
+    const input = cleaned.value
+    const now = this.deps.now()
+    const existing = input.id ? this.deps.store.get(input.id) : undefined
+    if (input.id && !existing) throw new Error('That schedule no longer exists.')
+    if (existing && input.expectedUpdatedAt !== undefined && existing.updatedAt !== input.expectedUpdatedAt) {
+      throw new Error('This schedule changed since you opened it. Close the form and open it again.')
+    }
+    const fields = mergeScheduleInput(input, existing, now)
+    const problem = scheduleFieldsProblem(fields, this.env())
+    if (problem) throw new Error(problem)
+    const saved = this.deps.store.update((d) => {
+      if (!existing && d.schedules.length >= SCHEDULES_MAX) throw new Error(`You can have at most ${SCHEDULES_MAX} schedules. Delete one first.`)
+      const next = this.build(fields, existing, 'user', now)
+      const i = d.schedules.findIndex((s) => s.id === next.id)
+      if (i >= 0) d.schedules[i] = next
+      else d.schedules.push(next)
+      return next
+    })
+    this.emit([saved.id])
+    return this.deps.store.get(saved.id) ?? saved
+  }
+
+  /** schedules:remove: the schedule and its history go; its runs stay. */
+  remove(id: string): void {
+    this.writable()
+    if (!this.deps.store.get(id)) throw new Error('That schedule no longer exists.')
+    this.deps.store.update((d) => {
+      d.schedules = d.schedules.filter((s) => s.id !== id)
+      d.history = d.history.filter((h) => h.scheduleId !== id)
+    })
+    for (const [runId, t] of this.tracked) if (t.scheduleId === id) this.tracked.delete(runId)
+    this.emit([], [id])
+  }
+
+  /** schedules:setEnabled. Enabling clears 'error' and the failure count; a schedule with no next run refuses. */
+  setEnabled(id: string, enabled: boolean): Schedule {
+    this.writable()
+    const existing = this.deps.store.get(id)
+    if (!existing) throw new Error('That schedule no longer exists.')
+    const now = this.deps.now()
+    const fields: ScheduleUserFields = { ...userFieldsOf(existing), enabled }
+    if (enabled) {
+      const problem = scheduleFieldsProblem(fields, this.env())
+      if (problem) throw new Error(problem)
+    }
+    const saved = this.deps.store.update((d) => {
+      const i = d.schedules.findIndex((s) => s.id === id)
+      if (i < 0) throw new Error('That schedule no longer exists.')
+      const next = this.build(fields, d.schedules[i], 'user', now)
+      if (enabled) {
+        next.consecutiveFailures = 0
+        delete next.stateReason
+      } else if (next.state !== 'error') delete next.stateReason
+      d.schedules[i] = next
+      return next
+    })
+    this.emit([id])
+    return saved
+  }
+
+  // ---------- proposals ----------
+
+  /**
+   * An approved 'schedules' proposal: every item validated again (the tool's checks are not trusted), then all of them
+   * written in one store update, or none. `origin.projectId` is the proposing work run's project (null = Chat): such a
+   * run may only touch schedules of its own project. An agent's mode must stay within the target's own mode.
+   */
+  applyProposal(payload: SchedulesProposalPayload, origin: { projectId: string | null }): Schedule[] {
+    this.writable()
+    const items: ScheduleProposalItem[] = Array.isArray(payload?.items) ? payload.items : []
+    if (!items.length || items.length > SCHEDULE_PROPOSAL_MAX_ITEMS) throw new Error('The proposal has no valid changes.')
+    const now = this.deps.now()
+    const env = this.env()
+    const own = (s: { target: Schedule['target'] }): boolean => origin.projectId === null || (s.target.kind === 'team' && s.target.projectId === origin.projectId)
+    type Planned = { action: ScheduleProposalItem['action']; id?: string; fields?: ScheduleUserFields }
+    const planned: Planned[] = []
+    for (const item of items) {
+      const action = item?.action
+      if (action === 'create' || action === 'update') {
+        const cleaned = cleanScheduleInput(action === 'update' ? { ...item.schedule, id: item.scheduleId } : { ...item.schedule, id: undefined })
+        if (!cleaned.ok) throw new Error(cleaned.problem)
+        const existing = action === 'update' ? (item.scheduleId ? this.deps.store.get(item.scheduleId) : undefined) : undefined
+        if (action === 'update' && !existing) throw new Error('A schedule in the proposal no longer exists.')
+        if (existing && !own(existing)) throw new Error('A project run can only change its own project\'s schedules.')
+        const fields = mergeScheduleInput(cleaned.value, existing, now)
+        if (!own(fields)) throw new Error('A project run can only schedule runs of its own project.')
+        const project = fields.target.kind === 'team' ? env.project(fields.target.projectId) : undefined
+        if (fields.permissionMode && !modeWithinTarget(fields.permissionMode, fields.target, project)) {
+          throw new Error(`The permission mode is wider than the target's own (${targetBaseMode(fields.target, project)}).`)
+        }
+        const problem = scheduleFieldsProblem(fields, env)
+        if (problem) throw new Error(problem)
+        planned.push({ action, ...(existing ? { id: existing.id } : {}), fields })
+      } else if (action === 'remove' || action === 'pause' || action === 'resume') {
+        const existing = item.scheduleId ? this.deps.store.get(item.scheduleId) : undefined
+        if (!existing) throw new Error('A schedule in the proposal no longer exists.')
+        if (!own(existing)) throw new Error('A project run can only change its own project\'s schedules.')
+        const fields = { ...userFieldsOf(existing), enabled: action === 'resume' ? true : action === 'pause' ? false : existing.enabled }
+        if (action === 'resume') {
+          const problem = scheduleFieldsProblem(fields, env)
+          if (problem) throw new Error(problem)
+        }
+        planned.push({ action, id: existing.id, fields })
+      } else {
+        throw new Error('The proposal has an unknown change.')
+      }
+    }
+    const ids = planned.map((p) => p.id).filter((x): x is string => !!x)
+    if (new Set(ids).size !== ids.length) throw new Error('The proposal changes one schedule twice.')
+    const removed: string[] = []
+    const result = this.deps.store.update((d) => {
+      const out: Schedule[] = []
+      const creates = planned.filter((p) => p.action === 'create').length
+      const removes = planned.filter((p) => p.action === 'remove').length
+      if (d.schedules.length - removes + creates > SCHEDULES_MAX) throw new Error(`You can have at most ${SCHEDULES_MAX} schedules.`)
+      for (const p of planned) {
+        const i = p.id ? d.schedules.findIndex((s) => s.id === p.id) : -1
+        if (p.id && i < 0) throw new Error('A schedule in the proposal no longer exists.')
+        if (p.action === 'remove') {
+          out.push({ ...d.schedules[i], enabled: false })
+          removed.push(p.id!)
+          d.schedules.splice(i, 1)
+          d.history = d.history.filter((h) => h.scheduleId !== p.id)
+          continue
+        }
+        const existing = i >= 0 ? d.schedules[i] : undefined
+        const next = this.build(p.fields!, existing, 'agent', now)
+        if (p.action === 'resume') delete next.stateReason
+        if (p.action === 'pause' && existing?.state !== 'error') delete next.stateReason
+        if (i >= 0) d.schedules[i] = next
+        else d.schedules.push(next)
+        out.push(next)
+      }
+      return out
+    })
+    this.appliedResults.set(payload, result)
+    this.emit(result.filter((s) => !removed.includes(s.id)).map((s) => s.id), removed)
+    return result
+  }
+
+  // ---------- firing (scheduler.ts and runNow) ----------
+
+  /** Live scheduled runs this service started that still block (runBlocks). */
+  liveScheduledRuns(): number {
+    let n = 0
+    for (const runId of this.tracked.keys()) if (runBlocks(this.deps.liveRunFacts(runId))) n++
+    return n
+  }
+
+  /** Enabled schedules with a next run (the quit gate's "scheduled runs are due"). */
+  pendingCount(): number {
+    return this.deps.store.list().filter((s) => s.enabled && s.nextRunAt !== undefined).length
+  }
+
+  private previousBlocks(scheduleId: string): boolean {
+    for (const [runId, t] of this.tracked) if (t.scheduleId === scheduleId && runBlocks(this.deps.liveRunFacts(runId))) return true
+    return false
+  }
+
+  /** Append a history entry (and lastEntry, unread) and optionally patch the schedule, in one write. */
+  private record(scheduleId: string, entry: Omit<ScheduleHistoryEntry, 'id' | 'scheduleId'>, patch?: (s: Schedule) => void): ScheduleHistoryEntry {
+    const full: ScheduleHistoryEntry = { id: newId('sh'), scheduleId, ...entry }
+    this.deps.store.update((d) => {
+      const s = d.schedules.find((x) => x.id === scheduleId)
+      if (!s) return
+      d.history.push(full)
+      s.unread = (s.unread ?? 0) + 1
+      s.lastEntry = lastEntryOf(full)
+      patch?.(s)
+    })
+    this.emit([scheduleId])
+    return full
+  }
+
+  /** One skipped entry (scheduler: app-closed, paused-globally). */
+  recordSkip(scheduleId: string, slotAt: number, trigger: ScheduleHistoryEntry['trigger'], reason: ScheduleSkipReason): ScheduleHistoryEntry {
+    return this.record(scheduleId, { slotAt, at: this.deps.now(), trigger, result: 'skipped', reason })
+  }
+
+  /**
+   * The scheduler's mark, written BEFORE the run starts (a crash never refires the slot): lastSlotAt, the next run,
+   * and 'done' when there is none (a once schedule) or the end date passed.
+   */
+  claimSlot(scheduleId: string, slotAt: number): Schedule | undefined {
+    const now = this.deps.now()
+    const out = this.deps.store.update((d) => {
+      const s = d.schedules.find((x) => x.id === scheduleId)
+      if (!s) return undefined
+      s.lastSlotAt = Math.max(slotAt, s.lastSlotAt ?? 0)
+      const next = nextScheduleRun(s.timing, now, s.lastSlotAt)
+      if (next === null || (s.expiresAt !== undefined && next > s.expiresAt)) {
+        markDone(s, s.timing.kind === 'once' ? 'The single run was handled.' : 'The end date passed.')
+      } else s.nextRunAt = next
+      s.updatedAt = now
+      return { ...s }
+    })
+    if (out) this.emit([scheduleId])
+    return out
+  }
+
+  /** A schedule whose end date passed before its next slot: 'done', nothing recorded. */
+  expire(scheduleId: string): void {
+    this.deps.store.update((d) => {
+      const s = d.schedules.find((x) => x.id === scheduleId)
+      if (s) {
+        markDone(s, 'The end date passed.')
+        s.updatedAt = this.deps.now()
+      }
+    })
+    this.emit([scheduleId])
+  }
+
+  /**
+   * Start one run of `schedule` for `slotAt`, or record why not: a team target whose project is gone (the schedule is
+   * disabled at once), the previous run still live, the global cap, a start that throws (counts as a failure). Every
+   * start goes through deps.startTeam / startAsk (RunManager.start / QuickRunService.start).
+   */
+  async fire(schedule: Schedule, slotAt: number, trigger: ScheduleHistoryEntry['trigger']): Promise<ScheduleHistoryEntry> {
+    const now = (): number => this.deps.now()
+    const target = schedule.target
+    const project = target.kind === 'team' ? this.deps.project(target.projectId) : undefined
+    if (target.kind === 'team' && (!project || isVirtualProjectId(target.projectId))) {
+      const entry = this.record(schedule.id, { slotAt, at: now(), trigger, result: 'skipped', reason: 'project-missing' }, (s) => {
+        s.enabled = false
+        s.state = 'error'
+        s.stateReason = PROJECT_MISSING_REASON
+        delete s.nextRunAt
+      })
+      this.notify(`Schedule "${clampName(schedule.name)}" stopped`, PROJECT_MISSING_REASON)
+      return entry
+    }
+    if (this.previousBlocks(schedule.id)) return this.record(schedule.id, { slotAt, at: now(), trigger, result: 'skipped', reason: 'previous-running' })
+    if (this.liveScheduledRuns() >= SCHEDULE_MAX_CONCURRENT_RUNS) return this.record(schedule.id, { slotAt, at: now(), trigger, result: 'skipped', reason: 'too-many-running' })
+    const input: ScheduleStartInput = {
+      schedule: { id: schedule.id, name: schedule.name },
+      prompt: schedule.prompt,
+      ...(schedule.modelSelection ? { modelSelection: { ...schedule.modelSelection } } : {}),
+      ...(schedule.permissionMode ? { permissionMode: schedule.permissionMode } : {}),
+      ...(schedule.budgetUsd !== undefined ? { budgetUsd: schedule.budgetUsd } : {})
+    }
+    let run: RunSummary
+    try {
+      if (target.kind === 'team') run = await this.deps.startTeam(project!, { ...input, ...(target.team === 'single' ? { team: 'single' as const } : {}) })
+      else {
+        // The folder is checked again at every fire (it may have moved or become unsafe).
+        const folderProblem = target.folder !== undefined ? this.deps.folderProblem(target.folder) : null
+        if (folderProblem) throw new Error(folderProblem)
+        run = await this.deps.startAsk({ ...input, ...(target.folder !== undefined ? { folder: target.folder } : {}), ...(target.allowEdits ? { allowEdits: true } : {}) })
+      }
+    } catch (e) {
+      this.deps.log?.(`Schedule ${schedule.id}: the run did not start: ${(e as Error)?.message ?? String(e)}`)
+      let paused = false
+      const entry = this.record(schedule.id, { slotAt, at: now(), trigger, result: 'failed', reason: 'start-refused', detail: START_FAILED_DETAIL }, (s) => {
+        paused = this.countFailure(s)
+      })
+      if (paused) this.notify(`Schedule "${clampName(schedule.name)}" paused`, ERROR_REASON)
+      else this.notify(`Schedule "${clampName(schedule.name)}"`, START_FAILED_DETAIL)
+      return entry
+    }
+    const entry = this.record(schedule.id, { slotAt, at: now(), trigger, result: 'started', runId: run.id, projectId: run.projectId })
+    this.tracked.set(run.id, { scheduleId: schedule.id, entryId: entry.id })
+    return entry
+  }
+
+  /** schedules:runNow: trigger 'manual', works while paused (the schedule's or the global pause); the overlap rules apply. */
+  async runNow(id: string): Promise<ScheduleHistoryEntry> {
+    this.writable()
+    const s = this.deps.store.get(id)
+    if (!s) throw new Error('That schedule no longer exists.')
+    return this.fire(s, this.deps.now(), 'manual')
+  }
+
+  /** Raise the failure count; at the limit disable the schedule with state 'error'. True when it was paused now. */
+  private countFailure(s: Schedule): boolean {
+    s.consecutiveFailures = (s.consecutiveFailures ?? 0) + 1
+    if (s.consecutiveFailures < SCHEDULE_FAILURES_TO_PAUSE || !s.enabled) return false
+    s.enabled = false
+    s.state = 'error'
+    s.stateReason = ERROR_REASON
+    delete s.nextRunAt
+    return true
+  }
+
+  // ---------- run end ----------
+
+  /** Every broadcast RunEvent (bootstrap's bus listener). Only runs this service started are looked at. */
+  onRunEvent(event: RunEvent): void {
+    const t = this.tracked.get(event.runId)
+    if (!t) return
+    try {
+      if (event.type.endsWith('.request')) {
+        this.setOutcome(event.runId, t, 'needs-you')
+        return
+      }
+      if (event.type !== 'run.status') return
+      if (event.status === 'idle') {
+        // The turn ended and nothing waits on the user: done for the schedule (the session may still take a message).
+        const facts = this.deps.liveRunFacts(event.runId)
+        if (!facts || facts.pendingCards > 0 || facts.limitHold) return
+        this.setOutcome(event.runId, t, 'finished')
+        return
+      }
+      if (event.status === 'error') {
+        this.setOutcome(event.runId, t, 'error')
+        this.tracked.delete(event.runId)
+        return
+      }
+      if (event.status === 'finished') {
+        // A run paused at a usage limit hands over to its continuation: not an outcome of the schedule.
+        if (event.pausedUntil) return
+        const summary = this.deps.runSummary(event.runId)
+        const endedBy = event.endedBy ?? summary?.endedBy
+        // A budget end counts as a failure (a schedule that keeps hitting its cap pauses itself).
+        const outcome = endedBy === 'budget' ? 'error' : endedBy === 'user' || endedBy === 'app' || endedBy === 'policy' ? 'stopped' : 'finished'
+        this.setOutcome(event.runId, t, outcome)
+        this.tracked.delete(event.runId)
+      }
+    } catch (e) {
+      this.deps.log?.(`Schedule ${t.scheduleId}: run-end bookkeeping failed: ${(e as Error).message}`)
+    }
+  }
+
+  private setOutcome(runId: string, t: Tracked, outcome: NonNullable<ScheduleHistoryEntry['outcome']>): void {
+    if (this.deps.store.readOnlyReason()) return
+    const summary = this.deps.runSummary(runId)
+    const cost = summary ? (summary.usage?.costUsd ?? summary.totalCostUsd) : undefined
+    const costUsd = typeof cost === 'number' && Number.isFinite(cost) ? Math.max(0, cost) : null
+    let paused = false
+    let name = ''
+    this.deps.store.update((d) => {
+      const s = d.schedules.find((x) => x.id === t.scheduleId)
+      const h = d.history.find((x) => x.id === t.entryId)
+      if (!s || !h) return
+      name = s.name
+      // A run that ended keeps its final outcome; "needs you" never overwrites it.
+      if (outcome === 'needs-you' && h.outcome !== undefined && h.outcome !== 'needs-you') return
+      h.outcome = outcome
+      h.costUsd = costUsd
+      if (s.lastEntry && s.lastEntry.runId === h.runId) s.lastEntry = lastEntryOf(h)
+      if (outcome === 'finished' && t.counted !== 'ok') {
+        s.consecutiveFailures = 0
+        t.counted = 'ok'
+      } else if (outcome === 'error' && t.counted !== 'fail') {
+        paused = this.countFailure(s)
+        t.counted = 'fail'
+      }
+    })
+    this.emit([t.scheduleId])
+    if (paused) this.notify(`Schedule "${clampName(name)}" paused`, ERROR_REASON)
+  }
+}
+
+function markDone(s: Schedule, reason: string): void {
+  s.enabled = false
+  s.state = 'done'
+  s.stateReason = reason
+  delete s.nextRunAt
+}
+
+function userFieldsOf(s: Schedule): ScheduleUserFields {
+  return {
+    name: s.name,
+    prompt: s.prompt,
+    target: s.target,
+    timing: s.timing,
+    enabled: s.enabled,
+    missed: s.missed,
+    ...(s.modelSelection ? { modelSelection: s.modelSelection } : {}),
+    ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}),
+    ...(s.budgetUsd !== undefined ? { budgetUsd: s.budgetUsd } : {}),
+    ...(s.expiresAt !== undefined ? { expiresAt: s.expiresAt } : {})
+  }
+}
+
+function newScheduleId(): string {
+  const bytes = new Uint8Array(8)
+  globalThis.crypto.getRandomValues(bytes)
+  return `sch_${[...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')}`
+}
