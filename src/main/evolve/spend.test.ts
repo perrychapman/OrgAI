@@ -31,6 +31,28 @@ describe('spendRaisesOf', () => {
     expect(spendRaisesOf(p, { rolePatches: [{ slug: 'docs', tier: 'everyday', effort: 'medium', reason: 'r' }] })).toEqual([])
     expect(spendRaisesOf(p, { rolePatches: [{ slug: 'dev', prompt: 'x', addTools: ['Grep'], reason: 'r' }] })).toEqual([])
   })
+  it('judges the model by the tier the role really runs on when model and tier disagree (review H-1)', () => {
+    // Runs on everyday (the model wins), although `tier` reads deep: patched to deep it moves to the deep model.
+    const up = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { id: 'r_dev', model: 'everyday', tier: 'deep' })])
+    expect(spendRaisesOf(up, { rolePatches: [{ slug: 'dev', tier: 'deep', reason: 'r' }] })).toEqual([{ roleSlug: 'dev', field: 'tier', summary: expect.stringContaining('from the everyday tier to the deep tier') }])
+    const alias = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { id: 'r_dev', model: 'haiku', tier: 'top' })])
+    expect(spendRaisesOf(alias, { rolePatches: [{ slug: 'dev', tier: 'everyday', reason: 'r' }] }).map((r) => r.field)).toEqual(['tier'])
+    // The other way round: runs on deep, `tier` reads everyday; a cut to everyday is not a raise.
+    const down = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { id: 'r_dev', model: 'deep', tier: 'everyday' })])
+    expect(spendRaisesOf(down, { rolePatches: [{ slug: 'dev', tier: 'everyday', reason: 'r' }] })).toEqual([])
+    // An alias-only role (no tier field) cut one step is not held (review L-8).
+    const bare = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { id: 'r_dev', model: 'opus', tier: undefined })])
+    expect(spendRaisesOf(bare, { rolePatches: [{ slug: 'dev', tier: 'everyday', reason: 'r' }] })).toEqual([])
+  })
+  it('the gate plus holdSpendRaises never lands a raise on a mismatched role', () => {
+    const p = project({}, [role('lead', { id: 'r_lead', reportsTo: null, canSpawn: true, spawnable: ['r_dev'] }), role('dev', { id: 'r_dev', model: 'everyday', tier: 'deep', effort: 'medium' })])
+    const gate = { diagnosis: under('dev') }
+    const plan = validateEvolutionPlan(p, raw([{ slug: 'dev', tier: 'deep', reason: 'r' }]), gate)
+    expect(plan.rolePatches[0]?.tier).toBe('deep')
+    const out = holdSpendRaises(p, plan, gate)
+    expect(out.held.map((h) => h.field)).toEqual(['tier'])
+    expect(out.plan.empty).toBe(true)
+  })
   it('a higher effective concurrency limit is a raise, an equal or lower one is not', () => {
     const p = proj({ maxConcurrentSubagents: 2 })
     expect(spendRaisesOf(p, { rolePatches: [], maxConcurrentSubagents: 4 })).toEqual([{ field: 'concurrency', summary: expect.stringContaining('from 2 to 4') }])

@@ -409,22 +409,29 @@ describe('validateEvolutionPlan: prompts, skills, limits, rejected', () => {
     expect(restoreSnapshot(after, snap, plan).project.roles[1].effort).toBe('high')
   })
   it('a tier cut never switches on a staffing floor the runtime was ignoring', () => {
-    // { model: 'top', tier: 'fast', minTier: 'top' }: effectiveRoleStaffing drops the floor (it is above the role's tier).
-    const odd = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'top', tier: 'fast', effort: 'medium', staffing: { mode: 'auto', minTier: 'top' } })])
-    const out = validateEvolutionPlan(odd, mkPlan({ rolePatches: [patch('dev', { tier: 'deep' })] }))
-    expect(out.rolePatches[0]?.tier).toBe('deep')
+    // { model: 'deep', tier: 'fast', minTier: 'deep' }: effectiveRoleStaffing drops the floor (it is above the role's tier).
+    const odd = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'deep', tier: 'fast', effort: 'medium', staffing: { mode: 'auto', minTier: 'deep' } })])
+    const out = validateEvolutionPlan(odd, mkPlan({ rolePatches: [patch('dev', { tier: 'everyday' })] }))
+    expect(out.rolePatches[0]?.tier).toBe('everyday')
     expect(out.rolePatches[0]?.staffing?.minTier).toBeUndefined()
     // A floor patch measured against the enforced floor (none): deep is a raise and needs the finding.
     expect(rules(validateEvolutionPlan(odd, mkPlan({ rolePatches: [patch('dev', { staffing: { mode: 'auto', minTier: 'everyday' } })] })))).toContain('tier_raise')
   })
   it('a tier change never switches on a stored floor the runtime ignored, whether it sits below, at or above the new tier', () => {
-    for (const minTier of ['everyday', 'deep', 'top'] as const) {
-      // { model: 'top', tier: 'fast' } runs on top; a floor above `tier` is dropped by effectiveRoleStaffing (none enforced).
-      const odd = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'top', tier: 'fast', effort: 'medium', staffing: { mode: 'auto', minTier } })])
-      const out = validateEvolutionPlan(odd, mkPlan({ rolePatches: [patch('dev', { tier: 'deep' })] }))
-      expect(out.rolePatches[0]?.tier, minTier).toBe('deep')
+    for (const minTier of ['everyday', 'deep'] as const) {
+      // { model: 'deep', tier: 'fast' } runs on deep; a floor above `tier` is dropped by effectiveRoleStaffing (none enforced).
+      const odd = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'deep', tier: 'fast', effort: 'medium', staffing: { mode: 'auto', minTier } })])
+      const out = validateEvolutionPlan(odd, mkPlan({ rolePatches: [patch('dev', { tier: 'everyday' })] }))
+      expect(out.rolePatches[0]?.tier, minTier).toBe('everyday')
       const after = applyPlan(odd, out).roles[1]
       expect(effectiveRoleStaffing(after, odd).minTier, minTier).toBeUndefined()
+    }
+    // A role on top (or with a top floor, or xhigh / max effort) is never resized: a rollback could not restore it.
+    for (const over of [{ model: 'top', tier: 'fast' as const }, { model: 'deep', tier: 'deep' as const, staffing: { mode: 'auto' as const, minTier: 'top' as const } }, { model: 'deep', tier: 'deep' as const, effort: 'xhigh' as const }, { model: 'deep', tier: 'deep' as const, staffing: { mode: 'auto' as const, maxEffort: 'max' as const } }]) {
+      const userSet = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { effort: 'medium', ...over })])
+      const cut = validateEvolutionPlan(userSet, mkPlan({ rolePatches: [patch('dev', { tier: 'everyday', effort: 'low' })] }))
+      expect(cut.rolePatches, JSON.stringify(over)).toEqual([])
+      expect(rules(cut), JSON.stringify(over)).toContain('user_only_value')
     }
     // A floor staffing already enforced is kept as it was.
     const consistent = project({}, [role('lead', { id: 'r_lead', reportsTo: null }), role('dev', { model: 'deep', tier: 'deep', effort: 'medium', staffing: { mode: 'auto', minTier: 'everyday' } })])

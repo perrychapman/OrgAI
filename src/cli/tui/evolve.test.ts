@@ -44,7 +44,9 @@ describe('formatters', () => {
     const lines = applyText({ applied: true, generation: gen(), project: {} as never, diagnosis: diagnosis(1), plan: p, teamFilesSynced: true }, 'hybrid')
     expect(lines).toContain('Applied gen_1')
     expect(lines).toContain('Undo it now with /evolve rollback gen_1.')
-    expect(lines).toContain('+2 more')
+    // Every violation is listed (a person may approve from this text).
+    expect(lines).toContain('m5')
+    expect(lines).not.toContain('more')
     expect(lines).toContain('Synthesis used 2.0k input')
     expect(lines).toContain('were synced')
   })

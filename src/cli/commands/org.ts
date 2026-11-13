@@ -360,6 +360,7 @@ const orgRetro: SubcommandFn = async (ctx, args) => {
   onlyPositionals(positionals, 1, 'org retro <runRef> [--unattended [--apply]]')
   const ref = checkArg('run (an id or R#)', positionals[0])
   if (values.apply === true && values.unattended !== true) throw new CliError('--apply belongs to the unattended retrospective: orgai org retro <runRef> --unattended --apply.', EXIT.usage)
+  if (values.yes === true && values.apply !== true) throw new CliError('--yes confirms an apply: orgai org retro <runRef> --unattended --apply --yes.', EXIT.usage)
   // No terminal needed: the unattended form reads the project's recent work runs through the team-evolution analysis (orgEvolve.ts).
   if (values.unattended === true) {
     return retroUnattended(ctx, ref, { apply: values.apply === true, ...(values.yes === true ? { yes: true } : {}),...(values.strategy ? { strategy: values.strategy } : {}), ...(values.goal ? { goal: values.goal } : {}), ...(values.runs ? { runs: values.runs } : {}), ...(values['min-waste'] ? { 'min-waste': values['min-waste'] } : {}) })

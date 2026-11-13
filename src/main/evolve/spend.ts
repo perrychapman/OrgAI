@@ -1,7 +1,7 @@
-import { effectiveSubagentLimits } from '../../shared/defaults'
+import { compareTier, effectiveSubagentLimits } from '../../shared/defaults'
 import { settleSpend, type SpendKey } from '../../shared/roleSpend'
 import type { EvolutionGateViolation, EvolutionPlan, EvolutionRolePatch, EvolutionSpendRaise, Project } from '../../shared/types'
-import { applyPlan, isPlanEmpty } from './plan'
+import { applyPlan, effectiveTier, isPlanEmpty } from './plan'
 import { validateEvolutionPlan, type GateOptions } from './ratchet'
 
 /**
@@ -12,9 +12,9 @@ import { validateEvolutionPlan, type GateOptions } from './ratchet'
  * plan (EvolveApplyInput.allowSpendRaise); unattended passes hold it. Pure.
  */
 
-const MAX_SUMMARY = 600
 const FIELD: Record<SpendKey, EvolutionSpendRaise['field']> = { tier: 'tier', model: 'tier', effort: 'effort', staffing: 'staffing' }
-const clip = (s: string): string => (s.length > MAX_SUMMARY ? `${s.slice(0, MAX_SUMMARY - 1)}…` : s)
+/** Never cut: a person decides on this text (role names are bounded by the project store). */
+const clip = (s: string): string => s
 
 const concurrencyOf = (p: Pick<Project, 'maxConcurrentSubagents'>): number => effectiveSubagentLimits({ maxConcurrentSubagents: p.maxConcurrentSubagents }).concurrency
 
@@ -25,9 +25,23 @@ export function spendRaisesOf(project: Project, plan: Pick<EvolutionPlan, 'roleP
     const role = project.roles.find((r) => r.slug === p.slug)
     if (!role) continue
     const after = applyPlan({ ...project, roles: [role] }, { rolePatches: [p] }).roles[0]
-    const settled = settleSpend(role, after, [project.staffing], role.name || role.slug)
+    const who = role.name || role.slug
+    const settled = settleSpend(role, after, [project.staffing], who)
     const seen = new Set<EvolutionSpendRaise['field']>()
+    // The model a role runs on is judged by the tier it really runs on (effectiveTier: a tier name or Claude alias in
+    // `model` wins over `tier`), never by the `tier` fields alone: `{ model: 'everyday', tier: 'deep' }` patched to deep
+    // moves from the everyday model to the deep one although both `tier` fields read deep (review fix-50 H-1).
+    if (p.tier !== undefined && (role.model !== after.model || role.tier !== after.tier)) {
+      const was = effectiveTier(role)
+      const now = effectiveTier(after)
+      if (!was || !now || compareTier(now, was) > 0) {
+        seen.add('tier')
+        out.push({ roleSlug: role.slug, field: 'tier', summary: was && now ? `${who} moves from the ${was} tier to the ${now} tier. This may spend more.` : `${who}'s model changes and may spend more.` })
+      }
+    }
     for (const h of settled.held) {
+      // The model row is decided above (settleSpend compares only the `tier` fields).
+      if (h.id === 'model' || h.id === 'tier') continue
       const field = FIELD[h.id]
       if (seen.has(field)) continue
       seen.add(field)

@@ -9298,7 +9298,7 @@ export interface EvolutionSpendRaise {
   roleSlug?: string
   /** The plan field that raises spend ('tier' also moves the role's model). */
   field: 'tier' | 'effort' | 'staffing' | 'concurrency'
-  /** The plain "may spend more" sentence (settleSpend's held summary), at most 600 chars. Shown in full, never truncated by clients. */
+  /** The plain "may spend more" sentence (settleSpend's held summary, or the effective-tier move). Shown in full, never truncated by clients. */
   summary: string
 }
 

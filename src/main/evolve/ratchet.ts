@@ -182,8 +182,12 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     // A role the user fixed runs as configured: its tier, effort and staffing bounds are never an evolution's to change.
     const fixed = isFixedRole(project, role)
     if (fixed && (rawPatch.tier !== undefined || rawPatch.effort !== undefined || rawPatch.staffing !== undefined)) trim('staffing_fixed', `${slug} has fixed staffing, so its tier, effort and staffing stay as configured`, slug)
+    // A value only the user sets (tier top, effort xhigh / max, as the role's own or a staffing bound) is never moved by an
+    // evolution: a rollback never restores it (restoreSnapshot), so such a cut could not be undone.
+    const userOnly = cur === 'top' || role.effort === 'xhigh' || role.effort === 'max' || role.staffing?.minTier === 'top' || role.staffing?.maxEffort === 'xhigh' || role.staffing?.maxEffort === 'max'
 
-    if (!fixed && rawPatch.tier !== undefined) {
+    if (!fixed && userOnly && (rawPatch.tier !== undefined || rawPatch.effort !== undefined || rawPatch.staffing !== undefined)) trim('user_only_value', `${slug} holds a value only you set (tier top, effort xhigh or max), so its tier, effort and staffing stay as they are`, slug)
+    else if (!fixed && rawPatch.tier !== undefined) {
       const t = rawPatch.tier
       if (t === 'top') trim('tier_top', `tier "top" is never set by an evolution`, slug)
       else if (!isTier(t)) trim('tier_invalid', `unknown tier`, slug)
@@ -196,7 +200,7 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
         else trim('tier_raise', `${slug} may be raised only by one step and only when it is under-provisioned`, slug)
       } else out.tier = t
     }
-    if (!fixed && rawPatch.effort !== undefined) {
+    if (!fixed && !userOnly && rawPatch.effort !== undefined) {
       const e = rawPatch.effort
       if (e === 'xhigh' || e === 'max') trim('effort_xhigh', `effort "${e}" is never set by an evolution`, slug)
       else if (!isEff(e)) trim('effort_invalid', 'unknown effort', slug)
@@ -216,7 +220,7 @@ export function validateEvolutionPlan(project: Project, plan: EvolutionPlan, opt
     const effFloor = enforcedStaffingFloor(role, project)
     /** A floor raise this patch proposed explicitly and the gate accepted (with an under-provisioned finding). */
     let floorRaised = false
-    if (!fixed && rawPatch.staffing !== undefined) {
+    if (!fixed && !userOnly && rawPatch.staffing !== undefined) {
       const s = (rawPatch.staffing ?? {}) as Record<string, unknown>
       const curMode = role.staffing?.mode ?? 'auto'
       // Start from the role's own bounds: a field that is trimmed keeps its current value, never drops it.

@@ -52,8 +52,6 @@ export function parseEvolve(args: string): EvolveRequest {
 }
 
 const MAX_FINDINGS = 6
-const MAX_CHANGES = 9
-const MAX_VIOLATIONS = 4
 const MAX_GENERATIONS = 5
 
 const num = (n: unknown): number => (typeof n === 'number' && Number.isFinite(n) ? n : 0)
@@ -119,8 +117,8 @@ export function planLines(p: EvolutionPlan, before?: Project): string[] {
   if (p.empty || changes.length === 0) lines.push('Proposed change: none.')
   else {
     lines.push(`Proposed change (${cleanLine(p.strategy, 20)}):`)
-    lines.push(...changes.slice(0, MAX_CHANGES))
-    more(lines, changes.length, MAX_CHANGES)
+    // Every change is listed: a person may approve this plan from this text (review fix-50 L-3).
+    lines.push(...changes)
   }
   const imp = p.expectedImpact ?? {}
   const est = savingsParts({ estSavingsUsd: imp.costUsd, estSavingsTokens: imp.tokens, estSavingsMs: imp.wallMs })
@@ -128,8 +126,7 @@ export function planLines(p: EvolutionPlan, before?: Project): string[] {
   const violations = list(p.gate?.violations)
   if (p.gate && !p.gate.ok) lines.push(`Safety gate: refused (${violations.length} violation${violations.length === 1 ? '' : 's'}).`)
   else lines.push(violations.length ? `Safety gate: passed, ${violations.length} trimmed.` : 'Safety gate: passed.')
-  for (const v of violations.slice(0, MAX_VIOLATIONS)) lines.push(`  ${cleanLine(v.action, 12)} ${cleanLine(v.rule, 40)}${v.roleSlug ? ` [${cleanLine(v.roleSlug, 40)}]` : ''}: ${full(v.message)}`)
-  more(lines, violations.length, MAX_VIOLATIONS)
+  for (const v of violations) lines.push(`  ${cleanLine(v.action, 12)} ${cleanLine(v.rule, 40)}${v.roleSlug ? ` [${cleanLine(v.roleSlug, 40)}]` : ''}: ${full(v.message)}`)
   if (p.usage) lines.push(`Synthesis used ${toks(p.usage.inputTokens)} input and ${toks(p.usage.outputTokens)} output tokens${p.usage.costUsd !== undefined ? ` (${usd(p.usage.costUsd)})` : ''}.`)
   lines.push(...raiseLines(p.spendRaises))
   return lines

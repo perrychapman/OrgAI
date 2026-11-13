@@ -278,6 +278,12 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
   /** Hybrid plans analyze made, per project (newest last), so an apply of the reviewed plan makes no second model call. */
   const reviewed = new Map<string, { plan: EvolutionPlan; key: string; at: number }[]>()
   const remember = (project: Project, plan: EvolutionPlan): void => {
+    // Expired plans of every project go first, so the cache never grows across projects.
+    for (const [id, entries] of reviewed) {
+      const live = entries.filter((e) => now() - e.at < REVIEWED_PLAN_TTL_MS)
+      if (live.length) reviewed.set(id, live)
+      else reviewed.delete(id)
+    }
     const list = (reviewed.get(project.id) ?? []).filter((e) => now() - e.at < REVIEWED_PLAN_TTL_MS && e.plan.fingerprint !== plan.fingerprint)
     list.push({ plan: structuredClone(plan), key: teamKey(project), at: now() })
     reviewed.set(project.id, list.slice(-REVIEWED_PLANS_KEPT))
@@ -604,7 +610,9 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     trial.trialMetrics = d.trialMetrics
     if (d.regressed) {
       const res = await rollbackCore(project.id, ledger, trial, `trial regressed: ${d.reason}`, src)
-      return { state: 'rolled_back', reason: res.unusable ? `${d.reason}; the snapshot was unusable, so the team was left unchanged` : d.reason, teamFilesSynced: res.teamFilesSynced }
+      // What a rollback could not put back (a later edit of the user's, a value only the user sets) is said, never hidden.
+      const partly = res.notes.length ? `${d.reason}; rolled back except: ${res.notes.join('; ')}`.slice(0, 600) : d.reason
+      return { state: 'rolled_back', reason: res.unusable ? `${d.reason}; the snapshot was unusable, so the team was left unchanged` : partly, teamFilesSynced: res.teamFilesSynced }
     }
     trial.status = 'promoted'
     trial.decidedAt = now()
