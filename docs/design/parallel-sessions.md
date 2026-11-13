@@ -1319,8 +1319,9 @@ change that first calls these modules in production):
 - Fairness (found while fixing PR 55's Windows check): waiting across processes is polling with backoff up to 100 ms,
   so a process that releases and re-takes a lock in a tight loop can starve another process's waiter past its budget
   (`LockBusyError`; fails closed, nothing is lost). On a heavily loaded Windows 11 machine (about 100 node processes
-  of parallel agent runs) the `sharedJsonFile` test "two processes x 200 updates" failed this way in 5 of 16 repeated
-  runs, at the same times as PowerShell start-token reads timed out (M6); an earlier loop of 6 runs passed every time.
+  of parallel agent runs) the `sharedJsonFile` test "two processes x 200 updates" failed this way in 6 of 21 repeated
+  runs, each time together with PowerShell start-token reads timing out (M6); an earlier loop of 6 runs passed every
+  time.
   Decide before activation
   whether hot locks need a fairness hand-off (for example a ticket file) or larger budgets.
 - L7: `startTokens.ts` passes the full `process.env` to `ps` / PowerShell (scrub it like other children), and the macOS
