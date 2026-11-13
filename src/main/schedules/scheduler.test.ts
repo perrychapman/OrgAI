@@ -206,6 +206,135 @@ describe('Scheduler', () => {
   })
 })
 
+describe('Scheduler re-reads state between starts', () => {
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 50; i++) await Promise.resolve()
+  }
+
+  /** Two schedules due at 10:30 whose start is held open until `release()`; `started` lists the names that began to start. */
+  async function twoDueWithHeldStart(): Promise<{ started: string[]; release(): Promise<void>; a: string; b: string; scheduler: Scheduler }> {
+    let open!: () => void
+    const gate = new Promise<void>((r) => {
+      open = r
+    })
+    const started: string[] = []
+    env = fakeEnv({
+      startTeam: async (project, input) => {
+        started.push(input.schedule.name)
+        await gate
+        const run = { id: `run_held_${started.length}`, projectId: project.id, status: 'running', kind: 'work', prompt: '', startedAt: env.clock.now, totalCostUsd: 0 } as never
+        return run
+      }
+    })
+    const a = env.service.save(daily('10:30', { name: 'A' }))
+    const b = env.service.save(daily('10:30', { name: 'B' }))
+    const { clock, scheduler } = setup()
+    scheduler.start()
+    await clock.advance(31 * MIN)
+    await flush()
+    expect(started).toEqual(['A']) // A's start is awaited; B waits behind it
+    return {
+      started,
+      a: a.id,
+      b: b.id,
+      scheduler,
+      release: async () => {
+        open()
+        await flush()
+      }
+    }
+  }
+
+  it('a schedule deleted while an earlier start is awaited does not start', async () => {
+    const t = await twoDueWithHeldStart()
+    env.service.remove(t.b)
+    await t.release()
+    expect(t.started).toEqual(['A'])
+    expect(env.service.get(t.b)).toBeUndefined()
+    expect(env.store.history(t.b)).toEqual([])
+    t.scheduler.stop()
+  })
+
+  it('a schedule paused while an earlier start is awaited does not start and gets no next run', async () => {
+    const t = await twoDueWithHeldStart()
+    env.service.setEnabled(t.b, false)
+    await t.release()
+    expect(t.started).toEqual(['A'])
+    const b = env.service.get(t.b)!
+    expect(b.enabled).toBe(false)
+    expect(b.nextRunAt).toBeUndefined()
+    expect(b.lastSlotAt).toBeUndefined()
+    expect(env.store.history(t.b)).toEqual([])
+    t.scheduler.stop()
+  })
+
+  it('Pause all turned on while an earlier start is awaited gives the next schedule the paused-globally skip', async () => {
+    const t = await twoDueWithHeldStart()
+    env.paused.value = true
+    await t.release()
+    expect(t.started).toEqual(['A'])
+    expect(env.store.history(t.b).map((h) => [h.result, h.reason])).toEqual([['skipped', 'paused-globally']])
+    t.scheduler.stop()
+  })
+})
+
+describe('catch-up walk over a long gap', () => {
+  const SIX_MONTHS_MS = 183 * 24 * HOUR
+  const cron15 = { kind: 'cron', expression: '*/15 * * * *' } as const
+  const interval15 = { kind: 'interval', everyMinutes: 15, anchor: new Date(2026, 4, 12, 10, 0).getTime() } as const
+
+  it('resolves the latest slot of a 15-minute cron six months back quickly', () => {
+    const now = new Date(2026, 10, 12, 10, 7).getTime()
+    const first = new Date(2026, 4, 12, 10, 0).getTime()
+    const t0 = Date.now()
+    const r = latestDueSlot({ timing: cron15 }, first, now)
+    expect(Date.now() - t0).toBeLessThan(250)
+    expect(r).toEqual({ slot: new Date(2026, 10, 12, 10, 0).getTime(), skippedEarlier: true })
+  })
+
+  it('resolves the latest slot of a 15-minute interval six months back quickly', () => {
+    const now = new Date(2026, 10, 12, 10, 7).getTime()
+    const first = interval15.anchor + 15 * MIN
+    const t0 = Date.now()
+    const r = latestDueSlot({ timing: interval15 }, first, now)
+    expect(Date.now() - t0).toBeLessThan(250)
+    expect(r.skippedEarlier).toBe(true)
+    expect(r.slot).toBeLessThanOrEqual(now)
+    expect(r.slot).toBeGreaterThan(now - 15 * MIN)
+    expect((r.slot - interval15.anchor) % (15 * MIN)).toBe(0)
+  })
+
+  it('with no slot inside the catch-up window reports the first missed slot without walking from it', () => {
+    // One slot a year (1 January 03:00): the one missed slot is far older than the window and no slot lies in (floor, now].
+    const timing = { kind: 'cron', expression: '0 3 1 1 *' } as const // once a year
+    const first = new Date(2026, 0, 1, 3, 0).getTime()
+    const now = new Date(2026, 10, 12, 10, 7).getTime()
+    const t0 = Date.now()
+    const r = latestDueSlot({ timing }, first, now)
+    expect(Date.now() - t0).toBeLessThan(250)
+    expect(r.slot).toBe(first)
+    expect(r.skippedEarlier).toBe(false) // the next slot (next January) is still in the future
+  })
+
+  it('a pass over a schedule whose next run is six months old records one app-closed skip and does not hang', async () => {
+    env = fakeEnv() // 2026-11-12 10:00
+    const s = env.service.save({ ...daily('x', { name: 'old cron', missed: 'skip' }), timing: cron15 })
+    env.store.update((d) => {
+      d.schedules.find((x) => x.id === s.id)!.nextRunAt = env.clock.now - SIX_MONTHS_MS
+    })
+    env.clock.now += 7 * MIN
+    const { clock, scheduler } = setup()
+    const t0 = Date.now()
+    scheduler.start()
+    await clock.advance(1)
+    scheduler.stop()
+    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(env.starts).toHaveLength(0)
+    expect(env.store.history(s.id).map((h) => h.reason)).toEqual(['app-closed'])
+    expect(env.service.get(s.id)!.nextRunAt).toBeGreaterThan(env.clock.now)
+  })
+})
+
 describe('scheduler helpers', () => {
   it('latestDueSlot walks to the last slot at or before now', () => {
     const t0 = Date.UTC(2026, 0, 1)

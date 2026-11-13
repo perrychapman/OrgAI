@@ -12,6 +12,7 @@ import {
 import type { PermissionMode, ScheduleTiming } from './types'
 import {
   cleanScheduleInput,
+  compileScheduleTiming,
   describeScheduleTiming,
   nextScheduleRun,
   parseCron,
@@ -210,6 +211,52 @@ describe('nextScheduleRun', () => {
     expect(upcomingScheduleRuns({ kind: 'once', at: L(2026, 11, 14, 8) }, L(2026, 6, 10), 3)).toEqual([L(2026, 11, 14, 8)])
     expect(upcomingScheduleRuns({ kind: 'daily', time: '09:30' }, L(2026, 6, 10), 0)).toEqual([])
     expect(upcomingScheduleRuns({ kind: 'daily', time: '09:30' }, L(2026, 6, 10), -2)).toEqual([])
+  })
+})
+
+describe('compileScheduleTiming', () => {
+  const after = L(2026, 6, 10, 9, 17)
+  const timings: ScheduleTiming[] = [
+    { kind: 'cron', expression: '*/15 * * * *' },
+    { kind: 'cron', expression: '30 9 * * 1-5' },
+    { kind: 'daily', time: '09:30' },
+    { kind: 'daily', time: '23:45', days: [0, 6] },
+    { kind: 'interval', everyMinutes: 90, anchor: L(2026, 6, 1, 8) },
+    { kind: 'interval', everyMinutes: 15 },
+    { kind: 'once', at: L(2026, 6, 20, 8) },
+    { kind: 'once', at: L(2026, 6, 1, 8) }
+  ]
+
+  it('returns the same slots as nextScheduleRun, with and without lastSlotAt', () => {
+    for (const t of timings) {
+      const next = compileScheduleTiming(t)
+      expect(next, JSON.stringify(t)).not.toBeNull()
+      for (const a of [after, L(2026, 6, 20, 8), L(2025, 1, 1)]) {
+        expect(next!(a), JSON.stringify(t)).toBe(nextScheduleRun(t, a))
+        expect(next!(a, a + 3 * 3_600_000), JSON.stringify(t)).toBe(nextScheduleRun(t, a, a + 3 * 3_600_000))
+      }
+      expect(next!(Number.NaN)).toBeNull()
+    }
+  })
+
+  it('walks a sequence the same way', () => {
+    const t: ScheduleTiming = { kind: 'cron', expression: '*/15 * * * *' }
+    const next = compileScheduleTiming(t)!
+    let cursor = after
+    for (let i = 0; i < 20; i++) {
+      const slot = next(cursor)
+      expect(slot).toBe(nextScheduleRun(t, cursor))
+      cursor = slot!
+    }
+  })
+
+  it('is null for an invalid timing', () => {
+    expect(compileScheduleTiming({ kind: 'cron', expression: '* * * * *' })).toBeNull()
+    expect(compileScheduleTiming({ kind: 'cron', expression: 'nonsense' })).toBeNull()
+    expect(compileScheduleTiming({ kind: 'interval', everyMinutes: 1 })).toBeNull()
+    expect(compileScheduleTiming({ kind: 'daily', time: '25:00' })).toBeNull()
+    expect(compileScheduleTiming({ kind: 'once', at: Number.NaN })).toBeNull()
+    expect(nextScheduleRun({ kind: 'cron', expression: 'nonsense' }, after)).toBeNull()
   })
 })
 

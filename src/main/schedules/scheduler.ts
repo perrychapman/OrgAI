@@ -13,7 +13,7 @@
  * While AppSettings.schedulesPaused is on, nothing fires: a due schedule gets one skipped 'paused-globally' entry per
  * pause and its slots move on. Started only by the desktop shell (index.ts); never on the CLI's in-process host.
  */
-import { nextScheduleRun } from '@shared/schedule'
+import { compileScheduleTiming } from '@shared/schedule'
 import { SCHEDULE_CATCH_UP_WINDOW_MS } from '@shared/types'
 import type { Schedule } from '@shared/types'
 import type { ScheduleService } from './service'
@@ -54,14 +54,32 @@ export function testTickMs(env: Record<string, string | undefined>): number | un
   return Number.isFinite(n) && n >= 50 && n <= MAX_SLEEP_MS ? Math.floor(n) : undefined
 }
 
-/** The latest slot at or before `now`, walking from the due slot `first`; and whether earlier slots were passed over. */
+/**
+ * The latest slot at or before `now`, walking from the due slot `first`; and whether earlier slots were passed over.
+ * The timing is compiled once. A slot older than SCHEDULE_CATCH_UP_WINDOW_MS + LATE_MS is never caught up or run, so the
+ * walk starts no earlier than that floor: when a slot exists in (floor, now] the walk continues from there; when none
+ * does, the reported slot is `first` itself (the first missed one, not the latest; the caller only records it in an
+ * 'app-closed' skip and claimSlot computes the next run from now, so the difference is harmless).
+ */
 export function latestDueSlot(s: Pick<Schedule, 'timing'>, first: number, now: number): { slot: number; skippedEarlier: boolean } {
+  const next = compileScheduleTiming(s.timing)
+  if (next === null) return { slot: first, skippedEarlier: false }
   let slot = first
   let skippedEarlier = false
+  const floor = now - SCHEDULE_CATCH_UP_WINDOW_MS - LATE_MS
+  if (floor > first) {
+    const probe = next(floor)
+    if (probe === null || probe > now) {
+      const following = next(first)
+      return { slot: first, skippedEarlier: following !== null && following <= now }
+    }
+    slot = probe
+    skippedEarlier = true
+  }
   for (let i = 0; i < MAX_SLOT_WALK; i++) {
-    const next = nextScheduleRun(s.timing, slot)
-    if (next === null || next > now) break
-    slot = next
+    const n = next(slot)
+    if (n === null || n > now) break
+    slot = n
     skippedEarlier = true
   }
   return { slot, skippedEarlier }
@@ -135,13 +153,18 @@ export class Scheduler {
   /** Handle due schedules; returns when to wake next (epoch ms). */
   private async pass(): Promise<number> {
     const svc = this.opts.service
-    const paused = this.opts.globallyPaused()
-    if (!paused) this.pauseNoted.clear()
     let wakeAt = Infinity
     const due = (s: Schedule): boolean => s.enabled && s.nextRunAt !== undefined && s.nextRunAt <= this.clock.now()
-    for (const s of svc.list()) {
+    // The order and planned slot come from one snapshot; everything else is re-read on every iteration, because an
+    // awaited start lets the user delete, pause or edit another schedule or turn on Pause all.
+    const snapshot = svc.list().map((x) => ({ id: x.id, nextRunAt: x.nextRunAt }))
+    for (const snap of snapshot) {
       if (this.stopped) break
-      if (!s.enabled || s.nextRunAt === undefined) continue
+      const s = svc.get(snap.id)
+      // An edited schedule (a different next run) is re-planned by the next pass: the service pokes the scheduler.
+      if (!s || !s.enabled || s.nextRunAt === undefined || s.nextRunAt !== snap.nextRunAt) continue
+      const paused = this.opts.globallyPaused()
+      if (!paused) this.pauseNoted.clear()
       const now = this.clock.now()
       if (s.expiresAt !== undefined && s.nextRunAt > s.expiresAt) {
         svc.expire(s.id)
@@ -166,8 +189,9 @@ export class Scheduler {
         // On time: earlier slots passed over (a sleep shorter than the catch-up rules care about) are recorded once.
         if (skippedEarlier) svc.recordSkip(s.id, s.nextRunAt, 'timer', 'app-closed')
         const claimed = svc.claimSlot(s.id, slot)
-        if (claimed?.nextRunAt !== undefined) wakeAt = Math.min(wakeAt, claimed.nextRunAt)
-        await svc.fire(claimed ?? s, slot, 'timer')
+        if (!claimed) continue
+        if (claimed.nextRunAt !== undefined) wakeAt = Math.min(wakeAt, claimed.nextRunAt)
+        await svc.fire(claimed, slot, 'timer')
         continue
       }
       const catchUp = s.missed === 'run-once' && now - slot <= SCHEDULE_CATCH_UP_WINDOW_MS
@@ -185,8 +209,9 @@ export class Scheduler {
       }
       this.lastCatchUpAt = now
       const claimed = svc.claimSlot(s.id, slot)
-      if (claimed?.nextRunAt !== undefined) wakeAt = Math.min(wakeAt, claimed.nextRunAt)
-      await svc.fire(claimed ?? s, slot, 'catch-up')
+      if (!claimed) continue
+      if (claimed.nextRunAt !== undefined) wakeAt = Math.min(wakeAt, claimed.nextRunAt)
+      await svc.fire(claimed, slot, 'catch-up')
     }
     return wakeAt
   }
