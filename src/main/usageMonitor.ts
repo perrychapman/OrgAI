@@ -1,9 +1,23 @@
 import type { ProviderAuth, RunEvent, UsageStatus } from '@shared/types'
 import type { RuntimeAdapter } from './runtime/types'
-import { mergeUsage } from './runtime/usage'
+import { mergeUsage, reconcileUsage } from './runtime/usage'
 
 const BOOT_DELAY_MS = 1500
 const IDLE_INTERVAL_MS = 10 * 60_000
+/** While a run is live the proxies' key spend is re-read this often (key-info HTTP read, no model call). */
+export const LIVE_PROXY_INTERVAL_MS = 60_000
+/** An unchanged Claude status is still broadcast this often so the renderer's updatedAt cue stays correct. */
+const UNCHANGED_REBROADCAST_MS = 60_000
+
+function sameFigures(a: UsageStatus, b: UsageStatus): boolean {
+  return JSON.stringify({ ...a, updatedAt: 0 }, replacer) === JSON.stringify({ ...b, updatedAt: 0 }, replacer)
+}
+
+/** Sort object keys so two structurally equal statuses serialise alike. */
+function replacer(_k: string, v: unknown): unknown {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return v
+  return Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([x], [y]) => (x < y ? -1 : 1)))
+}
 
 /**
  * What an extra probe answers: one status, null (nothing to report, the previous report stays), or a list (the
@@ -27,7 +41,10 @@ export type ExtraProbe = (() => Promise<ExtraProbeResult>) | { key: string; prob
 export class UsageMonitor {
   private timer: ReturnType<typeof setInterval> | null = null
   private inFlight: Promise<UsageStatus | null> | null = null
+  private liveTimer: ReturnType<typeof setInterval> | null = null
   private last: UsageStatus | null = null
+  private lastSent: UsageStatus | null = null
+  private lastSentAt = 0
   private extraLast: UsageStatus[][] = []
   /** At most one call in flight per extra probe, shared by refresh() and refreshProbe(). */
   private extraInFlight = new Map<number, Promise<void>>()
@@ -51,11 +68,17 @@ export class UsageMonitor {
     this.timer = setInterval(() => {
       if (this.opts.liveRuns() === 0) void this.refresh()
     }, IDLE_INTERVAL_MS)
+    // While a run is live nothing else reads a proxy's key spend: re-read it (only that probe) about every minute.
+    this.liveTimer = setInterval(() => {
+      if (this.opts.liveRuns() > 0) void this.refreshProbe('proxies')
+    }, LIVE_PROXY_INTERVAL_MS)
   }
 
   stop(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
+    if (this.liveTimer) clearInterval(this.liveTimer)
+    this.liveTimer = null
   }
 
   /** The newest Claude status known, from the probe or a run. */
@@ -69,11 +92,27 @@ export class UsageMonitor {
    * which is harmless.
    */
   observe(event: RunEvent): void {
-    if (event.type !== 'usage.status') return
+    void this.gate(event)
+  }
+
+  /**
+   * The choke point for every broadcast event (bootstrap's emitRun). A Claude usage.status is reconciled onto the
+   * newest known status (reconcileUsage), which becomes latest(); the returned event carries the reconciled status.
+   * Returns null when the same figures were already broadcast less than a minute ago (the renderer needs a fresh
+   * updatedAt about once a minute for its "out of date" cue). Everything else passes through unchanged.
+   */
+  gate(event: RunEvent, now = Date.now()): RunEvent | null {
+    if (event.type !== 'usage.status') return event
     const usage = event.usage
-    if (!usage || typeof usage !== 'object') return
-    if (usage.connection !== undefined && usage.connection !== 'anthropic') return
-    this.last = usage
+    if (!usage || typeof usage !== 'object') return event
+    if (usage.connection !== undefined && usage.connection !== 'anthropic') return event
+    const reconciled = reconcileUsage(this.last, usage)
+    this.last = reconciled
+    const sent = this.lastSent
+    if (sent && now - this.lastSentAt < UNCHANGED_REBROADCAST_MS && sameFigures(sent, reconciled)) return null
+    this.lastSent = reconciled
+    this.lastSentAt = now
+    return reconciled === usage ? event : { ...event, usage: reconciled }
   }
 
   /** The latest report of every probe, Claude first. */
@@ -92,7 +131,8 @@ export class UsageMonitor {
       .then((usage) => {
         if (!usage) return usage
         // Fold the probe onto what runs reported, so an event-only window outlives the run until its reset.
-        const merged = mergeUsage(this.last, usage)
+        // reconcile keeps the higher figure inside a period; the broadcast goes through the host's gate again (idempotent).
+        const merged = reconcileUsage(this.last, mergeUsage(this.last, usage))
         this.last = merged
         this.opts.broadcast({ type: 'usage.status', runId: '', usage: merged })
         return merged
