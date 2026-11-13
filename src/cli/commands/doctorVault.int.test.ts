@@ -34,7 +34,7 @@ beforeEach(() => {
   doctorProbes.homeDir = () => root
   runtimeCheckProbes.claude = () => ({ ok: true, path: '/fake/claude', source: 'sdk' })
   runtimeCheckProbes.codexLookup = () => ({ binary: { path: '/fake/codex', source: 'package' } })
-  runtimeCheckProbes.codexCheck = async (binary) => ({ ok: true, binary, version: '0.166.0' })
+  runtimeCheckProbes.codexCheck = async (binary) => ({ ok: true, binary, version: '0.167.0' })
 })
 afterEach(() => {
   Object.assign(doctorProbes, realProbes)

@@ -161,7 +161,36 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
   `error` with that one-line message, writes a harness system row whose detail is the scrubbed raw text, and
   `complete()` throws it. `[mock:auth-fail]` drives the mock the same way. The live failure shape is unverified
   (from the 0.3.312 typings and the user's report).
-- Codex (`@openai/codex` 0.166.0):
+- Codex (`@openai/codex` 0.167.0 pinned since 2026-11-12; facts below were checked on 0.166.0 unless they name 0.167.0):
+  - Move to 0.167.0 (Dependabot PR #53, owner decision, 2026-11-12). `CODEX_PINNED_VERSION` / `CODEX_SUPPORTED_RANGE`
+    are now 0.167.0 / 0.167.x (`codexBinary.ts`); 0.166.x is refused like any other untested version, except through
+    `ORGAI_CODEX_PATH` (a warning). How it was checked, all token-free (no login, no model call):
+    - `codex app-server generate-ts --experimental` of 0.166.0 and 0.167.0 diffed: no file the adapter relies on changed
+      (thread/turn start and resume params including `TurnStartParams.effort`, item and turn notifications, approval
+      request params, rate-limit snapshots, account shapes, `SandboxPolicy`). Added in 0.167.0: the `humanCommand`
+      `CommandExecutionApprovalKind`, `InitializeCapabilities.requiredHumanApproval` (opt-in, experimental; OrgAI does
+      not send it), `thread/guardianReview` (request) and `thread/section/changed` (notification), a `fileId` form of
+      audio input (`UserInput`, `ContentItem`), `ThreadSampleParams.interruptOnCancel` and `OtelRequirements.log_sse_deltas`.
+      OrgAI uses none of the additions.
+    - Real 0.167.0 binary: `ORGAI_CODEX_INTEGRATION=1` tests in `codexAppServer.test.ts` (initialize, config/read of the
+      overrides OrgAI builds, thread/start with dynamic tools, policy and the auto reviewer) and
+      `ORGAI_TEST_INSTALLED_CODEX=1` `codexInstalled.test.ts` (loopback fake Responses and MCP endpoints) pass;
+      `scripts/probe-codex-trust.mjs` still shows the whole-table `projects={...}` trust pin keeping a folder's own
+      config, hooks and MCP servers disabled.
+    - Release-note behaviour changes, judged from the types, binary strings and adapter code: (1) PreToolUse hooks now
+      run before Guardian policy checks: OrgAI configures no Codex hooks and the trust pin keeps a folder's hooks off
+      (probe: 0 hooks), so not affected. (2) Managed command checkpoints require fresh human approval: they arrive as
+      `kind: "humanCommand"` command approvals; OrgAI does not opt in (`requiredHumanApproval`), and 0.167.0 binary
+      strings suggest Codex then refuses such a command itself ("requires automatic review"). As a guard, codex.ts
+      (`commandApprovalNeedsPerson`) puts a humanCommand, or any unknown kind, to a card after the deny gates, never
+      answers it from a rule and never with `acceptForSession` (fake app-server tests in `codex.test.ts`). (3) MCP
+      approval metadata now carries tool names and hints: MCP elicitations are still declined outright, so not affected.
+      (4) Deferred tool world state on by default: it changes how tool_search-deferred namespaces are described to the
+      model; OrgAI's dynamic tools never set `deferLoading`, so their exposure is unchanged; whether MCP tools are
+      deferred differently is model-facing and unverified. (5) Centralised TOML config parsing: every `-c` override
+      OrgAI builds is accepted by the real 0.167.0 (integration tests above), and the whole-table trust pin still parses
+      and holds (probe); the dotted `projects."<p>".trust_level` form, which 0.166.0 ignored, was not re-checked.
+    - Live behaviour with a model (turn event order, approvals in a real turn, managed policies) is unverified.
   - `codex app-server` speaks JSON-RPC over stdio, one object per line. The `jsonrpc` field is not needed. The
     client sends `initialize` and then `initialized`. Verified offline against `generate-json-schema` /
     `generate-ts --experimental` (token-free).

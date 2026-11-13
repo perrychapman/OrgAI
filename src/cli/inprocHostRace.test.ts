@@ -9,10 +9,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EXIT } from './types'
+import { VITE_NODE_CLI } from '../main/host/testFixtures/viteNodeCli'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..', '..')
-const viteNode = join(root, 'node_modules', 'vite-node', 'vite-node.mjs')
+const viteNode = VITE_NODE_CLI
 
 interface Child {
   proc: ChildProcess

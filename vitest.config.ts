@@ -3,8 +3,9 @@ import { fileURLToPath } from 'node:url'
 
 export default defineConfig({
   resolve: { alias: { '@shared': fileURLToPath(new URL('./src/shared', import.meta.url)) } },
-  // vitest 3.2 runs on its own vite 7 (esbuild transforms): .tsx (the CLI TUI) uses React's automatic runtime.
-  esbuild: { jsx: 'automatic', jsxImportSource: 'react' },
+  // vitest 5 runs on the project's vite 8, which transforms with oxc (esbuild is no longer installed, and vite ignores an
+  // `esbuild` block next to oxc): .tsx (the CLI TUI) uses React's automatic runtime, as in vite.cli.config.ts.
+  oxc: { jsx: { runtime: 'automatic', importSource: 'react' } },
   test: {
     environment: 'node',
     // No unit test may write an OS key item (keychain, DPAPI, Secret Service): custodians/index.ts refuses the OS

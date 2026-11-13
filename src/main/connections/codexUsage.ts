@@ -2,7 +2,7 @@ import type { RateLimitWindow, UsageStatus } from '@shared/types'
 
 /**
  * Map Codex `account/rateLimits/read` onto the shared UsageStatus (provider 'codex', connection 'openai').
- * Shape (generated TS, 0.166.0): { rateLimits: RateLimitSnapshot, rateLimitsByLimitId: {..} | null, ... }
+ * Shape (generated TS, 0.166.0; unchanged in 0.167.0): { rateLimits: RateLimitSnapshot, rateLimitsByLimitId: {..} | null, ... }
  * with RateLimitSnapshot { planType, primary, secondary, ... } and RateLimitWindow
  * { usedPercent (0-100), windowDurationMins | null, resetsAt | null }. resetsAt is not documented in the
  * generated types; Codex uses unix SECONDS, so values below 1e12 are treated as seconds (UNVERIFIED live).
