@@ -163,7 +163,7 @@ describe('orgai tui', () => {
 
 describe('orgai resume (terminal UI)', () => {
   it('opens the TUI on the ref with the resume text, or on the newest ended run', async () => {
-    tui.conn = fakeConn({ runs: [summary('run_live0003', { startedAt: 300, status: 'running' }), summary('run_end00002', { startedAt: 200 }), summary('run_end00001', { startedAt: 100 })] })
+    tui.conn = fakeConn({ runs: [summary('run_live0003', { startedAt: 300, status: 'running' }), summary('run_end00002', { startedAt: 200, sessionId: 's2' }), summary('run_end00001', { startedAt: 100, sessionId: 's1' })] })
     const f = ttyCtx()
     expect(await runResumeTui(f.ctx, ['R1', '--prompt', 'more'])).toBe(0)
     expect(await runResumeTui(f.ctx, [])).toBe(0)
@@ -178,7 +178,7 @@ describe('orgai resume (terminal UI)', () => {
     await expect(runResumeTui(f.ctx, ['--prompt', '-'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--exec') })
     await expect(runResumeTui(f.ctx, ['R1', '--prompt=-'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('--exec') })
     tui.conn = fakeConn({ runs: [summary('run_live0003', { status: 'running' })] })
-    await expect(runResumeTui(f.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.usage, message: 'This project has no ended run to resume.' })
+    await expect(runResumeTui(f.ctx, [])).rejects.toMatchObject({ exitCode: EXIT.usage, message: 'This project has no ended work run to resume.' })
     const g = ttyCtx()
     managed(g.ctx)
     await expect(runResumeTui(g.ctx, ['R1'])).rejects.toMatchObject({ exitCode: EXIT.usage, message: expect.stringContaining('/repo') })

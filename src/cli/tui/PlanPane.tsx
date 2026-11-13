@@ -79,6 +79,9 @@ export function graphSegs(step: PlanStepView, env: TuiEnv): Seg[] {
   return out
 }
 
+/** The ETA is a rough pace estimate: refreshing it every 10 s is plenty. */
+export const PLAN_ETA_REFRESH_MS = 10_000
+
 export function PlanPane(props: PlanPaneProps) {
   const env = useTuiEnv()
   const width = Math.max(0, Math.floor(props.width))
@@ -94,7 +97,7 @@ export function PlanPane(props: PlanPaneProps) {
     && plan.runStatus === 'running' && width > 0 && height >= 2 && !env.screenReader
   useEffect(() => {
     if (!estimating) return undefined
-    const timer = setInterval(() => setNow(Date.now()), 1000)
+    const timer = setInterval(() => setNow(Date.now()), PLAN_ETA_REFRESH_MS)
     return () => clearInterval(timer)
   }, [estimating])
 

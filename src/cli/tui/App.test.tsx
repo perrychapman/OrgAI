@@ -214,7 +214,8 @@ function fakeSession(initial: Partial<TestState> = {}, hostKind: 'daemon' | 'inp
   const subs = new Set<() => void>()
   let n = 0
   const set = (patch: Partial<TestState>) => {
-    state = { ...state, ...patch, ...(patch.runs ? { runs: completeRuns(patch.runs) } : {}) }
+    // The mocked selectors read testCards / testRows; App memoizes on `runs`, so those patches replace it too.
+    state = { ...state, ...patch, ...(patch.runs ? { runs: completeRuns(patch.runs) } : patch.testCards || patch.testRows ? { runs: { ...state.runs } } : {}) }
     for (const fn of [...subs]) fn()
   }
   const api = {

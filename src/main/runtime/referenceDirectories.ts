@@ -186,6 +186,129 @@ const POP_NAMES: ReadonlySet<string> = new Set(['popd', 'pop-location'])
 const PUNCTUATION = /[<>|&;(){}`]|\$\(/
 const GLOB_CHAR = /[*?[]/
 
+interface ShellGlobGroup {
+  start: number
+  end: number
+  alternatives: string[]
+}
+
+/** Bound repeated rescans while expanding nested shell glob groups. */
+const MAX_SHELL_GLOB_GROUP_DEPTH = 64
+const MAX_SHELL_GLOB_PARSE_WORK = 1_000_000
+interface ShellGlobParseBudget {
+  work: number
+}
+
+/** Find one balanced zsh alternation or extglob group in a shell word. */
+function shellGlobGroup(pattern: string, allowSimple: boolean, budget: ShellGlobParseBudget): ShellGlobGroup | 'unreadable' | null {
+  let quote: string | null = null
+  for (let i = 0; i < pattern.length; i++) {
+    if (++budget.work > MAX_SHELL_GLOB_PARSE_WORK) return 'unreadable'
+    const ch = pattern[i]
+    if (quote) {
+      if (ch === quote) quote = null
+      else if (quote === '"' && ch === '\\') i++
+      continue
+    }
+    if (ch === '\\') {
+      i++
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      continue
+    }
+    if (ch === '[') {
+      const cls = parseGlobBracketClass(pattern, i)
+      if (cls) {
+        if (cls.unclosed) return 'unreadable'
+        budget.work += cls.end - i
+        if (budget.work > MAX_SHELL_GLOB_PARSE_WORK) return 'unreadable'
+        i = cls.end
+        continue
+      }
+    }
+    if (ch !== '(') continue
+
+    const before = pattern[i - 1] ?? ''
+    const marker = /[?*+@!]/.test(before) ? before : ''
+    const start = marker ? i - 1 : i
+    // Not after `=`: zsh `=(...)` is process substitution, never a glob group.
+    const zshContext = !!before && !/[\s;$|&()<>=]/.test(before)
+    let depth = 0
+    let from = i + 1
+    const alternatives: string[] = []
+    let close = -1
+    for (let j = i + 1; j < pattern.length; j++) {
+      if (++budget.work > MAX_SHELL_GLOB_PARSE_WORK) return 'unreadable'
+      const inner = pattern[j]
+      if (inner === '\\') {
+        j++
+        continue
+      }
+      if (inner === '[') {
+        const cls = parseGlobBracketClass(pattern, j)
+        if (cls) {
+          if (cls.unclosed) return 'unreadable'
+          budget.work += cls.end - j
+          if (budget.work > MAX_SHELL_GLOB_PARSE_WORK) return 'unreadable'
+          j = cls.end
+          continue
+        }
+      }
+      if (inner === '(') {
+        if (++depth > MAX_SHELL_GLOB_GROUP_DEPTH) return 'unreadable'
+      }
+      else if (inner === ')') {
+        if (depth === 0) {
+          alternatives.push(pattern.slice(from, j))
+          close = j
+          break
+        }
+        depth--
+      } else if (inner === '|' && depth === 0) {
+        alternatives.push(pattern.slice(from, j))
+        from = j + 1
+      }
+    }
+    const hasAlternation = alternatives.length > 1
+    if (!marker && !(zshContext && hasAlternation) && !allowSimple) continue
+    if (close < 0) return 'unreadable'
+
+    let choices = alternatives
+    if (marker === '?') choices = ['', ...alternatives]
+    else if (marker === '*' || marker === '+' || marker === '!') choices = ['*']
+    if (!marker && !hasAlternation && !allowSimple) continue
+    return { start, end: close, alternatives: choices }
+  }
+  return null
+}
+
+/**
+ * Expand bounded zsh alternation and optional extglob groups. Over-budget or unreadable groups return null so callers
+ * can fail closed. Groups are found only inside a word; command substitutions and shell subshells stay with the shell parser.
+ */
+export function expandShellGlobAlternatives(pattern: string, limit = 64): string[] | null {
+  const pending: { text: string; allowSimple: boolean }[] = [{ text: pattern, allowSimple: false }]
+  const out: string[] = []
+  const budget: ShellGlobParseBudget = { work: 0 }
+  while (pending.length) {
+    const current = pending.pop()!
+    const group = shellGlobGroup(current.text, current.allowSimple, budget)
+    if (group === 'unreadable') return null
+    if (!group) {
+      out.push(current.text)
+      if (out.length + pending.length > limit) return null
+      continue
+    }
+    for (const alternative of group.alternatives) {
+      pending.push({ text: current.text.slice(0, group.start) + alternative + current.text.slice(group.end + 1), allowSimple: true })
+      if (out.length + pending.length > limit) return null
+    }
+  }
+  return out
+}
+
 type PathModule = typeof posix
 
 interface RefEntry {
@@ -383,27 +506,184 @@ function checkPart(s: CheckState, raw: string, cwd: string | undefined): string 
   return null
 }
 
-/** One glob component as an anchored RegExp source (`*`, `?`, `[...]` / `[!...]`; everything else literal). */
-function globComponentSource(c: string): string {
-  let out = ''
+/** A parsed POSIX glob bracket expression. `source` is a JavaScript RegExp fragment for one character. */
+export interface GlobBracketClass {
+  end: number
+  source: string
+  /** The one case-folded literal this class can match, otherwise empty. */
+  single: string
+  /** True when shell matching cannot be modeled precisely; callers must fail closed. */
+  ambiguous: boolean
+  /** True when no closing `]` exists and the remainder is unreadable. */
+  unclosed: boolean
+}
+
+function classLiteralSource(ch: string): string {
+  if (ch === '\\') return '\\\\'
+  if (ch === ']') return '\\]'
+  if (ch === '^') return '\\^'
+  if (ch === '-') return '\\-'
+  if (ch === '\n') return '\\n'
+  if (ch === '\r') return '\\r'
+  if (ch === '\t') return '\\t'
+  return ch
+}
+
+/**
+ * Read one POSIX shell glob bracket expression, including the leading literal `]`, negation, escaped `]`, and
+ * nested POSIX classes such as `[[:alpha:]]`. POSIX classes are locale-sensitive, and unknown collating/equivalence
+ * classes and malformed or reversed ranges conservatively match any single character. An unmatched `[` consumes
+ * the rest of the component as an ambiguous expression so it cannot narrow a protected-path check.
+ */
+export function parseGlobBracketClass(pattern: string, start: number): GlobBracketClass | null {
+  if (pattern[start] !== '[') return null
+  let i = start + 1
+  let negate = false
+  if (pattern[i] === '!' || pattern[i] === '^') {
+    negate = true
+    i++
+  }
+  const units: { literal?: string; unknown?: boolean }[] = []
+  if (pattern[i] === ']') {
+    units.push({ literal: ']' })
+    i++
+  }
+  let close = -1
+  while (i < pattern.length) {
+    const ch = pattern[i]
+    if (ch === ']') {
+      close = i
+      break
+    }
+    if (ch === '\\') {
+      if (i + 1 >= pattern.length) break
+      units.push({ literal: pattern[i + 1] })
+      i += 2
+      continue
+    }
+    if (ch === '[' && (pattern[i + 1] === ':' || pattern[i + 1] === '.' || pattern[i + 1] === '=')) {
+      const marker = pattern[i + 1]
+      const pair = `${marker}]`
+      const end = pattern.indexOf(pair, i + 2)
+      if (end < 0) break
+      if (marker === ':') {
+        // Even standard classes such as alpha vary by locale; allow every character rather than assuming ASCII.
+        units.push({ unknown: true })
+      } else {
+        // Locale-dependent collating elements may contain more than one character.
+        units.push({ unknown: true })
+      }
+      i = end + 2
+      continue
+    }
+    if (ch >= '\uD800' && ch <= '\uDBFF' && pattern[i + 1] >= '\uDC00' && pattern[i + 1] <= '\uDFFF') {
+      // Without Unicode regex mode one class token sees only one half of a non-BMP code point.
+      units.push({ unknown: true })
+      i += 2
+      continue
+    }
+    units.push({ literal: ch })
+    i++
+  }
+
+  if (close < 0) {
+    return { end: pattern.length - 1, source: '[\\s\\S]', single: '', ambiguous: true, unclosed: true }
+  }
+
+  let ambiguous = false
+  let content = ''
+  const singles = new Set<string>()
+  for (let k = 0; k < units.length; k++) {
+    const unit = units[k]
+    if (unit.unknown) {
+      ambiguous = true
+      continue
+    }
+    const lo = unit.literal ?? ''
+    if (units[k + 1]?.literal === '-' && units[k + 2]?.literal !== undefined) {
+      const hi = units[k + 2].literal ?? ''
+      if (lo.codePointAt(0)! > hi.codePointAt(0)!) ambiguous = true
+      content += `${classLiteralSource(lo)}-${classLiteralSource(hi)}`
+      for (let code = lo.codePointAt(0)!; code <= hi.codePointAt(0)! && code - lo.codePointAt(0)! <= 256; code++) {
+        singles.add(String.fromCodePoint(code).toLowerCase())
+      }
+      k += 2
+    } else {
+      content += classLiteralSource(lo)
+      singles.add(lo.toLowerCase())
+    }
+  }
+  if (ambiguous) return { end: close, source: '[\\s\\S]', single: '', ambiguous: true, unclosed: false }
+  const single = !negate && singles.size === 1 ? [...singles][0] : ''
+  return { end: close, source: `[${negate ? '^' : ''}${content}]`, single, ambiguous: false, unclosed: false }
+}
+
+/** One glob token: `*` (any run of characters) or a test for exactly one character (UTF-16 unit). */
+export type GlobToken = { star: true } | { star: false; test: (ch: string) => boolean }
+
+/** Matches every string (a glob the scanner cannot model, fail closed). */
+export const MATCH_ANY: { test(s: string): boolean } = { test: () => true }
+
+/**
+ * Whole-string match of glob tokens without backtracking (review M2: a RegExp compiled from `*****...x` backtracks
+ * combinatorially on a mismatching name). A set-of-states simulation: O(|s| * |tokens|), runs of `*` count once.
+ */
+export function matchGlobTokens(tokens: readonly GlobToken[], s: string): boolean {
+  const toks: GlobToken[] = []
+  for (const t of tokens) if (!(t.star && toks.length && toks[toks.length - 1].star)) toks.push(t)
+  const m = toks.length
+  let states = new Uint8Array(m + 1)
+  const close = (set: Uint8Array): void => {
+    for (let j = 0; j < m; j++) if (set[j] && toks[j].star) set[j + 1] = 1
+  }
+  states[0] = 1
+  close(states)
+  for (let i = 0; i < s.length; i++) {
+    const next = new Uint8Array(m + 1)
+    let alive = false
+    for (let j = 0; j < m; j++) {
+      if (!states[j]) continue
+      const t = toks[j]
+      if (t.star) next[j] = 1
+      else if (!t.test(s[i])) continue
+      else next[j + 1] = 1
+      alive = true
+    }
+    if (!alive) return false
+    close(next)
+    states = next
+  }
+  return states[m] === 1
+}
+
+/** A one-character test from a bracket class's RegExp source (a source JavaScript cannot compile matches anything). */
+export function classTest(source: string, flags = ''): (ch: string) => boolean {
+  try {
+    const re = new RegExp(`^${source}$`, flags)
+    return (ch) => re.test(ch)
+  } catch {
+    return () => true
+  }
+}
+
+/** One glob component (`*`, `?`, bracket expressions; everything else literal) as a linear matcher. */
+function globComponentMatcher(c: string): { test(s: string): boolean } {
+  const toks: GlobToken[] = []
   for (let i = 0; i < c.length; i++) {
     const ch = c[i]
-    if (ch === '*') out += '[^\\\\/]*'
-    else if (ch === '?') out += '[^\\\\/]'
+    if (ch === '*') toks.push({ star: true })
+    else if (ch === '?') toks.push({ star: false, test: (x) => x !== '/' && x !== '\\' })
     else if (ch === '[') {
-      const close = c.indexOf(']', i + 2)
-      if (close < 0) {
-        out += '\\['
-        continue
+      const cls = parseGlobBracketClass(c, i)
+      if (cls) {
+        // A class the scanner cannot model (or an unclosed one) makes the whole component match anything.
+        if (cls.ambiguous) return MATCH_ANY
+        toks.push({ star: false, test: classTest(cls.source) })
+        i = cls.end
       }
-      let body = c.slice(i + 1, close)
-      const negate = body.startsWith('!') || body.startsWith('^')
-      if (negate) body = body.slice(1)
-      out += `[${negate ? '^' : ''}${body.replace(/[\\\]^]/g, (m) => `\\${m}`)}]`
-      i = close
-    } else out += ch.replace(/[.*+?^${}()|[\]\\/]/g, (m) => `\\${m}`)
+    } else toks.push({ star: false, test: (x) => x === ch })
   }
-  return out
+  return { test: (s) => matchGlobTokens(toks, s) }
 }
 
 /**
@@ -418,16 +698,22 @@ export function globMayStartWith(glob: string, prefix: string): boolean {
     const ch = glob[i]
     if (ch === '*') toks.push({ kind: 'star' })
     else if (ch === '?') toks.push({ kind: 'one', test: () => true })
-    else if (ch === '[' && glob.indexOf(']', i + 2) >= 0) {
-      const close = glob.indexOf(']', i + 2)
-      let re: RegExp | null = null
-      try {
-        re = new RegExp(`^${globComponentSource(glob.slice(i, close + 1))}$`)
-      } catch {
-        re = null
+    else if (ch === '[') {
+      const cls = parseGlobBracketClass(glob, i)
+      if (!cls) toks.push({ kind: 'one', test: () => true })
+      else {
+        if (cls.unclosed) return true
+        let re: RegExp | null = null
+        if (!cls.ambiguous) {
+          try {
+            re = new RegExp(`^${cls.source}$`)
+          } catch {
+            // Keep the class broad if JavaScript cannot model it.
+          }
+        }
+        toks.push({ kind: 'one', test: (c) => (re ? re.test(c) : true) })
+        i = cls.end
       }
-      toks.push({ kind: 'one', test: (c) => (re ? re.test(c) : true) })
-      i = close
     } else toks.push({ kind: 'one', test: (c) => c === ch })
   }
   const closure = (set: Set<number>): Set<number> => {
@@ -477,7 +763,7 @@ function globReaches(s: CheckState, full: string): string | null {
           deep = true
           break
         }
-        if (!GLOB_CHAR.test(gc) ? gc !== rc[k] : !new RegExp(`^${globComponentSource(gc)}$`).test(rc[k])) {
+        if (!GLOB_CHAR.test(gc) ? gc !== rc[k] : !globComponentMatcher(gc).test(rc[k])) {
           ok = false
           break
         }
@@ -668,7 +954,13 @@ function scanReferenceTouch(
   const texts = [command]
   const unwrapped = unwrapShellCommand(command)
   if (unwrapped && unwrapped !== command.trim()) texts.push(unwrapped)
+  const scanTexts: string[] = []
   for (const text of texts) {
+    const variants = expandShellGlobAlternatives(text)
+    if (!variants) return done(limitHit(s, { folder: entries[0].ref, how: 'names' }))
+    scanTexts.push(...variants)
+  }
+  for (const text of scanTexts) {
     const hit = scanCommand(s, text, startCwd, 0)
     if (hit || s.stopped) return done(hit)
   }

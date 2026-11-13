@@ -23,6 +23,16 @@ export const MANAGEMENT_INPROC: InprocStartOptions = {
   background: { connectionProbes: true, modelDiscovery: false, communityPrices: false, usageMonitor: false }
 }
 
+/**
+ * The background options of a headless `orgai exec` / `resume --exec` host: no model discovery (a first sweep 20 s
+ * after boot, then hourly) and no plan-usage monitor (a provider probe at boot and every 10 minutes): nothing a
+ * one-shot run reads. Connection probes and community prices stay (the run's connection status and its cost / budget
+ * math); system certificates still load once the process owns the folder, before any provider call.
+ */
+export const EXEC_INPROC: InprocStartOptions = {
+  background: { connectionProbes: true, modelDiscovery: false, communityPrices: true, usageMonitor: false }
+}
+
 export interface EnsuredHost {
   client: HostClient
   /** The in-process host, which the caller stops when done. */

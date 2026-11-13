@@ -71,7 +71,9 @@ test('a narrow main change selects its scripts plus the smoke set', () => {
   assert.equal(r.mode, 'selected')
   assert.deepEqual(r.scripts, all.filter((s) => ['clone-start', ...SMOKE].includes(s)))
   const cli = sel('src/cli/commands/exec.ts')
-  assert.deepEqual(cli.scripts, all.filter((s) => ['cli-exec', ...SMOKE].includes(s)))
+  assert.deepEqual(cli.scripts, all.filter((s) => ['cli-exec', 'cli-org-evolve', ...SMOKE].includes(s)))
+  const evolve = sel('src/main/evolve/ratchet.ts')
+  assert.deepEqual(evolve.scripts, all.filter((s) => ['cli-org-evolve', ...SMOKE].includes(s)))
 })
 
 test('brace globs and first-match order work', () => {
