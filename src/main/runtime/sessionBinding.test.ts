@@ -1,12 +1,11 @@
-/** Provider session binding tests (no tokens). Two-process races run TypeScript through `node_modules/.bin/vite-node`. */
-import { spawn, type ChildProcess } from 'node:child_process'
+/** Provider session binding tests (no tokens). Two-process races run TypeScript through the vite-node CLI (store/shared/testing/viteNode.ts). */
+import { type ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { bindProviderSession, bindingKey, listBindings, removeBindingsForChain } from './sessionBinding'
-
-const VITE_NODE = resolve(__dirname, '../../../node_modules/.bin/vite-node')
+import { killAndWait, spawnViteNode } from '../store/shared/testing/viteNode'
 const MODULE = resolve(__dirname, 'sessionBinding.ts')
 
 let dir: string
@@ -16,9 +15,9 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'sessbind-'))
   sessions = join(dir, 'control', 'sessions')
 })
-afterEach(() => {
-  for (const c of children.splice(0)) if (c.exitCode === null) c.kill('SIGKILL')
-  rmSync(dir, { recursive: true, force: true })
+afterEach(async () => {
+  await killAndWait(children)
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 
 const bind = (chainId: string, sessionId = 's1', adapter: 'claude' | 'codex' | 'mock' = 'claude') => bindProviderSession({ sessionsDir: sessions, adapter, sessionId, chainId })
@@ -70,7 +69,7 @@ while (Date.now() < t) {}
 console.log(JSON.stringify(bindProviderSession({ sessionsDir: ${JSON.stringify(sessions)}, adapter: 'claude', sessionId: 'race', chainId: ${JSON.stringify(chain)} })))
 `
       )
-      const c = spawn(VITE_NODE, [file], { stdio: ['ignore', 'pipe', 'inherit'] })
+      const c = spawnViteNode(file, [], { stdio: ['ignore', 'pipe', 'inherit'] })
       children.push(c)
       return c
     }
@@ -78,6 +77,7 @@ console.log(JSON.stringify(bindProviderSession({ sessionsDir: ${JSON.stringify(s
       new Promise((res, rej) => {
         let buf = ''
         c.stdout!.on('data', (d: Buffer) => (buf += String(d)))
+        c.once('error', rej)
         c.once('exit', () => {
           try {
             res(JSON.parse(buf.trim().split('\n').pop() as string))

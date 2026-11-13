@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -13,6 +13,7 @@ import {
   lockFileProblem,
   probeOsLock
 } from './osLock'
+import { killAndWait } from './testing/viteNode'
 
 let dir: string
 const children: ChildProcess[] = []
@@ -20,15 +21,10 @@ const children: ChildProcess[] = []
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'oslock-'))
 })
-afterEach(() => {
-  for (const c of children.splice(0)) {
-    try {
-      c.kill('SIGKILL')
-    } catch {
-      /* gone */
-    }
-  }
-  rmSync(dir, { recursive: true, force: true })
+afterEach(async () => {
+  // Wait for the children to exit first: on Windows a lock file a live child holds cannot be unlinked (EBUSY).
+  await killAndWait(children)
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 
 /** A child process that takes `mode` on `path` with plain node:sqlite and prints "held" (or "busy"), then waits. */
@@ -219,7 +215,16 @@ describe('lock file checks', () => {
     const target = join(dir, 'target.lock')
     ensureLockFile(target)
     const link = join(dir, 'link.lock')
-    symlinkSync(target, link)
+    try {
+      symlinkSync(target, link)
+    } catch (e) {
+      // Windows without Developer Mode or elevation refuses file symlinks (EPERM). A junction needs no privilege and
+      // lstat reports it as a link too, which is the property under test (the link check comes first).
+      if (process.platform !== 'win32' || (e as NodeJS.ErrnoException).code !== 'EPERM') throw e
+      const linkTarget = join(dir, 'linked-dir')
+      mkdirSync(linkTarget)
+      symlinkSync(linkTarget, link, 'junction')
+    }
     expect(lockFileProblem(link)).toMatch(/link/)
     await expect(acquireOsLock(link, 'shared', { waitMs: 0 })).rejects.toBeInstanceOf(LockFileUnsafeError)
 

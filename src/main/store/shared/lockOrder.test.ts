@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CoordinatorRetry,
@@ -17,6 +17,7 @@ import {
   type LockSpec
 } from './lockOrder'
 import { LockBusyError, _osLockStateCount, acquireOsLock, ensureLockFile, probeOsLock } from './osLock'
+import { killAndWait } from './testing/viteNode'
 
 let control: string
 const children: ChildProcess[] = []
@@ -25,9 +26,10 @@ beforeEach(() => {
   control = mkdtempSync(join(tmpdir(), 'lockorder-'))
   mkdirSync(join(control, 'locks'))
 })
-afterEach(() => {
-  for (const c of children.splice(0)) c.kill('SIGKILL')
-  rmSync(control, { recursive: true, force: true })
+afterEach(async () => {
+  // Wait for the children to exit first: on Windows a lock file a live child holds cannot be unlinked (EBUSY).
+  await killAndWait(children)
+  rmSync(control, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 
 const tx = (key: string, order: number, mode: 'exclusive' | 'shared' = 'exclusive'): LockSpec => ({
@@ -196,6 +198,12 @@ describe('lock paths', () => {
     expect(dataLockPath('/c', 'chain-run_abc')).toBe(join('/c', 'locks', 'chain-run_abc.lock'))
     expect(() => dataLockPath('/c', '../x')).toThrow(LockOrderError)
     expect(() => dataLockPath('/c', 'a/b')).toThrow(LockOrderError)
-    expect(cacheLockPath('/k', 'repo', '/Users/me/repo')).toMatch(/\/k\/repo-[0-9a-f]{32}\.lock$/)
+    // The folder is joined with the platform separator; the file name is the kind plus 32 hex digits of the hash.
+    const p = cacheLockPath('/k', 'repo', '/Users/me/repo')
+    expect(dirname(p)).toBe(join('/k'))
+    expect(basename(p)).toMatch(/^repo-[0-9a-f]{32}\.lock$/)
+    expect(cacheLockPath('/k', 'repo', '/Users/me/repo')).toBe(p)
+    expect(cacheLockPath('/k', 'repo', '/Users/me/other')).not.toBe(p)
+    expect(() => cacheLockPath('/k', '../x', '/Users/me/repo')).toThrow(LockOrderError)
   })
 })

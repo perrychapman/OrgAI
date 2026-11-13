@@ -21,7 +21,7 @@
 import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
-import { join, sep } from 'node:path'
+import { join } from 'node:path'
 import { probeOsLock } from '../store/shared/osLock'
 import { writeFileAtomic } from '../store/shared/atomicWrite'
 import { readStartTokenTable, sameStartToken, startTokenOfSync, type StartTokenTable } from './startTokens'
@@ -329,8 +329,12 @@ export function defaultIsAlive(pid: number, start: string | null): boolean | 'un
   return sameStartToken(start, cur)
 }
 
-/** Pids from `lsof -a -d cwd -Fn` output whose cwd is a path inside one of `paths` (or equal to it). */
+/**
+ * Pids from `lsof -a -d cwd -Fn` output whose cwd is a path inside one of `paths` (or equal to it). lsof is a POSIX
+ * tool and prints POSIX paths, so the separator is always '/' (not path.sep), whatever platform parses the text.
+ */
 export function parseLsofCwd(text: string, paths: string[], exclude: ReadonlySet<number> = new Set()): number[] {
+  const sep = '/'
   const roots = paths.map((p) => (p.endsWith(sep) ? p.slice(0, -1) : p)).filter((p) => p.length > 0)
   const out = new Set<number>()
   let pid: number | undefined

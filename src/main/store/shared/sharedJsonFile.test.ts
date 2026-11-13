@@ -1,10 +1,10 @@
-import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ORDER, dataLockPath, withLocks, type LockSpec } from './lockOrder'
 import { SharedJsonFile } from './sharedJsonFile'
+import { spawnViteNode } from './testing/viteNode'
 
 interface Doc {
   n: number
@@ -22,7 +22,7 @@ beforeEach(() => {
   mkdirSync(join(control, 'locks'), { recursive: true })
   file = join(dir, 'doc.json')
 })
-afterEach(() => rmSync(dir, { recursive: true, force: true }))
+afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }))
 
 const parse = (raw: unknown): Doc => {
   if (typeof raw !== 'object' || raw === null || typeof (raw as Doc).n !== 'number') throw new Error('bad doc')
@@ -127,14 +127,13 @@ describe('SharedJsonFile locking', () => {
   })
 })
 
-// Children cannot import the TS module through plain node, so they run under vite-node (node_modules/.bin/vite-node,
-// shipped with vitest), with the script placed in the test's temp dir and the module imported by absolute path.
-const viteNode = resolve(process.cwd(), 'node_modules/.bin/vite-node')
+// Children cannot import the TS module through plain node, so they run under the vite-node CLI (testing/viteNode.ts),
+// with the script placed in the test's temp dir and the module imported by absolute path.
 const modulePath = resolve(__dirname, 'sharedJsonFile.ts')
 
 function runChild(script: string, args: string[]): Promise<void> {
   return new Promise((res, rej) => {
-    const c = spawn(process.execPath, [viteNode, script, ...args], { stdio: ['ignore', 'inherit', 'inherit'], cwd: process.cwd() })
+    const c = spawnViteNode(script, args, { stdio: ['ignore', 'inherit', 'inherit'], cwd: process.cwd() })
     c.on('error', rej)
     c.on('exit', (code) => (code === 0 ? res() : rej(new Error(`child exited ${code}`))))
   })

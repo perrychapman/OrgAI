@@ -1,17 +1,18 @@
 /**
- * hostRegistry tests. The cross-process cases run a tiny TS script through `node_modules/.bin/vite-node` (the loader
- * this repo ships; tsx is not installed) that imports hostRegistry.ts by absolute path, claims a host and waits.
+ * hostRegistry tests. The cross-process cases run a tiny TS script through the vite-node CLI (the loader this repo
+ * ships; tsx is not installed; see store/shared/testing/viteNode.ts) that imports hostRegistry.ts by absolute path,
+ * claims a host and waits.
  */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { LockBusyError, acquireOsLock } from '../store/shared/osLock'
 import { claimHost, hostLockPath, listHosts, takeAdmission, type HostHandle, type HostInfo } from './hostRegistry'
+import { killAndWait, spawnViteNode } from '../store/shared/testing/viteNode'
 import { readEvidence } from './consumers'
 
-const VITE_NODE = resolve(__dirname, '../../../node_modules/.bin/vite-node')
 const info = (over: Partial<HostInfo> = {}): HostInfo => ({
   pid: process.pid,
   hostKind: 'test',
@@ -35,10 +36,11 @@ beforeEach(() => {
   handles = []
   children = []
 })
-afterEach(() => {
-  for (const c of children) c.kill('SIGKILL')
+afterEach(async () => {
+  // Wait for the children to exit first: on Windows a lock file a live child holds cannot be unlinked (EBUSY).
+  await killAndWait(children)
   for (const h of handles) h.release({ clean: true })
-  rmSync(dir, { recursive: true, force: true })
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 
 async function claim(id: string, over: Partial<HostInfo> = {}): Promise<HostHandle> {
@@ -56,7 +58,7 @@ async function childClaim(id: string): Promise<ChildProcess> {
       `await claimHost({ controlDir: ${JSON.stringify(control)}, hostInstanceId: ${JSON.stringify(id)}, info: { pid: process.pid, hostKind: 'child', appVersion: '0', ownerCwd: '/', command: 'child', startedAt: 'now', epoch: 1 } })\n` +
       `console.log('READY')\nsetInterval(() => {}, 1000)\n`
   )
-  const c = spawn(VITE_NODE, [script], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const c = spawnViteNode(script, [], { stdio: ['ignore', 'pipe', 'pipe'] })
   children.push(c)
   await new Promise<void>((ok, fail) => {
     let out = ''
@@ -69,6 +71,7 @@ async function childClaim(id: string): Promise<ChildProcess> {
       }
     })
     c.stderr!.on('data', (d) => (out += String(d)))
+    c.once('error', fail)
     c.on('exit', () => fail(new Error('child exited early: ' + out)))
   })
   return c
@@ -170,10 +173,12 @@ describe('takeAdmission', () => {
       `import { takeAdmission } from ${JSON.stringify(resolve(__dirname, 'hostRegistry.ts'))}\n` +
         `await takeAdmission(${JSON.stringify(control)}, 'shared')\nconsole.log('READY')\nsetInterval(() => {}, 1000)\n`
     )
-    const c = spawn(VITE_NODE, [script], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const c = spawnViteNode(script, [], { stdio: ['ignore', 'pipe', 'ignore'] })
     children.push(c)
     await new Promise<void>((ok, fail) => {
       const t = setTimeout(() => fail(new Error('not ready')), 20_000)
+      c.once('error', fail)
+      c.once('exit', (code) => fail(new Error(`child exited early (${code})`)))
       c.stdout!.on('data', (d) => {
         if (String(d).includes('READY')) {
           clearTimeout(t)

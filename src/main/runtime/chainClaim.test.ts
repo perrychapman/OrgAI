@@ -1,8 +1,8 @@
 /**
- * Chain claim tests (no tokens). Child processes run TypeScript through `node_modules/.bin/vite-node` (the loader this
- * repo ships; there is no tsx), started with an absolute script path written to a temp folder.
+ * Chain claim tests (no tokens). Child processes run TypeScript through the vite-node CLI (the loader this repo ships;
+ * there is no tsx; see store/shared/testing/viteNode.ts), started with an absolute script path written to a temp folder.
  */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -26,8 +26,8 @@ import {
   type ChainWrite
 } from './chainClaim'
 import * as chainClaimModule from './chainClaim'
+import { killAndWait, spawnViteNode } from '../store/shared/testing/viteNode'
 
-const VITE_NODE = resolve(__dirname, '../../../node_modules/.bin/vite-node')
 const MODULE = resolve(__dirname, 'chainClaim.ts')
 
 let dir: string
@@ -37,16 +37,17 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'chainclaim-'))
   mkdirSync(join(dir, 'control', 'locks'), { recursive: true })
 })
-afterEach(() => {
-  for (const c of children.splice(0)) if (c.exitCode === null) c.kill('SIGKILL')
-  rmSync(dir, { recursive: true, force: true })
+afterEach(async () => {
+  // Wait for the children to exit first: on Windows a lock file a live child holds cannot be unlinked (EBUSY).
+  await killAndWait(children)
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 const control = (): string => join(dir, 'control')
 
 function runChild(source: string): ChildProcess {
   const file = join(dir, `child-${children.length}.ts`)
   writeFileSync(file, source)
-  const c = spawn(VITE_NODE, [file], { stdio: ['ignore', 'pipe', 'inherit'] })
+  const c = spawnViteNode(file, [], { stdio: ['ignore', 'pipe', 'inherit'] })
   children.push(c)
   return c
 }
