@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { EvolutionGeneration, EvolutionMetrics, EvolutionPlan, EvolutionRolePatch, Project, SkillSpec } from '../../shared/types'
+import type { EvolutionGeneration, EvolutionMetrics, EvolutionPlan, EvolutionRolePatch, Project, Role, SkillSpec } from '../../shared/types'
 import { project, role, run } from './fixtures'
 import { effectiveRoleStaffing } from '../../shared/defaults'
 import { enforcedStaffingFloor } from '../runtime/staffing'
@@ -322,8 +322,21 @@ describe('validateEvolutionPlan: prompts, skills, limits, rejected', () => {
     expect(lim(32, f(40), 30)).toBe(32)
     expect(lim(0, f(10))).toBeUndefined()
     expect(lim(2.5, f(10))).toBeUndefined()
-    expect(lim(2)).toBe(2) // lowering needs nothing
+    expect(lim(2)).toBeUndefined() // an evolution never lowers the limit
+    expect(lim(2, f(10))).toBeUndefined() // not even with a finding
     expect(lim(8, f(10))).toBeUndefined() // unchanged
+  })
+  it('a concurrency cut is trimmed with the concurrency_cut rule and a plain message', () => {
+    const out = validateEvolutionPlan(project({ maxConcurrentSubagents: 6 }), mkPlan({ maxConcurrentSubagents: 3 }))
+    expect(out.maxConcurrentSubagents).toBeUndefined()
+    const v = out.gate.violations.find((x) => x.rule === 'concurrency_cut')
+    expect(v).toMatchObject({ action: 'trimmed' })
+    expect(v?.message).toContain('only you can lower')
+    // a raise with a throttled serial_bottleneck finding still passes
+    const d = { findings: [{ kind: 'serial_bottleneck' as const, severity: 10, summary: '', evidence: [], data: { limitThrottled: 1, peakReady: 9, limit: 6 } }] }
+    const up = validateEvolutionPlan(project({ maxConcurrentSubagents: 6 }), mkPlan({ maxConcurrentSubagents: 8 }), { diagnosis: d })
+    expect(up.maxConcurrentSubagents).toBe(8)
+    expect(rules(up)).not.toContain('concurrency_cut')
   })
   it('spend probes: floor above fast on an unknown-tier role, multi-step effort, root-only raises', () => {
     // An auto role with no known tier: a floor fails closed, even with an under-provisioned finding (no ceiling to bound it).
@@ -517,6 +530,23 @@ describe('ledger', () => {
     expect(readLedger(d, 'p1', () => 456).generations).toEqual([])
     expect(readdirSync(join(d, 'evolution')).sort()).toEqual(['p1.json.corrupt-123', 'p1.json.corrupt-456'])
   })
+  it('a read-only read never renames or writes a corrupt file', () => {
+    const d = tmp()
+    mkdirSync(join(d, 'evolution'))
+    for (const text of ['{not json', JSON.stringify({ version: 2, generations: [] })]) {
+      writeFileSync(ledgerPath(d, 'p1'), text)
+      const warned: string[] = []
+      const l = readLedger(d, 'p1', () => 789, (_l, m) => warned.push(m), { readOnly: true })
+      expect(l).toEqual(emptyLedger('p1'))
+      expect(readdirSync(join(d, 'evolution'))).toEqual(['p1.json'])
+      expect(readFileSync(ledgerPath(d, 'p1'), 'utf8')).toBe(text)
+      expect(warned).toEqual(['Evolution ledger for p1 was unreadable; read as empty.'])
+    }
+    // a valid file and a missing one read the same either way
+    expect(readLedger(d, 'nope', undefined, undefined, { readOnly: true }).generations).toEqual([])
+    writeLedger(d, emptyLedger('p2'))
+    expect(readLedger(d, 'p2', undefined, undefined, { readOnly: true })).toEqual(emptyLedger('p2'))
+  })
   it('drops malformed entries instead of failing', () => {
     const d = tmp()
     mkdirSync(join(d, 'evolution'))
@@ -592,7 +622,12 @@ describe('promote vs rollback thresholds (boundary values)', () => {
 })
 
 describe('restoreSnapshot', () => {
-  const p = project({ maxConcurrentSubagents: 4 })
+  // Another role also holds Bash, so a rollback may give it back to dev (a write tool nobody holds is not restored).
+  const p = project({ maxConcurrentSubagents: 4 }, [
+    role('lead', { id: 'r_lead', reportsTo: null, canSpawn: true, spawnable: ['r_dev', 'r_review'], tier: 'deep', model: 'deep' }),
+    role('dev', { id: 'r_dev', tools: ['Read', 'Edit', 'Write', 'Bash'], tier: 'deep', model: 'deep', effort: 'high' }),
+    role('review', { id: 'r_review', name: 'Reviewer', tools: ['Read', 'Grep', 'Bash'] })
+  ])
   const diagnosis = { findings: [
     { kind: 'tool_friction' as const, roleSlug: 'dev', severity: 10, summary: '', evidence: [] },
     { kind: 'serial_bottleneck' as const, severity: 10, summary: '', evidence: [], data: { limitThrottled: 1, peakReady: 6, limit: 4 } }
@@ -660,6 +695,65 @@ describe('restoreSnapshot', () => {
     const r = restoreSnapshot(applied, snap, gated)
     expect(r.ok).toBe(true)
     expect(r.project.roles.find((x) => x.slug === 'dev')!.tools).toContain('Bash')
+  })
+  describe('never restores what an evolution could never set', () => {
+    const base = (devOver: Partial<Role>, others?: Partial<Role>): Project =>
+      project({}, [
+        role('lead', { id: 'r_lead', reportsTo: null, canSpawn: true, spawnable: ['r_dev', 'r_review'], tier: 'deep', model: 'deep' }),
+        role('dev', { id: 'r_dev', tier: 'deep', model: 'deep', effort: 'high', ...devOver }),
+        role('review', { id: 'r_review', ...others })
+      ])
+    const roll = (before: Project, rolePatch: EvolutionRolePatch) => {
+      const plan = mkPlan({ rolePatches: [rolePatch] })
+      const after = applyPlan(before, plan)
+      return restoreSnapshot(after, snapshotOf(before, after, plan), plan)
+    }
+    const dev = (r: ReturnType<typeof roll>) => r.project.roles.find((x) => x.slug === 'dev')!
+
+    it('top tier is kept, with a note, and the rest of the rollback goes on', () => {
+      const r = roll(base({ tier: 'top', model: 'top', effort: 'medium' }), patch('dev', { tier: 'deep', effort: 'low' }))
+      expect(r.ok).toBe(true)
+      expect(dev(r)).toMatchObject({ tier: 'deep', effort: 'medium' })
+      expect(r.notes).toContain('kept dev.tier: restoring would set "top", which only you can set')
+      expect(r.notes.join(' ')).toContain('dev.model')
+      expect(dev(r).model).not.toBe('top')
+    })
+    it.each(['xhigh', 'max'] as const)('effort %s is kept, with a note', (effort) => {
+      const r = roll(base({ effort }), patch('dev', { effort: 'low' }))
+      expect(r.ok).toBe(true)
+      expect(dev(r).effort).toBe('low')
+      expect(r.notes).toContain(`kept dev.effort: restoring would set "${effort}", which only you can set`)
+    })
+    it('staffing maxEffort xhigh / max and minTier top are kept', () => {
+      for (const [pre, word] of [
+        [{ mode: 'auto', maxEffort: 'xhigh' }, 'xhigh'],
+        [{ mode: 'auto', maxEffort: 'max' }, 'max'],
+        [{ mode: 'auto', minTier: 'top' }, 'top']
+      ] as const) {
+        const r = roll(base({ staffing: { ...pre } }), patch('dev', { staffing: { mode: 'auto', minTier: 'deep', maxEffort: 'high' } }))
+        expect(r.ok).toBe(true)
+        expect(dev(r).staffing).toEqual({ mode: 'auto', minTier: 'deep', maxEffort: 'high' })
+        expect(r.notes).toContain(`kept dev.staffing: restoring would set "${word}", which only you can set`)
+      }
+    })
+    it('lower values still come back', () => {
+      const r = roll(base({ staffing: { mode: 'auto', minTier: 'everyday', maxEffort: 'high' } }), patch('dev', { staffing: { mode: 'auto', minTier: 'deep' } }))
+      expect(dev(r).staffing).toEqual({ mode: 'auto', minTier: 'everyday', maxEffort: 'high' })
+      expect(r.notes).toEqual([])
+    })
+    it('a write tool nobody else holds is left out with a note; a read tool still comes back', () => {
+      const r = roll(base({ tools: ['Read', 'Grep', 'Edit', 'Bash'] }), patch('dev', { removeTools: ['Bash', 'Grep'] }))
+      expect(r.ok).toBe(true)
+      expect(dev(r).tools).toContain('Grep')
+      expect(dev(r).tools).not.toContain('Bash')
+      expect(r.notes).toContain('Bash was not given back to dev; add it yourself if you want it')
+    })
+    it('a write tool another role holds comes back', () => {
+      const r = roll(base({ tools: ['Read', 'Edit', 'Bash'] }, { tools: ['Read', 'Bash'] }), patch('dev', { removeTools: ['Bash'] }))
+      expect(r.ok).toBe(true)
+      expect(dev(r).tools).toContain('Bash')
+      expect(r.notes).toEqual([])
+    })
   })
   it('a snapshot edited after the fact (a pre value the recorded chart does not hold) is refused whole', () => {
     const extra = structuredClone(snap)
