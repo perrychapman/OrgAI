@@ -118,7 +118,8 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     `eval` text with escaped quotes is misread; cmd's own quoting (`'` literal, `^` escapes) and PowerShell `--%`; wrapper
     options with values beyond the ones listed in `WRAPPER_VALUE_OPTIONS` / timeout `-s` / `-k` / env `-P`; negated
     bracket classes in program names and paths are compared after case folding (`/usr/bin/[!S]ecurity` passes; macOS
-    reaches the vault key that way); a zsh group without `|` (`orga(i)`); the path scan's here-document handling grows
+    reaches the vault key that way; the Reviewer's suggested fix is to match globs against a case-preserving base name,
+    lowercasing only literal characters, since `binName` lowercases before the class is parsed); a zsh group without `|` (`orga(i)`); the path scan's here-document handling grows
     faster than linear on many `<<` starts (thousands take seconds). Tracking is private (SECURITY.md), not a public
     issue.
   - Agent runtimes: `runtime/claudeBinary.ts` `claudeExecutable(env)` is the one resolver (claude.ts runs, probes, completions and

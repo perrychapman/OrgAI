@@ -908,8 +908,9 @@ const COMMENT_BEFORE: ReadonlySet<string> = new Set([' ', '\t', '\n', ';', '&', 
 /** After one of these the next word is in command position. */
 const COMMAND_START: ReadonlySet<string> = new Set([';', '&', '|', '(', '\n'])
 /** Reserved words after which the next word is still in command position. */
-// `time -p` / `time --` keep it too (bash's TIMEOPT / TIMEIGN; review round 5).
-const KEYWORD_THEN_COMMAND = /(?:then|do|else|elif|if|while|until|time|!|\{|-p|--)(?![A-Za-z0-9_-])/y
+const KEYWORD_THEN_COMMAND = /(?:then|do|else|elif|if|while|until|time|coproc|!|\{)(?![A-Za-z0-9_-])/y
+/** `time -p` / `time --` keep command position too (bash's TIMEOPT / TIMEIGN), only right after `time`. */
+const TIME_OPTION = /(?:-p|--)(?![A-Za-z0-9_-])/y
 const isWordChar = (ch: string | undefined): boolean => ch !== undefined && /[A-Za-z0-9_]/.test(ch)
 const newCode = (closer: ')' | '`' | ']' | null, arith = false): LexContext => ({
   k: 'code',
@@ -982,15 +983,19 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
   let bodies: HeredocBody[] = []
   let unterminated = false
   let heredocsOff = false
+  let afterTime = false
   let backticks = 0
   let dollars = 0
+  let hereDocsOpen = 0
   const push = (ctx: LexContext): void => {
     if (ctx.k === 'code' && ctx.closer === '`') backticks++
+    if (ctx.k === 'hd') hereDocsOpen++
     stack.push(ctx)
   }
   const pop = (): void => {
     const ctx = stack.pop()
     if (ctx?.k === 'code' && ctx.closer === '`') backticks--
+    if (ctx?.k === 'hd') hereDocsOpen--
     if (!stack.length) stack.push(newCode(null))
   }
   /** True when the character at i follows an odd run of backslashes. */
@@ -1259,6 +1264,7 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
     }
     if (COMMAND_START.has(ch)) {
       ctx.cmd = true
+      afterTime = false
       // After `;;`, `;&` or `;;&` inside a `case` comes a pattern (or `esac`).
       if (ctx.cases > 0 && text[i - 1] === ';' && (ch === ';' || ch === '&')) ctx.pattern = true
       continue
@@ -1281,8 +1287,9 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
       if (dash) j++
       while (text[j] === ' ' || text[j] === '\t') j++
       const word = heredocWord(text, j)
-      // A delimiter bash reads in a way not modelled here (`$'EOF'`) leaves the text open.
-      if (word === 'unmodelled') unterminated = true
+      // A delimiter bash reads in a way not modelled here (`$'EOF'`), or a here-document opened inside another's body
+      // (one shared body list; review round 5), leaves the text open.
+      if (word === 'unmodelled' || hereDocsOpen > 0) unterminated = true
       else if (word) heredocs.push({ delim: word.delim, dash, quoted: word.quoted })
       ctx.cmd = false
       continue
@@ -1316,10 +1323,19 @@ function lexClasses(text: string, reading: SegmentReading): Lexed {
         continue
       }
       if (ctx.cmd) {
-        KEYWORD_THEN_COMMAND.lastIndex = i
-        if (KEYWORD_THEN_COMMAND.test(text)) {
+        const wasTime = afterTime
+        afterTime = false
+        let end = -1
+        for (const re of wasTime ? [TIME_OPTION, KEYWORD_THEN_COMMAND] : [KEYWORD_THEN_COMMAND]) {
+          re.lastIndex = i
+          if (re.test(text)) {
+            end = re.lastIndex
+            break
+          }
+        }
+        if (end > i) {
           // The whole reserved word is read here, so the next word is still in command position.
-          const end = KEYWORD_THEN_COMMAND.lastIndex
+          afterTime = end === i + 4 && text.startsWith('time', i)
           out.fill(LEX_ACTIVE, i, end)
           i = end - 1
           continue

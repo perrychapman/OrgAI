@@ -1046,7 +1046,11 @@ describe('segment splitting gaps (PR 47 review)', () => {
       'exec -a x orgai status',
       'timeout -s KILL 5 orgai status',
       'env -P /usr/bin orgai status',
-      'stdbuf -o L orgai status'
+      'stdbuf -o L orgai status',
+      // Review round 6.
+      "cat <<A\n$(cat <<B\nx\nB\n)'\nA\n: ; orgai status #'",
+      "echo $'\\'' \"$(-p case x in y)\"; orgai status; echo \"\n;; esac)\"",
+      'echo "$(coproc case y in y) : ; orgai status;; esac)"'
     ]) {
       // Denied, or not checked when bash's grammar leaves it open (the PowerShell items through the Bash tool).
       expect(bash(command), command).not.toBeNull()
