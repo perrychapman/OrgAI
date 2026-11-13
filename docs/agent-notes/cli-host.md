@@ -84,20 +84,30 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   - PR 47 (self-control boundaries, outside contributor; fixes from its review, 2026-11-12): the gate also protects each
     project's team-files approval state (`<data>/projects/<id>/team-files/`, both spellings, project ids re-read on every
     check; the sibling product's existing project folders are enumerated, a linked or unreadable `projects` folder fails
-    closed at its parent; `src/main/teamFiles/protection.ts`, wired in `bootstrap.ts`). `cliSegments` takes the union of
-    several readings of the text (`SegmentReading`: bash/zsh backslash escapes with `$'...'` and `#` comments; PowerShell
-    backtick escapes; quotes only, the pre-PR reading; zsh glob groups absorbed only when they hold no space or operator,
-    and a second bash reading that absorbs every group), so a command any reading splits off is checked. A bracket
-    expression never spans an operator, `${...}` stays one word only with a plain body, zsh `=(...)` is a process
-    substitution (never a glob group), unmatched `)` and unclosed `[` split as before and are no longer "unchecked".
-    Glob names and path components match through `matchGlobTokens` (a state set, linear in name length times pattern
-    length), never a RegExp built from `*`. Every lookahead in `cliSegmentsIn` is precomputed, so the scan stays linear
-    (the scan-cost suite covers `[`, `(`, `)`, groups, `${` and runs of `*`). Checked by unit tests only
-    (`selfControlGate.test.ts` "segment splitting gaps (PR 47 review)", `referenceDirectories.test.ts`); never run in a real
-    zsh, bash or PowerShell. Open limits, not fixed: approval state can still be forged by writing to a parent folder
-    (`cp -r <forged>/. <data>/projects/<id>/` rewrites `team-files/approved.json`), because definite mode counts only
-    paths at or under a protected folder and the scanner does not know which word a command writes to; heredoc bodies and
-    nested quotes inside `${...}` within double quotes are not modelled (the quotes-only reading still checks the old split).
+    closed at its parent; `src/main/teamFiles/protection.ts`, wired in `bootstrap.ts`). `cliSegmentReadings` reads the
+    text several ways (`SegmentReading`): bash/zsh full grammar (backslash escapes and backslash-newline joins, `#`
+    comments only after a blank or operator, `$'...'` but not `$$'`, here-document bodies, `$(...)` / `${...}` / backticks
+    nesting inside double quotes with a context stack, `case` patterns inside them); bash plain (escapes only, no
+    comments, strings or bodies); quotes only (the pre-PR reading); full grammar absorbing every zsh glob group (zsh keeps
+    `orga(i|x y)` one word); PowerShell (backtick escapes, block comments, here-strings, smart quotes). Every segment of
+    every reading is checked; a pipe's look-back stays within its own reading; a segment text an earlier reading already
+    checked is skipped. A bracket expression never spans an operator, `${...}` stays one word only with a plain body,
+    zsh `=(...)` is a process substitution, zsh glob qualifier code (`*(e:'...':)`, `*(+cmd)`) is read from the raw text
+    (past 256 texts the command is unchecked), a variable in a program word reads as `*` with three letters of "orgai"
+    kept, `programIndex` reads any number of wrappers, every `-c`-style flag (clusters, `-com`, `//c`, `/r`, Windows
+    PowerShell's first positional) and csh / tcsh / mksh / `busybox` nest, the CLI scan refuses texts over 256 KB, and an
+    unmatched `)` or unclosed `[` no longer refuses a command. Glob names and path components match through
+    `matchGlobTokens` (a state set, linear), never a RegExp built from `*`. Checked by unit tests only
+    (`selfControlGate.test.ts` "segment splitting gaps (PR 47 review)" with the Reviewer's candidates, "Wave 7 scan cost",
+    `referenceDirectories.test.ts`); never run in a real zsh, bash or PowerShell, and the zsh / PowerShell grammar facts
+    are from memory. Open limits, not fixed (pre-existing on dev): approval state can be forged by writing into a parent
+    folder (`cp -r <forged>/. <data>/projects/<id>/`), because definite mode counts only paths at or under a protected
+    folder and the scanner does not know which word a command writes to; `segmentWords` ignores backslashes, so a nested
+    `bash -c` / `eval` text with escaped quotes is misread; cmd's own quoting (`'` literal, `^` escapes) and PowerShell
+    `--%` are not modelled; wrapper options that take a value (`exec -a x`, `timeout -s KILL`, `env -P`, `stdbuf -o L`) can
+    hide the program; case folding reads a negated class (`[!O]rgai`) wider than bash; a zsh group without `|` (`orga(i)`)
+    is not expanded; the path scan's here-document handling grows faster than linear on many `<<` starts (thousands
+    take seconds).
   - Agent runtimes: `runtime/claudeBinary.ts` `claudeExecutable(env)` is the one resolver (claude.ts runs, probes, completions and
     `anthropicAuth.ts`), evaluated per call: `ORGAI_CLAUDE_PATH` (absolute, existing regular file, not .cmd / .bat / .ps1 / .js /
     .mjs / .cjs; when set it decides), the app.asar.unpacked native package, the SDK per-platform package via `createRequire` from
@@ -339,7 +349,7 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     bundle's entry and loads it before the rest of the CLI, which comes in as its own chunk; `npm run cli` also passes
     `--disable-sigusr1`; `inspectorSignal.test.ts`). PR 47 adds the `#!/usr/bin/env -S node --disable-sigusr1` banner and a
     startup refusal at the top of `runCli()` (`sigusr1Disabled`: the exact flag in `process.execArgv` or as a whole word in
-    `NODE_OPTIONS`, else exit 1 with "refusing to start without Node.js --disable-sigusr1"); e2e scripts and `npm run cli`
+    `NODE_OPTIONS` and no `--no-disable-sigusr1` in either, else exit 1 with "refusing to start without Node.js --disable-sigusr1"); e2e scripts and `npm run cli`
     pass the flag. Checked by `packaging.test.ts` against the built bundle (refused without the flag, runs with it in argv
     and in NODE_OPTIONS, and through the shebang on POSIX); npm's Windows `.cmd` shim carrying the flag is unverified.
     The packaged desktop app flips Electron fuses (`electron-builder.yml` `electronFuses`: no `--inspect` arguments,
