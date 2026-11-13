@@ -44,7 +44,7 @@
     "media:readme": "node scripts/readme-media.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0 <23 || >=24.5.0"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

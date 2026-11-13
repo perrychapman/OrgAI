@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync as fsRealpath, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   SELF_CONTROL_DENIAL_MESSAGE,
@@ -724,6 +724,36 @@ describe('old packaged-app CLI roots, given explicitly', () => {
     }
   })
 
+  it('matches bounded zsh alternatives inside CLI roots without denying unrelated tools', () => {
+    const c: SelfControlContext = { protectedPaths: [], cwd: '/work', platform: 'linux', cliRoots: ['/tmp/install/out/cli'] }
+    for (const command of [
+      '/tmp/install/out/(cli|x)/entry.mjs status',
+      'node /tmp/install/out/(cli|x)/entry.mjs status',
+      'true; /tmp/install/out/(cli|x)/entry.mjs status',
+      'true && node /tmp/install/out/(cli|x)/entry.mjs status'
+    ]) {
+      expect(deny(command, c), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    for (const command of ['./bin/(lint|test)', './node_modules/.bin/(eslint|prettier)']) {
+      expect(deny(command, c), command).toBeNull()
+    }
+  })
+
+  it('matches broad globs in the direct program word without broadening script arguments', () => {
+    const c: SelfControlContext = { protectedPaths: [], cwd: '/work', platform: 'linux', cliRoots: [] }
+    for (const command of [
+      '~/.local/bin/* status',
+      '~/.local/bin/o* status',
+      './o* status',
+      '~/.local/bin/????? status'
+    ]) {
+      expect(deny(command, c), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    for (const command of ['./bin/(lint|test)', './node_modules/.bin/(eslint|prettier)', 'node * status']) {
+      expect(deny(command, c), command).toBeNull()
+    }
+  })
+
   it('denies cmd /c orgai.cmd on win32', () => {
     const wres = 'C:\\Users\\me\\AppData\\Local\\Programs\\OrgAI\\resources'
     const wctx: SelfControlContext = { protectedPaths: [], cwd: 'C:\\work\\repo', platform: 'win32', shell: 'powershell', cliRoots: [`${wres}\\app.asar.unpacked\\out\\cli`, `${wres}\\bin`] }
@@ -778,6 +808,11 @@ describe('stdin, here-strings, substitutions, find -exec, globs, braces and esca
       'sh -c "$(cat ~/.local/bin/orgai)"',
       `bash -c "$(cat ${res}/bin/orgai)" x status`,
       'sh <(cat ~/.local/bin/orgai) status',
+      'echo $(true|orgai)',
+      'echo $(orgai|true)',
+      'echo <(true|orgai)',
+      'echo <(orgai|true)',
+      "bash -c '(true | orgai status)'",
       'eval "$(echo orgai status)"',
       'find . -exec orgai status \\;',
       'find . -maxdepth 0 -execdir ~/.local/bin/orgai runs list +',
@@ -833,6 +868,12 @@ describe('stdin, here-strings, substitutions, find -exec, globs, braces and esca
       'echo a\\ b',
       'ls ./scripts/*.sh',
       'echo "$(git rev-parse HEAD)"',
+      'true; (ls|true)',
+      'echo hi; (false|true)',
+      './bin/(lint|test)',
+      './node_modules/.bin/(eslint|prettier)',
+      'case x in x) echo ok;; esac',
+      "bash -c 'case x in x) echo ok;; esac'",
       'if [ -f x ]; then echo y; fi',
       'printf "%s" "${HOME}"'
     ]) {
@@ -877,6 +918,216 @@ describe('commandRunsOrgaiCli', () => {
     expect(commandRunsOrgaiCli('ps -p 123')).toBe(false)
     expect(commandRunsOrgaiCli('npm install')).toBe(false)
   })
+
+  it('reads deep and unmatched shell groups (linear cost: Wave 7 scan cost)', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work', platform: 'linux', cliRoots: [] }
+    // A subshell nested any depth still splits off the command inside it.
+    const deep = `echo ${'('.repeat(16_000)}orgai status${')'.repeat(16_000)}`
+    expect(commandRunsOrgaiCli(deep)).toBe(true)
+    expect(checkSelfControlDenial('Bash', { command: deep }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    // An unmatched `(` is a syntax error to the shell; it splits as before PR 47 and names nothing.
+    expect(commandRunsOrgaiCli(`echo (${'x'.repeat(16_000)}`)).toBe(false)
+    expect(commandRunsOrgaiCli(`echo (${'x'.repeat(100)}; orgai status`)).toBe(true)
+
+    expect(commandRunsOrgaiCli('true; (ls|true)')).toBe(false)
+    expect(commandRunsOrgaiCli('echo hi; (false|true)')).toBe(false)
+    expect(commandRunsOrgaiCli("echo '((((not shell groups))))'")).toBe(false)
+  })
+})
+
+describe('segment splitting gaps (PR 47 review)', () => {
+  const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work', home: '/home/u', platform: 'linux', cliRoots: [] }
+  const bash = (command: string): string | null => checkSelfControlDenial('Bash', { command }, ctx)
+
+  it('splits off a command hidden behind a bracket, a ${, an escape, a comment or zsh =(...)', () => {
+    // A pipe's look-back reads the pieces of its own reading (PowerShell tool: only the backtick reading isolates it).
+    expect(checkSelfControlDenial('PowerShell', { command: "echo a | powershell -c -; echo `'; echo 'orgai status' | powershell -c -" }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    for (const command of [
+      // A bracket expression never spans an operator or a space.
+      'echo [;orgai status;]',
+      'echo [; orgai status',
+      'echo [|orgai status|]',
+      'echo [&&orgai status&&]',
+      'echo x[;orgai status;]y',
+      // `${...}` stays one word only with a plain body.
+      'echo \\${; orgai status',
+      "echo ${x:-'}'}; orgai status",
+      'echo ${x:-"}"}; orgai status',
+      'echo ${x:-\\}}; orgai status',
+      'echo ${x; orgai status; }',
+      // zsh process substitution.
+      'cat =(orgai status|cat)',
+      'cat =(orgai|cat)',
+      'diff =(orgai status) x',
+      // Backslash escapes outside quotes and inside double quotes, and $'...' strings.
+      "echo \\'; orgai status",
+      'echo \\"; orgai status',
+      'echo "\\"" ; orgai status',
+      "echo $'\\''; orgai status",
+      "echo $'\\'' && orgai status",
+      // A quote in a comment does not open a string.
+      "echo hi # it's\norgai status",
+      'echo hi # "\norgai status',
+      // PowerShell: a backtick escape, and a backslash that escapes nothing.
+      "echo `'; orgai status",
+      'Get-Content "C:\\dir\\"; orgai status',
+      // PowerShell block comments and here-strings.
+      "<# ' #> ; orgai status",
+      "@'\nit's\n'@; orgai status",
+      // A backslash-newline joins a word.
+      'orga\\\ni status',
+      // zsh glob qualifiers that run code.
+      "ls *(e:'orgai status':)",
+      'ls *(e[orgai status])',
+      'ls *(+orgai)',
+      // A glob group holding a space or an operator: both readings are checked.
+      'echo x(a|;orgai status;)',
+      'echo x(a|b c); orgai status',
+      '~/.local/bin/orga(i|x y) status',
+      // Review round 2: a comment only at a real word start, `$$'`, an escaped backslash before a newline.
+      "echo \\' $(true)#; orgai status",
+      "echo \\' a\r#; orgai status",
+      "echo \\' a\f#; orgai status",
+      "echo \\' a #; orgai status",
+      "echo \\' ${x- #}; orgai status",
+      "echo \\' $$'\\'; orgai status",
+      "echo \\' \\\\\norgai status",
+      // zsh qualifiers past any count, and with a space inside.
+      'ls ' + '*(e:true:) '.repeat(17) + "*(e:'orgai status':)",
+      'ls *(e:orgai status:)',
+      'ls *(e:orgai\\ status:)',
+      // A variable in the program word, nested quotes inside "$(...)", here-document bodies, many wrappers.
+      '${x}orgai status',
+      '$p/orgai status',
+      'echo "$(echo "\'")"; orgai status',
+      'echo "${x:-"\'"}"; orgai status',
+      ": <<EOF\n'\nEOF\norgai status",
+      "node x.js <<EOF\nit's\nEOF\norgai status",
+      "node x.js <<-'EOF'\n\tit's\n\tEOF\norgai status",
+      'env '.repeat(65) + 'orgai status',
+      // Nested shell flags.
+      "bash -ce 'orgai status'",
+      "bash -c -e 'orgai status'",
+      "bash -c -- 'orgai status'",
+      "pwsh -NoProfile -ExecutionPolicy Bypass -Command 'orgai status'",
+      "powershell -com 'orgai status'",
+      'powershell orgai status',
+      'cmd //c orgai status',
+      'cmd /r orgai status',
+      "tcsh -c 'orgai status'",
+      "busybox sh -c 'orgai status'",
+      // PowerShell smart quotes.
+      "echo \u2019'; orgai status",
+      // Review round 3: an unquoted here-document body is expanded; nested braces in `${...}`; option values.
+      "cat <<EOF\n'$(orgai status)\nEOF",
+      "echo $'\\'' ${x:-{a} #}; orgai status",
+      "$'orgai' status",
+      '$"orgai" status',
+      '${x:-orgai} status',
+      "bash -c -o pipefail 'orgai status'",
+      "bash -O extglob -c 'orgai status'",
+      "powershell -NoProfile 'orgai status'",
+      "powershell /Command 'orgai status'",
+      // Review round 4.
+      'echo "$(case y in x) echo esac;; y) : ; orgai status;; esac)"',
+      "echo $[1 << 2] $'\\''\n: ; orgai status\n2]",
+      "for ((i=0; i<<2; i++)); do :; done; echo $'\\''\n: ; orgai status\n2",
+      "echo $'\\'' `cat <<'EOF'\n`; orgai status #\nEOF\n`",
+      ": <<$'EOF'\n'\nEOF\norgai status\n$EOF",
+      "$'\\x6frgai' status",
+      "$'\\157rgai' status",
+      '${x/#/orgai} status',
+      // Review round 5.
+      'echo "$(time -p case y in y) : ; orgai status;; esac)"',
+      "echo $'\\'' \"$(case x in esac)\"; orgai status; echo \"\nesac)\"",
+      "echo $[x[0] << 2] $'\\''\n: ; orgai status\n2]",
+      ": <<''\n'\n\n: ; orgai status #'",
+      ": <<$'EOF'\n'\nEOF\n: ; orgai status #'",
+      'exec -a x orgai status',
+      'timeout -s KILL 5 orgai status',
+      'env -P /usr/bin orgai status',
+      'stdbuf -o L orgai status',
+      // Review round 6.
+      "cat <<A\n$(cat <<B\nx\nB\n)'\nA\n: ; orgai status #'",
+      "echo $'\\'' \"$(-p case x in y)\"; orgai status; echo \"\n;; esac)\"",
+      'echo "$(coproc case y in y) : ; orgai status;; esac)"'
+    ]) {
+      // Denied, or not checked when bash's grammar leaves it open (the PowerShell items through the Bash tool).
+      expect(bash(command), command).not.toBeNull()
+      expect(commandRunsOrgaiCli(command), command).toBe(true)
+    }
+    // The PowerShell-only items through the PowerShell tool are read and denied.
+    for (const command of ["echo `'; orgai status", "<# ' #> ; orgai status", "@'\nit's\n'@; orgai status", 'Get-Content "C:\\dir\\"; orgai status', "echo \u2019'; orgai status"]) {
+      expect(checkSelfControlDenial('PowerShell', { command }, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    // Texts the full grammar reads as left open (a misreading reading would split them): not checked further.
+    for (const command of [
+      "echo $((1 << 2)) $'\\''\norgai status",
+      ": <<'EO F'\n'\nEO F\norgai status",
+      "echo $'\\'' \"$(echo case)\"; orgai status",
+      "echo \"${x:-'\"'}\"; orgai status",
+      "echo `echo '`; orgai status",
+      "echo ${a'b}; orgai status"
+    ]) {
+      expect(bash(command), command).not.toBeNull()
+      expect(commandRunsOrgaiCli(command), command).toBe(true)
+    }
+    expect(checkSelfControlDenial('PowerShell', { command: "echo ${a'b}; orgai status" }, ctx)).not.toBeNull()
+    expect(checkSelfControlDenial('PowerShell', { command: "echo ${a'b}; orgai status #'}" }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+  })
+
+  it('still allows ordinary commands with brackets, parameters, escapes, comments and groups', () => {
+    for (const command of [
+      'echo [',
+      'grep -c [ f',
+      'grep -n "[" f',
+      'test [ -f x ]',
+      'if [ -f x ]; then echo y; fi',
+      'echo [abc] [!x] [[:alpha:]]',
+      'printf "%s" "${HOME}"',
+      'echo ${HOME} ${x:-y} ${x#*.}',
+      'echo \\$HOME \\( \\) \\;',
+      "find . \\( -name a -o -name b \\) -print",
+      "echo $'a\\'b'",
+      'echo hi # (unmatched in a comment',
+      'echo hi # it\'s fine',
+      'cat <<EOF\n# 1)\nEOF',
+      'node x.js <<EOF\n# 1)\n2) item\nEOF',
+      'echo $(case x in x) echo ok;; esac)',
+      'case x in x) echo ok;; esac',
+      'echo )',
+      './bin/(lint|test)',
+      'echo =(ls)',
+      'git commit -m "fix (wip"',
+      'ls ./scripts/*.sh',
+      'ls *(.om[1])',
+      'echo "(e.g. a note)"',
+      "<# a comment #> Get-ChildItem",
+      "$t = @'\nline (one\n'@",
+      'echo a \\\n  b',
+      'echo $$ $(date)#tag',
+      'git log --format="%h (%an)"',
+      '$EDITOR notes.md',
+      '"$PYTHON" -m pytest',
+      'node -e "console.log(require(\'os\').cpus().length)"',
+      "python3 - <<'PY'\nprint('it''s (fine')\nPY",
+      'pwsh -NoProfile -Command Get-ChildItem',
+      // The full grammar must not leave these open (the fail-closed backstop).
+      "git commit -F - <<'EOF'\nDon't (wip): it's \"done\"\nEOF",
+      'git commit -m "$(cat <<\'EOF\'\nFix: don\'t crash (again)\n\nRefs #47\nEOF\n)"',
+      "cat > notes.txt <<EOF\nit's $(date) and ${HOME}\nEOF\necho done",
+      'echo $(( 1 << 2 )); (( x = 1 << 3 ))',
+      'v=$(case "$1" in a) echo x;; b) echo y;; esac); echo "$v"',
+      "echo `date`; echo \"`whoami` it's\"",
+      "ls # don't (care)",
+      'echo "${x:-{a}}" ${y:-b}'
+    ]) {
+      expect(bash(command), command).toBeNull()
+    }
+    for (const command of ['Remove-Item "C:\\temp\\"; Get-ChildItem', 'Write-Host "a`"b"', "$s = @\"\nit's \"quoted\"\n\"@"]) {
+      expect(checkSelfControlDenial('PowerShell', { command }, ctx), command).toBeNull()
+    }
+  })
 })
 
 describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
@@ -894,6 +1145,58 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
   const bash = (command: string, ctx: SelfControlContext): string | null => checkSelfControlDenial('Bash', { command }, ctx)
   const ps = (command: string, ctx: SelfControlContext): string | null => checkSelfControlDenial('PowerShell', { command }, ctx)
   const encode = (text: string): string => Buffer.from(text, 'utf16le').toString('base64')
+
+  it('fails closed on POSIX bracket classes and shell glob ambiguity in protected names', () => {
+    const linuxRoot = posix.join('/tmp', `orgai-scg7-posix-${process.pid}`)
+    const data = posix.join(linuxRoot, 'data')
+    const ctx: SelfControlContext = {
+      protectedPaths: [posix.join(data, 'run')],
+      cwd: posix.join(linuxRoot, 'proj'),
+      home: linuxRoot,
+      platform: 'linux',
+      cliRoots: []
+    }
+    for (const command of [
+      '/usr/bin/secur[[:alpha:]]ty dump-keychain',
+      '/usr/bin/secur[]i]ty dump-keychain',
+      '/usr/bin/secur[!]z]ty dump-keychain',
+      '/usr/bin/secur[z-\\]i]ty dump-keychain',
+      '/usr/bin/secur[]z-ai]ty dump-keychain',
+      '/usr/bin/secur[!]z-a]ty dump-keychain',
+      '/usr/bin/secur[!"()"]ty dump-keychain',
+      '~/.local/bin/orga[[:alpha:]] status',
+      '~/.local/bin/orga[]i] status',
+      '~/.local/bin/orga[!"()"] status',
+      `cat '${data}'/r[[:alpha:]]n/daemon.secret`,
+      `cat '${data}'/r[z-\\]u]n/daemon.secret`,
+      "C=']'; ~/.local/bin/orga[z-\"]\"i$C status",
+      "C=']'; /usr/bin/secur[z-\"]\"i${C}ty dump-keychain",
+      "bash -O extglob -c '~/.local/bin/?(o)rgai status'",
+      "zsh -c '=orgai status'",
+      "zsh -c '/usr/bin/securit(y|x) dump-keychain'",
+      'true; ~/.local/bin/orga(i|x) status',
+      'true && ~/.local/bin/orga(i|x) status',
+      'true; /usr/bin/securit(y|x) dump-keychain',
+      '~/.local/bin/orga(i|(x)) status',
+      '/usr/bin/securit(y|(x)) dump-keychain',
+      'true; ~/.local/bin/orga(i|(x)) status',
+      'true; /usr/bin/securit(y|(x)) dump-keychain',
+      'cat ~/.local/bin/orga{h..i} | sh'
+    ]) {
+      expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+
+    const windowsData = 'C:\\security\\orgai\\data'
+    const windowsRun = win32.join(windowsData, 'run')
+    const windowsCtx: SelfControlContext = {
+      protectedPaths: [windowsRun],
+      cwd: 'C:\\work',
+      platform: 'win32',
+      shell: 'powershell',
+      cliRoots: []
+    }
+    expect(checkSelfControlDenial('PowerShell', { command: `Get-Content "${win32.join(windowsRun, 'daemon.secret')}"` }, windowsCtx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+  })
 
   describe('package runners naming the package', () => {
     const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }
@@ -1943,7 +2246,21 @@ describe('Wave 7 scan cost', () => {
       ['runner words', (n) => `npx ${'np\\x e?ec '.repeat(n)}`, 2_500],
       ['security options', (n) => `echo ${'security -v -- -pX '.repeat(n)}`, 2_500],
       ['vault env', (n) => `echo ${'ORGAI_'.repeat(n)}`, 10_000],
-      ['vault label words', (n) => `echo ${'keyring OrgAI '.repeat(n)}`, 2_500]
+      ['vault label words', (n) => `echo ${'keyring OrgAI '.repeat(n)}`, 2_500],
+      // PR 47 review (M2, M3): unclosed `[`, parentheses, glob groups and runs of `*` in a program word or path.
+      ['open brackets', (n) => `echo ${'['.repeat(n)}`, 10_000],
+      ['open brackets before a stop', (n) => `echo ${'[a'.repeat(n)};x`, 10_000],
+      ['open parens', (n) => `echo ${'('.repeat(n)}`, 10_000],
+      ['close parens', (n) => `echo ${')'.repeat(n)}`, 10_000],
+      ['sibling groups', (n) => `echo x${'(a|b)'.repeat(n)}`, 2_500],
+      ['nested groups', (n) => `echo ${'x('.repeat(n)}a|b${')'.repeat(n)}`, 2_500],
+      ['parameter braces', (n) => `echo ${'${x'.repeat(n)}`, 10_000],
+      ['star program', (n) => `~/.local/bin/${'*'.repeat(n)}x status`, 2_000],
+      ['star-letter program', (n) => `~/.local/bin/${'*o'.repeat(n)}x status`, 1_000],
+      ['star path', (n) => `cat ${data}/${'*'.repeat(n)}x/daemon.secret`, 2_000],
+      ['nested substitutions in quotes', (n) => `echo "${'$(echo "'.repeat(n)}`, 2_500],
+      ['zsh qualifiers', (n) => `ls ${'*(e:x:) '.repeat(n)}`, 2_500],
+      ['shell flags', (n) => `bash ${'-c '.repeat(n)}x`, 2_500]
     ]
     const best = (command: string): number => {
       let min = Infinity
@@ -1958,6 +2275,32 @@ describe('Wave 7 scan cost', () => {
     for (const [name, make, n] of texts) {
       const t1 = best(make(n))
       const t2 = best(make(2 * n))
+      expect(t2, `${name}: ${t1.toFixed(1)} ms at n, ${t2.toFixed(1)} ms at 2n`).toBeLessThan(3 * t1 + 100)
+    }
+  })
+
+  // The CLI scan alone: the path scan's here-document handling grows faster than linear on these (on dev before PR 47
+  // too; recorded in docs/agent-notes/cli-host.md), so this checks the segment readings only.
+  it('reads many here-document starts in linear time (CLI scan)', () => {
+    const best = (command: string): number => {
+      let min = Infinity
+      for (let k = 0; k < 3; k++) {
+        const t0 = performance.now()
+        commandRunsOrgaiCli(command, { cwd: '/work', platform: 'linux' })
+        min = Math.min(min, performance.now() - t0)
+      }
+      return min
+    }
+    const makes: [string, (n: number) => string][] = [
+      ['starts', (n) => `node ${'<<a '.repeat(n)}\nx`],
+      // Bodies whose `$(` closes only after later bodies (review round 4: never read backwards).
+      ['crossing bodies', (n) => `cat ${'<<A '.repeat(n)}\n${'$(\nA\n'.repeat(n)}${')'.repeat(n)}`],
+      // Here-documents whose delimiter never comes (review round 5).
+      ['missing delimiters', (n) => ': <<A\n'.repeat(n)]
+    ]
+    for (const [name, make] of makes) {
+      const t1 = best(make(5_000))
+      const t2 = best(make(10_000))
       expect(t2, `${name}: ${t1.toFixed(1)} ms at n, ${t2.toFixed(1)} ms at 2n`).toBeLessThan(3 * t1 + 100)
     }
   })

@@ -70,7 +70,7 @@ delete cliEnv.ORGAI_VAULT_KEY_FILE
 function startCli(args, { cwd = APP_DIR, env = {} } = {}) {
   const merged = { ...cliEnv, ...env }
   for (const k of Object.keys(merged)) if (merged[k] === undefined) delete merged[k]
-  const child = spawn(process.execPath, [CLI, '--no-color', ...args], { cwd, env: merged, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, ['--disable-sigusr1', CLI, '--no-color', ...args], { cwd, env: merged, stdio: ['ignore', 'pipe', 'pipe'] })
   const held = { out: '', err: '', exited: false }
   child.stdout.on('data', (d) => (held.out += d))
   child.stderr.on('data', (d) => (held.err += d))

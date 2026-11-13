@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   REFERENCE_EDIT_TOOLS,
@@ -8,8 +8,11 @@ import {
   commandReferenceTouch,
   commandTouchesReference,
   editTargetOf,
+  expandShellGlobAlternatives,
   globMayStartWith,
   localDrivePathOf,
+  matchGlobTokens,
+  type GlobToken,
   pathAtOrUnder,
   referenceCommandMessage,
   referenceEditDenial,
@@ -244,6 +247,100 @@ describe('prefix protection (definite mode, selfControlGate.ts Wave 7)', () => {
     for (const g of ['p*', 'x*', 'w*.json', 'vault', 'vault.js', '[!v]*', 'valut*', '?', 'vault.jsox*']) {
       expect(globMayStartWith(g, 'vault.json'), g).toBe(false)
     }
+  })
+
+  it('reads POSIX bracket classes and treats malformed or ambiguous ranges as broad matches', () => {
+    for (const [glob, prefix] of [
+      ['[[:alpha:]]', 'v'],
+      ['[]v]ault*', 'vault.json'],
+      ['[!]z]ault*', 'vault.json'],
+      ['[z-\\]v]ault*', 'vault.json'],
+      ['[!z-a]ault*', 'vault.json'],
+      ['[v', 'vault.json']
+    ]) {
+      expect(globMayStartWith(glob, prefix), glob).toBe(true)
+    }
+
+    const linuxRoot = '/tmp/orgai-reference-posix-fixture'
+    const linuxWork = posix.join(linuxRoot, 'work')
+    const dir = posix.join(linuxRoot, 'security', 'orgai', 'data')
+    const protectedRun = posix.join(dir, 'run')
+    for (const pattern of ['r[[:alpha:]]n/daemon.secret', 'r[z-\\]u]n/daemon.secret']) {
+      expect(searchReaches(dir, pattern, [protectedRun], linuxWork, { platform: 'linux' }), pattern).toBe(protectedRun)
+      expect(commandControlScan(`cat '${dir}'/${pattern}`, linuxWork, [protectedRun], { platform: 'linux' })).toBe('touch')
+    }
+
+    const cafe = posix.join(linuxRoot, 'café')
+    const cafeRun = posix.join(cafe, 'run')
+    expect(searchReaches(linuxRoot, 'caf[[:alpha:]]/run/daemon.secret', [cafeRun], linuxWork, { platform: 'linux' })).toBe(cafeRun)
+    expect(commandControlScan(`cat '${linuxRoot}'/caf[[:alpha:]]/run/daemon.secret`, linuxWork, [cafeRun], { platform: 'linux' })).toBe('touch')
+
+    const emojiRun = posix.join(linuxRoot, 'data😀', 'run')
+    expect(searchReaches(linuxRoot, 'data[😀]/run/daemon.secret', [emojiRun], linuxWork, { platform: 'linux' })).toBe(emojiRun)
+    expect(commandControlScan(`cat '${linuxRoot}'/data[😀]/run/daemon.secret`, linuxWork, [emojiRun], { platform: 'linux' })).toBe('touch')
+  })
+
+  it('keeps repeated ambiguous classes bounded while still refusing protected paths', () => {
+    const linuxRoot = '/tmp/orgai-reference-posix-fixture'
+    const linuxWork = posix.join(linuxRoot, 'work')
+    const component = `${'[z-a]'.repeat(80)}x`
+    const protectedRun = posix.join(linuxRoot, `${'a'.repeat(80)}y`, 'run')
+    const pattern = `${component}/run/daemon.secret`
+    expect(searchReaches(linuxRoot, pattern, [protectedRun], linuxWork, { platform: 'linux' })).toBe(protectedRun)
+    expect(commandControlScan(`cat '${linuxRoot}'/${pattern}`, linuxWork, [protectedRun], { platform: 'linux' })).toBe('touch')
+  })
+
+  it('matches glob components without backtracking (PR 47 review M2)', () => {
+    const tokens = (glob: string): GlobToken[] => [...glob].map((ch) => (ch === '*' ? { star: true } : { star: false, test: (x: string) => x === ch }))
+    // A RegExp `.*` per star backtracks combinatorially here; the state set is linear in name length times stars.
+    expect(matchGlobTokens(tokens(`${'*'.repeat(5_000)}x`), 'a'.repeat(200))).toBe(false)
+    expect(matchGlobTokens(tokens(`${'*a'.repeat(2_000)}x`), 'a'.repeat(200))).toBe(false)
+    expect(matchGlobTokens(tokens('*a*b'), 'xxaxxb')).toBe(true)
+    expect(matchGlobTokens(tokens('a*'), 'b')).toBe(false)
+    expect(matchGlobTokens(tokens(''), '')).toBe(true)
+    expect(matchGlobTokens(tokens('**'), '')).toBe(true)
+    const linuxRoot = '/tmp/orgai-reference-posix-fixture'
+    const protectedRun = posix.join(linuxRoot, 'data', 'run')
+    for (const pattern of [`${'*'.repeat(5_000)}a/run/x`, `d${'*'.repeat(5_000)}a/run/x`]) {
+      expect(searchReaches(linuxRoot, pattern, [protectedRun], linuxRoot, { platform: 'linux' }), pattern.slice(0, 8)).toBe(protectedRun)
+    }
+    // A mismatching component (the case a backtracking RegExp explodes on) leaves the command unmatched.
+    expect(commandControlScan(`cat ${linuxRoot}/${'*'.repeat(5_000)}z/run/x`, linuxRoot, [protectedRun], { platform: 'linux' })).toBeNull()
+  })
+
+  it('expands bounded zsh and optional extglob path groups before scanning protected paths', () => {
+    const linuxRoot = '/tmp/orgai-reference-posix-fixture'
+    const linuxWork = posix.join(linuxRoot, 'work')
+    const data = posix.join(linuxRoot, 'data')
+    const protectedRun = posix.join(data, 'run')
+    for (const command of [
+      `cat '${linuxRoot}'/data/(run|x)/daemon.secret`,
+      `cat '${linuxRoot}'/data/?(r)un/daemon.secret`,
+      `cat '${linuxRoot}'/(data|x)/run/daemon.secret`
+    ]) {
+      expect(commandControlScan(command, linuxWork, [protectedRun], { platform: 'linux' }), command).toBe('touch')
+    }
+  })
+
+  it('resolves Windows fixtures when the win32 path model is selected', () => {
+    const data = 'C:\\security\\orgai\\data'
+    const protectedRun = win32.join(data, 'run')
+    const workdir = 'C:\\work'
+    expect(searchReaches(data, 'run/daemon.secret', [protectedRun], workdir, { platform: 'win32' })).toBe(protectedRun)
+    expect(commandControlScan(`cat "${win32.join(protectedRun, 'daemon.secret')}"`, workdir, [protectedRun], { platform: 'win32' })).toBe('touch')
+  })
+
+  it('bounds work on deeply nested and unmatched shell glob groups', () => {
+    const deep = `x(a|${'('.repeat(8_000)}b${')'.repeat(8_000)})`
+    const unmatched = `x(a|${'('.repeat(16_000)}`
+    expect(expandShellGlobAlternatives(deep)).toBeNull()
+    expect(expandShellGlobAlternatives(unmatched)).toBeNull()
+  })
+
+  it('never reads zsh =(...) process substitution as a glob group', () => {
+    expect(expandShellGlobAlternatives('=(orgai|cat)')).toEqual(['=(orgai|cat)'])
+    expect(expandShellGlobAlternatives('x=(a|b)')).toEqual(['x=(a|b)'])
+    expect(expandShellGlobAlternatives('orga(i|x)')?.sort()).toEqual(['orgai', 'orgax'])
   })
 
   it('pathAtOrUnder / searchReaches / commandControlScan honour `prefixed`, and only in definite mode', () => {
