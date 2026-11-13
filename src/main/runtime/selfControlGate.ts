@@ -105,7 +105,7 @@
 import { join, posix, resolve, win32 } from 'node:path'
 import { canonicalDeep } from '../quick/scratch'
 import { LEGACY_SECRETS_FILE, VAULT_FILE } from '../store/vaultTypes'
-import { commandControlScan, pathAtOrUnder, searchReaches, type PrefixProtection } from './referenceDirectories'
+import { commandControlScan, expandShellGlobAlternatives, parseGlobBracketClass, pathAtOrUnder, searchReaches, type PrefixProtection } from './referenceDirectories'
 import { segmentWords } from './ruleMatch'
 
 export const SELF_CONTROL_DENIAL_MESSAGE = "OrgAI: Agent tools may not invoke the OrgAI CLI or access OrgAI's internal control and secret files."
@@ -288,6 +288,8 @@ const PACKAGE_RUNNERS: readonly string[] = ['npx', 'npm', 'pnpm', 'pnpx', 'yarn'
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 const MAX_NEST = 3
 const MAX_SEGMENTS = 2000
+/** Bound shell-group nesting before any helper scans for a matching close delimiter. */
+const MAX_CLI_GROUP_DEPTH = 64
 
 /**
  * The npm package in a word (Wave 7, cli-standalone 8.4; the published name is `orgai-cli`, owner decision 2026-11-06,
@@ -349,36 +351,16 @@ function globKeptLetters(glob: string): string {
     const ch = glob[i]
     if (ch === '*' || ch === '?') continue
     if (ch === '[') {
-      // The same bracket reading as globRegex: a `]` right after `[` is part of the class.
-      const end = glob.indexOf(']', i + 2)
-      if (end !== -1) {
-        out += singleClassLetter(glob.slice(i + 1, end))
-        i = end
+      const cls = parseGlobBracketClass(glob, i)
+      if (cls) {
+        if (!cls.ambiguous) out += cls.single
+        i = cls.end
         continue
       }
     }
     out += ch.toLowerCase()
   }
   return out
-}
-
-/** The one letter a bracket class body can match (case folded), else ''. */
-function singleClassLetter(body: string): string {
-  if (body === '' || body.startsWith('!') || body.startsWith('^')) return ''
-  const seen = new Set<string>()
-  for (let k = 0; k < body.length; k++) {
-    let lo = body[k]
-    let hi = lo
-    if (body[k + 1] === '-' && k + 2 < body.length) {
-      hi = body[k + 2]
-      k += 2
-    }
-    if (lo.toLowerCase() !== hi.toLowerCase()) return ''
-    lo = lo.toLowerCase()
-    seen.add(lo)
-    if (seen.size > 1) return ''
-  }
-  return seen.size === 1 ? [...seen][0] : ''
 }
 
 /**
@@ -389,11 +371,16 @@ function singleClassLetter(body: string): string {
  */
 function wordMayBe(word: string, names: readonly string[]): boolean {
   for (const n of wordNames(word)) {
-    if (names.includes(n)) return true
-    if (!GLOB_CHARS.test(n)) continue
-    const re = cachedGlobRegex(n)
-    const kept = globKeptLetters(n).length
-    for (const name of names) if (re.test(name) && kept >= Math.min(3, Math.max(1, name.length - 1))) return true
+    const variants = expandShellGlobAlternatives(n)
+    if (!variants) return true
+    for (const candidate of variants) {
+      const zshName = candidate.startsWith('=') ? candidate.slice(1) : candidate
+      if (names.includes(candidate) || names.includes(zshName)) return true
+      if (!GLOB_CHARS.test(candidate)) continue
+      const re = cachedGlobRegex(candidate)
+      const kept = globKeptLetters(candidate).length
+      for (const name of names) if (re.test(name) && kept >= Math.min(3, Math.max(1, name.length - 1))) return true
+    }
   }
   return false
 }
@@ -813,6 +800,118 @@ interface CliSegment {
   text: string
   pipeIn: boolean
   producer: boolean
+  limited?: boolean
+}
+
+function matchingParenEnd(text: string, open: number): number {
+  let depth = 0
+  let quote: string | null = null
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i]
+    if (quote) {
+      if (quote === '"' && ch === '\\') i++
+      else if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i++
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      continue
+    }
+    if (ch === '[') {
+      const cls = parseGlobBracketClass(text, i)
+      if (cls) {
+        i = cls.end
+        continue
+      }
+    }
+    if (ch === '(') depth++
+    else if (ch === ')' && --depth === 0) return i
+  }
+  return -1
+}
+
+/** A linear preflight prevents repeated matching-close scans on deeply nested or unmatched input. */
+function shellGroupsReadable(text: string): boolean {
+  let quote: string | null = null
+  let depth = 0
+  let caseDepth = 0
+  let casePattern = false
+  let commandPosition = true
+  let word = ''
+  const flushWord = (): void => {
+    const token = word
+    if (token === 'case' && commandPosition) {
+      caseDepth++
+      casePattern = false
+      commandPosition = false
+    } else if (token === 'esac' && caseDepth > 0) {
+      caseDepth--
+      casePattern = false
+      commandPosition = false
+    } else if (token === 'in' && caseDepth > 0) {
+      casePattern = true
+      commandPosition = false
+    } else if (['if', 'then', 'else', 'elif', 'while', 'until', 'do', '!'].includes(token)) commandPosition = true
+    else if (token) commandPosition = false
+    word = ''
+  }
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (quote) {
+      if (quote === '"' && ch === '\\') i++
+      else if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i++
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      flushWord()
+      quote = ch
+      continue
+    }
+    if (ch === '[') {
+      flushWord()
+      let end = i + 1
+      if (text[end] === '!' || text[end] === '^') end++
+      if (text[end] === ']') end++
+      while (end < text.length) {
+        if (text[end] === '\\') end += 2
+        else if (text[end] === ']') break
+        else end++
+      }
+      if (end < text.length) {
+        i = end
+        continue
+      }
+    }
+    if (ch === '(') {
+      flushWord()
+      if (++depth > MAX_CLI_GROUP_DEPTH) return false
+    } else if (ch === ')') {
+      flushWord()
+      if (depth === 0) {
+        if (caseDepth > 0 && casePattern) {
+          casePattern = false
+          commandPosition = true
+          continue
+        }
+        return false
+      }
+      depth--
+    } else if (/\s/.test(ch) || /[;|&{}]/.test(ch)) {
+      flushWord()
+      if (/[;|&{}\n\r]/.test(ch)) commandPosition = true
+      if (ch === ';' && caseDepth > 0 && !casePattern && text[i + 1] === ';') casePattern = true
+    } else word += ch
+  }
+  flushWord()
+  return depth === 0
 }
 
 /**
@@ -822,6 +921,7 @@ interface CliSegment {
  * brace expansion (`orga{i,}`) stays one word for expandBraces.
  */
 function cliSegments(text: string, keepBraces = false): CliSegment[] {
+  if (!shellGroupsReadable(text)) return [{ text: '', pipeIn: false, producer: false, limited: true }]
   const out: CliSegment[] = []
   let cur = ''
   let pipeIn = false
@@ -846,6 +946,31 @@ function cliSegments(text: string, keepBraces = false): CliSegment[] {
       quote = ch
       cur += ch
       continue
+    }
+    if (ch === '$' && text[i + 1] === '{') {
+      const end = text.indexOf('}', i + 2)
+      if (end < 0) return [{ text, pipeIn: false, producer: false }]
+      cur += text.slice(i, end + 1)
+      i = end
+      continue
+    }
+    if (ch === '[') {
+      const cls = parseGlobBracketClass(text, i)
+      if (cls) {
+        cur += text.slice(i, cls.end + 1)
+        i = cls.end
+        continue
+      }
+    }
+    if (ch === '(') {
+      const end = matchingParenEnd(text, i)
+      const probe = end < 0 ? '' : cur + text.slice(i, end + 1)
+      const variants = probe ? expandShellGlobAlternatives(probe) : null
+      if (end >= 0 && variants && variants.some((variant) => variant !== probe)) {
+        cur += text.slice(i, end + 1)
+        i = end
+        continue
+      }
     }
     if (ch === '|') {
       if (text[i + 1] === '|') {
@@ -1160,7 +1285,7 @@ function producerRunsCli(segment: string, depth: number, budget: CliBudget, chec
 /** Most words one segment's brace expansions may produce before the scan gives up (fail closed). */
 const MAX_BRACE_WORDS = 256
 
-/** The words after bash brace expansion (`orga{i,}` -> `orgai orga`); numeric and letter ranges keep their first value. */
+/** The words after bash brace expansion (`orga{i,}` -> `orgai orga`, `orga{h..i}` -> `orgah orgai`). */
 function expandWords(words: readonly string[], budget: CliBudget): string[] {
   if (!words.some((w) => w.includes('{'))) return [...words]
   const out: string[] = []
@@ -1202,7 +1327,20 @@ function expandBraces(word: string, limit: number): string[] {
     } else {
       const range = /^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.-?\d+)?$/.exec(word.slice(open + 1, close))
       if (!range) continue
-      alts = [range[1]]
+      if (/^[A-Za-z]$/.test(range[1]) && /^[A-Za-z]$/.test(range[2])) {
+        const start = range[1].charCodeAt(0)
+        const end = range[2].charCodeAt(0)
+        const stepText = /\.\.(-?\d+)$/.exec(word.slice(open + 1, close))?.[1]
+        const step = Math.max(1, Math.abs(Number(stepText ?? 1))) * (start <= end ? 1 : -1)
+        alts = []
+        for (let value = start; start <= end ? value <= end : value >= end; value += step) {
+          alts.push(String.fromCharCode(value))
+          if (alts.length >= limit) break
+        }
+      } else {
+        // Numeric ranges were historically kept to their first member; retain that bounded behavior.
+        alts = [range[1]]
+      }
     }
     const out: string[] = []
     for (const alt of alts) {
@@ -1219,6 +1357,16 @@ function expandBraces(word: string, limit: number): string[] {
 /** The CLI file names a glob in a program or script word may stand for. */
 const CLI_FILE_NAMES = ['orgai', 'orgai.exe', 'orgai.cmd', 'orgai.bat', 'orgai.ps1', 'orgai.mjs', 'orgai.js']
 const GLOB_CHARS = /[*?[]/
+const SHELL_GLOB_AMBIGUITY = /(?:\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\}))|(?:[?*+@!]\([^()\s]*\))/
+
+function hasShellGlobGroup(pattern: string): boolean {
+  const variants = expandShellGlobAlternatives(pattern)
+  return variants === null || variants.length !== 1 || variants[0] !== pattern
+}
+
+function hasShellGlobWord(pattern: string): boolean {
+  return GLOB_CHARS.test(pattern) || hasShellGlobGroup(pattern)
+}
 
 /** The ways a shell may read one word: as written and with backslash escapes removed (`org\ai` is `orgai`). */
 function spellings(word: string): string[] {
@@ -1228,19 +1376,20 @@ function spellings(word: string): string[] {
 
 /** A glob component (`orga?`, `*`, `[o]rgai`, `[!x]*`) as a whole-string, case-insensitive pattern. */
 function globRegex(pattern: string): RegExp {
+  // Variable expansion inside a glob and shell extglob depend on shell state or quoting that the
+  // scanner does not model. Treat them as matching any name; callers still require enough literal name characters.
+  if (SHELL_GLOB_AMBIGUITY.test(pattern)) return /^.*$/i
   let re = ''
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i]
+    if (ch === ']') return /^.*$/i // Quote removal or an invalid bracket expression made this spelling ambiguous.
     if (ch === '*') re += '.*'
     else if (ch === '?') re += '.'
     else if (ch === '[') {
-      const end = pattern.indexOf(']', i + 2)
-      if (end === -1) re += '\\['
-      else {
-        let body = pattern.slice(i + 1, end)
-        if (body.startsWith('!')) body = `^${body.slice(1)}`
-        re += `[${body.replace(/\\/g, '\\\\')}]`
-        i = end
+      const cls = parseGlobBracketClass(pattern, i)
+      if (cls) {
+        re += cls.unclosed ? '.*' : cls.source
+        i = cls.end
       }
     } else re += ch.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
   }
@@ -1258,11 +1407,19 @@ function globRegex(pattern: string): RegExp {
  */
 function programIsCli(word: string, check: CliCheck): boolean {
   for (const w of spellings(word)) {
-    if (CLI_NAME.test(binName(w)) || SCOPED_CLI.test(w)) return true
-    if (/[\\/]/.test(w) && (insideCliRoot(w, check) || (GLOB_CHARS.test(w) && globMayReachCliRoot(w, check)))) return true
-    if (GLOB_CHARS.test(binName(w))) {
-      const re = globRegex(binName(w))
-      if (CLI_FILE_NAMES.some((n) => re.test(n))) return true
+    const zshName = w.startsWith('=') ? w.slice(1) : w
+    if (CLI_NAME.test(binName(w)) || CLI_NAME.test(binName(zshName)) || SCOPED_CLI.test(w)) return true
+    if (/[\\/]/.test(w) && (insideCliRoot(w, check) || (hasShellGlobWord(w) && globMayReachCliRoot(w, check)))) return true
+    const bare = binName(w)
+    if (hasShellGlobWord(bare)) {
+      const alternatives = expandShellGlobAlternatives(bare)
+      if (!alternatives) return true
+      if (alternatives.some((candidate) => {
+        if (CLI_NAME.test(candidate)) return true
+        if (!GLOB_CHARS.test(candidate)) return false
+        const re = cachedGlobRegex(candidate)
+        return CLI_FILE_NAMES.some((name) => re.test(name))
+      })) return true
     }
   }
   return false
@@ -1275,6 +1432,11 @@ function literalNamesCli(word: string, check: CliCheck): boolean {
 
 /** A glob path whose leading components may match one of this install's CLI folders (fail closed: any component). */
 function globMayReachCliRoot(word: string, check: CliCheck): boolean {
+  const alternatives = expandShellGlobAlternatives(word)
+  if (!alternatives) return true
+  if (alternatives.length > 1 || alternatives[0] !== word) {
+    return alternatives.some((candidate) => globMayReachCliRoot(candidate, check))
+  }
   if (!check.roots.length) return false
   const p = check.platform === 'win32' ? win32 : posix
   const abs = p.isAbsolute(word) ? word : check.cwd && p.isAbsolute(check.cwd) ? p.join(check.cwd, word) : null
@@ -1285,7 +1447,7 @@ function globMayReachCliRoot(word: string, check: CliCheck): boolean {
     if (check.testRun && isSourceCliRoot(root, check.platform) && testRunTarget(word)) continue
     const want = parts(p.resolve(root))
     if (got.length < want.length || got.slice(0, want.length).includes('..')) continue
-    if (want.every((c, k) => (GLOB_CHARS.test(got[k]) ? globRegex(got[k]).test(c) : got[k].toLowerCase() === c.toLowerCase()))) return true
+    if (want.every((c, k) => (hasShellGlobWord(got[k]) ? globRegex(got[k]).test(c) : got[k].toLowerCase() === c.toLowerCase()))) return true
   }
   return false
 }
@@ -1348,7 +1510,7 @@ function redirectFeedsCli(rest: readonly string[], check: CliCheck): boolean {
 }
 
 function scriptWordIsCli(word: string, check: CliCheck): boolean {
-  return spellings(word).some((w) => CLI_NAME.test(binName(w)) || (GLOB_CHARS.test(binName(w)) && globNamesCli(binName(w)))) || interpreterArgIsCli(word, check)
+  return spellings(word).some((w) => CLI_NAME.test(binName(w)) || (hasShellGlobWord(binName(w)) && globNamesCli(binName(w)))) || interpreterArgIsCli(word, check)
 }
 
 /**
@@ -1362,7 +1524,7 @@ function interpreterArgIsCli(word: string, check: CliCheck): boolean {
   for (const v of spellings(value)) {
     if (!PATHISH.test(v)) continue
     if (CLI_NAME.test(binName(v)) || SCOPED_CLI.test(v) || insideCliRoot(v, check)) return true
-    if (GLOB_CHARS.test(v) && (globMayReachCliRoot(v, check) || (GLOB_CHARS.test(binName(v)) && globNamesCli(binName(v))))) return true
+    if (hasShellGlobWord(v) && (globMayReachCliRoot(v, check) || (hasShellGlobWord(binName(v)) && globNamesCli(binName(v))))) return true
   }
   return false
 }
@@ -1433,6 +1595,16 @@ function assignsElectronAsNode(segment: string): boolean {
 }
 
 function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliCheck): boolean {
+  // Inspect each command segment with pattern parentheses intact: cliSegments splits shell operators, but keeps a
+  // zsh `(a|b)` or extglob group inside its word. This also catches a later command after `;` / `&&`.
+  for (const seg of cliSegments(text)) {
+    if (seg.limited) return (budget.limited = true)
+    const words = segmentWords(seg.text)
+    const program = words[programIndex(words)]
+    if (program && hasShellGlobGroup(program)) {
+      if (wordMayBe(program, [...SECURITY, ...CLI_FILE_NAMES])) return true
+    }
+  }
   if (ELECTRON_AS_NODE_PS.some((re) => re.test(text))) return true
   // Wave 7: any word referencing ORGAI_VAULT_*, quoted or not (it may be handed to a shell).
   if (referencesVaultEnv(text)) return true

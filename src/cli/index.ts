@@ -1,5 +1,6 @@
 /**
- * `orgai` CLI (bin.ts is the bundle's entry, out/cli/orgai.mjs, and loads this module as its own chunk). Plain Node only:
+ * `orgai` CLI (bin.ts is the bundle's entry, out/cli/orgai.mjs, and loads this module as its own chunk; the build adds
+ * the hardened `#!/usr/bin/env -S node --disable-sigusr1` banner). Plain Node only:
  * no desktop-shell import, ever. Routes over commandTable.ts (cli-spec 6.1): global flags first (flags.ts), then the
  * command. Exit codes are EXIT in types.ts; a CliError carries its own, anything else is 1.
  */
@@ -311,6 +312,12 @@ function isEntry(): boolean {
 
 /** Run the orgai command in this process (bin.ts, the bundle's entry, calls it once the CLI has loaded). */
 export function runCli(): void {
+  // Refuse before anything else runs unless Node was started with SIGUSR1 inspector activation disabled.
+  if (!process.execArgv.includes('--disable-sigusr1')) {
+    process.stderr.write('orgai: refusing to start without Node.js --disable-sigusr1; use the orgai launcher or run `node --disable-sigusr1 out/cli/orgai.mjs`.\n')
+    process.exitCode = EXIT.failure
+    return
+  }
   // Before main() builds the context (which reads process.env) and before anything can spawn.
   scrubElectronRunAsNode(process.env)
   process.on('unhandledRejection', (reason: unknown) => {

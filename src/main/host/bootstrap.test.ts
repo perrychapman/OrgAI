@@ -1,9 +1,13 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppSettingsInfo, DaemonInfo, RunEvent, RunSummary } from '../../shared/types'
 import { ACTIVITY_LEASE_KINDS, IPC } from '../../shared/types'
+import { cliUserDataDir } from '../../cli/client/locate'
+import { MockAdapter } from '../runtime/mock'
+import { SELF_CONTROL_DENIAL_MESSAGE, checkSelfControlDenial, type SelfControlContext } from '../runtime/selfControlGate'
+import { teamFilesDir } from '../teamFiles/store'
 
 // bootOrgAIHost must boot in plain Node (cli-spec 3.1): any electron import fails the whole file.
 vi.mock('electron', () => {
@@ -233,6 +237,51 @@ describe('bootOrgAIHost', () => {
     await expect(h.dispatcher.invokeRpc(IPC.runsDecide, [{ runId: run.id, requestId: 'p1', decision: 'yes' }], decide)).rejects.toMatchObject({ code: 'bad_request' })
     await expect(h.dispatcher.invokeRpc(IPC.mergesDecide, [{ runId: run.id, reviewId: 'm1', decision: { behavior: 'push' } }], decide)).rejects.toMatchObject({ code: 'bad_request' })
     await expect(h.dispatcher.invokeRpc(IPC.runsStart, [{ projectId: project.id, prompt: { text: 'x' } }], ctx)).rejects.toMatchObject({ code: 'bad_request' })
+    await h.runs.stopAll({ reason: 'quit' })
+  })
+
+  it('supplies current team-files approval roots to an active run on every gate read', async () => {
+    vi.stubEnv('HOME', root)
+    vi.stubEnv('APPDATA', join(root, 'AppData'))
+    vi.stubEnv('XDG_CONFIG_HOME', join(root, '.config'))
+    const siblingDataDir = join(cliUserDataDir(process.platform, process.env, homedir()), 'data')
+    const originalStart = MockAdapter.prototype.start
+    let runtime: Parameters<typeof originalStart>[0] | undefined
+    vi.spyOn(MockAdapter.prototype, 'start').mockImplementation(function (this: MockAdapter, ctx) {
+      runtime = ctx
+      return originalStart.call(this, ctx)
+    })
+    const h = boot()
+    const firstRepo = join(root, 'repo-team-files-one')
+    mkdirSync(firstRepo)
+    const first = h.services.projects.create({ name: 'Team files one', path: firstRepo, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    await h.runs.start({ project: first, prompt: 'check protected paths' })
+
+    const readPaths = (): string[] => {
+      if (!runtime?.controlProtectedPaths) throw new Error('The run has no protected-path source')
+      return runtime.controlProtectedPaths()
+    }
+    expect(readPaths()).toContain(teamFilesDir(dataDir, first.id))
+
+    const secondRepo = join(root, 'repo-team-files-two')
+    mkdirSync(secondRepo)
+    const second = h.services.projects.create({ name: 'Team files two', path: secondRepo, brief: '', setupKind: 'existing', mock: true }, h.settings.get(), { mockAvailable: true })
+    expect(readPaths()).toContain(teamFilesDir(dataDir, second.id))
+
+    const siblingProjectDir = join(siblingDataDir, 'projects', 'p_sibling')
+    const siblingTeamDir = join(siblingProjectDir, 'team-files')
+    mkdirSync(siblingTeamDir, { recursive: true })
+    const siblingApproved = join(siblingTeamDir, 'approved.json')
+    const siblingEngagement = join(siblingProjectDir, 'ENGAGEMENT.md')
+    writeFileSync(siblingApproved, '{}')
+    writeFileSync(siblingEngagement, 'sibling project artifact')
+    const gateCtx: SelfControlContext = { protectedPaths: readPaths(), cwd: root, home: root }
+    expect(readPaths()).toContain(siblingTeamDir)
+    expect(checkSelfControlDenial('Read', { file_path: join(teamFilesDir(dataDir, first.id), 'approved.json') }, gateCtx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(checkSelfControlDenial('Read', { file_path: siblingApproved }, gateCtx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(checkSelfControlDenial('Write', { file_path: siblingApproved, content: '{"forged":true}' }, gateCtx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(checkSelfControlDenial('Bash', { command: `cat '${siblingApproved}'` }, gateCtx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    expect(checkSelfControlDenial('Read', { file_path: siblingEngagement }, gateCtx)).toBeNull()
     await h.runs.stopAll({ reason: 'quit' })
   })
 

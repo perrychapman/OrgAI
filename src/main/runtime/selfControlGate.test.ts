@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync as fsRealpath, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   SELF_CONTROL_DENIAL_MESSAGE,
@@ -724,6 +724,36 @@ describe('old packaged-app CLI roots, given explicitly', () => {
     }
   })
 
+  it('matches bounded zsh alternatives inside CLI roots without denying unrelated tools', () => {
+    const c: SelfControlContext = { protectedPaths: [], cwd: '/work', platform: 'linux', cliRoots: ['/tmp/install/out/cli'] }
+    for (const command of [
+      '/tmp/install/out/(cli|x)/entry.mjs status',
+      'node /tmp/install/out/(cli|x)/entry.mjs status',
+      'true; /tmp/install/out/(cli|x)/entry.mjs status',
+      'true && node /tmp/install/out/(cli|x)/entry.mjs status'
+    ]) {
+      expect(deny(command, c), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    for (const command of ['./bin/(lint|test)', './node_modules/.bin/(eslint|prettier)']) {
+      expect(deny(command, c), command).toBeNull()
+    }
+  })
+
+  it('matches broad globs in the direct program word without broadening script arguments', () => {
+    const c: SelfControlContext = { protectedPaths: [], cwd: '/work', platform: 'linux', cliRoots: [] }
+    for (const command of [
+      '~/.local/bin/* status',
+      '~/.local/bin/o* status',
+      './o* status',
+      '~/.local/bin/????? status'
+    ]) {
+      expect(deny(command, c), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+    for (const command of ['./bin/(lint|test)', './node_modules/.bin/(eslint|prettier)', 'node * status']) {
+      expect(deny(command, c), command).toBeNull()
+    }
+  })
+
   it('denies cmd /c orgai.cmd on win32', () => {
     const wres = 'C:\\Users\\me\\AppData\\Local\\Programs\\OrgAI\\resources'
     const wctx: SelfControlContext = { protectedPaths: [], cwd: 'C:\\work\\repo', platform: 'win32', shell: 'powershell', cliRoots: [`${wres}\\app.asar.unpacked\\out\\cli`, `${wres}\\bin`] }
@@ -778,6 +808,11 @@ describe('stdin, here-strings, substitutions, find -exec, globs, braces and esca
       'sh -c "$(cat ~/.local/bin/orgai)"',
       `bash -c "$(cat ${res}/bin/orgai)" x status`,
       'sh <(cat ~/.local/bin/orgai) status',
+      'echo $(true|orgai)',
+      'echo $(orgai|true)',
+      'echo <(true|orgai)',
+      'echo <(orgai|true)',
+      "bash -c '(true | orgai status)'",
       'eval "$(echo orgai status)"',
       'find . -exec orgai status \\;',
       'find . -maxdepth 0 -execdir ~/.local/bin/orgai runs list +',
@@ -833,6 +868,12 @@ describe('stdin, here-strings, substitutions, find -exec, globs, braces and esca
       'echo a\\ b',
       'ls ./scripts/*.sh',
       'echo "$(git rev-parse HEAD)"',
+      'true; (ls|true)',
+      'echo hi; (false|true)',
+      './bin/(lint|test)',
+      './node_modules/.bin/(eslint|prettier)',
+      'case x in x) echo ok;; esac',
+      "bash -c 'case x in x) echo ok;; esac'",
       'if [ -f x ]; then echo y; fi',
       'printf "%s" "${HOME}"'
     ]) {
@@ -877,6 +918,22 @@ describe('commandRunsOrgaiCli', () => {
     expect(commandRunsOrgaiCli('ps -p 123')).toBe(false)
     expect(commandRunsOrgaiCli('npm install')).toBe(false)
   })
+
+  it('bounds deep and unmatched shell group scanning and fails closed', () => {
+    const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work', platform: 'linux', cliRoots: [] }
+    const deep = `echo ${'('.repeat(16_000)}orgai status${')'.repeat(16_000)}`
+    const unmatched = `echo (${'x'.repeat(16_000)}`
+    const started = Date.now()
+    for (const command of [deep, unmatched]) {
+      expect(commandRunsOrgaiCli(command), 'unreadable group structure').toBe(true)
+      expect(checkSelfControlDenial('Bash', { command }, ctx), 'unreadable group structure').toBe(SELF_CONTROL_UNCHECKED_MESSAGE)
+    }
+    expect(Date.now() - started).toBeLessThan(1000)
+
+    expect(commandRunsOrgaiCli('true; (ls|true)')).toBe(false)
+    expect(commandRunsOrgaiCli('echo hi; (false|true)')).toBe(false)
+    expect(commandRunsOrgaiCli("echo '((((not shell groups))))'")).toBe(false)
+  })
 })
 
 describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
@@ -894,6 +951,58 @@ describe('Wave 7 gate additions (cli-standalone.md 8.4)', () => {
   const bash = (command: string, ctx: SelfControlContext): string | null => checkSelfControlDenial('Bash', { command }, ctx)
   const ps = (command: string, ctx: SelfControlContext): string | null => checkSelfControlDenial('PowerShell', { command }, ctx)
   const encode = (text: string): string => Buffer.from(text, 'utf16le').toString('base64')
+
+  it('fails closed on POSIX bracket classes and shell glob ambiguity in protected names', () => {
+    const linuxRoot = posix.join('/tmp', `orgai-scg7-posix-${process.pid}`)
+    const data = posix.join(linuxRoot, 'data')
+    const ctx: SelfControlContext = {
+      protectedPaths: [posix.join(data, 'run')],
+      cwd: posix.join(linuxRoot, 'proj'),
+      home: linuxRoot,
+      platform: 'linux',
+      cliRoots: []
+    }
+    for (const command of [
+      '/usr/bin/secur[[:alpha:]]ty dump-keychain',
+      '/usr/bin/secur[]i]ty dump-keychain',
+      '/usr/bin/secur[!]z]ty dump-keychain',
+      '/usr/bin/secur[z-\\]i]ty dump-keychain',
+      '/usr/bin/secur[]z-ai]ty dump-keychain',
+      '/usr/bin/secur[!]z-a]ty dump-keychain',
+      '/usr/bin/secur[!"()"]ty dump-keychain',
+      '~/.local/bin/orga[[:alpha:]] status',
+      '~/.local/bin/orga[]i] status',
+      '~/.local/bin/orga[!"()"] status',
+      `cat '${data}'/r[[:alpha:]]n/daemon.secret`,
+      `cat '${data}'/r[z-\\]u]n/daemon.secret`,
+      "C=']'; ~/.local/bin/orga[z-\"]\"i$C status",
+      "C=']'; /usr/bin/secur[z-\"]\"i${C}ty dump-keychain",
+      "bash -O extglob -c '~/.local/bin/?(o)rgai status'",
+      "zsh -c '=orgai status'",
+      "zsh -c '/usr/bin/securit(y|x) dump-keychain'",
+      'true; ~/.local/bin/orga(i|x) status',
+      'true && ~/.local/bin/orga(i|x) status',
+      'true; /usr/bin/securit(y|x) dump-keychain',
+      '~/.local/bin/orga(i|(x)) status',
+      '/usr/bin/securit(y|(x)) dump-keychain',
+      'true; ~/.local/bin/orga(i|(x)) status',
+      'true; /usr/bin/securit(y|(x)) dump-keychain',
+      'cat ~/.local/bin/orga{h..i} | sh'
+    ]) {
+      expect(bash(command, ctx), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+    }
+
+    const windowsData = 'C:\\security\\orgai\\data'
+    const windowsRun = win32.join(windowsData, 'run')
+    const windowsCtx: SelfControlContext = {
+      protectedPaths: [windowsRun],
+      cwd: 'C:\\work',
+      platform: 'win32',
+      shell: 'powershell',
+      cliRoots: []
+    }
+    expect(checkSelfControlDenial('PowerShell', { command: `Get-Content "${win32.join(windowsRun, 'daemon.secret')}"` }, windowsCtx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+  })
 
   describe('package runners naming the package', () => {
     const ctx: SelfControlContext = { protectedPaths: [], cwd: '/work/proj', home: '/home/u' }

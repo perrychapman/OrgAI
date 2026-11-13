@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -41,7 +41,7 @@ describe('isCliExternal', () => {
 })
 
 describe('electron-builder.yml', () => {
-  const yml = readFileSync(join(repo, 'electron-builder.yml'), 'utf8')
+  const yml = readFileSync(join(repo, 'electron-builder.yml'), 'utf8').replace(/\r\n/g, '\n')
   /** The list items under a top-level key (two-space `- ` lines until the next top-level key). */
   const topList = (key: string): string[] => {
     const lines = yml.split(/\r?\n/)
@@ -91,10 +91,25 @@ describe('electron-builder.yml', () => {
     expect(existsSync(join(repo, 'build', 'bin'))).toBe(false)
   })
 
-  it('adds no publish, signing identity or fuse settings', () => {
+  it('disables Electron inspector CLI arguments while retaining RunAsNode for system certificate lookup', () => {
+    expect(yml).toMatch(/^electronFuses:\n  enableNodeCliInspectArguments: false\n  # systemCerts\.ts starts this executable with ELECTRON_RUN_AS_NODE=1 to read the system trust store\.\n  runAsNode: true$/m)
+  })
+
+  it('adds no publish or signing identity', () => {
     expect(yml).not.toMatch(/^publish:/m)
-    expect(yml).not.toMatch(/^\s*electronFuses:/m)
     expect(yml).not.toMatch(/^\s*identity:\s*\S/m)
+  })
+})
+
+describe('hardened CLI launch', () => {
+  it('generates a Node shebang with SIGUSR1 inspector disabled and hardens the npm script', () => {
+    const viteConfig = readFileSync(join(repo, 'vite.cli.config.ts'), 'utf8')
+    const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { scripts: Record<string, string>; engines: { node: string } }
+    const lock = JSON.parse(readFileSync(join(repo, 'package-lock.json'), 'utf8')) as { packages: { '': { engines: { node: string } } } }
+    expect(viteConfig).toContain('#!/usr/bin/env -S node --disable-sigusr1')
+    expect(pkg.scripts.cli).toBe('node --disable-sigusr1 out/cli/orgai.mjs')
+    expect(pkg.engines.node).toBe('>=22.19.0 <23 || >=24.5.0')
+    expect(lock.packages[''].engines.node).toBe(pkg.engines.node)
   })
 })
 
@@ -134,5 +149,24 @@ describe('the built CLI bundle (out/cli)', () => {
       'import { render } from "ink";'
     ].join('\n')
     expect(bareImports(sample).sort()).toEqual(['events', 'ink', 'node:fs'])
+  })
+
+  it.skipIf(!built)('refuses direct Node invocation without the flag and runs with the protected runtime', () => {
+    const cli = join(outCli, 'orgai.mjs')
+    expect(readFileSync(cli, 'utf8').split(/\r?\n/, 1)[0]).toBe('#!/usr/bin/env -S node --disable-sigusr1')
+    const env = { ...process.env, NODE_OPTIONS: '' }
+    const blocked = spawnSync(process.execPath, [cli, '--version'], { encoding: 'utf8', env })
+    expect(blocked.status).toBe(1)
+    expect(blocked.stderr).toContain('refusing to start without Node.js --disable-sigusr1')
+
+    const protectedRun = spawnSync(process.execPath, ['--disable-sigusr1', cli, '--version'], { encoding: 'utf8', env })
+    expect(protectedRun.status).toBe(0)
+    expect(protectedRun.stdout).toContain('channel dev')
+
+    if (process.platform !== 'win32') {
+      const shebangRun = spawnSync(cli, ['--version'], { encoding: 'utf8', env })
+      expect(shebangRun.status).toBe(0)
+      expect(shebangRun.stdout).toContain('channel dev')
+    }
   })
 })

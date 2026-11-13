@@ -21,6 +21,10 @@ asarUnpack:
   - node_modules/@openai/codex/**
   - node_modules/zod/**
 npmRebuild: false
+electronFuses:
+  enableNodeCliInspectArguments: false
+  # systemCerts.ts starts this executable with ELECTRON_RUN_AS_NODE=1 to read the system trust store.
+  runAsNode: true
 # build/icon.png, icon.ico and icon.icns are generated together by `npm run icon` and committed. The top-level
 # PNG (1024) is the Linux icon; win and mac name their own multi-size files.
 icon: build/icon.png
