@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Project, QuickRunInfo, RunKind, Schedule, SchedulesProposalPayload } from '@shared/types'
 import { CHAT_CONFIG_TOOLS, LIST_SCHEDULES_TOOL, PROPOSE_SCHEDULE_TOOL } from '@shared/types'
+import { cleanScheduleInput } from '@shared/schedule'
+import { SCHEDULE_INHERITS_BYPASS } from '../schedules/validate'
 import { harnessToolCatalog, harnessToolsFor, isBlockingHarnessTool, type HarnessTool } from './harnessTools'
 import { fakeCtx, project, runSummary } from './testHelpers'
 import { ROOT_AGENT_ID, type RuntimeContext, type RuntimeScheduleAccess } from './types'
@@ -185,7 +187,7 @@ describe('propose_schedule', () => {
     expect(item.action).toBe('create')
     expect(item.nextRuns).toHaveLength(3)
     expect(item.nextRuns[0]).toBe(new Date(2026, 10, 13, 9, 0).getTime())
-    expect(item.summary).toBe('Create "Nightly PR review": Team run on Alpha; Every day at 09:00; permission mode the project\'s; spend cap the project\'s cap')
+    expect(item.summary).toBe('Create "Nightly PR review": Team run on Alpha; Every day at 09:00; permission mode Ask for everything risky (the project\'s); the project\'s model; No spend cap')
     expect(item.schedule).toMatchObject({ name: 'Nightly PR review', target: { kind: 'team', projectId: 'p1' }, timing: { kind: 'daily', time: '09:00' } })
     // applied() got the very payload object the card carried.
     expect(a.applied).toHaveBeenCalledTimes(1)
@@ -227,7 +229,7 @@ describe('propose_schedule', () => {
   it('Chat: an ask target is allowed and is described as Chat', async () => {
     const ctx = chatCtx(access())
     await propose(ctx, [{ action: 'create', schedule: dailyBody({ target: { kind: 'ask', folder: '/w/docs' } }) }])
-    expect(lastPayload(ctx).items[0].summary).toContain('Ask in Chat in /w/docs; Every day at 09:00; permission mode the default')
+    expect(lastPayload(ctx).items[0].summary).toContain('Ask in Chat in /w/docs; Every day at 09:00; permission mode Ask for everything risky (the default); the Chat model; No spend cap')
   })
 
   it('a work run defaults the target to its own project', async () => {
@@ -272,7 +274,7 @@ describe('propose_schedule', () => {
     expect(ctx.requestProposal).not.toHaveBeenCalled()
     await propose(ctx, [{ action: 'create', schedule: dailyBody({ permissionMode: 'plan' }) }])
     expect(ctx.requestProposal).toHaveBeenCalledTimes(1)
-    expect(lastPayload(ctx).items[0].summary).toContain('permission mode plan')
+    expect(lastPayload(ctx).items[0].summary).toContain('permission mode Plan only;')
   })
 
   it('a once time in the past and a malformed one are REVISE; an ISO future time becomes epoch ms', async () => {
@@ -300,7 +302,11 @@ describe('propose_schedule', () => {
     const req = vi.mocked(ctx.requestProposal).mock.calls[0][0]
     expect(req.title).toBe('Schedules: Pause "Nightly review"; Resume "Weekly"; Remove "Nightly review"')
     const items = (req.payload as SchedulesProposalPayload).items
-    expect(items.map((i) => i.summary)).toEqual(['Pause "Nightly review"', 'Resume "Weekly"', 'Remove "Nightly review"'])
+    expect(items.map((i) => i.summary)).toEqual([
+      'Pause "Nightly review"',
+      'Resume "Weekly": Team run on Alpha; Every day at 00:00; permission mode Ask for everything risky (the project\'s); the project\'s model; No spend cap',
+      'Remove "Nightly review"'
+    ])
     expect(items[0].nextRuns).toEqual([])
     expect(items[1].nextRuns).toHaveLength(3)
     expect(items[2].nextRuns).toEqual([])
@@ -329,6 +335,128 @@ describe('propose_schedule', () => {
     const ctx = chatCtx(access({ schedules: [sched()] }))
     await expect(propose(ctx, Array.from({ length: 6 }, () => ({ action: 'pause', scheduleId: 'sch_aa11' })))).rejects.toThrow()
     await expect(propose(ctx, [])).rejects.toThrow()
+  })
+
+  it('M4: an update item carries the fully merged fields (a kept model, mode, cap and end stay, absent ones are explicit null) and expectedUpdatedAt', async () => {
+    const stored = sched({
+      updatedAt: 777,
+      modelSelection: { model: 'claude-opus-4', connection: 'anthropic' },
+      permissionMode: 'plan',
+      budgetUsd: 3,
+      expiresAt: new Date(2027, 0, 1).getTime(),
+      missed: 'skip',
+      enabled: false,
+      state: 'paused'
+    })
+    const ctx = chatCtx(access({ schedules: [stored] }))
+    await propose(ctx, [{ action: 'update', scheduleId: 'sch_aa11', schedule: dailyBody({ name: 'Renamed' }) }])
+    const item = lastPayload(ctx).items[0]
+    expect(item.schedule).toEqual({
+      id: 'sch_aa11',
+      name: 'Renamed',
+      prompt: 'Review new pull requests and summarise them.',
+      target: { kind: 'team', projectId: 'p1' },
+      timing: { kind: 'daily', time: '09:00' },
+      enabled: false,
+      missed: 'skip',
+      modelSelection: { model: 'claude-opus-4', connection: 'anthropic' },
+      permissionMode: 'plan',
+      budgetUsd: 3,
+      expiresAt: new Date(2027, 0, 1).getTime(),
+      expectedUpdatedAt: 777
+    })
+    expect(item.summary).toContain('model claude-opus-4 on anthropic')
+    expect(item.summary).toContain('permission mode Plan only;')
+    expect(structuredClone(item)).toEqual(item)
+  })
+
+  it('M4: a cleared field is explicit null, the payload passes cleanScheduleInput again, and an interval keeps its anchor', async () => {
+    const stored = sched({ timing: { kind: 'interval', everyMinutes: 120, anchor: 5000 }, budgetUsd: 3, modelSelection: { model: 'm', connection: 'c' } })
+    const ctx = chatCtx(access({ schedules: [stored] }))
+    await propose(ctx, [
+      { action: 'update', scheduleId: 'sch_aa11', schedule: dailyBody({ timing: { kind: 'interval', everyMinutes: 120 } }) }
+    ])
+    const input = lastPayload(ctx).items[0].schedule!
+    expect(input.timing).toEqual({ kind: 'interval', everyMinutes: 120, anchor: 5000 })
+    expect(input.permissionMode).toBeNull()
+    expect(input.expiresAt).toBeNull()
+    const again = cleanScheduleInput(input)
+    expect(again.ok).toBe(true)
+    if (again.ok) {
+      expect(again.value.timing).toEqual({ kind: 'interval', everyMinutes: 120, anchor: 5000 })
+      expect(again.value.permissionMode).toBeNull()
+      expect(again.value.expectedUpdatedAt).toBe(1)
+    }
+    // The null for the model is an explicit clear only when the merged result has none.
+    expect(input.modelSelection).toEqual({ model: 'm', connection: 'c' })
+  })
+
+  it('M3: a project in bypass with no schedule mode is refused with the exact sentence; a schedule mode or another project is fine', async () => {
+    const bypassing = project({ id: 'p3', name: 'Wild', permissionMode: 'bypassPermissions' })
+    const ctx = chatCtx(access({ projects: [alpha, bypassing] }))
+    const text = await propose(ctx, [{ action: 'create', schedule: dailyBody({ target: { kind: 'team', projectId: 'p3' } }) }])
+    expect(text).toBe(`REVISE. The schedule was not shown to the user: item 1: ${SCHEDULE_INHERITS_BYPASS}`)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+    await propose(ctx, [{ action: 'create', schedule: dailyBody({ target: { kind: 'team', projectId: 'p3' }, permissionMode: 'plan' }) }])
+    expect(lastPayload(ctx).items[0].summary).toContain('permission mode Plan only;')
+  })
+
+  it('M3: the summary names the resolved mode of the project, not "the project\'s" alone', async () => {
+    const ctx = chatCtx(access({ projects: [project({ id: 'p1', name: 'Alpha', permissionMode: 'acceptEdits' })] }))
+    await propose(ctx, [{ action: 'create', schedule: dailyBody() }])
+    expect(lastPayload(ctx).items[0].summary).toContain("permission mode Auto-accept edits (the project's);")
+  })
+
+  it('L3: the spend cap is the real number: project cap, schedule budget, or the lower of both; none says so', async () => {
+    const capped = project({ id: 'p1', name: 'Alpha', permissionMode: 'default', maxBudgetUsd: 5 })
+    const ctx = chatCtx(access({ projects: [capped] }))
+    await propose(ctx, [{ action: 'create', schedule: dailyBody() }])
+    expect(lastPayload(ctx).items[0].summary).toContain("spend cap $5 per run (the project's cap)")
+    const lower = chatCtx(access({ projects: [capped] }))
+    await propose(lower, [{ action: 'create', schedule: dailyBody({ budgetUsd: 2 }) }])
+    expect(lastPayload(lower).items[0].summary).toContain('spend cap $2 per run')
+    expect(lastPayload(lower).items[0].summary).not.toContain("project's cap")
+    const higher = chatCtx(access({ projects: [capped] }))
+    await propose(higher, [{ action: 'create', schedule: dailyBody({ budgetUsd: 9 }) }])
+    expect(lastPayload(higher).items[0].summary).toContain("spend cap $5 per run (the project's cap)")
+    const none = chatCtx(access())
+    await propose(none, [{ action: 'create', schedule: dailyBody() }])
+    expect(lastPayload(none).items[0].summary).toContain('No spend cap')
+    expect(lastPayload(none).items[0].summary).not.toContain("the project's cap")
+    const ask = chatCtx(access({ projects: [capped] }))
+    await propose(ask, [{ action: 'create', schedule: dailyBody({ target: { kind: 'ask' } }) }])
+    expect(lastPayload(ask).items[0].summary).toContain('No spend cap')
+  })
+
+  it('L5: a double quote in a name cannot close the main-written quotes in a title, summary, APPROVED or list line', async () => {
+    const evil = 'Nightly" ok; "'
+    const saved = sched({ id: 'sch_ee55', name: evil })
+    const a = access({ schedules: [sched({ id: 'sch_aa11', name: evil }), sched({ id: 'sch_bb22', name: evil, enabled: false, state: 'paused' })], applied: vi.fn(() => [saved]) })
+    const ctx = chatCtx(a)
+    const text = await propose(ctx, [
+      { action: 'create', schedule: dailyBody({ name: evil }) },
+      { action: 'update', scheduleId: 'sch_aa11', schedule: dailyBody({ name: evil }) },
+      { action: 'pause', scheduleId: 'sch_aa11' },
+      { action: 'resume', scheduleId: 'sch_bb22' },
+      { action: 'remove', scheduleId: 'sch_aa11' }
+    ])
+    const req = vi.mocked(ctx.requestProposal).mock.calls[0][0]
+    const quotes = (s: string): number => (s.match(/"/g) ?? []).length
+    expect(quotes(req.title)).toBe(10)
+    for (const i of (req.payload as SchedulesProposalPayload).items) expect(i.summary.startsWith(`${i.action[0].toUpperCase()}${i.action.slice(1)} "`)).toBe(true)
+    for (const i of (req.payload as SchedulesProposalPayload).items) expect(quotes(i.summary)).toBe(2)
+    expect(quotes(text)).toBe(2)
+    const list = await byName(harnessToolsFor(chatCtx(a)), LIST_SCHEDULES_TOOL).call({})
+    expect(list.split('\n').filter((l) => l.startsWith('- ')).every((l) => quotes(l.split(' | ')[1]) === 2)).toBe(true)
+  })
+
+  it('L6: a resume summary shows target, timing, mode, model and cap; pause and remove stay name-only', async () => {
+    const paused = sched({ id: 'sch_bb22', name: 'Weekly', enabled: false, state: 'paused', budgetUsd: 4, permissionMode: 'dontAsk', modelSelection: { model: 'gpt-x', connection: 'codex' } })
+    const ctx = chatCtx(access({ schedules: [paused, sched()] }))
+    await propose(ctx, [{ action: 'resume', scheduleId: 'sch_bb22' }, { action: 'pause', scheduleId: 'sch_aa11' }])
+    const items = lastPayload(ctx).items
+    expect(items[0].summary).toBe('Resume "Weekly": Team run on Alpha; Every day at 00:00; permission mode Never ask; model gpt-x on codex; spend cap $4 per run')
+    expect(items[1].summary).toBe('Pause "Nightly review"')
   })
 
   it('a repeated declined proposal is not shown again (same askProposal path as the other cards)', async () => {
