@@ -1,6 +1,60 @@
 import { describe, expect, it } from 'vitest'
 import type { UsageSpend, UsageStatus } from '@shared/types'
-import { missingFiveHour, spendPeriodRows, tightestWindow, tightestWindowRow, usageRows } from './UsageMeter'
+import { accountRowView, missingFiveHour, rowFigures, spendPeriodRows, tightestWindow, tightestWindowRow, usageRows, type AccountRowInput } from './UsageMeter'
+
+const W = { resetsAt: null }
+const base: AccountRowInput = { mock: false, name: 'Claude', state: 'connected', isProxy: false, spends: false, apiKey: false, usage: undefined }
+const spend = (over: Partial<UsageSpend> = {}): UsageSpend => ({ usd: 3.2, budgetUsd: null, resetsAt: null, ...over }) as UsageSpend
+const periods = { day: { usd: 3.2, since: 0 }, week: { usd: 12.4, since: 0 }, month: { usd: 31, since: 0 } }
+
+describe('accountRowView', () => {
+  const plan = (windows: UsageStatus['windows'], over: Partial<UsageStatus> = {}) => ({ ...base, usage: status({ windows, ...over }) })
+  it('shows both windows as whole percents with spoken names', () => {
+    const v = accountRowView(plan({ fiveHour: { utilization: 22.4, ...W }, sevenDay: { utilization: 17.6, ...W } }))
+    expect(v.figures.map((f) => `${f.name} ${f.value}`)).toEqual(['5h 22%', '7d 18%'])
+    expect(v.words).toBe('five-hour 22 percent, seven-day 18 percent')
+    expect(v.text).toBe('')
+  })
+  it('shows the one reported window', () => {
+    expect(accountRowView(plan({ sevenDay: { utilization: 18, ...W } })).figures.map((f) => `${f.name} ${f.value}`)).toEqual(['7d 18%'])
+  })
+  it('falls back to the tightest model window with a short name', () => {
+    const v = accountRowView(plan({}, { modelWindows: [{ model: 'Fable', utilization: 20, resetsAt: null }] }))
+    expect(v.figures.map((f) => `${f.name} ${f.value}`)).toEqual(['Fable 20%'])
+    expect(rowFigures(status({ windows: { sevenDayOpus: { utilization: 9, ...W }, sevenDaySonnet: { utilization: 30, ...W } } })).map((f) => f.name)).toEqual(['Sonnet'])
+  })
+  it('keeps warn and danger on the figure itself', () => {
+    const v = accountRowView(plan({ fiveHour: { utilization: 100, ...W }, sevenDay: { utilization: 85, ...W } }, { status: 'rejected', limitedWindow: 'five_hour' }))
+    expect(v.figures.map((f) => f.level)).toEqual(['danger', 'warn'])
+    expect(v.figures[0].sr).toBe('five-hour 100 percent, limit reached')
+  })
+  it('marks only the tightest figure on an allowed_warning report', () => {
+    const v = accountRowView(plan({ fiveHour: { utilization: 50, ...W }, sevenDay: { utilization: 60, ...W } }, { status: 'allowed_warning' }))
+    expect(v.figures.map((f) => f.level)).toEqual(['', 'warn'])
+  })
+  it('API key, no report and unavailable report show one or two words', () => {
+    expect(accountRowView({ ...base, apiKey: true, usage: status({ authMode: 'apiKey' }) }).text).toBe('API key')
+    expect(accountRowView({ ...base, apiKey: true, keyMissing: true }).text).toBe('Key not set')
+    expect(accountRowView(base).text).toBe('Claude')
+    expect(accountRowView({ ...base, name: 'OpenAI', usage: status({ available: false }) }).text).toBe('OpenAI')
+    expect(accountRowView(plan({})).text).toBe('Claude')
+  })
+  it('proxy: figure only, name when it reports no spend, Spend unavailable without a report', () => {
+    const proxy = { ...base, name: 'LiteLLM', isProxy: true, spends: true }
+    expect(accountRowView({ ...proxy, usage: status({ spend: spend({ periods }) }) }).text).toBe('$3.20 today')
+    expect(accountRowView({ ...proxy, usage: status({ spend: spend({ budgetUsd: 50, usd: 42.1 }) }) }).text).toBe('$42.10 of $50.00')
+    expect(accountRowView({ ...proxy, usage: status({ spend: spend() }) }).text).toBe('$3.20 spent')
+    expect(accountRowView({ ...proxy, usage: undefined }).text).toBe('Spend unavailable')
+    expect(accountRowView({ ...proxy, spends: false }).text).toBe('LiteLLM')
+  })
+  it('problem states and the mock adapter', () => {
+    expect(accountRowView({ ...base, state: 'disconnected' }).text).toBe('Not connected')
+    expect(accountRowView({ ...base, state: 'error' }).text).toBe('Error')
+    expect(accountRowView({ ...base, state: 'connecting' }).text).toBe('Connecting…')
+    expect(accountRowView({ ...base, state: 'checking' }).text).toBe('Checking…')
+    expect(accountRowView({ ...base, mock: true }).text).toBe('Mock adapter')
+  })
+})
 
 const RESETS_AT = Date.UTC(2026, 10, 11, 12, 0, 0)
 
