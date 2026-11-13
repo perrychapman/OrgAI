@@ -27,8 +27,9 @@ import { APP_REFERENCE_ACTIONS, APP_REFERENCE_BUDGET_MAX, APP_REFERENCE_BUDGET_M
 import { SAFE_ID } from '@shared/defaults'
 import { cleanScheduleInput, describeScheduleTiming, upcomingScheduleRuns } from '@shared/schedule'
 import { LIST_SCHEDULES_TOOL, PROPOSE_SCHEDULE_TOOL, SCHEDULE_MAX_INTERVAL_MINUTES, SCHEDULE_MIN_INTERVAL_MINUTES, SCHEDULE_PERMISSION_MODES, SCHEDULE_PROPOSAL_MAX_ITEMS } from '@shared/types'
-import type { Project, Schedule, ScheduleProposalItem, ScheduleTarget, SchedulesProposalPayload } from '@shared/types'
-import { mergeScheduleInput, modeWithinTarget, scheduleFieldsProblem, targetBaseMode, type ScheduleCheckEnv, type ScheduleUserFields } from '../schedules/validate'
+import type { Project, Schedule, ScheduleProposalItem, ScheduleSaveInput, ScheduleTarget, SchedulesProposalPayload } from '@shared/types'
+import { PERMISSION_MODE_SHORT } from '@shared/view/settingsCopy'
+import { effectiveScheduleMode, mergeScheduleInput, modeWithinTarget, scheduleFieldsProblem, targetBaseMode, type ScheduleCheckEnv, type ScheduleUserFields } from '../schedules/validate'
 import { isAtlasSurfaceId } from '@shared/view/atlas'
 import { APP_SETTING_FIELD_LABELS, PROJECT_SETTING_FIELD_LABELS, projectSettingValueText, appSettingValue, appSettingValueProblem } from '@shared/appSettingsProposal'
 
@@ -3233,10 +3234,10 @@ export const listSchedulesTool = defineTool({
     const lines = schedules.map((s) => {
       const target =
         s.target.kind === 'team'
-          ? `team run on ${access.storedProject(s.target.projectId) ? `"${datum(access.storedProject(s.target.projectId)?.name, 80)}"` : 'a project that no longer exists'}${s.target.team === 'single' ? ' (single assistant)' : ''}`
+          ? `team run on ${access.storedProject(s.target.projectId) ? `"${datum(access.storedProject(s.target.projectId)?.name, 80).replace(/"/g, "'")}"` : 'a project that no longer exists'}${s.target.team === 'single' ? ' (single assistant)' : ''}`
           : `Chat${s.target.folder ? ` in folder ${datum(s.target.folder, 200)}` : ''}`
       return (
-        `- ${s.id} | "${datum(s.name, 80)}" | state: ${s.state}, ${s.enabled ? 'enabled' : 'paused'} | target: ${target} | ${describeScheduleTiming(s.timing)} | ` +
+        `- ${s.id} | "${datum(s.name, 80).replace(/"/g, "'")}" | state: ${s.state}, ${s.enabled ? 'enabled' : 'paused'} | target: ${target} | ${describeScheduleTiming(s.timing)} | ` +
         `next run: ${nextRunText(s.enabled ? s.nextRunAt : undefined)}${s.consecutiveFailures > 0 ? ` | consecutive failures: ${s.consecutiveFailures}` : ''}`
       )
     })
@@ -3284,15 +3285,65 @@ function scheduleTargetText(target: ScheduleTarget, project: Project | undefined
   return `Ask in Chat${target.folder ? ` in ${clampText(target.folder, 120)}` : ''}${target.allowEdits ? ' (may edit files)' : ''}`
 }
 
+/** A name inside the main-written quotes: a double quote in it would close them early and spoof the rest of the line (review L5). */
+const quotedName = (name: string, max: number): string => clampText(name, max).replace(/"/g, "'")
+
+/** The resolved permission mode in the user's words (review M3): the schedule's own, else what its target's runs use. */
+function scheduleModeText(fields: ScheduleUserFields, project: Project | undefined): string {
+  const name = PERMISSION_MODE_SHORT[effectiveScheduleMode(fields, project)]
+  if (fields.permissionMode) return name
+  return `${name} (${fields.target.kind === 'team' ? "the project's" : 'the default'})`
+}
+
+/** The model the runs use: the schedule's own choice, else the target's usual one. */
+function scheduleModelText(fields: ScheduleUserFields): string {
+  const m = fields.modelSelection
+  if (m) return `model ${clampText(m.model, 80).replace(/"/g, "'")} on ${clampText(m.connection, 80).replace(/"/g, "'")}`
+  return fields.target.kind === 'team' ? "the project's model" : 'the Chat model'
+}
+
+/**
+ * The cap a run really gets (review L3): the schedule's own budget lowered to the project's cap when there is one. An
+ * ask (Chat) run has no cap of its own (quickProject sets none), so only the schedule's budget applies to it.
+ */
+function scheduleCapText(fields: ScheduleUserFields, project: Project | undefined): string {
+  const projectCap = fields.target.kind === 'team' && project?.maxBudgetUsd !== undefined && project.maxBudgetUsd > 0 ? project.maxBudgetUsd : undefined
+  const own = fields.budgetUsd
+  if (own !== undefined && projectCap !== undefined) return projectCap < own ? `spend cap $${projectCap} per run (the project's cap)` : `spend cap $${own} per run`
+  if (own !== undefined) return `spend cap $${own} per run`
+  if (projectCap !== undefined) return `spend cap $${projectCap} per run (the project's cap)`
+  return 'No spend cap'
+}
+
 /** The card's one-line description of a created or updated schedule, from the merged fields only (never agent prose). */
 function scheduleSummary(verb: string, fields: ScheduleUserFields, project: Project | undefined): string {
-  const mode = fields.permissionMode ?? (fields.target.kind === 'team' ? "the project's" : 'the default')
-  const cap = fields.budgetUsd !== undefined ? `$${fields.budgetUsd} per run` : fields.target.kind === 'team' ? "the project's cap" : "the app's cap"
   return (
-    `${verb} "${clampText(fields.name, 60)}": ${scheduleTargetText(fields.target, project)}; ${describeScheduleTiming(fields.timing)}; ` +
-    `permission mode ${mode}; spend cap ${cap}${fields.enabled ? '' : '; starts paused'}${fields.missed === 'skip' ? '; skips runs missed while OrgAI is closed' : ''}` +
+    `${verb} "${quotedName(fields.name, 60)}": ${scheduleTargetText(fields.target, project)}; ${describeScheduleTiming(fields.timing)}; ` +
+    `permission mode ${scheduleModeText(fields, project)}; ${scheduleModelText(fields)}; ${scheduleCapText(fields, project)}${fields.enabled ? '' : '; starts paused'}${fields.missed === 'skip' ? '; skips runs missed while OrgAI is closed' : ''}` +
     `${fields.expiresAt !== undefined ? `; ends ${localIso(fields.expiresAt)}` : ''}`
   )
+}
+
+/**
+ * What an update card carries and the save applies (review M4): the fully merged fields, so the card shows what the
+ * stored schedule becomes (a kept model is still there). Explicit `null` for an optional field the merged result has
+ * none of; `expectedUpdatedAt` lets the apply refuse a schedule that changed after the card was built.
+ */
+function mergedSaveInput(id: string, merged: ScheduleUserFields, expectedUpdatedAt: number): ScheduleSaveInput {
+  return {
+    id,
+    name: merged.name,
+    prompt: merged.prompt,
+    target: merged.target,
+    timing: merged.timing,
+    enabled: merged.enabled,
+    missed: merged.missed,
+    modelSelection: merged.modelSelection ? { ...merged.modelSelection } : null,
+    permissionMode: merged.permissionMode ?? null,
+    budgetUsd: merged.budgetUsd ?? null,
+    expiresAt: merged.expiresAt ?? null,
+    expectedUpdatedAt
+  }
 }
 
 /** The user fields of a stored schedule, as the form would hold them (for resume's checks and next runs). */
@@ -3348,17 +3399,20 @@ export const proposeScheduleTool = defineTool({
 
       if (!needsBody) {
         // pause / resume / remove: the card names the stored schedule; nothing from the agent but the id.
-        const name = clampText(existing!.name, 60)
         const verb = PROPOSE_SCHEDULE_TITLE_VERB[item.action]
         let nextRuns: number[] = []
+        let summary = `${verb} "${quotedName(existing!.name, 60)}"`
         if (item.action === 'resume') {
           const fields = fieldsOfSchedule(existing!, true)
           const problem = scheduleFieldsProblem(fields, checkEnv)
           if (problem) return scheduleRevise(`${label}: ${problem}`)
           nextRuns = upcomingScheduleRuns(fields.timing, now, 3)
+          // Resuming restarts spend, so the card shows the whole schedule (review L6).
+          const t = fields.target
+          summary = scheduleSummary(verb, fields, t.kind === 'team' ? access.storedProject(t.projectId) : undefined)
         }
-        out.push({ action: item.action, scheduleId: existing!.id, summary: `${verb} "${name}"`, nextRuns })
-        titles.push(`${verb} "${clampText(existing!.name, 40)}"`)
+        out.push({ action: item.action, scheduleId: existing!.id, summary, nextRuns })
+        titles.push(`${verb} "${quotedName(existing!.name, 40)}"`)
         continue
       }
 
@@ -3400,11 +3454,11 @@ export const proposeScheduleTool = defineTool({
       out.push({
         action: item.action,
         ...(item.action === 'update' ? { scheduleId: item.scheduleId } : {}),
-        schedule: value,
+        schedule: item.action === 'update' ? mergedSaveInput(existing!.id, merged, existing!.updatedAt) : value,
         summary: scheduleSummary(verb, merged, project),
         nextRuns: merged.enabled ? upcomingScheduleRuns(merged.timing, now, 3) : []
       })
-      titles.push(`${verb} "${clampText(merged.name, 40)}"`)
+      titles.push(`${verb} "${quotedName(merged.name, 40)}"`)
     }
 
     const cardTitle = `Schedules: ${titles.join('; ')}`
@@ -3416,7 +3470,7 @@ export const proposeScheduleTool = defineTool({
     if (d.behavior !== 'approve') return decisionText(d, '')
     const saved = access.applied(payload)
     if (!saved || !saved.length) return decisionText(d, 'The schedules were saved.')
-    return `APPROVED. Saved: ${saved.map((s) => `${s.id} "${datum(s.name, 80)}" next run ${nextRunText(s.enabled ? s.nextRunAt : undefined)}`).join('; ')}.`
+    return `APPROVED. Saved: ${saved.map((s) => `${s.id} "${datum(s.name, 80).replace(/"/g, "'")}" next run ${nextRunText(s.enabled ? s.nextRunAt : undefined)}`).join('; ')}.`
   }
 })
 
