@@ -201,7 +201,7 @@ export default function ScheduleEditor({
   }
 
   const timingDesc = problems.timing ? id('timing-error') : id('next-runs')
-  const describedTiming =typeof timing === 'string' || problems.timing ? null : describeScheduleTiming(timing)
+  const describedTiming = typeof timing === 'string' || problems.timing ? null : describeScheduleTiming(timing)
 
   return (
     <>
