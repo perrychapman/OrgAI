@@ -116,7 +116,7 @@ export function LiveModelSwitch({ run, onRunChanged, className, inRow }: { run: 
     } finally { setBusy(false) }
   }
 
-  return <span ref={region} className={`live-model-switch${inRow ? ' live-model-switch--in-row' : ''}${className ? ` ${className}` : ''}`} data-testid="live-model-switch" aria-busy={busy}>
+  return <span ref={region} className={`live-model-switch${inRow ? ' live-model-switch--in-row' : ''}${className ? ` ${className}` : ''}`} data-testid="live-model-switch" data-run-status={run.status} aria-busy={busy}>
     <Popover placement="top-start" label="Choose conversation model" triggerTestId="live-model-change" testId="live-model-picker" className="live-model-switch__picker"
       triggerClassName="run-chip live-model-switch__trigger" triggerTitle={exactTitle}
       triggerLabel={`${busy ? 'Changing model. ' : ''}Conversation model: ${nextMessage ? 'Next message: ' : ''}${current}${applied ? ` (${applied.model})` : ''}`}
