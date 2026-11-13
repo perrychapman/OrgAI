@@ -53,6 +53,9 @@ export const RULES = [
   { match: ['scripts/smoke-*.mjs', 'scripts/probe-*.mjs', 'scripts/readme-media.mjs', 'scripts/measure-prompt-size.mjs', 'scripts/list-proxy-models.mjs'], kind: 'none', scripts: [], why: 'manual helper script no e2e runs' },
   { match: ['e2e/setup.mjs', 'e2e/history.mjs', 'e2e/worktree.mjs', 'e2e/shots/**'], kind: 'none', scripts: [], why: 'token-spending e2e or screenshots, not part of the free chain' },
 
+  // ---- Schedules: narrow shared files, ahead of the broad src/shared rule (first match wins) ----
+  { match: ['src/shared/schedule.ts', 'src/shared/view/schedules.ts', 'src/main/schedules/**', `${C}schedules/**`, `${R}views/SchedulesView.tsx`, `${C}proposals/SchedulesProposalBody.tsx`, `${S}schedules.css`, `${L}scheduleProposal.ts`], scripts: ['schedules', 'proposals'], why: 'Schedules (page, proposal card, scheduler)' },
+
   // ---- shared or hot paths: every flow passes through them ----
   { match: ['scripts/e2e-select.mjs'], kind: 'full', scripts: [], why: 'the selector itself changed' },
   { match: ['e2e/lib.mjs', 'e2e/cliLib.mjs', 'e2e/privateDir.mjs'], kind: 'full', scripts: [], why: 'shared e2e helper' },
