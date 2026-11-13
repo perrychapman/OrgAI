@@ -149,6 +149,7 @@ describe('osLock in one process', () => {
     expect(isWindowsSharingViolation({ code: 'EACCES' }, 'win32')).toBe(true)
     expect(isWindowsSharingViolation({ code: 'EPERM' }, 'win32')).toBe(true)
     expect(isWindowsSharingViolation({ errcode: 14 }, 'win32')).toBe(true)
+    expect(isWindowsSharingViolation({ code: 'EBUSY' }, 'win32')).toBe(true)
     expect(isWindowsSharingViolation({ code: 'ENOENT' }, 'win32')).toBe(false)
     expect(isWindowsSharingViolation({ code: 'EACCES' }, 'linux')).toBe(false)
     expect(isWindowsSharingViolation({ errcode: 14 }, 'darwin')).toBe(false)

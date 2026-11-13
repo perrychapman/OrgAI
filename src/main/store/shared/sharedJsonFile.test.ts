@@ -4,7 +4,8 @@ import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ORDER, dataLockPath, withLocks, type LockSpec } from './lockOrder'
 import { SharedJsonFile } from './sharedJsonFile'
-import { spawnViteNode } from './testing/viteNode'
+import { killAndWait, spawnViteNode } from './testing/viteNode'
+import type { ChildProcess } from 'node:child_process'
 
 interface Doc {
   n: number
@@ -22,7 +23,11 @@ beforeEach(() => {
   mkdirSync(join(control, 'locks'), { recursive: true })
   file = join(dir, 'doc.json')
 })
-afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }))
+afterEach(async () => {
+  // A child still running after a failed case holds the lock file open (EBUSY on Windows): wait for it first.
+  await killAndWait(children)
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+})
 
 const parse = (raw: unknown): Doc => {
   if (typeof raw !== 'object' || raw === null || typeof (raw as Doc).n !== 'number') throw new Error('bad doc')
@@ -131,9 +136,12 @@ describe('SharedJsonFile locking', () => {
 // with the script placed in the test's temp dir and the module imported by absolute path.
 const modulePath = resolve(__dirname, 'sharedJsonFile.ts')
 
+const children: ChildProcess[] = []
+
 function runChild(script: string, args: string[]): Promise<void> {
   return new Promise((res, rej) => {
     const c = spawnViteNode(script, args, { stdio: ['ignore', 'inherit', 'inherit'], cwd: process.cwd() })
+    children.push(c)
     c.on('error', rej)
     c.on('exit', (code) => (code === 0 ? res() : rej(new Error(`child exited ${code}`))))
   })

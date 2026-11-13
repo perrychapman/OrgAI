@@ -102,6 +102,14 @@ export function lockFileProblem(path: string, platform: NodeJS.Platform = proces
 
 /** Create the lock file if it does not exist (O_CREAT|O_EXCL, 0600, closed before any SQLite connection opens it). */
 export function ensureLockFile(path: string): void {
+  // An existing entry is never opened here (lockFileProblem judges it next). Skipping the create attempt matters on
+  // Windows, where an exclusive create of a file another process holds open can fail with EPERM instead of EEXIST.
+  try {
+    lstatSync(path)
+    return
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+  }
   try {
     closeSync(openSync(path, 'wx', 0o600))
   } catch (e) {
@@ -117,13 +125,13 @@ function isBusy(e: unknown): boolean {
 
 /**
  * Windows only: a sharing violation (another process, often a scanner, has the file open without sharing) shows up as
- * EACCES / EPERM from Node or SQLITE_CANTOPEN (14) from SQLite. Spec 4.1 "Waiting": retried like busy, after the lock
- * file passed its checks. Never on POSIX, where these are real permission errors and fail closed.
+ * EACCES / EPERM (and EBUSY, libuv's mapping of ERROR_SHARING_VIOLATION) from Node or SQLITE_CANTOPEN (14) from
+ * SQLite. Spec 4.1 "Waiting": retried like busy. Never on POSIX, where these are real errors and fail closed.
  */
 export function isWindowsSharingViolation(e: unknown, platform: NodeJS.Platform = process.platform): boolean {
   if (platform !== 'win32') return false
   const err = e as { errcode?: number; code?: string } | null
-  return err?.code === 'EACCES' || err?.code === 'EPERM' || err?.errcode === 14
+  return err?.code === 'EACCES' || err?.code === 'EPERM' || err?.code === 'EBUSY' || err?.errcode === 14
 }
 
 function openConnection(path: string): DatabaseSync {
@@ -289,6 +297,15 @@ function attempt(path: string, mode: LockMode): OsLockHandle | null {
   let db: DatabaseSync | null
   try {
     ensureLockFile(path)
+  } catch (e) {
+    // Windows: a create racing another process's open (or a scanner) is a sharing violation, retried like busy.
+    if (!isWindowsSharingViolation(e)) {
+      wakeNext(path)
+      throw e
+    }
+    return null
+  }
+  try {
     db = tryOsLock(path, mode)
   } catch (e) {
     wakeNext(path)

@@ -13,6 +13,9 @@ import { claimHost, hostLockPath, listHosts, takeAdmission, type HostHandle, typ
 import { killAndWait, spawnViteNode } from '../store/shared/testing/viteNode'
 import { readEvidence } from './consumers'
 
+/** Wait for a vite-node child to print READY (below the 60 s test timeout of vitest.config.ts). */
+const CHILD_READY_MS = 45_000
+
 const info = (over: Partial<HostInfo> = {}): HostInfo => ({
   pid: process.pid,
   hostKind: 'test',
@@ -62,7 +65,8 @@ async function childClaim(id: string): Promise<ChildProcess> {
   children.push(c)
   await new Promise<void>((ok, fail) => {
     let out = ''
-    const t = setTimeout(() => fail(new Error('child did not become ready: ' + out)), 20_000)
+    // vite-node start-up transforms TypeScript; on a loaded Windows machine that alone took over 20 s.
+    const t = setTimeout(() => fail(new Error('child did not become ready: ' + out)), CHILD_READY_MS)
     c.stdout!.on('data', (d) => {
       out += String(d)
       if (out.includes('READY')) {
@@ -176,7 +180,7 @@ describe('takeAdmission', () => {
     const c = spawnViteNode(script, [], { stdio: ['ignore', 'pipe', 'ignore'] })
     children.push(c)
     await new Promise<void>((ok, fail) => {
-      const t = setTimeout(() => fail(new Error('not ready')), 20_000)
+      const t = setTimeout(() => fail(new Error('not ready')), CHILD_READY_MS)
       c.once('error', fail)
       c.once('exit', (code) => fail(new Error(`child exited early (${code})`)))
       c.stdout!.on('data', (d) => {
