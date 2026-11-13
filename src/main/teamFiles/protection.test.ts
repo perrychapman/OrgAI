@@ -121,6 +121,8 @@ describe('team-files approval control paths', () => {
     mkdirSync(outsideTeam, { recursive: true })
     symlinkSync(outsideTeam, join(linkedTeamProject, 'team-files'), process.platform === 'win32' ? 'junction' : 'dir')
     const teamRealpaths = vi.spyOn(fs.realpathSync, 'native')
+    // Vitest 5 returns the spy installed above with its earlier calls; count only this enumeration's.
+    teamRealpaths.mockClear()
     const teamFallback = existingTeamFilesProtectedPaths(linkedTeamData)
     expect(teamFallback).toContain(linkedTeamProjects)
     expect(teamFallback).not.toContain(outsideTeam)
