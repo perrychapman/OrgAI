@@ -34,7 +34,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'global', keys: 'Alt+D, F2, Ctrl+.', label: 'Focus the Decision Tray (Shift+Tab from the composer too)' },
   { scope: 'global', keys: 'Tab, Shift+Tab', label: 'Cycle the panes' },
   { scope: 'global', keys: 'Esc', label: 'From a pane: back to the composer. On the composer: press Esc twice to interrupt the running turn' },
-  { scope: 'global', keys: 'Ctrl+C', label: 'Clear the composer; twice on an empty composer quits (runs keep going)' },
+  { scope: 'global', keys: 'Ctrl+C', label: 'Clear the composer; twice on an empty composer quits (active runs stop)' },
   { scope: 'global', keys: 'Ctrl+Z', label: 'Suspend (fg to come back)' },
   { scope: 'global', keys: '?', label: 'The keys of the focused pane, the tray, or an empty composer', hint: { order: 90, text: '? all keys' } },
   { scope: 'global', keys: '[ , ]', label: 'In a pane: follow the previous / next live run (the status bar lists them)' },
@@ -61,6 +61,11 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'transcript', keys: 'PgUp, PgDn', label: 'Scroll a page', hint: { order: 2, text: 'PgUp/PgDn page' } },
   { scope: 'transcript', keys: 'Home, End', label: 'Oldest row / back to the newest', hint: { order: 3, text: 'End newest' } },
   { scope: 'composer', keys: 'Ctrl+O', label: 'Expand / collapse tool details' },
+  { scope: 'composer', keys: 'Ctrl+J, Alt+Enter', label: 'Insert a new line' },
+  { scope: 'composer', keys: 'Up, Down', label: 'Earlier / later prompts (on the first / last line); your draft stays at the bottom' },
+  { scope: 'composer', keys: 'Alt+B, Alt+F', label: 'Jump a word back / forward' },
+  { scope: 'composer', keys: 'Ctrl+G', label: 'Edit the prompt in $VISUAL / $EDITOR' },
+  { scope: 'composer', keys: 'Shift+Tab', label: 'Cycle the permission mode (default, acceptEdits, plan, auto) when no decision waits' },
   { scope: 'transcript', keys: 'Ctrl+O', label: 'Expand / collapse tool details' },
   { scope: 'transcript', keys: 'Enter', label: 'Expand / collapse completed tool activity', hint: { order: 4, text: 'Enter tools' } },
   // ---- Plan ----
@@ -70,6 +75,7 @@ export const KEYMAP: readonly KeyDef[] = [
   { scope: 'worktrees', keys: 'Enter, v', label: 'View the diff in the pager', hint: { order: 2, text: 'v diff' } },
   // ---- Agent inspector ----
   { scope: 'inspector', keys: 'Up, Down, PgUp, PgDn, Home, End', label: "Scroll this agent's transcript", hint: { order: 5, text: 'Up/Down scroll' } },
+  { scope: 'inspector', keys: 'Ctrl+O', label: 'Expand / collapse tool details' },
   { scope: 'inspector', keys: 'Enter', label: 'Expand / collapse completed tool activity' },
   { scope: 'inspector', keys: 'd', label: "Go to this agent's decision card", hint: { order: 2, text: 'd decide' }, rows: ['waiting'] },
   { scope: 'inspector', keys: 'w', label: 'Open its worktree diff in the pager', hint: { order: 1, text: 'w diff' }, rows: ['agent'] },

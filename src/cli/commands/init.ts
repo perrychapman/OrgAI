@@ -12,13 +12,14 @@ import { projectKindLabel, projectKindOf } from '../../shared/defaults'
 import type { Project } from '../../shared/types'
 import { parseFlags } from '../flags'
 import { withHost } from '../manage'
+import { quietInproc } from '../context'
 import { emit, safeLine } from '../output'
 import { CliError, EXIT, type CliContext, type CommandFn } from '../types'
 import { runInteractiveRun, type InteractiveRunSpec } from './interactive'
 import { CREATE_FLAGS, checkFolder, createOptionsOf, createProjectIn, folderArg, projectFacts, projectLines } from './projects'
 import { hasTty, managedOf, worktreeRefusal } from './tui'
 
-export const INIT_NO_TTY_MESSAGE = 'orgai init needs a terminal for the Architect interview; pass --skip-architect to create the project with the default team.'
+export const INIT_NO_TTY_MESSAGE = 'orgai init needs a terminal for the Architect interview; pass --skip-architect to create the project with the default team (team files in the folder wait for review unless you pass --adopt-team-files).'
 export const ARCHITECT_LABEL = 'Architect setup'
 
 /** Swappable in tests: the interactive run (commands/interactive.ts). */
@@ -43,6 +44,8 @@ export const runInit: CommandFn = async (ctx, args) => {
   if (!skip && !hasTty(ctx)) throw new CliError(INIT_NO_TTY_MESSAGE, EXIT.usage)
   const folder = folderArg(ctx, positionals[0])
 
+  // The Architect's terminal UI follows on this same host, so it starts quiet (its console lines go to the log file).
+  if (!skip) quietInproc(ctx)
   const outcome = await withHost(ctx, ['read', 'configure'], async (client): Promise<{ project: Project; existing: boolean }> => {
     const check = await checkFolder(client, folder)
     if (check.exists && !check.isDirectory) throw new CliError(`${safeLine(folder)} is not a folder.`, EXIT.usage)
@@ -53,7 +56,8 @@ export const runInit: CommandFn = async (ctx, args) => {
       return { project, existing: true }
     }
     return { project: await createProjectIn(ctx, client, folder, check, opts), existing: false }
-  })
+    // Without --skip-architect the Architect follows on this same host (one boot, not two).
+  }, { keepHost: !skip })
   const { project, existing } = outcome
 
   if (skip) {

@@ -40,6 +40,7 @@ import type {
   AgentInstance,
   AgentState,
   CardKind,
+  ConnectionId,
   DecidedBy,
   DecisionOutcome,
   Effort,
@@ -48,6 +49,7 @@ import type {
   MergeReview,
   ModelTier,
   PendingCards,
+  PermissionMode,
   PermissionRequest,
   PermissionRuleRequest,
   Project,
@@ -56,6 +58,7 @@ import type {
   ProjectPathCheck,
   Proposal,
   ProviderModel,
+  QuickRunPromoteResult,
   RpcHelloResult,
   RunOverrides,
   RunPlan,
@@ -64,6 +67,9 @@ import type {
   RunStatus,
   RunSummary,
   RunOutput,
+  SetRunPermissionModeResult,
+  StaffingGoal,
+  SwitchRunModelResult,
   RunTeam,
   TranscriptEntry,
   UserQuestion,
@@ -526,6 +532,14 @@ export interface OpenTuiSessionOptions {
   readOnlyReason?: string
 }
 
+/** Per-run choices (/model, /effort, /mode, /goal) held by the session for the next run it starts; dropped once a run used them. */
+export interface StagedRunOptions {
+  model?: { model: string; connection: ConnectionId }
+  effort?: Effort
+  permissionMode?: PermissionMode
+  goal?: StaffingGoal
+}
+
 export interface TuiSessionApi {
   /** Read-only /approvals (cli-parity 3.4 as built): what waits for approval; deciding is done in the desktop app. */
   approvals?: ApprovalsApi
@@ -558,6 +572,18 @@ export interface TuiSessionApi {
   listRuns(): Promise<RunSummary[]>
   /** An Org retrospective of an ended work run (setup:retro, operate scope); follows the new run. */
   startRetro(runId?: string): Promise<RunSummary>
+  /** The choices staged for the next run this session starts (never sent until a run starts). */
+  getStaged(): StagedRunOptions
+  /** Stage (or, with undefined, clear) choices for the next run start. */
+  stage(patch: { [K in keyof StagedRunOptions]?: StagedRunOptions[K] | null }): void
+  /** The model catalog (models:list, read scope), for one connection or all enabled ones. */
+  listModels(connection?: ConnectionId): Promise<ProviderModel[]>
+  /** runs:switchModel on the followed run. Follows a successor run when the host returns one. Never sends a message. */
+  switchModel(selection: { model: string; connection?: ConnectionId }): Promise<SwitchRunModelResult>
+  /** runs:setPermissionMode on the followed run (applied false: saved for its next continuation, or refused with a reason). */
+  setPermissionMode(mode: PermissionMode): Promise<SetRunPermissionModeResult>
+  /** runs:promoteQuick: save the followed quick run's chain as a project. */
+  promoteQuick(name: string): Promise<QuickRunPromoteResult>
   /** Re-subscribe after SIGCONT or a reconnect. */
   resync(): Promise<void>
   notify(text: string, tone?: Tone): void
@@ -657,6 +683,8 @@ export interface TranscriptPaneProps extends PaneProps {
   rows: TranscriptRow[]
   partials: PartialRow[]
   omitted?: number
+  /** Inline mode: what the printed scrollback belongs to (the chain root); a change starts a fresh printed list. */
+  scope?: string
   /** The focus target the scroll keys register under (default 'transcript'; the inspector uses 'inspector'). */
   focusTarget?: FocusTarget
   /** Keys the host pane handles first (the inspector's d / w / t / u). */
@@ -740,6 +768,12 @@ export interface SlashContext {
   openConfig?(view: 'team' | 'settings'): void
   /** Hide finished agents on / off (optional: older test contexts lack it). */
   toggleFold?(): void
+  /** /mode: change the followed run's permission mode, or stage it for the next run when none is followed. */
+  setMode?(mode: PermissionMode): Promise<void>
+  /** /copy: put text on the clipboard (OSC 52 and the platform tool); the ways that took it. */
+  copyText?(text: string): Promise<string[]>
+  /** /save-project: follow the project the chat was saved as. */
+  openProject?(project: Project, runId?: string): Promise<void>
   newRun(opts: { prompt?: string; team?: RunTeam; overrides?: RunOverrides }): Promise<void>
   /** A short list to choose from (/model); undefined when dismissed. Optional: without it the command prints the list. */
   pick?(title: string, options: readonly { value: string; label: string }[]): Promise<string | undefined>

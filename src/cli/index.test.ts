@@ -125,7 +125,7 @@ describe('orgai routing', () => {
     for (const f of ['--status', '--transcript', '--tail']) expect(await helpOf('runs')).toContain(f)
     expect(await helpOf('status')).toContain('--all-projects')
     for (const f of ['--run', '--inline', '--ax-screen-reader']) expect(await helpOf('tui')).toContain(f)
-    expect(await helpOf('resume')).toContain('resume [runId-or-R#] [--prompt <text> | --prompt-file <path|-> | -] [--exec [exec options]]')
+    expect(await helpOf('resume')).toContain('resume [runId-or-R# | --latest] [--prompt <text> | --prompt-file <path|-> | -] [--exec [exec options]]')
     expect(calls).toHaveLength(0)
   })
 

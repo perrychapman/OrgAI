@@ -382,6 +382,16 @@ interface Pending {
 }
 
 /** An authenticated JSON-RPC connection (HostClient). */
+/** What the client needs of its stream: a net.Socket, or the in-process host's in-memory duplex. */
+export interface ClientStream {
+  on(event: 'data', listener: (chunk: Buffer) => void): unknown
+  on(event: 'error', listener: (err: Error) => void): unknown
+  on(event: 'close', listener: () => void): unknown
+  write(chunk: string): unknown
+  end(): unknown
+  destroy(): unknown
+}
+
 export class SocketHostClient implements HostClient {
   private nextId = HELLO_REQUEST_ID + 1
   private readonly inflight = new Map<JsonRpcId, Pending>()
@@ -392,7 +402,7 @@ export class SocketHostClient implements HostClient {
   private closeErr: Error | undefined
 
   constructor(
-    private readonly socket: Socket,
+    private readonly socket: ClientStream,
     private readonly reader: LineReader,
     readonly hello: RpcHelloResult,
     readonly daemon: DaemonInfo,

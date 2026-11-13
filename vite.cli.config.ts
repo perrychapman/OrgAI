@@ -35,6 +35,8 @@ export default defineConfig({
   resolve: { alias: { '@shared': resolve(root, 'src/shared') } },
   oxc: { jsx: { runtime: 'automatic', importSource: 'react' } },
   publicDir: false,
+  // No CLI code reads NODE_ENV (grep src/); the bundled dependencies (react, react-reconciler, ink) pick their production builds.
+  define: { 'process.env.NODE_ENV': JSON.stringify('production') },
   logLevel: 'warn',
   build: {
     outDir: 'out/cli',
@@ -44,7 +46,9 @@ export default defineConfig({
     // Two inputs: the CLI and the TUI entry, so out/cli/tui.mjs always exists (commands/tui.ts reaches it only through a
     // dynamic import, which then resolves to this same chunk; lazyTui.test.ts keeps ink and react out of orgai.mjs).
     ssr: true,
-    minify: false,
+    // Minified: the CLI ships as a package, readable stack frames are not part of any contract (e2e and tests run the
+    // sources or check behaviour). process.env.NODE_ENV is fixed below so React's development bundle is dropped.
+    minify: true,
     sourcemap: false,
     reportCompressedSize: false,
     rollupOptions: {
