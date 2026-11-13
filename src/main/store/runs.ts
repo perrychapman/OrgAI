@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, isAbsolute } from 'node:path'
+import { renameSyncRetry } from '../host/fsRetry'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
@@ -207,7 +208,7 @@ export class RunStore {
     mkdirSync(dirname(this.file), { recursive: true })
     const tmp = `${this.file}.tmp`
     writeFileSync(tmp, JSON.stringify({ version: 1, runs: this.runs.slice(-500) }, null, 2), 'utf8')
-    renameSync(tmp, this.file)
+    renameSyncRetry(tmp, this.file)
   }
 
   upsert(run: RunSummary): void {
@@ -275,7 +276,7 @@ export class RunStore {
         mkdirSync(dir, { recursive: true })
         const tmp = `${file}.tmp`
         writeFileSync(tmp, bytes)
-        renameSync(tmp, file)
+        renameSyncRetry(tmp, file)
       }
       this.storedImages.set(img, ref)
       return ref
@@ -345,7 +346,7 @@ export class RunStore {
     const file = this.recordPath(record.summary.id)
     const tmp = `${file}.tmp`
     writeFileSync(tmp, JSON.stringify(trimmed), 'utf8')
-    renameSync(tmp, file)
+    renameSyncRetry(tmp, file)
   }
 
   getRecord(runId: string): RunRecord | null {
