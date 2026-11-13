@@ -9245,6 +9245,8 @@ export interface Schedule {
   consecutiveFailures: number
   /** History entries the user has not seen. */
   unread: number
+  /** The newest history entry, for list rows (main-owned; absent before the first slot is handled). */
+  lastEntry?: Pick<ScheduleHistoryEntry, 'at' | 'slotAt' | 'trigger' | 'result' | 'reason' | 'outcome' | 'runId'>
 }
 
 export type ScheduleRunResult = 'started' | 'skipped' | 'failed'
