@@ -310,9 +310,14 @@ function isEntry(): boolean {
   }
 }
 
-/** True when Node was started with exactly `--disable-sigusr1`, on the command line or in NODE_OPTIONS. */
+/**
+ * True when Node was started with exactly `--disable-sigusr1`, on the command line or in NODE_OPTIONS, and no
+ * `--no-disable-sigusr1` anywhere (which could undo it; fail closed).
+ */
 export function sigusr1Disabled(execArgv: readonly string[], nodeOptions: string | undefined): boolean {
-  return execArgv.includes('--disable-sigusr1') || (nodeOptions ?? '').split(/\s+/).includes('--disable-sigusr1')
+  const options = (nodeOptions ?? '').split(/\s+/)
+  if (execArgv.includes('--no-disable-sigusr1') || options.includes('--no-disable-sigusr1')) return false
+  return execArgv.includes('--disable-sigusr1') || options.includes('--disable-sigusr1')
 }
 
 /** Run the orgai command in this process (bin.ts, the bundle's entry, calls it once the CLI has loaded). */

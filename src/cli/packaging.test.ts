@@ -16,6 +16,10 @@ describe('sigusr1Disabled', () => {
     expect(sigusr1Disabled([], '')).toBe(false)
     expect(sigusr1Disabled(['--disable-sigusr1x'], '--no-disable-sigusr1')).toBe(false)
     expect(sigusr1Disabled([], '--disable-sigusr1x --xdisable-sigusr1')).toBe(false)
+    // A negation anywhere refuses, whichever comes last.
+    expect(sigusr1Disabled(['--disable-sigusr1'], '--no-disable-sigusr1')).toBe(false)
+    expect(sigusr1Disabled(['--disable-sigusr1', '--no-disable-sigusr1'], undefined)).toBe(false)
+    expect(sigusr1Disabled([], '--disable-sigusr1 --no-disable-sigusr1')).toBe(false)
   })
 })
 

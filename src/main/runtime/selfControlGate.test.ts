@@ -940,6 +940,8 @@ describe('segment splitting gaps (PR 47 review)', () => {
   const bash = (command: string): string | null => checkSelfControlDenial('Bash', { command }, ctx)
 
   it('splits off a command hidden behind a bracket, a ${, an escape, a comment or zsh =(...)', () => {
+    // A pipe's look-back reads the pieces of its own reading (PowerShell tool: only the backtick reading isolates it).
+    expect(checkSelfControlDenial('PowerShell', { command: "echo a | powershell -c -; echo `'; echo 'orgai status' | powershell -c -" }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     for (const command of [
       // A bracket expression never spans an operator or a space.
       'echo [;orgai status;]',
@@ -981,7 +983,41 @@ describe('segment splitting gaps (PR 47 review)', () => {
       // A glob group holding a space or an operator: both readings are checked.
       'echo x(a|;orgai status;)',
       'echo x(a|b c); orgai status',
-      '~/.local/bin/orga(i|x y) status'
+      '~/.local/bin/orga(i|x y) status',
+      // Review round 2: a comment only at a real word start, `$$'`, an escaped backslash before a newline.
+      "echo \\' $(true)#; orgai status",
+      "echo \\' a\r#; orgai status",
+      "echo \\' a\f#; orgai status",
+      "echo \\' a #; orgai status",
+      "echo \\' ${x- #}; orgai status",
+      "echo \\' $$'\\'; orgai status",
+      "echo \\' \\\\\norgai status",
+      // zsh qualifiers past any count, and with a space inside.
+      'ls ' + '*(e:true:) '.repeat(17) + "*(e:'orgai status':)",
+      'ls *(e:orgai status:)',
+      'ls *(e:orgai\\ status:)',
+      // A variable in the program word, nested quotes inside "$(...)", here-document bodies, many wrappers.
+      '${x}orgai status',
+      '$p/orgai status',
+      'echo "$(echo "\'")"; orgai status',
+      'echo "${x:-"\'"}"; orgai status',
+      ": <<EOF\n'\nEOF\norgai status",
+      "node x.js <<EOF\nit's\nEOF\norgai status",
+      "node x.js <<-'EOF'\n\tit's\n\tEOF\norgai status",
+      'env '.repeat(65) + 'orgai status',
+      // Nested shell flags.
+      "bash -ce 'orgai status'",
+      "bash -c -e 'orgai status'",
+      "bash -c -- 'orgai status'",
+      "pwsh -NoProfile -ExecutionPolicy Bypass -Command 'orgai status'",
+      "powershell -com 'orgai status'",
+      'powershell orgai status',
+      'cmd //c orgai status',
+      'cmd /r orgai status',
+      "tcsh -c 'orgai status'",
+      "busybox sh -c 'orgai status'",
+      // PowerShell smart quotes.
+      "echo ’'; orgai status"
     ]) {
       expect(bash(command), command).toBe(SELF_CONTROL_DENIAL_MESSAGE)
       expect(commandRunsOrgaiCli(command), command).toBe(true)
@@ -1016,7 +1052,14 @@ describe('segment splitting gaps (PR 47 review)', () => {
       'echo "(e.g. a note)"',
       "<# a comment #> Get-ChildItem",
       "$t = @'\nline (one\n'@",
-      'echo a \\\n  b'
+      'echo a \\\n  b',
+      'echo $$ $(date)#tag',
+      'git log --format="%h (%an)"',
+      '$EDITOR notes.md',
+      '"$PYTHON" -m pytest',
+      'node -e "console.log(require(\'os\').cpus().length)"',
+      "python3 - <<'PY'\nprint('it''s (fine')\nPY",
+      'pwsh -NoProfile -Command Get-ChildItem'
     ]) {
       expect(bash(command), command).toBeNull()
     }
@@ -2150,7 +2193,10 @@ describe('Wave 7 scan cost', () => {
       ['parameter braces', (n) => `echo ${'${x'.repeat(n)}`, 10_000],
       ['star program', (n) => `~/.local/bin/${'*'.repeat(n)}x status`, 2_000],
       ['star-letter program', (n) => `~/.local/bin/${'*o'.repeat(n)}x status`, 1_000],
-      ['star path', (n) => `cat ${data}/${'*'.repeat(n)}x/daemon.secret`, 2_000]
+      ['star path', (n) => `cat ${data}/${'*'.repeat(n)}x/daemon.secret`, 2_000],
+      ['nested substitutions in quotes', (n) => `echo "${'$(echo "'.repeat(n)}`, 2_500],
+      ['zsh qualifiers', (n) => `ls ${'*(e:x:) '.repeat(n)}`, 2_500],
+      ['shell flags', (n) => `bash ${'-c '.repeat(n)}x`, 2_500]
     ]
     const best = (command: string): number => {
       let min = Infinity
@@ -2167,6 +2213,24 @@ describe('Wave 7 scan cost', () => {
       const t2 = best(make(2 * n))
       expect(t2, `${name}: ${t1.toFixed(1)} ms at n, ${t2.toFixed(1)} ms at 2n`).toBeLessThan(3 * t1 + 100)
     }
+  })
+
+  // The CLI scan alone: the path scan's here-document handling grows faster than linear on these (on dev before PR 47
+  // too; recorded in docs/agent-notes/cli-host.md), so this checks the segment readings only.
+  it('reads many here-document starts in linear time (CLI scan)', () => {
+    const best = (command: string): number => {
+      let min = Infinity
+      for (let k = 0; k < 3; k++) {
+        const t0 = performance.now()
+        commandRunsOrgaiCli(command, { cwd: '/work', platform: 'linux' })
+        min = Math.min(min, performance.now() - t0)
+      }
+      return min
+    }
+    const make = (n: number): string => `node ${'<<a '.repeat(n)}\nx`
+    const t1 = best(make(5_000))
+    const t2 = best(make(10_000))
+    expect(t2, `${t1.toFixed(1)} ms at n, ${t2.toFixed(1)} ms at 2n`).toBeLessThan(3 * t1 + 100)
   })
 })
 
