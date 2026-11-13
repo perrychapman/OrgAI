@@ -377,7 +377,8 @@ try {
   await sleep(200)
 
   // Efficiency grid
-  const effStops = await page.locator('[data-testid=usage-efficiency] .usage-eff-grid').evaluate((g) => [...g.querySelectorAll('button')].filter((e) => e.tabIndex === 0).length)
+  // The Team timing grid shares the class (PR 51); this check is about the efficiency measures only.
+  const effStops = await page.locator('[data-testid=usage-efficiency] .usage-eff-grid:not([data-testid=usage-timing])').evaluate((g) => [...g.querySelectorAll('button')].filter((e) => e.tabIndex === 0).length)
   check(effStops === 1, 'keyboard: the efficiency grid is one Tab stop', String(effStops))
   const sortBefore = await T('usage-wasteful-sort').inputValue()
   const target = page.locator('[data-testid=usage-eff-item][data-signal=cache] [data-testid=usage-eff-value]')
