@@ -102,7 +102,7 @@ export class SharedJsonFile<T> {
   }
 
   async update(fn: (current: T) => T | Promise<T>): Promise<T> {
-    mkdirSync(dirname(dataLockPath(this.controlDir, 'config')), { recursive: true })
+    mkdirSync(dirname(dataLockPath(this.controlDir, 'config')), { recursive: true, mode: 0o700 })
     const spec: LockSpec = {
       key: 'config',
       path: dataLockPath(this.controlDir, 'config'),

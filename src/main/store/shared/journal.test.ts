@@ -260,7 +260,7 @@ describe('unstarted journals', () => {
     const blocked = checkSharedLocators(cache, 'output-file-ab', 'f2', reader)
     expect(blocked).toEqual({ proceed: false, refusalFolder: join(root, 'data'), reason: 'pending' })
     // Recovery discards it (no step started); afterwards the other folder proceeds.
-    await recoverJournal(control, 'op1', makeHandlers())
+    await recoverJournal(control, 'op1', makeHandlers(), { cacheJournalDir: cache })
     expect(checkSharedLocators(cache, 'output-file-ab', 'f2', reader)).toEqual({ proceed: true })
     expect(existsSync(sharedLocatorPath(cache, 'output-file-ab', 'f1', 'op1'))).toBe(false)
   })
@@ -354,7 +354,7 @@ describe('locator repair and committed journals', () => {
         repaired = [existsSync(localLocatorPath(control, 'project-p1', 'op1')), existsSync(sharedLocatorPath(cache, 'output-file-ab', 'f1', 'op1'))]
       }
     }
-    await recoverJournal(control, 'op1', makeHandlers())
+    await recoverJournal(control, 'op1', makeHandlers(), { cacheJournalDir: cache })
     expect(repaired).toEqual([true, true])
     expect(existsSync(localDir('project-p1'))).toBe(false)
     expect(readdirSync(cache)).toEqual([])
@@ -367,7 +367,7 @@ describe('locator repair and committed journals', () => {
     h.record.state = 'committed'
     writeFileSync(canonicalPath(control, 'op1'), JSON.stringify(h.record))
     rmSync(localDir('project-p1'), { recursive: true }) // half removed
-    expect(await recoverJournal(control, 'op1', makeHandlers())).toEqual({ status: 'committed' })
+    expect(await recoverJournal(control, 'op1', makeHandlers(), { cacheJournalDir: cache })).toEqual({ status: 'committed' })
     expect(existsSync(canonicalPath(control, 'op1'))).toBe(false)
     expect(existsSync(localDir('project-p1'))).toBe(false)
     expect(existsSync(localDir('library'))).toBe(false)
@@ -453,4 +453,82 @@ describe('idempotence', () => {
       expect(world).toEqual(snapshot)
     })
   }
+})
+
+describe('a planted canonical journal (the file is data)', () => {
+  /** Write a started journal file by hand, as another process with access to control/ could. */
+  function plant(opId: string, over: Record<string, unknown>): void {
+    mkdirSync(join(control, 'journal', 'ops'), { recursive: true })
+    const base = {
+      opId,
+      op: 'test',
+      hostId: 'h1',
+      requiredLocks: ['team-p1'],
+      resources: ['project-p1'],
+      rule: 'back',
+      state: 'abandoned',
+      steps: [{ id: 's-a', kind: 'set', args: { k: 'a', from: '0', to: '1' }, started: true }]
+    }
+    writeFileSync(canonicalPath(control, opId), JSON.stringify({ ...base, ...over }))
+  }
+
+  it('never reads the shared-locator directory from the file: recovery uses the caller directory or refuses', async () => {
+    const elsewhere = join(root, 'elsewhere')
+    plant('op1', { sharedLocators: { cacheJournalDir: elsewhere, resourceKeys: ['output-file-ab'], folderId: 'f1' } })
+    expect(readJournal(control, 'op1')?.sharedLocators).toEqual({ resourceKeys: ['output-file-ab'], folderId: 'f1' })
+    // Without the caller's directory: refused before anything is touched.
+    await expect(recoverJournal(control, 'op1', makeHandlers())).rejects.toThrow(/cache journal directory must be given/)
+    expect(existsSync(canonicalPath(control, 'op1'))).toBe(true)
+    expect(existsSync(elsewhere)).toBe(false)
+    // With it: the caller's directory is the only one used.
+    expect(await recoverJournal(control, 'op1', makeHandlers(), { cacheJournalDir: cache })).toEqual({ status: 'rolled-back' })
+    expect(existsSync(elsewhere)).toBe(false)
+    expect(existsSync(canonicalPath(control, 'op1'))).toBe(false)
+  })
+
+  it('a planted record whose sharedLocators would escape is unreadable and nothing is written', async () => {
+    for (const sharedLocators of [
+      { resourceKeys: ['../../escape'], folderId: 'f1' },
+      { resourceKeys: ['output-file-ab'], folderId: '../f1' },
+      { resourceKeys: 'output-file-ab', folderId: 'f1' }
+    ]) {
+      plant('op1', { sharedLocators })
+      await expect(recoverJournal(control, 'op1', makeHandlers(), { cacheJournalDir: cache })).rejects.toThrow(/Invalid|unreadable/)
+      await expect(resolveNeedsAttention(control, 'op1', 'discard', makeHandlers(), { cacheJournalDir: cache })).rejects.toThrow(/Invalid|unreadable/)
+    }
+    expect(existsSync(cache)).toBe(false)
+    expect(existsSync(join(root, 'escape'))).toBe(false)
+  })
+
+  it('rejects bad required locks, step ids, step kinds and flags', () => {
+    const bad: Record<string, unknown>[] = [
+      { requiredLocks: ['../x'] },
+      { requiredLocks: [7] },
+      { steps: [{ id: '../s', kind: 'set', args: null }] },
+      { steps: [{ id: 's-a', kind: 'a/b', args: null }] },
+      { steps: [{ id: 's-a', kind: 'set', args: null }, { id: 's-a', kind: 'set', args: null }] },
+      { steps: [{ id: 's-a', kind: 'set', args: null, done: 'yes' }] },
+      { hostId: 3 },
+      { attention: { stepId: 1, reason: 'x' } }
+    ]
+    for (const over of bad) {
+      plant('op1', over)
+      expect(() => readJournal(control, 'op1'), JSON.stringify(over)).toThrow(/Invalid|Duplicate|unreadable/)
+    }
+  })
+
+  it('a step kind never resolves through the handler table prototype', async () => {
+    plant('op1', { steps: [{ id: 's-a', kind: 'constructor', args: null, started: true }] })
+    await expect(recoverJournal(control, 'op1', makeHandlers())).rejects.toThrow(/No handler for step kind "constructor"/)
+  })
+
+  it('beginJournal validates required locks and step names, and ignores a sharedLocators field on the record', () => {
+    expect(() => beginJournal(control, { ...record('ok'), requiredLocks: ['Bad Key'] })).toThrow(/Invalid required lock/)
+    expect(() => beginJournal(control, { ...record('ok'), steps: [{ id: 's', kind: '../k', args: null }] })).toThrow(/Invalid step kind/)
+    const planted = { ...record('op2'), sharedLocators: { resourceKeys: ['output-file-ab'], folderId: 'f1' } }
+    const h = beginJournal(control, planted)
+    expect(h.record.sharedLocators).toBeUndefined()
+    expect(readJournal(control, 'op2')?.sharedLocators).toBeUndefined()
+    expect(JSON.parse(readFileSync(canonicalPath(control, 'op2'), 'utf8')).cacheJournalDir).toBeUndefined()
+  })
 })

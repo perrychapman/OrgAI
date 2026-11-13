@@ -3,7 +3,7 @@
  * there is no tsx; see store/shared/testing/viteNode.ts), started with an absolute script path written to a temp folder.
  */
 import { type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -131,6 +131,12 @@ describe('ownership record', () => {
     writeFileSync(join(chains, 'run_c.json'), '{"hostId":"h","state":"weird","since":1}')
     expect(() => readChainRecord(chains, 'run_c')).toThrow()
     expect(() => readChainRecord(chains, '../x')).toThrow()
+  })
+  // POSIX permission bits; Windows has no mode bits on folders (its ACLs are not set here).
+  it.skipIf(process.platform === 'win32')('creates the chains folder private to this user (0700)', () => {
+    const chains = join(control(), 'chains')
+    writeChainRecord(chains, 'run_a', { hostId: 'h', state: 'open', since: 5 })
+    expect(statSync(chains).mode & 0o777).toBe(0o700)
   })
 })
 

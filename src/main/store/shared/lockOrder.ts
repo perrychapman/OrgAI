@@ -21,6 +21,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
+import { pathKey } from '../../runtime/repoLock'
 import { acquireOsLock, downgradeToShared, upgradeToExclusive, type LockMode, type OsLockHandle } from './osLock'
 
 export type LockKind = 'claim' | 'hold' | 'transaction'
@@ -248,15 +249,24 @@ export async function upgradeHold<T>(key: string, insideKey: string, fn: () => P
 
 const KEY_RE = /^[a-z][a-z0-9-]*(?:-[A-Za-z0-9_-]{1,100})?$/
 
+/** Whether `key` is a valid data-folder lock key (the name stem of `<controlDir>/locks/<key>.lock`). */
+export function isLockKey(key: string): boolean {
+  return KEY_RE.test(key)
+}
+
 /** A data-folder lock path: `<controlDir>/locks/<key>.lock`. The key is validated. */
 export function dataLockPath(controlDir: string, key: string): string {
   if (!KEY_RE.test(key)) throw new LockOrderError(`Invalid lock key ${JSON.stringify(key)}.`)
   return join(controlDir, 'locks', `${key}.lock`)
 }
 
-/** A cache lock path keyed by an outside path: `<cacheLocksDir>/<kind>-<sha256(canonicalKey)[0..32]>.lock`. */
-export function cacheLockPath(cacheLocksDir: string, kind: string, canonicalKey: string): string {
+/**
+ * A cache lock path keyed by an outside path: `<cacheLocksDir>/<kind>-<sha256(pathKey(outsidePath))[0..32]>.lock`.
+ * The path goes through repoLock's `pathKey` first (symlinks resolved, forward slashes, no trailing slash, case-folded
+ * on Windows and macOS), so `C:\Repo`, `c:/repo/` and a symlink to it name one lock file instead of several.
+ */
+export function cacheLockPath(cacheLocksDir: string, kind: string, outsidePath: string, platform: string = process.platform): string {
   if (!/^[a-z][a-z0-9-]*$/.test(kind)) throw new LockOrderError(`Invalid cache lock kind ${JSON.stringify(kind)}.`)
-  const hash = createHash('sha256').update(canonicalKey).digest('hex').slice(0, 32)
+  const hash = createHash('sha256').update(pathKey(outsidePath, platform)).digest('hex').slice(0, 32)
   return join(cacheLocksDir, `${kind}-${hash}.lock`)
 }

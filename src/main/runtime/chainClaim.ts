@@ -151,7 +151,7 @@ export function readChainRecord(chainsDir: string, chainId: string): ChainRecord
 /** Write a record atomically (durable). Call under the chain claim. */
 export function writeChainRecord(chainsDir: string, chainId: string, record: ChainRecord): void {
   const file = chainRecordPath(chainsDir, chainId)
-  mkdirSync(dirname(file), { recursive: true })
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   writeFileAtomic(file, JSON.stringify(record) + '\n')
 }
 

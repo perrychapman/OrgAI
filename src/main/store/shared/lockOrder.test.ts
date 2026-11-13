@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CoordinatorRetry,
@@ -205,5 +205,21 @@ describe('lock paths', () => {
     expect(cacheLockPath('/k', 'repo', '/Users/me/repo')).toBe(p)
     expect(cacheLockPath('/k', 'repo', '/Users/me/other')).not.toBe(p)
     expect(() => cacheLockPath('/k', '../x', '/Users/me/repo')).toThrow(LockOrderError)
+  })
+
+  it('keys cache locks by pathKey: trailing separators, slash style, case (Windows, macOS) and links name one lock', () => {
+    const repo = join(control, 'Repo')
+    mkdirSync(repo)
+    const p = cacheLockPath('/k', 'repo', repo)
+    expect(cacheLockPath('/k', 'repo', repo + sep)).toBe(p)
+    expect(cacheLockPath('/k', 'repo', repo.replace(/\\/g, '/'))).toBe(p)
+    // Case folds on the case-insensitive defaults only (the platform argument picks the rule; Linux keeps case).
+    expect(cacheLockPath('/k', 'repo', 'C:\\Work\\Repo', 'win32')).toBe(cacheLockPath('/k', 'repo', 'c:/work/repo/', 'win32'))
+    expect(cacheLockPath('/k', 'repo', '/Work/Repo', 'darwin')).toBe(cacheLockPath('/k', 'repo', '/work/repo', 'darwin'))
+    expect(cacheLockPath('/k', 'repo', '/Work/Repo', 'linux')).not.toBe(cacheLockPath('/k', 'repo', '/work/repo', 'linux'))
+    // A link to the folder resolves to the folder (junction on Windows: no privilege needed).
+    const link = join(control, 'link-to-repo')
+    symlinkSync(repo, link, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(cacheLockPath('/k', 'repo', link)).toBe(p)
   })
 })

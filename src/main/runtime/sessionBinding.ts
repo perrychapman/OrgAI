@@ -41,7 +41,7 @@ function parseBinding(text: string): string | null {
 export function bindProviderSession(opts: { sessionsDir: string; adapter: BindingAdapter; sessionId: string; chainId: string }): BindResult {
   assertChainId(opts.chainId)
   const key = bindingKey(opts.adapter, opts.sessionId)
-  mkdirSync(opts.sessionsDir, { recursive: true })
+  mkdirSync(opts.sessionsDir, { recursive: true, mode: 0o700 })
   const target = join(opts.sessionsDir, `${key}.json`)
   // tempPathFor appends `.tmp-<host>-<random>` to the target name, as the spec's naming requires.
   const tmp = tempPathFor(target)

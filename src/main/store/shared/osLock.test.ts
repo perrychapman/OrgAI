@@ -9,9 +9,12 @@ import {
   LockFileUnsafeError,
   _osLockStateCount,
   acquireOsLock,
+  downgradeToShared,
   ensureLockFile,
+  isWindowsSharingViolation,
   lockFileProblem,
-  probeOsLock
+  probeOsLock,
+  upgradeToExclusive
 } from './osLock'
 import { killAndWait } from './testing/viteNode'
 
@@ -109,6 +112,46 @@ describe('osLock in one process', () => {
     await expect(waiting).rejects.toBeInstanceOf(LockAbortedError)
     h.release()
     expect(_osLockStateCount()).toBe(0)
+  })
+
+  it('an exclusive hold creates no -journal file (journal_mode MEMORY) and leaves the lock file empty', async () => {
+    const p = join(dir, 'm.lock')
+    const h = await acquireOsLock(p, 'exclusive', { waitMs: 0 })
+    expect(existsSync(p + '-journal')).toBe(false)
+    expect(statSync(p).size).toBe(0)
+    h.release()
+    expect(statSync(p).size).toBe(0)
+  })
+
+  it('queued shared waiters are all admitted when the exclusive holder releases (FIFO chain)', async () => {
+    const p = join(dir, 'chain.lock')
+    const x = await acquireOsLock(p, 'exclusive', { waitMs: 0 })
+    const waiters = [1, 2, 3].map(() => acquireOsLock(p, 'shared', { waitMs: 2000 }))
+    x.release()
+    const handles = await Promise.all(waiters)
+    for (const h of handles) h.release()
+    expect(_osLockStateCount()).toBe(0)
+  })
+
+  it('a shared waiter queued during an upgrade is admitted when the hold is downgraded', async () => {
+    const p = join(dir, 'down.lock')
+    const s = await acquireOsLock(p, 'shared', { waitMs: 0 })
+    const x = upgradeToExclusive(s)
+    const waiting = acquireOsLock(p, 'shared', { waitMs: 1500 })
+    const back = downgradeToShared(x)
+    const other = await waiting
+    other.release()
+    back.release()
+    expect(_osLockStateCount()).toBe(0)
+  })
+
+  it('isWindowsSharingViolation is win32-only and covers EACCES, EPERM and SQLITE_CANTOPEN', () => {
+    expect(isWindowsSharingViolation({ code: 'EACCES' }, 'win32')).toBe(true)
+    expect(isWindowsSharingViolation({ code: 'EPERM' }, 'win32')).toBe(true)
+    expect(isWindowsSharingViolation({ errcode: 14 }, 'win32')).toBe(true)
+    expect(isWindowsSharingViolation({ code: 'ENOENT' }, 'win32')).toBe(false)
+    expect(isWindowsSharingViolation({ code: 'EACCES' }, 'linux')).toBe(false)
+    expect(isWindowsSharingViolation({ errcode: 14 }, 'darwin')).toBe(false)
   })
 
   it('the lock file stays empty with no SQLite sibling after use', async () => {
@@ -233,6 +276,34 @@ describe('lock file checks', () => {
     writeFileSync(j + '-wal', '')
     expect(lockFileProblem(j)).toMatch(/-wal/)
     await expect(acquireOsLock(j, 'exclusive', { waitMs: 0 })).rejects.toBeInstanceOf(LockFileUnsafeError)
+    expect(_osLockStateCount()).toBe(0)
+  })
+
+  it('a -journal beside the lock that is a link or a folder fails closed; a plain one is accepted', async () => {
+    const p = join(dir, 'jr.lock')
+    ensureLockFile(p)
+    mkdirSync(p + '-journal')
+    expect(lockFileProblem(p)).toMatch(/-journal beside it that is not a regular file/)
+    await expect(acquireOsLock(p, 'exclusive', { waitMs: 0 })).rejects.toBeInstanceOf(LockFileUnsafeError)
+    rmSync(p + '-journal', { recursive: true })
+
+    const target = join(dir, 'elsewhere')
+    writeFileSync(target, '')
+    try {
+      symlinkSync(target, p + '-journal')
+    } catch (e) {
+      if (process.platform !== 'win32' || (e as NodeJS.ErrnoException).code !== 'EPERM') throw e
+      const linkTarget = join(dir, 'linked-dir-j')
+      mkdirSync(linkTarget)
+      symlinkSync(linkTarget, p + '-journal', 'junction')
+    }
+    expect(lockFileProblem(p)).toMatch(/-journal beside it that is not a regular file/)
+    await expect(acquireOsLock(p, 'shared', { waitMs: 0 })).rejects.toBeInstanceOf(LockFileUnsafeError)
+    expect(probeOsLock.bind(null, p)).toThrow(LockFileUnsafeError)
+    rmSync(p + '-journal', { recursive: true, force: true })
+
+    writeFileSync(p + '-journal', '')
+    expect(lockFileProblem(p)).toBeNull()
     expect(_osLockStateCount()).toBe(0)
   })
 })

@@ -17,6 +17,7 @@
 import { mkdirSync, openSync, closeSync, readFileSync, readdirSync, rmdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fsyncDirectory as fsyncDirectoryRaw, unlinkDurable as unlinkDurableRaw, writeFileAtomic } from './atomicWrite'
+import { isLockKey } from './lockOrder'
 
 export interface JournalStep {
   id: string
@@ -29,8 +30,19 @@ export interface JournalStep {
 
 export type JournalState = 'active' | 'abandoned' | 'committed' | 'needs-attention'
 
+/** What beginJournal needs to write shared locators. `cacheJournalDir` is never persisted (see PersistedSharedLocators). */
 export interface SharedLocatorSpec {
   cacheJournalDir: string
+  resourceKeys: string[]
+  folderId: string
+}
+
+/**
+ * The shared-locator part of a canonical journal. The cache directory is deliberately absent: a journal file is data
+ * another process could have planted, so recovery takes the directory from its caller (the user cache it computes
+ * itself), never from the file. A legacy `cacheJournalDir` field in a file is ignored.
+ */
+export interface PersistedSharedLocators {
   resourceKeys: string[]
   folderId: string
 }
@@ -45,10 +57,10 @@ export interface JournalRecord {
   steps: JournalStep[]
   state: JournalState
   /**
-   * Added beyond the spec's record shape: recovery needs the shared-locator location and folder id to repair or
-   * remove shared locators, and `controlDir` alone cannot supply them (spec gap, see report).
+   * Added beyond the spec's record shape: recovery needs the shared-locator keys and folder id to repair or remove
+   * shared locators, and `controlDir` alone cannot supply them (spec gap, see report).
    */
-  sharedLocators?: SharedLocatorSpec
+  sharedLocators?: PersistedSharedLocators
   /** Added: the step that put the journal into needs-attention, and why. */
   attention?: { stepId: string; reason: string }
 }
@@ -67,6 +79,13 @@ export type StepHandlers = Record<string, StepHandler>
 export interface JournalHandle {
   controlDir: string
   record: JournalRecord
+  /** The caller's cache journal directory; required when `record.sharedLocators` is set. */
+  cacheJournalDir?: string
+}
+
+export interface RecoverOptions {
+  /** The user cache journal directory, computed by the caller (cachePaths().journal); never read from the journal. */
+  cacheJournalDir?: string
 }
 
 export type RecoverResult =
@@ -83,6 +102,8 @@ export interface PendingJournal {
 const OP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const KEY_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/
 const FOLDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+/** Step ids and step kinds: plain names (a kind is looked up as an own property of the handler table). */
+const STEP_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/
 
 export class JournalError extends Error {
   constructor(message: string) {
@@ -92,13 +113,37 @@ export class JournalError extends Error {
 }
 
 export function assertOpId(opId: string): void {
-  if (!OP_ID_RE.test(opId)) throw new JournalError(`Invalid journal operation id ${JSON.stringify(opId)}`)
+  if (typeof opId !== 'string' || !OP_ID_RE.test(opId)) throw new JournalError(`Invalid journal operation id ${JSON.stringify(opId)}`)
 }
 export function assertResourceKey(key: string): void {
-  if (!KEY_RE.test(key) || key === '.' || key === '..') throw new JournalError(`Invalid journal resource key ${JSON.stringify(key)}`)
+  if (typeof key !== 'string' || !KEY_RE.test(key) || key === '.' || key === '..') {
+    throw new JournalError(`Invalid journal resource key ${JSON.stringify(key)}`)
+  }
 }
 function assertFolderId(id: string): void {
-  if (!FOLDER_ID_RE.test(id)) throw new JournalError(`Invalid folder id ${JSON.stringify(id)}`)
+  if (typeof id !== 'string' || !FOLDER_ID_RE.test(id)) throw new JournalError(`Invalid folder id ${JSON.stringify(id)}`)
+}
+function assertRequiredLock(key: string): void {
+  if (typeof key !== 'string' || !isLockKey(key)) throw new JournalError(`Invalid required lock ${JSON.stringify(key)}`)
+}
+
+/** Validate every name a journal carries (shared by beginJournal and the reader). Throws JournalError. */
+function assertRecordNames(r: {
+  opId: string
+  resources: readonly string[]
+  requiredLocks: readonly string[]
+  steps: readonly { id: string; kind: string }[]
+}): void {
+  assertOpId(r.opId)
+  for (const k of r.resources) assertResourceKey(k)
+  for (const k of r.requiredLocks) assertRequiredLock(k)
+  const ids = new Set<string>()
+  for (const s of r.steps) {
+    if (typeof s.id !== 'string' || !STEP_NAME_RE.test(s.id)) throw new JournalError(`Invalid step id ${JSON.stringify(s.id)}`)
+    if (typeof s.kind !== 'string' || !STEP_NAME_RE.test(s.kind)) throw new JournalError(`Invalid step kind ${JSON.stringify(s.kind)}`)
+    if (ids.has(s.id)) throw new JournalError(`Duplicate step id ${JSON.stringify(s.id)}`)
+    ids.add(s.id)
+  }
 }
 
 // ---------------------------------------------------------------- paths
@@ -139,6 +184,15 @@ function touchEmpty(file: string): void {
   closeSync(openSync(file, 'a', 0o600))
 }
 
+/** The cache directory for a record's shared locators; fails closed when the record has some and the caller gave none. */
+function cacheDirFor(record: JournalRecord, cacheJournalDir: string | undefined): string | null {
+  if (!record.sharedLocators) return null
+  if (typeof cacheJournalDir !== 'string' || cacheJournalDir.length === 0) {
+    throw new JournalError(`Journal ${record.opId} has shared locators; the cache journal directory must be given`)
+  }
+  return cacheJournalDir
+}
+
 function persist(h: JournalHandle): void {
   ensureDir(opsDir(h.controlDir))
   writeFileAtomic(canonicalPath(h.controlDir, h.record.opId), JSON.stringify(h.record))
@@ -153,7 +207,8 @@ function tryRmdir(dir: string): void {
 }
 
 /** Create every missing local and shared locator, fsyncing their directories. Never touches the canonical file. */
-function writeLocators(controlDir: string, record: JournalRecord): void {
+function writeLocators(controlDir: string, record: JournalRecord, cacheJournalDir: string | undefined): void {
+  const cacheDir = cacheDirFor(record, cacheJournalDir)
   const touched = new Set<string>()
   for (const key of record.resources) {
     const dir = join(byResourceDir(controlDir), key)
@@ -162,18 +217,18 @@ function writeLocators(controlDir: string, record: JournalRecord): void {
     touched.add(dir)
   }
   const sh = record.sharedLocators
-  if (sh) {
+  if (sh && cacheDir) {
     for (const key of sh.resourceKeys) {
-      const dir = join(sh.cacheJournalDir, key)
+      const dir = join(cacheDir, key)
       ensureDir(dir)
-      writeFileAtomic(sharedLocatorPath(sh.cacheJournalDir, key, sh.folderId, record.opId), JSON.stringify({ dataFolder: dataFolderOf(controlDir), opId: record.opId }))
+      writeFileAtomic(sharedLocatorPath(cacheDir, key, sh.folderId, record.opId), JSON.stringify({ dataFolder: dataFolderOf(controlDir), opId: record.opId }))
       touched.add(dir)
     }
   }
   for (const dir of touched) fsyncDirectory(dir)
   // The new key directories themselves must be reachable after a power loss.
   fsyncDirectory(byResourceDir(controlDir))
-  if (sh) fsyncDirectory(sh.cacheJournalDir)
+  if (cacheDir) fsyncDirectory(cacheDir)
 }
 
 /** The data folder is the parent of `control/`. */
@@ -182,7 +237,8 @@ function dataFolderOf(controlDir: string): string {
 }
 
 /** Remove every locator (local and shared) of the record, then fsync directories. Missing is fine. */
-function removeLocators(controlDir: string, record: JournalRecord): void {
+function removeLocators(controlDir: string, record: JournalRecord, cacheJournalDir: string | undefined): void {
+  const cacheDir = cacheDirFor(record, cacheJournalDir)
   const dirs: string[] = []
   for (const key of record.resources) {
     const dir = join(byResourceDir(controlDir), key)
@@ -191,35 +247,76 @@ function removeLocators(controlDir: string, record: JournalRecord): void {
     dirs.push(byResourceDir(controlDir))
   }
   const sh = record.sharedLocators
-  if (sh) {
+  if (sh && cacheDir) {
     for (const key of sh.resourceKeys) {
-      const dir = join(sh.cacheJournalDir, key)
-      unlinkDurable(sharedLocatorPath(sh.cacheJournalDir, key, sh.folderId, record.opId))
+      const dir = join(cacheDir, key)
+      unlinkDurable(sharedLocatorPath(cacheDir, key, sh.folderId, record.opId))
       tryRmdir(dir)
-      dirs.push(sh.cacheJournalDir)
+      dirs.push(cacheDir)
     }
   }
   for (const d of new Set(dirs)) fsyncDirectory(d)
 }
 
 /** Step (4): locators, then the canonical journal, directories fsynced. */
-function removeJournal(controlDir: string, record: JournalRecord): void {
-  removeLocators(controlDir, record)
+function removeJournal(controlDir: string, record: JournalRecord, cacheJournalDir: string | undefined): void {
+  removeLocators(controlDir, record, cacheJournalDir)
   unlinkDurable(canonicalPath(controlDir, record.opId))
   fsyncDirectory(opsDir(controlDir))
 }
 
+const isBool = (v: unknown): boolean => v === undefined || typeof v === 'boolean'
+
+/**
+ * Validate a canonical journal read from disk (it is data: any process with access to control/ could have written
+ * it). Every name that becomes a path or a lookup key is checked; the result is rebuilt from known fields only, so a
+ * planted `cacheJournalDir` or any other extra field never reaches recovery.
+ */
 function validateRecord(raw: unknown, opId: string): JournalRecord {
+  const unreadable = (): JournalError => new JournalError(`Journal ${opId} is unreadable`)
   const r = raw as Partial<JournalRecord> | null
   if (
-    !r || typeof r !== 'object' || r.opId !== opId || typeof r.op !== 'string' || !Array.isArray(r.steps) ||
-    !Array.isArray(r.resources) || !Array.isArray(r.requiredLocks) || (r.rule !== 'forward' && r.rule !== 'back') ||
+    !r || typeof r !== 'object' || r.opId !== opId || typeof r.op !== 'string' || typeof r.hostId !== 'string' ||
+    !Array.isArray(r.steps) || !Array.isArray(r.resources) || !Array.isArray(r.requiredLocks) ||
+    (r.rule !== 'forward' && r.rule !== 'back') ||
     !['active', 'abandoned', 'committed', 'needs-attention'].includes(r.state as string)
   ) {
-    throw new JournalError(`Journal ${opId} is unreadable`)
+    throw unreadable()
   }
-  for (const k of r.resources) assertResourceKey(k as string)
-  return r as JournalRecord
+  const steps: JournalStep[] = []
+  for (const s of r.steps as unknown[]) {
+    const x = s as Partial<JournalStep> | null
+    if (!x || typeof x !== 'object' || !isBool(x.started) || !isBool(x.done) || !isBool(x.undone)) throw unreadable()
+    const step: JournalStep = { id: x.id as string, kind: x.kind as string, args: x.args }
+    if (x.started !== undefined) step.started = x.started
+    if (x.done !== undefined) step.done = x.done
+    if (x.undone !== undefined) step.undone = x.undone
+    steps.push(step)
+  }
+  const out: JournalRecord = {
+    opId,
+    op: r.op,
+    hostId: r.hostId,
+    requiredLocks: [...(r.requiredLocks as string[])],
+    resources: [...(r.resources as string[])],
+    rule: r.rule,
+    steps,
+    state: r.state as JournalState
+  }
+  assertRecordNames(out)
+  if (r.sharedLocators !== undefined) {
+    const sh = r.sharedLocators as Partial<PersistedSharedLocators> | null
+    if (!sh || typeof sh !== 'object' || !Array.isArray(sh.resourceKeys)) throw unreadable()
+    assertFolderId(sh.folderId as string)
+    for (const k of sh.resourceKeys) assertResourceKey(k as string)
+    out.sharedLocators = { resourceKeys: [...sh.resourceKeys], folderId: sh.folderId as string }
+  }
+  if (r.attention !== undefined) {
+    const a = r.attention as { stepId?: unknown; reason?: unknown } | null
+    if (!a || typeof a !== 'object' || typeof a.stepId !== 'string' || typeof a.reason !== 'string') throw unreadable()
+    out.attention = { stepId: a.stepId, reason: a.reason }
+  }
+  return out
 }
 
 /** Read the canonical journal; null when absent; throws JournalError when unreadable. */
@@ -252,26 +349,24 @@ export function beginJournal(
   record: Omit<JournalRecord, 'state'> & { state?: JournalState },
   opts?: { sharedLocators?: SharedLocatorSpec }
 ): JournalHandle {
-  assertOpId(record.opId)
-  for (const k of record.resources) assertResourceKey(k)
-  const ids = new Set<string>()
-  for (const s of record.steps) {
-    if (ids.has(s.id)) throw new JournalError(`Duplicate step id ${JSON.stringify(s.id)}`)
-    ids.add(s.id)
-  }
+  assertRecordNames(record)
   const full: JournalRecord = {
     ...record,
     steps: record.steps.map((s) => ({ ...s })),
     state: 'active'
   }
+  // A shared-locator spec on the record itself is never trusted (it may carry a directory); only opts count.
+  delete full.sharedLocators
+  let cacheJournalDir: string | undefined
   if (opts?.sharedLocators) {
     const sh = opts.sharedLocators
     assertFolderId(sh.folderId)
     for (const k of sh.resourceKeys) assertResourceKey(k)
-    full.sharedLocators = { cacheJournalDir: sh.cacheJournalDir, resourceKeys: [...sh.resourceKeys], folderId: sh.folderId }
+    full.sharedLocators = { resourceKeys: [...sh.resourceKeys], folderId: sh.folderId }
+    cacheJournalDir = sh.cacheJournalDir
   }
-  writeLocators(controlDir, full)
-  const h: JournalHandle = { controlDir, record: full }
+  writeLocators(controlDir, full, cacheJournalDir)
+  const h: JournalHandle = { controlDir, record: full, cacheJournalDir }
   persist(h)
   return h
 }
@@ -308,7 +403,7 @@ export function commitJournal(journal: JournalHandle): void {
   if (pending.length > 0) throw new JournalError(`Journal ${record.opId} has unfinished steps: ${pending.map((s) => s.id).join(', ')}`)
   record.state = 'committed'
   persist(journal)
-  removeJournal(controlDir, record)
+  removeJournal(controlDir, record, journal.cacheJournalDir)
 }
 
 // ---------------------------------------------------------------- finding
@@ -353,7 +448,8 @@ function needsAttention(h: JournalHandle, stepId: string, reason: string): Recov
 }
 
 function handlerFor(handlers: StepHandlers, step: JournalStep): StepHandler {
-  const h = handlers[step.kind]
+  // Own properties only: a kind such as `constructor` must not resolve through the prototype.
+  const h = Object.prototype.hasOwnProperty.call(handlers, step.kind) ? handlers[step.kind] : undefined
   if (!h) throw new JournalError(`No handler for step kind ${JSON.stringify(step.kind)}`)
   return h
 }
@@ -395,20 +491,22 @@ async function rollBack(h: JournalHandle, handlers: StepHandlers): Promise<Recov
       return needsAttention(h, step.id, `Step ${step.id} (${step.kind}): the target changed outside the operation`)
     }
   }
-  removeJournal(h.controlDir, h.record)
+  removeJournal(h.controlDir, h.record, h.cacheJournalDir)
   return { status: 'rolled-back' }
 }
 
 /**
  * Recover one journal per spec 4.9. Idempotent. The caller holds the journal's `requiredLocks`.
- * Missing journal: `removed` (nothing to do).
+ * Missing journal: `removed` (nothing to do). A journal with shared locators needs `opts.cacheJournalDir` (the
+ * caller's own cache journal directory); without it recovery throws JournalError before touching anything.
  */
-export async function recoverJournal(controlDir: string, opId: string, handlers: StepHandlers): Promise<RecoverResult> {
+export async function recoverJournal(controlDir: string, opId: string, handlers: StepHandlers, opts: RecoverOptions = {}): Promise<RecoverResult> {
   const record = readJournal(controlDir, opId)
   if (!record) return { status: 'removed' }
-  const h: JournalHandle = { controlDir, record }
+  if (record.state !== 'needs-attention') cacheDirFor(record, opts.cacheJournalDir)
+  const h: JournalHandle = { controlDir, record, cacheJournalDir: opts.cacheJournalDir }
   if (record.state === 'committed') {
-    removeJournal(controlDir, record)
+    removeJournal(controlDir, record, opts.cacheJournalDir)
     return { status: 'committed' }
   }
   if (record.state === 'needs-attention') {
@@ -416,10 +514,10 @@ export async function recoverJournal(controlDir: string, opId: string, handlers:
     return { status: 'needs-attention', stepId: a?.stepId ?? '', reason: a?.reason ?? 'needs attention' }
   }
   if (!record.steps.some((s) => s.started || s.done)) {
-    removeJournal(controlDir, record)
+    removeJournal(controlDir, record, opts.cacheJournalDir)
     return { status: 'removed' }
   }
-  writeLocators(controlDir, record) // repair: only for started journals
+  writeLocators(controlDir, record, opts.cacheJournalDir) // repair: only for started journals
   return record.rule === 'forward' ? rollForward(h, handlers) : rollBack(h, handlers)
 }
 
@@ -432,17 +530,19 @@ export async function resolveNeedsAttention(
   controlDir: string,
   opId: string,
   action: 'finish' | 'discard',
-  handlers: StepHandlers
+  handlers: StepHandlers,
+  opts: RecoverOptions = {}
 ): Promise<RecoverResult> {
   const record = readJournal(controlDir, opId)
   if (!record) return { status: 'removed' }
   if (record.state !== 'needs-attention') throw new JournalError(`Journal ${opId} is not in needs-attention`)
-  const h: JournalHandle = { controlDir, record }
+  cacheDirFor(record, opts.cacheJournalDir)
+  const h: JournalHandle = { controlDir, record, cacheJournalDir: opts.cacheJournalDir }
   if (action === 'discard') {
-    removeJournal(controlDir, record)
+    removeJournal(controlDir, record, opts.cacheJournalDir)
     return { status: 'removed' }
   }
-  writeLocators(controlDir, record)
+  writeLocators(controlDir, record, opts.cacheJournalDir)
   if (record.rule === 'forward') {
     for (const step of record.steps) {
       if (step.done) continue
@@ -465,7 +565,7 @@ export async function resolveNeedsAttention(
     step.undone = true
     persist(h)
   }
-  removeJournal(controlDir, record)
+  removeJournal(controlDir, record, opts.cacheJournalDir)
   return { status: 'rolled-back' }
 }
 

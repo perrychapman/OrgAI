@@ -63,15 +63,19 @@ export interface AcquireOptions {
 }
 
 /**
- * WAL-mode files never belong to a lock (nothing here sets WAL). A `-journal` file is expected: an exclusive hold
- * creates one (512 bytes, zeroed header) and a crashed holder leaves it behind; it is never hot because nothing is
- * written, and the next holder's ROLLBACK removes it (measured, parallel-sessions-locktest).
+ * WAL-mode files never belong to a lock (nothing here sets WAL). This module's connections use
+ * `journal_mode = MEMORY`, so they never create a `-journal` file. One may still exist: a holder that used SQLite's
+ * default mode (an older build, a test child) creates one (512 bytes, zeroed header) and a crashed one leaves it behind;
+ * it is never hot because nothing is written, and SQLite removes it when the database is empty (measured,
+ * parallel-sessions-locktest). Such a file must be a plain file: SQLite opens, writes and deletes it by name, so a
+ * planted link there would redirect those operations.
  */
 const SIBLINGS = ['-wal', '-shm']
 
 /**
  * Check a lock file without opening it: a regular, non-link file of size 0, owned by this user on POSIX, with no WAL
- * sibling files. Returns the reason it is unusable, or null.
+ * sibling files and no `-journal` beside it that is anything but a regular file. Returns the reason it is unusable,
+ * or null.
  */
 export function lockFileProblem(path: string, platform: NodeJS.Platform = process.platform): string | null {
   let st
@@ -85,6 +89,14 @@ export function lockFileProblem(path: string, platform: NodeJS.Platform = proces
   if (st.size !== 0) return 'it is not empty'
   if (platform !== 'win32' && typeof process.getuid === 'function' && st.uid !== process.getuid()) return 'it is owned by another user'
   for (const s of SIBLINGS) if (existsSync(path + s)) return `it has a ${s} file beside it`
+  let j
+  try {
+    j = lstatSync(path + '-journal')
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT') return `its -journal file could not be checked (${code ?? String(e)})`
+  }
+  if (j && (j.isSymbolicLink() || !j.isFile())) return 'it has a -journal beside it that is not a regular file'
   return null
 }
 
@@ -103,12 +115,25 @@ function isBusy(e: unknown): boolean {
   return err?.errcode === 5 || err?.errcode === 6 || /database is locked/i.test(String(err?.message ?? ''))
 }
 
+/**
+ * Windows only: a sharing violation (another process, often a scanner, has the file open without sharing) shows up as
+ * EACCES / EPERM from Node or SQLITE_CANTOPEN (14) from SQLite. Spec 4.1 "Waiting": retried like busy, after the lock
+ * file passed its checks. Never on POSIX, where these are real permission errors and fail closed.
+ */
+export function isWindowsSharingViolation(e: unknown, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform !== 'win32') return false
+  const err = e as { errcode?: number; code?: string } | null
+  return err?.code === 'EACCES' || err?.code === 'EPERM' || err?.errcode === 14
+}
+
 function openConnection(path: string): DatabaseSync {
   const problem = lockFileProblem(path)
   if (problem) throw new LockFileUnsafeError(path, problem)
   const db = new DatabaseSync(path)
   try {
     db.exec('PRAGMA busy_timeout = 0')
+    // No rollback journal file: an exclusive hold writes nothing, and a -journal path is one more name to trust.
+    db.exec('PRAGMA journal_mode = MEMORY')
   } catch (e) {
     db.close()
     throw e
@@ -118,7 +143,13 @@ function openConnection(path: string): DatabaseSync {
 
 /** Try once on a fresh connection; returns the connection holding the lock, or null when busy. Other errors throw. */
 function tryOsLock(path: string, mode: LockMode): DatabaseSync | null {
-  const db = openConnection(path)
+  let db: DatabaseSync
+  try {
+    db = openConnection(path)
+  } catch (e) {
+    if (isBusy(e) || isWindowsSharingViolation(e)) return null
+    throw e
+  }
   try {
     if (mode === 'exclusive') db.exec('BEGIN EXCLUSIVE')
     else {
@@ -133,7 +164,7 @@ function tryOsLock(path: string, mode: LockMode): DatabaseSync | null {
       /* the connection is closed next */
     }
     db.close()
-    if (isBusy(e)) return null
+    if (isBusy(e) || isWindowsSharingViolation(e)) return null
     throw e
   }
 }
@@ -251,6 +282,8 @@ function attempt(path: string, mode: LockMode): OsLockHandle | null {
   if (!inProcessFree(st, mode)) return null
   if (mode === 'shared' && st.shared) {
     st.shared.count += 1
+    // The next queued waiter may be shared too: it can join now (FIFO chain of shared waiters).
+    wakeNext(path)
     return makeHandle(path, mode)
   }
   let db: DatabaseSync | null
@@ -262,8 +295,11 @@ function attempt(path: string, mode: LockMode): OsLockHandle | null {
     throw e
   }
   if (!db) return null
-  if (mode === 'shared') st.shared = { db, count: 1 }
-  else st.exclusive = db
+  if (mode === 'shared') {
+    st.shared = { db, count: 1 }
+    // A shared waiter queued behind this one can join the new hold at once.
+    wakeNext(path)
+  } else st.exclusive = db
   return makeHandle(path, mode)
 }
 
@@ -410,7 +446,10 @@ export function downgradeToShared(exclusive: OsLockHandle): OsLockHandle {
   }
   st.shared = { db, count: 1 }
   ;(exclusive as { release: () => void }).release = () => {}
-  return makeHandle(exclusive.path, 'shared')
+  const handle = makeHandle(exclusive.path, 'shared')
+  // Shared waiters that queued behind the exclusive hold can join the shared one now.
+  wakeNext(exclusive.path)
+  return handle
 }
 
 /** Test seam: how many paths have in-process state (should be 0 when nothing is held or waiting). */

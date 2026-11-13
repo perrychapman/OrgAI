@@ -1,6 +1,6 @@
 /** Provider session binding tests (no tokens). Two-process races run TypeScript through the vite-node CLI (store/shared/testing/viteNode.ts). */
 import { type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -52,6 +52,11 @@ describe('bindProviderSession', () => {
     expect(readFileSync(file, 'utf8')).toBe('{"chainId":')
     writeFileSync(file, '{"chainId":"../x"}')
     expect(bind('run_a')).toEqual({ ok: false, reason: 'unreadable' })
+  })
+  // POSIX permission bits; Windows has no mode bits on folders (its ACLs are not set here).
+  it.skipIf(process.platform === 'win32')('creates the sessions folder private to this user (0700)', () => {
+    bind('run_a')
+    expect(statSync(sessions).mode & 0o777).toBe(0o700)
   })
   it('rejects an invalid chain id', () => {
     expect(() => bind('../x')).toThrow(/Invalid chain id/)

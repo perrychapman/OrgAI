@@ -7,11 +7,21 @@
  * systems that refuse it; the result says so (`dirSynced: false`), so callers and `doctor` can state the narrower
  * power-loss guarantee instead of assuming it.
  *
+ * The rename goes through `renameSyncRetry` (host/fsRetry.ts): transient Windows sharing failures are retried there,
+ * POSIX behaviour is unchanged.
+ *
  * Electron-free; relative imports only.
  */
 import { randomBytes } from 'node:crypto'
-import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, openSync, unlinkSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import { renameSyncRetry, type RenameRetryOptions } from '../../host/fsRetry'
+
+/** Test seam: options for the rename retry (a fake rename, platform, delays); null restores the defaults. */
+let renameSeam: RenameRetryOptions | null = null
+export function _setAtomicWriteRenameForTest(opts: RenameRetryOptions | null): void {
+  renameSeam = opts
+}
 
 /** Set once per process by the host (control/hosts registration); tests may set it. */
 let hostTag = 'nohost'
@@ -79,7 +89,8 @@ export function writeFileAtomic(file: string, data: string | Uint8Array, mode = 
   }
   closeSync(fd)
   try {
-    renameSync(tmp, file)
+    // Windows: a scanner or indexer briefly holding the target makes MoveFileEx fail with EPERM/EBUSY/EACCES; retried.
+    renameSyncRetry(tmp, file, renameSeam ?? {})
   } catch (e) {
     try {
       unlinkSync(tmp)
