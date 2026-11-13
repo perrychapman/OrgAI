@@ -33,7 +33,7 @@ import { HandleNamer, mapSendMessage, messageTranscriptText, spawnHandle } from 
 import { SHELL_TOOLS, isFreeCdTarget, matchOptionsFor, matchingRule, type MatchOptions } from './ruleMatch'
 import { countUsage, setModelTokens, usageOf } from './runUsage'
 import { cliProjectSettings, projectSettingsLoad } from './claude'
-import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL } from '@shared/types'
+import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, PROPOSE_SCHEDULE_TOOL } from '@shared/types'
 import { bridgedRolesOf, bridgedSpawnDenial } from './claude'
 import { BRIDGE_HARNESS_TOOLS } from '@shared/types'
 import { buildRolePrompt } from './prompts'
@@ -251,6 +251,8 @@ export interface MockHarnessAnswerStep {
   args?: Record<string, unknown>
   answers: { prefix: string; text: string }[]
   otherwise: string
+  /** When no answer matches, say the result's first line instead of `otherwise` (a refusal sentence). */
+  otherwiseResult?: boolean
 }
 
 /**
@@ -1918,6 +1920,10 @@ export class MockSession implements RuntimeSession {
       if (this.script.skillAssist !== DEFAULT_SKILL_ASSIST) return this.script.skillAssist
       return this.defaultSkillAssistSteps()
     }
+    if (this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK) {
+      const schedule = scheduleMarkerSteps(this.ctx.prompt, this.ctx.run.quick ? null : this.ctx.project.id, this.ctx.schedules?.now() ?? Date.now())
+      if (schedule) return schedule
+    }
     if (this.ctx.run.kind === 'work' && this.ctx.run.quick && this.script.work === DEFAULT_WORK) {
       if (this.ctx.prompt.includes(CHAT_EDIT_TOKEN)) return chatEditSteps(this.ctx.run.quick.folder)
       if (this.ctx.prompt.includes(CHAT_MCP_TOKEN)) return CHAT_MCP_STEPS
@@ -2912,7 +2918,8 @@ export class MockSession implements RuntimeSession {
     const result = await this.harnessStep({ type: 'harness', name: step.name, args: step.args ?? {}, retryOnRevise: false })
     if (this.stopped || this.interrupted) return
     const answer = result === undefined ? undefined : step.answers.find((a) => result.startsWith(a.prefix))
-    await this.step({ type: 'text', text: answer?.text ?? step.otherwise })
+    const echoed = step.otherwiseResult && result !== undefined ? result.split('\n')[0]!.trim() : ''
+    await this.step({ type: 'text', text: answer?.text ?? (echoed || step.otherwise) })
   }
 
   /** The firstProject step: list_projects, then `then` for the first project's id, or the `none` sentence. */
@@ -2982,6 +2989,51 @@ export function selfConfigProjectSteps(): MockStep[] {
         answers: [{ prefix: 'APPROVED', text: MOCK_SELF_CONFIG_PROJECT_DONE }],
         otherwise: MOCK_SELF_CONFIG_PROJECT_LEFT
       }
+    }
+  ]
+}
+
+/** Trigger token (work runs, Chat or project, default script): propose_schedule one daily create (scheduleSteps). */
+export const SCHEDULE_TOKEN = '[mock:schedule]'
+/** Trigger token: like SCHEDULE_TOKEN but a `once` schedule 10 seconds ahead of the clock, so an e2e can watch it fire. */
+export const SCHEDULE_ONCE_TOKEN = '[mock:schedule-once]'
+export const MOCK_SCHEDULE_NAME = 'Nightly PR monitor'
+export const MOCK_SCHEDULE_PROMPT = 'Review new pull requests and report what needs attention.'
+export const MOCK_SCHEDULE_ONCE_DELAY_MS = 10_000
+export const MOCK_SCHEDULE_APPROVED = 'APPROVED: the schedule is saved.'
+export const MOCK_SCHEDULE_REVISE = 'REVISE: tell me what to change in the schedule.'
+export const MOCK_SCHEDULE_DECLINED = 'DECLINED: I left your schedules alone.'
+export const MOCK_SCHEDULE_LEFT = 'I could not propose the schedule.'
+
+/**
+ * The [mock:schedule] / [mock:schedule-once] turn: propose_schedule with one create item (MOCK_SCHEDULE_NAME and
+ * _PROMPT, missed 'run-once', no model / mode / budget). Target: Chat (projectId null) an ask target without a folder,
+ * a project work run a team target on that project. Timing: daily 00:00, or once at `now` + 10 s. The reply starts
+ * with the outcome's first word (APPROVED / REVISE / DECLINED); anything else (a refusal) is said back as the tool's
+ * first line. null when neither token is in the prompt.
+ */
+export function scheduleMarkerSteps(prompt: string, projectId: string | null, now: number): MockStep[] | null {
+  const once = prompt.includes(SCHEDULE_ONCE_TOKEN)
+  if (!once && !prompt.includes(SCHEDULE_TOKEN)) return null
+  const schedule = {
+    name: MOCK_SCHEDULE_NAME,
+    prompt: MOCK_SCHEDULE_PROMPT,
+    target: projectId === null ? { kind: 'ask' } : { kind: 'team', projectId },
+    timing: once ? { kind: 'once', at: now + MOCK_SCHEDULE_ONCE_DELAY_MS } : { kind: 'daily', time: '00:00' },
+    missed: 'run-once'
+  }
+  return [
+    {
+      type: 'harnessAnswer',
+      name: PROPOSE_SCHEDULE_TOOL,
+      args: { rationale: 'You asked for a recurring check.', items: [{ action: 'create', schedule }] },
+      answers: [
+        { prefix: 'APPROVED', text: MOCK_SCHEDULE_APPROVED },
+        { prefix: 'REVISE', text: MOCK_SCHEDULE_REVISE },
+        { prefix: 'DECLINED', text: MOCK_SCHEDULE_DECLINED }
+      ],
+      otherwise: MOCK_SCHEDULE_LEFT,
+      otherwiseResult: true
     }
   ]
 }
