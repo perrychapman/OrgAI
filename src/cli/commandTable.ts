@@ -4,7 +4,7 @@
  * The Wave 5 management commands each live in their own file under ./entries (one per domain, so parallel work never
  * collides here).
  */
-import { EFFORTS, PERMISSION_MODES, STAFFING_GOALS } from '../shared/types'
+import { EFFORTS, EVOLVE_STRATEGIES, PERMISSION_MODES, STAFFING_GOALS } from '../shared/types'
 import { ENTRY as INIT_ENTRY } from './entries/init'
 import { ENTRY as ORG_ENTRY } from './entries/org'
 import { ENTRY as TEAM_ENTRY } from './entries/team'
@@ -123,6 +123,7 @@ const EXEC_START_FLAGS: readonly CommandFlag[] = [
   { name: 'create-project', takesValue: false, summary: 'Make the current folder a project when it is not one' },
   { name: 'model', short: 'm', takesValue: true, summary: 'Root model for this run: a tier (fast, everyday, deep, top) or a model id of the project\'s connection' },
   { name: 'effort', takesValue: true, values: EFFORTS, summary: 'Root reasoning effort for this run' },
+  { name: 'evolve', takesValue: false, optionalValue: true, values: EVOLVE_STRATEGIES, summary: 'After the run: settle an active team-evolution trial and, when the team wastes spend, apply a new generation; a trial is rolled back when a later evolve pass finds a regression, and changes that may spend more (a higher tier, effort or subagent limit) are held and listed, never applied here (--evolve or --evolve=deterministic|hybrid; not with --quick or --continue)' },
   { name: 'continue', short: 'c', takesValue: false, summary: 'Continue the newest ended run of this project instead of starting a new one' },
   { name: 'quiet', short: 'q', takesValue: false, summary: 'Text output: print only the final answer on stdout (errors still go to stderr)' },
   { name: 'output-last-message', takesValue: true, summary: 'Also write the final answer to this file' }

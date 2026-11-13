@@ -138,11 +138,12 @@ export const RULES = [
   // ---- CLI, by command ----
   { match: ['src/cli/tui/**', 'src/cli/commands/tui.ts', 'src/cli/commands/interactive.ts'], scripts: ['cli-tui'], why: 'terminal UI' },
   { match: ['src/cli/commands/projects.ts', 'src/cli/commands/init.ts', 'src/cli/entries/projects.ts', 'src/cli/entries/init.ts'], scripts: ['cli-projects'], why: 'orgai projects / init' },
-  { match: ['src/cli/commands/{org,team,permissions,worktrees}.ts', 'src/cli/entries/{org,team,permissions,worktrees}.ts'], scripts: ['cli-org'], why: 'orgai org / team / permissions / worktrees' },
+  { match: ['src/cli/commands/{org,team,permissions,worktrees}.ts', 'src/cli/entries/{org,team,permissions,worktrees}.ts'], scripts: ['cli-org', 'cli-org-evolve'], why: 'orgai org / team / permissions / worktrees (org retro --unattended and org evolve route through org.ts)' },
+  { match: ['src/cli/commands/orgEvolve.ts', 'src/main/evolve/**', 'e2e/cli-org-evolve.mjs'], scripts: ['cli-org-evolve'], why: 'orgai org evolve, loop and retro --unattended; the team-evolution engine' },
   { match: ['src/cli/commands/{connections,models,usage,notes}.ts', 'src/cli/entries/{connections,models,usage,notes}.ts'], scripts: ['cli-connections'], why: 'orgai connections / models / usage / notes' },
   { match: ['src/cli/commands/mcp.ts', 'src/cli/commands/mcp/**', 'src/cli/commands/secrets.ts', 'src/cli/entries/{mcp,secrets}.ts'], scripts: ['cli-mcp'], why: 'orgai mcp / secrets' },
   { match: ['src/cli/commands/{skills,kit,knowledge}.ts', 'src/cli/entries/{skills,kit,knowledge}.ts'], scripts: ['cli-skills-kit'], why: 'orgai skills / kit / knowledge' },
-  { match: ['src/cli/commands/exec.ts'], scripts: ['cli-exec'], why: 'orgai exec' },
+  { match: ['src/cli/commands/exec.ts'], scripts: ['cli-exec', 'cli-org-evolve'], why: 'orgai exec (org evolve loop and exec --evolve reuse its run machinery)' },
   { match: ['src/cli/commands/{runs,status,doctor,completions}.ts', 'src/cli/doctor/**'], scripts: ['cli-readonly', 'cli-exec'], why: 'read-only CLI commands' },
 ]
 

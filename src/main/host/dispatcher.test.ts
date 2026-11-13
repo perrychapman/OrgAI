@@ -257,7 +257,7 @@ describe('HostDispatcher.invoke (desktop path)', () => {
 
   it('agrees with the registry: serves exactly its socket-invokable channels (with a kit), none of its desktop-only ones', () => {
     const kit = { exportBundle: vi.fn(), previewBundle: vi.fn(), applyBundle: vi.fn() }
-    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never }))
+    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never, evolve: {} as never }))
     expect([...d.channels()].sort()).toEqual([...socketInvokableChannels()].sort())
     expect([...desktopOnlyChannels()].sort()).toEqual([...DESKTOP_ONLY].sort())
   })
@@ -278,7 +278,7 @@ describe('HostDispatcher.invoke (desktop path)', () => {
 
   it('serves every request channel except the desktop-only ones and runs:subscribe, plus host.status and host.stop', () => {
     const kit = { exportBundle: vi.fn(), previewBundle: vi.fn(), applyBundle: vi.fn() }
-    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never }))
+    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never, evolve: {} as never }))
     const expected = requestChannels().filter((c) => !DESKTOP_ONLY.includes(c) && c !== 'runs:subscribe')
     expected.push('host.status', 'host.stop')
     expect([...d.channels()].sort()).toEqual([...new Set(expected)].sort())
@@ -369,7 +369,7 @@ describe('HostDispatcher.invokeRpc (wire path)', () => {
         throw coded('stale_target_digest', 'The library changed.')
       })
     }
-    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never }), { gate: fakeGate({ mutations: [HOST_IPC.kitApplyBundle] }) })
+    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never, evolve: {} as never }), { gate: fakeGate({ mutations: [HOST_IPC.kitApplyBundle] }) })
     const digest = 'a'.repeat(64)
     const stale = await d.invokeRpc(HOST_IPC.kitApplyBundle, [{ rawBytesBase64: '', digest, targetDigest: digest, choices: [] }], RPC).catch((e: unknown) => e)
     expect(kit.applyBundle).toHaveBeenCalled()
@@ -591,7 +591,7 @@ describe('host-specific handlers', () => {
 
   it('kit:*Bundle call the KitService methods with rebuilt inputs', async () => {
     const kit = { exportBundle: vi.fn((_input: unknown) => ({ fileName: 'k' })), previewBundle: vi.fn(() => ({ items: [] })), applyBundle: vi.fn(async () => ({ applied: [] })) }
-    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never }))
+    const d = new HostDispatcher(services({ kit: kit as never, teamFiles: {} as never, evolve: {} as never }))
     d.invoke(HOST_IPC.kitExportBundle, [{ include: {}, fileName: 'mine', x: 1 }], DESKTOP)
     expect(kit.exportBundle).toHaveBeenCalledOnce()
     expect(kit.exportBundle.mock.calls[0][0]).toMatchObject({ fileName: 'mine' })

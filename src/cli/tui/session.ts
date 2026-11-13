@@ -18,6 +18,14 @@ import {
   type CardKind,
   type ConnectionId,
   type DecisionOutcome,
+  type EvolutionHistory,
+  type EvolveAnalyzeInput,
+  type EvolveAnalyzeResult,
+  type EvolveApplyInput,
+  type EvolveApplyResult,
+  type EvolveRollbackInput,
+  type EvolveRollbackResult,
+  EVOLVE_IPC,
   type HostKind,
   type HostScope,
   type PermissionMode,
@@ -731,6 +739,22 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     },
     async promoteQuick(name: string) {
       return call<QuickRunPromoteResult>('runs:promoteQuick', [{ runId: activeId(), name }])
+    },
+    async evolveAnalyze(input) {
+      return call<EvolveAnalyzeResult>(EVOLVE_IPC.orgEvolveAnalyze, [input], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+    },
+    async evolveHistory(projectId) {
+      return call<EvolutionHistory>(EVOLVE_IPC.orgEvolveHistory, [{ projectId }])
+    },
+    async evolveApply(input) {
+      const res = await call<EvolveApplyResult>(EVOLVE_IPC.orgEvolveApply, [input], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+      if (res?.project && state.project?.id === res.project.id) set(setProject(state, res.project))
+      return res
+    },
+    async evolveRollback(input) {
+      const res = await call<EvolveRollbackResult>(EVOLVE_IPC.orgEvolveRollback, [input], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+      if (res?.project && state.project?.id === res.project.id) set(setProject(state, res.project))
+      return res
     },
     async resync() {
       await stream?.resubscribe().catch((e: unknown) => {

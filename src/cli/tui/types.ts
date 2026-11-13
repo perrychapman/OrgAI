@@ -44,6 +44,13 @@ import type {
   DecidedBy,
   DecisionOutcome,
   Effort,
+  EvolutionHistory,
+  EvolveAnalyzeInput,
+  EvolveAnalyzeResult,
+  EvolveApplyInput,
+  EvolveApplyResult,
+  EvolveRollbackInput,
+  EvolveRollbackResult,
   HostKind,
   McpInstallRequest,
   MergeReview,
@@ -584,6 +591,14 @@ export interface TuiSessionApi {
   setPermissionMode(mode: PermissionMode): Promise<SetRunPermissionModeResult>
   /** runs:promoteQuick: save the followed quick run's chain as a project. */
   promoteQuick(name: string): Promise<QuickRunPromoteResult>
+  /** org:evolveAnalyze (read, deterministic unless hybrid): diagnosis and proposed plan. */
+  evolveAnalyze(input: EvolveAnalyzeInput): Promise<EvolveAnalyzeResult>
+  /** org:evolveHistory (read): generations, champion, trial, rejected hypotheses. */
+  evolveHistory(projectId: string): Promise<EvolutionHistory>
+  /** org:evolveApply (configure): applies a plan; a returned project replaces the state's project at once. */
+  evolveApply(input: EvolveApplyInput): Promise<EvolveApplyResult>
+  /** org:evolveRollback (configure): rolls a generation back; a returned project replaces the state's project. */
+  evolveRollback(input: EvolveRollbackInput): Promise<EvolveRollbackResult>
   /** Re-subscribe after SIGCONT or a reconnect. */
   resync(): Promise<void>
   notify(text: string, tone?: Tone): void

@@ -4,8 +4,12 @@
  * its existing tests. Relative imports only (noElectronImport.test.ts).
  */
 import { existsSync } from 'node:fs'
-import { APP_REFERENCE_ACTIONS, isStaffingGoal, type AppReferenceQuery } from '../../shared/types'
+import { APP_REFERENCE_ACTIONS, EVOLVE_STRATEGIES, isStaffingGoal, type AppReferenceQuery } from '../../shared/types'
 import type {
+  EvolveAnalyzeInput,
+  EvolveApplyInput,
+  EvolveRollbackInput,
+  EvolveStrategy,
   FolderConfigTrustInput,
   ProjectCreateInput,
   ProjectPathCheck,
@@ -1097,14 +1101,29 @@ function modelSelectionArg(v: unknown): { model: string; connection: ConnectionI
   return { model, connection: v.connection }
 }
 
-/** runs:start: { projectId, prompt, scaffold?, images?, team?, overrides?, modelSelection?, effort?, permissionMode? }, rebuilt; team only 'single'. */
-export function startRunArgs(input: unknown): StartRunInput {
+/** StartRunInput.evolve rebuilt: true, false, 'deterministic' or 'hybrid'; undefined and null are absent, anything else is refused. */
+function evolveStartArg(v: unknown): boolean | EvolveStrategy | undefined {
+  if (v === undefined || v === null) return undefined
+  if (typeof v === 'boolean') return v
+  if (typeof v === 'string' && (EVOLVE_STRATEGIES as readonly string[]).includes(v)) return v as EvolveStrategy
+  throw badInput("evolve must be true, false, 'deterministic' or 'hybrid'.")
+}
+
+/** runs:start: { projectId, prompt, scaffold?, images?, team?, overrides?, modelSelection?, effort?, permissionMode?, evolve?, evolveWindowRuns? }, rebuilt; team only 'single'. */
+export function startRunArgs(input: unknown): StartRunInput & { evolveWindowRuns?: number } {
   if (!isPlain(input)) throw badInput('Unknown run input.')
   if (!isValidId(input.projectId)) throw badInput('Project not found')
   const { text, images } = messageParts(input.prompt, input.images, 'prompt')
   if (input.scaffold !== undefined && input.scaffold !== null && typeof input.scaffold !== 'boolean') throw badInput('scaffold must be true or false.')
   const overrides: RunOverrides | undefined = runOverridesArgs(input.overrides)
   const modelSelection = modelSelectionArg(input.modelSelection)
+  const evolve = evolveStartArg(input.evolve)
+  let evolveWindowRuns: number | undefined
+  try {
+    evolveWindowRuns = evolveInt(input.evolveWindowRuns, 'evolveWindowRuns', 1, 10)
+  } catch (e) {
+    throw badInput((e as Error).message)
+  }
   if (input.effort !== undefined && input.effort !== null && !isEffort(input.effort)) throw badInput('effort is not a known reasoning effort.')
   if (input.permissionMode !== undefined && input.permissionMode !== null && !isPermissionMode(input.permissionMode)) throw badInput('permissionMode is not a known permission mode.')
   return {
@@ -1115,6 +1134,8 @@ export function startRunArgs(input: unknown): StartRunInput {
     ...(input.team === 'single' ? { team: 'single' as const } : {}),
     ...(overrides ? { overrides } : {}),
     ...(modelSelection ? { modelSelection } : {}),
+    ...(evolve !== undefined ? { evolve } : {}),
+    ...(evolve !== undefined && evolve !== false && evolveWindowRuns !== undefined ? { evolveWindowRuns } : {}),
     ...(isEffort(input.effort) ? { effort: input.effort } : {}),
     ...(isPermissionMode(input.permissionMode) ? { permissionMode: input.permissionMode } : {})
   }
@@ -1450,4 +1471,103 @@ export const outputArgs = {
       dataBase64: outputText(i.dataBase64, 'picture', Math.ceil(OUTPUT_EXPORT_IMAGE_MAX_BYTES / 3) * 4 + 8)
     }
   }
+}
+
+// ---------- Team evolution (EVOLVE_IPC; src/main/evolve/) ----------
+
+const EVOLVE_GENERATION_RE = /^gen_[0-9]{1,6}$/
+
+function evolveInt(v: unknown, what: string, min: number, max: number): number | undefined {
+  if (v === undefined || v === null) return undefined
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) throw new Error(`${what} must be a whole number from ${min} to ${max}.`)
+  return v
+}
+
+function evolveProjectId(i: Record<string, unknown>): string {
+  if (!isSafeId(i.projectId) || isVirtualProjectId(i.projectId)) throw new Error('Project not found')
+  return i.projectId
+}
+
+function evolveStrategyArg(v: unknown): EvolveStrategy | undefined {
+  if (v === undefined || v === null) return undefined
+  if (typeof v === 'string' && (EVOLVE_STRATEGIES as readonly string[]).includes(v)) return v as EvolveStrategy
+  throw new Error("strategy must be 'deterministic' or 'hybrid'.")
+}
+
+/**
+ * org:evolveAnalyze / org:evolveApply: { projectId, runs? 1..50, goal?, strategy?, minWaste? 0..100 (a number),
+ * evalWindowRuns? 1..10 (apply only) }, rebuilt field by field; unknown fields are dropped. Exported for tests.
+ */
+export function evolveAnalyzeArgs(input: unknown, withWindow: true): EvolveApplyInput
+export function evolveAnalyzeArgs(input: unknown, withWindow?: false): EvolveAnalyzeInput
+export function evolveAnalyzeArgs(input: unknown, withWindow = false): EvolveApplyInput {
+  if (!isPlain(input)) throw new Error('Project not found')
+  const projectId = evolveProjectId(input)
+  const runs = evolveInt(input.runs, 'runs', 1, 50)
+  if (input.goal !== undefined && input.goal !== null && !isStaffingGoal(input.goal)) throw new Error("goal must be 'balanced', 'cost' or 'speed'.")
+  const strategy = evolveStrategyArg(input.strategy)
+  let minWaste: number | undefined
+  if (input.minWaste !== undefined && input.minWaste !== null) {
+    if (typeof input.minWaste !== 'number' || !Number.isFinite(input.minWaste) || input.minWaste < 0 || input.minWaste > 100) throw new Error('minWaste must be a number from 0 to 100.')
+    minWaste = input.minWaste
+  }
+  const evalWindowRuns = withWindow ? evolveInt(input.evalWindowRuns, 'evalWindowRuns', 1, 10) : undefined
+  let expectedFingerprint: string | undefined
+  let allowSpendRaise: boolean | undefined
+  if (withWindow) {
+    if (input.expectedFingerprint !== undefined && input.expectedFingerprint !== null) {
+      if (typeof input.expectedFingerprint !== 'string' || !EVOLVE_FINGERPRINT_RE.test(input.expectedFingerprint)) throw new Error('expectedFingerprint must be the fingerprint of an analysed plan.')
+      expectedFingerprint = input.expectedFingerprint
+    }
+    if (input.allowSpendRaise !== undefined && input.allowSpendRaise !== null) {
+      if (typeof input.allowSpendRaise !== 'boolean') throw new Error('allowSpendRaise must be true or false.')
+      // Approving a raise means approving a reviewed plan: without its fingerprint there is nothing that was reviewed.
+      if (input.allowSpendRaise && expectedFingerprint === undefined) throw new Error('allowSpendRaise needs the expectedFingerprint of the plan that was reviewed.')
+      if (input.allowSpendRaise) allowSpendRaise = true
+    }
+  }
+  return {
+    projectId,
+    ...(runs !== undefined ? { runs } : {}),
+    ...(isStaffingGoal(input.goal) ? { goal: input.goal } : {}),
+    ...(strategy ? { strategy } : {}),
+    ...(minWaste !== undefined ? { minWaste } : {}),
+    ...(evalWindowRuns !== undefined ? { evalWindowRuns } : {}),
+    ...(expectedFingerprint !== undefined ? { expectedFingerprint } : {}),
+    ...(allowSpendRaise ? { allowSpendRaise } : {})
+  }
+}
+
+/** A plan fingerprint as plan.ts planFingerprint makes it (hex or word characters, bounded). */
+const EVOLVE_FINGERPRINT_RE = /^[A-Za-z0-9_-]{1,128}$/
+
+/** org:evolveHistory: { projectId }, rebuilt. */
+export function evolveHistoryArgs(input: unknown): { projectId: string } {
+  if (!isPlain(input)) throw new Error('Project not found')
+  return { projectId: evolveProjectId(input) }
+}
+
+/** org:evolveRollback: { projectId, generationId? (gen_<n>), reason? (text up to 200 chars) }, rebuilt. */
+export function evolveRollbackArgs(input: unknown): EvolveRollbackInput {
+  if (!isPlain(input)) throw new Error('Project not found')
+  const projectId = evolveProjectId(input)
+  let generationId: string | undefined
+  if (input.generationId !== undefined && input.generationId !== null) {
+    if (typeof input.generationId !== 'string' || !EVOLVE_GENERATION_RE.test(input.generationId)) throw new Error('generationId must look like gen_1.')
+    generationId = input.generationId
+  }
+  let reason: string | undefined
+  if (input.reason !== undefined && input.reason !== null) {
+    if (typeof input.reason !== 'string') throw new Error('reason must be text.')
+    // eslint-disable-next-line no-control-regex
+    const t = input.reason.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200)
+    if (t) reason = t
+  }
+  return { projectId, ...(generationId ? { generationId } : {}), ...(reason ? { reason } : {}) }
+}
+
+/** org:evolveAfterRun: { runId }, rebuilt (a run id the client holds; RunManager owns the pass). */
+export function evolveAfterRunArgs(input: unknown): { runId: string } {
+  if (!isPlain(input)) throw badInput('Unknown run.')
+  return { runId: refField(input, 'runId', 'run') }
 }
