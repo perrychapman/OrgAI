@@ -4,7 +4,20 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { sigusr1Disabled } from './index'
 import { isCliExternal } from './packaging'
+
+describe('sigusr1Disabled', () => {
+  it('accepts the exact flag in execArgv or NODE_OPTIONS only', () => {
+    expect(sigusr1Disabled(['--disable-sigusr1'], undefined)).toBe(true)
+    expect(sigusr1Disabled([], '--max-old-space-size=100  --disable-sigusr1')).toBe(true)
+    expect(sigusr1Disabled([], '--disable-sigusr1')).toBe(true)
+    expect(sigusr1Disabled([], undefined)).toBe(false)
+    expect(sigusr1Disabled([], '')).toBe(false)
+    expect(sigusr1Disabled(['--disable-sigusr1x'], '--no-disable-sigusr1')).toBe(false)
+    expect(sigusr1Disabled([], '--disable-sigusr1x --xdisable-sigusr1')).toBe(false)
+  })
+})
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const posixOnly = process.platform === 'win32' ? it.skip : it
@@ -92,7 +105,7 @@ describe('electron-builder.yml', () => {
   })
 
   it('disables Electron inspector CLI arguments while retaining RunAsNode for system certificate lookup', () => {
-    expect(yml).toMatch(/^electronFuses:\n  enableNodeCliInspectArguments: false\n  # systemCerts\.ts starts this executable with ELECTRON_RUN_AS_NODE=1 to read the system trust store\.\n  runAsNode: true$/m)
+    expect(yml).toMatch(/^electronFuses:\n  enableNodeCliInspectArguments: false\n  # systemCerts\.ts starts this executable with ELECTRON_RUN_AS_NODE=1 to read the system trust store\.\n  runAsNode: true\n  # arm64 macOS refuses a binary whose ad-hoc signature no longer matches; electron-builder re-signs ad hoc after flipping fuses only with this flag\.\n  resetAdHocDarwinSignature: true$/m)
   })
 
   it('adds no publish or signing identity', () => {
@@ -162,6 +175,10 @@ describe('the built CLI bundle (out/cli)', () => {
     const protectedRun = spawnSync(process.execPath, ['--disable-sigusr1', cli, '--version'], { encoding: 'utf8', env })
     expect(protectedRun.status).toBe(0)
     expect(protectedRun.stdout).toContain('channel dev')
+
+    const viaNodeOptions = spawnSync(process.execPath, [cli, '--version'], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '--disable-sigusr1' } })
+    expect(viaNodeOptions.status).toBe(0)
+    expect(viaNodeOptions.stdout).toContain('channel dev')
 
     if (process.platform !== 'win32') {
       const shebangRun = spawnSync(cli, ['--version'], { encoding: 'utf8', env })
