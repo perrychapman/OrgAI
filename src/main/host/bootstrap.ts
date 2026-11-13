@@ -11,9 +11,9 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary } from '../../shared/types'
+import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunRecord, RunSummary } from '../../shared/types'
 import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
-import { connectionConfigured, connectionIds } from '../../shared/defaults'
+import { connectionConfigured, connectionIds, staffingGoalOf, staffingModeOf } from '../../shared/defaults'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -57,7 +57,8 @@ import { SecretStore, type SecretCipher, type SecretStoreOptions } from '../stor
 import { SettingsStore } from '../store/settings'
 import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
-import { createAppReference, type ShortcutRow } from '../reference/appReference'
+import { createAppReference, type AppReferenceDeps, type AppReferenceService, type ShortcutRow } from '../reference/appReference'
+import { loadBundledDocs } from '../reference/docs'
 import { withAppSettingChanges } from '../../shared/appSettingsProposal'
 import type { AppSettingsProposalPayload, CliCommandStatus, SchedulesProposalPayload } from '../../shared/types'
 import { scheduledRunCap } from '../schedules/validate'
@@ -409,7 +410,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   /** Set once the dispatcher exists (below); the drain's quiesce aborts its model calls (draft:orgChart). */
   let dispatcherRef: HostDispatcher | undefined
   // Self-knowledge: OrgAI answers about itself (reference service, built lazily on first query) and can configure itself.
-  const reference = createAppReference({
+  const referenceDeps: AppReferenceDeps = {
     shortcuts: opts.referenceShortcuts,
     status: {
       appVersion: env.appVersion,
@@ -424,7 +425,16 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       skillLibraryCount: () => skills.libraryList().length,
       ...(opts.cliShimStatus ? { cliShim: opts.cliShimStatus } : {})
     }
-  })
+  }
+  // The bundled docs are separate lazy chunks: they load with the first query, never at boot.
+  let referenceService: AppReferenceService | undefined
+  const reference = {
+    query: async (...args: Parameters<AppReferenceService['query']>): ReturnType<AppReferenceService['query']> => {
+      const docs = await loadBundledDocs()
+      referenceService ??= createAppReference({ ...referenceDeps, docs })
+      return referenceService.query(...args)
+    }
+  }
   // Run outputs (types.ts "Run outputs"): one service for the harness tools (RunManager) and the outputs:* channels.
   // The OS trash only on the desktop (Electron shell.trashItem); every other host deletes for good. The service raises
   // outputs:changed itself for the versions the watcher captures and the revision ends it settles.

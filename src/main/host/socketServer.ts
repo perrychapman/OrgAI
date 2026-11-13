@@ -199,6 +199,11 @@ interface Conn {
    * are refused, since their argument shapes may differ between versions (cli-spec 3.3(2), 6.3(6)).
    */
   versionSkew?: boolean
+  /**
+   * An in-memory connection of the in-process host's own CLI (acceptLocal): no handshake, requests reach the dispatcher
+   * as surface 'inproc' (not 'socket').
+   */
+  local?: boolean
 }
 
 /** Re-read after calls that may close the connection (defeats narrowing). */
@@ -295,6 +300,58 @@ export class HostSocketServer {
     }, RPC_HANDSHAKE_TIMEOUT_MS)
     conn.timer.unref?.()
     this.send(conn, challengeFrame(this.opts.hostInstanceId, conn.hostNonce))
+  }
+
+  /**
+   * The in-process host's own CLI or TUI, over an in-memory stream pair instead of a listening socket (no daemon.secret,
+   * no handshake, no peer check: the caller holds the host object, so it is the process that started it; nothing outside
+   * this process can reach the stream). The connection is then served exactly like a socket one (the same frames, JSON
+   * codec, in-flight limit, frame caps, bulk budget, run subscriptions with their journal, topic pushes), except that its
+   * requests reach the dispatcher as surface 'inproc'. Returns the granted scopes, or the refusal a hello would have given
+   * (host_starting before attach, host_draining, too_many_connections); the caller ends `socket` then.
+   */
+  acceptLocal(socket: Socket, init: { clientKind: HostClientKind; pid: number; requestedScopes: readonly HostScope[] }): { ok: true; grantedScopes: HostScope[] } | { ok: false; error: HostRpcError } {
+    const host = this.host
+    const refuse = (error: HostRpcError): { ok: false; error: HostRpcError } => {
+      socket.destroy()
+      return { ok: false, error }
+    }
+    if (this.closed) return refuse({ code: 'host_draining', message: 'OrgAI is shutting down.', retryAfterMs: HOST_DRAINING_RETRY_MS })
+    if (!host) return refuse({ code: 'host_starting', message: 'OrgAI is starting; try again in a moment.', retryAfterMs: HOST_STARTING_RETRY_MS })
+    if (host.activity.state() === 'draining') return refuse({ code: 'host_draining', message: 'OrgAI is shutting down.', retryAfterMs: HOST_DRAINING_RETRY_MS })
+    if (this.authCount >= RPC_MAX_CLIENT_SOCKETS) return refuse({ code: 'too_many_connections', message: `OrgAI already serves ${RPC_MAX_CLIENT_SOCKETS} terminal clients.` })
+    const reader = new LineReader()
+    reader.maxLineBytes = RPC_BULK_FRAME_MAX_BYTES
+    const id = this.nextId++
+    const grantedScopes: HostScope[] = [...new Set(init.requestedScopes)]
+    const conn: Conn = {
+      id,
+      socket,
+      reader,
+      queue: new OutboundQueue(socket, {
+        onOverflow: (bytes) => this.log(`Client ${id} stopped reading (${Math.round(bytes / 1024 / 1024)} MB queued); disconnected it.`)
+      }),
+      state: 'auth',
+      hostNonce: '',
+      clientKind: init.clientKind,
+      pid: init.pid,
+      scopes: grantedScopes,
+      owner: true,
+      local: true,
+      inflight: 0,
+      authorizing: new Map(),
+      topics: new Set(),
+      pendingLines: [],
+      reservations: new Set()
+    }
+    this.conns.add(conn)
+    socket.on('error', () => {
+      /* closed below */
+    })
+    socket.on('close', () => this.cleanup(conn))
+    socket.on('data', (chunk: Buffer) => this.onData(conn, chunk))
+    this.log(`Client ${id} connected (in-memory, ${init.clientKind}, scopes ${grantedScopes.join(', ') || 'none'}).`)
+    return { ok: true, grantedScopes }
   }
 
   /**
@@ -432,7 +489,7 @@ export class HostSocketServer {
     conn.timer = undefined
     // Output watches are keyed on this connection (watchOwnerOf); drop them with it, silently.
     try {
-      this.host?.services.outputWatcher?.dropOwner(`socket:${String(conn.id)}`)
+      this.host?.services.outputWatcher?.dropOwner(`${conn.local ? 'inproc' : 'socket'}:${String(conn.id)}`)
     } catch {
       /* a watcher failure never blocks cleanup */
     }
@@ -713,7 +770,7 @@ export class HostSocketServer {
     conn.inflight++
     let p: Promise<unknown>
     try {
-      p = host.dispatcher.invokeRpc(method, req.params, { surface: 'socket', clientKind: conn.clientKind, pid: conn.pid, connectionId: String(conn.id), grantedScopes })
+      p = host.dispatcher.invokeRpc(method, req.params, { surface: conn.local ? 'inproc' : 'socket', clientKind: conn.clientKind, pid: conn.pid, connectionId: String(conn.id), grantedScopes })
     } catch (e) {
       p = Promise.reject(e)
     }

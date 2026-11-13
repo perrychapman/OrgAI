@@ -4,7 +4,7 @@
  * The Wave 5 management commands each live in their own file under ./entries (one per domain, so parallel work never
  * collides here).
  */
-import { PERMISSION_MODES, STAFFING_GOALS } from '../shared/types'
+import { EFFORTS, PERMISSION_MODES, STAFFING_GOALS } from '../shared/types'
 import { ENTRY as INIT_ENTRY } from './entries/init'
 import { ENTRY as ORG_ENTRY } from './entries/org'
 import { ENTRY as TEAM_ENTRY } from './entries/team'
@@ -32,6 +32,8 @@ export interface CommandFlag {
   takesValue: boolean
   /** Fixed values, for completion. */
   values?: readonly string[]
+  /** True when `--name` alone is valid and a value may only be attached as `--name=value` (flags.ts optionalValue). */
+  optionalValue?: boolean
   summary: string
   /** A value flag that may repeat (parsed as a list). */
   repeatable?: boolean
@@ -118,7 +120,12 @@ const EXEC_START_FLAGS: readonly CommandFlag[] = [
   { name: 'team', takesValue: true, values: ['default', 'single'], summary: 'The org chart (default) or one assistant (single)' },
   { name: 'quick', takesValue: false, summary: 'A Chat run outside any project' },
   { name: 'allow-edits', takesValue: false, summary: 'With --quick: allow edits in the folder (each still asks); without it the chat starts read-only and an edit or command asks' },
-  { name: 'create-project', takesValue: false, summary: 'Make the current folder a project when it is not one' }
+  { name: 'create-project', takesValue: false, summary: 'Make the current folder a project when it is not one' },
+  { name: 'model', short: 'm', takesValue: true, summary: 'Root model for this run: a tier (fast, everyday, deep, top) or a model id of the project\'s connection' },
+  { name: 'effort', takesValue: true, values: EFFORTS, summary: 'Root reasoning effort for this run' },
+  { name: 'continue', short: 'c', takesValue: false, summary: 'Continue the newest ended run of this project instead of starting a new one' },
+  { name: 'quiet', short: 'q', takesValue: false, summary: 'Text output: print only the final answer on stdout (errors still go to stderr)' },
+  { name: 'output-last-message', takesValue: true, summary: 'Also write the final answer to this file' }
 ]
 
 export const COMMANDS: readonly CommandEntry[] = [
@@ -175,15 +182,19 @@ export const COMMANDS: readonly CommandEntry[] = [
     usage: 'exec [options] [--prompt-file <path|->] [--] [prompt|-]',
     flags: [PROMPT_FILE_FLAG, ...EXEC_RUN_FLAGS, ...EXEC_START_FLAGS],
     available: true,
-    notes: [UNTRUSTED_PROMPT_NOTE]
+    notes: [
+      'With a prompt argument and piped stdin (git diff | orgai exec "review this"), the piped text is given to the run before the prompt, fenced between two lines holding a random STDIN-<hex> marker and labelled as data; a stdin that sends nothing for 3 seconds is ignored. Without a prompt argument (or with -), stdin is the prompt.',
+      UNTRUSTED_PROMPT_NOTE
+    ]
   },
   {
     name: 'resume',
     summary: 'Continue a session chain in the terminal UI, or headless with --exec',
-    usage: 'resume [runId-or-R#] [--prompt <text> | --prompt-file <path|-> | -] [--exec [exec options]] | resume <runId-or-R#> --now | --cancel-auto-resume',
+    usage: 'resume [runId-or-R# | --latest] [--prompt <text> | --prompt-file <path|-> | -] [--exec [exec options]] | resume <runId-or-R#> --now | --cancel-auto-resume',
     flags: [
       { name: 'prompt', takesValue: true, summary: 'The message to continue with ("-" reads stdin, --exec only)' },
       { ...PROMPT_FILE_FLAG, summary: 'Read the message from this file ("-" reads stdin, --exec only); use it for text you did not write' },
+      { name: 'latest', short: 'l', takesValue: false, summary: 'Resume the newest ended run of this project (the default when no run is given)' },
       { name: 'exec', takesValue: false, summary: 'Continue headless, keeping the chain\'s exec settings' },
       { name: 'now', takesValue: false, summary: 'Resume a run paused for a usage limit now (runs:resumeNow)' },
       { name: 'cancel-auto-resume', takesValue: false, summary: 'Keep a paused run paused: it will not resume by itself' },

@@ -7,14 +7,18 @@ import { outputsOfRun, outputsOverlayText } from '../outputsText'
 import { LOG_LEVEL_WORDS, logsOverlayText, type LogLevelFilter } from '../logText'
 import { runIndexMap, runName, runTag } from '../../shared/view/runLabels'
 import { agentLabel, statusWordOfSummary } from '../render'
+import { basename } from 'node:path'
 import { helpKeyLines } from './keymap'
+import { copyToClipboard, lastAssistantText, latestCodeBlock } from './clipboard'
+import { CYCLE_MODES, EFFORT_WORDS, GOAL_WORDS, modeInForce, modeSwitchHint, modelSwitchBlock, pickModel as pickModelFromList, isTier } from './runControls'
 import { sanitizeTty } from './sanitizeTty'
 import { offersRetro } from './selectors'
 import { usageText } from './usageText'
 import { approvalsText } from './approvals'
 import { MODEL_HANDOFF_BODY, MODEL_HANDOFF_TITLE } from '../../shared/liveModelSwitch'
-import type { ProviderModel, RunOverrides, RunSummary } from '../../shared/types'
-import { connectionName, modelChoices, pickModel } from '../modelSwitch'
+import type { ConnectionId, Effort, PermissionMode, ProviderModel, RunOverrides, RunSummary, StaffingGoal } from '../../shared/types'
+import { projectConnection } from '../../shared/defaults'
+import { connectionName, modelChoices, pickModel as pickModelFromCatalog } from '../modelSwitch'
 import { parseSlashRunArgs } from '../runStartFlags'
 import type { SlashCommand, SlashContext, TuiState } from './types'
 
@@ -45,6 +49,8 @@ async function guarded(ctx: SlashContext, fn: () => void | Promise<void>): Promi
 }
 
 const activeSummary = (s: TuiState) => (s.activeRunId ? s.runs[s.activeRunId]?.summary : undefined)
+/** The run a choice applies to: none while the composer starts a new run (/new, /ask), so the choice is staged for it. */
+const followedRun = (s: TuiState) => (s.composeTarget === 'new' ? undefined : activeSummary(s))
 
 /** The active run can be interrupted (its session is open). */
 function interruptible(s: TuiState): boolean {
@@ -102,15 +108,85 @@ function startArgs(args: string): { prompt: string; overrides?: RunOverrides } {
 /** "model-id via Anthropic" for notices. */
 const selectionLabel = (m: Pick<ProviderModel, 'id' | 'connection'>, name?: string): string => `${cleanLine(m.id, 120)} via ${cleanLine(name ?? m.connection, 60)}`
 
-/** /model: no argument lists the choices (a picker when the shell has one), else resolves a tier or id and switches. */
+/**
+ * A choice staged for the next run applies to a project's runs only: a chat started in a folder with no project
+ * (runs:startQuick) takes none of model, effort, mode or goal, so staging one there is refused rather than lost.
+ */
+export const NO_PROJECT_STAGE = 'Run choices apply to a project\'s runs; this folder has no project, so its chat runs as configured. Open a project (or save this chat with /save-project) first.'
+
+/** /model: no argument lists the choices (a picker when the shell has one), else resolves a tier or id and switches (or stages when no run is followed). */
 async function runModel(ctx: SlashContext, args: string): Promise<void> {
-  const run = activeSummary(ctx.state())
+  const s = ctx.state()
+  const run = followedRun(s)
+  const want = cleanLine(args, 200)
   if (!run) {
-    ctx.notify(needsRunReason(), 'warn')
+    if (!ctx.session.listModels || !ctx.session.stage) {
+      ctx.notify(needsRunReason(), 'warn')
+      return
+    }
+    const project = s.project
+    if (!project) {
+      ctx.notify(NO_PROJECT_STAGE, 'warn')
+      return
+    }
+    const staged = ctx.session.getStaged?.() ?? {}
+    const current = staged.model
+    if (!want) {
+      const now = current ? `${cleanLine(current.model, 80)} on ${cleanLine(String(current.connection), 40)}` : "the project's default"
+      ctx.notify(`Model: ${now} (for the next run). Use /model fast|everyday|deep|top|<model id>.`)
+      return
+    }
+    // The next run starts on the project's connection, so the choice is resolved there: a tier through that
+    // connection's own tier map (as exec --model does), an id from that connection's catalog.
+    const connection = projectConnection(project)
+    const tier = want.toLowerCase()
+    let choice: { id: string; connection: ConnectionId; label?: string }
+    if (isTier(tier) && ctx.session.config) {
+      const infos = await ctx.session.config.connections()
+      const id = infos.find((i) => i.connection.id === connection)?.connection.tierModels?.[tier]
+      if (!id) {
+        ctx.notify(`The connection ${cleanLine(String(connection), 40)} maps no model to the ${tier} tier. Use a model id.`, 'warn')
+        return
+      }
+      choice = { id, connection }
+    } else {
+      const picked = pickModelFromList(await ctx.session.listModels(connection), want, connection)
+      if ('error' in picked) {
+        ctx.notify(picked.error, 'warn')
+        return
+      }
+      choice = picked
+    }
+    const label = `${cleanLine(choice.label || choice.id, 80)} (${cleanLine(choice.id, 80)})`
+    ctx.session.stage({ model: { model: choice.id, connection: choice.connection } })
+    ctx.notify(`The next run starts on ${label}.`)
+    return
+  }
+  if (!ctx.session.modelCatalog && ctx.session.listModels) {
+    const current = run.modelSelection
+    if (!want) {
+      const now = current ? `${cleanLine(current.model, 80)} on ${cleanLine(String(current.connection), 40)}` : "the project's default"
+      ctx.notify(`Model: ${now}. Use /model fast|everyday|deep|top|<model id>.`)
+      return
+    }
+    const models = await ctx.session.listModels(isTier(want.toLowerCase()) ? current?.connection : undefined)
+    const picked = pickModelFromList(models, want, current?.connection)
+    if ('error' in picked) {
+      ctx.notify(picked.error, 'warn')
+      return
+    }
+    const label = `${cleanLine(picked.label || picked.id, 80)} (${cleanLine(picked.id, 80)})`
+    const blocked = modelSwitchBlock(s, picked)
+    if (blocked) {
+      ctx.notify(blocked, 'warn')
+      return
+    }
+    const res = await ctx.session.switchModel({ model: picked.id, connection: picked.connection })
+    if (res.applied) ctx.notify(`Now using ${label}.`)
+    else ctx.notify(`${label} is saved for the next message.${res.reason ? ` ${cleanLine(res.reason, 200)}` : ''}`, 'warn')
     return
   }
   const catalog = await ctx.session.modelCatalog()
-  const want = cleanLine(args, 200)
   let selected: ProviderModel | undefined
   if (!want) {
     const choices = modelChoices(run, catalog)
@@ -132,7 +208,7 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
     const [connection, id] = JSON.parse(value) as [string, string]
     selected = catalog.models.find((m) => m.connection === connection && m.id === id)
   } else {
-    const picked = pickModel(run, catalog, want)
+    const picked = pickModelFromCatalog(run, catalog, want)
     if ('error' in picked) {
       ctx.notify(cleanLine(picked.error, 200), 'warn')
       return
@@ -296,8 +372,9 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     name: 'model',
     args: '[<tier|model id>]',
     summary: "Switch the run's model (a short list without an argument)",
-    available: (s) => !s.readOnlyReason && s.activeRunId !== undefined,
-    unavailableReason: (s) => (s.readOnlyReason ? readOnlyText(s) : needsRunReason()),
+    // Without a followed run it stages the model for the next one.
+    available: (s) => !s.readOnlyReason,
+    unavailableReason: readOnlyText,
     run: (ctx, args) => guarded(ctx, () => runModel(ctx, args))
   },
   {
@@ -494,9 +571,137 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       })
   },
   {
+    name: 'effort',
+    args: '[low|medium|high|xhigh|max]',
+    summary: "Choose the root agent's reasoning effort for the next run",
+    available: (s) => !s.readOnlyReason,
+    unavailableReason: readOnlyText,
+    run: (ctx, args) =>
+      guarded(ctx, () => {
+        const word = cleanLine(args, 20).toLowerCase()
+        const run = followedRun(ctx.state())
+        const staged = ctx.session.getStaged()
+        if (!word) {
+          const now = run?.rootEffort ?? staged.effort
+          ctx.notify(`Effort: ${now ?? "the role's own"}${staged.effort && run ? ` (next run: ${staged.effort})` : ''}. Use /effort ${EFFORT_WORDS.join('|')}.`)
+          return
+        }
+        if (!(EFFORT_WORDS as readonly string[]).includes(word)) {
+          ctx.notify(`Effort is one of ${EFFORT_WORDS.join(', ')}.`, 'warn')
+          return
+        }
+        if (!ctx.state().project) {
+          ctx.notify(NO_PROJECT_STAGE, 'warn')
+          return
+        }
+        ctx.session.stage({ effort: word as Effort })
+        ctx.notify(`The next run starts at ${word} effort.${run ? ' The followed run keeps its own.' : ''}`)
+      })
+  },
+  {
+    name: 'mode',
+    args: '[default|acceptEdits|plan|auto]',
+    summary: 'Show or change the permission mode (widening a live run asks first; Shift+Tab from the composer only narrows it)',
+    available: (s) => !s.readOnlyReason,
+    unavailableReason: readOnlyText,
+    run: (ctx, args) =>
+      guarded(ctx, async () => {
+        const s = ctx.state()
+        const run = followedRun(s)
+        const staged = ctx.session.getStaged()
+        const word = cleanLine(args, 24)
+        if (!word) {
+          const now = modeInForce(run, staged.permissionMode)
+          ctx.notify(`Mode: ${now ?? "the project's"}${run ? '' : ' (for the next run)'}. ${modeSwitchHint(s)}`)
+          return
+        }
+        const mode = (CYCLE_MODES as readonly string[]).find((m) => m.toLowerCase() === word.toLowerCase()) as PermissionMode | undefined
+        if (!mode) {
+          ctx.notify(`Mode is one of ${CYCLE_MODES.join(', ')}.`, 'warn')
+          return
+        }
+        if (ctx.setMode) await ctx.setMode(mode)
+      })
+  },
+  {
+    name: 'goal',
+    args: '[balanced|speed|cost]',
+    summary: 'Staffing goal for the next run or continuation (balanced, speed or cost)',
+    available: (s) => !s.readOnlyReason,
+    unavailableReason: readOnlyText,
+    run: (ctx, args) =>
+      guarded(ctx, () => {
+        const word = cleanLine(args, 20).toLowerCase()
+        const staged = ctx.session.getStaged()
+        if (!word) {
+          ctx.notify(`Staffing goal: ${staged.goal ?? "the project's"}. Use /goal ${GOAL_WORDS.join('|')}.`)
+          return
+        }
+        if (!(GOAL_WORDS as readonly string[]).includes(word)) {
+          ctx.notify(`Goal is one of ${GOAL_WORDS.join(', ')}.`, 'warn')
+          return
+        }
+        if (!ctx.state().project) {
+          ctx.notify(NO_PROJECT_STAGE, 'warn')
+          return
+        }
+        ctx.session.stage({ goal: word as StaffingGoal })
+        ctx.notify(`The next run or continuation staffs for ${word}. A run already working keeps its goal.`)
+      })
+  },
+  {
+    name: 'save-project',
+    aliases: ['save'],
+    args: '[name]',
+    summary: 'Save this chat (a quick run) as a project',
+    available: (s) => !s.readOnlyReason && !!activeSummary(s)?.quick,
+    unavailableReason: (s) => (s.readOnlyReason ? readOnlyText(s) : 'Only a chat started without a project can be saved as one. Follow it first.'),
+    run: (ctx, args) =>
+      guarded(ctx, async () => {
+        const s = ctx.state()
+        const run = activeSummary(s)
+        if (!run?.quick) {
+          ctx.notify('Only a chat started without a project can be saved as one.', 'warn')
+          return
+        }
+        if (run.status === 'starting' || run.status === 'running' || run.status === 'idle' || run.status === 'stopping') {
+          ctx.notify('End the session first (/stop), then /save-project.', 'warn')
+          return
+        }
+        const name = cleanLine(args, 80) || cleanLine(basename(s.folder), 80) || 'Project'
+        const res = await ctx.session.promoteQuick(name)
+        if (res.kind === 'existing') {
+          ctx.notify(`This folder is already the project ${cleanLine(res.name, 80)}.`, 'warn')
+          return
+        }
+        ctx.notify(`Saved as the project ${cleanLine(res.project.name, 80)}.`)
+        if (ctx.openProject) await ctx.openProject(res.project, res.run.id)
+      })
+  },
+  {
+    name: 'copy',
+    args: '[code]',
+    summary: 'Copy the last assistant message (or its latest code block with "code")',
+    available: (s) => lastAssistantText(s) !== undefined,
+    unavailableReason: () => 'There is no assistant message to copy yet.',
+    run: (ctx, args) =>
+      guarded(ctx, async () => {
+        const s = ctx.state()
+        const wantCode = cleanLine(args, 20).toLowerCase() === 'code'
+        const text = wantCode ? latestCodeBlock(s) : lastAssistantText(s)
+        if (!text) {
+          ctx.notify(wantCode ? 'No code block in the recent messages.' : 'There is no assistant message to copy yet.', 'warn')
+          return
+        }
+        const via = ctx.copyText ? await ctx.copyText(text) : await copyToClipboard(text)
+        if (via.length === 0) ctx.notify('Could not reach a clipboard. Select the text with the mouse instead.', 'warn')
+        else ctx.notify(`Copied ${wantCode ? 'the code block' : 'the last message'} (${Array.from(text).length} characters).`)
+      })
+  },
+  {
     name: 'quit',
     aliases: ['q', 'exit'],
-    summary: 'Leave the terminal UI (runs keep going)',
+    summary: 'Leave the terminal UI (active runs are stopped; it asks first)',
     run: (ctx) => guarded(ctx, () => ctx.quit())
   }
 ]

@@ -115,9 +115,9 @@ describe('/model', () => {
     expect(ctx.notify).toHaveBeenLastCalledWith('Answer the open decisions before changing models.', 'danger')
   })
 
-  it('needs a followed run and a writable session', () => {
+  it('needs a writable session; without a followed run it stages for the next one', () => {
     expect(findSlash('model', stateWith())).toBeDefined()
-    expect(findSlash('model', stateWith({}, { activeRunId: undefined }))).toBeUndefined()
+    expect(findSlash('model', stateWith({}, { activeRunId: undefined }))).toBeDefined()
     expect(findSlash('model', stateWith({}, { readOnlyReason: 'elsewhere' }))).toBeUndefined()
   })
 })

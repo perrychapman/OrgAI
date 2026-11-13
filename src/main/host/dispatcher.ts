@@ -387,6 +387,14 @@ export class HostDispatcher {
 }
 
 /**
+ * A decision only the user's own surfaces make: the window or the in-process CLI / TUI (surface 'desktop' / 'inproc').
+ * Any other surface (a socket client) is refused first, whatever scopes it holds.
+ */
+function refuseSocketDecision(ctx: InvokeContext, what: string): void {
+  if (ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('scope_denied', `${what} is the user's own decision, made in the OrgAI window or the terminal UI.`)
+}
+
+/**
  * A channel whose call changes host state (Wave 7, cli-standalone.md 4.3): a registry request entry with a scope above
  * 'read' that is not a lifecycle call (host.stop). Desktop-only channels are leased by ipc.ts's own wrapper.
  */
@@ -517,10 +525,14 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.projectsList, () => projects.list())
   handle(IPC.projectsGet, (_e, id: string) => projectOrHarness(id))
   // Throws a readable message for a bad path (the form shows it) or a mock project without the mock adapter.
-  handle(IPC.projectsCreate, (_e, rawInput: ProjectCreateInput) => {
+  handle(IPC.projectsCreate, (ctx, rawInput: ProjectCreateInput) => {
     // teamFiles is rebuilt to `{ digest }` (64 hex) and wins over importAgents and templateId; the folder's `.orgai`
     // agents never come through importAgents (projectCreateInput), over the socket either.
     const { input, teamArg } = projectCreateInput(rawInput, teamFiles)
+    // Adopting a folder's own team files (its roles, tools, MCP servers, settings) is the desktop window's decision only,
+    // like teamFiles:approve (cli-parity 3.4 / 7: a terminal cannot be told apart from one an agent drives). The
+    // in-process CLI / TUI and socket clients create the project with the team files pending instead.
+    if (teamArg && ctx.surface !== 'desktop') throw new HostRpcFailure('scope_denied', "Adopting a folder's team files is available in the desktop app only; create the project without them and they stay pending.")
     return projects.create(input, settings.get(), {
       mockAvailable: adapterIds.includes('mock'),
       prepare: (p) => connections.prepareNewProject(p),
@@ -598,7 +610,10 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
       ...(input.permissionMode ? { permissionMode: input.permissionMode } : {})
     }
     const chosen = Object.keys(choice)
-    if (chosen.length && ctx.surface !== 'desktop') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app only: ${chosen.join(', ')}.`)
+    // The desktop and the in-process CLI / TUI (surface 'inproc': the user's own process) may choose them; a socket client may not.
+    if (chosen.length && ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('bad_request', `These run options are available in the desktop app and the terminal UI only: ${chosen.join(', ')}.`)
+    // They can raise spend (model, effort) or widen what the run may do (permission mode): in-process, 'configure' only.
+    if (chosen.length && ctx.surface === 'inproc' && !ctx.grantedScopes?.includes('configure')) throw new HostRpcFailure('scope_denied', `Choosing ${chosen.join(', ')} for a run needs the configure scope.`)
     return runs.start({
       project,
       prompt: input.prompt,
@@ -675,7 +690,14 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     const project = from.kind === 'setup' ? await setup.prepare(existing) : existing
     // Headless fields only from socket / inproc clients; overrides are checked against the project the run continues as.
     if (ctx.surface === 'desktop') return runs.continueRun(project, input.runId, input.text, input.images, { desktop: true })
-    if (!input.overrides && input.exec === undefined) return runs.continueRun(project, input.runId, input.text, input.images)
+    if (!input.overrides && input.exec === undefined) {
+      // A per-run permission mode the user chose in the terminal UI (permissionModeChosen) is carried for an in-process
+      // client holding 'configure', exactly as on the desktop: `{ desktop: true }` trusts only that carry. Never
+      // allowWidening here: the continued run's stored overrides (an exec's permissionMode, autoContinue, budget) must
+      // re-clamp to the project as it is now (an operate-only resume never inherits a configure grant).
+      if (ctx.surface === 'inproc' && ctx.grantedScopes?.includes('configure')) return runs.continueRun(project, input.runId, input.text, input.images, { desktop: true })
+      return runs.continueRun(project, input.runId, input.text, input.images)
+    }
     const o = checkRunOverrides(ctx, project, input.overrides)
     return runs.continueRun(project, input.runId, input.text, input.images, {
       ...(o.overrides ? { overrides: o.overrides } : {}),
@@ -687,7 +709,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.runsSwitchModel, (_e, raw: unknown) => runs.switchModel(raw as import('@shared/types').SwitchRunModelInput))
   // Desktop only: the registry scope ('configure') only gates the params; this refusal comes first, before any parsing.
   handle(IPC.runsSetPermissionMode, (ctx, raw: unknown) => {
-    if (ctx.surface !== 'desktop') throw new HostRpcFailure('scope_denied', "Changing a run's permission mode is available in the desktop app only.")
+    if (ctx.surface !== 'desktop' && ctx.surface !== 'inproc') throw new HostRpcFailure('scope_denied', "Changing a run's permission mode is available in the desktop app and the terminal UI only.")
     return runs.setPermissionMode(setPermissionModeArgs(raw))
   })
   handle(IPC.runsCancelAutoResume, (_e, runId: string) => runs.cancelAutoResume(runId))

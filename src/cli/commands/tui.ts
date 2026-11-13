@@ -8,7 +8,7 @@
  * resolved once the TUI is connected (`prepare`): run refs through the live host, else the folder's project, else the
  * folder onboarding.
  */
-import { isOpenStatus } from '../../shared/view/runChains'
+import { newestContinuable } from '../../shared/view/runChains'
 import type { Project, RunOverrides, RunSummary, RunTeam } from '../../shared/types'
 import { quietInproc } from '../context'
 import { parseFlags } from '../flags'
@@ -117,8 +117,8 @@ export async function prepareResume(ctx: CliContext, conn: TuiHostConnection, re
   const runs: RunSummary[] = await src.runs(res.project.id).catch((e: unknown) => {
     throw hostFailure(e)
   })
-  const ended = runs.find((r) => !isOpenStatus(r.status))
-  if (!ended) throw usage('This project has no ended run to resume.')
+  const ended = newestContinuable(runs)
+  if (!ended) throw usage('This project has no ended work run to resume.')
   return { project: res.project, runId: ended.id, ...extra }
 }
 
@@ -184,7 +184,8 @@ export async function runDefaultTui(ctx: CliContext, args: string[], opts: { hel
 
 /** `orgai resume [ref] [--prompt <text>] [--inline] [--ax-screen-reader]`: the TUI on that chain. */
 export async function runResumeTui(ctx: CliContext, args: string[]): Promise<number> {
-  const { values, positionals } = parseFlags(args, { ...TUI_FLAGS, prompt: { type: 'string' } })
+  const { values, positionals } = parseFlags(args, { ...TUI_FLAGS, prompt: { type: 'string' }, latest: { type: 'boolean', short: 'l' } })
+  if (values.latest && positionals.length) throw usage('--latest resumes the newest ended run; leave out the run id.')
   // `-` (positional or `--prompt -`) means stdin in `resume [ref] [--prompt <text> | -]`; only --exec reads it.
   if (positionals.includes('-') || values.prompt === '-') throw usage('Reading the message from stdin needs --exec; in the terminal UI give --prompt "<text>" or type it.')
   if (positionals.length > 1) throw usage('Use: orgai resume [runId-or-R#] [--prompt <text>]')

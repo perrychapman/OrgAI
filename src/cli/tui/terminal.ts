@@ -48,6 +48,8 @@ export interface TuiTerminal extends TerminalController {
   onResume(fn: () => void): () => void
   /** Ctrl+Z arrives as a key in raw mode: suspend and take the default SIGTSTP stop (no-op on win32). */
   stopSelf(): void
+  /** Raw bytes to the terminal (an OSC 52 clipboard write); dropped while suspended. */
+  write(s: string): void
   /** Whether the terminal is currently suspended (SIGTSTP or the pager). */
   readonly suspended: boolean
   /** Suspend for a child that takes the foreground terminal (the pager); signals are held until resumeFromChild. */
@@ -268,6 +270,9 @@ export function createTerminal(opts: {
     onResume(fn) {
       resumeListeners.add(fn)
       return () => void resumeListeners.delete(fn)
+    },
+    write(text) {
+      if (!suspended && !restored) writeNow(text)
     },
     stopSelf() {
       if (!jobControl || !entered || restored) return

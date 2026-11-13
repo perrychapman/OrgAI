@@ -6792,6 +6792,12 @@ export interface DaemonInfo {
    * connect to it. Absent = listening.
    */
   listening?: false
+  /**
+   * Only with `listening: false` on an 'inproc' host: `endpoint` is bound by a liveness-only listener that accepts and
+   * closes every connection (no daemon.secret, no handshake). A dead endpoint then proves a crashed host whose pid
+   * could not be confirmed is gone (ownership.ts). Absent on older records: they keep the strict rule.
+   */
+  livenessProbe?: true
   state: HostState
   /** Epoch ms. */
   startedAt: number

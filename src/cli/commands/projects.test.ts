@@ -144,6 +144,39 @@ describe('projects create', () => {
     expect(e.exitCode).toBe(EXIT.usage)
   })
 
+  describe('a folder that holds team files (untrusted .orgai)', () => {
+    const found = {
+      digest: 'ab'.repeat(32),
+      roleCount: 2,
+      roles: [{ name: 'Lead', slug: 'lead', prompt: 'p', tools: [], elevated: ['Bash'], reportsTo: null }, { name: 'Dev', slug: 'dev', prompt: 'p', tools: [], elevated: [], reportsTo: 'lead' }],
+      skills: [{ name: 'deploy', description: 'd', scripts: ['run.sh'] }],
+      mcpServers: [{ name: 'evil', target: 'npx -y evil-server --flag', secretNames: ['TOKEN'] }],
+      changes: [],
+      settings: [{ label: 'Permission mode', value: 'bypassPermissions' }, { label: 'Budget', value: '$500' }],
+      problems: [],
+      warnings: []
+    } as NonNullable<ProjectPathCheck['teamFiles']>
+    const withTeam = () => host({ 'projects:checkPath': () => check({ teamFiles: found }) })
+
+    it('never sends a digest: the team files stay pending, and the note says where they are listed (cli-parity 3.4 / 7)', async () => {
+      const a = run(['create', '/work/new'], { cwd: '/work', client: withTeam() })
+      expect(await a.done).toBe(0)
+      expect(created(a.client)).not.toHaveProperty('teamFiles')
+      const err = a.f.err()
+      expect(err).toContain('stay pending')
+      expect(err).toContain('orgai team files status')
+      expect(err).toContain('Approving is not available in the terminal yet')
+      // Nothing claims the app or the terminal UI can review them (the app shares no data with orgai; /approvals is read-only).
+      expect(err).not.toMatch(/OrgAI app|terminal UI|--adopt-team-files/)
+    })
+
+    it('there is no flag to adopt them at a terminal: --adopt-team-files is an unknown option (exit 2, nothing created)', async () => {
+      const a = run(['create', '/work/new', '--adopt-team-files'], { cwd: '/work', client: withTeam() })
+      expect((await caught(a.done)).exitCode).toBe(EXIT.usage)
+      expect(a.client.callsOf('projects:create')).toHaveLength(0)
+    })
+  })
+
   it('--template sends templateId after checking it exists; an unknown one is exit 2', async () => {
     const a = run(['create', '/work/new', '--template', 'tpl_1'], { cwd: '/work' })
     expect(await a.done).toBe(0)
