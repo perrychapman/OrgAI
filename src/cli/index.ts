@@ -310,10 +310,15 @@ function isEntry(): boolean {
   }
 }
 
+/** True when Node was started with exactly `--disable-sigusr1`, on the command line or in NODE_OPTIONS. */
+export function sigusr1Disabled(execArgv: readonly string[], nodeOptions: string | undefined): boolean {
+  return execArgv.includes('--disable-sigusr1') || (nodeOptions ?? '').split(/\s+/).includes('--disable-sigusr1')
+}
+
 /** Run the orgai command in this process (bin.ts, the bundle's entry, calls it once the CLI has loaded). */
 export function runCli(): void {
   // Refuse before anything else runs unless Node was started with SIGUSR1 inspector activation disabled.
-  if (!process.execArgv.includes('--disable-sigusr1')) {
+  if (!sigusr1Disabled(process.execArgv, process.env.NODE_OPTIONS)) {
     process.stderr.write('orgai: refusing to start without Node.js --disable-sigusr1; use the orgai launcher or run `node --disable-sigusr1 out/cli/orgai.mjs`.\n')
     process.exitCode = EXIT.failure
     return
