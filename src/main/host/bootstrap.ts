@@ -597,6 +597,17 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       }
       return out
     },
+    // Summaries come from the run index (no transcript is read): the engine counts runs and finds a trial's window from
+    // them and loads in full only the records it measures, so one pass reads few records on this thread.
+    listRunSummaries: (projectId, limit) => {
+      const out: RunSummary[] = []
+      for (const s of runStore.list(projectId)) {
+        if (out.length >= limit) break
+        if (isMeasuredRun({ summary: s })) out.push(s)
+      }
+      return out
+    },
+    getRunRecord: (runId) => runStore.getRecord(runId) ?? undefined,
     staffingProfile: (projectId) => {
       const p = projects.get(projectId)
       return { mode: staffingModeOf(p), goal: staffingGoalOf(p) }
@@ -641,7 +652,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
         ...(req.signal ? { signal: req.signal } : {}),
         onUsage: (u) => {
           usage = { inputTokens: Number(u?.tokens?.input) || 0, outputTokens: Number(u?.tokens?.output) || 0, ...(typeof u?.costUsd === 'number' ? { costUsd: u.costUsd } : {}) }
-          // No app-level usage ledger exists for helper calls (run titles are only logged too): log with project and model.
+          // No app-level usage ledger exists for helper calls (run titles and skill drafts are only logged too), so this
+          // spend is not on the Usage page: it is logged here with project and model, returned in plan.usage (the CLI
+          // prints it) and kept with the generation in the evolution ledger when the plan is applied.
           log.info(`Evolve: hybrid call for ${project.id} used ${usage.inputTokens} input + ${usage.outputTokens} output tokens${u?.model ? ` on ${u.model}` : ''}${usage.costUsd !== undefined ? ` ($${usage.costUsd})` : ''}`)
         }
       })

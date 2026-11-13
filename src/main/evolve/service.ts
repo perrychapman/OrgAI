@@ -9,8 +9,12 @@ import type {
   EvolutionHistory,
   EvolveStrategy,
   EvolutionGeneration,
+  EvolutionPlan,
+  EvolutionSpendRaise,
   Project,
   RunRecord,
+  RunSummary,
+  TeamEvolutionDiagnosis,
   SkillCreateInput,
   SkillFinding,
   SkillMutationResult,
@@ -32,12 +36,14 @@ import {
   trialOf,
   validateEvolutionPlan,
   writeLedger,
+  type GateOptions,
   type Ledger,
   type StoredGeneration
 } from './ratchet'
 import { draftProblem } from '../skills/skillMd'
+import { holdSpendRaises, spendRaisesOf } from './spend'
 import { buildDigest, synthesize } from './synthesizer'
-import { diagnose, measuredRuns } from './telemetry'
+import { diagnose, isMeasuredRun } from './telemetry'
 
 export interface EvolveAfterRunInput {
   projectId: string
@@ -84,6 +90,14 @@ export interface EvolveServiceDeps {
    * and setup runs may be included; the engine filters. Records as stored (plan, staffing, agents, transcript).
    */
   listRunRecords(projectId: string, limit: number): RunRecord[]
+  /**
+   * Measured run SUMMARIES of the project, newest first, at most `limit` (cheap: no transcript is read). With
+   * getRunRecord, the engine counts runs and finds a trial's window from these and loads only the records it measures.
+   * Absent = listRunRecords is used for counting too.
+   */
+  listRunSummaries?(projectId: string, limit: number): RunSummary[]
+  /** One stored record by run id (undefined when missing). Used with listRunSummaries. */
+  getRunRecord?(runId: string): RunRecord | undefined
   /** The project's staffing profile (Project.staffing and staffingGoal as defaults.ts reads them). Default auto / balanced. */
   staffingProfile?(projectId: string): { mode: StaffingMode; goal: StaffingGoal }
   /** Deterministic skill findings (src/main/skills/evaluate.ts evaluateSkills quality + gaps) for the project. Absent = none. */
@@ -101,7 +115,11 @@ export interface EvolveServiceDeps {
   syncTeamFiles?(project: Project): Promise<boolean>
   /** The single hybrid call. Absent, rejecting, slow or unparseable = the deterministic plan. */
   complete?(req: EvolveCompleteRequest): Promise<EvolveCompleteResult>
-  /** Records the hybrid call's usage (the host adds it to usage accounting). */
+  /**
+   * Told the hybrid call's usage. The engine also copies it into plan.usage (returned by analyze / apply and kept in the
+   * generation in the ledger). No app-wide ledger of helper calls exists, so it is not on the Usage page (which reads
+   * run records); the host logs it.
+   */
   onUsage?(usage: { inputTokens: number; outputTokens: number; costUsd?: number }): void
   now?(): number
   log?(level: 'info' | 'warn', message: string): void
@@ -129,8 +147,8 @@ export const COOLDOWN_MS = 7 * 24 * 3_600_000
  * recent: fewer than COOLDOWN_RUNS measured runs have finished since it was decided; when no run records are available
  * (nothing to count), COOLDOWN_MS after the decision. Each generation expires on its own.
  */
-export function cooldownOf(l: Ledger, records: RunRecord[], nowMs: number): string[] {
-  const measured = measuredRuns(records, 50)
+export function cooldownOf(l: Ledger, records: readonly Pick<RunRecord, 'summary'>[], nowMs: number): string[] {
+  const measured = newestMeasured(records)
   const slugs = new Set<string>()
   for (const g of l.generations.filter((x) => x.status !== 'trial').slice(-2)) {
     const at = typeof g.decidedAt === 'number' ? g.decidedAt : g.appliedAt
@@ -140,6 +158,32 @@ export function cooldownOf(l: Ledger, records: RunRecord[], nowMs: number): stri
     for (const p of Array.isArray(g.plan?.rolePatches) ? g.plan.rolePatches : []) slugs.add(p.slug)
   }
   return [...slugs]
+}
+
+/** The newest `max` measured runs (telemetry.measuredRuns' rule), newest first; summaries are enough. */
+function newestMeasured<T extends Pick<RunRecord, 'summary'>>(runs: readonly T[], max = 50): T[] {
+  return runs
+    .filter(isMeasuredRun)
+    .sort((a, b) => b.summary.startedAt - a.summary.startedAt)
+    .slice(0, max)
+}
+
+/** A hybrid plan analyze made is reusable by an apply naming its fingerprint for this long. */
+export const REVIEWED_PLAN_TTL_MS = 30 * 60_000
+/** Reviewed hybrid plans kept per project. */
+const REVIEWED_PLANS_KEPT = 4
+
+/**
+ * The runs one operation reads, loaded at most once per operation (one post-run pass, apply or rollback): summaries for
+ * counting and finding a trial's window, full records only for the runs measured.
+ */
+interface RunSource {
+  /** Measured runs (summary only), newest first, at most 50. */
+  summaries(): Pick<RunRecord, 'summary'>[]
+  /** Full records of the newest `n` measured runs. */
+  records(n: number): RunRecord[]
+  /** Full records of these runs (missing ones left out). */
+  byIds(ids: readonly string[]): RunRecord[]
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -185,13 +229,62 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     return p
   }
   const ledgerOf = (id: string): Ledger => readLedger(deps.dataDir, id, now, log)
-  const recordsOf = (id: string, n: number): RunRecord[] => {
+  /** Read paths (analyze, history) never move or write the ledger file. */
+  const ledgerForRead = (id: string): Ledger => readLedger(deps.dataDir, id, now, log, { readOnly: true })
+  const tryRead = <T>(fn: () => T, fallback: T): T => {
     try {
-      return deps.listRunRecords(id, n)
+      return fn()
     } catch (e) {
       log('warn', `Evolution could not read runs: ${e instanceof Error ? e.message : String(e)}`)
-      return []
+      return fallback
     }
+  }
+  /** One operation's runs, each kind loaded at most once (see RunSource). */
+  const runSource = (id: string): RunSource => {
+    let recs: RunRecord[] | undefined
+    let recLimit = 0
+    let sums: Pick<RunRecord, 'summary'>[] | undefined
+    const loadRecords = (n: number): RunRecord[] => {
+      const want = Math.min(50, Math.max(1, Math.floor(n)))
+      // Reloaded only when more are wanted than were asked for and the store had that many to give.
+      if (!recs || (want > recLimit && recs.length >= recLimit)) {
+        recs = tryRead(() => deps.listRunRecords(id, want), [] as RunRecord[])
+        recLimit = want
+      }
+      return newestMeasured(recs, want)
+    }
+    const cheap = !!deps.listRunSummaries && !!deps.getRunRecord
+    return {
+      summaries() {
+        if (!sums) sums = cheap ? newestMeasured(tryRead(() => deps.listRunSummaries!(id, 50), [] as RunSummary[]).map((summary) => ({ summary }))) : loadRecords(50)
+        return sums
+      },
+      records: loadRecords,
+      byIds(ids) {
+        if (!cheap) {
+          const want = new Set(ids)
+          return loadRecords(50).filter((r) => want.has(r.summary.id))
+        }
+        const out: RunRecord[] = []
+        for (const runId of ids) {
+          const hit = recs?.find((r) => r.summary.id === runId) ?? tryRead(() => deps.getRunRecord!(runId), undefined)
+          if (hit) out.push(hit)
+        }
+        return out
+      }
+    }
+  }
+  const measuredCount = (src: RunSource): number => src.summaries().length
+  /** Hybrid plans analyze made, per project (newest last), so an apply of the reviewed plan makes no second model call. */
+  const reviewed = new Map<string, { plan: EvolutionPlan; key: string; at: number }[]>()
+  const remember = (project: Project, plan: EvolutionPlan): void => {
+    const list = (reviewed.get(project.id) ?? []).filter((e) => now() - e.at < REVIEWED_PLAN_TTL_MS && e.plan.fingerprint !== plan.fingerprint)
+    list.push({ plan: structuredClone(plan), key: teamKey(project), at: now() })
+    reviewed.set(project.id, list.slice(-REVIEWED_PLANS_KEPT))
+  }
+  const recall = (project: Project, fingerprint: string): EvolutionPlan | undefined => {
+    const hit = (reviewed.get(project.id) ?? []).find((e) => e.plan.fingerprint === fingerprint && e.key === teamKey(project) && now() - e.at < REVIEWED_PLAN_TTL_MS)
+    return hit ? structuredClone(hit.plan) : undefined
   }
   const sync = async (p: Project): Promise<boolean> => {
     try {
@@ -203,7 +296,8 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
   }
 
   /** Diagnose and synthesize. Hybrid only when asked for; skill changes the host cannot make are dropped. */
-  async function planFor(project: Project, input: EvolveAnalyzeInput, ledger: Ledger, strategy: EvolveStrategy, records: RunRecord[]) {
+  /** The diagnosis of the newest runs and the safety gate's options a plan is checked with. Deterministic, no model call. */
+  function gateFor(project: Project, input: EvolveAnalyzeInput, ledger: Ledger, src: RunSource): { diagnosis: TeamEvolutionDiagnosis; gate: GateOptions & { diagnosis: TeamEvolutionDiagnosis; cooldownSlugs: string[] } } {
     const profile = deps.staffingProfile?.(project.id)
     let findings: SkillFinding[] = []
     try {
@@ -211,10 +305,17 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     } catch {
       findings = []
     }
+    const records = src.records(Math.min(50, Math.max(1, Math.floor(input.runs ?? 10))))
     const diagnosis = diagnose({ project, runs: records, staffingProfile: profile, skillFindings: findings, goal: input.goal, now: now(), maxRuns: input.runs ?? 10 })
+    const cooldownSlugs = cooldownOf(ledger, src.summaries(), now())
+    return { diagnosis, gate: { rejected: ledger.rejectedHypotheses, diagnosis, cooldownSlugs } }
+  }
+
+  /** Diagnose and synthesize. Hybrid only when asked for; skill changes the host cannot make are dropped. */
+  async function planFor(project: Project, input: EvolveAnalyzeInput, ledger: Ledger, strategy: EvolveStrategy, src: RunSource) {
+    const { diagnosis, gate } = gateFor(project, input, ledger, src)
+    const { cooldownSlugs } = gate
     const minWaste = typeof input.minWaste === 'number' && Number.isFinite(input.minWaste) ? Math.min(100, Math.max(0, input.minWaste)) : MIN_WASTE_DEFAULT
-    const cooldownSlugs = cooldownOf(ledger, records, now())
-    const gate = { rejected: ledger.rejectedHypotheses, diagnosis, cooldownSlugs }
     let plan = await synthesize({ project, diagnosis, strategy, rejected: ledger.rejectedHypotheses, minWaste, complete: deps.complete, onUsage: deps.onUsage, cooldownSlugs })
     // Deleting a project skill is reported, never applied: a skill's folder can hold more than SKILL.md (scripts,
     // references) and an enabled flag, which a generation's snapshot does not keep, so a rollback could not put it back
@@ -231,14 +332,16 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
       plan = validateEvolutionPlan(project, { ...plan, newSkills: [] }, gate)
       plan.gate.violations.push({ rule: 'skill_needs_review', message: `Suggested skills not applied (they need review): ${dropped.join(', ').slice(0, 160)}`, action: 'trimmed' })
     }
-    return { diagnosis, plan, minWaste }
+    return { diagnosis, plan, minWaste, gate }
   }
 
   async function analyze(input: EvolveAnalyzeInput): Promise<EvolveAnalyzeResult> {
     const project = projectOf(input.projectId)
-    const ledger = ledgerOf(project.id)
-    const n = Math.min(50, Math.max(1, Math.floor(input.runs ?? 10)))
-    const { diagnosis, plan } = await planFor(project, input, ledger, input.strategy ?? 'deterministic', recordsOf(project.id, n))
+    const ledger = ledgerForRead(project.id)
+    const strategy = input.strategy ?? 'deterministic'
+    const { diagnosis, plan } = await planFor(project, input, ledger, strategy, runSource(project.id))
+    plan.spendRaises = spendRaisesOf(project, plan)
+    if (strategy === 'hybrid' && plan.gate.ok && !plan.empty) remember(project, plan)
     return { diagnosis, plan, digest: buildDigest(project, diagnosis, ledger.rejectedHypotheses) }
   }
 
@@ -255,27 +358,69 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     return undefined
   }
 
-  async function applyCore(input: EvolveApplyInput): Promise<EvolveApplyResult> {
+  async function applyCore(input: EvolveApplyInput, src: RunSource = runSource(input.projectId)): Promise<EvolveApplyResult> {
     let project = projectOf(input.projectId)
     const ledger = ledgerOf(project.id)
-    const records = recordsOf(project.id, Math.min(50, Math.max(1, Math.floor(input.runs ?? 10))))
     // A trial whose window filled through ordinary runs (none started with evolve) is decided here, so it can never
     // block a later apply for good and a regression is still rolled back.
     const open = trialOf(ledger)
-    const settled = open ? await settleTrial(project, ledger, open) : undefined
+    const settled = open ? await settleTrial(project, ledger, open, src) : undefined
     if (settled && settled.state !== 'pending' && settled.state !== 'held') project = projectOf(input.projectId)
     const trial = settled?.state === 'pending' || settled?.state === 'held' ? open : undefined
     // A trial in flight or just rolled back: report why, with a cheap deterministic plan (never a model call) for display.
     const hold = trial !== undefined || settled?.state === 'rolled_back'
-    const { diagnosis, plan } = await planFor(project, input, ledger, hold ? 'deterministic' : (input.strategy ?? 'deterministic'), records)
-    const refuse = (reason: string): EvolveApplyResult => ({ applied: false, reason, project, diagnosis, plan, teamFilesSynced: false })
+    const strategy: EvolveStrategy = hold ? 'deterministic' : (input.strategy ?? 'deterministic')
+    const expected = typeof input.expectedFingerprint === 'string' ? input.expectedFingerprint : undefined
+    // Applying a reviewed hybrid plan reuses the plan this host's analysis made (re-checked by the gate below), never a
+    // second model call whose answer the person has not seen.
+    let diagnosis: TeamEvolutionDiagnosis
+    let plan: EvolutionPlan
+    let gate: GateOptions
+    let missingReviewed = false
+    if (strategy === 'hybrid' && expected !== undefined) {
+      const g = gateFor(project, input, ledger, src)
+      diagnosis = g.diagnosis
+      gate = g.gate
+      const kept = recall(project, expected)
+      if (kept) {
+        const carried = kept.gate.violations.filter((v) => v.rule === 'skill_prune_needs_review' || v.rule === 'skill_needs_review')
+        plan = validateEvolutionPlan(project, kept, gate)
+        plan.gate.violations.push(...carried)
+      } else {
+        missingReviewed = true
+        plan = validateEvolutionPlan(project, { strategy: 'hybrid', fingerprint: '', rolePatches: [], newSkills: [], pruneSkillIds: [], rationale: '', expectedImpact: {}, gate: { ok: true, violations: [] }, promptChars: { before: 0, after: 0, limit: 0 }, empty: true }, gate)
+      }
+    } else {
+      const made = await planFor(project, input, ledger, strategy, src)
+      diagnosis = made.diagnosis
+      plan = made.plan
+      gate = made.gate
+    }
+    plan.spendRaises = spendRaisesOf(project, plan)
+    let held: EvolutionSpendRaise[] = []
+    const refuse = (reason: string): EvolveApplyResult => ({ applied: false, reason, project, diagnosis, plan, teamFilesSynced: false, ...(held.length ? { heldSpendRaises: held } : {}) })
     if (trial && settled?.state === 'pending') return refuse(`Generation ${trial.id} is still on trial; it has ${settled.have} of ${settled.need} finished runs it needs before another change.`)
     if (trial && settled?.state === 'held') return refuse(`Nothing was applied: ${settled.reason}.`)
     const busy = teamFilesBusy(project.id)
     if (busy) return refuse(`Nothing was applied; run evolve again once ${busy}.`)
     if (open && settled?.state === 'rolled_back') return { ...refuse(`Generation ${open.id} finished its trial and was rolled back (${settled.reason}); no new change was applied.`), teamFilesSynced: settled.teamFilesSynced === true }
+    // Approving a raise means approving a reviewed plan: without its fingerprint nothing was reviewed.
+    if (input.allowSpendRaise === true && expected === undefined) return refuse('Nothing was applied: approving changes that may spend more needs the fingerprint of the plan that was reviewed.')
+    if (missingReviewed) return refuse('Nothing was applied: the hybrid plan that was reviewed is no longer available (it is kept for 30 minutes and only while the team is unchanged). Run the analysis again; no model call was made.')
+    if (expected !== undefined && plan.fingerprint !== expected) return refuse(`Nothing was applied: the plan changed since it was reviewed (now ${plan.fingerprint}, reviewed ${expected.slice(0, 32)}). Run the analysis again.`)
     if (!plan.gate.ok) return refuse(`The safety gate refused this plan: ${plan.gate.violations.filter((v) => v.action === 'rejected').map((v) => v.rule).join(', ')}.`)
     if (plan.empty) return refuse(diagnosis.wasteScore < (input.minWaste ?? MIN_WASTE_DEFAULT) ? `Waste score ${diagnosis.wasteScore} is below the threshold; nothing to change.` : 'No safe change follows from the findings.')
+    // Spend rises only with the person's approval of the reviewed plan: otherwise the raising parts are held (reported
+    // as 'spend_held') and only the rest applies, as the team files gate does for an edit that may spend more.
+    if (plan.spendRaises.length && input.allowSpendRaise !== true) {
+      const h = holdSpendRaises(project, plan, gate)
+      plan = h.plan
+      held = h.held
+      if (!plan.gate.ok) return refuse(`The safety gate refused what is left after holding the changes that may spend more: ${plan.gate.violations.filter((v) => v.action === 'rejected').map((v) => v.rule).join(', ')}.`)
+      if (plan.empty) return refuse('Nothing was applied: every change in this plan may spend more and needs your approval (run org evolve --apply in a terminal and confirm it).')
+    }
+    // Defence in depth: whatever is applied now raises spend only when that was approved.
+    if (input.allowSpendRaise !== true && spendRaisesOf(project, plan).length) return refuse('Nothing was applied: a change that may spend more could not be separated from the rest of the plan.')
 
     const next = applyPlan(project, plan)
     const problems = chartProblems(project, next)
@@ -292,7 +437,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
       fingerprint: plan.fingerprint,
       summary: planSummary(plan),
       appliedAt: now(),
-      appliedAtRunCount: measuredRuns(records, 50).length,
+      appliedAtRunCount: measuredCount(src),
       evalWindowRuns: clampWindow(input.evalWindowRuns),
       baselineMetrics: diagnosis.metrics,
       plan,
@@ -350,7 +495,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
       if (mutated) {
         log('warn', `Evolution ${gen.id} applied to ${project.id}, but a later step failed: ${why}`)
         const now = deps.getProject(project.id) ?? next
-        return { applied: true, reason: `Applied, but a later step failed (${why.slice(0, 200)}); the generation and its snapshot were recorded before the change.`, generation: pub(gen), project: now, diagnosis, plan, teamFilesSynced: await sync(now) }
+        return { applied: true, reason: `Applied, but a later step failed (${why.slice(0, 200)}); the generation and its snapshot were recorded before the change.`, generation: pub(gen), project: now, diagnosis, plan, teamFilesSynced: await sync(now), ...(held.length ? { heldSpendRaises: held } : {}) }
       }
       ledger.generations = ledger.generations.filter((g) => g !== gen)
       try {
@@ -363,10 +508,10 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     const after = deps.getProject(project.id) ?? next
     const teamFilesSynced = await sync(after)
     log('info', `Evolution ${gen.id} applied to ${project.id}: ${gen.summary}`)
-    return { applied: true, generation: pub(gen), project: after, diagnosis, plan, teamFilesSynced }
+    return { applied: true, generation: pub(gen), project: after, diagnosis, plan, teamFilesSynced, ...(held.length ? { heldSpendRaises: held } : {}) }
   }
 
-  async function rollbackCore(projectId: string, ledger: Ledger, gen: StoredGeneration, reason: string): Promise<{ project: Project; teamFilesSynced: boolean; unusable?: string; notes: string[] }> {
+  async function rollbackCore(projectId: string, ledger: Ledger, gen: StoredGeneration, reason: string, src: RunSource):Promise<{ project: Project; teamFilesSynced: boolean; unusable?: string; notes: string[] }> {
     let notes: string[] = []
     let unusable: string | undefined
     let updated: Project = deps.getProject(projectId) as Project
@@ -410,7 +555,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     // The generation is always closed, so a bad snapshot can never wedge the trial.
     gen.status = 'rolled_back'
     gen.decidedAt = now()
-    gen.decidedAtRunCount = measuredRuns(recordsOf(projectId, 50), 50).length
+    gen.decidedAtRunCount = measuredCount(src)
     const text = unusable ? `${reason}; the snapshot was unusable, so the project was left unchanged (${unusable})` : notes.length ? `${reason} (${notes.join('; ')})` : reason
     gen.outcomeReason = text.slice(0, 600)
     addRejected(ledger, { fingerprint: gen.fingerprint, summary: gen.summary, reason, generationId: gen.id, at: now() })
@@ -430,7 +575,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     const busy = teamFilesBusy(project.id)
     if (busy) return { rolledBack: false, reason: `Nothing was rolled back; try again once ${busy}.`, project, teamFilesSynced: false }
     const why = (typeof input.reason === 'string' && input.reason.trim() ? input.reason.trim().slice(0, 200) : 'rolled back by the user')
-    const res = await rollbackCore(project.id, ledger, gen, why)
+    const res = await rollbackCore(project.id, ledger, gen, why, runSource(project.id))
     // Nothing restored: say so. The generation is closed all the same (rollbackCore), so it cannot wedge the trial.
     if (res.unusable) return { rolledBack: false, reason: `${gen.id} could not be restored (${res.unusable}); the team was left unchanged and the generation is closed.`.slice(0, 600), generation: pub(gen), project: res.project, teamFilesSynced: false }
     // Restored in part (a later edit of the user's was kept, a skill could not be put back): the result carries what was not.
@@ -441,8 +586,15 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
    * Decide a trial once its window is full: promote it, or roll it back when it regressed. 'pending' while runs are
    * still missing. Callers hold the project's serial chain.
    */
-  async function settleTrial(project: Project, ledger: Ledger, trial: StoredGeneration): Promise<{ state: 'pending'; have: number; need: number } | { state: 'held' | 'promoted' | 'rolled_back'; reason: string; teamFilesSynced?: boolean }> {
-    const d = evaluateActiveTrial(trial, recordsOf(project.id, 50), effectiveConcurrency(project))
+  async function settleTrial(project: Project, ledger: Ledger, trial: StoredGeneration, src: RunSource): Promise<{ state: 'pending'; have: number; need: number } | { state: 'held' | 'promoted' | 'rolled_back'; reason: string; teamFilesSynced?: boolean }> {
+    // The window is found from summaries; only the runs it measures are loaded in full.
+    const need = clampWindow(trial.evalWindowRuns)
+    const since = src
+      .summaries()
+      .filter((r) => r.summary.startedAt >= trial.appliedAt)
+      .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
+    if (since.length < need) return { state: 'pending', have: since.length, need }
+    const d = evaluateActiveTrial(trial, src.byIds(since.slice(0, need).map((r) => r.summary.id)), effectiveConcurrency(project))
     if (d.state === 'pending') return { state: 'pending', have: d.have, need: d.need }
     if (d.regressed) {
       // The rollback writes the team: it waits (the trial stays open) while the team files cannot be written.
@@ -451,12 +603,12 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     }
     trial.trialMetrics = d.trialMetrics
     if (d.regressed) {
-      const res = await rollbackCore(project.id, ledger, trial, `trial regressed: ${d.reason}`)
+      const res = await rollbackCore(project.id, ledger, trial, `trial regressed: ${d.reason}`, src)
       return { state: 'rolled_back', reason: res.unusable ? `${d.reason}; the snapshot was unusable, so the team was left unchanged` : d.reason, teamFilesSynced: res.teamFilesSynced }
     }
     trial.status = 'promoted'
     trial.decidedAt = now()
-    trial.decidedAtRunCount = measuredRuns(recordsOf(project.id, 50), 50).length
+    trial.decidedAtRunCount = measuredCount(src)
     trial.outcomeReason = d.reason.slice(0, 600)
     writeLedger(deps.dataDir, ledger)
     return { state: 'promoted', reason: d.reason }
@@ -467,18 +619,21 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     const project = deps.getProject(input.projectId)
     if (!project || !isValidProjectId(input.projectId)) return { ...none, ratchet: 'none' }
     const ledger = ledgerOf(project.id)
+    // Every run this pass reads is loaded once, here, and handed down.
+    const src = runSource(project.id)
     const trial = trialOf(ledger)
     if (trial) {
-      const d = await settleTrial(project, ledger, trial)
+      const d = await settleTrial(project, ledger, trial, src)
       if (d.state === 'pending') return { ...none, ratchet: 'none', ratchetReason: `trial ${trial.id}: ${d.have} of ${d.need} runs` }
       if (d.state === 'held') return { ...none, ratchet: 'none', ratchetReason: d.reason }
       return { ...none, ratchet: d.state, ratchetReason: d.reason, decided: pub(trial) }
     }
     if (!input.evolve) return { ...none, ratchet: 'none' }
-    const records = recordsOf(project.id, 10)
-    if (measuredRuns(records, 10).length < MIN_RUNS_FOR_APPLY) return { ...none, ratchet: 'none', ratchetReason: `needs ${MIN_RUNS_FOR_APPLY} finished runs` }
-    const res = await applyCore({ projectId: project.id, strategy: input.strategy ?? 'deterministic', goal: input.goal, minWaste: input.minWaste, evalWindowRuns: input.evalWindowRuns })
-    return { ...none, ratchet: 'none', wasteScore: res.diagnosis.wasteScore, ...(res.applied && res.generation ? { applied: res.generation } : res.reason ? { ratchetReason: res.reason } : {}) }
+    if (measuredCount(src) < MIN_RUNS_FOR_APPLY) return { ...none, ratchet: 'none', ratchetReason: `needs ${MIN_RUNS_FOR_APPLY} finished runs` }
+    // Unattended: never an expectedFingerprint or allowSpendRaise, so any part that may spend more is held, not applied.
+    const res = await applyCore({ projectId: project.id, strategy: input.strategy ?? 'deterministic', goal: input.goal, minWaste: input.minWaste, evalWindowRuns: input.evalWindowRuns }, src)
+    const held = res.heldSpendRaises?.length ? { heldSpendRaises: res.heldSpendRaises } : {}
+    return { ...none, ratchet: 'none', wasteScore: res.diagnosis.wasteScore, ...(res.applied && res.generation ? { applied: res.generation } : res.reason ? { ratchetReason: res.reason } : {}), ...held }
   }
 
   return {
@@ -486,7 +641,7 @@ export function createEvolveService(deps: EvolveServiceDeps): EvolveService {
     apply: (input) => serial(input.projectId, () => applyCore(input)),
     history(projectId) {
       if (!isValidProjectId(projectId)) throw new Error('Invalid project id')
-      return toHistory(ledgerOf(projectId))
+      return toHistory(ledgerForRead(projectId))
     },
     rollback: (input) => serial(input.projectId, () => rollbackLocked(input)),
     async afterRun(input) {

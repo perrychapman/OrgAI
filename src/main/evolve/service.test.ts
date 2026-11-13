@@ -514,3 +514,132 @@ describe('unusable snapshots and cooldown', () => {
     expect(cooldownOf(h.svcLedger(), cleanRuns(4, NOW + 10), NOW + 30 * 24 * 3_600_000)).toEqual(['dev']) // counts available: counts rule
   })
 })
+
+describe('spend raises need the person (review H1)', () => {
+  /** dev on everyday / medium that fails half its assignments: the plan raises its tier one step. */
+  const underProject = (): Project =>
+    project({}, [
+      role('lead', { id: 'r_lead', reportsTo: null, canSpawn: true, spawnable: ['r_dev'], tier: 'deep', model: 'deep' }),
+      role('dev', { id: 'r_dev', name: 'Developer', tools: ['Read', 'Edit', 'Write', 'Bash'], tier: 'everyday', model: 'everyday', effort: 'medium' }),
+      role('review', { id: 'r_review', name: 'Reviewer', tools: ['Read', 'Grep'] })
+    ])
+  const failingRuns = (n: number, t0: number): RunRecord[] =>
+    Array.from({ length: n }, (_, i) => run({ startedAt: t0 + i * 1000, agents: [{ slug: 'dev', state: 'error', turns: 3 }, { slug: 'dev', turns: 3 }, { slug: 'dev', state: 'error', turns: 3 }], assignments: [{ tier: 'everyday' }, { tier: 'everyday' }, { tier: 'everyday' }] }))
+  const devOf = (p: Project) => p.roles.find((r) => r.slug === 'dev')!
+
+  it('the analysis lists the raise; an unattended post-run pass holds it, reports it and changes nothing that spends more', async () => {
+    const h = harness({ proj: underProject(), runs: failingRuns(6, 1_000_000) })
+    const before = structuredClone(devOf(h.proj))
+    const a = await h.svc.analyze({ projectId: 'p1' })
+    expect(a.plan.spendRaises?.some((r) => r.roleSlug === 'dev')).toBe(true)
+    const r = await h.svc.afterRun({ projectId: 'p1', evolve: true })
+    expect(r.heldSpendRaises?.some((x) => x.roleSlug === 'dev')).toBe(true)
+    const dev = devOf(h.proj)
+    expect([dev.tier, dev.model, dev.effort, dev.staffing]).toEqual([before.tier, before.model, before.effort, before.staffing])
+    // Whatever was applied, if anything, holds no sizing change for dev.
+    for (const g of h.svc.history('p1').generations) {
+      const p = g.plan.rolePatches.find((x) => x.slug === 'dev')
+      expect([p?.tier, p?.effort, p?.staffing]).toEqual([undefined, undefined, undefined])
+    }
+  })
+  it('an apply without allowSpendRaise holds the raise and reports it as spend_held', async () => {
+    const h = harness({ proj: underProject(), runs: failingRuns(6, 1_000_000) })
+    const before = structuredClone(devOf(h.proj))
+    const res = await h.svc.apply({ projectId: 'p1' })
+    expect(res.heldSpendRaises?.some((x) => x.roleSlug === 'dev')).toBe(true)
+    expect(res.plan.gate.violations.some((v) => v.rule === 'spend_held' && v.roleSlug === 'dev')).toBe(true)
+    expect(devOf(h.proj).staffing).toEqual(before.staffing)
+    expect(devOf(h.proj).tier).toBe('everyday')
+  })
+  it('allowSpendRaise without a fingerprint is refused and writes nothing', async () => {
+    const h = harness({ proj: underProject(), runs: failingRuns(6, 1_000_000) })
+    const res = await h.svc.apply({ projectId: 'p1', allowSpendRaise: true })
+    expect(res.applied).toBe(false)
+    expect(res.reason).toContain('fingerprint')
+    expect(h.state.updates).toBe(0)
+    expect(h.svc.history('p1').generations).toEqual([])
+  })
+  it('a fingerprint that does not match the plan built at apply time is refused, with or without allowSpendRaise', async () => {
+    const h = harness({ proj: underProject(), runs: failingRuns(6, 1_000_000) })
+    for (const allow of [false, true]) {
+      const res = await h.svc.apply({ projectId: 'p1', expectedFingerprint: 'deadbeefdeadbeef', allowSpendRaise: allow })
+      expect(res.applied).toBe(false)
+      expect(res.reason).toContain('changed since it was reviewed')
+    }
+    expect(h.state.updates).toBe(0)
+    expect(h.svc.history('p1').generations).toEqual([])
+  })
+  it('the reviewed plan with allowSpendRaise applies the raise', async () => {
+    const h = harness({ proj: underProject(), runs: failingRuns(6, 1_000_000) })
+    const a = await h.svc.analyze({ projectId: 'p1' })
+    const res = await h.svc.apply({ projectId: 'p1', expectedFingerprint: a.plan.fingerprint, allowSpendRaise: true })
+    expect(res.applied).toBe(true)
+    expect(res.heldSpendRaises).toBeUndefined()
+    const patch = a.plan.rolePatches.find((p) => p.slug === 'dev')
+    expect(patch?.tier ?? patch?.effort ?? patch?.staffing).toBeDefined()
+    if (patch?.staffing) expect(devOf(h.proj).staffing).toEqual(patch.staffing)
+    if (patch?.tier) expect(devOf(h.proj).tier).toBe(patch.tier)
+    expect(res.generation?.fingerprint).toBe(a.plan.fingerprint)
+  })
+  it('the reviewed plan without allowSpendRaise lands only what does not raise spend', async () => {
+    const h = harness({ proj: underProject(), runs: failingRuns(6, 1_000_000) })
+    const before = structuredClone(devOf(h.proj))
+    const a = await h.svc.analyze({ projectId: 'p1' })
+    const res = await h.svc.apply({ projectId: 'p1', expectedFingerprint: a.plan.fingerprint })
+    expect([devOf(h.proj).tier, devOf(h.proj).staffing]).toEqual([before.tier, before.staffing])
+    expect(res.heldSpendRaises?.length).toBeGreaterThan(0)
+  })
+  it('a reviewed hybrid plan is applied without a second model call; without one the apply refuses and calls nothing', async () => {
+    const complete = vi.fn(async () => ({ text: '{"rationale":"ok"}', usage: { inputTokens: 10, outputTokens: 2 } }))
+    const h = harness({ complete })
+    const a = await h.svc.analyze({ projectId: 'p1', strategy: 'hybrid' })
+    expect(complete).toHaveBeenCalledTimes(1)
+    // Another service instance (another process) never saw that analysis: it refuses and makes no model call.
+    const other = createEvolveService(h.deps)
+    const missing = await other.apply({ projectId: 'p1', strategy: 'hybrid', expectedFingerprint: a.plan.fingerprint })
+    expect(missing.applied).toBe(false)
+    expect(missing.reason).toContain('no longer available')
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(h.state.updates).toBe(0)
+    const res = await h.svc.apply({ projectId: 'p1', strategy: 'hybrid', expectedFingerprint: a.plan.fingerprint })
+    expect(complete).toHaveBeenCalledTimes(1)
+    expect(res.applied).toBe(true)
+    expect(res.generation?.fingerprint).toBe(a.plan.fingerprint)
+  })
+})
+
+describe('run loading (review M: synchronous records)', () => {
+  it('one post-run pass lists the records at most once', async () => {
+    const h = harness()
+    await h.svc.apply({ projectId: 'p1' })
+    h.setRuns([...cleanRuns(3, NOW + 10), ...cleanRuns(8, 1_000_000)])
+    h.state.listCalls = 0
+    await h.svc.afterRun({ projectId: 'p1', evolve: true })
+    expect(h.state.listCalls).toBeLessThanOrEqual(1)
+  })
+  it('with summaries and single-record ports, a pending trial loads no full record and a full window loads only its runs', async () => {
+    const h = harness()
+    await h.svc.apply({ projectId: 'p1' })
+    let runs = cleanRuns(8, 1_000_000)
+    const listRunRecords = vi.fn(() => runs)
+    const getRunRecord = vi.fn((id: string) => runs.find((r) => r.summary.id === id))
+    const svc = createEvolveService({ ...h.deps, listRunRecords, getRunRecord, listRunSummaries: () => runs.map((r) => r.summary) })
+    runs = [...cleanRuns(1, NOW + 10), ...runs]
+    expect((await svc.afterRun({ projectId: 'p1', evolve: false })).ratchetReason).toContain('1 of 3')
+    expect(listRunRecords).not.toHaveBeenCalled()
+    expect(getRunRecord).not.toHaveBeenCalled()
+    runs = [...cleanRuns(3, NOW + 10_000), ...runs]
+    expect((await svc.afterRun({ projectId: 'p1', evolve: false })).ratchet).toBe('promoted')
+    expect(listRunRecords).not.toHaveBeenCalled()
+    expect(getRunRecord).toHaveBeenCalledTimes(3)
+  })
+  it('analyze and history never move a corrupt ledger file aside', async () => {
+    const h = harness()
+    const { mkdirSync, writeFileSync, readdirSync } = await import('node:fs')
+    mkdirSync(join(dir, 'evolution'), { recursive: true })
+    writeFileSync(join(dir, 'evolution', 'p1.json'), '{not json')
+    await h.svc.analyze({ projectId: 'p1' })
+    h.svc.history('p1')
+    expect(readdirSync(join(dir, 'evolution'))).toEqual(['p1.json'])
+  })
+})
