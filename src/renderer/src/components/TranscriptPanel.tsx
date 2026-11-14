@@ -1,5 +1,5 @@
 import type { ReactElement, ReactNode } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Files,
@@ -43,7 +43,8 @@ import { Checkbox } from './ui/Checkbox'
 import { Icon } from './ui/Icon'
 import { TabPanel, Tabs } from './ui/Tabs'
 import { bareToolName, humanizeToolResult, humanizeToolUse, omittedLabel, type FeedItem, type ToolKind } from '../lib/transcriptRows'
-import { arriveClass, followBehavior } from '../lib/transcriptFollow'
+import { arriveClass } from '../lib/transcriptFollow'
+import { useTranscriptFollow } from '../lib/useTranscriptFollow'
 import { useArrival } from '../lib/useArrival'
 import { useReducedMotion } from '../lib/canvas'
 import { collapseSelfHelp, type SelfHelpRow } from '../lib/selfHelpRows'
@@ -52,9 +53,6 @@ import { revealOutputsTab } from './outputs/revealOutputsTab'
 import ReviseDialog from './outputs/ReviseDialog'
 import { canRevise } from '../lib/outputRevise'
 import { collapseOutputCalls, matchOutputId, producedSentence, registeredSentence, type OutputWriteRow } from '../lib/outputsRun'
-
-/** Distance from the end of the conversation under which it still counts as scrolled to the end. */
-const STICK_PX = 48
 
 interface Props {
   /** The run this panel shows. */
@@ -341,12 +339,29 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const entries = useMemo(() => items.flatMap((i) => (i.kind === 'entry' ? [i.entry] : [])), [items])
   const lastEntryId = entries[entries.length - 1]?.id
 
-  useEffect(() => {
-    // Scroll only the tab panel body (the sentinel's parent); scrollIntoView would also scroll every ancestor.
-    const body = bottom.current?.parentElement
-    if (body) body.scrollTop = body.scrollHeight
-    // Keyed by the last entry, not the count: entries prepended by "Load earlier sessions" must not jump to the end.
-  }, [lastEntryId, logs.length, tab, partial])
+  // Both shapes follow their end through one hook (docs/design/motion.md 3.11): opens at the end, releases on any user
+  // scroll, resumes after a quiet spell. It scrolls only the list itself (the sentinel's parent in the panel);
+  // scrollIntoView would also scroll every ancestor. Keyed by the last entry, not the count: entries prepended by
+  // "Load earlier sessions" must not jump to the end.
+  const listRef = useRef<HTMLDivElement>(null)
+  const reduced = useReducedMotion()
+  const panelListShown = tab === 'transcript' && !(finished && !agent)
+  const follow = useTranscriptFollow({
+    find: () => (variant === 'conversation' ? listRef.current : bottom.current?.parentElement ?? null),
+    attachKey: `${variant}:${variant === 'conversation' || panelListShown ? 'on' : 'off'}`,
+    resetKey: `${runId}|${variant}|${agent?.id ?? ''}|${finished ? 'finished' : ''}`,
+    contentKey: `${lastEntryId ?? ''}|${partial?.length ?? 0}`,
+    reducedMotion: reduced
+  })
+  const firstEntryId = entries[0]?.id
+  const ends = useRef({ first: firstEntryId, last: lastEntryId, runId })
+  useLayoutEffect(() => {
+    const before = ends.current
+    ends.current = { first: firstEntryId, last: lastEntryId, runId }
+    // Rows prepended above the reading position ("Load earlier sessions") keep it, and count as the user's scroll.
+    if (before.runId === runId && before.first !== undefined && before.first !== firstEntryId && before.last === lastEntryId) follow.holdHere()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstEntryId, lastEntryId, runId])
 
   const toolNames = useMemo(() => {
     const m = new Map<string, string>()
@@ -368,12 +383,10 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const visible = entries.filter(shown)
 
   // Arrival (motion.md 2.2, 3.11): only rows appended to the newest session while the user follows the end fade in; bursts of more than 6, chain loads, run switches and the first paint never do.
-  const stuck = useRef(true)
-  const reduced = useReducedMotion()
   const newestStart = items.findIndex((i) => i.kind === 'divider' && i.divider.runId === runId)
   const arrivalIds = useMemo(() => items.slice(Math.max(newestStart, 0)).flatMap((i) => (i.kind === 'entry' ? [i.entry.id] : [])), [items, newestStart])
   const isNew = useArrival(arrivalIds, `${runId}:${arrivalIds.length > 0}`, { maxPerBatch: 6 })
-  const arrive = (id: string): boolean => stuck.current && isNew(id)
+  const arrive = (id: string): boolean => follow.isFollowing() && isNew(id)
 
   const rows = items.map((item) => {
     if (item.kind === 'omitted') {
@@ -470,8 +483,6 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
   const earlierRows = rows.slice(0, splitAt)
   const newestRows = rows.slice(splitAt)
 
-  // Conversation variant: keep the newest entry in view unless the user scrolled up (within STICK_PX of the end counts as at the end).
-  const listRef = useRef<HTMLDivElement>(null)
   // The user asked to see a chain member (History, a link, after Send): put its divider at the top once, then let go.
   const focusRun = useAppStore((s) => s.chainFocusRun)
   useEffect(() => {
@@ -483,46 +494,13 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
     const first = items[0]
     const startsWithFocus = first?.kind === 'entry' && first.runId === focusRun
     if (!target && !startsWithFocus) return
-    stuck.current = false
     body.scrollTop = target ? target.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop : 0
+    // A position the app chose counts as the user's scroll: nothing moves it for FOLLOW_RESUME_IDLE_MS.
+    follow.holdHere()
     useAppStore.setState({ chainFocusRun: null })
   }, [focusRun, items, variant, tab])
-  const [away, setAway] = useState(false)
-  const prevLast = useRef(lastEntryId)
-  const lastUserScroll = useRef(0)
-  const userScrolled = (): void => {
-    lastUserScroll.current = Date.now()
-  }
-  // A smooth follow in flight (start time, 0 = none): its in-between scroll events are not the user leaving the end
-  // (review M2), so onScroll ignores them until scrollend, a user gesture, or a 1 s safety limit.
-  const autoScroll = useRef(0)
-  const smoothTo = (el: HTMLElement, top: number): void => {
-    autoScroll.current = Date.now()
-    el.addEventListener('scrollend', () => (autoScroll.current = 0), { once: true })
-    el.scrollTo({ top, behavior: 'smooth' })
-  }
-  useEffect(() => {
-    const el = listRef.current
-    if (variant !== 'conversation' || !el || !stuck.current) return
-    // A new row glides in when the hop is short and the user is not scrolling; streaming text growth just stays pinned.
-    const rowAdded = prevLast.current !== lastEntryId
-    prevLast.current = lastEntryId
-    const delta = el.scrollHeight - el.scrollTop - el.clientHeight
-    const behavior = rowAdded ? followBehavior({ delta, viewportHeight: el.clientHeight, sinceUserScrollMs: Date.now() - lastUserScroll.current, reducedMotion: reduced }) : 'auto'
-    if (behavior === 'smooth') smoothTo(el, el.scrollHeight)
-    else el.scrollTop = el.scrollHeight
-  }, [variant, lastEntryId, partial, showThinking, reduced])
 
   if (variant === 'conversation') {
-    const toEnd = (): void => {
-      const el = listRef.current
-      if (!el) return
-      stuck.current = true
-      setAway(false)
-      const behavior = followBehavior({ delta: el.scrollHeight - el.scrollTop - el.clientHeight, viewportHeight: el.clientHeight, sinceUserScrollMs: Infinity, reducedMotion: reduced })
-      if (behavior === 'smooth') smoothTo(el, el.scrollHeight)
-      else el.scrollTop = el.scrollHeight
-    }
     return (
       <div className="conversation-body" data-testid="conversation-transcript">
         <div
@@ -531,19 +509,6 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
           role="region"
           tabIndex={0}
           aria-label="Conversation scroll area"
-          onWheel={userScrolled}
-          onTouchMove={userScrolled}
-          onKeyDown={userScrolled}
-          onPointerDown={userScrolled}
-          onScroll={(e) => {
-            const el = e.currentTarget
-            const started = autoScroll.current
-            if (started && lastUserScroll.current < started && Date.now() - started < 1000) return
-            autoScroll.current = 0
-            const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX
-            stuck.current = atEnd
-            setAway(!atEnd)
-          }}
         >
           {feed && lead}
           {splitAt > 0 && <div className="conversation-earlier">{earlierRows}</div>}
@@ -557,9 +522,9 @@ export default function TranscriptPanel({ runId, agent, entries: ownEntries, fee
             )}
           </div>
         </div>
-        {away && (
+        {follow.away && (
           <div className="conversation-jump motion-enter">
-            <Button size="sm" variant="secondary" onClick={toEnd} testId="conversation-jump">
+            <Button size="sm" variant="secondary" onClick={follow.jumpToEnd} testId="conversation-jump">
               <Icon icon={ArrowDown} size="sm" /> Jump to latest
             </Button>
           </div>

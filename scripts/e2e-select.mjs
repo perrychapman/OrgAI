@@ -5,8 +5,8 @@
 //   node scripts/e2e-select.mjs --base <sha> --head <sha> [--print | --run]
 //   node scripts/e2e-select.mjs --full [--print | --run]
 //
-// --print (the default) prints the decision, --run also runs the chosen scripts in chain order and stops at the first
-// failure with its exit code, --ci takes the plan from the E2E_* environment variables (ciPlan; used by ci.yml so the step
+// --print (the default) prints the decision, --run also runs the chosen scripts in chain order, keeps going after a failure
+// (each script has a wall-clock limit), lists every failed script at the end and exits 1 if any failed, --ci takes the plan from the E2E_* environment variables (ciPlan; used by ci.yml so the step
 // is one shell-neutral line), --full forces the whole chain. --range two|three picks `git diff base head` (pushes: base
 // is the last green commit) or `base...head` (pull requests, the default). Exit 2 on a malformed or empty chain. No dependencies.
 //
@@ -14,7 +14,7 @@
 // changed path to the scripts that exercise it. Rules are tried in order and the first match wins, so put narrow rules
 // before broad ones. FAIL OPEN: a path no rule matches means the full chain, and so does an empty or unreadable diff.
 // When unsure whether a path is narrow, leave it out of the table.
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -329,7 +329,7 @@ function report(decision, allScripts) {
   }
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2), process.env)
   const allScripts = loadChain()
   if (allScripts.length === 0) throw new Error('the e2e:free chain in package.json is missing or empty')
@@ -338,16 +338,77 @@ function main() {
   else decision = selectE2e({ changedFiles: changedFilesBetween(args.base, args.head, ROOT, args.range), allScripts })
   report(decision, allScripts)
   if (!args.run) return 0
-  for (const name of decision.scripts) {
-    console.log(`\n=== node e2e/${name}.mjs`)
-    const r = spawnSync(process.execPath, [join('e2e', `${name}.mjs`)], { cwd: ROOT, stdio: 'inherit' })
-    const code = r.status ?? 1
-    if (code !== 0) {
-      console.error(`e2e/${name}.mjs failed with exit code ${code}`)
-      return code
+  const failed = await runScripts(decision.scripts, runScript)
+  return failed.length ? 1 : 0
+}
+
+/** One script's wall-clock budget. The slowest macOS script took about 4.5 minutes; the whole job has 50. E2E_SCRIPT_TIMEOUT_MS overrides. */
+export const SCRIPT_TIMEOUT_MS = 10 * 60 * 1000
+/** After SIGTERM a timed-out script gets this long to close its Electron app (playwright closes it on SIGTERM) before the kill. */
+const TERM_GRACE_MS = 10_000
+
+/**
+ * Runs every named script in order, whatever an earlier one did (a failure must not hide the evidence of the scripts behind
+ * it), then prints a summary that lists each failed script. `runOne(name)` resolves { code, timedOut? } and never rejects.
+ * Returns the failed entries: { name, code, timedOut }.
+ */
+export async function runScripts(names, runOne, out = { log: console.log, error: console.error }) {
+  const failed = []
+  const started = Date.now()
+  for (const name of names) {
+    out.log(`\n=== node e2e/${name}.mjs`)
+    const t0 = Date.now()
+    let r
+    try {
+      r = await runOne(name)
+    } catch (e) {
+      r = { code: 1, error: e instanceof Error ? e.message : String(e) }
     }
+    const seconds = Math.round((Date.now() - t0) / 1000)
+    if (r.code === 0 && !r.timedOut) continue
+    failed.push({ name, code: r.code, timedOut: !!r.timedOut })
+    out.error(`e2e/${name}.mjs ${r.timedOut ? `timed out after ${seconds}s` : `failed with exit code ${r.code}`}${r.error ? ` (${r.error})` : ''}; continuing with the next script`)
   }
-  return 0
+  const minutes = ((Date.now() - started) / 60_000).toFixed(1)
+  if (failed.length === 0) out.log(`\ne2e summary: all ${names.length} scripts passed (${minutes} min)`)
+  else {
+    out.error(`\ne2e summary: ${failed.length} of ${names.length} scripts failed (${minutes} min)`)
+    for (const f of failed) out.error(`  FAILED ${f.name}: ${f.timedOut ? 'timed out' : `exit code ${f.code}`}`)
+  }
+  return failed
+}
+
+/** Kill a script and everything it started (Electron and its helpers are its children). */
+function killTree(child, signal) {
+  if (child.pid === undefined) return
+  try {
+    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    else child.kill(signal)
+  } catch {
+    // already gone
+  }
+}
+
+/** Runs e2e/<name>.mjs with inherited output and a wall-clock limit (E2E_SCRIPT_TIMEOUT_MS or SCRIPT_TIMEOUT_MS). */
+export function runScript(name, timeoutMs = Number(process.env.E2E_SCRIPT_TIMEOUT_MS) || SCRIPT_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [join('e2e', `${name}.mjs`)], { cwd: ROOT, stdio: 'inherit' })
+    let timedOut = false
+    let hard
+    const timer = setTimeout(() => {
+      timedOut = true
+      // SIGTERM first: playwright closes the Electron app it launched on SIGTERM; the kill follows when that did not end it.
+      killTree(child, 'SIGTERM')
+      hard = setTimeout(() => killTree(child, 'SIGKILL'), TERM_GRACE_MS)
+    }, timeoutMs)
+    const done = (code) => {
+      clearTimeout(timer)
+      clearTimeout(hard)
+      resolve({ code: code ?? 1, timedOut })
+    }
+    child.on('error', () => done(1))
+    child.on('close', (code) => done(code))
+  })
 }
 
 /** True when this file is the entry point. Real paths on both sides: a symlinked tmp dir or checkout must not make main() silently skip. */
@@ -362,7 +423,7 @@ function isEntry() {
 
 if (isEntry()) {
   try {
-    process.exitCode = main()
+    process.exitCode = await main()
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e))
     process.exitCode = 2
