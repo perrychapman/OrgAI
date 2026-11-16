@@ -47,7 +47,11 @@ import { restrictDaemonSecretAcl } from './protocol'
  * gone). An unconfirmed pid whose daemon.json says `listening: false` (the Electron app, which never listens,
  * review M11) is a running host whatever the probe says: only a 'dead' pid is reclaimed then, unless the incumbent is
  * an Electron host and this launch holds Electron's single-instance lock (`singleInstanceLockHeld`; review M9
- * follow-up: the lock proves no Electron host runs here, so a crash record is never a lockout). An unconfirmed startup.mkdir owner is reclaimed once the mutex is older than
+ * follow-up: the lock proves no Electron host runs here, so a crash record is never a lockout). An 'inproc' host with
+ * `listen: false` (the orgai CLI) binds a liveness-only listener on the endpoint it names (accepts and destroys every
+ * connection; no daemon.secret, no handshake) and writes `livenessProbe: true` beside `listening: false`: for such a
+ * record an unconfirmed pid is decided by the endpoint (dead = crashed, taken over; answering = running). A record
+ * without `livenessProbe` keeps the strict rule above. An unconfirmed startup.mkdir owner is reclaimed once the mutex is older than
  * `unconfirmedStaleMs`. A daemon.json that exists but cannot be read or parsed is never taken for "no host": it is
  * reclaimed only when it still names a dead pid, else ownership is refused with the file named. The user's way out of
  * a wedged state is quitting that process, or deleting `<dataDir>/run` by hand (every refusal names it).
@@ -253,7 +257,8 @@ export interface OwnershipOptions {
   platform?: NodeJS.Platform
   /**
    * Write daemon.secret and bind the listener now (default true). false (review M11; the Electron app, which never listens): neither exists; daemon.json carries `listening: false` and
-   * the endpoint the listener will use.
+   * the endpoint the listener will use. An 'inproc' host then binds a liveness-only listener on that endpoint instead
+   * (DaemonInfo.livenessProbe); HostOwnership.listening stays false.
    */
   listen?: boolean
 }
@@ -348,6 +353,8 @@ export function parseDaemonInfo(raw: unknown): DaemonInfo | null {
     endpoint,
     // Only an explicit false means "not listening"; anything else reads as listening (older hosts never write it).
     ...(listening === false ? { listening: false as const } : {}),
+    // The liveness-only listener marker: read only beside `listening: false`, and only the exact value true.
+    ...(listening === false && raw.livenessProbe === true ? { livenessProbe: true as const } : {}),
     state: state as HostState,
     startedAt,
     ...(kind !== undefined ? { hostKind: kind as HostKind } : {}),
@@ -564,6 +571,8 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
   let endpoint = ''
   let runtimeDir: string | undefined
   let wroteSecret = false
+  /** listen: false on an inproc host and the liveness-only listener bound (daemon.json carries livenessProbe). */
+  let probeBound = false
   let published = false
   let secretAclWarning: string | undefined
   try {
@@ -582,13 +591,20 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       // Unless this launch holds Electron's single-instance lock and the incumbent is an Electron host: the lock
       // proves no Electron host runs on this data folder, so the record is stale (review M9 follow-up).
       const lockProvesGone = opts.singleInstanceLockHeld === true && incumbent.hostKind === 'desktop'
-      const unboundButMaybeLive = live === 'unconfirmed' && incumbent.listening === false && !lockProvesGone
+      // An orgai (inproc) host that bound a liveness-only listener (`livenessProbe`) has no other proof of life when its
+      // pid cannot be confirmed: its endpoint decides. A dead endpoint (reachable is false) then means it crashed.
+      // A record without `livenessProbe` (an older orgai may be running) keeps the strict rule.
+      const probeDecides = incumbent.listening === false && incumbent.hostKind === 'inproc' && incumbent.livenessProbe === true
+      const unboundButMaybeLive = live === 'unconfirmed' && incumbent.listening === false && !lockProvesGone && !probeDecides
       if (live === 'same' || reachable || unboundButMaybeLive) {
         removeStartupDir()
         throw new HostAlreadyRunningError(incumbent, runDir)
       }
       if (live === 'unconfirmed') {
-        const why = incumbent.listening === false ? 'it is an OrgAI app host and this launch holds the single-instance lock' : `its endpoint does not answer (${answer})`
+        const why =
+          incumbent.listening === false && !probeDecides
+            ? 'it is an OrgAI app host and this launch holds the single-instance lock'
+            : `its ${probeDecides ? 'liveness endpoint' : 'endpoint'} does not answer (${answer})`
         warn(`OrgAI host ownership: daemon.json names pid ${incumbent.pid}, which exists but could not be confirmed as that host, and ${why}; taking over.`)
       }
       unlinkStaleEndpoint(incumbent.endpoint)
@@ -626,10 +642,31 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       runtimeDir = bound.runtimeDir
       fault('after-listen')
     } else {
-      // Review M11: no secret and no listener; daemon.json names the endpoint a listener would use.
-      const planned = plannedEndpoint()
-      endpoint = planned.endpoint
-      runtimeDir = planned.runtimeDir
+      // Review M11: no secret and no handshake listener; daemon.json names the endpoint a listener would use.
+      let bound: { server: Server; endpoint: string; runtimeDir?: string } | undefined
+      if (opts.hostKind === 'inproc') {
+        // A liveness-only listener (DaemonInfo.livenessProbe): accepts and destroys every connection, reads and writes
+        // nothing, has no daemon.secret. It lets a later orgai tell a crashed host from a live one whose pid could not
+        // be confirmed. Never fatal: without it the record keeps the strict rule.
+        try {
+          bound = await bindListener((socket) => socket.destroy())
+          bound.server.unref() // never keeps a finished command's process alive
+          // An accept error (EMFILE, say) after the bind must never crash the host mid-run: warn and keep serving.
+          bound.server.on('error', (e) => warn(`OrgAI host ownership: the liveness endpoint failed (${errCode(e) ?? (e as Error).message}).`))
+        } catch (e) {
+          warn(`OrgAI host ownership: could not bind the liveness endpoint (${errCode(e) ?? (e as Error).message}); if this process crashes, a later orgai on this data folder may refuse to start until ${runDir} is deleted.`)
+        }
+      }
+      if (bound) {
+        server = bound.server
+        probeBound = true
+        endpoint = bound.endpoint
+        runtimeDir = bound.runtimeDir
+      } else {
+        const planned = plannedEndpoint()
+        endpoint = planned.endpoint
+        runtimeDir = planned.runtimeDir
+      }
     }
 
     const info: DaemonInfo = {
@@ -637,7 +674,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       pid,
       ...(myStart ? { processStartTime: myStart } : {}),
       endpoint,
-      ...(listenNow ? {} : { listening: false }),
+      ...(listenNow ? {} : { listening: false, ...(probeBound ? { livenessProbe: true } : {}) }),
       state: 'starting',
       startedAt: now(),
       hostKind: opts.hostKind,
@@ -649,7 +686,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
     fault('after-daemon-starting')
     fault('before-startup-release')
     removeStartupDir()
-    return ownershipHandle(info, server, runtimeDir, secretAclWarning)
+    return ownershipHandle(info, server, runtimeDir, secretAclWarning, listenNow)
   } catch (e) {
     if (e instanceof OwnershipFaultError) {
       const srv = server
@@ -861,7 +898,9 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
     return { endpoint: inRt, runtimeDir: rtDir }
   }
 
-  async function bindListener(): Promise<{ server: Server; endpoint: string; runtimeDir?: string }> {
+  async function bindListener(
+    onSocket: (socket: Socket) => void = (socket) => (opts.onConnection ? opts.onConnection(socket) : socket.destroy())
+  ): Promise<{ server: Server; endpoint: string; runtimeDir?: string }> {
     let path: string
     let rtDir: string | undefined
     if (platform === 'win32') {
@@ -885,10 +924,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
         }
       }
     }
-    const srv = createServer((socket) => {
-      if (opts.onConnection) opts.onConnection(socket)
-      else socket.destroy()
-    })
+    const srv = createServer(onSocket)
     try {
       await new Promise<void>((ok, fail) => {
         srv.once('error', fail)
@@ -941,7 +977,7 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
     return protectSecretOnWindows(runDir, write, { mode, warn, ...(opts.restrictAcl ? { restrict: opts.restrictAcl } : {}) })
   }
 
-  function ownershipHandle(info: DaemonInfo, initialServer: Server | undefined, rtDir: string | undefined, aclWarning: string | undefined): HostOwnership {
+  function ownershipHandle(info: DaemonInfo, initialServer: Server | undefined, rtDir: string | undefined, aclWarning: string | undefined, serves: boolean): HostOwnership {
     let current = info
     let released = false
     /** The bound listener; undefined while the host does not listen (review M11). */
@@ -978,7 +1014,8 @@ async function acquire(opts: OwnershipOptions, underMutex?: () => Promise<void>)
       ...(rtDir ? { runtimeDir: rtDir } : {}),
       ...(aclWarning ? { secretAclWarning: aclWarning } : {}),
       get listening() {
-        return !!srv && !released
+        // The liveness-only listener (serves false) is not a host listener: nothing may connect to it.
+        return serves && !!srv && !released
       },
       markReady() {
         const wrote = rewrite('ready')

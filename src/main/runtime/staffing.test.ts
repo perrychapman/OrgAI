@@ -4,6 +4,7 @@ import { EFFORTS, MODEL_TIERS, type Effort, type ModelTier, type PlanStep, type 
 import {
   appendStaffing,
   CLAUDE_TIER_ALIAS,
+  enforcedStaffingFloor,
   isDeepOrTopModelRef,
   recordStaffing,
   resolveStaffing,
@@ -728,5 +729,23 @@ describe('recording', () => {
       await expect(recordStaffing(t.ctx, bound(1, 'p1'))).rejects.toThrow('plan store down')
       expect(t.staffing()!.assignments).toHaveLength(1)
     })
+  })
+})
+
+describe('enforcedStaffingFloor (the floor resolveStaffing enforces; shared with team evolution)', () => {
+  it('is the role floor only when the role is auto and the floor is not above the ceiling staffing uses', () => {
+    expect(enforcedStaffingFloor({ model: 'deep', tier: 'deep', staffing: { mode: 'auto', minTier: 'everyday' } }, {})).toBe('everyday')
+    // A tier alias in the model sets the ceiling: sonnet runs on everyday, so a deep floor is not enforced.
+    expect(enforcedStaffingFloor({ model: 'sonnet', tier: 'deep', staffing: { mode: 'auto', minTier: 'deep' } }, {})).toBeUndefined()
+    expect(enforcedStaffingFloor({ model: 'top', tier: 'fast', staffing: { mode: 'auto', minTier: 'deep' } }, {})).toBeUndefined()
+    expect(enforcedStaffingFloor({ model: 'deep', tier: 'deep', staffing: { mode: 'fixed', minTier: 'everyday' } }, {})).toBeUndefined()
+    expect(enforcedStaffingFloor({ model: 'deep', tier: 'deep', staffing: { mode: 'auto', minTier: 'everyday' } }, { staffing: 'fixed' })).toBeUndefined()
+    expect(enforcedStaffingFloor({ model: 'inherit', staffing: { mode: 'auto', minTier: 'everyday' } }, {}, 'deep')).toBe('everyday')
+    expect(enforcedStaffingFloor({ model: 'inherit', staffing: { mode: 'auto', minTier: 'everyday' } }, {})).toBeUndefined()
+  })
+  it('agrees with resolveStaffing: a request below the floor is raised to it only when the floor is enforced', () => {
+    const fast = (role: Partial<Role>) => resolveStaffing({ role: { slug: 'r', ...role } as Role, project: {}, tierModels: TM, adapterEfforts: CLAUDE, requested: { tier: 'fast' } }).tier
+    expect(fast({ model: 'deep', tier: 'deep', staffing: { mode: 'auto', minTier: 'everyday' } })).toBe('everyday')
+    expect(fast({ model: 'sonnet', tier: 'deep', staffing: { mode: 'auto', minTier: 'deep' } })).toBe('fast')
   })
 })

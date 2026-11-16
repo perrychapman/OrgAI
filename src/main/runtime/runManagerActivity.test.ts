@@ -225,7 +225,20 @@ describe('RunManager working and busy run counts', () => {
     await vi.waitFor(() => expect(m.liveRunFacts(run.id)).toMatchObject({ status: 'idle', working: false }))
     // White box: a report still at work under an idle root (what the adapter's agent.upsert would record).
     const active = (m as unknown as { runs: Map<string, { record: { agents: Record<string, unknown> } }> }).runs.get(run.id)!
-    active.record.agents['rep_1'] = { id: 'rep_1', state: 'tool' }
+    active.record.agents['rep_1'] = {
+      id: 'rep_1',
+      roleId: null,
+      roleSlug: 'runtime-engineer',
+      name: 'Runtime Engineer 1',
+      parentId: 'root',
+      spawnToolUseId: null,
+      state: 'tool',
+      activity: 'Working',
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      startedAt: Date.now()
+    }
     expect(m.liveRunFacts(run.id)).toMatchObject({ status: 'idle', working: true })
     await m.stopAll()
   })

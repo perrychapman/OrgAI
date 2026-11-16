@@ -72,7 +72,7 @@ function fakeRepo({ license = false } = {}) {
   fs.writeFileSync(path.join(sdkDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.1', peerDependencies: { zod: '^4' } }))
   const cli = path.join(root, 'out', 'cli')
   fs.mkdirSync(cli, { recursive: true })
-  fs.writeFileSync(path.join(cli, 'orgai.mjs'), '#!/usr/bin/env node\n')
+  fs.writeFileSync(path.join(cli, 'orgai.mjs'), '#!/usr/bin/env -S node --disable-sigusr1\n')
   fs.chmodSync(path.join(cli, 'orgai.mjs'), 0o755)
   fs.writeFileSync(path.join(cli, 'tui.mjs'), '')
   fs.writeFileSync(path.join(cli, 'inprocHost.mjs'), '')
@@ -88,6 +88,10 @@ test('checkBundle refuses a missing file and a bundle of another version', () =>
     const cli = path.join(root, 'out', 'cli')
     assert.doesNotThrow(() => checkBundle(cli, '9.9.9'))
     assert.throws(() => checkBundle(cli, '9.9.10'), /does not carry version 9\.9\.10/)
+    // The minified bundle writes the version as a template literal.
+    fs.writeFileSync(path.join(cli, 'orgai.mjs'), 'var C=`9.9.11`;export{C};')
+    assert.doesNotThrow(() => checkBundle(cli, '9.9.11'))
+    assert.throws(() => checkBundle(cli, '9.9.1'), /does not carry version 9\.9\.1/)
     fs.rmSync(path.join(cli, 'tui.mjs'))
     assert.throws(() => checkBundle(cli, '9.9.9'), /missing tui\.mjs/)
   } finally {
@@ -129,6 +133,8 @@ test('main writes the package folder, packs it with npm and records the sha256',
     const r = main(['--shrinkwrap'], root, () => {}, { env: { GITHUB_SHA: 'b'.repeat(40), GITHUB_REPOSITORY: 'me/OrgAI' }, exec, execPath: '/n/bin/node', platform: 'linux' })
     const pkgDir = path.join(root, 'release', 'npm', 'package')
     const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))
+    assert.deepEqual(pkg.bin, { orgai: 'out/cli/orgai.mjs' })
+    assert.equal(fs.readFileSync(path.join(pkgDir, 'out', 'cli', 'orgai.mjs'), 'utf8').split(/\r?\n/, 1)[0], '#!/usr/bin/env -S node --disable-sigusr1')
     assert.deepEqual(pkg.dependencies, { '@anthropic-ai/claude-agent-sdk': '0.3.1', zod: '4.1.0' })
     assert.equal(pkg.scripts, undefined)
     assert.equal(pkg.license, 'SEE LICENSE IN LICENSE')

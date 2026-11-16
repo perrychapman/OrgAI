@@ -5,4 +5,9 @@ interface ImportMeta {
     pattern: string | readonly string[],
     options: { query: '?raw'; import: 'default'; eager: true }
   ): Record<string, string>
+  // Lazy form (docs.ts): one loader per file, nothing is parsed until it is called.
+  glob(
+    pattern: string | readonly string[],
+    options: { query: '?raw'; import: 'default' }
+  ): Record<string, () => Promise<string>>
 }

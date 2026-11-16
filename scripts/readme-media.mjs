@@ -594,7 +594,7 @@ async function cliText() {
     new Promise((resolve) => {
       const env = { ...process.env, ORGAI_CLI_DATA_DIR: CLI_DIR, ORGAI_CLI_VAULT_NO_OS_KEYSTORE: '1', ORGAI_MOCK: '1', NO_COLOR: '1' }
       delete env.ORGAI_DATA_DIR
-      const child = spawn(process.execPath, [CLI, '--no-color', ...a], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn(process.execPath, ['--disable-sigusr1', CLI, '--no-color', ...a], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
       let out = ''
       let err = ''
       child.stdout.on('data', (d) => (out += d))

@@ -14,7 +14,7 @@ import {
   utimesSync,
   writeFileSync
 } from 'node:fs'
-import { connect } from 'node:net'
+import { connect, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -1077,5 +1077,143 @@ describe('readDaemonInfo / parseDaemonInfo', () => {
     mkdirSync(join(base, 'run'))
     writeFileSync(join(base, 'run', 'daemon.json'), '{')
     expect(readDaemonInfo(base)).toBeNull()
+  })
+})
+
+// Review M2 on PR 49: an orgai (inproc) host that listens on nothing still binds a liveness-only endpoint, so a crash plus
+// pid reuse is no lockout. Real temp dirs and the platform's real endpoint (unix socket, or a named pipe on win32).
+describe('liveness-only listener for an inproc host with listen: false (review M2 on PR 49)', () => {
+  const OLD = '0a1b2c3d4e5f'
+  const inprocOpts = (env: Env, extra: Partial<OwnershipOptions> = {}): OwnershipOptions => opts(env, { hostKind: 'inproc', listen: false, wait: 'none', ...extra })
+  const oldEndpoint = (env: Env): string => (posix ? socketPathFor(env.dataDir, OLD) : pipeNameFor(env.dataDir, OLD))
+  const writeIncumbent = (env: Env, extra: Record<string, unknown>): void => {
+    mkdirSync(env.runDir, { recursive: true, mode: 0o700 })
+    writeFileSync(
+      join(env.runDir, 'daemon.json'),
+      JSON.stringify({ hostInstanceId: OLD, pid: process.pid, endpoint: oldEndpoint(env), state: 'ready', startedAt: Date.now(), listening: false, ...extra })
+    )
+  }
+  const warnings: string[] = []
+  const warn = (m: string): void => void warnings.push(m)
+
+  it('boots with livenessProbe: an endpoint that accepts and closes, no daemon.secret, listening stays false, gone on release', async () => {
+    const env = tempEnv()
+    const own = await acquire(env, inprocOpts(env, { warn }))
+    const onDisk = JSON.parse(readFileSync(join(env.runDir, 'daemon.json'), 'utf8')) as DaemonInfo
+    expect(onDisk).toMatchObject({ listening: false, livenessProbe: true, hostKind: 'inproc', endpoint: own.endpoint })
+    expect(own.info.livenessProbe).toBe(true)
+    expect(own.listening).toBe(false)
+    expect(existsSync(join(env.runDir, 'daemon.secret'))).toBe(false)
+    // It answers and hangs up at once, reading and writing nothing.
+    const bytes = await new Promise<number>((done, fail) => {
+      let n = 0
+      const s = connect(own.endpoint)
+      s.on('data', (c) => (n += c.length))
+      s.once('close', () => done(n))
+      s.once('error', fail)
+    })
+    expect(bytes).toBe(0)
+    expect(await canConnect(own.endpoint)).toBe(true)
+    // markReady keeps the marker.
+    own.markReady()
+    expect(readDaemonInfo(env.dataDir)).toMatchObject({ state: 'ready', listening: false, livenessProbe: true })
+    own.release()
+    expect(existsSync(join(env.runDir, 'daemon.json'))).toBe(false)
+    expect(await canConnect(own.endpoint)).toBe(false)
+    if (posix) expect(existsSync(own.endpoint)).toBe(false)
+  })
+
+  it('writes livenessProbe only for an inproc host with listen: false', async () => {
+    const desktop = tempEnv()
+    const d = await acquire(desktop, opts(desktop, { hostKind: 'desktop', listen: false }))
+    expect(readDaemonInfo(desktop.dataDir)?.livenessProbe).toBeUndefined()
+    expect(readDaemonInfo(desktop.dataDir)?.listening).toBe(false)
+    expect(await canConnect(d.endpoint)).toBe(false)
+    const serving = tempEnv()
+    const s = await acquire(serving, opts(serving, { hostKind: 'inproc', listen: true }))
+    expect(readDaemonInfo(serving.dataDir)?.livenessProbe).toBeUndefined()
+    expect(readDaemonInfo(serving.dataDir)?.listening).toBeUndefined()
+    expect(s.listening).toBe(true)
+  })
+
+  it('falls back to the plain record (no livenessProbe) with one warning when the endpoint cannot be bound, and still boots', async () => {
+    const env = tempEnv()
+    const id = '0f1e2d3c4b5a'
+    const taken = createServer()
+    cleanups.push(() => taken.close())
+    mkdirSync(env.runDir, { recursive: true, mode: 0o700 })
+    await new Promise<void>((ok) => taken.listen(posix ? socketPathFor(env.dataDir, id) : pipeNameFor(env.dataDir, id), ok))
+    warnings.length = 0
+    const own = await acquire(env, inprocOpts(env, { hostInstanceId: id, warn }))
+    expect(readDaemonInfo(env.dataDir)).toMatchObject({ hostInstanceId: id, listening: false })
+    expect(readDaemonInfo(env.dataDir)?.livenessProbe).toBeUndefined()
+    expect(own.info.livenessProbe).toBeUndefined()
+    expect(warnings.filter((w) => w.includes('liveness endpoint'))).toHaveLength(1)
+  })
+
+  it('unconfirmed pid + listening false + inproc + livenessProbe + dead endpoint: takes over with a warning', async () => {
+    for (const answer of ['refused', 'enoent'] as const) {
+      const env = tempEnv()
+      writeIncumbent(env, { hostKind: 'inproc', livenessProbe: true })
+      warnings.length = 0
+      const own = await acquire(env, inprocOpts(env, { warn, liveness: () => 'unconfirmed', connectProbe: async () => answer }))
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+      expect(warnings.join('\n')).toMatch(/could not be confirmed as that host, and its liveness endpoint does not answer \(\w+\); taking over/)
+    }
+  })
+
+  it('unconfirmed pid + listening false + inproc + livenessProbe + an endpoint that answers: HostAlreadyRunningError naming the run folder', async () => {
+    for (const answer of ['connected', 'eacces', 'timeout'] as const) {
+      const env = tempEnv()
+      writeIncumbent(env, { hostKind: 'inproc', livenessProbe: true })
+      const err = await acquireHostOwnership(inprocOpts(env, { liveness: () => 'unconfirmed', connectProbe: async () => answer })).catch((e: unknown) => e)
+      expect(err, answer).toBeInstanceOf(HostAlreadyRunningError)
+      expect((err as HostAlreadyRunningError).message).toContain(env.runDir)
+      expect((err as HostAlreadyRunningError).message).toContain('If you are sure no OrgAI')
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(OLD)
+      expect(existsSync(join(env.runDir, 'startup.mkdir'))).toBe(false)
+    }
+  })
+
+  it('a confirmed live pid is refused whatever the liveness endpoint says', async () => {
+    const env = tempEnv()
+    writeIncumbent(env, { hostKind: 'inproc', livenessProbe: true })
+    const err = await acquireHostOwnership(inprocOpts(env, { liveness: () => 'same', connectProbe: async () => 'refused' })).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(HostAlreadyRunningError)
+  })
+
+  it('unconfirmed + listening false + inproc WITHOUT livenessProbe keeps the strict rule (an older orgai may be running)', async () => {
+    for (const answer of ['refused', 'enoent'] as const) {
+      const env = tempEnv()
+      writeIncumbent(env, { hostKind: 'inproc' })
+      const err = await acquireHostOwnership(inprocOpts(env, { liveness: () => 'unconfirmed', connectProbe: async () => answer })).catch((e: unknown) => e)
+      expect(err, answer).toBeInstanceOf(HostAlreadyRunningError)
+      expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(OLD)
+    }
+  })
+
+  it('unconfirmed + listening false + desktop is unchanged: refused even with a forged livenessProbe field; the single-instance lock still reclaims it', async () => {
+    for (const forged of [false, true]) {
+      const env = tempEnv()
+      writeIncumbent(env, { hostKind: 'desktop', ...(forged ? { livenessProbe: true } : {}) })
+      const err = await acquireHostOwnership(inprocOpts(env, { liveness: () => 'unconfirmed', connectProbe: async () => 'enoent' })).catch((e: unknown) => e)
+      expect(err, String(forged)).toBeInstanceOf(HostAlreadyRunningError)
+    }
+    const env = tempEnv()
+    writeIncumbent(env, { hostKind: 'desktop' })
+    warnings.length = 0
+    const own = await acquire(env, opts(env, { warn, singleInstanceLockHeld: true, listen: false, liveness: () => 'unconfirmed', connectProbe: async () => 'enoent' }))
+    expect(warnings.join('\n')).toMatch(/single-instance lock; taking over/)
+    expect(readDaemonInfo(env.dataDir)?.hostInstanceId).toBe(own.info.hostInstanceId)
+  })
+
+  it('parseDaemonInfo keeps livenessProbe only as true beside listening: false', () => {
+    const good = { hostInstanceId: '0123456789ab', pid: 42, endpoint: '/x/d.sock', state: 'ready', startedAt: 1, hostKind: 'inproc' }
+    expect(parseDaemonInfo({ ...good, listening: false, livenessProbe: true })).toEqual({ ...good, listening: false, livenessProbe: true })
+    for (const bad of [false, 'true', 1, null, {}]) {
+      expect(parseDaemonInfo({ ...good, listening: false, livenessProbe: bad })).toEqual({ ...good, listening: false })
+    }
+    expect(parseDaemonInfo({ ...good, livenessProbe: true })).toEqual(good)
+    expect(parseDaemonInfo({ ...good, listening: true, livenessProbe: true })).toEqual(good)
   })
 })

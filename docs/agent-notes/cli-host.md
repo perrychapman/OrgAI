@@ -27,6 +27,17 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     publish (D2 fallback). release.yml has three desktop build jobs on two OSes (Windows x64, macOS arm64, macOS x64) and
     no Linux leg: Linux is covered only by verify-npm. The app no longer contains the CLI (standalone spec 5.2); `pack:verify` has no CLI-driven checks.
   - Model (docs/design/cli-standalone-default.md, implemented 2026-11-08): see the first bullet. `orgai` always runs its host in-process (`src/cli/inprocHost.ts`, ownership in `src/main/host/ownership.ts`, one `orgai` per CLI data folder, a second one is refused with exit 6; read-only commands read files beside an owner, `src/cli/client/readOnlyStore.ts`). There is no `--host`, daemon, Node or headless host, no `orgai app`, `terminal-access`, `watch`, `inbox`, `decide` or `attach`, and no launcher or shared host. Cards are answered inside the owning TUI. `ORGAI_SECRET_*` / `--secret-env` rules follow spec 4.1 (Round 6 item 8); `ORGAI_SECRET_*` names are refused as `--from-env` / `--client-secret-from-env` sources (exit 2).
+  - PR 49 (in-memory dispatch, lazy loading, run choices, exec flags; review fixes 2026-11-12). Each item says how it was checked; nothing here was run against a live provider, and no e2e beyond the area scripts listed in the PR 49 fix report.
+    - `orgai exec -q` / `--quiet`: stdout carries only the sanitized final answer, logs go nowhere or to stderr, JSON output is unchanged (exec.test.ts "--quiet ..." cases).
+    - `--output-last-message <file>`: the final answer is written to a temporary file and renamed over the destination (relative to the cwd), never through a link; a failed write fails the command (exec.test.ts; the link case needs symlink privilege and fails with EPERM on a Windows account without it, a test-environment limit).
+    - `exec --model <tier|id>` / `--effort`: resolved against the project connection's catalog and sent as `runs:start` choices, which the host accepts from `inproc` only with `configure` (exec.test.ts tier cases, dispatcherRunChoice.test.ts). `--continue` / `-c` continues the newest continuable work run headless and refuses new-run choices (exec.test.ts, `newestContinuable` in runChains).
+    - Piped stdin beside a prompt argument is fenced between two random `STDIN-<hex>` lines labelled as data (`fencePiped`; exec.test.ts checks a `</stdin>` inside the input cannot close the fence and that a colliding tag is re-rolled).
+    - TUI `/mode`: shows or changes the permission mode; widening a followed live run asks first (`confirm`), narrowing and staging do not. Shift+Tab on the composer chooses a waiting decision; with none it steps a live run's mode narrower only (auto, acceptEdits, default, plan, no wrap; at plan it says to use /mode) or cycles the next run's staged mode (default, acceptEdits, plan; `auto` only through /mode); a Shift+Tab within 750 ms of the tray emptying is ignored (App.shell.test.tsx, runControls.test.ts, workstreamC.controls.test.ts; ink-testing-library with a fake session, no real terminal).
+    - TUI `/copy` copies the last assistant message or its code block (OSC 52 plus the platform tool, `clipboard.ts`); `/save-project` turns an ended Chat (quick) run into a project and follows it; Ctrl+G edits the draft in `$VISUAL` / `$EDITOR` through a private temp file it removes afterwards (workstreamC.controls.test.ts; no real clipboard or editor was driven).
+    - Team files at create / init: there is no terminal flag to adopt a folder's `.orgai` team. `orgai projects create` / `init` never send a digest, print that the changes stay pending (`orgai team files status`), and the host refuses `projects:create` with `teamFiles.digest` from `inproc` and socket clients (projects.test.ts, dispatcherTeamFiles.test.ts). An `--adopt-team-files` flag in the contributed PR was removed in review (cli-parity 3.4 / 7).
+    - A plain TUI continue passes `{ desktop: true }`, not `allowWidening`: stored exec overrides re-clamp to the current project. A continue with its own overrides (a staged `/goal`) keeps `allowWidening` for those fields only: `continuedOverrides` drops carried keys that would widen the project now, except on `resume --exec` and the automatic resume (runManager.startChoice.test.ts "re-clamps", runManagerExec.test.ts, dispatcherRunChoice.test.ts; fake adapters).
+    - `/mode` compares a widening with the run's own mode as well as the mode in force, so a session-only accept-edits grant is not saved as the run's mode without the question; Shift+Tab steps from the run's own mode; an ignored Shift+Tab says so (App.shell.test.tsx).
+    - Crash recovery without a socket: the `listen: false` host binds a liveness-only endpoint (`livenessProbe` in daemon.json); an unconfirmed pid with a dead endpoint is reclaimed, and exit 6 names the run folder to delete when nothing runs (ownership.test.ts, inprocHost.test.ts on Windows with a real named pipe; the posix socket path and the posix shutdown integration suites did not run, and no real crash plus pid reuse was staged). `memoryStreamPair` defaults to a 1 MiB high-water mark; a 5 MiB frame still crosses intact (inprocHost.test.ts).
   - Shutdown (`src/main/host/shutdown.ts` `ShutdownCoordinator`; handoff is gone with the app's host): every exit path (desktop Quit through `desktopQuit.ts` `beforeQuitHandler`, the last window on Windows / Linux, `installShutdownSignals`, the `orgai` in-process cleanup, `host.stop` from the TUI) runs drain (state 'draining', mutations refused `host_draining`, quiesce, `RunManager.stopAll({ reason: 'quit' })` for at most 3 s then `markQuit`), `settleWriters`, `ownership.release()`, exit. At `SHUTDOWN_HARD_LIMIT_MS` (60 s) `killHostDescendants` terminates what is left (POSIX `ps`, Windows CIM; the coordinator's own helpers are never targets). `HostDispatcher.invoke` leases every mutating channel (`mcp:authorize` leases only its final commit, `COMMIT_LEASED_CHANNELS`) and ipc.ts wraps every mutating desktop-only channel the same way (`ipcLeases.test.ts`); quiesce aborts OAuth flows, repository clones, Team assistant / evaluation model calls and `draft:orgChart`. Unit tests and real owner-process integration tests (`shutdown.int`, `inprocShutdown.int`) on macOS; a real Electron quit is not driven.
   - Vault (`src/main/store/`: `secrets.ts` `SecretStore`, `vaultTypes.ts`, `vaultCrypto.ts`, `vaultFile.ts`, `vaultMetadata.ts`,
     `reconcile.ts`, `durableFs.ts`, `unavailableCustodian.ts`, tests `vaultStore.fixture.ts`): `<data>/vault.json`
@@ -81,6 +92,47 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     drive path in definite (self-control) mode on win32 only (reference mode still treats every UNC word as touching). They are text
     checks, a speed bump, not a boundary. The scan-cost test checks linearity (best of 3, 2n under 3x n plus 100 ms), not a wall clock.
     Unit tests and pure-function probes only; never run in a real shell against the real tools or on Windows.
+  - PR 47 (self-control boundaries, outside contributor; fixes from its review, 2026-11-12): the gate also protects each
+    project's team-files approval state (`<data>/projects/<id>/team-files/`, both spellings, project ids re-read on every
+    check; the sibling product's existing project folders are enumerated, a linked or unreadable `projects` folder fails
+    closed at its parent; `src/main/teamFiles/protection.ts`, wired in `bootstrap.ts`). `cliSegmentReadings` reads the
+    text several ways (`SegmentReading`): bash/zsh full grammar (backslash escapes and backslash-newline joins, `#`
+    comments only after a blank or operator, `$'...'` but not `$$'`, here-document words read as bash reads them, quoted
+    bodies dropped and unquoted bodies expanded (a here-document inside backticks, a `$'EOF'` delimiter or a body whose
+    substitution runs past its delimiter leaves the text open), arithmetic `$((...))` / `((...))` / `$[...]`,
+    `$(...)` / `${...}` (nested braces) /
+    backticks nesting with a context stack, backticks ending at the first unescaped backtick, `case` patterns counted
+    only in command position); a fail-closed backstop refuses (as unchecked) a command the tool's shell grammar leaves
+    inside an open quote, substitution, parameter or here-document (`readingLeftOpen`, read before data here-documents
+    are cut; nested `bash -c` / `pwsh -Command` texts too); bash plain (escapes only, no
+    comments, strings or bodies); quotes only (the pre-PR reading); full grammar absorbing every zsh glob group (zsh keeps
+    `orga(i|x y)` one word); PowerShell, always (backtick escapes, block comments, here-strings, smart quotes, `${...}`
+    names holding quotes). Every segment of
+    every reading is checked; a pipe's look-back stays within its own reading; a segment text an earlier reading already
+    checked is skipped. A bracket expression never spans an operator, `${...}` stays one word only with a plain body,
+    zsh `=(...)` is a process substitution, zsh glob qualifier code (`*(e:'...':)`, `*(+cmd)`) is read from the raw text
+    (past 256 texts the command is unchecked), a variable in a program word reads as `*` with three letters of "orgai"
+    kept (and as its `${x:-word}` default or `${x/#/word}` replacement; `$'orgai'` / `$"orgai"` as `orgai`, ANSI-C
+    escapes decoded), `programIndex` reads any number of
+    wrappers, every `-c`-style flag (clusters, `-com`, `//c`, `/r`; option values skipped) and Windows PowerShell's first
+    two positional words nest, as do csh / tcsh / mksh / `busybox`, the CLI scan refuses texts over 256 KB, and an
+    unmatched `)` or unclosed `[` no longer refuses a command. Glob names and path components match through
+    `matchGlobTokens` (a state set, linear), never a RegExp built from `*`. Checked by unit tests only
+    (`selfControlGate.test.ts` "segment splitting gaps (PR 47 review)" with the Reviewer's candidates, "Wave 7 scan cost",
+    `referenceDirectories.test.ts`); never run in a real zsh, bash or PowerShell, and the zsh / PowerShell grammar facts
+    are from memory. This is still a text check: crafted shell syntax gets past it, and neither the union of readings nor
+    the backstop is a guarantee (Reviewer, four rounds; each round found new bypasses, the later ones all also bypass
+    origin/dev). Known open classes (pre-existing on dev, not fixed here): approval state forged by writing into a
+    parent folder (`cp -r <forged>/. <data>/projects/<id>/`; definite mode counts only paths at or under a protected
+    folder and the scanner does not know which word a command writes to); more `case` / reserved-word corner cases in
+    the full grammar; unusual here-document delimiters; `segmentWords` ignores backslashes, so a nested `bash -c` /
+    `eval` text with escaped quotes is misread; cmd's own quoting (`'` literal, `^` escapes) and PowerShell `--%`; wrapper
+    options with values beyond the ones listed in `WRAPPER_VALUE_OPTIONS` / timeout `-s` / `-k` / env `-P`; negated
+    bracket classes in program names and paths are compared after case folding (`/usr/bin/[!S]ecurity` passes; macOS
+    reaches the vault key that way; the Reviewer's suggested fix is to match globs against a case-preserving base name,
+    lowercasing only literal characters, since `binName` lowercases before the class is parsed); a zsh group without `|` (`orga(i)`); the path scan's here-document handling grows
+    faster than linear on many `<<` starts (thousands take seconds). Tracking is private (SECURITY.md), not a public
+    issue.
   - Agent runtimes: `runtime/claudeBinary.ts` `claudeExecutable(env)` is the one resolver (claude.ts runs, probes, completions and
     `anthropicAuth.ts`), evaluated per call: `ORGAI_CLAUDE_PATH` (absolute, existing regular file, not .cmd / .bat / .ps1 / .js /
     .mjs / .cjs; when set it decides), the app.asar.unpacked native package, the SDK per-platform package via `createRequire` from
@@ -90,8 +142,8 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     POSIX `#!` wrapper that maps to no package is used as is, a Windows .cmd / .ps1 is refused), then `@openai/codex-<platform>-<arch>`,
     then a synchronous PATH walk (never the cwd). Hits are classified by content: native binaries used as is, npm shims mapped to the
     vendor binary and never spawned. `checkCodexBinary` runs `--version` (cached by realpath + mtime + size) in
-    `CodexAppServer.start` and the OpenAI probe; outside 0.166.x it refuses ("Codex <v> is not supported; install
-    @openai/codex@0.166.0"), except `ORGAI_CODEX_PATH`, which gets one run warning (a test ties package.json's pin to
+    `CodexAppServer.start` and the OpenAI probe; outside 0.167.x it refuses ("Codex <v> is not supported; install
+    @openai/codex@0.167.0"; the pin moved from 0.166.0 on 2026-11-12), except `ORGAI_CODEX_PATH`, which gets one run warning (a test ties package.json's pin to
     `CODEX_PINNED_VERSION`). Codex is not a dependency of the npm package. The Codex MCP restart creates no app-server after End
     session; `codex --version` / app-server children untrack from `host/shutdown.ts` on 'error' and 'close' as well as 'exit'.
     Unit-tested with fake file systems and fake servers only; no real claude or codex binary was resolved through these paths.
@@ -320,7 +372,16 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     `projects:setFolderConfigTrust` stay `desktop_only`.
   - The CLI starts Node with the inspector signal disabled (`src/cli/inspectorSignal.ts`; `src/cli/bin.ts` is the
     bundle's entry and loads it before the rest of the CLI, which comes in as its own chunk; `npm run cli` also passes
-    `--disable-sigusr1`; `inspectorSignal.test.ts`).
+    `--disable-sigusr1`; `inspectorSignal.test.ts`). PR 47 adds the `#!/usr/bin/env -S node --disable-sigusr1` banner and a
+    startup refusal at the top of `runCli()` (`sigusr1Disabled`: the exact flag in `process.execArgv` or as a whole word in
+    `NODE_OPTIONS` and no `--no-disable-sigusr1` in either, else exit 1 with "refusing to start without Node.js --disable-sigusr1"); e2e scripts and `npm run cli`
+    pass the flag. Checked by `packaging.test.ts` against the built bundle (refused without the flag, runs with it in argv
+    and in NODE_OPTIONS, and through the shebang on POSIX); npm's Windows `.cmd` shim carrying the flag is unverified.
+    The packaged desktop app flips Electron fuses (`electron-builder.yml` `electronFuses`: no `--inspect` arguments,
+    RunAsNode kept for `systemCerts.ts`, `resetAdHocDarwinSignature: true` because flipping fuses breaks the unsigned
+    arm64 macOS binary's ad hoc signature); `packaging.test.ts` checks the exact block. Dev builds (`npm run dev`,
+    `out/`) have no fuses. The packed app was not built or launched for this change; the macOS ad hoc re-signing is
+    unverified (no Mac).
   - Why approving was held: an approval path at the terminal was built and reviewed twice. Both independent reviews
     found that a terminal session cannot be told apart from one an agent drives, so an agent could approve its own change.
     Approving from a terminal needs a confirmation from the operating system that an agent cannot produce, and a record of

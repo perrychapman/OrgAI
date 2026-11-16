@@ -93,18 +93,19 @@ describe('lazy TUI import graph', () => {
       if (seen.has(file)) continue
       seen.add(file)
       const text = readFileSync(resolve(outCli, file), 'utf8')
-      // The bundler marks each bundled module with a `// <path>` line; bare imports would name the package.
-      if (/^\/\/ .*node_modules\/(?:ink|react|react-reconciler|yoga-layout)\//m.test(text)) bad.push(`${file} bundles ink or react`)
-      if (/^import[^;'"]*from\s*"(?:ink|react|react\/[^"]*|react-reconciler)";?$/m.test(text)) bad.push(`${file} imports ink or react`)
-      for (const m of text.matchAll(/^(?:import|export)[^;'"]*?from\s*"\.\/([^"]+)";?$/gm)) stack.push(m[1])
-      for (const m of text.matchAll(/^import\s*"\.\/([^"]+)";?$/gm)) stack.push(m[1])
+      // The bundle is minified (no `// <path>` markers, statements share lines): react and ink leave string literals
+      // behind that survive minification (React's element symbol, ink's host element names), and a bare import names the package.
+      if (/react\.transitional\.element|ink-box/.test(text)) bad.push(`${file} bundles ink or react`)
+      if (/(?:^|[;}])import[^;'"]*?from\s*"(?:ink|react|react\/[^"]*|react-reconciler)"/.test(text)) bad.push(`${file} imports ink or react`)
+      for (const m of text.matchAll(/(?:^|[;}])(?:import|export)[^;'"]*?from\s*"\.\/([^"]+)"/g)) stack.push(m[1])
+      for (const m of text.matchAll(/(?:^|[;}])import\s*"\.\/([^"]+)"/g)) stack.push(m[1])
       // The entry (bin.ts) loads the rest of the CLI with one dynamic import: that chunk counts as loaded at start.
-      if (file === 'orgai.mjs') for (const m of text.matchAll(/\bawait import\("\.\/([^"]+)"\)/g)) stack.push(m[1])
+      if (file === 'orgai.mjs') for (const m of text.matchAll(/\bimport\("\.\/([^"]+)"\)/g)) stack.push(m[1])
     }
     expect(seen.has('tui.mjs')).toBe(false)
     expect(bad).toEqual([])
     // The TUI chunk does carry them (bundled, not external).
-    expect(readFileSync(resolve(outCli, 'tui.mjs'), 'utf8')).toMatch(/^\/\/ .*node_modules\/ink\//m)
+    expect(readFileSync(resolve(outCli, 'tui.mjs'), 'utf8')).toMatch(/react\.transitional\.element/)
   })
 
   it('commands/tui.ts reaches the TUI only through a dynamic import', () => {

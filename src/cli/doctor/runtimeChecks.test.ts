@@ -19,10 +19,10 @@ describe('doctor runtime checks (cli-standalone 6.1, 6.2)', () => {
   it('names the Claude runtime and its source, and Codex with its version and source', async () => {
     const fs = new FakeLookupFs({ '/usr/local/bin/codex': ELF })
     runtimeCheckProbes.codexLookup = () => lookupCodexBinary({ env: { PATH: '/usr/local/bin' }, platform: 'linux', arch: 'x64', fs, resolveModule: () => undefined, bundleDir: '/b' })
-    runtimeCheckProbes.codexCheck = async (binary) => ({ ok: true, binary, version: '0.166.0' })
+    runtimeCheckProbes.codexCheck = async (binary) => ({ ok: true, binary, version: '0.167.0' })
     expect(await run()).toEqual([
       { id: 'claude-runtime', status: 'ok', detail: v("/n/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude (from the Agent SDK's native package)") },
-      { id: 'codex-runtime', status: 'ok', detail: v('Codex 0.166.0 at /usr/local/bin/codex (from PATH)') }
+      { id: 'codex-runtime', status: 'ok', detail: v('Codex 0.167.0 at /usr/local/bin/codex (from PATH)') }
     ])
   })
 
@@ -45,11 +45,11 @@ describe('doctor runtime checks (cli-standalone 6.1, 6.2)', () => {
   it('a Codex OrgAI refuses or only warns about is a warning, with where it came from', async () => {
     const binary = { path: '/x/vendor/bin/codex', source: 'path' as const, via: '/usr/local/bin/codex' }
     runtimeCheckProbes.codexLookup = () => ({ binary })
-    runtimeCheckProbes.codexCheck = async () => ({ ok: false, binary, version: '0.170.0', reason: 'Codex 0.170.0 is not supported; install @openai/codex@0.166.0' })
+    runtimeCheckProbes.codexCheck = async () => ({ ok: false, binary, version: '0.170.0', reason: 'Codex 0.170.0 is not supported; install @openai/codex@0.167.0' })
     expect((await run())[1]).toEqual({
       id: 'codex-runtime',
       status: 'warn',
-      detail: v('/x/vendor/bin/codex (from PATH, through /usr/local/bin/codex): Codex 0.170.0 is not supported; install @openai/codex@0.166.0')
+      detail: v('/x/vendor/bin/codex (from PATH, through /usr/local/bin/codex): Codex 0.170.0 is not supported; install @openai/codex@0.167.0')
     })
     runtimeCheckProbes.codexLookup = () => ({ problem: 'ORGAI_CODEX_PATH must be an absolute path (it is codex).' })
     expect((await run())[1]).toEqual({ id: 'codex-runtime', status: 'warn', detail: v('ORGAI_CODEX_PATH must be an absolute path (it is codex).') })

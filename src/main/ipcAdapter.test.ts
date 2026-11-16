@@ -76,7 +76,7 @@ describe('registerIpc (thin adapter)', () => {
     ['with a kit and repository clones', true],
     ['without either', false]
   ])('registers exactly the dispatcher channels that are not socket-only plus the desktop-only ones (%s)', (_label, withOptional) => {
-    const svc = services(withOptional ? { kit: kit as never, repoClone: repoClone as never, teamFiles: {} as never } : {})
+    const svc = services(withOptional ? { kit: kit as never, repoClone: repoClone as never, teamFiles: {} as never, evolve: {} as never } : {})
     registerIpc(svc)
     const reference = new HostDispatcher({ ...svc, desktop: { openRunWindow: svc.openRunWindow } })
     const desktopOnly = withOptional ? DESKTOP_ONLY_CHANNELS : DESKTOP_ONLY_CHANNELS.filter((c) => !c.startsWith('kit:') && !c.startsWith('teamFiles:') && !REPO_CHANNELS.includes(c))

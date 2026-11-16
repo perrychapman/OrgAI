@@ -23,6 +23,9 @@ export interface InspectorPaneProps extends PaneProps {
   partials: PartialRow[]
   omitted?: number
   showThinking: boolean
+  /** Ctrl+O: full tool commands and output (shared with the main transcript). */
+  detailsExpanded?: boolean
+  onToggleDetails?(): void
   onDecide?(): void
   onDiff?(): void
   onToggleThinking?(): void
@@ -177,7 +180,7 @@ export function InspectorPane(props: InspectorPaneProps) {
     <Box flexDirection="column" width={width} height={height} overflow="hidden">
       <PaneLines width={width} height={Math.min(height, lines.length)} lines={lines} env={env} />
       {
-        <TranscriptPane mode="fullscreen" width={width} height={transcriptH} focused={props.focused} focusTarget="inspector" extraKeys={extraKeys} rows={rows} partials={props.partials} omitted={props.omitted ?? 0} />
+        <TranscriptPane mode="fullscreen" compact detailsExpanded={props.detailsExpanded} onToggleDetails={props.onToggleDetails} width={width} height={transcriptH} focused={props.focused} focusTarget="inspector" extraKeys={extraKeys} rows={rows} partials={props.partials} omitted={props.omitted ?? 0} />
       }
       {hintSegs.length > 0 && height > lines.length + transcriptH ? <PaneLines width={width} height={1} lines={hintSegs} env={env} /> : null}
     </Box>

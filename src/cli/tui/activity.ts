@@ -26,7 +26,7 @@ export function agentActivityLabel(row: { state: AgentState; stateWord: string; 
 }
 
 export interface ActivityTickOptions {
-  /** Decorative motion uses its own cadence, while the default remains the genuine-work spinner cadence. */
+  /** Kept for callers; decorative and work motion share one cadence (TICK_MS). */
   kind?: 'activity' | 'decorative'
 }
 
@@ -45,16 +45,51 @@ export function distinctActivity(activity: string | undefined, stateWord: string
   return normalized(detail) === normalized(stateWord ?? '') ? '' : detail
 }
 
-/** Animate genuine work or explicitly requested decoration, with no timer in inaccessible/static modes. */
-export function useActivityTick(active: boolean, env: TuiEnv, options: ActivityTickOptions = {}): number {
+/** The one animation cadence: every animated component steps on the same 120 ms tick. */
+export const TICK_MS = 120
+
+// One interval for the whole TUI. It exists only while at least one animated subscriber is active and is cleared the
+// moment the last one leaves, so an idle screen has no timer at all.
+const tickSubscribers = new Set<() => void>()
+let tickTimer: ReturnType<typeof setInterval> | undefined
+
+/** Subscribes to the shared tick; the returned function unsubscribes (and stops the interval at zero subscribers). */
+export function subscribeTick(fn: () => void): () => void {
+  tickSubscribers.add(fn)
+  if (tickTimer === undefined) {
+    tickTimer = setInterval(() => {
+      for (const sub of [...tickSubscribers]) sub()
+    }, TICK_MS)
+    // Never keep the process alive for decoration.
+    ;(tickTimer as { unref?: () => void }).unref?.()
+  }
+  return () => {
+    tickSubscribers.delete(fn)
+    if (tickSubscribers.size === 0 && tickTimer !== undefined) {
+      clearInterval(tickTimer)
+      tickTimer = undefined
+    }
+  }
+}
+
+/** How many components are subscribed to the shared tick (tests). */
+export function tickSubscriberCount(): number {
+  return tickSubscribers.size
+}
+
+/** A counter that advances on the shared tick while `active`; 0 and no subscription otherwise. */
+export function useSharedTick(active: boolean): number {
   const [tick, setTick] = useState(0)
-  const kind = options.kind ?? 'activity'
   useEffect(() => {
-    if (!active || !motionEnabled(env)) return undefined
-    const timer = setInterval(() => setTick(t => t + 1), kind === 'decorative' ? 100 : 90)
-    return () => clearInterval(timer)
-  }, [active, env.bufferMode, env.screenReader, env.dumbTerminal, env.reducedMotion, env.color, kind])
+    if (!active) return undefined
+    return subscribeTick(() => setTick((t) => t + 1))
+  }, [active])
   return tick
+}
+
+/** Animate genuine work or explicitly requested decoration, with no subscription in inaccessible/static modes. */
+export function useActivityTick(active: boolean, env: TuiEnv, _options: ActivityTickOptions = {}): number {
+  return useSharedTick(active && motionEnabled(env))
 }
 
 export function elapsedLabel(startedAt: number, now = Date.now()): string {

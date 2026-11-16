@@ -36,27 +36,53 @@ const menu = (id) =>
 /**
  * Arms a watcher in the renderer: when an element matching `selector` gains `attr` (dialog[open], :popover-open), it
  * records the animations running on it and its subtree (CSS transitions included) in the next frame.
+ * `onStart` (the motion-on popover check): a native popover opens without any attribute change, so the first DOM mutation
+ * after the click can be an unrelated one, or React's render after the toggle event, and the frame after it can fall
+ * past the 160 ms transition (macOS CI saw `[]` for a popover that did open). With `onStart` the sample is taken inside
+ * the first transitionrun / animationstart event on the open panel, when the transition is known to exist, so it cannot
+ * be missed or read late. Without such an event within the 4 s limit the last snapshot (possibly empty) is the result.
  */
-const armWatch = (selector, kind) =>
+const armWatch = (selector, kind, { onStart = false } = {}) =>
   page.evaluate(
-    ([sel, k]) => {
+    ([sel, k, start]) => {
       window.__motionSeen = new Promise((resolve) => {
         const isOpen = (el) => (k === 'dialog' ? el.hasAttribute('open') : el.matches(':popover-open'))
-        const capture = (el) =>
-          requestAnimationFrame(() => {
-            const anims = document.getAnimations().filter((a) => {
+        const snapshot = (el) =>
+          document
+            .getAnimations()
+            .filter((a) => {
               const t = a.effect?.target
               return t && (t === el || el.contains(t))
             })
-            resolve(
-              anims.map((a) => ({
-                name: a.animationName ?? a.transitionProperty ?? a.constructor.name,
-                state: a.playState,
-                duration: Number(a.effect?.getComputedTiming?.().duration ?? 0)
-              }))
-            )
-          })
+            .map((a) => ({
+              name: a.animationName ?? a.transitionProperty ?? a.constructor.name,
+              state: a.playState,
+              duration: Number(a.effect?.getComputedTiming?.().duration ?? 0)
+            }))
+        const capture = (el) => requestAnimationFrame(() => resolve(snapshot(el)))
         const find = () => [...document.querySelectorAll(sel)].find(isOpen)
+        if (start) {
+          const onEvent = (e) => {
+            const el = find()
+            if (!el || !(e.target instanceof Node) || !el.contains(e.target)) return
+            const anims = snapshot(el)
+            if (!anims.some((a) => a.state === 'running' && a.duration >= 50)) return
+            done()
+            resolve(anims)
+          }
+          const done = () => {
+            document.removeEventListener('transitionrun', onEvent, true)
+            document.removeEventListener('animationstart', onEvent, true)
+          }
+          document.addEventListener('transitionrun', onEvent, true)
+          document.addEventListener('animationstart', onEvent, true)
+          setTimeout(() => {
+            done()
+            const el = find()
+            resolve(el ? snapshot(el) : null)
+          }, 4000)
+          return
+        }
         const now = find()
         if (now) return capture(now)
         const mo = new MutationObserver(() => {
@@ -73,7 +99,7 @@ const armWatch = (selector, kind) =>
         }, 4000)
       })
     },
-    [selector, kind]
+    [selector, kind, onStart]
   )
 const seen = () => page.evaluate(() => window.__motionSeen)
 const token = (name) => page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim(), name)
@@ -138,7 +164,7 @@ try {
       // Popover: the account popover.
       const pill = page.locator('[data-testid=auth-pill]')
       if (await pill.count()) {
-        await armWatch('[data-testid=account-popover]', 'popover')
+        await armWatch('[data-testid=account-popover]', 'popover', { onStart: true })
         await pill.click()
         const pop = await seen()
         check((pop ?? []).some((a) => a.state === 'running' && a.duration >= 50), `a popover open starts a running transition ${tag}`, JSON.stringify(pop))

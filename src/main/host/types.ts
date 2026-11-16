@@ -31,6 +31,7 @@ import type { QuickRunService } from '../quick/quickRuns'
 import type { RunManager } from '../runtime/runManager'
 import type { ScheduleService } from '../schedules/service'
 import type { AgentImportService } from '../setup/import/importer'
+import type { EvolveService } from '../evolve/service'
 import type { TeamFilesService } from '../teamFiles/service'
 import type { OutputsServiceApi } from '../outputs/api'
 import type { OutputWatcher } from '../outputs/watch'
@@ -110,6 +111,8 @@ export interface HostServices {
   kit?: KitService
   /** Team files (src/main/teamFiles/service.ts). Absent = the teamFiles channels answer 'not available' (older tests). */
   teamFiles?: TeamFilesService
+  /** Team evolution (src/main/evolve/service.ts). Absent = the org:evolve* channels answer 'not available'. */
+  evolve?: EvolveService
   /** The reference service (reference/appReference.ts); app:reference answers with status allowed. Absent = "not available". */
   reference?: { query(q: AppReferenceQuery, opts: { status: boolean }): Promise<AppReferenceResult> }
   /** Run outputs (src/main/outputs/service.ts). Absent = outputs:list answers [], preview 'none', forget / delete reject. */

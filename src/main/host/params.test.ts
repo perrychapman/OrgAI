@@ -206,6 +206,12 @@ const PAYLOADS: Record<string, unknown[]> = {
   'teamFiles:undo': [{ projectId: 'p_abc123' }],
   'teamFiles:commit': [{ projectId: 'p_abc123' }],
   'teamFiles:enable': [{ projectId: 'p_abc123' }],
+  // team evolution
+  'org:evolveAnalyze': [{ projectId: 'p_abc123', runs: 10, goal: 'cost', strategy: 'deterministic', minWaste: 15 }],
+  'org:evolveHistory': [{ projectId: 'p_abc123' }],
+  'org:evolveApply': [{ projectId: 'p_abc123', evalWindowRuns: 3 }],
+  'org:evolveRollback': [{ projectId: 'p_abc123', generationId: 'gen_1' }],
+  'org:evolveAfterRun': [{ runId: 'run_abc123' }],
   // outputs
   'outputs:list': ['p_abc123'],
   'outputs:preview': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],

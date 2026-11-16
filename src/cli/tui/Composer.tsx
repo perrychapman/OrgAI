@@ -1,8 +1,9 @@
 /**
  * The Composer (W4-T4; cli-spec 5.3(1)). While it has focus every character key inserts literal text (y, s, a, n, m,
  * h, x, r, p, l and digits included: decision shortcuts only work in the focused Decision Tray), and a paste is
- * inserted literally at the cursor and never submits. Enter submits the trimmed text; Alt+Enter or Ctrl+J (on terminals
- * that report it) inserts a newline; '/' on an empty buffer opens the slash palette; Shift+Tab leaves for the tray.
+ * inserted literally at the cursor and never submits. Enter submits the trimmed text; Alt+Enter or Ctrl+J inserts a
+ * newline; Up / Down on the first / last line walk the prompt history (the draft stays at its bottom); Alt+B / Alt+F
+ * jump words; Ctrl+G edits the draft in $VISUAL / $EDITOR; '/' on an empty buffer opens the slash palette; Shift+Tab leaves for the tray.
  * Esc is not consumed (the shell interrupts a running turn) and Ctrl+C clears a non-empty buffer, else it is left to
  * the shell (quit). Input arrives through the InputBus only, never Ink's useInput.
  *
@@ -28,9 +29,12 @@ import {
   moveLeft,
   moveRight,
   moveUp,
+  wordLeft,
+  wordRight,
   wrapBuffer,
   type TextBuffer
 } from './input/textBuffer'
+import { DraftStore, EMPTY_HISTORY, historyNext, historyPrev, pushHistory, type PromptHistory } from './input/promptHistory'
 import { textWidth, truncateEnd } from './panes/text'
 import { sanitizeTty } from './sanitizeTty'
 import { asciiOnly, composerSurface, toneColor } from './theme'
@@ -45,7 +49,7 @@ const PROMPT_UNICODE: Record<ComposerMode, string> = { start: '›', send: '›'
 const PROMPT_ASCII: Record<ComposerMode, string> = { start: '>', send: '>', continue: '>', quick: '>', readOnly: '--' }
 
 /** Optional view-only affordances used by the full-screen composer. Kept local so the input contract stays stable. */
-export type ComposerViewProps = ComposerProps & { height?: number; maxHeight?: number; hints?: string; animated?: boolean; working?: boolean; cursorVisible?: boolean; showFooter?: boolean; onDraftChange?(text: string): void }
+export type ComposerViewProps = ComposerProps & { draftKey?: string; onExternalEdit?(draft: string): Promise<string | undefined>; height?: number; maxHeight?: number; hints?: string; animated?: boolean; working?: boolean; cursorVisible?: boolean; showFooter?: boolean; onDraftChange?(text: string): void }
 
 export function promptGlyph(mode: ComposerMode, ascii: boolean): string {
   return (ascii ? PROMPT_ASCII : PROMPT_UNICODE)[mode] ?? '>'
@@ -61,12 +65,18 @@ export function composerReduce(
   e: InputEvent,
   mode: ComposerMode,
   canHelp = false
-): { buffer: TextBuffer; action?: 'submit' | 'palette' | 'leave' | 'help'; submitted?: string } | null {
+): { buffer: TextBuffer; action?: 'submit' | 'palette' | 'leave' | 'help' | 'edit'; submitted?: string } | null {
   if (e.type === 'paste') return { buffer: insertText(b, e.text) }
   switch (e.name) {
     case 'char': {
       const ch = e.ch ?? ''
-      if (e.alt) return null
+      if (e.alt) {
+        // Alt+B / Alt+F: word jumps (Alt+Left / Alt+Right below do the same).
+        if (e.ctrl) return null
+        if (ch === 'b') return { buffer: wordLeft(b) }
+        if (ch === 'f') return { buffer: wordRight(b) }
+        return null
+      }
       if (e.ctrl) {
         switch (ch) {
           case 'a':
@@ -87,6 +97,8 @@ export function composerReduce(
             return { buffer: backspace(b) }
           case 'j':
             return { buffer: insertText(b, '\n') }
+          case 'g':
+            return { buffer: b, action: 'edit' }
           case 'c':
             return b.text === '' ? null : { buffer: EMPTY_BUFFER }
           case 'd':
@@ -112,9 +124,9 @@ export function composerReduce(
     case 'delete':
       return { buffer: deleteForward(b) }
     case 'left':
-      return { buffer: moveLeft(b) }
+      return { buffer: e.alt || e.ctrl ? wordLeft(b) : moveLeft(b) }
     case 'right':
-      return { buffer: moveRight(b) }
+      return { buffer: e.alt || e.ctrl ? wordRight(b) : moveRight(b) }
     case 'home':
       return { buffer: lineHome(b) }
     case 'end':
@@ -144,19 +156,58 @@ export function Composer(props: ComposerViewProps) {
   const [buffer, setBuffer] = useState<TextBuffer>(EMPTY_BUFFER)
   const propsRef = useRef(props)
   propsRef.current = props
+  const history = useRef<PromptHistory>(EMPTY_HISTORY)
+  const drafts = useRef(new DraftStore())
+  const draftKey = props.draftKey ?? ''
+  const lastKey = useRef(draftKey)
+
+  const put = (next: TextBuffer): void => {
+    bufRef.current = next
+    propsRef.current.onDraftChange?.(next.text)
+    setBuffer(next)
+  }
+
+  // A different run: its own draft (saved on the way out, never shared), and history browsing starts over.
+  if (lastKey.current !== draftKey) {
+    drafts.current.save(lastKey.current, bufRef.current.text)
+    lastKey.current = draftKey
+    history.current = { ...history.current, index: -1, draft: '' }
+    const next = drafts.current.load(draftKey)
+    bufRef.current = next
+    if (buffer !== next) setBuffer(next)
+    propsRef.current.onDraftChange?.(next.text)
+  }
 
   useFocusHandler(
     'composer',
     (e) => {
       const p = propsRef.current
-      const r = composerReduce(bufRef.current, e, p.mode, p.onHelp !== undefined)
-      if (!r) return false
-      if (r.buffer !== bufRef.current) {
-        bufRef.current = r.buffer
-        p.onDraftChange?.(r.buffer.text)
-        setBuffer(r.buffer)
+      let r = composerReduce(bufRef.current, e, p.mode, p.onHelp !== undefined)
+      // Up on the first line / Down on the last: the prompt history (the unfinished draft stays at its bottom).
+      if (!r && e.type === 'key' && (e.name === 'up' || e.name === 'down') && !e.alt && !e.ctrl && !e.shift && p.mode !== 'readOnly') {
+        const step = (e.name === 'up' ? historyPrev : historyNext)(history.current, bufRef.current)
+        if (step) {
+          history.current = step.history
+          r = { buffer: step.buffer }
+        }
       }
-      if (r.action === 'submit' && r.submitted) p.onSubmit(r.submitted)
+      if (!r) return false
+      if (r.action === 'edit') {
+        if (!p.onExternalEdit || p.mode === 'readOnly') return false
+        const before = bufRef.current
+        p.onExternalEdit(before.text)
+          .then((text) => {
+            if (text !== undefined && bufRef.current === before) put({ text, cursor: text.length })
+          })
+          .catch(() => undefined)
+        return true
+      }
+      if (r.buffer !== bufRef.current) put(r.buffer)
+      if (r.action === 'submit' && r.submitted) {
+        history.current = pushHistory(history.current, r.submitted)
+        drafts.current.save(lastKey.current, '')
+        p.onSubmit(r.submitted)
+      }
       else if (r.action === 'palette') p.onOpenPalette('/')
       else if (r.action === 'help') p.onHelp?.()
       else if (r.action === 'leave') p.onLeave()

@@ -4,7 +4,7 @@
  * custodian works), so set-secret and the mock OAuth sign-in can be checked end to end. No tokens, no network.
  */
 import { writeProductMarker } from '../../main/store/productMarker'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -35,7 +35,7 @@ describe('orgai mcp against a real inproc host', () => {
   let userDataDir: string
   let projectDir: string
   let project: Project
-  const saved = process.env.ORGAI_MOCK
+  const saved = { mock: process.env.ORGAI_MOCK, claudePath: process.env.ORGAI_CLAUDE_PATH }
 
   async function cli(args: string[], opts: { stdin?: string; env?: NodeJS.ProcessEnv } = {}): Promise<{ code: number; out: string; err: string }> {
     let out = ''
@@ -59,6 +59,9 @@ describe('orgai mcp against a real inproc host', () => {
   beforeAll(async () => {
     process.env.ORGAI_MOCK = '1'
     userDataDir = realpathSync(mkdtempSync(join(tmpdir(), 'orgai-mcp-int-')))
+    // These MCP cases do not exercise provider authentication. Keep the management host's connection probe from
+    // starting an installed Claude CLI with data/auth-cwd as its working directory while this fixture is torn down.
+    process.env.ORGAI_CLAUDE_PATH = join(userDataDir, 'missing-claude-runtime')
     projectDir = join(userDataDir, 'project')
     mkdirSync(projectDir)
     writeProductMarker(userDataDir, 'orgai-cli')
@@ -67,9 +70,13 @@ describe('orgai mcp against a real inproc host', () => {
   }, 60_000)
 
   afterAll(async () => {
-    if (saved === undefined) delete process.env.ORGAI_MOCK
-    else process.env.ORGAI_MOCK = saved
+    const authCwdCreated = existsSync(join(userDataDir, 'data', 'auth-cwd'))
+    if (saved.mock === undefined) delete process.env.ORGAI_MOCK
+    else process.env.ORGAI_MOCK = saved.mock
+    if (saved.claudePath === undefined) delete process.env.ORGAI_CLAUDE_PATH
+    else process.env.ORGAI_CLAUDE_PATH = saved.claudePath
     rmSync(userDataDir, { recursive: true, force: true })
+    expect(authCwdCreated).toBe(false)
   })
 
   it('add a stdio server, list it, set its secret from stdin, disable, enable, remove', async () => {

@@ -20,10 +20,11 @@ import {
   SECRETS_IPC,
   OUTPUTS_IPC,
   TEAM_FILES_IPC,
+  EVOLVE_IPC,
   hostCanOpenWindows
 } from '../../shared/types'
 import type { HostKind, HostRpcError, HostRpcErrorCode, HostScope, HostSubscribeTopic } from '../../shared/types'
-import { CHANNEL_JSON_FIELDS, decodeRequest } from './jsonCodec'
+import { CHANNEL_JSON_FIELDS, EVOLVE_AFTER_RUN_CHANNEL, decodeRequest } from './jsonCodec'
 import { CHANNEL_PARAMS, paramProblem } from './params'
 import { STORES_SECRET, type StoresSecretFn } from './storesSecret'
 
@@ -129,7 +130,8 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'skillLibrary:read', 'capabilities:lastReview', 'maintenance:listWorktrees', 'maintenance:diff', 'templates:list',
     'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention', 'secrets:status',
     'app:reference', 'outputs:list', 'outputs:preview', 'outputs:deletePreview', 'outputs:versions', 'outputs:readSource', 'outputs:thumb', 'outputs:compare', 'outputs:notes', 'outputs:revisions', 'outputs:reviseOptions',
-    'schedules:list', 'schedules:history'
+    'schedules:list', 'schedules:history',
+    'org:evolveAnalyze', 'org:evolveHistory'
   ],
   operate: [
     'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:switchModel', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
@@ -160,7 +162,9 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'teamFiles:status', 'secrets:init', 'secrets:reset',
     'secrets:undelete', 'secrets:confirmDelete', 'outputs:forget', 'outputs:delete', 'outputs:saveEdit', 'outputs:restore', 'outputs:update',
     // Desktop only in the handler (surface check), like runs:setPermissionMode.
-    'schedules:save', 'schedules:remove', 'schedules:setEnabled'
+    'schedules:save', 'schedules:remove', 'schedules:setEnabled',
+    // Team evolution: served by dispatcher.ts for the window and the in-process CLI only; a socket client is refused.
+    'org:evolveApply', 'org:evolveRollback', 'org:evolveAfterRun'
   ],
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
@@ -233,6 +237,9 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   'host dispatcher (teamFiles/service.ts; Wave 6 port of dev)': [
     TEAM_FILES_IPC.teamFilesStatus, TEAM_FILES_IPC.teamFilesListAttention, TEAM_FILES_IPC.teamFilesApprove, TEAM_FILES_IPC.teamFilesReject,
     TEAM_FILES_IPC.teamFilesUndo, TEAM_FILES_IPC.teamFilesCommit, TEAM_FILES_IPC.teamFilesEnable
+  ],
+  'host dispatcher (evolve/service.ts; Pareto-ratchet team evolution)': [
+    EVOLVE_IPC.orgEvolveAnalyze, EVOLVE_IPC.orgEvolveHistory, EVOLVE_IPC.orgEvolveApply, EVOLVE_IPC.orgEvolveRollback, EVOLVE_AFTER_RUN_CHANNEL
   ],
   'host dispatcher outputs handlers (host/outputsHandlers.ts)': [
     OUTPUTS_IPC.outputsList, OUTPUTS_IPC.outputsPreview, OUTPUTS_IPC.outputsForget, OUTPUTS_IPC.outputsDelete, OUTPUTS_IPC.outputsDeletePreview,

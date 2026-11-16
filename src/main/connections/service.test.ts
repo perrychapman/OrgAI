@@ -407,7 +407,7 @@ describe('openai ChatGPT login', () => {
   }
 
   it('the probe checks the Codex runtime for every auth kind: missing or unsupported is an error, never a disconnect (cli-standalone 6.2)', async () => {
-    const refused = { ok: false as const, reason: 'Codex 0.170.0 is not supported; install @openai/codex@0.166.0' }
+    const refused = { ok: false as const, reason: 'Codex 0.170.0 is not supported; install @openai/codex@0.167.0' }
     const { factory } = codexSetup()
     const ctx = setup({ codexFactory: factory, codexRuntime: async () => refused })
     expect(await ctx.service.test('openai')).toMatchObject({ state: 'error', detail: refused.reason })

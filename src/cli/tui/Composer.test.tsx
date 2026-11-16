@@ -310,3 +310,44 @@ describe('Composer', () => {
     t.r.unmount()
   })
 })
+
+describe('Composer history and per-run drafts', () => {
+  it('Up / Down on the first / last line walk submitted prompts and bring the draft back', async () => {
+    const t = setup()
+    await t.send('first\r')
+    await t.send('second\r')
+    await t.send('draft')
+    await t.send('\x1b[A')
+    expect(t.frame()).toContain('second')
+    await t.send('\x1b[A')
+    expect(t.frame()).toContain('first')
+    await t.send('\x1b[B')
+    await t.send('\x1b[B')
+    expect(t.frame()).toContain('draft')
+    expect(t.props.onSubmit).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps one draft per draftKey without leaking across runs', async () => {
+    const bus = new InputBus()
+    const base: ComposerViewProps = { width: 40, focused: true, mode: 'send', placeholder: 'm', onSubmit: vi.fn(), onOpenPalette: vi.fn(), onLeave: vi.fn() }
+    const view = (key: string) => (
+      <TuiEnvContext.Provider value={DEFAULT_TUI_ENV}>
+        <InputBusContext.Provider value={bus}>
+          <Composer {...base} draftKey={key} />
+        </InputBusContext.Provider>
+      </TuiEnvContext.Provider>
+    )
+    const r = render(view('r1'))
+    for (const e of keys('alpha')) bus.dispatch(e, 'composer')
+    await tick()
+    r.rerender(view('r2'))
+    await tick()
+    expect(plain(r.lastFrame())).not.toContain('alpha')
+    for (const e of keys('beta')) bus.dispatch(e, 'composer')
+    await tick()
+    r.rerender(view('r1'))
+    await tick()
+    expect(plain(r.lastFrame())).toContain('alpha')
+    expect(plain(r.lastFrame())).not.toContain('beta')
+  })
+})

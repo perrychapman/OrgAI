@@ -91,7 +91,7 @@ export function buildContext(input: BuildContextInput): CliContext {
   const signalSource = input.signalSource ?? process
   const pid = input.pid ?? process.pid
   // The started in-process host's owner key (memory only): connect() proves ownership of that host with it.
-  let owner: { key: string; hostInstanceId: string } | undefined
+  let owner: { key: string; hostInstanceId: string; handle: InprocHostHandle } | undefined
   const startInproc = reusableInproc((opts) =>
     import('./inprocHost').then((m) =>
       m.startInprocHost({
@@ -105,7 +105,7 @@ export function buildContext(input: BuildContextInput): CliContext {
         ...(quietContexts.has(ctx) ? { quiet: true } : {})
       })
     ).then((h) => {
-      if (h.ownerKey && h.hostInstanceId) owner = { key: h.ownerKey, hostInstanceId: h.hostInstanceId }
+      if (h.ownerKey && h.hostInstanceId) owner = { key: h.ownerKey, hostInstanceId: h.hostInstanceId, handle: h }
       return h
     })
   )
@@ -118,17 +118,20 @@ export function buildContext(input: BuildContextInput): CliContext {
     io,
     version: CLI_VERSION,
     connect: (scopes, opts = {}) =>
-      connectHost({
-        dataDir: paths.dataDir,
-        scopes,
-        clientKind: opts.clientKind ?? 'cli',
-        clientVersion: CLI_VERSION,
-        cwd,
-        pid,
-        ...(opts.waitStartingMs !== undefined ? { waitStartingMs: opts.waitStartingMs } : {}),
-        ...(owner ? { ownerKey: owner.key, ownerHostInstanceId: owner.hostInstanceId } : {}),
-        platform
-      }),
+      // This process's own host serves it in memory (no socket, no handshake); a host not started here is looked up on disk.
+      owner?.handle.connectLocal
+        ? owner.handle.connectLocal(scopes, { clientKind: opts.clientKind ?? 'cli', cwd })
+        : connectHost({
+          dataDir: paths.dataDir,
+          scopes,
+          clientKind: opts.clientKind ?? 'cli',
+          clientVersion: CLI_VERSION,
+          cwd,
+          pid,
+          ...(opts.waitStartingMs !== undefined ? { waitStartingMs: opts.waitStartingMs } : {}),
+          ...(owner ? { ownerKey: owner.key, ownerHostInstanceId: owner.hostInstanceId } : {}),
+          platform
+        }),
     readStore: () => readOnlySnapshot({ dataDir: paths.dataDir }),
     resolveProject: (projects) => resolveProject(projects, { flag: globals.project, cwd, platform }),
     startInproc,

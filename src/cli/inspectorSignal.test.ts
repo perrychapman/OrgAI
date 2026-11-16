@@ -3,7 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { transformSync } from 'esbuild'
+// vite (a declared devDependency) transpiles the module for the child: esbuild is no longer installed, and TypeScript
+// 7's package has no transpileModule.
+import { transformWithOxc } from 'vite'
 import { afterAll, describe, expect, it } from 'vitest'
 import { disableInspectorSignal } from './inspectorSignal'
 
@@ -12,8 +14,8 @@ const dir = mkdtempSync(join(tmpdir(), 'orgai-sig-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 /** A child Node that loads the real module (when `guard`), signals itself and reports whether the inspector opened. */
-function probe(guard: boolean): string {
-  const guardJs = transformSync(readFileSync(join(here, 'inspectorSignal.ts'), 'utf8'), { loader: 'ts', format: 'esm' }).code
+async function probe(guard: boolean): Promise<string> {
+  const guardJs = (await transformWithOxc(readFileSync(join(here, 'inspectorSignal.ts'), 'utf8'), 'inspectorSignal.ts', { lang: 'ts' })).code
   writeFileSync(join(dir, 'guard.mjs'), guardJs)
   writeFileSync(
     join(dir, 'probe.mjs'),
@@ -30,9 +32,16 @@ function probe(guard: boolean): string {
 }
 
 describe('the inspector signal', () => {
-  it.runIf(process.platform !== 'win32')('without the module SIGUSR1 opens the inspector (the probe can tell); with it, it does not', () => {
-    expect(probe(false)).toBe('open')
-    expect(probe(true)).toBe('closed')
+  it.runIf(process.platform !== 'win32')('without the module SIGUSR1 opens the inspector (the probe can tell); with it, it does not', async () => {
+    expect(await probe(false)).toBe('open')
+    expect(await probe(true)).toBe('closed')
+  })
+
+  it('the transpiled guard the probe loads is plain ESM JavaScript that still installs the listener', async () => {
+    const js = (await transformWithOxc(readFileSync(join(here, 'inspectorSignal.ts'), 'utf8'), 'inspectorSignal.ts', { lang: 'ts' })).code
+    expect(js).not.toMatch(/: void|NodeJS\.|Pick</)
+    expect(js).toMatch(/export function disableInspectorSignal/)
+    expect(js).toMatch(/disableInspectorSignal\(\)/)
   })
 
   it('installs one listener, once, and nothing on Windows', () => {

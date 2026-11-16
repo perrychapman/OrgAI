@@ -10,13 +10,18 @@ export interface FlagDef {
   short?: string
   /** string flags only: may repeat; the value is then a string[]. */
   multiple?: boolean
+  /**
+   * string flags only: `--name` alone is allowed and reads as `true`; a value must be attached (`--name=value`), it never
+   * takes the next argument (so `--evolve "do the task"` keeps the prompt positional).
+   */
+  optionalValue?: boolean
 }
 
 export type FlagSpec = Record<string, FlagDef>
 
 /** Parsed values: boolean flags are booleans, multiple string flags string[], other string flags a string. */
 export type FlagValues<S extends FlagSpec> = {
-  [K in keyof S]?: S[K]['type'] extends 'boolean' ? boolean : S[K]['multiple'] extends true ? string[] : string
+  [K in keyof S]?: S[K]['type'] extends 'boolean' ? boolean : S[K]['multiple'] extends true ? string[] : S[K]['optionalValue'] extends true ? string | boolean : string
 }
 
 export interface ParsedFlags<S extends FlagSpec> {
@@ -67,6 +72,11 @@ export function parseFlags<S extends FlagSpec>(args: readonly string[], spec: S)
       continue
     }
     let value = inline
+    if (value === undefined && def.optionalValue) {
+      if (values[name] !== undefined) throw usage(`Option --${name} was given more than once.`)
+      values[name] = true
+      continue
+    }
     if (value === undefined) {
       if (i + 1 >= args.length) throw usage(`Option --${name} needs a value.`)
       value = args[++i]

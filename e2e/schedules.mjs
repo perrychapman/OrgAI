@@ -70,6 +70,28 @@ async function startChat(prompt) {
   await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 })
 }
 
+/**
+ * Wait for the schedules proposal card body to be in the DOM, then open it. In a compact frame (the CI runners' small
+ * windows) the decision card keeps its body collapsed behind a Details toggle, so the body is attached but not visible
+ * until Details is pressed; on a big window there is no toggle. On a miss, log the Chat run's state for the next CI read.
+ */
+async function awaitSchedulesCard(ms = 40_000) {
+  await T('proposal-schedules').waitFor({ state: 'attached', timeout: ms }).catch(() => {})
+  const toggle = page.locator('.decision-card[data-kind=proposal] .decision-details').first()
+  if ((await toggle.count()) > 0 && (await toggle.isVisible()) && (await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click()
+  await T('proposal-schedules').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
+  if (await visible('[data-testid=proposal-schedules]')) return
+  const diag = await page
+    .evaluate(async () => {
+      const tab = document.querySelector('.run-tab[aria-selected=true]')
+      const scheduled = !!document.querySelector('[data-testid=run-meta-scheduled]')
+      const cards = Array.from(document.querySelectorAll('.decision-card')).map((c) => ({ kind: c.getAttribute('data-kind'), expanded: c.getAttribute('data-expanded') }))
+      return { tab: tab?.textContent?.slice(0, 80), scheduledRun: scheduled, cards, main: (document.querySelector('#main-content')?.textContent ?? '').slice(-300) }
+    })
+    .catch((e) => ({ error: String(e) }))
+  log('DIAG schedules card missing:', JSON.stringify(diag))
+}
+
 /** Open the editor, fill the common fields. */
 async function openEditor() {
   await T('schedules-new').click()
@@ -184,16 +206,20 @@ try {
   await rowA.locator('[data-testid=schedule-toggle]').click()
   await until(async () => (await rowA.getAttribute('data-state')) === 'Paused', 10_000)
   check((await rowA.getAttribute('data-state')) === 'Paused', '4 Pause moves the row to Paused', String(await rowA.getAttribute('data-state')))
+  await until(async () => clean(await rowA.locator('[data-testid=schedule-toggle]').innerText()) === 'Resume', 10_000, 100)
   check(clean(await rowA.locator('[data-testid=schedule-toggle]').innerText()) === 'Resume', '4 the action reads Resume while paused')
   check((await list())[0].enabled === false, '4 the stored schedule is disabled')
   await rowA.locator('[data-testid=schedule-toggle]').click()
   await until(async () => (await rowA.getAttribute('data-state')) === 'Active', 10_000)
   check((await rowA.getAttribute('data-state')) === 'Active', '4 Resume moves the row back to Active')
+  await until(async () => clean(await rowA.locator('[data-testid=schedule-toggle]').innerText()) === 'Pause', 10_000, 100)
   check(clean(await rowA.locator('[data-testid=schedule-toggle]').innerText()) === 'Pause', '4 the action reads Pause again')
 
   const beforeNext = clean(await rowA.locator('[data-testid=schedule-next]').innerText())
   await rowA.locator('[data-testid=schedule-edit]').click()
   await T('schedule-editor').waitFor({ timeout: 10_000 })
+  // The editor fills its fields in an effect after it opens: wait for the stored values before reading them.
+  await until(async () => (await T('schedule-field-name').inputValue()) === 'E2E nightly team' && (await T('schedule-field-time').inputValue()) === '09:30', 10_000, 100)
   check((await T('schedule-field-name').inputValue()) === 'E2E nightly team', '4 Edit loads the stored name')
   check((await T('schedule-field-time').inputValue()) === '09:30', '4 Edit loads the stored time')
   await T('schedule-field-time').fill('21:45')
@@ -257,7 +283,7 @@ try {
   await goSchedules()
   const beforeIds = (await list()).map((s) => s.id)
   await startChat('Please watch my pull requests [mock:schedule]')
-  await T('proposal-schedules').waitFor({ timeout: 40_000 }).catch(() => {})
+  await awaitSchedulesCard()
   check(await visible('[data-testid=proposal-schedules]'), '6 the proposal-schedules card shows in the Chat run')
   const card = T('proposal-schedules')
   check((await T('proposal-schedule-item').count()) === 1, '6 the card lists one item')
@@ -281,12 +307,13 @@ try {
   await goSchedules()
   await row('Nightly PR monitor').waitFor({ timeout: 10_000 }).catch(() => {})
   check((await row('Nightly PR monitor').count()) === 1, '6 the Schedules page lists "Nightly PR monitor"')
+  await until(async () => /Added from a chat/.test(await row('Nightly PR monitor').innerText()), 10_000, 100)
   check(/Added from a chat/.test(await row('Nightly PR monitor').innerText().catch(() => '')), '6 the row says it was added from a chat')
 
   // Decline once: nothing saved.
   const countBeforeDecline = (await list()).length
   await startChat('Please watch my pull requests again [mock:schedule]')
-  await T('proposal-schedules').waitFor({ timeout: 40_000 }).catch(() => {})
+  await awaitSchedulesCard()
   check(await visible('[data-testid=proposal-schedules]'), '6 a second card shows for the decline run')
   await T('proposal-decline').click()
   await T('proposal-decline-send').click()
@@ -309,13 +336,14 @@ try {
   check(await visible('[data-testid=schedules-paused-banner]'), '8 the Pause all switch shows the banner')
   check(/All schedules are paused/.test(await T('schedules-paused-banner').innerText().catch(() => '')), '8 the banner explains the pause')
   check((await page.evaluate(() => window.orgai.settings.get())).schedulesPaused === true, '8 the pause is saved in settings (schedulesPaused)')
+  await until(async () => /Held: all schedules paused/.test(await rowA.locator('[data-testid=schedule-next]').innerText()), 10_000, 100)
   check(/Held: all schedules paused/.test(await rowA.locator('[data-testid=schedule-next]').innerText()), '8 rows read "Held: all schedules paused"', clean(await rowA.locator('[data-testid=schedule-next]').innerText()))
   await shot('paused-all')
 
   // A once schedule due 10 s ahead is approved while paused.
   const idsBeforeOnce1 = (await list()).map((s) => s.id)
   await startChat('Remind me once [mock:schedule-once]')
-  await T('proposal-schedules').waitFor({ timeout: 40_000 }).catch(() => {})
+  await awaitSchedulesCard()
   check(/Once on/.test(clean(await T('proposal-schedule-item').innerText().catch(() => ''))), '7 the once proposal says "Once on ..."', clean(await T('proposal-schedule-item').innerText().catch(() => '')))
   await T('proposal-approve').click()
   check(!!(await waitMain('APPROVED: the schedule is saved.')), '7 the mock answers APPROVED for the once schedule')
@@ -350,7 +378,7 @@ try {
   // ---------- 7. Due-time fire ----------
   const idsBeforeOnce2 = (await list()).map((s) => s.id)
   await startChat('Remind me once more [mock:schedule-once]')
-  await T('proposal-schedules').waitFor({ timeout: 40_000 }).catch(() => {})
+  await awaitSchedulesCard()
   await T('proposal-approve').click()
   check(!!(await waitMain('APPROVED: the schedule is saved.')), '7 the second once proposal is approved')
   const once2 = (await list()).find((s) => !idsBeforeOnce2.includes(s.id))

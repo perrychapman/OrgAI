@@ -27,6 +27,14 @@ describe('parseFlags', () => {
     expect(parseFlags(['-n', '3', '-'], spec)).toEqual({ values: { limit: '3' }, positionals: ['-'] })
   })
 
+  it('an optionalValue flag reads true alone, takes only an attached value and never the next argument', () => {
+    const s = { evolve: { type: 'string', optionalValue: true }, quiet: { type: 'boolean' } } as const
+    expect(parseFlags(['--evolve', 'prompt text', '--quiet'], s)).toEqual({ values: { evolve: true, quiet: true }, positionals: ['prompt text'] })
+    expect(parseFlags(['--evolve=hybrid', 'p'], s)).toEqual({ values: { evolve: 'hybrid' }, positionals: ['p'] })
+    expect(() => parseFlags(['--evolve', '--evolve=hybrid'], s)).toThrow(/more than once/)
+    expect(() => parseFlags(['--evolve=a', '--evolve'], s)).toThrow(/more than once/)
+  })
+
   it('stops at -- and keeps dashes after it as positionals', () => {
     const r = parseFlags(['--all', '--', '--limit', '-x'], spec)
     expect(r.values).toEqual({ all: true })

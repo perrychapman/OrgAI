@@ -5,6 +5,7 @@ process.env.ORGAI_MOCK = '1'
 const repo = makeFixtureRepo('model-switch')
 const { app, page, shot } = await launch({ shotPrefix: 'model-switch' })
 let view
+let viewRunId
 const start = async (kind, projectId, marker) => page.evaluate(async ({ kind, projectId, marker }) => {
   if (kind === 'chat') return window.orgai.runs.startQuick({ prompt: marker })
   if (kind === 'mcp') return window.orgai.mcp.startAssist({ scope: 'library', instruction: marker })
@@ -12,7 +13,15 @@ const start = async (kind, projectId, marker) => page.evaluate(async ({ kind, pr
   if (kind === 'setup') return window.orgai.setup.start({ projectId, instruction: marker })
   return window.orgai.runs.start({ projectId, prompt: marker })
 }, { kind, projectId, marker })
+// Apply refuses with "The session state changed" when the run window's own status (data-run-status, what the component
+// compares) differs from main's. The window keeps its own store, so after main reports a state wait until the window shows
+// it too before acting on the picker (CI macOS: both Apply failures showed exactly that refusal).
+async function viewShowsMainStatus() {
+  const status = await page.evaluate(async (id) => (await window.orgai.runs.get(id)).summary.status, viewRunId)
+  await view.waitForFunction((want) => document.querySelector('[data-testid=live-model-switch]')?.dataset.runStatus === want, status, { timeout: 15000 })
+}
 async function open(run) {
+  viewRunId = run.id
   if (view && !view.isClosed()) await view.close()
   await page.evaluate((run) => window.orgai.window.openRun({ projectId: run.projectId, runId: run.id }), run)
   for (let i = 0; i < 40; i++) {
@@ -33,6 +42,7 @@ async function open(run) {
   })
 }
 async function choose(connection) {
+  await viewShowsMainStatus()
   const before = await view.locator('[data-testid=live-model-change]').getAttribute('title')
   const trigger = view.locator('[data-testid=live-model-change]')
   await trigger.focus()

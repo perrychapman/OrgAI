@@ -394,3 +394,19 @@ Read from the installed typings, no smoke run (no tokens spent). Used by `setPer
   grant of a setMode acceptEdits (Claude where `updatedPermissions` carries it, Codex / mock where they set
   `sessionAcceptEdits`), never on allow-once, and drops its own grant when a live change goes to default, plan or
   dontAsk (Claude: the CLI's single session mode is replaced). Unit tests in all three adapters; live unverified.
+
+## SDK 0.3.319 (typings and fake-query tests, 2026-11-12; NOT verified live)
+
+Dependabot PR #53 moved the SDK from 0.3.318 to 0.3.319. Read from the installed `sdk.d.ts` and the release notes; no
+smoke run, no tokens spent.
+
+- New task type `mcp_task`: a backgrounded MCP tool call, which per the release notes appears only with
+  `CLAUDE_AUTO_BACKGROUND_TASKS=1` plus streaming input (OrgAI sets neither the variable nor anything that implies it).
+  `task_type` stays a plain `string` in the typings. claude.ts treats every `task_type` other than `local_agent` (or a
+  missing one) as a non-subagent task: never on the chart, counted in `backgroundTasks` (unless `ambient` or
+  `skip_transcript`) so an MCP restart waits for its `task_notification`. Checked by the fake-query test "SDK 0.3.319
+  mcp_task (and any unknown task type)" in `claude.test.ts`. `task_notification` may now carry `resourceLinks` for an
+  `mcp_task`; OrgAI does not read them.
+- `session_writes_lost` (`SDKSessionWritesLostMessage`) is now sent only when the CLI exits 0, after the last result;
+  "Safe to ignore". Nothing in `src/` reads it (grep), so the change does not affect OrgAI.
+- Live behaviour of both is unverified.

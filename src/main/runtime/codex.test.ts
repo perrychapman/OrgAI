@@ -1051,6 +1051,40 @@ describe('CodexAdapter session', () => {
       expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
     })
 
+    it('0.167.0 humanCommand (and an unknown kind) always gets a one-time card: no rule, no suggestions, never acceptForSession', async () => {
+      const { ctx, s } = await started('default')
+      const human = (command: string, kind = 'humanCommand') => ({ ...cmd(command), kind, reason: 'Managed command policy requires a one-time human approval.' })
+      // A normal command granted for the session becomes a session rule ...
+      ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'session' })
+      expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), kind: 'command' })).toEqual({ decision: 'acceptForSession' })
+      expect(await s.ask('item/commandExecution/requestApproval', cmd('npm test -- --watch'))).toEqual({ decision: 'accept' })
+      expect(ctx.requestPermission).toHaveBeenCalledTimes(1)
+      // ... which never answers a managed checkpoint: it is asked, with no suggestions, and a session grant accepts once.
+      ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'session' })
+      expect(await s.ask('item/commandExecution/requestApproval', human('npm test'))).toEqual({ decision: 'accept' })
+      expect(ctx.requestPermission).toHaveBeenCalledTimes(2)
+      const card = (ctx.requestPermission as any).mock.calls[1][0]
+      expect(card).toMatchObject({ toolName: 'Bash', input: { command: 'npm test' } })
+      expect(card.suggestions).toBeUndefined()
+      // The grant did not become a rule: the same checkpoint asks again, and a deny declines.
+      ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'deny', message: 'no' })
+      expect(await s.ask('item/commandExecution/requestApproval', human('npm test'))).toEqual({ decision: 'decline' })
+      expect(ctx.requestPermission).toHaveBeenCalledTimes(3)
+      // An unknown future kind fails closed the same way.
+      ;(ctx.requestPermission as any).mockResolvedValueOnce({ behavior: 'allow', scope: 'session' })
+      expect(await s.ask('item/commandExecution/requestApproval', human('npm test', 'somethingNew'))).toEqual({ decision: 'accept' })
+      expect(ctx.requestPermission).toHaveBeenCalledTimes(4)
+      // writeStdin keeps the normal path (the session rule still covers it).
+      expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('npm test'), kind: 'writeStdin' })).toEqual({ decision: 'accept' })
+      expect(ctx.requestPermission).toHaveBeenCalledTimes(4)
+    })
+
+    it('a humanCommand still meets the deny gates first: dontAsk declines it without a card', async () => {
+      const { ctx, s } = await started('dontAsk')
+      expect(await s.ask('item/commandExecution/requestApproval', { ...cmd('ls'), kind: 'humanCommand' })).toEqual({ decision: 'decline' })
+      expect(ctx.requestPermission).not.toHaveBeenCalled()
+    })
+
     it('declines without asking in dontAsk mode', async () => {
       const { ctx, s } = await started('dontAsk')
       expect(await s.ask('item/commandExecution/requestApproval', cmd('ls'))).toEqual({ decision: 'decline' })

@@ -604,3 +604,18 @@ describe('RunStore exec fields (cli-spec Wave 0)', () => {
     }
   })
 })
+
+describe('RunStore atomic renames', () => {
+  it('goes through renameSyncRetry for the index and record writes', async () => {
+    const retry = await import('../host/fsRetry')
+    const spy = vi.spyOn(retry, 'renameSyncRetry')
+    try {
+      const s = new RunStore(dataDir)
+      s.upsert(run('r1'))
+      s.saveRecord(record(run('r1')))
+      expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})

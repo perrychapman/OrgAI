@@ -38,19 +38,40 @@ export function Shimmer({ text, active = true, phase, monochrome = true }: Shimm
   const resolvedPhase = motionEnabled(env) ? phase ?? tick : 0
   if (!motionEnabled(env)) return <Text>{text}</Text>
   const palette = terminalPalette(env)
-  const parts = graphemes(text)
   return (
     <Text>
-      {parts.map((part, i) => {
-        const shade = shimmerColor(i, resolvedPhase, parts.length)
-        // Explicit foregrounds keep both ends of the neutral sweep readable in either theme.
-        const color = monochrome ? (shade === SHIMMER_RAMP[3] ? palette.secondary : palette.primary) : shade
-        return <Text key={`${i}:${part}`} color={color} bold={shade !== SHIMMER_RAMP[3]}>
-          {part}
+      {shimmerSpans(text, resolvedPhase, monochrome, palette).map((span, i) => (
+        <Text key={i} color={span.color} bold={span.bold}>
+          {span.text}
         </Text>
-      })}
+      ))}
     </Text>
   )
+}
+
+export interface ShimmerSpan {
+  text: string
+  color: string
+  bold: boolean
+}
+
+/**
+ * The shimmer as runs of contiguous characters with identical color and weight (a handful of Yoga nodes, not one per
+ * grapheme), the way MotionRule groups its band.
+ */
+export function shimmerSpans(text: string, phase: number, monochrome: boolean, palette: { primary: string; secondary: string }): ShimmerSpan[] {
+  const parts = graphemes(text)
+  const spans: ShimmerSpan[] = []
+  parts.forEach((part, i) => {
+    const shade = shimmerColor(i, phase, parts.length)
+    // Explicit foregrounds keep both ends of the neutral sweep readable in either theme.
+    const color = monochrome ? (shade === SHIMMER_RAMP[3] ? palette.secondary : palette.primary) : shade
+    const bold = shade !== SHIMMER_RAMP[3]
+    const last = spans.at(-1)
+    if (last && last.color === color && last.bold === bold) last.text += part
+    else spans.push({ text: part, color, bold })
+  })
+  return spans
 }
 
 export interface SpinnerProps {

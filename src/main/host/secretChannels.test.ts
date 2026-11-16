@@ -259,6 +259,9 @@ const COVERED_ELSEWHERE: Record<string, string> = {
 const NEVER_WRITES_SECRETS: Record<string, string> = {
   'connections:removeProxy': "removes the proxy and deletes its key (a removal's delete never prepares)",
   'teamFiles:status': 'writes the project folder\'s team files only, no secrets',
+  'org:evolveApply': "rewrites roles and skills in the project record and the evolution ledger, no secrets",
+  'org:evolveRollback': "restores the project's roles and skills from the evolution ledger, no secrets",
+  'org:evolveAfterRun': "awaits the post-run evolve pass of a run; the pass may rewrite roles and skills like org:evolveApply, no secrets",
   'outputs:forget': 'removes an output index entry in the project data folder only, no secrets',
   'outputs:delete': 'deletes an output file and its index entry, versions and notes, no secrets',
   'outputs:saveEdit': 'writes an output file and its stored version in the project and data folders, no secrets',

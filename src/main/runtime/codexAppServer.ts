@@ -12,7 +12,7 @@ import { StreamingSecretRedactor } from './streamRedactor'
  * limits). Vendor protocol shapes beyond the envelope live in codexProtocol.ts.
  *
  * Wire format checked against `codex app-server generate-json-schema` / `generate-ts --experimental` of
- * @openai/codex 0.166.0 (token-free): requests are { id, method, params }, responses { id, result } or
+ * @openai/codex 0.166.0, re-diffed for 0.167.0 (token-free): requests are { id, method, params }, responses { id, result } or
  * { id, error: { code, message, data? } }, notifications { method, params }; the "jsonrpc" field is not
  * required and is not sent. The client sends `initialize` and then the `initialized` notification.
  */
