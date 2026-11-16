@@ -12,7 +12,7 @@ const MODEL_COST_TITLE = 'Model cost per role is not recorded'
 const roleKey =(r: UsageOverviewRole): string => r.roleId ?? r.roleSlug
 const idOf = (r: UsageOverviewRole): string => `${r.projectId}\u0000${roleKey(r)}`
 
-export default function RolesPanel({ data, filters, onNarrow }: UsagePanelProps): ReactElement {
+export default function RolesPanel({ data, filters, onNarrow, announce, embedded }: UsagePanelProps & { embedded?: boolean }): ReactElement {
   const wide = useWidePage()
   const limit = wide ? 7 : 5
   const [showAll, setShowAll] = useState(false)
@@ -34,7 +34,7 @@ export default function RolesPanel({ data, filters, onNarrow }: UsagePanelProps)
     sub: oneProject ? undefined : r.projectName,
     fraction: r.costUsd === null ? 0 : barFraction(r.costUsd, maxCost),
     state: r.costUsd === null ? 'unknown' : r.costUnknownRuns > 0 ? 'partial' : 'known',
-    fill: 'var(--text-secondary)',
+    fill: 'var(--chart-other)',
     cost: rollupCost(r),
     costTitle: filters.model ? MODEL_COST_TITLE : undefined,
     detail: `${formatTokens(tokenSum(r.tokens))} tokens`,
@@ -54,17 +54,23 @@ export default function RolesPanel({ data, filters, onNarrow }: UsagePanelProps)
   const rows = ranked.map((r) => ({
     key: idOf(r),
     data: { project: r.projectId, role: roleKey(r) },
-    cells: [r.roleName, r.projectName, r.runs, r.agents, formatTokens(tokenSum(r.tokens)), <CostText key="c" value={rollupCost(r)} title={filters.model ? MODEL_COST_TITLE : undefined} />, r.retries]
+    cells: [r.roleName, r.projectName, r.runs, r.agents, formatTokens(tokenSum(r.tokens)), <CostText key="c" value={rollupCost(r)} title={filters.model ? MODEL_COST_TITLE : undefined} />, r.retries],
+    sort: [r.roleName, r.projectName, r.runs, r.agents, tokenSum(r.tokens), r.costUsd, r.retries]
   }))
 
+  const Root = embedded ? 'div' : 'section'
   return (
-    <section className="usage-panel" aria-labelledby="usage-roles-h" data-testid="usage-roles">
-      <div className="usage-panel-head">
-        <h2 id="usage-roles-h" tabIndex={-1}>
-          By role
-        </h2>
+    <Root className={embedded ? 'usage-panel-embedded' : 'usage-panel'} {...(embedded ? {} : { 'aria-labelledby': 'usage-roles-h' })} data-testid="usage-roles">
+      {embedded ? (
         <p className="usage-panel-summary">{summary}</p>
-      </div>
+      ) : (
+        <div className="usage-panel-head">
+          <h2 id="usage-roles-h" tabIndex={-1}>
+            By role
+          </h2>
+          <p className="usage-panel-summary">{summary}</p>
+        </div>
+      )}
       {items.length > 0 ? (
         <RankedBars
           label={filters.model ? 'Roles that used this model, by tokens' : 'Roles by estimated cost'}
@@ -97,7 +103,8 @@ export default function RolesPanel({ data, filters, onNarrow }: UsagePanelProps)
         ]}
         rows={rows}
         empty="No runs in this period."
+        announce={announce}
       />
-    </section>
+    </Root>
   )
 }
