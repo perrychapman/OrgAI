@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
+import type { SortValue } from '../../lib/usageDashboard'
 import '../../styles/usage-charts.css'
 
 export interface ChartColumn {
@@ -15,6 +16,11 @@ export interface ChartRow {
   cells: ReactNode[]
   /** Plain data attributes for tests and styling. */
   data?: Record<string, string>
+  /**
+   * One sort key per column (lib/usageDashboard.ts SortValue: number, string, or null for unknown which sorts last).
+   * When the rows carry these, the column headers become sort buttons. Dashboard increment 2.
+   */
+  sort?: SortValue[]
 }
 
 /**
