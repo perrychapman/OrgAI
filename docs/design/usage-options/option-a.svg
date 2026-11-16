@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">
+  <title>Option A: tidy single page, 1600x1000 wireframe</title>
+  <desc>Neutral wireframe. Sidebar, topbar, one-row filter bar with inline chips, KPI band with sparklines and deltas, hero spend chart beside one tabbed breakdown card, efficiency strip, runs worth a look, footer disclosures.</desc>
+  <rect width="1600" height="1000" fill="#ffffff"/>
+  <!-- sidebar -->
+  <rect x="0" y="0" width="232" height="1000" fill="#ececec" stroke="#bdbdbd"/>
+  <text x="16" y="30" fill="#666">Sidebar (232 px)</text>
+  <rect x="12" y="80" width="208" height="30" rx="6" fill="#d8d8d8"/><text x="24" y="100" fill="#444">Usage (current)</text>
+  <!-- topbar -->
+  <rect x="232" y="0" width="1368" height="48" fill="#f6f6f6" stroke="#d0d0d0"/>
+  <text x="252" y="30" font-size="18" font-weight="600" fill="#333">Usage</text>
+  <text x="1150" y="30" fill="#777">Updated 14:02</text>
+  <rect x="1270" y="10" width="140" height="28" rx="6" fill="#fff" stroke="#999"/><text x="1288" y="29" fill="#444">Copy as CSV</text>
+  <rect x="1424" y="10" width="150" height="28" rx="6" fill="#fff" stroke="#999"/><text x="1442" y="29" fill="#444">Save CSV...</text>
+  <!-- filter bar -->
+  <rect x="232" y="48" width="1368" height="52" fill="#fafafa" stroke="#d0d0d0"/>
+  <text x="252" y="62" font-size="11" fill="#888">Region 1: sticky filter bar, one row. Scope line moves into it.</text>
+  <rect x="252" y="68" width="330" height="26" rx="6" fill="#fff" stroke="#999"/><text x="264" y="86" fill="#444">7d | 30d | This month | Last month | Months</text>
+  <rect x="596" y="68" width="150" height="26" rx="6" fill="#fff" stroke="#999"/><text x="608" y="86" fill="#444">Day | Week | Month</text>
+  <rect x="760" y="68" width="120" height="26" rx="6" fill="#fff" stroke="#999"/><text x="772" y="86" fill="#444">All projects</text>
+  <rect x="890" y="68" width="100" height="26" rx="6" fill="#fff" stroke="#999"/><text x="902" y="86" fill="#444">All kinds</text>
+  <rect x="1000" y="68" width="130" height="26" rx="6" fill="#fff" stroke="#999"/><text x="1012" y="86" fill="#444">All connections</text>
+  <text x="1150" y="86" fill="#666">6 Oct to 5 Nov, 212 runs</text>
+  <!-- chips line (only when active) -->
+  <rect x="252" y="108" width="120" height="22" rx="11" fill="#e4e4e4"/><text x="266" y="123" font-size="12" fill="#444">Project: Billing  x</text>
+  <text x="392" y="123" font-size="12" fill="#777">Clear all  (row exists only when a filter is active; no empty gap)</text>
+
+  <!-- KPI band -->
+  <text x="252" y="156" font-size="11" fill="#888">Region 2: KPI band. No boxes: five columns split by hairlines. Each = label, value, delta text + arrow glyph, 14-point sparkline.</text>
+  <rect x="252" y="164" width="1328" height="112" fill="#ffffff" stroke="#d0d0d0"/>
+  <g fill="#333">
+    <text x="272" y="188" fill="#666">Estimated cost</text><text x="272" y="222" font-size="26" font-weight="600">$412.30+</text><text x="272" y="244" font-size="12" fill="#666">up 12% on previous 30 days</text><text x="272" y="262" font-size="11" fill="#777">from 208 of 212 runs · 4 have no price</text>
+    <text x="548" y="188" fill="#666">Runs</text><text x="548" y="222" font-size="26" font-weight="600">212</text><text x="548" y="244" font-size="12" fill="#666">down 4%</text>
+    <text x="824" y="188" fill="#666">Cost per run</text><text x="824" y="222" font-size="26" font-weight="600">$1.94</text><text x="824" y="244" font-size="12" fill="#666">up 17%</text>
+    <text x="1100" y="188" fill="#666">Cache hit</text><text x="1100" y="222" font-size="26" font-weight="600">64%</text><text x="1100" y="244" font-size="12" fill="#666">same as before</text>
+    <text x="1376" y="188" fill="#666">Wall time</text><text x="1376" y="222" font-size="26" font-weight="600">38 h</text><text x="1376" y="244" font-size="12" fill="#666">up 3%</text>
+  </g>
+  <g stroke="#d9d9d9"><line x1="528" y1="176" x2="528" y2="266"/><line x1="804" y1="176" x2="804" y2="266"/><line x1="1080" y1="176" x2="1080" y2="266"/><line x1="1356" y1="176" x2="1356" y2="266"/></g>
+  <g fill="none" stroke="#8a8a8a" stroke-width="1.5">
+    <polyline points="430,236 442,230 454,234 466,222 478,226 490,214 502,218"/>
+    <polyline points="706,232 718,226 730,230 742,224 754,228 766,222 778,226"/>
+    <polyline points="982,224 994,230 1006,220 1018,226 1030,218 1042,224 1054,216"/>
+    <polyline points="1258,228 1270,226 1282,228 1294,224 1306,226 1318,224 1330,226"/>
+    <polyline points="1534,232 1546,226 1558,230 1570,222"/>
+  </g>
+  <text x="430" y="256" font-size="10" fill="#999">sparkline: per-bucket, same data as the hero chart</text>
+
+  <!-- hero spend chart -->
+  <rect x="252" y="296" width="900" height="360" fill="#fafafa" stroke="#d0d0d0"/>
+  <text x="268" y="320" font-size="15" font-weight="600" fill="#333">Spend over time (hero)</text>
+  <text x="268" y="338" font-size="12" fill="#666">Billing is 61% of this period's estimated cost.</text>
+  <rect x="860" y="304" width="130" height="26" rx="6" fill="#fff" stroke="#999"/><text x="872" y="322" fill="#444">Cost | Tokens</text>
+  <rect x="1000" y="304" width="140" height="26" rx="6" fill="#fff" stroke="#999"/><text x="1012" y="322" fill="#444">vs previous: off</text>
+  <g>
+    <line x1="310" y1="360" x2="310" y2="600" stroke="#bbb"/><line x1="310" y1="600" x2="1130" y2="600" stroke="#bbb"/>
+    <g stroke="#e6e6e6"><line x1="310" y1="420" x2="1130" y2="420"/><line x1="310" y1="480" x2="1130" y2="480"/><line x1="310" y1="540" x2="1130" y2="540"/></g>
+    <g fill="#9a9a9a"><rect x="330" y="540" width="14" height="60"/><rect x="360" y="500" width="14" height="100"/><rect x="390" y="520" width="14" height="80"/><rect x="420" y="470" width="14" height="130"/><rect x="450" y="490" width="14" height="110"/><rect x="480" y="440" width="14" height="160"/><rect x="510" y="470" width="14" height="130"/><rect x="540" y="500" width="14" height="100"/><rect x="570" y="420" width="14" height="180"/><rect x="600" y="450" width="14" height="150"/><rect x="630" y="400" width="14" height="200"/><rect x="660" y="430" width="14" height="170"/><rect x="690" y="470" width="14" height="130"/><rect x="720" y="520" width="14" height="80"/><rect x="750" y="480" width="14" height="120"/><rect x="780" y="440" width="14" height="160"/><rect x="810" y="410" width="14" height="190"/><rect x="840" y="460" width="14" height="140"/><rect x="870" y="500" width="14" height="100"/><rect x="900" y="480" width="14" height="120"/></g>
+    <g fill="#c8c8c8"><rect x="330" y="560" width="14" height="40"/><rect x="570" y="470" width="14" height="130"/><rect x="630" y="450" width="14" height="150"/><rect x="810" y="470" width="14" height="130"/></g>
+    <rect x="630" y="400" width="14" height="200" fill="none" stroke="#333" stroke-width="2"/>
+    <text x="1060" y="372" font-size="11" fill="#777">hatched stub = unknown</text>
+    <rect x="1006" y="360" width="46" height="16" fill="none" stroke="#999" stroke-dasharray="3 2"/>
+  </g>
+  <text x="268" y="628" font-size="12" fill="#444">Readout line (fixed height): Tue 3 Nov: $9.80, 14 runs. Billing $6.10, Docs $3.70.</text>
+  <text x="268" y="646" font-size="11" fill="#888">Legend becomes a one-line row under the plot, rank order, click = narrow. Plot + legend share one card.</text>
+
+  <!-- breakdown tabbed card -->
+  <rect x="1172" y="296" width="408" height="360" fill="#fafafa" stroke="#d0d0d0"/>
+  <text x="1188" y="320" font-size="15" font-weight="600" fill="#333">Where it went</text>
+  <rect x="1188" y="332" width="376" height="26" rx="6" fill="#fff" stroke="#999"/><text x="1200" y="350" fill="#444">Project | Model | Role | Connection</text>
+  <g fill="#333" font-size="12">
+    <text x="1188" y="388">Billing</text><rect x="1188" y="394" width="240" height="8" fill="#9a9a9a"/><text x="1500" y="388" text-anchor="end">$252.10</text><text x="1572" y="388" text-anchor="end" fill="#777">61%</text>
+    <text x="1188" y="424">Docs</text><rect x="1188" y="430" width="120" height="8" fill="#9a9a9a"/><text x="1500" y="424" text-anchor="end">$98.40</text><text x="1572" y="424" text-anchor="end" fill="#777">24%</text>
+    <text x="1188" y="460">Chat</text><rect x="1188" y="466" width="60" height="8" fill="#9a9a9a"/><text x="1500" y="460" text-anchor="end">$31.00</text><text x="1572" y="460" text-anchor="end" fill="#777">8%</text>
+    <text x="1188" y="496">Website</text><rect x="1188" y="502" width="34" height="8" fill="#9a9a9a"/><text x="1500" y="496" text-anchor="end">$18.20</text><text x="1572" y="496" text-anchor="end" fill="#777">4%</text>
+    <text x="1188" y="532">Other (3)</text><rect x="1188" y="538" width="12" height="8" fill="#c8c8c8"/><text x="1500" y="532" text-anchor="end">$12.60+</text>
+  </g>
+  <text x="1188" y="590" font-size="12" fill="#444">Show all 12 (opens table)</text>
+  <text x="1188" y="612" font-size="11" fill="#888">One card replaces the three side-by-side panels.</text>
+  <text x="1188" y="630" font-size="11" fill="#888">Row click = narrow; More = open project / History.</text>
+
+  <!-- efficiency strip -->
+  <text x="252" y="684" font-size="11" fill="#888">Region 5: Efficiency as one compact strip (rails + numbers), staffing inside a disclosure</text>
+  <rect x="252" y="692" width="1328" height="96" fill="#fafafa" stroke="#d0d0d0"/>
+  <text x="268" y="714" font-size="15" font-weight="600" fill="#333">Efficiency</text><text x="360" y="714" fill="#666">Cache hit is 41%, lower than the 70% your other projects reach.</text>
+  <g fill="#555" font-size="12">
+    <text x="268" y="742">Cache hit 64%</text><rect x="268" y="750" width="130" height="6" fill="#ddd"/><rect x="268" y="750" width="83" height="6" fill="#888"/>
+    <text x="448" y="742">Retries 12</text><rect x="448" y="750" width="130" height="6" fill="#ddd"/><rect x="448" y="750" width="20" height="6" fill="#888"/>
+    <text x="628" y="742">No result 7%</text><rect x="628" y="750" width="130" height="6" fill="#ddd"/><rect x="628" y="750" width="9" height="6" fill="#888"/>
+    <text x="808" y="742">Waiting 18% · idle 7%</text><rect x="808" y="750" width="130" height="6" fill="#ddd"/><rect x="808" y="750" width="32" height="6" fill="#888"/>
+    <text x="988" y="742">Team vs Ask per run</text><text x="988" y="764" fill="#888">$2.40 vs $0.60</text>
+    <text x="1188" y="742" fill="#444">Staffing and tiers (disclosure)</text><text x="1188" y="764" fill="#888">More signals (disclosure)</text>
+  </g>
+
+  <!-- runs worth a look -->
+  <rect x="252" y="800" width="1328" height="150" fill="#fafafa" stroke="#d0d0d0"/>
+  <text x="268" y="822" font-size="15" font-weight="600" fill="#333">Runs worth a look</text>
+  <text x="1160" y="822" fill="#444">Sort by: Cost with no result</text>
+  <g fill="#555" font-size="12"><text x="268" y="850">Run</text><text x="600" y="850">Why listed</text><text x="1100" y="850">When</text><text x="1260" y="850">Cost</text><text x="1500" y="850">Status</text></g>
+  <line x1="268" y1="856" x2="1564" y2="856" stroke="#ddd"/>
+  <g fill="#666" font-size="12"><text x="268" y="878">Refactor billing exports</text><text x="600" y="878">implementer-2 spent 820 tokens, no result</text><text x="1100" y="878">3 Nov</text><text x="1260" y="878">$3.10</text>
+  <text x="268" y="902">Docs sweep</text><text x="600" y="902">Retried 4 times</text><text x="1100" y="902">2 Nov</text><text x="1260" y="902">$1.88</text></g>
+  <line x1="268" y1="912" x2="1564" y2="912" stroke="#eee"/>
+  <text x="268" y="936" font-size="12" fill="#444">Show 8 more   |   All runs, 212 (collapsed)   |   What these terms mean (collapsed)</text>
+  <text x="252" y="980" font-size="11" fill="#888">Cutline: first view (no scroll) at 1600x1000 ends near y 800, so hero chart, breakdown and KPI band are all above the fold.</text>
+</svg>
