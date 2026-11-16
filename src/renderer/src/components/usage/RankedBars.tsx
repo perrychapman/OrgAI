@@ -59,6 +59,8 @@ export interface RankedItem {
   selected?: boolean
   /** Extra sr-only text inside the button. */
   srText?: string
+  /** The series key this row stands for (compared with `highlighted`); defaults to `id`. */
+  seriesKey?: string
 }
 
 /** A horizontal bar in a row: solid, solid + hatched end (partial), or a dashed stub (unknown). */
@@ -95,7 +97,9 @@ export function RankedBars({
   rowTestId,
   onActivate,
   onMenu,
-  moreLabel
+  moreLabel,
+  onHover,
+  highlighted
 }: {
   label: string
   items: RankedItem[]
@@ -104,6 +108,10 @@ export function RankedBars({
   /** Open the row menu on the row's button (Right, Shift+F10, the Menu key, or the More button). */
   onMenu?: (item: RankedItem, anchor: HTMLElement) => void
   moreLabel?: (item: RankedItem) => string
+  /** Pointer enter or focus on a row passes its item; leaving the list (pointer or focus) passes null. Never announced. */
+  onHover?: (item: RankedItem | null) => void
+  /** A series key; rows whose `seriesKey` (or id) equals it get data-highlight. */
+  highlighted?: string | null
 }): ReactElement {
   const refs = useRef(new Map<string, HTMLButtonElement>())
   const [active, setActive] = useState<string | null>(null)
@@ -130,7 +138,18 @@ export function RankedBars({
   }
 
   return (
-    <ul className="uc-rank" aria-label={label}>
+    <ul
+      className="uc-rank"
+      aria-label={label}
+      onPointerLeave={onHover ? () => onHover(null) : undefined}
+      onBlur={
+        onHover
+          ? (e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onHover(null)
+            }
+          : undefined
+      }
+    >
       {items.map((item, i) => (
         <li
           key={item.id}
@@ -138,6 +157,8 @@ export function RankedBars({
           data-testid={rowTestId}
           data-state={item.state}
           data-selected={item.selected ? 'true' : undefined}
+          data-highlight={highlighted != null && (item.seriesKey ?? item.id) === highlighted ? 'true' : undefined}
+          onPointerEnter={onHover ? () => onHover(item) : undefined}
           {...Object.fromEntries(Object.entries(item.data).map(([k, v]) => [`data-${k}`, v]))}
         >
           <button
@@ -148,7 +169,10 @@ export function RankedBars({
               if (el) refs.current.set(item.id, el)
               else refs.current.delete(item.id)
             }}
-            onFocus={() => setActive(item.id)}
+            onFocus={() => {
+              setActive(item.id)
+              onHover?.(item)
+            }}
             onClick={() => onActivate(item)}
             onKeyDown={(e) => onKey(e, item, i)}
             onContextMenu={(e) => {
