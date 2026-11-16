@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">
+  <title>Option B: tabbed report, 1600x1000 wireframe (Breakdown tab shown)</title>
+  <desc>Neutral wireframe. Shared header and filter bar, tab strip Overview / Spend / Breakdown / Efficiency / Runs, Breakdown tab showing one hero chart and one table.</desc>
+  <rect width="1600" height="1000" fill="#ffffff"/>
+  <rect x="0" y="0" width="232" height="1000" fill="#ececec" stroke="#bdbdbd"/>
+  <text x="16" y="30" fill="#666">Sidebar (232 px)</text>
+  <rect x="12" y="80" width="208" height="30" rx="6" fill="#d8d8d8"/><text x="24" y="100" fill="#444">Usage (current)</text>
+  <rect x="232" y="0" width="1368" height="48" fill="#f6f6f6" stroke="#d0d0d0"/>
+  <text x="252" y="30" font-size="18" font-weight="600" fill="#333">Usage</text>
+  <rect x="1270" y="10" width="140" height="28" rx="6" fill="#fff" stroke="#999"/><text x="1288" y="29" fill="#444">Copy as CSV</text>
+  <rect x="1424" y="10" width="150" height="28" rx="6" fill="#fff" stroke="#999"/><text x="1442" y="29" fill="#444">Save CSV...</text>
+  <!-- filter bar -->
+  <rect x="232" y="48" width="1368" height="52" fill="#fafafa" stroke="#d0d0d0"/>
+  <text x="252" y="62" font-size="11" fill="#888">Shared across tabs: sticky filter bar + chips (filters survive tab switches)</text>
+  <rect x="252" y="68" width="330" height="26" rx="6" fill="#fff" stroke="#999"/><text x="264" y="86" fill="#444">7d | 30d | This month | Last month | Months</text>
+  <rect x="596" y="68" width="150" height="26" rx="6" fill="#fff" stroke="#999"/><text x="608" y="86" fill="#444">Day | Week | Month</text>
+  <rect x="760" y="68" width="120" height="26" rx="6" fill="#fff" stroke="#999"/><text x="772" y="86" fill="#444">All projects</text>
+  <rect x="890" y="68" width="100" height="26" rx="6" fill="#fff" stroke="#999"/><text x="902" y="86" fill="#444">All kinds</text>
+  <rect x="1000" y="68" width="130" height="26" rx="6" fill="#fff" stroke="#999"/><text x="1012" y="86" fill="#444">All connections</text>
+  <text x="1150" y="86" fill="#666">6 Oct to 5 Nov, 212 runs</text>
+  <!-- compact summary line always visible -->
+  <rect x="252" y="112" width="1328" height="44" fill="#fff" stroke="#d0d0d0"/>
+  <text x="268" y="139" fill="#333">Estimated $412.30+  ·  212 runs  ·  $1.94 per run  ·  cache hit 64%  ·  wall 38 h   (one line, same on every tab, with period deltas in the title)</text>
+  <!-- tabs -->
+  <g>
+    <line x1="252" y1="196" x2="1580" y2="196" stroke="#bbb"/>
+    <text x="268" y="184" fill="#666">Overview</text><text x="378" y="184" fill="#666">Spend</text>
+    <rect x="456" y="162" width="120" height="34" fill="#fff" stroke="#555"/><text x="470" y="184" font-weight="600" fill="#222">Breakdown</text>
+    <text x="620" y="184" fill="#666">Efficiency</text><text x="740" y="184" fill="#666">Runs</text>
+    <text x="1200" y="184" font-size="11" fill="#888">role=tablist, arrows move, Home/End, one Tab stop; panel keeps scroll per tab</text>
+  </g>
+  <!-- breakdown tab content -->
+  <rect x="252" y="212" width="1328" height="420" fill="#fafafa" stroke="#d0d0d0"/>
+  <text x="268" y="236" font-size="15" font-weight="600" fill="#333">Hero: cost by group (ranked bars with share)</text>
+  <rect x="1090" y="218" width="470" height="26" rx="6" fill="#fff" stroke="#999"/><text x="1102" y="236" fill="#444">Group by: Project | Model | Role | Connection</text>
+  <g fill="#333" font-size="12">
+    <text x="268" y="280">Billing</text><rect x="420" y="270" width="640" height="14" fill="#9a9a9a"/><text x="1080" y="281">$252.10</text><text x="1170" y="281" fill="#777">61%</text><text x="1240" y="281" fill="#777">82 runs</text>
+    <text x="268" y="316">Docs</text><rect x="420" y="306" width="260" height="14" fill="#9a9a9a"/><text x="1080" y="317">$98.40</text><text x="1170" y="317" fill="#777">24%</text><text x="1240" y="317" fill="#777">51 runs</text>
+    <text x="268" y="352">Chat</text><rect x="420" y="342" width="80" height="14" fill="#9a9a9a"/><text x="1080" y="353">$31.00</text><text x="1170" y="353" fill="#777">8%</text><text x="1240" y="353" fill="#777">40 runs</text>
+    <text x="268" y="388">Website</text><rect x="420" y="378" width="46" height="14" fill="#9a9a9a"/><text x="1080" y="389">$18.20</text><text x="1170" y="389" fill="#777">4%</text><text x="1240" y="389" fill="#777">22 runs</text>
+    <text x="268" y="424">Skill assistant</text><rect x="420" y="414" width="6" height="14" fill="none" stroke="#999" stroke-dasharray="3 2"/><text x="1080" y="425">unknown</text><text x="1240" y="425" fill="#777">3 runs, no price</text>
+  </g>
+  <text x="268" y="470" font-size="11" fill="#888">Bars: known solid, partial hatched at top, unknown = dashed stub (unchanged encoding). Row click = narrow, hover = readout line below.</text>
+  <text x="268" y="490" font-size="12" fill="#444">Readout: Billing: $252.10 (61%), 82 runs, cache hit 71%.</text>
+  <rect x="1330" y="300" width="230" height="150" fill="#f1f1f1" stroke="#ccc"/>
+  <text x="1344" y="322" fill="#555">Optional share ring / stack</text><circle cx="1445" cy="388" r="44" fill="none" stroke="#999" stroke-width="16"/>
+  <text x="268" y="540" font-size="11" fill="#888">Other tabs' hero + table:  Overview = KPI band + spend sparkline + top 3 + runs worth a look (3 rows)  |  Spend = stacked time chart + period table</text>
+  <text x="268" y="560" font-size="11" fill="#888">Efficiency = 8 instruments + by-project efficiency table + staffing  |  Runs = Runs worth a look + All runs (sortable, paged)</text>
+  <text x="268" y="580" font-size="11" fill="#888">Deep link usageFocus: usage -> Overview, usage-efficiency -> Efficiency tab heading, usage-runs -> Runs tab heading (tab chosen first).</text>
+  <!-- table -->
+  <rect x="252" y="650" width="1328" height="300" fill="#fff" stroke="#d0d0d0"/>
+  <text x="268" y="674" font-size="15" font-weight="600" fill="#333">Table: breakdown by project (sortable; replaces "Show as table" details)</text>
+  <g fill="#555" font-size="12"><text x="268" y="704">Project ^</text><text x="560" y="704">Kind</text><text x="700" y="704">Runs</text><text x="820" y="704">Tokens</text><text x="960" y="704">Cost</text><text x="1100" y="704">Per run</text><text x="1240" y="704">Cache hit</text><text x="1400" y="704">vs previous</text></g>
+  <line x1="268" y1="712" x2="1564" y2="712" stroke="#ddd"/>
+  <g fill="#666" font-size="12"><text x="268" y="738">Billing</text><text x="560" y="738">Code</text><text x="700" y="738">82</text><text x="820" y="738">9.1M</text><text x="960" y="738">$252.10</text><text x="1100" y="738">$3.07</text><text x="1240" y="738">71%</text><text x="1400" y="738">up 9%</text>
+  <text x="268" y="766">Docs</text><text x="560" y="766">Engagement</text><text x="700" y="766">51</text><text x="820" y="766">3.8M</text><text x="960" y="766">$98.40</text><text x="1100" y="766">$1.93</text><text x="1240" y="766">58%</text><text x="1400" y="766">down 4%</text>
+  <text x="268" y="794">Chat</text><text x="560" y="794">Assistant</text><text x="700" y="794">40</text><text x="820" y="794">1.2M</text><text x="960" y="794">$31.00</text><text x="1100" y="794">$0.78</text><text x="1240" y="794">64%</text><text x="1400" y="794">up 22%</text></g>
+  <text x="268" y="840" font-size="12" fill="#444">Show all 12 (in place, 25 rows then Show more)</text>
+  <text x="268" y="930" font-size="11" fill="#888">One hero + one table per tab; the table reuses the ChartTable / usageTableParts sort pattern. Footer definitions move to an "i" popover in the tab strip.</text>
+  <text x="252" y="980" font-size="11" fill="#888">Cutline: first view shows summary line, tabs, hero and the first table rows without scrolling (page scroll only inside a tab).</text>
+</svg>
