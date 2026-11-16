@@ -5,7 +5,7 @@
 import type { ProjectKind, RunStatus, TokenUsage, UsageOverviewRow, UsageProjectKind, UsageProjectRollup } from '@shared/types'
 import { VIRTUAL_PROJECT_LABELS, isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
-import { costView, formatDuration, type CostInput } from './cost'
+import { costView, formatDuration, formatTokens, type CostInput } from './cost'
 import { ASSISTANT_ORDER } from './assistants'
 import { groupByClient } from './clientGroups'
 import {
@@ -102,7 +102,7 @@ export function pointsDelta(cur: number, prev: number, words: string): string | 
   return `${cur > prev ? 'up' : 'down'} ${pts} ${pts === 1 ? 'point' : 'points'} on ${words}`
 }
 
-export type SummarySignal = 'cost' | 'runs' | 'cost-per-run' | 'cache' | 'wall'
+export type SummarySignal = 'cost' | 'tokens' | 'runs' | 'cost-per-run' | 'cache' | 'wall'
 
 export interface SummaryItemModel {
   signal: SummarySignal
@@ -147,6 +147,8 @@ export interface PreviousSpan {
   truncated: boolean
 }
 
+const tokenTotal = (t: TokenUsage): number => t.input + t.output + t.cacheRead + t.cacheWrite
+
 function costExact(c: CostInput): c is CostInput & { costUsd: number } {
   return c.costUsd !== null && !c.costPartial && c.costSource !== 'unknown' && c.costSource !== 'none'
 }
@@ -186,6 +188,13 @@ export function summaryModel(data: UsageData, prev: PreviousSpan | null, o: { tr
       ...(view.kind === 'unknown' ? { noPriceText: 'No price' } : {}),
       ...(model ? { title: MODEL_COST_TITLE } : {}),
       delta: p && costExact(cost) && costExact(p.totals.cost) && !lowerBound ? percentDelta(cost.costUsd, p.totals.cost.costUsd, o.words) : null
+    },
+    {
+      signal: 'tokens',
+      label: model ? 'Model tokens' : 'Tokens',
+      text: formatTokens(tokenTotal(t.tokens)),
+      ...(lowerBound ? { atLeast: true } : {}),
+      delta: p && !lowerBound ? percentDelta(tokenTotal(t.tokens), tokenTotal(p.totals.tokens), o.words) : null
     },
     {
       signal: 'runs',

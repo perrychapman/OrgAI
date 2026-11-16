@@ -126,20 +126,22 @@ describe('figures', () => {
 
 describe('summary model', () => {
   const opts = { truncated: false, words: 'the previous 30 days', model: null }
-  it('builds five figures with deltas from the previous span', () => {
+  it('builds six figures with deltas from the previous span', () => {
     const cur = data([row('a', { usage: usage({ costUsd: 6 }) }), row('b', { usage: usage({ costUsd: 4 }) })])
     const prev = data([row('c', { usage: usage({ costUsd: 5 }) })])
     const m = summaryModel(cur, { data: prev, truncated: false }, opts)
-    expect(m.map((i) => i.signal)).toEqual(['cost', 'runs', 'cost-per-run', 'cache', 'wall'])
+    expect(m.map((i) => i.signal)).toEqual(['cost', 'tokens', 'runs', 'cost-per-run', 'cache', 'wall'])
     expect(m[0]!.label).toBe('Estimated cost')
     expect(m[0]!.delta).toBe('up 100% on the previous 30 days')
-    expect(m[1]!.text).toBe('2')
+    expect(m[1]!.label).toBe('Tokens')
     expect(m[1]!.delta).toBe('up 100% on the previous 30 days')
-    expect(m[2]!.cost?.costUsd).toBe(5)
-    expect(m[2]!.delta).toBe('about the same as the previous 30 days')
-    expect(m[3]!.text).toBe('Not reported')
-    expect(m[3]!.delta).toBeNull()
-    expect(m[4]!.text).toBe('2m 00s')
+    expect(m[2]!.text).toBe('2')
+    expect(m[2]!.delta).toBe('up 100% on the previous 30 days')
+    expect(m[3]!.cost?.costUsd).toBe(5)
+    expect(m[3]!.delta).toBe('about the same as the previous 30 days')
+    expect(m[4]!.text).toBe('Not reported')
+    expect(m[4]!.delta).toBeNull()
+    expect(m[5]!.text).toBe('2m 00s')
   })
   it('omits deltas without a previous span, and never invents a zero', () => {
     const cur = data([row('a')])
@@ -158,13 +160,14 @@ describe('summary model', () => {
     const d = data([unknown], { costKnownRuns: 0, costUnknownRuns: 1, totals: usage({ costUsd: null, costSource: 'unknown' }) })
     const m = summaryModel(d, null, opts)
     expect(m[0]!.noPriceText).toBe('No price')
-    expect(m[2]!.noPriceText).toBe('No price')
+    expect(m[3]!.noPriceText).toBe('No price')
     const chip = { ...f0, model: 'sonnet-x' }
     const md = data([row('a')], {}, chip)
     const mm = summaryModel(md, null, { ...opts, model: 'sonnet-x' })
     expect(mm[0]!.label).toBe('Model cost')
     expect(mm[0]!.title).toMatch(/this model only/)
-    expect(mm[2]!.label).toBe('Model cost per run')
+    expect(mm[1]!.label).toBe('Model tokens')
+    expect(mm[3]!.label).toBe('Model cost per run')
   })
   it('marks folded truncated figures as a lower bound', () => {
     const f = { ...f0, noPrice: true }
@@ -175,7 +178,8 @@ describe('summary model', () => {
     expect(m[0]!.atLeast).toBe(true)
     expect(m[0]!.cost?.costPartial).toBe(true)
     expect(m[1]!.atLeast).toBe(true)
-    expect(m[2]!.title).toMatch(/newest 2,000/)
+    expect(m[2]!.atLeast).toBe(true)
+    expect(m[3]!.title).toMatch(/newest 2,000/)
   })
 })
 
