@@ -1,0 +1,145 @@
+/* Usage KPI band (option D): borderless, hairline-separated columns. Sized from the `usage` container. */
+.usage-kpi {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.usage-kpi-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 0;
+  padding: var(--space-3);
+  border-left: 1px solid var(--border-subtle);
+}
+.usage-kpi-item:first-child {
+  border-left: 0;
+}
+.usage-kpi-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-0h);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.usage-kpi-switch {
+  cursor: pointer;
+  /* The tile's own padding is the hit area: stretch the button over it. */
+  position: static;
+}
+.usage-kpi-switch::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-top: 2px solid transparent;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.usage-kpi-switch:hover::before {
+  background: var(--surface-hover, var(--surface-2));
+  opacity: 0.5;
+}
+.usage-kpi-switch[aria-pressed='true']::before {
+  border-top-color: var(--accent);
+}
+.usage-kpi-switch:focus-visible {
+  outline: none;
+}
+.usage-kpi-switch:focus-visible::before {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.usage-kpi-main > *,
+.usage-kpi-sub,
+.usage-kpi-spark-wrap {
+  position: relative;
+}
+.usage-kpi-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-0h) var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-kpi-value {
+  color: var(--text-primary);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.usage-kpi-delta,
+.usage-kpi-sub,
+.usage-kpi-on {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-1);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-kpi-on {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.usage-kpi-spark-wrap {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  line-height: 0;
+}
+.usage-kpi-spark {
+  display: block;
+  max-width: 100%;
+}
+/* Pressed tile on a forced-colours screen keeps its rule. */
+@media (forced-colors: active) {
+  .usage-kpi-switch[aria-pressed='true']::before {
+    border-top-color: Highlight;
+  }
+}
+@container usage (max-width: 1099px) {
+  .usage-kpi {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .usage-kpi-item:nth-child(3n + 1) {
+    border-left: 0;
+  }
+  .usage-kpi-item:nth-child(n + 4) {
+    border-top: 1px solid var(--border-subtle);
+  }
+}
+@container usage (max-width: 639px) {
+  .usage-kpi-spark-wrap {
+    display: none;
+  }
+}
+@container usage (max-width: 559px) {
+  .usage-kpi {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .usage-kpi-item:nth-child(3n + 1) {
+    border-left: 1px solid var(--border-subtle);
+  }
+  .usage-kpi-item:nth-child(2n + 1) {
+    border-left: 0;
+  }
+  .usage-kpi-item:nth-child(n + 3) {
+    border-top: 1px solid var(--border-subtle);
+  }
+}
