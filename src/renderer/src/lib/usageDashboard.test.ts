@@ -12,6 +12,7 @@ import {
   overlayReadout,
   resolveMetric,
   seriesAnnouncement,
+  shortDelta,
   sortAnnouncement,
   sortRows,
   sparkSeries,
@@ -53,6 +54,13 @@ describe('deltaDirection', () => {
     expect(deltaDirection('down 3 points on the previous 30 days')).toBe('down')
     expect(deltaDirection('about the same as the previous 30 days')).toBe('same')
     expect(deltaDirection(null)).toBeNull()
+  })
+  it('shortens to one line for the band', () => {
+    expect(shortDelta('up 400% on the previous 30 days')).toBe('400% vs previous 30 days')
+    expect(shortDelta('down 3 points on the previous 7 days')).toBe('3 points vs previous 7 days')
+    expect(shortDelta('about the same as the previous 30 days')).toBe('same as previous 30 days')
+    expect(shortDelta('up 5% on last month')).toBe('5% vs last month')
+    expect(shortDelta('something else')).toBe('something else')
   })
 })
 

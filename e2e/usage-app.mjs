@@ -411,6 +411,84 @@ try {
   const sortAfter = await T('usage-wasteful-sort').inputValue()
   check(sortAfter !== sortBefore, 'keyboard: the efficiency press changes usage-wasteful-sort', `${sortBefore} -> ${sortAfter}`)
 
+  // ---------- 4b. Dashboard interactions (metric switch, legend toggle, overlay, highlight, tabs, sort) ----------
+  await clearAll()
+  await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 0))
+  // KPI tiles are the chart's metric switch.
+  const kpiRuns = page.locator('[data-testid=usage-kpi-metric][data-metric=runs]')
+  check((await page.locator('[data-testid=usage-kpi-metric]').count()) === 3, 'metric: the Cost, Tokens and Runs tiles are switches', String(await page.locator('[data-testid=usage-kpi-metric]').count()))
+  await watchLive()
+  await kpiRuns.focus()
+  await page.keyboard.press('Enter')
+  await sleep(2500)
+  check((await T('usage-spend').getAttribute('data-metric')) === 'runs', 'metric: Enter on the Runs tile switches the chart to runs')
+  check((await kpiRuns.getAttribute('aria-pressed')) === 'true', 'metric: the Runs tile is pressed')
+  check((await said()).some((t) => /Chart shows runs/.test(t)), 'metric: the switch is announced', JSON.stringify(await said()))
+  check(!/\$/.test(clean(await T('usage-spend-legend').innerText())), 'metric: with runs on, the legend shows no cost figures', clean(await T('usage-spend-legend').innerText()))
+  await page.locator('[data-testid=usage-kpi-metric][data-metric=cost]').click()
+  await sleep(300)
+  check((await T('usage-spend').getAttribute('data-metric')) === 'cost', 'metric: the Cost tile switches back')
+  // Legend toggle hides a series.
+  const legend0 = T('usage-spend-legend-row').first()
+  const hiddenProject = await legend0.getAttribute('data-project')
+  const segsBefore = await page.locator(`[data-testid=usage-spend-segment][data-project="${hiddenProject}"]`).count()
+  await watchLive()
+  await legend0.focus()
+  await page.keyboard.press('Enter')
+  await sleep(2500)
+  check((await legend0.getAttribute('aria-pressed')) === 'false', 'legend: Enter on a legend entry hides its series (aria-pressed false)')
+  check((await page.locator(`[data-testid=usage-spend-segment][data-project="${hiddenProject}"]`).count()) === 0, 'legend: the hidden series draws no segments', `${segsBefore} before`)
+  check((await said()).some((t) => /hidden from the chart/.test(t)), 'legend: hiding is announced', JSON.stringify(await said()))
+  check((await chips()).length === 0, 'legend: a legend toggle adds no chip')
+  await legend0.click()
+  await sleep(300)
+  check((await legend0.getAttribute('aria-pressed')) === 'true', 'legend: a second press shows it again')
+  // Previous-period overlay.
+  const ov = T('usage-spend-overlay')
+  check((await ov.getAttribute('aria-pressed')) !== 'true', 'overlay: off by default')
+  if ((await ov.getAttribute('aria-disabled')) === 'true') skip('overlay marks', 'no previous period data in the seed')
+  else {
+    await ov.click()
+    await sleep(400)
+    check((await ov.getAttribute('aria-pressed')) === 'true', 'overlay: the toggle turns it on')
+    await liveBar().focus()
+    check(/Previous period/.test(clean(await T('usage-spend-readout').innerText())), 'overlay: the readout names the previous period', clean(await T('usage-spend-readout').innerText()))
+    log('info: overlay marks', await T('usage-spend-overlay-mark').count())
+    await ov.click()
+    await sleep(300)
+    check((await T('usage-spend-overlay-mark').count()) === 0, 'overlay: off again removes the marks')
+  }
+  // Row-to-series highlight.
+  await T('usage-project-row').first().locator('button').first().hover()
+  await sleep(300)
+  check(!!(await T('usage-spend-plot').getAttribute('data-highlight')), 'highlight: pointing at a project row highlights its series in the chart')
+  await page.mouse.move(5, 5)
+  await sleep(300)
+  // Tabs: one Tab stop, arrows switch, only the active panel is mounted.
+  const tabStops = await page.locator('[data-testid=usage-where-tab][tabindex="0"]').count()
+  check(tabStops === 1, 'tabs: the tab strip is one Tab stop', String(tabStops))
+  await page.locator('[data-testid=usage-where-tab][data-tab=project]').focus()
+  await page.keyboard.press('ArrowRight')
+  await sleep(200)
+  check((await page.locator('[data-testid=usage-where-tab][data-tab=model]').getAttribute('aria-selected')) === 'true' && (await T('usage-models').count()) === 1 && (await T('usage-projects-panel').count()) === 0, 'tabs: ArrowRight selects Model and shows only its panel')
+  await page.keyboard.press('Home')
+  await sleep(200)
+  check((await T('usage-projects-panel').count()) === 1, 'tabs: Home goes back to Project')
+  // Sortable table columns.
+  await T('usage-projects-panel').locator('details.usage-table-details > summary').click()
+  await sleep(200)
+  const costSort = T('usage-projects-table').locator('[data-testid=usage-table-sort][data-col=cost]')
+  await watchLive()
+  await costSort.click()
+  await sleep(2500)
+  const ariaSort = await costSort.evaluate((b) => b.closest('th')?.getAttribute('aria-sort'))
+  check(ariaSort === 'descending', 'sort: pressing Cost sorts high to low (aria-sort)', String(ariaSort))
+  check((await said()).some((t) => /Sorted by Cost/.test(t)), 'sort: the sort is announced', JSON.stringify(await said()))
+  await costSort.click()
+  await sleep(200)
+  check((await costSort.evaluate((b) => b.closest('th')?.getAttribute('aria-sort'))) === 'ascending', 'sort: a second press flips to ascending')
+  await T('usage-projects-panel').locator('details.usage-table-details > summary').click()
+
   // ---------- 5. States ----------
   await clearAll()
   await T('usage-period').getByText('Last month', { exact: true }).click()
@@ -474,14 +552,17 @@ try {
       const boxes = await page.evaluate(() => {
         const q = (id) => document.querySelector(`[data-testid=${id}]`)?.getBoundingClientRect()
         const r = (b) => (b ? { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) } : null)
-        return { p: r(q('usage-projects-panel')), m: r(q('usage-models')), r: r(q('usage-roles')), f: r(q('usage-filters')) }
+        return { s: r(q('usage-spend')), w: r(q('usage-where')), k: r(q('usage-summary')), f: r(q('usage-filters')) }
       })
-      if (boxes.p && boxes.m && boxes.r) {
-        const sameRow = Math.abs(boxes.p.y - boxes.m.y) < 4 && Math.abs(boxes.m.y - boxes.r.y) < 4 && boxes.p.x < boxes.m.x && boxes.m.x < boxes.r.x
-        const stacked = boxes.m.y > boxes.p.y + boxes.p.h - 2 && boxes.r.y > boxes.m.y + boxes.m.h - 2
-        if (w >= 1600) check(sameRow, `layout ${tag}: the three "Where it went" panels sit side by side`, JSON.stringify(boxes))
-        else check(stacked, `layout ${tag}: the three "Where it went" panels are stacked`, JSON.stringify(boxes))
-      }
+      if (boxes.s && boxes.w) {
+        const beside = Math.abs(boxes.s.y - boxes.w.y) < 4 && boxes.s.x + boxes.s.w <= boxes.w.x && boxes.s.w > boxes.w.w
+        const stacked = boxes.w.y >= boxes.s.y + boxes.s.h - 2
+        if (w >= 1600) check(beside, `layout ${tag}: the spend chart and the wider-than-it "Where it went" card sit side by side`, JSON.stringify(boxes))
+        else check(stacked, `layout ${tag}: "Where it went" sits under the spend chart`, JSON.stringify(boxes))
+      } else check(false, `layout ${tag}: the spend chart and the Where it went card are rendered`, JSON.stringify(boxes))
+      if (boxes.k && boxes.s) check(boxes.s.y < h, `layout ${tag}: the KPI band and the top of the spend chart are in the first view`, JSON.stringify(boxes))
+      const pageH = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollHeight ?? 0)
+      log(`info: layout ${tag}: page content height ${pageH} px`)
       // Sticky bar: constant height, and never covers a focused element after scrolling to it.
       const h0 = boxes.f?.h
       // Scroll to the end, then focus an element far above: the browser scrolls it into view, and scroll-padding-top

@@ -143,7 +143,7 @@
 }
 .uc-readout {
   margin: var(--space-2) 0 0;
-  height: calc(var(--text-small-lh) * 3);
+  height: calc(var(--text-small-lh) * 2);
   overflow: hidden;
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
@@ -172,10 +172,19 @@
   flex: 0 0 220px;
   width: 220px;
 }
+/* Under the plot (the plot takes the card's width): one wrapping row of entries. */
 .uc-spend-body[data-wide='false'] .uc-legend {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: var(--space-3);
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-0h) var(--space-2);
+}
+.uc-spend-body[data-wide='false'] .uc-legend-row {
+  min-width: 0;
+  max-width: 100%;
+}
+.uc-spend-body[data-wide='false'] .uc-legend-btn {
+  width: auto;
+  max-width: 100%;
 }
 .uc-legend-btn {
   display: grid;

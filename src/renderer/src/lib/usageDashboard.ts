@@ -41,6 +41,18 @@ export function deltaDirection(delta: string | null): DeltaDirection | null {
   return null
 }
 
+/**
+ * The one-line form of a delta for the KPI band, shown after its arrow: "400% vs previous 30 days", "3 points vs ...",
+ * "same as previous 30 days". The full sentence stays the accessible text (the arrow is decorative).
+ */
+export function shortDelta(delta: string): string {
+  const m = /^(up|down) (.+?) on (?:the )?(.+)$/.exec(delta)
+  if (m) return `${m[2]} vs ${m[3]}`
+  const s = /^about the same as (?:the )?(.+)$/.exec(delta)
+  if (s) return `same as ${s[1]}`
+  return delta
+}
+
 // ---------- sparklines ----------
 
 /** The KPI signals a trend point can draw; cost per run is a median of rows and has no per-bucket figure. */

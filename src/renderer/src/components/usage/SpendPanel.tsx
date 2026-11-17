@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent, ReactElement } from 'react'
 import { Check } from 'lucide-react'
-import { formatTokens } from '../../lib/cost'
+import type { UsageProjectRollup } from '@shared/types'
+import { formatTokens, type CostInput } from '../../lib/cost'
 import { Button } from '../ui/Button'
 import { SegmentedControl } from '../ui/SegmentedControl'
 import { bucketEnd, bucketPickOf } from '../../lib/usageOverview'
@@ -45,7 +46,6 @@ const STUB_H = 7
 const LABEL_ROW = 20
 const MAX_BAR_PX = 48
 const WIDE_PANEL_PX = 720
-const LEGEND_PX = 220
 const SERIES_VAR = ['--chart-s1', '--chart-s2', '--chart-s3', '--chart-s4', '--chart-s5']
 const fillOf = (series: number): string => (series >= 0 ? `var(${SERIES_VAR[series]})` : 'var(--chart-other)')
 
@@ -144,9 +144,11 @@ export default function SpendPanel({
     })
   }, [trend, data.lowerBound, overview.oldestIncludedAt, span.since, span.until, bucket, series, metric, hidden, prevSlots])
 
+  // The plot takes the card's whole width; the legend wraps under it (owner review: a side legend left the plot two
+  // thirds wide with thin bars). `wide` now only picks the taller plot.
   const wide = rootW >= WIDE_PANEL_PX
   const totalH = wide ? 196 : 172
-  const plotBoxW = wide ? rootW - LEGEND_PX - 16 : rootW
+  const plotBoxW = rootW
   const plotH = totalH - TOP_PAD - STUB_LANE - LABEL_ROW
   const n = bars.length
   const slot = slotWidth(n, plotBoxW - GUTTER - RIGHT_PAD)
@@ -267,6 +269,16 @@ export default function SpendPanel({
     costUnknownRuns: legend.rest.reduce((a, p) => a + p.costUnknownRuns, 0)
   })
   const otherName = `Other (${other.count} ${other.count === 1 ? 'project' : 'projects'})`
+  // Legend figures follow the metric (owner review): cost, tokens or runs for the whole period.
+  const legendValue = (ps: readonly UsageProjectRollup[], cost: CostInput): ReactElement | string => {
+    if (metric === 'tokens') return formatTokens(ps.reduce((a, p) => a + tokenSum(p.tokens), 0))
+    if (metric === 'runs') {
+      const n = ps.reduce((a, p) => a + p.runs, 0)
+      return `${n} ${n === 1 ? 'run' : 'runs'}`
+    }
+    return <CostText value={cost} />
+  }
+  const title = metric === 'cost' ? 'Spend over time' : metric === 'tokens' ? 'Tokens over time' : 'Runs over time'
 
   // Table: one column per legend project (and Other), then the previous period while the overlay is on.
   const tableCols = [
@@ -328,7 +340,7 @@ export default function SpendPanel({
   })()
 
   const dimOf = (key: string): boolean => highlight !== null && highlight !== key
-  const groupLabel = `Spend per ${bucket}, bar chart. Arrow keys move between ${bucket}s, Up and Down between projects, Enter narrows to the ${bucket} or project.`
+  const groupLabel = `${METRIC_WORD[metric]} per ${bucket}, bar chart. Arrow keys move between ${bucket}s, Up and Down between projects, Enter narrows to the ${bucket} or project.`
   const hasPrevious = previousTrend !== null && previousSpan !== null
   const whyOverlay = overlayDisabledReason(hasPrevious)
   const noPrices = unpriced && metric !== 'cost'
@@ -337,7 +349,7 @@ export default function SpendPanel({
     <section className="usage-panel uc-spend" aria-labelledby="usage-spend-h" data-testid="usage-spend" data-metric={metric}>
       <div className="usage-panel-head">
         <h2 id="usage-spend-h" tabIndex={-1}>
-          Spend over time
+          {title}
         </h2>
         <p className="usage-panel-summary">{summary}</p>
         <div className="uc-head-controls">
@@ -374,7 +386,7 @@ export default function SpendPanel({
           </div>
         </div>
       </div>
-      <div ref={rootRef} className="uc-spend-body" data-wide={wide ? 'true' : 'false'}>
+      <div ref={rootRef} className="uc-spend-body" data-wide="false">
         <div className="uc-spend-chart">
           <div ref={plotRef} className="uc-spend-scroll">
             <div
@@ -610,7 +622,7 @@ export default function SpendPanel({
                 >
                   <Swatch fill={fillOf(idx)} hollow={isHidden} />
                   <span className="uc-legend-name">{clipMiddle(p.projectName, 28)}</span>
-                  <span className="uc-legend-value">{metric === 'tokens' ? `${formatTokens(tokenSum(p.tokens))}` : <CostText value={rollupCost(p)} />}</span>
+                  <span className="uc-legend-value">{legendValue([p], rollupCost(p))}</span>
                 </button>
               </li>
             )
@@ -633,9 +645,7 @@ export default function SpendPanel({
               >
                 <Swatch fill="var(--chart-other)" hollow={hidden.has(OTHER_KEY)} />
                 <span className="uc-legend-name">{otherName}</span>
-                <span className="uc-legend-value">
-                  {metric === 'tokens' ? formatTokens(legend.rest.reduce((a, p) => a + tokenSum(p.tokens), 0)) : <CostText value={legendOtherCost} />}
-                </span>
+                <span className="uc-legend-value">{legendValue(legend.rest, legendOtherCost)}</span>
               </button>
             </li>
           )}

@@ -84,6 +84,10 @@
 /* The arrow stays on the delta's first line. */
 .usage-kpi-delta {
   display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   margin: 0;
   color: var(--text-secondary);
   font-size: var(--text-caption);
@@ -106,9 +110,13 @@
   color: var(--text-primary);
   font-weight: var(--weight-semibold);
 }
+/* Pushed to the tile's foot and a fixed height, so every sparkline (and the empty Cost per run slot) shares a baseline. */
 .usage-kpi-spark-wrap {
   display: block;
-  margin-top: var(--space-1);
+  height: 20px;
+  margin-top: auto;
+  padding-top: var(--space-1);
+  box-sizing: content-box;
   color: var(--text-secondary);
   line-height: 0;
 }
@@ -136,6 +144,9 @@
 @container usage (max-width: 639px) {
   .usage-kpi-spark-wrap {
     display: none;
+  }
+  .usage-kpi-delta {
+    white-space: normal;
   }
 }
 @container usage (max-width: 559px) {

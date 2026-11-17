@@ -47,6 +47,10 @@ export default function BreakdownCard(props: UsagePanelProps & SeriesHighlightPr
         <h2 id="usage-where-h" tabIndex={-1}>
           Where it went
         </h2>
+        {/* Ranked by cost whatever the chart shows (owner review: say it rather than follow the chart's metric). */}
+        <p className="usage-panel-summary usage-where-basis" data-testid="usage-where-basis">
+          Ranked by estimated cost, for the whole period.
+        </p>
       </div>
       <div className="usage-where-tabs" role="tablist" aria-label="Break down by">
         {TABS.map((t, i) => (

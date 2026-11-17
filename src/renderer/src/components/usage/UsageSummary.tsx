@@ -1,7 +1,7 @@
 import type { ReactElement, ReactNode } from 'react'
 import { costView, formatTokens } from '../../lib/cost'
 import { PARTIAL_COST_TITLE, type CostCoverage, type SummaryItemModel, type SummarySignal } from '../../lib/usagePage'
-import { KPI_METRIC, deltaDirection, sparkSignal, type SparkPoint } from '../../lib/usageDashboard'
+import { KPI_METRIC, deltaDirection, shortDelta, sparkSignal, type SparkPoint } from '../../lib/usageDashboard'
 import type { Metric } from '../../lib/usageCharts'
 import Sparkline from './Sparkline'
 import '../../styles/usage-kpi.css'
@@ -86,13 +86,14 @@ export default function UsageSummary({
             </span>
           )
           const delta: ReactNode = i.delta ? (
-            <span className="usage-kpi-delta usage-delta">
+            <span className="usage-kpi-delta usage-delta" title={i.delta}>
               {dir && (
                 <span className="usage-kpi-arrow" aria-hidden="true">
                   {ARROW[dir]}
                 </span>
               )}
-              <span>{i.delta}</span>
+              <span aria-hidden="true">{shortDelta(i.delta)}</span>
+              <span className="sr-only">{i.delta}</span>
             </span>
           ) : null
           return (
@@ -141,11 +142,10 @@ export default function UsageSummary({
                   </button>
                 </p>
               )}
-              {pts && (
-                <span className="usage-kpi-spark-wrap" title={`${i.label} ${bucketWord}`}>
-                  <Sparkline points={pts} />
-                </span>
-              )}
+              {/* Always present (empty for Cost per run, which has no per-bucket figure) so sparklines share one baseline. */}
+              <span className="usage-kpi-spark-wrap" title={pts ? `${i.label} ${bucketWord}` : undefined}>
+                {pts && <Sparkline points={pts} />}
+              </span>
             </li>
           )
         })}
