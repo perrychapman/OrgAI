@@ -65,6 +65,8 @@ export async function applyDevAppName({ platform, electronBinary, run, iconSourc
 
 /** <app>/Contents/Resources/<CFBundleIconFile>, with the .icns extension added when the plist omits it; default electron.icns. */
 export function iconDestination(app, iconFile) {
-  const name = iconFile || 'electron.icns'
+  // Only a plain file name from the plist is trusted; anything with a path part falls back to the default.
+  const plain = iconFile && !/[\\/]/.test(iconFile) && !iconFile.includes('..') && path.posix.basename(iconFile) === iconFile
+  const name = plain ? iconFile : 'electron.icns'
   return `${app}/Contents/Resources/${name.endsWith('.icns') ? name : `${name}.icns`}`
 }
