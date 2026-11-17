@@ -41,7 +41,8 @@ function fakeUpdater() {
     install: vi.fn(() => true),
     onProgress: (cb) => {
       progress = cb
-    }
+    },
+    setAutoInstallOnQuit: vi.fn()
   }
   return { u, checks, downloads, progress: (p: UpdaterProgressInfo) => progress?.(p) }
 }
@@ -125,6 +126,9 @@ describe('pure helpers', () => {
     expect(plainReleaseNotes(html)).toBe("What's new\n\n- Fast & safe\n- x <script>\nEnd line")
     expect(plainReleaseNotes('a\u202Eb\u0007c\u200Bd')).toBe('abcd')
     expect(plainReleaseNotes([{ version: '1.0.0', note: '<p>one</p>' }, { version: '0.9.0', note: null }, 7])).toBe('1.0.0\none\n\n0.9.0')
+    // Arabic letter mark, line and paragraph separators, BOM (built from code points: the source holds none).
+    const hidden = [0x61c, 0x2028, 0x2029, 0xfeff, 0x2066].map((n) => String.fromCharCode(n)).join('')
+    expect(plainReleaseNotes(`x${hidden}y`)).toBe('xy')
     expect(plainReleaseNotes(null)).toBeUndefined()
     expect(plainReleaseNotes({ note: 'x' })).toBeUndefined()
     expect(plainReleaseNotes('<p> </p>')).toBeUndefined()
@@ -199,9 +203,38 @@ describe('UpdateController (auto)', () => {
     expect(deps.requestQuit).toHaveBeenCalledTimes(1)
     // The installer starts only from the app's 'quit' event, silent, running the app again.
     expect(f.u.install).not.toHaveBeenCalled()
-    c.onAppQuit()
+    c.onAppQuit(0)
     expect(f.u.install).toHaveBeenCalledWith(true, true)
     live = 0
+  })
+
+  async function downloadedAndAccepted() {
+    const t = controller()
+    const p = t.c.check()
+    t.f.checks[0].resolve(available())
+    await p
+    t.c.download()
+    t.f.downloads[0].resolve()
+    await flush()
+    expect(t.c.install()).toEqual({ ok: true })
+    return t
+  }
+
+  it('a quit with a non-zero exit code never installs', async () => {
+    const { c, f, deps } = await downloadedAndAccepted()
+    c.onAppQuit(1)
+    expect(f.u.install).not.toHaveBeenCalled()
+    expect(deps.log.warn).toHaveBeenCalledWith(expect.stringContaining('code 1'))
+  })
+
+  it('a failed shutdown cancels the accepted install and electron-updater\'s install on quit, even when the exit code is 0', async () => {
+    const { c, f } = await downloadedAndAccepted()
+    c.cancelInstallOnQuit()
+    expect(c.state().installing).toBeUndefined()
+    expect(f.u.setAutoInstallOnQuit).toHaveBeenCalledWith(false)
+    c.onAppQuit(0)
+    expect(f.u.install).not.toHaveBeenCalled()
+    c.cancelInstallOnQuit() // idempotent
   })
 
   it('installs without force when no run is live', async () => {
@@ -218,7 +251,7 @@ describe('UpdateController (auto)', () => {
 
   it('a quit without an accepted install leaves installing to electron-updater (no explicit install call)', () => {
     const { c, f } = controller()
-    c.onAppQuit()
+    c.onAppQuit(0)
     expect(f.u.install).not.toHaveBeenCalled()
   })
 
@@ -314,6 +347,21 @@ describe('UpdateController (auto)', () => {
     expect(s).toMatchObject({ status: 'error', error: UPDATE_ERROR_TEXT.badVersion })
     expect(s.availableVersion).toBeUndefined()
     expect(s.releaseUrl).toBe(UPDATE_RELEASES_URL)
+  })
+
+  it('an invalid feed version after a valid one forgets the earlier version, notes and progress', async () => {
+    const { c, f } = controller()
+    let p = c.check()
+    f.checks[0].resolve(available('0.2.0', '<p>old notes</p>'))
+    await p
+    p = c.check()
+    f.checks[1].resolve(available('not-a-version'))
+    const s = await p
+    expect(s).toMatchObject({ status: 'error', error: UPDATE_ERROR_TEXT.badVersion, releaseUrl: UPDATE_RELEASES_URL })
+    expect(s.availableVersion).toBeUndefined()
+    expect(s.releaseNotes).toBeUndefined()
+    expect(s.progress).toBeUndefined()
+    expect(c.download()).toEqual({ ok: false, reason: 'not-available' })
   })
 
   it('a failed download keeps the version so it can be retried', async () => {
@@ -475,7 +523,7 @@ describe('ORGAI_UPDATE_MOCK fake', () => {
     expect(c.install()).toEqual({ ok: false, reason: 'active-runs', activeRuns: 1 })
     expect(c.install({ force: true })).toEqual({ ok: true })
     expect(deps.requestQuit).not.toHaveBeenCalled()
-    c.onAppQuit()
+    c.onAppQuit(0)
   })
 
   it('error, up-to-date and download-error behave as documented', async () => {

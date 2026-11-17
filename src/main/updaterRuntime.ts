@@ -63,10 +63,16 @@ interface ElectronUpdaterApi {
   logger: { info(m?: unknown): void; warn(m?: unknown): void; error(m?: unknown): void } | null
   checkForUpdates(): Promise<UpdaterCheckResult | null>
   downloadUpdate(): Promise<string[]>
+  disableWebInstaller: boolean
+  /** @internal in electron-updater 6.8.11 (AppUpdater.js): a Lazy whose `.value` is read for the x-user-staging-id header. */
+  stagingUserIdPromise?: { readonly value: Promise<string> }
   install?: (isSilent?: boolean, isForceRunAfter?: boolean) => boolean
   on(event: 'error', cb: (e: Error) => void): unknown
   on(event: 'download-progress', cb: (p: UpdaterProgressInfo) => void): unknown
 }
+
+/** The one x-user-staging-id every OrgAI install sends (a valid v4 UUID, so electron-updater's checks accept it). */
+export const UPDATER_STAGING_ID = '00000000-0000-4000-8000-000000000000'
 
 export async function loadElectronUpdater(log: { info(m: string): void; warn(m: string): void }): Promise<UpdaterLike> {
   const mod = (await import('electron-updater')) as unknown as { autoUpdater?: ElectronUpdaterApi; default?: { autoUpdater?: ElectronUpdaterApi } }
@@ -77,6 +83,13 @@ export async function loadElectronUpdater(log: { info(m: string): void; warn(m: 
   u.allowDowngrade = false
   u.fullChangelog = false
   u.autoInstallOnAppQuit = true
+  // No nsis-web target ships: never fetch a web-installer package from a URL the feed names.
+  u.disableWebInstaller = true
+  // electron-updater would send a per-install random id (x-user-staging-id) on every check and write it to
+  // <userData>/.updaterId. Replace its lazy with one constant id shared by every install: nothing identifying, no file.
+  // OrgAI uses no staged rollouts (stagingPercentage), the only other reader. Pinned to 6.8.11; updaterRuntime.test.ts
+  // fails if the installed source stops reading this field.
+  u.stagingUserIdPromise = { value: Promise.resolve(UPDATER_STAGING_ID) }
   const line = (m: unknown): string => (typeof m === 'string' ? m : m instanceof Error ? m.message : String(m))
   u.logger = {
     info: (m) => log.info(`[updater] ${line(m)}`),
@@ -91,6 +104,9 @@ export async function loadElectronUpdater(log: { info(m: string): void; warn(m: 
     install: (isSilent, isForceRunAfter) => (typeof u.install === 'function' ? u.install(isSilent, isForceRunAfter) : false),
     onProgress: (cb) => {
       u.on('download-progress', (p) => cb(p))
+    },
+    setAutoInstallOnQuit: (on) => {
+      u.autoInstallOnAppQuit = on
     }
   }
 }

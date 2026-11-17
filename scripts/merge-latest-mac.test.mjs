@@ -4,7 +4,49 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { main, mergeLatestMac, parseUpdateYaml, serializeUpdateYaml } from './merge-latest-mac.mjs'
+import { checkLatestWindows, main, mergeLatestMac, parseUpdateYaml, serializeUpdateYaml } from './merge-latest-mac.mjs'
+
+const winYml = (over = {}) => `version: ${over.version ?? '0.1.8'}
+files:
+  - url: ${over.url ?? 'OrgAI-Setup-0.1.8.exe'}
+${over.noSha ? '' : '    sha512: winAA+/==\n'}    size: 99
+    isAdminRightsRequired: true
+path: ${over.path ?? 'OrgAI-Setup-0.1.8.exe'}
+sha512: winAA+/==
+releaseDate: '2026-11-17T10:00:00.000Z'
+`
+
+test('windows leg: a well-formed latest.yml passes and main --windows copies it byte for byte', () => {
+  assert.doesNotThrow(() => checkLatestWindows(parseUpdateYaml(winYml())))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'merge-latest-win-'))
+  try {
+    const src = path.join(dir, 'latest.yml')
+    fs.writeFileSync(src, winYml())
+    const out = path.join(dir, 'update', 'latest.yml')
+    main(['--windows', src, out])
+    assert.equal(fs.readFileSync(out, 'utf8'), winYml())
+    // A failing leg writes nothing.
+    const bad = path.join(dir, 'bad.yml')
+    fs.writeFileSync(bad, winYml({ url: '../OrgAI.exe' }))
+    const out2 = path.join(dir, 'update', 'bad-out.yml')
+    assert.throws(() => main(['--windows', bad, out2]), /plain file name/)
+    assert.equal(fs.existsSync(out2), false)
+    assert.throws(() => main(['--windows', path.join(dir, 'missing.yml'), out2]), /cannot read/)
+    assert.throws(() => main(['--windows', src]), /usage/)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('windows leg: fails closed on bad version, urls, missing sha512 or a non-exe', () => {
+  const check = (text) => () => checkLatestWindows(parseUpdateYaml(text))
+  assert.throws(check(winYml({ version: 'v0.1.8' })), /semver/)
+  assert.throws(check(winYml({ url: 'https://evil.example/x.exe' })), /plain file name/)
+  assert.throws(check(winYml({ url: 'OrgAI%2e.exe' })), /plain file name/)
+  assert.throws(check(winYml({ noSha: true })), /no sha512/)
+  assert.throws(check(winYml({ url: 'OrgAI-Setup-0.1.8.zip' })), /not an .exe/)
+  assert.throws(check(winYml({ path: 'C:/x/OrgAI.exe' })), /plain file name/)
+})
 
 const leg = (arch, over = {}) => {
   const v = over.version ?? '0.1.8'

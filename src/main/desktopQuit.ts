@@ -31,6 +31,11 @@ export interface BeforeQuitDeps {
   stopCertRead(): void
   /** Cancel an orgai command install still running (its mutation lease would hold the drain). */
   stopCliInstall(): void
+  /**
+   * Called just before `exit` when the shutdown failed: a downloaded update must not install on that exit (app.exit
+   * still emits 'quit' with code 0; updater.ts UpdateController.cancelInstallOnQuit).
+   */
+  cancelUpdateInstall?(): void
   /** app.exit: never strand the app when the shutdown failed (the process exit hook releases ownership). */
   exit(code: number): void
   warn(message: string): void
@@ -56,6 +61,12 @@ export function beforeQuitHandler(deps: BeforeQuitDeps): (event: QuitEventLike) 
     deps.stopCertRead()
     void h.shutdown.shutdown(deps.reason(), { force: true }).catch((e: unknown) => {
       deps.warn(`Quitting failed: ${e instanceof Error ? e.message : String(e)}`)
+      // Runs may not have ended cleanly: no update installs on this exit.
+      try {
+        deps.cancelUpdateInstall?.()
+      } catch (err) {
+        deps.warn(`Could not cancel the update install: ${err instanceof Error ? err.message : String(err)}`)
+      }
       deps.exit(0)
     })
   }
