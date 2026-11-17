@@ -1,7 +1,9 @@
 // Dev only (npm run predev / prestart / prepreview). macOS: names the unpacked Electron.app "OrgAI" so the menu bar and
-// Dock tooltip stop saying "Electron". No-op elsewhere. Never fails the dev start: any error is a warning, exit 0.
+// Dock tooltip stop saying "Electron", and copies build/icon.icns over its icon so notifications and the Dock show the logo. No-op elsewhere. Never fails the dev start: any error is a warning, exit 0.
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { copyFile, readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { applyDevAppName, appBundleOf, MANUAL_FIX } from './lib/macDevAppName.mjs'
 
@@ -14,7 +16,16 @@ async function main() {
     const r = await applyDevAppName({
       platform: process.platform,
       electronBinary,
-      run: (file, args) => exec(file, args, { encoding: 'utf8' })
+      run: (file, args) => exec(file, args, { encoding: 'utf8' }),
+      iconSource: fileURLToPath(new URL('../build/icon.icns', import.meta.url)),
+      copyFile: (from, to) => copyFile(from, to),
+      iconIsCurrent: async (from, to) => {
+        try {
+          return (await readFile(from)).equals(await readFile(to))
+        } catch {
+          return false
+        }
+      }
     })
     if (r.message) console.log(r.message)
   } catch (e) {

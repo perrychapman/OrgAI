@@ -2,15 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RunEvent } from '@shared/types'
 
 const shown: { title: string; body: string }[] = []
+const icons: (string | undefined)[] = []
 
 vi.mock('electron', () => {
   class Notification {
     static isSupported(): boolean {
       return true
     }
-    constructor(private opts: { title: string; body: string }) {}
+    constructor(private opts: { title: string; body: string; icon?: string }) {}
     on(): void {}
     show(): void {
+      if ('icon' in this.opts) icons.push(this.opts.icon)
       shown.push({ title: this.opts.title, body: this.opts.body })
     }
   }
@@ -33,6 +35,7 @@ const request: RunEvent = {
 describe('Notifier', () => {
   beforeEach(() => {
     shown.length = 0
+    icons.length = 0
   })
 
   it('reads AppSettings.notifications at every decision, so a save takes effect at once', () => {
@@ -52,6 +55,25 @@ describe('Notifier', () => {
     settings.notifications = undefined // settings saved before the field existed: on
     notifier.handle(request)
     expect(shown).toHaveLength(2)
+  })
+
+  it('passes the icon path on Linux only', () => {
+    const make = (): InstanceType<typeof Notifier> =>
+      new Notifier({ projectOfRun: () => ({ projectId: 'proj', kind: 'work' }), projectName: () => 'Shop', enabled: () => true, iconPath: () => '/res/icon.png' })
+    const original = process.platform
+    try {
+      Object.defineProperty(process, 'platform', { value: 'linux' })
+      make().handle(request)
+      expect(icons).toEqual(['/res/icon.png'])
+      icons.length = 0
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      make().handle(request)
+      Object.defineProperty(process, 'platform', { value: 'darwin' })
+      make().handle(request)
+      expect(icons).toEqual([])
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original })
+    }
   })
 
   it('labels a harness MCP assistant run with the app name and its own wording', () => {

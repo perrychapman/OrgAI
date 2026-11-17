@@ -1,7 +1,7 @@
 // node --test scripts/mac-dev-app-name.test.mjs (npm run test:scripts). Injected runner; never touches a real plist.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyDevAppName, appBundleOf, CODESIGN, PLUTIL } from './lib/macDevAppName.mjs'
+import { applyDevAppName, appBundleOf, CODESIGN, iconDestination, PLUTIL } from './lib/macDevAppName.mjs'
 
 const APP = '/p/node_modules/electron/dist/Electron.app'
 const BIN = `${APP}/Contents/MacOS/Electron`
@@ -58,6 +58,46 @@ test('only the stale key is replaced', async () => {
   const edits = f.calls.filter((c) => c[1] === '-replace')
   assert.equal(edits.length, 1)
   assert.equal(edits[0][2], 'CFBundleDisplayName')
+})
+
+test('icon: copies build/icon.icns over the bundle icon before signing', async () => {
+  const f = fake({ CFBundleName: 'OrgAI', CFBundleDisplayName: 'OrgAI', CFBundleIconFile: 'electron.icns' })
+  const copies = []
+  const r = await applyDevAppName({
+    platform: 'darwin',
+    electronBinary: BIN,
+    run: f.run,
+    iconSource: '/repo/build/icon.icns',
+    copyFile: async (a, b) => {
+      copies.push([a, b])
+      f.calls.push(['copy'])
+    },
+    iconIsCurrent: async () => false
+  })
+  assert.equal(r.action, 'renamed')
+  assert.deepEqual(copies, [['/repo/build/icon.icns', `${APP}/Contents/Resources/electron.icns`]])
+  const last = f.calls.slice(-2)
+  assert.deepEqual(last, [['copy'], [CODESIGN, '--force', '--deep', '--sign', '-', APP]])
+})
+
+test('icon: plist without CFBundleIconFile defaults to electron.icns; current icon is left alone', async () => {
+  const f = fake({ CFBundleName: 'OrgAI', CFBundleDisplayName: 'OrgAI' })
+  const copies = []
+  const r = await applyDevAppName({
+    platform: 'darwin', electronBinary: BIN, run: f.run, iconSource: '/i.icns',
+    copyFile: async (a, b) => copies.push([a, b]), iconIsCurrent: async () => true
+  })
+  assert.equal(r.action, 'unchanged')
+  assert.equal(copies.length, 0)
+  assert.ok(f.calls.every((c) => c[1] === '-extract'))
+  assert.equal(iconDestination(APP, ''), `${APP}/Contents/Resources/electron.icns`)
+  assert.equal(iconDestination(APP, 'foo'), `${APP}/Contents/Resources/foo.icns`)
+})
+
+test('icon: non-darwin never copies', async () => {
+  let n = 0
+  await applyDevAppName({ platform: 'win32', electronBinary: BIN, run: async () => ({}), iconSource: '/i', copyFile: async () => n++ })
+  assert.equal(n, 0)
 })
 
 test('runner failure on edit propagates; bad path throws', async () => {

@@ -20,6 +20,13 @@ asarUnpack:
   - node_modules/@anthropic-ai/claude-agent-sdk/**
   - node_modules/@openai/codex/**
   - node_modules/zod/**
+# The icon files must exist outside the asar: Windows reads IconUri / appIconPath from disk (src/main/appIdentity.ts
+# registers them for the portable build, which has no Start Menu shortcut) and Linux notifications take a PNG path.
+extraResources:
+  - from: build/icon.ico
+    to: icon.ico
+  - from: build/icon.png
+    to: icon.png
 npmRebuild: false
 electronFuses:
   enableNodeCliInspectArguments: false
