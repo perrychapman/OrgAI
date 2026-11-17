@@ -415,6 +415,21 @@ async function regionFlow(label) {
   check(box1.left > box0.left + 10 && box1.height > box0.height, `${label}: arrows move the box and Shift+arrow grows it`, `${box0.left}->${box1.left} ${box0.height}->${box1.height}`)
   const after = await vp.evaluate((el) => ({ x: el.dataset.x, y: el.dataset.y }))
   check(before.x === after.x && before.y === after.y, `${label}: the view does not pan while the box moves`)
+  // The default box is centred in what is visible, and where that lands on the drawing depends on the panel width and the
+  // fitted zoom (a 0.6 floor), so on some displays it sits beside every label. Grow it with Shift+Right until it covers a
+  // drawn label, so the anchor below carries the labels it is meant to capture.
+  const coversLabel = () =>
+    page.evaluate(() => {
+      const d = document.querySelector('[data-testid=diagram-viewport] .output-region-shape.draft')?.getBoundingClientRect()
+      const shadow = document.querySelector('[data-testid=diagram-viewport] [data-testid=output-mermaid-svg]')?.shadowRoot
+      if (!d || !shadow) return false
+      return [...shadow.querySelectorAll('text')].some((t) => {
+        const r = t.getBoundingClientRect()
+        return !!t.textContent?.trim() && r.width > 0 && d.left < r.right && r.left < d.right && d.top < r.bottom && r.top < d.bottom
+      })
+    })
+  for (let i = 0; i < 60 && !(await coversLabel()); i++) await page.keyboard.press('Shift+ArrowRight')
+  check(await coversLabel(), `${label}: the box covers a drawn label before it is confirmed`)
   await page.keyboard.press('Enter')
   await typeNote('This arrow looks wrong.')
   const id = await idOfKind('mermaid')

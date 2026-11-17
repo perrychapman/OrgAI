@@ -1,7 +1,28 @@
 import { describe, expect, it } from 'vitest'
 import type { OutputKind } from '@shared/types'
 import { canOpenOutput, canReviseFallback, externalAppName, isEditableKind } from './outputs'
-import { hasPreviewKind, menuLeadActions, primaryAction, toolbarControlCount, type PrimaryInput } from './outputToolbar'
+import { hasPreviewKind, menuLeadActions, overlayOwnsEscape, primaryAction, toolbarControlCount, type EscapeTarget, type PrimaryInput } from './outputToolbar'
+
+function escapeTarget(attrs: Record<string, string>, inOverlay = false): EscapeTarget {
+  return { closest: () => (inOverlay ? {} : null), getAttribute: (n) => attrs[n] ?? null }
+}
+
+describe('overlayOwnsEscape', () => {
+  const isPopover = (id: string): boolean => id === 'menu'
+  it('leaves Escape to a popover or dialog that holds the target', () => {
+    expect(overlayOwnsEscape(escapeTarget({}, true), isPopover)).toBe(true)
+  })
+  it('leaves Escape to the menu of an open trigger, even before focus moved into the menu', () => {
+    expect(overlayOwnsEscape(escapeTarget({ 'aria-expanded': 'true', 'aria-controls': 'menu' }), isPopover)).toBe(true)
+  })
+  it('does not own Escape for a closed trigger, a disclosure that is not a popover, or a plain target', () => {
+    expect(overlayOwnsEscape(escapeTarget({ 'aria-expanded': 'false', 'aria-controls': 'menu' }), isPopover)).toBe(false)
+    expect(overlayOwnsEscape(escapeTarget({ 'aria-expanded': 'true', 'aria-controls': 'section' }), isPopover)).toBe(false)
+    expect(overlayOwnsEscape(escapeTarget({ 'aria-expanded': 'true' }), isPopover)).toBe(false)
+    expect(overlayOwnsEscape(escapeTarget({}), isPopover)).toBe(false)
+    expect(overlayOwnsEscape(null, isPopover)).toBe(false)
+  })
+})
 
 const base: PrimaryInput = { kind: 'markdown', missing: false, isCurrent: true, canEdit: true, external: null, canOpen: true, canRevise: true }
 

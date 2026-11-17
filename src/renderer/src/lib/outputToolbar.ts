@@ -68,3 +68,23 @@ export function menuLeadActions(
 export function toolbarControlCount(o: { primary: PrimaryAction | null; notes: boolean; larger: boolean }): number {
   return (o.primary ? 1 : 0) + (o.notes ? 1 : 0) + (o.larger ? 1 : 0) + 1
 }
+
+/** The few DOM members `overlayOwnsEscape` reads, so the rule is testable without a DOM. */
+export interface EscapeTarget {
+  closest(selector: string): unknown
+  getAttribute(name: string): string | null
+}
+
+/**
+ * Whether an Escape keydown at `target` belongs to a menu or dialog and must not close the detail. Inside a popover,
+ * dialog or role=dialog it does. So does the popover's own trigger while that popover is open: the menu moves focus in
+ * only a frame or more after it opens, and an Escape that lands in between has the trigger as its target, which would
+ * otherwise read as "leave the detail" (the platform closes the menu on the same key).
+ * `popoverById` returns whether the element with that id is a popover (`[popover]`).
+ */
+export function overlayOwnsEscape(target: EscapeTarget | null, popoverById: (id: string) => boolean): boolean {
+  if (!target) return false
+  if (target.closest('[popover], dialog, [role=dialog]')) return true
+  const controls = target.getAttribute('aria-controls')
+  return target.getAttribute('aria-expanded') === 'true' && controls !== null && popoverById(controls)
+}
