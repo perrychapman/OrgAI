@@ -108,6 +108,15 @@ describe('outputs helpers', () => {
     expect(outputsCountLabel(5)).toBe('5 outputs')
   })
 
+  it('lists an output under the run that wrote its current version', () => {
+    // Made by r1, version 2 written by r2: both runs list it (the run side tab of r2 said "No outputs yet").
+    const list = [out('a', { runId: 'r1', current: { source: 'agent', at: 2, runId: 'r2' } }), out('b', { runId: 'r1' }), out('c', { runId: 'r3', current: { source: 'edit', at: 3 } })]
+    expect(outputsOfRuns(list, ['r2']).map((o) => o.id)).toEqual(['a'])
+    expect(outputsOfRuns(list, ['r1']).map((o) => o.id)).toEqual(['a', 'b'])
+    expect(outputsOfRuns(list, ['r3']).map((o) => o.id)).toEqual(['c'])
+    expect(outputsOfRuns(list, ['r1', 'r2']).map((o) => o.id)).toEqual(['a', 'b'])
+  })
+
   it('keys previews by updatedAt and evicts the least recently used', () => {
     expect(previewKey({ id: 'x', createdAt: 1 })).toBe('x@1')
     expect(previewKey({ id: 'x', createdAt: 1, updatedAt: 5 })).toBe('x@5')

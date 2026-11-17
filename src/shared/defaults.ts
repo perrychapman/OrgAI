@@ -717,6 +717,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   proxies: defaultProxies(),
   defaultConnection: 'anthropic',
   notifications: true,
+  autoUpdateCheck: true,
   appearance: DEFAULT_APPEARANCE,
   opusGuardThreshold: 80,
   defaultPreferEverydayNearLimit: false,

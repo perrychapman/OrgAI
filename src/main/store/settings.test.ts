@@ -5,6 +5,13 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit } from './settings'
 
+describe('schedulesPaused (Schedules global pause)', () => {
+  it('is exactly true or absent', () => {
+    expect(normalizeSettings({ schedulesPaused: true } as never).schedulesPaused).toBe(true)
+    for (const v of [false, 'true', 1, null, undefined]) expect('schedulesPaused' in normalizeSettings({ schedulesPaused: v } as never)).toBe(false)
+  })
+})
+
 describe('tier model validation', () => {
   it('drops renderer or file tier models that are not valid model ids', () => {
     const tierModels = { top: '--help', deep: ' opus ', everyday: 'has space', fast: 'bell\u0007' }

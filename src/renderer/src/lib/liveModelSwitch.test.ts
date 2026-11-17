@@ -99,7 +99,8 @@ describe('model switch sequencing', () => {
   it('refuses newly running work, changed drafts sent elsewhere and successor sessions', async () => {
     const f = fixture()
     f.set(record('running'))
-    await expect(performModelSwitch(f.input)).rejects.toThrow('state changed')
+    // The refusal names both sides (the window's view first, then main's) so a stale window is told apart from a changed run.
+    await expect(performModelSwitch(f.input)).rejects.toThrow('state changed (idle to running)')
     expect(f.api.interrupt).not.toHaveBeenCalled()
     f.set(record())
     f.input.handoff = true

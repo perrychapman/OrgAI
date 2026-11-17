@@ -53,8 +53,11 @@ const BUCKETS: { value: UsageBucket; label: string }[] = [
   { value: 'month', label: 'Month' }
 ]
 
-/** Group by: the SegmentedControl markup with an inert (aria-disabled, titled) choice the span refuses (3.2). */
-function BucketControl({ value, days, onChange }: { value: UsageBucket; days: number; onChange: (b: UsageBucket) => void }): ReactElement {
+/**
+ * Group by: the SegmentedControl markup with an inert (aria-disabled, titled) choice the span refuses (3.2). Rendered by
+ * UsageView into the chart header since the dashboard rework (it only changes the chart).
+ */
+export function BucketControl({ value, days, onChange }: { value: UsageBucket; days: number; onChange: (b: UsageBucket) => void }): ReactElement {
   const name = useId()
   return (
     <div className="seg" role="radiogroup" aria-label="Group by" data-testid="usage-bucket">
@@ -226,12 +229,13 @@ export interface UsageFilterBarProps {
   /** The scope line again, as sr-only text, so it is known after scrolling. */
   scope: string
   barRef: Ref<HTMLDivElement>
+  /** Runs under the filters, shown after the date text ("· 10 runs"); null while loading. */
+  runs?: number | null
 }
 
 /** The sticky filter bar (docs/design/usage-app.md 3). Row one: period, months and group by; row two: the rest. */
-export default function UsageFilterBar({ filters, onChange, now, compact, groups, connections, projectName, scope, barRef }: UsageFilterBarProps): ReactElement {
-  const span = periodSpan(filters.period, now)
-  const bucket = effectiveBucket(filters, now)
+export default function UsageFilterBar({ filters, onChange, now, compact, groups, connections, projectName, scope, barRef, runs }: UsageFilterBarProps): ReactElement {
+  const runsText = runs === null || runs === undefined ? null : `${runs} ${runs === 1 ? 'run' : 'runs'}`
   const months = usageMonthOptions(now)
   const period = filters.period
   const set = (patch: Partial<UsageFilters>, moved?: string): void => onChange({ ...filters, ...patch }, moved)
@@ -260,8 +264,7 @@ export default function UsageFilterBar({ filters, onChange, now, compact, groups
     <div className="usage-filters" data-testid="usage-filters" ref={barRef} role="group" aria-label="Usage filters">
       <p className="sr-only">{scope}</p>
       <div className="usage-filters-row">
-        <div className="usage-field">
-          <span className="usage-field-label">Period</span>
+        <div className="usage-field" title={`Period: ${periodLabel(period, now)}${runsText ? ` · ${runsText}` : ''}`}>
           <div data-testid="usage-period">
             <SegmentedControl<PeriodChoice> label="Period" value={periodChoice(period)} options={PERIOD_OPTIONS} onChange={pickPeriod} />
           </div>
@@ -290,13 +293,6 @@ export default function UsageFilterBar({ filters, onChange, now, compact, groups
             </select>
           </div>
         )}
-        <div className="usage-field">
-          <span className="usage-field-label">Group by</span>
-          <BucketControl value={bucket} days={span.days} onChange={(b) => set({ bucket: b })} />
-        </div>
-        <p className="usage-period-label" data-testid="usage-period-label">
-          {periodLabel(period, now)}
-        </p>
       </div>
       <div className="usage-filters-row">
         {compact ? (

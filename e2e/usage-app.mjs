@@ -71,6 +71,11 @@ const overflow = () => page.evaluate(() => ({ sw: document.documentElement.scrol
 const chips = () => page.locator('[data-testid=usage-chip]').evaluateAll((els) => els.map((e) => ({ kind: e.getAttribute('data-kind'), text: (e.textContent ?? '').trim() })))
 const chipKinds = async () => (await chips()).map((c) => c.kind)
 const bodyText = () => T('usage-view').innerText()
+/** Selects a tab of the "Where it went" card (project, model, role, connection). */
+const whereTab = async (tab) => {
+  await page.locator(`[data-testid=usage-where-tab][data-tab=${tab}]`).click()
+  await sleep(200)
+}
 
 /** Start a mock run, let it spend, stop it and wait until it is no longer live. Returns its id. */
 const seedRun = async (projectId, prompt) => {
@@ -228,12 +233,16 @@ try {
   const partial = /\+/.test(summaryCost.split('\n')[0] ?? summaryCost)
   const coverage = (await T('usage-coverage').count()) ? clean(await T('usage-coverage').innerText()) : ''
   if (partial || /No price/.test(summaryCost)) {
-    check(/from \d+ of \d+ runs|0 of \d+ runs/.test(coverage), 'figures: a partial total carries the "from N of M runs" coverage line', `${summaryCost} | ${coverage}`)
+    check(/\d+ of \d+ priced|from \d+ of \d+ runs|0 of \d+ runs/.test(coverage), 'figures: a partial total carries the "N of M priced" coverage chip', `${summaryCost} | ${coverage}`)
     check((await T('usage-no-price-link').count()) === 1, 'figures: usage-no-price-link is present beside the coverage line')
   } else skip('coverage line', `the cost total is not partial in the seed (${summaryCost})`)
+  await whereTab('model')
   const unpricedRow = T('usage-model-row').filter({ has: page.locator('[data-testid=usage-set-price]') })
-  check((await unpricedRow.count()) >= 1, 'figures: the unpriced model row has usage-set-price')
-  check((await T('usage-partial-note').count()) + (await T('usage-unpriced-note').count()) >= 1, 'figures: a partial/unpriced note is shown')
+  check((await unpricedRow.count()) >= 1, 'figures: the unpriced model row has usage-set-price (Model tab)')
+  await whereTab('project')
+  // The partial caveat is said once, by the coverage line under Estimated cost (dashboard rework).
+  check((await T('usage-coverage').count()) + (await T('usage-unpriced-note').count()) >= 1, 'figures: the no-price caveat is shown (coverage line or unpriced note)')
+  check((await T('usage-partial-note').count()) === 0, 'figures: the partial caveat is not repeated under the KPI band')
   void costItem
   // The no-price link adds the "Cost: no price" chip and opens All runs
   await T('usage-no-price-link').click()
@@ -256,8 +265,17 @@ try {
     check(s.filter((t) => /Filter added/.test(t)).length === 1, `drilldown: ${name} announces once`, JSON.stringify(s))
     return ks
   }
-  await drill('a legend row', () => T('usage-spend-legend-row').first().click(), 'project')
-  check(await T('usage-runs').locator('details').evaluate((d) => d.open), 'drilldown: a project narrowing opens All runs')
+  // All runs may still be open from the no-price link above: close it, so the check is about what the row does.
+  if (await T('usage-runs').locator('details').evaluate((d) => d.open)) await T('usage-runs').locator('details > summary').click()
+  await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 0))
+  await sleep(200)
+  const keyBefore = await page.evaluate(() => ({ top: Math.round(document.querySelector('[data-testid=usage-summary]')?.getBoundingClientRect().top ?? -1), scroll: document.querySelector('.usage-scroll')?.scrollTop ?? -1 }))
+  await drill('a project row (click)', () => T('usage-project-row').first().locator('button').first().click(), 'project')
+  // Walk H1: a row narrowing neither opens All runs nor scrolls, and the first chip shifts nothing below the bar.
+  const keyAfter = await page.evaluate(() => ({ top: Math.round(document.querySelector('[data-testid=usage-summary]')?.getBoundingClientRect().top ?? -1), scroll: document.querySelector('.usage-scroll')?.scrollTop ?? -1 }))
+  check(!(await T('usage-runs').locator('details').evaluate((d) => d.open)), 'drilldown: a row narrowing leaves All runs closed')
+  check(keyAfter.scroll === keyBefore.scroll && Math.abs(keyAfter.top - keyBefore.top) <= 1, 'drilldown: a row narrowing neither scrolls nor shifts the KPI band', JSON.stringify({ keyBefore, keyAfter }))
+  check((await chipKinds()).every((k) => k !== 'period'), 'chips: the period gets no chip')
   // chip remove
   await watchLive()
   await T('usage-chip-remove').first().click()
@@ -274,10 +292,23 @@ try {
     await T('usage-project-row').first().locator('button').first().focus()
     await page.keyboard.press('Enter')
   }, 'project')
-  await drill('a model row', () => T('usage-model-row').first().click(), 'model')
-  await drill('a role row', () => T('usage-role-row').first().click(), 'role')
+  await drill('a model row', async () => {
+    await whereTab('model')
+    await T('usage-model-row').first().click()
+  }, 'model')
+  await drill('a role row', async () => {
+    await whereTab('role')
+    await T('usage-role-row').first().click()
+  }, 'role')
+  const connRows = await (async () => {
+    await clearAll()
+    await whereTab('connection')
+    return T('usage-connection-row').count()
+  })()
+  check(connRows >= 1, 'where: the Connection tab lists connection rows', String(connRows))
+  await whereTab('project')
   // two chips then Clear all
-  await T('usage-spend-legend-row').first().click().catch(() => {})
+  await T('usage-project-row').first().locator('button').first().click().catch(() => {})
   await sleep(1500)
   await watchLive()
   await T('usage-clear-all').click()
@@ -298,8 +329,15 @@ try {
     await sleep(800)
     const sel = await T('side-tab-usage').getAttribute('aria-selected').catch(() => null)
     check(sel === 'true', 'drilldown: usage-run-open lands on the run with the Usage side tab selected', String(sel))
-    const w = await page.evaluate(() => document.querySelector('aside.side-panel')?.getBoundingClientRect().width ?? 0)
-    check(w >= 478, 'drilldown: at 1024 the side panel is at least 480 px wide on arrival', String(w))
+    // An ended work run opens as the conversation under 1100 px: no side panel there, the Usage tab sits in the stage strip.
+    const shape = await page.evaluate(() => ({
+      layout: document.querySelector('.run-body')?.getAttribute('data-layout'),
+      w: document.querySelector('aside.side-panel')?.getBoundingClientRect().width ?? 0,
+      strip: !!document.querySelector('[data-testid=run-stage-tabs] [data-testid=side-tab-usage][aria-selected=true]'),
+      usage: !!document.querySelector('[data-testid=run-stage-tabs] [role=tabpanel][id*=usage]')
+    }))
+    if (shape.layout === 'conversation') check(shape.w === 0 && shape.strip && shape.usage, 'drilldown: at 1024 an ended run lands on the Usage tab of the stage strip, with no side panel', JSON.stringify(shape))
+    else check(shape.w >= 478, 'drilldown: at 1024 the side panel is at least 480 px wide on arrival', JSON.stringify(shape))
     const proj = await page.evaluate(() => window.orgai.projects.list().then((l) => l.length))
     void proj
     check(!!rowProject, 'drilldown: the opened run belongs to a project row', String(rowProject))
@@ -310,6 +348,8 @@ try {
   await clearAll()
   await T('usage-project-row').first().click()
   await sleep(2000)
+  if (!(await T('usage-runs').locator('details').evaluate((d) => d.open))) await T('usage-runs').locator('details > summary').click()
+  await sleep(300)
   const runOpen = T('usage-run-row').first().locator('[data-testid=usage-run-open]')
   check((await T('usage-run-row').count()) >= 1, 'drilldown: All runs lists the narrowed project runs')
   if (await runOpen.count()) {
@@ -370,7 +410,8 @@ try {
   await sleep(200)
 
   // Efficiency grid
-  const effStops = await page.locator('[data-testid=usage-efficiency] .usage-eff-grid').evaluate((g) => [...g.querySelectorAll('button')].filter((e) => e.tabIndex === 0).length)
+  // The Team timing grid shares the class (PR 51); this check is about the efficiency measures only.
+  const effStops = await page.locator('[data-testid=usage-eff-main]').evaluate((g) => [...g.querySelectorAll('button')].filter((e) => e.tabIndex === 0).length)
   check(effStops === 1, 'keyboard: the efficiency grid is one Tab stop', String(effStops))
   const sortBefore = await T('usage-wasteful-sort').inputValue()
   const target = page.locator('[data-testid=usage-eff-item][data-signal=cache] [data-testid=usage-eff-value]')
@@ -381,12 +422,179 @@ try {
   const sortAfter = await T('usage-wasteful-sort').inputValue()
   check(sortAfter !== sortBefore, 'keyboard: the efficiency press changes usage-wasteful-sort', `${sortBefore} -> ${sortAfter}`)
 
+  // ---------- 4b. Dashboard interactions (metric switch, legend toggle, overlay, highlight, tabs, sort) ----------
+  await clearAll()
+  await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 0))
+  check((await T('usage-summary-item').count()) === 4 && (await page.locator('[data-testid=usage-summary-item][data-signal=cache]').count()) === 0, 'kpi: four tiles; Cache hit lives only in Efficiency')
+  // Crosshair and tooltip on the spend chart.
+  await liveBar().hover()
+  await sleep(200)
+  const tip = T('usage-chart-tooltip')
+  check((await tip.count()) === 1 && (await tip.isVisible()), 'chart: pointing at a bucket shows usage-chart-tooltip')
+  check((await T('usage-chart-crosshair').count()) >= 1, 'chart: pointing at a bucket shows the crosshair')
+  const tipText = clean(await tip.innerText().catch(() => ''))
+  check(/\d/.test(tipText), 'chart: the tooltip names the date and the total', tipText)
+  const tipInside = await page.evaluate(() => {
+    const t = document.querySelector('[data-testid=usage-chart-tooltip]')?.getBoundingClientRect()
+    const c = document.querySelector('[data-testid=usage-spend]')?.getBoundingClientRect()
+    return t && c ? t.left >= c.left - 1 && t.right <= c.right + 1 : false
+  })
+  check(tipInside, 'chart: the tooltip stays inside the chart card')
+  const crossAnims = await page.evaluate(() => [...document.querySelectorAll('[data-testid=usage-chart-crosshair]')].reduce((n, el) => n + el.getAnimations().length, 0))
+  check(crossAnims === 0, 'chart: the crosshair never animates', String(crossAnims))
+  await liveBar().focus()
+  await sleep(150)
+  const tipA = clean(await tip.innerText().catch(() => ''))
+  await page.keyboard.press('ArrowLeft')
+  await sleep(150)
+  const tipB = clean(await tip.innerText().catch(() => ''))
+  if ((await T('usage-spend-bar').count()) > 1) check(tipA !== tipB, 'chart: ArrowLeft moves the tooltip to the next bucket', `${tipA} | ${tipB}`)
+  await page.keyboard.press('Escape')
+  await sleep(150)
+  check(!(await tip.isVisible().catch(() => false)), 'chart: Escape hides the tooltip')
+  check((await focusInfo()).testid === 'usage-spend-bar', 'chart: focus stays on the plot after Escape', JSON.stringify(await focusInfo()))
+  await page.mouse.move(5, 5)
+  // Table toggle in the chart header.
+  const tableBtn = T('usage-spend-table-toggle')
+  await tableBtn.click()
+  await sleep(200)
+  check((await tableBtn.getAttribute('aria-expanded')) === 'true' && (await T('usage-spend-table').count()) === 1, 'chart: the Table button shows the spend table')
+  await tableBtn.click()
+  await sleep(150)
+  check((await tableBtn.getAttribute('aria-expanded')) === 'false', 'chart: the Table button hides it again')
+  // Sparkline scrub moves the chart crosshair.
+  const spark = page.locator('[data-testid=usage-summary-item][data-signal=runs] [data-testid=usage-kpi-spark]')
+  if (await spark.count()) {
+    const sb = await spark.boundingBox()
+    if (sb) {
+      await page.mouse.move(sb.x + sb.width - 2, sb.y + sb.height / 2)
+      await sleep(200)
+      check((await page.locator('[data-testid=usage-summary-item][data-signal=runs] [data-testid=usage-kpi-scrub]').count()) === 1, 'kpi: pointing at a sparkline shows that bucket in the tile')
+      check(await tip.isVisible().catch(() => false), 'kpi: pointing at a sparkline shows the chart tooltip at that bucket')
+      await page.mouse.move(5, 5)
+      await sleep(200)
+      check((await page.locator('[data-testid=usage-kpi-scrub]').count()) === 0, 'kpi: leaving the sparkline restores the tile')
+    }
+  } else skip('sparkline scrub', 'no sparkline drawn (fewer than three buckets with values in the seed)')
+  // KPI tiles are the chart's metric switch.
+  const kpiRuns = page.locator('[data-testid=usage-kpi-metric][data-metric=runs]')
+  check((await page.locator('[data-testid=usage-kpi-metric]').count()) === 3, 'metric: the Cost, Tokens and Runs tiles are switches', String(await page.locator('[data-testid=usage-kpi-metric]').count()))
+  await watchLive()
+  await kpiRuns.focus()
+  await page.keyboard.press('Enter')
+  await sleep(2500)
+  check((await T('usage-spend').getAttribute('data-metric')) === 'runs', 'metric: Enter on the Runs tile switches the chart to runs')
+  check((await kpiRuns.getAttribute('aria-pressed')) === 'true', 'metric: the Runs tile is pressed')
+  check((await said()).some((t) => /Chart shows runs/.test(t)), 'metric: the switch is announced', JSON.stringify(await said()))
+  check(!/\$/.test(clean(await T('usage-spend-legend').innerText())), 'metric: with runs on, the legend shows no cost figures', clean(await T('usage-spend-legend').innerText()))
+  await page.locator('[data-testid=usage-kpi-metric][data-metric=cost]').click()
+  await sleep(300)
+  check((await T('usage-spend').getAttribute('data-metric')) === 'cost', 'metric: the Cost tile switches back')
+  // Legend toggle hides a series.
+  const legend0 = T('usage-spend-legend-row').first()
+  const hiddenProject = await legend0.getAttribute('data-project')
+  const segsBefore = await page.locator(`[data-testid=usage-spend-segment][data-project="${hiddenProject}"]`).count()
+  await watchLive()
+  await legend0.focus()
+  await page.keyboard.press('Enter')
+  await sleep(2500)
+  check((await legend0.getAttribute('aria-pressed')) === 'false', 'legend: Enter on a legend entry hides its series (aria-pressed false)')
+  check((await page.locator(`[data-testid=usage-spend-segment][data-project="${hiddenProject}"]`).count()) === 0, 'legend: the hidden series draws no segments', `${segsBefore} before`)
+  check((await said()).some((t) => /hidden from the chart/.test(t)), 'legend: hiding is announced', JSON.stringify(await said()))
+  check((await chips()).length === 0, 'legend: a legend toggle adds no chip')
+  await legend0.click()
+  await sleep(300)
+  check((await legend0.getAttribute('aria-pressed')) === 'true', 'legend: a second press shows it again')
+  // Previous-period overlay.
+  const ov = T('usage-spend-overlay')
+  check((await ov.getAttribute('aria-pressed')) !== 'true', 'overlay: off by default')
+  if ((await ov.getAttribute('aria-disabled')) === 'true') skip('overlay marks', 'no previous period data in the seed')
+  else {
+    await ov.click()
+    await sleep(400)
+    check((await ov.getAttribute('aria-pressed')) === 'true', 'overlay: the toggle turns it on')
+    await liveBar().focus()
+    check(/Previous period/.test(clean(await T('usage-spend-readout').innerText())), 'overlay: the readout names the previous period', clean(await T('usage-spend-readout').innerText()))
+    log('info: overlay marks', await T('usage-spend-overlay-mark').count())
+    await ov.click()
+    await sleep(300)
+    check((await T('usage-spend-overlay-mark').count()) === 0, 'overlay: off again removes the marks')
+  }
+  // Row-to-series highlight, both ways.
+  await T('usage-project-row').first().locator('button').first().hover()
+  await sleep(300)
+  check(!!(await T('usage-spend-plot').getAttribute('data-highlight')), 'highlight: pointing at a project row highlights its series in the chart')
+  await page.mouse.move(5, 5)
+  await sleep(300)
+  const chip0 = T('usage-spend-legend-row').first()
+  const chipKey = await chip0.getAttribute('data-project')
+  await chip0.focus()
+  await sleep(400)
+  const dim = await page.evaluate((k) => {
+    const others = [...document.querySelectorAll('[data-testid=usage-spend-segment]')].filter((s) => s.getAttribute('data-project') !== k)
+    return others.length ? Math.max(...others.map((s) => parseFloat(getComputedStyle(s.closest('[data-dim]') ?? s).opacity))) : null
+  }, chipKey)
+  check(dim === null || dim < 0.5, 'highlight: focusing a legend chip dims the other series', String(dim))
+  const rowHl = await page.locator(`[data-testid=usage-project-row][data-highlight=true]`).count()
+  check(rowHl <= 1, 'highlight: at most the matching ranked row is highlighted', String(rowHl))
+  await chip0.blur()
+  await sleep(300)
+  // Tabs: one Tab stop, arrows switch, only the active panel is mounted.
+  const tabStops = await page.locator('[data-testid=usage-where-tab][tabindex="0"]').count()
+  check(tabStops === 1, 'tabs: the tab strip is one Tab stop', String(tabStops))
+  await page.locator('[data-testid=usage-where-tab][data-tab=project]').focus()
+  await page.keyboard.press('ArrowRight')
+  await sleep(200)
+  check((await page.locator('[data-testid=usage-where-tab][data-tab=model]').getAttribute('aria-selected')) === 'true' && (await T('usage-models').count()) === 1 && (await T('usage-projects-panel').count()) === 0, 'tabs: ArrowRight selects Model and shows only its panel')
+  await page.keyboard.press('Home')
+  await sleep(200)
+  check((await T('usage-projects-panel').count()) === 1, 'tabs: Home goes back to Project')
+  // Sortable table columns.
+  await T('usage-projects-panel').locator('details.usage-table-details > summary').click()
+  await sleep(200)
+  const costSort = T('usage-projects-table').locator('[data-testid=usage-table-sort][data-col=cost]')
+  await watchLive()
+  await costSort.click()
+  await sleep(2500)
+  const ariaSort = await costSort.evaluate((b) => b.closest('th')?.getAttribute('aria-sort'))
+  check(ariaSort === 'descending', 'sort: pressing Cost sorts high to low (aria-sort)', String(ariaSort))
+  check((await said()).some((t) => /Sorted by Cost/.test(t)), 'sort: the sort is announced', JSON.stringify(await said()))
+  await costSort.click()
+  await sleep(200)
+  check((await costSort.evaluate((b) => b.closest('th')?.getAttribute('aria-sort'))) === 'ascending', 'sort: a second press flips to ascending')
+  await T('usage-projects-panel').locator('details.usage-table-details > summary').click()
+  // Expandable run rows in Runs worth a look (the efficiency press above may have picked a sort with no rows).
+  await T('usage-wasteful-sort').selectOption('no-result').catch(() => {})
+  await sleep(300)
+  const runToggle = T('usage-wasteful').locator('[data-testid=usage-run-toggle]').first()
+  if (await runToggle.count()) {
+    const detailHidden = () => page.evaluate(() => {
+      const d = document.querySelector('[data-testid=usage-wasteful] [data-testid=usage-run-detail]')
+      if (!d) return 'absent'
+      const inner = d.querySelector('button, a, [tabindex]')
+      return inner ? getComputedStyle(inner).visibility : 'no-control'
+    })
+    check((await runToggle.getAttribute('aria-expanded')) === 'false', 'run rows: the details toggle starts closed')
+    const closedVis = await detailHidden()
+    check(closedVis === 'absent' || closedVis === 'hidden' || closedVis === 'no-control', 'run rows: a closed detail is not reachable', closedVis)
+    await runToggle.focus()
+    await page.keyboard.press('Enter')
+    await sleep(500)
+    check((await runToggle.getAttribute('aria-expanded')) === 'true', 'run rows: Enter opens the details')
+    check((await detailHidden()) === 'visible', 'run rows: the open detail shows its controls', await detailHidden())
+    check((await focusInfo()).testid === 'usage-run-toggle', 'run rows: focus stays on the toggle')
+    await page.keyboard.press('Enter')
+    await sleep(400)
+    check((await runToggle.getAttribute('aria-expanded')) === 'false', 'run rows: Enter closes them again')
+  } else skip('run row toggle', 'no Runs worth a look rows in the seed')
+
   // ---------- 5. States ----------
   await clearAll()
   await T('usage-period').getByText('Last month', { exact: true }).click()
   await settle()
   await sleep(500)
   check(await visible('[data-testid=usage-empty]'), 'states: Last month (no runs) shows usage-empty')
+  check(!(await chipKinds()).includes('period') && /Oct|Nov|Sep|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug/.test(await T('usage-period-label').innerText()), 'chips: a non-default period gets no chip; the date text names it', JSON.stringify(await chipKinds()))
   check(await visible('[data-testid=usage-empty-30]'), 'states: the filtered-empty state offers Use 30 days when the period is the cause')
   check((await T('usage-empty-clear').count()) === 0, 'states: with only the period narrowed there is no pointless Clear all (it would keep the period)')
   // Add a project narrowing on top: now Clear all is offered too.
@@ -423,6 +631,74 @@ try {
   check(ks.some((c) => c.kind === 'kind'), 'states: picking Chat in usage-kinds adds the Kind chip', JSON.stringify(ks))
   await clearAll()
 
+  // ---------- 5b. Polish round: Months picker height, Where table fit, scroll kept after Clear all ----------
+  for (const [w, h] of [
+    [1024, 640],
+    [1600, 1000]
+  ]) {
+    await setSize(w, h)
+    await goUsage()
+    await clearAll()
+    const stickyH = () => page.evaluate(() => Math.round(document.querySelector('.usage-sticky')?.getBoundingClientRect().height ?? 0))
+    await T('usage-period').locator('label', { hasText: 'Months' }).click()
+    await settle()
+    const mb = await page.evaluate(() => {
+      const r = (id) => document.querySelector(`[data-testid=${id}]`)?.getBoundingClientRect()
+      const a = r('usage-month')
+      const b = r('usage-month-to')
+      return a && b ? { aTop: Math.round(a.top), bTop: Math.round(b.top) } : null
+    })
+    check(mb && Math.abs(mb.aTop - mb.bTop) <= 2, `polish ${w}: From and To sit on one row`, JSON.stringify(mb))
+    const withMonths = await stickyH()
+    check(withMonths < 130, `polish ${w}: the sticky block stays under 130 px with Months open`, String(withMonths))
+    await T('usage-period').locator('label', { hasText: '30 days' }).click()
+    await settle()
+
+    await whereTab('project')
+    const spendH0 = await page.evaluate(() => Math.round(document.querySelector('[data-testid=usage-spend]').getBoundingClientRect().height))
+    await T('usage-where').locator('summary').click()
+    await sleep(300)
+    const fit = await page.evaluate(() => {
+      const wrap = document.querySelector('[data-testid=usage-where] .usage-table-wrap')
+      return wrap ? { sw: wrap.scrollWidth, cw: wrap.clientWidth } : null
+    })
+    check(fit && fit.sw <= fit.cw + 1, `polish ${w}: the Where table has no inner horizontal scroll`, JSON.stringify(fit))
+    const heads = await T('usage-where').locator('thead th').evaluateAll((els) => els.filter((e) => e.getBoundingClientRect().width > 0).map((e) => (e.textContent ?? '').trim()))
+    check(heads.includes('Runs') && heads.includes('Cost'), `polish ${w}: Runs and Cost stay visible in the Where table`, JSON.stringify(heads))
+    if (w >= 1600) {
+      const hh = await page.evaluate(() => Math.round(document.querySelector('[data-testid=usage-spend]').getBoundingClientRect().height))
+      check(Math.abs(hh - spendH0) <= 2, `polish ${w}: the chart card keeps its height when the Where table opens`, `${spendH0} -> ${hh}`)
+    }
+    await shot(`polish-where-table-${w}`)
+    await T('usage-where').locator('summary').click()
+  }
+  await setSize(1600, 1000)
+  await goUsage()
+  await clearAll()
+  await T('usage-kinds').click()
+  await T('usage-kinds-picker').waitFor({ timeout: 5000 })
+  {
+    const opts = T('usage-kinds-picker').locator('[data-testid=usage-kind-option] input[type=checkbox]')
+    const n = await opts.count()
+    for (let i = 0; i < n; i++) {
+      if (await opts.nth(i).isChecked()) {
+        await opts.nth(i).uncheck({ force: true })
+        break
+      }
+    }
+  }
+  await page.keyboard.press('Escape')
+  await settle()
+  if (await T('usage-clear-all').count()) {
+    await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 500))
+    await sleep(200)
+    const before = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTop ?? 0)
+    await T('usage-clear-all').evaluate((el) => el.click())
+    await settle()
+    const after = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTop ?? 0)
+    check(before > 100 && after >= before - 5, 'polish: Clear all keeps the scroll position', `${before} -> ${after}`)
+  } else skip('Clear all scroll', 'no chip appeared after narrowing kinds')
+
   // ---------- 6. Layout, both sizes and themes ----------
   for (const [w, h] of [
     [1024, 640],
@@ -444,14 +720,31 @@ try {
       const boxes = await page.evaluate(() => {
         const q = (id) => document.querySelector(`[data-testid=${id}]`)?.getBoundingClientRect()
         const r = (b) => (b ? { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) } : null)
-        return { p: r(q('usage-projects-panel')), m: r(q('usage-models')), r: r(q('usage-roles')), f: r(q('usage-filters')) }
+        return { s: r(q('usage-spend')), w: r(q('usage-where')), k: r(q('usage-summary')), f: r(q('usage-filters')) }
       })
-      if (boxes.p && boxes.m && boxes.r) {
-        const sameRow = Math.abs(boxes.p.y - boxes.m.y) < 4 && Math.abs(boxes.m.y - boxes.r.y) < 4 && boxes.p.x < boxes.m.x && boxes.m.x < boxes.r.x
-        const stacked = boxes.m.y > boxes.p.y + boxes.p.h - 2 && boxes.r.y > boxes.m.y + boxes.m.h - 2
-        if (w >= 1600) check(sameRow, `layout ${tag}: the three "Where it went" panels sit side by side`, JSON.stringify(boxes))
-        else check(stacked, `layout ${tag}: the three "Where it went" panels are stacked`, JSON.stringify(boxes))
-      }
+      if (boxes.s && boxes.w) {
+        const beside = Math.abs(boxes.s.y - boxes.w.y) < 4 && boxes.s.x + boxes.s.w <= boxes.w.x && boxes.s.w > boxes.w.w
+        const stacked = boxes.w.y >= boxes.s.y + boxes.s.h - 2
+        if (w >= 1600) check(beside, `layout ${tag}: the spend chart and the wider-than-it "Where it went" card sit side by side`, JSON.stringify(boxes))
+        else check(stacked, `layout ${tag}: "Where it went" sits under the spend chart`, JSON.stringify(boxes))
+      } else check(false, `layout ${tag}: the spend chart and the Where it went card are rendered`, JSON.stringify(boxes))
+      if (boxes.k && boxes.s) check(boxes.s.y < h, `layout ${tag}: the KPI band and the top of the spend chart are in the first view`, JSON.stringify(boxes))
+      if (w >= 1600 && boxes.s && boxes.w) check(Math.abs(boxes.s.h - boxes.w.h) <= 2, `layout ${tag}: the hero cards have equal heights`, JSON.stringify(boxes))
+      const pageH = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollHeight ?? 0)
+      log(`info: layout ${tag}: page content height ${pageH} px`)
+      // Tuned to this seed (Runs worth a look stacks above Cost by tier below a 1500 px container).
+      check(pageH < (w >= 1600 ? 2300 : 2700), `layout ${tag}: the page is shorter than before the rework (2906 / 3881 px)`, String(pageH))
+      const kpi = await page.evaluate(() => [...document.querySelectorAll('[data-testid=usage-summary-item]')].map((e) => Math.round(e.getBoundingClientRect().height)))
+      check(kpi.length === 4 && kpi.every((x) => x < 110), `layout ${tag}: four KPI tiles, each under 110 px high`, JSON.stringify(kpi))
+      const plotShare = await page.evaluate(() => {
+        const card = document.querySelector('[data-testid=usage-spend]')
+        const plot = document.querySelector('[data-testid=usage-spend-plot]')
+        if (!card || !plot) return 0
+        const cs = getComputedStyle(card)
+        const inner = card.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+        return Math.min(plot.getBoundingClientRect().width, card.getBoundingClientRect().width) / inner
+      })
+      check(plotShare >= 0.9, `layout ${tag}: the plot takes at least 90% of the chart card's width`, plotShare.toFixed(2))
       // Sticky bar: constant height, and never covers a focused element after scrolling to it.
       const h0 = boxes.f?.h
       // Scroll to the end, then focus an element far above: the browser scrolls it into view, and scroll-padding-top
@@ -486,15 +779,17 @@ try {
         }
         const q = (s) => document.querySelector(`[data-testid=usage-filters] ${s}`)
         const bar = document.querySelector('[data-testid=usage-filters]')
-        return { period: r(q('[data-testid=usage-period]')), bucket: r(q('[data-testid=usage-bucket]')), projects: r(q('[data-testid=usage-projects]')), kinds: r(q('[data-testid=usage-kinds]')), bar: r(bar), clipped: bar ? bar.scrollWidth > bar.clientWidth + 1 : false }
+        // Group by now sits in the chart header, so only the bar's own controls are checked here.
+        return { period: r(q('[data-testid=usage-period]')), projects: r(q('[data-testid=usage-projects]')), kinds: r(q('[data-testid=usage-kinds]')), bar: r(bar), clipped: bar ? bar.scrollWidth > bar.clientWidth + 1 : false }
       })
       const hit = (a, b) => a && b && a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b
-      const pairs = [['period', 'bucket'], ['period', 'projects'], ['bucket', 'projects'], ['projects', 'kinds']]
+      const pairs = [['period', 'projects'], ['projects', 'kinds']]
+      check((await page.locator('[data-testid=usage-spend] [data-testid=usage-bucket]').count()) === 1, `layout ${tag}: Group by sits in the chart header`)
       const overlapping = pairs.filter(([x, y]) => hit(ctl[x], ctl[y]))
       check(overlapping.length === 0 && !ctl.clipped && ctl.period && ctl.projects, `layout ${tag}: the filter bar controls do not overlap or clip`, JSON.stringify({ overlapping, ctl }))
       if (ctl.period && ctl.projects) {
-        if (w >= 1600) check(Math.abs(ctl.projects.t - ctl.period.t) < 40, `layout ${tag}: the filter bar fits in one band at 1600`, JSON.stringify(ctl))
-        else check(ctl.kinds && ctl.kinds.t >= ctl.period.b - 2, `layout ${tag}: the filter bar wraps to two rows at 1024`, JSON.stringify(ctl))
+        // Dashboard rework: Group by moved into the chart header, so the bar is one row at both sizes.
+        check(Math.abs(ctl.projects.t - ctl.period.t) < 40 && ctl.bar && ctl.bar.b - ctl.bar.t < 56, `layout ${tag}: the filter bar is one row under 56 px`, JSON.stringify(ctl))
       }
       await shot(`page-${w}-${theme}`)
       await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 99999))

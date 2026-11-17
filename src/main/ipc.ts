@@ -29,6 +29,8 @@ import { HostDispatcher } from './host/dispatcher'
 import { runLeased } from './host/mutationLease'
 import type { HostActivityTrackerApi, HostDispatchEnv, HostServices } from './host/types'
 import { installCommandText, installTag, type CliInstallService } from './host/cliInstaller'
+import { UPDATES_IPC, type UpdateActionResult, type UpdateState } from '@shared/types'
+import { updateInstallArgs, type UpdateController } from './updater'
 
 /**
  * What registerIpc serves: the host services (host/types.ts HostServices; the shared field docs live there) plus the
@@ -50,6 +52,8 @@ export interface IpcServices extends Omit<HostServices, 'desktop'> {
    * progress goes to the calling window and a closed window cancels its clone. Absent = the channels are not registered.
    */
   repoClone?: RepoCloneService
+  /** The desktop updater (updater.ts). Absent = the updates:* channels are not registered (tests). */
+  updates?: UpdateController
 }
 
 export { harnessProjectFor, withEffectiveDefault } from './host/args'
@@ -123,7 +127,12 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
   OUTPUTS_IPC.outputsOpen,
   OUTPUTS_IPC.outputsReveal,
   OUTPUTS_IPC.outputsSaveAs,
-  OUTPUTS_IPC.outputsSaveImage
+  OUTPUTS_IPC.outputsSaveImage,
+  UPDATES_IPC.updatesGet,
+  UPDATES_IPC.updatesCheck,
+  UPDATES_IPC.updatesDownload,
+  UPDATES_IPC.updatesInstall,
+  UPDATES_IPC.updatesOpenReleasePage
 ]
 
 /**
@@ -164,7 +173,14 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
   [OUTPUTS_IPC.outputsReveal]: false,
   [OUTPUTS_IPC.outputsSaveAs]: false,
   // The path comes from the native save dialog; the write is temp + rename beside the destination (like saveAs).
-  [OUTPUTS_IPC.outputsSaveImage]: false
+  [OUTPUTS_IPC.outputsSaveImage]: false,
+  // The desktop updater: reading the state, checking and opening the fixed release page change nothing here; a
+  // download writes electron-updater's cache and an install starts the quit.
+  [UPDATES_IPC.updatesGet]: false,
+  [UPDATES_IPC.updatesCheck]: false,
+  [UPDATES_IPC.updatesDownload]: true,
+  [UPDATES_IPC.updatesInstall]: true,
+  [UPDATES_IPC.updatesOpenReleasePage]: false
 }
 
 /**
@@ -305,6 +321,42 @@ export function registerIpc(services: IpcServices): void {
   if (kit) registerKitIpc(activity, kit)
   if (services.repoClone) registerRepoIpc(activity, services.repoClone)
   registerOutputsIpc({ outputs: services.outputs, projects, dataDir: settings.dataDir, handleReadOnly, watcher: services.outputWatcher })
+  if (services.updates) registerUpdatesIpc(activity, services.updates)
+}
+
+// ---- Desktop updater (updater.ts); desktop only ----
+
+/** The sender is one of this app's windows (a webContents without a BrowserWindow, e.g. a webview, is refused). */
+function requireAppWindow(e: IpcMainInvokeEvent): void {
+  const win = e?.sender ? BrowserWindow.fromWebContents(e.sender) : null
+  if (!win || win.isDestroyed()) throw new Error('Refused: not an OrgAI window.')
+}
+
+/**
+ * updates:*. No handler takes a URL, path or version: get / check / download take nothing, install takes only
+ * `{ force?: true }` (updateInstallArgs), openReleasePage opens the page main built. Exported for tests.
+ */
+export function registerUpdatesIpc(activity: HostActivityTrackerApi, updates: UpdateController): void {
+  handleReadOnly(UPDATES_IPC.updatesGet, (e): UpdateState => {
+    requireAppWindow(e)
+    return updates.state()
+  })
+  handleReadOnly(UPDATES_IPC.updatesCheck, (e): Promise<UpdateState> => {
+    requireAppWindow(e)
+    return updates.check()
+  })
+  handleMutating(activity, UPDATES_IPC.updatesDownload, (e): UpdateActionResult => {
+    requireAppWindow(e)
+    return updates.download()
+  })
+  handleMutating(activity, UPDATES_IPC.updatesInstall, (e, input: unknown): UpdateActionResult => {
+    requireAppWindow(e)
+    return updates.install(updateInstallArgs(input))
+  })
+  handleReadOnly(UPDATES_IPC.updatesOpenReleasePage, (e): void => {
+    requireAppWindow(e)
+    updates.openReleasePage()
+  })
 }
 
 // ---- Start a project from a repository (clone or fork); desktop only ----

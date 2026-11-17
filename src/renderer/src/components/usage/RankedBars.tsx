@@ -1,8 +1,23 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import type { KeyboardEvent, ReactElement, ReactNode } from 'react'
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties, KeyboardEvent, ReactElement, ReactNode } from 'react'
 import { costView, type CostInput } from '../../lib/cost'
+import { useReducedMotion } from '../../lib/canvas'
+import { tokenMs } from '../../lib/useExitPresence'
 import { costFigureText } from '../../lib/usageCharts'
+import { enterIndex, flipPlan } from './rankFlip'
 import '../../styles/usage-charts.css'
+
+/** Rows shown before "Show all N" in every Where it went tab. */
+export const RANK_TOP = 5
+
+/** True for a short while after the user changed the Where it went tab: the rows rise in and the bars draw. */
+export const RankEnterContext = createContext(false)
+/**
+ * The filters the user last chose (a stable string). A reorder glides only within REORDER_ARM_MS of it changing, so a
+ * silent refresh that reorders rows never animates (Reviewer M2).
+ */
+export const RankArmContext = createContext('')
+const REORDER_ARM_MS = 5000
 
 /** One cost figure on the page: "No price" for unknown (never $0), "+" and "~" as costView says, full value in the title. */
 export function CostText({ value, title }: { value: CostInput; title?: string }): ReactElement {
@@ -59,6 +74,8 @@ export interface RankedItem {
   selected?: boolean
   /** Extra sr-only text inside the button. */
   srText?: string
+  /** The series key this row stands for (compared with `highlighted`); defaults to `id`. */
+  seriesKey?: string
 }
 
 /** A horizontal bar in a row: solid, solid + hatched end (partial), or a dashed stub (unknown). */
@@ -95,7 +112,9 @@ export function RankedBars({
   rowTestId,
   onActivate,
   onMenu,
-  moreLabel
+  moreLabel,
+  onHover,
+  highlighted
 }: {
   label: string
   items: RankedItem[]
@@ -104,10 +123,54 @@ export function RankedBars({
   /** Open the row menu on the row's button (Right, Shift+F10, the Menu key, or the More button). */
   onMenu?: (item: RankedItem, anchor: HTMLElement) => void
   moreLabel?: (item: RankedItem) => string
+  /** Pointer enter or focus on a row passes its item; leaving the list (pointer or focus) passes null. Never announced. */
+  onHover?: (item: RankedItem | null) => void
+  /** A series key; rows whose `seriesKey` (or id) equals it get data-highlight. */
+  highlighted?: string | null
 }): ReactElement {
   const refs = useRef(new Map<string, HTMLButtonElement>())
   const [active, setActive] = useState<string | null>(null)
   const current = items.some((i) => i.id === active) ? active : (items[0]?.id ?? null)
+  const enter = useContext(RankEnterContext)
+  const reduced = useReducedMotion()
+  const listRef = useRef<HTMLUListElement>(null)
+  const lastLayout = useRef<{ keys: string[]; tops: Map<string, number> }>({ keys: [], tops: new Map() })
+  const arm = useContext(RankArmContext)
+  const armSeen = useRef({ arm, at: 0 })
+  // A highlight dims the other rows only while some row matches it.
+  const hlOn = highlighted != null && items.some((it) => (it.seriesKey ?? it.id) === highlighted)
+
+  // FLIP (plan M10): the same rows in a new order glide from their old place (transform only, at most 8, none when
+  // motion is reduced). offsetTop ignores any transform still running, so a second reorder starts from the real layout.
+  useLayoutEffect(() => {
+    const ul = listRef.current
+    if (!ul) return
+    if (armSeen.current.arm !== arm) armSeen.current = { arm, at: performance.now() }
+    const keys = items.map((it) => it.id)
+    // Same rows in the same order (hover, highlight, a refresh that kept the ranking): nothing to measure.
+    if (keys.length === lastLayout.current.keys.length && keys.every((k, i) => k === lastLayout.current.keys[i])) return
+    const armed = performance.now() - armSeen.current.at <= REORDER_ARM_MS
+    const tops = new Map<string, number>()
+    const els = Array.from(ul.children) as HTMLElement[]
+    keys.forEach((k, i) => {
+      const el = els[i]
+      if (el) tops.set(k, el.offsetTop)
+    })
+    const prev = lastLayout.current
+    lastLayout.current = { keys, tops }
+    if (!armed || reduced || typeof Element === 'undefined' || typeof Element.prototype.animate !== 'function') return
+    const ms = tokenMs('--dur-slow')
+    if (ms <= 1) return
+    const plan = flipPlan(prev.keys, keys, prev.tops, tops)
+    if (plan.length === 0) return
+    const easing = getComputedStyle(document.documentElement).getPropertyValue('--ease-in-out').trim() || 'ease-in-out'
+    for (const m of plan) {
+      const el = els[keys.indexOf(m.key)]
+      if (!el) continue
+      for (const a of el.getAnimations()) a.cancel()
+      el.animate([{ transform: `translateY(${m.delta}px)` }, { transform: 'none' }], { duration: ms, easing })
+    }
+  })
 
   const focusAt = (i: number): void => {
     const it = items[Math.max(0, Math.min(items.length - 1, i))]
@@ -130,14 +193,33 @@ export function RankedBars({
   }
 
   return (
-    <ul className="uc-rank" aria-label={label}>
-      {items.map((item, i) => (
+    <ul
+      ref={listRef}
+      className="uc-rank"
+      data-hl={hlOn ? 'on' : undefined}
+      data-enter={enter ? 'true' : undefined}
+      aria-label={label}
+      onPointerLeave={onHover ? () => onHover(null) : undefined}
+      onBlur={
+        onHover
+          ? (e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onHover(null)
+            }
+          : undefined
+      }
+    >
+      {items.map((item, i) => {
+        const stagger = enter ? enterIndex(i) : null
+        return (
         <li
           key={item.id}
-          className="uc-rank-row"
+          className={stagger === null ? 'uc-rank-row' : 'uc-rank-row motion-enter'}
+          style={stagger === null ? undefined : ({ '--i': stagger } as CSSProperties)}
           data-testid={rowTestId}
           data-state={item.state}
           data-selected={item.selected ? 'true' : undefined}
+          data-highlight={highlighted != null && (item.seriesKey ?? item.id) === highlighted ? 'true' : undefined}
+          onPointerEnter={onHover ? () => onHover(item) : undefined}
           {...Object.fromEntries(Object.entries(item.data).map(([k, v]) => [`data-${k}`, v]))}
         >
           <button
@@ -148,7 +230,10 @@ export function RankedBars({
               if (el) refs.current.set(item.id, el)
               else refs.current.delete(item.id)
             }}
-            onFocus={() => setActive(item.id)}
+            onFocus={() => {
+              setActive(item.id)
+              onHover?.(item)
+            }}
             onClick={() => onActivate(item)}
             onKeyDown={(e) => onKey(e, item, i)}
             onContextMenu={(e) => {
@@ -191,7 +276,8 @@ export function RankedBars({
           )}
           {item.extra}
         </li>
-      ))}
+        )
+      })}
     </ul>
   )
 }

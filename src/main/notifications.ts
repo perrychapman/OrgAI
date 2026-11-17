@@ -2,6 +2,7 @@ import { app, BrowserWindow, Notification } from 'electron'
 import type { FocusRunTarget, RunEvent, RunKind, RunPlan } from '@shared/types'
 import { DEFAULT_MAX_AUTO_CONTINUES, IPC, QUICK_PROJECT_ID } from '@shared/types'
 import { pickFocusWindow } from './windowScope'
+import { APP_USER_MODEL_ID } from './appIdentity'
 
 /** What the notifier knows about a run. */
 export interface NotifierRun {
@@ -26,6 +27,8 @@ export interface NotifierDeps {
    * and a save takes effect at once.
    */
   enabled(): boolean
+  /** Absolute PNG path for Linux notifications; never used on Windows or macOS. */
+  iconPath?(): string | undefined
 }
 
 /**
@@ -44,7 +47,14 @@ export class Notifier {
   private alive = new Set<Notification>()
 
   constructor(private deps: NotifierDeps) {
-    if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
+    if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID)
+  }
+
+  /** Linux only: the notification daemon has no app identity to take a logo from. Windows and macOS use the app identity. */
+  private iconOption(): { icon?: string } {
+    if (process.platform !== 'linux') return {}
+    const icon = this.deps.iconPath?.()
+    return icon ? { icon } : {}
   }
 
   /** Stop the taskbar flash once the user comes back. */
@@ -91,7 +101,8 @@ export class Notifier {
     const notification = new Notification({
       title: this.deps.projectName(run.projectId) ?? 'OrgAI',
       body,
-      urgency: isRequest ? 'critical' : 'normal'
+      urgency: isRequest ? 'critical' : 'normal',
+      ...this.iconOption()
     })
     const target: FocusRunTarget = { projectId: run.projectId, runId: event.runId }
     const release = (): void => {
@@ -100,6 +111,34 @@ export class Notifier {
     notification.on('click', () => {
       release()
       this.focus(target)
+    })
+    notification.on('close', release)
+    this.alive.add(notification)
+    notification.show()
+  }
+
+  /**
+   * A notice that is not a run event (Schedules: a start that failed, a schedule paused after failures or a lost
+   * project). OrgAI-written text only. Honours AppSettings.notifications; shown whether or not a window is focused,
+   * since nobody was there when it happened. A click focuses the run when one is named, else the main window.
+   */
+  notice(input: { title: string; body: string; target?: FocusRunTarget }): void {
+    if (!this.deps.enabled() || !Notification.isSupported()) return
+    const notification = new Notification({ title: input.title.slice(0, 120), body: input.body.slice(0, 240), urgency: 'normal', ...this.iconOption() })
+    const release = (): void => {
+      this.alive.delete(notification)
+    }
+    notification.on('click', () => {
+      release()
+      if (input.target) this.focus(input.target)
+      else {
+        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+        if (win) {
+          if (win.isMinimized()) win.restore()
+          win.show()
+          win.focus()
+        }
+      }
     })
     notification.on('close', release)
     this.alive.add(notification)

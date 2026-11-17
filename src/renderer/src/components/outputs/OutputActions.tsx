@@ -1,10 +1,11 @@
 import type { KeyboardEvent, ReactElement } from 'react'
-import { useId, useState } from 'react'
-import { Copy, ExternalLink, FolderOpen, Link2, MessageSquareQuote, MoreHorizontal, Pencil, Save, Trash2, X } from 'lucide-react'
+import { useId, useRef, useState } from 'react'
+import { Copy, ExternalLink, FolderOpen, Link2, MessageSquareQuote, MoreHorizontal, Pencil, Save, SquarePen, Trash2, X } from 'lucide-react'
 import { OUTPUT_DESCRIPTION_MAX_CHARS, OUTPUT_TITLE_MAX_CHARS, type OutputReviseResult, type RunOutput } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { canDeleteOutput, canOpenOutput, canReviseFallback, mergeOutput, previewCacheFor, previewKey } from '../../lib/outputs'
 import { forgetBody } from '../../lib/outputVersions'
+import { menuLeadActions, type PrimaryAction } from '../../lib/outputToolbar'
 import { COPY_FAILED, SOURCE_COPIED } from '../../lib/diagramExport'
 import { cleanIpcError } from '../../lib/ipcError'
 import { HIDDEN_OR_CONTROL_RUN, showHidden } from '../../lib/hiddenChars'
@@ -21,9 +22,9 @@ import { useOutputDetail } from './outputDetailContext'
 import '../../styles/outputs.css'
 
 /** Arrow keys, Home and End move between the menu's items (the Popover focuses the first one on open). */
-function onMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
+export function onMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return
-  const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role=menuitem]:not(:disabled)'))
+  const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role=menuitem]:not(:disabled), [role=menuitemradio]:not(:disabled)'))
   if (items.length === 0) return
   e.preventDefault()
   const at = items.indexOf(document.activeElement as HTMLButtonElement)
@@ -36,6 +37,21 @@ const plainTitle = (s: string): string => s.replace(HIDDEN_OR_CONTROL_RUN, '').t
 
 /** Kinds whose preview is the file's own text, so "Copy source" has something to copy. */
 const SOURCE_KINDS: ReadonlySet<string> = new Set(['markdown', 'text', 'csv', 'json', 'mermaid', 'svg'])
+
+/**
+ * What the detail's toolbar already shows, so More adds only the rest: the primary action and the controls the detail
+ * owns (edit, edit in the Office app). Absent in the run side tab rows, where More keeps its own items.
+ */
+export interface OutputActionsLead {
+  primary: PrimaryAction | null
+  /** In-app Edit is offered right now. */
+  canEdit: boolean
+  /** Name of the Office app ("Word") when Edit in it is offered on the shown version, else null. */
+  editExternalApp: string | null
+  editExternalTitle?: string
+  onEdit(): void
+  onEditExternal(): void
+}
 
 export const OUTPUT_OPEN_HINT = 'OrgAI does not open this kind of file. Show it in its folder instead.'
 
@@ -100,13 +116,16 @@ function RenameDialog({ output, onClose, onDone }: { output: RunOutput; onClose(
 export default function OutputActions({
   output,
   onRemoved,
-  onNotice
+  onNotice,
+  lead
 }: {
   output: RunOutput
   onRemoved?: (id: string) => void
   onNotice?: (text: string) => void
+  lead?: OutputActionsLead
 }): ReactElement {
   const uid = useId()
+  const wrap = useRef<HTMLSpanElement>(null)
   const ctx = useOutputDetail()
   const { confirm, dialog } = useConfirm()
   const { deleteOutputs, dialog: deleteDialog } = useDeleteOutputs()
@@ -163,8 +182,20 @@ export default function OutputActions({
     })
   }
 
-  const item = (testId: string, icon: typeof FolderOpen, label: string, onClick: () => void, danger?: boolean): ReactElement => (
-    <button type="button" role="menuitem" className={`output-menuitem${danger ? ' danger' : ''}`} data-testid={testId} onClick={onClick}>
+  // An item that opens a dialog or a mode: focus goes back to the More button first, so the dialog (or the editor) returns
+  // focus to a control that stays mounted, never to the menu item that is about to leave.
+  const item = (testId: string, icon: typeof FolderOpen, label: string, onClick: () => void, danger?: boolean, title?: string): ReactElement => (
+    <button
+      type="button"
+      role="menuitem"
+      className={`output-menuitem${danger ? ' danger' : ''}`}
+      data-testid={testId}
+      title={title}
+      onClick={() => {
+        wrap.current?.querySelector<HTMLElement>('[data-testid=output-more]')?.focus({ preventScroll: true })
+        onClick()
+      }}
+    >
       <Icon icon={icon} size="sm" />
       {label}
     </button>
@@ -174,9 +205,12 @@ export default function OutputActions({
     if (ctx) ctx.openRevise()
     else setRevising(true)
   }
+  const avail = { canEdit: lead?.canEdit ?? false, canEditExternal: lead?.editExternalApp != null, canOpen: open, canRevise: canReviseFallback(output) }
+  const inMenu = lead ? menuLeadActions(lead.primary, avail) : { edit: false, editExternal: false, open: avail.canOpen, revise: avail.canRevise }
+  const reviseLabel = ctx && !ctx.isCurrent ? 'Ask the team to revise the current version…' : 'Ask the team to revise…'
   const hintId = !open && !missing ? `${uid}-open-hint` : undefined
   return (
-    <>
+    <span className="output-actions-wrap" ref={wrap}>
       {hintId && (
         <span id={hintId} className="sr-only">
           {OUTPUT_OPEN_HINT}
@@ -196,7 +230,10 @@ export default function OutputActions({
       >
         {({ close }) => (
           <div className="output-menu" role="presentation" onKeyDown={onMenuKey}>
-            {open && item('output-open', ExternalLink, 'Open', () => { close(); void shell(() => window.orgai.outputs.open(ref)) })}
+            {lead && inMenu.edit && item('output-edit', Pencil, 'Edit', () => { close(); lead.onEdit() })}
+            {lead && inMenu.editExternal && item('output-edit-external', SquarePen, `Edit in ${lead.editExternalApp}`, () => { close(); lead.onEditExternal() }, false, lead.editExternalTitle)}
+            {inMenu.open && item('output-open', ExternalLink, 'Open', () => { close(); void shell(() => window.orgai.outputs.open(ref)) })}
+            {inMenu.revise && item('output-revise', MessageSquareQuote, reviseLabel, () => { close(); revise() })}
             {!open && !missing && (
               <p className="output-menu-hint" data-testid="output-open-hint" aria-hidden="true">
                 {OUTPUT_OPEN_HINT}
@@ -220,7 +257,7 @@ export default function OutputActions({
             })}
             {item('output-rename', Pencil, 'Rename…', () => { close(); setRenaming(true) })}
             {!missing && SOURCE_KINDS.has(output.kind) && item('output-copy-source', Copy, 'Copy source', () => { close(); copySource() })}
-            {canReviseFallback(output) && item('output-revise-item', MessageSquareQuote, 'Ask the team to revise…', () => { close(); revise() })}
+            <div className="output-menu-sep" role="separator" />
             {item('output-forget', X, 'Remove from list', () => {
               close()
               void run(async () => {
@@ -279,6 +316,6 @@ export default function OutputActions({
       )}
       {dialog}
       {deleteDialog}
-    </>
+    </span>
   )
 }

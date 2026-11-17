@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { RULES, SMOKE, ciPlan, changedFilesBetween, globToRegExp, loadChain, parseArgs, parseChain, selectE2e } from './e2e-select.mjs'
+import { RULES, SMOKE, ciPlan, changedFilesBetween, globToRegExp, loadChain, parseArgs, parseChain, runScripts, selectE2e } from './e2e-select.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const all = loadChain()
@@ -71,7 +71,23 @@ test('a narrow main change selects its scripts plus the smoke set', () => {
   assert.equal(r.mode, 'selected')
   assert.deepEqual(r.scripts, all.filter((s) => ['clone-start', ...SMOKE].includes(s)))
   const cli = sel('src/cli/commands/exec.ts')
-  assert.deepEqual(cli.scripts, all.filter((s) => ['cli-exec', ...SMOKE].includes(s)))
+  assert.deepEqual(cli.scripts, all.filter((s) => ['cli-exec', 'cli-org-evolve', ...SMOKE].includes(s)))
+  const evolve = sel('src/main/evolve/ratchet.ts')
+  assert.deepEqual(evolve.scripts, all.filter((s) => ['cli-org-evolve', ...SMOKE].includes(s)))
+  // The desktop updater: the menu and updates scripts plus the smoke set; its test files alone select nothing.
+  for (const f of ['src/main/updater.ts', 'src/main/updaterRuntime.ts', 'src/main/updaterMock.ts']) {
+    assert.deepEqual(sel(f).scripts, all.filter((s) => ['menu', 'updates', ...SMOKE].includes(s)), f)
+  }
+  assert.deepEqual(sel('src/main/updater.test.ts').scripts, [])
+  // Its renderer side: updates.mjs plus the smoke set.
+  for (const f of ['src/renderer/src/components/updates/UpdatesSection.tsx', 'src/renderer/src/components/updates/UpdateNotice.tsx', 'src/renderer/src/lib/updates.ts', 'src/renderer/src/store/updatesStore.ts', 'src/renderer/src/styles/updates.css']) {
+    assert.deepEqual(sel(f).scripts, all.filter((s) => ['updates', ...SMOKE].includes(s)), f)
+  }
+  assert.deepEqual(sel('src/renderer/src/lib/updates.test.ts').scripts, [])
+  assert.ok(sel('src/renderer/src/views/AppSettingsView.tsx').scripts.includes('updates'))
+  assert.ok(sel('src/renderer/src/lib/menuActions.ts').scripts.includes('updates'))
+  // The release-only metadata merge script selects nothing (not even the smoke set).
+  assert.deepEqual(sel('scripts/merge-latest-mac.mjs').scripts, [])
 })
 
 test('brace globs and first-match order work', () => {
@@ -91,6 +107,15 @@ test('a changed e2e script selects itself plus the smoke set', () => {
   assert.equal(sel('e2e/brandNewHelper.mjs').mode, 'full')
   // spend-tokens scripts never run in CI
   assert.deepEqual(sel('e2e/setup.mjs').scripts, [])
+})
+
+test('Schedules files select schedules.mjs; the broad shared rule still forces full for other shared files', () => {
+  for (const p of ['src/shared/schedule.ts', 'src/shared/view/schedules.ts', 'src/main/schedules/scheduler.ts', 'src/renderer/src/components/schedules/ScheduleRow.tsx', 'src/renderer/src/views/SchedulesView.tsx', 'src/renderer/src/components/proposals/SchedulesProposalBody.tsx', 'e2e/schedules.mjs']) {
+    const r = sel(p)
+    assert.equal(r.mode, 'selected', p)
+    assert.ok(r.scripts.includes('schedules'), p)
+  }
+  assert.equal(sel('src/shared/types.ts', 'src/shared/schedule.ts').mode, 'full')
 })
 
 test('e2e helper parts map to the script that calls them', () => {
@@ -251,6 +276,58 @@ test('the CLI exits non-zero on an empty chain', async () => {
   assert.equal(r.status, 2)
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { 'e2e:free': 'node e2e/a.mjs && echo hi' } }))
   assert.equal(spawnSync(process.execPath, [join(dir, 'scripts', 'e2e-select.mjs'), '--full'], { encoding: 'utf8' }).status, 2)
+})
+
+test('runScripts keeps going after a failure and lists every failed script', async () => {
+  const lines = []
+  const out = { log: (m) => lines.push(m), error: (m) => lines.push(m) }
+  const ran = []
+  const codes = { a: { code: 0 }, b: { code: 3 }, c: { code: 0 }, d: { code: 1, timedOut: true }, e: { code: 0 } }
+  const failed = await runScripts(['a', 'b', 'c', 'd', 'e'], async (name) => (ran.push(name), codes[name]), out)
+  assert.deepEqual(ran, ['a', 'b', 'c', 'd', 'e'], 'a failing script does not stop the chain')
+  assert.deepEqual(failed, [{ name: 'b', code: 3, timedOut: false }, { name: 'd', code: 1, timedOut: true }])
+  const text = lines.join('\n')
+  assert.match(text, /e2e\/b\.mjs failed with exit code 3/)
+  assert.match(text, /e2e summary: 2 of 5 scripts failed/)
+  assert.match(text, /FAILED b: exit code 3/)
+  assert.match(text, /FAILED d: timed out/)
+  assert.doesNotMatch(text, /FAILED (a|c|e)\b/)
+  // A runner that throws is a failure of that script, not of the chain.
+  const thrown = await runScripts(['x', 'y'], async (name) => { if (name === 'x') throw new Error('spawn failed'); return { code: 0 } }, out)
+  assert.deepEqual(thrown, [{ name: 'x', code: 1, timedOut: false }])
+  assert.deepEqual(await runScripts(['p'], async () => ({ code: 0 }), out), [])
+})
+
+test('--run runs every script, ends a hung one at its limit, and exits 1 when any failed', async () => {
+  const { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { spawnSync } = await import('node:child_process')
+  const dir = mkdtempSync(join(tmpdir(), 'e2e-select-run-'))
+  try {
+    mkdirSync(join(dir, 'scripts'))
+    mkdirSync(join(dir, 'e2e'))
+    copyFileSync(join(ROOT, 'scripts', 'e2e-select.mjs'), join(dir, 'scripts', 'e2e-select.mjs'))
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { 'e2e:free': 'node e2e/ok1.mjs && node e2e/bad.mjs && node e2e/hang.mjs && node e2e/ok2.mjs' } }))
+    writeFileSync(join(dir, 'e2e', 'ok1.mjs'), "console.log('RAN ok1')\n")
+    writeFileSync(join(dir, 'e2e', 'bad.mjs'), "console.log('RAN bad')\nprocess.exit(3)\n")
+    writeFileSync(join(dir, 'e2e', 'hang.mjs'), "console.log('RAN hang')\nsetInterval(() => {}, 1000)\n")
+    writeFileSync(join(dir, 'e2e', 'ok2.mjs'), "console.log('RAN ok2')\n")
+    const r = spawnSync(process.execPath, [join(dir, 'scripts', 'e2e-select.mjs'), '--full', '--run'], { encoding: 'utf8', env: { ...process.env, E2E_SCRIPT_TIMEOUT_MS: '2000' }, timeout: 60_000 })
+    assert.equal(r.status, 1)
+    for (const name of ['ok1', 'bad', 'hang', 'ok2']) assert.match(r.stdout, new RegExp(`RAN ${name}`), `${name} ran`)
+    assert.match(r.stderr, /e2e\/bad\.mjs failed with exit code 3/)
+    assert.match(r.stderr, /e2e\/hang\.mjs timed out/)
+    assert.match(r.stderr, /e2e summary: 2 of 4 scripts failed/)
+    assert.match(r.stderr, /FAILED bad: exit code 3/)
+    assert.match(r.stderr, /FAILED hang: timed out/)
+    // All passing: exit 0.
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { 'e2e:free': 'node e2e/ok1.mjs && node e2e/ok2.mjs' } }))
+    const ok = spawnSync(process.execPath, [join(dir, 'scripts', 'e2e-select.mjs'), '--full', '--run'], { encoding: 'utf8', timeout: 60_000 })
+    assert.equal(ok.status, 0)
+    assert.match(ok.stdout, /e2e summary: all 2 scripts passed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('file names cannot forge log lines', () => {

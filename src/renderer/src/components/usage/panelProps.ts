@@ -2,8 +2,10 @@
  * Props every Usage page panel takes (docs/design/usage-app.md sections 6, 7). UsageView owns the state and passes
  * these down; panels never read the store's usage filters themselves, so a panel renders from its props alone.
  */
+import type { ReactNode } from 'react'
 import type { UsageOverview, UsageOverviewTrendPoint } from '@shared/types'
 import type { PeriodSpan, UsageBucket, UsageData, UsageFilters, UsageNarrowing } from '../../lib/usageOverview'
+import type { Metric } from '../../lib/usageCharts'
 
 /** "Runs worth a look" sort (6.6). 'no-result' is the default when the data carries noResultCostUsd. */
 export type WastefulSort = 'no-result' | 'cost' | 'cache' | 'retries' | 'nudges' | 'idle'
@@ -30,4 +32,40 @@ export interface UsagePanelProps {
   periodTrend?: UsageOverviewTrendPoint[]
   /** SpendPanel only: Esc on a bar while a day is picked removes the day chip. */
   onClearBucket?: () => void
+}
+
+/**
+ * Row-to-series highlight (dashboard increment 2): a project id (or OTHER_KEY) the user is pointing at or focusing in
+ * the "Where it went" card or the legend; the spend chart dims every other series. Null when nothing is pointed at.
+ * Owned by UsageView; never announced (the row or legend entry under focus already says its name).
+ */
+export interface SeriesHighlightProps {
+  highlight: string | null
+  onHighlight: (key: string | null) => void
+}
+
+/** What UsageView passes to SpendPanel on top of UsagePanelProps (all state lives in the view). */
+export interface SpendInteractionProps extends SeriesHighlightProps {
+  /** The metric in force (lib/usageDashboard.ts resolveMetric); the KPI tiles and the chart's own switch both set it. */
+  metric: Metric
+  onMetric: (m: Metric) => void
+  /** True when no bucket has a known price (usageCharts allUnpriced on the period trend). */
+  unpriced: boolean
+  /** Legend keys (project ids, OTHER_KEY) hidden from the stack; the scale recomputes from what is shown. */
+  hidden: ReadonlySet<string>
+  /** Toggle one legend series; the view refuses hiding the last one and announces through usage-live. */
+  onToggleSeries: (key: string, name: string) => void
+  /** Previous-period overlay on (off by default, not persisted). */
+  overlay: boolean
+  onOverlay: (on: boolean) => void
+  /** The previous equal span's trend (already fetched by useUsageOverview) and its span; null while unknown. */
+  previousTrend: UsageOverviewTrendPoint[] | null
+  previousSpan: PeriodSpan | null
+  /** Increment 3: the Group by control, rendered by the view (it changes filters) and placed in the chart header. */
+  groupBy?: ReactNode
+  /**
+   * Increment 3 sparkline scrub: a bucket slot index (the same fillBuckets slots the chart draws) a KPI sparkline is
+   * pointing at, or null. The chart shows its crosshair and tooltip there while it is set (pointer only, instant).
+   */
+  scrubIndex: number | null
 }

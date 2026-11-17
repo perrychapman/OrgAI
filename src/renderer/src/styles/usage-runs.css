@@ -1,0 +1,126 @@
+/*
+ * Expandable run rows in "Runs worth a look" and "All runs" (docs/design/usage-app.md, plan 2.7 / M11). Tokens only.
+ * The detail row is a `.motion-collapse` grid (motion.css): height 0fr to 1fr over --dur-base, closed content hidden
+ * with visibility, chevron rotation over --dur-fast. Reduced motion: both selectors below.
+ */
+
+.usage-run-toggle {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 22px;
+  block-size: 22px;
+  margin-inline-end: var(--space-1);
+  vertical-align: middle;
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.usage-run-toggle:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.usage-run-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.usage-run-toggle svg {
+  transition: rotate var(--dur-fast) var(--ease-out);
+}
+.usage-run-toggle[aria-expanded='true'] svg {
+  rotate: 90deg;
+}
+
+/* Detail row: no height of its own while closed. */
+.usage-tbl .usage-run-detail-row > td {
+  padding: 0;
+  border-bottom: 0;
+  white-space: normal;
+}
+.usage-tbl .usage-run-detail-row[data-open='true'] > td {
+  border-bottom: 1px solid var(--border-subtle);
+}
+.usage-run-detail-body {
+  position: sticky;
+  left: 0;
+  inline-size: min(40rem, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3) calc(var(--space-3) + 22px + var(--space-1));
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.usage-run-why,
+.usage-run-unpriced {
+  margin: 0;
+  color: var(--text-primary);
+}
+.usage-run-unpriced {
+  color: var(--text-secondary);
+}
+.usage-run-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-5);
+  margin: 0;
+}
+.usage-run-facts > div {
+  display: flex;
+  gap: var(--space-2);
+}
+.usage-run-facts dt {
+  color: var(--text-secondary);
+}
+.usage-run-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Runs worth a look: the one-line "Why", the kind chip and the status dot beside the name. */
+.usage-why-clip {
+  display: inline-block;
+  max-inline-size: 24rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.usage-run-kind {
+  margin-inline-start: var(--space-2);
+}
+.usage-status-dot {
+  display: inline-block;
+  flex: none;
+  inline-size: 8px;
+  block-size: 8px;
+  margin-inline-start: var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+  vertical-align: middle;
+}
+.usage-status-dot[data-tone='ok'] {
+  background: var(--success);
+}
+.usage-status-dot[data-tone='bad'] {
+  background: var(--danger);
+}
+.usage-status-dot[data-tone='live'] {
+  background: var(--accent);
+}
+
+:root[data-reduce-motion='on'] .usage-run-toggle svg,
+:root[data-reduce-motion='on'] .usage-run-detail,
+:root[data-reduce-motion='on'] .usage-run-detail > * {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-run-toggle svg,
+  .usage-run-detail,
+  .usage-run-detail > * {
+    transition: none;
+  }
+}

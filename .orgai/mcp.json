@@ -91,17 +91,9 @@
       "description": "Search 12,000+ shadcn/ui blocks from 130+ registries, free and paid, with install commands.",
       "enabled": true,
       "roles": [
-        "adapter-engineer",
-        "orchestrator",
         "product-designer",
-        "qa-engineer",
-        "researcher",
-        "reviewer",
-        "runtime-engineer",
-        "runtime-lead",
         "ui-engineer",
-        "ui-lead",
-        "ux-researcher"
+        "ui-lead"
       ],
       "fromLibrary": true,
       "registry": {

@@ -14,9 +14,10 @@ import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HostOwnershipError, acquireHostOwnership } from './ownership'
 import { readProcessTable } from './shutdown'
+import { VITE_NODE_CLI } from './testFixtures/viteNodeCli'
 
 const ROOT = resolve(__dirname, '..', '..', '..')
-const VITE_NODE = join(ROOT, 'node_modules', 'vite-node', 'vite-node.mjs')
+const VITE_NODE = VITE_NODE_CLI
 const FIXTURE = join(__dirname, 'testFixtures', 'shutdownOwner.ts')
 
 const dirs: string[] = []

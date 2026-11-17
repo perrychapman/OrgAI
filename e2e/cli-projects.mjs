@@ -116,7 +116,7 @@ const CARD_ON_SCREEN = /Approve|Allow once|to answer/
 
 async function partC() {
   const dir = fixture('cli-init-tui')
-  const t = spawnTui([process.execPath, CLI, '--no-color', 'init', '--name', 'E2E architect'], { cols: 120, rows: 34, cwd: dir, env: ttyEnv() })
+  const t = spawnTui([process.execPath, '--disable-sigusr1', CLI, '--no-color', 'init', '--name', 'E2E architect'], { cols: 120, rows: 34, cwd: dir, env: ttyEnv() })
   let approved = 0
   try {
     await t.waitFor('Architect setup', 30_000)
@@ -147,7 +147,7 @@ async function partC() {
 
 async function partD() {
   const dir = fixture('cli-init-stop')
-  const t = spawnTui([process.execPath, CLI, '--no-color', 'init', '--name', 'E2E stop'], { cols: 120, rows: 34, cwd: dir, env: ttyEnv() })
+  const t = spawnTui([process.execPath, '--disable-sigusr1', CLI, '--no-color', 'init', '--name', 'E2E stop'], { cols: 120, rows: 34, cwd: dir, env: ttyEnv() })
   try {
     await t.waitFor('Architect setup', 30_000)
     // Wait for the first card so the run is surely open, then quit with Ctrl+C twice.

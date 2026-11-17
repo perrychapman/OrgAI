@@ -1,0 +1,230 @@
+/*
+ * "Where it went" card (BreakdownCard) and sortable table headers (ChartTable). Tokens only, both themes.
+ * The card is one surface (.usage-panel from usage.css); its panels are embedded and add no surface of their own.
+ */
+
+.usage-where-tabs {
+  position: relative;
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border-default);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.usage-where-tab {
+  flex: none;
+  padding: var(--space-1h) var(--space-3);
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  cursor: pointer;
+}
+.usage-where-tab:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.usage-where-tab[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.usage-where-tab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+/* Sliding 2 px underline (plan M1, motion.md 3.3): one element moved by transform from measured offsets. Once it has
+   measured (data-ready) the tab's own border steps aside; a resize snaps (data-snap) and first paint never glides. */
+.usage-where-indicator {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: 0 0;
+  transform: translateX(var(--tab-x, 0px)) scaleX(var(--tab-w, 0));
+  pointer-events: none;
+}
+.usage-where-tabs[data-ready] .usage-where-tab[aria-selected='true'] {
+  border-bottom-color: transparent;
+}
+.usage-where-tabs[data-ready]:not([data-snap]) .usage-where-indicator {
+  transition: transform var(--dur-slow) var(--ease-in-out);
+}
+
+/* The card stretches to the chart card's height: body and panel fill it and the table disclosure sits at the foot. */
+.usage-where-card {
+  display: flex;
+  flex-direction: column;
+}
+.usage-where-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-block-size: 0;
+  overflow-y: auto;
+}
+/* In the narrow side-by-side card the table keeps name, runs and cost (columns marked optional drop) and the name
+   truncates, so it fits the card with no inner horizontal scroll. */
+@container usage (min-width: 1100px) {
+  .usage-where-card .uc-table .opt {
+    display: none;
+  }
+  .usage-where-card .uc-table th,
+  .usage-where-card .uc-table td {
+    padding-inline: var(--space-2);
+  }
+  .usage-where-card .uc-table tbody th[scope='row'] {
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+.usage-panel-embedded {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.usage-panel-embedded > .usage-table-details {
+  margin-top: auto;
+}
+.usage-panel-embedded .uc-rank-main {
+  min-width: 0;
+}
+
+/* One line per ranked row: name, bar, value, then the muted count right of it. The sub line (family, client,
+   connection) stays in the row for assistive tech and the table, not on screen. */
+.usage-where-card .uc-rank-main {
+  position: relative;
+  grid-template-columns: minmax(0, 10rem) minmax(24px, 1fr) auto auto;
+  grid-template-areas: 'name bar cost detail';
+  align-items: center;
+  column-gap: var(--space-3);
+}
+.usage-where-card .uc-rank-bar {
+  align-self: center;
+  width: 100%;
+}
+.usage-where-card .uc-rank-detail {
+  grid-column: auto;
+  max-width: 10rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--text-caption);
+}
+.usage-where-card .uc-rank-sub {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Linked highlight (plan 2.4, M7): the others dim, the match gets a fill and a 2 px outline (never opacity alone). */
+.usage-where-card .uc-rank-row {
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.uc-rank[data-hl='on'] .uc-rank-row:not([data-highlight='true']) {
+  opacity: 0.35;
+}
+.uc-rank-row[data-highlight='true'] {
+  outline: 2px solid var(--border-strong);
+  outline-offset: -2px;
+}
+
+/* Tab change entry (user only; the classes are applied for a moment after the click): bars draw from the left. */
+@keyframes usage-bar-draw {
+  from {
+    transform: scaleX(0);
+  }
+}
+.uc-rank[data-enter] .uc-rank-row.motion-enter .uc-rank-bar {
+  transform-origin: left center;
+  animation: usage-bar-draw var(--dur-slow) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--i, 0), 5) * var(--motion-stagger));
+}
+
+:root[data-reduce-motion='on'] .usage-where-indicator,
+:root[data-reduce-motion='on'] .usage-where-card .uc-rank-row {
+  transition: none;
+}
+:root[data-reduce-motion='on'] .uc-rank[data-enter] .uc-rank-row.motion-enter,
+:root[data-reduce-motion='on'] .uc-rank[data-enter] .uc-rank-row.motion-enter .uc-rank-bar,
+:root[data-reduce-motion='on'] .usage-where-body.motion-view {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-where-indicator,
+  .usage-where-card .uc-rank-row {
+    transition: none;
+  }
+  .uc-rank[data-enter] .uc-rank-row.motion-enter,
+  .uc-rank[data-enter] .uc-rank-row.motion-enter .uc-rank-bar,
+  .usage-where-body.motion-view {
+    animation: none;
+  }
+}
+
+/* Row-to-series highlight: a quiet fill plus the selected-style inset bar, so it is never colour alone. */
+.uc-rank-row[data-highlight='true'] {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--border-strong);
+}
+.uc-rank-row[data-selected='true'][data-highlight='true'] {
+  background: var(--accent-soft);
+}
+
+/* Sort buttons read as header text. */
+.uc-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.uc-table .num .uc-sort {
+  flex-direction: row-reverse;
+}
+.uc-sort:hover {
+  color: var(--text-primary);
+}
+.uc-sort:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.uc-sort-glyph {
+  display: inline-flex;
+  width: 10px;
+  height: 10px;
+  color: var(--text-primary);
+}
+.uc-table th[aria-sort='ascending'],
+.uc-table th[aria-sort='descending'] {
+  color: var(--text-primary);
+}
+
+@media (forced-colors: active) {
+  .usage-where-indicator {
+    background: Highlight;
+  }
+  .usage-where-tab[aria-selected='true'] {
+    border-bottom-color: Highlight;
+  }
+}

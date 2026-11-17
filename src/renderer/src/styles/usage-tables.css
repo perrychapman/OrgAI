@@ -141,8 +141,8 @@
 
 /* A run's first cell: the button that opens it. */
 .usage-run-cell {
-  min-width: 14rem;
-  max-width: 22rem;
+  min-width: 10rem;
+  max-width: 20rem;
 }
 .usage-run-open {
   all: unset;
@@ -175,10 +175,25 @@
   white-space: nowrap;
   vertical-align: bottom;
 }
+/* One line, clipped to the cell (the full sentence is in the row's detail and the title). */
 .usage-why {
-  min-width: 16rem;
-  max-width: 28rem;
+  min-width: 8rem;
+  max-width: 16rem;
   color: var(--text-primary);
+}
+.usage-status-word {
+  margin-inline-start: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+.usage-why .usage-why-clip {
+  display: block;
+  max-inline-size: 100%;
+}
+.usage-runs-details > summary h2 {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
 }
 .usage-wasteful-table .usage-run-cell .usage-tag {
   margin-inline-start: var(--space-2);
@@ -243,15 +258,37 @@
 #usage-efficiency {
   container: usage-eff / inline-size;
 }
+/* A compact strip (dashboard rework): four across from 760 px, details clamped to two lines (the full text stays in
+   the accessible description and the definition popover). */
 .usage-eff-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-4) var(--space-5);
+  gap: var(--space-3) var(--space-5);
 }
-@container usage-eff (min-width: 1100px) {
+@container usage-eff (min-width: 760px) {
   .usage-eff-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
+}
+.usage-eff-grid .usage-eff-detail {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+.usage-timing-details > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+}
+.usage-timing-details > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.usage-timing-details[open] > summary {
+  margin-block-end: var(--space-3);
 }
 @container usage-eff (max-width: 520px) {
   .usage-eff-grid {

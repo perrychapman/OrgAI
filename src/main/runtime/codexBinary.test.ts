@@ -67,10 +67,10 @@ describe('lookupCodexBinary (cli-standalone 6.2)', () => {
   })
 
   it('PATH: a native binary (Homebrew link) is used through its real path, with an adjacent codex-path', () => {
-    const real = '/opt/homebrew/Caskroom/codex/0.166.0/codex'
-    const fs = new FakeLookupFs({ [real]: MACHO }, ['/opt/homebrew/Caskroom/codex/0.166.0/codex-path']).link('/opt/homebrew/bin/codex', real)
+    const real = '/opt/homebrew/Caskroom/codex/0.167.0/codex'
+    const fs = new FakeLookupFs({ [real]: MACHO }, ['/opt/homebrew/Caskroom/codex/0.167.0/codex-path']).link('/opt/homebrew/bin/codex', real)
     expect(lookupCodexBinary({ ...mac, fs, env: { PATH: '/opt/homebrew/bin' } })).toEqual({
-      binary: { path: real, source: 'path', pathDir: '/opt/homebrew/Caskroom/codex/0.166.0/codex-path', via: '/opt/homebrew/bin/codex' }
+      binary: { path: real, source: 'path', pathDir: '/opt/homebrew/Caskroom/codex/0.167.0/codex-path', via: '/opt/homebrew/bin/codex' }
     })
   })
 
@@ -151,7 +151,7 @@ describe('lookupCodexBinary (cli-standalone 6.2)', () => {
     const r = lookupCodexBinary({ ...mac, fs, env: { PATH: ':.:rel:/s:/t' } })
     expect(r.binary).toBeUndefined()
     expect(r.problem).toBe(
-      `${CODEX_NOT_INSTALLED_MESSAGE} (/s/codex is an npm shim whose native package (@openai/codex-darwin-arm64) was not found; reinstall @openai/codex@0.166.0; /t/codex is neither a native Codex executable nor an npm shim)`
+      `${CODEX_NOT_INSTALLED_MESSAGE} (/s/codex is an npm shim whose native package (@openai/codex-darwin-arm64) was not found; reinstall @openai/codex@0.167.0; /t/codex is neither a native Codex executable nor an npm shim)`
     )
     expect(lookupCodexBinary({ ...mac, fs: new FakeLookupFs(), env: {} })).toEqual({ problem: CODEX_NOT_INSTALLED_MESSAGE })
   })
@@ -229,29 +229,31 @@ describe('Codex version (cli-standalone 6.2)', () => {
   })
 
   it('parses and ranges versions', () => {
-    expect(parseCodexVersion('codex-cli 0.166.0\n')).toBe('0.166.0')
-    expect(parseCodexVersion('codex 0.166.1-alpha.2')).toBe('0.166.1-alpha.2')
+    expect(parseCodexVersion('codex-cli 0.167.0\n')).toBe('0.167.0')
+    expect(parseCodexVersion('codex 0.167.1-alpha.2')).toBe('0.167.1-alpha.2')
     expect(parseCodexVersion('nothing here')).toBeUndefined()
-    expect(codexVersionSupported('0.166.0')).toBe(true)
-    expect(codexVersionSupported('0.166.12')).toBe(true)
-    expect(codexVersionSupported('0.167.0')).toBe(false)
+    expect(codexVersionSupported('0.167.0')).toBe(true)
+    expect(codexVersionSupported('0.167.12')).toBe(true)
+    // The previous pin is refused too: the range moves with the pin, it does not widen.
+    expect(codexVersionSupported('0.166.0')).toBe(false)
+    expect(codexVersionSupported('0.168.0')).toBe(false)
     expect(codexVersionSupported('1.166.0')).toBe(false)
   })
 
   it('caches by realpath + mtime + size; a changed binary is asked again; failures are not cached', async () => {
     const fs = new FakeLookupFs({ '/c/codex': { head: MACHO, mtimeMs: 5, size: 100 } }).link('/l/codex', '/c/codex')
     let calls = 0
-    let answer = 'codex-cli 0.166.0'
+    let answer = 'codex-cli 0.167.0'
     const run = async (): Promise<string> => {
       calls++
       return answer
     }
-    expect(await codexVersion({ path: '/l/codex' }, { fs, run })).toBe('0.166.0')
-    expect(await codexVersion({ path: '/c/codex' }, { fs, run })).toBe('0.166.0')
+    expect(await codexVersion({ path: '/l/codex' }, { fs, run })).toBe('0.167.0')
+    expect(await codexVersion({ path: '/c/codex' }, { fs, run })).toBe('0.167.0')
     expect(calls).toBe(1)
     fs.file('/c/codex', { head: MACHO, mtimeMs: 6, size: 100 })
-    answer = 'codex-cli 0.167.0'
-    expect(await codexVersion({ path: '/c/codex' }, { fs, run })).toBe('0.167.0')
+    answer = 'codex-cli 0.167.1'
+    expect(await codexVersion({ path: '/c/codex' }, { fs, run })).toBe('0.167.1')
     expect(calls).toBe(2)
     fs.file('/c/codex', { head: MACHO, mtimeMs: 7, size: 100 })
     answer = 'garbage'
@@ -267,13 +269,13 @@ describe('Codex version (cli-standalone 6.2)', () => {
       throw new Error('spawn EACCES')
     }
     const bin = (source?: CodexBinary['source']): CodexBinary => ({ path: '/c/codex', ...(source ? { source } : {}) })
-    expect(await checkCodexBinary(bin('path'), { fs, run: v('codex-cli 0.166.0') })).toEqual({ ok: true, binary: bin('path'), version: '0.166.0' })
+    expect(await checkCodexBinary(bin('path'), { fs, run: v('codex-cli 0.167.0') })).toEqual({ ok: true, binary: bin('path'), version: '0.167.0' })
     clearCodexVersionCache()
     expect(await checkCodexBinary(bin('package'), { fs, run: v('codex-cli 0.170.2') })).toEqual({
       ok: false,
       binary: bin('package'),
       version: '0.170.2',
-      reason: 'Codex 0.170.2 is not supported; install @openai/codex@0.166.0'
+      reason: 'Codex 0.170.2 is not supported; install @openai/codex@0.167.0'
     })
     clearCodexVersionCache()
     const env = await checkCodexBinary(bin('env'), { fs, run: v('codex-cli 0.170.2') })
@@ -293,10 +295,10 @@ describe('Codex version (cli-standalone 6.2)', () => {
     expect(r).toEqual({ ok: false, reason: CODEX_NOT_INSTALLED_MESSAGE })
     expect(ran).toBe(false)
     const fs = new FakeLookupFs({ '/n/codex': ELF })
-    expect(await checkCodexRuntime({ ...mac, fs, env: { PATH: '/n' }, run: async () => 'codex-cli 0.166.0' })).toEqual({
+    expect(await checkCodexRuntime({ ...mac, fs, env: { PATH: '/n' }, run: async () => 'codex-cli 0.167.0' })).toEqual({
       ok: true,
       binary: { path: '/n/codex', source: 'path' },
-      version: '0.166.0'
+      version: '0.167.0'
     })
   })
 })

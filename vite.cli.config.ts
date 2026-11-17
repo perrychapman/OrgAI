@@ -1,6 +1,8 @@
 /**
- * The CLI bundle (cli-spec 7): src/cli/bin.ts (which loads src/cli/index.ts as a chunk) -> out/cli/orgai.mjs, an ESM file plain `node` (or the packaged app's
- * own binary with ELECTRON_RUN_AS_NODE=1, build/bin/orgai) runs. Only src/cli/packaging.ts `isCliExternal` stays a bare
+ * The CLI bundle (cli-spec 7): src/cli/bin.ts (which loads src/cli/index.ts as a chunk) -> out/cli/orgai.mjs, an ESM
+ * file Node started with `--disable-sigusr1` runs (or the packaged app's own binary with ELECTRON_RUN_AS_NODE=1,
+ * build/bin/orgai). The generated shebang supplies the flag for npm bin launchers; invoke the bundle directly as
+ * `node --disable-sigusr1 out/cli/orgai.mjs`. Only src/cli/packaging.ts `isCliExternal` stays a bare
  * import: Node builtins, electron (never imported by the CLI), the Claude Agent SDK, Codex and zod (unpacked from
  * app.asar by electron-builder.yml). Every other dependency (ink, react, react/jsx-runtime, react-reconciler, ...) is
  * bundled, so a packaged app needs no node_modules tree for the CLI beyond those three.
@@ -24,7 +26,7 @@ export default defineConfig({
   plugins: [
     {
       name: 'orgai-cli-executable',
-      // `./out/cli/orgai.mjs` runs directly (the banner names node); npm's bin link needs no mode, a checkout does.
+      // `./out/cli/orgai.mjs` uses env -S to pass the flag; npm's POSIX and Windows bin shims carry it too.
       writeBundle(options, bundle) {
         for (const [file, out] of Object.entries(bundle)) {
           if (out.type === 'chunk' && out.isEntry && file === 'orgai.mjs' && options.dir) chmodSync(resolve(options.dir, file), 0o755)
@@ -35,6 +37,8 @@ export default defineConfig({
   resolve: { alias: { '@shared': resolve(root, 'src/shared') } },
   oxc: { jsx: { runtime: 'automatic', importSource: 'react' } },
   publicDir: false,
+  // No CLI code reads NODE_ENV (grep src/); the bundled dependencies (react, react-reconciler, ink) pick their production builds.
+  define: { 'process.env.NODE_ENV': JSON.stringify('production') },
   logLevel: 'warn',
   build: {
     outDir: 'out/cli',
@@ -44,7 +48,9 @@ export default defineConfig({
     // Two inputs: the CLI and the TUI entry, so out/cli/tui.mjs always exists (commands/tui.ts reaches it only through a
     // dynamic import, which then resolves to this same chunk; lazyTui.test.ts keeps ink and react out of orgai.mjs).
     ssr: true,
-    minify: false,
+    // Minified: the CLI ships as a package, readable stack frames are not part of any contract (e2e and tests run the
+    // sources or check behaviour). process.env.NODE_ENV is fixed below so React's development bundle is dropped.
+    minify: true,
     sourcemap: false,
     reportCompressedSize: false,
     rollupOptions: {
@@ -59,7 +65,7 @@ export default defineConfig({
           // A lazily split commands/tui.ts would also be named 'tui'; keep it apart from the tui.mjs entry.
           return chunk.name === 'tui' ? 'tuiCommand-[hash].mjs' : '[name]-[hash].mjs'
         },
-        banner: (chunk) => (chunk.isEntry && chunk.name === 'orgai' ? '#!/usr/bin/env node' : '')
+        banner: (chunk) => (chunk.isEntry && chunk.name === 'orgai' ? '#!/usr/bin/env -S node --disable-sigusr1' : '')
       }
     }
   },

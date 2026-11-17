@@ -123,15 +123,19 @@ export function packageContents(root, env = process.env, { shrinkwrap: withShrin
 /**
  * Throws unless out/cli holds the bundle files and one of its modules carries this version as a string literal (the
  * bundler inlines package.json's version into whichever chunk holds src/cli/version.ts), so a stale bundle never ships.
+ * The literal may use any JavaScript quote: the minified bundle writes it as a template literal (`0.1.7`).
  */
 export function checkBundle(cliSource, version) {
   const missing = BUNDLE_FILES.filter((f) => !fs.existsSync(path.join(cliSource, f)))
   if (missing.length) throw new Error(`${cliSource} is missing ${missing.join(', ')}; run npm run build first`)
-  const literal = JSON.stringify(version)
+  const literals = [JSON.stringify(version), `'${version}'`, `\`${version}\``]
   const carries = fs
     .readdirSync(cliSource)
     .filter((f) => f.endsWith('.mjs'))
-    .some((f) => fs.readFileSync(path.join(cliSource, f), 'utf8').includes(literal))
+    .some((f) => {
+      const text = fs.readFileSync(path.join(cliSource, f), 'utf8')
+      return literals.some((l) => text.includes(l))
+    })
   if (!carries) throw new Error(`The CLI bundle in ${cliSource} does not carry version ${version}; it was built from another checkout. Run npm run build first`)
 }
 

@@ -39,7 +39,9 @@ describe('KeyParser keys', () => {
 
   it('Enter, Tab, Backspace', () => {
     expect(one('\r').name).toBe('enter')
-    expect(one('\n').name).toBe('enter')
+    // LF is Ctrl+J (a newline in the composer), not Enter.
+    expect(one('\n')).toMatchObject({ name: 'char', ch: 'j', ctrl: true })
+    expect(one('\x1b\n')).toMatchObject({ name: 'char', ch: 'j', ctrl: true, alt: true })
     expect(one('\t').name).toBe('tab')
     expect(one('\x7f').name).toBe('backspace')
     expect(one('\b').name).toBe('backspace')
@@ -185,7 +187,7 @@ describe('KeyParser bracketed paste', () => {
 
   it('without bracketedPaste the bytes parse as keys', () => {
     const ev = parse('\x1b[200~y\n\x1b[201~', false)
-    expect(ev.map((e) => (e as KeyEvent).name)).toEqual(['unknown', 'char', 'enter', 'unknown'])
+    expect(ev.map((e) => (e as KeyEvent).name)).toEqual(['unknown', 'char', 'char', 'unknown'])
   })
 })
 

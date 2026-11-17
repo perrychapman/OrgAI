@@ -29,6 +29,14 @@ describe('windowAllClosedAction (review H3)', () => {
       expect(windowAllClosedAction({ platform, quitting: false, workingRuns: 1 })).toBe('ask')
     }
   })
+  it('off macOS a pending schedule is asked about like a working run (Schedules)', () => {
+    expect(windowAllClosedAction({ platform: 'win32', quitting: false, workingRuns: 0, pendingSchedules: 1 })).toBe('ask')
+    expect(windowAllClosedAction({ platform: 'win32', quitting: false, workingRuns: 0, pendingSchedules: 0 })).toBe('quit')
+    expect(windowAllClosedAction({ platform: 'darwin', quitting: false, workingRuns: 0, pendingSchedules: 2 })).toBe('stay')
+    expect(closePromptText(0, 1).message).toBe('A scheduled run is due later.')
+    expect(closePromptText(0, 3).message).toBe('3 schedules have runs due later.')
+    expect(closePromptText(2, 1).message).toBe('2 runs are still working, or scheduled runs are due.')
+  })
   it('macOS keeps the app (Dock) whatever its runs do', () => {
     expect(windowAllClosedAction({ platform: 'darwin', quitting: false, workingRuns: 0 })).toBe('stay')
     expect(windowAllClosedAction({ platform: 'darwin', quitting: false, workingRuns: 3 })).toBe('stay')

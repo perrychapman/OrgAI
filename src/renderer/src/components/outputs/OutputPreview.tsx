@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OutputPreview as OutputPreviewData, RunOutput } from '@shared/types'
 import { previewCacheFor, previewKey } from '../../lib/outputs'
 import { Button } from '../ui/Button'
-import { OutputViewContext, PreviewStatusContext, type OutputViewValue } from './previewStatus'
+import { OutputViewContext, PreviewStatusContext, noPreviewSentence, type OutputViewValue } from './previewStatus'
 import DocumentView from './DocumentView'
 import SheetView from './SheetView'
 import TextPreview from './TextPreview'
@@ -28,7 +28,7 @@ export interface OutputPreviewProps {
   version?: number | null
 }
 
-type State = { status: 'loading' } | { status: 'error' } | { status: 'ready'; preview: OutputPreviewData }
+type State ={ status: 'loading' } | { status: 'error' } | { status: 'ready'; preview: OutputPreviewData }
 
 /** The in-window preview of one output, fetched on demand and cached per project. Renders nothing for a missing file. */
 export default function OutputPreview({ output, context = 'detail', onOpenLarge, full, onToggleFull, version }: OutputPreviewProps): ReactElement | null {
@@ -145,7 +145,7 @@ export default function OutputPreview({ output, context = 'detail', onOpenLarge,
     default:
       body = (
         <p className="output-preview-note" data-testid="output-preview-none">
-          {p.reason}
+          {noPreviewSentence(output.kind, p.reason)}
         </p>
       )
   }

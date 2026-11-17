@@ -1,6 +1,7 @@
 // Token-free. Mock adapter, temp ORGAI_DATA_DIR. The slide viewer (docs/design/outputs-2.md 13): a scripted run produces a
-// five-slide pptx through produce_output (ORGAI_MOCK_SCRIPT set in main), then the strip, stage, keys, speaker notes,
-// paper colour, table, fidelity caption and the Larger view are checked at 1024x640 and 1600x1000 in both themes.
+// five-slide pptx through produce_output (ORGAI_MOCK_SCRIPT set in main), then the stage, keys, paper colour, table and
+// fidelity caption are checked in the panel (no filmstrip, no speaker notes there) and the strip, speaker notes and the
+// Larger view in the dialog, at 1024x640 and 1600x1000 in both themes.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as zlib from 'node:zlib'
@@ -151,23 +152,43 @@ try {
     await page.locator('[data-testid=output-detail-heading]', { hasText: 'Client deck' }).first().waitFor({ timeout: 8000 })
   }
 
-  async function slideChecks(label, scope, wideExpected) {
+  // `panel` = the detail column: the stage, Previous / Next, the counter and the caption only (the filmstrip and the speaker
+  // notes are the Larger view's). Otherwise the Larger view with its strip (`wideExpected`: the vertical one).
+  async function slideChecks(label, scope, wideExpected, panel = false) {
     const root = scope.locator('[data-testid=output-slides]').first()
     await root.waitFor({ timeout: 15_000 })
     check((await root.getAttribute('data-state')) === 'ready', `${label}: the viewer is ready`)
     const strip = root.locator('[data-testid=slide-strip]')
-    const orient = await strip.getAttribute('aria-orientation')
-    check(orient === (wideExpected ? 'vertical' : 'horizontal'), `${label}: the strip is ${wideExpected ? 'vertical' : 'horizontal'}`, String(orient))
-    check((await strip.locator('[data-testid=slide-thumb]').count()) === 5, `${label}: five thumbnails`)
-    {
-      const sb = await strip.boundingBox()
+    if (panel) {
+      check((await strip.count()) === 0 && (await root.locator('[data-testid=slide-notes]').count()) === 0, `${label}: the panel has no filmstrip and no speaker notes`)
+      // The stage is the first thing in the preview and as wide as it (nothing of the viewer pushes it down), keeps the slide's
+      // shape, and at 1600x1000 sits wholly in the window with Previous / Next. At 1024x640 how far down it starts is the
+      // detail head's doing (the run tab's panel is also only about 245 px wide): reported, not asserted.
       const st = await root.locator('[data-testid=slide-stage]').boundingBox()
-      if (wideExpected) check(!!sb && !!st && Math.abs(sb.width - 168) <= 12 && st.x >= sb.x + sb.width - 1, `${label}: the strip is 168 px wide at the left of the stage`, JSON.stringify({ sb, st }))
-      else check(!!sb && !!st && sb.y >= st.y + st.height - 1 && sb.height <= 110, `${label}: the strip is a row under the stage`, JSON.stringify({ sb, st }))
+      const pv = await scope.locator('[data-testid=output-preview]').first().boundingBox()
+      const win = await page.evaluate(() => ({ w: innerWidth, h: innerHeight }))
+      check(!!st && !!pv && Math.abs(st.y - pv.y) <= 1 && st.width >= pv.width - 2 && st.width >= 200, `${label}: the stage opens the preview and is as wide as the panel`, JSON.stringify({ st, pv }))
+      const ratio = st ? st.width / st.height : 0
+      check(Math.abs(ratio - 16 / 9) < 0.08, `${label}: the stage keeps the slide's 16:9 shape`, String(ratio))
+      const bar = await root.locator('[data-testid=slide-next]').boundingBox()
+      if (win.h >= 1000) {
+        check(!!st && st.y + st.height <= win.h && st.y >= 0, `${label}: the stage is wholly above the fold`, JSON.stringify({ st, win }))
+        check(!!st && !!bar && bar.y + bar.height <= win.h, `${label}: Previous / Next are above the fold too`, JSON.stringify({ bar, win }))
+      } else console.log(`NOTE ${label}: the stage starts at y=${Math.round(st?.y ?? -1)} of ${win.h}, the stage is ${Math.round(st?.width ?? 0)}x${Math.round(st?.height ?? 0)}`)
+    } else {
+      const orient = await strip.getAttribute('aria-orientation')
+      check(orient === (wideExpected ? 'vertical' : 'horizontal'), `${label}: the strip is ${wideExpected ? 'vertical' : 'horizontal'}`, String(orient))
+      check((await strip.locator('[data-testid=slide-thumb]').count()) === 5, `${label}: five thumbnails`)
+      {
+        const sb = await strip.boundingBox()
+        const st = await root.locator('[data-testid=slide-stage]').boundingBox()
+        if (wideExpected) check(!!sb && !!st && Math.abs(sb.width - 168) <= 12 && st.x >= sb.x + sb.width - 1, `${label}: the strip is 168 px wide at the left of the stage`, JSON.stringify({ sb, st }))
+        else check(!!sb && !!st && sb.y >= st.y + st.height - 1 && sb.height <= 110, `${label}: the strip is a row under the stage`, JSON.stringify({ sb, st }))
+      }
+      check((await strip.locator('[tabindex="0"]').count()) === 1, `${label}: the strip is one Tab stop`)
+      const names = await strip.locator('[data-testid=slide-thumb]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))
+      check(names[0] === 'Slide 1: Client deck' && names[2] === 'Slide 3: Two columns', `${label}: thumbnails are named with number and title`, names.join(' | '))
     }
-    check((await strip.locator('[tabindex="0"]').count()) === 1, `${label}: the strip is one Tab stop`)
-    const names = await strip.locator('[data-testid=slide-thumb]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))
-    check(names[0] === 'Slide 1: Client deck' && names[2] === 'Slide 3: Two columns', `${label}: thumbnails are named with number and title`, names.join(' | '))
     const counter = root.locator('[data-testid=slide-counter]')
     check(clean(await counter.innerText()) === 'Slide 1 of 5', `${label}: the counter starts at slide 1`)
     // Title drawn from runs, paper stays light.
@@ -176,16 +197,23 @@ try {
     const paper = await stage.locator('.slide-paper').evaluate((el) => getComputedStyle(el).backgroundColor)
     check(paper === 'rgb(255, 255, 255)', `${label}: the slide paper is white`, paper)
     check((await stage.getAttribute('aria-label')).startsWith('Slide 1 of 5'), `${label}: the stage is named`, await stage.getAttribute('aria-label'))
-    // Strip keys: focus the selected thumb, arrows and PageDown move the selection.
-    await strip.locator('[data-n="1"]').focus()
-    await page.keyboard.press(wideExpected ? 'ArrowDown' : 'ArrowRight')
-    check(clean(await counter.innerText()) === 'Slide 2 of 5', `${label}: an arrow key on the strip moves to slide 2`)
-    check((await strip.locator('[data-n="2"]').getAttribute('aria-selected')) === 'true', `${label}: thumb 2 is selected`)
-    check(await page.evaluate(() => document.activeElement?.getAttribute('data-n') === '2'), `${label}: focus followed the selection`)
-    await page.keyboard.press('PageDown')
-    check(clean(await counter.innerText()) === 'Slide 3 of 5', `${label}: PageDown moves to slide 3`)
-    await page.keyboard.press('End')
-    check(clean(await counter.innerText()) === 'Slide 5 of 5', `${label}: End goes to the last slide`)
+    if (panel) {
+      // No strip: the stage's own keys and the buttons move on.
+      await stage.focus()
+      await page.keyboard.press('End')
+      check(clean(await counter.innerText()) === 'Slide 5 of 5', `${label}: End on the stage goes to the last slide`)
+    } else {
+      // Strip keys: focus the selected thumb, arrows and PageDown move the selection.
+      await strip.locator('[data-n="1"]').focus()
+      await page.keyboard.press(wideExpected ? 'ArrowDown' : 'ArrowRight')
+      check(clean(await counter.innerText()) === 'Slide 2 of 5', `${label}: an arrow key on the strip moves to slide 2`)
+      check((await strip.locator('[data-n="2"]').getAttribute('aria-selected')) === 'true', `${label}: thumb 2 is selected`)
+      check(await page.evaluate(() => document.activeElement?.getAttribute('data-n') === '2'), `${label}: focus followed the selection`)
+      await page.keyboard.press('PageDown')
+      check(clean(await counter.innerText()) === 'Slide 3 of 5', `${label}: PageDown moves to slide 3`)
+      await page.keyboard.press('End')
+      check(clean(await counter.innerText()) === 'Slide 5 of 5', `${label}: End goes to the last slide`)
+    }
     check(/Design/.test(await stage.innerText()) && (await stage.locator('td').count()) === 6, `${label}: the table slide has its six cells`, String(await stage.locator('td').count()))
     // Stage keys.
     await stage.focus()
@@ -207,11 +235,13 @@ try {
     await root.locator('[data-testid=slide-prev]').click()
     await root.locator('[data-testid=slide-prev]').click()
     await root.locator('[data-testid=slide-next]').click()
-    const notesBtn = root.locator('[data-testid=slide-notes] button')
-    check((await notesBtn.getAttribute('aria-expanded')) === 'false', `${label}: speaker notes start closed`)
-    await notesBtn.click()
-    check(/Compare the two sides/.test(await root.locator('[data-testid=slide-notes-body]').innerText()), `${label}: speaker notes open with the slide's notes`)
-    await notesBtn.click()
+    if (!panel) {
+      const notesBtn = root.locator('[data-testid=slide-notes] button')
+      check((await notesBtn.getAttribute('aria-expanded')) === 'false', `${label}: speaker notes start closed`)
+      await notesBtn.click()
+      check(/Compare the two sides/.test(await root.locator('[data-testid=slide-notes-body]').innerText()), `${label}: speaker notes open with the slide's notes`)
+      await notesBtn.click()
+    }
     check(clean(await root.locator('[data-testid=slide-fidelity]').innerText()) === 'Preview. Open in PowerPoint for the exact look.', `${label}: the fidelity caption is shown`)
     check((await running(root)) === '', `${label}: nothing animates`, await running(root))
   }
@@ -229,7 +259,7 @@ try {
     try {
       await openDeck()
       const detail = page.locator('[data-testid=output-detail]').first()
-      await slideChecks(`${label} panel`, detail, false)
+      await slideChecks(`${label} panel`, detail, false, true)
       await noScroll(`${label} panel`)
       await screenshot(page, `outputs-slides-${c.w}-${c.theme}-panel`)
       // The Larger view: vertical strip, fidelity caption, focus on the selected thumb.

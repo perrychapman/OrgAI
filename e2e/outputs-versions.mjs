@@ -140,19 +140,34 @@ async function select(title) {
 async function versionChecks(label, wide) {
   await select('Project plan')
   const planId = (await outputsOf()).find((o) => o.title === 'Project plan')?.id
-  const sel = detail().locator('[data-testid=output-version-select]')
-  await sel.waitFor({ state: 'visible', timeout: 8000 })
+  // The panel head shows the version as text ("v2 of 2"); switching is on the Versions tab and in the Larger view's select.
+  const solo = detail().locator('[data-testid=output-version-solo]')
+  await solo.waitFor({ state: 'visible', timeout: 8000 })
   await page.waitForFunction((id) => {
     const detail = document.querySelector('[data-testid=outputs-detail] [data-testid=output-detail]')
-    return !!id && detail?.getAttribute('data-id') === id &&
-      detail.querySelectorAll('[data-testid=output-version-select] option').length === 2
+    return !!id && detail?.getAttribute('data-id') === id && /^v2 of 2$/.test(detail.querySelector('[data-testid=output-version-solo]')?.textContent?.trim() ?? '')
   }, planId, { timeout: 8000 })
-  check((await sel.count()) === 1, `${label}: a two-version output has a version select`)
-  const opts = (await sel.locator('option').allInnerTexts()).map(clean)
-  check(opts.length === 2 && /^v2 · now, .+ · \d+ \w+$/.test(opts[0]) && /^v1 · .+ · \d+ \w+$/.test(opts[1]), `${label}: the select lists "v2 · now, <who> · <date>" then v1`, JSON.stringify(opts))
+  check((await detail().locator('[data-testid=output-version-select]').count()) === 0, `${label}: the panel head has no version select`)
+  check(/^v2 of 2$/.test(clean(await solo.innerText())), `${label}: the panel head says "v2 of 2"`, clean(await solo.innerText()))
   check((await detail().getAttribute('data-version')) === '2', `${label}: the detail carries data-version 2`)
+  // Head compression: the preview body starts within about 200 px of the top of the panel for a plain output.
+  const bodyTop = await detail().evaluate((d) => Math.round(d.querySelector('.output-detail-body').getBoundingClientRect().top - d.getBoundingClientRect().top))
+  check(bodyTop <= 200, `${label}: the preview body starts ${bodyTop} px below the top of the detail (head, tabs and toolbar on one row)`, String(bodyTop))
   check((await detail().locator('[data-testid=output-edit]').count()) === 1, `${label}: a Markdown output offers Edit on its current version`)
-  check((await detail().locator('[data-testid=output-revise]').count()) === 1, `${label}: Revise is offered`)
+  check((await detail().locator('[data-testid=output-revise]').count()) === 0, `${label}: Revise is not in the toolbar at rest`)
+  // At most four controls at rest: Edit, Add note, Larger view, More.
+  const toolbarCount = await detail().evaluate((d) => [...d.querySelectorAll('[role=group][aria-label="Output actions"] button')].filter((b) => !b.closest('.popover-panel')).length)
+  check(toolbarCount > 0 && toolbarCount <= 4, `${label}: the toolbar at rest has at most four controls`, String(toolbarCount))
+  await detail().locator('[data-testid=output-more]').click()
+  await page.locator('[data-testid=output-revise]').waitFor({ state: 'visible', timeout: 4000 })
+  check((await detail().locator('[data-testid=output-revise]').count()) === 1, `${label}: Revise is offered in the More menu`)
+  const menuIds = await page.locator('[data-testid=output-actions] [role=menuitem]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
+  check(menuIds.indexOf('output-open') >= 0 && menuIds.indexOf('output-revise') < menuIds.indexOf('output-reveal') && menuIds.indexOf('output-reveal') < menuIds.indexOf('output-forget') && menuIds.at(-1) === 'output-delete', `${label}: More lists Open, Revise, then Show in folder ... Remove, Delete`, JSON.stringify(menuIds))
+  await snap(`${label}-more`)
+  await page.keyboard.press('Escape')
+  await page.locator('[data-testid=output-revise]').waitFor({ state: 'detached', timeout: 4000 }).catch(() => undefined)
+  await snap(`${label}-detail`)
+  check(await until(async () => (await active()).id === 'output-more'), `${label}: Esc closes More and focus returns to its button`, JSON.stringify(await active()))
   check((await live().count()) === 1, `${label}: one output-live region on the panel`)
 
   // Versions tab.
@@ -196,6 +211,7 @@ async function versionChecks(label, wide) {
   // Word and Excel: Edit in the app, no in-app Edit.
   await select('Brief')
   check(/^Edit in Word$/.test(clean(await detail().locator('[data-testid=output-edit-external]').innerText())) && (await detail().locator('[data-testid=output-edit]').count()) === 0, `${label}: a Word document offers "Edit in Word" and no Edit`)
+  await snap(`${label}-word`)
   await select('Budget')
   check(/^Edit in Excel$/.test(clean(await detail().locator('[data-testid=output-edit-external]').innerText())), `${label}: a workbook offers "Edit in Excel"`)
 
@@ -206,6 +222,8 @@ async function versionChecks(label, wide) {
   await dlg.waitFor({ state: 'visible', timeout: 5000 })
   await dlg.locator('[data-testid=output-version-select]').waitFor({ state: 'visible', timeout: 8000 })
   check((await dlg.locator('[data-testid=output-version-select]').count()) === 1, `${label}: the Larger view has the version select`)
+  const opts = (await dlg.locator('[data-testid=output-version-select] option').allInnerTexts()).map(clean)
+  check(opts.length === 2 && /^v2 · now, .+ · \d+ \w+$/.test(opts[0]) && /^v1 · .+ · \d+ \w+$/.test(opts[1]), `${label}: the select lists "v2 · now, <who> · <date>" then v1`, JSON.stringify(opts))
   check((await dlg.locator('[data-testid=output-notes-toggle]').count()) === 1, `${label}: the Larger view has the notes toggle`)
   check((await live().count()) === 1, `${label}: only one output-live region while the Larger view is open`)
   const drawerOpen = (await dlg.locator('[data-testid=output-notes-drawer]').count()) > 0
@@ -240,8 +258,13 @@ async function mutatingChecks(label) {
   await v1.locator('[data-testid=output-version-name-input]').fill('First draft')
   await v1.locator('[data-testid=output-version-name-save]').click()
   check(await until(async () => /First draft/.test(clean(await v1.locator('[data-testid=output-version-label]').innerText().catch(() => '')))), `${label}: a named version shows its name`)
-  const opts = (await detail().locator('[data-testid=output-version-select] option').allInnerTexts()).map(clean)
-  check(opts.some((o) => /^v1 · First draft/.test(o)), `${label}: the select shows the name`, JSON.stringify(opts))
+  await detail().locator('[data-testid=output-detail-expand]').click()
+  const dlgNamed = page.locator('[data-testid=output-dialog]')
+  await dlgNamed.locator('[data-testid=output-version-select]').waitFor({ state: 'visible', timeout: 8000 })
+  const opts = (await dlgNamed.locator('[data-testid=output-version-select] option').allInnerTexts()).map(clean)
+  check(opts.some((o) => /^v1 · First draft/.test(o)), `${label}: the Larger view's select shows the name`, JSON.stringify(opts))
+  await page.keyboard.press('Escape')
+  await dlgNamed.waitFor({ state: 'hidden', timeout: 5000 })
 
   // Rename.
   await detail().locator('[data-testid=output-more]').click()

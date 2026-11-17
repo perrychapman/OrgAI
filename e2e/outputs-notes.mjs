@@ -155,7 +155,43 @@ async function toTab(which) {
     .catch(() => undefined)
 }
 const addBtn = () => detail().locator('[data-testid=output-note-add]').first()
-const addEnabled = async () => (await addBtn().getAttribute('aria-disabled')) !== 'true'
+// Kinds with a region tool (diagram, SVG, image, deck) have Add note as a menu button: "Note on the selection" and the
+// "Mark an area" radios live in its menu. Other kinds keep a plain button that is aria-disabled without a selection.
+const addIsMenu = async () => (await addBtn().getAttribute('aria-haspopup')) === 'menu'
+// A closed menu keeps its last render mounted (inert, aria-hidden, data-state=out) for one exit duration, so an item can
+// be "visible" in it while the menu is closed and still show the state from before the last choice (the Off radio checked
+// right after Box was chosen). Open means the trigger says aria-expanded=true and the panel is data-state=in; only then are
+// the items current. The trigger reports expanded one task after the click (the platform's toggle event).
+const openAddMenu = async () => {
+  if ((await addBtn().getAttribute('aria-expanded')) !== 'true') await addBtn().click()
+  await detail().locator('[data-testid=output-note-add][aria-expanded=true]').waitFor({ state: 'attached', timeout: 4000 })
+  await detail().locator('[data-testid=output-note-menu][data-state=in]').waitFor({ state: 'attached', timeout: 4000 })
+  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'visible', timeout: 4000 })
+}
+const closeAddMenu = async () => {
+  if ((await addBtn().getAttribute('aria-expanded')) !== 'true') return
+  await page.keyboard.press('Escape')
+  // Closed for real: the trigger says so and the retained exit render is gone, so nothing can take focus from the viewport.
+  await detail().locator('[data-testid=output-note-add][aria-expanded=false]').waitFor({ state: 'attached', timeout: 4000 })
+  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'detached', timeout: 4000 })
+}
+const addEnabled = async () => {
+  if (!(await addIsMenu())) return (await addBtn().getAttribute('aria-disabled')) !== 'true'
+  await openAddMenu()
+  const on = (await detail().locator('[data-testid=output-note-selection]').getAttribute('aria-disabled')) !== 'true'
+  await closeAddMenu()
+  return on
+}
+const addNote = async () => {
+  if (await addIsMenu()) {
+    await openAddMenu()
+    await detail().locator('[data-testid=output-note-selection]').click()
+  } else await addBtn().click()
+}
+const chooseRegion = async (tool) => {
+  await openAddMenu()
+  await detail().locator(`[data-testid=output-note-region-${tool}]`).click()
+}
 const composer = () => page.locator('[data-testid=output-note-composer]')
 const liveText = async () => clean(await page.locator('[data-testid=output-live], [data-testid=output-live-temp]').allInnerTexts().then((a) => a.join(' ')))
 
@@ -365,10 +401,17 @@ async function regionFlow(label) {
   const vp = detail().locator('[data-testid=diagram-viewport]').first()
   await vp.waitFor({ timeout: 30_000 })
   await sleep(500)
-  const group = detail().locator('[data-testid=output-note-region]')
   check(/Mark an area to add a note\./.test(clean(await detail().locator('[data-testid=output-note-hint]').innerText())), `${label}: the hint names an area`)
+  check((await detail().locator('[data-testid=output-note-region]').count()) === 0, `${label}: the Off / Box / Circle row is not in the toolbar at rest`)
+  await openAddMenu()
+  const group = detail().locator('[data-testid=output-note-region]')
+  check((await group.getAttribute('role')) === 'group' && (await group.locator('[role=menuitemradio]').count()) === 3, `${label}: "Mark an area" is a group of three radio items in the Add note menu`)
+  check((await group.locator('[data-testid=output-note-region-off]').getAttribute('aria-checked')) === 'true', `${label}: the tool starts Off`)
   await group.locator('[data-testid=output-note-region-box]').click()
-  check((await group.locator('[data-testid=output-note-region-box]').getAttribute('aria-pressed')) === 'true', `${label}: the Box tool is pressed`)
+  check(await until(async () => /Marking: Box/.test(clean(await addBtn().innerText()))), `${label}: Add note says "Marking: Box" while the tool is on`)
+  await openAddMenu()
+  check((await detail().locator('[data-testid=output-note-region-box]').getAttribute('aria-checked')) === 'true', `${label}: the Box tool is checked`)
+  await closeAddMenu()
   const before = await vp.evaluate((el) => ({ x: el.dataset.x, y: el.dataset.y }))
   await vp.focus()
   await page.keyboard.press('Enter')
@@ -380,6 +423,21 @@ async function regionFlow(label) {
   check(box1.left > box0.left + 10 && box1.height > box0.height, `${label}: arrows move the box and Shift+arrow grows it`, `${box0.left}->${box1.left} ${box0.height}->${box1.height}`)
   const after = await vp.evaluate((el) => ({ x: el.dataset.x, y: el.dataset.y }))
   check(before.x === after.x && before.y === after.y, `${label}: the view does not pan while the box moves`)
+  // The default box is centred in what is visible, and where that lands on the drawing depends on the panel width and the
+  // fitted zoom (a 0.6 floor), so on some displays it sits beside every label. Grow it with Shift+Right until it covers a
+  // drawn label, so the anchor below carries the labels it is meant to capture.
+  const coversLabel = () =>
+    page.evaluate(() => {
+      const d = document.querySelector('[data-testid=diagram-viewport] .output-region-shape.draft')?.getBoundingClientRect()
+      const shadow = document.querySelector('[data-testid=diagram-viewport] [data-testid=output-mermaid-svg]')?.shadowRoot
+      if (!d || !shadow) return false
+      return [...shadow.querySelectorAll('text')].some((t) => {
+        const r = t.getBoundingClientRect()
+        return !!t.textContent?.trim() && r.width > 0 && d.left < r.right && r.left < d.right && d.top < r.bottom && r.top < d.bottom
+      })
+    })
+  for (let i = 0; i < 60 && !(await coversLabel()); i++) await page.keyboard.press('Shift+ArrowRight')
+  check(await coversLabel(), `${label}: the box covers a drawn label before it is confirmed`)
   await page.keyboard.press('Enter')
   await typeNote('This arrow looks wrong.')
   const id = await idOfKind('mermaid')
@@ -392,7 +450,10 @@ async function regionFlow(label) {
   // Esc order: the tool is still on; Esc on the viewport turns it off.
   await vp.focus()
   await page.keyboard.press('Escape')
-  check((await group.locator('[data-testid=output-note-region-off]').getAttribute('aria-pressed')) === 'true', `${label}: Esc turns the area tool off`)
+  check(await until(async () => !/Marking:/.test(clean(await addBtn().innerText()))), `${label}: Esc turns the area tool off (Add note no longer says Marking)`)
+  await openAddMenu()
+  check((await detail().locator('[data-testid=output-note-region-off]').getAttribute('aria-checked')) === 'true', `${label}: Off is the checked tool after Esc`)
+  await closeAddMenu()
   check(!(await running(detail())), `${label}: nothing animates in the detail`, await running(detail()))
   // SVG by pointer drag.
   await clearNotes()
@@ -400,7 +461,7 @@ async function regionFlow(label) {
   const svgVp = detail().locator('[data-testid=diagram-viewport]').first()
   await svgVp.waitFor()
   await sleep(500)
-  await detail().locator('[data-testid=output-note-region-ellipse]').click()
+  await chooseRegion('ellipse')
   // In the 360 px panel at 1024x640 the drawing sits below the fold of the detail's scroller: bring it on screen first.
   await svgVp.scrollIntoViewIfNeeded()
   await sleep(200)
@@ -412,7 +473,7 @@ async function regionFlow(label) {
   await page.mouse.up()
   check(await until(addEnabled, 3000), `${label}: a dragged circle enables Add note`)
   check((await svgVp.evaluate((el) => el.dataset.mode)) === 'fit', `${label}: the drag drew instead of panning`)
-  await addBtn().click()
+  await addNote()
   await typeNote('Check the logo colour.')
   const sid = await idOfKind('svg')
   const sa = (await until(async () => (await notesOf(sid)).length === 1)) ? (await notesOf(sid))[0].anchor : null

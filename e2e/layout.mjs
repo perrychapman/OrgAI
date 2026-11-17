@@ -184,7 +184,7 @@ try {
       await sleep(300)
       const m = await page.evaluate(() => {
         const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && { l: b.left, r: b.right, t: b.top, b: b.bottom } }
-        return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, iw: window.innerWidth, ih: window.innerHeight, tabs: r('.run-tabs'), strip: r('[data-testid=run-strip]'), toolbar: r('.frame-toolbar'), stage: r('.frame-stage'), frame: r('.canvas-frame'), topbar: r('main .topbar'), composer: r('.composer'), side: document.querySelector('.side-panel')?.getAttribute('data-collapsed') }
+        return { sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth, iw: window.innerWidth, ih: window.innerHeight, tabs: r('.run-tabs'), strip: r('[data-testid=run-strip]'), toolbar: r('.frame-toolbar'), stage: r('.frame-stage'), frame: r('.canvas-frame'), topbar: r('main .topbar'), composer: r('.composer'), side: document.querySelector('.side-panel')?.getAttribute('data-collapsed'), panels: document.querySelectorAll('.run-body > .side-panel').length, layout: document.querySelector('.run-body')?.getAttribute('data-layout'), flag: document.querySelector('.run-body')?.getAttribute('data-side-panel') }
       })
       const inside = (b) => !!b && b.l >= -0.5 && b.r <= m.iw + 0.5 && b.t >= -0.5 && b.b <= m.ih + 0.5
       const shellM = await page.evaluate(() => {
@@ -216,7 +216,8 @@ try {
       check(!!m.toolbar && !!m.strip && m.toolbar.t >= m.strip.b - 0.5 && Math.abs(m.toolbar.b - m.toolbar.t - 32) <= 1.5, `canvas toolbar is 32 px and sits under the strip at ${w}x${h} ${theme}`, JSON.stringify([m.strip, m.toolbar]))
       check(!!m.tabs && !!m.strip && m.tabs.l >= m.strip.l - 0.5 && m.tabs.r <= m.strip.r + 0.5, `run tabs live inside the strip at ${w}x${h} ${theme}`, JSON.stringify([m.strip, m.tabs]))
       check(!!m.stage && !!m.toolbar && m.stage.t >= m.toolbar.b - 0.5, `stage sits under the toolbar at ${w}x${h} ${theme}`, JSON.stringify([m.toolbar, m.stage]))
-      check(w >= 1100 || m.side === 'true', `run panel starts collapsed below 1100 px of main width at ${w}x${h} ${theme}`, String(m.side))
+      // A run in the conversation layout (an ended run opened under 1100 px) has no panel at all; on the canvas it starts collapsed.
+      check(m.layout === 'conversation' ? m.panels === 0 && m.flag === 'none' : w >= 1100 || m.side === 'true', `run panel starts collapsed below 1100 px of main width (none in the conversation layout) at ${w}x${h} ${theme}`, JSON.stringify([m.layout, m.panels, m.flag, m.side]))
       check((await page.locator('.react-flow__controls').count()) === 0, `React Flow controls are gone from the canvas at ${w}x${h} ${theme}`)
       check((await page.locator('[data-testid=run-strip] .btn:visible').first().evaluate((el) => el.getBoundingClientRect().height).catch(() => 28)) <= 36, `strip buttons fit the 40 px strip at ${w}x${h} ${theme}`)
       log(`chrome above canvas at ${w}x${h} ${theme}:`, m.stage ? Math.round(m.stage.t) : '?', 'px; stage', m.stage ? `${Math.round(m.stage.r - m.stage.l)}x${Math.round(m.stage.b - m.stage.t)}` : '?')

@@ -334,6 +334,25 @@ export function roleModelTier(role: Pick<Role, 'model' | 'tier'>, byFamily = fal
  *    lowest supported; an empty adapterEfforts means no effort at all. This adds a note but does not change source.
  * 9. model = tierModels[tier]; overrides = tier or effort differs from the role's chart values.
  */
+/**
+ * The staffing floor resolveStaffing enforces for `role` (rule 2): none for a fixed role or one with no known ceiling,
+ * and none when the role's floor (effectiveRoleStaffing) is above its ceiling (roleModelTier for a role on its own
+ * model, the chart tier or `parentTier` for an 'inherit' role). Pure; the one place this reading lives, shared with team
+ * evolution's gate so a change it measures as "no floor raise" is one here too.
+ */
+export function enforcedStaffingFloor(
+  role: Pick<Role, 'model' | 'tier' | 'effort' | 'staffing'>,
+  project: Pick<Project, 'staffing'> | null | undefined,
+  parentTier?: ModelTier
+): ModelTier | undefined {
+  const eff = effectiveRoleStaffing(role, project)
+  const roleModel = typeof role.model === 'string' ? role.model.trim() : ''
+  const parent = isModelTier(parentTier) ? parentTier : undefined
+  const ceiling: ModelTier | undefined = roleModel === 'inherit' ? (eff.maxTier ?? parent) : roleModelTier(role)
+  if (eff.mode === 'fixed' || !ceiling) return undefined
+  return eff.minTier && compareTier(eff.minTier, ceiling) <= 0 ? eff.minTier : undefined
+}
+
 export function resolveStaffing(input: ResolveStaffingInput): ResolvedStaffing {
   const { role, project, parentTier, tierModels, adapterEfforts, planGuard, escalatedFrom } = input
   const requested = cleanRequest(input.requested)
@@ -391,7 +410,7 @@ export function resolveStaffing(input: ResolveStaffingInput): ResolvedStaffing {
   }
 
   // ---- 2. bounds ----
-  const floor = eff.minTier && compareTier(eff.minTier, ceiling) <= 0 ? eff.minTier : undefined
+  const floor = enforcedStaffingFloor(role, project, parentTier)
   const effortCeiling: Effort = eff.maxEffort ?? UNSET_EFFORT_CEILING
   const notes: string[] = []
   let adjustment: StaffingAdjustment | undefined

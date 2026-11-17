@@ -26,7 +26,9 @@ import type {
 import { IPC, isMenuAction } from '../shared/types'
 import { SELF_KNOWLEDGE_IPC, type AppNavigateEvent, type AppReferenceQuery } from '../shared/types'
 import { isAtlasSurfaceId } from '../shared/view/atlas'
-import { KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../shared/types'
+import { KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../shared/types'
+import type { SchedulesChangedEvent } from '../shared/types'
+import { UPDATES_IPC, type UpdateState } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -396,6 +398,32 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, event: OutputsChangedEvent): void => cb(event)
     ipcRenderer.on(OUTPUTS_IPC.outputsChanged, listener)
     return () => ipcRenderer.removeListener(OUTPUTS_IPC.outputsChanged, listener)
+  },
+  schedules: {
+    list: () => ipcRenderer.invoke(SCHEDULES_IPC.schedulesList),
+    history: (scheduleId) => ipcRenderer.invoke(SCHEDULES_IPC.schedulesHistory, scheduleId),
+    save: (input) => ipcRenderer.invoke(SCHEDULES_IPC.schedulesSave, input),
+    remove: (scheduleId) => ipcRenderer.invoke(SCHEDULES_IPC.schedulesRemove, scheduleId),
+    setEnabled: (input) => ipcRenderer.invoke(SCHEDULES_IPC.schedulesSetEnabled, input),
+    runNow: (scheduleId) => ipcRenderer.invoke(SCHEDULES_IPC.schedulesRunNow, scheduleId)
+  },
+  onSchedulesChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, event: SchedulesChangedEvent): void => cb(event)
+    ipcRenderer.on(SCHEDULES_IPC.schedulesChanged, listener)
+    return () => ipcRenderer.removeListener(SCHEDULES_IPC.schedulesChanged, listener)
+  },
+  // Desktop updater: no argument carries a URL, path or version; install sends only { force: true } when confirmed.
+  updates: {
+    get: () => ipcRenderer.invoke(UPDATES_IPC.updatesGet),
+    check: () => ipcRenderer.invoke(UPDATES_IPC.updatesCheck),
+    download: () => ipcRenderer.invoke(UPDATES_IPC.updatesDownload),
+    install: (input) => ipcRenderer.invoke(UPDATES_IPC.updatesInstall, input?.force === true ? { force: true } : {}),
+    openReleasePage: () => ipcRenderer.invoke(UPDATES_IPC.updatesOpenReleasePage)
+  },
+  onUpdatesChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, state: UpdateState): void => cb(state)
+    ipcRenderer.on(UPDATES_IPC.updatesChanged, listener)
+    return () => ipcRenderer.removeListener(UPDATES_IPC.updatesChanged, listener)
   }
 }
 

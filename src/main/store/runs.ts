@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, isAbsolute } from 'node:path'
+import { renameSyncRetry } from '../host/fsRetry'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
@@ -103,6 +104,12 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
   const r: RunSummary = { ...input }
   if (typeof r.conversationBudgetUsd !== 'number' || !Number.isFinite(r.conversationBudgetUsd) || r.conversationBudgetUsd <= 0) delete r.conversationBudgetUsd
   if (r.modelAdapter !== 'claude' && r.modelAdapter !== 'codex' && r.modelAdapter !== 'mock') delete r.modelAdapter
+  // Schedules (untrusted file): a schedule id and a one-line name of at most 80 characters, both or neither.
+  // eslint-disable-next-line no-control-regex
+  if (typeof r.scheduleId !== 'string' || !/^sch_[0-9a-f]{4,64}$/.test(r.scheduleId) || typeof r.scheduleName !== 'string' || r.scheduleName.length > 80 || /[\u0000-\u001f\u007f]/.test(r.scheduleName)) {
+    delete r.scheduleId
+    delete r.scheduleName
+  }
   if (r.endedBy !== undefined && !ENDED_BY.includes(r.endedBy)) delete r.endedBy
   // endedWithApp is exactly true or absent. A record saved before endedBy existed has endedWithApp alone: the
   // app cut it, so it gets endedBy 'app' (the renderer trusts endedWithApp). Next to any other endedBy it is dropped.
@@ -201,7 +208,7 @@ export class RunStore {
     mkdirSync(dirname(this.file), { recursive: true })
     const tmp = `${this.file}.tmp`
     writeFileSync(tmp, JSON.stringify({ version: 1, runs: this.runs.slice(-500) }, null, 2), 'utf8')
-    renameSync(tmp, this.file)
+    renameSyncRetry(tmp, this.file)
   }
 
   upsert(run: RunSummary): void {
@@ -269,7 +276,7 @@ export class RunStore {
         mkdirSync(dir, { recursive: true })
         const tmp = `${file}.tmp`
         writeFileSync(tmp, bytes)
-        renameSync(tmp, file)
+        renameSyncRetry(tmp, file)
       }
       this.storedImages.set(img, ref)
       return ref
@@ -339,7 +346,7 @@ export class RunStore {
     const file = this.recordPath(record.summary.id)
     const tmp = `${file}.tmp`
     writeFileSync(tmp, JSON.stringify(trimmed), 'utf8')
-    renameSync(tmp, file)
+    renameSyncRetry(tmp, file)
   }
 
   getRecord(runId: string): RunRecord | null {

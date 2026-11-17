@@ -22,11 +22,14 @@ import {
   byteLength,
   diagramText,
   hintText,
+  isBigDiagram,
   isLargeDiagram,
+  FIT_PAD,
+  LARGE_FIT,
   largeNote,
   type ViewKey
 } from '../../../lib/diagramView'
-import { svgNaturalSize } from '../../../lib/outputZoom'
+import { DIAGRAM_OPEN_MAX, VECTOR_FLOOR, svgNaturalSize } from '../../../lib/outputZoom'
 import { useOutputView, usePreviewStatus } from '../previewStatus'
 import { DiagramError } from './DiagramError'
 import { serializeStandalone, useDiagramExport, type ExportBuild } from './DiagramExport'
@@ -42,8 +45,10 @@ const REDRAW_DELAY_MS = 400
 const NOTICE_MS = 8000
 /** Container width where Split puts the editor beside the viewport. */
 const SPLIT_ROW_PX = 900
-/** Under this container width everything after the zoom group moves into More. */
+/** Under this container width everything after the zoom group moves into More (in the panel it always is). */
 const NARROW_PX = 560
+/** Empty px around the drawing in the panel: the panel is narrow, so less than the Larger view's. */
+const PANEL_PAD = 8
 
 /** lib/theme.ts resolves System to 'dark' | 'light' and writes it as data-theme on <html>. */
 function currentTheme(): 'light' | 'dark' {
@@ -138,7 +143,7 @@ interface DiagramBodyProps extends DiagramViewerProps {
 }
 
 function DiagramBody({ text, title, truncated, edit, editState, startOpen }: DiagramBodyProps): ReactElement {
-  const { context, onOpenLarge, full, onToggleFull } = useOutputView()
+  const { context, full, onToggleFull } = useOutputView()
   const appTheme = useTheme()
   const [light, setLight] = useState(false)
   const mTheme = viewerTheme(appTheme, light)
@@ -242,10 +247,17 @@ function DiagramBody({ text, title, truncated, edit, editState, startOpen }: Dia
   // ---- pan and zoom ----
   const [overviewPref, setOverviewPref] = useState<boolean | null>(readOverviewPref)
   const onCommandRef = useRef<(k: ViewKey) => void>(() => undefined)
-  const pz = usePanZoom(natural, { wheel: context === 'dialog' ? 'zoom' : 'modifier', onSpeak: speak, onCommand: (k) => onCommandRef.current(k) })
+  // It opens contained in the box (never under 60% when a sideways pan reads better) and follows the box until the user moves it.
+  const pz = usePanZoom(natural, {
+    wheel: context === 'dialog' ? 'zoom' : 'modifier',
+    onSpeak: speak,
+    onCommand: (k) => onCommandRef.current(k),
+    open: { floor: VECTOR_FLOOR, max: DIAGRAM_OPEN_MAX, pad: context === 'dialog' ? FIT_PAD : PANEL_PAD }
+  })
+  // The note names a diagram that is both big and unreadable at Fit; the overview opens for a big or tiny-at-Fit one.
   const large = good !== null && isLargeDiagram(facts.shapes, pz.fitK)
   const bigger = natural !== null && biggerThanViewport(natural, pz.box, pz.view.k)
-  const overviewOn = good !== null && showViewport && (overviewPref ?? (context === 'dialog' && large && bigger))
+  const overviewOn = good !== null && showViewport && (overviewPref ?? (context === 'dialog' && (isBigDiagram(facts.shapes) || pz.fitK < LARGE_FIT) && bigger))
   const toggleOverview = useCallback((): void => {
     const next = !overviewOn
     setOverviewPref(next)
@@ -322,7 +334,6 @@ function DiagramBody({ text, title, truncated, edit, editState, startOpen }: Dia
         onCopySource={copySource}
         narrow={narrow}
         context={context}
-        onOpenLarge={onOpenLarge}
         full={full}
         onToggleFull={onToggleFull}
       />
@@ -333,8 +344,7 @@ function DiagramBody({ text, title, truncated, edit, editState, startOpen }: Dia
       )}
       {large && showViewport && (
         <p className="diagram-large-note" role="note" data-testid="diagram-large-note">
-          {/* The toolbar's primary "Open large" sits just above, so the note carries no second one. */}
-          {largeNote(facts.shapes)}
+          {largeNote(facts.shapes, context === 'dialog')}
         </p>
       )}
       {state === 'guard' && (

@@ -1,9 +1,8 @@
 /**
  * The TUI's host connection and session (W4-T1, cli-spec 3.3(4), 5.1, 5.2).
  *
- * - connectTuiHost: ensureHost with scopes read / operate / decide and clientKind 'tui' (the host counts the socket as
- *   an interactive client). 'configure' is asked for only by createProject (onboarding), on a separate connection
- *   closed after the call, so the shared client and the open session's stream are never touched.
+ * - connectTuiHost: ensureHost with scopes read / operate / decide / configure and clientKind 'tui' (the host counts the socket as
+ *   an interactive client). 'configure' is held on that one connection (createProject, promote, folder trust).
  * - openTuiSession: one RunStream (runs:subscribe with followChains, never nonInteractive) feeding the pure reducer
  *   in state.ts; listeners are notified at most once per 16 ms. Runs the state has not seen (an auto-resume, another
  *   window's run) are fetched with runs:get; earlier chain members (up to 5) are fetched after a focus.
@@ -17,18 +16,31 @@ import {
   type FolderConfigReview,
   type TeamFilesStatus,
   type CardKind,
+  type ConnectionId,
   type DecisionOutcome,
+  type EvolutionHistory,
+  type EvolveAnalyzeInput,
+  type EvolveAnalyzeResult,
+  type EvolveApplyInput,
+  type EvolveApplyResult,
+  type EvolveRollbackInput,
+  type EvolveRollbackResult,
+  EVOLVE_IPC,
   type HostKind,
   type HostScope,
+  type PermissionMode,
   type Project,
   type ProjectCreateInput,
   type ProjectPathCheck,
   type ProviderModel,
+  type QuickRunPromoteResult,
   type RunOverrides,
   type RunRecord,
   type RunSummary,
   type RunOutput,
   type RunTeam,
+  type SetRunPermissionModeResult,
+  type SwitchRunModelResult,
   type WorktreeDiff
 } from '../../shared/types'
 import { chainOf, isOpenStatus, newestOf, runBatched } from '../../shared/view/runChains'
@@ -62,14 +74,16 @@ import type {
   ComposeTarget,
   DecisionCall,
   OpenTuiSessionOptions,
+  StagedRunOptions,
   Tone,
   TuiHostConnection,
   TuiSessionApi,
   TuiState
 } from './types'
 
-export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide']
-export const TUI_CONFIGURE_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
+export const TUI_SCOPES: readonly HostScope[] = ['read', 'operate', 'decide', 'configure']
+/** Kept for older importers: the TUI's one connection now holds 'configure' itself. */
+export const TUI_CONFIGURE_SCOPES: readonly HostScope[] = TUI_SCOPES
 /** How long a decision call may take (a proposal approval applies changes before it answers). */
 export const TUI_DECIDE_TIMEOUT_MS = 120_000
 /** Listeners are notified at most this often. */
@@ -162,22 +176,15 @@ class TuiConnection implements TuiHostConnection {
   }
 
   /**
-   * A separate connection with 'configure' (like exec's Session.needConfigure), used for one call and closed after
-   * it: the shared client (and the open session's stream on it) is never touched. Refused with exit 1 when the host
-   * does not grant it.
+   * Runs `fn` on the shared client, which holds 'configure' (TUI_SCOPES). Refused with exit 1 when the host did not
+   * grant it (an older host that has no 'configure' for the 'tui' client kind).
    */
   private async withConfigure<T>(fn: (client: HostClient) => Promise<T>): Promise<T> {
-    const res = await this.ctx.connect([...TUI_CONFIGURE_SCOPES], { clientKind: 'tui', waitStartingMs: ENSURE_HOST_STARTING_WAIT_MS })
-    if (!res.ok) throw connectFailure(res)
-    try {
-      const granted = res.client.hello.grantedScopes
-      if (Array.isArray(granted) && !granted.includes('configure')) {
-        throw new CliError("The OrgAI host did not grant the 'configure' access this needs.", EXIT.failure)
-      }
-      return await fn(res.client)
-    } finally {
-      res.client.close()
+    const granted = this.client.hello.grantedScopes
+    if (Array.isArray(granted) && !granted.includes('configure')) {
+      throw new CliError("The OrgAI host did not grant the 'configure' access this needs.", EXIT.failure)
     }
+    return fn(this.client)
   }
 
   async createProject(input: ProjectCreateInput): Promise<Project> {
@@ -190,11 +197,25 @@ class TuiConnection implements TuiHostConnection {
 
   /** One call with 'configure' (run options that widen the project's settings; exec's Session.needConfigure). */
   async callConfigured<T>(method: string, params: unknown[]): Promise<T> {
-    return this.withConfigure((client) =>
-      client.call<T>(method, params).catch((e: unknown) => {
+    const granted = this.client.hello.grantedScopes
+    if (!Array.isArray(granted) || granted.includes('configure')) {
+      return this.client.call<T>(method, params).catch((e: unknown) => {
         throw hostError(e)
       })
-    )
+    }
+    const res = await this.ctx.connect([...TUI_CONFIGURE_SCOPES], { clientKind: 'tui', waitStartingMs: ENSURE_HOST_STARTING_WAIT_MS })
+    if (!res.ok) throw connectFailure(res)
+    try {
+      const nextGranted = res.client.hello.grantedScopes
+      if (Array.isArray(nextGranted) && !nextGranted.includes('configure')) {
+        throw new CliError("The OrgAI host did not grant the 'configure' access this needs.", EXIT.failure)
+      }
+      return await res.client.call<T>(method, params).catch((e: unknown) => {
+        throw hostError(e)
+      })
+    } finally {
+      res.client.close()
+    }
   }
 
   async startSetup(projectId: string): Promise<RunSummary> {
@@ -439,7 +460,13 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
   }
   set(setConnection(state, 'live'))
 
+  // Choices for the next run this session starts (/model, /effort, /mode, /goal when no run is followed). One-shot: a
+  // start that succeeded used them all, a continuation used the goal (the only one it carries), so they are dropped
+  // then. A failed call keeps them for the retry.
+  let staged: StagedRunOptions = {}
   const focusRun = async (runId: string, list?: RunSummary[]): Promise<void> => {
+    // Choices staged for a new run do not wait hidden behind a followed run.
+    staged = {}
     const chain = await focusChain(runId, list)
     await stream?.resubscribe().catch((e: unknown) => {
       throw hostError(e)
@@ -537,6 +564,35 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     ...(firstOpen ? { firstOpen } : {})
   }
 
+  const mergedOverrides = (over: RunOverrides | undefined): RunOverrides | undefined => {
+    const base: RunOverrides = { ...(staged.goal ? { goal: staged.goal } : {}), ...(over ?? {}) }
+    return Object.keys(base).length ? base : undefined
+  }
+
+  function doSwitchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }): Promise<Awaited<ReturnType<typeof switchRunModel>>>
+  function doSwitchModel(selection: { model: string; connection?: ConnectionId }): Promise<SwitchRunModelResult>
+  async function doSwitchModel(
+    selectedOrSelection: ProviderModel | { model: string; connection?: ConnectionId },
+    opts?: { confirm(): Promise<boolean> }
+  ): Promise<Awaited<ReturnType<typeof switchRunModel>> | SwitchRunModelResult> {
+    const runId = activeId()
+    if (opts !== undefined) {
+      const out = await switchRunModel(call, runId, selectedOrSelection as ProviderModel, opts)
+      // The run.model event updates the status bar; the summary also carries the selection kept for the next message.
+      if (out.run && out.run.id !== runId) await adopt(out.run, [...state.activeChain])
+      else if (out.run?.id === runId) set(upsertRunSummary(state, out.run))
+      return out
+    }
+    const selection = selectedOrSelection as { model: string; connection?: ConnectionId }
+    const res = await call<SwitchRunModelResult>('runs:switchModel', [
+      { runId, expectedRunId: runId, model: selection.model, ...(selection.connection ? { connection: selection.connection } : {}) }
+    ])
+    // A provider handoff answers a successor run: follow it (never send anything).
+    if (res?.run && res.run.id !== runId) await adopt(res.run, [...state.activeChain])
+    else if (res?.run) set(upsertRunSummary(state, { ...state.runs[runId]?.summary, ...res.run }))
+    return res
+  }
+
   const api: TuiSessionApi = {
     config,
     getState: () => state,
@@ -568,13 +624,35 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
         case 'continue': {
           const from = activeId()
           const chain = [...state.activeChain]
-          const next = await startCall<RunSummary>('runs:continue', [{ runId: from, text, ...withOverrides(o.overrides) }], o.overrides, state.project)
+          const eff = mergedOverrides(o.overrides)
+          const next = await startCall<RunSummary>('runs:continue', [{ runId: from, text, ...withOverrides(eff) }], eff, state.project)
+          if (staged.goal) {
+            const { goal: _used, ...rest } = staged
+            staged = rest
+          }
           return adopt(next, chain)
         }
         case 'start': {
           const projectId = state.project?.id
           if (!projectId) throw new Error('No project is open.')
-          const next = await startCall<RunSummary>('runs:start', [{ projectId, prompt: text, ...(o.team ? { team: o.team } : {}), ...withOverrides(o.overrides) }], o.overrides, state.project)
+          const eff = mergedOverrides(o.overrides)
+          const next = await startCall<RunSummary>(
+            'runs:start',
+            [
+              {
+                projectId,
+                prompt: text,
+                ...(o.team ? { team: o.team } : {}),
+                ...(staged.model ? { modelSelection: staged.model } : {}),
+                ...(staged.effort ? { effort: staged.effort } : {}),
+                ...(staged.permissionMode ? { permissionMode: staged.permissionMode } : {}),
+                ...withOverrides(eff)
+              }
+            ],
+            eff,
+            state.project
+          )
+          staged = {}
           return adopt(next)
         }
         case 'quick':
@@ -596,13 +674,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       list: () => waitingItems(),
       waiting: async () => waitingNotice(await waitingItems())
     },
-    async switchModel(selected: ProviderModel, opts: { confirm(): Promise<boolean> }) {
-      const runId = activeId()
-      const out = await switchRunModel(call, runId, selected, opts)
-      // The run.model event updates the status bar; the summary also carries the selection kept for the next message.
-      if (out.run?.id === runId) set(upsertRunSummary(state, out.run))
-      return out
-    },
+    switchModel: doSwitchModel,
     async resumeNow() {
       const from = activeId()
       const chain = [...state.activeChain]
@@ -645,6 +717,44 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       if (!offersRetro(run)) throw new Error('An Org retrospective looks back at an ended work run of a project.')
       const started = await call<RunSummary>('setup:retro', [{ projectId: run.projectId, runId: id }], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
       return adopt(started)
+    },
+    getStaged: () => ({ ...staged }),
+    stage(patch) {
+      const next: StagedRunOptions = { ...staged }
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === null || v === undefined) delete (next as Record<string, unknown>)[k]
+        else (next as Record<string, unknown>)[k] = v
+      }
+      staged = next
+    },
+    async listModels(connection?: ConnectionId): Promise<ProviderModel[]> {
+      const list = await call<ProviderModel[]>('models:list', [connection ? { connection } : {}])
+      return Array.isArray(list) ? list : []
+    },
+    async setPermissionMode(mode: PermissionMode) {
+      const runId = activeId()
+      const res = await call<SetRunPermissionModeResult>('runs:setPermissionMode', [{ runId, mode }])
+      if (res?.run && res.run.id === runId) set(upsertRunSummary(state, { ...state.runs[runId]?.summary, ...res.run }))
+      return res
+    },
+    async promoteQuick(name: string) {
+      return call<QuickRunPromoteResult>('runs:promoteQuick', [{ runId: activeId(), name }])
+    },
+    async evolveAnalyze(input) {
+      return call<EvolveAnalyzeResult>(EVOLVE_IPC.orgEvolveAnalyze, [input], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+    },
+    async evolveHistory(projectId) {
+      return call<EvolutionHistory>(EVOLVE_IPC.orgEvolveHistory, [{ projectId }])
+    },
+    async evolveApply(input) {
+      const res = await call<EvolveApplyResult>(EVOLVE_IPC.orgEvolveApply, [input], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+      if (res?.project && state.project?.id === res.project.id) set(setProject(state, res.project))
+      return res
+    },
+    async evolveRollback(input) {
+      const res = await call<EvolveRollbackResult>(EVOLVE_IPC.orgEvolveRollback, [input], { timeoutMs: TUI_DECIDE_TIMEOUT_MS })
+      if (res?.project && state.project?.id === res.project.id) set(setProject(state, res.project))
+      return res
     },
     async resync() {
       await stream?.resubscribe().catch((e: unknown) => {

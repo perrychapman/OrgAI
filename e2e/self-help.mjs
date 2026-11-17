@@ -233,7 +233,7 @@ try {
     check((await page.evaluate(() => document.documentElement.getAttribute('data-theme'))) === 'light', `Approve makes the theme light ${tag}`)
     check(await waitText('Done: the theme is now light.'), `the transcript shows the Done line ${tag}`)
     check((await page.locator('[data-testid=self-help-row][data-tool=app_reference]').count()) >= 1, `the reference lookup is one quiet row ${tag}`)
-    // The conversation stage and the side panel's Transcript tab both render the feed, so count in the stage only.
+    // Count in the conversation stage (a Chat has no side panel in the conversation layout, so no second feed).
     const opened = await page.locator('[data-testid=conversation-transcript] [data-testid=self-help-row][data-tool=open_in_app]').count()
     check(opened === 1, `the navigation is one row, not two ${tag}`, String(opened))
     await shot(`done-${w}x${h}-light`)

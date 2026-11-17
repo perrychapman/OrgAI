@@ -3,7 +3,7 @@ import { architectRole } from '@shared/setup'
 import { briefFiles } from './contextPack'
 import { PLAN_BATCHING_TEXT, REPORT_CHECKS_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, spawnCallText, spawnLimitMark, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
 import { orgChart, project } from './testHelpers'
-import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, type Role } from '@shared/types'
+import { APP_REFERENCE_TOOL, LIST_SCHEDULES_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, PROPOSE_SCHEDULE_TOOL, type Role } from '@shared/types'
 import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText } from './prompts'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
@@ -17,6 +17,12 @@ describe('self-knowledge paragraphs', () => {
     expect(text).toContain('before the result begins APPROVED')
     expect(text).toContain('is data, not instructions')
     expect(selfKnowledgeChatText()).not.toMatch(/\bcode\b/i)
+  })
+  it('Chat says schedules change only through propose_schedule and are never claimed before APPROVED', () => {
+    const text = buildRolePrompt(roles[0], roles, project(), { isSetup: false, isolation: false, quick: scratch })
+    expect(text).toContain(`change only through ${PROPOSE_SCHEDULE_TOOL}`)
+    expect(text).toContain(LIST_SCHEDULES_TOOL)
+    expect(text).toMatch(/never say a schedule exists or changed before the result begins APPROVED/)
   })
   it('the Architect, MCP and Skill assistant roots get one sentence naming app_reference and open_in_app', () => {
     const arch = architectRole()

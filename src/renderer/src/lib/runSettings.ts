@@ -157,6 +157,32 @@ export function permissionModeHelp(mode: PermissionMode): string {
   return PERMISSION_MODE_TRADEOFF[mode]
 }
 
+/** What stops asking under each wider mode (the confirmation bodies). */
+const WIDENING_STOPS: Record<PermissionMode, string> = {
+  auto: "Routine edits and commands no longer ask: the model's safety check approves them and asks only when unsure.",
+  acceptEdits: 'File edits inside the project and its allowed folders no longer ask. Commands still ask.',
+  default: 'Calls that no saved rule covers ask you instead of being refused.',
+  dontAsk: '',
+  plan: '',
+  bypassPermissions: ''
+}
+
+/**
+ * The ConfirmDialog options for a schedule whose mode asks less than its target's own (docs/design/schedules.md 5):
+ * the mode is standing consent for every run the schedule starts, while the user is away. Bypass never reaches here.
+ */
+export function scheduleWideningConfirmOptions(from: PermissionMode, to: PermissionMode, team: boolean): { title: string; body: string; confirmLabel: string; danger: boolean; confirmTestId: string; cancelLabel: string } {
+  const name = permissionModeName(to)
+  return {
+    title: `Let every run of this schedule use ${name}?`,
+    body: `${WIDENING_STOPS[to] || permissionModeHelp(to)} Each run this schedule starts uses it, including while you are away (${team ? "the project's mode is" : 'Chat runs use'} ${permissionModeName(from)}). Steps that still need approval wait for you.`,
+    confirmLabel: `Use ${name} for this schedule`,
+    danger: false,
+    confirmTestId: 'schedule-permission-confirm',
+    cancelLabel: team ? "Keep the project's mode" : 'Keep the Chat default'
+  }
+}
+
 /** What stops asking when moving from `from` to `to` (the confirmation body). */
 export function wideningCopy(from: PermissionMode, to: PermissionMode): { title: string; body: string; confirmLabel: string; danger: boolean } {
   const name = permissionModeName(to)
@@ -168,17 +194,9 @@ export function wideningCopy(from: PermissionMode, to: PermissionMode): { title:
       danger: true
     }
   }
-  const stops: Record<PermissionMode, string> = {
-    auto: "Routine edits and commands no longer ask: the model's safety check approves them and asks only when unsure.",
-    acceptEdits: 'File edits inside the project and its allowed folders no longer ask. Commands still ask.',
-    default: 'Calls that no saved rule covers ask you instead of being refused.',
-    dontAsk: '',
-    plan: '',
-    bypassPermissions: ''
-  }
   return {
     title: `Switch this run to ${name}?`,
-    body: `${stops[to] || permissionModeHelp(to)} This applies to this run only (now ${permissionModeName(from)}). Open approval cards stay open.`,
+    body: `${WIDENING_STOPS[to] || permissionModeHelp(to)} This applies to this run only (now ${permissionModeName(from)}). Open approval cards stay open.`,
     confirmLabel: `Use ${name} for this run`,
     danger: false
   }

@@ -13,6 +13,7 @@ const { applyAppSettingsPayload } = await import('./bootstrap')
 const { HostDispatcher } = await import('./dispatcher')
 const { SettingsStore } = await import('../store/settings')
 const { createAppReference } = await import('../reference/appReference')
+const { loadBundledDocs } = await import('../reference/docs')
 
 let dir: string
 beforeEach(() => {
@@ -58,6 +59,7 @@ describe('app:reference through the dispatcher', () => {
 
   it('answers a search and allows status (the user may see the secret-free snapshot)', async () => {
     const reference = createAppReference({
+      docs: await loadBundledDocs(),
       status: { appVersion: '1.0.0', platform: 'linux', dataDir: '/d', mock: false, settings: () => ({}) as never, connections: () => [], projectCount: () => 0, mcpLibraryCount: () => 0, skillLibraryCount: () => 0 }
     })
     const d = new HostDispatcher(base(reference as never))

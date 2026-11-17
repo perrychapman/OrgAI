@@ -206,6 +206,12 @@ const PAYLOADS: Record<string, unknown[]> = {
   'teamFiles:undo': [{ projectId: 'p_abc123' }],
   'teamFiles:commit': [{ projectId: 'p_abc123' }],
   'teamFiles:enable': [{ projectId: 'p_abc123' }],
+  // team evolution
+  'org:evolveAnalyze': [{ projectId: 'p_abc123', runs: 10, goal: 'cost', strategy: 'deterministic', minWaste: 15 }],
+  'org:evolveHistory': [{ projectId: 'p_abc123' }],
+  'org:evolveApply': [{ projectId: 'p_abc123', evalWindowRuns: 3 }],
+  'org:evolveRollback': [{ projectId: 'p_abc123', generationId: 'gen_1' }],
+  'org:evolveAfterRun': [{ runId: 'run_abc123' }],
   // outputs
   'outputs:list': ['p_abc123'],
   'outputs:preview': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
@@ -232,6 +238,19 @@ const PAYLOADS: Record<string, unknown[]> = {
   'outputs:watch': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
   'outputs:unwatch': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef' }],
   'outputs:saveImage': [{ projectId: 'p_abc123', outputId: 'out_0123456789abcdef', suggestedName: 'a', mime: 'image/png', dataBase64: 'AAAA' }],
+  // SCHEDULES_IPC
+  'schedules:list': [],
+  'schedules:history': ['sch_0123abcd'],
+  'schedules:save': [{ name: 'PR monitor', prompt: 'Review new pull requests.', target: { kind: 'team', projectId: 'p_abc123' }, timing: { kind: 'daily', time: '00:00' } }],
+  'schedules:remove': ['sch_0123abcd'],
+  'schedules:setEnabled': [{ id: 'sch_0123abcd', enabled: false }],
+  'schedules:runNow': ['sch_0123abcd'],
+  // UPDATES_IPC (desktop only)
+  'updates:get': [],
+  'updates:check': [],
+  'updates:download': [],
+  'updates:install': [{ force: true }],
+  'updates:openReleasePage': [],
   // HOST_IPC
   'runs:subscribe': [{ projectIds: ['p_abc123'], followChains: true, sinceSeq: 12 }],
   'skillLibrary:addFromBundle': [{ name: 'review', files: [{ path: 'SKILL.md', base64: 'IyBSZXZpZXc=' }] }],

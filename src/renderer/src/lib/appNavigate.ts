@@ -27,6 +27,8 @@ export type NavTarget =
   | { kind: 'dashboard'; newProject?: true }
   /** The app-wide Usage page; `section` is the id of the section element whose heading takes focus. */
   | { kind: 'usage'; section?: 'usage-efficiency' | 'usage-runs' }
+  /** The app-wide Schedules page (docs/design/schedules.md section 5). */
+  | { kind: 'schedules' }
   /** App settings: `target` is a pane or section id (requestAppSettingsSection); `advanced` opens that disclosure first. */
   | { kind: 'app'; target: string; advanced?: 'app-general' | 'app-connections' }
   | {
@@ -63,6 +65,7 @@ export const SURFACE_TARGETS: Readonly<Record<AtlasSurfaceId, NavTarget>> = {
   usage: { kind: 'usage' },
   'usage-efficiency': { kind: 'usage', section: 'usage-efficiency' },
   'usage-runs': { kind: 'usage', section: 'usage-runs' },
+  schedules: { kind: 'schedules' },
   'app-sidebar': { kind: 'shell', what: 'sidebar' },
   'app-needs-you': { kind: 'shell', what: 'needs-you' },
   'app-account': { kind: 'shell', what: 'account' },

@@ -215,10 +215,29 @@ function withOrder(s: TuiState, add: readonly RunSummary[]): string[] {
 
 /** Entries appended without duplicates (by id), capped at TUI_TRANSCRIPT_MAX keeping the newest. */
 function appendEntries(run: TuiRun, entries: readonly TranscriptEntry[]): TuiRun {
-  const seen = new Set(run.transcript.map((e) => e.id))
+  const seen = idSetOf(run.transcript)
   const add = entries.filter((e) => e && typeof e.id === 'string' && !seen.has(e.id) && (seen.add(e.id), true))
   if (add.length === 0) return run
-  return capped({ ...run, transcript: [...run.transcript, ...add] })
+  const transcript = [...run.transcript, ...add]
+  idSets.delete(run.transcript)
+  const next = capped({ ...run, transcript })
+  // Dropped (oldest) entries leave the set; it then belongs to the new array.
+  for (let i = 0; i < transcript.length - next.transcript.length; i++) seen.delete(transcript[i].id)
+  idSets.set(next.transcript, seen)
+  return next
+}
+
+/**
+ * Entry-id sets by transcript array identity, so a streaming append does not rebuild an O(N) set. The set moves to
+ * the new array on append; a set whose size no longer matches its array (an old state reused) is rebuilt.
+ */
+const idSets = new WeakMap<readonly TranscriptEntry[], Set<string>>()
+function idSetOf(transcript: readonly TranscriptEntry[]): Set<string> {
+  const known = idSets.get(transcript)
+  if (known && known.size === transcript.length) return known
+  const set = new Set(transcript.map((e) => e.id))
+  idSets.set(transcript, set)
+  return set
 }
 
 function capped(run: TuiRun): TuiRun {
@@ -452,6 +471,13 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
     case 'usage.status':
       // The plan windows (run-less report, runId ''): the status bar shows the newest.
       return e.usage && typeof e.usage === 'object' ? { ...out, planUsage: e.usage } : out
+    case 'output.created':
+    case 'output.versioned': {
+      const title = typeof e.output?.title === 'string' ? e.output.title : typeof e.output?.fileName === 'string' ? e.output.fileName : ''
+      if (!title) return out
+      const verb = e.type === 'output.created' ? 'Output created' : 'Output updated'
+      return addNotice(out, `${verb}: ${title}`, undefined, now)
+    }
     default:
       break
   }
@@ -477,6 +503,16 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
         opts.partials?.clearRun(e.runId)
         run = { ...run, partials: {} }
       }
+      break
+    }
+    case 'run.permissionMode': {
+      const next: RunSummary = { ...summary }
+      if (e.permissionMode !== undefined) next.permissionMode = e.permissionMode
+      if (e.permissionModeChosen) next.permissionModeChosen = true
+      else delete next.permissionModeChosen
+      if (e.sessionPermissionMode) next.sessionPermissionMode = e.sessionPermissionMode
+      else delete next.sessionPermissionMode
+      run = { ...run, summary: next }
       break
     }
     case 'run.finalized':
@@ -515,7 +551,8 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
       if (text === '') run = withoutPartial(run, e.agentId)
       else if (run.partials[e.agentId] === text) return out
       else run = { ...run, partials: { ...run.partials, [e.agentId]: text } }
-      break
+      // Fast path: a partial changes neither status, order nor the chain, so skip withOrder / followSuccessors.
+      return putRun(out, run)
     }
     case 'agent.compacted': {
       // RunManager re-sends the agent with its count right after; counted here too so the row and notice agree at once.
@@ -556,7 +593,8 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
         ...run,
         summary: { ...summary, usage: e.usage, ...(typeof e.usage?.costUsd === 'number' ? { totalCostUsd: e.usage.costUsd } : {}) }
       }
-      break
+      // Fast path: usage never changes status, start time, project or resumedFrom.
+      return existing ? putRun(out, run) : finish(out, run, existing, summary)
     case 'run.cost':
       if (typeof e.totalCostUsd === 'number' && Number.isFinite(e.totalCostUsd)) run = { ...run, summary: { ...summary, totalCostUsd: e.totalCostUsd } }
       break
@@ -594,9 +632,13 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
     }
   }
 
-  out = putRun(out, run)
-  if (!existing || summary !== run.summary) out = { ...out, runOrder: withOrder(out, [run.summary]) }
   if (compactedNotice) out = addNotice(out, compactedNotice, 'warn', now)
+  return finish(out, run, existing, summary)
+}
+
+function finish(s: TuiState, run: TuiRun, existing: TuiRun | undefined, summary: RunSummary): TuiState {
+  let out = putRun(s, run)
+  if (!existing || summary !== run.summary) out = { ...out, runOrder: withOrder(out, [run.summary]) }
   return followSuccessors(out)
 }
 

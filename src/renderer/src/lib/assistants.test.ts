@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { QuickRunInfo } from '@shared/types'
 import { ASSISTANT_ORDER, offersRetro, promoteNameError, canPromote, chatSummaryLine, displayProject, locationLabel, newSessionLabel, promoteName, quickFolderLabel, runKindLabel } from './assistants'
-import { assistantModeLabel, composerPlaceholder, isSingleAgentRun, offersSaveAsProject, runLayoutFor, speaksAsAssistant } from './assistants'
+import { assistantModeLabel, composerPlaceholder, hasRunSidePanel,isSingleAgentRun, offersSaveAsProject, runLayoutFor, speaksAsAssistant } from './assistants'
 
 describe('run layout', () => {
   it('single-agent runs default to the conversation', () => {
@@ -33,6 +33,32 @@ describe('offersSaveAsProject', () => {
     expect(offersSaveAsProject({ quick: quick(), projectId: 'quick' })).toBe(true)
     expect(offersSaveAsProject({ quick: quick(), projectId: 'p-123' })).toBe(false)
     expect(offersSaveAsProject({ projectId: 'quick' })).toBe(false)
+  })
+})
+
+describe('run side panel', () => {
+  it('the panel exists only while the stage is the org chart', () => {
+    expect(hasRunSidePanel('canvas')).toBe(true)
+    expect(hasRunSidePanel('conversation')).toBe(false)
+  })
+  it('every run kind in the conversation layout has no panel, a team run on the canvas has it', () => {
+    const kinds = [
+      { kind: 'work' as const, quick: quick(), projectId: 'quick' },
+      { kind: 'work' as const, quick: quick(), projectId: 'p-123' },
+      { kind: 'mcp-assist' as const, projectId: 'harness' },
+      { kind: 'skill-assist' as const, projectId: 'skills' },
+      { kind: 'work' as const, projectId: 'p1', team: 'single' as const },
+      { kind: 'work' as const, projectId: 'p1' },
+      { kind: 'setup' as const, projectId: 'p1' }
+    ]
+    for (const summary of kinds) {
+      expect(hasRunSidePanel(runLayoutFor(summary, 'conversation'))).toBe(false)
+      expect(hasRunSidePanel(runLayoutFor(summary, 'canvas'))).toBe(true)
+    }
+    // Defaults: a team run opens on the canvas (panel), a single-agent run as the conversation (none).
+    expect(hasRunSidePanel(runLayoutFor({ kind: 'work' }))).toBe(true)
+    expect(hasRunSidePanel(runLayoutFor({ kind: 'work', team: 'single' }))).toBe(false)
+    expect(hasRunSidePanel(runLayoutFor({ kind: 'work' }, undefined, { endedNarrow: true }))).toBe(false)
   })
 })
 

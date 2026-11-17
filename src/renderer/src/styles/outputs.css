@@ -69,15 +69,41 @@
 }
 .run-output-row {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-1);
   min-width: 0;
-  padding: var(--space-2);
+  padding: var(--space-1);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--surface-1);
 }
-.run-output-row[aria-current='true'] {
+/* The row's open target: one native button over the icon and the text (the row has no separate Show button). */
+.run-output-show {
+  all: unset;
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.run-output-show:hover {
+  background: var(--surface-3);
+}
+.run-output-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+.run-output-show:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.run-output-row[data-current='true'] {
   border-color: var(--accent);
   background: var(--surface-2);
 }
@@ -121,8 +147,20 @@
   align-items: center;
   gap: var(--space-1);
 }
+/* The detail takes the panel's remaining height, so its preview can fill it (only the list or the detail scrolls). */
+.run-outputs[data-mode='detail'] {
+  height: 100%;
+  box-sizing: border-box;
+}
 .run-output-detail {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-outputs[data-mode='detail'] .run-output-detail {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 .run-outputs[data-mode='split'] .run-output-detail {
   flex: 1 1 60%;
@@ -133,11 +171,17 @@
 }
 
 /* ---------- Detail ---------- */
+/* The detail fills the room its surface gives it: head, banners and toolbar keep their size, the body takes the rest. */
 .output-detail {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: var(--space-2);
   min-width: 0;
+  min-height: 0;
+}
+.output-detail > :not(.output-detail-body) {
+  flex: none;
 }
 .output-detail-heading {
   margin: 0;
@@ -164,6 +208,41 @@
   color: var(--text-tertiary);
   overflow-wrap: anywhere;
 }
+/* Meta and provenance share one line: ellipsis on overflow (the full text is the line's title). */
+.output-detail-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.output-detail-line > .output-detail-meta,
+.output-detail-line > .output-detail-prov {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.output-detail-line > .output-detail-meta {
+  flex: 1 1 auto;
+}
+/* Provenance holds the focusable run link: it never clips (its focus ring and the tag stay whole); the meta ellipsises. */
+.output-detail-line > .output-detail-prov {
+  flex: none;
+  overflow: visible;
+}
+@container side (max-width: 360px) {
+  .output-detail-line {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+}
+.output-detail-line > .output-detail-sep {
+  flex: none;
+}
 .output-missing {
   margin: 0;
   padding: var(--space-2) var(--space-3);
@@ -177,7 +256,46 @@
 .output-detail-toolbar {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-2);
+  margin-left: auto;
+}
+/* Tabs on the left, toolbar on the right: one row, the toolbar drops under the tabs only when they do not fit together. */
+.output-detail-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.output-detail-bar > .output-detail-tabs {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+/* Icon-only toolbar buttons (Add note and Larger view in the panel): a square, the words are the name and the tooltip. */
+.btn.sm.output-icon-only {
+  padding: 0;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  justify-content: center;
+}
+/* The primary action keeps its words and gives way (ellipsis, the full text is its tooltip) before the toolbar wraps. */
+.output-detail-toolbar > .btn {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.output-detail-toolbar > .btn.output-icon-only {
+  flex: none;
+}
+.output-primary-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.output-actions-wrap {
+  display: contents;
 }
 
 /* ---------- More actions menu ---------- */
@@ -186,6 +304,27 @@
   flex-direction: column;
   gap: var(--space-0h);
   min-width: 180px;
+}
+.output-menu-sep {
+  height: 1px;
+  margin: var(--space-1) var(--space-2);
+  background: var(--border-subtle);
+}
+.output-menu-check {
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-4);
+  flex: none;
+}
+.output-menuitem[aria-disabled='true'] {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+.output-menuitem[aria-disabled='true']:hover {
+  background: transparent;
+}
+.output-menuitem[aria-checked='true'] {
+  font-weight: var(--weight-semibold);
 }
 .output-menuitem {
   all: unset;

@@ -36,27 +36,53 @@ const menu = (id) =>
 /**
  * Arms a watcher in the renderer: when an element matching `selector` gains `attr` (dialog[open], :popover-open), it
  * records the animations running on it and its subtree (CSS transitions included) in the next frame.
+ * `onStart` (the motion-on popover check): a native popover opens without any attribute change, so the first DOM mutation
+ * after the click can be an unrelated one, or React's render after the toggle event, and the frame after it can fall
+ * past the 160 ms transition (macOS CI saw `[]` for a popover that did open). With `onStart` the sample is taken inside
+ * the first transitionrun / animationstart event on the open panel, when the transition is known to exist, so it cannot
+ * be missed or read late. Without such an event within the 4 s limit the last snapshot (possibly empty) is the result.
  */
-const armWatch = (selector, kind) =>
+const armWatch = (selector, kind, { onStart = false } = {}) =>
   page.evaluate(
-    ([sel, k]) => {
+    ([sel, k, start]) => {
       window.__motionSeen = new Promise((resolve) => {
         const isOpen = (el) => (k === 'dialog' ? el.hasAttribute('open') : el.matches(':popover-open'))
-        const capture = (el) =>
-          requestAnimationFrame(() => {
-            const anims = document.getAnimations().filter((a) => {
+        const snapshot = (el) =>
+          document
+            .getAnimations()
+            .filter((a) => {
               const t = a.effect?.target
               return t && (t === el || el.contains(t))
             })
-            resolve(
-              anims.map((a) => ({
-                name: a.animationName ?? a.transitionProperty ?? a.constructor.name,
-                state: a.playState,
-                duration: Number(a.effect?.getComputedTiming?.().duration ?? 0)
-              }))
-            )
-          })
+            .map((a) => ({
+              name: a.animationName ?? a.transitionProperty ?? a.constructor.name,
+              state: a.playState,
+              duration: Number(a.effect?.getComputedTiming?.().duration ?? 0)
+            }))
+        const capture = (el) => requestAnimationFrame(() => resolve(snapshot(el)))
         const find = () => [...document.querySelectorAll(sel)].find(isOpen)
+        if (start) {
+          const onEvent = (e) => {
+            const el = find()
+            if (!el || !(e.target instanceof Node) || !el.contains(e.target)) return
+            const anims = snapshot(el)
+            if (!anims.some((a) => a.state === 'running' && a.duration >= 50)) return
+            done()
+            resolve(anims)
+          }
+          const done = () => {
+            document.removeEventListener('transitionrun', onEvent, true)
+            document.removeEventListener('animationstart', onEvent, true)
+          }
+          document.addEventListener('transitionrun', onEvent, true)
+          document.addEventListener('animationstart', onEvent, true)
+          setTimeout(() => {
+            done()
+            const el = find()
+            resolve(el ? snapshot(el) : null)
+          }, 4000)
+          return
+        }
         const now = find()
         if (now) return capture(now)
         const mo = new MutationObserver(() => {
@@ -73,7 +99,7 @@ const armWatch = (selector, kind) =>
         }, 4000)
       })
     },
-    [selector, kind]
+    [selector, kind, onStart]
   )
 const seen = () => page.evaluate(() => window.__motionSeen)
 const token = (name) => page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim(), name)
@@ -138,7 +164,7 @@ try {
       // Popover: the account popover.
       const pill = page.locator('[data-testid=auth-pill]')
       if (await pill.count()) {
-        await armWatch('[data-testid=account-popover]', 'popover')
+        await armWatch('[data-testid=account-popover]', 'popover', { onStart: true })
         await pill.click()
         const pop = await seen()
         check((pop ?? []).some((a) => a.state === 'running' && a.duration >= 50), `a popover open starts a running transition ${tag}`, JSON.stringify(pop))
@@ -198,6 +224,50 @@ try {
     const off = await breathe()
     check(off.running === 0, 'no canvas node runs breathe with Reduce motion on', JSON.stringify(off))
   } else check(true, 'no working node was caught on the canvas (the mock finished first); breathe check skipped')
+  // Usage page (docs/design/usage-dashboard-motion.md): the KPI and tab indicators slide at --dur-slow, a metric change
+  // runs bar transforms, and with Reduce motion on nothing runs. The run above gives the page data.
+  await setReduceMotion(page, 'off')
+  await page.evaluate(async () => {
+    const runs = await window.orgai.runs.list()
+    for (const r of runs) if (!['finished', 'error', 'stopped'].includes(r.status)) await window.orgai.runs.stop(r.id).catch(() => {})
+  }).catch(() => {})
+  await sleep(2500)
+  await page.locator('[data-testid=nav-usage]').click()
+  await page.locator('[data-testid=usage-summary]').waitFor({ timeout: 20_000 }).catch(() => {})
+  await sleep(800)
+  if (await page.locator('[data-testid=usage-kpi-metric]').count()) {
+    const ms = (s) => (s.endsWith('ms') ? parseFloat(s) : parseFloat(s) * 1000)
+    const indicator = (id) => page.evaluate((i) => {
+      const el = document.querySelector(`[data-testid=${i}]`)
+      return el ? getComputedStyle(el).transitionDuration.split(',')[0].trim() : null
+    }, id)
+    const running = () => page.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running' && (a.effect?.getComputedTiming().duration ?? 0) > 1).length)
+    await page.locator('[data-testid=usage-kpi-metric][data-metric=tokens]').click()
+    await sleep(50)
+    const kpiDur = await indicator('usage-kpi-indicator')
+    check(kpiDur !== null && ms(kpiDur) >= 200, 'usage: the KPI selected bar slides at --dur-slow', String(kpiDur))
+    // The chart's own svg (the card header also holds icon svgs), and only animations on its segment groups count.
+    const morph = await page.evaluate(() => ({
+      attr: document.querySelector('[data-testid=usage-spend-plot] svg.uc-svg')?.getAttribute('data-morph') ?? null,
+      anims: [...document.querySelectorAll('[data-testid=usage-spend-plot] g[data-gk]')].reduce((n, g) => n + g.getAnimations().length, 0)
+    }))
+    check(morph.attr === 'running' || morph.anims > 0, 'usage: a metric change starts the bar morph', JSON.stringify(morph))
+    await sleep(600)
+    await page.locator('[data-testid=usage-where-tab][data-tab=model]').click()
+    await sleep(30)
+    const tabDur = await indicator('usage-where-indicator')
+    check(tabDur !== null && ms(tabDur) >= 200, 'usage: the Where it went underline slides at --dur-slow', String(tabDur))
+    await sleep(600)
+    await setReduceMotion(page, 'on')
+    await sleep(300)
+    await page.locator('[data-testid=usage-kpi-metric][data-metric=runs]').click()
+    await page.locator('[data-testid=usage-where-tab][data-tab=role]').click()
+    await sleep(30)
+    const kpiOff = await indicator('usage-kpi-indicator')
+    check(kpiOff !== null && ms(kpiOff) <= 1, 'usage: with Reduce motion on the KPI bar does not slide', String(kpiOff))
+    check((await running()) === 0, 'usage: with Reduce motion on a metric or tab change runs no animation', String(await running()))
+    await page.locator('[data-testid=usage-kpi-metric][data-metric=cost]').click()
+  } else check(true, 'usage: no data on the Usage page in this run; its motion checks were skipped')
   await setReduceMotion(page, 'system')
   await cleanup(app, page, NAME)
 } finally {

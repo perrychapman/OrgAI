@@ -6,12 +6,16 @@ import AppNavigateBanner from '../components/AppNavigateBanner'
 import { joinAnnouncement } from '../components/layout/CanvasFrame'
 import { connectionLabel } from '../lib/connectionLabel'
 import { scrollWithin } from '../lib/scrollWithin'
-import { assignSeries, type SeriesState } from '../lib/usageCharts'
+import { allUnpriced, assignSeries, axisLabel, fillBuckets, OTHER_KEY, type Metric, type SeriesState } from '../lib/usageCharts'
+import { metricAnnouncement, resolveMetric, seriesAnnouncement, sparkSeries, sparkSignal, toggleSeries, type SparkPoint } from '../lib/usageDashboard'
 import {
   addedChips,
   clearedFilters,
   narrowFilters,
   previousPeriodWords,
+  periodLabel,
+  previousSpan,
+  effectiveBucket,
   queryKey,
   usageChips,
   usageData,
@@ -34,19 +38,18 @@ import {
   refreshFailedText,
   scopeLine,
   summaryModel,
-  updatedText
+  updatedText,
+  type SummarySignal
 } from '../lib/usagePage'
 import type { WastefulSort } from '../components/usage/panelProps'
 import SpendPanel from '../components/usage/SpendPanel'
-import ProjectsPanel from '../components/usage/ProjectsPanel'
-import ModelsPanel from '../components/usage/ModelsPanel'
-import RolesPanel from '../components/usage/RolesPanel'
+import BreakdownCard from '../components/usage/BreakdownCard'
 import EfficiencyPanel from '../components/usage/EfficiencyPanel'
 import StaffingPanel from '../components/usage/StaffingPanel'
 import WastefulRuns from '../components/usage/WastefulRuns'
 import AllRuns from '../components/usage/AllRuns'
 import UsageHeader, { UsageTopbarActions } from '../components/usage/UsageHeader'
-import UsageFilterBar from '../components/usage/UsageFilterBar'
+import UsageFilterBar, { BucketControl } from '../components/usage/UsageFilterBar'
 import UsageChips from '../components/usage/UsageChips'
 import UsageSummary from '../components/usage/UsageSummary'
 import UsageDefinitions from '../components/usage/UsageDefinitions'
@@ -86,10 +89,19 @@ export default function UsageView(): ReactElement {
   const rootRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const barRef = useRef<HTMLDivElement>(null)
+  const stickyRef = useRef<HTMLDivElement>(null)
   const [compact, setCompact] = useState(false)
   const [wastefulSort, setWastefulSort] = useState<WastefulSort>('no-result')
   const [wastefulFocus, setWastefulFocus] = useState(0)
   const [runsOpen, setRunsOpen] = useState(filters.projectIds.length > 0)
+  // Dashboard interactions (docs/design/usage-app.md "Dashboard rework"): view-owned so the KPI tiles, the chart and the
+  // breakdown card stay in step. None of them is persisted; legend toggles reset when the period or projects change.
+  const [chosenMetric, setChosenMetric] = useState<Metric | null>(null)
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set())
+  const [overlay, setOverlay] = useState(false)
+  const [pointed, setHighlight] = useState<string | null>(null)
+  // A hidden series is never "highlighted": pressing its legend chip to hide it must not dim the rest (walk M).
+  const highlight = pointed !== null && hidden.has(pointed) ? null : pointed
   const seriesRef = useRef<SeriesState | null>(null)
   const pending = useRef<Pending | null>(null)
   const pendingFocus = useRef<{ chipKey: string | null } | null>(null)
@@ -177,6 +189,9 @@ export default function UsageView(): ReactElement {
     return seriesRef.current.map
   }, [overview, filters.period])
   const chips = useMemo(() => usageChips(filters, chipNames), [filters, chipNames])
+  // The period is the Period control's own state and the date text says it, so it gets no chip (walk M2); `chips`
+  // still carries it for the announcement of a period change and for the empty state's cause.
+  const shownChips = useMemo(() => chips.filter((c) => c.kind !== 'period'), [chips])
   const groups = useMemo(() => projectOptionGroups(projects, state.projectStats), [projects, state.projectStats])
 
   // Does any run exist at all? Asked once, and only when the current answer is empty (the cheapest correct test).
@@ -206,30 +221,54 @@ export default function UsageView(): ReactElement {
 
   // The sticky bar's height feeds the scroller's scroll-padding-top; the bar mounts again when the empty-all state ends.
   useLayoutEffect(() => {
-    const bar = barRef.current
+    // The sticky block is the filter bar plus the chips line under it.
+    const bar = stickyRef.current
     const root = rootRef.current
     if (!bar || !root) return
     const apply = (): void => root.style.setProperty('--usage-filters-h', `${Math.ceil(bar.getBoundingClientRect().height)}px`)
     const ro = new ResizeObserver(apply)
     ro.observe(bar)
     apply()
-    return () => ro.disconnect()
+    // The bar's bottom hairline shows once the page has scrolled (an attribute, no React state per scroll).
+    const scroller = scrollRef.current
+    const onScroll = (): void => {
+      const on = (scroller?.scrollTop ?? 0) > 0 ? 'true' : 'false'
+      if (bar.dataset.scrolled !== on) bar.dataset.scrolled = on
+    }
+    scroller?.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => {
+      ro.disconnect()
+      scroller?.removeEventListener('scroll', onScroll)
+    }
   }, [emptyAll])
+
+  // The sparkline bucket under the pointer (shared with the chart's crosshair) and the KPI number tween's trigger:
+  // only a filter or metric change the user made bumps it, never first paint or the periodic refresh.
+  const [scrub, setScrub] = useState<number | null>(null)
+  const [tweenKey, setTweenKey] = useState(0)
 
   // ---- filter changes ----
   const applyFilters = useCallback(
     (next: UsageFilters, opts?: { moved?: string; cleared?: boolean; scrollRuns?: boolean }) => {
+      setTweenKey((k) => k + 1)
       const before = chips
       const after = usageChips(next, chipNames)
       const added = addedChips(before, after)
       const removed = addedChips(after, before)
+      // The period chip's key never changes, so a move between two non-default periods is announced from the period
+      // itself (its chip is hidden; Reviewer recheck).
+      const periodMoved = JSON.stringify(next.period) !== JSON.stringify(filters.period)
+      const periodText = after.find((c) => c.kind === 'period')?.text ?? null
       const lead: Pending['lead'] = opts?.cleared
         ? { kind: 'cleared', chip: null }
         : added.length > 0
           ? { kind: 'added', chip: added[0]!.text }
           : removed.length > 0
             ? { kind: 'removed', chip: removed[0]!.text }
-            : null
+            : periodMoved && periodText
+              ? { kind: 'added', chip: periodText }
+              : null
       const active = document.activeElement
       pending.current = {
         key: queryKey(next, Date.now()),
@@ -241,24 +280,27 @@ export default function UsageView(): ReactElement {
       setStoreFilters(next)
       if (opts?.moved) say(opts.moved)
     },
-    [chips, chipNames, setStoreFilters, say]
+    [chips, chipNames, filters, setStoreFilters, say]
   )
 
   const onNarrow = useCallback(
     (n: UsageNarrowing) => {
       const next = narrowFilters(useAppStore.getState().usageFilters, n)
-      const opensRuns = !!n.projectId || !!n.noPrice
-      if (opensRuns) setRunsOpen(true)
-      applyFilters(next, { scrollRuns: opensRuns })
+      // Only the "N of M priced" link opens All runs (it asks for those runs); a row, segment or bar narrowing leaves the
+      // page where it is, so the chart and tiles the user just narrowed stay in view (post-rebuild walk H1).
+      if (n.noPrice) setRunsOpen(true)
+      applyFilters(next)
     },
     [applyFilters]
   )
 
   const onRemoveChip = useCallback(
     (chip: UsageChip) => {
-      const i = chips.findIndex((c) => c.key === chip.key)
+      // Indices over the chips actually shown (the period has none), so focus lands on a real remove button.
+      const visible = (cs: UsageChip[]): UsageChip[] => cs.filter((c) => c.kind !== 'period')
+      const i = visible(chips).findIndex((c) => c.key === chip.key)
       const next = withoutChip(filters, chip)
-      const after = usageChips(next, chipNames)
+      const after = visible(usageChips(next, chipNames))
       pendingFocus.current = { chipKey: after.length > 0 ? after[Math.min(i, after.length - 1)]!.key : null }
       applyFilters(next)
     },
@@ -293,8 +335,9 @@ export default function UsageView(): ReactElement {
     const root = rootRef.current
     const chipBtn = f.chipKey ? root?.querySelector<HTMLElement>(`[data-testid="usage-chip-remove"][data-chip="${CSS.escape(f.chipKey)}"]`) : null
     const first = barRef.current?.querySelector<HTMLElement>('[data-testid="usage-period"] input:checked, button, select')
-    ;(chipBtn ?? first)?.focus()
+    ;(chipBtn ?? first)?.focus({ preventScroll: true })
   }, [filters])
+
 
   // The data caught up with a change: announce it, keep or restore focus, scroll to All runs after a project drilldown.
   useEffect(() => {
@@ -303,7 +346,7 @@ export default function UsageView(): ReactElement {
     pending.current = null
     if (p.lead) say(filterAnnouncement(p.lead.kind, p.lead.chip, data.matchedRuns, data.totals.cost))
     if (p.chipKey && p.focusEl && !p.focusEl.isConnected) {
-      rootRef.current?.querySelector<HTMLElement>(`[data-testid="usage-chip-remove"][data-chip="${CSS.escape(p.chipKey)}"]`)?.focus()
+      rootRef.current?.querySelector<HTMLElement>(`[data-testid="usage-chip-remove"][data-chip="${CSS.escape(p.chipKey)}"]`)?.focus({ preventScroll: true })
     }
     if (p.scrollRuns) window.requestAnimationFrame(() => scrollWithin(rootRef.current?.querySelector('[data-testid="usage-runs"]')))
   }, [data, state.settledKey, say])
@@ -359,6 +402,58 @@ export default function UsageView(): ReactElement {
 
   const panelProps = data && overview && span && bucket ? { data, overview, filters, bucket, span, series, onNarrow, announce: say } : null
 
+  // ---- dashboard interactions ----
+  const chartTrend = periodTrend ?? data?.trend
+  const unpriced = useMemo(() => (chartTrend ? allUnpriced(chartTrend) : false), [chartTrend])
+  const metric = resolveMetric(chosenMetric, unpriced)
+  const onMetric = useCallback(
+    (m: Metric) => {
+      // No tween key here: the KPI figures do not depend on the chart metric (Reviewer M1).
+      setChosenMetric(m)
+      say(metricAnnouncement(m))
+    },
+    [say]
+  )
+  const legendKeys = useMemo(() => {
+    const ps = data?.projects ?? []
+    const own = ps.filter((p) => series.has(p.projectId)).map((p) => p.projectId)
+    return ps.some((p) => !series.has(p.projectId)) ? [...own, OTHER_KEY] : own
+  }, [data, series])
+  const onToggleSeries = useCallback(
+    (key: string, name: string) => {
+      const r = toggleSeries(hidden, key, legendKeys)
+      setHidden(r.hidden)
+      say(seriesAnnouncement(name, r.hidden.has(key), r.refused))
+    },
+    [hidden, legendKeys, say]
+  )
+  const projectsKey = filters.projectIds.join('\u0000')
+  const periodKey = JSON.stringify(filters.period)
+  useEffect(() => {
+    setHidden(new Set())
+    setHighlight(null)
+  }, [periodKey, projectsKey])
+  const onOverlay = useCallback(
+    (on: boolean) => {
+      setOverlay(on)
+      say(on ? 'Previous period shown as dashed outlines.' : 'Previous period hidden.')
+    },
+    [say]
+  )
+  const prevSpan = useMemo(() => (previousData && context ? previousSpan(filters.period, context.now) : null), [previousData, context, filters.period])
+  const sparkData = useMemo(() => {
+    const out: Partial<Record<SummarySignal, SparkPoint[]>> = {}
+    if (!chartTrend || !span || !bucket || !summary) return { spark: out, labels: [] as string[] }
+    const slots = fillBuckets(chartTrend, span.since, span.until, bucket)
+    for (const i of summary) {
+      const s = sparkSignal(i.signal)
+      if (s) out[i.signal] = sparkSeries(slots, s)
+    }
+    return { spark: out, labels: slots.map((s) => axisLabel(s.start, bucket)) }
+  }, [chartTrend, span, bucket, summary])
+  // The band shows four headline figures; cost per run and cache hit live in the Efficiency strip.
+  const kpiItems = useMemo(() => (summary ?? []).filter((i) => i.signal === 'cost' || i.signal === 'tokens' || i.signal === 'runs' || i.signal === 'wall'), [summary])
+
   return (
     <div className="usage-view" ref={rootRef} data-testid="usage-view" aria-busy={state.busy}>
       <div className="topbar">
@@ -374,18 +469,27 @@ export default function UsageView(): ReactElement {
           ) : (
             <>
               <UsageHeader scope={scope} csv={csv} />
-              <UsageFilterBar
-                filters={filters}
-                onChange={(next, moved) => applyFilters(next, moved ? { moved } : undefined)}
-                now={barNow}
-                compact={compact}
-                groups={groups}
-                connections={overview?.connections ?? []}
-                projectName={projectName}
-                scope={scope}
-                barRef={barRef}
-              />
-              <UsageChips chips={chips} onRemove={onRemoveChip} onClear={onClearAll} />
+              <div className="usage-sticky" ref={stickyRef}>
+                <UsageFilterBar
+                  filters={filters}
+                  onChange={(next, moved) => applyFilters(next, moved ? { moved } : undefined)}
+                  now={barNow}
+                  compact={compact}
+                  groups={groups}
+                  connections={overview?.connections ?? []}
+                  projectName={projectName}
+                  scope={scope}
+                  barRef={barRef}
+                />
+                {/* Always present: the date and run count, then the chips, so adding a chip shifts nothing (walk H1). */}
+                <div className="usage-scope-row">
+                  <p className="usage-period-label" data-testid="usage-period-label">
+                    {periodLabel(filters.period, barNow)}
+                    {data && <span className="usage-period-runs"> · {data.matchedRuns} {data.matchedRuns === 1 ? 'run' : 'runs'}</span>}
+                  </p>
+                  <UsageChips chips={shownChips} onRemove={onRemoveChip} onClear={onClearAll} />
+                </div>
+              </div>
               {notes?.truncated && <TruncatedBanner note={notes.truncated} onUseThirtyDays={useThirtyDays} />}
               {state.refreshFailedFrom !== null && <RefreshFailed text={refreshFailedText(state.refreshFailedFrom)} onRetry={retry} />}
               {state.error && !overview && <LoadError message={state.error} onRetry={retry} />}
@@ -393,21 +497,51 @@ export default function UsageView(): ReactElement {
               {panelProps && summary && data && notes && (
                 <>
                   <UsageSummary
-                    items={summary}
+                    items={kpiItems}
                     coverage={costCoverage(data.totals)}
                     modelChip={filters.model}
                     onNoPrice={() => onNarrow({ noPrice: true })}
+                    spark={sparkData.spark}
+                    bucketLabels={sparkData.labels}
+                    onScrub={setScrub}
+                    tweenKey={tweenKey}
+                    unpricedNote={notes.partial ?? notes.unpriced}
+                    bucketWord={`per ${bucket}`}
+                    metric={metric}
+                    onMetric={onMetric}
+                    tokens={data.totals.tokens}
                   />
-                  <SummaryNotes notes={notes} />
+                  {/* The partial-cost caveat is said once, by the coverage line under Estimated cost (walkthrough finding 5). */}
+                  <SummaryNotes notes={{ partial: null, unpriced: notes.unpriced }} />
                   {noRuns ? (
                     <EmptyFiltered model={emptyModel(filters, chips, anyRuns?.lastAt ?? null, barNow)} onClear={onClearAll} onUseThirtyDays={useThirtyDays} />
                   ) : (
                     <>
-                      <SpendPanel {...panelProps} periodTrend={periodTrend} onClearBucket={filters.bucketPick ? onClearBucket : undefined} />
-                      <div className="usage-where">
-                        <ProjectsPanel {...panelProps} />
-                        <ModelsPanel {...panelProps} />
-                        <RolesPanel {...panelProps} />
+                      <div className="usage-hero">
+                        <SpendPanel
+                          {...panelProps}
+                          periodTrend={periodTrend}
+                          onClearBucket={filters.bucketPick ? onClearBucket : undefined}
+                          metric={metric}
+                          onMetric={onMetric}
+                          unpriced={unpriced}
+                          hidden={hidden}
+                          onToggleSeries={onToggleSeries}
+                          overlay={overlay}
+                          onOverlay={onOverlay}
+                          // A folded, truncated previous span is only a lower bound: no overlay then (Compare says why).
+                          previousTrend={previousData && !previousData.data.lowerBound ? previousData.data.trend : null}
+                          previousSpan={prevSpan}
+                          highlight={highlight}
+                          onHighlight={setHighlight}
+                          scrubIndex={scrub}
+                          groupBy={
+                            span && bucket ? (
+                              <BucketControl value={effectiveBucket(filters, barNow)} days={span.days} onChange={(b) => applyFilters({ ...filters, bucket: b })} />
+                            ) : undefined
+                          }
+                        />
+                        <BreakdownCard {...panelProps} highlight={highlight} onHighlight={setHighlight} />
                       </div>
                       <EfficiencyPanel
                         {...panelProps}
@@ -416,8 +550,10 @@ export default function UsageView(): ReactElement {
                           setWastefulFocus((n) => n + 1)
                         }}
                       />
-                      <StaffingPanel {...panelProps} />
-                      <WastefulRuns {...panelProps} sort={wastefulSort} onSort={setWastefulSort} focusSeq={wastefulFocus} />
+                      <div className="usage-pair">
+                        <WastefulRuns {...panelProps} sort={wastefulSort} onSort={setWastefulSort} focusSeq={wastefulFocus} />
+                        <StaffingPanel {...panelProps} />
+                      </div>
                       <AllRuns {...panelProps} open={runsOpen} onToggle={setRunsOpen} />
                     </>
                   )}

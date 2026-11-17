@@ -20,7 +20,28 @@ asarUnpack:
   - node_modules/@anthropic-ai/claude-agent-sdk/**
   - node_modules/@openai/codex/**
   - node_modules/zod/**
+# The icon files must exist outside the asar: Windows reads IconUri / appIconPath from disk (src/main/appIdentity.ts
+# registers them for the portable build, which has no Start Menu shortcut) and Linux notifications take a PNG path.
+extraResources:
+  - from: build/icon.ico
+    to: icon.ico
+  - from: build/icon.png
+    to: icon.png
 npmRebuild: false
+# Auto-update (src/main/updater.ts, docs/agent-notes/updates.md): this block only makes electron-builder embed
+# resources/app-update.yml, the updater's one feed (GitHub releases of perrychapman/OrgAI). electron-builder never
+# uploads: every build passes `--publish never` (package.json dist scripts, scripts/pack-local.mjs, release.yml), and
+# release.yml's publish job drafts the release with latest.yml and the merged latest-mac.yml attached.
+publish:
+  provider: github
+  owner: perrychapman
+  repo: OrgAI
+electronFuses:
+  enableNodeCliInspectArguments: false
+  # systemCerts.ts starts this executable with ELECTRON_RUN_AS_NODE=1 to read the system trust store.
+  runAsNode: true
+  # arm64 macOS refuses a binary whose ad-hoc signature no longer matches; electron-builder re-signs ad hoc after flipping fuses only with this flag.
+  resetAdHocDarwinSignature: true
 # build/icon.png, icon.ico and icon.icns are generated together by `npm run icon` and committed. The top-level
 # PNG (1024) is the Linux icon; win and mac name their own multi-size files.
 icon: build/icon.png

@@ -259,6 +259,9 @@ const COVERED_ELSEWHERE: Record<string, string> = {
 const NEVER_WRITES_SECRETS: Record<string, string> = {
   'connections:removeProxy': "removes the proxy and deletes its key (a removal's delete never prepares)",
   'teamFiles:status': 'writes the project folder\'s team files only, no secrets',
+  'org:evolveApply': "rewrites roles and skills in the project record and the evolution ledger, no secrets",
+  'org:evolveRollback': "restores the project's roles and skills from the evolution ledger, no secrets",
+  'org:evolveAfterRun': "awaits the post-run evolve pass of a run; the pass may rewrite roles and skills like org:evolveApply, no secrets",
   'outputs:forget': 'removes an output index entry in the project data folder only, no secrets',
   'outputs:delete': 'deletes an output file and its index entry, versions and notes, no secrets',
   'outputs:saveEdit': 'writes an output file and its stored version in the project and data folders, no secrets',
@@ -270,6 +273,10 @@ const NEVER_WRITES_SECRETS: Record<string, string> = {
   'outputs:revise': 'sends a message through RunManager like a user message, no secrets',
   'outputs:watch': 'polls an output file with lstat, in memory only, no secrets',
   'outputs:unwatch': 'drops an in-memory watch, no secrets',
+  'schedules:save': 'writes schedules.json (name, prompt, target, timing, limits), no secrets',
+  'schedules:remove': 'removes a schedule and its history from schedules.json, no secrets',
+  'schedules:setEnabled': 'flips a schedule in schedules.json, no secrets',
+  'schedules:runNow': 'starts a run through RunManager / QuickRunService like a user start, no secrets',
   // Runs: setup-like and virtual-project runs carry no project MCP servers (bare); run-scoped installs carry no OAuth.
   'runs:startQuick': 'quick runs are bare (no project servers to refresh)',
   'setup:start': 'setup runs are bare',

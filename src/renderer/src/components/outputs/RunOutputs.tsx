@@ -1,5 +1,5 @@
 import type { KeyboardEvent, ReactElement } from 'react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import type { RunOutput } from '@shared/types'
 import { chainKeyOf, chainOf } from '../../lib/runChains'
@@ -8,6 +8,7 @@ import { RUN_ROW_THUMB_KINDS, currentProvenance, isNewVersion, rowMetaLine } fro
 import { OutputBadges, OutputThumb } from './OutputThumb'
 import { useOutputThumb } from './useOutputThumb'
 import { showHidden } from '../../lib/hiddenChars'
+import { overlayOwnsEscape } from '../../lib/outputToolbar'
 import { runTag } from '../../lib/runLabels'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
@@ -42,6 +43,7 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
   const indexes = useRunIndexes()
   const list = useMemo(() => outputsOfRuns(all, chainIds), [all, chainIds])
   const shown = useMemo(() => list.find((o) => o.id === openId) ?? null, [list, openId])
+  const tagOf = useCallback((id: string) => indexes.get(id), [indexes])
 
   useEffect(() => {
     if (all === undefined) void loadOutputs(projectId)
@@ -134,8 +136,8 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
   const onDetailKey = (e: KeyboardEvent<HTMLDivElement>): void => {
     onStepKey(e)
     if (e.key !== 'Escape' || e.defaultPrevented) return
-    // A menu or dialog inside the detail closes itself first.
-    if ((e.target as Element).closest('[popover], dialog, [role=dialog]')) return
+    // A menu or dialog inside the detail closes itself first (also when focus is still on the menu's trigger).
+    if (overlayOwnsEscape(e.target as Element, (id) => document.getElementById(id)?.hasAttribute('popover') === true)) return
     e.preventDefault()
     e.stopPropagation()
     back()
@@ -165,7 +167,7 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
         ) : (
           <ul className="run-outputs-list" data-testid="run-outputs-list" data-split={wide && shown ? 'true' : undefined} tabIndex={-1} aria-label="Outputs">
             {list.map((o) => (
-              <OutputRow key={o.id} output={o} current={o.id === shown?.id} tag={indexes.get(o.runId)} onShow={() => leaveThen(o.id, () => open(o.id))} onNotice={say} onRemoved={removed} />
+              <OutputRow key={o.id} output={o} current={o.id === shown?.id} tagOf={tagOf} onShow={() => leaveThen(o.id, () => open(o.id))} onNotice={say} onRemoved={removed} />
             ))}
           </ul>
         ))}
@@ -186,14 +188,15 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
 function OutputRow({
   output,
   current,
-  tag,
+  tagOf,
   onShow,
   onNotice,
   onRemoved
 }: {
   output: RunOutput
   current: boolean
-  tag: number | undefined
+  /** The run's tag number (R1 = 1) for a run id: the maker or the run that wrote the current version. */
+  tagOf: (runId: string) => number | undefined
   onShow: () => void
   onNotice: (text: string) => void
   onRemoved: (id: string) => void
@@ -203,6 +206,7 @@ function OutputRow({
   const wantsThumb = RUN_ROW_THUMB_KINDS.has(output.kind)
   const { ref, thumb } = useOutputThumb({ ...output, missing: output.missing || !wantsThumb ? true : undefined })
   const meta = rowMetaLine(output)
+  const uid = useId()
   return (
     <li
       className="run-output-row"
@@ -210,26 +214,40 @@ function OutputRow({
       data-id={output.id}
       data-kind={output.kind}
       data-missing={output.missing ? 'true' : undefined}
-      aria-current={current ? 'true' : undefined}
+      data-current={current ? 'true' : undefined}
     >
-      <span className="run-output-icon" ref={ref}>
-        {wantsThumb ? <OutputThumb thumb={thumb} kind={output.kind} size="run" /> : <OutputKindIcon kind={output.kind} />}
-      </span>
-      <div className="run-output-text">
-        <span className="run-output-head">
-          <span className="run-output-title" title={title}>
-            {title}
-          </span>
-          <ExtBadge fileName={output.fileName} />
-          <OutputBadges openNotes={output.openNoteCount ?? 0} isNew={isNewVersion(output, seen)} />
-        </span>
-        <span className="run-output-meta">{output.missing ? `File missing · ${meta}` : meta}</span>
-        <span className="run-output-prov">{currentProvenance(output, (id) => (id === output.runId && tag !== undefined ? runTag(tag) : undefined))}</span>
-      </div>
-      <div className="run-output-actions">
-        <Button variant="primary" size="sm" testId="run-output-show" ariaLabel={`Show ${title}`} onClick={onShow}>
+      {/* The row itself opens the output (one native button over icon and text); More is the row's one visible control.
+          Named "Show <title>" plus its badges from the content; meta and provenance describe it. */}
+      <button
+        type="button"
+        className="run-output-show"
+        data-testid="run-output-show"
+        aria-labelledby={`${uid}-verb ${uid}-title ${uid}-badges`}
+        aria-describedby={`${uid}-meta ${uid}-prov`}
+        aria-current={current ? 'true' : undefined}
+        onClick={onShow}
+      >
+        <span className="sr-only" id={`${uid}-verb`}>
           Show
-        </Button>
+        </span>
+        <span className="run-output-icon" ref={ref}>
+          {wantsThumb ? <OutputThumb thumb={thumb} kind={output.kind} size="run" /> : <OutputKindIcon kind={output.kind} />}
+        </span>
+        <span className="run-output-text">
+          <span className="run-output-head">
+            <span className="run-output-title" id={`${uid}-title`} title={title}>
+              {title}
+            </span>
+            <span className="run-output-badges" id={`${uid}-badges`}>
+              <ExtBadge fileName={output.fileName} />
+              <OutputBadges openNotes={output.openNoteCount ?? 0} isNew={isNewVersion(output, seen)} />
+            </span>
+          </span>
+          <span className="run-output-meta" id={`${uid}-meta`}>{output.missing ? `File missing · ${meta}` : meta}</span>
+          <span className="run-output-prov" id={`${uid}-prov`}>{currentProvenance(output, (id) => { const n = tagOf(id); return n !== undefined ? runTag(n) : undefined })}</span>
+        </span>
+      </button>
+      <div className="run-output-actions">
         <OutputActions output={output} onNotice={onNotice} onRemoved={onRemoved} />
       </div>
     </li>

@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement, ReactNode } from 'react'
+import { ariaSort, nextSort, sortAnnouncement, sortRows, type SortState, type SortValue } from '../../lib/usageDashboard'
 import '../../styles/usage-charts.css'
+import '../../styles/usage-breakdown.css'
 
 export interface ChartColumn {
   key: string
   label: string
   /** Right-aligned tabular figures. */
   numeric?: boolean
+  /** Dropped by CSS where the table sits in the narrow "Where it went" card; kept in the DOM and the CSV. */
+  optional?: boolean
 }
 
 export interface ChartRow {
@@ -15,6 +19,11 @@ export interface ChartRow {
   cells: ReactNode[]
   /** Plain data attributes for tests and styling. */
   data?: Record<string, string>
+  /**
+   * One sort key per column (lib/usageDashboard.ts SortValue: number, string, or null for unknown which sorts last).
+   * When the rows carry these, the column headers become sort buttons. Dashboard increment 2.
+   */
+  sort?: SortValue[]
 }
 
 /**
@@ -26,17 +35,36 @@ export function ChartTable({
   caption,
   columns,
   rows,
-  empty = 'Nothing to show.'
+  empty = 'Nothing to show.',
+  announce,
+  open,
+  id
 }: {
+  /** Controlled mode: when set, no "Show as table" disclosure; the table shows only while true. */
+  open?: boolean
+  /** The wrapper's id in controlled mode, for the caller's aria-controls. */
+  id?: string
   /** `usage-<panel>-table`, on the table. */
   testId: string
   caption: string
   columns: ChartColumn[]
   rows: ChartRow[]
   empty?: string
+  /** Says "Sorted by ..." through the page's polite region after a header press. */
+  announce?: (text: string) => void
 }): ReactElement {
   const wrap = useRef<HTMLDivElement>(null)
   const [scrolls, setScrolls] = useState(false)
+  const [sort, setSort] = useState<SortState | null>(null)
+  const sortable = rows.some((r) => r.sort)
+  const colIndex = sort ? columns.findIndex((c) => c.key === sort.key) : -1
+  const shownRows =
+    sort && colIndex >= 0 ? sortRows(rows, (r) => r.sort?.[colIndex] ?? null, sort.dir) : rows
+  const press = (c: ChartColumn): void => {
+    const next = nextSort(sort, c.key, !!c.numeric)
+    setSort(next)
+    announce?.(sortAnnouncement(c.label, next.dir, !!c.numeric))
+  }
   useEffect(() => {
     const el = wrap.current
     if (!el) return
@@ -45,10 +73,8 @@ export function ChartTable({
     const ro = new ResizeObserver(check)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [rows.length, columns.length])
-  return (
-    <details className="usage-table-details">
-      <summary>Show as table</summary>
+  }, [rows.length, columns.length, open])
+  const body = (
       <div
         ref={wrap}
         className="usage-table-wrap"
@@ -64,22 +90,35 @@ export function ChartTable({
             <thead>
               <tr>
                 {columns.map((c) => (
-                  <th key={c.key} scope="col" className={c.numeric ? 'num' : undefined}>
-                    {c.label}
+                  <th key={c.key} scope="col" className={cellClass(c)} aria-sort={sortable ? ariaSort(sort, c.key) : undefined}>
+                    {sortable ? (
+                      <button type="button" className="uc-sort" data-testid="usage-table-sort" data-col={c.key} onClick={() => press(c)}>
+                        <span>{c.label}</span>
+                        <span className="uc-sort-glyph" aria-hidden="true">
+                          {sort?.key === c.key && (
+                            <svg viewBox="0 0 10 10" width="10" height="10" focusable="false">
+                              <path d={sort.dir === 'asc' ? 'M5 2 L9 8 H1 Z' : 'M5 8 L9 2 H1 Z'} fill="currentColor" />
+                            </svg>
+                          )}
+                        </span>
+                      </button>
+                    ) : (
+                      c.label
+                    )}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {shownRows.map((r) => (
                 <tr key={r.key} {...dataAttrs(r.data)}>
                   {r.cells.map((cell, i) =>
                     i === 0 ? (
-                      <th key={i} scope="row">
+                      <th key={i} scope="row" title={typeof cell === 'string' ? cell : undefined}>
                         {cell}
                       </th>
                     ) : (
-                      <td key={i} className={columns[i]?.numeric ? 'num' : undefined}>
+                      <td key={i} className={columns[i] ? cellClass(columns[i]) : undefined}>
                         {cell}
                       </td>
                     )
@@ -90,8 +129,26 @@ export function ChartTable({
           </table>
         )}
       </div>
+  )
+  // Controlled (increment 3): the caller's header button (aria-expanded, aria-controls = id) shows it; no details.
+  if (open !== undefined) {
+    return (
+      <div id={id} className="usage-table-controlled" hidden={!open}>
+        {open ? body : null}
+      </div>
+    )
+  }
+  return (
+    <details className="usage-table-details">
+      <summary>Show as table</summary>
+      {body}
     </details>
   )
+}
+
+function cellClass(c: ChartColumn): string | undefined {
+  const cls = [c.numeric ? 'num' : '', c.optional ? 'opt' : ''].filter(Boolean).join(' ')
+  return cls || undefined
 }
 
 function dataAttrs(d: Record<string, string> | undefined): Record<string, string> {

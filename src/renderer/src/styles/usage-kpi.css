@@ -1,0 +1,276 @@
+/* Usage KPI band: four borderless, hairline-separated tiles; a 2 px bar slides to the pressed one. Sized from the `usage` container. */
+.usage-summary-wrap {
+  position: relative;
+}
+.usage-kpi {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.usage-kpi-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 1px solid var(--border-subtle);
+}
+.usage-kpi-item:first-child {
+  border-left: 0;
+}
+.usage-kpi-main {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-0h);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.usage-kpi-switch {
+  cursor: pointer;
+  /* The tile's own padding is the hit area: stretch the button over it. */
+  position: static;
+}
+.usage-kpi-switch::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.usage-kpi-switch:hover::before {
+  background: var(--surface-1);
+}
+.usage-kpi-switch:active::before {
+  background: var(--surface-2);
+}
+.usage-kpi-switch:focus-visible {
+  outline: none;
+}
+.usage-kpi-switch:focus-visible::before {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.usage-kpi-main > *,
+.usage-kpi-spark-wrap,
+.usage-kpi-coverage {
+  position: relative;
+}
+.usage-kpi-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+/* Room for the "7 of 10 priced" chip at the tile's top right. */
+.usage-kpi-label[data-chip='true'] {
+  padding-inline-end: 6.5rem;
+}
+/* Static cue for the pressed tile, so the state never lives in the sliding bar alone. */
+.usage-kpi-switch[aria-pressed='true'] .usage-kpi-label {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.usage-kpi-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-2);
+  min-width: 0;
+}
+.usage-kpi-value {
+  color: var(--text-primary);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.usage-kpi-chip-slot {
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-variant-numeric: tabular-nums;
+}
+.usage-kpi-delta {
+  display: inline;
+  margin: 0;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.usage-kpi-chip {
+  color: var(--text-primary);
+}
+.usage-kpi-glyph {
+  font-size: 0.85em;
+}
+.usage-kpi-vs,
+.usage-kpi-nodelta {
+  color: var(--text-secondary);
+}
+.usage-kpi-scrub {
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+/* The coverage chip is a button over the tile's top right, outside the pressed-tile button. */
+.usage-kpi-coverage {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 1;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-kpi-priced {
+  margin: 0;
+  /* At least 24 px tall: it sits inside the Cost tile's own hit area (WCAG 2.5.8, Reviewer M4). */
+  min-block-size: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.usage-kpi-priced:hover {
+  color: var(--text-primary);
+  background: var(--surface-2);
+}
+.usage-kpi-priced:active {
+  background: var(--surface-3);
+}
+.usage-kpi-priced:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+/* A fixed height, so tiles with and without a sparkline stay level. */
+.usage-kpi-spark-wrap {
+  display: block;
+  height: 28px;
+  margin-top: auto;
+  color: var(--text-secondary);
+  line-height: 0;
+}
+.usage-kpi-item:has(.usage-kpi-switch[aria-pressed='true']) .usage-kpi-spark-wrap {
+  color: var(--accent-text);
+}
+.usage-kpi-spark-box {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 28px;
+  cursor: crosshair;
+  touch-action: pan-y;
+}
+.usage-kpi-spark {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.usage-kpi-spark-line,
+.usage-kpi-spark-tick {
+  stroke: currentColor;
+  stroke-width: 1.5px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.usage-kpi-spark-tick {
+  stroke-width: 1px;
+}
+.usage-kpi-dot {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+.usage-kpi-dot-end {
+  background: currentColor;
+}
+.usage-kpi-dot-hollow {
+  border: 1px solid var(--chart-unknown);
+  background: var(--surface-0, transparent);
+}
+.usage-kpi-dot-scrub {
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  background: var(--text-primary);
+  border: 2px solid var(--surface-0, transparent);
+}
+/* The sliding bar over the pressed tile (the same pattern as the tab underline, motion.md 3.3). */
+.usage-kpi-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100px;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: 0 0;
+  transform: translateX(0) scaleX(0);
+  pointer-events: none;
+}
+.usage-kpi-indicator:not([data-ready]),
+.usage-kpi-indicator[data-hidden] {
+  opacity: 0;
+}
+.usage-kpi-indicator[data-ready] {
+  transition: transform var(--dur-slow) var(--ease-in-out);
+}
+@media (forced-colors: active) {
+  .usage-kpi-indicator {
+    background: Highlight;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-kpi-indicator[data-ready],
+  .usage-kpi-switch::before {
+    transition: none;
+  }
+}
+:root[data-reduce-motion='on'] .usage-kpi-indicator[data-ready],
+:root[data-reduce-motion='on'] .usage-kpi-switch::before {
+  transition: none;
+}
+/* Narrow: the "vs prev." tail drops first, then two rows of two. */
+@container usage (max-width: 899px) {
+  .usage-kpi-vs {
+    display: none;
+  }
+}
+@container usage (max-width: 759px) {
+  .usage-kpi {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .usage-kpi-item:nth-child(2n + 1) {
+    border-left: 0;
+  }
+  .usage-kpi-item:nth-child(n + 3) {
+    border-top: 1px solid var(--border-subtle);
+  }
+  .usage-kpi-vs {
+    display: inline;
+  }
+}

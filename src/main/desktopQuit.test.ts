@@ -72,6 +72,7 @@ function desktop(opts: { host?: boolean; shutdownFails?: boolean } = {}) {
       reason: () => state.reason,
       stopCertRead: () => app.order.push('cert read stopped'),
       stopCliInstall: () => void installStops.push('cancel'),
+      cancelUpdateInstall: () => void exits.push(-1),
       exit: (code) => void exits.push(code),
       warn: (m) => void warnings.push(m)
     })
@@ -165,7 +166,15 @@ describe('desktop Quit through the real before-quit / will-quit handlers (cli-st
     const d = desktop({ shutdownFails: true })
     d.app.quit()
     await waitFor(() => d.exits.length > 0)
-    expect(d.exits).toEqual([0])
+    // -1 marks cancelUpdateInstall: a downloaded update never installs on the exit after a failed shutdown.
+    expect(d.exits).toEqual([-1, 0])
     expect(d.warnings[0]).toContain('stuck')
+  })
+
+  it('a clean quit leaves a pending update install alone', async () => {
+    const d = desktop()
+    d.app.quit()
+    await waitFor(() => d.app.exited)
+    expect(d.exits).toEqual([])
   })
 })

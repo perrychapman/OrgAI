@@ -21,6 +21,8 @@ export interface MenuTemplateOptions {
   openDataFolder?: () => void
   /** Closes the focused window (Window > Close window on win32 / linux). */
   closeWindow?: () => void
+  /** "Check for Updates…": starts the updater's check in main (updater.ts) before the action reaches the renderer. */
+  checkForUpdates?: () => void
   /** What the focused window shows; decides which items are enabled. Default: nothing open. */
   state?: MenuState
   /** What the main (unscoped) window shows; decides the items routed to 'main'. Default: `state`. */
@@ -113,6 +115,14 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
     return it
   }
   const sep: MenuItemConstructorOptions = { type: 'separator' }
+  // Main starts the check, then the renderer shows its status (App settings > About).
+  const checkForUpdates: MenuItemConstructorOptions = {
+    ...item('check-for-updates', 'Check for Updates…'),
+    click: () => {
+      opts.checkForUpdates?.()
+      send('check-for-updates')
+    }
+  }
 
   const appMenu: MenuItemConstructorOptions[] = mac
     ? [
@@ -120,6 +130,7 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
           label: opts.appName,
           submenu: [
             { role: 'about' },
+            checkForUpdates,
             sep,
             item('open-app-settings', 'Settings…', 'CmdOrCtrl+,'),
             sep,
@@ -184,6 +195,7 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
       item('show-project-settings', 'Project settings', 'CmdOrCtrl+4'),
       sep,
       item('show-usage', 'Usage'),
+      item('show-schedules', 'Schedules'),
       sep,
       item('toggle-sidebar', 'Toggle sidebar', 'CmdOrCtrl+B', true),
       {
@@ -244,6 +256,7 @@ export function buildMenuTemplate(opts: MenuTemplateOptions): MenuItemConstructo
       { label: 'Open logs folder', click: () => opts.openLogs() },
       { label: 'Open data folder', click: () => opts.openDataFolder?.() },
       sep,
+      ...(mac ? [] : [checkForUpdates]),
       item('open-about', 'About OrgAI')
     ]
   }
@@ -366,7 +379,9 @@ const MENU_ACTION_TARGETS: Record<MenuAction, 'main' | 'focused'> = {
   'canvas-zoom-in': 'focused',
   'canvas-zoom-out': 'focused',
   'ask-about-orgai': 'main',
-  'show-usage': 'main'
+  'show-usage': 'main',
+  'show-schedules': 'main',
+  'check-for-updates': 'main'
 }
 
 export function menuActionTarget(action: MenuAction): 'main' | 'focused' {
@@ -548,7 +563,7 @@ export function setMenuState(
   if (isFocused || windowAccess?.mainId() === id) refreshMenu()
 }
 
-export function installAppMenu(send: (action: MenuAction) => void): void {
+export function installAppMenu(send: (action: MenuAction) => void, extra: { checkForUpdates?: () => void } = {}): void {
   const build = (state: MenuState, mainState: MenuState): void => {
     try {
       Menu.setApplicationMenu(
@@ -558,6 +573,7 @@ export function installAppMenu(send: (action: MenuAction) => void): void {
             appName: app.name || 'OrgAI',
             isDev: !app.isPackaged,
             send,
+            ...(extra.checkForUpdates ? { checkForUpdates: extra.checkForUpdates } : {}),
             state,
             mainState,
             openExternal: (url) =>

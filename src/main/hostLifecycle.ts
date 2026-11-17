@@ -18,10 +18,12 @@ export function windowAllClosedAction(input: {
   platform: NodeJS.Platform | string
   quitting: boolean
   workingRuns: number
+  /** Enabled schedules with a next run (Schedules; 0 while they are paused globally). They are asked about like working runs. */
+  pendingSchedules?: number
 }): WindowAllClosedAction {
   if (input.quitting) return 'quit'
   if (input.platform === 'darwin') return 'stay'
-  return input.workingRuns > 0 ? 'ask' : 'quit'
+  return input.workingRuns > 0 || (input.pendingSchedules ?? 0) > 0 ? 'ask' : 'quit'
 }
 
 export type ClosePromptChoice = 'background' | 'quit' | 'cancel'
@@ -33,10 +35,17 @@ export const CLOSE_PROMPT_BUTTONS: readonly [background: string, quit: string, c
 export const CLOSE_PROMPT_CANCEL_ID = 2
 
 /** The close prompt's text for `workingRuns` runs that are still working. */
-export function closePromptText(workingRuns: number): { message: string; detail: string } {
-  const n = Math.max(1, Math.floor(Number.isFinite(workingRuns) ? workingRuns : 1))
+export function closePromptText(workingRuns: number, pendingSchedules = 0): { message: string; detail: string } {
+  const runs = Math.max(0, Math.floor(Number.isFinite(workingRuns) ? workingRuns : 0))
+  const due = Math.max(0, Math.floor(Number.isFinite(pendingSchedules) ? pendingSchedules : 0))
+  const n = Math.max(1, runs)
+  const runsLine = n === 1 ? 'A run is still working.' : `${n} runs are still working.`
+  const message =
+    runs === 0 && due > 0 ? (due === 1 ? 'A scheduled run is due later.' : `${due} schedules have runs due later.`)
+    : due > 0 ? `${runsLine.slice(0, -1)}, or scheduled runs are due.`
+    : runsLine
   return {
-    message: n === 1 ? 'A run is still working.' : `${n} runs are still working.`,
+    message,
     detail:
       'OrgAI can keep working in the background without a window; start OrgAI again to see it. Once nothing is working and ' +
       'nothing has happened for a while, it quits by itself. Stop and quit ends every run; you can continue them later.'

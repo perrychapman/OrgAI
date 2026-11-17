@@ -202,12 +202,21 @@ async function openRunOutputsTab() {
   }
 }
 const runRow = (kind) => page.locator(`[data-testid=run-output-row][data-kind=${kind}]`)
+let rowControlsChecked = false
 /** Show one output of the run side tab and wait for its detail. */
 async function showRunOutput(kind) {
   const back = page.locator('[data-testid=run-output-back]')
   if (await back.count()) {
     await back.click()
     await page.locator('[data-testid=run-outputs-list]').waitFor({ timeout: 5000 })
+  }
+  if (!rowControlsChecked) {
+    rowControlsChecked = true
+    // M7: a row is its own open target; More is its one visible control (no Show button beside it).
+    const counts = await page.locator('[data-testid=run-output-row]').evaluateAll((els) =>
+      els.map((li) => ({ show: li.querySelectorAll('[data-testid=run-output-show]').length, extra: Array.from(li.querySelectorAll('button')).filter((b) => !b.closest('[popover]') && b.getAttribute('data-testid') !== 'run-output-show' && b.getClientRects().length > 0).length }))
+    )
+    check(counts.length > 0 && counts.every((c) => c.show === 1 && c.extra <= 1), `run side tab rows carry at most one visible control besides the row itself`, JSON.stringify(counts))
   }
   await runRow(kind).locator('[data-testid=run-output-show]').click()
   await page.locator(`[data-testid=output-detail][data-kind=${kind}]`).waitFor({ timeout: 8000 })
@@ -227,11 +236,17 @@ async function zoomIn(scope, label) {
   const naturalW = Number(await vp.getAttribute('data-natural-w'))
   check((await value()) === 'fit' && (await vp.getAttribute('data-mode')) === 'fit', `${label}: the diagram opens at Fit`, await value())
   check(await until(async () => Math.abs((await drawn()) - naturalW * (await k())) < 2, 4000), `${label}: the drawing is drawn at the scale the viewport names`, `${await k()} ${await drawn()}`)
-  await scope.locator('[data-testid=output-zoom-actual]').click()
-  check((await value()) === '1' && (await vp.getAttribute('data-mode')) === 'free', `${label}: Actual size sets 100%`, String(await value()))
+  // The panel's compact zoom group has no Actual size (key 1 still sets 100%); the Larger view keeps the button.
+  const compact = (await scope.locator('[data-testid=output-zoom-actual]').count()) === 0
+  if (compact) {
+    await vp.focus()
+    await page.keyboard.press('1')
+  } else await scope.locator('[data-testid=output-zoom-actual]').click()
+  check((await value()) === '1' && (await vp.getAttribute('data-mode')) === 'free', `${label}: ${compact ? 'key 1' : 'Actual size'} sets 100%`, String(await value()))
   check(/^100\s?%$/.test(clean(await zoom.locator('[data-testid=output-zoom-readout]').innerText())), `${label}: the readout says 100%`)
   const order = await zoom.evaluate((el) => Array.from(el.querySelectorAll('[data-testid]')).map((c) => c.getAttribute('data-testid')).join(','))
-  check(order === 'output-zoom-out,output-zoom-readout,output-zoom-in,output-zoom-fit,output-zoom-actual', `${label}: the zoom bar reads - readout + Fit Actual size`, order)
+  const want = compact ? 'output-zoom-out,output-zoom-readout,output-zoom-in,output-zoom-fit' : 'output-zoom-out,output-zoom-readout,output-zoom-in,output-zoom-fit,output-zoom-actual'
+  check(order === want, `${label}: the zoom bar reads - readout + Fit${compact ? ' (panel)' : ' Actual size'}`, order)
   await scope.locator('[data-testid=output-zoom-in]').click()
   check((await k()) > 1, `${label}: Zoom in raises the scale`, String(await k()))
   await scope.locator('[data-testid=output-zoom-out]').click()
@@ -383,7 +398,16 @@ async function runSideChecks(label, wide) {
   const src = clean(await detail().locator('[data-testid=diagram-source]').first().inputValue())
   check(/flowchart/.test(src) && /Client/.test(src), `${label}: the diagram source shows the text`, src.slice(0, 80))
   await detail().locator('[data-testid=diagram-mode]').getByText('Diagram', { exact: true }).click()
-  check((await detail().locator('[data-testid=output-open-large]').count()) === 1, `${label}: a diagram in the panel offers Open large`)
+  // One way into the Larger view (ux-review-outputs-usability H1): the detail's Larger view, never a second "Open large".
+  check((await detail().locator('[data-testid=output-open-large]').count()) === 0 && (await detail().locator('[data-testid=output-detail-expand]').count()) === 1, `${label}: a diagram in the panel has one way into the Larger view`)
+  const panelBar = await detail().locator('[data-testid=diagram-toolbar]').first().evaluate((bar) => ({
+    primary: bar.querySelectorAll('.btn.primary').length,
+    extras: ['diagram-overview-toggle', 'diagram-light-toggle', 'diagram-copy-source', 'diagram-export'].filter((t) => { const el = bar.querySelector(`[data-testid=${t}]`); return !!el && !el.closest('[popover]') }).length,
+    more: bar.querySelectorAll('[data-testid=diagram-more]').length
+  }))
+  check(panelBar.primary === 0 && panelBar.extras === 0 && panelBar.more === 1, `${label}: the panel's diagram toolbar keeps mode and zoom, the rest in More`, JSON.stringify(panelBar))
+  const toolbarCount = await detail().locator('[data-testid=output-detail-toolbar], .output-detail-toolbar').first().evaluate((bar) => Array.from(bar.querySelectorAll('button, select, a[href]')).filter((el) => !el.closest('[popover]') && el.getClientRects().length > 0).length)
+  check(toolbarCount <= 4, `${label}: the detail toolbar shows at most four controls`, String(toolbarCount))
   await noScroll(`${label}: diagram preview`)
   await zoomChecks(label)
   await largerViewChecks(label)
@@ -731,7 +755,8 @@ async function diagramChecks(label, full) {
   // The detail column scrolls in a short panel: bring the drawing into view before pointing at it.
   await vp.scrollIntoViewIfNeeded()
   const vpBox = await rectOf(vp)
-  check(vpBox.h >= 239 && vpBox.w >= 200, `${label}: the viewport is at least 240 px tall in the panel`, JSON.stringify(vpBox))
+  // The viewport fills the rest of the panel (outputs-2 as-built 2026-11): never under its 200 px floor.
+  check(vpBox.h >= 196 && vpBox.w >= 200, `${label}: the viewport keeps its 200 px stage floor in the panel`, JSON.stringify(vpBox))
   let f = await fitFacts(detail())
   const v0 = await vAttr(vp)
   check(v0.mode === 'fit' && v0.k < 1 && f.inside && f.fill >= 0.8, `${label}: Fit shows the whole large diagram and fills the viewport`, JSON.stringify({ ...v0, fill: f.fill.toFixed(2), inside: f.inside }))
@@ -792,14 +817,14 @@ async function diagramChecks(label, full) {
   await noScroll(`${label}: large diagram in the panel`)
   await snap(`${label}-large`)
 
-  // A tiny diagram is never shrunk below 100% nor blown past 150%, and sits centred.
+  // A tiny diagram opens fitted (contain, at most 200%: lib/outputZoom DIAGRAM_OPEN_MAX), never below 100%, centred.
   await showByTitle('Tiny map')
   const tvp = detail().locator('[data-testid=diagram-viewport]').first()
   await tvp.waitFor({ timeout: 20_000 })
   await sleep(300)
   const tv = await vAttr(tvp)
   f = await fitFacts(detail())
-  check(tv.mode === 'fit' && tv.k >= 1 - 1e-6 && tv.k <= 1.5 + 1e-6 && f.inside && f.centred, `${label}: a small diagram fits between 100% and 150%, centred`, JSON.stringify({ ...tv, centred: f.centred }))
+  check(tv.mode === 'fit' && tv.k >= 1 - 1e-6 && tv.k <= 2 + 1e-6 && f.inside && f.centred, `${label}: a small diagram fits between 100% and 200%, centred`, JSON.stringify({ ...tv, centred: f.centred }))
   check((await detail().locator('[data-testid=diagram-large-note]').count()) === 0, `${label}: no large note on a small diagram`)
 
   // A broken diagram keeps its source on screen with the error.
@@ -826,12 +851,12 @@ async function diagramChecks(label, full) {
   if (!full) return
   // Larger view of the tiny diagram: plain wheel zooms, overview, Full window and Esc order, split live editing, export.
   await showByTitle('Tiny map')
-  await detail().locator('[data-testid=output-open-large]').click()
+  await detail().locator('[data-testid=output-detail-expand]').click()
   const dlg = page.locator('[data-testid=output-dialog]')
   await dlg.waitFor({ state: 'visible', timeout: 5000 })
   const dvp = dlg.locator('[data-testid=diagram-viewport]').first()
   await dvp.waitFor({ timeout: 20_000 })
-  check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'diagram-viewport', 4000), `${label}: Open large lands focus on the drawing`)
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'diagram-viewport', 4000), `${label}: Larger view lands focus on the drawing`)
   const db = await rectOf(dvp)
   const k0 = (await vAttr(dvp)).k
   await page.mouse.move(db.l + db.w / 2, db.t + db.h / 2)

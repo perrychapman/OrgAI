@@ -2,6 +2,10 @@
 # - Flow: work lands on dev. Bump package.json's version on dev, merge dev -> main by PR, then tag the main commit
 #   `v<version>` (must equal package.json's version) and push the tag. That builds all three and drafts the release;
 #   publish the draft by hand.
+# - Auto-update: the app's updater (electron-updater, GitHub provider, reading the embedded app-update.yml) only sees a
+#   release once the draft is published by hand; releases marked prerelease are ignored (allowPrerelease is off). The
+#   update payloads are the NSIS installer with its .blockmap and the mac zip, described by latest.yml and the merged
+#   latest-mac.yml the publish job attaches. The portable exe and the dmg are manual downloads only.
 # - The meta job refuses a tag, or a dispatch with dry_run off, whose commit is not reachable from origin/main.
 # - Or run it by hand (workflow_dispatch). dry_run (the default) only builds and uploads workflow artifacts; a dry run
 #   of a ref that is not on main is allowed (build only) and prints a notice.
@@ -54,7 +58,7 @@ jobs:
       publish: ${{ steps.meta.outputs.publish }}
     steps:
       # Full history plus origin/main and the tags, for the reachability check.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -121,11 +125,11 @@ jobs:
             args: --mac --x64
             arch: x64
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
           ref: ${{ needs.meta.outputs.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -169,7 +173,7 @@ jobs:
             fi
           fi
           npx electron-builder ${{ matrix.args }} --publish never
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact v7.0.2
         with:
           name: orgai-${{ matrix.name }}
           path: |
@@ -190,11 +194,11 @@ jobs:
       file: ${{ steps.pack.outputs.file }}
       sha256: ${{ steps.pack.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
           ref: ${{ needs.meta.outputs.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -217,7 +221,7 @@ jobs:
           echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "sha256=$sum" >> "$GITHUB_OUTPUT"
           echo "$file sha256 $sum"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact v7.0.2
         with:
           name: orgai-npm
           path: |
@@ -245,14 +249,14 @@ jobs:
       GIT_COMMITTER_EMAIL: ci@orgai.local
     steps:
       # Only the scripts are needed (they import nothing from node_modules); no npm ci.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
           ref: ${{ needs.meta.outputs.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # actions/setup-node v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node v7.1.0
         with:
           node-version: ${{ matrix.node }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact v8.0.2
         with:
           name: orgai-npm
           path: npm-artifact
@@ -330,11 +334,11 @@ jobs:
             echo "::error::Not publishing: the npm-publish environment is not set up. Add required reviewers to it, then set its environment variable NPM_PUBLISH_ENABLED=true (never at repository level), and re-run this job."
             exit 1
           fi
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - run: npm install --global npm@11.21.2
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: orgai-npm
           path: npm-artifact
@@ -370,21 +374,45 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only scripts/merge-latest-mac.mjs is needed (no npm dependencies, no npm ci). Checked out first, into the
+      # workspace root, so the download below (dist/) cannot collide with it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node v7.1.0
+        with:
+          node-version: 22
       # One folder per leg (no merge-multiple): both mac legs may write a latest-mac.yml.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact v8.0.2
         with:
           path: dist
           pattern: orgai-*
       - run: ls -R dist
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # softprops/action-gh-release v2
+      # The updater's metadata: one latest-mac.yml listing both mac legs, and the Windows latest.yml, under dist/update/
+      # (the per-leg copies stay out of the release). Fails closed: a missing or inconsistent leg publishes no draft.
+      - name: Build the update metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/update
+          node scripts/merge-latest-mac.mjs dist/orgai-mac-arm64/latest-mac.yml dist/orgai-mac-x64/latest-mac.yml dist/update/latest-mac.yml
+          # The Windows leg gets the same checks (semver, plain-name .exe urls, sha512) and is copied unchanged.
+          node scripts/merge-latest-mac.mjs --windows dist/orgai-windows/latest.yml dist/update/latest.yml
+          ls -l dist/update
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # softprops/action-gh-release v3.0.4
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
-          # latest*.yml is left out: auto-update is not wired, and the two mac legs' copies would collide.
+          # Auto-update metadata is attached as the merged dist/update/latest.yml (Windows) and dist/update/latest-mac.yml
+          # (both mac legs' files in one list), by explicit path. The per-leg latest*.yml copies are left out on purpose:
+          # the two mac legs' files would collide under one name, and a glob could pick them up.
           files: |
             dist/**/*.exe
             dist/**/*.dmg
             dist/**/*.zip
             dist/**/*.blockmap
+            dist/update/latest.yml
+            dist/update/latest-mac.yml

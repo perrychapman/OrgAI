@@ -17,6 +17,7 @@ import './styles/assistants.css'
 import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
 import UsageView from './views/UsageView'
+import SchedulesView from './views/SchedulesView'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import Sidebar from './components/Sidebar'
 import RunHistory from './components/RunHistory'
@@ -125,6 +126,7 @@ export default function App(): ReactElement {
     const where = selectedId && isVirtualProjectId(selectedId) ? assistantLabel(selectedId) : project?.name
     if (view === 'appSettings') document.title = 'App settings · OrgAI'
     else if (view === 'usage') document.title = 'Usage · OrgAI'
+    else if (view === 'schedules') document.title = 'Schedules · OrgAI'
     else if (!where || view === 'projects') document.title = 'OrgAI'
     else if (run && view === 'run') document.title = `${where} · ${runTag(runIndex)}: ${displayRunName(first)} · OrgAI`
     else document.title = `${where} · OrgAI`
@@ -186,6 +188,8 @@ export default function App(): ReactElement {
             <AppSettingsView />
           ) : view === 'usage' ? (
             <UsageView />
+          ) : view === 'schedules' ? (
+            <SchedulesView />
           ) : view === 'projects' || !project ? (
             <DashboardView />
           ) : (

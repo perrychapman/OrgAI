@@ -31,6 +31,7 @@ export const ATLAS_SURFACE_IDS = [
   'usage',
   'usage-efficiency',
   'usage-runs',
+  'schedules',
   'app-sidebar',
   'app-needs-you',
   'app-account',
@@ -394,6 +395,22 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     summary: 'Every run in the Usage page filters with its project, kind, models, tokens, cost and time. A row opens the run on its Usage tab.',
     reach: [{ via: 'sidebar', label: 'Usage' }, { via: 'menu', action: 'show-usage' }],
     testIds: ['usage-runs', 'usage-run-row', 'usage-run-open']
+  },
+  // ----- Schedules (app-wide; docs/design/schedules.md section 5) -----
+  {
+    id: 'schedules',
+    label: 'Schedules',
+    path: ['Schedules'],
+    kind: 'view',
+    scope: 'app',
+    summary: 'Recurring jobs that start a team run on a project or a Chat run at set times while OrgAI is open. Create, edit, pause, run now or delete a schedule, see each one\'s history, or pause every schedule at once.',
+    reach: [
+      { via: 'sidebar', label: 'Schedules' },
+      { via: 'menu', action: 'show-schedules' },
+      { via: 'button', label: 'Scheduled: <name>', on: 'run-toolbar' }
+    ],
+    settings: ['schedulesPaused'],
+    testIds: ['schedules-view', 'nav-schedules', 'schedules-new', 'schedules-list', 'schedule-row', 'schedules-pause-all', 'schedules-paused-banner']
   },
   {
     id: 'app-sidebar',
@@ -1374,7 +1391,15 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
     summary: 'Your own per-model prices; they win over every other price source.',
     surface: 'app-settings-connections-model-prices',
     control: 'user'
-  }
+  },
+  // The "Check for updates automatically" switch in App settings > About > Updates (components/updates/UpdatesSection.tsx).
+  autoUpdateCheck: {
+    summary: 'Check GitHub for a new OrgAI release about 30 seconds after launch and then every six hours ("Check for updates automatically" under About > Updates). It never downloads on its own; an update you downloaded installs when you restart from About or the next time OrgAI quits. On unless turned off.',
+    surface: 'app-settings-about',
+    control: 'user'
+  },
+  // PLACEHOLDER (Schedules contract): the renderer engineer points this at the Schedules surface. Never proposable.
+  schedulesPaused: { summary: 'Pause every schedule at once. Nothing fires while it is on.', surface: 'schedules', control: 'user' }
 }
 
 export const PROJECT_SETTING_DOCS: Readonly<Record<keyof Project, AtlasSettingDoc>> = {
@@ -1562,5 +1587,7 @@ export const MENU_ACTION_DOCS: Readonly<Record<MenuAction, string>> = {
   'canvas-zoom-in': 'View > Canvas > Zoom in: zooms the live canvas in.',
   'canvas-zoom-out': 'View > Canvas > Zoom out: zooms the live canvas out.',
   'ask-about-orgai': 'Help > Ask OrgAI about itself…: opens Chat ready for a question about the app.',
-  'show-usage': 'View > Usage: opens the app-wide Usage page (every project and the assistants).'
+  'show-usage': 'View > Usage: opens the app-wide Usage page (every project and the assistants).',
+  'show-schedules': 'View > Schedules: opens the Schedules page (recurring team and Chat runs).',
+  'check-for-updates': 'Help > Check for Updates… (the OrgAI menu on macOS): checks GitHub for a newer release and shows the result in App settings > About.'
 }

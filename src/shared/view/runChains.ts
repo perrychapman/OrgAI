@@ -147,6 +147,15 @@ export function canContinue<T extends ChainSummary>(runs: readonly T[], id: stri
   return canContinueIn(chainOf(runs, id), id)
 }
 
+/**
+ * The run `orgai exec --continue` and `orgai resume --latest` pick from a project's runs (newest first): the newest work
+ * run that can be continued. A setup or skill-assist run, an older member of a chain whose newer member is still live,
+ * and a run with no provider session are passed over.
+ */
+export function newestContinuable<T extends ChainSummary & { kind?: string }>(runs: readonly T[]): T | undefined {
+  return runs.find((r) => (r.kind ?? 'work') === 'work' && canContinue(runs, r.id))
+}
+
 interface CountedRun {
   summary: ChainSummary
   permissions?: readonly unknown[]

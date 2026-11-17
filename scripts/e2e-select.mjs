@@ -5,8 +5,8 @@
 //   node scripts/e2e-select.mjs --base <sha> --head <sha> [--print | --run]
 //   node scripts/e2e-select.mjs --full [--print | --run]
 //
-// --print (the default) prints the decision, --run also runs the chosen scripts in chain order and stops at the first
-// failure with its exit code, --ci takes the plan from the E2E_* environment variables (ciPlan; used by ci.yml so the step
+// --print (the default) prints the decision, --run also runs the chosen scripts in chain order, keeps going after a failure
+// (each script has a wall-clock limit), lists every failed script at the end and exits 1 if any failed, --ci takes the plan from the E2E_* environment variables (ciPlan; used by ci.yml so the step
 // is one shell-neutral line), --full forces the whole chain. --range two|three picks `git diff base head` (pushes: base
 // is the last green commit) or `base...head` (pull requests, the default). Exit 2 on a malformed or empty chain. No dependencies.
 //
@@ -14,7 +14,7 @@
 // changed path to the scripts that exercise it. Rules are tried in order and the first match wins, so put narrow rules
 // before broad ones. FAIL OPEN: a path no rule matches means the full chain, and so does an empty or unreadable diff.
 // When unsure whether a path is narrow, leave it out of the table.
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -51,7 +51,12 @@ export const RULES = [
   { match: ['.github/workflows/**'], kind: 'full', scripts: [], why: 'CI workflow change' },
   { match: ['.github/**'], kind: 'none', scripts: [], why: 'GitHub metadata (templates, dependabot)' },
   { match: ['scripts/smoke-*.mjs', 'scripts/probe-*.mjs', 'scripts/readme-media.mjs', 'scripts/measure-prompt-size.mjs', 'scripts/list-proxy-models.mjs'], kind: 'none', scripts: [], why: 'manual helper script no e2e runs' },
+  { match: ['scripts/audit-gate.mjs'], kind: 'none', scripts: [], why: 'CI dependency audit gate (the audit job); no e2e runs it' },
+  { match: ['scripts/merge-latest-mac.mjs'], kind: 'none', scripts: [], why: 'release-only script (release.yml publish job); its node:test runs in test:scripts' },
   { match: ['e2e/setup.mjs', 'e2e/history.mjs', 'e2e/worktree.mjs', 'e2e/shots/**'], kind: 'none', scripts: [], why: 'token-spending e2e or screenshots, not part of the free chain' },
+
+  // ---- Schedules: narrow shared files, ahead of the broad src/shared rule (first match wins) ----
+  { match: ['src/shared/schedule.ts', 'src/shared/view/schedules.ts', 'src/main/schedules/**', `${C}schedules/**`, `${R}views/SchedulesView.tsx`, `${C}proposals/SchedulesProposalBody.tsx`, `${S}schedules.css`, `${L}scheduleProposal.ts`], scripts: ['schedules', 'proposals'], why: 'Schedules (page, proposal card, scheduler)' },
 
   // ---- shared or hot paths: every flow passes through them ----
   { match: ['scripts/e2e-select.mjs'], kind: 'full', scripts: [], why: 'the selector itself changed' },
@@ -76,7 +81,7 @@ export const RULES = [
   { match: [`${C}settings/ModelPricesSection.tsx`], scripts: ['usage'], why: 'model prices' },
   { match: [`${C}settings/ContextNotesSection.tsx`, `${C}settings/EngagementPlanSection.tsx`, `${C}settings/ReferenceDirectoriesSection.tsx`], scripts: ['engagement', 'engagement2'], why: 'engagement settings' },
   { match: [`${C}settings/MaintenanceSection.tsx`], scripts: ['maintenance'], why: 'maintenance panel' },
-  { match: [`${C}settings/**`, `${R}views/SettingsView.tsx`, `${R}views/AppSettingsView.tsx`, `${S}settings.css`, `${S}model-prices.css`], scripts: ['connections', 'permissions', 'folder-trust', 'engagement', 'engagement2', 'canvas', 'install-row', 'usage', 'maintenance', 'self-help'], why: 'settings pages' },
+  { match: [`${C}settings/**`, `${R}views/SettingsView.tsx`, `${R}views/AppSettingsView.tsx`, `${S}settings.css`, `${S}model-prices.css`], scripts: ['connections', 'permissions', 'folder-trust', 'engagement', 'engagement2', 'canvas', 'install-row', 'usage', 'maintenance', 'self-help', 'updates'], why: 'settings pages (About holds Updates)' },
 
   { match: [`${C}team/TeamFiles*`, `${C}team/useTeamFilesActions.ts`, `${L}teamFiles.ts`, `${L}teamFound.ts`, `${S}teamFiles.css`, `${S}teamFound.css`, `${C}dashboard/TeamFoundPanel.tsx`], scripts: ['team-files'], why: 'team files UI' },
   { match: [`${C}team/OrgChangePointer.tsx`, `${C}team/useOrgChange.ts`, `${L}orgChange.ts`], scripts: ['org-change'], why: 'org change sessions' },
@@ -109,10 +114,12 @@ export const RULES = [
   { match: [`${L}transcriptMedia.ts`], scripts: ['transcript-media', 'runs'], why: 'transcript media' },
   { match: [`${C}TranscriptPanel.tsx`, `${S}transcript.css`, `${L}transcript*.ts`], scripts: ['runs', 'transcript-media', 'knowledge-run', 'outputs'], why: 'transcript rendering' },
   { match: [`${R}views/LiveRunView.tsx`, `${C}RunTabs.tsx`, `${C}RunHistory.tsx`, `${C}RunMeta.tsx`, `${C}RunActions.tsx`, `${C}RunLabel.tsx`, `${C}FinishedList.tsx`, `${S}run.css`, `${S}run-tabs.css`, `${L}run*.ts`, `${L}chainView.ts`], scripts: RUN_VIEW, why: 'live run view' },
-  { match: [`${C}AppMenuLayer.tsx`, `${C}KeyboardShortcutsDialog.tsx`, `${S}menu.css`, `${L}menu*.ts`, `${L}useAppMenu.ts`, 'src/main/appMenu.ts'], scripts: ['menu', 'self-help'], why: 'application menu' },
+  { match: [`${C}AppMenuLayer.tsx`, `${C}KeyboardShortcutsDialog.tsx`, `${S}menu.css`, `${L}menu*.ts`, `${L}useAppMenu.ts`, 'src/main/appMenu.ts'], scripts: ['menu', 'self-help', 'updates'], why: 'application menu (Help > Check for Updates… routes through menuActions)' },
+  { match: [`${C}updates/**`, `${L}updates.ts`, `${R}store/updatesStore.ts`, `${S}updates.css`], scripts: ['updates'], why: 'desktop updater UI (About > Updates, sidebar notice)' },
   { match: [`${S}motion.css`, `${L}motion.ts`, `${L}layoutMotion.ts`], scripts: ['motion', 'layout', 'canvas', 'dashboard'], why: 'motion tokens' },
 
   // ---- main process, narrow areas ----
+  { match: ['src/main/updater*.ts'], scripts: ['menu', 'updates'], why: 'desktop updater (updates.mjs drives it through ORGAI_UPDATE_MOCK; Help > Check for Updates…)' },
   { match: ['src/main/runtime/codexBinary.ts'], scripts: ['connections', 'project-connection', 'multi-provider', 'cli-connections'], why: 'Codex binary discovery (connection status)' },
   { match: ['src/main/runtime/codex*.ts', 'src/main/runtime/fixtures/**'], scripts: [], why: 'Codex adapter: no e2e uses a real adapter; unit tests plus the smoke set (the app still launches)' },
   { match: ['src/main/runtime/folderConfigTrust.ts'], scripts: ['folder-trust'], why: 'folder config trust' },
@@ -135,11 +142,12 @@ export const RULES = [
   // ---- CLI, by command ----
   { match: ['src/cli/tui/**', 'src/cli/commands/tui.ts', 'src/cli/commands/interactive.ts'], scripts: ['cli-tui'], why: 'terminal UI' },
   { match: ['src/cli/commands/projects.ts', 'src/cli/commands/init.ts', 'src/cli/entries/projects.ts', 'src/cli/entries/init.ts'], scripts: ['cli-projects'], why: 'orgai projects / init' },
-  { match: ['src/cli/commands/{org,team,permissions,worktrees}.ts', 'src/cli/entries/{org,team,permissions,worktrees}.ts'], scripts: ['cli-org'], why: 'orgai org / team / permissions / worktrees' },
+  { match: ['src/cli/commands/{org,team,permissions,worktrees}.ts', 'src/cli/entries/{org,team,permissions,worktrees}.ts'], scripts: ['cli-org', 'cli-org-evolve'], why: 'orgai org / team / permissions / worktrees (org retro --unattended and org evolve route through org.ts)' },
+  { match: ['src/cli/commands/orgEvolve.ts', 'src/main/evolve/**', 'e2e/cli-org-evolve.mjs'], scripts: ['cli-org-evolve'], why: 'orgai org evolve, loop and retro --unattended; the team-evolution engine' },
   { match: ['src/cli/commands/{connections,models,usage,notes}.ts', 'src/cli/entries/{connections,models,usage,notes}.ts'], scripts: ['cli-connections'], why: 'orgai connections / models / usage / notes' },
   { match: ['src/cli/commands/mcp.ts', 'src/cli/commands/mcp/**', 'src/cli/commands/secrets.ts', 'src/cli/entries/{mcp,secrets}.ts'], scripts: ['cli-mcp'], why: 'orgai mcp / secrets' },
   { match: ['src/cli/commands/{skills,kit,knowledge}.ts', 'src/cli/entries/{skills,kit,knowledge}.ts'], scripts: ['cli-skills-kit'], why: 'orgai skills / kit / knowledge' },
-  { match: ['src/cli/commands/exec.ts'], scripts: ['cli-exec'], why: 'orgai exec' },
+  { match: ['src/cli/commands/exec.ts'], scripts: ['cli-exec', 'cli-org-evolve'], why: 'orgai exec (org evolve loop and exec --evolve reuse its run machinery)' },
   { match: ['src/cli/commands/{runs,status,doctor,completions}.ts', 'src/cli/doctor/**'], scripts: ['cli-readonly', 'cli-exec'], why: 'read-only CLI commands' },
 ]
 
@@ -325,7 +333,7 @@ function report(decision, allScripts) {
   }
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2), process.env)
   const allScripts = loadChain()
   if (allScripts.length === 0) throw new Error('the e2e:free chain in package.json is missing or empty')
@@ -334,16 +342,77 @@ function main() {
   else decision = selectE2e({ changedFiles: changedFilesBetween(args.base, args.head, ROOT, args.range), allScripts })
   report(decision, allScripts)
   if (!args.run) return 0
-  for (const name of decision.scripts) {
-    console.log(`\n=== node e2e/${name}.mjs`)
-    const r = spawnSync(process.execPath, [join('e2e', `${name}.mjs`)], { cwd: ROOT, stdio: 'inherit' })
-    const code = r.status ?? 1
-    if (code !== 0) {
-      console.error(`e2e/${name}.mjs failed with exit code ${code}`)
-      return code
+  const failed = await runScripts(decision.scripts, runScript)
+  return failed.length ? 1 : 0
+}
+
+/** One script's wall-clock budget. The slowest macOS script took about 4.5 minutes; the whole job has 50. E2E_SCRIPT_TIMEOUT_MS overrides. */
+export const SCRIPT_TIMEOUT_MS = 10 * 60 * 1000
+/** After SIGTERM a timed-out script gets this long to close its Electron app (playwright closes it on SIGTERM) before the kill. */
+const TERM_GRACE_MS = 10_000
+
+/**
+ * Runs every named script in order, whatever an earlier one did (a failure must not hide the evidence of the scripts behind
+ * it), then prints a summary that lists each failed script. `runOne(name)` resolves { code, timedOut? } and never rejects.
+ * Returns the failed entries: { name, code, timedOut }.
+ */
+export async function runScripts(names, runOne, out = { log: console.log, error: console.error }) {
+  const failed = []
+  const started = Date.now()
+  for (const name of names) {
+    out.log(`\n=== node e2e/${name}.mjs`)
+    const t0 = Date.now()
+    let r
+    try {
+      r = await runOne(name)
+    } catch (e) {
+      r = { code: 1, error: e instanceof Error ? e.message : String(e) }
     }
+    const seconds = Math.round((Date.now() - t0) / 1000)
+    if (r.code === 0 && !r.timedOut) continue
+    failed.push({ name, code: r.code, timedOut: !!r.timedOut })
+    out.error(`e2e/${name}.mjs ${r.timedOut ? `timed out after ${seconds}s` : `failed with exit code ${r.code}`}${r.error ? ` (${r.error})` : ''}; continuing with the next script`)
   }
-  return 0
+  const minutes = ((Date.now() - started) / 60_000).toFixed(1)
+  if (failed.length === 0) out.log(`\ne2e summary: all ${names.length} scripts passed (${minutes} min)`)
+  else {
+    out.error(`\ne2e summary: ${failed.length} of ${names.length} scripts failed (${minutes} min)`)
+    for (const f of failed) out.error(`  FAILED ${f.name}: ${f.timedOut ? 'timed out' : `exit code ${f.code}`}`)
+  }
+  return failed
+}
+
+/** Kill a script and everything it started (Electron and its helpers are its children). */
+function killTree(child, signal) {
+  if (child.pid === undefined) return
+  try {
+    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    else child.kill(signal)
+  } catch {
+    // already gone
+  }
+}
+
+/** Runs e2e/<name>.mjs with inherited output and a wall-clock limit (E2E_SCRIPT_TIMEOUT_MS or SCRIPT_TIMEOUT_MS). */
+export function runScript(name, timeoutMs = Number(process.env.E2E_SCRIPT_TIMEOUT_MS) || SCRIPT_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [join('e2e', `${name}.mjs`)], { cwd: ROOT, stdio: 'inherit' })
+    let timedOut = false
+    let hard
+    const timer = setTimeout(() => {
+      timedOut = true
+      // SIGTERM first: playwright closes the Electron app it launched on SIGTERM; the kill follows when that did not end it.
+      killTree(child, 'SIGTERM')
+      hard = setTimeout(() => killTree(child, 'SIGKILL'), TERM_GRACE_MS)
+    }, timeoutMs)
+    const done = (code) => {
+      clearTimeout(timer)
+      clearTimeout(hard)
+      resolve({ code: code ?? 1, timedOut })
+    }
+    child.on('error', () => done(1))
+    child.on('close', (code) => done(code))
+  })
 }
 
 /** True when this file is the entry point. Real paths on both sides: a symlinked tmp dir or checkout must not make main() silently skip. */
@@ -358,7 +427,7 @@ function isEntry() {
 
 if (isEntry()) {
   try {
-    process.exitCode = main()
+    process.exitCode = await main()
   } catch (e) {
     console.error(e instanceof Error ? e.message : String(e))
     process.exitCode = 2

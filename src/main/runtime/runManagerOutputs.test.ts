@@ -429,7 +429,7 @@ describe('RuntimeContext.outputs: read, run end and revise helpers', () => {
   it('liveRunFacts reports a live run (status, no hold, no cards) and null for an unknown one; isQuitting is false', async () => {
     const { m } = rig({ outputs: fakeService() })
     const run = await m.start({ project: makeProject({ id: 'p1', path: folder() }), prompt: 'go' })
-    expect(m.liveRunFacts(run.id)).toEqual({ status: 'running', limitHold: false, pendingCards: 0 })
+    expect(m.liveRunFacts(run.id)).toEqual({ status: 'running', limitHold: false, pendingCards: 0, working: true })
     expect(m.liveRunFacts('nope')).toBeNull()
     expect(m.isQuitting()).toBe(false)
     await m.stopAll()

@@ -77,7 +77,7 @@ export async function performModelSwitch(input: {
     return record
   }
   let record = await fresh()
-  if (record.summary.status !== run.status) throw new Error('The session state changed. Review the action before trying again.')
+  if (record.summary.status !== run.status) throw new Error(`The session state changed (${run.status} to ${record.summary.status}). Review the action before trying again.`)
   const handoff = !modelSessionEnded(record.summary) && (input.handoff || needsModelHandoff(record.summary, input.selected))
   if (handoff) {
     if (!await input.confirm()) return null

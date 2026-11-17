@@ -20,6 +20,7 @@ import {
   matchesBashRule,
   mcpToolPrefix,
   parseCommandApproval,
+  commandApprovalNeedsPerson,
   parseFileApproval,
   parsePermissionsApproval,
   parseThreadResult,
@@ -624,7 +625,7 @@ class CodexSession implements RuntimeSession {
    * Live permission mode switch (RuntimeSession.setPermissionMode; RunManager.setPermissionMode is the only caller).
    * Everything is derived from `mode` (RunManager sets ctx.project before this call only for a narrowing). The
    * app-server cannot change a running turn's sandbox or approval policy: TurnSettingsUpdateParams carries only
-   * reviewer / model / effort, and thread/settings/update is experimental-only (generate-ts of @openai/codex 0.166.0).
+   * reviewer / model / effort, and thread/settings/update is experimental-only (generate-ts of @openai/codex 0.166.0, unchanged in 0.167.0).
    * TurnStartParams.approvalPolicy / approvalsReviewer / sandboxPolicy hold "for this turn and subsequent turns", so:
    *   - the root must be between turns (else refused): its next turn/start carries the new policy;
    *   - every thread's OrgAI-side policy (ThreadInfo.policy: declined approvals, accepted edits) changes at once;
@@ -2028,6 +2029,13 @@ class CodexSession implements RuntimeSession {
       return { decision: 'decline' }
     }
     const input = { command: req.command, ...(req.cwd ? { cwd: req.cwd } : {}), ...(req.reason ? { reason: req.reason } : {}) }
+    // A managed command checkpoint (0.167.0 "humanCommand", or a kind this adapter does not know): after the deny gates
+    // above, always a card with no suggestions, and an allow accepts this call only (no rule, no acceptForSession).
+    if (commandApprovalNeedsPerson(req)) {
+      this.log('info', `Codex asks for a one-time human approval (${req.kind}) of a command by ${this.agents.get(agentId)?.name ?? agentId}.`)
+      const { decision } = await this.ask(agentId, 'Bash', input, req.cwd, null)
+      return { decision: decision.behavior === 'allow' ? 'accept' : 'decline' }
+    }
     // Reference folders (H1): a command that runs inside one (req.cwd) or names a path at, under or above one is never
     // accepted by a rule; it is asked with the folder named and no suggestions, and an allow accepts this command only.
     // An unreadable list asks the same way (no folder named).

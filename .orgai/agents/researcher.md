@@ -11,7 +11,7 @@ tools:
   - "Read"
   - "WebFetch"
   - "WebSearch"
-tier: "everyday"
+tier: "fast"
 canSpawn: false
 spawnable: []
 reportsTo: "orchestrator"

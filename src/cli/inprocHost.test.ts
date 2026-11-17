@@ -14,8 +14,9 @@ vi.mock('../main/systemCerts', () => ({
 import { LITELLM_KEY, READ_ONLY_SECRETS_MESSAGE, type SecretStore } from '../main/store/secrets'
 import { fakeCustody } from '../main/store/vaultTesting'
 import { VaultNotReady } from '../main/store/vaultTypes'
+import { connectProbe } from '../main/host/ownership'
 import { connectHost } from './client/hostClient'
-import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, startInprocHost, type InprocHost } from './inprocHost'
+import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, memoryStreamPair, startInprocHost, type InprocHost } from './inprocHost'
 import { CliError } from './types'
 import { CLI_VERSION } from './version'
 
@@ -78,7 +79,7 @@ describe('startInprocHost', () => {
   })
 
   it('serves only its own process: a hello without the in-memory owner proof is refused not_owner (spec 4.1)', async () => {
-    const h = await start()
+    const h = await start(new Map(), { listen: true })
     expect(h.ownerKey).toMatch(/^[0-9a-f]{64}$/)
     expect(h.hostInstanceId).toBe(JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')).hostInstanceId)
     // The key is never written to the run folder.
@@ -102,14 +103,49 @@ describe('startInprocHost', () => {
     owner.client.close()
   })
 
+  it('listens on nothing by default and serves its own process through connectLocal (surface inproc)', async () => {
+    const h = await start()
+    const daemon = JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
+    expect(daemon.listening).toBe(false)
+    expect(existsSync(join(dataDir, 'run', 'daemon.secret'))).toBe(false)
+    // A foreign process finds no listener.
+    const foreign = await connectHost({ dataDir, scopes: ['read'], clientVersion: CLI_VERSION, cwd: userDataDir, pid: process.pid })
+    expect(foreign).toMatchObject({ ok: false, reason: 'refused' })
+    const c = await h.connectLocal!(['read', 'operate', 'configure'], { clientKind: 'tui' })
+    if (!c.ok) throw new Error(c.message)
+    expect(c.client.hello.grantedScopes).toEqual(['read', 'operate', 'configure'])
+    const status = await c.client.call<{ state: string }>('host.status')
+    expect(status.state).toBe('ready')
+    // Scopes still gate: no 'decide' was granted.
+    await expect(c.client.call('runs:decide', [{}])).rejects.toMatchObject({ data: { code: 'scope_denied' } })
+    // The single-owner guarantee does not depend on a socket.
+    await expect(startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false })).rejects.toMatchObject({ exitCode: 6 })
+    c.client.close()
+  })
+
   it('a second host on the same data dir is refused at once with exit 6, naming the owner (spec 4.2)', async () => {
     await start(new Map(), { cwd: '/work/first' })
     const began = Date.now()
     const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CliError)
     expect((err as CliError).exitCode).toBe(6)
-    expect((err as CliError).message).toBe(`orgai is already running in another terminal (/work/first, pid ${process.pid}). Use that one, or quit it first.`)
+    const message = (err as CliError).message
+    expect(message.startsWith(`orgai is already running in another terminal (/work/first, pid ${process.pid}). Use that one, or quit it first.`)).toBe(true)
+    // Review M2 (PR 49): the way out when nothing is really running names the run folder.
+    expect(message).toContain('If you are sure no OrgAI (and no orgai terminal host) is running')
+    expect(message).toContain(join(dataDir, 'run'))
     expect(Date.now() - began).toBeLessThan(2000)
+  })
+
+  it('a host that listens on nothing binds a liveness-only endpoint: livenessProbe in daemon.json, accepts and closes, no daemon.secret, gone on stop', async () => {
+    const h = await start()
+    const daemon = JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
+    expect(daemon).toMatchObject({ listening: false, livenessProbe: true, hostKind: 'inproc' })
+    expect(existsSync(join(dataDir, 'run', 'daemon.secret'))).toBe(false)
+    expect(await connectProbe(daemon.endpoint as string, 1000)).toBe('connected')
+    await h.stop(true)
+    expect(existsSync(join(dataDir, 'run', 'daemon.json'))).toBe(false)
+    expect(await connectProbe(daemon.endpoint as string, 1000)).not.toBe('connected')
   })
 
   it('an unreadable daemon.json is the owned refusal (exit 6), not the raw ownership error (spec 4.2)', async () => {
@@ -236,5 +272,65 @@ describe('inprocHardLimitExit (cli-standalone.md 4.3)', () => {
     }
     inprocHardLimitExit(proc as unknown as Pick<NodeJS.Process, 'once' | 'exit'>, (s) => void order.push(`write:${s.trim()}`))
     expect(order).toEqual(['once:exit', 'exit:1', `write:${INPROC_HARD_LIMIT_MESSAGE}`])
+  })
+})
+
+describe('memoryStreamPair', () => {
+  const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
+  it('a writer waits while the reader is full, and goes on once the reader reads (socket-like backpressure)', async () => {
+    const [a, b] = memoryStreamPair(16)
+    b.pause()
+    let written = 0
+    a.write(Buffer.alloc(32, 1), () => written++)
+    await tick()
+    expect(written).toBe(0)
+    const got: Buffer[] = []
+    b.on('data', (c: Buffer) => got.push(c))
+    b.resume()
+    await tick()
+    await tick()
+    expect(written).toBe(1)
+    expect(Buffer.concat(got).length).toBe(32)
+    a.destroy()
+  })
+  it('a write parked on a full reader settles when either side is destroyed', async () => {
+    const [a, b] = memoryStreamPair(16)
+    b.pause()
+    let settled = 0
+    a.on('error', () => undefined)
+    a.write(Buffer.alloc(32, 1), () => settled++)
+    await tick()
+    expect(settled).toBe(0)
+    b.destroy()
+    await tick()
+    await tick()
+    expect(settled).toBe(1)
+  })
+  it('defaults to a 1 MiB high-water mark, which is backpressure and not a cap: a frame of several MiB still flows whole', async () => {
+    const [a, b] = memoryStreamPair()
+    expect(a.writableHighWaterMark).toBe(1024 * 1024)
+    expect(b.readableHighWaterMark).toBe(1024 * 1024)
+    const frame = Buffer.alloc(5 * 1024 * 1024 + 123, 7)
+    const chunks: Buffer[] = []
+    b.on('data', (c: Buffer) => chunks.push(c))
+    const done = new Promise<void>((r) => b.on('end', () => r()))
+    await new Promise<void>((ok) => a.write(frame, () => ok()))
+    a.end()
+    await done
+    const got = Buffer.concat(chunks)
+    expect(got.length).toBe(frame.length)
+    expect(got.equals(frame)).toBe(true)
+  })
+  it('a small write completes at once, and ending one side ends the other', async () => {
+    const [a, b] = memoryStreamPair()
+    let written = 0
+    const got: Buffer[] = []
+    b.on('data', (c: Buffer) => got.push(c))
+    const ended = new Promise<void>((r) => b.on('end', () => r()))
+    a.write(Buffer.from('hi'), () => written++)
+    a.end()
+    await ended
+    expect(written).toBe(1)
+    expect(Buffer.concat(got).toString()).toBe('hi')
   })
 })

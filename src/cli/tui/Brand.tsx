@@ -1,6 +1,6 @@
 import { Box, Text } from 'ink'
-import { useEffect, useState, type ReactElement } from 'react'
-import { motionEnabled } from './activity'
+import { useEffect, useRef, useState, type ReactElement } from 'react'
+import { motionEnabled, subscribeTick } from './activity'
 import { useTuiEnv } from './context'
 import { graphemes, textWidth, truncateEnd } from './panes/text'
 import { asciiOnly, glyphs, terminalPalette } from './theme'
@@ -9,7 +9,6 @@ import type { TuiEnv } from './types'
 const WORDMARK = ['█▀█ █▀█ █▀▀ ▄▀█ █', '█▄█ █▀▄ █▄█ █▀█ █'] as const
 const SWEEP_MS = 1_000
 const IDLE_MS = 5_000
-const TICK_MS = 80
 
 function brandColorEnabled(env: TuiEnv): boolean {
   return env.color && !env.screenReader && !env.dumbTerminal
@@ -35,22 +34,46 @@ export function brandHeight(width: number, env: TuiEnv, prominent = false): 1 | 
   return prominent && width >= 44 && env.bufferMode === 'fullscreen' && !asciiOnly(env) ? 3 : 1
 }
 
+/**
+ * The sweep phase: 0..1 across SWEEP_MS, then a static IDLE_MS. The shared tick is subscribed only during the sweep;
+ * the idle window costs one timeout, not a frame loop.
+ */
 function useBrandPhase(active: boolean): number {
   const [phase, setPhase] = useState(0)
+  const [sweeping, setSweeping] = useState(true)
+  const started = useRef(Date.now())
   useEffect(() => {
     if (!active) {
       setPhase(0)
       return undefined
     }
-    const started = Date.now()
-    const update = () => {
-      const cycle = (Date.now() - started) % (SWEEP_MS + IDLE_MS)
+    started.current = Date.now()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const schedule = (): void => {
+      const cycle = (Date.now() - started.current) % (SWEEP_MS + IDLE_MS)
+      if (cycle < SWEEP_MS) {
+        setSweeping(true)
+        timer = setTimeout(schedule, SWEEP_MS - cycle)
+      } else {
+        setSweeping(false)
+        setPhase(0)
+        timer = setTimeout(schedule, SWEEP_MS + IDLE_MS - cycle)
+      }
+    }
+    schedule()
+    return () => {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [active])
+  useEffect(() => {
+    if (!active || !sweeping) return undefined
+    const update = (): void => {
+      const cycle = (Date.now() - started.current) % (SWEEP_MS + IDLE_MS)
       setPhase(cycle < SWEEP_MS ? cycle / SWEEP_MS : 0)
     }
     update()
-    const timer = setInterval(update, TICK_MS)
-    return () => clearInterval(timer)
-  }, [active])
+    return subscribeTick(update)
+  }, [active, sweeping])
   return phase
 }
 

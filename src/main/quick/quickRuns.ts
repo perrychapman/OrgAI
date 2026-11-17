@@ -9,12 +9,15 @@ import type {
   QuickRunPromoteResult,
   Role,
   RunEvent,
+  ConnectionId,
+  PermissionMode,
   RunOverrides,
   RunSummary
 } from '@shared/types'
 import { PROJECT_PEEK_BRIEF_CHARS, QUICK_PROJECT_ID, isVirtualProjectId, QUICK_RUN_MAX_PROMPT_CHARS, VIRTUAL_PROJECT_LABELS } from '@shared/types'
 import { QUICK_ASSISTANT_SLUG, ROLE_COLORS, newId, newProject, quickRunPermissionMode, quickRunTools } from '@shared/defaults'
 import { createScratchDir, isReferencedScratch, referencedScratch, removeScratchDir, samePath, validateQuickFolder } from './scratch'
+import { scheduledRunCap } from '../schedules/validate'
 
 /**
  * Chat (quick runs): project-less work runs on the virtual project QUICK_PROJECT_ID. Folder validation and scratch
@@ -163,6 +166,10 @@ export interface QuickRunDeps {
       images?: QuickRunInput['images']
       overrides?: RunOverrides
       allowWidening?: boolean
+      /** Scheduled starts only (QuickStartOptions.schedule): RunManager checks them like the desktop user's choices. */
+      userChoice?: { modelSelection?: { model: string; connection: ConnectionId }; permissionMode?: PermissionMode }
+      conversationBudgetUsd?: number
+      schedule?: { id: string; name: string }
     }): Promise<RunSummary>
     summary(runId: string): RunSummary | null
     /** The run's session chain with live runs' current summaries (RunManager.chain). */
@@ -196,6 +203,18 @@ export interface QuickStartOptions {
    * the project's mode is 'default', so only narrowing values can matter.
    */
   checkOverrides?: (project: Project) => boolean
+  /**
+   * A schedule's start (ScheduleService only, never IPC input): the run is marked with the schedule, its model and
+   * permission mode go through RunManager's start-choice checks (an ask run accepts only Ask, Never ask or Plan), and
+   * `budgetUsd` caps the run (the project's cap lowered to it, and the run's conversation budget).
+   */
+  schedule?: {
+    id: string
+    name: string
+    modelSelection?: { model: string; connection: ConnectionId }
+    permissionMode?: PermissionMode
+    budgetUsd?: number
+  }
 }
 
 /** Chat: start, rebuild the project of a continued run, and promote a run chain to a project. */
@@ -236,16 +255,27 @@ export class QuickRunService {
       info = { folder: createScratchDir(this.deps.dataDir), scratch: true, team, allowEdits, gitRepo: false }
     }
     try {
-      const project = quickProject(this.deps.settings(), info, this.projectOpts())
+      let project = quickProject(this.deps.settings(), info, this.projectOpts())
       const overrides = input.overrides
       const allowWidening = overrides ? (opts.checkOverrides?.(project) ?? false) : false
+      const s = opts.schedule
+      // A scheduled run's cap is min(its budget, the quick project's cap), recorded as the conversation budget so main
+      // enforces it (Schedules review L3, L4). A user's own Chat run is unchanged.
+      const budget = s ? scheduledRunCap(s.budgetUsd, project.maxBudgetUsd) : undefined
+      if (budget !== undefined) project = { ...project, maxBudgetUsd: budget }
+      const userChoice = s && (s.modelSelection || s.permissionMode)
+        ? { ...(s.modelSelection ? { modelSelection: s.modelSelection } : {}), ...(s.permissionMode ? { permissionMode: s.permissionMode } : {}) }
+        : undefined
       return await this.deps.runs.start({
         project,
         prompt,
         kind: 'work',
         quick: info,
         ...(hasImages ? { images: input.images } : {}),
-        ...(overrides ? { overrides, allowWidening } : {})
+        ...(overrides ? { overrides, allowWidening } : {}),
+        ...(s ? { schedule: { id: s.id, name: s.name } } : {}),
+        ...(userChoice ? { userChoice } : {}),
+        ...(budget !== undefined ? { conversationBudgetUsd: budget } : {})
       })
     } catch (e) {
       if (info.scratch) this.removeScratch(info.folder)

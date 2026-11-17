@@ -89,7 +89,7 @@ describe('request plumbing without a process', () => {
     expect(trackedChildCount('codex app-server')).toBe(before)
   })
 
-  it('checks the version of a resolved binary before spawning: refused outside 0.166.x, warned for ORGAI_CODEX_PATH', async () => {
+  it('checks the version of a resolved binary before spawning: refused outside 0.167.x, warned for ORGAI_CODEX_PATH', async () => {
     const binary = { path: process.execPath, source: 'package' as const }
     let ran = 0
     const versionRunner = async (): Promise<string> => {
@@ -97,7 +97,7 @@ describe('request plumbing without a process', () => {
       return 'codex-cli 0.199.0'
     }
     clearCodexVersionCache()
-    await expect(new CodexAppServer({ binary, versionRunner }).start()).rejects.toThrow('Codex 0.199.0 is not supported; install @openai/codex@0.166.0')
+    await expect(new CodexAppServer({ binary, versionRunner }).start()).rejects.toThrow('Codex 0.199.0 is not supported; install @openai/codex@0.167.0')
     expect(ran).toBe(1)
     clearCodexVersionCache()
     const warnings: string[] = []
@@ -130,7 +130,7 @@ describe('request plumbing without a process', () => {
       const started = s.start()
       await new Promise((r) => setTimeout(r, 10))
       s.close()
-      release('codex-cli 0.166.0')
+      release('codex-cli 0.167.0')
       await expect(started).rejects.toThrow('codex app-server was closed before it started')
       await expect(s.exited).resolves.toBeUndefined()
       expect(s.running).toBe(false)

@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { APP_REFERENCE_BUDGET_MIN, APP_REFERENCE_READ_MAX_CHARS } from '../../shared/types'
 import type { AppSettings, ConnectionInfo } from '../../shared/types'
 import { buildReferenceCorpus, createAppReference, shortcutRows, splitMarkdown } from './appReference'
 import { SHORTCUTS } from '../../shared/view/shortcuts'
 import type { AppReferenceDeps } from './appReference'
-import { bundledDocs } from './docs'
+import { bundledDocs, loadBundledDocs } from './docs'
+
+// The docs load lazily (docs.ts); the sync reader below needs them loaded once.
+beforeAll(async () => {
+  await loadBundledDocs()
+})
 
 const SECRET = 'sk-SECRET-proxy-key-123456'
 

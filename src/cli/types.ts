@@ -156,6 +156,12 @@ export interface InprocHostHandle {
    */
   readonly ownerKey?: string
   readonly hostInstanceId?: string
+  /**
+   * An authenticated client of this host over an in-memory stream pair (no socket, no handshake, no subprocess): the
+   * requests reach the dispatcher as surface 'inproc'. Absent on a handle that cannot serve one. Resolves like
+   * CliContext.connect (a draining host answers 'draining').
+   */
+  connectLocal?(scopes: HostScope[], opts?: { clientKind?: HostClientKind; cwd?: string }): Promise<ConnectResult>
 }
 
 /** How the in-process host starts (ensureHost / withHost pass it to CliContext.startInproc). */

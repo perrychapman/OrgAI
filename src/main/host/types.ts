@@ -18,6 +18,7 @@ import type {
   HostStopInput,
   HostStopResult,
   Project,
+  SchedulesChangedEvent,
   TeamFilesStatus
 } from '../../shared/types'
 import type { AppLike } from '../appInfo'
@@ -28,7 +29,9 @@ import type { MaintenanceService } from '../maintenance'
 import type { McpService } from '../mcp/service'
 import type { QuickRunService } from '../quick/quickRuns'
 import type { RunManager } from '../runtime/runManager'
+import type { ScheduleService } from '../schedules/service'
 import type { AgentImportService } from '../setup/import/importer'
+import type { EvolveService } from '../evolve/service'
 import type { TeamFilesService } from '../teamFiles/service'
 import type { OutputsServiceApi } from '../outputs/api'
 import type { OutputWatcher } from '../outputs/watch'
@@ -57,6 +60,8 @@ export interface DesktopHooks {
   openRunWindow(target: FocusRunTarget): void
   /** teamFiles:changed: send a project's team-files status to every window (desktop_only push; never to a socket). */
   teamFilesChanged?(status: TeamFilesStatus): void
+  /** schedules:changed: send to every window (desktop-only push; never to a socket). */
+  schedulesChanged?(event: SchedulesChangedEvent): void
   /**
    * An agent's open_in_app (RunManager -> SelfKnowledgeHooks.navigate): send an AppNavigateEvent on IPC.appNavigate to
    * the live unscoped main window (restored, focused, created when closed). false only when no window can be made.
@@ -100,10 +105,14 @@ export interface HostServices {
   quick: QuickRunService
   /** Saved team templates (src/main/setup/templates.ts). */
   templates: TemplateService
+  /** Schedules (src/main/schedules/service.ts). Absent = the schedules:* channels answer that schedules are not available. */
+  schedules?: ScheduleService
   /** The practice kit (src/main/kit/service.ts). Absent = the kit channels are not registered (older tests). */
   kit?: KitService
   /** Team files (src/main/teamFiles/service.ts). Absent = the teamFiles channels answer 'not available' (older tests). */
   teamFiles?: TeamFilesService
+  /** Team evolution (src/main/evolve/service.ts). Absent = the org:evolve* channels answer 'not available'. */
+  evolve?: EvolveService
   /** The reference service (reference/appReference.ts); app:reference answers with status allowed. Absent = "not available". */
   reference?: { query(q: AppReferenceQuery, opts: { status: boolean }): Promise<AppReferenceResult> }
   /** Run outputs (src/main/outputs/service.ts). Absent = outputs:list answers [], preview 'none', forget / delete reject. */

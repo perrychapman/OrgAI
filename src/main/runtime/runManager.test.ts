@@ -1268,6 +1268,37 @@ describe('RunManager with the mock adapter', () => {
       await m.stopAll()
     })
 
+    it('Schedules review L1: the timer resume of a scheduled run keeps the schedule; a user resume does not', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const p = makeProject({ path: join(dir, 'repo') })
+      const { m } = manager(p, limitScript, { resolveProject: () => p })
+      const schedule = { id: 'sch_00aa11bb', name: 'Nightly' }
+      const run = await m.start({ project: p, prompt: 'Big job', schedule })
+      await waitFor(isType('run.status', (e) => e.status === 'paused' && e.runId === run.id))
+      await vi.waitFor(() => expect(m.summaryOf(run.id)).toBeUndefined())
+      const continueRun = vi.spyOn(m, 'continueRun')
+      vi.advanceTimersByTime(HOUR + 1000)
+      await vi.waitFor(() => expect(continueRun).toHaveBeenCalledTimes(1))
+      const next = await continueRun.mock.results[0].value
+      expect(next).toMatchObject({ resumedFrom: run.id, scheduleId: schedule.id, scheduleName: 'Nightly' })
+      // The successor pauses at the limit again; the user's Resume now is not the schedule's.
+      await waitFor(isType('run.status', (e) => e.status === 'paused' && e.runId === next.id))
+      await vi.waitFor(() => expect(m.summaryOf(next.id)).toBeUndefined())
+      const byUser = await m.resumeNow(next.id)
+      expect(byUser.resumedFrom).toBe(next.id)
+      expect(byUser.scheduleId).toBeUndefined()
+      await m.stopAll()
+    })
+
+    it('Schedules review recheck L-d: a scheduled run never starts with bypass, a user run still may', async () => {
+      const p = makeProject({ path: join(dir, 'repo'), permissionMode: 'bypassPermissions' })
+      const { m } = manager(p, { work: [{ type: 'text', text: 'hi' }] }, { resolveProject: () => p })
+      await expect(m.start({ project: p, prompt: 'Go', schedule: { id: 'sch_00aa11bb', name: 'Nightly' } })).rejects.toThrow(/scheduled run cannot use bypass/)
+      const own = await m.start({ project: p, prompt: 'Go' })
+      expect(own.scheduleId).toBeUndefined()
+      await m.stopAll()
+    })
+
     it('falls back to a short pause when the limit gives no reset time', async () => {
       const p = makeProject({ path: join(dir, 'repo') })
       const { m } = manager(p, { work: [{ type: 'rateLimit' }] }, { resolveProject: () => p })

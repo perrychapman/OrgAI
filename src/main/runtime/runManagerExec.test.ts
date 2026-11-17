@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AgentInstance, RunEvent, RunOverrides, RunPlan, RunSummary } from '@shared/types'
+import type { AgentInstance, Project, RunEvent, RunOverrides, RunPlan, RunSummary } from '@shared/types'
 import { DEFAULT_EXEC_STALL_TIMEOUT_MS, EXEC_FINALIZE_STOP_TIMEOUT_MS, MAX_TIMER_DELAY_MS } from '@shared/types'
 import { EXEC_STALL_BUSY_ROUNDS, RunManager, continuedOverrides, timerDelay, type RunManagerOptions } from './runManager'
 import { RunStore } from '../store/runs'
@@ -762,6 +762,17 @@ describe('overrides', () => {
     expect(operate).not.toHaveProperty('allowUnpricedBudget')
     expect(continuedOverrides(undefined, {})).toBeUndefined()
     expect(continuedOverrides(prev, { overrides: { maxBudgetUsd: 0.5 } })?.maxBudgetUsd).toBe(0.5)
+  })
+
+  it('continuedOverrides with the project drops carried keys that widen it now, except on exec / auto-resume (PR 49 H2)', () => {
+    const wide: RunOverrides = { permissionMode: 'bypassPermissions', autoContinue: true, maxAutoContinues: 40, maxBudgetUsd: 50, goal: 'cost' }
+    const narrow = { permissionMode: 'default', autoContinue: false, maxAutoContinues: 2, maxBudgetUsd: 5 } as Project
+    expect(continuedOverrides(wide, { allowWidening: true }, narrow)).toEqual({ goal: 'cost' })
+    expect(continuedOverrides(wide, { allowWidening: true, overrides: { permissionMode: 'acceptEdits' } }, narrow)).toEqual({ goal: 'cost', permissionMode: 'acceptEdits' })
+    // Narrowing carried values stay.
+    expect(continuedOverrides({ permissionMode: 'plan', maxBudgetUsd: 1 }, {}, narrow)).toEqual({ permissionMode: 'plan', maxBudgetUsd: 1 })
+    // resume --exec keeps the exec chain as configured.
+    expect(continuedOverrides(wide, { exec: true, allowWidening: true }, narrow)).toMatchObject({ permissionMode: 'bypassPermissions', maxBudgetUsd: 50 })
   })
 
   it('peer messages are refused on exec runs without allowPeerMessages', async () => {

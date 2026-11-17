@@ -1,0 +1,6 @@
+const { DatabaseSync } = require('node:sqlite')
+const db = new DatabaseSync(process.argv[2])
+db.exec('PRAGMA busy_timeout=0')
+db.exec('BEGIN EXCLUSIVE')
+console.log('held', process.pid)
+setInterval(() => {}, 1000)

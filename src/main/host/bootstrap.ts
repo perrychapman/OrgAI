@@ -9,11 +9,14 @@
  *
  * Electron-free (noElectronImport.test.ts lists it); relative imports only.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunSummary } from '../../shared/types'
+import type { AppSettings, ConnectionId, HostKind, HostStatusResult, Project, RunEvent, RunRecord, RunSummary } from '../../shared/types'
 import { DEFAULT_KEEP_RUNS, HARNESS_PROJECT_ID, HOST_KIND_CAPABILITIES, HOST_PROTOCOL_VERSION, IPC, OUTPUTS_IPC, QUICK_PROJECT_ID, SKILLS_PROJECT_ID, isBuiltinConnectionId, isVirtualProjectId } from '../../shared/types'
-import { connectionConfigured, connectionIds } from '../../shared/defaults'
+import { connectionConfigured, connectionIds, staffingGoalOf, staffingModeOf } from '../../shared/defaults'
+import { createEvolveService, type EvolveCompleteRequest, type EvolveService } from '../evolve/service'
+import { isMeasuredRun } from '../evolve/telemetry'
 import { buildSettingsInfo } from '../appInfo'
 import { CapabilityService } from '../capabilities/service'
 import { seedMockHome } from '../capabilities/mockHome'
@@ -24,10 +27,13 @@ import { KitService } from '../kit/service'
 import { log } from '../log'
 import { MaintenanceService } from '../maintenance'
 import { TeamFilesService } from '../teamFiles/service'
+import { existingTeamFilesProtectedPaths, teamFilesProtectedPaths } from '../teamFiles/protection'
 import { harnessProject } from '../mcp/assist'
 import { McpService } from '../mcp/service'
 import { QuickRunService, projectPeeks } from '../quick/quickRuns'
-import { sweepScratchDirs } from '../quick/scratch'
+import { sweepScratchDirs, validateQuickFolder } from '../quick/scratch'
+import { ScheduleService } from '../schedules/service'
+import { ScheduleStore } from '../schedules/store'
 import { ClaudeAdapter } from '../runtime/claude'
 import { sweepStaleSkillDirs } from '../runtime/claudeSkills'
 import { CodexAdapter } from '../runtime/codex'
@@ -55,9 +61,11 @@ import { SecretStore, type SecretCipher, type SecretStoreOptions } from '../stor
 import { SettingsStore } from '../store/settings'
 import { UsageMonitor } from '../usageMonitor'
 import { HostActivityTracker, daemonIdleMs } from './activity'
-import { createAppReference, type ShortcutRow } from '../reference/appReference'
+import { createAppReference, type AppReferenceDeps, type AppReferenceService, type ShortcutRow } from '../reference/appReference'
+import { loadBundledDocs } from '../reference/docs'
 import { withAppSettingChanges } from '../../shared/appSettingsProposal'
-import type { AppSettingsProposalPayload, CliCommandStatus } from '../../shared/types'
+import type { AppSettingsProposalPayload, CliCommandStatus, SchedulesProposalPayload } from '../../shared/types'
+import { scheduledRunCap } from '../schedules/validate'
 import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
 import { HostEventBus } from './events'
@@ -226,7 +234,13 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     await opts.openExternal(url)
   }
   const events = new HostEventBus()
-  const emitRun = (event: RunEvent): void => events.emit(IPC.runEvent, event)
+  // Set once the usage monitor exists: reconciles every Claude usage.status onto the newest known one (or drops an
+  // unchanged repeat) before it goes out, so no consumer sees a stale or differently rounded snapshot win.
+  let usageGate: ((event: RunEvent) => RunEvent | null) | undefined
+  const emitRun = (event: RunEvent): void => {
+    const out = usageGate ? usageGate(event) : event
+    if (out) events.emit(IPC.runEvent, out)
+  }
   const emitProject = (project: Project): void => emitRun({ type: 'project.updated', runId: '', project })
 
   const projects = new ProjectStore(dataDir)
@@ -276,6 +290,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   const harness = (): Project => harnessProject(connections.effectiveSettings(), dataDir, { mock: mockAdapter })
   // Set once RunManager exists (below); only read when a run or a window asks for a project.
   let quickRuns: QuickRunService | undefined
+  /** Schedules (schedules/service.ts); built after RunManager and QuickRunService, which it starts runs through. */
+  let scheduleService: ScheduleService | undefined
   let skillEvaluationService: SkillEvaluationService | undefined
   const projectOrHarness = (projectId: string): Project | null | undefined =>
     projectId === HARNESS_PROJECT_ID ? harness()
@@ -398,7 +414,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   /** Set once the dispatcher exists (below); the drain's quiesce aborts its model calls (draft:orgChart). */
   let dispatcherRef: HostDispatcher | undefined
   // Self-knowledge: OrgAI answers about itself (reference service, built lazily on first query) and can configure itself.
-  const reference = createAppReference({
+  const referenceDeps: AppReferenceDeps = {
     shortcuts: opts.referenceShortcuts,
     status: {
       appVersion: env.appVersion,
@@ -413,7 +429,16 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
       skillLibraryCount: () => skills.libraryList().length,
       ...(opts.cliShimStatus ? { cliShim: opts.cliShimStatus } : {})
     }
-  })
+  }
+  // The bundled docs are separate lazy chunks: they load with the first query, never at boot.
+  let referenceService: AppReferenceService | undefined
+  const reference = {
+    query: async (...args: Parameters<AppReferenceService['query']>): ReturnType<AppReferenceService['query']> => {
+      const docs = await loadBundledDocs()
+      referenceService ??= createAppReference({ ...referenceDeps, docs })
+      return referenceService.query(...args)
+    }
+  }
   // Run outputs (types.ts "Run outputs"): one service for the harness tools (RunManager) and the outputs:* channels.
   // The OS trash only on the desktop (Electron shell.trashItem); every other host deletes for good. The service raises
   // outputs:changed itself for the versions the watcher captures and the revision ends it settles.
@@ -429,8 +454,27 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     emit: (event) => events.emit(OUTPUTS_IPC.outputsChanged, event)
   })
+  // Team evolution (src/main/evolve/): the service is built right after RunManager (it completes through it); the post-run hook reads it lazily.
+  let evolveService: EvolveService | undefined
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
     dataDir,
+    // Schedules: list_schedules / propose_schedule read through access(); an approved card applies through the service.
+    // Desktop only (review L8): the CLI's in-process host never fires a schedule, so it offers no schedule tools.
+    ...(opts.desktop
+      ? {
+          schedules: {
+            access: () => {
+              if (!scheduleService) throw new Error('Schedules are not ready yet.')
+              return scheduleService.access()
+            },
+            apply: (payload: SchedulesProposalPayload, origin: { projectId: string | null }) => {
+              if (!scheduleService) throw new Error('Schedules are not ready yet.')
+              return scheduleService.applyProposal(payload, origin)
+            }
+          }
+        }
+      : {}),
+    evolveAfterRun: (input) => (evolveService ? evolveService.afterRun(input) : Promise.reject(new Error('Team evolution is not available.'))),
     selfKnowledge: {
       reference: (q, o) => reference.query(q, o),
       navigate: (e) => opts.desktop?.navigate?.(e) ?? false,
@@ -442,7 +486,17 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     teamFiles,
     // cli-spec 3.4(1): the control socket dir, daemon secret, secrets.json and CODEX_HOME are off limits to agent tools.
     // Wave 7: plus the vault's key file, re-read per call (the vault may change; cli-standalone.md 8.4).
-    controlProtectedPaths: () => controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles(), otherProductDataDirs: [otherProductDataDir(hostKind)] }),
+    controlProtectedPaths: () => {
+      const siblingDataDir = otherProductDataDir(hostKind)
+      const paths = controlProtectedPaths(dataDir, ownership.runtimeDir, { vaultKeyFiles: secrets.vaultKeyFiles(), otherProductDataDirs: [siblingDataDir] })
+      // A team-files snapshot is the approval baseline. Resolve current project ids on every gate check so a new or
+      // removed project takes effect immediately, and protect both spellings for paths behind a symlinked data root.
+      paths.push(...teamFilesProtectedPaths(dataDir, projects.list().map((project) => project.id)))
+      // The sibling product's project registry is separate. Enumerate only its existing project directories so the
+      // team approval state is protected without blocking nearby project artifacts such as engagement documents.
+      paths.push(...existingTeamFilesProtectedPaths(siblingDataDir))
+      return paths
+    },
     // cli-spec 6.2(1) humanGraceMs: open windows (index.ts source) plus TUI / interactive sockets (socketServer's
     // attachedClientCount, which leaves non-interactive CLI exec sockets out). `activity` is created further down;
     // before that (never during a run) there is nobody to count.
@@ -543,6 +597,61 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     mock: mockAdapter
   })
   quickRuns = quick
+  // Schedules (docs/design/schedules.md 4): every scheduled start goes through the user's own start paths, RunManager.start
+  // (team) and QuickRunService.start (ask), so their checks apply. budgetUsd lowers the project's cap for that run and
+  // is the run's conversation budget. The timer (scheduler.ts) is started only by the desktop shell (index.ts).
+  const schedules = new ScheduleService({
+    store: new ScheduleStore(dataDir, { log: (m) => log.info(m) }),
+    now: () => Date.now(),
+    project: (id) => (isVirtualProjectId(id) ? undefined : (projects.get(id) ?? undefined)),
+    folderProblem: (folder) => {
+      try {
+        validateQuickFolder(folder, dataDir)
+        return null
+      } catch (e) {
+        return (e as Error).message
+      }
+    },
+    startTeam: (project, i) => {
+      const choice = { ...(i.modelSelection ? { modelSelection: i.modelSelection } : {}), ...(i.permissionMode ? { permissionMode: i.permissionMode } : {}) }
+      // The enforced cap is min(schedule budget, project cap), recorded as the conversation budget so main enforces it
+      // on every scheduled run, not only the adapter (review L3, L4). No cap at all leaves both unset.
+      const total = scheduledRunCap(i.budgetUsd, project.maxBudgetUsd)
+      return rm.start({
+        project: total !== undefined ? { ...project, maxBudgetUsd: total } : project,
+        prompt: i.prompt,
+        schedule: i.schedule,
+        ...(i.team === 'single' ? { team: 'single' as const } : {}),
+        ...(Object.keys(choice).length ? { userChoice: choice } : {}),
+        ...(total !== undefined ? { conversationBudgetUsd: total } : {})
+      })
+    },
+    startAsk: (i) =>
+      quick.start(
+        { prompt: i.prompt, ...(i.folder !== undefined ? { folder: i.folder } : {}), ...(i.allowEdits ? { allowEdits: true } : {}) },
+        {
+          schedule: {
+            ...i.schedule,
+            ...(i.modelSelection ? { modelSelection: i.modelSelection } : {}),
+            ...(i.permissionMode ? { permissionMode: i.permissionMode } : {}),
+            ...(i.budgetUsd !== undefined ? { budgetUsd: i.budgetUsd } : {})
+          }
+        }
+      ),
+    liveRunFacts: (runId) => rm.liveRunFacts(runId),
+    autoResumePending: (runId) => rm.hasAutoResume(runId),
+    liveScheduleRuns: () => rm.liveRuns().flatMap((s) => (s.scheduleId ? [{ runId: s.id, scheduleId: s.scheduleId }] : [])),
+    stopRun: (runId) => rm.stop(runId),
+    runSummary: (runId) => rm.summary(runId),
+    globallyPaused: () => settings.get().schedulesPaused === true,
+    // A desktop-only push (like teamFiles:changed): never on the socket bus.
+    changed: (event) => opts.desktop?.schedulesChanged?.(event),
+    log: (m) => log.info(m)
+  })
+  scheduleService = schedules
+  events.on((channel, payload) => {
+    if (channel === IPC.runEvent) schedules.onRunEvent(payload as RunEvent)
+  })
   // A pruned or deleted quick run takes its scratch dir with it when no other run uses it.
   runStore.onRunsRemoved = (removed: RunSummary[]) => quick.runsRemoved(removed)
   const skillEvaluation = new SkillEvaluationService({
@@ -554,6 +663,106 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     complete: (project, input) => rm.completeForProject(project, input)
   })
   skillEvaluationService = skillEvaluation
+  // The engine's single hybrid completion names no project; the call chain carries it (AsyncLocalStorage), so the
+  // completion runs on the connection of the project being analysed.
+  const evolveProject = new AsyncLocalStorage<string>()
+  const evolveEngine = createEvolveService({
+    dataDir,
+    getProject: (id) => projects.get(id) ?? undefined,
+    // ProjectStore.update saves through the team files hook, so `.orgai/` follows the change on its own.
+    updateProject: (id, fn) => {
+      const saved = projects.update(id, fn)
+      if (!saved) throw new Error('Project not found')
+      // Open windows and terminals see the new team at once, as for every other service that saves a project.
+      emitProject(saved)
+      return saved
+    },
+    teamFilesState: (projectId) => teamFiles.check(projectId).state,
+    listRunRecords: (projectId, limit) => {
+      const out: RunRecord[] = []
+      // Only runs the engine measures count toward the limit (a stopped run or a chat must not crowd out a team run).
+      for (const s of runStore.list(projectId)) {
+        if (out.length >= limit) break
+        // The engine's own rule (finished, failed or paused on a usage limit; not stopped or cut by quitting).
+        if (!isMeasuredRun({ summary: s })) continue
+        const rec = runStore.getRecord(s.id)
+        if (rec) out.push(rec)
+      }
+      return out
+    },
+    // Summaries come from the run index (no transcript is read): the engine counts runs and finds a trial's window from
+    // them and loads in full only the records it measures, so one pass reads few records on this thread.
+    listRunSummaries: (projectId, limit) => {
+      const out: RunSummary[] = []
+      for (const s of runStore.list(projectId)) {
+        if (out.length >= limit) break
+        if (isMeasuredRun({ summary: s })) out.push(s)
+      }
+      return out
+    },
+    getRunRecord: (runId) => runStore.getRecord(runId) ?? undefined,
+    staffingProfile: (projectId) => {
+      const p = projects.get(projectId)
+      return { mode: staffingModeOf(p), goal: staffingGoalOf(p) }
+    },
+    skillFindings: (projectId) => skillEvaluation.last(projectId)?.findings ?? [],
+    skills: {
+      create: (input) => skills.create(input, 'suggestion'),
+      remove: (input) => skills.remove(input),
+      readDraft: (projectId, skillId) => {
+        try {
+          const info = skills.list(projectId).find((s) => s.spec.id === skillId)
+          if (!info) return null
+          return { name: info.spec.name, description: info.spec.description, body: skills.read({ projectId, skillId }).body }
+        } catch {
+          return null
+        }
+      }
+    },
+    // The project save already wrote `.orgai/` through the team files hook, but only for a project whose team files were
+    // opened ('not-written' = a code project nobody opened yet: nothing was written, and evolving does not open it).
+    syncTeamFiles: async (project) => {
+      try {
+        // Written only when the files are in use and readable: 'problem' never overwrites a file, 'rejected' keeps the
+        // refused content, and 'off' writes nothing.
+        const state = teamFiles.check(project.id).state
+        return state === 'in-sync' || state === 'pending'
+      } catch {
+        return false
+      }
+    },
+    // Without a project in scope there is no connection to complete on, and the engine falls back to its deterministic plan.
+    complete: async (req: EvolveCompleteRequest) => {
+      const id = evolveProject.getStore()
+      const project = id ? projects.get(id) : undefined
+      if (!project) throw new Error('No project to complete for.')
+      let usage: { inputTokens: number; outputTokens: number; costUsd?: number } | undefined
+      const done = await rm.completeForProject(project, {
+        system: req.system,
+        prompt: req.prompt,
+        kind: 'draft',
+        tier: 'fast',
+        ...(req.signal ? { signal: req.signal } : {}),
+        onUsage: (u) => {
+          usage = { inputTokens: Number(u?.tokens?.input) || 0, outputTokens: Number(u?.tokens?.output) || 0, ...(typeof u?.costUsd === 'number' ? { costUsd: u.costUsd } : {}) }
+          // No app-level usage ledger exists for helper calls (run titles and skill drafts are only logged too), so this
+          // spend is not on the Usage page: it is logged here with project and model, returned in plan.usage (the CLI
+          // prints it) and kept with the generation in the evolution ledger when the plan is applied.
+          log.info(`Evolve: hybrid call for ${project.id} used ${usage.inputTokens} input + ${usage.outputTokens} output tokens${u?.model ? ` on ${u.model}` : ''}${usage.costUsd !== undefined ? ` ($${usage.costUsd})` : ''}`)
+        }
+      })
+      // The engine copies this usage into plan.usage.
+      return { text: done.text, ...(usage ? { usage } : {}) }
+    },
+    log: (level, message) => (level === 'warn' ? log.warn(`Evolve: ${message}`) : log.info(`Evolve: ${message}`))
+  })
+  evolveService = {
+    analyze: (i) => evolveProject.run(i.projectId, () => evolveEngine.analyze(i)),
+    apply: (i) => evolveProject.run(i.projectId, () => evolveEngine.apply(i)),
+    history: (id) => evolveEngine.history(id),
+    rollback: (i) => evolveProject.run(i.projectId, () => evolveEngine.rollback(i)),
+    afterRun: (i) => evolveProject.run(i.projectId, () => evolveEngine.afterRun(i))
+  }
   if (mockAdapter) seedMockHome(join(dataDir, 'mock-home'))
   const caps = new CapabilityService({
     projects,
@@ -601,10 +810,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     liveRuns: () => rm.liveRunCount(),
     extraProbes: [() => connections.probeCodexUsage(), { key: 'proxies', probe: () => connections.probeProxyUsages() }]
   })
-  // Every usage.status a run or probe sends is merged onto the monitor's newest Claude status.
-  const unobserve = events.on((channel, payload) => {
-    if (channel === IPC.runEvent) monitor.observe(payload as RunEvent)
-  })
+  // Every usage.status a run or probe sends is reconciled onto the monitor's newest Claude status in emitRun.
+  usageGate = (event) => monitor.gate(event)
   refreshProxySpend = () => void monitor.refreshProbe('proxies')
   if (background.usageMonitor) monitor.start()
 
@@ -682,7 +889,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   activity.addSource('liveRuns', () => rm.busyRunCount())
   activity.addSource('pausedAutoResumes', () => rm.activeResumeTimerCount() + rm.inFlightResumeCount())
   activity.addSource('activeWorktreeOps', () => repoLockActivity())
-  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + caps.inFlightCount() + skillEvaluation.inFlightCount())
+  activity.addSource('backgroundTasks', () => rm.titleTaskCount() + rm.evolvePassCount() + caps.inFlightCount() + skillEvaluation.inFlightCount())
   activity.addSource('activeOAuthFlows', () => mcp.activeAuthorizationCount() + connections.pendingLoginCount())
 
   const hostControl: HostControl = {
@@ -722,9 +929,11 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     skillEvaluation,
     capabilities: caps,
     quick,
+    schedules,
     templates,
     kit,
     teamFiles,
+    evolve: evolveService,
     outputs,
     outputWatcher,
     events,
@@ -760,7 +969,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     spendTimer = undefined
     monitor.stop()
     activity.disarmIdleExit()
-    unobserve()
+    usageGate = undefined
     // Wave 7 (cli-standalone.md 5.6): the vault's background retry timer (legacy-only app hosts).
     secrets.dispose()
   }

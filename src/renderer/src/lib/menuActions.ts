@@ -7,6 +7,7 @@ import { assistantLabel, offersSaveAsProject } from './assistants'
 import { waitingItems } from './needsYou'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestSkillLibrary } from './settingsTarget'
 import { toggleSidebar } from './useSidebarCollapsed'
+import { useUpdatesStore } from '../store/updatesStore'
 
 /**
  * The renderer side of the native application menu (docs/design/ux-review-menu.md). `routeMenuAction` is installed
@@ -92,7 +93,7 @@ function anyDecision(runs: Record<string, RunState>, team: readonly TeamAttentio
 /** What the window shows, as the five booleans main needs to grey out menu items. */
 export function menuStateFor(s: MenuSource): MenuState {
   const pid = s.selectedProjectId
-  const hasProject = !!pid && s.view !== 'projects' && s.view !== 'appSettings' && s.view !== 'usage' && (isVirtualProjectId(pid) || s.projects.some((p) => p.id === pid))
+  const hasProject = !!pid && s.view !== 'projects' && s.view !== 'appSettings' && s.view !== 'usage' && s.view !== 'schedules' && (isVirtualProjectId(pid) || s.projects.some((p) => p.id === pid))
   const run = hasProject ? viewedRunOf(s) : undefined
   return {
     hasProject,
@@ -170,6 +171,15 @@ function openSettings(target: string): void {
   window.dispatchEvent(new Event('orgai:settings-section'))
 }
 
+/**
+ * Help > Check for Updates… (main already started the check) and the sidebar's update notice: App settings > About,
+ * with the Updates block scrolled to and its heading focused (components/updates/UpdatesSection).
+ */
+export function openUpdates(): void {
+  useUpdatesStore.getState().requestFocus()
+  openSettings(APP_SETTINGS_SECTIONS.about)
+}
+
 function jumpTo(projectId: string, runId: string, item: { key: string; kind: string } | undefined): void {
   void useAppStore
     .getState()
@@ -225,6 +235,8 @@ function fallback(action: MenuAction): string | void {
       return
     case 'open-about':
       return openSettings(APP_SETTINGS_SECTIONS.about)
+    case 'check-for-updates':
+      return openUpdates()
     case 'toggle-sidebar':
       return toggleSidebar()
     case 'keyboard-shortcuts':
@@ -287,6 +299,10 @@ function fallback(action: MenuAction): string | void {
     case 'show-usage':
       st.openUsage({})
       announceMenu(usageMenuAnnouncement(st))
+      return
+    case 'show-schedules':
+      st.openSchedules()
+      announceMenu('Schedules.')
       return
   }
 }

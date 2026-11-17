@@ -9,7 +9,8 @@
  *
  * Electron-free; relative imports only. Only registry.ts (and its tests) read these.
  */
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { EVOLVE_IPC, HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC, UPDATES_IPC } from '../../shared/types'
+import { EVOLVE_AFTER_RUN_CHANNEL } from './jsonCodec'
 import type { ParamSpec } from './registry'
 
 /** Ids from the renderer (newId() output, virtual project ids, older hand-made ids): windowScope.ts ID_PATTERN. */
@@ -143,6 +144,13 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [TEAM_FILES_IPC.teamFilesCommit]: OBJECT,
   [TEAM_FILES_IPC.teamFilesEnable]: OBJECT,
 
+  // ---- EVOLVE_IPC ---- (evolve*Args rebuild each input: safe project id, bounded integers, strategy / goal enums)
+  [EVOLVE_IPC.orgEvolveAnalyze]: OBJECT,
+  [EVOLVE_IPC.orgEvolveHistory]: OBJECT,
+  [EVOLVE_IPC.orgEvolveApply]: OBJECT,
+  [EVOLVE_IPC.orgEvolveRollback]: OBJECT,
+  [EVOLVE_AFTER_RUN_CHANNEL]: OBJECT,
+
   // ---- OUTPUTS_IPC ---- (outputArgs rebuilds each input: safe project id, OUTPUT_ID_RE output id)
   [OUTPUTS_IPC.outputsList]: ID,
   [OUTPUTS_IPC.outputsPreview]: OBJECT,
@@ -169,6 +177,21 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [OUTPUTS_IPC.outputsWatch]: OBJECT,
   [OUTPUTS_IPC.outputsUnwatch]: OBJECT,
   [OUTPUTS_IPC.outputsSaveImage]: OBJECT,
+
+  // ---- SCHEDULES_IPC ---- (cleanScheduleInput rebuilds save; the id arguments are rechecked against the store)
+  [SCHEDULES_IPC.schedulesList]: NONE,
+  [SCHEDULES_IPC.schedulesHistory]: ID,
+  [SCHEDULES_IPC.schedulesSave]: OBJECT,
+  [SCHEDULES_IPC.schedulesRemove]: ID,
+  [SCHEDULES_IPC.schedulesSetEnabled]: OBJECT,
+  [SCHEDULES_IPC.schedulesRunNow]: ID,
+
+  // ---- UPDATES_IPC ---- (desktop only; ipc.ts registerUpdatesIpc, updateInstallArgs rebuilds install's input)
+  [UPDATES_IPC.updatesGet]: NONE,
+  [UPDATES_IPC.updatesCheck]: NONE,
+  [UPDATES_IPC.updatesDownload]: NONE,
+  [UPDATES_IPC.updatesInstall]: OPTIONAL_NULLABLE_OBJECT,
+  [UPDATES_IPC.updatesOpenReleasePage]: NONE,
 
   // ---- permissions ----
   [IPC.permissionsList]: ID,

@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
+import { subscribeTick, TICK_MS } from './activity'
 import type { TeamMessageRow } from './collaboration'
 import type { TuiEnv } from './types'
 import { asciiOnly } from './theme'
 import { textWidth, truncateEnd } from './panes/text'
 
-export const MESSAGE_PULSE_FRAMES = 20
-export const MESSAGE_PULSE_MS = 80
+/** About 1.7 s of courier travel, one frame per shared tick. */
+export const MESSAGE_PULSE_FRAMES = 14
+export const MESSAGE_PULSE_MS = TICK_MS
 
 /** Animate only newly observed agent-to-agent events, never existing history or a changed run. */
 export function useMessagePulse(message: TeamMessageRow | undefined, runId: string | undefined, enabled: boolean): number | undefined {
@@ -18,14 +20,14 @@ export function useMessagePulse(message: TeamMessageRow | undefined, runId: stri
     if (!enabled || !fresh || !message?.toId || message.toId === message.fromId) return undefined
     let frame = 0
     setPulse({ runId, key: message.key, frame })
-    const timer = setInterval(() => {
+    const off = subscribeTick(() => {
       frame++
       if (frame >= MESSAGE_PULSE_FRAMES) {
-        clearInterval(timer)
+        off()
         setPulse(undefined)
       } else setPulse({ runId, key: message.key, frame })
-    }, MESSAGE_PULSE_MS)
-    return () => clearInterval(timer)
+    })
+    return off
   }, [message?.key, runId, enabled])
   return enabled && pulse?.key === message?.key && pulse?.runId === runId ? pulse?.frame : undefined
 }

@@ -61,7 +61,34 @@ import type {
 } from '@shared/types'
 import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
 import type { StaffingProfile } from '../store/staffingProfile'
-import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId, PermissionMode } from '@shared/types'
+import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId, PermissionMode, Schedule, SchedulesProposalPayload } from '@shared/types'
+
+/**
+ * RuntimeContext.schedules: what list_schedules / propose_schedule may read. Every Schedule is a copy. The checks run
+ * again in ScheduleService.applyProposal (validate all, then write), so nothing here is trusted at apply time.
+ */
+export interface RuntimeScheduleAccess {
+  /** Every schedule, by name. */
+  list(): Schedule[]
+  /** A stored, non-virtual project by id (a team target, its name and its own permission mode). */
+  storedProject(projectId: string): Project | undefined
+  /** An ask target's folder: a plain sentence when it cannot be used (validateQuickFolder), else null. */
+  folderProblem(folder: string): string | null
+  /** The clock, for nextRuns and the past-time checks. */
+  now(): number
+  /** The schedules an approved proposal saved, by the payload object the tool sent (identity); undefined before approval. */
+  applied(payload: SchedulesProposalPayload): Schedule[] | undefined
+}
+
+/**
+ * RunManagerOptions.schedules (bootstrap.ts, a lazy ScheduleService). `access` feeds RuntimeContext.schedules; `apply`
+ * applies an approved 'schedules' proposal (throws a plain sentence, nothing written, when any item is refused).
+ * `origin` is the proposing run's project: a stored project id for a work run, null for Chat.
+ */
+export interface RunManagerScheduleHooks {
+  access(): RuntimeScheduleAccess
+  apply(payload: SchedulesProposalPayload, origin: { projectId: string | null }): Schedule[]
+}
 
 /**
  * RunManagerOptions.selfKnowledge (types.ts "Self-knowledge and self-configuration"), wired in host/bootstrap.ts.
@@ -661,6 +688,13 @@ export interface RuntimeContext {
   appSettings?(): AppSettings
   /** Quick runs only: a stored, non-virtual project by id (propose_project_settings target). undefined otherwise. */
   storedProject?(projectId: string): Project | undefined
+  /**
+   * Schedules (docs/design/schedules.md 4 "Conversational creation"): list_schedules and propose_schedule. Set by
+   * RunManager on the root of Chat runs and of work runs (team or single) of a stored project; absent on setup-like,
+   * build-session and virtual-project runs. A run with RunSummary.scheduleId keeps it so the tools can refuse in words.
+   */
+  schedules?: RuntimeScheduleAccess
+
   /**
    * Skill assistant runs ('skill-assist'): the skill library and, in a project session, the project's skills with
    * the role ids that load them (SkillInfo.grantedTo; resolve to slugs through ctx.project.roles). `project` is empty

@@ -1,12 +1,13 @@
 import type { ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { Bot, ClipboardList, Clock, Database, Files, Folder, Shield, ShieldAlert, ShieldOff } from 'lucide-react'
+import { Bot, CalendarClock, ClipboardList, Clock, Database, Files, Folder, Shield, ShieldAlert, ShieldOff } from 'lucide-react'
 import { metaPermission, modeInForce, modeInForceLabel, permissionModeHelp, permissionModeName, permissionSessionEnded, permissionTone } from '../lib/runSettings'
 import '../styles/run-settings.css'
 import { outputsCountLabel, outputsOfRuns } from '../lib/outputs'
 import { useOutputAnnouncements } from './outputs/useOutputAnnouncements'
 import { chipLabel } from '../lib/outputRevise'
 import { showHidden } from '../lib/hiddenChars'
+import { clampLabel } from '../lib/clampLabel'
 import { revealOutputsTab } from './outputs/revealOutputsTab'
 import '../styles/outputs.css'
 import '../styles/outputs-revise.css'
@@ -130,6 +131,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const metaEnded = permissionSessionEnded(summary.status)
   const metaTone = metaMode ? permissionTone(metaEnded ? metaMode : modeInForce(summary, metaMode)) : null
   const metaLabel = metaMode ? (metaEnded ? permissionModeName(metaMode) : modeInForceLabel(summary, metaMode)) : ''
+  const scheduleName = showHidden(summary.scheduleName ?? '').trim() || 'Scheduled run'
   const next = useAppStore((s) => s.proposalNextByRun[summary.id])
   const nextCopy = next ? PROPOSAL_NEXT_COPY[next.kind] : null
   const goNext = (): void => {
@@ -166,6 +168,19 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <span className="run-meta-item" data-testid="run-meta-kind">
           {isOrgChangeRun(summary) ? `${ORG_CHANGE_KIND_LABEL} session` : 'Setup session'}
         </span>
+      )}
+      {summary.scheduleId && (
+        <button
+          type="button"
+          className="run-meta-item run-meta-scheduled"
+          data-testid="run-meta-scheduled"
+          title={`Started by the schedule ${scheduleName}. Opens Schedules.`}
+          onClick={() => useAppStore.getState().openSchedules({ scheduleId: summary.scheduleId })}
+        >
+          <Icon icon={CalendarClock} size="xs" />
+          <span className="run-meta-scheduled-text">Scheduled: {clampLabel(scheduleName, 40)}</span>
+          <span className="sr-only">; opens Schedules</span>
+        </button>
       )}
       {summary.quick && (
         <>

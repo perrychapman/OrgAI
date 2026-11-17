@@ -47,7 +47,7 @@ import {
   type RunSummary
 } from '../../shared/types'
 import { resolveProject } from '../client/resolveProject'
-import { folderTrustLines, NO_APPROVE_COMMAND, TRUST_WHERE } from '../approvalText'
+import { APPROVE_WHERE, folderTrustLines, NO_APPROVE_COMMAND, TRUST_WHERE } from '../approvalText'
 import { connectionArg, labelOfId } from './connections'
 import { parseFlags } from '../flags'
 import { confirm, hostCall, requireProject, runSubcommands, withHost } from '../manage'
@@ -166,6 +166,12 @@ export async function createProjectIn(ctx: CliContext, client: HostClient, folde
     }
   }
   const name = (o.name ?? '').trim() || check.suggestedName || basename(folder) || 'Project'
+  // A folder's own `.orgai/` team is untrusted (a cloned repo): no digest is ever sent from the terminal, so the host
+  // applies only the low-power changes and holds the rest pending (cli-parity 3.4 / 7: approving team-file changes at a
+  // terminal is held back, and the host refuses a digest from any surface but the desktop window).
+  if (check.teamFiles && (o.kind ?? 'code') !== 'engagement') {
+    ctx.io.stderr.write(`${safeLine(folder)}/.orgai holds team files. Changes that need approval stay pending, not adopted: list them with orgai team files status. ${APPROVE_WHERE}\n`)
+  }
   const input: ProjectCreateInput = {
     name,
     path: folder,

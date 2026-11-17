@@ -8,8 +8,8 @@
  * 50 ms without input (ESC is also the first byte of every sequence). Unknown or over-long sequences become one
  * 'unknown' event and never leak characters. Pure: no I/O.
  *
- * Enter: both \r and \n are 'enter' (a line-mode or dumb terminal sends \n), so Ctrl+J arrives as a newline key only
- * on terminals that report it as CSI-u / modifyOtherKeys ('char' 'j' ctrl).
+ * Enter is \r (a raw-mode terminal sends CR for Enter). A bare \n is Ctrl+J ('char' 'j' ctrl), which the composer
+ * turns into a newline; inside a bracketed paste a \n is still just text.
  */
 import { sanitizeTty, TtySanitizer } from '../sanitizeTty'
 import type { InputEvent, KeyEvent, KeyName } from '../types'
@@ -54,7 +54,7 @@ function codeKey(code: number, m: { shift: boolean; alt: boolean; ctrl: boolean 
 
 /** A C0 control byte as a key. */
 function controlKey(c: number, raw: string, alt: boolean): KeyEvent {
-  if (c === 0x0d || c === 0x0a) return key('enter', raw, { alt })
+  if (c === 0x0d) return key('enter', raw, { alt })
   if (c === 0x09) return key('tab', raw, { alt })
   if (c === 0x08 || c === 0x7f) return key('backspace', raw, { alt })
   if (c === 0x00) return key('char', raw, { ch: ' ', ctrl: true, alt })

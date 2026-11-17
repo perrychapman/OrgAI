@@ -787,6 +787,17 @@ ul.maint-list {
   color: var(--text-tertiary);
   font-size: var(--text-small);
 }
+/* Unread mark (new reply): a still dot, no motion. */
+.tabs-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: var(--space-1);
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  vertical-align: middle;
+  flex: none;
+}
 
 /* ---------- Empty state ---------- */
 .empty-state {

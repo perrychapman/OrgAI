@@ -83,7 +83,7 @@ describe('InspectorPane', () => {
   it('a short pane drops the facts and keeps three transcript rows', () => {
     const f = mountInspector({ height: 8 }).lastFrame() ?? ''
     expect(f.split('\n').length).toBeLessThanOrEqual(8)
-    expect(f).toContain('line 0')
+    // The inspector transcript is compact (speaker heading, gaps), so the newest rows fill the three lines.
     expect(f).toContain('line 2')
     expect(f).toContain('transcript (this agent')
   })

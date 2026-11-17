@@ -320,6 +320,10 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     defaultConnectionChosen,
     ...(replaced !== undefined ? { defaultConnectionReplaced: replaced } : {}),
     notifications: typeof r.notifications === 'boolean' ? r.notifications : d.notifications,
+    // Desktop updater's automatic checks: an explicit boolean, missing or malformed = on.
+    autoUpdateCheck: typeof r.autoUpdateCheck === 'boolean' ? r.autoUpdateCheck : d.autoUpdateCheck !== false,
+    // Schedules' global pause: exactly true, or absent (off).
+    ...(r.schedulesPaused === true ? { schedulesPaused: true } : {}),
     appearance: normalizeAppearance(r.appearance),
     modelPrices: normalizeModelPrices(r.modelPrices),
     opusGuardThreshold:

@@ -48,7 +48,8 @@ describe('Brand', () => {
       await act(async () => {
           app = render(<Providers env={env()} bus={new InputBus()}><Brand width={60} prominent animated /></Providers>)
       })
-      expect(vi.getTimerCount()).toBe(1)
+      // The sweep window: the phase timeout plus the one shared 120 ms tick interval.
+      expect(vi.getTimerCount()).toBe(2)
       const before = app.lastFrame()
       await act(async () => {
         vi.advanceTimersByTime(800)
@@ -57,6 +58,8 @@ describe('Brand', () => {
       expect(app.lastFrame()).not.toBe(before)
       await act(async () => { vi.advanceTimersByTime(1_200) })
       const resting = app.lastFrame()
+      // The static idle window holds no frame loop: only the timeout that starts the next sweep.
+      expect(vi.getTimerCount()).toBe(1)
       expect(resting).toBe(before)
       await act(async () => { vi.advanceTimersByTime(3_000) })
       expect(app.lastFrame()).toBe(resting)

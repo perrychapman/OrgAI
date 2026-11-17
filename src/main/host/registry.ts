@@ -16,13 +16,16 @@ import {
   RPC_BULK_FRAME_MAX_BYTES,
   RPC_CONTROL_REQUEST_MAX_BYTES,
   RPC_CONTROL_RESPONSE_MAX_BYTES,
+  SCHEDULES_IPC,
   SECRETS_IPC,
   OUTPUTS_IPC,
   TEAM_FILES_IPC,
+  EVOLVE_IPC,
+  UPDATES_IPC,
   hostCanOpenWindows
 } from '../../shared/types'
 import type { HostKind, HostRpcError, HostRpcErrorCode, HostScope, HostSubscribeTopic } from '../../shared/types'
-import { CHANNEL_JSON_FIELDS, decodeRequest } from './jsonCodec'
+import { CHANNEL_JSON_FIELDS, EVOLVE_AFTER_RUN_CHANNEL, decodeRequest } from './jsonCodec'
 import { CHANNEL_PARAMS, paramProblem } from './params'
 import { STORES_SECRET, type StoresSecretFn } from './storesSecret'
 
@@ -127,14 +130,18 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'connectorPresets:list', 'skills:list', 'skills:read', 'skills:previewImport', 'skills:lastEvaluation', 'skillLibrary:list',
     'skillLibrary:read', 'capabilities:lastReview', 'maintenance:listWorktrees', 'maintenance:diff', 'templates:list',
     'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention', 'secrets:status',
-    'app:reference', 'outputs:list', 'outputs:preview', 'outputs:deletePreview', 'outputs:versions', 'outputs:readSource', 'outputs:thumb', 'outputs:compare', 'outputs:notes', 'outputs:revisions', 'outputs:reviseOptions'
+    'app:reference', 'outputs:list', 'outputs:preview', 'outputs:deletePreview', 'outputs:versions', 'outputs:readSource', 'outputs:thumb', 'outputs:compare', 'outputs:notes', 'outputs:revisions', 'outputs:reviseOptions',
+    'schedules:list', 'schedules:history',
+    'org:evolveAnalyze', 'org:evolveHistory'
   ],
   operate: [
     'runs:start', 'runs:startQuick', 'runs:continue', 'runs:send', 'runs:switchModel', 'runs:interrupt', 'runs:stop', 'runs:resumeNow',
     'runs:cancelAutoResume', 'setup:start', 'setup:retro', 'mcp:startAssist', 'skills:startAssist', 'usage:refresh',
     'connections:test', 'models:refresh', 'mcp:test', 'mcpLibrary:test', 'capabilities:discover', 'capabilities:recommend',
     'capabilities:cancel', 'capabilities:review', 'skills:evaluate', 'draft:orgChart', 'window:openRun', 'outputs:noteAdd', 'outputs:noteUpdate',
-    'outputs:noteRemove', 'outputs:revise', 'outputs:watch', 'outputs:unwatch'
+    'outputs:noteRemove', 'outputs:revise', 'outputs:watch', 'outputs:unwatch',
+    // Desktop only in the handler (surface check, like runs:setPermissionMode): a schedule is standing consent to spend.
+    'schedules:runNow'
   ],
   decide: ['runs:decide', 'permissions:decideRequest', 'setup:decide', 'setup:answer', 'merges:decide', 'mcp:answerInstall'],
   configure: [
@@ -154,7 +161,11 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'maintenance:discardWorktree', 'maintenance:uninstallRepo', 'templates:saveFromProject', 'templates:remove',
     'templates:apply', 'knowledge:saveNode', 'knowledge:removeNode', 'knowledge:saveEdge', 'knowledge:removeEdge',
     'knowledge:clear', 'knowledge:dismissLink', 'kit:exportBundle', 'kit:applyBundle', 'teamFiles:status', 'secrets:init', 'secrets:reset',
-    'secrets:undelete', 'secrets:confirmDelete', 'outputs:forget', 'outputs:delete', 'outputs:saveEdit', 'outputs:restore', 'outputs:update'
+    'secrets:undelete', 'secrets:confirmDelete', 'outputs:forget', 'outputs:delete', 'outputs:saveEdit', 'outputs:restore', 'outputs:update',
+    // Desktop only in the handler (surface check), like runs:setPermissionMode.
+    'schedules:save', 'schedules:remove', 'schedules:setEnabled',
+    // Team evolution: served by dispatcher.ts for the window and the in-process CLI only; a socket client is refused.
+    'org:evolveApply', 'org:evolveRollback', 'org:evolveAfterRun'
   ],
   desktop_only: [
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
@@ -162,7 +173,8 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'app:cliCommandStatus', 'app:installCliCommand', 'app:cancelCliInstall', 'app:removeOldCliShim', 'projects:parseRepoSource', 'projects:repoTools',
     'projects:cloneRepo', 'projects:cancelClone', 'projects:setFolderConfigTrust', 'teamFiles:approve', 'teamFiles:reject',
     'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit',
-    'outputs:open', 'outputs:reveal', 'outputs:saveAs', 'outputs:saveImage'
+    'outputs:open', 'outputs:reveal', 'outputs:saveAs', 'outputs:saveImage',
+    'updates:get', 'updates:check', 'updates:download', 'updates:install', 'updates:openReleasePage'
   ]
 }
 
@@ -181,7 +193,9 @@ const PUSH_TABLE: Readonly<Record<string, Omit<PushChannelEntry, 'direction'>>> 
   [IPC.menuAction]: { delivery: 'desktop_only', source: 'appMenu.ts (application menu item click)' },
   [IPC.projectsCloneProgress]: { delivery: 'desktop_only', source: 'ipc.ts registerRepoIpc (progress of a clone the window started)' },
   [IPC.appNavigate]: { delivery: 'desktop_only', source: 'RunManager open_in_app -> SelfKnowledgeHooks.navigate -> DesktopHooks.navigate (index.ts, the live main window; never on the bus, never a socket)' },
-  [TEAM_FILES_IPC.teamFilesChanged]: { delivery: 'desktop_only', source: 'host/bootstrap.ts TeamFilesService broadcastStatus -> DesktopHooks.teamFilesChanged (index.ts, every window; never on the bus, never a socket)' }
+  [TEAM_FILES_IPC.teamFilesChanged]: { delivery: 'desktop_only', source: 'host/bootstrap.ts TeamFilesService broadcastStatus -> DesktopHooks.teamFilesChanged (index.ts, every window; never on the bus, never a socket)' },
+  [SCHEDULES_IPC.schedulesChanged]: { delivery: 'desktop_only', source: 'schedules/service.ts changed event -> index.ts (every window; never on the bus, never a socket)' },
+  [UPDATES_IPC.updatesChanged]: { delivery: 'desktop_only', source: 'updater.ts UpdateController emit -> index.ts (every window; never on the bus, never a socket)' }
 }
 
 /** Where each request channel is handled today (ipc.ts register functions; HOST_IPC and host.* are Wave 1 / 2). */
@@ -227,6 +241,9 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
     TEAM_FILES_IPC.teamFilesStatus, TEAM_FILES_IPC.teamFilesListAttention, TEAM_FILES_IPC.teamFilesApprove, TEAM_FILES_IPC.teamFilesReject,
     TEAM_FILES_IPC.teamFilesUndo, TEAM_FILES_IPC.teamFilesCommit, TEAM_FILES_IPC.teamFilesEnable
   ],
+  'host dispatcher (evolve/service.ts; Pareto-ratchet team evolution)': [
+    EVOLVE_IPC.orgEvolveAnalyze, EVOLVE_IPC.orgEvolveHistory, EVOLVE_IPC.orgEvolveApply, EVOLVE_IPC.orgEvolveRollback, EVOLVE_AFTER_RUN_CHANNEL
+  ],
   'host dispatcher outputs handlers (host/outputsHandlers.ts)': [
     OUTPUTS_IPC.outputsList, OUTPUTS_IPC.outputsPreview, OUTPUTS_IPC.outputsForget, OUTPUTS_IPC.outputsDelete, OUTPUTS_IPC.outputsDeletePreview,
     OUTPUTS_IPC.outputsVersions, OUTPUTS_IPC.outputsReadSource, OUTPUTS_IPC.outputsThumb, OUTPUTS_IPC.outputsCompare, OUTPUTS_IPC.outputsNotes,
@@ -235,6 +252,13 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
     OUTPUTS_IPC.outputsRevise, OUTPUTS_IPC.outputsWatch, OUTPUTS_IPC.outputsUnwatch
   ],
   'outputsIpc.ts registerOutputsIpc (desktop-only; shell and save dialog)': [OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs, OUTPUTS_IPC.outputsSaveImage],
+  'ipc.ts registerUpdatesIpc (desktop-only; updater.ts)': [
+    UPDATES_IPC.updatesGet, UPDATES_IPC.updatesCheck, UPDATES_IPC.updatesDownload, UPDATES_IPC.updatesInstall, UPDATES_IPC.updatesOpenReleasePage
+  ],
+  'host dispatcher (SCHEDULES_IPC; schedules/service.ts, desktop surface only for writes and runNow)': [
+    SCHEDULES_IPC.schedulesList, SCHEDULES_IPC.schedulesHistory, SCHEDULES_IPC.schedulesSave, SCHEDULES_IPC.schedulesRemove,
+    SCHEDULES_IPC.schedulesSetEnabled, SCHEDULES_IPC.schedulesRunNow
+  ],
   'host dispatcher (HOST_IPC, socket only; skills/service.ts libraryAddFromBundle)': [HOST_IPC.skillLibraryAddFromBundle],
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],
   'host dispatcher (HOST_IPC, socket only; RunManager.findDecision, cli-spec Wave 3)': [HOST_IPC.runsFindDecision],

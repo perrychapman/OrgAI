@@ -12,10 +12,11 @@ import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HostOwnershipError, acquireHostOwnership } from '../main/host/ownership'
 import { readProcessTable } from '../main/host/shutdown'
+import { VITE_NODE_CLI } from '../main/host/testFixtures/viteNodeCli'
 import { INPROC_HARD_LIMIT_MESSAGE } from './inprocHost'
 
 const ROOT = resolve(__dirname, '..', '..')
-const VITE_NODE = join(ROOT, 'node_modules', 'vite-node', 'vite-node.mjs')
+const VITE_NODE = VITE_NODE_CLI
 const CONFIG = join(ROOT, 'vitest.config.ts')
 const FIXTURE = join(__dirname, 'testFixtures', 'inprocOwner.ts')
 

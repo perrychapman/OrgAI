@@ -50,6 +50,7 @@ function fakeCtx(state: TuiState = stateWith()) {
     switchRun: vi.fn(async () => {}),
     confirm: vi.fn(async () => true),
     openText: vi.fn(async () => {}),
+    setMode: vi.fn(async () => {}),
     quit: vi.fn()
   } satisfies SlashContext
   return { ctx, session: session as unknown as Record<string, ReturnType<typeof vi.fn>> }

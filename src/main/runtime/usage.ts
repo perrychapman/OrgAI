@@ -217,6 +217,101 @@ export function mergeUsage(prev: UsageStatus | null, report: UsageStatus): Usage
   return merged
 }
 
+/** Reset times of one window period differ by rounding and clock skew (ISO microseconds vs epoch seconds) by far less than this. */
+const SAME_PERIOD_TOLERANCE_MS = 2 * 60_000
+
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || !a || !b) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  const ka = Object.keys(a).filter((k) => (a as Record<string, unknown>)[k] !== undefined)
+  const kb = Object.keys(b).filter((k) => (b as Record<string, unknown>)[k] !== undefined)
+  if (ka.length !== kb.length) return false
+  return ka.every((k) => sameJson((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
+}
+
+/** One window of the same name: the higher figure inside a period, the newer period's figure across a reset. */
+function reconcileWindow(p: RateLimitWindow, n: RateLimitWindow, now: number): RateLimitWindow {
+  if (p.resetsAt !== null && p.resetsAt <= now) return n // prev's period is over: the figure may drop
+  if (p.resetsAt !== null && n.resetsAt !== null) {
+    if (n.resetsAt > p.resetsAt + SAME_PERIOD_TOLERANCE_MS) return n // a new period
+    if (n.resetsAt < p.resetsAt - SAME_PERIOD_TOLERANCE_MS) return p // a stale snapshot
+  }
+  const utilization = p.utilization === null ? n.utilization : n.utilization === null ? p.utilization : Math.max(p.utilization, n.utilization)
+  const resetsAt = p.resetsAt ?? n.resetsAt
+  return p.utilization === utilization && p.resetsAt === resetsAt ? p : { utilization, resetsAt }
+}
+
+/**
+ * Fold a Claude usage snapshot (any live session's, or a probe's) onto the newest status known, so the sidebar meter
+ * holds steady when several sessions report out of order or in different units (poll: integer percent; events: 0.1
+ * steps). Per window, inside one period utilization never goes down; a later reset time starts a new period (the
+ * figure may drop); an earlier one is a stale snapshot and loses. Windows only prev has stay until their reset has
+ * passed. Request state (status, limitedWindow, limitedUntil, overageInUse) follows the newer snapshot by updatedAt,
+ * and a limit clears once limitedUntil has passed. API-key reports pass through. Idempotent, and returns prev itself
+ * when nothing changed.
+ */
+export function reconcileUsage(prev: UsageStatus | null, next: UsageStatus): UsageStatus {
+  if (!prev || next.authMode === 'apiKey' || prev.authMode === 'apiKey') return next
+  const updatedAt = Math.max(prev.updatedAt, next.updatedAt)
+  const now = next.updatedAt
+  const result: UsageStatus = { ...next, updatedAt }
+  delete result.status
+  delete result.limitedWindow
+  delete result.limitedUntil
+  delete result.overageInUse
+  if (result.subscriptionType === null) result.subscriptionType = prev.subscriptionType
+
+  if (!next.available && prev.available) {
+    result.available = true
+    result.windows = prev.windows
+    if (prev.modelWindows) result.modelWindows = prev.modelWindows
+    else delete result.modelWindows
+  } else if (next.available) {
+    const windows: UsageStatus['windows'] = {}
+    for (const k of Object.keys({ ...prev.windows, ...next.windows }) as WindowKey[]) {
+      const p = prev.windows[k]
+      const n = next.windows[k]
+      if (p && n) windows[k] = reconcileWindow(p, n, now)
+      else if (n) windows[k] = n
+      else if (p && (p.resetsAt === null || p.resetsAt > now)) windows[k] = p
+    }
+    result.windows = windows
+    const byModel = new Map<string, ModelRateLimitWindow>()
+    for (const m of next.modelWindows ?? []) byModel.set(m.model, m)
+    const models: ModelRateLimitWindow[] = []
+    for (const m of next.modelWindows ?? []) {
+      const p = (prev.modelWindows ?? []).find((x) => x.model === m.model)
+      models.push(p ? { model: m.model, ...reconcileWindow(p, m, now) } : m)
+    }
+    for (const p of prev.modelWindows ?? []) {
+      if (!byModel.has(p.model) && (p.resetsAt === null || p.resetsAt > now)) models.push(p)
+    }
+    if (models.length) result.modelWindows = models
+    else delete result.modelWindows
+  }
+
+  const take = (s: UsageStatus): void => {
+    if (s.status !== undefined) result.status = s.status
+    if (s.limitedWindow !== undefined) result.limitedWindow = s.limitedWindow
+    if (s.limitedUntil !== undefined) result.limitedUntil = s.limitedUntil
+    if (s.overageInUse !== undefined) result.overageInUse = s.overageInUse
+  }
+  if (next.updatedAt >= prev.updatedAt) {
+    if (next.status !== undefined) take(next)
+    else {
+      take(prev) // a report without request state (a poll) keeps the last known one
+      if (next.overageInUse !== undefined) result.overageInUse = next.overageInUse
+    }
+  } else take(prev)
+  if (result.limitedUntil !== undefined && result.limitedUntil <= updatedAt) {
+    delete result.limitedUntil
+    delete result.limitedWindow
+    if (result.status === 'rejected') result.status = 'allowed'
+  }
+  return sameJson(result, prev) ? prev : result
+}
+
 /** Has a run used at least `cap` percentage points of the window since it started? Off when cap is unset. */
 export function windowShareExceeded(startUtil: number | null | undefined, nowUtil: number | null | undefined, cap: number | undefined): boolean {
   if (cap === undefined || !Number.isFinite(cap) || cap <= 0) return false

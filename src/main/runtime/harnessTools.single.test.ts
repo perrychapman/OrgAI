@@ -33,7 +33,7 @@ describe('harnessToolsFor: single-agent runs and engagements', () => {
   it('a single-agent run gets exactly the single set plus the native skill tools', () => {
     const ctx = fakeCtx({ run: runSummary({ kind: 'work', team: 'single' }) })
     // engagement_context stays (a code project's context notes); the plan tools come without `staff` (no reports to staff).
-    const base = [...SINGLE_TOOL_DEFS.map((d) => d.name), 'app_reference'].sort()
+    const base = [...SINGLE_TOOL_DEFS.map((d) => d.name), 'app_reference', 'list_schedules', 'propose_schedule'].sort()
     expect(names(harnessToolsFor(ctx, {}, { nativeSkills: true }))).toEqual(base)
     // The skill tools are there even with no skills at start (a skill approved mid-run is usable at once).
     expect(names(harnessToolsFor(ctx))).toEqual([...base, 'list_skills', 'load_skill'].sort())

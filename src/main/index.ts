@@ -5,13 +5,17 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, FocusRunTarget, RunEvent } from '@shared/types'
-import { IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
+import { IPC, SCHEDULES_IPC, TEAM_FILES_IPC, UPDATES_IPC, runWindowHash } from '@shared/types'
+import { createDesktopUpdates } from './updaterRuntime'
+import type { UpdateController } from './updater'
+import { Scheduler, testTickMs } from './schedules/scheduler'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
 import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
 import { installAppMenu, menuActionSender, navigateSender } from './appMenu'
 import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
+import { APP_USER_MODEL_ID, appDetailsFor, registerWindowsAppIdentity, resolveIconPath, shouldRegisterIdentity, stableIconPath } from './appIdentity'
 import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
 import { installElectronLogHooks } from './electronLogHooks'
 import { acquireHostOwnership, HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
@@ -81,6 +85,8 @@ function canonicalUserData(dir: string): string {
 /** The booted host (stores, services, runs, the event bus; host/bootstrap.ts); set once whenReady has built it. */
 let host: OrgAIHost | undefined
 let notifier: Notifier | undefined
+/** Schedules' timer (schedules/scheduler.ts): the desktop shell only; stopped as soon as a quit drains the host. */
+let scheduler: Scheduler | undefined
 /** This process's ownership of <dataDir>/run (cli-spec 3.2(2)); released by the shutdown and on process exit. */
 let ownership: HostOwnership | undefined
 /** True once whenReady has built the stores and the first window: the window handlers below wait for it. */
@@ -91,6 +97,8 @@ let quitting = false
 let cliInstallForStatus: CliInstallService | undefined
 /** Clones started from a window (desktop only); cancelled when the quit goes ahead. */
 let repoClone: RepoCloneService | undefined
+/** The desktop updater, once booted (before-quit cancels its install when the shutdown fails). */
+let updatesController: UpdateController | undefined
 
 // The app is a host of its own: no socket, no terminal clients, no headless mode (standalone spec 5.1).
 const hostKind = 'desktop' as const
@@ -154,7 +162,23 @@ if (gotLock && !folderRefused) {
   // On macOS the store is read in a child process (it can stall) and applied when that finishes; the quit below kills it.
   trustSystemCertificates()
 }
-if (process.platform === 'win32') app.setAppUserModelId('com.orgai.app')
+if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID)
+/** On-disk icon (ico on Windows, png elsewhere): build/ unpackaged, the resources root packaged (extraResources). */
+function appIconPath(): string | undefined {
+  return resolveIconPath({ platform: process.platform, isPackaged: app.isPackaged, appPath: app.getAppPath(), resourcesPath: process.resourcesPath })
+}
+// Windows toasts without an installer shortcut (dev, portable) take their name and logo from this registry entry. Not in
+// e2e / CI (ORGAI_DATA_DIR set) or the mock adapter (ORGAI_MOCK=1), so those registries stay untouched.
+// Only unpackaged and portable runs write it: the installed build's shortcut carries the id and nothing would remove the key.
+// The portable build runs from a temp folder deleted on exit, so its icon is copied under userData first.
+const portableFile = process.env.PORTABLE_EXECUTABLE_FILE?.trim() || undefined
+function identityIconPath(): string | undefined {
+  const p = appIconPath()
+  return portableFile ? stableIconPath({ iconPath: p, userDataDir: app.getPath('userData'), warn: (m) => log.warn(m) }) : p
+}
+if (gotLock && !folderRefused && process.platform === 'win32' && shouldRegisterIdentity({ isPackaged: app.isPackaged })) {
+  void registerWindowsAppIdentity({ iconPath: identityIconPath(), warn: (m) => log.warn(m) })
+}
 
 /** Native menus, scrollbars, dialogs and prefers-color-scheme in the renderer follow AppSettings.appearance.theme. */
 function applyTheme(s: AppSettings): void {
@@ -285,6 +309,16 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
       contextIsolation: true
     }
   })
+
+  if (process.platform === 'win32') {
+    // Taskbar hover / jump list name and icon (otherwise the executable's: "Electron" when unpackaged). Packaged builds keep
+    // the same appId as the installer shortcut, so pinning still groups.
+    try {
+      win.setAppDetails(appDetailsFor({ isPackaged: app.isPackaged, execPath: process.execPath, appPath: app.getAppPath(), iconPath: identityIconPath(), portableFile }))
+    } catch (err) {
+      log.warn(`Could not set the taskbar app details: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
 
   windowScopes.set(win, scope)
   // The web contents id is read now: it is gone when 'closed' fires. A closed window's output watches end with it.
@@ -422,6 +456,13 @@ app.whenReady().then(async () => {
         for (const win of BrowserWindow.getAllWindows()) {
           if (!win.isDestroyed()) win.webContents.send(TEAM_FILES_IPC.teamFilesChanged, status)
         }
+      },
+      // Schedules: every window hears about a change; the timer re-plans.
+      schedulesChanged: (event) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(SCHEDULES_IPC.schedulesChanged, event)
+        }
+        scheduler?.poke()
       }
     },
     mock: process.env.ORGAI_MOCK === '1',
@@ -429,12 +470,21 @@ app.whenReady().then(async () => {
     // anywhere (Quit, a last window on Windows / Linux, idle exit, a signal) only leaves once it got here.
     // Repository clones the windows started are cancelled as soon as the drain starts (round 6 item 9).
     quiesce: () => {
+      // A draining host starts no scheduled run.
+      scheduler?.stop()
       repoClone?.dispose()
       // A running install holds a mutation lease; cancel it now so the drain does not wait for npm.
       cliInstallForStatus?.cancel()
     },
     // At the hard limit (writers still in flight after 60 s, descendants killed): leave now; the exit hook releases.
-    exitAtHardLimit: () => process.exit(0),
+    exitAtHardLimit: () => {
+      try {
+        updatesController?.cancelInstallOnQuit()
+      } catch {
+        /* exiting anyway */
+      }
+      process.exit(0)
+    },
     // Chromium's own helpers (GPU, renderers, network and utility services) are not the host's work: killing them
     // only makes Chromium relaunch them. app.getAppMetrics lists them, re-read on every pass of the tree kill.
     shutdownExcludePids: () => app.getAppMetrics().map((m) => m.pid),
@@ -471,10 +521,31 @@ app.whenReady().then(async () => {
     projectName: (projectId) => h.projectOrHarness(projectId)?.name,
     windows: liveWindowScopes,
     // AppSettings.notifications is the single source of truth, read fresh at every decision.
-    enabled: () => settings.get().notifications !== false
+    enabled: () => settings.get().notifications !== false,
+    iconPath: () => (process.platform === 'linux' ? appIconPath() : undefined)
   })
   // Open windows keep the desktop host busy (cli-spec 3.2(4) interactiveClients).
   h.activity.addSource('interactiveClients', () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length)
+  // Schedules (docs/design/schedules.md 4): one timer, in this process only (the single-instance lock is the "one
+  // scheduler" guard; the orgai CLI never starts one). Started after the stores and RunManager (the boot above).
+  const schedules = h.services.schedules
+  if (schedules) {
+    schedules.setNotify((n) => notifier?.notice(n))
+    const tick = testTickMs(process.env)
+    scheduler = new Scheduler({
+      service: schedules,
+      globallyPaused: () => settings.get().schedulesPaused === true,
+      ...(tick !== undefined ? { maxSleepMs: tick } : {}),
+      log: (m) => log.info(m)
+    })
+    // The global pause is read at every wake; a change re-plans at once.
+    settings.onChange(() => scheduler?.poke())
+    // A pending schedule keeps a background app alive (the user chose "Keep working in the background"): counted as a
+    // timer-like wait, never as a writer the quit drain settles. 0 once the scheduler stopped.
+    h.activity.addSource('pausedAutoResumes', () => (scheduler && !quitting ? schedules.pendingCount() : 0))
+    scheduler.start()
+    app.once('will-quit', () => scheduler?.stop())
+  }
   const cliInstall = buildCliInstall()
   cliInstallForStatus = cliInstall
   // An install still running when the app quits is stopped with it.
@@ -512,11 +583,40 @@ app.whenReady().then(async () => {
       if (ids.size) outputWatcher.checkProjects([...ids])
     })
   }
+  // Desktop updater (updater.ts, docs/agent-notes/updates.md): a dev or mock launch loads nothing and requests nothing.
+  // An accepted install quits through before-quit above (runs end as on Quit); the installer starts from 'quit'.
+  const updates = await createDesktopUpdates({
+    packaged: app.isPackaged,
+    platform: process.platform,
+    execPath: process.execPath,
+    env: process.env,
+    currentVersion: app.getVersion(),
+    autoCheck: () => settings.get().autoUpdateCheck !== false,
+    liveRunCount: () => h.runs.liveRunCount(),
+    quitting: () => quitting,
+    requestQuit: () => setImmediate(() => app.quit()),
+    openExternal: (url) => {
+      shell.openExternal(url).catch((e: Error) => log.warn(`Could not open the release page: ${e.message}`))
+    },
+    emit: (state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(UPDATES_IPC.updatesChanged, state)
+      }
+    },
+    log: { info: (m) => log.info(m), warn: (m) => log.warn(m) }
+  })
+  settings.onChange(() => updates.settingsChanged())
+  updatesController = updates
+  // app.exit also emits 'quit': only a clean exit code installs (a failed shutdown cancels first, desktopQuit.ts).
+  app.on('quit', (_e, exitCode) => updates.onAppQuit(exitCode))
+  app.once('will-quit', () => updates.dispose())
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
-  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliInstall, repoClone: clones })
+  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliInstall, repoClone: clones, updates })
   installAppMenu(
-    menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
+    menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow()),
+    { checkForUpdates: () => void updates.check() }
   )
+  updates.start()
   createWindow()
   booted = true
   // SIGINT / SIGTERM (and SIGHUP) end the host through the same sequence as Quit (forced: runs end continuable).
@@ -564,6 +664,7 @@ app.on(
     reason: () => quitReason,
     stopCertRead: () => stopSystemCertRead(),
     stopCliInstall: () => cliInstallForStatus?.cancel(),
+    cancelUpdateInstall: () => updatesController?.cancelInstallOnQuit(),
     // Never strand the app: the exit hook releases ownership.
     exit: (code) => app.exit(code),
     warn: (m) => log.warn(m)
@@ -574,12 +675,12 @@ app.on(
  * The last window closed on Windows or Linux while runs are working without the user (review H3): ask before going
  * to the background. Cancel (or Esc) brings a window back.
  */
-async function askClose(workingRuns: number): Promise<void> {
+async function askClose(workingRuns: number, pendingSchedules = 0): Promise<void> {
   if (closePromptOpen) return
   closePromptOpen = true
   let choice: ClosePromptChoice = 'cancel'
   try {
-    const { message, detail } = closePromptText(workingRuns)
+    const { message, detail } = closePromptText(workingRuns, pendingSchedules)
     const { response } = await dialog.showMessageBox({
       type: 'question',
       buttons: [...CLOSE_PROMPT_BUTTONS],
@@ -615,9 +716,10 @@ app.on('window-all-closed', () => {
   // Nothing quits before boot.
   if (!booted) return
   const workingRuns = host ? host.runs.workingRunCount() : 0
-  const action = windowAllClosedAction({ platform: process.platform, quitting, workingRuns })
+  const pendingSchedules = host?.settings.get().schedulesPaused ? 0 : (host?.services.schedules?.pendingCount() ?? 0)
+  const action = windowAllClosedAction({ platform: process.platform, quitting, workingRuns, pendingSchedules })
   if (action === 'quit') {
     quitReason = 'window-closed'
     app.quit()
-  } else if (action === 'ask') void askClose(workingRuns)
+  } else if (action === 'ask') void askClose(workingRuns, pendingSchedules)
 })

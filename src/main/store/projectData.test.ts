@@ -30,6 +30,7 @@ import {
   removeNote,
   removeProjectData,
   removeSkillEvaluation,
+  removeEvolutionLedger,
   saveNote,
   NOTE_STALE_MESSAGE,
   skillEvaluationFile,
@@ -293,6 +294,15 @@ describe('file helpers for project removal', () => {
     writeFileSync(join(dir, 'skill-evaluations', 'p1.json'), '{}')
     expect(removeSkillEvaluation(dir, 'p1')).toBe(true)
     expect(removeSkillEvaluation(dir, 'p1')).toBe(false)
+    mkdirSync(join(dir, 'evolution'), { recursive: true })
+    writeFileSync(join(dir, 'evolution', 'p1.json'), '{}')
+    expect(removeEvolutionLedger(dir, 'p1')).toBe(true)
+    expect(removeEvolutionLedger(dir, 'p1')).toBe(false)
+    expect(removeEvolutionLedger(dir, '../x')).toBe(false)
+    writeFileSync(join(dir, 'evolution', 'p1.json.corrupt-123'), 'x')
+    writeFileSync(join(dir, 'evolution', 'p10.json'), '{}')
+    expect(removeEvolutionLedger(dir, 'p1')).toBe(true)
+    expect(readdirSync(join(dir, 'evolution'))).toEqual(['p10.json'])
     expect(removeSkillEvaluation(dir, '../x')).toBe(false)
     expect(skillEvaluationFile(dir, 'p1')).toBe(join(dir, 'skill-evaluations', 'p1.json'))
     expect(teamReviewFile(dir, 'p1')).toBe(join(dir, 'team-reviews', 'p1.json'))

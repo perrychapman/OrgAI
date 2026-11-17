@@ -43,10 +43,19 @@ import { claudeToolSizes, codexToolSizes, measureCase, sumChars, type MeasureSlu
  *   writing report     Claude  5,981 ->    442   Codex  6,484 ->    921 (request_permission_rules and the skill tools)
  *   single assistant   Claude 10,257 ->  9,441   Codex 10,814 ->  9,998 (engagement_context kept for the context notes)
  */
+/*
+ * Schedules (docs/design/schedules.md 4): list_schedules (246 chars) and propose_schedule (2,159 chars, a compact flat
+ * schema with five actions, the target, the four timing kinds and the optional run settings) are offered to the root of
+ * work and single runs so a project run can schedule itself; reports get neither. +2,405 chars on both adapters:
+ *   team root          Claude 17,657 -> 20,066   Codex 19,950 -> 22,367
+ *   single assistant   Claude  9,441 -> 11,846   Codex  9,998 -> 12,415
+ *   writing report     unchanged
+ * Bounds rose to the next 50 above the new figure.
+ */
 const BUDGET: Record<string, { claude: number; codex: number }> = {
-  orchestrator: { claude: 17_800, codex: 20_050 },
+  orchestrator: { claude: 20_100, codex: 22_400 },
   implementer: { claude: 500, codex: 1_000 },
-  single: { claude: 9_500, codex: 10_050 }
+  single: { claude: 11_850, codex: 12_450 }
 }
 
 const CASES: { label: string; slug: MeasureSlug; opts: { isolation: boolean; arch: boolean } }[] = [

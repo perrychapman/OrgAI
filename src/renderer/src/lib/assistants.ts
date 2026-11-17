@@ -154,6 +154,16 @@ export function runLayoutFor(summary: Pick<RunSummary, 'kind' | 'quick'> & Parti
 }
 
 /**
+ * Whether the Live view shows the run side panel: only while the stage is the org chart (the canvas layout, the Pocket
+ * Office included), for every run kind. In the conversation layout there is no panel, rail or resize handle: its
+ * Transcript tab only repeated the stage, so the other tabs sit in a strip above the conversation instead
+ * (RunStageTabs). On the canvas the panel stays, it is where a selected agent's transcript is read.
+ */
+export function hasRunSidePanel(layout: RunLayout): boolean {
+  return layout === 'canvas'
+}
+
+/**
  * Whether "Save as project" is offered at all: only while the run still belongs to the Chat project. After run.moved
  * the run lives in a real project and the action is gone (its quick info stays on the summary).
  */

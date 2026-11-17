@@ -39,6 +39,48 @@
 .sidebar-footer {
   container: sidebar-footer / inline-size;
 }
+
+/*
+ * Plan figures in the account row ("5h 22%  7d 18%"): never clipped (the bar beside them yields first), tabular
+ * numerals and a fixed value width so a number changing width does not move its neighbour. A figure at 80 percent or
+ * over, or limited, turns semibold and takes the state colour; the dot, the popover and the accessible name carry
+ * the same state in words.
+ */
+.account-label.account-figures {
+  display: inline-flex;
+  flex: none;
+  align-items: baseline;
+  gap: var(--space-2);
+  overflow: visible;
+  font-variant-numeric: tabular-nums;
+}
+.account-fig {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+.account-fig-name {
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+.account-fig-value {
+  min-width: 4ch;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  text-align: right;
+  color: var(--text-primary);
+}
+.account-fig[data-level='warn'] .account-fig-value,
+.account-fig[data-level='danger'] .account-fig-value {
+  font-weight: var(--weight-semibold);
+}
+.account-fig[data-level='warn'] .account-fig-value {
+  color: var(--warning);
+}
+.account-fig[data-level='danger'] .account-fig-value {
+  color: var(--danger);
+}
 @container sidebar-footer (max-width: 240px) {
   .account-name {
     position: absolute;
@@ -175,6 +217,8 @@
   flex: 1 1 0;
   min-height: 0;
   overflow: auto;
+  /* A filter change swaps the panels; anchoring would then slide the page to a different place. Keep the offset. */
+  overflow-anchor: none;
   /* The sticky bar must never cover a focused element (its height is measured by UsageView). */
   scroll-padding-top: var(--usage-filters-h, 0px);
 }
@@ -215,8 +259,8 @@
 .usage-header {
   display: flex;
   flex-direction: column;
-  gap: var(--space-0h);
-  padding-top: var(--space-4);
+  gap: 0;
+  padding-top: var(--space-3);
 }
 .usage-scopeline {
   margin: 0;
@@ -239,19 +283,62 @@
   color: var(--danger-text);
 }
 
-/* Filter bar: sticky, hairline, one row at 1600 and two at 1024 */
-.usage-filters {
+/*
+ * Sticky block: the filter bar plus the chips line (only while a filter is on). Opaque, and every panel below isolates
+ * its own stacking (sticky table heads, chart marks), so nothing draws over the bar (UX walkthrough finding 1).
+ */
+.usage-sticky {
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
   margin-inline: calc(-1 * var(--usage-pad));
-  padding: var(--space-2) var(--usage-pad);
   background: var(--surface-0);
-  border-bottom: 1px solid var(--border-subtle);
+}
+/* The hairline under the bar appears only once the page has scrolled (motion plan M12; opacity only). */
+.usage-sticky::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 1px;
+  background: var(--border-subtle);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+  pointer-events: none;
+}
+.usage-sticky[data-scrolled='true']::after {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-sticky::after {
+    transition: none;
+  }
+}
+:root[data-reduce-motion='on'] .usage-sticky::after {
+  transition: none;
+}
+/* The always-present second line: date and run count, then the chips; a fixed minimum so a first chip shifts nothing. */
+.usage-scope-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-2) var(--space-4);
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  /* One chips line (chip plus the small "Clear all filters" button) measured at 38 px, so the first chip moves nothing. */
+  min-block-size: 38px;
+  padding: 0 var(--usage-pad) var(--space-2);
+}
+.usage-scope-row > .usage-period-label {
+  margin: 0;
+}
+.usage-filters {
+  padding: var(--space-2) var(--usage-pad);
+  background: var(--surface-0);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.usage-period-runs {
+  color: var(--text-tertiary);
 }
 /* One wrapping row at 1600 px, two at 1024 px: the rows only group the DOM. */
 .usage-filters-row {
@@ -268,13 +355,22 @@
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
 }
+/* From and to sit on one row (the .select base is width 100%, which stacked them); they wrap only when truly cramped. */
 .usage-months {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
   flex-wrap: wrap;
 }
-.usage-months .select,
+.usage-months .usage-field-label {
+  white-space: nowrap;
+}
+.usage-months .select {
+  width: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
 .usage-field .select {
   min-width: 0;
   max-width: 100%;
@@ -430,47 +526,7 @@
   outline-offset: 1px;
 }
 
-/* Summary strip: instruments are boxed like the Dashboard's */
-.usage-summary-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.usage-summary {
-  margin: 0;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-@container usage (max-width: 839px) {
-  .usage-summary {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-@container usage (max-width: 559px) {
-  .usage-summary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-.usage-summary-item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-0h);
-  min-width: 0;
-  padding: var(--space-3);
-  background: var(--surface-1);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-}
-.usage-summary-label {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-0h) var(--space-1);
-  color: var(--text-secondary);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-}
+/* KPI band: usage-kpi.css. The model chip name and the text link are shared. */
 .usage-summary-model {
   max-width: 100%;
   overflow: hidden;
@@ -480,24 +536,6 @@
   border-radius: var(--radius-sm);
   background: var(--surface-3);
   color: var(--text-primary);
-}
-.usage-summary-value {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: var(--text-title);
-  line-height: var(--text-title-lh);
-  font-weight: var(--weight-semibold);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-.usage-summary-sub {
-  margin: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0 var(--space-1);
-  color: var(--text-secondary);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
 }
 .usage-text-link {
   padding: 0;
@@ -527,19 +565,74 @@
 
 /* Panel shell the panel components follow: section.usage-panel > div.usage-panel-head + content (+ table details). The
    run Usage tab also has a .usage-panel (usage-tab.css); inside the page those rules are reset. */
+/*
+ * Chrome hierarchy (dashboard rework): only the hero pair (spend chart, Where it went) are cards; every other section is
+ * open on the page under a hairline, so nothing is box-in-box. `isolation` keeps each panel's sticky heads and marks
+ * inside its own stacking context, under the sticky filter bar.
+ */
 .usage-view .usage-panel {
   container: none;
+  isolation: isolate;
   overflow: visible;
-  padding: var(--space-4);
+  padding: var(--space-4) 0 0;
   gap: var(--space-3);
   display: flex;
   flex-direction: column;
   min-width: 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  --usage-tbl-bg: var(--surface-0);
+}
+.usage-view .usage-hero > .usage-panel {
+  padding: var(--space-4);
   background: var(--surface-1);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
+  --usage-tbl-bg: var(--surface-1);
+}
+
+/* Hero: the spend chart beside the tabbed breakdown from 1100 px, stacked below. */
+.usage-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: stretch;
+}
+@container usage (min-width: 1100px) {
+  .usage-hero {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+  /* Equal heights by default: the breakdown's own height does not size the row, it fills the chart's. */
+  .usage-hero > .usage-where-card {
+    contain: size;
+    min-block-size: 0;
+  }
+  /* Once the breakdown is expanded (all rows, or its table) it takes the height it needs and the chart card keeps
+     its own instead of stretching to match, so no empty band opens under the axis. */
+  .usage-hero:has(.usage-where-card details[open], .usage-where-card .uc-more[aria-expanded='true'], .usage-where-card .usage-table-controlled:not([hidden])) {
+    align-items: start;
+  }
+  .usage-hero:has(.usage-where-card details[open], .usage-where-card .uc-more[aria-expanded='true'], .usage-where-card .usage-table-controlled:not([hidden])) > .usage-where-card {
+    contain: none;
+  }
+}
+
+/* Runs worth a look beside Cost by tier from 1100 px; one column below. */
+.usage-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0 var(--space-6);
+  align-items: start;
+}
+/* Side by side only where Runs worth a look keeps room for its columns (the walk found it clipped at 805 px). */
+@container usage (min-width: 1500px) {
+  .usage-pair {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
 }
 .usage-panel-head {
   display: flex;
@@ -603,18 +696,6 @@
   text-align: start;
 }
 
-/* Where it went: three panels in a row from about 1100 px, stacked below */
-.usage-where {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-4);
-}
-@container usage (min-width: 1100px) {
-  .usage-where {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
 /* Footer */
 .usage-footer {
   display: flex;
@@ -668,13 +749,21 @@
   border-radius: var(--radius-lg);
 }
 .usage-sk-summary {
-  min-height: 104px;
+  min-height: 96px;
 }
-.usage-sk-spend {
-  min-height: 300px;
-}
+.usage-sk-spend,
 .usage-sk-where {
-  min-height: 320px;
+  min-height: 340px;
+}
+.usage-sk-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+@container usage (min-width: 1100px) {
+  .usage-sk-hero {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
 }
 .usage-sk-eff {
   min-height: 220px;

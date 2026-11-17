@@ -249,6 +249,15 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   only an existing real directory (lstat) that is a project folder, a project's allowed directory or inside the data
   dir (lexical and real spellings), at most 1,024 chars, no hidden characters, absolute, no UNC/device; refusals come
   back as the message string, never a throw. Unit-tested; symlink/junction refusal and macOS spellings not live.
+- Sidebar plan meter stability (2026-11-12): every Claude `usage.status` goes through `UsageMonitor.gate()` in
+  `bootstrap.ts` `emitRun` (late-bound `usageGate`), which runs `reconcileUsage(prev, next)` (`runtime/usage.ts`, pure):
+  inside one window period (reset times within 2 min) utilization never drops, a later reset is a new period (may drop),
+  an earlier one is stale, prev-only windows live until their reset, request state follows the newer `updatedAt`, a limit
+  clears after `limitedUntil`, apiKey reports pass through, idempotent. An unchanged status is not rebroadcast within 60 s.
+  While a run is live `start()` also ticks a 60 s timer that runs only the keyed `'proxies'` probe (gate: `liveRuns() > 0`,
+  not per proxy connection; shares `runExtra`'s one-in-flight; CLI host has `usageMonitor: false`, so no timer there).
+  Checked by `usageReconcile.test.ts` and `usageMonitor.test.ts` (fake timers, fake adapters). Live Claude/proxy
+  behaviour is unverified; the renderer's `putUsage` still replaces wholesale but now only sees reconciled values.
 - Usage and pricing (#10): `src/main/runtime/pricing.ts` (pure) prices per token (`ModelPrice`, each price finite,
   >= 0 and at most `MODEL_PRICE_MAX_PER_TOKEN` 0.01). Per model: override (`AppSettings.modelPrices`, at most 200,
   connection-scoped beats global) > provider-reported cost > 0 > proxy (LiteLLM `RunConnection.pricing` /

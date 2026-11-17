@@ -1,13 +1,18 @@
 /* Outputs 2: versions, tabs, banners, the Larger view shell, delete and rename (docs/design/outputs-2.md 7, 10, 12). Tokens only. */
 
+/* Title and extension badge on the left, the version on the right: one row. */
 .output-detail-head {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .output-version-row-head {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+}
+.output-detail-head > .output-version-row-head {
+  flex: none;
+  white-space: nowrap;
 }
 .output-version-select {
   max-width: 100%;
@@ -19,17 +24,21 @@
   color: var(--text-tertiary);
 }
 .output-detail-toolbar {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 .output-detail-tabs {
   min-width: 0;
 }
+/* The body takes the height the panel has left; the preview inside fills it (each preview sets its own fill rules). */
 .output-detail-body {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: var(--space-2);
   min-width: 0;
-  min-height: 0;
+  min-height: 240px;
+  overflow: auto;
 }
 .output-edit-reason {
   margin: 0;

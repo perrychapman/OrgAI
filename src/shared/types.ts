@@ -1895,6 +1895,8 @@ export interface NormalizedAppearanceSettings extends AppearanceSettings {
 
 /** Global defaults applied to new projects, plus app-wide auth. Persisted as settings.json in the data dir. */
 export interface AppSettings {
+  /** Global pause of Schedules (kill switch): while true nothing fires and due slots are recorded as skipped. */
+  schedulesPaused?: boolean
   defaultPermissionMode: PermissionMode
   /** undefined = no cap. */
   defaultMaxBudgetUsd?: number
@@ -1963,6 +1965,12 @@ export interface AppSettings {
    * decides to notify. Default true.
    */
   notifications?: boolean
+  /**
+   * Desktop updater (section "Desktop auto-update"): check for a new release shortly after launch and then every
+   * UPDATE_CHECK_INTERVAL_MS. Off = only a manual check. It never downloads or installs on its own. Default true;
+   * store/settings.ts always writes an explicit boolean, so treat a missing value as true.
+   */
+  autoUpdateCheck?: boolean
   /** Theme, accent, canvas and motion. Filled with defaults for settings saved before it existed. */
   appearance: AppearanceSettings
   /**
@@ -2201,7 +2209,7 @@ export interface SkillsProposalPayload {
   rationale: string
 }
 
-export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills' | 'appSettings'
+export type ProposalKind = 'architecture' | 'orgChart' | 'settings' | 'mcpServers' | 'skills' | 'appSettings' | 'schedules'
 
 interface ProposalBase {
   id: string
@@ -2236,6 +2244,7 @@ export type Proposal =
   | (ProposalBase & { kind: 'mcpServers'; payload: McpServersProposalPayload })
   | (ProposalBase & { kind: 'skills'; payload: SkillsProposalPayload })
   | (ProposalBase & { kind: 'appSettings'; payload: AppSettingsProposalPayload })
+  | (ProposalBase & { kind: 'schedules'; payload: SchedulesProposalPayload })
 
 /**
  * The user's answer to a proposal card (setup:decide). 'approve' applies it; 'revise' sends feedback and the agent may
@@ -3301,6 +3310,8 @@ export interface SwitchRunModelResult {
 }
 
 export interface RunSummary {
+  /** Main-owned: the schedule that started this run, and its name then (section "Schedules"). Continuations do not carry them. */
+  scheduleId?: string; scheduleName?: string
   /** Required-delegation outcome (delegation-enforcement spec 4.3). Set by RunManager once a ledger exists. */
   delegation?: { failed: number; corrected: number; nativeSpawns: number; rootVerdict?: DelegationVerdict; subtreeFailed?: boolean }
   /** Runtime actually used by this run, retained when selecting a different adapter for continuation. */
@@ -4049,7 +4060,14 @@ export const MENU_ACTIONS = [
   /** Help > "Ask OrgAI about itself…": opens Chat ready for a question about the app (section "Self-knowledge"). */
   'ask-about-orgai',
   /** View > Usage: the app-wide Usage page (docs/design/usage-app.md). No accelerator; always enabled. */
-  'show-usage'
+  'show-usage',
+  /** View > Schedules: the app-wide Schedules page (docs/design/schedules.md section 5). No accelerator; always enabled. */
+  'show-schedules',
+  /**
+   * "Check for Updates…" (macOS app menu; Help elsewhere): main starts updates:check itself, then sends this to the main
+   * window so the renderer shows the update status (App settings > About). Always enabled.
+   */
+  'check-for-updates'
 ] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
@@ -4352,6 +4370,14 @@ export interface StartRunInput {
   team?: RunTeam
   /** Headless exec overrides (cli-spec 6.2(1)). Honoured only from socket / inproc host clients; the desktop handler drops it. */
   overrides?: RunOverrides
+  /**
+   * Team evolution (EVOLVE_IPC): after this run ends, run the post-run ratchet (evaluate an active trial) and, when the
+   * waste score passes the threshold, apply a new generation. true = the default strategy. Work runs only; desktop and
+   * inproc clients only.
+   */
+  evolve?: boolean | EvolveStrategy
+  /** With `evolve` only: runs a trial generation applied by the post-run pass is measured over (1..10, default 3). */
+  evolveWindowRuns?: number
   /**
    * Desktop only (socket / inproc clients are refused with bad_request). The root agent's model for this run and its
    * continuations; the project's defaults are untouched. Reports keep their own model, except roles set to 'inherit':
@@ -6785,6 +6811,12 @@ export interface DaemonInfo {
    * connect to it. Absent = listening.
    */
   listening?: false
+  /**
+   * Only with `listening: false` on an 'inproc' host: `endpoint` is bound by a liveness-only listener that accepts and
+   * closes every connection (no daemon.secret, no handshake). A dead endpoint then proves a crashed host whose pid
+   * could not be confirmed is gone (ownership.ts). Absent on older records: they keep the strict rule.
+   */
+  livenessProbe?: true
   state: HostState
   /** Epoch ms. */
   startedAt: number
@@ -8231,7 +8263,8 @@ export const PROPOSE_APP_SETTINGS_TOOL = 'propose_app_settings'
 /** Harness tool: propose a stored project's settings (Proposal kind 'settings' with `target`). Chat only. */
 export const PROPOSE_PROJECT_SETTINGS_TOOL = 'propose_project_settings'
 /** The self-knowledge and self-configuration tools Chat (quick runs) gets, in addition to list_projects. */
-export const CHAT_CONFIG_TOOLS = [APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL] as const
+// The two schedule tools are literals: LIST_SCHEDULES_TOOL / PROPOSE_SCHEDULE_TOOL are declared at the end of the file (a const cannot be read before it is initialised).
+export const CHAT_CONFIG_TOOLS = [APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, 'list_schedules', 'propose_schedule'] as const
 
 /** app_reference / app:reference actions. 'status' is answered only on Chat, MCP and Skill assistant runs and over IPC. */
 export const APP_REFERENCE_ACTIONS = ['search', 'read', 'locate', 'status'] as const
@@ -9181,4 +9214,612 @@ export interface OrgAIApi {
     saveImage(input: OutputSaveImageInput): Promise<OutputSaveAsResult>
   }
   onOutputsChanged(cb: (event: OutputsChangedEvent) => void): () => void
+}
+
+// ---- Schedules (docs/design/schedules.md; pure helpers in ./schedule.ts) ----
+
+/** When a schedule fires. All times are the system's local time. */
+export type ScheduleTiming =
+  /** One run at a wall-clock instant (epoch ms). The schedule disables itself after firing or being missed. */
+  | { kind: 'once'; at: number }
+  /** Every n minutes from `anchor` (epoch ms, set by main at save). SCHEDULE_MIN_INTERVAL_MINUTES..SCHEDULE_MAX_INTERVAL_MINUTES. */
+  | { kind: 'interval'; everyMinutes: number; anchor?: number }
+  /** Local time 'HH:MM' on the given weekdays (0 = Sunday; absent or empty = every day). */
+  | { kind: 'daily'; time: string; days?: number[] }
+  /** 5-field cron in local time (minute hour day-of-month month day-of-week; lists, ranges and steps; names are not supported). */
+  | { kind: 'cron'; expression: string }
+
+export type ScheduleTarget =
+  /** A work run of a stored project; `team: 'single'` runs one assistant instead of the org chart (StartRunInput.team). */
+  | { kind: 'team'; projectId: string; team?: RunTeam }
+  /** A Chat (quick) run. No folder = a scratch folder per run. `allowEdits` as QuickRunInput. */
+  | { kind: 'ask'; folder?: string; allowEdits?: boolean }
+
+export type ScheduleMissedPolicy = 'run-once' | 'skip'
+export type ScheduleState = 'active' | 'paused' | 'error' | 'done'
+
+export interface Schedule {
+  /** 'sch_<hex>', main-owned. */
+  id: string
+  /** 1..SCHEDULE_NAME_MAX_CHARS, no hidden characters. */
+  name: string
+  /** 1..SCHEDULE_PROMPT_MAX_CHARS. */
+  prompt: string
+  target: ScheduleTarget
+  timing: ScheduleTiming
+  enabled: boolean
+  /** Default 'run-once'. */
+  missed: ScheduleMissedPolicy
+  /** Root model for each run (StartRunInput.modelSelection). Absent = the project's / Chat's default. */
+  modelSelection?: { model: string; connection: ConnectionId }
+  /** Permission mode of each run. Absent = the project's mode. Never 'bypassPermissions' (refused on save). */
+  permissionMode?: PermissionMode
+  /** Spend cap per run in USD (the run's conversation budget). Absent = the project's own cap, if any. */
+  budgetUsd?: number
+  /** Disable after this instant (epoch ms). */
+  expiresAt?: number
+  // ---- main-owned from here on; ignored on save ----
+  state: ScheduleState
+  /** Why the state is 'error' or 'done', one plain sentence. */
+  stateReason?: string
+  createdAt: number
+  updatedAt: number
+  /** 'agent' = an approved proposal. */
+  createdBy: 'user' | 'agent'
+  /** Absent when not enabled / done. */
+  nextRunAt?: number
+  /** The last slot handled (started, skipped or missed), so no slot fires twice. */
+  lastSlotAt?: number
+  consecutiveFailures: number
+  /** History entries the user has not seen. */
+  unread: number
+  /** The newest history entry, for list rows (main-owned; absent before the first slot is handled). */
+  lastEntry?: Pick<ScheduleHistoryEntry, 'at' | 'slotAt' | 'trigger' | 'result' | 'reason' | 'outcome' | 'runId'>
+}
+
+export type ScheduleRunResult = 'started' | 'skipped' | 'failed'
+export type ScheduleSkipReason =
+  | 'previous-running'
+  | 'too-many-running'
+  | 'app-closed'
+  | 'paused-globally'
+  | 'project-missing'
+  | 'usage-limited'
+  | 'start-refused'
+
+export interface ScheduleHistoryEntry {
+  id: string
+  scheduleId: string
+  /** The due time this entry answers. */
+  slotAt: number
+  /** When it was handled. */
+  at: number
+  trigger: 'timer' | 'catch-up' | 'manual'
+  result: ScheduleRunResult
+  reason?: ScheduleSkipReason
+  /** A plain OrgAI-written sentence for 'failed' / 'start-refused' (never a raw provider message). */
+  detail?: string
+  runId?: string
+  /** The run's project id (a virtual id for ask runs). */
+  projectId?: string
+  /** Filled when the run ends: how it ended and what it cost (null = unknown). */
+  outcome?: 'finished' | 'error' | 'stopped' | 'needs-you'
+  costUsd?: number | null
+}
+
+/** schedules:save input. No id = create. `null` clears an optional field on update. */
+export interface ScheduleSaveInput {
+  id?: string
+  name: string
+  prompt: string
+  target: ScheduleTarget
+  timing: ScheduleTiming
+  enabled?: boolean
+  missed?: ScheduleMissedPolicy
+  modelSelection?: { model: string; connection: ConnectionId } | null
+  permissionMode?: PermissionMode | null
+  budgetUsd?: number | null
+  expiresAt?: number | null
+  /** Refuse when the stored schedule changed since the form loaded it. */
+  expectedUpdatedAt?: number
+}
+
+/** Push on SCHEDULES_IPC.schedulesChanged (every window). */
+export interface SchedulesChangedEvent {
+  scheduleIds: string[]
+  removed?: string[]
+}
+
+export const SCHEDULES_MAX = 50
+/** History entries kept per schedule. */
+export const SCHEDULE_HISTORY_MAX = 50
+export const SCHEDULE_MIN_INTERVAL_MINUTES = 15
+/** 30 days. */
+export const SCHEDULE_MAX_INTERVAL_MINUTES = 43_200
+export const SCHEDULE_MAX_CONCURRENT_RUNS = 2
+export const SCHEDULE_FAILURES_TO_PAUSE = 3
+/** A missed slot older than this is never caught up (24 h). */
+export const SCHEDULE_CATCH_UP_WINDOW_MS = 24 * 60 * 60 * 1000
+export const SCHEDULE_BUDGET_MAX_USD = 1000
+export const SCHEDULE_PROPOSAL_MAX_ITEMS = 5
+export const SCHEDULE_NAME_MAX_CHARS = 80
+export const SCHEDULE_PROMPT_MAX_CHARS = 8000
+/** Longest cron expression text accepted. */
+export const SCHEDULE_CRON_MAX_CHARS = 120
+/** Every PermissionMode except 'bypassPermissions' (a schedule never runs unattended with it). */
+export const SCHEDULE_PERMISSION_MODES = ['auto', 'acceptEdits', 'default', 'dontAsk', 'plan'] as const satisfies readonly PermissionMode[]
+
+/** Harness tool names (harnessTools.ts; the main-process side adds them to CHAT_CONFIG_TOOLS). */
+export const LIST_SCHEDULES_TOOL = 'list_schedules'
+export const PROPOSE_SCHEDULE_TOOL = 'propose_schedule'
+
+/** One change of a schedules proposal. */
+export interface ScheduleProposalItem {
+  action: 'create' | 'update' | 'remove' | 'pause' | 'resume'
+  /** Required for update / remove / pause / resume. */
+  scheduleId?: string
+  /** Required for create and update (cleaned through cleanScheduleInput). */
+  schedule?: ScheduleSaveInput
+  /** Main-written description of the change (never agent text). */
+  summary: string
+  /** Next run times (epoch ms), at most 3, computed by main. */
+  nextRuns: number[]
+}
+
+/** Schedules proposal (propose_schedule): at most SCHEDULE_PROPOSAL_MAX_ITEMS items. */
+export interface SchedulesProposalPayload {
+  items: ScheduleProposalItem[]
+  rationale: string
+}
+
+/** Channels of this section. Not spread into IPC (IPC is declared earlier in the file); jsonCodec.allChannels lists it. */
+export const SCHEDULES_IPC = {
+  /** () -> Schedule[] by name. Scope read. */
+  schedulesList: 'schedules:list',
+  /** (scheduleId) -> ScheduleHistoryEntry[] newest first; clears `unread`. Scope read. */
+  schedulesHistory: 'schedules:history',
+  /** (ScheduleSaveInput) -> Schedule. Scope configure, desktop only. */
+  schedulesSave: 'schedules:save',
+  /** (scheduleId) -> void; the history goes, runs stay. Scope configure, desktop only. */
+  schedulesRemove: 'schedules:remove',
+  /** ({ id, enabled }) -> Schedule; enabling clears 'error' and the failure count. Scope configure, desktop only. */
+  schedulesSetEnabled: 'schedules:setEnabled',
+  /** (scheduleId) -> ScheduleHistoryEntry (trigger 'manual'; works while paused; the overlap rule applies). Scope operate, desktop only. */
+  schedulesRunNow: 'schedules:runNow',
+  /** main -> renderer push carrying SchedulesChangedEvent (every window). */
+  schedulesChanged: 'schedules:changed'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  schedules: {
+    list(): Promise<Schedule[]>
+    /** Newest first; clears the schedule's unread count. */
+    history(scheduleId: string): Promise<ScheduleHistoryEntry[]>
+    save(input: ScheduleSaveInput): Promise<Schedule>
+    remove(scheduleId: string): Promise<void>
+    setEnabled(input: { id: string; enabled: boolean }): Promise<Schedule>
+    runNow(scheduleId: string): Promise<ScheduleHistoryEntry>
+  }
+  onSchedulesChanged(cb: (event: SchedulesChangedEvent) => void): () => void
+}
+
+// ---- Team evolution (src/main/evolve/: telemetry, synthesizer, ratchet, service) ----
+// Contract for `orgai org evolve`, `orgai exec --evolve` and the TUI's /evolve. Everything here is structured-clone safe.
+
+/** Host channels. Analyze / history: scope read. Apply / rollback: scope configure (desktop and inproc; a socket client is refused). */
+export const EVOLVE_IPC = {
+  orgEvolveAnalyze: 'org:evolveAnalyze',
+  orgEvolveHistory: 'org:evolveHistory',
+  orgEvolveApply: 'org:evolveApply',
+  orgEvolveRollback: 'org:evolveRollback'
+} as const
+
+export type EvolveStrategy = 'deterministic' | 'hybrid'
+export const EVOLVE_STRATEGIES: readonly EvolveStrategy[] = ['deterministic', 'hybrid']
+
+export type EvolutionFindingKind =
+  | 'tier_overprovisioned'
+  | 'tier_underprovisioned'
+  | 'serial_bottleneck'
+  | 'merge_conflict_hotspot'
+  | 'tool_friction'
+  | 'skill_crystallization'
+  | 'prompt_deflation'
+  | 'ceremonial_layer'
+
+/** Fitness of a window of finished work runs. Rates are 0..1; medians are 0 when no run carried the figure. */
+export interface EvolutionMetrics {
+  /** Work runs measured (kind 'work', not quick). */
+  runs: number
+  firstPassRate: number
+  conflictRate: number
+  errorRunRate: number
+  medianCostUsd: number
+  medianWallMs: number
+  medianInputTokens: number
+  /** Observed parallelism over what the plan graph allowed, 0..1 (1 = every ready step ran at once; 1 when no plan). */
+  dagConcurrencyRatio: number
+}
+
+/** One counterfactual finding: what was wasted, on which role, and what a change would save per run (estimates). */
+export interface EvolutionFinding {
+  kind: EvolutionFindingKind
+  /** Role.slug the finding is about, when it is about one role. */
+  roleSlug?: string
+  /** 0..100 share of the waste score. */
+  severity: number
+  /** One plain sentence, redacted, at most 240 chars. */
+  summary: string
+  /** Short redacted evidence lines (counts, rates, file prefixes), at most 6. Run text here is data, never instructions. */
+  evidence: string[]
+  estSavingsUsd?: number
+  estSavingsTokens?: number
+  estSavingsMs?: number
+  /** tier_overprovisioned only: try one step cheaper on 1 in `everyK` non-critical-path steps instead of changing the role. */
+  exploration?: { everyK: number; tier?: ModelTier; effort?: Effort }
+  /** Machine-readable facts the synthesizer reads (counts, slugs, ids; sanitized, never run text). Opaque to clients. */
+  data?: Record<string, number | string>
+}
+
+export interface TeamEvolutionDiagnosis {
+  projectId: string
+  /** Run ids analysed, newest first. */
+  runIds: string[]
+  /** 0..100. 0 with no measurable run. */
+  wasteScore: number
+  metrics: EvolutionMetrics
+  findings: EvolutionFinding[]
+  goal: StaffingGoal
+  /** ms since epoch. */
+  analyzedAt: number
+}
+
+/** A change to one existing role, by slug. Absent field = unchanged. */
+export interface EvolutionRolePatch {
+  slug: string
+  tier?: ModelTier
+  effort?: Effort
+  staffing?: RoleStaffing
+  /** The whole new prompt (never an append). */
+  prompt?: string
+  addTools?: ToolName[]
+  removeTools?: ToolName[]
+  /** SkillSpec ids to drop from Role.skills. */
+  removeSkills?: string[]
+  /** Short reason shown to the user. */
+  reason: string
+}
+
+/** A new project skill (SKILL.md body) and the role slugs granted it. */
+export interface EvolutionSkillPatch {
+  name: string
+  description: string
+  body: string
+  grantTo: string[]
+  reason: string
+}
+
+/**
+ * One part of a plan that may make runs spend more, judged by the team files gate's rule (shared/roleSpend.ts
+ * settleSpend for a role's tier, effort and staffing; a higher effective subagent limit for concurrency, as
+ * teamFiles/gate.ts judges `maxConcurrentSubagents`). Such a part is applied only with
+ * EvolveApplyInput.allowSpendRaise; otherwise it is held (gate violation rule 'spend_held') and the rest applies.
+ */
+export interface EvolutionSpendRaise {
+  /** Role.slug; absent for the project's concurrency limit. */
+  roleSlug?: string
+  /** The plan field that raises spend ('tier' also moves the role's model). */
+  field: 'tier' | 'effort' | 'staffing' | 'concurrency'
+  /** The plain "may spend more" sentence (settleSpend's held summary, or the effective-tier move). Shown in full, never truncated by clients. */
+  summary: string
+}
+
+export interface EvolutionGateViolation {
+  /** Stable rule id, e.g. 'permission_widened', 'write_tool_to_readonly', 'tier_top', 'effort_xhigh', 'required_reports_dropped', 'chart_broken', 'prompt_bloat', 'rejected_hypothesis', 'spend_held' (a part that may spend more was not applied: no allowSpendRaise). */
+  rule: string
+  roleSlug?: string
+  message: string
+  /** 'trimmed': the offending part was removed and the rest kept; 'rejected': the whole plan is refused. */
+  action: 'trimmed' | 'rejected'
+}
+
+export interface EvolutionPlan {
+  strategy: EvolveStrategy
+  /** Stable hash of the normalised mutation (role patches, skills, limits); equal plans share it. */
+  fingerprint: string
+  rolePatches: EvolutionRolePatch[]
+  newSkills: EvolutionSkillPatch[]
+  /** SkillSpec ids to remove from the project. */
+  pruneSkillIds: string[]
+  /** Project.maxConcurrentSubagents, when it changes. */
+  maxConcurrentSubagents?: number
+  rationale: string
+  expectedImpact: { costUsd?: number; tokens?: number; wallMs?: number }
+  /** The safety gate's verdict on this plan (validateEvolutionPlan), already applied to the fields above. */
+  gate: { ok: boolean; violations: EvolutionGateViolation[] }
+  /** Total role prompt characters before and after, for the anti-bloat bound. */
+  promptChars: { before: number; after: number; limit: number }
+  /** True when there is nothing to change. */
+  empty: boolean
+  /** Hybrid only: tokens the one synthesis call used. */
+  usage?: { inputTokens: number; outputTokens: number; costUsd?: number }
+  /**
+   * The parts of this plan that may make runs spend more (filled by the host on analyze and apply; not part of the
+   * fingerprint). Empty or absent = nothing in it raises spend. Clients list every entry in full before asking to apply.
+   */
+  spendRaises?: EvolutionSpendRaise[]
+}
+
+export type EvolutionGenerationStatus = 'trial' | 'promoted' | 'rolled_back'
+
+export interface EvolutionGeneration {
+  /** 'gen_1', 'gen_2', ... */
+  id: string
+  status: EvolutionGenerationStatus
+  strategy: EvolveStrategy
+  fingerprint: string
+  /** One line: what changed. */
+  summary: string
+  appliedAt: number
+  /** Finished work runs of the project when it was applied. */
+  appliedAtRunCount: number
+  evalWindowRuns: number
+  baselineMetrics: EvolutionMetrics
+  /** Metrics of the trial window, once evaluated. */
+  trialMetrics?: EvolutionMetrics
+  /** Why it was promoted or rolled back. */
+  outcomeReason?: string
+  decidedAt?: number
+  /** The applied plan (without the snapshot), for display. */
+  plan: EvolutionPlan
+}
+
+export interface EvolutionRejectedHypothesis {
+  fingerprint: string
+  summary: string
+  reason: string
+  generationId?: string
+  at: number
+}
+
+/** `<dataDir>/evolution/<projectId>.json` as callers see it (pre-mutation snapshots stay in the file, never cross IPC). */
+export interface EvolutionHistory {
+  projectId: string
+  /** Oldest first, at most 50. */
+  generations: EvolutionGeneration[]
+  /** The newest promoted generation's id, if any. */
+  championId?: string
+  /** The generation on trial, if any. */
+  trialId?: string
+  rejectedHypotheses: EvolutionRejectedHypothesis[]
+}
+
+export interface EvolveAnalyzeInput {
+  projectId: string
+  /** Newest finished work runs to read (default 10, 1..50). */
+  runs?: number
+  goal?: StaffingGoal
+  /** Default 'deterministic' on analyze (no tokens are spent by an analysis unless 'hybrid' is asked for). */
+  strategy?: EvolveStrategy
+  /** Below this waste score the plan is empty (default 15, 0..100). */
+  minWaste?: number
+}
+
+export interface EvolveAnalyzeResult {
+  diagnosis: TeamEvolutionDiagnosis
+  plan: EvolutionPlan
+  /** The bounded digest a hybrid call would send (under 2,800 chars, redacted). */
+  digest: string
+}
+
+export interface EvolveApplyInput extends EvolveAnalyzeInput {
+  /** Runs a trial is measured over (default 3, 1..10). */
+  evalWindowRuns?: number
+  /**
+   * The fingerprint of the plan the person reviewed (EvolveAnalyzeResult.plan.fingerprint). When set, the host refuses
+   * (nothing written) if the plan it builds at apply time has another fingerprint. With strategy 'hybrid' the host reuses
+   * the plan its own recent analysis made (no second model call) and refuses when it has none with this fingerprint.
+   * At most 128 chars.
+   */
+  expectedFingerprint?: string
+  /**
+   * The person approved the plan's spendRaises after they were shown. Only honoured with `expectedFingerprint` (refused
+   * otherwise). Absent or false: the parts that may spend more are held (gate rule 'spend_held') and only the rest applies.
+   */
+  allowSpendRaise?: boolean
+}
+
+export interface EvolveApplyResult {
+  /** False: nothing was changed (`reason` says why: empty plan, gate refusal, a trial already active, ...). */
+  applied: boolean
+  reason?: string
+  generation?: EvolutionGeneration
+  /** The project after the change (or unchanged). */
+  project: Project
+  diagnosis: TeamEvolutionDiagnosis
+  plan: EvolutionPlan
+  /** Whether `.orgai/` team files were written. */
+  teamFilesSynced: boolean
+  /** The parts that may spend more and were NOT applied (no allowSpendRaise). Absent or empty = none held. */
+  heldSpendRaises?: EvolutionSpendRaise[]
+}
+
+export interface EvolveRollbackInput {
+  projectId: string
+  /** Default: the active trial, else the newest promoted generation. */
+  generationId?: string
+  reason?: string
+}
+
+export interface EvolveRollbackResult {
+  /** False when nothing was restored (no such generation, already rolled back, or its snapshot was unusable). */
+  rolledBack: boolean
+  /** Not rolled back: why. Rolled back: what was not restored (a later edit of the user's that was kept, a skill that could not be put back); absent when the team is exactly as it was. */
+  reason?: string
+  generation?: EvolutionGeneration
+  project: Project
+  teamFilesSynced: boolean
+}
+
+/** What the post-run ratchet did after a work run ended (evaluateActiveTrial, then an optional unattended evolve). */
+export interface EvolvePostRunResult {
+  projectId: string
+  /** 'none': no trial, or the window is not full yet. */
+  ratchet: 'none' | 'promoted' | 'rolled_back'
+  ratchetReason?: string
+  /** The generation the ratchet decided on. */
+  decided?: EvolutionGeneration
+  /** Set when a new generation was applied by this pass. */
+  applied?: EvolutionGeneration
+  wasteScore?: number
+  /** The post-run pass is unattended: parts of its plan that may spend more are never applied; they are listed here. */
+  heldSpendRaises?: EvolutionSpendRaise[]
+}
+
+// ---- Desktop auto-update (src/main/updater.ts; docs/agent-notes/updates.md) ----
+// Desktop only (the orgai CLI has no updater). electron-updater with the GitHub provider reads its feed from the
+// app-update.yml embedded at packaging; nothing here carries a URL, a path or a version from the renderer. Never
+// downloads or installs without the user: a check may run on its own (AppSettings.autoUpdateCheck), a download and an
+// install only through updates:download / updates:install. Everything here is structured-clone safe.
+
+/**
+ * What this install can do. 'auto': check, download and install (a packaged Windows NSIS install). 'manual': check
+ * only; the UI offers the release page (Windows portable or unpacked, macOS, Linux). 'none': never touches the network
+ * (unpackaged dev builds and any mock / e2e launch).
+ */
+export type UpdateCapability = 'auto' | 'manual' | 'none'
+
+/**
+ * Why the capability is not 'auto' (absent when it is). 'dev': an unpackaged build. 'test': a packaged build launched
+ * with ORGAI_MOCK=1 (e2e, verify-pack). 'portable': the Windows portable exe. 'unpacked': a packaged Windows build the
+ * NSIS installer did not install (release/win-unpacked). 'platform': macOS (unsigned builds; Squirrel.Mac needs a
+ * signed app) and Linux.
+ */
+export type UpdateCapabilityReason = 'dev' | 'test' | 'portable' | 'unpacked' | 'platform'
+
+/**
+ * 'idle': no check yet (always, for capability 'none'). 'checking': a check is in flight (never two at once).
+ * 'up-to-date': the last check found nothing newer. 'available': `availableVersion` is newer (download it with 'auto',
+ * open the release page with 'manual'). 'downloading': `progress` moves. 'downloaded': ready for updates:install (also
+ * installed on the next normal quit). 'error': `error` says what failed; `availableVersion` stays when a download
+ * failed, so the download can be retried.
+ */
+export type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'downloaded' | 'error'
+
+export interface UpdateProgress {
+  /** 0..100. */
+  percent: number
+  transferredBytes: number
+  totalBytes: number
+}
+
+/** The updater's state: the answer of updates:get and updates:check, and every updates:changed push. */
+export interface UpdateState {
+  capability: UpdateCapability
+  /** Present exactly when capability is not 'auto'. */
+  reason?: UpdateCapabilityReason
+  status: UpdateStatus
+  /** This app's version (app.getVersion()). */
+  currentVersion: string
+  /** The newer version the feed offers, validated as semver (at most UPDATE_VERSION_MAX_CHARS) in main. */
+  availableVersion?: string
+  /**
+   * The feed's release notes as plain text: tags stripped, entities decoded, control characters removed, at most
+   * UPDATE_NOTES_MAX_CHARS. Untrusted text: render it as text only (never as HTML, Markdown or links).
+   */
+  releaseNotes?: string
+  /**
+   * The page updates:openReleasePage opens, for display only. Built in main from constants:
+   * `${UPDATE_RELEASES_URL}/tag/v<availableVersion>` when a version is known, else UPDATE_RELEASES_URL. Never from the feed.
+   */
+  releaseUrl: string
+  /** While status is 'downloading' (kept at its last value once 'downloaded'). */
+  progress?: UpdateProgress
+  /** Epoch ms of the last finished check (any result). */
+  checkedAt?: number
+  /** status 'error': one fixed sentence (at most UPDATE_ERROR_MAX_CHARS), never a path, URL or token. */
+  error?: string
+  /** True once updates:install was accepted: the app is quitting to install. */
+  installing?: boolean
+}
+
+/** Why updates:download or updates:install was refused. */
+export type UpdateRefusal =
+  /** updates:install: runs are live and `force` was not true; `activeRuns` says how many. */
+  | 'active-runs'
+  /** updates:install: nothing has been downloaded. */
+  | 'not-downloaded'
+  /** updates:download: no newer version is known (check first). A download already running or finished answers ok. */
+  | 'not-available'
+  /** capability is not 'auto'. */
+  | 'unsupported'
+  /** The app is already quitting. */
+  | 'quitting'
+
+export type UpdateActionResult =
+  | { ok: true }
+  | {
+      ok: false
+      reason: UpdateRefusal
+      /** reason 'active-runs': how many live runs installing would end. */
+      activeRuns?: number
+    }
+
+/**
+ * updates:install input. `force: true` is the user's explicit confirmation to end live runs (they end as a Quit ends
+ * them: stopped, persisted, continuable). Main decides what counts as live (RunManager.liveRunCount()).
+ */
+export interface UpdateInstallInput {
+  force?: boolean
+}
+
+/** The only page updates:openReleasePage opens (with `/tag/v<semver>` appended when a version is known). */
+export const UPDATE_RELEASES_URL = 'https://github.com/perrychapman/OrgAI/releases'
+export const UPDATE_NOTES_MAX_CHARS = 4000
+export const UPDATE_ERROR_MAX_CHARS = 200
+export const UPDATE_VERSION_MAX_CHARS = 64
+/** The first automatic check runs this long after launch; then every UPDATE_CHECK_INTERVAL_MS. */
+export const UPDATE_FIRST_CHECK_DELAY_MS = 30_000
+export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Renderer e2e only: ORGAI_UPDATE_MOCK, honoured only when the app is NOT packaged, swaps electron-updater for a
+ * scripted fake (no network); an unknown value is ignored (capability 'none'). 'up-to-date': capability 'auto',
+ * checks find nothing. 'available': 'auto', a check finds UPDATE_MOCK_VERSION with notes, a download steps 0..100 then
+ * 'downloaded'; updates:install answers as for real but neither runs an installer nor quits. 'download-error': like
+ * 'available' but the download fails. 'error': 'auto', every check fails. 'manual': capability 'manual' (reason
+ * 'platform'), a check finds UPDATE_MOCK_VERSION. The launch check also runs (after UPDATE_FIRST_CHECK_DELAY_MS) when
+ * autoUpdateCheck is on.
+ */
+export const UPDATE_MOCK_MODES = ['up-to-date', 'available', 'download-error', 'error', 'manual'] as const
+export type UpdateMockMode = (typeof UPDATE_MOCK_MODES)[number]
+export const UPDATE_MOCK_VERSION = '99.0.0'
+
+/** Channels of this section. Not spread into IPC (IPC is declared earlier in the file); jsonCodec.allChannels lists it. */
+export const UPDATES_IPC = {
+  /** () -> UpdateState. Desktop only, read-only. */
+  updatesGet: 'updates:get',
+  /** () -> UpdateState once the check settled (joins a check in flight). Desktop only. Capability 'none': no network, state as is. */
+  updatesCheck: 'updates:check',
+  /** () -> UpdateActionResult once the download started; progress follows on updates:changed. Desktop only. */
+  updatesDownload: 'updates:download',
+  /** (UpdateInstallInput?) -> UpdateActionResult. ok: the app quits through the normal quit path, then installs and restarts. Desktop only. */
+  updatesInstall: 'updates:install',
+  /** () -> void: opens UpdateState.releaseUrl (built in main) in the browser. Desktop only. */
+  updatesOpenReleasePage: 'updates:openReleasePage',
+  /** main -> renderer push of UpdateState (every window) on every change. */
+  updatesChanged: 'updates:changed'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  updates: {
+    get(): Promise<UpdateState>
+    check(): Promise<UpdateState>
+    download(): Promise<UpdateActionResult>
+    install(input?: UpdateInstallInput): Promise<UpdateActionResult>
+    openReleasePage(): Promise<void>
+  }
+  onUpdatesChanged(cb: (state: UpdateState) => void): () => void
 }

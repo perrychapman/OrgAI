@@ -9,7 +9,7 @@
  *
  * Standalone and pure: no electron import, no file I/O. Wave 1's src/main/host/registry.ts imports it.
  */
-import { HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { EVOLVE_IPC, HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC, UPDATES_IPC } from '../../shared/types'
 
 // ---------- Safe parse / stringify ----------
 
@@ -82,15 +82,23 @@ export const PUSH_CHANNELS: readonly string[] = [
   IPC.projectsCloneProgress,
   TEAM_FILES_IPC.teamFilesChanged,
   IPC.appNavigate,
-  OUTPUTS_IPC.outputsChanged
+  OUTPUTS_IPC.outputsChanged,
+  SCHEDULES_IPC.schedulesChanged,
+  UPDATES_IPC.updatesChanged
 ]
+
+/**
+ * org:evolveAfterRun (host code only; not in shared EVOLVE_IPC): awaits the post-run ratchet pass of a run started with
+ * `evolve`. Scope configure, desktop and inproc surfaces only.
+ */
+export const EVOLVE_AFTER_RUN_CHANNEL = 'org:evolveAfterRun'
 
 /**
  * Every channel value the host knows: IPC (with TEMPLATE_ENGAGEMENT_IPC and KNOWLEDGE_IPC), MCP_SCOPE_IPC, KIT_IPC,
  * HOST_IPC, SECRETS_IPC (Wave 7).
  */
 export function allChannels(): string[] {
-  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
+  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC), ...Object.values(UPDATES_IPC), ...Object.values(EVOLVE_IPC), EVOLVE_AFTER_RUN_CHANNEL, ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 }
 
 /** Every request channel: allChannels() minus PUSH_CHANNELS. */
@@ -231,7 +239,7 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'runs:continue': { note: IMAGES_NOTE }, // runs.continueRun(project, runId, text, images)
   'runs:resumeNow': {}, // runs.resumeNow(runId)
   'runs:switchModel': {},
-  'runs:setPermissionMode': {}, // desktop surface only (the handler refuses socket / inproc); runs.setPermissionMode({ runId, mode })
+  'runs:setPermissionMode': {}, // desktop and inproc (the TUI, with configure); the handler refuses socket; runs.setPermissionMode({ runId, mode })
   'runs:cancelAutoResume': {}, // runs.cancelAutoResume(runId)
   'runs:listLive': {}, // runs.liveRuns()
   'runs:pendingCards': { note: 'Response cards may carry SettingsProposalPayload.maxBudgetUsd: null (domain null, kept by JSON).' },
@@ -285,6 +293,12 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'teamFiles:undo': {},
   'teamFiles:commit': {},
   'teamFiles:enable': {},
+  // ---- team evolution (EVOLVE_IPC + org:evolveAfterRun; evolve*Args rebuild each input). Optional fields are left out, never null. ----
+  'org:evolveAnalyze': {},
+  'org:evolveHistory': {},
+  'org:evolveApply': {}, // desktop and inproc only
+  'org:evolveRollback': {}, // desktop and inproc only
+  'org:evolveAfterRun': {}, // desktop and inproc only
   // ---- run outputs (OUTPUTS_IPC; outputArgs rebuilds each input). Optional fields are left out or sent as undefined by a
   // client, never meaningful as null: outputArgs treats undefined and null alike (so nothing needs decoding), except
   // where listed as clearable below. ----
@@ -313,6 +327,19 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'outputs:revise': { clearable: ['anchor', 'noteIds'] },
   'outputs:watch': {},
   'outputs:unwatch': {},
+  // ---- schedules (SCHEDULES_IPC; cleanScheduleInput rebuilds the input). null on these save fields clears them. ----
+  'schedules:list': {},
+  'schedules:history': {},
+  'schedules:save': { nullable: ['modelSelection', 'permissionMode', 'budgetUsd', 'expiresAt'], note: 'null clears the optional field on update' },
+  'schedules:remove': {}, // desktop only (handler)
+  'schedules:setEnabled': {}, // desktop only (handler)
+  'schedules:runNow': {}, // desktop only (handler)
+  // ---- desktop updater (UPDATES_IPC; ipc.ts registerUpdatesIpc, desktop only) ----
+  'updates:get': {},
+  'updates:check': {},
+  'updates:download': {},
+  'updates:install': {}, // updateInstallArgs: only { force: true } counts
+  'updates:openReleasePage': {},
   'permissions:remove': {}, // permissionRuleArgs
   'permissions:add': {}, // permissionRuleArgs + permissionAddRefusal
   'permissions:decideRequest': {}, // runs.decideRules(runId, requestId, PermissionRuleDecision)

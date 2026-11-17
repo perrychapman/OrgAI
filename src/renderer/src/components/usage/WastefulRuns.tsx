@@ -1,12 +1,16 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { formatDateTime } from '../../lib/dates'
 import { effectiveWastefulSort, WASTEFUL_MORE, WASTEFUL_SHOWN, WASTEFUL_SORT_LABELS, wastefulRuns } from '../../lib/usageEfficiency'
-import { rowCostInput, rowName, rowStatusWord } from '../../lib/usageRuns'
+import { rowCostInput, rowKindWord, rowName, rowStatusWord } from '../../lib/usageRuns'
 import { useAppStore } from '../../store/useAppStore'
 import { CostText } from './RankedBars'
 import type { UsagePanelProps, WastefulSort } from './panelProps'
-import { TableWrap } from './usageTableParts'
+import { RunDetailRow, RunToggle, TableWrap } from './usageTableParts'
+import '../../styles/usage-runs.css'
+
+/** Status dot colour per word; the dot is decorative (aria-hidden) and the word beside it is visible text. */
+const TONE: Record<string, string> = { Finished: 'ok', Failed: 'bad', Running: 'live', 'Needs you': 'live' }
 
 export interface WastefulRunsProps extends UsagePanelProps {
   sort: WastefulSort
@@ -22,6 +26,19 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
   const headingRef = useRef<HTMLHeadingElement>(null)
   const selectId = useId()
   const [expanded, setExpanded] = useState(false)
+  // Run details: `open` is what is expanded, `touched` keeps a closed detail row mounted so it can glide shut.
+  const uid = useId().replace(/[^a-zA-Z0-9]/g, '')
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
+  const [touched, setTouched] = useState<ReadonlySet<string>>(new Set())
+  const toggle = (id: string): void => {
+    setOpen((s) => {
+      const n = new Set(s)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
+      return n
+    })
+    setTouched((s) => (s.has(id) ? s : new Set(s).add(id)))
+  }
 
   // An efficiency instrument picked the sort: the heading takes focus (not on first mount).
   const seen = useRef(focusSeq)
@@ -91,7 +108,6 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                     Cost
                   </th>
                   <th scope="col">Why listed</th>
-                  <th scope="col">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -100,9 +116,13 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                   const name = rowName(r)
                   const status = rowStatusWord(r)
                   const nr = r.usage.noResultCostUsd
+                  const isOpen = open.has(r.runId)
+                  const detailId = `${uid}-detail-${r.runId}`
                   return (
-                    <tr key={r.runId} data-testid="usage-wasteful-row" data-run={r.runId} data-project={r.projectId}>
+                    <Fragment key={r.runId}>
+                    <tr data-testid="usage-wasteful-row" data-run={r.runId} data-project={r.projectId}>
                       <th scope="row" className="sticky usage-run-cell">
+                        <RunToggle open={isOpen} detailId={detailId} mounted={touched.has(r.runId)} onToggle={() => toggle(r.runId)} name={name} />
                         {r.projectRemoved ? (
                           <span className="usage-run-name" title={name}>
                             {name}
@@ -112,6 +132,12 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                             {name}
                           </button>
                         )}
+                        {/* The word is visible beside the dot, so status never rests on colour alone (Reviewer M5). */}
+                        <span className="usage-status-dot" data-tone={TONE[status.word] ?? 'idle'} aria-hidden="true" />
+                        <span className="usage-status-word" title={status.note ? `${status.word}. ${status.note}` : status.word}>
+                          {status.word}
+                        </span>
+                        <span className="usage-tag usage-run-kind">{rowKindWord(r)}</span>
                         {e.noResult && <span className="usage-tag" data-testid="usage-no-result-tag">No result</span>}
                         <span className="usage-cell-sub">{r.projectRemoved ? `${r.projectName}. Project removed` : r.projectName}</span>
                       </th>
@@ -124,11 +150,12 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                           </span>
                         )}
                       </td>
-                      <td className="usage-why">{e.why}</td>
-                      <td className="nowrap" title={status.note}>
-                        {status.word}
+                      <td className="usage-why" title={e.why}>
+                        <span className="usage-why-clip">{e.why}</span>
                       </td>
                     </tr>
+                    {touched.has(r.runId) && <RunDetailRow id={detailId} colSpan={4} open={isOpen} row={r} why={e.why} />}
+                    </Fragment>
                   )
                 })}
               </tbody>

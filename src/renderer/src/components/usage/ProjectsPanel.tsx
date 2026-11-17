@@ -8,6 +8,7 @@ import {
   barFraction,
   cacheHit,
   clipMiddle,
+  OTHER_KEY,
   percentText,
   perRunCost,
   projectKindWord,
@@ -17,13 +18,15 @@ import {
   sharePercent,
   tokenSum
 } from '../../lib/usageCharts'
-import type { UsagePanelProps } from './panelProps'
+import type { SeriesHighlightProps, UsagePanelProps } from './panelProps'
 import { Icon } from '../ui/Icon'
 import { ChartTable } from './ChartTable'
-import { CostText, RankedBars, RowMenu, useWidePage, type MenuEntry, type RankedItem } from './RankedBars'
+import { CostText, RankedBars, RANK_TOP, RowMenu, type MenuEntry, type RankedItem } from './RankedBars'
 import '../../styles/usage-charts.css'
 
 const SERIES_VAR = ['--chart-s1', '--chart-s2', '--chart-s3', '--chart-s4', '--chart-s5']
+
+const perRunNumber = (cost: number | null, runs: number): number | null => (cost === null || runs <= 0 ? null : cost / runs)
 
 /** Opens the project (or assistant) in the app; a removed project has nowhere to go. */
 async function openTarget(p: UsageProjectRollup, then?: 'history'): Promise<void> {
@@ -34,9 +37,17 @@ async function openTarget(p: UsageProjectRollup, then?: 'history'): Promise<void
   if (then === 'history') useAppStore.getState().setView('history')
 }
 
-export default function ProjectsPanel({ data, filters, series, onNarrow }: UsagePanelProps): ReactElement {
-  const wide = useWidePage()
-  const limit = wide ? 7 : 5
+export default function ProjectsPanel({
+  data,
+  filters,
+  series,
+  onNarrow,
+  announce,
+  embedded,
+  highlight,
+  onHighlight
+}: UsagePanelProps & Partial<SeriesHighlightProps> & { embedded?: boolean }): ReactElement {
+  const limit = RANK_TOP
   const [showAll, setShowAll] = useState(false)
   const [menu, setMenu] = useState<{ project: UsageProjectRollup; anchor: HTMLElement } | null>(null)
 
@@ -61,6 +72,7 @@ export default function ProjectsPanel({ data, filters, series, onNarrow }: Usage
       fill: idx !== undefined ? `var(${SERIES_VAR[idx]})` : 'var(--chart-other)',
       cost,
       detail: runsText(p.runs),
+      seriesKey: series.has(p.projectId) ? p.projectId : OTHER_KEY,
       selected: filters.projectIds.includes(p.projectId),
       srText: `, ${formatTokens(tokenSum(p.tokens))} tokens`
     }
@@ -93,17 +105,35 @@ export default function ProjectsPanel({ data, filters, series, onNarrow }: Usage
       <CostText key="c" value={rollupCost(p)} />,
       <CostText key="r" value={perRunCost(rollupCost(p), p.runs)} />,
       percentText(cacheHit(p.tokens))
+    ],
+    sort: [
+      p.projectName,
+      projectKindWord(p.projectKind),
+      p.runs,
+      tokenSum(p.tokens),
+      p.costUsd,
+      perRunNumber(p.costUsd, p.runs),
+      cacheHit(p.tokens)
     ]
   }))
 
+  const Root = embedded ? 'div' : 'section'
   return (
-    <section className="usage-panel" aria-labelledby="usage-projects-h" data-testid="usage-projects-panel">
-      <div className="usage-panel-head">
-        <h2 id="usage-projects-h" tabIndex={-1}>
-          By project
-        </h2>
+    <Root
+      className={embedded ? 'usage-panel-embedded' : 'usage-panel'}
+      {...(embedded ? {} : { 'aria-labelledby': 'usage-projects-h' })}
+      data-testid="usage-projects-panel"
+    >
+      {embedded ? (
         <p className="usage-panel-summary">{summary}</p>
-      </div>
+      ) : (
+        <div className="usage-panel-head">
+          <h2 id="usage-projects-h" tabIndex={-1}>
+            By project
+          </h2>
+          <p className="usage-panel-summary">{summary}</p>
+        </div>
+      )}
       {items.length > 0 ? (
         <RankedBars
           label="Projects by estimated cost"
@@ -115,13 +145,15 @@ export default function ProjectsPanel({ data, filters, series, onNarrow }: Usage
             if (p) setMenu({ project: p, anchor })
           }}
           moreLabel={(it) => `More for ${it.name}`}
+          onHover={onHighlight ? (it) => onHighlight(it ? (it.seriesKey ?? it.id) : null) : undefined}
+          highlighted={highlight}
         />
       ) : (
         <p className="uc-empty">No runs in this period.</p>
       )}
       {ranked.length > limit && (
         <button type="button" className="link-btn uc-more" data-testid="usage-projects-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
-          {showAll ? 'Show fewer' : `Show ${ranked.length - limit} more`}
+          {showAll ? 'Show fewer' : `Show all ${ranked.length}`}
         </button>
       )}
       {menu && <RowMenu anchor={menu.anchor} entries={entries(menu.project)} label={`${menu.project.projectName}: actions`} testId="usage-project-more" onClose={() => setMenu(null)} />}
@@ -130,16 +162,17 @@ export default function ProjectsPanel({ data, filters, series, onNarrow }: Usage
         caption="Usage by project"
         columns={[
           { key: 'project', label: 'Project' },
-          { key: 'kind', label: 'Kind' },
+          { key: 'kind', label: 'Kind', optional: true },
           { key: 'runs', label: 'Runs', numeric: true },
-          { key: 'tokens', label: 'Tokens', numeric: true },
+          { key: 'tokens', label: 'Tokens', numeric: true, optional: true },
           { key: 'cost', label: 'Cost', numeric: true },
-          { key: 'perRun', label: 'Cost per run', numeric: true },
-          { key: 'cache', label: 'Cache hit', numeric: true }
+          { key: 'perRun', label: 'Cost per run', numeric: true, optional: true },
+          { key: 'cache', label: 'Cache hit', numeric: true, optional: true }
         ]}
         rows={rows}
         empty="No runs in this period."
+        announce={announce}
       />
-    </section>
+    </Root>
   )
 }

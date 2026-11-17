@@ -953,7 +953,7 @@ describe('quick runs: tool set and list_projects', () => {
 
   it('binds the quick set only for quick work runs', () => {
     const names = harnessToolsFor(quickCtx()).map((t) => t.name)
-    expect(names).toEqual(['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'request_permission_rules', 'list_projects', 'request_mcp_install', 'list_skill_library', 'read_library_skill', 'app_reference', 'open_in_app', 'propose_app_settings', 'propose_project_settings'])
+    expect(names).toEqual(['set_plan', 'update_plan', 'complete_plan', 'mark_blocked', 'ask_user', 'integrate_worktrees', 'request_permission_rules', 'list_projects', 'request_mcp_install', 'list_skill_library', 'read_library_skill', 'app_reference', 'open_in_app', 'propose_app_settings', 'propose_project_settings', 'list_schedules', 'propose_schedule'])
     for (const gone of ['propose_org_change', 'list_runs', 'message_run', 'list_mcp_servers', 'search_mcp_registry', 'propose_mcp_servers', 'propose_skills', 'list_skills', 'load_skill']) expect(names).not.toContain(gone)
     const work = harnessToolsFor(fakeCtx()).map((t) => t.name)
     expect(work).not.toContain('list_projects')
