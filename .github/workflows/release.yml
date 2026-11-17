@@ -397,10 +397,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist/update
           node scripts/merge-latest-mac.mjs dist/orgai-mac-arm64/latest-mac.yml dist/orgai-mac-x64/latest-mac.yml dist/update/latest-mac.yml
-          if [ ! -s dist/orgai-windows/latest.yml ]; then
-            echo "::error::dist/orgai-windows/latest.yml is missing or empty."; exit 1
-          fi
-          cp dist/orgai-windows/latest.yml dist/update/latest.yml
+          # The Windows leg gets the same checks (semver, plain-name .exe urls, sha512) and is copied unchanged.
+          node scripts/merge-latest-mac.mjs --windows dist/orgai-windows/latest.yml dist/update/latest.yml
           ls -l dist/update
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # softprops/action-gh-release v3.0.4
         with:

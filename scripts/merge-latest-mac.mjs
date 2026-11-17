@@ -8,7 +8,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/
-const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._+~%-]*$/
+const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._+~-]*$/
 const SAFE_PLAIN = /^[A-Za-z0-9][A-Za-z0-9._+/=-]*$/
 const BARE_KEYS = new Set(['size', 'blockMapSize', 'isAdminRightsRequired'])
 
@@ -55,7 +55,7 @@ export function parseUpdateYaml(text) {
   let filesSeen = false
   let item = null
   let dashIndent = -1
-  const lines = text.replace(/^﻿/, '').split('\n')
+  const lines = text.replace(/^\ufeff/, '').split('\n')
   for (let n = 0; n < lines.length; n++) {
     const line = lines[n].replace(/\r$/, '')
     const where = `line ${n + 1}`
@@ -120,6 +120,7 @@ function checkLeg(leg, arch, label) {
     if (seen.has(f.url)) fail(`${label}: duplicate url ${f.url}`)
     seen.add(f.url)
   }
+  if (arch === 'win') return
   const arm = files.filter((f) => f.url.includes('arm64'))
   if (arch === 'arm64' && arm.length === 0) fail(`${label}: no url contains arm64`)
   if (arch === 'x64' && arm.length > 0) fail(`${label}: contains an arm64 url (${arm[0].url})`)
@@ -142,6 +143,21 @@ export function mergeLatestMac(arm64, x64) {
     top: { version: x64.top.version, path: x64.top.path, sha512: x64.top.sha512, releaseDate: later },
     files: [...arm64.files, ...x64.files].map((f) => ({ ...f }))
   }
+}
+
+/**
+ * Checks the Windows leg's latest.yml with the same rules as a mac leg (semver version, releaseDate, plain-name urls,
+ * a sha512 on every file, no duplicates), plus: every url and the top-level path is an .exe, and path and sha512 are
+ * present. Pure; throws on anything else.
+ */
+export function checkLatestWindows(doc) {
+  checkLeg(doc, 'win', 'windows leg')
+  for (const f of doc.files) if (!/\.exe$/i.test(f.url)) fail(`windows leg: ${f.url} is not an .exe`)
+  if (!doc.top.path) fail('windows leg: path is missing')
+  checkName(doc.top.path, 'windows leg path')
+  if (!/\.exe$/i.test(doc.top.path)) fail(`windows leg: path ${doc.top.path} is not an .exe`)
+  if (!doc.top.sha512) fail('windows leg: sha512 is missing')
+  return doc
 }
 
 function emitScalar(key, value) {
@@ -178,11 +194,7 @@ function readLeg(file, label) {
   }
 }
 
-export function main(argv = process.argv.slice(2)) {
-  if (argv.length !== 3) fail('usage: merge-latest-mac.mjs <arm64 latest-mac.yml> <x64 latest-mac.yml> <out path>')
-  const [armPath, x64Path, outPath] = argv
-  const merged = mergeLatestMac(readLeg(armPath, 'arm64 leg'), readLeg(x64Path, 'x64 leg'))
-  const yaml = serializeUpdateYaml(merged)
+function writeAtomic(outPath, yaml) {
   fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true })
   const tmp = `${outPath}.${process.pid}.tmp`
   try {
@@ -192,13 +204,42 @@ export function main(argv = process.argv.slice(2)) {
     fs.rmSync(tmp, { force: true })
     throw e
   }
+}
+
+/**
+ * `<arm64 latest-mac.yml> <x64 latest-mac.yml> <out>`: merge the mac legs. `--windows <latest.yml> <out>`: check the
+ * Windows leg and copy it unchanged (the bytes electron-builder wrote) once it passed. Nothing is written on a failure.
+ */
+export function main(argv = process.argv.slice(2)) {
+  if (argv[0] === '--windows') {
+    if (argv.length !== 3) fail('usage: merge-latest-mac.mjs --windows <latest.yml> <out path>')
+    const [, inPath, outPath] = argv
+    let text
+    try {
+      text = fs.readFileSync(inPath, 'utf8')
+    } catch (e) {
+      fail(`windows leg: cannot read ${inPath} (${e.code ?? e.message})`)
+    }
+    try {
+      checkLatestWindows(parseUpdateYaml(text))
+    } catch (e) {
+      fail(`windows leg (${inPath}): ${e.message}`)
+    }
+    writeAtomic(outPath, text)
+    return text
+  }
+  if (argv.length !== 3) fail('usage: merge-latest-mac.mjs <arm64 latest-mac.yml> <x64 latest-mac.yml> <out path>')
+  const [armPath, x64Path, outPath] = argv
+  const merged = mergeLatestMac(readLeg(armPath, 'arm64 leg'), readLeg(x64Path, 'x64 leg'))
+  const yaml = serializeUpdateYaml(merged)
+  writeAtomic(outPath, yaml)
   return yaml
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
     main()
-    console.log(`merge-latest-mac: wrote ${process.argv[4]}`)
+    console.log(`merge-latest-mac: wrote ${process.argv[process.argv.length - 1]}`)
   } catch (e) {
     console.error(`merge-latest-mac: ${e.message}`)
     process.exit(1)

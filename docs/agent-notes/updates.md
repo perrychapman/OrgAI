@@ -38,9 +38,16 @@ metadata yet).
   `import('electron-updater')` only for a packaged 'auto' / 'manual' app, so a dev, mock or e2e launch never loads it
   and makes no request (unit-tested with a mocked module that records loading; `out/main/index.js` keeps the import
   external, checked after `npm run build`). Settings applied: `autoDownload = false`, `allowPrerelease = false`,
-  `allowDowngrade = false`, `fullChangelog = false`, `autoInstallOnAppQuit = true`; `setFeedURL` is never called, no
-  request header or token is set, and an `'error'` listener is attached (an unhandled emit would throw). API checked
-  against the installed typings of electron-updater 6.8.11 (`AppUpdater.d.ts`, `BaseUpdater.d.ts`).
+  `allowDowngrade = false`, `fullChangelog = false`, `autoInstallOnAppQuit = true`, `disableWebInstaller = true` (no
+  nsis-web target ships, so a `packageInfo` URL in a feed is never fetched); `setFeedURL` is never called, no token or
+  extra header is set, and an `'error'` listener is attached (an unhandled emit would throw). electron-updater sends an
+  `x-user-staging-id` header on every check and would keep a per-install random id in `<userData>/.updaterId`;
+  `loadElectronUpdater` replaces its internal `stagingUserIdPromise` lazy with the constant `UPDATER_STAGING_ID`
+  (`00000000-0000-4000-8000-000000000000`), so every install sends the same value and the file is never written
+  (OrgAI uses no staged rollouts, the only other reader). That internal is read in the installed
+  `out/AppUpdater.js` (`getUpdateInfoAndProvider` and the staging check are its only readers, `getOrCreateStagingUserId`
+  the only writer of `.updaterId`); `updaterRuntime.test.ts` pins the version and fails if that source changes. API
+  checked against the installed typings of electron-updater 6.8.11 (`AppUpdater.d.ts`, `BaseUpdater.d.ts`).
 - `src/main/updaterMock.ts`: the `ORGAI_UPDATE_MOCK` fake (below). Never used by a packaged app (unit-tested).
 - Checks: once `UPDATE_FIRST_CHECK_DELAY_MS` after launch, then every `UPDATE_CHECK_INTERVAL_MS`, only while
   `autoUpdateCheck` is on; a settings change arms or disarms the timer; a manual check always works; a check joins one in
@@ -54,8 +61,12 @@ metadata yet).
   download, so it runs first; electron-updater's then sees `quitAndInstallCalled` and skips (read in
   `node_modules/electron-updater/out/BaseUpdater.js`). Without an accepted install, a downloaded update installs
   silently on the next normal quit through electron-updater's own `'quit'` handler (exit code 0 only), also after the
-  shutdown. The 'quit' ordering and the installer run are UNVERIFIED live. A quit that ends through `app.exit` (the
-  shutdown failing, the 60 s hard limit) emits no `'quit'`, so nothing installs then.
+  shutdown. The 'quit' ordering and the installer run are UNVERIFIED live. `app.exit()` still emits `'quit'` (it skips
+  only before-quit and will-quit, electron.d.ts), so: `onAppQuit(exitCode)` installs only on exit code 0, and when the
+  shutdown fails `desktopQuit.ts` calls `cancelUpdateInstall` (`UpdateController.cancelInstallOnQuit`: clears the
+  accepted install and sets electron-updater's `autoInstallOnAppQuit = false`) before its `app.exit(0)`, so neither
+  installer runs after a failed shutdown (unit-tested in `updater.test.ts` and `desktopQuit.test.ts`; the exit code
+  itself is unchanged). The 60 s hard limit leaves through `process.exit`, which emits no Electron event.
 - Menu: "Check for Updates…" in the OrgAI menu on macOS (after About) and in Help elsewhere (before About OrgAI); its
   click starts `updates.check()` in main, then sends `'check-for-updates'` to the main window (target 'main'). Unit-tested
   in `appMenu.test.ts`; the renderer's handling is the UI lead's (until then the action is ignored by the renderer).
@@ -68,14 +79,23 @@ metadata yet).
 - The feed is the embedded `resources/app-update.yml` (electron-builder.yml `publish: github perrychapman/OrgAI`); no
   `setFeedURL` in any build. The release page is `UPDATE_RELEASES_URL` + `/tag/v<semver>` built in main from a version
   validated by `isUpdateVersion`; a URL from the feed is never opened. Unit-tested.
-- Release notes are untrusted: script/style dropped, tags stripped, entities decoded once, C0/C1, bidi and zero-width
-  characters removed, at most 4000 characters, before they cross IPC; the renderer must show them as text only.
-  Unit-tested.
+- Release notes are untrusted: script/style dropped, tags stripped, entities decoded once, C0/C1 controls, the Arabic
+  letter mark, bidi and zero-width characters, line and paragraph separators and the BOM removed, at most 4000
+  characters, before they cross IPC; the renderer must show them as text only. Unit-tested. The source writes those
+  characters only as `\u` escapes (`updater.ts` HIDDEN_RE, `merge-latest-mac.mjs`).
+- A feed version that is not strict semver is an error and clears the earlier available version, notes and progress, so
+  nothing downloads for it. Unit-tested.
 - Errors cross IPC as one of the fixed sentences of `UPDATE_ERROR_TEXT` (never a path, URL or token); the raw message
   goes to the log only. Unit-tested.
 - Known limitation: Windows builds are unsigned, so electron-updater performs no Authenticode publisher check; integrity
   rests on the sha512 in `latest.yml`, fetched over TLS from GitHub (an attacker who can publish a release on the repo can
   ship an update). Nothing electron-updater verifies is disabled.
+- Known limitation: TLS trusts the system store (`systemCerts.ts`), so on a network with a corporate TLS-interception
+  CA installed, whoever holds that CA can serve a forged latest.yml and installer together (the sha512 then matches the
+  forged file). Not mitigated; an Authenticode-signed build would close it.
+- Known limitation: GitHub release assets are mutable. Anyone with write access to the repository can replace an
+  asset (installer plus latest.yml) on a published release after the fact; nothing pins a release's hashes outside
+  GitHub.
 - The download cache is written by electron-updater outside the data folder (OS per-user cache,
   `<updaterCacheDirName>/pending`), recorded in `writePathInventory.allowlist.ts` as a comment (no call site in our code).
 
@@ -83,10 +103,15 @@ metadata yet).
 
 - `electron-builder.yml` has the `publish` block only so `app-update.yml` is embedded; every build passes
   `--publish never` (package.json `dist*` scripts, `scripts/pack-local.mjs`, release.yml). `src/cli/packaging.test.ts`
-  checks the block and every `--publish never`. `npm run pack -- --dry-run` still prints `--dir --publish never`.
+  checks the block and every `--publish never`. `npm run pack -- --dry-run` still prints `--dir --publish never`. A
+  local `electron-builder --win nsis --publish never` (to a temp folder, 2026-11-17) embedded
+  `resources/app-update.yml` (`owner: perrychapman`, `repo: OrgAI`, `provider: github`, `updaterCacheDirName:
+  orgai-updater`) and wrote a `latest.yml` that `merge-latest-mac.mjs --windows` accepts. The `--dir` build
+  (`npm run pack`, `release/win-unpacked`) embeds no app-update.yml, which is one reason an unpacked build is 'manual'.
 - `release.yml` publish job: checks out the commit, `node scripts/merge-latest-mac.mjs` merges the arm64 and x64
   `latest-mac.yml` into one (fails closed on a missing leg, version mismatch, duplicate or path-like url, arch mixup;
-  `scripts/merge-latest-mac.test.mjs` in `test:scripts`) and copies the windows `latest.yml`; both are attached to the
+  `scripts/merge-latest-mac.test.mjs` in `test:scripts`) and `--windows` checks the windows `latest.yml` with the same
+  rules (semver, plain-name `.exe` urls and path, sha512 present) before copying it unchanged; both are attached to the
   draft by explicit path. The updater sees a release only once the draft is published by hand, and ignores releases
   marked prerelease (`allowPrerelease = false`). A merged sample parses with the js-yaml 4 electron-updater uses
   (checked by hand with the script's exports; sizes stay numbers). The workflow has not run with these steps

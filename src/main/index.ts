@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import type { AppSettings, FocusRunTarget, RunEvent } from '@shared/types'
 import { IPC, SCHEDULES_IPC, TEAM_FILES_IPC, UPDATES_IPC, runWindowHash } from '@shared/types'
 import { createDesktopUpdates } from './updaterRuntime'
+import type { UpdateController } from './updater'
 import { Scheduler, testTickMs } from './schedules/scheduler'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
@@ -95,6 +96,8 @@ let quitting = false
 let cliInstallForStatus: CliInstallService | undefined
 /** Clones started from a window (desktop only); cancelled when the quit goes ahead. */
 let repoClone: RepoCloneService | undefined
+/** The desktop updater, once booted (before-quit cancels its install when the shutdown fails). */
+let updatesController: UpdateController | undefined
 
 // The app is a host of its own: no socket, no terminal clients, no headless mode (standalone spec 5.1).
 const hostKind = 'desktop' as const
@@ -568,7 +571,9 @@ app.whenReady().then(async () => {
     log: { info: (m) => log.info(m), warn: (m) => log.warn(m) }
   })
   settings.onChange(() => updates.settingsChanged())
-  app.on('quit', () => updates.onAppQuit())
+  updatesController = updates
+  // app.exit also emits 'quit': only a clean exit code installs (a failed shutdown cancels first, desktopQuit.ts).
+  app.on('quit', (_e, exitCode) => updates.onAppQuit(exitCode))
   app.once('will-quit', () => updates.dispose())
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
   registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliInstall, repoClone: clones, updates })
@@ -624,6 +629,7 @@ app.on(
     reason: () => quitReason,
     stopCertRead: () => stopSystemCertRead(),
     stopCliInstall: () => cliInstallForStatus?.cancel(),
+    cancelUpdateInstall: () => updatesController?.cancelInstallOnQuit(),
     // Never strand the app: the exit hook releases ownership.
     exit: (code) => app.exit(code),
     warn: (m) => log.warn(m)

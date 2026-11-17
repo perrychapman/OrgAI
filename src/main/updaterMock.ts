@@ -37,6 +37,7 @@ export function createMockUpdater(mode: UpdateMockMode, timers?: TimerApi): Upda
     },
     onProgress(cb): void {
       progress.push(cb)
-    }
+    },
+    setAutoInstallOnQuit(): void {}
   }
 }
