@@ -25,14 +25,18 @@ export default async function (ctx) {
       await sleep(400)
     }
   }
-  const reviseBtn = t('output-revise')
-  if (!(await t('output-detail').count()) || !(await reviseBtn.count())) {
-    skip('the detail or its Revise button is not rendered yet')
+  // Revise is not the primary action of a markdown output: it lives in the More menu (output-more > output-revise).
+  const more = t('output-detail').locator('[data-testid=output-more]').first()
+  if (!(await t('output-detail').count()) || !(await more.count())) {
+    skip('the detail or its More button is not rendered yet')
     return
   }
 
-  await reviseBtn.first().focus()
-  await reviseBtn.first().click()
+  await more.focus()
+  await more.click()
+  await t('output-revise').waitFor({ state: 'visible', timeout: 4000 }).catch(() => undefined)
+  check((await t('output-revise').count()) === 1, `${label}: one "Ask the team to revise" item in More (and none in the toolbar)`)
+  await t('output-revise').first().click()
   const dialog = t('output-revise-dialog')
   check(await dialog.waitFor({ timeout: 4000 }).then(() => true, () => false), `${label}: Revise opens its dialog`)
   const heading = await dialog.locator('h2').innerText()
@@ -65,7 +69,7 @@ export default async function (ctx) {
   const pendingText = await t('output-revision-pending').first().innerText().catch(() => '')
   check(/Waiting for the team's new version\. Sent to R\d+ at \d\d:\d\d\./.test(pendingText), `${label}: the pending line reads as the spec says`, pendingText)
   const inFocus = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))
-  check(inFocus === 'output-revise', `${label}: focus returns to Revise`, String(inFocus))
+  check(inFocus === 'output-more', `${label}: focus returns to the More button that opened Revise`, String(inFocus))
   const chip = t('run-meta-revision')
   if (await chip.count()) check(/Waiting for the team's version of /.test(await chip.first().innerText()), `${label}: the run chip names the output`)
   else skip('run-meta-revision (the run strip is not on screen here)')

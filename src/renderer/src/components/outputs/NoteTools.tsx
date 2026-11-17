@@ -1,12 +1,17 @@
 // Add note (`output-note-add`, Ctrl/Cmd+Shift+M), the region tool (`output-note-region`) and the reason line
 // (`output-note-hint`), plus the composer (docs/design/outputs-2.md 11.2). The shell mounts this in the action toolbar.
+// For kinds with a region tool, Add note is a menu button: "Note on the selection" and the "Mark an area" choices
+// (Off / Box / Circle) live in its menu, so the Off / Box / Circle row no longer sits in the toolbar at rest.
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { MessageSquarePlus } from 'lucide-react'
+import { Check, MessageSquarePlus } from 'lucide-react'
 import { Button } from '../ui/Button'
+import { Icon } from '../ui/Icon'
+import { Popover } from '../ui/Popover'
 import { hasRegionTool, noteHint, noteStyleOf } from '../../lib/outputNotes'
 import type { RegionTool } from './outputDetailContext'
 import { useOutputDetail } from './outputDetailContext'
+import { onMenuKey } from './OutputActions'
 import NoteComposer from './NoteComposer'
 import { NOTE_COMPOSE_EVENT } from './RegionLayer'
 import '../../styles/outputs-notes.css'
@@ -64,56 +69,120 @@ export default function NoteTools(): ReactElement | null {
   if (!ctx || ctx.mode !== 'preview' || noteStyleOf(ctx.output.kind) === 'none') return null
   const kind = ctx.output.kind
   const hint = noteHint(kind)
+  // In the panel the button is icon-only (the toolbar shares a row with the tabs); the Larger view has room for the words.
+  const iconOnly = ctx.surface === 'detail'
+  const region = hasRegionTool(kind)
+  const marking = region ? TOOLS.find((t) => t.value === ctx.regionTool && t.value !== 'off') : undefined
+  const markingId = `${id}-marking`
+  const hintId = `${id}-hint`
+  const describedBy = [marking ? markingId : '', selection ? '' : hintId].filter(Boolean).join(' ') || undefined
+  const title = marking ? `Marking: ${marking.label}. Press Esc to turn it off.` : selection ? 'Add note (Ctrl+Shift+M)' : hint
+  const triggerAnchor = (): HTMLElement | null => wrap.current?.querySelector<HTMLElement>('[data-testid="output-note-add"]') ?? null
+
+  const chooseTool = (t: { value: RegionTool; label: string }, close: () => void): void => {
+    ctx.setRegionTool(t.value)
+    ctx.announce(t.value === 'off' ? 'Area tool off.' : `Area tool on: ${t.label.toLowerCase()}. Drag on the drawing, or press Enter in the viewer to place one.`)
+    close()
+  }
 
   return (
     <span ref={wrap} className="output-note-tools" data-testid="output-note-tools">
-      {hasRegionTool(kind) && (
-        <span className="output-note-region" role="group" aria-label="Mark an area" data-testid="output-note-region">
-          <span className="output-note-region-label" aria-hidden="true">
-            Mark an area
-          </span>
-          <span className="output-note-region-group">
-            {TOOLS.map((t) => (
+      {region ? (
+        <Popover
+          trigger={
+            <>
+              <Icon icon={MessageSquarePlus} size="sm" />
+              {marking ? `Marking: ${marking.label}` : iconOnly ? null : 'Add note'}
+            </>
+          }
+          triggerClassName={`btn sm${marking ? ' output-note-marking' : iconOnly ? ' output-icon-only' : ''}`}
+          triggerLabel={marking ? `Add note, Marking: ${marking.label}` : 'Add note'}
+          triggerTitle={title}
+          triggerTestId="output-note-add"
+          triggerDescribedBy={describedBy}
+          label="Add note"
+          role="menu"
+          placement="bottom-end"
+          testId="output-note-menu"
+          onOpenChange={(o) => {
+            // Opened with nothing selected: say how to select, as clicking the plain button does.
+            if (o && !ctx.selection) ctx.announce(hint)
+          }}
+        >
+          {({ close }) => (
+            <div className="output-menu" role="presentation" onKeyDown={onMenuKey}>
               <button
-                key={t.value}
                 type="button"
-                className="btn ghost sm"
-                aria-pressed={ctx.regionTool === t.value}
-                data-testid={`output-note-region-${t.value}`}
+                role="menuitem"
+                className="output-menuitem"
+                data-testid="output-note-selection"
+                aria-disabled={canAdd ? undefined : 'true'}
+                title={canAdd ? 'Note on the selection (Ctrl+Shift+M)' : `${hint} (Ctrl+Shift+M)`}
                 onClick={() => {
-                  ctx.setRegionTool(t.value)
-                  ctx.announce(t.value === 'off' ? 'Area tool off.' : `Area tool on: ${t.label.toLowerCase()}. Drag on the drawing, or press Enter in the viewer to place one.`)
+                  if (!canAdd) {
+                    ctx.announce(hint)
+                    return
+                  }
+                  triggerAnchor()?.focus({ preventScroll: true })
+                  close()
+                  setOpen(true)
                 }}
               >
-                {t.label}
+                <Icon icon={MessageSquarePlus} size="sm" />
+                Note on the selection
               </button>
-            ))}
-          </span>
+              <div className="output-menu-sep" role="separator" />
+              <div className="output-note-region" role="group" aria-label="Mark an area" data-testid="output-note-region">
+                <span className="output-note-region-label" aria-hidden="true">
+                  Mark an area
+                </span>
+                {TOOLS.map((t) => (
+                  <button
+                    key={t.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={ctx.regionTool === t.value}
+                    className="output-menuitem"
+                    data-testid={`output-note-region-${t.value}`}
+                    onClick={() => chooseTool(t, close)}
+                  >
+                    <span className="output-menu-check" aria-hidden="true">
+                      {ctx.regionTool === t.value && <Icon icon={Check} size="sm" />}
+                    </span>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </Popover>
+      ) : (
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={MessageSquarePlus}
+          testId="output-note-add"
+          className={iconOnly ? 'output-icon-only' : undefined}
+          ariaLabel={iconOnly ? 'Add note' : undefined}
+          inert={!canAdd}
+          ariaDescribedBy={selection ? undefined : hintId}
+          title={title}
+          onClick={begin}
+        >
+          {iconOnly ? null : 'Add note'}
+        </Button>
+      )}
+      {marking && (
+        <span id={markingId} className="sr-only">
+          Marking an area: {marking.label.toLowerCase()}. Drag on the drawing to place it. Press Escape to turn the tool off.
         </span>
       )}
-      <Button
-        variant="secondary"
-        size="sm"
-        icon={MessageSquarePlus}
-        testId="output-note-add"
-        inert={!canAdd}
-        ariaDescribedBy={selection ? undefined : `${id}-hint`}
-        title={selection ? 'Add note (Ctrl+Shift+M)' : hint}
-        onClick={begin}
-      >
-        Add note
-      </Button>
       {!selection && (
-        <span id={`${id}-hint`} className="output-note-hint" data-testid="output-note-hint">
+        <span id={hintId} className="sr-only output-note-hint" data-testid="output-note-hint">
           {hint}
         </span>
       )}
-      <NoteComposer
-        open={open}
-        selection={selection}
-        anchorEl={open ? (wrap.current?.querySelector<HTMLElement>('[data-testid="output-note-add"]') ?? null) : null}
-        onClose={() => setOpen(false)}
-      />
+      <NoteComposer open={open} selection={selection} anchorEl={open ? triggerAnchor() : null} onClose={() => setOpen(false)} />
     </span>
   )
 }
