@@ -1,8 +1,17 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import type { KeyboardEvent, ReactElement, ReactNode } from 'react'
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import type { CSSProperties, KeyboardEvent, ReactElement, ReactNode } from 'react'
 import { costView, type CostInput } from '../../lib/cost'
+import { useReducedMotion } from '../../lib/canvas'
+import { tokenMs } from '../../lib/useExitPresence'
 import { costFigureText } from '../../lib/usageCharts'
+import { enterIndex, flipPlan } from './rankFlip'
 import '../../styles/usage-charts.css'
+
+/** Rows shown before "Show all N" in every Where it went tab. */
+export const RANK_TOP = 5
+
+/** True for a short while after the user changed the Where it went tab: the rows rise in and the bars draw. */
+export const RankEnterContext = createContext(false)
 
 /** One cost figure on the page: "No price" for unknown (never $0), "+" and "~" as costView says, full value in the title. */
 export function CostText({ value, title }: { value: CostInput; title?: string }): ReactElement {
@@ -116,6 +125,40 @@ export function RankedBars({
   const refs = useRef(new Map<string, HTMLButtonElement>())
   const [active, setActive] = useState<string | null>(null)
   const current = items.some((i) => i.id === active) ? active : (items[0]?.id ?? null)
+  const enter = useContext(RankEnterContext)
+  const reduced = useReducedMotion()
+  const listRef = useRef<HTMLUListElement>(null)
+  const lastLayout = useRef<{ keys: string[]; tops: Map<string, number> }>({ keys: [], tops: new Map() })
+  // A highlight dims the other rows only while some row matches it.
+  const hlOn = highlighted != null && items.some((it) => (it.seriesKey ?? it.id) === highlighted)
+
+  // FLIP (plan M10): the same rows in a new order glide from their old place (transform only, at most 8, none when
+  // motion is reduced). offsetTop ignores any transform still running, so a second reorder starts from the real layout.
+  useLayoutEffect(() => {
+    const ul = listRef.current
+    if (!ul) return
+    const keys = items.map((it) => it.id)
+    const tops = new Map<string, number>()
+    const els = Array.from(ul.children) as HTMLElement[]
+    keys.forEach((k, i) => {
+      const el = els[i]
+      if (el) tops.set(k, el.offsetTop)
+    })
+    const prev = lastLayout.current
+    lastLayout.current = { keys, tops }
+    if (reduced || typeof Element === 'undefined' || typeof Element.prototype.animate !== 'function') return
+    const ms = tokenMs('--dur-slow')
+    if (ms <= 1) return
+    const plan = flipPlan(prev.keys, keys, prev.tops, tops)
+    if (plan.length === 0) return
+    const easing = getComputedStyle(document.documentElement).getPropertyValue('--ease-in-out').trim() || 'ease-in-out'
+    for (const m of plan) {
+      const el = els[keys.indexOf(m.key)]
+      if (!el) continue
+      for (const a of el.getAnimations()) a.cancel()
+      el.animate([{ transform: `translateY(${m.delta}px)` }, { transform: 'none' }], { duration: ms, easing })
+    }
+  })
 
   const focusAt = (i: number): void => {
     const it = items[Math.max(0, Math.min(items.length - 1, i))]
@@ -139,7 +182,10 @@ export function RankedBars({
 
   return (
     <ul
+      ref={listRef}
       className="uc-rank"
+      data-hl={hlOn ? 'on' : undefined}
+      data-enter={enter ? 'true' : undefined}
       aria-label={label}
       onPointerLeave={onHover ? () => onHover(null) : undefined}
       onBlur={
@@ -150,10 +196,13 @@ export function RankedBars({
           : undefined
       }
     >
-      {items.map((item, i) => (
+      {items.map((item, i) => {
+        const stagger = enter ? enterIndex(i) : null
+        return (
         <li
           key={item.id}
-          className="uc-rank-row"
+          className={stagger === null ? 'uc-rank-row' : 'uc-rank-row motion-enter'}
+          style={stagger === null ? undefined : ({ '--i': stagger } as CSSProperties)}
           data-testid={rowTestId}
           data-state={item.state}
           data-selected={item.selected ? 'true' : undefined}
@@ -215,7 +264,8 @@ export function RankedBars({
           )}
           {item.extra}
         </li>
-      ))}
+        )
+      })}
     </ul>
   )
 }

@@ -5,7 +5,7 @@ import { formatTokens } from '../../lib/cost'
 import { barFraction, clipMiddle, rankByCost, rollupCost, sharePercent, tokenSum } from '../../lib/usageCharts'
 import type { UsagePanelProps } from './panelProps'
 import { ChartTable } from './ChartTable'
-import { CostText, RankedBars, useWidePage, type RankedItem } from './RankedBars'
+import { CostText, RANK_TOP, RankedBars, type RankedItem } from './RankedBars'
 import '../../styles/usage-charts.css'
 
 const MODEL_COST_TITLE = 'Model cost per role is not recorded'
@@ -13,8 +13,7 @@ const roleKey =(r: UsageOverviewRole): string => r.roleId ?? r.roleSlug
 const idOf = (r: UsageOverviewRole): string => `${r.projectId}\u0000${roleKey(r)}`
 
 export default function RolesPanel({ data, filters, onNarrow, announce, embedded }: UsagePanelProps & { embedded?: boolean }): ReactElement {
-  const wide = useWidePage()
-  const limit = wide ? 7 : 5
+  const limit = RANK_TOP
   const [showAll, setShowAll] = useState(false)
 
   // One project in scope (filtered or the only one with runs): its name is no information, so it drops.
@@ -86,7 +85,7 @@ export default function RolesPanel({ data, filters, onNarrow, announce, embedded
       )}
       {ranked.length > limit && (
         <button type="button" className="link-btn uc-more" data-testid="usage-roles-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
-          {showAll ? 'Show fewer' : `Show ${ranked.length - limit} more`}
+          {showAll ? 'Show fewer' : `Show all ${ranked.length}`}
         </button>
       )}
       <ChartTable

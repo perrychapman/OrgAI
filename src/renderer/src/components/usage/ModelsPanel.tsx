@@ -10,7 +10,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { barFraction, clipMiddle, rankByCost, rollupCost, sharePercent, tokenSum } from '../../lib/usageCharts'
 import type { UsagePanelProps } from './panelProps'
 import { ChartTable } from './ChartTable'
-import { CostText, RankedBars, useWidePage, type RankedItem } from './RankedBars'
+import { CostText, RANK_TOP, RankedBars, type RankedItem } from './RankedBars'
 import '../../styles/usage-charts.css'
 
 const PRICE_WORD: Record<PriceSource, string> = {
@@ -25,8 +25,7 @@ const PRICE_WORD: Record<PriceSource, string> = {
 const unpriced = (m: UsageOverviewModel): boolean => m.costUsd === null || m.priceSource === 'unknown'
 
 export default function ModelsPanel({ data, filters, onNarrow, announce, embedded }: UsagePanelProps & { embedded?: boolean }): ReactElement {
-  const wide = useWidePage()
-  const limit = wide ? 7 : 5
+  const limit = RANK_TOP
   const [showAll, setShowAll] = useState(false)
   const setView = useAppStore((s) => s.setView)
 
@@ -130,7 +129,7 @@ export default function ModelsPanel({ data, filters, onNarrow, announce, embedde
       )}
       {ranked.length > limit && (
         <button type="button" className="link-btn uc-more" data-testid="usage-models-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
-          {showAll ? 'Show fewer' : `Show ${ranked.length - limit} more`}
+          {showAll ? 'Show fewer' : `Show all ${ranked.length}`}
         </button>
       )}
       <ChartTable

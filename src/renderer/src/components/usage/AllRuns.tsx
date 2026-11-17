@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { formatTokens } from '../../lib/cost'
 import { formatDateTime } from '../../lib/dates'
 import { totalTokens } from '../../lib/trends'
@@ -23,8 +23,9 @@ import {
 import { useAppStore } from '../../store/useAppStore'
 import { CostText } from './RankedBars'
 import type { UsagePanelProps } from './panelProps'
-import { SortTh, useOverflowX } from './usageTableParts'
+import { RunDetailRow, RunToggle, SortTh, useOverflowX } from './usageTableParts'
 import '../../styles/usage-tables.css'
+import '../../styles/usage-runs.css'
 
 export interface AllRunsProps extends UsagePanelProps {
   /** The disclosure is open (a project drilldown or a deep link opens it, 4.8). */
@@ -41,6 +42,21 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
   const sorted = useMemo(() => sortRunRows(rows, sort.key, sort.dir), [rows, sort])
   const visible = sorted.slice(0, shown)
   const windowed = visible.length > RUNS_WINDOW_AFTER
+
+  // Row details (plan 2.7). The windowed list (more than RUNS_WINDOW_AFTER rows) assumes fixed 44 px rows, so it has
+  // no expansion: the toggle is not drawn there and the Open run button on each row stays the way in.
+  const uid = useId().replace(/[^a-zA-Z0-9]/g, '')
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set())
+  const [touched, setTouched] = useState<ReadonlySet<string>>(new Set())
+  const toggle = (id: string): void => {
+    setOpen((s) => {
+      const n = new Set(s)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
+      return n
+    })
+    setTouched((s) => (s.has(id) ? s : new Set(s).add(id)))
+  }
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const over = useOverflowX(wrapRef)
@@ -130,9 +146,11 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
               const models = rowModels(r)
               const cache = rowCacheHit(r)
               const status = rowStatusWord(r)
+              const isOpen = open.has(r.runId)
+              const detailId = `${uid}-detail-${r.runId}`
               return (
+                <Fragment key={r.runId}>
                 <tr
-                  key={r.runId}
                   className="usage-run-row"
                   data-testid="usage-run-row"
                   data-run={r.runId}
@@ -141,6 +159,7 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
                   {...(windowed ? { 'aria-rowindex': win.start + i + 2 } : {})}
                 >
                   <th scope="row" className="sticky usage-run-cell">
+                    {!windowed && <RunToggle open={isOpen} detailId={detailId} mounted={touched.has(r.runId)} onToggle={() => toggle(r.runId)} />}
                     {r.projectRemoved ? (
                       <span className="usage-run-name" title={name}>
                         {name}
@@ -173,6 +192,8 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
                   </td>
                   <td className="num">{rowTime(r)}</td>
                 </tr>
+                {!windowed && touched.has(r.runId) && <RunDetailRow id={detailId} colSpan={COLUMNS} open={isOpen} row={r} />}
+                </Fragment>
               )
             })}
             {win.after > 0 && (

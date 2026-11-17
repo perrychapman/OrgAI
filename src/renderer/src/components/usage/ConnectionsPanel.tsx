@@ -4,7 +4,7 @@ import type { UsageOverviewConnection } from '@shared/types'
 import { barFraction, clipMiddle, rankByCost, rollupCost, runsText, sharePercent } from '../../lib/usageCharts'
 import type { UsagePanelProps } from './panelProps'
 import { ChartTable } from './ChartTable'
-import { CostText, RankedBars, useWidePage, type RankedItem } from './RankedBars'
+import { CostText, RANK_TOP, RankedBars, type RankedItem } from './RankedBars'
 import '../../styles/usage-charts.css'
 import '../../styles/usage-breakdown.css'
 
@@ -16,8 +16,7 @@ const agentsText = (n: number): string => `${n} ${n === 1 ? 'agent' : 'agents'}`
 
 /** "Where it went" Connection tab: spend by connection (no tokens are recorded per connection, so unknown costs rank after known ones, then by agents). */
 export default function ConnectionsPanel({ data, filters, onNarrow, announce, embedded }: UsagePanelProps & { embedded?: boolean }): ReactElement {
-  const wide = useWidePage()
-  const limit = wide ? 7 : 5
+  const limit = RANK_TOP
   const [showAll, setShowAll] = useState(false)
 
   const ranked = useMemo(() => {
@@ -92,7 +91,7 @@ export default function ConnectionsPanel({ data, filters, onNarrow, announce, em
       )}
       {ranked.length > limit && (
         <button type="button" className="link-btn uc-more" data-testid="usage-connections-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
-          {showAll ? 'Show fewer' : `Show ${ranked.length - limit} more`}
+          {showAll ? 'Show fewer' : `Show all ${ranked.length}`}
         </button>
       )}
       <ChartTable
