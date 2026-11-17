@@ -217,6 +217,8 @@
   flex: 1 1 0;
   min-height: 0;
   overflow: auto;
+  /* A filter change swaps the panels; anchoring would then slide the page to a different place. Keep the offset. */
+  overflow-anchor: none;
   /* The sticky bar must never cover a focused element (its height is measured by UsageView). */
   scroll-padding-top: var(--usage-filters-h, 0px);
 }
@@ -353,13 +355,22 @@
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
 }
+/* From and to sit on one row (the .select base is width 100%, which stacked them); they wrap only when truly cramped. */
 .usage-months {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
   flex-wrap: wrap;
 }
-.usage-months .select,
+.usage-months .usage-field-label {
+  white-space: nowrap;
+}
+.usage-months .select {
+  width: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
 .usage-field .select {
   min-width: 0;
   max-width: 100%;
@@ -594,6 +605,19 @@
 @container usage (min-width: 1100px) {
   .usage-hero {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+  /* Equal heights by default: the breakdown's own height does not size the row, it fills the chart's. */
+  .usage-hero > .usage-where-card {
+    contain: size;
+    min-block-size: 0;
+  }
+  /* Once the breakdown is expanded (all rows, or its table) it takes the height it needs and the chart card keeps
+     its own instead of stretching to match, so no empty band opens under the axis. */
+  .usage-hero:has(.usage-where-card details[open], .usage-where-card .uc-more[aria-expanded='true'], .usage-where-card .usage-table-controlled:not([hidden])) {
+    align-items: start;
+  }
+  .usage-hero:has(.usage-where-card details[open], .usage-where-card .uc-more[aria-expanded='true'], .usage-where-card .usage-table-controlled:not([hidden])) > .usage-where-card {
+    contain: none;
   }
 }
 

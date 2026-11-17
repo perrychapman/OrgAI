@@ -162,12 +162,12 @@ export default function ProjectsPanel({
         caption="Usage by project"
         columns={[
           { key: 'project', label: 'Project' },
-          { key: 'kind', label: 'Kind' },
+          { key: 'kind', label: 'Kind', optional: true },
           { key: 'runs', label: 'Runs', numeric: true },
-          { key: 'tokens', label: 'Tokens', numeric: true },
+          { key: 'tokens', label: 'Tokens', numeric: true, optional: true },
           { key: 'cost', label: 'Cost', numeric: true },
-          { key: 'perRun', label: 'Cost per run', numeric: true },
-          { key: 'cache', label: 'Cache hit', numeric: true }
+          { key: 'perRun', label: 'Cost per run', numeric: true, optional: true },
+          { key: 'cache', label: 'Cache hit', numeric: true, optional: true }
         ]}
         rows={rows}
         empty="No runs in this period."

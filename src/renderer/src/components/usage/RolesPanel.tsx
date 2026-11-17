@@ -93,12 +93,12 @@ export default function RolesPanel({ data, filters, onNarrow, announce, embedded
         caption="Usage by role"
         columns={[
           { key: 'role', label: 'Role' },
-          { key: 'project', label: 'Project' },
+          { key: 'project', label: 'Project', optional: true },
           { key: 'runs', label: 'Runs', numeric: true },
-          { key: 'agents', label: 'Agents', numeric: true },
-          { key: 'tokens', label: 'Tokens', numeric: true },
+          { key: 'agents', label: 'Agents', numeric: true, optional: true },
+          { key: 'tokens', label: 'Tokens', numeric: true, optional: true },
           { key: 'cost', label: 'Cost', numeric: true },
-          { key: 'retries', label: 'Retries', numeric: true }
+          { key: 'retries', label: 'Retries', numeric: true, optional: true }
         ]}
         rows={rows}
         empty="No runs in this period."

@@ -712,7 +712,7 @@ export default function SpendPanel({
                   onBlur={() => onHighlight(null)}
                 >
                   <Swatch fill={fillOf(idx)} hollow={isHidden} />
-                  <span className="uc-legend-name">{clipMiddle(p.projectName, 28)}</span>
+                  <span className="uc-legend-name">{p.projectName}</span>
                   <span className="uc-legend-value">{legendValue([p], rollupCost(p))}</span>
                 </button>
               </li>
