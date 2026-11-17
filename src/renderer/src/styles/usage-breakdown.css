@@ -8,6 +8,8 @@
   gap: var(--space-1);
   border-bottom: 1px solid var(--border-default);
   overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
 .usage-where-tab {
   flex: none;

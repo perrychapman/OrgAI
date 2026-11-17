@@ -47,8 +47,7 @@
   transition: background-color var(--dur-fast) var(--ease-out);
 }
 .usage-kpi-switch:hover::before {
-  background: var(--surface-hover, var(--surface-2));
-  opacity: 0.5;
+  background: var(--surface-1);
 }
 .usage-kpi-switch[aria-pressed='true']::before {
   border-top-color: var(--accent);
@@ -82,7 +81,17 @@
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
-.usage-kpi-delta,
+/* The arrow stays on the delta's first line. */
+.usage-kpi-delta {
+  display: block;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-kpi-arrow {
+  margin-inline-end: var(--space-1);
+}
 .usage-kpi-sub,
 .usage-kpi-on {
   display: flex;

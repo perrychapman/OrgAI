@@ -463,7 +463,8 @@ export default function UsageView(): ReactElement {
                     onMetric={onMetric}
                     tokens={data.totals.tokens}
                   />
-                  <SummaryNotes notes={notes} />
+                  {/* The partial-cost caveat is said once, by the coverage line under Estimated cost (walkthrough finding 5). */}
+                  <SummaryNotes notes={{ partial: null, unpriced: notes.unpriced }} />
                   {noRuns ? (
                     <EmptyFiltered model={emptyModel(filters, chips, anyRuns?.lastAt ?? null, barNow)} onClear={onClearAll} onUseThirtyDays={useThirtyDays} />
                   ) : (

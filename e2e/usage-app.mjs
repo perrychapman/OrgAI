@@ -71,6 +71,11 @@ const overflow = () => page.evaluate(() => ({ sw: document.documentElement.scrol
 const chips = () => page.locator('[data-testid=usage-chip]').evaluateAll((els) => els.map((e) => ({ kind: e.getAttribute('data-kind'), text: (e.textContent ?? '').trim() })))
 const chipKinds = async () => (await chips()).map((c) => c.kind)
 const bodyText = () => T('usage-view').innerText()
+/** Selects a tab of the "Where it went" card (project, model, role, connection). */
+const whereTab = async (tab) => {
+  await page.locator(`[data-testid=usage-where-tab][data-tab=${tab}]`).click()
+  await sleep(200)
+}
 
 /** Start a mock run, let it spend, stop it and wait until it is no longer live. Returns its id. */
 const seedRun = async (projectId, prompt) => {
@@ -231,9 +236,13 @@ try {
     check(/from \d+ of \d+ runs|0 of \d+ runs/.test(coverage), 'figures: a partial total carries the "from N of M runs" coverage line', `${summaryCost} | ${coverage}`)
     check((await T('usage-no-price-link').count()) === 1, 'figures: usage-no-price-link is present beside the coverage line')
   } else skip('coverage line', `the cost total is not partial in the seed (${summaryCost})`)
+  await whereTab('model')
   const unpricedRow = T('usage-model-row').filter({ has: page.locator('[data-testid=usage-set-price]') })
-  check((await unpricedRow.count()) >= 1, 'figures: the unpriced model row has usage-set-price')
-  check((await T('usage-partial-note').count()) + (await T('usage-unpriced-note').count()) >= 1, 'figures: a partial/unpriced note is shown')
+  check((await unpricedRow.count()) >= 1, 'figures: the unpriced model row has usage-set-price (Model tab)')
+  await whereTab('project')
+  // The partial caveat is said once, by the coverage line under Estimated cost (dashboard rework).
+  check((await T('usage-coverage').count()) + (await T('usage-unpriced-note').count()) >= 1, 'figures: the no-price caveat is shown (coverage line or unpriced note)')
+  check((await T('usage-partial-note').count()) === 0, 'figures: the partial caveat is not repeated under the KPI band')
   void costItem
   // The no-price link adds the "Cost: no price" chip and opens All runs
   await T('usage-no-price-link').click()
@@ -256,7 +265,7 @@ try {
     check(s.filter((t) => /Filter added/.test(t)).length === 1, `drilldown: ${name} announces once`, JSON.stringify(s))
     return ks
   }
-  await drill('a legend row', () => T('usage-spend-legend-row').first().click(), 'project')
+  await drill('a project row (click)', () => T('usage-project-row').first().locator('button').first().click(), 'project')
   check(await T('usage-runs').locator('details').evaluate((d) => d.open), 'drilldown: a project narrowing opens All runs')
   // chip remove
   await watchLive()
@@ -274,10 +283,23 @@ try {
     await T('usage-project-row').first().locator('button').first().focus()
     await page.keyboard.press('Enter')
   }, 'project')
-  await drill('a model row', () => T('usage-model-row').first().click(), 'model')
-  await drill('a role row', () => T('usage-role-row').first().click(), 'role')
+  await drill('a model row', async () => {
+    await whereTab('model')
+    await T('usage-model-row').first().click()
+  }, 'model')
+  await drill('a role row', async () => {
+    await whereTab('role')
+    await T('usage-role-row').first().click()
+  }, 'role')
+  const connRows = await (async () => {
+    await clearAll()
+    await whereTab('connection')
+    return T('usage-connection-row').count()
+  })()
+  check(connRows >= 1, 'where: the Connection tab lists connection rows', String(connRows))
+  await whereTab('project')
   // two chips then Clear all
-  await T('usage-spend-legend-row').first().click().catch(() => {})
+  await T('usage-project-row').first().locator('button').first().click().catch(() => {})
   await sleep(1500)
   await watchLive()
   await T('usage-clear-all').click()
