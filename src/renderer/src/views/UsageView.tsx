@@ -6,7 +6,7 @@ import AppNavigateBanner from '../components/AppNavigateBanner'
 import { joinAnnouncement } from '../components/layout/CanvasFrame'
 import { connectionLabel } from '../lib/connectionLabel'
 import { scrollWithin } from '../lib/scrollWithin'
-import { allUnpriced, assignSeries, fillBuckets, OTHER_KEY, type Metric, type SeriesState } from '../lib/usageCharts'
+import { allUnpriced, assignSeries, axisLabel, fillBuckets, OTHER_KEY, type Metric, type SeriesState } from '../lib/usageCharts'
 import { metricAnnouncement, resolveMetric, seriesAnnouncement, sparkSeries, sparkSignal, toggleSeries, type SparkPoint } from '../lib/usageDashboard'
 import {
   addedChips,
@@ -225,9 +225,15 @@ export default function UsageView(): ReactElement {
     return () => ro.disconnect()
   }, [emptyAll])
 
+  // The sparkline bucket under the pointer (shared with the chart's crosshair) and the KPI number tween's trigger:
+  // only a filter or metric change the user made bumps it, never first paint or the periodic refresh.
+  const [scrub, setScrub] = useState<number | null>(null)
+  const [tweenKey, setTweenKey] = useState(0)
+
   // ---- filter changes ----
   const applyFilters = useCallback(
     (next: UsageFilters, opts?: { moved?: string; cleared?: boolean; scrollRuns?: boolean }) => {
+      setTweenKey((k) => k + 1)
       const before = chips
       const after = usageChips(next, chipNames)
       const added = addedChips(before, after)
@@ -374,6 +380,7 @@ export default function UsageView(): ReactElement {
   const metric = resolveMetric(chosenMetric, unpriced)
   const onMetric = useCallback(
     (m: Metric) => {
+      setTweenKey((k) => k + 1)
       setChosenMetric(m)
       say(metricAnnouncement(m))
     },
@@ -406,16 +413,18 @@ export default function UsageView(): ReactElement {
     [say]
   )
   const prevSpan = useMemo(() => (previousData && context ? previousSpan(filters.period, context.now) : null), [previousData, context, filters.period])
-  const spark = useMemo(() => {
+  const sparkData = useMemo(() => {
     const out: Partial<Record<SummarySignal, SparkPoint[]>> = {}
-    if (!chartTrend || !span || !bucket || !summary) return out
+    if (!chartTrend || !span || !bucket || !summary) return { spark: out, labels: [] as string[] }
     const slots = fillBuckets(chartTrend, span.since, span.until, bucket)
     for (const i of summary) {
       const s = sparkSignal(i.signal)
       if (s) out[i.signal] = sparkSeries(slots, s)
     }
-    return out
+    return { spark: out, labels: slots.map((s) => axisLabel(s.start, bucket)) }
   }, [chartTrend, span, bucket, summary])
+  // The band shows four headline figures; cost per run and cache hit live in the Efficiency strip.
+  const kpiItems = useMemo(() => (summary ?? []).filter((i) => i.signal === 'cost' || i.signal === 'tokens' || i.signal === 'runs' || i.signal === 'wall'), [summary])
 
   return (
     <div className="usage-view" ref={rootRef} data-testid="usage-view" aria-busy={state.busy}>
@@ -453,11 +462,15 @@ export default function UsageView(): ReactElement {
               {panelProps && summary && data && notes && (
                 <>
                   <UsageSummary
-                    items={summary}
+                    items={kpiItems}
                     coverage={costCoverage(data.totals)}
                     modelChip={filters.model}
                     onNoPrice={() => onNarrow({ noPrice: true })}
-                    spark={spark}
+                    spark={sparkData.spark}
+                    bucketLabels={sparkData.labels}
+                    onScrub={setScrub}
+                    tweenKey={tweenKey}
+                    unpricedNote={notes.partial ?? notes.unpriced}
                     bucketWord={`per ${bucket}`}
                     metric={metric}
                     onMetric={onMetric}
@@ -485,7 +498,7 @@ export default function UsageView(): ReactElement {
                           previousSpan={prevSpan}
                           highlight={highlight}
                           onHighlight={setHighlight}
-                          scrubIndex={null}
+                          scrubIndex={scrub}
                         />
                         <BreakdownCard {...panelProps} highlight={highlight} onHighlight={setHighlight} />
                       </div>
