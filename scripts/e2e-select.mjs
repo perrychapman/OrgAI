@@ -51,6 +51,7 @@ export const RULES = [
   { match: ['.github/workflows/**'], kind: 'full', scripts: [], why: 'CI workflow change' },
   { match: ['.github/**'], kind: 'none', scripts: [], why: 'GitHub metadata (templates, dependabot)' },
   { match: ['scripts/smoke-*.mjs', 'scripts/probe-*.mjs', 'scripts/readme-media.mjs', 'scripts/measure-prompt-size.mjs', 'scripts/list-proxy-models.mjs'], kind: 'none', scripts: [], why: 'manual helper script no e2e runs' },
+  { match: ['scripts/audit-gate.mjs'], kind: 'none', scripts: [], why: 'CI dependency audit gate (the audit job); no e2e runs it' },
   { match: ['scripts/merge-latest-mac.mjs'], kind: 'none', scripts: [], why: 'release-only script (release.yml publish job); its node:test runs in test:scripts' },
   { match: ['e2e/setup.mjs', 'e2e/history.mjs', 'e2e/worktree.mjs', 'e2e/shots/**'], kind: 'none', scripts: [], why: 'token-spending e2e or screenshots, not part of the free chain' },
 
