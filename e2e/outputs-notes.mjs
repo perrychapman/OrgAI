@@ -155,7 +155,35 @@ async function toTab(which) {
     .catch(() => undefined)
 }
 const addBtn = () => detail().locator('[data-testid=output-note-add]').first()
-const addEnabled = async () => (await addBtn().getAttribute('aria-disabled')) !== 'true'
+// Kinds with a region tool (diagram, SVG, image, deck) have Add note as a menu button: "Note on the selection" and the
+// "Mark an area" radios live in its menu. Other kinds keep a plain button that is aria-disabled without a selection.
+const addIsMenu = async () => (await addBtn().getAttribute('aria-haspopup')) === 'menu'
+const openAddMenu = async () => {
+  if ((await addBtn().getAttribute('aria-expanded')) !== 'true') await addBtn().click()
+  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'visible', timeout: 4000 })
+}
+const closeAddMenu = async () => {
+  if ((await addBtn().getAttribute('aria-expanded')) !== 'true') return
+  await page.keyboard.press('Escape')
+  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'detached', timeout: 4000 }).catch(() => undefined)
+}
+const addEnabled = async () => {
+  if (!(await addIsMenu())) return (await addBtn().getAttribute('aria-disabled')) !== 'true'
+  await openAddMenu()
+  const on = (await detail().locator('[data-testid=output-note-selection]').getAttribute('aria-disabled')) !== 'true'
+  await closeAddMenu()
+  return on
+}
+const addNote = async () => {
+  if (await addIsMenu()) {
+    await openAddMenu()
+    await detail().locator('[data-testid=output-note-selection]').click()
+  } else await addBtn().click()
+}
+const chooseRegion = async (tool) => {
+  await openAddMenu()
+  await detail().locator(`[data-testid=output-note-region-${tool}]`).click()
+}
 const composer = () => page.locator('[data-testid=output-note-composer]')
 const liveText = async () => clean(await page.locator('[data-testid=output-live], [data-testid=output-live-temp]').allInnerTexts().then((a) => a.join(' ')))
 
@@ -365,10 +393,17 @@ async function regionFlow(label) {
   const vp = detail().locator('[data-testid=diagram-viewport]').first()
   await vp.waitFor({ timeout: 30_000 })
   await sleep(500)
-  const group = detail().locator('[data-testid=output-note-region]')
   check(/Mark an area to add a note\./.test(clean(await detail().locator('[data-testid=output-note-hint]').innerText())), `${label}: the hint names an area`)
+  check((await detail().locator('[data-testid=output-note-region]').count()) === 0, `${label}: the Off / Box / Circle row is not in the toolbar at rest`)
+  await openAddMenu()
+  const group = detail().locator('[data-testid=output-note-region]')
+  check((await group.getAttribute('role')) === 'group' && (await group.locator('[role=menuitemradio]').count()) === 3, `${label}: "Mark an area" is a group of three radio items in the Add note menu`)
+  check((await group.locator('[data-testid=output-note-region-off]').getAttribute('aria-checked')) === 'true', `${label}: the tool starts Off`)
   await group.locator('[data-testid=output-note-region-box]').click()
-  check((await group.locator('[data-testid=output-note-region-box]').getAttribute('aria-pressed')) === 'true', `${label}: the Box tool is pressed`)
+  check(await until(async () => /Marking: Box/.test(clean(await addBtn().innerText()))), `${label}: Add note says "Marking: Box" while the tool is on`)
+  await openAddMenu()
+  check((await detail().locator('[data-testid=output-note-region-box]').getAttribute('aria-checked')) === 'true', `${label}: the Box tool is checked`)
+  await closeAddMenu()
   const before = await vp.evaluate((el) => ({ x: el.dataset.x, y: el.dataset.y }))
   await vp.focus()
   await page.keyboard.press('Enter')
@@ -392,7 +427,10 @@ async function regionFlow(label) {
   // Esc order: the tool is still on; Esc on the viewport turns it off.
   await vp.focus()
   await page.keyboard.press('Escape')
-  check((await group.locator('[data-testid=output-note-region-off]').getAttribute('aria-pressed')) === 'true', `${label}: Esc turns the area tool off`)
+  check(await until(async () => !/Marking:/.test(clean(await addBtn().innerText()))), `${label}: Esc turns the area tool off (Add note no longer says Marking)`)
+  await openAddMenu()
+  check((await detail().locator('[data-testid=output-note-region-off]').getAttribute('aria-checked')) === 'true', `${label}: Off is the checked tool after Esc`)
+  await closeAddMenu()
   check(!(await running(detail())), `${label}: nothing animates in the detail`, await running(detail()))
   // SVG by pointer drag.
   await clearNotes()
@@ -400,7 +438,7 @@ async function regionFlow(label) {
   const svgVp = detail().locator('[data-testid=diagram-viewport]').first()
   await svgVp.waitFor()
   await sleep(500)
-  await detail().locator('[data-testid=output-note-region-ellipse]').click()
+  await chooseRegion('ellipse')
   // In the 360 px panel at 1024x640 the drawing sits below the fold of the detail's scroller: bring it on screen first.
   await svgVp.scrollIntoViewIfNeeded()
   await sleep(200)
@@ -412,7 +450,7 @@ async function regionFlow(label) {
   await page.mouse.up()
   check(await until(addEnabled, 3000), `${label}: a dragged circle enables Add note`)
   check((await svgVp.evaluate((el) => el.dataset.mode)) === 'fit', `${label}: the drag drew instead of panning`)
-  await addBtn().click()
+  await addNote()
   await typeNote('Check the logo colour.')
   const sid = await idOfKind('svg')
   const sa = (await until(async () => (await notesOf(sid)).length === 1)) ? (await notesOf(sid))[0].anchor : null

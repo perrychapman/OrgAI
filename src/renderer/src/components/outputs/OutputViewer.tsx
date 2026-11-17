@@ -14,6 +14,8 @@ import '../../styles/outputs-versions.css'
 
 /** Under this viewer width the drawer overlays the content and starts closed. */
 export const DRAWER_OVERLAY_PX = 900
+/** Under this viewer width the notes drawer starts closed even when notes are open (the drawing keeps the room); the user's toggle wins. */
+export const DRAWER_AUTO_OPEN_PX = 1100
 
 export interface OutputViewerProps {
   /** The detail's shared state; the viewer provides it again as surface 'viewer' with its own announce. */
@@ -40,7 +42,7 @@ export default function OutputViewer({ value, onClose, full, live, head, tools, 
   const openNotes = output.openNoteCount ?? 0
   const [drawer, setDrawer] = useState<boolean | null>(null)
   const narrow = width > 0 && width < DRAWER_OVERLAY_PX
-  const drawerOpen = drawer ?? (width >= DRAWER_OVERLAY_PX && openNotes > 0)
+  const drawerOpen = drawer ?? (width >= DRAWER_AUTO_OPEN_PX && openNotes > 0)
   const wasOpen = useRef(false)
 
   useEffect(() => {
