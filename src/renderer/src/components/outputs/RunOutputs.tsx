@@ -8,6 +8,7 @@ import { RUN_ROW_THUMB_KINDS, currentProvenance, isNewVersion, rowMetaLine } fro
 import { OutputBadges, OutputThumb } from './OutputThumb'
 import { useOutputThumb } from './useOutputThumb'
 import { showHidden } from '../../lib/hiddenChars'
+import { overlayOwnsEscape } from '../../lib/outputToolbar'
 import { runTag } from '../../lib/runLabels'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
@@ -135,8 +136,8 @@ export default function RunOutputs({ runId, projectId }: { runId: string; projec
   const onDetailKey = (e: KeyboardEvent<HTMLDivElement>): void => {
     onStepKey(e)
     if (e.key !== 'Escape' || e.defaultPrevented) return
-    // A menu or dialog inside the detail closes itself first.
-    if ((e.target as Element).closest('[popover], dialog, [role=dialog]')) return
+    // A menu or dialog inside the detail closes itself first (also when focus is still on the menu's trigger).
+    if (overlayOwnsEscape(e.target as Element, (id) => document.getElementById(id)?.hasAttribute('popover') === true)) return
     e.preventDefault()
     e.stopPropagation()
     back()

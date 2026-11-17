@@ -2,6 +2,7 @@ import type { KeyboardEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Project, RunOutput } from '@shared/types'
 import { runName } from '@shared/view/runLabels'
+import { overlayOwnsEscape } from '../lib/outputToolbar'
 import type { OutputsFilter, OutputsViewMode, UpdatedVersion } from '../lib/outputsList'
 import { EMPTY_OUTPUTS_FILTER, OUTPUTS_COUNT_ANNOUNCE_MS, OUTPUTS_PRODUCED_ANNOUNCE_MS, countLine, deletedText, filterOutputs, idAfterRemoval, isOutputsFilterActive, kindCounts, newOutputIds, outputsViewKey, producedText, readViewMode, resolveOutputFocus, runOptions, selectedText, updatedText, updatedVersions } from '../lib/outputsList'
 import { useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
@@ -329,6 +330,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
     const t = e.target as HTMLElement
     try {
       if (t.closest('[popover]:popover-open') || t.closest('[role=dialog], dialog')) return
+      if (overlayOwnsEscape(t, (id) => document.getElementById(id)?.hasAttribute('popover') === true)) return
     } catch {
       /* :popover-open unsupported */
     }
