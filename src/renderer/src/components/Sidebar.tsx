@@ -33,6 +33,7 @@ import { Badge } from './ui/Badge'
 import { Button } from './ui/Button'
 import { IconButton } from './ui/IconButton'
 import { Popover } from './ui/Popover'
+import UpdateNotice from './updates/UpdateNotice'
 
 const MOCK_TIP = 'ORGAI_MOCK is on: runs use scripted data, no tokens are spent'
 
@@ -577,6 +578,7 @@ export default function Sidebar({
             })}
       </div>
 
+      <UpdateNotice rail={rail} />
       <div className="sidebar-footer">
         <Popover
           trigger={

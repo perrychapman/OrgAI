@@ -1392,9 +1392,9 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
     surface: 'app-settings-connections-model-prices',
     control: 'user'
   },
-  // PLACEHOLDER (updater contract): the renderer lead points this at the About surface's update control once it exists.
+  // The "Check for updates automatically" switch in App settings > About > Updates (components/updates/UpdatesSection.tsx).
   autoUpdateCheck: {
-    summary: 'Check GitHub for a new OrgAI release at launch and every six hours. It never downloads or installs on its own. On unless turned off.',
+    summary: 'Check GitHub for a new OrgAI release about 30 seconds after launch and then every six hours ("Check for updates automatically" under About > Updates). It never downloads on its own; an update you downloaded installs when you restart from About or the next time OrgAI quits. On unless turned off.',
     surface: 'app-settings-about',
     control: 'user'
   },
