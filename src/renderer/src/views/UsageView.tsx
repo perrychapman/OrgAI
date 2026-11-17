@@ -14,6 +14,7 @@ import {
   narrowFilters,
   previousPeriodWords,
   previousSpan,
+  effectiveBucket,
   queryKey,
   usageChips,
   usageData,
@@ -47,7 +48,7 @@ import StaffingPanel from '../components/usage/StaffingPanel'
 import WastefulRuns from '../components/usage/WastefulRuns'
 import AllRuns from '../components/usage/AllRuns'
 import UsageHeader, { UsageTopbarActions } from '../components/usage/UsageHeader'
-import UsageFilterBar from '../components/usage/UsageFilterBar'
+import UsageFilterBar, { BucketControl } from '../components/usage/UsageFilterBar'
 import UsageChips from '../components/usage/UsageChips'
 import UsageSummary from '../components/usage/UsageSummary'
 import UsageDefinitions from '../components/usage/UsageDefinitions'
@@ -222,7 +223,18 @@ export default function UsageView(): ReactElement {
     const ro = new ResizeObserver(apply)
     ro.observe(bar)
     apply()
-    return () => ro.disconnect()
+    // The bar's bottom hairline shows once the page has scrolled (an attribute, no React state per scroll).
+    const scroller = scrollRef.current
+    const onScroll = (): void => {
+      const on = (scroller?.scrollTop ?? 0) > 0 ? 'true' : 'false'
+      if (bar.dataset.scrolled !== on) bar.dataset.scrolled = on
+    }
+    scroller?.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => {
+      ro.disconnect()
+      scroller?.removeEventListener('scroll', onScroll)
+    }
   }, [emptyAll])
 
   // The sparkline bucket under the pointer (shared with the chart's crosshair) and the KPI number tween's trigger:
@@ -452,6 +464,7 @@ export default function UsageView(): ReactElement {
                   projectName={projectName}
                   scope={scope}
                   barRef={barRef}
+                  runs={data ? data.matchedRuns : null}
                 />
                 <UsageChips chips={chips} onRemove={onRemoveChip} onClear={onClearAll} />
               </div>
@@ -499,6 +512,11 @@ export default function UsageView(): ReactElement {
                           highlight={highlight}
                           onHighlight={setHighlight}
                           scrubIndex={scrub}
+                          groupBy={
+                            span && bucket ? (
+                              <BucketControl value={effectiveBucket(filters, barNow)} days={span.days} onChange={(b) => applyFilters({ ...filters, bucket: b })} />
+                            ) : undefined
+                          }
                         />
                         <BreakdownCard {...panelProps} highlight={highlight} onHighlight={setHighlight} />
                       </div>

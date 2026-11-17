@@ -141,6 +141,9 @@ function Instrument({ item, onPick }: { item: EfficiencyItem; onPick: (item: Eff
   )
 }
 
+/** Measures shown in the strip; the rest are under "More signals". */
+const EFF_SHOWN = 4
+
 const COLUMNS: { col: EfficiencyColumn; label: string; num: boolean }[] = [
   { col: 'project', label: 'Project', num: false },
   { col: 'runs', label: 'Runs', num: true },
@@ -165,6 +168,8 @@ export default function EfficiencyPanel({ data, overview, onPickSignal, announce
 
   const groupRef = useRef<HTMLDivElement>(null)
   const roving = useRovingFocus(groupRef, '.usage-eff-info, .usage-eff-value')
+  const moreRef = useRef<HTMLDivElement>(null)
+  const moreRoving = useRovingFocus(moreRef, '.usage-eff-info, .usage-eff-value')
 
   const pick = (item: EfficiencyItem): void => {
     onPickSignal(item.sort)
@@ -185,11 +190,24 @@ export default function EfficiencyPanel({ data, overview, onPickSignal, announce
       {data.rows.length === 0 ? (
         <p className="usage-note">No runs in this view.</p>
       ) : (
-        <div ref={groupRef} className="usage-eff-grid" role="group" aria-label="Efficiency measures. Arrow keys move between them; press a value to sort Runs worth a look by it." onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
-          {items.map((item) => (
-            <Instrument key={item.signal} item={item} onPick={pick} />
-          ))}
-        </div>
+        <>
+          {/* A strip of the first four measures; the rest sit one disclosure down (dashboard rework). */}
+          <div ref={groupRef} className="usage-eff-grid" data-testid="usage-eff-main" role="group" aria-label="Efficiency measures. Arrow keys move between them; press a value to sort Runs worth a look by it." onKeyDown={roving.onKeyDown} onFocus={roving.onFocus}>
+            {items.slice(0, EFF_SHOWN).map((item) => (
+              <Instrument key={item.signal} item={item} onPick={pick} />
+            ))}
+          </div>
+          {items.length > EFF_SHOWN && (
+            <details className="usage-timing-details" data-testid="usage-eff-more-details">
+              <summary>More signals ({items.length - EFF_SHOWN})</summary>
+              <div ref={moreRef} className="usage-eff-grid" data-testid="usage-eff-more" role="group" aria-label="More efficiency measures. Arrow keys move between them." onKeyDown={moreRoving.onKeyDown} onFocus={moreRoving.onFocus}>
+                {items.slice(EFF_SHOWN).map((item) => (
+                  <Instrument key={item.signal} item={item} onPick={pick} />
+                ))}
+              </div>
+            </details>
+          )}
+        </>
       )}
       {timing.runs > 0 && (
         <details className="usage-timing-details" data-testid="usage-timing-details">

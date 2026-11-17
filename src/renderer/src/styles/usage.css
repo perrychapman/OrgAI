@@ -291,7 +291,28 @@
   z-index: var(--z-sticky);
   margin-inline: calc(-1 * var(--usage-pad));
   background: var(--surface-0);
-  border-bottom: 1px solid var(--border-subtle);
+}
+/* The hairline under the bar appears only once the page has scrolled (motion plan M12; opacity only). */
+.usage-sticky::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 1px;
+  background: var(--border-subtle);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+  pointer-events: none;
+}
+.usage-sticky[data-scrolled='true']::after {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-sticky::after {
+    transition: none;
+  }
+}
+:root[data-reduce-motion='on'] .usage-sticky::after {
+  transition: none;
 }
 .usage-sticky > .usage-chips {
   padding: 0 var(--usage-pad) var(--space-2);
@@ -301,8 +322,11 @@
   background: var(--surface-0);
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-2) var(--space-4);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.usage-period-runs {
+  color: var(--text-tertiary);
 }
 /* One wrapping row at 1600 px, two at 1024 px: the rows only group the DOM. */
 .usage-filters-row {
@@ -555,7 +579,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
-  align-items: start;
+  align-items: stretch;
 }
 @container usage (min-width: 1100px) {
   .usage-hero {
@@ -563,11 +587,17 @@
   }
 }
 
-/* Runs worth a look beside Staffing only on very wide pages; the runs table needs the width below that. */
+/* Runs worth a look beside Cost by tier from 1100 px; one column below. */
 .usage-pair {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-6);
+  gap: 0 var(--space-6);
+  align-items: start;
+}
+@container usage (min-width: 1100px) {
+  .usage-pair {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
 }
 .usage-panel-head {
   display: flex;
