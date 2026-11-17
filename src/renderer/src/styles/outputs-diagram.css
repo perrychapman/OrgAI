@@ -18,6 +18,8 @@
 
 /* ---------- Toolbar: one 36 px row, wrapping rather than clipping ---------- */
 .diagram-toolbar {
+  /* Never squeezed below its wrapped rows when the panel is short: the stage gives way, the toolbar does not. */
+  flex: none;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -141,11 +143,11 @@
 .diagram-empty {
   padding: var(--space-3);
 }
-/* Embedded: a set height (a stage inside a scrolling column cannot follow its content), never under 240 px. About 40% of
-   the window (spec 8.9) so the head and toolbar stay in view at 1024x640: 269 px there, 420 px at 1600x1000. */
+/* Embedded: the stage takes the height the detail body gives it (the body is a flex column that fills the panel), never under
+   200 px. A stage inside a column that has no height of its own cannot follow its content, so 320 px is its basis then. */
 .diagram-viewer[data-context='detail'] .diagram-pane-view .pz-stage {
-  flex: 0 0 auto;
-  height: clamp(240px, 42vh, 480px);
+  flex: 1 1 320px;
+  min-height: 200px;
 }
 .diagram-viewer[data-context='detail'] .diagram-pane-source {
   flex: 0 0 auto;
@@ -177,7 +179,7 @@
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 240px;
+  min-height: 200px;
   overflow: hidden;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);

@@ -41,16 +41,16 @@ export function clampK(k: number): number {
 }
 
 /** The scale at which `natural` fits `box` with `pad` px around it: min(area fit, FIT_MAX). No floor: a huge drawing still fits. */
-export function fitScale(box: Box, natural: Size, pad = FIT_PAD): number {
+export function fitScale(box: Box, natural: Size, pad = FIT_PAD, max = FIT_MAX): number {
   if (!usable(box) || !usable(natural)) return 1
   const availW = Math.max(1, box.w - pad * 2)
   const availH = Math.max(1, box.h - pad * 2)
-  return Math.min(FIT_MAX, availW / natural.w, availH / natural.h)
+  return Math.min(max, availW / natural.w, availH / natural.h)
 }
 
 /** The fitted view, centred. */
-export function fitView(box: Box, natural: Size, pad = FIT_PAD): View {
-  const k = fitScale(box, natural, pad)
+export function fitView(box: Box, natural: Size, pad = FIT_PAD, max = FIT_MAX): View {
+  const k = fitScale(box, natural, pad, max)
   return { k, x: (box.w - natural.w * k) / 2, y: (box.h - natural.h * k) / 2 }
 }
 
@@ -194,20 +194,31 @@ export function viewKey(e: { key: string; shiftKey?: boolean; ctrlKey?: boolean;
 
 // ---------- Large diagrams (8.3) ----------
 
+/** A diagram of this many shapes or more is a big one: the note and the overview default look at it. */
 export const LARGE_SHAPES = 40
+/** Under this scale at Fit a big diagram's text is not readable. */
 export const LARGE_FIT = 0.4
 /** Over this many bytes of source the drawing waits for "Draw it anyway". */
 export const DRAW_GUARD_BYTES = 64 * 1024
 export const SHAPE_SELECTOR = 'g.node, g.cluster, .actor, .entity'
 export const LABEL_LIST_MAX = 60
 
-export function isLargeDiagram(shapes: number, fit: number): boolean {
-  return shapes > LARGE_SHAPES || fit < LARGE_FIT
+/** Many shapes: the overview opens by default in the Larger view once the drawing is bigger than the viewport. */
+export function isBigDiagram(shapes: number): boolean {
+  return shapes >= LARGE_SHAPES
 }
 
-export function largeNote(shapes: number): string {
+/**
+ * Says "Large diagram" only for a diagram that is both big (LARGE_SHAPES or more) and not readable at Fit. A short, wide
+ * five-shape flowchart fits at a tiny scale too, but the note would call it large.
+ */
+export function isLargeDiagram(shapes: number, fit: number): boolean {
+  return isBigDiagram(shapes) && fit < LARGE_FIT
+}
+
+export function largeNote(shapes: number, inLargerView = false): string {
   const what = shapes > 0 ? `${shapes} ${shapes === 1 ? 'shape' : 'shapes'}` : 'many shapes'
-  return `Large diagram, ${what}. Zoom in to read, or open the larger view.`
+  return inLargerView ? `Large diagram, ${what}. Zoom in to read.` : `Large diagram, ${what}. Zoom in to read, or open the larger view.`
 }
 
 export const GUARD_TEXT = 'This diagram is very large and may be slow to draw.'

@@ -161,6 +161,19 @@
 .output-slides[data-surface='viewer'] .slide-stage .slide-paper {
   width: min(100cqw, calc(100cqh * var(--slide-aspect, 1.7778)));
 }
+/* The panel: the stage is as wide as the panel and as tall as the slide's own shape asks (it gives way only when the panel is
+   shorter than that), with no side padding, so the slide is not drawn smaller than it must be. */
+.output-slides[data-surface='detail'] .slide-stage {
+  flex: 0 1 auto;
+  min-height: 120px;
+  padding: 0;
+  align-items: center;
+  aspect-ratio: var(--slide-aspect, 1.7778);
+  container-type: size;
+}
+.output-slides[data-surface='detail'] .slide-stage .slide-paper {
+  width: min(100cqw, calc(100cqh * var(--slide-aspect, 1.7778)));
+}
 .slide-bar {
   display: flex;
   align-items: center;

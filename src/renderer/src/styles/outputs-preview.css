@@ -8,6 +8,11 @@
   min-width: 0;
   flex: 1 1 auto;
 }
+/* In the detail panel the preview takes what the detail body leaves (a flex column that fills the panel); never under 200 px.
+   Text-like kinds scroll inside it, so the head and the tabs stay where they are. */
+.output-preview[data-context='detail'] {
+  min-height: 200px;
+}
 .output-preview > *,
 .output-doc,
 .output-sheets,
@@ -208,7 +213,10 @@ h6.output-doc-heading {
 .output-sheet-region {
   flex: 0 1 auto;
 }
+/* The table fills the width it is given (the panel, or the Larger view's whole area). Columns grow to their content between
+   96 and 320 px and cut longer text with an ellipsis (the cell's title carries the rest); the header row stays in view. */
 .output-sheet-table {
+  width: 100%;
   border-collapse: separate;
   border-spacing: 0;
   font-size: var(--text-small);
@@ -220,11 +228,24 @@ h6.output-doc-heading {
   padding: var(--space-1) var(--space-3);
   border-right: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
-  max-width: 40ch;
+  box-sizing: border-box;
+  min-width: 96px;
+  max-width: 320px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: left;
+}
+/* The panel is narrow: a small table still fits it, so its columns start narrower (the Larger view keeps 96 px). */
+.output-preview[data-context='detail'] .output-sheet-table th,
+.output-preview[data-context='detail'] .output-sheet-table td {
+  min-width: 72px;
+}
+/* The row numbers and the corner stay as narrow as their digits. */
+.output-preview[data-context] .output-sheet-table tbody th[scope='row'],
+.output-preview[data-context] .output-sheet-table .output-sheet-corner {
+  width: 1%;
+  min-width: 0;
 }
 .output-sheet-table td[data-num] {
   text-align: right;
