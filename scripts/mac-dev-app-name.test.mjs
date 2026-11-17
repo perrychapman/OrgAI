@@ -92,6 +92,9 @@ test('icon: plist without CFBundleIconFile defaults to electron.icns; current ic
   assert.ok(f.calls.every((c) => c[1] === '-extract'))
   assert.equal(iconDestination(APP, ''), `${APP}/Contents/Resources/electron.icns`)
   assert.equal(iconDestination(APP, 'foo'), `${APP}/Contents/Resources/foo.icns`)
+  for (const bad of ['../../x', '..', 'a/b.icns', 'a\\b', '/abs.icns']) {
+    assert.equal(iconDestination(APP, bad), `${APP}/Contents/Resources/electron.icns`, bad)
+  }
 })
 
 test('icon: non-darwin never copies', async () => {
