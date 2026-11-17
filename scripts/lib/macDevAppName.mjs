@@ -26,7 +26,7 @@ export const MANUAL_FIX = (app) =>
   `Manual fix: for k in CFBundleName CFBundleDisplayName; do /usr/bin/plutil -replace $k -string ${APP_NAME} "${app}/Contents/Info.plist"; done; /usr/bin/codesign --force --deep --sign - "${app}"`
 
 /** Returns { action: 'skipped' | 'unchanged' | 'renamed', message }. Throws on runner errors (caller prints a warning). */
-export async function applyDevAppName({ platform, electronBinary, run }) {
+export async function applyDevAppName({ platform, electronBinary, run, iconSource, copyFile, iconIsCurrent }) {
   if (platform !== 'darwin') return { action: 'skipped', message: '' }
   const app = appBundleOf(electronBinary)
   if (!app) throw new Error(`Unexpected Electron path: ${String(electronBinary)}`)
@@ -40,8 +40,31 @@ export async function applyDevAppName({ platform, electronBinary, run }) {
     }
     if (current !== APP_NAME) stale.push(key)
   }
-  if (stale.length === 0) return { action: 'unchanged', message: `mac-dev-app-name: dev Electron already named ${APP_NAME}.` }
+  // Icon: notifications and the Dock hover use the bundle icon. Copy build/icon.icns over Electron's icon file once
+  // (iconIsCurrent compares bytes, so an unchanged dev start neither copies nor re-signs). Skipped without an iconSource.
+  let iconCopied = false
+  if (iconSource && copyFile) {
+    let name = ''
+    try {
+      name = String((await run(PLUTIL, readArgs(app, 'CFBundleIconFile'))).stdout ?? '').trim()
+    } catch {
+      name = ''
+    }
+    const dest = iconDestination(app, name)
+    if (!(await iconIsCurrent?.(iconSource, dest))) {
+      await copyFile(iconSource, dest)
+      iconCopied = true
+    }
+  }
+  if (stale.length === 0 && !iconCopied) return { action: 'unchanged', message: `mac-dev-app-name: dev Electron already named ${APP_NAME}.` }
   for (const key of stale) await run(PLUTIL, replaceArgs(app, key))
   await run(CODESIGN, signArgs(app))
-  return { action: 'renamed', message: `mac-dev-app-name: set ${stale.join(' and ')} to ${APP_NAME} in ${app} and re-signed it ad hoc.` }
+  const did = [...(stale.length ? [`set ${stale.join(' and ')} to ${APP_NAME}`] : []), ...(iconCopied ? ['replaced the icon'] : [])].join(' and ')
+  return { action: 'renamed', message: `mac-dev-app-name: ${did} in ${app} and re-signed it ad hoc.` }
+}
+
+/** <app>/Contents/Resources/<CFBundleIconFile>, with the .icns extension added when the plist omits it; default electron.icns. */
+export function iconDestination(app, iconFile) {
+  const name = iconFile || 'electron.icns'
+  return `${app}/Contents/Resources/${name.endsWith('.icns') ? name : `${name}.icns`}`
 }
