@@ -52,6 +52,8 @@ export interface UpdaterLike {
   /** BaseUpdater.install(isSilent, isForceRunAfter): spawns the downloaded installer. Called from the app's 'quit' event only. */
   install(isSilent: boolean, isForceRunAfter: boolean): boolean
   onProgress(cb: (p: UpdaterProgressInfo) => void): void
+  /** electron-updater's autoInstallOnAppQuit (its own 'quit' handler reads it at quit time). */
+  setAutoInstallOnQuit(on: boolean): void
 }
 
 // ---------- Pure helpers ----------
@@ -137,9 +139,10 @@ function codePoint(n: number): string | undefined {
   return String.fromCodePoint(n)
 }
 
-// C0 / C1 controls except tab and newline, bidi controls, zero-width characters and the BOM.
+// C0 / C1 controls except tab and newline, the Arabic letter mark, zero-width and bidi characters, the line and paragraph
+// separators and the BOM. Written as escapes: the source holds no invisible character.
 // eslint-disable-next-line no-control-regex
-const HIDDEN_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]/g
+const HIDDEN_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g
 
 /**
  * The feed's release notes as plain text (untrusted). Accepts electron-updater's `string | ReleaseNoteInfo[] | null`
@@ -332,6 +335,10 @@ export class UpdateController {
         } else if (r.isUpdateAvailable) {
           const v = r.updateInfo?.version
           if (!isUpdateVersion(v)) {
+            // electron-updater now holds this (unreadable) release: forget the earlier one so no download starts for it.
+            this.availableVersion = undefined
+            this.releaseNotes = undefined
+            this.progress = undefined
             this.fail(UPDATE_ERROR_TEXT.badVersion, 'The update feed named an invalid version.')
           } else {
             this.status = 'available'
@@ -425,12 +432,31 @@ export class UpdateController {
    * silently, and runs the app again afterwards. Without one, electron-updater's own quit handler
    * (autoInstallOnAppQuit) installs a downloaded update silently without relaunching.
    */
-  onAppQuit(): void {
+  onAppQuit(exitCode: number): void {
+    if (exitCode !== 0) {
+      // Not a clean quit: nothing installs (electron-updater's own handler also refuses a non-zero code).
+      if (this.installing) this.deps.log.warn(`Update not installed: the app quit with code ${exitCode}.`)
+      return
+    }
     if (!this.installing || this.deps.dryInstall || !this.deps.updater) return
     try {
       if (!this.deps.updater.install(true, true)) this.deps.log.warn('The update installer did not start.')
     } catch (e) {
       this.deps.log.warn(`The update installer did not start: ${rawMessage(e)}`)
+    }
+  }
+
+  /**
+   * The shutdown failed and the app is about to app.exit(0) (desktopQuit.ts), which still emits 'quit' with code 0:
+   * neither our install nor electron-updater's install-on-quit may run then. Idempotent.
+   */
+  cancelInstallOnQuit(): void {
+    if (this.installing) this.deps.log.warn('Update install cancelled: the shutdown did not finish cleanly.')
+    this.installing = false
+    try {
+      this.deps.updater?.setAutoInstallOnQuit(false)
+    } catch (e) {
+      this.deps.log.warn(`Could not turn off install on quit: ${rawMessage(e)}`)
     }
   }
 
