@@ -10,6 +10,7 @@ import {
   FIDELITY_NOTE,
   labelsInBox,
   openNotesBySlide,
+  slideAspect,
   slideCounter,
   slideKey,
   truncatedSlidesLine
@@ -34,6 +35,8 @@ export default function SlideViewer({ size, slides, truncatedSlides }: SlideView
   const ctx = useOutputDetail()
   const view = useOutputView()
   const surface = ctx?.surface ?? (view.context === 'dialog' ? 'viewer' : 'detail')
+  // The panel is narrow: it keeps the stage, Previous / Next and the counter. The filmstrip and the speaker notes are the Larger view's.
+  const panel = surface === 'detail'
   const [index, setIndex] = useState(0)
   const [wide, setWide] = useState(true)
   const [notesOpen, setNotesOpen] = useState(false)
@@ -128,6 +131,7 @@ export default function SlideViewer({ size, slides, truncatedSlides }: SlideView
           aria-roledescription="slide"
           aria-label={slideLabel}
           tabIndex={0}
+          style={{ ['--slide-aspect' as string]: String(slideAspect(size)) }}
           onKeyDown={onStageKey}
         >
           <SlideStage slide={slide} size={size}>
@@ -159,22 +163,24 @@ export default function SlideViewer({ size, slides, truncatedSlides }: SlideView
             </Button>
           ) : null}
         </div>
-        <div className="slide-notes" data-testid="slide-notes" data-open={notesOpen ? 'true' : 'false'}>
-          <button
-            type="button"
-            className="slide-notes-toggle"
-            aria-expanded={notesOpen}
-            aria-controls={notesId}
-            onClick={() => setNotesOpen((o) => !o)}
-          >
-            Speaker notes
-          </button>
-          {notesOpen ? (
-            <p id={notesId} className="slide-notes-body" data-testid="slide-notes-body">
-              {slide.notes?.trim() ? slide.notes : 'This slide has no speaker notes.'}
-            </p>
-          ) : null}
-        </div>
+        {panel ? null : (
+          <div className="slide-notes" data-testid="slide-notes" data-open={notesOpen ? 'true' : 'false'}>
+            <button
+              type="button"
+              className="slide-notes-toggle"
+              aria-expanded={notesOpen}
+              aria-controls={notesId}
+              onClick={() => setNotesOpen((o) => !o)}
+            >
+              Speaker notes
+            </button>
+            {notesOpen ? (
+              <p id={notesId} className="slide-notes-body" data-testid="slide-notes-body">
+                {slide.notes?.trim() ? slide.notes : 'This slide has no speaker notes.'}
+              </p>
+            ) : null}
+          </div>
+        )}
         <p className="output-preview-note slide-fidelity" data-testid="slide-fidelity">
           {FIDELITY_NOTE}
         </p>
@@ -184,7 +190,7 @@ export default function SlideViewer({ size, slides, truncatedSlides }: SlideView
           </p>
         ) : null}
       </div>
-      <SlideStrip slides={slides} size={size} index={at} onSelect={go} openNotes={openNotes} vertical={wide} focusOnMount={surface === 'viewer'} />
+      {panel ? null : <SlideStrip slides={slides} size={size} index={at} onSelect={go} openNotes={openNotes} vertical={wide} focusOnMount={surface === 'viewer'} />}
      </div>
     </div>
   )

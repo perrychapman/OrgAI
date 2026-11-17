@@ -9,6 +9,8 @@ import {
   actualView,
   centerOnOverview,
   clampView,
+  FIT_MAX,
+  FIT_PAD,
   fitScale,
   fitView,
   panBy,
@@ -22,16 +24,18 @@ import {
   type View,
   type ViewKey
 } from '../../../lib/diagramView'
+import { initialView, type InitialViewOptions } from '../../../lib/outputZoom'
 
 export type WheelMode = 'zoom' | 'modifier'
 
 export interface PanZoom {
-  /** The view drawn now (the fitted one while mode is 'fit'). */
+  /** The view drawn now (the opening or fitted one while mode is 'fit'). */
   view: View
+  /** 'fit' until the user zooms or pans: the box's size then still decides the view. */
   mode: 'fit' | 'free'
   box: Box
   natural: Size | null
-  /** The scale Fit would use now. */
+  /** The scale the Fit button would use now (the whole drawing in the box). */
   fitK: number
   dragging: boolean
   atMin: boolean
@@ -63,15 +67,24 @@ interface Options {
   onSpeak?: (text: string) => void
   /** Keys that are not about the view itself (O, S, F). */
   onCommand?: (cmd: ViewKey) => void
+  /** How the drawing opens (lib/outputZoom.ts initialView): a floor, a ceiling and the padding. Default: whole drawing, up to FIT_MAX. */
+  open?: InitialViewOptions
 }
 
 const SPEAK_DELAY_MS = 400
 
-/** The view of a drawing of `natural` px inside the viewport element: fit until the user pans or zooms. */
-export function usePanZoom(natural: Size | null, { wheel, onSpeak, onCommand }: Options): PanZoom {
+/**
+ * The view of a drawing of `natural` px inside the viewport element: it opens as `open` says and follows the box's size until the
+ * user pans or zooms. The Fit button always shows the whole drawing (contained), with no floor.
+ */
+export function usePanZoom(natural: Size | null, { wheel, onSpeak, onCommand, open }: Options): PanZoom {
   const [el, setEl] = useState<HTMLDivElement | null>(null)
   const [box, setBox] = useState<Box>({ w: 0, h: 0 })
-  const [mode, setMode] = useState<'fit' | 'free'>('fit')
+  // 'auto' is the opening view; 'contain' is the Fit button's; both report mode 'fit'.
+  const [mode, setMode] = useState<'auto' | 'contain' | 'free'>('auto')
+  const floor = open?.floor ?? 0
+  const maxK = open?.max ?? FIT_MAX
+  const pad = open?.pad ?? FIT_PAD
   const [free, setFree] = useState<View>({ k: 1, x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
 
@@ -90,8 +103,8 @@ export function usePanZoom(natural: Size | null, { wheel, onSpeak, onCommand }: 
   }, [el])
 
   const ready = natural !== null && box.w > 0 && box.h > 0
-  const fitK = ready ? fitScale(box, natural) : 1
-  const view: View = ready && mode === 'fit' ? fitView(box, natural) : free
+  const fitK = ready ? fitScale(box, natural, pad, maxK) : 1
+  const view: View = ready && mode === 'auto' ? initialView(natural, box, { floor, max: maxK, pad }) : ready && mode === 'contain' ? fitView(box, natural, pad, maxK) : free
 
   // Handlers read the latest state through refs, so they never close over a stale view.
   const live = useRef({ view, mode, box, natural, wheel, onSpeak, onCommand })
@@ -117,7 +130,7 @@ export function usePanZoom(natural: Size | null, { wheel, onSpeak, onCommand }: 
 
   const fit = useCallback(
     (say = true): void => {
-      setMode('fit')
+      setMode('contain')
       if (say) speak(zoomSpeech(fitK, true))
     },
     [fitK, speak]
@@ -254,7 +267,7 @@ export function usePanZoom(natural: Size | null, { wheel, onSpeak, onCommand }: 
   const onDoubleClick = (e: React.MouseEvent<HTMLDivElement>): void => {
     const { mode: m, view: v } = live.current
     // Fit and 100% trade places; the 100% view centres on the pointer.
-    if (m === 'fit' || Math.abs(v.k - 1) > 0.005) actual(local(e))
+    if (m !== 'free' || Math.abs(v.k - 1) > 0.005) actual(local(e))
     else fit()
   }
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
@@ -292,7 +305,7 @@ export function usePanZoom(natural: Size | null, { wheel, onSpeak, onCommand }: 
 
   return {
     view,
-    mode,
+    mode: mode === 'free' ? 'free' : 'fit',
     box,
     natural,
     fitK,
