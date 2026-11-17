@@ -200,3 +200,147 @@ Inferred (code only): why R2 shows no outputs (`lib/outputsRun.ts` filters `o.ru
 5. Fill the Larger view for tables, SVG and slide decks at 1024 (close the Notes drawer by default) (M2, M3).
 6. Run side tab: drop the "Show" button on rows (the row is the target), and list outputs whose latest version came from this run (M6, M7).
 7. Add an image/PDF thumbnail (M4) and let the compare view use the Larger view (M5).
+
+## Re-walk after the fix (2026-11-17)
+
+Reviewer: UX Researcher. Build under test: the uncommitted working tree of worktree `agent-a609828a1e4756c6d`, its `out/` built 2026-11-17 10:37 (I did not rebuild or edit it; the commit sha was not readable from here). Ran the built app on `ORGAI_MOCK=1`, token-free, with a throwaway data dir, project "UX Outputs", 17 outputs: all 12 kinds (diagram x4, image x2, text x2, and one each of csv, deck, xlsx, other, json, markdown, pdf, svg, docx), R1 `[mock:outputs-all]`, R2 `[mock:outputs-v2]` (5 outputs get version 2), R3 registered files (text, png 1200x800, .bin, handoff.txt, a tiny pdf). Three notes were added through the preload API (Summary text, Project deck slide 2, Report cell). Sizes 1600x1000 and 1024x640 (`setContentSize`), dark and light (settings), mouse pass then one keyboard pass at 1024x640 dark. Scripts, 139 screenshots and raw JSON (`m1-all.json` panel, `m2.json` larger view, `m3.json` widths, menus and drawer, `m4.json` run tab, `m5.json` keyboard): `e2e/shots/ux/outputs-recheck/` (gitignored). The seed differs from the first walk (17 outputs, not 13; the first walk's scripts were not available), so counts for a kind are comparable but not row-for-row.
+
+"Observed" means I saw or measured it. "Inferred" means I did not see it. Counting rules: (a) every visible button, select, link, tab, radio, input and the Resize separator inside the output detail panel, as the first review counted; (b) Tab stops inside the panel (a tablist, radio group or the diagram toolbar counts as one; the scrollable content region counts as one stop). "Above content" is the chrome that sits above the preview (Hide, Resize, Previous, Next, run link, three tabs, toolbar); controls that live inside the preview region (zoom, view switch, sheet tabs, slide arrows) are listed as "in preview". Numbers are identical in dark and light and at both sizes unless a column says otherwise.
+
+### Verdict: MOSTLY FIXED
+
+Both original complaints are largely gone. The panel is now a preview-first card: the toolbar holds at most 4 controls, the preview starts 184 px from the window top (text) instead of 355 to 529, and the panel is 677 px wide at 1600 and 581 px at 1024 (was 360). The diagram, previously 293x25 px at 31%, is now 634x209 px at 115% (1600) and 538x178 px at 97% (1024). Larger view is reachable one way, closes with focus returning to its button, opens the Notes drawer closed at 1024, and widens tables. The Run side tab now lists R2's versioned outputs. What is left is polish and a few structural leftovers: the panel header is still 8 controls tall before the toolbar for every kind, the diagram still carries a second "..." menu, PDF and "other" panels are one line of text over a blank pane, and a few keyboard details.
+
+### Before and after
+
+Panel control counts per kind (baseline `fd67e020` first review, now this build). Cells for now are dark 1600; the other three combinations were identical.
+
+| Kind | (a) total before | (a) total now | Above content before | Above content now | In preview now | (b) Tab stops now | Toolbar controls now | Preview top, window y before | Preview top, window y now |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Other (.bin) | 9 | 9 | 9 | 9 | 0 | 7 | 1 (Open) | about 270 | 184 |
+| PDF | 10 | 10 | 10 | 10 | 0 | 8 | 2 (Open, More) | about 270 | 184 |
+| Text | 13 | 12 | 13 | 12 | 0 | 11 | 4 | about 355 | 184 |
+| JSON | 13 | 12 | 13 | 12 | 0 | 11 | 4 | about 355 | 184 |
+| xlsx | 15 | 14 | 12 | 12 | 2 (sheet tabs) | 12 | 4 | about 355 | 184 (sheet tabs, table at 251) |
+| csv | 15-17 | 12 | 14 | 12 | 0 | 11 | 4 | about 370 | 185 |
+| Markdown | 15-17 | 14 | 14 | 12 | 2 (Rendered / Source) | 13 | 4 | about 370 | 184 |
+| docx | 14 | 12 | 13 | 12 | 0 | 11 | 4 | about 400 | 211 |
+| Image | 19 | 15 | 14 | 12 | 3 (zoom out, in, Fit) | 12 | 4 | about 425 | 228 (stage) |
+| SVG | 22 | 15 | 15 | 12 | 3 | 12 | 4 | about 425 | 228 (stage) |
+| Deck | 25 | 15 | 15 | 12 | 3 (Previous / Next slide, Revise this slide) | 13 | 4 | stage 355, filmstrip 653 off screen | 211 (stage); strip gone |
+| Diagram | 26 | 19 | 16 | 12 | 7 (3 view radios, zoom out, in, Fit, "More diagram actions") | 12 | 4 | 529 (below the fold at 1024) | 228 (stage) |
+
+Notes on the table. "Above content" is now the same 12 for every kind that has an Edit/Open, Add note, Larger view and More toolbar: Hide, Resize, Previous, Next, run link, Preview, Versions, Notes, plus the toolbar's four. The count dropped mostly because Ask the team to revise, Mark an area (3 radios), Larger view duplicates, Name version and the zoom stack left the head; some of those are now one level down in menus. The (b) number includes one stop for the scrollable content ("Meeting notes text", "Report table"), which is reasonable (keyboard users scroll it). Panel header height: top of the Preview/Versions/Notes tab row is at window y 160, the toolbar shares the same row as the tabs (observed), so the header is two rows (title and meta, then tabs plus toolbar), not the 240-530 px stack of the first walk.
+
+Preview size, project Outputs detail panel (dark; light matches):
+
+| Kind | Before 1600 | Now 1600 | Now 1024 | Notes |
+| --- | --- | --- | --- | --- |
+| Panel width | 360 (22%) | 677 (42%) | 581 (57%) | Panel body height 952 at 1600, 592 at 1024 |
+| Text, JSON | 317 x 1124 / 1736 | 652 wide (pre fills 652x796 box) | 556 wide (box 556x436) | Reads at full panel width |
+| xlsx, csv table | 224 wide | 650 wide | 554 wide | Table now uses the panel width (first review M2) |
+| Image | image about 288x192 at 24% | 634x423 at 53% | 538x359 at 45% | Stage 652x752 / 556x392 |
+| SVG (64x64 source) | 293x176 | 256x256 at 400% | 256x256 at 400% | Capped at 400% so a small icon stays small (not a defect, see M3 below) |
+| Diagram, 6 shapes | 293x25 at 31% | 634x209 at 115% | 538x178 at 97% | Readable at both sizes; box starts at y 228 |
+| Diagram, 80 shapes | not measured | 6091x235 at 60% | same | Large-diagram note shown, illegible without Larger view as expected |
+| Deck | stage 327x191 | stage 652x367 (svg 650x365) | stage 556x313 (svg 554x311) | Filmstrip removed from the panel; slide arrows below the stage |
+
+### Toolbar and where things live (observed)
+
+- Toolbar controls at rest: Text, JSON, csv, xlsx, Markdown, docx, image, SVG, deck, diagram: 4 (Edit or Edit in Excel/Word/PowerPoint or Open, Add note, Larger view, More). PDF: 2 (Open, More). Other: 1 (Open). Target of 4 met.
+- Duplicates between toolbar and More: none. More holds Open (kinds that show Edit in the toolbar), Ask the team to revise..., Show in folder, Save as..., Copy path, Rename..., Copy source (text-like and diagram), Remove from list, Delete.... For image, PDF and other, More has no "Open" (it is the toolbar button) and no "Ask the team to revise" (not offered for those kinds; the mock registered them, so this may be by design, inferred).
+- "Mark an area" lives in the Add note menu: "Note on the selection", then a "Mark an area" group of radios Off, Box, Circle (`menu-addnote-diagram-1600.png`). Choosing Box returns focus to the button, whose name becomes "Add note, Marking: Box", and the panel shows "Marking an area: box. Drag on the drawing to place it. Press Escape to turn the tool off." A text output's Add note is disabled with the tooltip "Select text to add a note." (an icon-only disabled button).
+- Larger view is an icon-only filled purple button with the accessible name and tooltip "Larger view". PDF and other have no Larger view button; Open is their only action (outlined, not filled, see M5).
+- Diagram: one way into Larger view (the old "Open large" is gone). A second "..." ("More diagram actions") still sits in the viewer row beside the toolbar's "More actions" (observed, `menu-addnote-diagram-1600.png`, top right of the stage). Its contents were not opened.
+- The "Large diagram, N shapes" note shows only for the 80 shape diagram ("Large diagram, 80 shapes."), not for the 6 shape one or the sequence diagram (first review L1 fixed).
+
+### Panel and list widths, resize, hide (observed)
+
+| | 1600x1000 | 1024x640 |
+| --- | --- | --- |
+| Filter rail | x 232, 240 wide | stacked above the list: 387 wide, 243 tall |
+| List | x 472, 451 wide (was 768) | x 56, 387 wide, 349 tall including the filter rail |
+| Detail panel | x 923, 677 wide | x 443, 581 wide |
+| Drag handle left 120 px | 797 | 688 |
+| Drag handle right 260 px | 537 | 428 |
+| Double-click handle | back to 677 | back to 581 |
+| Arrow Left on the focused handle | 693 (+16) | 597 (+16) |
+| Hide output preview | panel 40 wide at x 1560, list takes the width | 40 wide at x 984 |
+| Show output preview | 677 again | 581 again |
+
+Drag-resize, keyboard resize and Hide/Show all work. After Hide, focus moves to "Show output preview" (observed). After clicking Show the focus drops to the document body (the Show button is replaced; observed by mouse click, the keyboard path was not tested separately).
+
+### Larger view per kind (observed)
+
+| Kind | Dialog 1600 / 1024 | Content area 1600 / 1024 | Notes |
+| --- | --- | --- | --- |
+| Other, PDF | no button | n/a | Open is the only action; panel shows one line plus a blank pane |
+| Text, JSON | 1568x968 / 992x608 | 1534x829 / 958x469 | 7 controls |
+| xlsx | same | table 1532 wide / 956 wide | Uses the width; two columns stretch to 750 px each, so right aligned numbers sit far from the labels (`lv-xlsx-dark-1600.png`) |
+| csv | same | table 1532 / 956 wide | |
+| Markdown, docx | same | 1534x829 / 958x469 (md), 1534x812 / 958x452 (docx) | Text blocks fill the width |
+| Image | same | viewer 1534x785 / 958x425, image 1127x751 at 94% / 587x391 at 49% | |
+| SVG | same | stage 1534x785, drawing 256x256 at 400% | Not filling because the source is 64x64 and zoom caps at 400% |
+| Deck | same | stage 1358x717, slide 1244x699 / stage 782x357, slide 604x339 | |
+| Diagram | same | stage 1534x768, drawing 1104x364 at 200% / 924x305 at 167% | Opens fit, not at a tiny zoom |
+
+Notes drawer at 1024x640: closed on open for Summary (1 note), Project deck (1 note) and Report (1 note); the button reads "Notes (1)" and the content gets the full 958 px (`n-lv-Summary-1024.png`). The drawer open state was not exercised by opening it. Control counts in the dialog (including Close) went from 5-31 to 7 (text), 8-10 (tables, docx), 9 (md), 11-13 (image, svg), 12 (deck), 20 (diagram).
+
+### Run side tab (observed)
+
+| Run | Rows before / now | Controls per row |
+| --- | --- | --- |
+| R1 (outputs-all) | 12 / 12 | row "Show <title>" plus "More actions for <title>" |
+| R2 (only added versions) | "No outputs yet" / 5: Report, Project deck, Architecture diagram, Budget, Project plan, each "v2 - 2 versions" (`run-1-dark-1600.png`) | same |
+| R3 (registered files) | n/a / 5 | same |
+
+Per row: before 2 buttons (filled "Show" plus "..."), now 2 tab stops (the row itself is a button named "Show <title>" and a "..." menu) and one visible icon. M6 is fixed, with one caveat: this was a relaunched (ended) run. I did not drive a live run. The side tab at 1600 is 358 wide, at 1024 607 wide.
+
+### Keyboard pass, 1024x640 dark (observed)
+
+- Tab order in the panel from "Hide output preview": Hide, Resize (separator), Previous, Next, run link "Open run R2", Preview tab (the tablist is one stop), Edit, Add note, Larger view, More, view switch (one stop for the diagram toolbar), then the diagram viewport. 12 stops; then the page wraps to "Skip to content".
+- Selecting a row with the mouse leaves focus on the preview heading, so Tab goes next to "Open run R2"; Previous/Next/Hide are reached backwards. Keyboard list behavior matches the first review: ArrowDown moves focus, Enter selects and moves focus to the heading, Escape returns to the row.
+- The diagram toolbar ("Diagram controls") is a roving toolbar: one Tab stop, then ArrowRight walks Zoom out, Zoom in, Fit, More diagram actions and wraps; in the Larger view it also visits Actual size, Overview, Light drawing, Export, Copy source and Full window. Arrow keys in the radio group (Diagram, Split, Source) work with ArrowDown/ArrowUp; ArrowRight from the checked radio skips Split and Source and goes to Zoom out. The viewport itself answers "+", "-" and "0" (97% -> 122% -> 78% -> 97%).
+- Add note menu: Enter opens with focus on "Note on the selection"; ArrowDown goes Off, Box, Circle and wraps; Home and End work; Esc closes and focus returns to the Add note button; Enter on Box applies it and returns focus to the button (`k-addnote-open-dark-1024.png`).
+- More menu: Enter or Space opens on "Open"; ArrowDown cycles through the 9 items and wraps; Home works; Esc returns focus to "More actions for Architecture diagram". Tab inside the open menu moves to the next item and leaves the menu open (it does not close the menu; observed).
+- Larger view: opens with focus on the drawing viewport, not on Close. Tab order: Close, version select, Preview tab, Edit, Add note, More, "Show notes", view switch toolbar, viewport; then it wraps inside the dialog (trap works). Esc closes and focus returns to the "Larger view" button.
+- Focus ring: 2 px solid purple (`rgb(165, 146, 255)`) on every stop I sampled. Not measured: contrast.
+
+### Remaining issues, ranked
+
+No High items remain. Ranking is by what a first-time user would hit.
+
+| # | Severity | Finding | Evidence | Recommended fix and copy |
+| --- | --- | --- | --- | --- |
+| M1 | Medium | "Ask the team to revise..." is now only in the More menu. It was a visible button and is a main reason to open an output. A first-time user will not look under "..." for it. | `menu-more-diagram-1600.png`: item 2 of 9 | Keep it as a labelled toolbar button for kinds that support it ("Ask for changes") and drop "Open" into More; or replace the first toolbar slot's label with it. The toolbar stays at 4 for revisable kinds if Add note and Larger view become one overflow. Suggested button copy: "Ask for changes". |
+| M2 | Medium | Two "..." buttons side by side on a diagram: "More actions for X" and "More diagram actions". The first review asked for the second to be removed. | `menu-addnote-diagram-1600.png`, `k-more-open-dark-1024.png` | Merge "More diagram actions" into the main More menu or rename to "Diagram options" with a visible label. Contents of the second menu were not opened, so check what it holds first. |
+| M3 | Medium | Larger view of an SVG shows a 64x64 icon at 400% (256 px) in a 1534x785 stage; no readable way to know it is capped. A deck's image slides and small icons look unfinished. | `lv-svg-dark-1600.png` | If the zoom cap stops fit-to-window, show "Fit (400% max)" in the readout or raise the cap for SVG only, since vector scales cleanly. |
+| M4 | Medium | The filter rail eats half of the left column at 1024x640: filters and kind chips are 243 px tall, the list gets about 350 px and shows 5 rows. The panel got wider, but the list is now the cramped part. | `p-pdf-dark-1024.png` | Collapse the kind chips into one "Kind" dropdown or a single scrolling row under 1100 px wide; keep search always visible. Suggested label: "Kind: All (12)". |
+| M5 | Medium | PDF and "other" panels are one line of text above an empty pane (the "other" panel was measured but its screenshot was not inspected); Open is outlined, not the primary. | `p-pdf-dark-1024.png`: header and one sentence, then blank space | Make Open the filled primary, and fill the pane with the file facts and "Show in folder": "OrgAI cannot show PDFs yet. Open the file in your PDF app." is fine; add size, path and a primary "Open in your PDF app". |
+| L1 | Low | After Show output preview the focus drops to the page body (observed by mouse click). | `m3.json` `shownFocus` = BODY at both sizes | Move focus to "Hide output preview" after Show. |
+| L2 | Low | Disabled "Add note" on text kinds is an icon-only button that explains itself only through a tooltip ("Select text to add a note."). | `m3.json` `addnote-text` | Show the hint as helper text under the toolbar for a few seconds on first select, or keep the label "Add note" visible. |
+| L3 | Low | Menu keyboard: Tab inside the open More menu moves between items and does not close the menu; ArrowRight from the Diagram radio skips Split and Source (they need ArrowDown). | `m5.json` `moreTab`, `m7` output | Close the menu on Tab and return focus to its button. Make Left/Right move inside the radio group before leaving it. |
+| L4 | Low | The diagram and image sit in the lower half of the stage, and the right-hand shapes touch the right edge (Event bus ends 18 px from the stage border at 1600), leaving about 120 px of empty space above. | `p-diagram-dark-1600.png`, `p-image-light-1600.png` | Centre the fit vertically with the same padding on all four sides. |
+| L5 | Low | In the Larger view, a 2-column xlsx stretches each column to 750 px so numbers sit far from their labels. | `lv-xlsx-dark-1600.png` | Cap column width at about 320 px and let the table be as wide as its content, left-aligned. |
+| L6 | Low | The Run tab row's accessible name is "Show <title>" while the whole row is the target; there is no visible "Show", so the name reads as an instruction the row does not display. | `m4.json` | Name the row with its title and kind ("Report, CSV, 2 versions"), keep "More actions for Report" on the menu. |
+
+### Did the fix meet the targets?
+
+- Controls at rest in the toolbar at most 4: met (1 to 4).
+- Toolbar and More duplicates: none observed.
+- Mark an area: inside Add note, as a radio group (one control instead of 5).
+- Drag-resize and Hide/Show: work; keyboard resize works (Arrow keys 16 px).
+- Larger view: tables use the width, SVG limited by its 400% cap, notes drawer closed at 1024, PDF/other have no button.
+- R2 lists its versioned outputs: yes, after relaunch; live run not driven.
+- Diagram: one entry into Larger view, opens at 97% to 115% in the panel (200% / 167% in Larger view), no "Large diagram" note for the small one: met.
+- Keyboard: Tab order and menu focus return behave as described; two small gaps (L1, L3).
+
+### Not driven in this re-walk
+
+- Native Open, Edit in Word/Excel/PowerPoint, Show in folder, Save as: OS handlers, not exercised.
+- A live (not ended) run for the Run side tab.
+- The contents of "More diagram actions", the Larger view Notes drawer when opened, restore, delete, compare, grid mode, reduced motion, 320 px reflow and the Broken diagram preview (no stage measured).
+- Real multi-page PDF and a real Word/Excel file; the PDF here is a 69 byte stub.
+- Screen reader speech, and contrast numbers (light theme was screenshotted for every kind at both sizes and showed no theme specific defects at a glance, not measured).
+- Hover-only and focus-only reveals beyond the menus above.
+- Timings are driver timings.
