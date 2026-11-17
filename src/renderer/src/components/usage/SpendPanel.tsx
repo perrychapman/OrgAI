@@ -668,7 +668,8 @@ export default function SpendPanel({
             onClick={() => setTableOpen((o) => !o)}
           >
             <Icon icon={Table} size="sm" />
-            {tableOpen ? 'Hide table' : 'Table'}
+            {/* A fixed label: aria-expanded carries the state (Reviewer). */}
+            Table
           </button>
         </div>
         <p className="usage-panel-summary">{summary}</p>

@@ -154,6 +154,8 @@ describe('summary model', () => {
     const cur = data([partial], { costUnknownRuns: 1, costKnownRuns: 0, totals: usage({ costUsd: 2, costPartial: true }) })
     const prev = data([row('c')])
     expect(summaryModel(cur, { data: prev, truncated: false }, opts)[0]!.delta).toBeNull()
+    expect(summaryModel(cur, { data: prev, truncated: false }, opts)[0]!.deltaNote).toMatch(/not compared/)
+    expect(summaryModel(cur, null, opts)[0]!.deltaNote).toBeUndefined()
   })
   it('reads a Model cost view and no price', () => {
     const unknown = row('u', { usage: usage({ costUsd: null, costSource: 'unknown', models: [{ model: 'x', tokens: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0 }, costUsd: null, priceSource: 'unknown' }] }) })

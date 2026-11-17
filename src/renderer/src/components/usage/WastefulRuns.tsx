@@ -122,7 +122,7 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                     <Fragment key={r.runId}>
                     <tr data-testid="usage-wasteful-row" data-run={r.runId} data-project={r.projectId}>
                       <th scope="row" className="sticky usage-run-cell">
-                        <RunToggle open={isOpen} detailId={detailId} mounted={touched.has(r.runId)} onToggle={() => toggle(r.runId)} />
+                        <RunToggle open={isOpen} detailId={detailId} mounted={touched.has(r.runId)} onToggle={() => toggle(r.runId)} name={name} />
                         {r.projectRemoved ? (
                           <span className="usage-run-name" title={name}>
                             {name}
@@ -132,7 +132,11 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                             {name}
                           </button>
                         )}
-                        <span className="usage-status-dot" data-tone={TONE[status.word] ?? 'idle'} role="img" aria-label={`Status: ${status.word}`} title={status.note ? `${status.word}. ${status.note}` : status.word} />
+                        {/* The word is visible beside the dot, so status never rests on colour alone (Reviewer M5). */}
+                        <span className="usage-status-dot" data-tone={TONE[status.word] ?? 'idle'} aria-hidden="true" />
+                        <span className="usage-status-word" title={status.note ? `${status.word}. ${status.note}` : status.word}>
+                          {status.word}
+                        </span>
                         <span className="usage-tag usage-run-kind">{rowKindWord(r)}</span>
                         {e.noResult && <span className="usage-tag" data-testid="usage-no-result-tag">No result</span>}
                         <span className="usage-cell-sub">{r.projectRemoved ? `${r.projectName}. Project removed` : r.projectName}</span>

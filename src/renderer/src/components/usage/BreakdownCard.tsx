@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent, ReactElement } from 'react'
 import type { SeriesHighlightProps, UsagePanelProps } from './panelProps'
-import { RankEnterContext } from './RankedBars'
+import { RankArmContext, RankEnterContext } from './RankedBars'
 import ProjectsPanel from './ProjectsPanel'
 import ModelsPanel from './ModelsPanel'
 import RolesPanel from './RolesPanel'
@@ -19,6 +19,8 @@ const TABS: { id: Tab; label: string }[] = [
 /** "Where it went": one card, one breakdown at a time (docs/design/usage-dashboard-options.md option D). */
 export default function BreakdownCard(props: UsagePanelProps & SeriesHighlightProps): ReactElement {
   const { highlight, onHighlight, ...panel } = props
+  // The user's filters (a refresh keeps them): rows may glide into a new order only after these change.
+  const armKey = JSON.stringify(panel.filters)
   const [tab, setTab] = useState<Tab>('project')
   const refs = useRef(new Map<Tab, HTMLButtonElement>())
   const listRef = useRef<HTMLDivElement>(null)
@@ -144,12 +146,14 @@ export default function BreakdownCard(props: UsagePanelProps & SeriesHighlightPr
         id="usage-where-panel"
         aria-labelledby={`usage-where-tab-${tab}`}
       >
-        <RankEnterContext.Provider value={enter}>
-          {tab === 'project' && <ProjectsPanel {...panel} embedded highlight={highlight} onHighlight={onHighlight} />}
-          {tab === 'model' && <ModelsPanel {...panel} embedded />}
-          {tab === 'role' && <RolesPanel {...panel} embedded />}
-          {tab === 'connection' && <ConnectionsPanel {...panel} embedded />}
-        </RankEnterContext.Provider>
+        <RankArmContext.Provider value={armKey}>
+          <RankEnterContext.Provider value={enter}>
+            {tab === 'project' && <ProjectsPanel {...panel} embedded highlight={highlight} onHighlight={onHighlight} />}
+            {tab === 'model' && <ModelsPanel {...panel} embedded />}
+            {tab === 'role' && <RolesPanel {...panel} embedded />}
+            {tab === 'connection' && <ConnectionsPanel {...panel} embedded />}
+          </RankEnterContext.Provider>
+        </RankArmContext.Provider>
       </div>
     </section>
   )

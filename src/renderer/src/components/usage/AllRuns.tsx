@@ -159,7 +159,7 @@ function RunsTable({ rows }: { rows: ReturnType<typeof sortRunRows> }): ReactEle
                   {...(windowed ? { 'aria-rowindex': win.start + i + 2 } : {})}
                 >
                   <th scope="row" className="sticky usage-run-cell">
-                    {!windowed && <RunToggle open={isOpen} detailId={detailId} mounted={touched.has(r.runId)} onToggle={() => toggle(r.runId)} />}
+                    {!windowed && <RunToggle open={isOpen} detailId={detailId} mounted={touched.has(r.runId)} onToggle={() => toggle(r.runId)} name={rowName(r)} />}
                     {r.projectRemoved ? (
                       <span className="usage-run-name" title={name}>
                         {name}

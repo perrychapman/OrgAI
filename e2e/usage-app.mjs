@@ -698,10 +698,12 @@ try {
         }
         const q = (s) => document.querySelector(`[data-testid=usage-filters] ${s}`)
         const bar = document.querySelector('[data-testid=usage-filters]')
-        return { period: r(q('[data-testid=usage-period]')), bucket: r(q('[data-testid=usage-bucket]')), projects: r(q('[data-testid=usage-projects]')), kinds: r(q('[data-testid=usage-kinds]')), bar: r(bar), clipped: bar ? bar.scrollWidth > bar.clientWidth + 1 : false }
+        // Group by now sits in the chart header, so only the bar's own controls are checked here.
+        return { period: r(q('[data-testid=usage-period]')), projects: r(q('[data-testid=usage-projects]')), kinds: r(q('[data-testid=usage-kinds]')), bar: r(bar), clipped: bar ? bar.scrollWidth > bar.clientWidth + 1 : false }
       })
       const hit = (a, b) => a && b && a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b
-      const pairs = [['period', 'bucket'], ['period', 'projects'], ['bucket', 'projects'], ['projects', 'kinds']]
+      const pairs = [['period', 'projects'], ['projects', 'kinds']]
+      check((await page.locator('[data-testid=usage-spend] [data-testid=usage-bucket]').count()) === 1, `layout ${tag}: Group by sits in the chart header`)
       const overlapping = pairs.filter(([x, y]) => hit(ctl[x], ctl[y]))
       check(overlapping.length === 0 && !ctl.clipped && ctl.period && ctl.projects, `layout ${tag}: the filter bar controls do not overlap or clip`, JSON.stringify({ overlapping, ctl }))
       if (ctl.period && ctl.projects) {

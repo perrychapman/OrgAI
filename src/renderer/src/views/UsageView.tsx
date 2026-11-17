@@ -98,7 +98,9 @@ export default function UsageView(): ReactElement {
   const [chosenMetric, setChosenMetric] = useState<Metric | null>(null)
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set())
   const [overlay, setOverlay] = useState(false)
-  const [highlight, setHighlight] = useState<string | null>(null)
+  const [pointed, setHighlight] = useState<string | null>(null)
+  // A hidden series is never "highlighted": pressing its legend chip to hide it must not dim the rest (walk M).
+  const highlight = pointed !== null && hidden.has(pointed) ? null : pointed
   const seriesRef = useRef<SeriesState | null>(null)
   const pending = useRef<Pending | null>(null)
   const pendingFocus = useRef<{ chipKey: string | null } | null>(null)
@@ -276,7 +278,9 @@ export default function UsageView(): ReactElement {
       const next = narrowFilters(useAppStore.getState().usageFilters, n)
       const opensRuns = !!n.projectId || !!n.noPrice
       if (opensRuns) setRunsOpen(true)
-      applyFilters(next, { scrollRuns: opensRuns })
+      // All runs opens but the page does not scroll there: the chart and tiles the user just narrowed stay in view
+      // (post-rebuild walk H1).
+      applyFilters(next)
     },
     [applyFilters]
   )
@@ -392,7 +396,7 @@ export default function UsageView(): ReactElement {
   const metric = resolveMetric(chosenMetric, unpriced)
   const onMetric = useCallback(
     (m: Metric) => {
-      setTweenKey((k) => k + 1)
+      // No tween key here: the KPI figures do not depend on the chart metric (Reviewer M1).
       setChosenMetric(m)
       say(metricAnnouncement(m))
     },

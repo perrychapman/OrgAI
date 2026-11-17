@@ -36,8 +36,12 @@ function figure(i: SummaryItemModel): { text: string; title?: string } {
 /** The number a tile's figure stands for (null = unknown or not numeric: it never tweens). The item carries text, so parse it back. */
 function figureNumber(i: SummaryItemModel): number | null {
   switch (i.signal) {
-    case 'cost':
-      return i.cost?.costUsd ?? null
+    case 'cost': {
+      // Only a known or lower-bound figure tweens; unknown or nothing spent never counts up from a made-up number.
+      if (!i.cost) return null
+      const kind = costView(i.cost, { precision: 'page' }).kind
+      return kind === 'known' || kind === 'partial' ? (i.cost.costUsd ?? null) : null
+    }
     case 'tokens':
       return i.text === undefined ? null : parseTokenText(i.text)
     case 'runs': {
@@ -71,7 +75,7 @@ function figureAt(i: SummaryItemModel, v: number): SummaryItemModel {
 function scrubValue(signal: SummarySignal, p: SparkPoint | undefined): string {
   if (!p) return ''
   if (p.kind === 'unknown') return 'no price'
-  if (p.kind === 'empty' && signal !== 'cost') return signal === 'runs' ? '0 runs' : 'no runs'
+  if (p.kind === 'empty') return signal === 'runs' ? '0 runs' : 'no runs'
   if (p.value === null) return 'not reported'
   switch (signal) {
     case 'cost':
@@ -177,14 +181,8 @@ export default function UsageSummary({
   }, [])
 
   return (
-    <div className="usage-summary-wrap">
-      <ul
-        ref={listRef}
-        className="usage-kpi"
-        data-testid="usage-summary"
-        role="group"
-        aria-label="Key figures. Cost, Tokens and Runs choose what the chart shows."
-      >
+    <div className="usage-summary-wrap" role="group" aria-label="Key figures. Cost, Tokens and Runs choose what the chart shows.">
+      <ul ref={listRef} className="usage-kpi" data-testid="usage-summary">
         {items.map((i) => (
           <Tile
             key={i.signal}
@@ -267,7 +265,8 @@ function Tile({
       : ''
   const title = [final.title, split].filter(Boolean).join(' ') || undefined
   const hint = drawable ? `Point at the sparkline to read a ${bucketWord.replace(/^per /, '')}; the chart is the keyboard path.` : ''
-  const description = [split, hint].filter(Boolean).join('. ')
+  // aria-describedby replaces the title as the description, so the figure's own title (model cost, lower bound) joins it.
+  const description = [final.title, split, hint].filter(Boolean).join('. ')
   const scrubPoint = drawable && scrubIndex !== null ? drawable[scrubIndex] : undefined
   const scrubText = scrubPoint ? `${bucketLabels[scrubIndex ?? 0] ?? ''} · ${scrubValue(i.signal, scrubPoint)}` : null
   const priced = i.signal === 'cost' && coverage ? (pricedChip(coverage.line) ?? coverage.line) : null
@@ -296,7 +295,7 @@ function Tile({
               {vs && <span className="usage-kpi-vs"> {vs}</span>}
             </span>
           ) : (
-            <span className="usage-kpi-delta usage-kpi-nodelta">no prior data</span>
+            <span className="usage-kpi-delta usage-kpi-nodelta">{i.deltaNote ?? 'no prior data'}</span>
           )}
         </span>
         {i.delta && <span className="sr-only">, {i.delta}</span>}
@@ -325,7 +324,7 @@ function Tile({
           {body}
         </button>
       ) : (
-        <div className="usage-kpi-main" title={title} aria-describedby={description ? descId : undefined}>
+        <div className="usage-kpi-main" title={title}>
           {body}
         </div>
       )}

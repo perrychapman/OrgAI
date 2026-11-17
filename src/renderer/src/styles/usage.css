@@ -594,7 +594,8 @@
   gap: 0 var(--space-6);
   align-items: start;
 }
-@container usage (min-width: 1100px) {
+/* Side by side only where Runs worth a look keeps room for its columns (the walk found it clipped at 805 px). */
+@container usage (min-width: 1500px) {
   .usage-pair {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   }

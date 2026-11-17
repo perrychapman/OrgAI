@@ -7,6 +7,10 @@ describe('shouldTween', () => {
   it('tweens a keyed change', () => expect(shouldTween(base)).toBe(true))
   it('does not tween without a key change (first paint, poll refresh)', () =>
     expect(shouldTween({ ...base, key: 1 })).toBe(false))
+  it('does not tween a refresh that lands after the user change expired (key bumped, value unchanged, later poll)', () => {
+    expect(shouldTween({ ...base, keyAgeMs: 30_000 })).toBe(false)
+    expect(shouldTween({ ...base, keyAgeMs: 400 })).toBe(true)
+  })
   it('skips changes under 1%', () => expect(shouldTween({ ...base, prev: 1000, next: 1005 })).toBe(false))
   it('never tweens from or to unknown', () => {
     expect(shouldTween({ ...base, prev: null })).toBe(false)
