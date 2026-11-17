@@ -89,10 +89,8 @@ export function LoadingSkeleton(): ReactElement {
   return (
     <div className="usage-skeleton" aria-hidden="true" data-testid="usage-skeleton">
       <div className="skeleton usage-sk-summary" />
-      <div className="skeleton usage-sk-spend" />
-      <div className="usage-where">
-        <div className="skeleton usage-sk-where" />
-        <div className="skeleton usage-sk-where" />
+      <div className="usage-sk-hero">
+        <div className="skeleton usage-sk-spend" />
         <div className="skeleton usage-sk-where" />
       </div>
       <div className="skeleton usage-sk-eff" />
