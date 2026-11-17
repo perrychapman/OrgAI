@@ -3,15 +3,18 @@
    come from them. Same grid shape as .knowledge: the side panel sets --side-panel-w on it, the collapsed rail narrows
    the last column. The page never scrolls: the filter column, the list and the pane scroll inside themselves. */
 
+/* The preview pane is the wide column (ux-review-outputs-usability H2): with no saved width it takes 3/5 of what the
+   filters leave, the list the rest (list at least 260 px). A dragged width (--side-panel-w, SidePanel) still wins. */
 .outputs {
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) var(--side-panel-w, 360px);
+  /* The list has no hard floor here: a dragged pane width (SidePanel keeps 280 px beside it) must never push the pane
+     past the grid's edge. With no saved width, 2fr of about 1130 px keeps the list near 450 px. */
+  grid-template-columns: auto minmax(0, 2fr) var(--side-panel-w, minmax(360px, 3fr));
   grid-template-rows: minmax(0, 1fr);
   grid-template-areas: 'filters main side';
-  container: outputs / inline-size;
   overflow: hidden;
   background: var(--surface-0);
 }
@@ -20,6 +23,34 @@
 }
 .outputs > .side-panel {
   grid-area: side;
+}
+/* Narrow windows (1024x640): the filters stack above the list in one column, so the pane keeps the larger share.
+   A media query on the window (the grid itself sizes the pane, so it cannot be a container of its own queries). */
+@media (max-width: 1279px) {
+  .outputs {
+    grid-template-columns: minmax(240px, 2fr) var(--side-panel-w, minmax(320px, 3fr));
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      'filters side'
+      'main side';
+  }
+  .outputs:has(> .side-panel[data-collapsed='true']) {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+  /* Grid view needs two card columns: list and pane share the width evenly. */
+  .outputs:has(> .outputs-main[data-view='grid']) {
+    grid-template-columns: minmax(240px, 1fr) var(--side-panel-w, minmax(320px, 1fr));
+  }
+  .outputs:has(> .outputs-main[data-view='grid']):has(> .side-panel[data-collapsed='true']) {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+  .outputs > .outputs-filters {
+    width: auto;
+    max-height: 38vh;
+    padding: var(--space-2);
+    border-right: 0;
+    border-bottom: 1px solid var(--border-default);
+  }
 }
 
 /* ---------- Filter column ---------- */
@@ -35,12 +66,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-}
-@container outputs (max-width: 1100px) {
-  .outputs-filters {
-    width: 200px;
-    padding: var(--space-2);
-  }
 }
 .outputs-filters-title {
   margin: 0;
@@ -275,16 +300,27 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4) var(--space-4);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
 }
 .outputs-detail-body:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
+/* The pane's Hide button and the stepper share one row (the Hide bar floats over the body's first row). */
+.outputs > .side-panel > .side-panel-bar {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-3);
+  padding: 0;
+  z-index: 1;
+}
 .outputs-stepbar {
+  flex: none;
   display: flex;
   justify-content: flex-end;
+  min-height: var(--control-sm);
+  margin-right: calc(var(--control-sm) + var(--space-2));
 }
 .outputs-pick {
   margin: 0;

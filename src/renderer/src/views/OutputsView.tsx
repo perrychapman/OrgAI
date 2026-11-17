@@ -21,6 +21,8 @@ const HEADING_ID = 'output-detail-heading'
 const EMPTY: readonly RunOutput[] = []
 const NOTICE_MS = 8000
 const NOW_TICK_MS = 60_000
+/** The preview pane starts folded only when the tab is narrower than this (at 1024x640 it is open: previews come first). */
+const OUTPUTS_PANE_COLLAPSE_BELOW_PX = 640
 const VIEW_OPTIONS: { value: OutputsViewMode; label: string }[] = [
   { value: 'list', label: 'List' },
   { value: 'grid', label: 'Grid' }
@@ -397,7 +399,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
           </div>
         )}
       </div>
-      <SidePanel label="output preview" persistKey="outputs" autoCollapseBelow={1100} revealOn={reveal} open={paneOpen} onOpenChange={setPaneOpen} testId="outputs-detail">
+      <SidePanel label="output preview" persistKey="outputs" autoCollapseBelow={OUTPUTS_PANE_COLLAPSE_BELOW_PX} revealOn={reveal} open={paneOpen} onOpenChange={setPaneOpen} testId="outputs-detail">
         <div className="outputs-detail-body" data-testid="outputs-detail-body" tabIndex={-1} onKeyDown={onPaneKeyDown}>
           {selected ? (
             <>

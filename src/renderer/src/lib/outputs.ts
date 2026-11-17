@@ -128,10 +128,14 @@ export function mergeOutput(list: readonly RunOutput[] | undefined, output: RunO
   return next
 }
 
-/** The outputs of a set of runs (a chain), newest first, keeping the list's order. */
+/**
+ * The outputs of a set of runs (a chain), newest first, keeping the list's order: those a run made, and those whose
+ * current version a run wrote (a later run that only added a version). Older versions written by a run are not in the
+ * index entry, so a version that was later superseded by another run does not list it.
+ */
 export function outputsOfRuns(list: readonly RunOutput[] | undefined, runIds: ReadonlySet<string> | readonly string[]): RunOutput[] {
   const ids = runIds instanceof Set ? runIds : new Set(runIds as readonly string[])
-  return (list ?? []).filter((o) => ids.has(o.runId))
+  return (list ?? []).filter((o) => ids.has(o.runId) || (o.current?.runId !== undefined && ids.has(o.current.runId)))
 }
 
 /** "5 outputs" / "1 output". */

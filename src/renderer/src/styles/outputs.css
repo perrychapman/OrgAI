@@ -69,15 +69,41 @@
 }
 .run-output-row {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
+  align-items: center;
+  gap: var(--space-1);
   min-width: 0;
-  padding: var(--space-2);
+  padding: var(--space-1);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--surface-1);
 }
-.run-output-row[aria-current='true'] {
+/* The row's open target: one native button over the icon and the text (the row has no separate Show button). */
+.run-output-show {
+  all: unset;
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.run-output-show:hover {
+  background: var(--surface-3);
+}
+.run-output-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+}
+.run-output-show:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.run-output-row[data-current='true'] {
   border-color: var(--accent);
   background: var(--surface-2);
 }
@@ -121,8 +147,20 @@
   align-items: center;
   gap: var(--space-1);
 }
+/* The detail takes the panel's remaining height, so its preview can fill it (only the list or the detail scrolls). */
+.run-outputs[data-mode='detail'] {
+  height: 100%;
+  box-sizing: border-box;
+}
 .run-output-detail {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.run-outputs[data-mode='detail'] .run-output-detail {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 .run-outputs[data-mode='split'] .run-output-detail {
   flex: 1 1 60%;
@@ -191,8 +229,16 @@
 .output-detail-line > .output-detail-meta {
   flex: 1 1 auto;
 }
+/* Provenance holds the focusable run link: it never clips (its focus ring and the tag stay whole); the meta ellipsises. */
 .output-detail-line > .output-detail-prov {
-  flex: 0 1 auto;
+  flex: none;
+  overflow: visible;
+}
+@container side (max-width: 360px) {
+  .output-detail-line {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
 }
 .output-detail-line > .output-detail-sep {
   flex: none;
