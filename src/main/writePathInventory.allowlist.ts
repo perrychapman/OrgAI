@@ -40,8 +40,8 @@ const EXEC_OUTPUT_FILE = 'outside data folder: user-chosen --output-last-message
 const DESKTOP_ICON_COPY = 'desktop single instance: idempotent copy of the app icon to <userData>/app-icon.ico (portable Windows build), same bytes from any writer'
 const TEST_TEMP = 'test helper: private mkdtemp folder under the OS temp dir, never the data folder'
 // Not a call site here (the scanner sees only src/main and src/cli): the desktop updater (updater.ts) has electron-updater
-// write its download cache outside the data folder, in the OS per-user cache (Windows %LOCALAPPDATA%\<updaterCacheDirName
-// from app-update.yml>\pending), only after the user's updates:download. One desktop per user data folder (single-instance
+// write its download cache outside the data folder, in the OS per-user cache (Windows %LOCALAPPDATA%\orgai-updater
+// (electron-builder's updaterCacheDirName, from app-update.yml)\pending), only after the user's updates:download. One desktop per user data folder (single-instance
 // lock); the CLI never loads electron-updater. Recorded so the inventory names every writer the app starts.
 export const WRITE_SITES: Record<string, string> = {
   'src/cli/commands/exec.ts:writeLastMessage:openSync': EXEC_OUTPUT_FILE,

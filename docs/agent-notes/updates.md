@@ -66,7 +66,7 @@ metadata yet).
   shutdown fails `desktopQuit.ts` calls `cancelUpdateInstall` (`UpdateController.cancelInstallOnQuit`: clears the
   accepted install and sets electron-updater's `autoInstallOnAppQuit = false`) before its `app.exit(0)`, so neither
   installer runs after a failed shutdown (unit-tested in `updater.test.ts` and `desktopQuit.test.ts`; the exit code
-  itself is unchanged). The 60 s hard limit leaves through `process.exit`, which emits no Electron event.
+  itself is unchanged). The 60 s hard limit (`exitAtHardLimit` in `index.ts`) calls `cancelInstallOnQuit` first, then `process.exit(0)`; whether `process.exit` emits Electron's `'quit'` is UNVERIFIED (not unit-tested).
 - Menu: "Check for Updates…" in the OrgAI menu on macOS (after About) and in Help elsewhere (before About OrgAI); its
   click starts `updates.check()` in main, then sends `'check-for-updates'` to the main window (target 'main'). Unit-tested
   in `appMenu.test.ts`; the renderer's handling is the UI lead's (until then the action is ignored by the renderer).
@@ -97,7 +97,9 @@ metadata yet).
   asset (installer plus latest.yml) on a published release after the fact; nothing pins a release's hashes outside
   GitHub.
 - The download cache is written by electron-updater outside the data folder (OS per-user cache,
-  `<updaterCacheDirName>/pending`), recorded in `writePathInventory.allowlist.ts` as a comment (no call site in our code).
+  `orgai-updater/pending`), recorded in `writePathInventory.allowlist.ts` as a comment (no call site in our code).
+- A local `npm run pack` build has capability 'manual' (no uninstaller beside the exe), so launched without `ORGAI_MOCK`
+  it does contact GitHub for update checks.
 
 ## Packaging and release
 

@@ -477,7 +477,14 @@ app.whenReady().then(async () => {
       cliInstallForStatus?.cancel()
     },
     // At the hard limit (writers still in flight after 60 s, descendants killed): leave now; the exit hook releases.
-    exitAtHardLimit: () => process.exit(0),
+    exitAtHardLimit: () => {
+      try {
+        updatesController?.cancelInstallOnQuit()
+      } catch {
+        /* exiting anyway */
+      }
+      process.exit(0)
+    },
     // Chromium's own helpers (GPU, renderers, network and utility services) are not the host's work: killing them
     // only makes Chromium relaunch them. app.getAppMetrics lists them, re-read on every pass of the tree kill.
     shutdownExcludePids: () => app.getAppMetrics().map((m) => m.pid),
