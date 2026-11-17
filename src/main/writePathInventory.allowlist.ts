@@ -34,7 +34,11 @@ const DATA_FOLDER_OWNER = 'data-folder owner: written only by the host holding h
 // exec --output-last-message: a user-chosen path outside the data folder that other tools may also write; written to a
 // private temp file and renamed over the destination (never through a link); no OrgAI lock covers it.
 const EXEC_OUTPUT_FILE = 'outside data folder: user-chosen --output-last-message file, temp file + rename, no OrgAI lock'
-const TEST_TEMP = 'test helper: private mkdtemp folder under the OS temp dir, never the data folder'
+// Windows portable build only: <userData>/app-icon.ico, the stable copy of the app icon the AppUserModelID registry entry
+// points at. Written at start by the desktop process holding Electron's single-instance lock; the CLI never writes it. The
+// content is the same bytes from every writer (copied only when missing or of a different size), so a lost race is harmless.
+const DESKTOP_ICON_COPY = 'desktop single instance: idempotent copy of the app icon to <userData>/app-icon.ico (portable Windows build), same bytes from any writer'
+const TEST_TEMP ='test helper: private mkdtemp folder under the OS temp dir, never the data folder'
 export const WRITE_SITES: Record<string, string> = {
   'src/cli/commands/exec.ts:writeLastMessage:openSync': EXEC_OUTPUT_FILE,
   'src/cli/commands/exec.ts:writeLastMessage:renameSync': EXEC_OUTPUT_FILE,
@@ -63,6 +67,9 @@ export const WRITE_SITES: Record<string, string> = {
   'src/cli/tui/externalEditor.ts:editInExternalEditor:writeFileSync': 'single owner',
   'src/cli/tui/terminal.ts:onCrash:writeSync': 'single owner',
   'src/cli/tui/terminal.ts:writeNow:writeSync': 'single owner',
+  'src/main/appIdentity.ts:copy:copyFileSync': DESKTOP_ICON_COPY,
+  'src/main/appIdentity.ts:mkdir:mkdirSync': DESKTOP_ICON_COPY,
+  'src/main/appIdentity.ts:stableIconPath:fs.mkdir': DESKTOP_ICON_COPY,
   'src/main/capabilities/mockHome.ts:seedMockHome:mkdirSync': 'single owner',
   'src/main/capabilities/mockHome.ts:seedMockHome:writeFileSync': 'single owner',
   'src/main/capabilities/reviewStore.ts:removeReview:rmSync': 'single owner',
