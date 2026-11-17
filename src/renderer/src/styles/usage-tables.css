@@ -181,6 +181,11 @@
   max-width: 16rem;
   color: var(--text-primary);
 }
+.usage-status-word {
+  margin-inline-start: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
 .usage-why .usage-why-clip {
   display: block;
   max-inline-size: 100%;

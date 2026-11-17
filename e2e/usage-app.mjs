@@ -265,8 +265,17 @@ try {
     check(s.filter((t) => /Filter added/.test(t)).length === 1, `drilldown: ${name} announces once`, JSON.stringify(s))
     return ks
   }
+  // All runs may still be open from the no-price link above: close it, so the check is about what the row does.
+  if (await T('usage-runs').locator('details').evaluate((d) => d.open)) await T('usage-runs').locator('details > summary').click()
+  await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 0))
+  await sleep(200)
+  const keyBefore = await page.evaluate(() => ({ top: Math.round(document.querySelector('[data-testid=usage-summary]')?.getBoundingClientRect().top ?? -1), scroll: document.querySelector('.usage-scroll')?.scrollTop ?? -1 }))
   await drill('a project row (click)', () => T('usage-project-row').first().locator('button').first().click(), 'project')
-  check(await T('usage-runs').locator('details').evaluate((d) => d.open), 'drilldown: a project narrowing opens All runs')
+  // Walk H1: a row narrowing neither opens All runs nor scrolls, and the first chip shifts nothing below the bar.
+  const keyAfter = await page.evaluate(() => ({ top: Math.round(document.querySelector('[data-testid=usage-summary]')?.getBoundingClientRect().top ?? -1), scroll: document.querySelector('.usage-scroll')?.scrollTop ?? -1 }))
+  check(!(await T('usage-runs').locator('details').evaluate((d) => d.open)), 'drilldown: a row narrowing leaves All runs closed')
+  check(keyAfter.scroll === keyBefore.scroll && Math.abs(keyAfter.top - keyBefore.top) <= 1, 'drilldown: a row narrowing neither scrolls nor shifts the KPI band', JSON.stringify({ keyBefore, keyAfter }))
+  check((await chipKinds()).every((k) => k !== 'period'), 'chips: the period gets no chip')
   // chip remove
   await watchLive()
   await T('usage-chip-remove').first().click()
@@ -339,6 +348,8 @@ try {
   await clearAll()
   await T('usage-project-row').first().click()
   await sleep(2000)
+  if (!(await T('usage-runs').locator('details').evaluate((d) => d.open))) await T('usage-runs').locator('details > summary').click()
+  await sleep(300)
   const runOpen = T('usage-run-row').first().locator('[data-testid=usage-run-open]')
   check((await T('usage-run-row').count()) >= 1, 'drilldown: All runs lists the narrowed project runs')
   if (await runOpen.count()) {
@@ -583,6 +594,7 @@ try {
   await settle()
   await sleep(500)
   check(await visible('[data-testid=usage-empty]'), 'states: Last month (no runs) shows usage-empty')
+  check(!(await chipKinds()).includes('period') && /Oct|Nov|Sep|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug/.test(await T('usage-period-label').innerText()), 'chips: a non-default period gets no chip; the date text names it', JSON.stringify(await chipKinds()))
   check(await visible('[data-testid=usage-empty-30]'), 'states: the filtered-empty state offers Use 30 days when the period is the cause')
   check((await T('usage-empty-clear').count()) === 0, 'states: with only the period narrowed there is no pointless Clear all (it would keep the period)')
   // Add a project narrowing on top: now Clear all is offered too.
@@ -652,7 +664,8 @@ try {
       if (w >= 1600 && boxes.s && boxes.w) check(Math.abs(boxes.s.h - boxes.w.h) <= 2, `layout ${tag}: the hero cards have equal heights`, JSON.stringify(boxes))
       const pageH = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollHeight ?? 0)
       log(`info: layout ${tag}: page content height ${pageH} px`)
-      check(pageH < (w >= 1600 ? 2000 : 2700), `layout ${tag}: the page is shorter than before the rework (2906 / 3881 px)`, String(pageH))
+      // Tuned to this seed (Runs worth a look stacks above Cost by tier below a 1500 px container).
+      check(pageH < (w >= 1600 ? 2300 : 2700), `layout ${tag}: the page is shorter than before the rework (2906 / 3881 px)`, String(pageH))
       const kpi = await page.evaluate(() => [...document.querySelectorAll('[data-testid=usage-summary-item]')].map((e) => Math.round(e.getBoundingClientRect().height)))
       check(kpi.length === 4 && kpi.every((x) => x < 110), `layout ${tag}: four KPI tiles, each under 110 px high`, JSON.stringify(kpi))
       const plotShare = await page.evaluate(() => {
@@ -698,10 +711,12 @@ try {
         }
         const q = (s) => document.querySelector(`[data-testid=usage-filters] ${s}`)
         const bar = document.querySelector('[data-testid=usage-filters]')
-        return { period: r(q('[data-testid=usage-period]')), bucket: r(q('[data-testid=usage-bucket]')), projects: r(q('[data-testid=usage-projects]')), kinds: r(q('[data-testid=usage-kinds]')), bar: r(bar), clipped: bar ? bar.scrollWidth > bar.clientWidth + 1 : false }
+        // Group by now sits in the chart header, so only the bar's own controls are checked here.
+        return { period: r(q('[data-testid=usage-period]')), projects: r(q('[data-testid=usage-projects]')), kinds: r(q('[data-testid=usage-kinds]')), bar: r(bar), clipped: bar ? bar.scrollWidth > bar.clientWidth + 1 : false }
       })
       const hit = (a, b) => a && b && a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b
-      const pairs = [['period', 'bucket'], ['period', 'projects'], ['bucket', 'projects'], ['projects', 'kinds']]
+      const pairs = [['period', 'projects'], ['projects', 'kinds']]
+      check((await page.locator('[data-testid=usage-spend] [data-testid=usage-bucket]').count()) === 1, `layout ${tag}: Group by sits in the chart header`)
       const overlapping = pairs.filter(([x, y]) => hit(ctl[x], ctl[y]))
       check(overlapping.length === 0 && !ctl.clipped && ctl.period && ctl.projects, `layout ${tag}: the filter bar controls do not overlap or clip`, JSON.stringify({ overlapping, ctl }))
       if (ctl.period && ctl.projects) {

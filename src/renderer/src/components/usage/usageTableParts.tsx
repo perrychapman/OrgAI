@@ -8,7 +8,8 @@ import '../../styles/usage-tables.css'
 import '../../styles/usage-runs.css'
 
 /** The chevron button at the start of a run row: toggles its detail row (one disclosure level, plan 2.7). */
-export function RunToggle({ open, detailId, mounted, onToggle }: { open: boolean; detailId: string; mounted: boolean; onToggle: () => void }): ReactElement {
+export function RunToggle({ open, detailId, mounted, onToggle, name }: { open: boolean; detailId: string; mounted: boolean; onToggle: () => void; name: string }): ReactElement {
+  // A fixed name; aria-expanded alone carries the state (Reviewer: the state was said twice and every row read the same).
   return (
     <button
       type="button"
@@ -16,7 +17,7 @@ export function RunToggle({ open, detailId, mounted, onToggle }: { open: boolean
       data-testid="usage-run-toggle"
       aria-expanded={open}
       aria-controls={mounted ? detailId : undefined}
-      aria-label={open ? 'Hide details' : 'Show details'}
+      aria-label={`Details of ${name}`}
       title={open ? 'Hide details' : 'Show details'}
       onClick={onToggle}
     >

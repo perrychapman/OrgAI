@@ -71,7 +71,7 @@ export function ChartTable({
     const ro = new ResizeObserver(check)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [rows.length, columns.length])
+  }, [rows.length, columns.length, open])
   const body = (
       <div
         ref={wrap}

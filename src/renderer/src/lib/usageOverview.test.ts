@@ -135,6 +135,8 @@ describe('query', () => {
     expect(q.bucket).toBe('day')
     expect(overviewQuery(defaultUsageFilters(), NOW).kinds).toBeUndefined()
     expect(previousQuery(defaultUsageFilters(), NOW).until).toBe(periodSpan({ kind: 'days', days: 30 }, NOW).since)
+    // Same bucket as the chart, so the overlay lines up bucket for bucket.
+    expect(previousQuery({ ...defaultUsageFilters(), bucket: 'week' }, NOW).bucket).toBe(overviewQuery({ ...defaultUsageFilters(), bucket: 'week' }, NOW).bucket)
   })
   it('knows the page kinds', () => {
     expect(usageKindOf(row('a'))).toBe('work')

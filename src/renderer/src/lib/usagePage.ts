@@ -117,6 +117,8 @@ export interface SummaryItemModel {
   noPriceText?: string
   title?: string
   delta: string | null
+  /** Why there is no delta although a previous span exists ("not compared: runs without a price"). */
+  deltaNote?: string
 }
 
 export interface CostCoverage {
@@ -187,7 +189,11 @@ export function summaryModel(data: UsageData, prev: PreviousSpan | null, o: { tr
       atLeast: lowerBound && t.cost.costUsd !== null,
       ...(view.kind === 'unknown' ? { noPriceText: 'No price' } : {}),
       ...(model ? { title: MODEL_COST_TITLE } : {}),
-      delta: p && costExact(cost) && costExact(p.totals.cost) && !lowerBound ? percentDelta(cost.costUsd, p.totals.cost.costUsd, o.words) : null
+      delta: p && costExact(cost) && costExact(p.totals.cost) && !lowerBound ? percentDelta(cost.costUsd, p.totals.cost.costUsd, o.words) : null,
+      // A lower bound on either side is not compared; say so instead of "no prior data" (post-rebuild walk H2).
+      ...(p && p.totals.runs > 0 && !(costExact(cost) && costExact(p.totals.cost) && !lowerBound)
+        ? { deltaNote: p.totals.cost.costUsd === null ? `No priced runs in ${o.words}` : 'not compared: some runs have no price' }
+        : {})
     },
     {
       signal: 'tokens',

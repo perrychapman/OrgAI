@@ -273,10 +273,14 @@ export function overviewQuery(f: UsageFilters, now: number, span: PeriodSpan = p
   }
 }
 
-/** The equal prior span's query for the deltas: same kinds and projects, month buckets (only totals are read). */
+/**
+ * The equal prior span's query: same kinds, projects and bucket as the chart, so its trend can be drawn as the
+ * previous-period overlay bucket for bucket (it used month buckets while only totals were read; the dashboard rework's
+ * overlay drew those month points as one tall ghost bar).
+ */
 export function previousQuery(f: UsageFilters, now: number): UsageOverviewQuery {
   const span = previousSpan(f.period, now)
-  return { ...overviewQuery(f, now, span), bucket: 'month', limit: 1 }
+  return { ...overviewQuery(f, now, span), limit: 1 }
 }
 
 export { usageKindOf }

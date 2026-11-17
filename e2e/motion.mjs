@@ -246,8 +246,12 @@ try {
     await sleep(50)
     const kpiDur = await indicator('usage-kpi-indicator')
     check(kpiDur !== null && ms(kpiDur) >= 200, 'usage: the KPI selected bar slides at --dur-slow', String(kpiDur))
-    const morph = await page.evaluate(() => document.querySelector('[data-testid=usage-spend] svg')?.getAttribute('data-morph') ?? null)
-    check(morph === 'running' || (await running()) > 0, 'usage: a metric change starts the bar morph', String(morph))
+    // The chart's own svg (the card header also holds icon svgs), and only animations on its segment groups count.
+    const morph = await page.evaluate(() => ({
+      attr: document.querySelector('[data-testid=usage-spend-plot] svg.uc-svg')?.getAttribute('data-morph') ?? null,
+      anims: [...document.querySelectorAll('[data-testid=usage-spend-plot] g[data-gk]')].reduce((n, g) => n + g.getAnimations().length, 0)
+    }))
+    check(morph.attr === 'running' || morph.anims > 0, 'usage: a metric change starts the bar morph', JSON.stringify(morph))
     await sleep(600)
     await page.locator('[data-testid=usage-where-tab][data-tab=model]').click()
     await sleep(30)

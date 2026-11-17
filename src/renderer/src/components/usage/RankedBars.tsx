@@ -12,6 +12,12 @@ export const RANK_TOP = 5
 
 /** True for a short while after the user changed the Where it went tab: the rows rise in and the bars draw. */
 export const RankEnterContext = createContext(false)
+/**
+ * The filters the user last chose (a stable string). A reorder glides only within REORDER_ARM_MS of it changing, so a
+ * silent refresh that reorders rows never animates (Reviewer M2).
+ */
+export const RankArmContext = createContext('')
+const REORDER_ARM_MS = 5000
 
 /** One cost figure on the page: "No price" for unknown (never $0), "+" and "~" as costView says, full value in the title. */
 export function CostText({ value, title }: { value: CostInput; title?: string }): ReactElement {
@@ -129,6 +135,8 @@ export function RankedBars({
   const reduced = useReducedMotion()
   const listRef = useRef<HTMLUListElement>(null)
   const lastLayout = useRef<{ keys: string[]; tops: Map<string, number> }>({ keys: [], tops: new Map() })
+  const arm = useContext(RankArmContext)
+  const armSeen = useRef({ arm, at: 0 })
   // A highlight dims the other rows only while some row matches it.
   const hlOn = highlighted != null && items.some((it) => (it.seriesKey ?? it.id) === highlighted)
 
@@ -137,7 +145,11 @@ export function RankedBars({
   useLayoutEffect(() => {
     const ul = listRef.current
     if (!ul) return
+    if (armSeen.current.arm !== arm) armSeen.current = { arm, at: performance.now() }
     const keys = items.map((it) => it.id)
+    // Same rows in the same order (hover, highlight, a refresh that kept the ranking): nothing to measure.
+    if (keys.length === lastLayout.current.keys.length && keys.every((k, i) => k === lastLayout.current.keys[i])) return
+    const armed = performance.now() - armSeen.current.at <= REORDER_ARM_MS
     const tops = new Map<string, number>()
     const els = Array.from(ul.children) as HTMLElement[]
     keys.forEach((k, i) => {
@@ -146,7 +158,7 @@ export function RankedBars({
     })
     const prev = lastLayout.current
     lastLayout.current = { keys, tops }
-    if (reduced || typeof Element === 'undefined' || typeof Element.prototype.animate !== 'function') return
+    if (!armed || reduced || typeof Element === 'undefined' || typeof Element.prototype.animate !== 'function') return
     const ms = tokenMs('--dur-slow')
     if (ms <= 1) return
     const plan = flipPlan(prev.keys, keys, prev.tops, tops)

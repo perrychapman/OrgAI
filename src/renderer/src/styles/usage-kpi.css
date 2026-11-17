@@ -137,6 +137,10 @@
 }
 .usage-kpi-priced {
   margin: 0;
+  /* At least 24 px tall: it sits inside the Cost tile's own hit area (WCAG 2.5.8, Reviewer M4). */
+  min-block-size: 24px;
+  display: inline-flex;
+  align-items: center;
   padding: 0 var(--space-1);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);

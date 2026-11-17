@@ -29,15 +29,21 @@ export interface TweenDecision {
   lastKey: number
   reduced: boolean
   durationMs: number
+  /** How long ago the key last moved; a change arriving later than TWEEN_ARM_MS after it is a refresh, not the user's. */
+  keyAgeMs?: number
 }
 
+/** A user change arms the tween for this long (its data normally lands well within it); later changes are refreshes. */
+export const TWEEN_ARM_MS = 5000
+
 /**
- * Whether a value change animates: only after a user-triggered change (key moved), never for unknown (null) on
- * either side, never under reduced motion or a zero duration, and not for changes under 1%.
+ * Whether a value change animates: only after a user-triggered change (key moved, within TWEEN_ARM_MS), never for
+ * unknown (null) on either side, never under reduced motion or a zero duration, and not for changes under 1%.
  */
 export function shouldTween(d: TweenDecision): boolean {
   if (d.reduced || !(d.durationMs > 0)) return false
   if (d.key === d.lastKey) return false
+  if (d.keyAgeMs !== undefined && d.keyAgeMs > TWEEN_ARM_MS) return false
   if (d.prev === null || d.next === null) return false
   if (!Number.isFinite(d.prev) || !Number.isFinite(d.next) || d.prev === d.next) return false
   const base = Math.max(Math.abs(d.prev), Math.abs(d.next))

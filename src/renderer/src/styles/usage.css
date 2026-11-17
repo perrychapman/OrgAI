@@ -314,8 +314,18 @@
 :root[data-reduce-motion='on'] .usage-sticky::after {
   transition: none;
 }
-.usage-sticky > .usage-chips {
+/* The always-present second line: date and run count, then the chips; a fixed minimum so a first chip shifts nothing. */
+.usage-scope-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  /* One chips line (chip plus the small "Clear all filters" button) measured at 38 px, so the first chip moves nothing. */
+  min-block-size: 38px;
   padding: 0 var(--usage-pad) var(--space-2);
+}
+.usage-scope-row > .usage-period-label {
+  margin: 0;
 }
 .usage-filters {
   padding: var(--space-2) var(--usage-pad);
@@ -594,7 +604,8 @@
   gap: 0 var(--space-6);
   align-items: start;
 }
-@container usage (min-width: 1100px) {
+/* Side by side only where Runs worth a look keeps room for its columns (the walk found it clipped at 805 px). */
+@container usage (min-width: 1500px) {
   .usage-pair {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   }

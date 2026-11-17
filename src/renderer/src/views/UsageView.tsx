@@ -13,6 +13,7 @@ import {
   clearedFilters,
   narrowFilters,
   previousPeriodWords,
+  periodLabel,
   previousSpan,
   effectiveBucket,
   queryKey,
@@ -98,7 +99,9 @@ export default function UsageView(): ReactElement {
   const [chosenMetric, setChosenMetric] = useState<Metric | null>(null)
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set())
   const [overlay, setOverlay] = useState(false)
-  const [highlight, setHighlight] = useState<string | null>(null)
+  const [pointed, setHighlight] = useState<string | null>(null)
+  // A hidden series is never "highlighted": pressing its legend chip to hide it must not dim the rest (walk M).
+  const highlight = pointed !== null && hidden.has(pointed) ? null : pointed
   const seriesRef = useRef<SeriesState | null>(null)
   const pending = useRef<Pending | null>(null)
   const pendingFocus = useRef<{ chipKey: string | null } | null>(null)
@@ -186,6 +189,9 @@ export default function UsageView(): ReactElement {
     return seriesRef.current.map
   }, [overview, filters.period])
   const chips = useMemo(() => usageChips(filters, chipNames), [filters, chipNames])
+  // The period is the Period control's own state and the date text says it, so it gets no chip (walk M2); `chips`
+  // still carries it for the announcement of a period change and for the empty state's cause.
+  const shownChips = useMemo(() => chips.filter((c) => c.kind !== 'period'), [chips])
   const groups = useMemo(() => projectOptionGroups(projects, state.projectStats), [projects, state.projectStats])
 
   // Does any run exist at all? Asked once, and only when the current answer is empty (the cheapest correct test).
@@ -250,13 +256,19 @@ export default function UsageView(): ReactElement {
       const after = usageChips(next, chipNames)
       const added = addedChips(before, after)
       const removed = addedChips(after, before)
+      // The period chip's key never changes, so a move between two non-default periods is announced from the period
+      // itself (its chip is hidden; Reviewer recheck).
+      const periodMoved = JSON.stringify(next.period) !== JSON.stringify(filters.period)
+      const periodText = after.find((c) => c.kind === 'period')?.text ?? null
       const lead: Pending['lead'] = opts?.cleared
         ? { kind: 'cleared', chip: null }
         : added.length > 0
           ? { kind: 'added', chip: added[0]!.text }
           : removed.length > 0
             ? { kind: 'removed', chip: removed[0]!.text }
-            : null
+            : periodMoved && periodText
+              ? { kind: 'added', chip: periodText }
+              : null
       const active = document.activeElement
       pending.current = {
         key: queryKey(next, Date.now()),
@@ -268,24 +280,27 @@ export default function UsageView(): ReactElement {
       setStoreFilters(next)
       if (opts?.moved) say(opts.moved)
     },
-    [chips, chipNames, setStoreFilters, say]
+    [chips, chipNames, filters, setStoreFilters, say]
   )
 
   const onNarrow = useCallback(
     (n: UsageNarrowing) => {
       const next = narrowFilters(useAppStore.getState().usageFilters, n)
-      const opensRuns = !!n.projectId || !!n.noPrice
-      if (opensRuns) setRunsOpen(true)
-      applyFilters(next, { scrollRuns: opensRuns })
+      // Only the "N of M priced" link opens All runs (it asks for those runs); a row, segment or bar narrowing leaves the
+      // page where it is, so the chart and tiles the user just narrowed stay in view (post-rebuild walk H1).
+      if (n.noPrice) setRunsOpen(true)
+      applyFilters(next)
     },
     [applyFilters]
   )
 
   const onRemoveChip = useCallback(
     (chip: UsageChip) => {
-      const i = chips.findIndex((c) => c.key === chip.key)
+      // Indices over the chips actually shown (the period has none), so focus lands on a real remove button.
+      const visible = (cs: UsageChip[]): UsageChip[] => cs.filter((c) => c.kind !== 'period')
+      const i = visible(chips).findIndex((c) => c.key === chip.key)
       const next = withoutChip(filters, chip)
-      const after = usageChips(next, chipNames)
+      const after = visible(usageChips(next, chipNames))
       pendingFocus.current = { chipKey: after.length > 0 ? after[Math.min(i, after.length - 1)]!.key : null }
       applyFilters(next)
     },
@@ -392,7 +407,7 @@ export default function UsageView(): ReactElement {
   const metric = resolveMetric(chosenMetric, unpriced)
   const onMetric = useCallback(
     (m: Metric) => {
-      setTweenKey((k) => k + 1)
+      // No tween key here: the KPI figures do not depend on the chart metric (Reviewer M1).
       setChosenMetric(m)
       say(metricAnnouncement(m))
     },
@@ -464,9 +479,15 @@ export default function UsageView(): ReactElement {
                   projectName={projectName}
                   scope={scope}
                   barRef={barRef}
-                  runs={data ? data.matchedRuns : null}
                 />
-                <UsageChips chips={chips} onRemove={onRemoveChip} onClear={onClearAll} />
+                {/* Always present: the date and run count, then the chips, so adding a chip shifts nothing (walk H1). */}
+                <div className="usage-scope-row">
+                  <p className="usage-period-label" data-testid="usage-period-label">
+                    {periodLabel(filters.period, barNow)}
+                    {data && <span className="usage-period-runs"> · {data.matchedRuns} {data.matchedRuns === 1 ? 'run' : 'runs'}</span>}
+                  </p>
+                  <UsageChips chips={shownChips} onRemove={onRemoveChip} onClear={onClearAll} />
+                </div>
               </div>
               {notes?.truncated && <TruncatedBanner note={notes.truncated} onUseThirtyDays={useThirtyDays} />}
               {state.refreshFailedFrom !== null && <RefreshFailed text={refreshFailedText(state.refreshFailedFrom)} onRetry={retry} />}
@@ -507,7 +528,8 @@ export default function UsageView(): ReactElement {
                           onToggleSeries={onToggleSeries}
                           overlay={overlay}
                           onOverlay={onOverlay}
-                          previousTrend={previousData?.data.trend ?? null}
+                          // A folded, truncated previous span is only a lower bound: no overlay then (Compare says why).
+                          previousTrend={previousData && !previousData.data.lowerBound ? previousData.data.trend : null}
                           previousSpan={prevSpan}
                           highlight={highlight}
                           onHighlight={setHighlight}
