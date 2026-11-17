@@ -24,7 +24,7 @@ const PRICE_WORD: Record<PriceSource, string> = {
 
 const unpriced = (m: UsageOverviewModel): boolean => m.costUsd === null || m.priceSource === 'unknown'
 
-export default function ModelsPanel({ data, filters, onNarrow }: UsagePanelProps): ReactElement {
+export default function ModelsPanel({ data, filters, onNarrow, announce, embedded }: UsagePanelProps & { embedded?: boolean }): ReactElement {
   const wide = useWidePage()
   const limit = wide ? 7 : 5
   const [showAll, setShowAll] = useState(false)
@@ -72,7 +72,7 @@ export default function ModelsPanel({ data, filters, onNarrow }: UsagePanelProps
       ),
       fraction: m.costUsd === null ? 0 : barFraction(m.costUsd, maxCost),
       state: m.costUsd === null ? 'unknown' : m.costUnknownRuns > 0 ? 'partial' : 'known',
-      fill: 'var(--text-secondary)',
+      fill: 'var(--chart-other)',
       cost: rollupCost(m),
       detail: `${formatTokens(tokens)} tokens · ${sharePercent(tokens, totalTokens)}%`,
       selected: filters.model === m.model,
@@ -106,17 +106,23 @@ export default function ModelsPanel({ data, filters, onNarrow }: UsagePanelProps
       `${sharePercent(tokenSum(m.tokens), totalTokens)}%`,
       <CostText key="c" value={rollupCost(m)} />,
       PRICE_WORD[m.priceSource]
-    ]
+    ],
+    sort: [m.model, connText(m.model) || null, m.runs, tokenSum(m.tokens), tokenSum(m.tokens), m.costUsd, PRICE_WORD[m.priceSource]]
   }))
 
+  const Root = embedded ? 'div' : 'section'
   return (
-    <section className="usage-panel" aria-labelledby="usage-models-h" data-testid="usage-models">
-      <div className="usage-panel-head">
-        <h2 id="usage-models-h" tabIndex={-1}>
-          By model
-        </h2>
+    <Root className={embedded ? 'usage-panel-embedded' : 'usage-panel'} {...(embedded ? {} : { 'aria-labelledby': 'usage-models-h' })} data-testid="usage-models">
+      {embedded ? (
         <p className="usage-panel-summary">{summary}</p>
-      </div>
+      ) : (
+        <div className="usage-panel-head">
+          <h2 id="usage-models-h" tabIndex={-1}>
+            By model
+          </h2>
+          <p className="usage-panel-summary">{summary}</p>
+        </div>
+      )}
       {items.length > 0 ? (
         <RankedBars label="Models by estimated cost" items={items} rowTestId="usage-model-row" onActivate={(it) => onNarrow({ model: it.id })} />
       ) : (
@@ -141,7 +147,8 @@ export default function ModelsPanel({ data, filters, onNarrow }: UsagePanelProps
         ]}
         rows={rows}
         empty="No runs in this period."
+        announce={announce}
       />
-    </section>
+    </Root>
   )
 }

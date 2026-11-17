@@ -21,8 +21,31 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+.uc-head-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2) var(--space-3);
+}
 .uc-metric {
-  margin-inline-start: auto;
+  margin: 0;
+}
+.uc-overlay-ctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+/* The pressed state is the filled background, the accent edge and the check icon, never colour alone. */
+.uc-overlay[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+.uc-overlay-why {
+  font-size: var(--text-small);
+  color: var(--text-secondary);
 }
 .uc-spend-scroll {
   overflow-x: auto;
@@ -61,9 +84,39 @@
 }
 .uc-stub {
   stroke: var(--chart-unknown);
-  stroke-width: 1;
+  stroke-width: 1.5;
   stroke-dasharray: 3 2;
   cursor: pointer;
+}
+/* Dimmed by the row-to-series highlight (UsageView owns it); no transition, so reduced motion has nothing to remove. */
+.uc-spend [data-dim='true'] {
+  opacity: var(--dim-opacity);
+}
+/* The previous-period overlay: a dashed outline at the previous total (or a hollow circle when its cost is unknown). */
+.uc-prev {
+  fill: none;
+  stroke: var(--text-secondary);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+.uc-prev-unknown {
+  fill: var(--surface-1);
+}
+/* The compact value above the focused or hovered bar; decorative, the readout says it in words. */
+.uc-vlabel {
+  font-family: var(--font-sans);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+  fill: var(--text-primary);
+  stroke: var(--surface-1);
+  stroke-width: 3px;
+  paint-order: stroke;
+  pointer-events: none;
+}
+.uc-overlay-key {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 .uc-notloaded {
   stroke: var(--chart-unknown);
@@ -119,10 +172,19 @@
   flex: 0 0 220px;
   width: 220px;
 }
+/* Under the plot (the plot takes the card's width): one wrapping row of entries. */
 .uc-spend-body[data-wide='false'] .uc-legend {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: var(--space-3);
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-0h) var(--space-2);
+}
+.uc-spend-body[data-wide='false'] .uc-legend-row {
+  min-width: 0;
+  max-width: 100%;
+}
+.uc-spend-body[data-wide='false'] .uc-legend-btn {
+  width: auto;
+  max-width: 100%;
 }
 .uc-legend-btn {
   display: grid;
@@ -146,15 +208,19 @@ button.uc-legend-btn {
 button.uc-legend-btn:hover {
   background: var(--surface-2);
 }
-button.uc-legend-btn[aria-pressed='true'] {
-  background: var(--accent-soft);
+/* A toggle: pressed means shown. A hidden series gets a hollow swatch, a struck muted name and no value weight. */
+button.uc-legend-btn[data-highlight='true'] {
+  background: var(--surface-2);
+}
+button.uc-legend-btn[data-hidden='true'] {
+  color: var(--text-secondary);
+}
+button.uc-legend-btn[data-hidden='true'] .uc-legend-name {
+  text-decoration: line-through;
 }
 button.uc-legend-btn:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
-}
-.uc-legend-static {
-  color: var(--text-secondary);
 }
 .uc-legend-name {
   overflow: hidden;
@@ -394,6 +460,9 @@ button.uc-legend-btn:focus-visible {
 }
 
 @media (forced-colors: active) {
+  .uc-prev {
+    stroke: CanvasText;
+  }
   .uc-selected,
   .uc-bar:focus-visible {
     stroke: Highlight;

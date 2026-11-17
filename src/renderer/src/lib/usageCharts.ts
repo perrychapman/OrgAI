@@ -74,8 +74,9 @@ function round(n: number): number {
 }
 
 /** Axis label for a tick: "$5", "$12k", "$0.50"; tokens through formatTokens. Never a page-precision figure. */
-export function formatTick(v: number, metric: 'cost' | 'tokens'): string {
+export function formatTick(v: number, metric: Metric): string {
   if (metric === 'tokens') return v === 0 ? '0' : formatTokens(v)
+  if (metric === 'runs') return v >= 1000 ? `${+(v / 1000).toFixed(1)}k` : String(+v.toFixed(1))
   if (v === 0) return '$0'
   if (v >= 1000) return `$${+(v / 1000).toFixed(1)}k`
   if (v >= 1) return `$${+v.toFixed(2)}`
@@ -182,7 +183,7 @@ export interface Segment {
   key: string
   /** 0..4, or -1 for Other. */
   series: number
-  /** The value on the scale: cost (known part) or all tokens. 0 for unknown or nothing. */
+  /** The value on the scale: cost (known part), all tokens or runs. 0 for unknown or nothing. */
   value: number
   state: SegmentState
   runs: number
@@ -193,7 +194,8 @@ export interface Segment {
   projects: number
 }
 
-export type Metric = 'cost' | 'tokens'
+/** What the spend chart stacks: estimated cost, all tokens, or runs (counts are always known). */
+export type Metric = 'cost' | 'tokens' | 'runs'
 
 export const tokenSum = (t: TokenUsage): number => t.input + t.output + t.cacheRead + t.cacheWrite
 
@@ -238,6 +240,9 @@ function segmentFrom(key: string, seriesIdx: number, parts: readonly UsageTrendP
   if (metric === 'tokens') {
     return { key, series: seriesIdx, value: tokens, state: tokens > 0 ? 'known' : 'none', runs, tokens, cost: sliceCost(costUsd, unknownRuns), projects: parts.length }
   }
+  if (metric === 'runs') {
+    return { key, series: seriesIdx, value: runs, state: runs > 0 ? 'known' : 'none', runs, tokens, cost: sliceCost(costUsd, unknownRuns), projects: parts.length }
+  }
   return { key, series: seriesIdx, value: costUsd ?? 0, state: sliceState(costUsd, unknownRuns), runs, tokens, cost: sliceCost(costUsd, unknownRuns), projects: parts.length }
 }
 
@@ -272,6 +277,7 @@ function figure(c: CostInput): string {
 }
 
 function metricFigure(seg: { value: number; cost: CostInput }, metric: Metric): string {
+  if (metric === 'runs') return plural(seg.value, 'run')
   return metric === 'tokens' ? `${formatTokens(seg.value)} tokens` : figure(seg.cost)
 }
 
@@ -280,16 +286,19 @@ const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n =
 /** "Tue 3 Nov: $9.80, 14 runs. Billing $6.10, Docs $3.70." Unknown parts read "Notes unknown". */
 export function readoutText(label: string, bar: { runs: number; cost: CostInput; tokens: number }, segments: readonly Segment[], names: (key: string, seg: Segment) => string, metric: Metric): string {
   if (bar.runs === 0) return `${label}: no runs.`
-  const total = metric === 'tokens' ? `${formatTokens(bar.tokens)} tokens` : figure(bar.cost)
   const parts = segments.map((s) => {
     const n = names(s.key, s)
     return s.state === 'unknown' && metric === 'cost' ? `${n} unknown` : `${n} ${metricFigure(s, metric)}`
   })
-  return `${label}: ${total}, ${plural(bar.runs, 'run')}.${parts.length > 0 ? ` ${parts.join(', ')}.` : ''}`
+  const tail = parts.length > 0 ? ` ${parts.join(', ')}.` : ''
+  if (metric === 'runs') return `${label}: ${plural(bar.runs, 'run')}.${tail}`
+  const total = metric === 'tokens' ? `${formatTokens(bar.tokens)} tokens` : figure(bar.cost)
+  return `${label}: ${total}, ${plural(bar.runs, 'run')}.${tail}`
 }
 
 /** A segment's own readout: "Tue 3 Nov, Billing: $6.10, 9 runs." */
 export function segmentReadout(label: string, name: string, seg: Segment, metric: Metric): string {
+  if (metric === 'runs') return `${label}, ${name}: ${plural(seg.runs, 'run')}.`
   const v = seg.state === 'unknown' && metric === 'cost' ? 'cost unknown' : metricFigure(seg, metric)
   return `${label}, ${name}: ${v}, ${plural(seg.runs, 'run')}.`
 }

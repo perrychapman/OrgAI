@@ -1,0 +1,101 @@
+/*
+ * "Where it went" card (BreakdownCard) and sortable table headers (ChartTable). Tokens only, both themes.
+ * The card is one surface (.usage-panel from usage.css); its panels are embedded and add no surface of their own.
+ */
+
+.usage-where-tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border-default);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.usage-where-tab {
+  flex: none;
+  padding: var(--space-1h) var(--space-3);
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  cursor: pointer;
+}
+.usage-where-tab:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.usage-where-tab[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.usage-where-tab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.usage-where-body {
+  min-width: 0;
+}
+.usage-panel-embedded {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.usage-panel-embedded .uc-rank-main {
+  min-width: 0;
+}
+
+/* Row-to-series highlight: a quiet fill plus the selected-style inset bar, so it is never colour alone. */
+.uc-rank-row[data-highlight='true'] {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--border-strong);
+}
+.uc-rank-row[data-selected='true'][data-highlight='true'] {
+  background: var(--accent-soft);
+}
+
+/* Sort buttons read as header text. */
+.uc-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.uc-table .num .uc-sort {
+  flex-direction: row-reverse;
+}
+.uc-sort:hover {
+  color: var(--text-primary);
+}
+.uc-sort:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.uc-sort-glyph {
+  display: inline-flex;
+  width: 10px;
+  height: 10px;
+  color: var(--text-primary);
+}
+.uc-table th[aria-sort='ascending'],
+.uc-table th[aria-sort='descending'] {
+  color: var(--text-primary);
+}
+
+@media (forced-colors: active) {
+  .usage-where-tab[aria-selected='true'] {
+    border-bottom-color: Highlight;
+  }
+}

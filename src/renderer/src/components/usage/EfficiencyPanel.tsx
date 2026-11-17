@@ -192,6 +192,8 @@ export default function EfficiencyPanel({ data, overview, onPickSignal, announce
         </div>
       )}
       {timing.runs > 0 && (
+        <details className="usage-timing-details" data-testid="usage-timing-details">
+        <summary>Team timing</summary>
         <div className="usage-eff-grid" role="group" aria-label="Team timing" data-testid="usage-timing">
           {[
             { id: 'first-spawn', name: 'Time to first spawn', value: timing.firstSpawnMs === null ? '—' : minutesText(timing.firstSpawnMs), def: TIMING_DEFINITIONS.firstSpawn },
@@ -214,6 +216,7 @@ export default function EfficiencyPanel({ data, overview, onPickSignal, announce
             </dl>
           ))}
         </div>
+        </details>
       )}
       {byProject.length > 0 && (
         <details className="usage-table-details" data-testid="usage-eff-table-details">
