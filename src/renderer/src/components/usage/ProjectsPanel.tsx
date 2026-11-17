@@ -21,7 +21,7 @@ import {
 import type { SeriesHighlightProps, UsagePanelProps } from './panelProps'
 import { Icon } from '../ui/Icon'
 import { ChartTable } from './ChartTable'
-import { CostText, RankedBars, RowMenu, useWidePage, type MenuEntry, type RankedItem } from './RankedBars'
+import { CostText, RankedBars, RANK_TOP, RowMenu, type MenuEntry, type RankedItem } from './RankedBars'
 import '../../styles/usage-charts.css'
 
 const SERIES_VAR = ['--chart-s1', '--chart-s2', '--chart-s3', '--chart-s4', '--chart-s5']
@@ -47,8 +47,7 @@ export default function ProjectsPanel({
   highlight,
   onHighlight
 }: UsagePanelProps & Partial<SeriesHighlightProps> & { embedded?: boolean }): ReactElement {
-  const wide = useWidePage()
-  const limit = wide ? 7 : 5
+  const limit = RANK_TOP
   const [showAll, setShowAll] = useState(false)
   const [menu, setMenu] = useState<{ project: UsageProjectRollup; anchor: HTMLElement } | null>(null)
 
@@ -154,7 +153,7 @@ export default function ProjectsPanel({
       )}
       {ranked.length > limit && (
         <button type="button" className="link-btn uc-more" data-testid="usage-projects-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
-          {showAll ? 'Show fewer' : `Show ${ranked.length - limit} more`}
+          {showAll ? 'Show fewer' : `Show all ${ranked.length}`}
         </button>
       )}
       {menu && <RowMenu anchor={menu.anchor} entries={entries(menu.project)} label={`${menu.project.projectName}: actions`} testId="usage-project-more" onClose={() => setMenu(null)} />}
