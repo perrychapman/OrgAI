@@ -35,6 +35,10 @@ const DATA_FOLDER_OWNER = 'data-folder owner: written only by the host holding h
 // private temp file and renamed over the destination (never through a link); no OrgAI lock covers it.
 const EXEC_OUTPUT_FILE = 'outside data folder: user-chosen --output-last-message file, temp file + rename, no OrgAI lock'
 const TEST_TEMP = 'test helper: private mkdtemp folder under the OS temp dir, never the data folder'
+// Not a call site here (the scanner sees only src/main and src/cli): the desktop updater (updater.ts) has electron-updater
+// write its download cache outside the data folder, in the OS per-user cache (Windows %LOCALAPPDATA%\<updaterCacheDirName
+// from app-update.yml>\pending), only after the user's updates:download. One desktop per user data folder (single-instance
+// lock); the CLI never loads electron-updater. Recorded so the inventory names every writer the app starts.
 export const WRITE_SITES: Record<string, string> = {
   'src/cli/commands/exec.ts:writeLastMessage:openSync': EXEC_OUTPUT_FILE,
   'src/cli/commands/exec.ts:writeLastMessage:renameSync': EXEC_OUTPUT_FILE,

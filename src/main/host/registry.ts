@@ -21,6 +21,7 @@ import {
   OUTPUTS_IPC,
   TEAM_FILES_IPC,
   EVOLVE_IPC,
+  UPDATES_IPC,
   hostCanOpenWindows
 } from '../../shared/types'
 import type { HostKind, HostRpcError, HostRpcErrorCode, HostScope, HostSubscribeTopic } from '../../shared/types'
@@ -172,7 +173,8 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'app:cliCommandStatus', 'app:installCliCommand', 'app:cancelCliInstall', 'app:removeOldCliShim', 'projects:parseRepoSource', 'projects:repoTools',
     'projects:cloneRepo', 'projects:cancelClone', 'projects:setFolderConfigTrust', 'teamFiles:approve', 'teamFiles:reject',
     'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit',
-    'outputs:open', 'outputs:reveal', 'outputs:saveAs', 'outputs:saveImage'
+    'outputs:open', 'outputs:reveal', 'outputs:saveAs', 'outputs:saveImage',
+    'updates:get', 'updates:check', 'updates:download', 'updates:install', 'updates:openReleasePage'
   ]
 }
 
@@ -192,7 +194,8 @@ const PUSH_TABLE: Readonly<Record<string, Omit<PushChannelEntry, 'direction'>>> 
   [IPC.projectsCloneProgress]: { delivery: 'desktop_only', source: 'ipc.ts registerRepoIpc (progress of a clone the window started)' },
   [IPC.appNavigate]: { delivery: 'desktop_only', source: 'RunManager open_in_app -> SelfKnowledgeHooks.navigate -> DesktopHooks.navigate (index.ts, the live main window; never on the bus, never a socket)' },
   [TEAM_FILES_IPC.teamFilesChanged]: { delivery: 'desktop_only', source: 'host/bootstrap.ts TeamFilesService broadcastStatus -> DesktopHooks.teamFilesChanged (index.ts, every window; never on the bus, never a socket)' },
-  [SCHEDULES_IPC.schedulesChanged]: { delivery: 'desktop_only', source: 'schedules/service.ts changed event -> index.ts (every window; never on the bus, never a socket)' }
+  [SCHEDULES_IPC.schedulesChanged]: { delivery: 'desktop_only', source: 'schedules/service.ts changed event -> index.ts (every window; never on the bus, never a socket)' },
+  [UPDATES_IPC.updatesChanged]: { delivery: 'desktop_only', source: 'updater.ts UpdateController emit -> index.ts (every window; never on the bus, never a socket)' }
 }
 
 /** Where each request channel is handled today (ipc.ts register functions; HOST_IPC and host.* are Wave 1 / 2). */
@@ -249,6 +252,9 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
     OUTPUTS_IPC.outputsRevise, OUTPUTS_IPC.outputsWatch, OUTPUTS_IPC.outputsUnwatch
   ],
   'outputsIpc.ts registerOutputsIpc (desktop-only; shell and save dialog)': [OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs, OUTPUTS_IPC.outputsSaveImage],
+  'ipc.ts registerUpdatesIpc (desktop-only; updater.ts)': [
+    UPDATES_IPC.updatesGet, UPDATES_IPC.updatesCheck, UPDATES_IPC.updatesDownload, UPDATES_IPC.updatesInstall, UPDATES_IPC.updatesOpenReleasePage
+  ],
   'host dispatcher (SCHEDULES_IPC; schedules/service.ts, desktop surface only for writes and runNow)': [
     SCHEDULES_IPC.schedulesList, SCHEDULES_IPC.schedulesHistory, SCHEDULES_IPC.schedulesSave, SCHEDULES_IPC.schedulesRemove,
     SCHEDULES_IPC.schedulesSetEnabled, SCHEDULES_IPC.schedulesRunNow

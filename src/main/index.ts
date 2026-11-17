@@ -5,7 +5,8 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, FocusRunTarget, RunEvent } from '@shared/types'
-import { IPC, SCHEDULES_IPC, TEAM_FILES_IPC, runWindowHash } from '@shared/types'
+import { IPC, SCHEDULES_IPC, TEAM_FILES_IPC, UPDATES_IPC, runWindowHash } from '@shared/types'
+import { createDesktopUpdates } from './updaterRuntime'
 import { Scheduler, testTickMs } from './schedules/scheduler'
 import { appUrlMatcher, isExternalWebUrl, scopedWindow, shouldBlockNavigation } from './windowScope'
 import { applyShellPath } from './shellEnv'
@@ -544,11 +545,38 @@ app.whenReady().then(async () => {
       if (ids.size) outputWatcher.checkProjects([...ids])
     })
   }
+  // Desktop updater (updater.ts, docs/agent-notes/updates.md): a dev or mock launch loads nothing and requests nothing.
+  // An accepted install quits through before-quit above (runs end as on Quit); the installer starts from 'quit'.
+  const updates = await createDesktopUpdates({
+    packaged: app.isPackaged,
+    platform: process.platform,
+    execPath: process.execPath,
+    env: process.env,
+    currentVersion: app.getVersion(),
+    autoCheck: () => settings.get().autoUpdateCheck !== false,
+    liveRunCount: () => h.runs.liveRunCount(),
+    quitting: () => quitting,
+    requestQuit: () => setImmediate(() => app.quit()),
+    openExternal: (url) => {
+      shell.openExternal(url).catch((e: Error) => log.warn(`Could not open the release page: ${e.message}`))
+    },
+    emit: (state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(UPDATES_IPC.updatesChanged, state)
+      }
+    },
+    log: { info: (m) => log.info(m), warn: (m) => log.warn(m) }
+  })
+  settings.onChange(() => updates.settingsChanged())
+  app.on('quit', () => updates.onAppQuit())
+  app.once('will-quit', () => updates.dispose())
   // `events` given: registerIpc leaves forwarding the bus to windows to the listener above.
-  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliInstall, repoClone: clones })
+  registerIpc({ ...h.services, openRunWindow, events: h.events, dispatcher: h.dispatcher, cliInstall, repoClone: clones, updates })
   installAppMenu(
-    menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow())
+    menuActionSender(() => BrowserWindow.getFocusedWindow(), liveWindowScopes, () => createWindow()),
+    { checkForUpdates: () => void updates.check() }
   )
+  updates.start()
   createWindow()
   booted = true
   // SIGINT / SIGTERM (and SIGHUP) end the host through the same sequence as Quit (forced: runs end continuable).

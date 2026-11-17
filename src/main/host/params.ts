@@ -9,7 +9,7 @@
  *
  * Electron-free; relative imports only. Only registry.ts (and its tests) read these.
  */
-import { EVOLVE_IPC, HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { EVOLVE_IPC, HOST_IPC, HOST_METHODS, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC, UPDATES_IPC } from '../../shared/types'
 import { EVOLVE_AFTER_RUN_CHANNEL } from './jsonCodec'
 import type { ParamSpec } from './registry'
 
@@ -185,6 +185,13 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   [SCHEDULES_IPC.schedulesRemove]: ID,
   [SCHEDULES_IPC.schedulesSetEnabled]: OBJECT,
   [SCHEDULES_IPC.schedulesRunNow]: ID,
+
+  // ---- UPDATES_IPC ---- (desktop only; ipc.ts registerUpdatesIpc, updateInstallArgs rebuilds install's input)
+  [UPDATES_IPC.updatesGet]: NONE,
+  [UPDATES_IPC.updatesCheck]: NONE,
+  [UPDATES_IPC.updatesDownload]: NONE,
+  [UPDATES_IPC.updatesInstall]: OPTIONAL_NULLABLE_OBJECT,
+  [UPDATES_IPC.updatesOpenReleasePage]: NONE,
 
   // ---- permissions ----
   [IPC.permissionsList]: ID,

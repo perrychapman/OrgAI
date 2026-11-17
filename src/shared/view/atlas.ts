@@ -1392,6 +1392,12 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
     surface: 'app-settings-connections-model-prices',
     control: 'user'
   },
+  // PLACEHOLDER (updater contract): the renderer lead points this at the About surface's update control once it exists.
+  autoUpdateCheck: {
+    summary: 'Check GitHub for a new OrgAI release at launch and every six hours. It never downloads or installs on its own. On unless turned off.',
+    surface: 'app-settings-about',
+    control: 'user'
+  },
   // PLACEHOLDER (Schedules contract): the renderer engineer points this at the Schedules surface. Never proposable.
   schedulesPaused: { summary: 'Pause every schedule at once. Nothing fires while it is on.', surface: 'schedules', control: 'user' }
 }
@@ -1582,5 +1588,6 @@ export const MENU_ACTION_DOCS: Readonly<Record<MenuAction, string>> = {
   'canvas-zoom-out': 'View > Canvas > Zoom out: zooms the live canvas out.',
   'ask-about-orgai': 'Help > Ask OrgAI about itself…: opens Chat ready for a question about the app.',
   'show-usage': 'View > Usage: opens the app-wide Usage page (every project and the assistants).',
-  'show-schedules': 'View > Schedules: opens the Schedules page (recurring team and Chat runs).'
+  'show-schedules': 'View > Schedules: opens the Schedules page (recurring team and Chat runs).',
+  'check-for-updates': 'Help > Check for Updates… (the OrgAI menu on macOS): checks GitHub for a newer release and shows the result in App settings > About.'
 }
