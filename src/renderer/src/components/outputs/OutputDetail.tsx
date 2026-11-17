@@ -4,7 +4,7 @@
 // Shared by the run side tab and the project tab.
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Maximize2, MessageSquareQuote, Pencil, SquarePen } from 'lucide-react'
+import { ExternalLink, Maximize2, MessageSquareQuote, Pencil, SquarePen } from 'lucide-react'
 import type { OutputReviseResult, RunOutput } from '@shared/types'
 import { useAppStore, useRunIndexes } from '../../store/useAppStore'
 import { canOpenOutput, canReviseFallback, currentProvenance, editBlockedReason, externalAppName, isEditableKind, outputMetaLine, provenanceLine } from '../../lib/outputs'
@@ -14,6 +14,7 @@ import { HIDDEN_SHOWN_TITLE } from '../../lib/teamFound'
 import { runTag } from '../../lib/runLabels'
 import { oldVersionText, versionOptionLabel } from '../../lib/outputVersions'
 import { SENT_ANNOUNCEMENT } from '../../lib/outputRevise'
+import { hasPreviewKind, primaryAction } from '../../lib/outputToolbar'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
@@ -136,15 +137,16 @@ function GuardDialog({ title, onChoose }: { title: string; onChoose(choice: 'sav
   )
 }
 
-/** The version select beside the title (native select). */
+/** The version beside the title. The panel shows it as text (switching is on the Versions tab); the Larger view has the select. */
 function VersionSelect(): ReactElement | null {
   const ctx = useOutputDetail()
   if (!ctx) return null
   const list = ctx.versions
-  if (!list || list.length < 2) {
+  const total = ctx.output.versionCount ?? list?.length ?? 1
+  if (ctx.surface === 'detail' || !list || list.length < 2) {
     return (
       <span className="output-version-solo" data-testid="output-version-solo">
-        v{ctx.version}
+        {total > 1 ? `v${ctx.version} of ${total}` : `v${ctx.version}`}
       </span>
     )
   }
@@ -212,74 +214,100 @@ function Toolbar({ edit, onOpenLarger, collapsed, onNotice, onRemoved }: { edit:
       say(cleanIpcError(e))
     }
   }
-  const expand = !viewer && !missing && (
+  // Kinds with no preview (pdf, other) have nothing to enlarge: no Larger view button, the primary is Open.
+  const expand = !viewer && !missing && hasPreviewKind(output.kind) && (
     <Button
       key="expand"
       variant={output.kind === 'mermaid' || output.kind === 'pptx' ? 'primary' : 'secondary'}
       size="sm"
       icon={Maximize2}
+      className="output-icon-only"
       ariaLabel="Larger view"
+      title="Larger view (opens the output in a large window)"
       testId="output-detail-expand"
       onClick={onOpenLarger}
     >
-      Larger view
+      {null}
     </Button>
   )
   if (collapsed) {
     return (
-      <>
-        <div className="output-detail-toolbar" role="group" aria-label="Output actions">
-          {expand}
-        </div>
-      </>
+      <div className="output-detail-toolbar" role="group" aria-label="Output actions">
+        {expand}
+      </div>
     )
   }
   const blocked = editBlockedReason(output, ctx.isCurrent)
-  const canEdit = isEditableKind(output.kind) && blocked === null && ctx.mode !== 'edit'
+  const editing = ctx.mode === 'edit'
+  const canEdit = isEditableKind(output.kind) && blocked === null && !editing
+  const canRevise = canReviseFallback(output)
+  const editExternalApp = external && !missing && ctx.isCurrent && !editing ? external : null
+  const primary = primaryAction({ kind: output.kind, missing, isCurrent: ctx.isCurrent, canEdit, external, canOpen: canOpenOutput(output), canRevise, editing })
   const reviseLabel = ctx.isCurrent ? 'Ask the team to revise…' : 'Ask the team to revise the current version…'
+  const editExternalTitle = external
+    ? `Opens the file in the app your computer uses for ${external === 'Excel' ? 'spreadsheet' : external === 'PowerPoint' ? 'presentation' : 'document'} files. When you save there, OrgAI keeps the change as a new version.`
+    : undefined
+  const startExternal = (): void => {
+    void edit.start().then((refusal) => {
+      if (refusal) say(refusal)
+    })
+  }
+  return (
+    <div className="output-detail-toolbar" role="group" aria-label="Output actions">
+      {primary === 'edit' && (
+        <Button variant="secondary" size="sm" icon={Pencil} testId="output-edit" onClick={() => void ctx.setMode('edit')}>
+          <span className="output-primary-label">Edit</span>
+        </Button>
+      )}
+      {primary === 'edit-external' && (
+        <Button variant="secondary" size="sm" icon={SquarePen} testId="output-edit-external" title={editExternalTitle} onClick={startExternal}>
+          <span className="output-primary-label">Edit in {external}</span>
+        </Button>
+      )}
+      {primary === 'open' && (
+        <Button variant="secondary" size="sm" icon={ExternalLink} testId={`${prefix}-open`} title={OPEN_TITLE} onClick={() => void open()}>
+          <span className="output-primary-label">Open</span>
+        </Button>
+      )}
+      {primary === 'revise' && (
+        <Button variant="secondary" size="sm" icon={MessageSquareQuote} testId="output-revise" title={reviseLabel} onClick={() => ctx.openRevise()}>
+          <span className="output-primary-label">{reviseLabel}</span>
+        </Button>
+      )}
+      <NoteTools />
+      {expand}
+      <OutputActions
+        output={output}
+        onRemoved={onRemoved}
+        onNotice={say}
+        lead={{ primary, canEdit, editExternalApp, editExternalTitle, onEdit: () => void ctx.setMode('edit'), onEditExternal: startExternal }}
+      />
+    </div>
+  )
+}
+
+/** Why Edit is not offered (an older version, a file too large, a missing file): visible text, never just a missing button. */
+function EditReason(): ReactElement | null {
+  const ctx = useOutputDetail()
+  if (!ctx) return null
+  const blocked = editBlockedReason(ctx.output, ctx.isCurrent)
+  if (!blocked) return null
+  return (
+    <p className="output-edit-reason" data-testid="output-edit-reason">
+      {blocked}
+    </p>
+  )
+}
+
+/** Tabs on the left, the action toolbar on the right: one row, wrapping only when it must. */
+function BarRow({ tabs, reason, children }: { tabs: ReactElement | false; reason: boolean; children: ReactElement }): ReactElement {
   return (
     <>
-      <div className="output-detail-toolbar" role="group" aria-label="Output actions">
-        {canEdit && (
-          <Button variant="secondary" size="sm" icon={Pencil} testId="output-edit" onClick={() => void ctx.setMode('edit')}>
-            Edit
-          </Button>
-        )}
-        {external && !missing && ctx.isCurrent && (
-          <Button
-            variant="secondary"
-            size="sm"
-            icon={SquarePen}
-            testId="output-edit-external"
-            title={`Opens the file in the app your computer uses for ${external === 'Excel' ? 'spreadsheet' : external === 'PowerPoint' ? 'presentation' : 'document'} files. When you save there, OrgAI keeps the change as a new version.`}
-            onClick={() => {
-              void edit.start().then((refusal) => {
-                if (refusal) say(refusal)
-              })
-            }}
-          >
-            Edit in {external}
-          </Button>
-        )}
-        {canOpenOutput(output) && !external && (
-          <Button variant="secondary" size="sm" testId={`${prefix}-open`} title={OPEN_TITLE} onClick={() => void open()}>
-            Open
-          </Button>
-        )}
-        {canReviseFallback(output) && (
-          <Button variant="secondary" size="sm" icon={MessageSquareQuote} testId="output-revise" onClick={() => ctx.openRevise()}>
-            {reviseLabel}
-          </Button>
-        )}
-        <NoteTools />
-        {expand}
-        <OutputActions output={output} onRemoved={onRemoved} onNotice={say} />
+      <div className="output-detail-bar">
+        {tabs}
+        {children}
       </div>
-      {blocked && (
-        <p className="output-edit-reason" data-testid="output-edit-reason">
-          {blocked}
-        </p>
-      )}
+      {reason && <EditReason />}
     </>
   )
 }
@@ -551,7 +579,9 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
     const back = reviseReturn && reviseReturn.id === output.id && Date.now() < reviseReturn.until ? reviseReturn : null
     reviseReturn = null
     if (back) {
-      const btn = heading.current?.closest('section')?.querySelector<HTMLElement>('[data-testid=output-revise]')
+      // Revise is the toolbar's primary only for some kinds; otherwise it was started from the More menu.
+      const sec = heading.current?.closest('section')
+      const btn = sec?.querySelector<HTMLElement>('[data-testid=output-revise]') ?? sec?.querySelector<HTMLElement>('[data-testid=output-more]')
       if (btn) {
         btn.focus({ preventScroll: true })
         announce(REVISE_SENT_TEXT)
@@ -594,7 +624,8 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
     }
   }
 
-  const meta = <p className="output-detail-meta" data-testid={larger ? 'output-dialog-meta' : 'output-detail-meta'}>{outputMetaLine(output)}</p>
+  const provText = agentCurrent && tag ? `${before ?? ''}${tag}${after ?? ''}` : currentProvenance(output)
+  const meta = <p className="output-detail-meta" data-testid="output-dialog-meta">{outputMetaLine(output)}</p>
   const versionRow = (
     <div className="output-version-row-head">
       <VersionSelect />
@@ -630,20 +661,27 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
             {WIDE_HINT_TEXT}
           </p>
         )}
-        {!larger && meta}
         {!larger && (
-          <p className="output-detail-prov" data-testid="output-detail-prov">
-            {agentCurrent && tag ? (
-              <>
-                {before}
-                <button type="button" className="link-btn" data-testid="output-run-link" aria-label={`Open run ${tag}`} onClick={openRun}>
-                  {tag}
-                </button>
-                {after}
-              </>
-            ) : (
-              currentProvenance(output)
-            )}
+          <p className="output-detail-line" title={`${outputMetaLine(output)} · ${provText}`}>
+            <span className="output-detail-meta" data-testid="output-detail-meta">
+              {outputMetaLine(output)}
+            </span>
+            <span className="output-detail-sep" aria-hidden="true">
+              ·
+            </span>
+            <span className="output-detail-prov" data-testid="output-detail-prov">
+              {agentCurrent && tag ? (
+                <>
+                  {before}
+                  <button type="button" className="link-btn" data-testid="output-run-link" aria-label={`Open run ${tag}`} onClick={openRun}>
+                    {tag}
+                  </button>
+                  {after}
+                </>
+              ) : (
+                currentProvenance(output)
+              )}
+            </span>
           </p>
         )}
         {output.description && !larger && <ClampText text={output.description} label={output.title} />}
@@ -658,8 +696,9 @@ export default function OutputDetail({ output, onRemoved, onNotice, autoFocus, n
             <OldVersionBanner />
           </>
         )}
-        <Toolbar edit={external} onOpenLarger={openLarger} collapsed={larger} onNotice={say} onRemoved={afterRemoved} />
-        {!larger && !missing && <DetailTabs idPrefix={tabsPrefix} />}
+        <BarRow tabs={!larger && !missing && <DetailTabs idPrefix={tabsPrefix} />} reason={!larger}>
+          <Toolbar edit={external} onOpenLarger={openLarger} collapsed={larger} onNotice={say} onRemoved={afterRemoved} />
+        </BarRow>
         {!larger && (
           <div className="output-detail-body" role="tabpanel" id={panelId} aria-labelledby={labelId}>
             <Body onCloseCompare={closeCompare} onCloseEditor={closeEditor} full={false} onToggleFull={toggleFull} onOpenLarge={openLarger} context="detail" />
@@ -716,8 +755,9 @@ function ViewerTools({ edit, say, afterRemoved, idPrefix, status }: { edit: Exte
     <div className="output-viewer-tools">
       {status}
       <OldVersionBanner />
-      <Toolbar edit={edit} onOpenLarger={() => undefined} collapsed={false} onNotice={say} onRemoved={afterRemoved} />
-      <DetailTabs idPrefix={`${idPrefix}`} />
+      <BarRow tabs={<DetailTabs idPrefix={`${idPrefix}`} />} reason>
+        <Toolbar edit={edit} onOpenLarger={() => undefined} collapsed={false} onNotice={say} onRemoved={afterRemoved} />
+      </BarRow>
     </div>
   )
 }
