@@ -16,8 +16,8 @@ export type { WastefulEntry } from '@shared/view/usageInsights'
 // ---------- shared helpers ----------
 
 export const CACHE_MIN_INPUT_TOKENS = 20_000
-/** Five first (dashboard rework: the page was 6.6 screens at 1024x640), "Show more" up to WASTEFUL_MORE. */
-export const WASTEFUL_SHOWN = 5
+/** Three first (dashboard rework: the page was 6.6 screens at 1024x640), "Show more" up to WASTEFUL_MORE. */
+export const WASTEFUL_SHOWN = 3
 export const WASTEFUL_MORE = 25
 /** Runs of each kind the Team vs Ask comparison needs. */
 export const TEAM_ASK_MIN_RUNS = 3

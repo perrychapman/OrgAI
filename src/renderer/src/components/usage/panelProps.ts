@@ -2,6 +2,7 @@
  * Props every Usage page panel takes (docs/design/usage-app.md sections 6, 7). UsageView owns the state and passes
  * these down; panels never read the store's usage filters themselves, so a panel renders from its props alone.
  */
+import type { ReactNode } from 'react'
 import type { UsageOverview, UsageOverviewTrendPoint } from '@shared/types'
 import type { PeriodSpan, UsageBucket, UsageData, UsageFilters, UsageNarrowing } from '../../lib/usageOverview'
 import type { Metric } from '../../lib/usageCharts'
@@ -60,4 +61,11 @@ export interface SpendInteractionProps extends SeriesHighlightProps {
   /** The previous equal span's trend (already fetched by useUsageOverview) and its span; null while unknown. */
   previousTrend: UsageOverviewTrendPoint[] | null
   previousSpan: PeriodSpan | null
+  /** Increment 3: the Group by control, rendered by the view (it changes filters) and placed in the chart header. */
+  groupBy?: ReactNode
+  /**
+   * Increment 3 sparkline scrub: a bucket slot index (the same fillBuckets slots the chart draws) a KPI sparkline is
+   * pointing at, or null. The chart shows its crosshair and tooltip there while it is set (pointer only, instant).
+   */
+  scrubIndex: number | null
 }
