@@ -80,7 +80,7 @@ export const RULES = [
   { match: [`${C}settings/ModelPricesSection.tsx`], scripts: ['usage'], why: 'model prices' },
   { match: [`${C}settings/ContextNotesSection.tsx`, `${C}settings/EngagementPlanSection.tsx`, `${C}settings/ReferenceDirectoriesSection.tsx`], scripts: ['engagement', 'engagement2'], why: 'engagement settings' },
   { match: [`${C}settings/MaintenanceSection.tsx`], scripts: ['maintenance'], why: 'maintenance panel' },
-  { match: [`${C}settings/**`, `${R}views/SettingsView.tsx`, `${R}views/AppSettingsView.tsx`, `${S}settings.css`, `${S}model-prices.css`], scripts: ['connections', 'permissions', 'folder-trust', 'engagement', 'engagement2', 'canvas', 'install-row', 'usage', 'maintenance', 'self-help'], why: 'settings pages' },
+  { match: [`${C}settings/**`, `${R}views/SettingsView.tsx`, `${R}views/AppSettingsView.tsx`, `${S}settings.css`, `${S}model-prices.css`], scripts: ['connections', 'permissions', 'folder-trust', 'engagement', 'engagement2', 'canvas', 'install-row', 'usage', 'maintenance', 'self-help', 'updates'], why: 'settings pages (About holds Updates)' },
 
   { match: [`${C}team/TeamFiles*`, `${C}team/useTeamFilesActions.ts`, `${L}teamFiles.ts`, `${L}teamFound.ts`, `${S}teamFiles.css`, `${S}teamFound.css`, `${C}dashboard/TeamFoundPanel.tsx`], scripts: ['team-files'], why: 'team files UI' },
   { match: [`${C}team/OrgChangePointer.tsx`, `${C}team/useOrgChange.ts`, `${L}orgChange.ts`], scripts: ['org-change'], why: 'org change sessions' },
@@ -113,11 +113,12 @@ export const RULES = [
   { match: [`${L}transcriptMedia.ts`], scripts: ['transcript-media', 'runs'], why: 'transcript media' },
   { match: [`${C}TranscriptPanel.tsx`, `${S}transcript.css`, `${L}transcript*.ts`], scripts: ['runs', 'transcript-media', 'knowledge-run', 'outputs'], why: 'transcript rendering' },
   { match: [`${R}views/LiveRunView.tsx`, `${C}RunTabs.tsx`, `${C}RunHistory.tsx`, `${C}RunMeta.tsx`, `${C}RunActions.tsx`, `${C}RunLabel.tsx`, `${C}FinishedList.tsx`, `${S}run.css`, `${S}run-tabs.css`, `${L}run*.ts`, `${L}chainView.ts`], scripts: RUN_VIEW, why: 'live run view' },
-  { match: [`${C}AppMenuLayer.tsx`, `${C}KeyboardShortcutsDialog.tsx`, `${S}menu.css`, `${L}menu*.ts`, `${L}useAppMenu.ts`, 'src/main/appMenu.ts'], scripts: ['menu', 'self-help'], why: 'application menu' },
+  { match: [`${C}AppMenuLayer.tsx`, `${C}KeyboardShortcutsDialog.tsx`, `${S}menu.css`, `${L}menu*.ts`, `${L}useAppMenu.ts`, 'src/main/appMenu.ts'], scripts: ['menu', 'self-help', 'updates'], why: 'application menu (Help > Check for Updates… routes through menuActions)' },
+  { match: [`${C}updates/**`, `${L}updates.ts`, `${R}store/updatesStore.ts`, `${S}updates.css`], scripts: ['updates'], why: 'desktop updater UI (About > Updates, sidebar notice)' },
   { match: [`${S}motion.css`, `${L}motion.ts`, `${L}layoutMotion.ts`], scripts: ['motion', 'layout', 'canvas', 'dashboard'], why: 'motion tokens' },
 
   // ---- main process, narrow areas ----
-  { match: ['src/main/updater*.ts'], scripts: ['menu'], why: 'desktop updater (every e2e launch is capability none; Help > Check for Updates…)' },
+  { match: ['src/main/updater*.ts'], scripts: ['menu', 'updates'], why: 'desktop updater (updates.mjs drives it through ORGAI_UPDATE_MOCK; Help > Check for Updates…)' },
   { match: ['src/main/runtime/codexBinary.ts'], scripts: ['connections', 'project-connection', 'multi-provider', 'cli-connections'], why: 'Codex binary discovery (connection status)' },
   { match: ['src/main/runtime/codex*.ts', 'src/main/runtime/fixtures/**'], scripts: [], why: 'Codex adapter: no e2e uses a real adapter; unit tests plus the smoke set (the app still launches)' },
   { match: ['src/main/runtime/folderConfigTrust.ts'], scripts: ['folder-trust'], why: 'folder config trust' },

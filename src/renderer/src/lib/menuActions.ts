@@ -7,6 +7,7 @@ import { assistantLabel, offersSaveAsProject } from './assistants'
 import { waitingItems } from './needsYou'
 import { APP_SETTINGS_PANES, APP_SETTINGS_SECTIONS, requestAppSettingsSection, requestSkillLibrary } from './settingsTarget'
 import { toggleSidebar } from './useSidebarCollapsed'
+import { useUpdatesStore } from '../store/updatesStore'
 
 /**
  * The renderer side of the native application menu (docs/design/ux-review-menu.md). `routeMenuAction` is installed
@@ -170,6 +171,15 @@ function openSettings(target: string): void {
   window.dispatchEvent(new Event('orgai:settings-section'))
 }
 
+/**
+ * Help > Check for Updates… (main already started the check) and the sidebar's update notice: App settings > About,
+ * with the Updates block scrolled to and its heading focused (components/updates/UpdatesSection).
+ */
+export function openUpdates(): void {
+  useUpdatesStore.getState().requestFocus()
+  openSettings(APP_SETTINGS_SECTIONS.about)
+}
+
 function jumpTo(projectId: string, runId: string, item: { key: string; kind: string } | undefined): void {
   void useAppStore
     .getState()
@@ -225,6 +235,8 @@ function fallback(action: MenuAction): string | void {
       return
     case 'open-about':
       return openSettings(APP_SETTINGS_SECTIONS.about)
+    case 'check-for-updates':
+      return openUpdates()
     case 'toggle-sidebar':
       return toggleSidebar()
     case 'keyboard-shortcuts':

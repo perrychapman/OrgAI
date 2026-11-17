@@ -108,10 +108,63 @@ Honoured only when the app is NOT packaged; an unknown value is ignored (capabil
 
 The launch check also runs (30 s after launch) when `autoUpdateCheck` is on; an e2e can call `updates.check()` directly.
 
+## Renderer
+
+- One source of truth: `src/renderer/src/store/updatesStore.ts` (zustand). `ensureUpdates()` (called by both surfaces,
+  idempotent) reads `updates.get()` once and subscribes to `onUpdatesChanged`; a push that lands before the `get()`
+  answer wins; no polling. `check()`'s answer is not written to the store (the push carries it; an answer could be
+  older than a push). A failed `get()` lets the next mount retry. Checked by `e2e/updates.mjs` (every state below
+  arrives through pushes) and code reading.
+- Pure mapping in `lib/updates.ts` (`updates.test.ts`, every status, capability, reason and refusal): the status line,
+  the one primary action per state (Check for updates / Checking… -> Download update (auto) or Open release page
+  (manual) -> Downloading… -> Restart and install -> Restarting…; a failed download keeps its version and offers Retry
+  download, a failed check Check again; 'manual' never offers download or install; 'none' offers nothing), the
+  capability notes, the refusal sentences, the active-runs confirmation body and the announcements.
+- App settings > About > Updates (`components/updates/UpdatesSection.tsx`, testid `updates-block`, section id
+  `appsettings-section-updates`, after the About card): installed version, status line, the capability note
+  ('manual'), "Last checked <date time>", a native `<progress>` with `aria-label` and `aria-valuetext` (percent and
+  MB) plus a visible text equivalent, the primary action (`updates-action`, one element whose label follows the state;
+  `inert` while busy so focus stays on it), a ghost "Open release page" beside Download / Restart for 'auto', a
+  feedback line for refusals, the release notes and the "Check for updates automatically" switch bound to
+  `autoUpdateCheck` (missing = on; saved at once through AppSettingsView's `patch`). Checked by `e2e/updates.mjs`
+  (all five mock modes, both themes, 1024x640 and 1600x1000 without horizontal overflow, the switch persisting across a
+  relaunch).
+- Release notes are a React text node in a bounded (12rem) scroller (`white-space: pre-wrap`, focusable region named
+  "What's new in <v>"); no HTML, Markdown, auto-linking or `dangerouslySetInnerHTML`. `releaseUrl` is never rendered;
+  both release-page buttons call `updates.openReleasePage()` with no argument. e2e: the mock's notes arrive as text
+  (main stripped the tags), and a crafted `updates:changed` push with `<img onerror>`, `<b>`, a Markdown link and a URL
+  renders as the exact literal text with no element and no script run; no anchor to github.com exists in the block;
+  Open release page opens `/releases/tag/v99.0.0` through main (`shell.openExternal` stubbed in the e2e).
+- Install: `install()` first; on 'active-runs' a `useConfirm` dialog ("Stop runs and install the update?", body
+  "Installing restarts OrgAI and stops N working run(s). They stay in History and can be continued, as after Quit.",
+  focus on Not now, Esc cancels). After the confirmation the renderer asks again without force and sends
+  `install({ force: true })` only when main's count is not above the confirmed one; a higher count asks again. Not now
+  says the update installs on the next quit. Every other refusal is one sentence. e2e: dialog with the count, Not now
+  leaves `installing` false, the confirmation shows "Restarting to install version 99.0.0…". A run started between the
+  final count and the forced call is still stopped (window of one IPC round trip; unverified live).
+- Sidebar notice (`components/updates/UpdateNotice.tsx`, inserted above the account footer in `Sidebar.tsx`): "Update
+  available: <v>" or "Update ready: <v>" when a newer version is available, downloading or downloaded; hidden on App
+  settings, after an install started and for a version dismissed this session (memory only). It never takes focus or
+  covers a view; activating it opens About with the Updates heading focused; Dismiss moves focus to the App settings
+  button. In the rail it is one icon button (named with the text) without Dismiss. e2e checks text, no focus move,
+  open, dismiss and focus after dismiss.
+- Help > Check for Updates… (`'check-for-updates'`): `lib/menuActions.ts` `openUpdates()` opens App settings > About
+  and the block scrolls to (`scrollWithin`) and focuses its heading (`appsettings-updates-title`); a focus request older
+  than 5 s is dropped. e2e: the menu item clicked in main lands focus on the heading and the check result shows.
+- Announcements: one sr-only polite region per surface (`updates-announce` in the block, one in the notice). Spoken: a
+  status change, a new error, "Download halfway." once (never per step), the finished download, the restart, refusals
+  (cleared first so a repeat is read again). The notice does not repeat what the block already said. Speech itself is
+  UNVERIFIED (no screen reader run). No animation was added (reduced motion has nothing to stop).
+- Atlas: `APP_SETTING_DOCS.autoUpdateCheck` points at `app-settings-about` with honest wording (about 30 s after
+  launch; never downloads on its own; a downloaded update installs on restart or the next quit).
+- Mock walkthrough: `docs/design/ux-review-updates.md` (no High; fixes and accepted items in its Resolution section).
+
 ## Open items
 
 - A live update (check, download, install, relaunch) against a real published release: UNVERIFIED.
 - macOS auto-install needs a signed and notarized app; until then macOS stays 'manual'.
 - Linux AppImage auto-install is not offered (Linux is 'manual'); checks need `APPIMAGE` set, otherwise a check reports
   "Update checks are not available for this install."
-- No e2e script covers the updater yet; the UI lead adds one against `ORGAI_UPDATE_MOCK`.
+- Renderer: screen-reader speech of the two polite regions, the rail notice without Dismiss, the sidebar notice's faint
+  Dismiss in the light theme (ux-review-updates L5) and the Updates block below the fold at 1024x640 when reached by the
+  gear (M3, accepted) remain. `e2e/updates.mjs` covers the UI against `ORGAI_UPDATE_MOCK` only.
