@@ -2,6 +2,10 @@
 # - Flow: work lands on dev. Bump package.json's version on dev, merge dev -> main by PR, then tag the main commit
 #   `v<version>` (must equal package.json's version) and push the tag. That builds all three and drafts the release;
 #   publish the draft by hand.
+# - Auto-update: the app's updater (electron-updater, GitHub provider, reading the embedded app-update.yml) only sees a
+#   release once the draft is published by hand; releases marked prerelease are ignored (allowPrerelease is off). The
+#   update payloads are the NSIS installer with its .blockmap and the mac zip, described by latest.yml and the merged
+#   latest-mac.yml the publish job attaches. The portable exe and the dmg are manual downloads only.
 # - The meta job refuses a tag, or a dispatch with dry_run off, whose commit is not reachable from origin/main.
 # - Or run it by hand (workflow_dispatch). dry_run (the default) only builds and uploads workflow artifacts; a dry run
 #   of a ref that is not on main is allowed (build only) and prints a notice.
@@ -370,21 +374,47 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only scripts/merge-latest-mac.mjs is needed (no npm dependencies, no npm ci). Checked out first, into the
+      # workspace root, so the download below (dist/) cannot collide with it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node v7.1.0
+        with:
+          node-version: 22
       # One folder per leg (no merge-multiple): both mac legs may write a latest-mac.yml.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # actions/download-artifact v8.0.2
         with:
           path: dist
           pattern: orgai-*
       - run: ls -R dist
+      # The updater's metadata: one latest-mac.yml listing both mac legs, and the Windows latest.yml, under dist/update/
+      # (the per-leg copies stay out of the release). Fails closed: a missing or inconsistent leg publishes no draft.
+      - name: Build the update metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/update
+          node scripts/merge-latest-mac.mjs dist/orgai-mac-arm64/latest-mac.yml dist/orgai-mac-x64/latest-mac.yml dist/update/latest-mac.yml
+          if [ ! -s dist/orgai-windows/latest.yml ]; then
+            echo "::error::dist/orgai-windows/latest.yml is missing or empty."; exit 1
+          fi
+          cp dist/orgai-windows/latest.yml dist/update/latest.yml
+          ls -l dist/update
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # softprops/action-gh-release v3.0.4
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           draft: true
           generate_release_notes: true
           fail_on_unmatched_files: true
-          # latest*.yml is left out: auto-update is not wired, and the two mac legs' copies would collide.
+          # Auto-update metadata is attached as the merged dist/update/latest.yml (Windows) and dist/update/latest-mac.yml
+          # (both mac legs' files in one list), by explicit path. The per-leg latest*.yml copies are left out on purpose:
+          # the two mac legs' files would collide under one name, and a glob could pick them up.
           files: |
             dist/**/*.exe
             dist/**/*.dmg
             dist/**/*.zip
             dist/**/*.blockmap
+            dist/update/latest.yml
+            dist/update/latest-mac.yml
