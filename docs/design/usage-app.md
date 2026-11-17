@@ -341,3 +341,53 @@ Built as specified, with these deviations:
 - The Projects popover's test id is `usage-projects-popover` (the panel keeps `usage-projects-panel`).
 
 Open: Reviewer L1 (bar group nests segment buttons), L5 (several status regions, `aria-busy` on the root), L6 (`usage-scope`, `usage-roles`, `usage-empty`, `usage-no-result-tag` also exist on the run Usage tab); no UX walk of the built page yet. Checked by unit tests and `e2e/usage-app.mjs` (see CLAUDE.md Renderer "Usage page").
+
+## 20. Dashboard rework (2026-11-17, UI Lead): as built
+
+Decision: option D of `docs/design/usage-dashboard-options.md` (increments 1 and 2), then increment 3 from `docs/design/usage-dashboard-motion.md` (declutter and motion), renderer only, no contract change. Sections 4, 6.1 to 6.4 and 9 above are superseded where they disagree with this section.
+
+### 20.1 Page (top to bottom)
+
+1. Topbar (unchanged: Usage, live note, Updated, Copy as CSV, Save CSV). The scope line and subtitle are now screen-reader text (`usage-scope` stays).
+2. Sticky block `.usage-sticky`: the filter bar in one row at both sizes (Period, date text with the run count, Projects, Kinds; More filters under 880 px) and the chips line, which exists only while a filter is on. Opaque `--surface-0`; every panel below isolates its stacking, so sticky table heads never draw over it; its bottom hairline fades in once the page scrolls.
+3. KPI band (`UsageSummary`, four tiles: Estimated cost, Tokens, Runs, Wall time). Borderless, hairline separated. Each tile: label, value with a one-line delta chip ("▲ 400%" plus "vs prev. 30 d"; the full sentence is the accessible text and title; "no prior data", or "not compared: some runs have no price" when either side is a lower bound), a full-width sparkline (same buckets as the chart; unknown cost is a gap with a hollow dot; none under three buckets with values). Cost, Tokens and Runs are toggle buttons (`aria-pressed`) that set the chart's metric; a 2 px bar slides to the pressed tile. The Cost tile carries "N of M priced", which is the no-price link (`usage-no-price-link` inside `usage-coverage`). Tokens' in/out and cache split is in its title and description. Pointing at a sparkline shows that bucket's value in the tile and moves the chart's crosshair there (pointer only; the chart is the keyboard path). Cost per run and Cache hit live only in Efficiency.
+4. Hero row (`.usage-hero`, equal heights; side by side from 1100 px, chart about two thirds): the chart card and the "Where it went" card.
+   - Chart (`SpendPanel`): title follows the metric ("Spend / Tokens / Runs over time"); header controls are the metric switch, Group by (moved from the filter bar; the view renders `BucketControl` into the `groupBy` slot), "Compare with previous period" and a "Table" button (`aria-expanded`, drives `ChartTable` in controlled mode). The summary line only adds the busiest bucket. Legend: toggle chips above the plot (`aria-pressed` = shown; a hidden series has a hollow swatch and struck name; at least one stays); key chips "cost unknown", "lower bound", "previous period" appear only when relevant. The plot takes the card's full width. Hover or keyboard focus snaps a crosshair (`usage-chart-crosshair`) and a tooltip (`usage-chart-tooltip`: date, total, one line per visible series, previous value when Compare is on, runs and unpriced runs); Escape hides it and keeps focus; `usage-spend-readout` stays as screen-reader text with the same sentence. Compare draws the previous equal span (already fetched for the deltas) as dashed outlines aligned bucket to bucket, with the same series map, metric and hidden set; unknown previous cost is a hollow circle. Legend chips, segments and project rows highlight one series both ways (others dim to 0.35, the matched one gets an outline); a hidden series is never highlighted.
+   - "Where it went" (`BreakdownCard`, `usage-where`): "Ranked by estimated cost, for the whole period" (it does not follow the chart metric, by choice); tabs Project / Model / Role / Connection (one Tab stop, arrows, Home/End, sliding underline); only the active panel is mounted and keeps its old test id (`usage-projects-panel`, `usage-models`, `usage-roles`, new `usage-connections-panel`). Rows are one line, top 5 then "Show all N"; row click or Enter narrows (chip, one announcement). Each panel keeps its sortable "Show as table" (`usage-table-sort`, `aria-sort`, unknown sorts last both ways, announced).
+5. Efficiency: four measures in a strip (`usage-eff-main`), the rest under "More signals" (`usage-eff-more`), Team timing and the table closed.
+6. Runs worth a look (3 rows, "Show N more"; Why on one line; a dot plus the status word; a details toggle per row opening an in-table detail with the full reason, tokens, cache hit, an unpriced note and Open run) and Cost by tier with Lead alone vs With reports. Stacked; side by side only from a 1500 px container (the walk found the table clipped at 805 px).
+7. All runs (closed; the same details toggle, except in the windowed list over 300 rows), then the legacy note and "What these terms mean".
+
+Narrowing from a row, segment or the no-price chip opens All runs but no longer scrolls the page there (walk H1).
+
+### 20.2 Interaction state and models
+
+All state lives in `UsageView`: chosen metric (default cost, tokens when nothing is priced), hidden series (reset when the period or projects change), overlay (off, not persisted), highlight, scrub bucket, tween key (bumped only by user filter changes; a bump arms the number tween for 5 s, so a later refresh never animates). Pure models with unit tests: `lib/usageDashboard.ts` (metric, deltas and chips, sparkline series and geometry, legend toggles, overlay alignment and figures, sort), `lib/usageSpend.ts` (visible totals, summary, crosshair snap, tooltip side, morph decision), `lib/tween.ts`, `components/usage/rankFlip.ts`; `summaryModel` gained a Tokens item and `deltaNote`.
+
+### 20.3 Motion (only on a user change; never on first paint or a refresh)
+
+KPI bar and tab underline slide `--dur-slow` `--ease-in-out` (no slide on first measure or resize); metric change morphs bars with WAAPI `transform` (cap 120 segments; skipped when the bucket set changed, which fades the plot once with `.motion-fade`); legend toggle grows or shrinks the series `--dur-base`; Compare fades outlines in `--dur-base`; highlight dims `--dur-fast`; crosshair and tooltip never animate (first show fades `--dur-fade`); KPI numbers tween over `--dur-slow` with one rAF loop (skip under 1%, never from or to unknown); tab body `.motion-view`, rows `.motion-enter` (6 staggered), bars `scaleX`; FLIP reorder (8 rows, only within 5 s of a filter change); run detail `.motion-collapse`; sticky hairline opacity. Every stylesheet has both `prefers-reduced-motion` and `:root[data-reduce-motion='on']` rules; every script reads `useReducedMotion()`. No loops, no permanent `will-change`, no new tokens, no dependency.
+
+### 20.4 Deviations from the documents
+
+- Owner decisions: no sliding pill on segmented controls (motion.md 3.16 kept; the motion plan's 2.3 pill is not built); KPI toggles stay `aria-pressed` buttons, not a radio group; no arrow keys between ranked rows beyond what existed; the page follows Reduce motion (Pause motion is Pocket Office only).
+- KPI band is four tiles, not five or six (Cost per run and Cache hit only in Efficiency); the "priced" chip is the no-price link itself, not a popover.
+- "Where it went" ranks by cost whatever the chart shows (labelled), rather than following the metric.
+- Efficiency strip stays four across at 1024 (the plan said 2x2): shorter page.
+- Runs worth a look and Cost by tier stack below a 1500 px container (the plan put them side by side at 1600).
+- The legend chip's click toggles the series; it no longer narrows (narrowing stays on segments, bars and rows).
+- The highlight dim is a literal 0.35 (`--dim-opacity` is 0.5 to 0.55).
+- Model, Role and Connection bars use `--chart-other` so colour never implies a series.
+- Expansion is off in the windowed All runs list (fixed 44 px rows).
+
+### 20.5 Checked
+
+`npm run typecheck`, `npm test`, `npm run build`; `e2e/usage-app.mjs` (adds tabs, metric switch, legend toggle, overlay, highlight both ways, sort, crosshair and tooltip, Table button, sparkline scrub, run detail toggle, one-row filter bar under 56 px, equal hero heights, four KPI tiles under 110 px, plot at least 90% of the card, page height), `e2e/motion.mjs` (KPI and tab indicator durations, morph start, nothing running under Reduce motion), `e2e/usage.mjs`, `e2e/layout.mjs`. Looked at by eye on backdated mock data, both themes, 1600x1000 and 1024x640 (screenshots `e2e/shots/ux/usage-dashboard-new/`). Page height: 2906 to about 1370 to 1730 px at 1600x1000 and 3881 to about 2000 to 2350 px at 1024x640 (depends on the seed). UX walk: `docs/design/ux-review-usage-dashboard-post.md` (H1 and H3 fixed, H2 partly). Reviewer: approve, no Critical or High; the five Mediums fixed.
+
+### 20.6 Open and unverified
+
+- Walk H2 (partly): there is still no previous-period total in words, only per-bucket outlines and tooltip lines; a single tall previous bucket rescales the axis.
+- Adding the first chip still pushes the content below by one chip row (the chips row is shown only while a filter is on, by decision).
+- Walk Mediums not done: a redundant Period chip for a non-default period; Cost per run versus "Mean" wording in Efficiency; week grouping flattens sparklines; rows and tiles do not say they are clickable.
+- Reviewer Lows not done: legend made a roving toolbar and a Tab-stop count check (the walk counted about 33 stops); legend names clipped at 28 characters with the full name only in the title; the dim does not keep text at 4.5:1; `BreakdownCard` copies the `ui/Tabs` indicator rather than reusing it; the tween duration is read once at mount.
+- Not driven: the tween's intermediate values in e2e (unit-tested only), screen-reader speech, forced colours, contrast by measurement, truncated / error / legacy states with the new layout, macOS.

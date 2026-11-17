@@ -13,6 +13,7 @@ import {
   clearedFilters,
   narrowFilters,
   previousPeriodWords,
+  periodLabel,
   previousSpan,
   effectiveBucket,
   queryKey,
@@ -188,6 +189,9 @@ export default function UsageView(): ReactElement {
     return seriesRef.current.map
   }, [overview, filters.period])
   const chips = useMemo(() => usageChips(filters, chipNames), [filters, chipNames])
+  // The period is the Period control's own state and the date text says it, so it gets no chip (walk M2); `chips`
+  // still carries it for the announcement of a period change and for the empty state's cause.
+  const shownChips = useMemo(() => chips.filter((c) => c.kind !== 'period'), [chips])
   const groups = useMemo(() => projectOptionGroups(projects, state.projectStats), [projects, state.projectStats])
 
   // Does any run exist at all? Asked once, and only when the current answer is empty (the cheapest correct test).
@@ -276,10 +280,9 @@ export default function UsageView(): ReactElement {
   const onNarrow = useCallback(
     (n: UsageNarrowing) => {
       const next = narrowFilters(useAppStore.getState().usageFilters, n)
-      const opensRuns = !!n.projectId || !!n.noPrice
-      if (opensRuns) setRunsOpen(true)
-      // All runs opens but the page does not scroll there: the chart and tiles the user just narrowed stay in view
-      // (post-rebuild walk H1).
+      // Only the "N of M priced" link opens All runs (it asks for those runs); a row, segment or bar narrowing leaves the
+      // page where it is, so the chart and tiles the user just narrowed stay in view (post-rebuild walk H1).
+      if (n.noPrice) setRunsOpen(true)
       applyFilters(next)
     },
     [applyFilters]
@@ -468,9 +471,15 @@ export default function UsageView(): ReactElement {
                   projectName={projectName}
                   scope={scope}
                   barRef={barRef}
-                  runs={data ? data.matchedRuns : null}
                 />
-                <UsageChips chips={chips} onRemove={onRemoveChip} onClear={onClearAll} />
+                {/* Always present: the date and run count, then the chips, so adding a chip shifts nothing (walk H1). */}
+                <div className="usage-scope-row">
+                  <p className="usage-period-label" data-testid="usage-period-label">
+                    {periodLabel(filters.period, barNow)}
+                    {data && <span className="usage-period-runs"> · {data.matchedRuns} {data.matchedRuns === 1 ? 'run' : 'runs'}</span>}
+                  </p>
+                  <UsageChips chips={shownChips} onRemove={onRemoveChip} onClear={onClearAll} />
+                </div>
               </div>
               {notes?.truncated && <TruncatedBanner note={notes.truncated} onUseThirtyDays={useThirtyDays} />}
               {state.refreshFailedFrom !== null && <RefreshFailed text={refreshFailedText(state.refreshFailedFrom)} onRetry={retry} />}

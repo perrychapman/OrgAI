@@ -265,8 +265,14 @@ try {
     check(s.filter((t) => /Filter added/.test(t)).length === 1, `drilldown: ${name} announces once`, JSON.stringify(s))
     return ks
   }
+  await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 0))
+  const keyBefore = await page.evaluate(() => ({ top: Math.round(document.querySelector('[data-testid=usage-summary]')?.getBoundingClientRect().top ?? -1), scroll: document.querySelector('.usage-scroll')?.scrollTop ?? -1 }))
   await drill('a project row (click)', () => T('usage-project-row').first().locator('button').first().click(), 'project')
-  check(await T('usage-runs').locator('details').evaluate((d) => d.open), 'drilldown: a project narrowing opens All runs')
+  // Walk H1: a row narrowing neither opens All runs nor scrolls, and the first chip shifts nothing below the bar.
+  const keyAfter = await page.evaluate(() => ({ top: Math.round(document.querySelector('[data-testid=usage-summary]')?.getBoundingClientRect().top ?? -1), scroll: document.querySelector('.usage-scroll')?.scrollTop ?? -1 }))
+  check(!(await T('usage-runs').locator('details').evaluate((d) => d.open)), 'drilldown: a row narrowing leaves All runs closed')
+  check(keyAfter.scroll === keyBefore.scroll && Math.abs(keyAfter.top - keyBefore.top) <= 1, 'drilldown: a row narrowing neither scrolls nor shifts the KPI band', JSON.stringify({ keyBefore, keyAfter }))
+  check((await chipKinds()).every((k) => k !== 'period'), 'chips: the period gets no chip')
   // chip remove
   await watchLive()
   await T('usage-chip-remove').first().click()
@@ -339,6 +345,8 @@ try {
   await clearAll()
   await T('usage-project-row').first().click()
   await sleep(2000)
+  if (!(await T('usage-runs').locator('details').evaluate((d) => d.open))) await T('usage-runs').locator('details > summary').click()
+  await sleep(300)
   const runOpen = T('usage-run-row').first().locator('[data-testid=usage-run-open]')
   check((await T('usage-run-row').count()) >= 1, 'drilldown: All runs lists the narrowed project runs')
   if (await runOpen.count()) {

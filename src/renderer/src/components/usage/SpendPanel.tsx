@@ -2,13 +2,13 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import { Check, Table } from 'lucide-react'
 import type { UsageOverviewTrendPoint, UsageProjectRollup } from '@shared/types'
-import { formatTokens, type CostInput } from '../../lib/cost'
+import { costView, formatTokens, type CostInput } from '../../lib/cost'
 import { useReducedMotion } from '../../lib/canvas'
 import { tokenMs } from '../../lib/useExitPresence'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { SegmentedControl } from '../ui/SegmentedControl'
-import { bucketEnd, bucketPickOf } from '../../lib/usageOverview'
+import { bucketEnd, bucketPickOf, previousPeriodWords } from '../../lib/usageOverview'
 import {
   axisLabel,
   barHeight,
@@ -251,6 +251,21 @@ export default function SpendPanel({
   const anyUnknown = bars.some((b) => b.segments.some((s) => s.state === 'unknown'))
   const anyPartial = bars.some((b) => b.segments.some((s) => s.state === 'partial'))
   const anyPrevUnknown = bars.some((b) => b.prev?.state === 'unknown')
+  // The overlay's key names the previous span and its total under the metric (walk H2): "Previous 30 days: $0.012+".
+  const previousKeyText = (() => {
+    const words = previousPeriodWords(filters.period).replace(/^the /, '')
+    const label = `${words.charAt(0).toUpperCase()}${words.slice(1)}`
+    const figs = bars.flatMap((b) => (b.prev ? [b.prev] : []))
+    const runs = figs.reduce((n, f) => n + f.runs, 0)
+    if (runs === 0) return `${label}: no runs`
+    const sum = figs.reduce((n, f) => n + f.value, 0)
+    if (metric === 'runs') return `${label}: ${runs} ${runs === 1 ? 'run' : 'runs'}`
+    if (metric === 'tokens') return `${label}: ${formatTokens(sum)} tokens`
+    const known = figs.some((f) => f.state === 'known' || f.state === 'partial')
+    if (!known) return `${label}: cost unknown`
+    const partial = figs.some((f) => f.state === 'partial' || f.state === 'unknown')
+    return `${label}: ${costView({ costUsd: sum, costSource: 'computed', sourceMixed: true, ...(partial ? { costPartial: true } : {}) }, { precision: 'page' }).text}`
+  })()
 
   // Each bar's drawn stack (known and partial segments; unknown ones are stubs under the axis) with its svg y and height.
   const stacks = useMemo(
@@ -752,7 +767,7 @@ export default function SpendPanel({
               <svg width="18" height="10" aria-hidden="true" focusable="false">
                 <rect x="1" y="1" width="16" height="8" fill="none" strokeDasharray="4 3" className="uc-prev" />
               </svg>
-              previous period
+              {previousKeyText}
             </li>
           )}
           {overlayOn && anyPrevUnknown && (

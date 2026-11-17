@@ -191,7 +191,9 @@ export function summaryModel(data: UsageData, prev: PreviousSpan | null, o: { tr
       ...(model ? { title: MODEL_COST_TITLE } : {}),
       delta: p && costExact(cost) && costExact(p.totals.cost) && !lowerBound ? percentDelta(cost.costUsd, p.totals.cost.costUsd, o.words) : null,
       // A lower bound on either side is not compared; say so instead of "no prior data" (post-rebuild walk H2).
-      ...(p && p.totals.runs > 0 && !(costExact(cost) && costExact(p.totals.cost) && !lowerBound) ? { deltaNote: 'not compared: some runs have no price' } : {})
+      ...(p && p.totals.runs > 0 && !(costExact(cost) && costExact(p.totals.cost) && !lowerBound)
+        ? { deltaNote: p.totals.cost.costUsd === null ? `No priced runs in ${o.words}` : 'not compared: some runs have no price' }
+        : {})
     },
     {
       signal: 'tokens',

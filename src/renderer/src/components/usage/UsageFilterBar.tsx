@@ -293,10 +293,6 @@ export default function UsageFilterBar({ filters, onChange, now, compact, groups
             </select>
           </div>
         )}
-        <p className="usage-period-label" data-testid="usage-period-label">
-          {periodLabel(period, now)}
-          {runsText && <span className="usage-period-runs"> · {runsText}</span>}
-        </p>
       </div>
       <div className="usage-filters-row">
         {compact ? (

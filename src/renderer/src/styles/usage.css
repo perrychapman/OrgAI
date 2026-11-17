@@ -314,8 +314,17 @@
 :root[data-reduce-motion='on'] .usage-sticky::after {
   transition: none;
 }
-.usage-sticky > .usage-chips {
+/* The always-present second line: date and run count, then the chips; a fixed minimum so a first chip shifts nothing. */
+.usage-scope-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-block-size: 32px;
   padding: 0 var(--usage-pad) var(--space-2);
+}
+.usage-scope-row > .usage-period-label {
+  margin: 0;
 }
 .usage-filters {
   padding: var(--space-2) var(--usage-pad);
