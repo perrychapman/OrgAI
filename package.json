@@ -68,6 +68,7 @@
     "@openai/codex": "0.167.0",
     "@xyflow/react": "12.12.1",
     "docx": "9.15.3",
+    "electron-updater": "6.8.11",
     "exceljs": "4.4.0",
     "ink": "8.0.0",
     "jszip": "3.10.2",
