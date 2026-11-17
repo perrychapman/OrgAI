@@ -34,8 +34,14 @@ export function ChartTable({
   columns,
   rows,
   empty = 'Nothing to show.',
-  announce
+  announce,
+  open,
+  id
 }: {
+  /** Controlled mode: when set, no "Show as table" disclosure; the table shows only while true. */
+  open?: boolean
+  /** The wrapper's id in controlled mode, for the caller's aria-controls. */
+  id?: string
   /** `usage-<panel>-table`, on the table. */
   testId: string
   caption: string
@@ -66,9 +72,7 @@ export function ChartTable({
     ro.observe(el)
     return () => ro.disconnect()
   }, [rows.length, columns.length])
-  return (
-    <details className="usage-table-details">
-      <summary>Show as table</summary>
+  const body = (
       <div
         ref={wrap}
         className="usage-table-wrap"
@@ -123,6 +127,19 @@ export function ChartTable({
           </table>
         )}
       </div>
+  )
+  // Controlled (increment 3): the caller's header button (aria-expanded, aria-controls = id) shows it; no details.
+  if (open !== undefined) {
+    return (
+      <div id={id} className="usage-table-controlled" hidden={!open}>
+        {open ? body : null}
+      </div>
+    )
+  }
+  return (
+    <details className="usage-table-details">
+      <summary>Show as table</summary>
+      {body}
     </details>
   )
 }

@@ -485,6 +485,7 @@ export default function UsageView(): ReactElement {
                           previousSpan={prevSpan}
                           highlight={highlight}
                           onHighlight={setHighlight}
+                          scrubIndex={null}
                         />
                         <BreakdownCard {...panelProps} highlight={highlight} onHighlight={setHighlight} />
                       </div>
