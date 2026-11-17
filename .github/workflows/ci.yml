@@ -56,7 +56,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm audit --audit-level=high --ignore-scripts
+      # Same threshold as `npm audit --audit-level=high`, minus the one advisory the owner exempted on 2026-11-17
+      # (GHSA-fc5q-39xc-vjpf, picomatch ReDoS, no patched release). The script expires the exemption on 2026-12-17.
+      - run: node scripts/audit-gate.mjs
 
   check:
     name: check (${{ matrix.os }})
