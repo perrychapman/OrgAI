@@ -137,7 +137,6 @@ export function RankedBars({
   const lastLayout = useRef<{ keys: string[]; tops: Map<string, number> }>({ keys: [], tops: new Map() })
   const arm = useContext(RankArmContext)
   const armSeen = useRef({ arm, at: 0 })
-  if (armSeen.current.arm !== arm) armSeen.current = { arm, at: performance.now() }
   // A highlight dims the other rows only while some row matches it.
   const hlOn = highlighted != null && items.some((it) => (it.seriesKey ?? it.id) === highlighted)
 
@@ -146,6 +145,7 @@ export function RankedBars({
   useLayoutEffect(() => {
     const ul = listRef.current
     if (!ul) return
+    if (armSeen.current.arm !== arm) armSeen.current = { arm, at: performance.now() }
     const keys = items.map((it) => it.id)
     // Same rows in the same order (hover, highlight, a refresh that kept the ranking): nothing to measure.
     if (keys.length === lastLayout.current.keys.length && keys.every((k, i) => k === lastLayout.current.keys[i])) return

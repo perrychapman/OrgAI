@@ -256,13 +256,19 @@ export default function UsageView(): ReactElement {
       const after = usageChips(next, chipNames)
       const added = addedChips(before, after)
       const removed = addedChips(after, before)
+      // The period chip's key never changes, so a move between two non-default periods is announced from the period
+      // itself (its chip is hidden; Reviewer recheck).
+      const periodMoved = JSON.stringify(next.period) !== JSON.stringify(filters.period)
+      const periodText = after.find((c) => c.kind === 'period')?.text ?? null
       const lead: Pending['lead'] = opts?.cleared
         ? { kind: 'cleared', chip: null }
         : added.length > 0
           ? { kind: 'added', chip: added[0]!.text }
           : removed.length > 0
             ? { kind: 'removed', chip: removed[0]!.text }
-            : null
+            : periodMoved && periodText
+              ? { kind: 'added', chip: periodText }
+              : null
       const active = document.activeElement
       pending.current = {
         key: queryKey(next, Date.now()),
@@ -274,7 +280,7 @@ export default function UsageView(): ReactElement {
       setStoreFilters(next)
       if (opts?.moved) say(opts.moved)
     },
-    [chips, chipNames, setStoreFilters, say]
+    [chips, chipNames, filters, setStoreFilters, say]
   )
 
   const onNarrow = useCallback(
@@ -290,9 +296,11 @@ export default function UsageView(): ReactElement {
 
   const onRemoveChip = useCallback(
     (chip: UsageChip) => {
-      const i = chips.findIndex((c) => c.key === chip.key)
+      // Indices over the chips actually shown (the period has none), so focus lands on a real remove button.
+      const visible = (cs: UsageChip[]): UsageChip[] => cs.filter((c) => c.kind !== 'period')
+      const i = visible(chips).findIndex((c) => c.key === chip.key)
       const next = withoutChip(filters, chip)
-      const after = usageChips(next, chipNames)
+      const after = visible(usageChips(next, chipNames))
       pendingFocus.current = { chipKey: after.length > 0 ? after[Math.min(i, after.length - 1)]!.key : null }
       applyFilters(next)
     },

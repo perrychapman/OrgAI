@@ -299,6 +299,7 @@ function Tile({
           )}
         </span>
         {i.delta && <span className="sr-only">, {i.delta}</span>}
+        {!i.delta && i.deltaNote && <span className="sr-only">, {i.deltaNote}</span>}
       </span>
     </>
   )

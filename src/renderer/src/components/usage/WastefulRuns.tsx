@@ -9,7 +9,7 @@ import type { UsagePanelProps, WastefulSort } from './panelProps'
 import { RunDetailRow, RunToggle, TableWrap } from './usageTableParts'
 import '../../styles/usage-runs.css'
 
-/** Status dot colour per word (the word is also the dot's accessible name and title, never colour alone). */
+/** Status dot colour per word; the dot is decorative (aria-hidden) and the word beside it is visible text. */
 const TONE: Record<string, string> = { Finished: 'ok', Failed: 'bad', Running: 'live', 'Needs you': 'live' }
 
 export interface WastefulRunsProps extends UsagePanelProps {

@@ -19,9 +19,9 @@ export function useTweenedNumber(
   const { key, reduced, durationMs } = opts
   // When the key last moved: a bump the value never answered expires (TWEEN_ARM_MS), so a later refresh stays silent.
   const keySeen = useRef({ key: opts.key, at: 0 })
-  if (keySeen.current.key !== key) keySeen.current = { key, at: performance.now() }
 
   useLayoutEffect(() => {
+    if (keySeen.current.key !== key) keySeen.current = { key, at: performance.now() }
     if (value === lastValue.current) return
     const prev = shownRef.current
     const animate = shouldTween({ prev, next: value, key, lastKey: lastKey.current, reduced, durationMs, keyAgeMs: performance.now() - keySeen.current.at })
