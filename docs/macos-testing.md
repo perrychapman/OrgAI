@@ -43,6 +43,8 @@ Launch time and certificates (issue #16): from Finder, time the launch to a usab
 
 Icon checks: Finder shows the OrgAI mark (from `build/icon.icns`, with its margin) on OrgAI.app and on the dmg volume/file, and the running app's Dock icon is the same mark, not Electron's.
 
+Identity checks (packaged): hovering the Dock icon shows "OrgAI"; a notification (trigger a permission request with the window in the background) shows the name "OrgAI" and the OrgAI logo in its header. Repeat both in dev (section 3): `npm run dev` runs `scripts/mac-dev-app-name.mjs`, which renames the dev Electron.app and copies `build/icon.icns` over its icon, so a notification in dev should also say "OrgAI" with the logo (if the old icon is cached, run `killall Dock` and restart the app).
+
 ## 5. PATH discovery (packaged app, launched from Finder)
 
 - Open the log: `open ~/Library/Logs/OrgAI` (the app also has an Open log folder action). The first lines should include `OrgAI <version> starting ... darwin arm64 packaged=true` and a `PATH: N entries added (login shell)` line.
