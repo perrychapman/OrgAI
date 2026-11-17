@@ -26,6 +26,9 @@ async function start(mode) {
   process.env.ORGAI_UPDATE_MOCK = mode
   ;({ app, page } = await launch({ shotPrefix: `updates-${mode}` }))
   page.setDefaultTimeout(8000)
+  // Every launch starts wide: the window's opening size differs by machine (CI opens narrow), and below the breakpoint
+  // the sidebar is the 56 px rail, where the notice is an icon-only button with no text.
+  await setSize(1600, 1000)
   // Never open a real browser: record what the release page action would open.
   await app.evaluate(({ shell }) => {
     globalThis.__orgaiOpened = []
@@ -271,7 +274,8 @@ try {
     const refused = await page.evaluate(() => window.orgai.updates.download())
     check(refused.ok === false && refused.reason === 'unsupported', 'manual: a download is refused', JSON.stringify(refused))
     await gotoProjects(page)
-    check(/Update available: 99\.0\.0/.test(await text('[data-testid=update-notice]')), 'manual: the sidebar notice shows too')
+    await page.locator('[data-testid=update-notice-open]').waitFor({ timeout: 4000 }).catch(() => {})
+    check(/Update available: 99\.0\.0/.test(await text('[data-testid=update-notice]')), 'manual: the sidebar notice shows too', await text('[data-testid=update-notice]'))
   }
   await stop()
 
