@@ -2,9 +2,11 @@
 //
 //   node scripts/audit-gate.mjs
 //
-// Runs `npm audit --json --ignore-scripts`, exits 1 when a high or critical finding remains that the exempt list below
+// Runs `npm audit --json --ignore-scripts --include=dev`, exits 1 when a high or critical finding remains that the exempt list below
 // does not fully explain, when the exemption has expired, or when the report cannot be read (fail closed). Moderate and
 // low findings never fail, the same threshold as `--audit-level=high`.
+//
+// Changing EXEMPT, an entry's review date or this script's rules needs a new owner decision and Reviewer sign-off.
 //
 // To remove the exemption: delete the entry from EXEMPT (and, once nothing is exempt, this script can go back to a plain
 // `npm audit --audit-level=high --ignore-scripts` in .github/workflows/ci.yml).
@@ -26,19 +28,28 @@ export const EXEMPT = [
 ]
 
 const FAILING = new Set(['high', 'critical'])
+const SEVERITIES = new Set(['info', 'low', 'moderate', 'high', 'critical'])
+/** The real `npm audit --json` report gives url "https://github.com/advisories/<id>". */
+const ADVISORY_BASE = 'https://github.com/advisories/'
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 
-function isoDay(today) {
-  if (today instanceof Date) return Number.isNaN(today.getTime()) ? null : today.toISOString().slice(0, 10)
-  if (typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today)) return today
-  return null
+/** 'YYYY-MM-DD' that is a real calendar date, else null. */
+function validDay(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null
+  const d = new Date(`${s}T00:00:00Z`)
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s ? s : null
 }
 
-/** True when this advisory object (a `via` entry) is exactly the exempt entry's advisory on its package. */
-function matchesEntry(adv, entry) {
-  if (!isObj(adv) || adv.name !== entry.package || typeof adv.url !== 'string') return false
-  return adv.url === entry.id || adv.url.endsWith(`/${entry.id}`)
+function isoDay(today) {
+  if (today instanceof Date) return Number.isNaN(today.getTime()) ? null : today.toISOString().slice(0, 10)
+  return validDay(today)
+}
+
+/** True when this advisory object (a `via` entry under package `key`) is exactly the exempt entry's advisory. */
+function matchesEntry(adv, key, entry) {
+  if (!isObj(adv) || adv.name !== entry.package || key !== entry.package) return false
+  return adv.url === `${ADVISORY_BASE}${entry.id}`
 }
 
 /**
@@ -49,8 +60,10 @@ function matchesEntry(adv, entry) {
  *   expired:  entries whose review date has passed (they are NOT applied, and make ok false)
  *
  * Rule: a package with severity high/critical is exempt only if, over the package and every package reachable through
- * its `via` strings, every high/critical advisory object is an exempt entry's advisory (matched by name and a url ending
- * in the GHSA id), and every `via` string names a package present in the report. Anything else fails.
+ * its `via` strings, at least one advisory object is an exempt entry's advisory (exact url, name equal to the package key
+ * and the entry's package), no other high/critical advisory object exists, and every `via` string names a package
+ * present in the report. Severities must be exactly info/low/moderate/high/critical. metadata must agree with the report
+ * (high + critical count, a non-zero dev dependency count).
  */
 export function evaluateAudit(report, exempt, today) {
   const failures = []
@@ -65,13 +78,35 @@ export function evaluateAudit(report, exempt, today) {
   const vulns = report.vulnerabilities
   if (!isObj(vulns)) return result({ failures: ['audit report has no "vulnerabilities" object'] })
   for (const [name, v] of Object.entries(vulns)) {
-    if (!isObj(v) || typeof v.severity !== 'string' || !Array.isArray(v.via)) {
-      return result({ failures: [`audit report entry for ${name} is malformed`] })
+    if (!isObj(v) || !Array.isArray(v.via)) return result({ failures: [`audit report entry for ${name} is malformed`] })
+    if (!SEVERITIES.has(v.severity)) return result({ failures: [`audit report entry for ${name} has an unknown severity`] })
+    for (const via of v.via) {
+      if (isObj(via) && !SEVERITIES.has(via.severity)) {
+        return result({ failures: [`audit report entry for ${name} has an advisory with an unknown severity`] })
+      }
     }
   }
+  const meta = report.metadata
+  const counts = isObj(meta) && isObj(meta.vulnerabilities) ? meta.vulnerabilities : null
+  if (!counts || !Number.isInteger(counts.high) || !Number.isInteger(counts.critical)) {
+    return result({ failures: ['audit report has no usable metadata.vulnerabilities'] })
+  }
+  const highCount = Object.values(vulns).filter((v) => FAILING.has(v.severity)).length
+  if (counts.high + counts.critical !== highCount) {
+    return result({ failures: [`audit metadata counts ${counts.high + counts.critical} high/critical but the report lists ${highCount}`] })
+  }
+  const dev = isObj(meta.dependencies) ? meta.dependencies.dev : undefined
+  if (!Number.isInteger(dev) || dev <= 0) {
+    return result({ failures: ['audit report covers no dev dependencies (metadata.dependencies.dev is 0 or missing)'] })
+  }
   if (!Array.isArray(exempt)) return result({ failures: ['exempt list is not an array'] })
+  for (const e of exempt) {
+    if (!isObj(e) || !validDay(e.review) || !validDay(e.added)) {
+      return result({ failures: ['an exempt entry has a missing or invalid added/review date'] })
+    }
+  }
 
-  const expired = exempt.filter((e) => typeof e.review !== 'string' || day > e.review)
+  const expired = exempt.filter((e) => day > e.review)
   const active = exempt.filter((e) => !expired.includes(e))
   const used = new Map(active.map((e) => [e, new Set()]))
 
@@ -93,10 +128,10 @@ export function evaluateAudit(report, exempt, today) {
       for (const via of v.via) {
         if (typeof via === 'string') stack.push(via)
         else if (isObj(via)) {
-          if (!FAILING.has(via.severity) && via.severity !== undefined) continue
-          const entry = active.find((e) => matchesEntry(via, e))
+          if (!FAILING.has(via.severity)) continue
+          const entry = active.find((e) => matchesEntry(via, cur, e))
           if (entry) hits.add(entry)
-          else bad ??= `${cur}: ${via.url ?? via.title ?? 'unnamed advisory'} (${via.severity ?? 'unknown severity'})`
+          else bad ??= `${cur}: ${via.url ?? via.title ?? 'unnamed advisory'} (${via.severity})`
         } else bad ??= `${cur}: unreadable via entry`
       }
     }
@@ -107,6 +142,7 @@ export function evaluateAudit(report, exempt, today) {
     if (!FAILING.has(v.severity)) continue
     const { bad, hits } = explain(name)
     if (bad) failures.push(`${name} (${v.severity}): not covered by an exemption, caused by ${bad}`)
+    else if (hits.size === 0) failures.push(`${name} (${v.severity}): no exempt advisory in its chain explains it`)
     else for (const e of hits) if (name !== e.package) used.get(e).add(name)
   }
 
@@ -122,7 +158,7 @@ export function evaluateAudit(report, exempt, today) {
 
 function runNpmAudit() {
   const npm = npmInvocation(process.env, process.execPath, process.platform)
-  const r = spawnSync(npm.command, [...npm.prefix, 'audit', '--json', '--ignore-scripts'], {
+  const r = spawnSync(npm.command, [...npm.prefix, 'audit', '--json', '--ignore-scripts', '--include=dev'], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     timeout: 5 * 60 * 1000,
