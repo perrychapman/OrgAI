@@ -1,54 +1,86 @@
-import type { ReactElement } from 'react'
-import { sparkShape, type SparkPoint } from '../../lib/usageDashboard'
+import type { PointerEvent, ReactElement } from 'react'
+import { scrubSlot, sparkShape, sparkXY, type SparkPoint } from '../../lib/usageDashboard'
 
-export const SPARK_W = 72
-export const SPARK_H = 20
+export const SPARK_W = 200
+export const SPARK_H = 28
+const PAD = 3
 
 /**
- * A 72x20 trend line for a KPI tile. Decorative: the tile's value and delta carry the meaning, so it is aria-hidden.
- * Unknown-cost buckets are hollow circles on the baseline (never zero); lower-bound buckets get a short tick.
- * No animation.
+ * A full-tile-width, 28 px trend line for a KPI tile. The svg stretches (preserveAspectRatio none, non-scaling
+ * stroke); dots are positioned spans so they stay round. Decorative and pointer-only: moving over it reports the
+ * nearest bucket slot through `onScrub` (only when the slot changes) and marks it; the spend chart is the keyboard
+ * path. Unknown-cost buckets are hollow dots on the baseline (a gap, never zero). No animation.
  */
-export default function Sparkline({ points }: { points: readonly SparkPoint[] }): ReactElement | null {
-  const shape = sparkShape(points, SPARK_W, SPARK_H, 2)
+export default function Sparkline({
+  points,
+  active,
+  onScrub
+}: {
+  points: readonly SparkPoint[]
+  /** The slot being read out, or null. */
+  active: number | null
+  onScrub: (i: number | null) => void
+}): ReactElement | null {
+  const shape = sparkShape(points, SPARK_W, SPARK_H, PAD)
   if (!shape) return null
+  const left = (x: number): string => `${(x / SPARK_W) * 100}%`
+  const at = (e: PointerEvent<HTMLElement>): number | null => {
+    const r = e.currentTarget.getBoundingClientRect()
+    if (r.width <= 0) return null
+    return scrubSlot((e.clientX - r.left) / r.width, points.length)
+  }
+  const move = (e: PointerEvent<HTMLElement>): void => {
+    const i = at(e)
+    if (i !== active) onScrub(i)
+  }
+  const mark = active === null ? null : sparkXY(points, active, SPARK_W, SPARK_H, PAD)
   return (
-    <svg
-      className="usage-kpi-spark"
+    <span
+      className="usage-kpi-spark-box"
       data-testid="usage-kpi-spark"
-      viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
-      width={SPARK_W}
-      height={SPARK_H}
       aria-hidden="true"
-      focusable="false"
+      onPointerMove={move}
+      onPointerDown={move}
+      onPointerLeave={() => onScrub(null)}
+      onPointerCancel={() => onScrub(null)}
     >
-      {shape.lines.map((l, i) => (
-        <polyline
-          key={i}
-          points={l}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.25}
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-      ))}
-      {shape.partial.map((p, i) => (
-        <line key={`p${i}`} x1={p.x} x2={p.x} y1={p.y - 4} y2={p.y - 1.5} stroke="currentColor" strokeWidth={1} />
-      ))}
+      <svg
+        className="usage-kpi-spark"
+        viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
+        preserveAspectRatio="none"
+        focusable="false"
+      >
+        {shape.lines.map((l, i) => (
+          <polyline key={i} points={l} fill="none" className="usage-kpi-spark-line" vectorEffect="non-scaling-stroke" />
+        ))}
+        {shape.partial.map((p, i) => (
+          <line
+            key={`p${i}`}
+            x1={p.x}
+            x2={p.x}
+            y1={p.y - 5}
+            y2={p.y - 2}
+            className="usage-kpi-spark-tick"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+      </svg>
       {shape.hollow.map((p, i) => (
-        <circle
+        <span
           key={`h${i}`}
-          cx={p.x}
-          cy={p.y}
-          r={1.6}
-          fill="none"
-          stroke="var(--chart-unknown)"
-          strokeWidth={1}
+          className="usage-kpi-dot usage-kpi-dot-hollow"
           data-cost-kind="unknown"
+          style={{ left: left(p.x), top: p.y }}
         />
       ))}
-      {shape.last && <circle cx={shape.last.x} cy={shape.last.y} r={1.8} fill="currentColor" />}
-    </svg>
+      {shape.last && <span className="usage-kpi-dot usage-kpi-dot-end" style={{ left: left(shape.last.x), top: shape.last.y }} />}
+      {mark && (
+        <span
+          className="usage-kpi-dot usage-kpi-dot-scrub"
+          data-testid="usage-kpi-scrub-dot"
+          style={{ left: left(mark.x), top: mark.y }}
+        />
+      )}
+    </span>
   )
 }

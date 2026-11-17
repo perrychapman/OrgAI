@@ -258,3 +258,52 @@ export function sortAnnouncement(label: string, dir: SortDir, numeric: boolean):
   const how = numeric ? (dir === 'desc' ? 'highest first' : 'lowest first') : dir === 'asc' ? 'A to Z' : 'Z to A'
   return `Sorted by ${label}, ${how}.`
 }
+
+// ---------- KPI tile chips and scrub (usage dashboard increment 3) ----------
+
+/** The delta chip: a glyph and a sign so direction never rests on colour. "up 400% on ..." -> ▲ 400%; points -> "4 pts". */
+export function deltaChip(delta: string | null): { glyph: string; text: string } | null {
+  const dir = deltaDirection(delta)
+  if (!delta || !dir) return null
+  if (dir === 'same') return { glyph: '●', text: '0%' }
+  const m = /^(?:up|down) (\d+%|\d+ points?) on /.exec(delta)
+  if (!m) return null
+  return { glyph: dir === 'up' ? '▲' : '▼', text: m[1]!.replace(/ points?$/, ' pts') }
+}
+
+/** The muted tail of a chip: "vs prev. 30 d". Null when the sentence has no comparison span. */
+export function deltaVs(delta: string | null): string | null {
+  if (!delta) return null
+  const m = /\b(?:on|as) (?:the )?(.+)$/.exec(delta)
+  if (!m) return null
+  return `vs ${m[1]!.replace(/\bprevious\b/, 'prev.').replace(/\b(\d+) days?\b/, '$1 d')}`
+}
+
+/** "from 3 of 4 runs" -> "3 of 4 priced"; null when the line is not that shape. */
+export function pricedChip(line: string): string | null {
+  const m = /^from (\d+) of (\d+) runs?$/.exec(line)
+  return m ? `${m[1]} of ${m[2]} priced` : null
+}
+
+/** The bucket slot nearest to a pointer: `frac` is 0..1 across the sparkline, `count` the number of points. */
+export function scrubSlot(frac: number, count: number): number | null {
+  if (count < 1 || !Number.isFinite(frac)) return null
+  return Math.min(count - 1, Math.max(0, Math.round(Math.min(1, Math.max(0, frac)) * (count - 1))))
+}
+
+/** Where point `i` sits in the same w x h box `sparkShape` uses (x spread over the width, y linear from zero). */
+export function sparkXY(points: readonly SparkPoint[], i: number, w: number, h: number, pad = 2): { x: number; y: number } | null {
+  const p = points[i]
+  if (!p || points.length < 2) return null
+  const max = points.reduce((m, q) => Math.max(m, q.value ?? 0), 0)
+  const base = h - pad
+  const x = r1(pad + (i * (w - 2 * pad)) / (points.length - 1))
+  if (p.value === null) return p.kind === 'unknown' ? { x, y: r1(base) } : null
+  if (!(p.value > 0) || !(max > 0)) return { x, y: r1(base) }
+  return { x, y: r1(base - Math.max(2, (p.value / max) * (base - pad))) }
+}
+
+/** A tile shows a sparkline only with at least three buckets that carry a value. */
+export function sparkDrawable(points: readonly SparkPoint[]): boolean {
+  return points.filter((p) => p.value !== null).length >= 3
+}

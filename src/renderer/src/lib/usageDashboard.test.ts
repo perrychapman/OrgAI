@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { deltaChip, deltaVs, pricedChip, scrubSlot, sparkDrawable, sparkXY } from './usageDashboard'
 import type { UsageOverviewTrendPoint, UsageTrendProjectSlice } from '@shared/types'
 import { OTHER_KEY, formatTick, readoutText, segmentReadout, segmentsOf, type BucketSlot } from './usageCharts'
 import {
@@ -181,5 +182,43 @@ describe('table sorting', () => {
     expect(ariaSort({ key: 'cost', dir: 'asc' }, 'runs')).toBe('none')
     expect(sortAnnouncement('Cost', 'desc', true)).toBe('Sorted by Cost, highest first.')
     expect(sortAnnouncement('Project', 'asc', false)).toBe('Sorted by Project, A to Z.')
+  })
+})
+
+describe('KPI tile chips and scrub', () => {
+  it('builds the delta chip with a glyph and sign', () => {
+    expect(deltaChip('up 400% on previous 30 days')).toEqual({ glyph: '▲', text: '400%' })
+    expect(deltaChip('down 12% on previous 30 days')).toEqual({ glyph: '▼', text: '12%' })
+    expect(deltaChip('up 4 points on previous 30 days')).toEqual({ glyph: '▲', text: '4 pts' })
+    expect(deltaChip('down 1 point on previous 7 days')).toEqual({ glyph: '▼', text: '1 pts' })
+    expect(deltaChip('about the same as previous 30 days')).toEqual({ glyph: '●', text: '0%' })
+    expect(deltaChip(null)).toBeNull()
+  })
+  it('shortens the comparison span', () => {
+    expect(deltaVs('up 400% on previous 30 days')).toBe('vs prev. 30 d')
+    expect(deltaVs('about the same as previous 7 days')).toBe('vs prev. 7 d')
+    expect(deltaVs(null)).toBeNull()
+  })
+  it('words the priced chip', () => {
+    expect(pricedChip('from 7 of 10 runs')).toBe('7 of 10 priced')
+    expect(pricedChip('other')).toBeNull()
+  })
+  it('maps a pointer fraction to a slot', () => {
+    expect(scrubSlot(0, 5)).toBe(0)
+    expect(scrubSlot(1, 5)).toBe(4)
+    expect(scrubSlot(0.4, 5)).toBe(2)
+    expect(scrubSlot(-1, 5)).toBe(0)
+    expect(scrubSlot(0.5, 0)).toBeNull()
+  })
+  it('places points and needs three values to draw', () => {
+    const pts = [
+      { value: 0, kind: 'empty' as const },
+      { value: null, kind: 'unknown' as const },
+      { value: 4, kind: 'known' as const }
+    ]
+    expect(sparkXY(pts, 1, 100, 20)?.y).toBe(18)
+    expect(sparkXY(pts, 2, 100, 20)?.x).toBe(98)
+    expect(sparkDrawable(pts)).toBe(false)
+    expect(sparkDrawable([...pts, { value: 1, kind: 'known' as const }])).toBe(true)
   })
 })
