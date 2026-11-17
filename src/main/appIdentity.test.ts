@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { join } from 'node:path'
-import { APP_USER_MODEL_ID, appDetailsFor, regAddArgs, regExePath, registerWindowsAppIdentity, resolveIconPath, skipIdentityRegistration } from './appIdentity'
+import { APP_USER_MODEL_ID, appDetailsFor, regAddArgs, regExePath, registerWindowsAppIdentity, quoteArg, resolveIconPath, shouldRegisterIdentity, skipIdentityRegistration, stableIconPath } from './appIdentity'
 
 const REG = 'C:\\Windows\\System32\\reg.exe'
 const KEY = `HKCU\\Software\\Classes\\AppUserModelId\\${APP_USER_MODEL_ID}`
@@ -12,11 +12,12 @@ describe('registerWindowsAppIdentity', () => {
       platform: 'win32',
       iconPath: 'C:\\app\\build\\icon.ico',
       regExe: REG,
+      env: { SystemRoot: 'D:\\Win' },
       run: async (f, a, o) => void calls.push([f, a, o])
     })
     expect(calls).toEqual([
-      [REG, ['add', KEY, '/v', 'DisplayName', '/t', 'REG_SZ', '/d', 'OrgAI', '/f'], { windowsHide: true, timeout: 5000 }],
-      [REG, ['add', KEY, '/v', 'IconUri', '/t', 'REG_SZ', '/d', 'C:\\app\\build\\icon.ico', '/f'], { windowsHide: true, timeout: 5000 }]
+      [REG, ['add', KEY, '/v', 'DisplayName', '/t', 'REG_SZ', '/d', 'OrgAI', '/f'], { windowsHide: true, timeout: 5000, env: { SystemRoot: 'D:\\Win' } }],
+      [REG, ['add', KEY, '/v', 'IconUri', '/t', 'REG_SZ', '/d', 'C:\\app\\build\\icon.ico', '/f'], { windowsHide: true, timeout: 5000, env: { SystemRoot: 'D:\\Win' } }]
     ])
   })
 
@@ -69,11 +70,79 @@ describe('helpers', () => {
     expect(skipIdentityRegistration({ ORGAI_DATA_DIR: '/tmp/x' })).toBe(true)
     expect(skipIdentityRegistration({ ORGAI_MOCK: '1' })).toBe(true)
   })
-  it('appDetailsFor quotes the relaunch command', () => {
+  it('appDetailsFor quotes the relaunch command (unpackaged)', () => {
     const d = appDetailsFor({ isPackaged: false, execPath: 'C:\\e\\electron.exe', appPath: 'C:\\p q', iconPath: 'C:\\i.ico' })
     expect(d.relaunchCommand).toBe('"C:\\e\\electron.exe" "C:\\p q"')
     expect(d.relaunchDisplayName).toBe('OrgAI')
     expect(d.appId).toBe(APP_USER_MODEL_ID)
-    expect(appDetailsFor({ isPackaged: true, execPath: 'C:\\o.exe', appPath: 'x', iconPath: undefined }).relaunchCommand).toBe('"C:\\o.exe"')
+    expect(d.appIconPath).toBe('C:\\i.ico')
+  })
+  it('installed packaged build passes only the appId', () => {
+    expect(appDetailsFor({ isPackaged: true, execPath: 'C:\\o.exe', appPath: 'x', iconPath: 'C:\\i.ico' })).toEqual({ appId: APP_USER_MODEL_ID })
+  })
+  it('portable build relaunches through the portable file with the full details', () => {
+    const d = appDetailsFor({ isPackaged: true, execPath: 'C:\\tmp\\o.exe', appPath: 'x', iconPath: 'C:\\ud\\app-icon.ico', portableFile: 'C:\\Apps\\OrgAI.exe' })
+    expect(d).toMatchObject({ appId: APP_USER_MODEL_ID, relaunchCommand: '"C:\\Apps\\OrgAI.exe"', appIconPath: 'C:\\ud\\app-icon.ico', relaunchDisplayName: 'OrgAI' })
+  })
+  it('quoteArg strips quotes and trailing backslashes', () => {
+    expect(quoteArg('C:\\a b\\')).toBe('"C:\\a b"')
+    expect(quoteArg('C:\\a\\\\')).toBe('"C:\\a"')
+    expect(quoteArg('a"b')).toBe('"ab"')
+  })
+  it('shouldRegisterIdentity: unpackaged and portable only, never under skip', () => {
+    expect(shouldRegisterIdentity({ isPackaged: false }, {})).toBe(true)
+    expect(shouldRegisterIdentity({ isPackaged: true }, {})).toBe(false)
+    expect(shouldRegisterIdentity({ isPackaged: true }, { PORTABLE_EXECUTABLE_FILE: 'C:\\x.exe' })).toBe(true)
+    expect(shouldRegisterIdentity({ isPackaged: false }, { ORGAI_MOCK: '1' })).toBe(false)
+    expect(shouldRegisterIdentity({ isPackaged: true }, { PORTABLE_EXECUTABLE_FILE: 'C:\\x.exe', ORGAI_DATA_DIR: 'D:\\d' })).toBe(false)
+  })
+  it('regExePath accepts only drive-absolute roots', () => {
+    expect(regExePath({ SystemRoot: 'relative\\win' })).toBe(join('C:\\Windows', 'System32', 'reg.exe'))
+    expect(regExePath({ SystemRoot: '\\\\evil\\share', windir: 'D:\\Win' })).toBe(join('D:\\Win', 'System32', 'reg.exe'))
+    expect(regExePath({})).toBe(join('C:\\Windows', 'System32', 'reg.exe'))
+  })
+  it('reg.exe gets a minimal env, not process.env', async () => {
+    const opts: unknown[] = []
+    await registerWindowsAppIdentity({
+      platform: 'win32',
+      iconPath: undefined,
+      env: { SystemRoot: 'D:\\Win', ANTHROPIC_API_KEY: 'secret' },
+      run: async (_f, _a, o) => void opts.push(o)
+    })
+    expect(opts[0]).toEqual({ windowsHide: true, timeout: 5000, env: { SystemRoot: 'D:\\Win' } })
+  })
+})
+
+describe('stableIconPath', () => {
+  const mk = (sizes: Record<string, number>) => {
+    const copies: [string, string][] = []
+    return {
+      copies,
+      fs: { size: (p: string) => sizes[p], mkdir: () => {}, copy: (a: string, b: string) => void copies.push([a, b]) }
+    }
+  }
+  const dest = join('C:\\ud', 'app-icon.ico')
+  it('copies when missing', () => {
+    const { fs, copies } = mk({ src: 10 })
+    expect(stableIconPath({ iconPath: 'src', userDataDir: 'C:\\ud', fs })).toBe(dest)
+    expect(copies).toEqual([['src', dest]])
+  })
+  it('copies when the size differs, not when equal', () => {
+    const a = mk({ src: 10, [dest]: 9 })
+    stableIconPath({ iconPath: 'src', userDataDir: 'C:\\ud', fs: a.fs })
+    expect(a.copies).toHaveLength(1)
+    const b = mk({ src: 10, [dest]: 10 })
+    expect(stableIconPath({ iconPath: 'src', userDataDir: 'C:\\ud', fs: b.fs })).toBe(dest)
+    expect(b.copies).toHaveLength(0)
+  })
+  it('fails open with one warning', () => {
+    const warns: string[] = []
+    const fs = { size: (p: string) => (p === 'src' ? 1 : undefined), mkdir: () => {}, copy: () => { throw new Error('disk full') } }
+    expect(stableIconPath({ iconPath: 'src', userDataDir: 'C:\\ud', fs, warn: (m) => warns.push(m) })).toBeUndefined()
+    expect(warns).toHaveLength(1)
+    expect(warns[0]).toContain('disk full')
+  })
+  it('returns undefined without a source icon', () => {
+    expect(stableIconPath({ iconPath: undefined, userDataDir: 'C:\\ud' })).toBeUndefined()
   })
 })

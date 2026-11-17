@@ -13,7 +13,7 @@ import { stopSystemCertRead, trustSystemCertificates } from './systemCerts'
 import { installAppMenu, menuActionSender, navigateSender } from './appMenu'
 import { registerIpc } from './ipc'
 import { Notifier } from './notifications'
-import { APP_USER_MODEL_ID, appDetailsFor, registerWindowsAppIdentity, resolveIconPath, skipIdentityRegistration } from './appIdentity'
+import { APP_USER_MODEL_ID, appDetailsFor, registerWindowsAppIdentity, resolveIconPath, shouldRegisterIdentity, stableIconPath } from './appIdentity'
 import { canWriteDir, dataDirOverride, installLogging, log, pickLogsDir } from './log'
 import { installElectronLogHooks } from './electronLogHooks'
 import { acquireHostOwnership, HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, type HostOwnership } from './host/ownership'
@@ -165,8 +165,15 @@ function appIconPath(): string | undefined {
 }
 // Windows toasts without an installer shortcut (dev, portable) take their name and logo from this registry entry. Not in
 // e2e / CI (ORGAI_DATA_DIR set) or the mock adapter (ORGAI_MOCK=1), so those registries stay untouched.
-if (gotLock && !folderRefused && process.platform === 'win32' && !skipIdentityRegistration()) {
-  void registerWindowsAppIdentity({ iconPath: appIconPath(), warn: (m) => log.warn(m) })
+// Only unpackaged and portable runs write it: the installed build's shortcut carries the id and nothing would remove the key.
+// The portable build runs from a temp folder deleted on exit, so its icon is copied under userData first.
+const portableFile = process.env.PORTABLE_EXECUTABLE_FILE?.trim() || undefined
+function identityIconPath(): string | undefined {
+  const p = appIconPath()
+  return portableFile ? stableIconPath({ iconPath: p, userDataDir: app.getPath('userData'), warn: (m) => log.warn(m) }) : p
+}
+if (gotLock && !folderRefused && process.platform === 'win32' && shouldRegisterIdentity({ isPackaged: app.isPackaged })) {
+  void registerWindowsAppIdentity({ iconPath: identityIconPath(), warn: (m) => log.warn(m) })
 }
 
 /** Native menus, scrollbars, dialogs and prefers-color-scheme in the renderer follow AppSettings.appearance.theme. */
@@ -303,7 +310,7 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     // Taskbar hover / jump list name and icon (otherwise the executable's: "Electron" when unpackaged). Packaged builds keep
     // the same appId as the installer shortcut, so pinning still groups.
     try {
-      win.setAppDetails(appDetailsFor({ isPackaged: app.isPackaged, execPath: process.execPath, appPath: app.getAppPath(), iconPath: appIconPath() }))
+      win.setAppDetails(appDetailsFor({ isPackaged: app.isPackaged, execPath: process.execPath, appPath: app.getAppPath(), iconPath: identityIconPath(), portableFile }))
     } catch (err) {
       log.warn(`Could not set the taskbar app details: ${err instanceof Error ? err.message : String(err)}`)
     }
