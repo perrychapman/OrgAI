@@ -28,6 +28,7 @@ import { SELF_KNOWLEDGE_IPC, type AppNavigateEvent, type AppReferenceQuery } fro
 import { isAtlasSurfaceId } from '../shared/view/atlas'
 import { KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../shared/types'
 import type { SchedulesChangedEvent } from '../shared/types'
+import { UPDATES_IPC, type UpdateState } from '../shared/types'
 
 const api: OrgAIApi = {
   projects: {
@@ -410,6 +411,19 @@ const api: OrgAIApi = {
     const listener = (_e: IpcRendererEvent, event: SchedulesChangedEvent): void => cb(event)
     ipcRenderer.on(SCHEDULES_IPC.schedulesChanged, listener)
     return () => ipcRenderer.removeListener(SCHEDULES_IPC.schedulesChanged, listener)
+  },
+  // Desktop updater: no argument carries a URL, path or version; install sends only { force: true } when confirmed.
+  updates: {
+    get: () => ipcRenderer.invoke(UPDATES_IPC.updatesGet),
+    check: () => ipcRenderer.invoke(UPDATES_IPC.updatesCheck),
+    download: () => ipcRenderer.invoke(UPDATES_IPC.updatesDownload),
+    install: (input) => ipcRenderer.invoke(UPDATES_IPC.updatesInstall, input?.force === true ? { force: true } : {}),
+    openReleasePage: () => ipcRenderer.invoke(UPDATES_IPC.updatesOpenReleasePage)
+  },
+  onUpdatesChanged: (cb) => {
+    const listener = (_e: IpcRendererEvent, state: UpdateState): void => cb(state)
+    ipcRenderer.on(UPDATES_IPC.updatesChanged, listener)
+    return () => ipcRenderer.removeListener(UPDATES_IPC.updatesChanged, listener)
   }
 }
 

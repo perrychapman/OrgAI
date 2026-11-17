@@ -16,6 +16,7 @@ import {
   TEAM_FILES_IPC,
   EVOLVE_IPC,
   OUTPUTS_IPC,
+  UPDATES_IPC,
   type AppSettings,
   type DecisionOutcome,
   type KitBundleApplyInput,
@@ -49,20 +50,21 @@ function dropUndefined(v: unknown): unknown {
 }
 
 describe('(a) completeness', () => {
-  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC)]
+  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC), ...Object.values(UPDATES_IPC)]
   // HOST_IPC (socket only) and SECRETS_IPC (Wave 7, every surface): channels added for the host.
   const host: string[] = [...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC), ...Object.values(EVOLVE_IPC), EVOLVE_AFTER_RUN_CHANNEL]
 
-  it('matches the spec counts: 219 existing channels (204 request + 15 push, including the 7 SCHEDULES_IPC) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
+  it('matches the spec counts: 225 existing channels (209 request + 16 push, including the 7 SCHEDULES_IPC and 6 UPDATES_IPC) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
     expect(new Set(existing).size).toBe(existing.length)
-    expect(existing.length).toBe(219)
-    expect(existing.filter((c) => push.has(c)).length).toBe(15)
-    expect(existing.filter((c) => !push.has(c)).length).toBe(204)
+    expect(existing.length).toBe(225)
+    expect(existing.filter((c) => push.has(c)).length).toBe(16)
+    expect(existing.filter((c) => !push.has(c)).length).toBe(209)
     expect(Object.values(SCHEDULES_IPC).length).toBe(7)
+    expect(Object.values(UPDATES_IPC).length).toBe(6)
     expect(Object.values(HOST_IPC).length).toBe(6)
     expect(Object.values(SECRETS_IPC).length).toBe(5)
-    expect(requestChannels().length).toBe(220)
+    expect(requestChannels().length).toBe(225)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {

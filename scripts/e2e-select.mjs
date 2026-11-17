@@ -51,6 +51,7 @@ export const RULES = [
   { match: ['.github/workflows/**'], kind: 'full', scripts: [], why: 'CI workflow change' },
   { match: ['.github/**'], kind: 'none', scripts: [], why: 'GitHub metadata (templates, dependabot)' },
   { match: ['scripts/smoke-*.mjs', 'scripts/probe-*.mjs', 'scripts/readme-media.mjs', 'scripts/measure-prompt-size.mjs', 'scripts/list-proxy-models.mjs'], kind: 'none', scripts: [], why: 'manual helper script no e2e runs' },
+  { match: ['scripts/merge-latest-mac.mjs'], kind: 'none', scripts: [], why: 'release-only script (release.yml publish job); its node:test runs in test:scripts' },
   { match: ['e2e/setup.mjs', 'e2e/history.mjs', 'e2e/worktree.mjs', 'e2e/shots/**'], kind: 'none', scripts: [], why: 'token-spending e2e or screenshots, not part of the free chain' },
 
   // ---- Schedules: narrow shared files, ahead of the broad src/shared rule (first match wins) ----
@@ -116,6 +117,7 @@ export const RULES = [
   { match: [`${S}motion.css`, `${L}motion.ts`, `${L}layoutMotion.ts`], scripts: ['motion', 'layout', 'canvas', 'dashboard'], why: 'motion tokens' },
 
   // ---- main process, narrow areas ----
+  { match: ['src/main/updater*.ts'], scripts: ['menu'], why: 'desktop updater (every e2e launch is capability none; Help > Check for Updates…)' },
   { match: ['src/main/runtime/codexBinary.ts'], scripts: ['connections', 'project-connection', 'multi-provider', 'cli-connections'], why: 'Codex binary discovery (connection status)' },
   { match: ['src/main/runtime/codex*.ts', 'src/main/runtime/fixtures/**'], scripts: [], why: 'Codex adapter: no e2e uses a real adapter; unit tests plus the smoke set (the app still launches)' },
   { match: ['src/main/runtime/folderConfigTrust.ts'], scripts: ['folder-trust'], why: 'folder config trust' },

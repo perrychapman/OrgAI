@@ -98,6 +98,8 @@ feature notes to the matching file there (or a new one listed here), not to CLAU
   permission modes, worktree isolation, MCP servers added mid-session).
 - `docs/agent-notes/schedules.md`: schedules (recurring team / ask runs, desktop only): contract, store, scheduler rules,
   conversation tools and proposal card, limits, the Schedules page, mock markers, what is verified.
+- `docs/agent-notes/updates.md`: desktop auto-update (electron-updater, GitHub Releases): contract, capability per install
+  kind, consent and install-through-quit, security bounds, release metadata, `ORGAI_UPDATE_MOCK`, what is verified.
 - `docs/agent-notes/platform-ci.md`: macOS (untested on a Mac), dev app name, icon, system certificates, shell PATH,
   window placement, `ORGAI_DATA_DIR`, CI runners and open CI items.
 

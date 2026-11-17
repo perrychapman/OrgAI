@@ -53,10 +53,15 @@ const DESKTOP_ONLY = [
   'outputs:open',
   'outputs:reveal',
   'outputs:saveAs',
-  'outputs:saveImage'
+  'outputs:saveImage',
+  'updates:get',
+  'updates:check',
+  'updates:download',
+  'updates:install',
+  'updates:openReleasePage'
 ]
 
-const DESKTOP = { surface: 'desktop' as const, senderId: 1 }
+const DESKTOP ={ surface: 'desktop' as const, senderId: 1 }
 const RPC: RpcInvokeContext = { surface: 'socket', grantedScopes: ['read', 'operate', 'decide', 'configure'] satisfies HostScope[] }
 
 describe('model switching dispatch', () => {

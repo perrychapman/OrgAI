@@ -273,7 +273,8 @@ describe('release.yml publish-npm', () => {
   it('builds, packs and verifies the commit the meta job checked, not the ref name', () => {
     expect(text).toMatch(/sha: \$\{\{ steps\.meta\.outputs\.sha \}\}/)
     expect(text).toContain('echo "sha=$commit"')
-    expect(text.match(/ref: \$\{\{ needs\.meta\.outputs\.sha \}\}/g)).toHaveLength(3)
+    // build, npm-package, verify-npm and the desktop publish job (checked out for scripts/merge-latest-mac.mjs).
+    expect(text.match(/ref: \$\{\{ needs\.meta\.outputs\.sha \}\}/g)).toHaveLength(4)
     expect(text).not.toMatch(/ref: \$\{\{ needs\.meta\.outputs\.ref \}\}/)
   })
   it('falls back to the NPM_TOKEN secret through an npmrc that names the variable, never the value', () => {

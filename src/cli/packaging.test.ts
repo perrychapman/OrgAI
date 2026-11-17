@@ -112,9 +112,19 @@ describe('electron-builder.yml', () => {
     expect(yml).toMatch(/^electronFuses:\n  enableNodeCliInspectArguments: false\n  # systemCerts\.ts starts this executable with ELECTRON_RUN_AS_NODE=1 to read the system trust store\.\n  runAsNode: true\n  # arm64 macOS refuses a binary whose ad-hoc signature no longer matches; electron-builder re-signs ad hoc after flipping fuses only with this flag\.\n  resetAdHocDarwinSignature: true$/m)
   })
 
-  it('adds no publish or signing identity', () => {
-    expect(yml).not.toMatch(/^publish:/m)
+  it('adds no signing identity; publish only names the updater feed and nothing ever uploads', () => {
     expect(yml).not.toMatch(/^\s*identity:\s*\S/m)
+    // The desktop updater's feed (embedded as app-update.yml): exactly the GitHub provider on perrychapman/OrgAI.
+    expect(yml).toMatch(/^publish:\n  provider: github\n  owner: perrychapman\n  repo: OrgAI$/m)
+    expect(yml.match(/^publish:/gm)).toHaveLength(1)
+    // Every electron-builder run passes --publish never (package.json scripts, pack-local, release.yml).
+    const pkg = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
+    const builds = Object.values(pkg.scripts).filter((s) => /\belectron-builder\b/.test(s))
+    expect(builds.length).toBeGreaterThan(0)
+    for (const s of builds) expect(s, s).toContain('--publish never')
+    expect(readFileSync(join(repo, 'scripts/pack-local.mjs'), 'utf8')).toContain("['--dir', '--publish', 'never']")
+    const release = readFileSync(join(repo, '.github/workflows/release.yml'), 'utf8')
+    for (const line of release.split('\n').filter((l) => /npx electron-builder/.test(l))) expect(line, line).toContain('--publish never')
   })
 })
 

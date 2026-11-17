@@ -245,6 +245,12 @@ const PAYLOADS: Record<string, unknown[]> = {
   'schedules:remove': ['sch_0123abcd'],
   'schedules:setEnabled': [{ id: 'sch_0123abcd', enabled: false }],
   'schedules:runNow': ['sch_0123abcd'],
+  // UPDATES_IPC (desktop only)
+  'updates:get': [],
+  'updates:check': [],
+  'updates:download': [],
+  'updates:install': [{ force: true }],
+  'updates:openReleasePage': [],
   // HOST_IPC
   'runs:subscribe': [{ projectIds: ['p_abc123'], followChains: true, sinceSeq: 12 }],
   'skillLibrary:addFromBundle': [{ name: 'review', files: [{ path: 'SKILL.md', base64: 'IyBSZXZpZXc=' }] }],
