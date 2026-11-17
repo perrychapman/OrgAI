@@ -158,14 +158,22 @@ const addBtn = () => detail().locator('[data-testid=output-note-add]').first()
 // Kinds with a region tool (diagram, SVG, image, deck) have Add note as a menu button: "Note on the selection" and the
 // "Mark an area" radios live in its menu. Other kinds keep a plain button that is aria-disabled without a selection.
 const addIsMenu = async () => (await addBtn().getAttribute('aria-haspopup')) === 'menu'
+// A closed menu keeps its last render mounted (inert, aria-hidden, data-state=out) for one exit duration, so an item can
+// be "visible" in it while the menu is closed and still show the state from before the last choice (the Off radio checked
+// right after Box was chosen). Open means the trigger says aria-expanded=true and the panel is data-state=in; only then are
+// the items current. The trigger reports expanded one task after the click (the platform's toggle event).
 const openAddMenu = async () => {
   if ((await addBtn().getAttribute('aria-expanded')) !== 'true') await addBtn().click()
+  await detail().locator('[data-testid=output-note-add][aria-expanded=true]').waitFor({ state: 'attached', timeout: 4000 })
+  await detail().locator('[data-testid=output-note-menu][data-state=in]').waitFor({ state: 'attached', timeout: 4000 })
   await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'visible', timeout: 4000 })
 }
 const closeAddMenu = async () => {
   if ((await addBtn().getAttribute('aria-expanded')) !== 'true') return
   await page.keyboard.press('Escape')
-  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'detached', timeout: 4000 }).catch(() => undefined)
+  // Closed for real: the trigger says so and the retained exit render is gone, so nothing can take focus from the viewport.
+  await detail().locator('[data-testid=output-note-add][aria-expanded=false]').waitFor({ state: 'attached', timeout: 4000 })
+  await detail().locator('[data-testid=output-note-selection]').waitFor({ state: 'detached', timeout: 4000 })
 }
 const addEnabled = async () => {
   if (!(await addIsMenu())) return (await addBtn().getAttribute('aria-disabled')) !== 'true'
