@@ -1965,6 +1965,12 @@ export interface AppSettings {
    * decides to notify. Default true.
    */
   notifications?: boolean
+  /**
+   * Desktop updater (section "Desktop auto-update"): check for a new release shortly after launch and then every
+   * UPDATE_CHECK_INTERVAL_MS. Off = only a manual check. It never downloads or installs on its own. Default true;
+   * store/settings.ts always writes an explicit boolean, so treat a missing value as true.
+   */
+  autoUpdateCheck?: boolean
   /** Theme, accent, canvas and motion. Filled with defaults for settings saved before it existed. */
   appearance: AppearanceSettings
   /**
@@ -4056,7 +4062,12 @@ export const MENU_ACTIONS = [
   /** View > Usage: the app-wide Usage page (docs/design/usage-app.md). No accelerator; always enabled. */
   'show-usage',
   /** View > Schedules: the app-wide Schedules page (docs/design/schedules.md section 5). No accelerator; always enabled. */
-  'show-schedules'
+  'show-schedules',
+  /**
+   * "Check for Updates…" (macOS app menu; Help elsewhere): main starts updates:check itself, then sends this to the main
+   * window so the renderer shows the update status (App settings > About). Always enabled.
+   */
+  'check-for-updates'
 ] as const
 
 export type MenuAction = (typeof MENU_ACTIONS)[number]
@@ -9664,4 +9675,151 @@ export interface EvolvePostRunResult {
   wasteScore?: number
   /** The post-run pass is unattended: parts of its plan that may spend more are never applied; they are listed here. */
   heldSpendRaises?: EvolutionSpendRaise[]
+}
+
+// ---- Desktop auto-update (src/main/updater.ts; docs/agent-notes/updates.md) ----
+// Desktop only (the orgai CLI has no updater). electron-updater with the GitHub provider reads its feed from the
+// app-update.yml embedded at packaging; nothing here carries a URL, a path or a version from the renderer. Never
+// downloads or installs without the user: a check may run on its own (AppSettings.autoUpdateCheck), a download and an
+// install only through updates:download / updates:install. Everything here is structured-clone safe.
+
+/**
+ * What this install can do. 'auto': check, download and install (a packaged Windows NSIS install). 'manual': check
+ * only; the UI offers the release page (Windows portable or unpacked, macOS, Linux). 'none': never touches the network
+ * (unpackaged dev builds and any mock / e2e launch).
+ */
+export type UpdateCapability = 'auto' | 'manual' | 'none'
+
+/**
+ * Why the capability is not 'auto' (absent when it is). 'dev': an unpackaged build. 'test': a packaged build launched
+ * with ORGAI_MOCK=1 (e2e, verify-pack). 'portable': the Windows portable exe. 'unpacked': a packaged Windows build the
+ * NSIS installer did not install (release/win-unpacked). 'platform': macOS (unsigned builds; Squirrel.Mac needs a
+ * signed app) and Linux.
+ */
+export type UpdateCapabilityReason = 'dev' | 'test' | 'portable' | 'unpacked' | 'platform'
+
+/**
+ * 'idle': no check yet (always, for capability 'none'). 'checking': a check is in flight (never two at once).
+ * 'up-to-date': the last check found nothing newer. 'available': `availableVersion` is newer (download it with 'auto',
+ * open the release page with 'manual'). 'downloading': `progress` moves. 'downloaded': ready for updates:install (also
+ * installed on the next normal quit). 'error': `error` says what failed; `availableVersion` stays when a download
+ * failed, so the download can be retried.
+ */
+export type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'downloaded' | 'error'
+
+export interface UpdateProgress {
+  /** 0..100. */
+  percent: number
+  transferredBytes: number
+  totalBytes: number
+}
+
+/** The updater's state: the answer of updates:get and updates:check, and every updates:changed push. */
+export interface UpdateState {
+  capability: UpdateCapability
+  /** Present exactly when capability is not 'auto'. */
+  reason?: UpdateCapabilityReason
+  status: UpdateStatus
+  /** This app's version (app.getVersion()). */
+  currentVersion: string
+  /** The newer version the feed offers, validated as semver (at most UPDATE_VERSION_MAX_CHARS) in main. */
+  availableVersion?: string
+  /**
+   * The feed's release notes as plain text: tags stripped, entities decoded, control characters removed, at most
+   * UPDATE_NOTES_MAX_CHARS. Untrusted text: render it as text only (never as HTML, Markdown or links).
+   */
+  releaseNotes?: string
+  /**
+   * The page updates:openReleasePage opens, for display only. Built in main from constants:
+   * `${UPDATE_RELEASES_URL}/tag/v<availableVersion>` when a version is known, else UPDATE_RELEASES_URL. Never from the feed.
+   */
+  releaseUrl: string
+  /** While status is 'downloading' (kept at its last value once 'downloaded'). */
+  progress?: UpdateProgress
+  /** Epoch ms of the last finished check (any result). */
+  checkedAt?: number
+  /** status 'error': one fixed sentence (at most UPDATE_ERROR_MAX_CHARS), never a path, URL or token. */
+  error?: string
+  /** True once updates:install was accepted: the app is quitting to install. */
+  installing?: boolean
+}
+
+/** Why updates:download or updates:install was refused. */
+export type UpdateRefusal =
+  /** updates:install: runs are live and `force` was not true; `activeRuns` says how many. */
+  | 'active-runs'
+  /** updates:install: nothing has been downloaded. */
+  | 'not-downloaded'
+  /** updates:download: no newer version is known (check first). A download already running or finished answers ok. */
+  | 'not-available'
+  /** capability is not 'auto'. */
+  | 'unsupported'
+  /** The app is already quitting. */
+  | 'quitting'
+
+export type UpdateActionResult =
+  | { ok: true }
+  | {
+      ok: false
+      reason: UpdateRefusal
+      /** reason 'active-runs': how many live runs installing would end. */
+      activeRuns?: number
+    }
+
+/**
+ * updates:install input. `force: true` is the user's explicit confirmation to end live runs (they end as a Quit ends
+ * them: stopped, persisted, continuable). Main decides what counts as live (RunManager.liveRunCount()).
+ */
+export interface UpdateInstallInput {
+  force?: boolean
+}
+
+/** The only page updates:openReleasePage opens (with `/tag/v<semver>` appended when a version is known). */
+export const UPDATE_RELEASES_URL = 'https://github.com/perrychapman/OrgAI/releases'
+export const UPDATE_NOTES_MAX_CHARS = 4000
+export const UPDATE_ERROR_MAX_CHARS = 200
+export const UPDATE_VERSION_MAX_CHARS = 64
+/** The first automatic check runs this long after launch; then every UPDATE_CHECK_INTERVAL_MS. */
+export const UPDATE_FIRST_CHECK_DELAY_MS = 30_000
+export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Renderer e2e only: ORGAI_UPDATE_MOCK, honoured only when the app is NOT packaged, swaps electron-updater for a
+ * scripted fake (no network); an unknown value is ignored (capability 'none'). 'up-to-date': capability 'auto',
+ * checks find nothing. 'available': 'auto', a check finds UPDATE_MOCK_VERSION with notes, a download steps 0..100 then
+ * 'downloaded'; updates:install answers as for real but neither runs an installer nor quits. 'download-error': like
+ * 'available' but the download fails. 'error': 'auto', every check fails. 'manual': capability 'manual' (reason
+ * 'platform'), a check finds UPDATE_MOCK_VERSION. The launch check also runs (after UPDATE_FIRST_CHECK_DELAY_MS) when
+ * autoUpdateCheck is on.
+ */
+export const UPDATE_MOCK_MODES = ['up-to-date', 'available', 'download-error', 'error', 'manual'] as const
+export type UpdateMockMode = (typeof UPDATE_MOCK_MODES)[number]
+export const UPDATE_MOCK_VERSION = '99.0.0'
+
+/** Channels of this section. Not spread into IPC (IPC is declared earlier in the file); jsonCodec.allChannels lists it. */
+export const UPDATES_IPC = {
+  /** () -> UpdateState. Desktop only, read-only. */
+  updatesGet: 'updates:get',
+  /** () -> UpdateState once the check settled (joins a check in flight). Desktop only. Capability 'none': no network, state as is. */
+  updatesCheck: 'updates:check',
+  /** () -> UpdateActionResult once the download started; progress follows on updates:changed. Desktop only. */
+  updatesDownload: 'updates:download',
+  /** (UpdateInstallInput?) -> UpdateActionResult. ok: the app quits through the normal quit path, then installs and restarts. Desktop only. */
+  updatesInstall: 'updates:install',
+  /** () -> void: opens UpdateState.releaseUrl (built in main) in the browser. Desktop only. */
+  updatesOpenReleasePage: 'updates:openReleasePage',
+  /** main -> renderer push of UpdateState (every window) on every change. */
+  updatesChanged: 'updates:changed'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  updates: {
+    get(): Promise<UpdateState>
+    check(): Promise<UpdateState>
+    download(): Promise<UpdateActionResult>
+    install(input?: UpdateInstallInput): Promise<UpdateActionResult>
+    openReleasePage(): Promise<void>
+  }
+  onUpdatesChanged(cb: (state: UpdateState) => void): () => void
 }

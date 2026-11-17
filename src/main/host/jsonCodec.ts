@@ -9,7 +9,7 @@
  *
  * Standalone and pure: no electron import, no file I/O. Wave 1's src/main/host/registry.ts imports it.
  */
-import { EVOLVE_IPC, HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC } from '../../shared/types'
+import { EVOLVE_IPC, HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC, UPDATES_IPC } from '../../shared/types'
 
 // ---------- Safe parse / stringify ----------
 
@@ -83,7 +83,8 @@ export const PUSH_CHANNELS: readonly string[] = [
   TEAM_FILES_IPC.teamFilesChanged,
   IPC.appNavigate,
   OUTPUTS_IPC.outputsChanged,
-  SCHEDULES_IPC.schedulesChanged
+  SCHEDULES_IPC.schedulesChanged,
+  UPDATES_IPC.updatesChanged
 ]
 
 /**
@@ -97,7 +98,7 @@ export const EVOLVE_AFTER_RUN_CHANNEL = 'org:evolveAfterRun'
  * HOST_IPC, SECRETS_IPC (Wave 7).
  */
 export function allChannels(): string[] {
-  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC), ...Object.values(EVOLVE_IPC), EVOLVE_AFTER_RUN_CHANNEL, ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
+  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC), ...Object.values(UPDATES_IPC), ...Object.values(EVOLVE_IPC), EVOLVE_AFTER_RUN_CHANNEL, ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
 }
 
 /** Every request channel: allChannels() minus PUSH_CHANNELS. */
@@ -333,6 +334,12 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'schedules:remove': {}, // desktop only (handler)
   'schedules:setEnabled': {}, // desktop only (handler)
   'schedules:runNow': {}, // desktop only (handler)
+  // ---- desktop updater (UPDATES_IPC; ipc.ts registerUpdatesIpc, desktop only) ----
+  'updates:get': {},
+  'updates:check': {},
+  'updates:download': {},
+  'updates:install': {}, // updateInstallArgs: only { force: true } counts
+  'updates:openReleasePage': {},
   'permissions:remove': {}, // permissionRuleArgs
   'permissions:add': {}, // permissionRuleArgs + permissionAddRefusal
   'permissions:decideRequest': {}, // runs.decideRules(runId, requestId, PermissionRuleDecision)

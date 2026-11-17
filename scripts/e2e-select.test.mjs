@@ -74,6 +74,13 @@ test('a narrow main change selects its scripts plus the smoke set', () => {
   assert.deepEqual(cli.scripts, all.filter((s) => ['cli-exec', 'cli-org-evolve', ...SMOKE].includes(s)))
   const evolve = sel('src/main/evolve/ratchet.ts')
   assert.deepEqual(evolve.scripts, all.filter((s) => ['cli-org-evolve', ...SMOKE].includes(s)))
+  // The desktop updater: the menu script plus the smoke set; its test file alone selects nothing.
+  for (const f of ['src/main/updater.ts', 'src/main/updaterRuntime.ts', 'src/main/updaterMock.ts']) {
+    assert.deepEqual(sel(f).scripts, all.filter((s) => ['menu', ...SMOKE].includes(s)), f)
+  }
+  assert.deepEqual(sel('src/main/updater.test.ts').scripts, [])
+  // The release-only metadata merge script selects nothing (not even the smoke set).
+  assert.deepEqual(sel('scripts/merge-latest-mac.mjs').scripts, [])
 })
 
 test('brace globs and first-match order work', () => {

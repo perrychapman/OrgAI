@@ -105,13 +105,31 @@ describe.each(['darwin', 'win32', 'linux'])('buildMenuTemplate on %s', (platform
       'Interrupt turn', 'End session', '-', 'Save chat as project', 'Org retrospective'
     ])
     expect(labels(menu(template, 'Help'))).toEqual([
-      'Documentation', 'Report an issue', 'Keyboard shortcuts', 'Ask OrgAI about itself…', '-', 'Open logs folder', 'Open data folder', '-', 'About OrgAI'
+      'Documentation', 'Report an issue', 'Keyboard shortcuts', 'Ask OrgAI about itself…', '-', 'Open logs folder', 'Open data folder', '-',
+      ...(mac ? [] : ['Check for Updates…']),
+      'About OrgAI'
     ])
     if (mac) {
       expect(labels(menu(template, 'OrgAI'))).toEqual([
-        'role:about', '-', 'Settings…', '-', 'role:hide', 'role:hideOthers', 'role:unhide', '-', 'role:quit'
+        'role:about', 'Check for Updates…', '-', 'Settings…', '-', 'role:hide', 'role:hideOthers', 'role:unhide', '-', 'role:quit'
       ])
     }
+    // Exactly one "Check for Updates…" item per platform, always enabled, no accelerator.
+    const updates = walk(template).filter((i) => i.id === 'check-for-updates')
+    expect(updates).toHaveLength(1)
+    expect(updates[0].enabled).toBe(true)
+    expect(updates[0].accelerator).toBeUndefined()
+  })
+
+  it('"Check for Updates…" starts the check in main, then sends the action to the renderer', () => {
+    const order: string[] = []
+    const checkForUpdates = vi.fn(() => void order.push('check'))
+    const { template, send } = build(platform, false, { checkForUpdates })
+    send.mockImplementation((a: string) => void order.push(`send:${a}`))
+    ;(find(template, 'check-for-updates').click as () => void)()
+    expect(checkForUpdates).toHaveBeenCalledTimes(1)
+    expect(order).toEqual(['check', 'send:check-for-updates'])
+    expect(menuActionTarget('check-for-updates')).toBe('main')
   })
 
   it('routes each id-bearing item to send with exactly its id, and covers every action once', () => {
@@ -229,7 +247,7 @@ describe('menuItemEnabled', () => {
   it('follows the rule table', () => {
     const always = ['new-project', 'new-chat', 'open-chat', 'open-mcp-assistant', 'open-skill-assistant',
       'open-app-settings', 'open-connections', 'open-connectors', 'open-skill-library', 'open-about',
-      'toggle-sidebar', 'keyboard-shortcuts', 'ask-about-orgai', 'show-usage', 'show-schedules']
+      'toggle-sidebar', 'keyboard-shortcuts', 'ask-about-orgai', 'show-usage', 'show-schedules', 'check-for-updates']
     expect(enabledFor(EMPTY_MENU_STATE)).toEqual([...always].sort())
     expect(enabledFor(only('hasProject'))).toEqual(
       [...always, 'show-live', 'show-history', 'show-team', 'show-project-settings', 'new-run'].sort()
@@ -273,7 +291,7 @@ describe('menuActionTarget', () => {
   it('classifies every action', () => {
     const main = ['new-project', 'new-chat', 'open-chat', 'open-mcp-assistant', 'open-skill-assistant', 'open-app-settings',
       'open-connections', 'open-connectors', 'open-skill-library', 'open-about', 'show-live', 'show-history', 'show-team',
-      'show-project-settings', 'toggle-sidebar', 'keyboard-shortcuts', 'show-needs-you', 'ask-about-orgai', 'show-usage', 'show-schedules']
+      'show-project-settings', 'toggle-sidebar', 'keyboard-shortcuts', 'show-needs-you', 'ask-about-orgai', 'show-usage', 'show-schedules', 'check-for-updates']
     const focused = ['new-run', 'close-tab', 'interrupt-run', 'end-session', 'go-to-decision',
       'org-retrospective', 'save-chat-as-project', 'open-run-window', 'toggle-conversation', 'toggle-hide-finished',
       'canvas-fit', 'canvas-zoom-in', 'canvas-zoom-out']

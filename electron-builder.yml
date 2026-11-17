@@ -28,6 +28,14 @@ extraResources:
   - from: build/icon.png
     to: icon.png
 npmRebuild: false
+# Auto-update (src/main/updater.ts, docs/agent-notes/updates.md): this block only makes electron-builder embed
+# resources/app-update.yml, the updater's one feed (GitHub releases of perrychapman/OrgAI). electron-builder never
+# uploads: every build passes `--publish never` (package.json dist scripts, scripts/pack-local.mjs, release.yml), and
+# release.yml's publish job drafts the release with latest.yml and the merged latest-mac.yml attached.
+publish:
+  provider: github
+  owner: perrychapman
+  repo: OrgAI
 electronFuses:
   enableNodeCliInspectArguments: false
   # systemCerts.ts starts this executable with ELECTRON_RUN_AS_NODE=1 to read the system trust store.
