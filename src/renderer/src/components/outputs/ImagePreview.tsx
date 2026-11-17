@@ -1,7 +1,8 @@
 import type { ReactElement } from 'react'
 import { useState } from 'react'
 import { isSafeImageDataUrl } from '../../lib/outputPreview'
-import { hintText } from '../../lib/diagramView'
+import { FIT_PAD, hintText } from '../../lib/diagramView'
+import { IMAGE_OPEN_MAX } from '../../lib/outputZoom'
 import { PanZoomSurface } from './diagram/PanZoomSurface'
 import { SurfaceToolbar } from './diagram/DiagramToolbar'
 import { usePanZoom } from './diagram/usePanZoom'
@@ -9,12 +10,16 @@ import { useSurfaceNotes } from './diagram/useSurfaceNotes'
 import { useOutputView } from './previewStatus'
 import '../../styles/outputs-diagram.css'
 
+/** Empty px around the picture in the panel (the Larger view uses FIT_PAD). */
+const PANEL_PAD = 8
+
 /** A raster image from a checked data URL on the pan/zoom surface: fits at first, drag to move, zoom bar and keys. */
 export default function ImagePreview({ dataUrl, title }: { dataUrl: string; title: string }): ReactElement {
   const { context } = useOutputView()
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null)
   const notes = useSurfaceNotes()
-  const pz = usePanZoom(natural, { wheel: context === 'dialog' ? 'zoom' : 'modifier', onSpeak: notes.speak })
+  // Opens contained in the box, never above 100% (a small picture is not blown up to a blur), until the user zooms or pans.
+  const pz = usePanZoom(natural, { wheel: context === 'dialog' ? 'zoom' : 'modifier', onSpeak: notes.speak, open: { max: IMAGE_OPEN_MAX, pad: context === 'dialog' ? FIT_PAD : PANEL_PAD } })
   if (!isSafeImageDataUrl(dataUrl)) {
     return (
       <p className="output-preview-none" data-testid="output-preview-none">
@@ -24,7 +29,7 @@ export default function ImagePreview({ dataUrl, title }: { dataUrl: string; titl
   }
   return (
     <div className="diagram-viewer output-image-wrap" data-testid="output-image-viewer" data-context={context}>
-      <SurfaceToolbar pz={pz} label="Image controls" />
+      <SurfaceToolbar pz={pz} label="Image controls" context={context} />
       <div className="diagram-body" data-layout="column" data-view="diagram">
         <div className="diagram-pane diagram-pane-view">
           <PanZoomSurface pz={pz} title={title} kind="image" hint={hintText(context)}>

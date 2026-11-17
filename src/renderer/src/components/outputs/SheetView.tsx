@@ -8,6 +8,8 @@ import { useOutputDetail } from './outputDetailContext'
 import { findNoted, useScrollToShown, useViewedNotes } from './NoteMarks'
 
 const CELLS_PER_NOTE_MAX = 4000
+/** Text longer than this may be cut by the column's width, so the cell carries it whole as its title. */
+export const CUT_TITLE_CHARS = 30
 
 export interface NotedCell {
   state: 'open' | 'resolved'
@@ -154,7 +156,7 @@ function SheetTable({ sheet }: { sheet: SheetPreview }): ReactElement {
                       key={c}
                       id={grid.cellId(r, c)}
                       data-num={isNumericCell(cell) ? '' : undefined}
-                      title={cell?.f ? formulaText(cell.f) : undefined}
+                      title={cell?.f ? formulaText(cell.f) : text.length > CUT_TITLE_CHARS ? text : undefined}
                       aria-selected={grid.range ? inRange(grid.range, r, c) : false}
                       data-note-state={nc?.state}
                       data-notes={nc?.ids.join(' ')}

@@ -23,7 +23,7 @@ import { scrollWithin } from '../../lib/scrollWithin'
 import { useOutputDetail } from './outputDetailContext'
 import { MarkedText, findNoted, selectedOffsets, useScrollToShown, useTextSelection, useViewedNotes } from './NoteMarks'
 import { inRange } from '../../lib/outputNotes'
-import { useGridNotes } from './SheetView'
+import { CUT_TITLE_CHARS, useGridNotes } from './SheetView'
 import { useBlockCursor } from './useBlockCursor'
 
 // Mermaid is large: its code loads only when a diagram is opened.
@@ -84,6 +84,7 @@ function CsvTable({ rows, more, title }: { rows: string[][]; more: boolean; titl
     const nc = grid.noted.get(`${r},${c}`)
     return {
       id: grid.cellId(r, c),
+      title: (rows[r]?.[c] ?? '').length > CUT_TITLE_CHARS ? rows[r][c] : undefined,
       'aria-selected': grid.range ? inRange(grid.range, r, c) : false,
       'data-note-state': nc?.state,
       'data-notes': nc?.ids.join(' '),

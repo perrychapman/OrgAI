@@ -14,6 +14,7 @@ import {
   fitScale,
   fitView,
   hintText,
+  isBigDiagram,
   isLargeDiagram,
   largeNote,
   lineColumn,
@@ -151,11 +152,21 @@ describe('wording', () => {
     expect(zoomDataValue(0.123456, false)).toBe('0.12')
     expect(zoomDataValue(1, true)).toBe('fit')
   })
-  it('flags large diagrams', () => {
-    expect(isLargeDiagram(41, 1)).toBe(true)
-    expect(isLargeDiagram(10, 0.39)).toBe(true)
-    expect(isLargeDiagram(40, 0.4)).toBe(false)
+  it('calls a diagram large only when it has many shapes and is unreadable at Fit', () => {
+    expect(isLargeDiagram(80, 0.15)).toBe(true)
+    expect(isLargeDiagram(40, 0.39)).toBe(true)
+    // Many shapes that still read at Fit.
+    expect(isLargeDiagram(41, 1)).toBe(false)
+    expect(isLargeDiagram(80, 0.4)).toBe(false)
+    // A short, wide five-shape flowchart fits at a tiny scale but is not large.
+    expect(isLargeDiagram(5, 0.1)).toBe(false)
+    expect(isLargeDiagram(39, 0.05)).toBe(false)
     expect(largeNote(80)).toBe('Large diagram, 80 shapes. Zoom in to read, or open the larger view.')
+    expect(largeNote(80, true)).toBe('Large diagram, 80 shapes. Zoom in to read.')
+  })
+  it('knows a big diagram by its shape count alone', () => {
+    expect(isBigDiagram(39)).toBe(false)
+    expect(isBigDiagram(40)).toBe(true)
   })
   it('lists labels for up to 60 shapes, else points at the source', () => {
     expect(diagramText(['Web app', 'API', 'API', ' Data  base '], 4)).toBe('Contains: Web app, API, Data base.')

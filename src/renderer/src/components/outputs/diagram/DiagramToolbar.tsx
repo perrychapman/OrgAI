@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useLayoutEffect, useRef } from 'react'
-import { Copy, Maximize2, Minimize2, MoreHorizontal, PictureInPicture2, SquareArrowOutUpRight } from 'lucide-react'
+import { Copy, Maximize2, Minimize2, MoreHorizontal, PictureInPicture2 } from 'lucide-react'
 import { Button } from '../../ui/Button'
 import { IconButton } from '../../ui/IconButton'
 import { Icon } from '../../ui/Icon'
@@ -94,16 +94,20 @@ export interface DiagramToolbarProps {
   onCopySource: () => void
   /** Under 560 px of container width everything after the zoom group moves into More. */
   narrow: boolean
+  /** In the detail panel the toolbar is the mode switch and the zoom group; the rest is always in More. The Larger view has the full row. */
   context: 'detail' | 'dialog'
-  onOpenLarge?: () => void
   full?: boolean
   onToggleFull?: () => void
 }
 
-/** One row (36 px) of controls over the viewer, a role=toolbar with one Tab stop (docs/design/outputs-2.md 8.2). */
+/**
+ * One row (36 px) of controls over the viewer, a role=toolbar with one Tab stop (docs/design/outputs-2.md 8.2). The panel
+ * never carries a second way into the Larger view: the detail's own "Larger view" button is the one.
+ */
 export function DiagramToolbar(p: DiagramToolbarProps): ReactElement {
   const rov = useRoving()
   const showZoom = p.mode !== 'source' && p.hasDrawing
+  const inMore = p.narrow || p.context === 'detail'
   const extras = (
     <>
       {p.hasDrawing && (
@@ -126,10 +130,10 @@ export function DiagramToolbar(p: DiagramToolbarProps): ReactElement {
       <div data-testid="diagram-mode">
         <SegmentedControl<DiagramMode> label="Show" value={p.mode} onChange={p.onMode} options={MODE_OPTIONS} />
       </div>
-      {showZoom && <ZoomBar pz={p.pz} />}
-      {!p.narrow && extras}
+      {showZoom && <ZoomBar pz={p.pz} compact={p.context === 'detail'} />}
+      {!inMore && extras}
       <span className="diagram-toolbar-end">
-        {p.narrow && (
+        {inMore && (
           <Popover
             trigger={<Icon icon={MoreHorizontal} size="sm" />}
             triggerClassName="icon-btn size-sm"
@@ -151,11 +155,6 @@ export function DiagramToolbar(p: DiagramToolbarProps): ReactElement {
             )}
           </Popover>
         )}
-        {p.context === 'detail' && p.onOpenLarge && (
-          <Button size="sm" variant="primary" icon={SquareArrowOutUpRight} testId="output-open-large" title="Open the diagram in the larger view" onClick={p.onOpenLarge}>
-            Open large
-          </Button>
-        )}
         {p.context === 'dialog' && p.onToggleFull && (
           <IconButton icon={p.full ? Minimize2 : Maximize2} size="sm" label={p.full ? 'Leave full window' : 'Full window'} testId="diagram-fullscreen" onClick={p.onToggleFull} />
         )}
@@ -164,12 +163,15 @@ export function DiagramToolbar(p: DiagramToolbarProps): ReactElement {
   )
 }
 
-/** The toolbar of an SVG or image surface: the zoom group and, for an SVG, Export and Copy source. One Tab stop, like the diagram's. */
-export function SurfaceToolbar({ pz, label, exportApi, onCopySource }: { pz: PanZoom; label: string; exportApi?: ExportApi; onCopySource?: () => void }): ReactElement {
+/**
+ * The toolbar of an SVG or image surface: the zoom group (without Actual size in the panel) and, in the Larger view only, for an
+ * SVG, Export and Copy source. One Tab stop, like the diagram's.
+ */
+export function SurfaceToolbar({ pz, label, context = 'dialog', exportApi, onCopySource }: { pz: PanZoom; label: string; context?: 'detail' | 'dialog'; exportApi?: ExportApi; onCopySource?: () => void }): ReactElement {
   const rov = useRoving()
   return (
     <div ref={rov.ref} className="diagram-toolbar" role="toolbar" aria-label={label} data-testid="diagram-toolbar" onKeyDown={rov.onKeyDown} onFocus={rov.onFocus}>
-      <ZoomBar pz={pz} />
+      <ZoomBar pz={pz} compact={context === 'detail'} />
       {exportApi && <ExportPopover api={exportApi} />}
       {onCopySource && (
         <Button size="sm" variant="ghost" icon={Copy} testId="diagram-copy-source" onClick={onCopySource}>

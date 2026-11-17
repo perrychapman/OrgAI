@@ -1,9 +1,9 @@
 import type { ReactElement } from 'react'
 import { useCallback, useMemo, useState } from 'react'
 import { svgDataUrl } from '../../lib/outputPreview'
-import { svgNaturalSize } from '../../lib/outputZoom'
+import { SVG_OPEN_MAX, VECTOR_FLOOR, svgNaturalSize } from '../../lib/outputZoom'
 import { COPY_FAILED, SOURCE_COPIED } from '../../lib/diagramExport'
-import { hintText } from '../../lib/diagramView'
+import { FIT_PAD, hintText } from '../../lib/diagramView'
 import { PanZoomSurface } from './diagram/PanZoomSurface'
 import { SurfaceToolbar } from './diagram/DiagramToolbar'
 import { useDiagramExport } from './diagram/DiagramExport'
@@ -25,6 +25,9 @@ export function svgTextSize(text: string): { w: number; h: number } | null {
   return svgNaturalSize(rootAttr(tag, 'viewBox'), rootAttr(tag, 'width'), rootAttr(tag, 'height'))
 }
 
+/** Empty px around the drawing in the panel (the Larger view uses FIT_PAD). */
+const PANEL_PAD = 8
+
 /**
  * An SVG file as an <img> from a data URL (no script runs, nothing loads; never inlined), on the same pan/zoom surface as a
  * diagram. Export saves the file's own text or a PNG drawn from it.
@@ -35,7 +38,12 @@ export default function SvgPreview({ text, title }: { text: string; title: strin
   const [loaded, setLoaded] = useState<{ w: number; h: number } | null>(null)
   const natural = fromText ?? loaded
   const notes = useSurfaceNotes()
-  const pz = usePanZoom(natural, { wheel: context === 'dialog' ? 'zoom' : 'modifier', onSpeak: notes.speak })
+  // Opens contained in the box (a vector drawing may be enlarged to fill it, never under 60% when a pan reads better).
+  const pz = usePanZoom(natural, {
+    wheel: context === 'dialog' ? 'zoom' : 'modifier',
+    onSpeak: notes.speak,
+    open: { floor: VECTOR_FLOOR, max: SVG_OPEN_MAX, pad: context === 'dialog' ? FIT_PAD : PANEL_PAD }
+  })
   const src = useMemo(() => svgDataUrl(text), [text])
   const build = useCallback(async () => (natural ? { svg: text, natural } : null), [natural, text])
   const exportApi = useDiagramExport({ title, build, notify: notes.notify, showTheme: false, svgSource: text })
@@ -47,7 +55,8 @@ export default function SvgPreview({ text, title }: { text: string; title: strin
   }, [text, notes])
   return (
     <div className="diagram-viewer output-svg-wrap" data-testid="output-svg" data-context={context}>
-      <SurfaceToolbar pz={pz} label="Drawing controls" exportApi={exportApi} onCopySource={copySource} />
+      {/* Export and Copy source belong to the Larger view; the output's own More menu also copies the source. */}
+      <SurfaceToolbar pz={pz} label="Drawing controls" context={context} exportApi={context === 'dialog' ? exportApi : undefined} onCopySource={context === 'dialog' ? copySource : undefined} />
       {notes.notice && (
         <p className="diagram-notice" data-testid="diagram-notice">
           {notes.notice}
