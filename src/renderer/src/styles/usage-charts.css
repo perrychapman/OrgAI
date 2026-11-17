@@ -1,7 +1,10 @@
 /*
  * Usage page charts (docs/design/usage-app.md sections 5 and 6.1-6.4): the stacked spend chart, ranked bars, row menu and
  * the table alternatives. The panel shell (.usage-panel, .usage-panel-head, .usage-table-details) is styled in usage.css.
- * Colours are tokens only (--chart-* in tokens.css); no transitions or animation on data marks.
+ * Colours are tokens only (--chart-* in tokens.css). The spend chart's motion (docs/design usage plan 3, M2-M7) is only what a
+ * user's own change starts: the metric morph and legend toggle run from SpendPanel through the Web Animations API, and
+ * this file carries the fades, the linked-highlight dim and the reduced-motion switch-off at the end of the spend block.
+ * The crosshair and tooltip never transition.
  */
 
 /* ---------- spend chart ---------- */
@@ -9,15 +12,11 @@
 .uc-spend-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
   min-width: 0;
 }
-.uc-spend-body[data-wide='true'] {
-  flex-direction: row;
-  align-items: flex-start;
-  gap: var(--space-4);
-}
 .uc-spend-chart {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -52,12 +51,19 @@
   overflow-y: hidden;
 }
 .uc-spend-plot {
+  position: relative;
   max-width: none;
 }
 .uc-svg {
   display: block;
+  position: relative;
+  z-index: 1;
   font-variant-numeric: tabular-nums;
   overflow: visible;
+}
+/* Table toggle: its label ("Table" / "Hide table") and aria-expanded carry the state, the fill only echoes it. */
+.uc-table-toggle[aria-expanded='true'] {
+  background: var(--surface-3);
 }
 .uc-tick {
   font-family: var(--font-sans);
@@ -80,6 +86,7 @@
 .uc-seg {
   stroke: var(--surface-1);
   stroke-width: 1;
+  vector-effect: non-scaling-stroke;
   cursor: pointer;
 }
 .uc-stub {
@@ -88,9 +95,41 @@
   stroke-dasharray: 3 2;
   cursor: pointer;
 }
-/* Dimmed by the row-to-series highlight (UsageView owns it); no transition, so reduced motion has nothing to remove. */
-.uc-spend [data-dim='true'] {
-  opacity: var(--dim-opacity);
+/*
+ * Linked highlight (M7): while a legend chip, a segment or a "Where it went" row is pointed at or focused, every other
+ * series dims to 0.35 over --dur-fast (restore uses the same transition, so it sits on the resting rule). The
+ * highlighted segment also gets a 2 px outline (.uc-hl), so it never rests on the dim alone. 0.35 is stronger than
+ * --dim-opacity (0.5 to 0.55, used for the day pick) on purpose: the pick keeps its figures readable, this one points.
+ */
+.uc-segg,
+.uc-stub,
+.uc-legend-row {
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.uc-spend .uc-segg[data-dim='true'],
+.uc-spend .uc-stub[data-dim='true'],
+.uc-spend .uc-legend-row[data-dim='true'] {
+  opacity: 0.35;
+}
+.uc-hl {
+  fill: none;
+  stroke: var(--text-primary);
+  stroke-width: 2;
+  pointer-events: none;
+}
+/* Metric morph and legend toggle (M2, M5): each segment group scales about its own bottom edge. */
+.uc-segg,
+.uc-ghost {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+.uc-ghost {
+  pointer-events: none;
+}
+/* A bucket-set change (period, group by, project filter) fades the chart body once (M3): SpendPanel adds .motion-fade. */
+/* Compare turned on by the user (M4): the previous-period outlines fade in; SpendPanel sets data-anim-overlay for one --dur-base. */
+.uc-spend-plot[data-anim-overlay='in'] .uc-prev {
+  animation: motion-fade var(--dur-base) var(--ease-out) backwards;
 }
 /* The previous-period overlay: a dashed outline at the previous total (or a hollow circle when its cost is unknown). */
 .uc-prev {
@@ -101,22 +140,6 @@
 }
 .uc-prev-unknown {
   fill: var(--surface-1);
-}
-/* The compact value above the focused or hovered bar; decorative, the readout says it in words. */
-.uc-vlabel {
-  font-family: var(--font-sans);
-  font-size: var(--text-small);
-  font-variant-numeric: tabular-nums;
-  fill: var(--text-primary);
-  stroke: var(--surface-1);
-  stroke-width: 3px;
-  paint-order: stroke;
-  pointer-events: none;
-}
-.uc-overlay-key {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
 }
 .uc-notloaded {
   stroke: var(--chart-unknown);
@@ -141,15 +164,6 @@
   outline: 2px solid var(--chart-focus);
   outline-offset: 2px;
 }
-.uc-readout {
-  margin: var(--space-2) 0 0;
-  height: calc(var(--text-small-lh) * 2);
-  overflow: hidden;
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-}
 .uc-note {
   margin: var(--space-1) 0 0;
   font-size: var(--text-small);
@@ -157,45 +171,115 @@
   color: var(--text-tertiary);
 }
 
-/* ---------- legend ---------- */
+/* ---------- crosshair and tooltip (2.1, M6): both move with no transition; the tooltip's first show fades over --dur-fade ---------- */
+
+/* One column band and a 1 px rule at --cx (written by SpendPanel). It sits under the svg, so bars stay crisp over it. */
+.uc-crosshair {
+  position: absolute;
+  z-index: 0;
+  left: 0;
+  width: var(--slot);
+  transform: translateX(calc(var(--cx, 0px) - var(--slot) / 2));
+  pointer-events: none;
+}
+.uc-crosshair::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--surface-2);
+  opacity: 0.6;
+}
+.uc-crosshair::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(50% - 0.5px);
+  width: 1px;
+  background: var(--border-strong);
+}
+/* A positioned overlay over the card, not inside the plot scroller, so a tall tooltip is never clipped. aria-hidden:
+   the visually hidden readout carries the same words. */
+.uc-tip {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  width: max-content;
+  max-width: 260px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  box-shadow: var(--elev-2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  animation: motion-fade var(--dur-fade) var(--ease-out) backwards;
+}
+.uc-tip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-weight: var(--weight-semibold);
+}
+.uc-tip-total {
+  white-space: nowrap;
+}
+.uc-tip-note,
+.uc-tip-prev,
+.uc-tip-runs {
+  color: var(--text-secondary);
+}
+.uc-tip-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+.uc-tip-row.is-hl {
+  font-weight: var(--weight-semibold);
+}
+.uc-tip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.uc-tip-value {
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.uc-tip-runs {
+  margin-top: var(--space-1);
+}
+
+/* ---------- legend: one row of toggle chips above the plot (two lines at most) ---------- */
 
 .uc-legend {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
-  flex-direction: column;
-  gap: var(--space-0h);
+  flex-flow: row wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
   min-width: 0;
 }
-.uc-spend-body[data-wide='true'] .uc-legend {
-  flex: 0 0 220px;
-  width: 220px;
-}
-/* Under the plot (the plot takes the card's width): one wrapping row of entries. */
-.uc-spend-body[data-wide='false'] .uc-legend {
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: var(--space-0h) var(--space-2);
-}
-.uc-spend-body[data-wide='false'] .uc-legend-row {
+.uc-legend-row {
   min-width: 0;
-  max-width: 100%;
-}
-.uc-spend-body[data-wide='false'] .uc-legend-btn {
-  width: auto;
   max-width: 100%;
 }
 .uc-legend-btn {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  width: 100%;
+  max-width: 100%;
   min-height: 28px;
-  padding: var(--space-0h) var(--space-2);
-  border: 0;
-  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
   background: transparent;
   color: var(--text-primary);
   font: inherit;
@@ -211,6 +295,21 @@ button.uc-legend-btn:hover {
 /* A toggle: pressed means shown. A hidden series gets a hollow swatch, a struck muted name and no value weight. */
 button.uc-legend-btn[data-highlight='true'] {
   background: var(--surface-2);
+  border-color: var(--text-secondary);
+}
+/* Key chips (not buttons): only what is on the chart explains itself here. */
+.uc-key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  min-height: 28px;
+  padding: 0 var(--space-1);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.uc-key .uc-stub {
+  cursor: default;
 }
 button.uc-legend-btn[data-hidden='true'] {
   color: var(--text-secondary);
@@ -223,6 +322,7 @@ button.uc-legend-btn:focus-visible {
   outline-offset: -2px;
 }
 .uc-legend-name {
+  max-width: 16ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -231,6 +331,25 @@ button.uc-legend-btn:focus-visible {
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
   white-space: nowrap;
+}
+
+/* Reduced motion (system preference or Appearance > Reduce motion): the spend chart's fades, dim and tooltip change at
+   once. SpendPanel also skips its Web Animations (useReducedMotion), which CSS cannot reach. */
+@media (prefers-reduced-motion: reduce) {
+  .uc-spend,
+  .uc-spend *,
+  .uc-spend *::before,
+  .uc-spend *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+:root[data-reduce-motion='on'] .uc-spend,
+:root[data-reduce-motion='on'] .uc-spend *,
+:root[data-reduce-motion='on'] .uc-spend *::before,
+:root[data-reduce-motion='on'] .uc-spend *::after {
+  animation: none !important;
+  transition: none !important;
 }
 
 /* ---------- ranked bars ---------- */
@@ -467,5 +586,14 @@ button.uc-legend-btn:focus-visible {
   .uc-bar:focus-visible {
     stroke: Highlight;
     outline-color: Highlight;
+  }
+  .uc-hl {
+    stroke: CanvasText;
+  }
+  .uc-crosshair::after {
+    background: CanvasText;
+  }
+  .uc-tip {
+    border-color: CanvasText;
   }
 }

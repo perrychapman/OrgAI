@@ -8,8 +8,7 @@
 import type { UsageOverviewTrendPoint } from '@shared/types'
 import { costView, formatTokens, type CostInput } from './cost'
 import { axisLabel, costFigureText, OTHER_KEY, rollupCost, tokenSum, type Metric, type Segment } from './usageCharts'
-import type { OverlayFigure } from './usageDashboard'
-import type { SortValue } from './usageDashboard'
+import type { OverlayFigure, SortValue } from './usageDashboard'
 import type { UsageBucket } from './usageOverview'
 
 export interface SpendTotals {
@@ -73,19 +72,143 @@ export interface SpendSummaryInput {
   hidden: number
 }
 
-/** The chart's finding in words: "14 runs; busiest day 3 Nov, 5 runs." */
+/**
+ * What the chart adds to the KPI band, in words: "Busiest day 3 Nov, 5 runs." The totals are already in the band, so
+ * they are not repeated here (dashboard increment 3).
+ */
 export function spendSummary(i: SpendSummaryInput): string {
   const { metric, bucket, totals, busiest } = i
   const tail = i.hidden > 0 ? ` ${i.hidden} hidden.` : ''
   if (totals.runs === 0) return i.hidden > 0 ? `No runs in the series shown.${tail}` : 'No runs in this period.'
-  const when = busiest ? `; busiest ${bucket} ${bucket === 'week' ? 'from ' : ''}${axisLabel(busiest.start, bucket)}, ` : ''
-  const at = (figure: string): string => (busiest ? `${when}${figure}` : '')
-  if (metric === 'runs') return `${plural(totals.runs, 'run')}${at(plural(busiest?.value ?? 0, 'run'))}.${tail}`
-  if (metric === 'tokens') return `${formatTokens(totals.tokens)} tokens across ${plural(totals.runs, 'run')}${at(`${formatTokens(busiest?.value ?? 0)} tokens`)}.${tail}`
-  const total = costView(totals.cost, { precision: 'page' })
-  if (total.kind === 'unknown') return `Cost unknown for ${plural(totals.runs, 'run')}: no price is known. Tokens are counted.${tail}`
-  const best = busiest ? costView({ costUsd: busiest.value, costSource: 'computed' }, { precision: 'page' }).text : ''
-  return `Estimated ${total.text} across ${plural(totals.runs, 'run')}${at(best)}.${tail}`
+  if (metric === 'cost' && costView(totals.cost, { precision: 'page' }).kind === 'unknown') {
+    return `Cost unknown for ${plural(totals.runs, 'run')}: no price is known. Tokens are counted.${tail}`
+  }
+  if (!busiest) return `${plural(totals.runs, 'run')}.${tail}`
+  const when = `Busiest ${bucket} ${bucket === 'week' ? 'from ' : ''}${axisLabel(busiest.start, bucket)}, `
+  if (metric === 'runs') return `${when}${plural(busiest.value, 'run')}.${tail}`
+  if (metric === 'tokens') return `${when}${formatTokens(busiest.value)} tokens.${tail}`
+  return `${when}${costView({ costUsd: busiest.value, costSource: 'computed' }, { precision: 'page' }).text}.${tail}`
+}
+
+/** One series' figure in the tooltip: "$6.10", "12k", "3", or "No price" for an unpriced cost. */
+export function segmentFigure(metric: Metric, seg: Segment): string {
+  if (metric === 'runs') return String(seg.value)
+  if (metric === 'tokens') return formatTokens(seg.value)
+  return costFigureText(seg.cost)
+}
+
+/** The tooltip's last line: "2 runs, 1 unpriced" (the unpriced part only when some of them have no price). */
+export function runsLine(runs: number, unpriced: number): string {
+  return unpriced > 0 ? `${plural(runs, 'run')}, ${unpriced} unpriced` : plural(runs, 'run')
+}
+
+/** Runs without a price among the series that are shown (legend keys not hidden). */
+export function unpricedRuns(point: UsageOverviewTrendPoint, series: ReadonlyMap<string, number>, hidden: ReadonlySet<string>): number {
+  if (hidden.size === 0) return point.costUnknownRuns
+  return point.byProject.reduce((n, s) => (hidden.has(sliceKey(s.projectId, series)) ? n : n + s.costUnknownRuns), 0)
+}
+
+/** The tooltip's "Previous: ..." text for the overlay figure. */
+export function previousTipText(f: OverlayFigure, metric: Metric): string {
+  if (f.state === 'empty') return 'no runs'
+  if (metric === 'runs') return plural(f.runs, 'run')
+  if (metric === 'tokens') return `${formatTokens(f.value)} tokens`
+  return f.state === 'unknown' ? 'cost unknown' : overlayCostText(f)
+}
+
+// ---------- crosshair and tooltip geometry ----------
+
+/**
+ * The bucket column under x (plot coordinates, 0 at the svg's left edge), or null when x is outside the columns or there
+ * are none. The whole column is the hit area, not the thin bar.
+ */
+export function nearestBucket(x: number, gutter: number, slot: number, count: number): number | null {
+  if (count <= 0 || !(slot > 0)) return null
+  const rel = x - gutter
+  if (rel < 0 || rel > slot * count) return null
+  return Math.min(count - 1, Math.floor(rel / slot))
+}
+
+export interface TipPlacement {
+  side: 'right' | 'left'
+  /** The tooltip's left edge in the same coordinates as `viewLeft` / `viewRight`. */
+  left: number
+}
+
+/**
+ * Where the tooltip sits: right of the column (clear of the pointer bucket's own bar), flipped to its left when it would
+ * pass `viewRight`, and clamped inside [viewLeft, viewRight] when neither side has room.
+ */
+export function tooltipPlacement(i: { cx: number; half: number; width: number; viewLeft: number; viewRight: number; gap?: number }): TipPlacement {
+  const gap = i.gap ?? 8
+  const right = i.cx + i.half + gap
+  if (right + i.width <= i.viewRight) return { side: 'right', left: right }
+  const left = i.cx - i.half - gap - i.width
+  if (left >= i.viewLeft) return { side: 'left', left }
+  const room = { right: i.viewRight - right, left: i.cx - i.half - gap - i.viewLeft }
+  const side = room.right >= room.left ? 'right' : 'left'
+  return { side, left: Math.max(i.viewLeft, Math.min(i.viewRight - i.width, side === 'right' ? right : left)) }
+}
+
+// ---------- motion decisions ----------
+
+export type ChartMotion = 'none' | 'morph' | 'fade'
+/** A morph moves every segment at once; above this many it is skipped (docs/design usage motion plan 3.3). */
+export const MORPH_MAX_SEGMENTS = 120
+
+export const sameKeys = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((k, i) => k === b[i])
+
+export const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => a.size === b.size && [...a].every((k) => b.has(k))
+
+/**
+ * Which motion a committed change gets. Only a user's change animates (the arrival rule): `viewChanged` is a filter,
+ * period or group-by change whose data has arrived (one fade, bars never morph because they cannot be paired);
+ * `metricChanged` or `hiddenChanged` over the same buckets morphs the bars; anything else (first paint, a data refresh
+ * with the same filters) is none. Reduced motion, or more than MORPH_MAX_SEGMENTS segments, is none.
+ */
+export function chartMotion(i: {
+  prevSlots: readonly string[] | null
+  nextSlots: readonly string[]
+  viewChanged: boolean
+  metricChanged: boolean
+  hiddenChanged: boolean
+  segments: number
+  reduced: boolean
+}): ChartMotion {
+  if (i.reduced || i.prevSlots === null) return 'none'
+  if (i.viewChanged) return 'fade'
+  if (!sameKeys(i.prevSlots, i.nextSlots)) return 'none'
+  if (!i.metricChanged && !i.hiddenChanged) return 'none'
+  return i.segments > MORPH_MAX_SEGMENTS ? 'none' : 'morph'
+}
+
+/** A drawn segment's resting geometry in svg px: the y of its bottom edge and its height. */
+export interface SegGeom {
+  bottom: number
+  h: number
+}
+
+export interface MorphFrom {
+  /** translateY in px and scaleY that map the segment's new rect (origin: its bottom edge) onto its old one. */
+  ty: number
+  sy: number
+  /** True when the segment had no old rect: it grows from nothing and fades in. */
+  entering: boolean
+}
+
+/** The start of one segment's morph, or null when it did not move (under half a pixel and 1% of height). */
+export function morphFrom(prev: SegGeom | undefined, next: SegGeom): MorphFrom | null {
+  if (next.h <= 0) return null
+  if (!prev || prev.h <= 0) return { ty: 0, sy: 0, entering: true }
+  const ty = prev.bottom - next.bottom
+  const sy = prev.h / next.h
+  if (Math.abs(ty) < 0.5 && Math.abs(sy - 1) < 0.01) return null
+  return { ty, sy, entering: false }
+}
+
+/** Where a segment visibly is while a morph's transform (ty, sy about its bottom edge) is applied to its geometry. */
+export function visualGeom(g: SegGeom, ty: number, sy: number): SegGeom {
+  return { bottom: g.bottom + ty, h: g.h * sy }
 }
 
 /** The visible stack's figure under the bar-top label: "$9.80", "$4.20+", "12k", "5", or "No price". */
