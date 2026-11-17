@@ -631,6 +631,74 @@ try {
   check(ks.some((c) => c.kind === 'kind'), 'states: picking Chat in usage-kinds adds the Kind chip', JSON.stringify(ks))
   await clearAll()
 
+  // ---------- 5b. Polish round: Months picker height, Where table fit, scroll kept after Clear all ----------
+  for (const [w, h] of [
+    [1024, 640],
+    [1600, 1000]
+  ]) {
+    await setSize(w, h)
+    await goUsage()
+    await clearAll()
+    const stickyH = () => page.evaluate(() => Math.round(document.querySelector('.usage-sticky')?.getBoundingClientRect().height ?? 0))
+    await T('usage-period').locator('label', { hasText: 'Months' }).click()
+    await settle()
+    const mb = await page.evaluate(() => {
+      const r = (id) => document.querySelector(`[data-testid=${id}]`)?.getBoundingClientRect()
+      const a = r('usage-month')
+      const b = r('usage-month-to')
+      return a && b ? { aTop: Math.round(a.top), bTop: Math.round(b.top) } : null
+    })
+    check(mb && Math.abs(mb.aTop - mb.bTop) <= 2, `polish ${w}: From and To sit on one row`, JSON.stringify(mb))
+    const withMonths = await stickyH()
+    check(withMonths < 130, `polish ${w}: the sticky block stays under 130 px with Months open`, String(withMonths))
+    await T('usage-period').locator('label', { hasText: '30 days' }).click()
+    await settle()
+
+    await whereTab('project')
+    const spendH0 = await page.evaluate(() => Math.round(document.querySelector('[data-testid=usage-spend]').getBoundingClientRect().height))
+    await T('usage-where').locator('summary').click()
+    await sleep(300)
+    const fit = await page.evaluate(() => {
+      const wrap = document.querySelector('[data-testid=usage-where] .usage-table-wrap')
+      return wrap ? { sw: wrap.scrollWidth, cw: wrap.clientWidth } : null
+    })
+    check(fit && fit.sw <= fit.cw + 1, `polish ${w}: the Where table has no inner horizontal scroll`, JSON.stringify(fit))
+    const heads = await T('usage-where').locator('thead th').evaluateAll((els) => els.filter((e) => e.getBoundingClientRect().width > 0).map((e) => (e.textContent ?? '').trim()))
+    check(heads.includes('Runs') && heads.includes('Cost'), `polish ${w}: Runs and Cost stay visible in the Where table`, JSON.stringify(heads))
+    if (w >= 1600) {
+      const hh = await page.evaluate(() => Math.round(document.querySelector('[data-testid=usage-spend]').getBoundingClientRect().height))
+      check(Math.abs(hh - spendH0) <= 2, `polish ${w}: the chart card keeps its height when the Where table opens`, `${spendH0} -> ${hh}`)
+    }
+    await shot(`polish-where-table-${w}`)
+    await T('usage-where').locator('summary').click()
+  }
+  await setSize(1600, 1000)
+  await goUsage()
+  await clearAll()
+  await T('usage-kinds').click()
+  await T('usage-kinds-picker').waitFor({ timeout: 5000 })
+  {
+    const opts = T('usage-kinds-picker').locator('[data-testid=usage-kind-option] input[type=checkbox]')
+    const n = await opts.count()
+    for (let i = 0; i < n; i++) {
+      if (await opts.nth(i).isChecked()) {
+        await opts.nth(i).uncheck({ force: true })
+        break
+      }
+    }
+  }
+  await page.keyboard.press('Escape')
+  await settle()
+  if (await T('usage-clear-all').count()) {
+    await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 500))
+    await sleep(200)
+    const before = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTop ?? 0)
+    await T('usage-clear-all').evaluate((el) => el.click())
+    await settle()
+    const after = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTop ?? 0)
+    check(before > 100 && after >= before - 5, 'polish: Clear all keeps the scroll position', `${before} -> ${after}`)
+  } else skip('Clear all scroll', 'no chip appeared after narrowing kinds')
+
   // ---------- 6. Layout, both sizes and themes ----------
   for (const [w, h] of [
     [1024, 640],

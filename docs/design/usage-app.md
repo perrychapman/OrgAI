@@ -384,6 +384,15 @@ KPI bar and tab underline slide `--dur-slow` `--ease-in-out` (no slide on first 
 
 `npm run typecheck`, `npm test`, `npm run build`; `e2e/usage-app.mjs` (adds tabs, metric switch, legend toggle, overlay, highlight both ways, sort, crosshair and tooltip, Table button, sparkline scrub, run detail toggle, one-row filter bar under 56 px, equal hero heights, four KPI tiles under 110 px, plot at least 90% of the card, page height), `e2e/motion.mjs` (KPI and tab indicator durations, morph start, nothing running under Reduce motion), `e2e/usage.mjs`, `e2e/layout.mjs`. Looked at by eye on backdated mock data, both themes, 1600x1000 and 1024x640 (screenshots `e2e/shots/ux/usage-dashboard-new/`). Page height: 2906 to about 1370 to 1730 px at 1600x1000 and 3881 to about 2000 to 2350 px at 1024x640 (depends on the seed). UX walk: `docs/design/ux-review-usage-dashboard-post.md` (H1, H2 and H3 fixed after the walk; not re-walked). Reviewer: approve, no Critical or High; the five Mediums fixed; a recheck approved again and its three new Mediums (chip-removal focus over the shown chips, period change announcement, the cost note for screen readers) are fixed. `npm test`: everything passes except six symlink tests in `src/cli` and `src/main/runtime` that fail with EPERM on this Windows machine (no symlink privilege; untouched by this change).
 
+### 20.5a Polish round (QA gate defects)
+
+- M-A: the Months pickers sit on one row (the `.select` base is `width: 100%`, which stacked them; now `width: auto` inside `.usage-months`). Sticky block stays under 130 px at 1024 and 1600.
+- M-B: "Where it went" tables drop columns marked `optional` (`ChartColumn.optional`, class `opt`) in the side-by-side card (container 1100 px and up), keep name, Runs and Cost, and truncate the first column with a title. No inner horizontal scroll; the CSV and the stacked layout keep every column.
+- M-C: the Where card no longer sizes the hero row (`contain: size`), so default heights stay equal; when its list or table is expanded (`:has(...)`) the row aligns to start and the card takes the height it needs, so the chart card keeps its own height.
+- L1: the chip-removal focus calls use `{ preventScroll: true }`. `.usage-scroll` also sets `overflow-anchor: none` so a swap of panels cannot slide the offset. The e2e clicks Clear all through the DOM (Playwright's own real click moved the offset by 31 px in the narrowed page, before the app ran any code); without the fix the check reads 487 -> 0.
+- L3: the legend name is clipped by CSS only (full name in the chip's title).
+- Checked by `e2e/usage-app.mjs` (From/To one row, sticky under 130, Where table fits with Runs and Cost visible, chart height unchanged with the table open, scroll kept after Clear all) and by eye at both sizes. Not driven: "Show all 14" with the real 14-project seed (the e2e seed has 3 projects; the same `:has` rule covers it), light theme by eye.
+
 ### 20.6 Open and unverified
 
 - A tall previous bucket still rescales the axis when Compare is on (by design: the scale covers both periods).

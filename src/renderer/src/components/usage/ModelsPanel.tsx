@@ -137,12 +137,12 @@ export default function ModelsPanel({ data, filters, onNarrow, announce, embedde
         caption="Usage by model"
         columns={[
           { key: 'model', label: 'Model' },
-          { key: 'conn', label: 'Connection' },
+          { key: 'conn', label: 'Connection', optional: true },
           { key: 'runs', label: 'Runs', numeric: true },
-          { key: 'tokens', label: 'Tokens', numeric: true },
-          { key: 'share', label: 'Share of tokens', numeric: true },
+          { key: 'tokens', label: 'Tokens', numeric: true, optional: true },
+          { key: 'share', label: 'Share of tokens', numeric: true, optional: true },
           { key: 'cost', label: 'Cost', numeric: true },
-          { key: 'price', label: 'Price source' }
+          { key: 'price', label: 'Price source', optional: true }
         ]}
         rows={rows}
         empty="No runs in this period."

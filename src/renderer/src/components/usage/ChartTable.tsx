@@ -9,6 +9,8 @@ export interface ChartColumn {
   label: string
   /** Right-aligned tabular figures. */
   numeric?: boolean
+  /** Dropped by CSS where the table sits in the narrow "Where it went" card; kept in the DOM and the CSV. */
+  optional?: boolean
 }
 
 export interface ChartRow {
@@ -88,7 +90,7 @@ export function ChartTable({
             <thead>
               <tr>
                 {columns.map((c) => (
-                  <th key={c.key} scope="col" className={c.numeric ? 'num' : undefined} aria-sort={sortable ? ariaSort(sort, c.key) : undefined}>
+                  <th key={c.key} scope="col" className={cellClass(c)} aria-sort={sortable ? ariaSort(sort, c.key) : undefined}>
                     {sortable ? (
                       <button type="button" className="uc-sort" data-testid="usage-table-sort" data-col={c.key} onClick={() => press(c)}>
                         <span>{c.label}</span>
@@ -112,11 +114,11 @@ export function ChartTable({
                 <tr key={r.key} {...dataAttrs(r.data)}>
                   {r.cells.map((cell, i) =>
                     i === 0 ? (
-                      <th key={i} scope="row">
+                      <th key={i} scope="row" title={typeof cell === 'string' ? cell : undefined}>
                         {cell}
                       </th>
                     ) : (
-                      <td key={i} className={columns[i]?.numeric ? 'num' : undefined}>
+                      <td key={i} className={columns[i] ? cellClass(columns[i]) : undefined}>
                         {cell}
                       </td>
                     )
@@ -142,6 +144,11 @@ export function ChartTable({
       {body}
     </details>
   )
+}
+
+function cellClass(c: ChartColumn): string | undefined {
+  const cls = [c.numeric ? 'num' : '', c.optional ? 'opt' : ''].filter(Boolean).join(' ')
+  return cls || undefined
 }
 
 function dataAttrs(d: Record<string, string> | undefined): Record<string, string> {

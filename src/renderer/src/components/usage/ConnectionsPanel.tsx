@@ -99,9 +99,9 @@ export default function ConnectionsPanel({ data, filters, onNarrow, announce, em
         caption="Usage by connection"
         columns={[
           { key: 'connection', label: 'Connection' },
-          { key: 'kind', label: 'Kind' },
+          { key: 'kind', label: 'Kind', optional: true },
           { key: 'runs', label: 'Runs', numeric: true },
-          { key: 'agents', label: 'Agents', numeric: true },
+          { key: 'agents', label: 'Agents', numeric: true, optional: true },
           { key: 'cost', label: 'Cost', numeric: true }
         ]}
         rows={rows}

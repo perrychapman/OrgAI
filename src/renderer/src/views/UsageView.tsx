@@ -335,8 +335,9 @@ export default function UsageView(): ReactElement {
     const root = rootRef.current
     const chipBtn = f.chipKey ? root?.querySelector<HTMLElement>(`[data-testid="usage-chip-remove"][data-chip="${CSS.escape(f.chipKey)}"]`) : null
     const first = barRef.current?.querySelector<HTMLElement>('[data-testid="usage-period"] input:checked, button, select')
-    ;(chipBtn ?? first)?.focus()
+    ;(chipBtn ?? first)?.focus({ preventScroll: true })
   }, [filters])
+
 
   // The data caught up with a change: announce it, keep or restore focus, scroll to All runs after a project drilldown.
   useEffect(() => {
@@ -345,7 +346,7 @@ export default function UsageView(): ReactElement {
     pending.current = null
     if (p.lead) say(filterAnnouncement(p.lead.kind, p.lead.chip, data.matchedRuns, data.totals.cost))
     if (p.chipKey && p.focusEl && !p.focusEl.isConnected) {
-      rootRef.current?.querySelector<HTMLElement>(`[data-testid="usage-chip-remove"][data-chip="${CSS.escape(p.chipKey)}"]`)?.focus()
+      rootRef.current?.querySelector<HTMLElement>(`[data-testid="usage-chip-remove"][data-chip="${CSS.escape(p.chipKey)}"]`)?.focus({ preventScroll: true })
     }
     if (p.scrollRuns) window.requestAnimationFrame(() => scrollWithin(rootRef.current?.querySelector('[data-testid="usage-runs"]')))
   }, [data, state.settledKey, say])
