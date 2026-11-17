@@ -74,11 +74,18 @@ test('a narrow main change selects its scripts plus the smoke set', () => {
   assert.deepEqual(cli.scripts, all.filter((s) => ['cli-exec', 'cli-org-evolve', ...SMOKE].includes(s)))
   const evolve = sel('src/main/evolve/ratchet.ts')
   assert.deepEqual(evolve.scripts, all.filter((s) => ['cli-org-evolve', ...SMOKE].includes(s)))
-  // The desktop updater: the menu script plus the smoke set; its test file alone selects nothing.
+  // The desktop updater: the menu and updates scripts plus the smoke set; its test files alone select nothing.
   for (const f of ['src/main/updater.ts', 'src/main/updaterRuntime.ts', 'src/main/updaterMock.ts']) {
-    assert.deepEqual(sel(f).scripts, all.filter((s) => ['menu', ...SMOKE].includes(s)), f)
+    assert.deepEqual(sel(f).scripts, all.filter((s) => ['menu', 'updates', ...SMOKE].includes(s)), f)
   }
   assert.deepEqual(sel('src/main/updater.test.ts').scripts, [])
+  // Its renderer side: updates.mjs plus the smoke set.
+  for (const f of ['src/renderer/src/components/updates/UpdatesSection.tsx', 'src/renderer/src/components/updates/UpdateNotice.tsx', 'src/renderer/src/lib/updates.ts', 'src/renderer/src/store/updatesStore.ts', 'src/renderer/src/styles/updates.css']) {
+    assert.deepEqual(sel(f).scripts, all.filter((s) => ['updates', ...SMOKE].includes(s)), f)
+  }
+  assert.deepEqual(sel('src/renderer/src/lib/updates.test.ts').scripts, [])
+  assert.ok(sel('src/renderer/src/views/AppSettingsView.tsx').scripts.includes('updates'))
+  assert.ok(sel('src/renderer/src/lib/menuActions.ts').scripts.includes('updates'))
   // The release-only metadata merge script selects nothing (not even the smoke set).
   assert.deepEqual(sel('scripts/merge-latest-mac.mjs').scripts, [])
 })

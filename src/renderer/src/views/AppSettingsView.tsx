@@ -43,6 +43,7 @@ import { mergePendingSettings } from '../lib/settingsMerge'
 import { focusCheckedPreset } from '../components/canvas/CanvasPresetGroup'
 import { askOrgAI } from '../lib/menuActions'
 import AppNavigateBanner from '../components/AppNavigateBanner'
+import { UpdatesSection } from '../components/updates/UpdatesSection'
 
 /** Same debounce the project store uses for project saves. */
 const SAVE_DELAY_MS = 350
@@ -616,6 +617,9 @@ export default function AppSettingsView(): ReactElement {
               </p>
             </SettingsCard>
           </SettingsSection>
+        )}
+        {pane === 'about' && appInfo && (
+          <UpdatesSection autoCheck={info.autoUpdateCheck !== false} onAutoCheckChange={(autoUpdateCheck) => patch({ autoUpdateCheck }, true)} />
         )}
       </SettingsPage>
     </>

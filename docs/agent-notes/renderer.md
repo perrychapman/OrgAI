@@ -1,5 +1,12 @@
 # Renderer (general)
 
+## Desktop updater UI (2026-11-17)
+
+App settings > About > Updates, the sidebar update notice and Help > Check for Updates… are described, with how each
+fact was checked, in `docs/agent-notes/updates.md` "Renderer" (store `store/updatesStore.ts`, pure `lib/updates.ts`,
+`components/updates/`, `styles/updates.css`, `e2e/updates.mjs` on `ORGAI_UPDATE_MOCK`). The notice is the one
+`Sidebar.tsx` addition: a row above the footer that takes over the footer's `margin-top: auto`.
+
 ## Native popover rapid reopen (2026-11-10)
 
 Chromium can coalesce a native close/reopen into one `toggle` from open to open.

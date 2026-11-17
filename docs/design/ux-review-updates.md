@@ -61,3 +61,12 @@ None.
 - Screen-reader speech for the live region and the rail icon name; the automatic-check switch persisting across a relaunch (not re-tested here; the repo's `e2e/updates.mjs` covers it).
 - The notice in a mid-download state and "Update ready" wording in the sidebar (only "Update available" was captured here; `e2e/updates.mjs` checks the ready wording).
 - The collapsed rail via an explicit collapse click: the sidebar was already a rail at 1024 and my size changes switched it automatically, so the rail notice was seen but not toggled by hand.
+
+## Resolution (UI lead, 2026-11-17)
+- M1 fixed: a failed download reads "Could not download version 99.0.0. <reason>" (`lib/updates.ts` `updateStatusLine`; unit test and `e2e/updates.mjs`).
+- M2 fixed: the manual notes now say the copy is "updated by hand" (OrgAI checks, you download from the release page), and Open release page answers "Opened the release page in your browser." (unit test, e2e).
+- M3 accepted: About keeps the version facts first; Help > Check for Updates… and the sidebar notice scroll to and focus the Updates heading (e2e).
+- L1 not a defect: the second copy is the sr-only polite region (`updates-announce`).
+- L2 fixed: "Checks about 30 seconds after launch, then every six hours. Nothing downloads until you choose to. A downloaded update installs when you restart from here or when OrgAI next quits."
+- L3 kept: "Last checked" records any finished check, including a failed one (contract: `checkedAt` is any result).
+- L5, L6 open (the Dismiss X is the shared `IconButton`; no hint after Dismiss). L7: the rail button's name is "Update available: <v>. Open App settings, About" (code read; speech unverified); the rail has no Dismiss (accepted).
