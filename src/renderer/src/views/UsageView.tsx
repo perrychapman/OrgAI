@@ -528,7 +528,8 @@ export default function UsageView(): ReactElement {
                           onToggleSeries={onToggleSeries}
                           overlay={overlay}
                           onOverlay={onOverlay}
-                          previousTrend={previousData?.data.trend ?? null}
+                          // A folded, truncated previous span is only a lower bound: no overlay then (Compare says why).
+                          previousTrend={previousData && !previousData.data.lowerBound ? previousData.data.trend : null}
                           previousSpan={prevSpan}
                           highlight={highlight}
                           onHighlight={setHighlight}
