@@ -141,7 +141,15 @@ try {
 
     // The notice stays away on App settings, appears elsewhere without taking focus.
     check(!(await visible('[data-testid=update-notice]')), 'no sidebar notice on App settings (the block says it)')
+    // The window size decides the sidebar: below the breakpoint it is the 56 px rail and the notice is an icon-only
+    // button named by aria-label (CI's window opens narrow). Check the rail variant, then the expanded one explicitly.
+    await setSize(1024, 640)
     await gotoProjects(page)
+    await page.locator('[data-testid=update-notice]').waitFor({ timeout: 4000 }).catch(() => {})
+    const railName = (await page.locator('[data-testid=update-notice]').first().getAttribute('aria-label').catch(() => '')) ?? ''
+    check(/^Update available: 99\.0\.0\. Open App settings, About$/.test(railName), 'the rail notice is an icon button named for the update', railName)
+    await setSize(1600, 1000)
+    await page.locator('[data-testid=update-notice-open]').waitFor({ timeout: 4000 }).catch(() => {})
     const before = await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 80) ?? '')
     await page.locator('[data-testid=update-notice]').waitFor({ timeout: 4000 }).catch(() => {})
     check(/Update available: 99\.0\.0/.test(await text('[data-testid=update-notice]')), 'the sidebar notice says an update is available', await text('[data-testid=update-notice]'))
