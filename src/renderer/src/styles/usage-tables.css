@@ -175,10 +175,20 @@
   white-space: nowrap;
   vertical-align: bottom;
 }
+/* One line, clipped to the cell (the full sentence is in the row's detail and the title). */
 .usage-why {
-  min-width: 11rem;
-  max-width: 28rem;
+  min-width: 8rem;
+  max-width: 16rem;
   color: var(--text-primary);
+}
+.usage-why .usage-why-clip {
+  display: block;
+  max-inline-size: 100%;
+}
+.usage-runs-details > summary h2 {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
 }
 .usage-wasteful-table .usage-run-cell .usage-tag {
   margin-inline-start: var(--space-2);

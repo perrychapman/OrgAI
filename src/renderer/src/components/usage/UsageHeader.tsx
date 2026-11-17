@@ -32,11 +32,13 @@ export function UsageTopbarActions({ csv, disabled, updated, liveNote }: { csv: 
 /** Scope line, subtitle and the CSV status under the h1 (usage-header). */
 export default function UsageHeader({ scope, csv }: { scope: string; csv: UsageCsv }): ReactElement {
   return (
-    <header className="usage-header" data-testid="usage-header">
-      <p className="usage-scopeline" data-testid="usage-scope">
+    // Dashboard rework: the visible scope is the date and run count in the filter bar; the full scope line and the
+    // subtitle stay for assistive tech (and usage-scope for tests), and the CSV status still shows here.
+    <header className="usage-header" data-testid="usage-header" title={USAGE_SUBTITLE}>
+      <p className="sr-only" data-testid="usage-scope">
         {scope}
       </p>
-      <p className="usage-subtitle">{USAGE_SUBTITLE}</p>
+      <p className="sr-only">{USAGE_SUBTITLE}</p>
       <p
         key={csv.status?.failed ? 'failed' : 'ok'}
         className={`usage-csv-status${csv.status?.failed ? ' failed' : ''}`}
