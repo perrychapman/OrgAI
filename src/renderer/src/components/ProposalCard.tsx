@@ -12,7 +12,7 @@ import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
 import { orgChartEffectCopy, proposalNextFor } from '../lib/proposalNext'
 import { mcpApplyNote, proposalScope, proposalEffectCopy, secretsHelp, SKIP_MCP_FEEDBACK, uniqueSecretSlots } from '../lib/mcpProposal'
-import { diffOrgChart, modelDisplay, orgDiffBase, type ChangedRole, type DiffRole } from '../lib/orgDiff'
+import { addedRoleLines, diffOrgChart, modelDisplay, orgDiffBase, type ChangedRole, type DiffRole } from '../lib/orgDiff'
 import { proposalFoldSummary, proposerName, revisePlaceholder } from '../lib/proposalSummary'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { oneLine, proposalTitle } from '../lib/decisionTitle'
@@ -448,7 +448,8 @@ function ResponsibilitiesDisclosure({ before, items, roleName }: { before: reado
 }
 
 function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): ReactElement {
-  const hidden = hasHidden(role.name) || hasHidden(role.description) || hasHidden(role.prompt) || role.tools.some(hasHidden) || role.responsibilities.some(hasHidden)
+  const reach = addedRoleLines(role, all)
+  const hidden = hasHidden(role.name) || hasHidden(role.description) || hasHidden(role.prompt) || role.tools.some(hasHidden) || role.responsibilities.some(hasHidden) || reach.some(hasHidden)
   return (
     <details className="org-diff-row is-added" data-testid="org-diff-row" data-change="added" data-role={clampLabel(role.name, 64)}>
       <summary>
@@ -459,12 +460,16 @@ function AddedRow({ role, all }: { role: PayloadRole; all: PayloadRole[] }): Rea
         <span className="org-diff-name">{showHidden(role.name)}</span>
         <span className="org-diff-meta">
           reports to {showHidden(parentLabel(role, all))} · {showHidden(modelDisplay(role.model))}
-          {role.canSpawn ? ` · leads ${role.spawnable.length}` : ''}
         </span>
       </summary>
       <div className="proposal-role-body">
         <div>{showHidden(role.description)}</div>
         <div className="mono-dim">tools: {showHidden(role.tools.join(', ')) || 'none'}</div>
+        {reach.map((line) => (
+          <div key={line} className="mono-dim" data-testid="org-diff-added-reach">
+            {showHidden(line)}
+          </div>
+        ))}
         {role.responsibilities.length > 0 && (
           <ul className="proposal-list">
             {role.responsibilities.map((x, i) => (

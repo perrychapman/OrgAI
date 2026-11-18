@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffOrgChart, nameSimilarity, orgDiffBase, type DiffRole } from './orgDiff'
+import { addedRoleLines, diffOrgChart, nameSimilarity, orgDiffBase, type DiffRole } from './orgDiff'
 
 const role = (slug: string, over: Partial<DiffRole> = {}): DiffRole => ({
   id: `id-${slug}`,
@@ -178,6 +178,30 @@ describe('diffOrgChart', () => {
     expect(by('b')).toEqual([{ field: 'tier', label: 'tier', from: 'Deep', to: 'none' }])
     // The model line already says Everyday -> Deep, so the tier is not repeated.
     expect(by('c')).toEqual([{ field: 'model', label: 'model', from: 'Everyday', to: 'Deep' }])
+  })
+
+  it('shows a tier-only change when both sides read the same tier', () => {
+    const one = (from: Partial<DiffRole>, to: Partial<DiffRole>) => diffOrgChart([role('a', from)], [role('a', to)]).changed[0]?.changes
+    const m = { model: 'claude-sonnet-4-5' }
+    expect(one(m, { ...m, tier: 'everyday' })).toEqual([{ field: 'tier', label: 'tier', from: 'none (fixed)', to: 'Everyday' }])
+    expect(one({ ...m, tier: 'everyday' }, m)).toEqual([{ field: 'tier', label: 'tier', from: 'Everyday', to: 'none (fixed)' }])
+    expect(one({ ...m, tier: 'everyday' }, { ...m, tier: 'everyday' })).toBeUndefined()
+    expect(one({ ...m, tier: 'everyday' }, { ...m, tier: 'deep' })).toEqual([{ field: 'tier', label: 'tier', from: 'Everyday', to: 'Deep' }])
+  })
+
+  describe('addedRoleLines', () => {
+    const all = [role('lead'), role('dev', { name: 'Dev' }), role('qa', { name: 'QA' })]
+    it('names spawn targets and required reports from the proposed chart, falling back to the id', () => {
+      const r = role('helper', { canSpawn: true, spawnable: ['id-qa', 'id-dev', 'gone'], requiredReports: ['id-dev'] })
+      expect(addedRoleLines(r, all)).toEqual(['spawns: Dev, QA, gone', 'must delegate to: Dev'])
+    })
+    it('says any for an open spawn list and nothing when there is nothing to say', () => {
+      expect(addedRoleLines(role('h', { canSpawn: true, spawnable: [] }), all)).toEqual(['spawns: any'])
+      expect(addedRoleLines(role('h', { canSpawn: false, spawnable: [] }), all)).toEqual([])
+    })
+    it('does not claim a role that cannot spawn leads its listed roles', () => {
+      expect(addedRoleLines(role('h', { canSpawn: false, spawnable: ['id-dev'] }), all)).toEqual(['spawns: cannot spawn (the listed roles are ignored)'])
+    })
   })
 
   it('shows the ids when a model change keeps its tier label (review M1)', () => {

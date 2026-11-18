@@ -70,7 +70,7 @@ const EXPECTED_EXPORTS: Readonly<Record<string, readonly string[]>> = {
     'waitingItems'
   ],
   orgDiff: [
-    'RENAME_SIMILARITY', 'diffOrgChart', 'diffSummary', 'modelDisplay', 'nameSimilarity', 'orgDiffBase', 'promptChange',
+    'RENAME_SIMILARITY', 'addedRoleLines', 'diffOrgChart', 'diffSummary', 'modelDisplay', 'nameSimilarity', 'orgDiffBase', 'promptChange',
     'responsibilitiesChange'
   ],
   paths: [
