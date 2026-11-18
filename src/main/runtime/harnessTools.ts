@@ -62,11 +62,12 @@ export interface HarnessToolHooks {
    */
   addMcpServer?(spec: McpServerSpec): Promise<string | McpAttachResult>
   /**
-   * An approved propose_mcp_servers or propose_skills proposal changed this work run's own project, and RunManager
-   * already updated the run's view (ctx.project, ctx.mcpServers(), ctx.resolvedMcpServers(), ctx.skills() now
-   * return the new configuration). Bring the live session in line (Claude: setMcpServers with the live list, a
-   * restart at idle for new tool whitelists or a rebuilt skill plugin; Codex: an app-server restart at idle for MCP;
-   * mock: at once). Missing hook or a rejection = the change applies from the next run, and the tool says so.
+   * An approved propose_mcp_servers, propose_skills or (sessions with RuntimeSession.liveRoster) propose_org_change
+   * proposal changed this work run's own project, and RunManager already updated the run's view (ctx.project,
+   * ctx.mcpServers(), ctx.resolvedMcpServers(), ctx.skills(), ctx.roles now return the new configuration). Bring the
+   * live session in line (Claude: setMcpServers with the live list, a restart at idle for new tool whitelists or a
+   * rebuilt skill plugin; Codex: an app-server restart at idle for MCP; mock: at once; roles: see ConfigChange.roles).
+   * Missing hook or a rejection = the change applies from the next run, and the tool says so.
    */
   configChanged?(change: ConfigChange): Promise<ConfigChangeResult>
   /**
@@ -111,6 +112,31 @@ export interface ConfigChange {
   mcp?: { upserted: string[]; removed: string[] }
   /** The project's skills or skill grants changed (ctx.skills() was recomputed). */
   skills?: boolean
+  /**
+   * An approved org chart (propose_org_change) changed this run's roster. Sent only when the session declares
+   * `RuntimeSession.liveRoster` and RunManager applied at least one role (ProposalOutcome.roster); role ids.
+   * `changed` = any field other than the grants and the canvas position differs (name, slug, prompt, description,
+   * responsibilities, tools, canSpawn, spawnable, reportsTo, requiredReports, model / tier / effort, connection,
+   * staffing, colour); the root may be in it (prompt, tools, spawnable...), never in `added` / `removed`.
+   *
+   * Already done by RunManager when the hook is called: ctx.roles updated IN PLACE (changed objects rewritten, new
+   * roles appended with no MCP / skill grants, removed roles out of the array and in ctx.retiredRoles()); ctx.project
+   * shows the new roles; ctx.skills() recomputed when membership changed; the bridge (ctx.bridge.roles(), spawn) and
+   * ctx.agentConnection read the live roles. Roles RunManager could not apply (another connection or adapter than the
+   * root's, an unpriced model under a budget, a required-delegation obligation, a different root) are NOT in these
+   * lists: they stay as the run started and apply from the next run. Staffing still goes through resolveStaffing,
+   * and subagent limits, permission mode, trust restrictions and the budget are untouched.
+   *
+   * What the adapter must do: make the native spawn path match ctx.roles (Claude: agent definitions for added /
+   * changed roles and none for removed ones, the spawn gate refusing a removed or unknown role at once; Codex:
+   * spawn_report / its role list read ctx.roles); bring the root's system prompt and tools in line when the root is
+   * in `changed` (a session restart at idle where the provider cannot change them live); leave running agents of a
+   * removed or changed role alone (they finish on their start-time definition). Answer 'now' only when the next
+   * spawn already uses the new roster, otherwise 'after-idle' and message the orchestrator once it is in place.
+   * Reject (throw) when it cannot apply it at all: the tool then says the chart applies from the next run, while
+   * ctx.roles has already moved, so the gates refuse removed roles either way.
+   */
+  roles?: { added: string[]; changed: string[]; removed: string[] }
 }
 
 /** What an adapter's configChanged hook reports back, so the proposal tools say exactly what is true. */

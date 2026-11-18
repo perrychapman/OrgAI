@@ -117,18 +117,26 @@ export function cancelPending(cards: PendingCardMaps, runId: string, broadcast: 
 }
 
 /**
- * When an approved proposal takes effect (Proposal.effect): a work run's own 'mcpServers' / 'skills' change reaches
- * the live session, at once on the mock and after the current turn on Claude and Codex (both answer configChanged;
- * Claude sometimes sooner, so 'after-turn' is the upper bound); everything else, and every setup-like, assistant or
- * quick run, changes only later runs.
+ * When an approved proposal takes effect (Proposal.effect): a work run's own 'mcpServers' / 'skills' change, and its
+ * 'orgChart' change when `opts.liveRoster` (runRoster.ts liveRosterApplies: a team work run whose session declares
+ * RuntimeSession.liveRoster), reaches the live session, at once on the mock and after the current turn on Claude and
+ * Codex (both answer configChanged; Claude sometimes sooner, so 'after-turn' is the upper bound; an org chart role the
+ * run cannot take is deferred to the next run and the tool result names it); everything else, and every setup-like,
+ * assistant or quick run, changes only later runs.
  */
-export function proposalEffect(kind: ProposalKind, summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick'>, adapter: ProviderId | undefined): ProposalEffect {
+export function proposalEffect(
+  kind: ProposalKind,
+  summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick'>,
+  adapter: ProviderId | undefined,
+  opts: { liveRoster?: boolean } = {}
+): ProposalEffect {
   // App settings are saved at once and every surface reads them live (Chat only).
   if (kind === 'appSettings') return 'now'
   // Schedules are saved at once (ScheduleService.applyProposal); the scheduler reads them live.
   if (kind === 'schedules') return 'now'
   if (summary.kind !== 'work' || summary.quick || isVirtualProjectId(summary.projectId)) return 'next-run'
-  if (kind !== 'mcpServers' && kind !== 'skills') return 'next-run'
+  if (kind === 'orgChart' && !opts.liveRoster) return 'next-run'
+  if (kind !== 'mcpServers' && kind !== 'skills' && kind !== 'orgChart') return 'next-run'
   return adapter === 'mock' ? 'now' : 'after-turn'
 }
 
