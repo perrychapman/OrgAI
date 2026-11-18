@@ -161,7 +161,9 @@ try {
       await view.locator('[data-testid=live-model-change]').click()
       const search = view.locator('[data-testid=live-model-search]')
       await search.waitFor()
-      check(await search.evaluate((el) => el === document.activeElement), 'picker opens with focus in search')
+      // The component focuses the search in a requestAnimationFrame after the popover opens, so wait (bounded) for it.
+      await view.waitForFunction(() => document.activeElement?.matches('[data-testid=live-model-search]'), undefined, { timeout: 5000 }).catch(() => {})
+      check(await search.evaluate((el) => el === document.activeElement), `picker opens with focus in search (active: ${await view.evaluate(() => { const a = document.activeElement; return a ? `${a.tagName.toLowerCase()}[${a.getAttribute('data-testid') || ''}]` : 'none' })})`)
       await search.fill('no-model-can-match-this')
       await view.getByText('No models match your search.').waitFor()
       await view.keyboard.press('Escape')
