@@ -320,13 +320,19 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   gate, role lookup and restart sees it; review M1).
   - Org changes in the same run (owner request 2026-11-18; ARCHITECTURE.md "Org changes in the same run"): on a team
     work run whose session sets `RuntimeSession.liveRoster` (`runRoster.ts` `liveRosterApplies`), an approved
-    propose_org_change also changes `ctx.roles` in place under one invariant (third review): RunManager sets
+    propose_org_change also changes `ctx.roles` in place, on the DESKTOP host only (fourth review, owner decision:
+    `RunManagerOptions.liveRosterCards`, set by bootstrap.ts with `desktop`, checked inside `liveRosterApplies`; the CLI
+    / TUI / exec host keeps the pre-feature behaviour, runManagerRoster.test.ts "fourth review"), under one invariant
+    (third review): RunManager sets
     `OrgChartProposalPayload.runBaseline` (the run's roles plus waiting ones, `runBaselineOf`; an incoming value is
     dropped, never saved), the card diffs against it, and a field moves only if the card differs from the baseline
     for that role (model / tier where changed: the save's resolved value). A running role whose baseline differs from
     it is deferred `stale`; a new role keeps the card's id and slug or is deferred `identity` (M1); a card role the save
     holds under another identity is deferred `unmatched` (L3); a partial application that cuts a role off from the
-    root defers it `reporting` (L1); a waiting role joins with only the view's grants (L2). Checked by
+    root defers it `reporting` (L1); a waiting role joins with only the view's grants (L2). Parallel cards (fourth
+    review): a running role absent from a card's baseline is never removed by it (`stale`, M2); a waiting role whose
+    baseline entry differs from its current view entry is deferred `stale` and keeps the current entry (M3,
+    `currentView`); a card never changes a running role's slug (`identity`, L4). Pure tests in runRoster.test.ts. Checked by
     runRoster.test.ts and runManagerRoster.test.ts "third review" (both regression tests fail without runBaseline).
     Changed roles keep object, id and grants; removed roles go to
     `ctx.retiredRoles()`; the root keeps model / tier / effort / connection / canSpawn). Roles on another placement,
