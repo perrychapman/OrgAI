@@ -19,7 +19,8 @@ type-ahead, `isMenuKey`, `nativeMenuWins`; unit tested in `lib/contextMenu.test.
   `[data-testid=...][role=menu]`); it unhides (`data-placed`) before focusing, since focus on a `visibility: hidden`
   element is a no-op (found by e2e: menus opened with focus left on the row); it closes on a wheel event outside, not
   on `scroll` (focusing the tab scrolled `.run-tablist` and closed the tab menu in about half of the runs); a keyboard
-  open ignores the platform's `contextmenu` echo for 600 ms; an invoker that cannot take focus falls back to
+  open ignores the platform's `contextmenu` echo for 600 ms unless a pointer press came after it (without that
+  condition a real right click right after Shift+F10 and Escape was swallowed, found by `e2e/team.mjs`); an invoker that cannot take focus falls back to
   `fallbackFocus`; a menu whose target disappears closes itself.
 - A real right click in a field, on a link or over a selection pops the native menu from main
   (`src/main/textContextMenu.ts`); e2e cannot dismiss it, so `e2e/context-menus.mjs` dispatches `contextmenu` from
