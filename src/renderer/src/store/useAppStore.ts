@@ -570,7 +570,7 @@ interface AppState {
   handleEvent(e: RunEvent): void
   /** Replace a placeholder summary (created by an event of an unknown run) with the real one. */
   fillSummary(runId: string): Promise<void>
-  /** Hide a finished run's tab. Stops viewing it if it was the viewed run. */
+  /** Hide a run's tab, whatever its status; the session is never touched. Stops viewing it if it was the viewed run. */
   dismissRun(runId: string): void
   /** Select a project and view one of its runs (e.g. from a clicked notification). */
   focusRun(projectId: string, runId: string): Promise<void>
@@ -622,6 +622,8 @@ export const activeRun = (s: AppState): RunState | undefined => {
 }
 
 const HIDDEN_NOTICE = 'Hidden. Find it in History.'
+/** After hiding a tab whose session is still open: it keeps working; the sidebar's open runs and History reopen it. */
+export const HIDDEN_LIVE_NOTICE = 'Hidden. It keeps working: find it in the sidebar or History.'
 const LIVE_RUN_STATUSES = new Set(['starting', 'running', 'idle', 'stopping'])
 export const isRunLive = (run: RunState): boolean => LIVE_RUN_STATUSES.has(run.summary.status)
 
@@ -786,14 +788,13 @@ function fetchRun(id: string): Promise<void> {
 const restoredTabs = new Map<string, Promise<string | undefined>>()
 
 /**
- * The first settle of a real project after launch: loads the newest member of each remembered chain so its tab is
- * back. Resolves to the remembered viewed chain's newest member (the run to open when nothing needs you).
+ * The first settle of a project or an assistant after launch: loads the newest member of each remembered chain so its
+ * tab is back, ended or not. Resolves to the remembered viewed chain's newest member (the run to open when nothing needs you).
  */
 function restoreOpenTabs(projectId: string): Promise<string | undefined> {
   const known = restoredTabs.get(projectId)
   if (known) return known
   const p = (async () => {
-    if (isVirtualProjectId(projectId)) return undefined
     const remembered = readOpenTabs(projectId)
     const sums = summariesOf(useAppStore.getState(), projectId)
     const newestOfKey = (key: string): string | undefined => chainOf(sums, key).at(-1)?.id
@@ -815,7 +816,7 @@ function watchOpenTabs(): void {
     const othersSame = s.history === prev.history && s.dismissedRuns === prev.dismissedRuns && s.activeRunByProject === prev.activeRunByProject && s.draftPage === prev.draftPage && s.historyByProject === prev.historyByProject
     if (othersSame && (s.runs === prev.runs || sameRunSummaries(s.runs, prev.runs))) return
     for (const [projectId, state] of restoreDone) {
-      if (!state || isVirtualProjectId(projectId)) continue
+      if (!state) continue
       // Streamed events change `runs` constantly; rebuild the chains only when something that decides the tabs changed.
       const sums = summariesOf(s, projectId)
       const viewedId = s.draftPage[projectId] ? undefined : s.activeRunByProject[projectId]
@@ -836,7 +837,6 @@ function watchOpenTabs(): void {
 /** Projects whose remembered tabs are back: only then do we overwrite what was remembered. */
 const restoreDone = new Map<string, boolean>()
 function markTabsRestored(projectId: string): void {
-  if (isVirtualProjectId(projectId)) return
   restoreDone.set(projectId, true)
   watchOpenTabs()
 }
@@ -855,9 +855,9 @@ async function settleWorkspace(projectId: string): Promise<void> {
       if (!s.selectedAgentId) setState({ selectedAgentId: 'root' })
       return
     }
-    // An assistant opens a live run or its start page, never an ended run.
+    // An assistant opens the run that needs you, else the last viewed tab (ended or not), else an open run, else its start page.
     const target = isVirtualProjectId(projectId)
-      ? assistantRunToOpen(runsOfProject(s, projectId), viewed)
+      ? assistantRunToOpen(runsOfProject(s, projectId), viewed ?? remembered, { history: s.historyByProject[projectId] ?? [] })
       : defaultRunToOpen(runsOfProject(s, projectId), s.historyByProject[projectId] ?? [], viewed ?? remembered)
     if (target) await getState().openRun(target)
     else setState((cur) => (cur.draftPage[projectId] ? {} : { draftPage: { ...cur.draftPage, [projectId]: true as const } }))
@@ -1403,18 +1403,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     // A seeded instruction or a fresh entry belongs on the start page, not behind a run. Set it before selecting, so
     // the workspace settling that selectProject starts cannot open a run over it.
     const fresh = Boolean(instruction || opts?.fresh)
+    // Leave and return: the start page comes back only when the user left the assistant on it.
+    const leftOnStart = !!get().draftPage[id]
     if (fresh) set((s) => ({ draftPage: { ...s.draftPage, [id]: true as const } }))
     if (get().selectedProjectId !== id) get().selectProject(id)
     set({ view: 'run' })
     await get().loadHistory()
-    if (fresh) {
-      if (!get().draftPage[id]) set((s) => ({ draftPage: { ...s.draftPage, [id]: true as const } }))
-      return
+    // The first visit after launch brings the remembered tabs back (ended ones too) and the viewed one as "last viewed".
+    const remembered = await restoreOpenTabs(id)
+    try {
+      if (fresh) {
+        if (!get().draftPage[id]) set((s) => ({ draftPage: { ...s.draftPage, [id]: true as const } }))
+        return
+      }
+      const s = get()
+      const target = assistantRunToOpen(runsOfProject(s, id), s.activeRunByProject[id] ?? remembered, { history: s.historyByProject[id] ?? [], startPage: leftOnStart })
+      if (target) await get().openRun(target)
+      else get().openDraft()
+    } finally {
+      markTabsRestored(id)
     }
-    const s = get()
-    const target = assistantRunToOpen(runsOfProject(s, id), s.activeRunByProject[id])
-    if (target) await get().openRun(target)
-    else get().openDraft()
   },
 
   async openProject(projectId) {
@@ -2312,7 +2320,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   dismissRun(runId) {
     set((s) => {
       const run = s.runs[runId]
-      if (!run || isRunLive(run)) return {}
+      if (!run) return {}
       const projectId = run.summary.projectId
       // Hiding a tab hides its whole chain.
       const dismissedRuns = { ...s.dismissedRuns, [runId]: true as const }
@@ -2322,7 +2330,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         delete unreadByRun[m.id]
       }
       delete unreadByRun[runId]
-      const tabNotice = HIDDEN_NOTICE
+      // Hiding never touches the session: a live run keeps working and stays in the sidebar's open runs.
+      const tabNotice = isRunLive(run) ? HIDDEN_LIVE_NOTICE : HIDDEN_NOTICE
       if (s.activeRunByProject[projectId] !== runId) return { dismissedRuns, unreadByRun, tabNotice }
       // Hiding the viewed tab moves to its right neighbour, else the left one; with no tab left, the New run page.
       const tabs = tabRunsOf(s, projectId)
@@ -2337,7 +2346,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       delete activeRunByProject[projectId]
       return { dismissedRuns, unreadByRun, activeRunByProject, draftPage: { ...s.draftPage, [projectId]: true as const }, tabNotice }
     })
-    setTimeout(() => set((s) => (s.tabNotice === HIDDEN_NOTICE ? { tabNotice: null } : {})), 5000)
+    setTimeout(() => set((s) => (s.tabNotice === HIDDEN_NOTICE || s.tabNotice === HIDDEN_LIVE_NOTICE ? { tabNotice: null } : {})), 5000)
   },
 
   async focusRun(projectId, runId) {

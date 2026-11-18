@@ -130,7 +130,7 @@ describe('assistantModeLabel', () => {
     expect(assistantModeLabel({ status: 'running', openCards: 2 })).toBe('Waiting for your answer')
   })
   it('says it is the user turn when idle with nothing open, never "Done."', () => {
-    expect(assistantModeLabel({ status: 'idle', openCards: 0 })).toBe('Your turn. Reply, ask a follow-up, or end the session.')
+    expect(assistantModeLabel({ status: 'idle', openCards: 0 })).toBe('Your turn. Reply or ask a follow-up.')
   })
   it('reads Reply to the assistant while running', () => {
     expect(assistantModeLabel({ status: 'running', openCards: 0 })).toBe('Reply to the assistant')

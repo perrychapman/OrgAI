@@ -97,8 +97,8 @@ interface TabView {
 }
 
 /**
- * Keyboard shortcuts for the run workspace. Ctrl+T opens the New run page. Ctrl+W hides the viewed tab when it is
- * finished (or closes the New run page); Ctrl+W is always swallowed so it can never close the window, even outside the run view.
+ * Keyboard shortcuts for the run workspace. Ctrl+T opens the New run page. Ctrl+W hides the viewed tab whatever its
+ * status (a live session keeps working) or closes the New run page; Ctrl+W is always swallowed so it can never close the window, even outside the run view.
  */
 export function useRunTabShortcuts(): void {
   useEffect(() => {
@@ -124,7 +124,8 @@ export function useRunTabShortcuts(): void {
 
 /**
  * Browser-style run tabs for the selected project. A real tablist: one tab stop (roving tabindex), arrows, Home and
- * End move focus, Enter or Space opens the focused tab, Delete hides a finished one. Tabs that do not fit collapse
+ * End move focus, Enter or Space opens the focused tab, Delete hides it (a live session keeps working; the tab and
+ * the session's lifetime are independent). Tabs that do not fit collapse
  * into a "+n" menu (never a scrollbar); the viewed tab always stays visible and "+" stays at the end.
  */
 export default function RunTabs({ project }: { project: Project }): ReactElement {
@@ -205,7 +206,8 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       waiting,
       hasDraft,
       unread,
-      closable: !isRunLive(run)
+      // Any tab can be hidden: hiding never ends or interrupts the session (a live run keeps working).
+      closable: true
     }
   }
 
@@ -271,11 +273,6 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   const tabRefs = useRef(new Map<string, HTMLButtonElement>())
   const refocus = useRef(false)
   useEffect(() => setRoving(selectedId), [selectedId])
-  // The "stays open" notice belongs to the tab it was raised on; switching tabs clears it.
-  useEffect(() => {
-    const s = useAppStore.getState()
-    if (s.tabNotice === 'A working run stays open. End its session first.') useAppStore.setState({ tabNotice: null })
-  }, [selectedId])
   useEffect(() => {
     if (!refocus.current) return
     refocus.current = false
@@ -489,7 +486,14 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 {v.tooltip}
               </span>
               {v.closable && (
-                <button type="button" className="run-tab-close" tabIndex={-1} aria-label={`Hide ${v.tag || newLabel}`} title="Hide this tab (Ctrl+W)" onClick={() => hide(item)}>
+                <button
+                  type="button"
+                  className="run-tab-close"
+                  tabIndex={-1}
+                  aria-label={`Hide ${v.tag || newLabel}`}
+                  title={item.run && isRunLive(item.run) ? 'Hide this tab (Ctrl+W). The session keeps working.' : 'Hide this tab (Ctrl+W)'}
+                  onClick={() => hide(item)}
+                >
                   <Icon icon={X} size="xs" />
                 </button>
               )}
@@ -561,7 +565,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 role="menuitem"
                 className="run-tab-menuitem"
                 disabled={!v.closable}
-                title={v.closable ? 'Hide this tab (Ctrl+W)' : 'A working run stays open. End its session first.'}
+                title={item.run && isRunLive(item.run) ? 'Hide this tab (Ctrl+W). The session keeps working.' : 'Hide this tab (Ctrl+W)'}
                 onClick={() => {
                   setCtx(null)
                   hide(item)

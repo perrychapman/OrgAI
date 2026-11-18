@@ -123,16 +123,21 @@ describe('routeMenuAction', () => {
     expect(store.interrupt).toHaveBeenCalled()
   })
 
-  it('close-tab: draft page closes, finished run is hidden, working run stays', () => {
+  it('close-tab: draft page closes, a finished or a working run tab is hidden and the session is never touched', () => {
     setState({ selectedProjectId: 'p1', projects: PROJECTS, view: 'run', draftPage: { p1: true } })
     actions.routeMenuAction('close-tab')
     expect(store.closeDraft).toHaveBeenCalled()
     setState({ selectedProjectId: 'p1', projects: PROJECTS, view: 'run', runs: { r1: run('r1', 'p1', 'finished') }, activeRunByProject: { p1: 'r1' } })
     actions.routeMenuAction('close-tab')
     expect(store.dismissRun).toHaveBeenCalledWith('r1')
-    setState({ selectedProjectId: 'p1', projects: PROJECTS, view: 'run', runs: { r1: run('r1', 'p1', 'running') }, activeRunByProject: { p1: 'r1' } })
-    actions.routeMenuAction('close-tab')
-    expect(store.setTabNotice).toHaveBeenLastCalledWith('A working run stays open. End its session first.')
+    for (const status of ['running', 'idle', 'starting']) {
+      store.dismissRun.mockClear()
+      setState({ selectedProjectId: 'p1', projects: PROJECTS, view: 'run', runs: { r2: run('r2', 'p1', status) }, activeRunByProject: { p1: 'r2' } })
+      actions.routeMenuAction('close-tab')
+      expect(store.dismissRun).toHaveBeenCalledWith('r2')
+    }
+    expect(store.stopRun).not.toHaveBeenCalled()
+    expect(store.interrupt).not.toHaveBeenCalled()
     store.setTabNotice.mockClear()
     setState({})
     actions.routeMenuAction('close-tab')

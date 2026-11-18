@@ -150,7 +150,10 @@ export function openRunWindow(projectId: string, runId: string): void {
     )
 }
 
-/** Ctrl/Cmd+W and Window > Close tab: closes the New run page or hides a finished tab; a working run stays. Silent when there is nothing to close. */
+/**
+ * Ctrl/Cmd+W and File > Close tab: closes the New run page or hides the shown run tab whatever its status. Hiding never
+ * touches the session: a live run keeps working (the notice says where to find it). Silent when there is nothing to close.
+ */
 export function closeCurrentTab(): void {
   const st = useAppStore.getState()
   const pid = st.selectedProjectId
@@ -161,8 +164,7 @@ export function closeCurrentTab(): void {
     if (st.draftPage[pid]) st.closeDraft()
     return
   }
-  if (isRunLive(run)) st.setTabNotice('A working run stays open. End its session first.')
-  else st.dismissRun(run.summary.id)
+  st.dismissRun(run.summary.id)
 }
 
 function openSettings(target: string): void {
