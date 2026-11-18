@@ -50,8 +50,10 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     the `ShutdownCoordinator` in `host/shutdown.ts`, at most 3 s, then the synchronous `markQuit()` writes what is left) or crashed (RunStore boot
     normalization, `endedBy ??= 'app'`), always next to `endedWithApp: true` (only then), and absent when the run
     ended on its own; junk values are dropped on read, a legacy lone `endedWithApp` gets 'app'. With 'app',
-    `endedWhile` says what it was doing: 'waiting' (idle or a card open), 'working' (starting, running, stopping),
-    absent for a paused run. The terminal `run.status` event ('finished' / 'error', including the quit write-out's
+    `endedWhile` says what it was doing: 'waiting' (a decision card was open or the plan was blocked, whatever the status), 'idle' (status idle, no open decision: the turn ended and it only awaits a reply; never "waiting on you"), 'working' (starting, running, stopping),
+    absent for a paused run (`quitEndedWhile` in runManager.ts; boot normalization keeps a stored 'waiting' or 'idle'
+    and maps a crashed 'idle' row to 'idle'). Checked by fake-adapter unit tests in `runManager.test.ts`, `runs.test.ts`
+    and `bootstrap.test.ts`; no live app run. The terminal `run.status` event ('finished' / 'error', including the quit write-out's
     forced 'finished') carries the summary's `endedBy` / `endedWhile`, and 'stopping' carries `endedBy: 'user'` after
     End session (`withEndFacts` in runManager.ts; adapter-set values are dropped). Once quitting, start / continueRun / send / resumeNow refuse ("OrgAI is quitting") and a
     session still opening is stopped when it opens. The renderer's adoption of endedBy lands with the
