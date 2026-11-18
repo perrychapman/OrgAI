@@ -171,14 +171,14 @@ describe('an approved org chart reaches the same work run (liveRoster session)',
     const { m, ctxs } = rig({ liveRoster: true })
     const run = await m.start({ project: p, prompt: 'go' })
     const ctx = ctxs[0]
-    const agent = { id: 'a-rev', roleId: 'r-rev', roleSlug: 'reviewer', name: 'Reviewer', parentId: 'root', spawnToolUseId: 't1', state: 'working' as const, activity: 'reading', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1 }
+    const agent = { id: 'a-rev', roleId: 'r-rev', roleSlug: 'reviewer', name: 'Reviewer', parentId: 'root', spawnToolUseId: 't1', state: 'tool' as const, activity: 'reading', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1 }
     ctx.emit({ type: 'agent.upsert', runId: run.id, agent })
     const outcome = await approveChart(m, ctx, structuredClone(p.roles).filter((r) => r.id !== 'r-rev'))
     expect(outcome.behavior === 'approve' && outcome.roster?.removed).toEqual(['r-rev'])
     // Nothing touched the running report.
     expect(events.some((e) => e.type === 'agent.remove')).toBe(false)
     const upserts = events.filter((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.id === 'a-rev')
-    expect(upserts.at(-1)!.agent).toMatchObject({ state: 'working', roleId: 'r-rev' })
+    expect(upserts.at(-1)!.agent).toMatchObject({ state: 'tool', roleId: 'r-rev' })
     // Its role is no longer in the roster agents spawn from, but its name and colour stay available.
     expect(ctx.roles.some((r) => r.id === 'r-rev')).toBe(false)
     expect(ctx.retiredRoles!()).toEqual([expect.objectContaining({ id: 'r-rev', name: 'Reviewer', color: '#fff' })])
