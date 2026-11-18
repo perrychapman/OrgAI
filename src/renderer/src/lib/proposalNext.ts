@@ -38,9 +38,9 @@ export function rosterNextFor(proposal: Proposal, outcome: ProposalOutcome, proj
  * upper bound: roles the run cannot start wait for the next run, and the line says so.
  */
 export function orgChartEffectCopy(effect: Proposal['effect']): string | null {
-  const tail = ' Roles it cannot start yet wait for the next run. Reports already running keep what they have.'
-  if (effect === 'now') return `This run can use the new roles now.${tail}`
-  if (effect === 'after-turn') return `This run can use the new roles once the orchestrator's current turn ends.${tail}`
+  const tail = ' Roles it cannot take wait for the next run. Reports already running keep what they have.'
+  if (effect === 'now') return `This run can use the new roles now. Removed roles stop being available immediately.${tail}`
+  if (effect === 'after-turn') return `New and changed roles can be used once no agent is working and the session restarts. Removed roles stop being available immediately.${tail}`
   return null
 }
 
@@ -49,7 +49,10 @@ export function rosterNextLead(roster: NonNullable<ProposalNext['roster']>): str
   const n = roster.deferred.length
   const wait = n === 0 ? '' : ` ${n === 1 ? '1 role waits' : `${n} roles wait`} for the next run:`
   if (!roster.applied) return `Org chart saved.${wait}`
-  const use = roster.when === 'after-turn' ? 'This run can use the new roles once the current turn ends.' : 'This run can use the new roles now.'
+  const use =
+    roster.when === 'after-turn'
+      ? 'New and changed roles can be used once no agent is working and the session restarts. Removed roles stop being available immediately.'
+      : 'This run can use the new roles now. Removed roles stop being available immediately.'
   return `Org chart saved. ${use}${wait}`
 }
 

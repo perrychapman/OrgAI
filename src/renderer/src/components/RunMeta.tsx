@@ -67,9 +67,13 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     const n = s.proposalNextByRun[summary.id]
     return n?.kind === 'orgRoster' ? [proposalNextLead(n), ...(n.roster?.deferred ?? []).map((d) => `${clampLabel(showHidden(d.name), 40)}: ${clampLabel(showHidden(d.reason), 200)}`)].join(' ') : ''
   })
+  // Keyed by run like the chip above: a note already spoken for a run stays quiet when its tab is shown again.
+  const lastRoster = useRef({ runId: summary.id, note: rosterNote })
   useEffect(() => {
-    if (rosterNote) announce?.(rosterNote)
-  }, [rosterNote, announce])
+    const prev = lastRoster.current
+    if (prev.runId === summary.id && rosterNote && prev.note !== rosterNote) announce?.(rosterNote)
+    lastRoster.current = { runId: summary.id, note: rosterNote }
+  }, [summary.id, rosterNote, announce])
   // The host's run usage is the truth; before the first run.usage event the strip total can lag the agent costs.
   const agentCosts = sumCosts(Object.values(run.agents).map(agentCostInput))
   const own =
@@ -161,7 +165,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   return (
     <div className="run-meta" data-testid="run-meta">
       {next && nextCopy && (
-        <span className="run-meta-item run-meta-next">
+        <div className="run-meta-item run-meta-next">
           <span data-testid="proposal-next-lead">{proposalNextLead(next)}</span>
           {next.roster && next.roster.deferred.length > 0 && (
             <ul className="run-meta-next-list" data-testid="proposal-next-deferred">
@@ -178,7 +182,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           <button type="button" className="link-btn" onClick={() => useAppStore.getState().noteProposalNext(summary.id, null)} aria-label="Dismiss this note">
             Dismiss
           </button>
-        </span>
+        </div>
       )}
       {!isVirtualProjectId(project.id) && <TeamFilesPointer projectId={project.id} />}
       {summary.kind === 'setup' && (

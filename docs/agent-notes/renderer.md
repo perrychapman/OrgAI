@@ -481,7 +481,9 @@ roles. Readers: live canvas colours (`LiveRunView`), the decision card avatar (`
 (`BandRunIn.roster`, part of `bandSignature`). Agent names and the side panel role label come from the agent itself and
 Pocket Office people use agent names only, so they need no lookup. A removed role stays in the roster, so agents that
 started on it keep their colour. Copy: the org chart card's effect line is `orgChartEffectCopy` (now / after-turn; other
-effects keep the generic line); an approved outcome with `roster` leaves a RunMeta note (`rosterNextFor`, kind
+effects keep the generic line). After-turn says new and changed roles can be used once no agent is working and the session
+restarts (the Claude adapter waits for that, not for the turn end); both say removed roles stop being available at once.
+The RunMeta note announces once per run and note (ref keyed by run id, never on mount or on a switch back); an approved outcome with `roster` leaves a RunMeta note (`rosterNextFor`, kind
 `orgRoster`, never cleared by the card's own approve) listing deferred roles and OrgAI's reasons as plain text, announced
 through the frame announcer. Checked by `runRoster.test.ts`, `proposalNext.test.ts`, `store/runRoster.test.ts`,
 typecheck and build. `e2e/proposals.mjs` scenario 5 (`Staff up [mock:org-change]`) covers the flow and needs the mock
