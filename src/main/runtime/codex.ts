@@ -58,7 +58,7 @@ import {
   type NetworkHost,
   type SpawnRequest
 } from './codexAgents'
-import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
+import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { ContinuationDriver, agentSlots, rootRoleNames, stepActivity } from './continuation'
 import { obligationsFor } from './delegation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
@@ -321,6 +321,13 @@ export function codexModelFor(model: string | undefined): string | undefined {
   return validModelId(m) ? m : undefined
 }
 
+/** Same strings in any order. */
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false
+  const set = new Set(b)
+  return a.every((x) => set.has(x))
+}
+
 function userBlock(text: string, images?: ImageAttachment[]): TranscriptBlock {
   return images?.length ? { kind: 'user', text, images } : { kind: 'user', text }
 }
@@ -350,6 +357,8 @@ const POLICY_UNKNOWN = 'unknown' as const
 
 class CodexSession implements RuntimeSession {
   readonly finished: Promise<void>
+  /** configChanged handles ConfigChange.roles (RuntimeSession.liveRoster): see configChanged. */
+  readonly liveRoster = true
   private server!: CodexServerLike
   private unsubscribers: (() => void)[] = []
   /** The Codex version warning (ORGAI_CODEX_PATH outside the tested range) was shown for this session. */
@@ -438,6 +447,24 @@ class CodexSession implements RuntimeSession {
   /** Bridged results that landed while the run was held for the user (interrupt) or for a stopped child, delivered after the user's next message. */
   private heldBridged: { parentId: string; text: string }[] = []
   private mcpRestartPending = false
+  /**
+   * An approved org chart (configChanged roles) left the root thread's developer instructions behind the live roster:
+   * the next restart at idle resumes the root with instructions rebuilt from ctx.roles, then messages the orchestrator.
+   */
+  private rosterRestartPending = false
+  /** Role ids added or changed by roster changes still waiting for that restart (named in the harness message). */
+  private pendingRosterRoles: string[] = []
+  /** threadId -> the developer instructions Codex last received for it (thread/start or thread/resume). */
+  private sentInstructions = new Map<string, string>()
+  /** The root thread's network and harness tool names at thread start (Codex cannot change a thread's dynamic tools). */
+  private rootToolNames?: string[]
+  /** agentId -> its role as it was when its thread started (spawnChildNow), for pinning after an org change. */
+  private startRoles = new Map<string, Role>()
+  /**
+   * Agents whose role an org change rewrote or removed while their thread existed: they keep their start-time definition
+   * (the role snapshot and the instructions they were given) through any later restart. New threads use ctx.roles.
+   */
+  private pinnedAgents = new Set<string>()
   /** Root turn ends so far (completed, failed and interrupted): RootTurnEnd.turnGen. */
   private rootTurnGen = 0
   /** Tool calls the root made this session (any kind, spawns included); a pure direct-answer turn 1 has none. */
@@ -644,7 +671,7 @@ class CodexSession implements RuntimeSession {
     if (this.ctx.bridgedChild) throw new PermissionModeRefusal('Only the run root can change the permission mode.')
     if (this.setupLike) throw new PermissionModeRefusal('This run keeps its own permission mode.')
     if (this.ending || this.ended || !this.rootThreadId || !this.threads.has(this.rootThreadId)) throw new PermissionModeRefusal('This session is not live. The mode will apply when the run continues.')
-    if (this.restarting || this.mcpRestartPending || this.threadStarts > 0) throw new PermissionModeRefusal('The session is starting a thread or restarting. Try again in a moment.')
+    if (this.restarting || this.mcpRestartPending || this.rosterRestartPending || this.threadStarts > 0) throw new PermissionModeRefusal('The session is starting a thread or restarting. Try again in a moment.')
     if (isTrustRestrictedRun(this.ctx.run) && (mode === 'auto' || mode === 'acceptEdits' || mode === 'bypassPermissions')) {
       throw new PermissionModeRefusal('This run asks before each change, so it cannot use that permission mode.')
     }
@@ -780,7 +807,7 @@ class CodexSession implements RuntimeSession {
     const rootIdle =
       (!this.rootThreadId || !this.activeTurn.has(this.rootThreadId)) && (!root || root.state === 'idle' || root.state === 'done' || root.state === 'error')
     const quiescent =
-      !this.mcpRestartPending && !this.restarting && this.queues.size === 0 && this.threadStarts === 0 && this.earlySends.length === 0 && !this.integrator.hasPendingWork()
+      !this.mcpRestartPending && !this.rosterRestartPending && !this.restarting && this.queues.size === 0 && this.threadStarts === 0 && this.earlySends.length === 0 && !this.integrator.hasPendingWork()
     return {
       rootTurnGen: this.rootTurnGen,
       rootIdle,
@@ -1125,7 +1152,9 @@ class CodexSession implements RuntimeSession {
   private async startThread(params: Record<string, unknown>, method: string = METHOD.threadStart): Promise<{ threadId: string; model?: string }> {
     this.threadStarts += 1
     try {
-      return await this.startThreadNow(params, method)
+      const started = await this.startThreadNow(params, method)
+      if (typeof params.developerInstructions === 'string') this.sentInstructions.set(started.threadId, params.developerInstructions)
+      return started
     } finally {
       this.threadStarts -= 1
       if (this.threadStarts === 0) {
@@ -1378,6 +1407,7 @@ class CodexSession implements RuntimeSession {
 
       const policy = this.policyFor(this.root)
       const params = this.threadParams(this.root, true, ctx.project.path)
+      this.rootToolNames = this.toolsFor(this.root, true).names
       let started: { threadId: string; model?: string } | undefined
       if (ctx.resumeSessionId) {
         try {
@@ -2477,6 +2507,8 @@ class CodexSession implements RuntimeSession {
     let registered = false
     try {
       const params = this.threadParams(req.role, false, cwd, parent?.model, staffed.model)
+      // The definition this thread starts on (taken with its params): an org change later pins it (configChanged roles).
+      this.startRoles.set(req.id, structuredClone(req.role))
       const started = await this.startThread(params)
       this.bindThread(started.threadId, req.id, policy)
       if (staffed.model) this.staffedModel.set(req.id, staffed.model)
@@ -2538,30 +2570,115 @@ class CodexSession implements RuntimeSession {
    * not in it) and answers 'after-idle'. A skills-only change is 'now': list_skills / load_skill read ctx.skills() at
    * call time. Codex's native skill lock is not redone here: a newly linked skill is not re-locked natively, which
    * only matters for native skills, and those stay locked.
+   *
+   * Roles (an approved org chart, ConfigChange.roles; RunManager already rewrote ctx.roles in place): spawn_report reads
+   * the live roster at call time (CodexAgentNetwork holds ctx.roles itself and the root's Role object), so the next spawn
+   * already uses it and a removed or unknown role is refused at once. Threads that exist keep their start-time
+   * definition (pinRosterAgents). The root thread's developer instructions (its prompt, the reports it lists, the tool
+   * notes) were fixed at thread start: when instructionsFor(root) now differs from what Codex last received, the root
+   * is resumed with the new ones at the next restart at idle (shared with MCP, coalesced) and told once it is in place:
+   * 'after-idle'. When they are the same, 'now'. A change of the root's own tool list (canSpawn flipped) cannot reach a
+   * running thread (Codex fixes dynamic tools at thread/start): rejected, so the tool says the chart applies from the
+   * next run (ctx.roles has moved anyway, so the spawn gate already follows it).
+   * The combined answer is 'after-idle' when any part is.
    */
   private async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
-    if (!change.mcp) return { availability: 'now' }
-    if (!this.ctx.resolvedMcpServers) throw new Error('This run cannot attach MCP servers; the change applies from the next run.')
-    const live = new Set((this.ctx.mcpServers?.() ?? []).map((s) => s.name))
-    for (const name of change.mcp.upserted) {
-      const prefix = mcpToolPrefix(name)
-      if (live.has(name) && !this.pendingMcpPrefixes.includes(prefix)) this.pendingMcpPrefixes.push(prefix)
+    let after = false
+    if (change.roles) after = this.rosterChanged(change.roles) || after
+    if (change.mcp) {
+      if (!this.ctx.resolvedMcpServers) throw new Error('This run cannot attach MCP servers; the change applies from the next run.')
+      const live = new Set((this.ctx.mcpServers?.() ?? []).map((s) => s.name))
+      for (const name of change.mcp.upserted) {
+        const prefix = mcpToolPrefix(name)
+        if (live.has(name) && !this.pendingMcpPrefixes.includes(prefix)) this.pendingMcpPrefixes.push(prefix)
+      }
+      this.mcpRestartPending = true
+      this.log('info', 'The MCP configuration changed; Codex is restarted to apply it when the agents are idle.')
+      after = true
     }
-    this.mcpRestartPending = true
-    this.log('info', 'The MCP configuration changed; Codex is restarted to apply it when the agents are idle.')
-    void this.maybeRestartForMcp()
-    return { availability: 'after-idle' }
+    if (after) void this.maybeRestartForMcp()
+    return { availability: after ? 'after-idle' : 'now' }
+  }
+
+  /** configChanged's roles part. True when the root must be brought in line at the next restart ('after-idle'). Throws when it cannot. */
+  private rosterChanged(roles: NonNullable<ConfigChange['roles']>): boolean {
+    if (this.setupLike) throw new Error('This run keeps its own roles; the org chart applies from the next run.')
+    const toolNames = this.toolsFor(this.root, true).names
+    if (this.rootToolNames && !sameList(toolNames, this.rootToolNames)) {
+      throw new Error("the orchestrator's own tools would change, which a running Codex thread cannot take")
+    }
+    this.pinRosterAgents([...roles.changed, ...roles.removed])
+    for (const id of [...roles.added, ...roles.changed]) if (!this.pendingRosterRoles.includes(id)) this.pendingRosterRoles.push(id)
+    if (!this.rootInstructionsStale()) {
+      // Nothing the root was told moved: in effect now. An earlier change's pending refresh still sends its message
+      // (maybeRestartForMcp skips the restart itself once the root is in line).
+      if (!this.rosterRestartPending) this.pendingRosterRoles = []
+      this.log('info', 'The org chart changed; new reports use it now.')
+      return false
+    }
+    this.rosterRestartPending = true
+    this.log('info', "The org chart changed; the orchestrator's instructions are updated when the agents are idle (Codex restart).")
+    return true
+  }
+
+  /** The root thread's developer instructions differ from what instructionsFor builds from the live roster now. */
+  private rootInstructionsStale(): boolean {
+    if (!this.rootThreadId) return false // the root thread starts with the live roster
+    const sent = this.sentInstructions.get(this.rootThreadId)
+    return sent === undefined || sent !== this.instructionsFor(this.root, true)
+  }
+
+  /** Threads of these roles that exist now keep their start-time definition (never the root). */
+  private pinRosterAgents(roleIds: string[]): void {
+    const ids = new Set(roleIds)
+    for (const info of this.threads.values()) {
+      if (info.agentId === ROOT_AGENT_ID) continue
+      const roleId = this.startRoles.get(info.agentId)?.id ?? this.agents.get(info.agentId)?.roleId
+      if (roleId && ids.has(roleId)) this.pinnedAgents.add(info.agentId)
+    }
+  }
+
+  /** The role a thread is resumed with after a restart: a pinned agent's start-time snapshot, else the live one. */
+  private resumeRoleOf(agentId: string): Role {
+    if (agentId === ROOT_AGENT_ID) return this.root
+    const pinned = this.pinnedAgents.has(agentId) ? this.startRoles.get(agentId) : undefined
+    if (pinned) {
+      // Grants still follow the live role (grant changes reach running agents); nothing else moves.
+      const live = this.net.roleOf(agentId)
+      return { ...pinned, ...(live?.mcpServers ? { mcpServers: [...live.mcpServers] } : {}), ...(live?.skills ? { skills: [...live.skills] } : {}) }
+    }
+    return this.net.roleOf(agentId) ?? this.root
+  }
+
+  /** The harness message once a roster refresh is in place, or '' when none was pending. */
+  private rosterNotice(ids: string[]): string {
+    const names = ids
+      .map((id) => this.ctx.roles.find((r) => r.id === id))
+      .filter((r): r is Role => !!r && r.reportsTo !== null)
+      .map((r) => datum(r.name, 60))
+    return `Harness: the org chart change is in place now: your instructions list the roles as they are in this run.${names.length ? ` You can delegate to ${names.join(', ')}.` : ''}`
   }
 
   private async maybeRestartForMcp(): Promise<void> {
-    if (!this.mcpRestartPending || this.restarting || this.ending || this.activeTurn.size > 0) return
+    if (!(this.mcpRestartPending || this.rosterRestartPending) || this.restarting || this.ending || this.activeTurn.size > 0) return
+    // A roster-only restart that an earlier restart already covered (the root was resumed with the live roster): no
+    // restart, just the message the tool promised.
+    if (!this.mcpRestartPending && !this.rootInstructionsStale()) {
+      this.rosterRestartPending = false
+      this.notifyOrchestrator(this.rosterNotice(this.pendingRosterRoles.splice(0)), 'Reading the new org chart…')
+      return
+    }
+    const mcpRestart = this.mcpRestartPending
+    const rosterRestart = this.rosterRestartPending
     this.restarting = true
     this.mcpRestartPending = false
+    this.rosterRestartPending = false
     this.noteActivity('restart')
     // End session can land during any await below. stop() / endRun() close whatever `this.server` is at that moment,
     // so a server this restart created after that would never be closed: check `ending` before creating one, and close
     // the one we made when the run ended while it started (review round 2).
     let created: CodexServerLike | undefined
+    let notified = false
     const abandon = (): void => {
       this.restarting = false
       if (created) {
@@ -2570,7 +2687,8 @@ class CodexSession implements RuntimeSession {
       }
     }
     try {
-      const servers = withoutControlEnv(await this.ctx.resolvedMcpServers!())
+      // A roster-only restart of a run without resolvedMcpServers relaunches with what the run started with: none.
+      const servers = withoutControlEnv(this.ctx.resolvedMcpServers ? await this.ctx.resolvedMcpServers() : [])
       if (this.ending) return abandon()
       const writableRoots = codexWritableRoots(this.ctx)
       const launch = await this.buildLaunch(servers, {
@@ -2593,12 +2711,16 @@ class CodexSession implements RuntimeSession {
       if (this.ending) return abandon()
       this.readWorkspaceTempAtLaunch(this.server)
       for (const [threadId, info] of this.threads) {
-        const role = this.net.roleOf(info.agentId) ?? this.root
+        // A thread whose role an org change rewrote or removed keeps its start-time definition (resumeRoleOf); the root
+        // and every other thread are resumed from the live roster.
+        const role = this.resumeRoleOf(info.agentId)
         const wt = this.integrator.worktreeOf(info.agentId)
         // threadParams re-derives the policy (mode and reference folders read now); the thread keeps the new one.
         const { dynamicTools: _t, serviceName: _s, ...resume } = this.threadParams(role, info.agentId === ROOT_AGENT_ID, wt?.path ?? this.ctx.project.path, undefined, this.staffedModel.get(info.agentId))
         void _t
         void _s
+        const pinnedText = this.pinnedAgents.has(info.agentId) ? this.sentInstructions.get(threadId) : undefined
+        if (pinnedText !== undefined) resume.developerInstructions = pinnedText
         info.policy = this.policyFor(role)
         try {
           await this.startThread({ threadId, ...resume }, METHOD.threadResume)
@@ -2609,23 +2731,37 @@ class CodexSession implements RuntimeSession {
         }
       }
       this.activeTurn.clear()
-      const prefixes = this.pendingMcpPrefixes.splice(0)
       this.log('info', `Codex restarted with ${servers.filter((s) => s.spec.enabled).length} MCP server(s).`)
-      this.notifyOrchestrator(
-        prefixes.length
-          ? `Harness: the MCP server${prefixes.length === 1 ? '' : 's'} you requested ${prefixes.length === 1 ? 'is' : 'are'} connected now. Tool names start with ${prefixes.join(' and ')}. Calls may still ask the user for permission.`
-          : 'Harness: the MCP configuration change is in place now. Tools of servers that were disabled or removed are gone.',
-        'Using a new MCP server…'
-      )
+      // One harness message for everything this restart brought in (MCP and / or the roster).
+      const parts: string[] = []
+      if (mcpRestart) {
+        const prefixes = this.pendingMcpPrefixes.splice(0)
+        parts.push(
+          prefixes.length
+            ? `Harness: the MCP server${prefixes.length === 1 ? '' : 's'} you requested ${prefixes.length === 1 ? 'is' : 'are'} connected now. Tool names start with ${prefixes.join(' and ')}. Calls may still ask the user for permission.`
+            : 'Harness: the MCP configuration change is in place now. Tools of servers that were disabled or removed are gone.'
+        )
+      }
+      // The root was resumed with instructions built from the live roster just now. A roster change that landed during
+      // this restart is either already in them (told now) or still stale (rosterRestartPending stays for the next one).
+      if ((rosterRestart || this.rosterRestartPending) && !this.rootInstructionsStale()) {
+        this.rosterRestartPending = false
+        parts.push(this.rosterNotice(this.pendingRosterRoles.splice(0)))
+      }
+      if (parts.length) this.notifyOrchestrator(parts.join('\n\n'), mcpRestart ? 'Using a new MCP server…' : 'Reading the new org chart…')
+      notified = parts.length > 0
     } catch (e) {
       // stop() closed the new server while it started: the run is ending, not failing.
       if (this.ending) return abandon()
       this.restarting = false
-      this.fail(`Could not restart Codex to attach the MCP server: ${(e as Error).message}`)
+      this.fail(`Could not restart Codex to ${mcpRestart ? 'attach the MCP server' : 'apply the org chart change'}: ${(e as Error).message}`)
       return
     }
     this.restarting = false
     this.noteActivity('restart')
+    // A change that arrived while this restart ran is not lost: the root turn the message starts ends in
+    // maybeRestartForMcp (turnCompleted); with no message there is no turn, so check now.
+    if (!notified && (this.mcpRestartPending || this.rosterRestartPending)) void this.maybeRestartForMcp()
   }
 }
 
