@@ -3,6 +3,7 @@
 // remove another and add a new one; a work run leaves two background permission cards, an ask_user question and then an
 // org chart proposal open together (the stepper). Checks at 1024x640 (dark and light) and 1600x1000. Scenario 4 is a
 // 29-change org chart proposal in the Live tray of a work run and of an org change session (proposal-cards.md section 12).
+// Scenario 5 ([mock:org-change]): an approved org chart is usable in the same run (roster shown by name, saved, survives reload).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { TMP, check, cleanup, createProject, endSession, finish, launch, log, makeFixtureRepo, projectTab, sleep } from './lib.mjs'
@@ -577,6 +578,61 @@ try {
   await setTheme('dark')
   await page.locator(`${setupCard} .btn.primary`).click()
   await sleep(1000)
+
+  // ---- Scenario 5: [mock:org-change], a work run proposes a role, the user approves, the run uses it at once. The
+  // role shows by name in the Live view, is saved on the Team tab, and the finished run still names it after a reload.
+  // Needs the mock marker (adapter-codex-mock): the mock adds "Roster Tester" under the root and delegates one task. ----
+  await endSession(page)
+  writeScript({ delayMs: 200 })
+  await setSize(1600, 1000)
+  await setTheme('dark')
+  await projectTab(page, 'Live').click()
+  await page.keyboard.press('Control+t').catch(() => {})
+  await ta.waitFor({ timeout: 10_000 })
+  await ta.fill('Staff up [mock:org-change]')
+  await page.locator('.composer .btn.primary').click()
+  const rosterCard = page.locator('.decision-card.kind-proposal')
+  await rosterCard.waitFor({ timeout: 30_000 })
+  check(/Add a Roster Tester/.test(((await rosterCard.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')), 'the org chart card is titled "Add a Roster Tester"')
+  const detailsBtn = page.locator('[data-testid=decision-details], .decision-details').first()
+  if ((await detailsBtn.isVisible().catch(() => false)) && (await rosterCard.getAttribute('data-expanded')) !== 'true') await detailsBtn.click()
+  const rosterEffect = ((await page.locator('[data-testid=proposal-effect]').first().innerText().catch(() => '')) || '').trim()
+  check(/This run can use the new roles now/.test(rosterEffect), 'the org chart card says it applies to this run now', rosterEffect)
+  await shot('org-change-live-card')
+  await page.locator('[data-testid=proposal-approve]').click()
+  const testerNode = page.locator('.react-flow__node', { hasText: 'Roster Tester' }).first()
+  await testerNode.waitFor({ timeout: 30_000 })
+  check(true, 'an agent named Roster Tester appears in the live view after approval')
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('.react-flow__node')].some((n) => /Roster Tester/.test(n.textContent ?? '') && /Finished|Done|done/.test(n.textContent ?? '')),
+    null,
+    { timeout: 30_000 }
+  ).catch(() => {})
+  const nodeText = ((await testerNode.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(/Roster Tester/.test(nodeText) && !/unknown/i.test(nodeText), 'the Roster Tester node shows its role name', nodeText)
+  const lead = ((await page.locator('[data-testid=proposal-next-lead]').innerText().catch(() => '')) || '').trim()
+  check(/can use the new roles now/.test(lead), 'the run metadata says the run can use the new roles now', lead)
+  await shot('org-change-live-agent')
+  await endSession(page)
+
+  // The Team tab shows the role saved.
+  await projectTab(page, 'Team').click()
+  await page.locator('.editor [data-testid=team-panel-tabs]').waitFor({ state: 'visible', timeout: 10_000 })
+  await page.locator('.react-flow__node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 10_000 })
+  check(true, 'the Team tab shows the Roster Tester role saved')
+
+  // After a reload the finished run still names the agent.
+  await page.reload()
+  await page.locator('.sidebar').waitFor({ timeout: 20_000 })
+  await sleep(1000)
+  const runRow = page.locator('.sidebar [data-testid=nav-run]').first()
+  if (await runRow.count()) await runRow.click()
+  else {
+    await projectTab(page, 'Live').click().catch(() => {})
+  }
+  await page.locator('.react-flow__node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 20_000 })
+  check(true, 'after a reload the finished run still shows Roster Tester by name')
+  await shot('org-change-reloaded')
 } finally {
   await cleanup(app, page, NAME)
   finish('proposals')

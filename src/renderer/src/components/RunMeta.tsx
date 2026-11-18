@@ -62,6 +62,14 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     if (prev.runId === summary.id && accessState === 'session' && prev.state !== 'session') announce?.(CHAT_ACCESS_ANNOUNCEMENT)
     lastAccess.current = { runId: summary.id, state: accessState }
   }, [summary.id, accessState, announce])
+  // An org chart the run took live: said once when the note appears.
+  const rosterNote = useAppStore((s) => {
+    const n = s.proposalNextByRun[summary.id]
+    return n?.kind === 'orgRoster' ? [proposalNextLead(n), ...(n.roster?.deferred ?? []).map((d) => `${clampLabel(showHidden(d.name), 40)}: ${clampLabel(showHidden(d.reason), 200)}`)].join(' ') : ''
+  })
+  useEffect(() => {
+    if (rosterNote) announce?.(rosterNote)
+  }, [rosterNote, announce])
   // The host's run usage is the truth; before the first run.usage event the strip total can lag the agent costs.
   const agentCosts = sumCosts(Object.values(run.agents).map(agentCostInput))
   const own =
@@ -154,7 +162,16 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     <div className="run-meta" data-testid="run-meta">
       {next && nextCopy && (
         <span className="run-meta-item run-meta-next">
-          {proposalNextLead(next)}{' '}
+          <span data-testid="proposal-next-lead">{proposalNextLead(next)}</span>
+          {next.roster && next.roster.deferred.length > 0 && (
+            <ul className="run-meta-next-list" data-testid="proposal-next-deferred">
+              {next.roster.deferred.map((d, i) => (
+                <li key={i}>
+                  {clampLabel(showHidden(d.name), 40)}: {clampLabel(showHidden(d.reason), 200)}
+                </li>
+              ))}
+            </ul>
+          )}{' '}
           <button type="button" className="link-btn" data-testid={nextCopy.testId} onClick={goNext}>
             {nextCopy.action}
           </button>

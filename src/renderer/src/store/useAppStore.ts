@@ -8,7 +8,7 @@ import { create } from 'zustand'
 import { useMemo } from 'react'
 import { defaultRunToOpen } from '../lib/needsYou'
 import { assistantRunToOpen } from '../lib/assistantNav'
-import { secretsNextFor, type ProposalNext } from '../lib/proposalNext'
+import { rosterNextFor, secretsNextFor, type ProposalNext } from '../lib/proposalNext'
 import type { KnowledgeFocusRequest } from '../lib/knowledge'
 import { forgetPreviewCache, mergeOutput } from '../lib/outputs'
 import type { OutputsChangedEvent, RunOutput, StaffingGoal, StartRunInput } from '@shared/types'
@@ -52,6 +52,7 @@ import type {
   RunEvent,
   RunPlan,
   RunStaffing,
+  RunRosterRole,
   RunSummary,
   SetupKind,
   TranscriptEntry,
@@ -210,6 +211,8 @@ export interface RunState {
   plan?: RunPlan
   /** Work runs: the latest staffing record (staffing.updated, or the run record), once one exists. Not shown yet. */
   staffing?: RunStaffing
+  /** Work runs: the run's roster after an approved org change (run.roster, or the run record); absent = the project's roles (lib/runRoster.ts). */
+  roster?: RunRosterRole[]
   /** Open request_mcp_install approvals. */
   mcpInstalls: McpInstallRequest[]
   /** Answered installs (secret-free outcomes), keyed by request id, kept so the card shows its resolution. */
@@ -2100,7 +2103,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const proposal = s.runs[e.runId]?.proposals.find((p) => p.id === e.proposalId)
         const out: Partial<AppState> = { proposalOutcomes: { ...s.proposalOutcomes, [e.proposalId]: e.decision } }
         const home = s.runs[e.runId]?.summary.projectId
-        const next = !e.cancelled && proposal && home ? secretsNextFor(proposal, e.decision, home) : null
+        const next = !e.cancelled && proposal && home ? (secretsNextFor(proposal, e.decision, home) ?? rosterNextFor(proposal, e.decision, home)) : null
         if (next) out.proposalNextByRun = { ...s.proposalNextByRun, [e.runId]: next }
         return out
       })
@@ -2264,6 +2267,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           break
         case 'staffing.updated':
           run.staffing = e.staffing
+          break
+        case 'run.roster':
+          run.roster = e.roster
           break
         case 'run.delegation': {
           const applied = applyRunDelegation(run.summary, run.agents, e)

@@ -6,7 +6,7 @@ import type { Proposal, ProposalOutcome } from '@shared/types'
 import { clampLabel } from './clampLabel'
 import { proposalScope } from './mcpProposal'
 
-export type ProposalNextKind = 'skillsLibrary' | 'skillsProject' | 'connectors' | 'mcpProject' | 'mcpSecrets'
+export type ProposalNextKind = 'skillsLibrary' | 'skillsProject' | 'connectors' | 'mcpProject' | 'mcpSecrets' | 'orgRoster'
 
 export interface ProposalNext {
   kind: ProposalNextKind
@@ -14,6 +14,43 @@ export interface ProposalNext {
   projectId: string
   /** 'mcpSecrets' only: the servers still waiting on a secret (untrusted text; clamped when shown). */
   names?: string[]
+  /** 'orgRoster' only: when the run can use the applied roles, and the roles that wait for the next run. */
+  roster?: { applied: boolean; when: 'now' | 'after-turn'; deferred: { name: string; reason: string }[] }
+}
+
+/**
+ * The notice for an approved org chart a running work run took live (ProposalOutcome.roster), or null: nothing applied
+ * to the run (the change reaches the next run, which the card already said) or another kind of proposal.
+ */
+export function rosterNextFor(proposal: Proposal, outcome: ProposalOutcome, projectId: string): ProposalNext | null {
+  if (proposal.kind !== 'orgChart' || outcome.behavior !== 'approve' || !outcome.roster) return null
+  const r = outcome.roster
+  const appliedAny = r.added.length + r.changed.length + r.removed.length > 0
+  const deferred = r.deferred.map((d) => ({ name: d.name, reason: d.reason }))
+  if (!appliedAny && deferred.length === 0) return null
+  // 'next-run' / absent: the session could not take it live, so the run itself got nothing.
+  const when = proposal.effect === 'after-turn' ? 'after-turn' : 'now'
+  return { kind: 'orgRoster', projectId, roster: { applied: appliedAny, when, deferred } }
+}
+
+/**
+ * The card's effect line for an org chart a running work run proposed, or null to use the generic one. The effect is an
+ * upper bound: roles the run cannot start wait for the next run, and the line says so.
+ */
+export function orgChartEffectCopy(effect: Proposal['effect']): string | null {
+  const tail = ' Roles it cannot start yet wait for the next run. Reports already running keep what they have.'
+  if (effect === 'now') return `This run can use the new roles now.${tail}`
+  if (effect === 'after-turn') return `This run can use the new roles once the orchestrator's current turn ends.${tail}`
+  return null
+}
+
+/** The visible sentence of an 'orgRoster' notice. */
+export function rosterNextLead(roster: NonNullable<ProposalNext['roster']>): string {
+  const n = roster.deferred.length
+  const wait = n === 0 ? '' : ` ${n === 1 ? '1 role waits' : `${n} roles wait`} for the next run:`
+  if (!roster.applied) return `Org chart saved.${wait}`
+  const use = roster.when === 'after-turn' ? 'This run can use the new roles once the current turn ends.' : 'This run can use the new roles now.'
+  return `Org chart saved. ${use}${wait}`
 }
 
 /** The follow-up link for an approved proposal, or null when it has none. */
@@ -42,6 +79,7 @@ const NAMES_SHOWN = 3
 
 /** The visible sentence of a notice. Server names are plain text, clamped. */
 export function proposalNextLead(next: ProposalNext): string {
+  if (next.kind === 'orgRoster' && next.roster) return rosterNextLead(next.roster)
   if (next.kind !== 'mcpSecrets') return PROPOSAL_NEXT_COPY[next.kind].lead
   const names = (next.names ?? []).map((n) => clampLabel(n, NAME_MAX)).filter(Boolean)
   const shown = names.slice(0, NAMES_SHOWN).join(', ')
@@ -54,5 +92,6 @@ export const PROPOSAL_NEXT_COPY: Record<ProposalNextKind, { lead: string; action
   skillsProject: { lead: 'Skills saved to this project.', action: 'Open the Team catalog', testId: 'proposal-next-project-skills' },
   connectors: { lead: 'Saved to your MCP library.', action: 'Open Connectors', testId: 'proposal-next-connectors' },
   mcpProject: { lead: 'Servers saved to this project.', action: 'Open its connections', testId: 'proposal-next-project-mcp' },
-  mcpSecrets: { lead: 'A server needs a secret before it can start.', action: 'Set it in Project settings', testId: 'proposal-next-secrets' }
+  mcpSecrets: { lead: 'A server needs a secret before it can start.', action: 'Set it in Project settings', testId: 'proposal-next-secrets' },
+  orgRoster: { lead: 'Org chart saved.', action: 'Open the Team tab', testId: 'proposal-next-org-roster' }
 }

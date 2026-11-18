@@ -470,3 +470,18 @@ Spec: `docs/design/ux-review-run-start-pre.md` (H1-H3, M1-M8). Contract: `StartR
   reduced motion and forced colours, 320 px reflow, the stale "Interrupt and change" path in the app (the idle mock cannot
   stage a mid-reply refusal; the decision is unit-tested). Popover focus-in on first open is now asserted by run-start
   section 9 (it was a NOTE).
+
+## Mid-run roster (2026-11-18)
+
+An org chart a work run proposes and the user approves is usable in that run. The store keeps `RunState.roster`
+(`run.roster` replaces it; runs loaded from a record carry it through `stateFromRecord`). `lib/runRoster.ts`
+(`rolesForRun`, `resolveRunRole`, `runRoleColor`) resolves an agent's role from the roster first, then the project's
+roles. Readers: live canvas colours (`LiveRunView`), the decision card avatar (`DecisionCard`) and the dashboard band
+(`BandRunIn.roster`, part of `bandSignature`). Agent names and the side panel role label come from the agent itself and
+Pocket Office people use agent names only, so they need no lookup. A removed role stays in the roster, so agents that
+started on it keep their colour. Copy: the org chart card's effect line is `orgChartEffectCopy` (now / after-turn; other
+effects keep the generic line); an approved outcome with `roster` leaves a RunMeta note (`rosterNextFor`, kind
+`orgRoster`, never cleared by the card's own approve) listing deferred roles and OrgAI's reasons as plain text, announced
+through the frame announcer. Checked by `runRoster.test.ts`, `proposalNext.test.ts`, `store/runRoster.test.ts`,
+typecheck and build. `e2e/proposals.mjs` scenario 5 (`Staff up [mock:org-change]`) covers the flow and needs the mock
+marker. Unverified: screen-reader speech, the deferred list at 1024x640 (the meta line wraps it; not looked at).

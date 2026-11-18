@@ -80,6 +80,7 @@ function bandSnapshotOf(s: StoreState): BandSnapshot {
       return {
         summary: r.summary,
         ...(r.plan ? { plan: r.plan } : {}),
+        ...(r.roster ? { roster: r.roster } : {}),
         agents: r.agents,
         decisions: items.length,
         ...(items[0] ? { firstDecision: items[0].label } : {})

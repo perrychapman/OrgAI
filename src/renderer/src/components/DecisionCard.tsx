@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { initials } from '../lib/layout'
+import { resolveRunRole } from '../lib/runRoster'
 import { useFrameCompact } from './layout/CanvasFrame'
 import { selectedProject, useAppStore } from '../store/useAppStore'
 import { Badge, type BadgeTone } from './ui/Badge'
@@ -152,8 +153,9 @@ export default function DecisionCard({ kind, runId, who, agentId, title, summary
     if (expandSignal && frameCompact) setExpanded(true)
   }, [expandSignal, frameCompact])
   const color = useAppStore((st) => {
-    const roleId = agentId ? st.runs[runId]?.agents[agentId]?.roleId : undefined
-    return roleId ? selectedProject(st)?.roles.find((r) => r.id === roleId)?.color : undefined
+    const run = st.runs[runId]
+    const agent = agentId ? run?.agents[agentId] : undefined
+    return agent?.roleId ? resolveRunRole(run?.roster, selectedProject(st)?.roles, agent.roleId, undefined)?.color : undefined
   })
   const hasBody = (children !== undefined && children !== null) || !!helper
   const hasDetails = inline ? !!helper : hasBody

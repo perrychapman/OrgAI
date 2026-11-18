@@ -10,7 +10,7 @@ import { ProjectSettingsChanges } from './proposals/ProjectSettingsChanges'
 import { PERMISSION_MODE_OPTIONS, PROPOSAL_NOTE_MAX_CHARS, proposalSecretKey } from '@shared/types'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
-import { proposalNextFor } from '../lib/proposalNext'
+import { orgChartEffectCopy, proposalNextFor } from '../lib/proposalNext'
 import { mcpApplyNote, proposalScope, proposalEffectCopy, secretsHelp, SKIP_MCP_FEEDBACK, uniqueSecretSlots } from '../lib/mcpProposal'
 import { diffOrgChart, modelDisplay, type ChangedRole, type DiffRole } from '../lib/orgDiff'
 import { proposalFoldSummary, proposerName, revisePlaceholder } from '../lib/proposalSummary'
@@ -126,7 +126,9 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
     [proposal, currentRoles, mcpCurrent.servers, skillCurrent, mcpLoading, targetKind, existingSchedules]
   )
   const hasSecrets = !!mcp && uniqueSecretSlots(mcp).length > 0
-  const effectCopy = proposalEffectCopy(proposal.effect, isSetup ? 'architect' : runSummary?.kind === 'mcp-assist' || runSummary?.kind === 'skill-assist' || runSummary?.quick ? 'assistant' : 'orchestrator')
+  const effectCopy =
+    (proposal.kind === 'orgChart' && !isSetup ? orgChartEffectCopy(proposal.effect) : null) ??
+    proposalEffectCopy(proposal.effect, isSetup ? 'architect' : runSummary?.kind === 'mcp-assist' || runSummary?.kind === 'skill-assist' || runSummary?.quick ? 'assistant' : 'orchestrator')
   const helperText =
     proposal.kind === 'mcpServers'
       ? mcpApplyNote(scope, hasSecrets)
@@ -156,6 +158,8 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
     void submit(async () => {
       await onDecide(decision)
       // The card disappears once resolved; the run's metadata line keeps the pointer to where the result went.
+      // An org chart's note comes from the proposal.resolved outcome (what the run could take live): never cleared here.
+      if (proposal.kind === 'orgChart') return
       const home = useAppStore.getState().runs[runId]?.summary.projectId
       useAppStore.getState().noteProposalNext(runId, home ? proposalNextFor(proposal, home) : null)
     })
