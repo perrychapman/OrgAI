@@ -321,12 +321,18 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   - Org changes in the same run (owner request 2026-11-18; ARCHITECTURE.md "Org changes in the same run"): on a team
     work run whose session sets `RuntimeSession.liveRoster` (`runRoster.ts` `liveRosterApplies`), an approved
     propose_org_change also changes `ctx.roles` in place (`applyRosterChange`: changed roles keep object, id and
-    grants and take only the fields the card changed; new roles appended with no grants; removed roles go to
+    grants and take only the fields the card changed, at the card's value; new roles are appended built from their
+    card entry (`joiningRole`: card fields, id / slug / model / tier from the save, no grants), never from the saved
+    role; removed roles go to
     `ctx.retiredRoles()`; the root keeps model / tier / effort / connection / canSpawn). Roles on another placement,
     with an unpriced model under a budget, under a required-delegation obligation, under a different root, or new
     with the slug of a role removed earlier in the run or in the same change are deferred (`RunRosterChange.deferred`;
     a root canSpawn change is deferred alone). Security review fixes (2026-11-18): H1 `ctx.project.roles` is rebuilt
-    from `ctx.roles` after every applied chart so a same-save team-file pull never rides on a later card; M1
+    from `ctx.roles` after every applied chart so a same-save team-file pull never rides on a later card, and a
+    deferred new role is shown there as its card made it (`applied.pending`); second route (a deferred role's file
+    rewritten and ingested before a later card clears the deferral) closed by `joiningRole`, checked by
+    runManagerRoster.test.ts for a price and a placement deferral (both fail with the old code); bridge.ts resolves a
+    caller through `retiredRoles()` and refuses an unresolvable named caller instead of using the root's rights; M1
     `RuntimeSession.rosterApplied` is called synchronously right after the move (throw caught and logged); M2 slug
     reuse deferred; L1 `RunStore.getRecord` cleans `roster` (`cleanRunRoster`, runsRoster.test.ts). RunManager
     records `RunRecord.roster`, emits host-only `run.roster`, returns

@@ -245,6 +245,24 @@ describe('BridgedSessions.spawn', () => {
     expect((await q).ok).toBe(false)
   })
 
+  it('a caller on a role removed mid-run keeps its own rights, never the root; an unresolvable caller is refused', async () => {
+    const roles = chart()
+    const eng = roles.splice(1, 1)[0]!
+    const r = rig({ roles, parent: { retiredRoles: () => [eng] } })
+    r.agents.set('rep', agentOf({ id: 'rep', roleId: 'r-eng', roleSlug: 'engineer', name: 'Engineer', parentId: ROOT_AGENT_ID, state: 'thinking' }))
+    // The engineer (retired, canSpawn false) is not treated as the root, which could spawn oa.
+    await expect(r.b.spawn({ role: 'oa', brief: 'b', parentAgentId: 'rep' })).rejects.toThrow('Role Engineer may not delegate to OpenAI lead.')
+    await expect(r.b.spawn({ role: 'oa', brief: 'b', parentRoleId: 'r-eng' })).rejects.toThrow('Role Engineer may not delegate to OpenAI lead.')
+    // Ids nobody knows: refused instead of the root's rights.
+    await expect(r.b.spawn({ role: 'oa', brief: 'b', parentAgentId: 'ghost' })).rejects.toThrow('could not tell which role called delegate_agent')
+    await expect(r.b.spawn({ role: 'oa', brief: 'b', parentRoleId: 'r-ghost' })).rejects.toThrow('could not tell which role called delegate_agent')
+    // A live agent of a removed role that may delegate still blocks an unnamed caller from counting as the root.
+    const spawner = { ...eng, canSpawn: true, spawnable: ['r-oa'] }
+    const r2 = rig({ roles: chart().filter((x) => x.id !== 'r-eng'), parent: { retiredRoles: () => [spawner] } })
+    r2.agents.set('rep', agentOf({ id: 'rep', roleId: 'r-eng', roleSlug: 'engineer', name: 'Engineer', parentId: ROOT_AGENT_ID, state: 'thinking' }))
+    await expect(r2.b.spawn({ role: 'oa', brief: 'b' })).rejects.toThrow('could not tell which agent called delegate_agent')
+  })
+
   it('refuses unknown or native roles, a caller that may not delegate, depth and concurrency', async () => {
     const r = rig()
     await expect(r.b.spawn({ role: 'engineer', brief: 'b' })).rejects.toThrow('engineer does not run on another connection.')

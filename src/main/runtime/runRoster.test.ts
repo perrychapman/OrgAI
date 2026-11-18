@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Role } from '@shared/types'
-import { ROSTER_REASONS, applyRosterChange, liveRosterApplies, rosterChanged, rosterOf } from './runRoster'
+import { ROSTER_REASONS, applyRosterChange, joiningRole, liveRosterApplies, rosterChanged, rosterOf } from './runRoster'
 import { orgChart, role } from './testHelpers'
 
 const running = (): Role[] => {
@@ -214,6 +214,53 @@ describe('applyRosterChange: an approved org chart in the same run', () => {
     const run3 = running()
     const fresh = savedFrom(run3, (r) => [...r, role({ id: 'r-qa', slug: 'qa', reportsTo: 'r-lead' })])
     expect(applyRosterChange({ running: run3, saved: fresh, proposed: fresh, retiredSlugs: ['auditor'] }).change.added).toEqual(['r-qa'])
+  })
+})
+
+describe('review H1 second route: the card, not the save, defines what joins or changes', () => {
+  it('a joining role takes every field from its card entry, id / slug / model / tier from the save, and no grants', () => {
+    const run = running()
+    const card = [...structuredClone(run), role({ id: 'r-x', slug: 'x', name: 'X', reportsTo: 'r-lead', prompt: 'card', tools: ['Read'], model: 'opus' })]
+    const saved = structuredClone(card)
+    saved[3] = { ...saved[3], slug: 'x-2', model: 'claude-opus-x', tier: 'deep', prompt: 'PULLED', tools: ['Bash'], canSpawn: true, spawnable: ['r-eng'], effort: 'max', mcpServers: ['m1'] }
+    const { change } = applyRosterChange({ running: run, saved, proposed: card })
+    expect(change.added).toEqual(['r-x'])
+    const x = run[3]
+    expect(x).toMatchObject({ id: 'r-x', slug: 'x-2', model: 'claude-opus-x', tier: 'deep', prompt: 'card', tools: ['Read'], canSpawn: false, spawnable: [] })
+    expect(x.effort).toBeUndefined()
+    expect(x.mcpServers).toBeUndefined()
+    expect(joiningRole(card[3], saved[3])).toEqual(x)
+  })
+
+  it('a deferred joining role is returned as it would join (pending), so the run view never shows the saved one', () => {
+    const run = running()
+    const card = [...structuredClone(run), role({ id: 'r-x', slug: 'x', name: 'X', reportsTo: 'r-lead', prompt: 'card' })]
+    const saved = structuredClone(card)
+    saved[3] = { ...saved[3], prompt: 'PULLED' }
+    const { change, pending } = applyRosterChange({ running: run, saved, proposed: card, refuse: () => 'later' })
+    expect(change.deferred.map((d) => d.id)).toEqual(['r-x'])
+    expect(pending.map((r) => [r.id, r.prompt])).toEqual([['r-x', 'card']])
+  })
+
+  it('a field the card changed takes the card value even where the save differs (a pull of the same field)', () => {
+    const run = running()
+    const card = structuredClone(run)
+    card[1] = { ...card[1], prompt: 'card prompt', tools: ['Read', 'Grep'] }
+    const saved = structuredClone(card)
+    saved[1] = { ...saved[1], prompt: 'PULLED', tools: ['Bash'] }
+    applyRosterChange({ running: run, saved, proposed: card })
+    expect(run[1]).toMatchObject({ prompt: 'card prompt', tools: ['Read', 'Grep'] })
+  })
+
+  it('a saved role a pull renamed to another card role never takes that role\'s card entry', () => {
+    const run = running()
+    // The card drops the reviewer; the save still has it, renamed by a pull to the engineer's name.
+    const card = structuredClone(run).filter((r) => r.id !== 'r-rev')
+    const saved = [...structuredClone(card), { ...structuredClone(run[2]), name: 'Engineer', prompt: 'PULLED' }]
+    applyRosterChange({ running: run, saved, proposed: card })
+    const rev = run.find((r) => r.id === 'r-rev')!
+    expect(rev.prompt).toBe('You are reviewer.')
+    expect(rev.tools).toEqual(['Read', 'Grep'])
   })
 })
 

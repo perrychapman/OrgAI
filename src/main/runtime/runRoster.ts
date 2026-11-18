@@ -53,6 +53,12 @@ export interface RosterApplyResult {
   change: RunRosterChange
   /** Copies of the roles removed from `running` by this change, as they were. */
   retired: Role[]
+  /**
+   * New roles of the card that were deferred, as they would join (`joiningRole`: the card's fields, no grants). The
+   * run's view of its roles (ctx.project.roles) holds these, never the saved roles, so the next card is built from what
+   * the user approved.
+   */
+  pending: Role[]
 }
 
 export const ROSTER_REASONS = {
@@ -76,10 +82,21 @@ function differs(before: Role, next: Role, skip: ReadonlySet<string>): boolean {
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
 /**
- * A running role's next definition, field by field: the saved value where it agrees with the card; the running value
- * where the card left the field as it was (only a same-save team-file pull changed it, which never reaches a live run);
- * the saved value where the card changed the field and the save normalised it (or a pull changed it too: the stored
- * value wins).
+ * The only fields a role entering or changing in a live run takes from the SAVE rather than the approved card: identity
+ * (id; slug, which the save may de-duplicate) and the model / tier as the save resolved them (sanitizeRoleModels maps a
+ * tier or unknown id onto the connection's catalog). Everything else the user approved is the card's value, so a
+ * team-file pull ingested by the same save (teamFiles delta mergeFields keeps pulled values for fields the save did not
+ * change, and the gate applies prompt / description / responsibilities / parent / non-spending model edits unasked)
+ * never reaches a run (review H1). A pulled model / tier would still have to pass `refuse` (placement, price) on the
+ * resulting role; grants never move at all.
+ */
+const SAVE_OWNS = ['id', 'slug', 'model', 'tier'] as const
+const SAVE_OWNED: ReadonlySet<string> = new Set(SAVE_OWNS)
+
+/**
+ * A running role's next definition, field by field: the running value where the card left the field as it was (only a
+ * same-save team-file pull could have changed it); otherwise the card's value, except the save-owned fields
+ * (`SAVE_OWNS`), which take the saved value.
  */
 function merged(before: Role, card: Role, saved: Role): Role {
   const out: Loose = {}
@@ -87,10 +104,27 @@ function merged(before: Role, card: Role, saved: Role): Role {
   const c = card as unknown as Loose
   const s = saved as unknown as Loose
   for (const k of new Set([...Object.keys(b), ...Object.keys(s), ...Object.keys(c)])) {
-    const v = same(s[k], c[k]) ? s[k] : same(c[k], b[k]) ? b[k] : s[k]
+    const v = same(c[k], b[k]) ? b[k] : SAVE_OWNED.has(k) ? s[k] : c[k]
     if (v !== undefined) out[k] = v
   }
   return structuredClone(out) as unknown as Role
+}
+
+/**
+ * A role joining the run (or waiting to): every field from the approved card, the save-owned fields from the save, no
+ * grants (an org change never grants). Never the saved role whole (review H1, second route): a deferred role's file can
+ * be rewritten and ingested before a later card clears the deferral.
+ */
+export function joiningRole(card: Role, saved: Role): Role {
+  const out = structuredClone(card) as unknown as Loose
+  const s = saved as unknown as Loose
+  for (const k of SAVE_OWNS) {
+    if (s[k] === undefined) delete out[k]
+    else out[k] = structuredClone(s[k])
+  }
+  delete out.mcpServers
+  delete out.skills
+  return out as unknown as Role
 }
 
 /** Rewrite `role` in place from `next`, keeping the fields in `keep`. */
@@ -109,10 +143,11 @@ function obligated(obligations: Readonly<Record<string, readonly string[]>>, rol
 /**
  * Apply the approved chart's own roles to the running roles, in place:
  * - a role of the chart that the run has (by id) and that differs in anything but grants and position is rewritten in
- *   its own object with the fields the card changed (`merged`); it keeps the run's grants. The root keeps its model,
- *   tier, effort, connection and canSpawn (a card that changes canSpawn gets a `rootCanSpawn` deferral; the rest of the
- *   root's change applies);
- * - a role of the chart the run does not have is appended as saved, with no MCP / skill grants;
+ *   its own object with the fields the card changed, at the card's value (`merged`; id, slug, model and tier as the
+ *   save resolved them); it keeps the run's grants. The root keeps its model, tier, effort, connection and canSpawn (a
+ *   card that changes canSpawn gets a `rootCanSpawn` deferral; the rest of the root's change applies);
+ * - a role of the chart the run does not have is appended built from its card entry (`joiningRole`: every field from
+ *   the card, id / slug / model / tier from the save, no MCP / skill grants), never from the saved role;
  * - a running role that is neither in the chart (id or name) nor in the saved project leaves the array;
  * - roles of the saved project that are not the chart's, and fields of the chart's roles the card did not change (a
  *   team-file pull of the same save), never move.
@@ -128,14 +163,31 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
   const isOwn = (r: Role): boolean => ids.has(r.id) || names.has(r.name)
   const cardById = new Map(proposed.map((r) => [r.id, r]))
   const cardByName = new Map(proposed.map((r) => [r.name, r]))
+  const savedIdSet = new Set(saved.map((r) => r.id))
+  /**
+   * The card entry a saved role was approved as: by id; by name only for a card entry whose id the save does not have
+   * (the save gave it another id), so a role a pull renamed to another card role's name never takes that role's fields.
+   */
+  const cardFor = (r: Role): Role | undefined => {
+    const byId = cardById.get(r.id)
+    if (byId) return byId
+    const byName = cardByName.get(r.name)
+    return byName && !savedIdSet.has(byName.id) ? byName : undefined
+  }
   const mine = saved.filter(isOwn)
   const change: RunRosterChange = { added: [], changed: [], removed: [], deferred: [] }
   const retired: Role[] = []
   const root = running.find((r) => r.reportsTo === null) ?? running[0]
-  const proposedRoot = mine.find((r) => r.reportsTo === null)
+  // The card's root decides (a pull may move a parent; only the card was approved).
+  const proposedRoot = proposed.find((r) => r.reportsTo === null)
   if (!root || !proposedRoot || proposedRoot.id !== root.id) {
-    for (const r of mine) change.deferred.push({ id: r.id, name: r.name, reason: ROSTER_REASONS.root })
-    return { change, retired }
+    const pending: Role[] = []
+    for (const r of mine) {
+      change.deferred.push({ id: r.id, name: r.name, reason: ROSTER_REASONS.root })
+      const card = cardFor(r)
+      if (card &&!running.some((x) => x.id === r.id)) pending.push(joiningRole(card, r))
+    }
+    return { change, retired, pending }
   }
   const savedIds = new Set(saved.map((r) => r.id))
   const byId = new Map(running.map((r) => [r.id, r]))
@@ -143,12 +195,14 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
   const leaving = new Set(running.filter((r) => r !== root && !isOwn(r) && !savedIds.has(r.id) && !obligated(obligations, r.id)).map((r) => r.id))
   const takenSlugs = new Set([...(input.retiredSlugs ?? []), ...running.filter((r) => leaving.has(r.id)).map((r) => r.slug)])
   const added: Role[] = []
+  const pending: Role[] = []
   for (const stored of mine) {
     const before = byId.get(stored.id)
     const isRoot = before === root
     const keep = new Set<string>([...NEVER_MOVES, ...(isRoot ? ROOT_KEEPS : [])])
     if (before) {
-      const card = cardById.get(stored.id) ?? cardByName.get(stored.name) ?? stored
+      const card = cardFor(stored)
+      if (!card) continue
       const next = merged(before, card, stored)
       if (isRoot && next.canSpawn !== before.canSpawn) change.deferred.push({ id: before.id, name: before.name, reason: ROSTER_REASONS.rootCanSpawn })
       if (!differs(before, next, new Set([...keep, ...IGNORED_IN_DIFF]))) continue
@@ -168,14 +222,16 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
       change.changed.push(before.id)
       continue
     }
-    const reason = takenSlugs.has(stored.slug) ? ROSTER_REASONS.slug : input.refuse?.(stored, undefined)
+    // A role that is not in the run: built from the card it was approved on, never taken whole from the save.
+    const card = cardFor(stored)
+    if (!card) continue
+    const fresh = joiningRole(card, stored)
+    const reason = takenSlugs.has(fresh.slug) ? ROSTER_REASONS.slug : input.refuse?.(fresh, undefined)
     if (reason) {
-      change.deferred.push({ id: stored.id, name: stored.name, reason })
+      change.deferred.push({ id: fresh.id, name: fresh.name, reason })
+      pending.push(fresh)
       continue
     }
-    const fresh = structuredClone(stored)
-    delete fresh.mcpServers
-    delete fresh.skills
     added.push(fresh)
   }
   // Removals: never the root, never a role the chart names, never one the saved project still has.
@@ -194,7 +250,7 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
     running.push(r)
     change.added.push(r.id)
   }
-  return { change, retired }
+  return { change, retired, pending }
 }
 
 /** True when the change applied anything (a `run.roster` event and the configChanged call follow). */
