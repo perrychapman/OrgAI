@@ -353,6 +353,16 @@ html[data-columns-moving] .side-panel-body {
   align-items: center;
   gap: var(--space-1);
 }
+/* Roles an applied org chart left for the next run: name and OrgAI's reason, inline after the note. */
+.run-meta-next-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  white-space: normal;
+}
 /* Working / ready counts: two quiet figures that appear only above zero. */
 .run-meta-staffing {
   gap: var(--space-2);

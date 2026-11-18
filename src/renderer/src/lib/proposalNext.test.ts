@@ -1,10 +1,35 @@
 import { describe, expect, it } from 'vitest'
 import type { Proposal } from '@shared/types'
-import { PROPOSAL_NEXT_COPY, proposalNextFor, proposalNextLead, secretsNextFor } from './proposalNext'
+import { PROPOSAL_NEXT_COPY, orgChartEffectCopy, proposalNextFor, proposalNextLead, rosterNextFor, secretsNextFor } from './proposalNext'
 
 const skills = (scopes: ('library' | 'project')[]): Proposal =>
   ({ id: 'p', kind: 'skills', title: 't', payload: { items: scopes.map((scope) => ({ scope, draft: { name: 'x' } })) } }) as unknown as Proposal
 const mcp = (scope?: 'library'): Proposal => ({ id: 'p', kind: 'mcpServers', title: 't', payload: { servers: [], ...(scope ? { scope } : {}) } }) as unknown as Proposal
+
+describe('org chart roster notes', () => {
+  const org = (effect?: Proposal['effect']): Proposal => ({ id: 'p', kind: 'orgChart', title: 't', ...(effect ? { effect } : {}), payload: { roles: [], rationale: '' } }) as unknown as Proposal
+  const roster = (over: object = {}): { behavior: 'approve'; roster: never } => ({ behavior: 'approve', roster: { added: ['a'], changed: [], removed: [], deferred: [], ...over } as never })
+  it('says when the run can use the new roles, per effect', () => {
+    expect(orgChartEffectCopy('now')).toContain('can use the new roles now')
+    expect(orgChartEffectCopy('after-turn')).toContain("once the orchestrator's current turn ends")
+    expect(orgChartEffectCopy('next-run')).toBeNull()
+    expect(orgChartEffectCopy(undefined)).toBeNull()
+  })
+  it('has no note when nothing reached the run, or for another kind', () => {
+    expect(rosterNextFor(org('now'), { behavior: 'approve' }, 'p1')).toBeNull()
+    expect(rosterNextFor(org('now'), roster({ added: [] }), 'p1')).toBeNull()
+    expect(rosterNextFor(mcp(), roster(), 'p1')).toBeNull()
+    expect(rosterNextFor(org('now'), { behavior: 'decline' }, 'p1')).toBeNull()
+  })
+  it('words the note by timing and counts deferred roles', () => {
+    const now = rosterNextFor(org('now'), roster(), 'p1')
+    expect(now && proposalNextLead(now)).toBe('Org chart saved. This run can use the new roles now.')
+    const later = rosterNextFor(org('after-turn'), roster({ deferred: [{ id: 'x', name: 'X', reason: 'r' }] }), 'p1')
+    expect(later && proposalNextLead(later)).toBe('Org chart saved. This run can use the new roles once the current turn ends. 1 role waits for the next run:')
+    const only = rosterNextFor(org('now'), roster({ added: [], deferred: [{ id: 'x', name: 'X', reason: 'r' }, { id: 'y', name: 'Y', reason: 's' }] }), 'p1')
+    expect(only && proposalNextLead(only)).toBe('Org chart saved. 2 roles wait for the next run:')
+  })
+})
 
 describe('proposalNextFor', () => {
   it('points library skills at the Skill library and any project skill at the project', () => {

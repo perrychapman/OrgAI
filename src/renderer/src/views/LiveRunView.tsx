@@ -14,6 +14,7 @@ import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { OfficeScene, type OfficeSceneHandle } from '../components/canvas/office/OfficeScene'
 import { officeAgentView } from '../lib/office/agentView'
+import { runRoleColor } from '../lib/runRoster'
 import { withOfficeDepartments } from '../lib/office/departments'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
@@ -362,8 +363,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   }, [agents, chain.earlier])
   const roleColor = useCallback(
     (roleId: string | null, slug: string): string =>
-      project.roles.find((r) => r.id === roleId)?.color ?? project.roles.find((r) => r.slug === slug)?.color ?? neutralRoleColor,
-    [project.roles, neutralRoleColor]
+      runRoleColor(run.roster, project.roles, roleId, slug, neutralRoleColor),
+    [run.roster, project.roles, neutralRoleColor]
   )
 
   // Finished reports fold after a short grace period (lib/foldFinished.ts). One timeout waits for the next agent to

@@ -2,11 +2,12 @@
  * The Dashboard's Right now band as a pure model (docs/design/dashboard-2.md section 6): which runs, which agent rows,
  * the caps and their priority, tree order, depth, reporting-line facts and the accessible names. No React, no store.
  */
-import type { AgentInstance, AgentState, Project, RunPlan, RunSummary } from '@shared/types'
+import type { AgentInstance, AgentState, Project, RunPlan, RunRosterRole, RunSummary } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { agentLabel, hasLiveDescendant, normalizeParents } from '@shared/view/agentTree'
 import { isSettledAt } from './foldFinished'
+import { rolesForRun, rosterSignature, type RunRoleView } from './runRoster'
 import { nodeActivity, isWorkingAgent, worktreeLabel } from './agentActivity'
 import { locationLabel } from './assistants'
 import { oneLine } from '@shared/view/decisionTitle'
@@ -35,6 +36,8 @@ export interface BandCaps {
 export interface BandRunIn {
   summary: RunSummary
   plan?: RunPlan
+  /** The run's roster after a mid-run org change; role colours resolve from it first (lib/runRoster.ts). */
+  roster?: RunRosterRole[]
   agents: Record<string, AgentInstance>
   /** `waitingItems(run).length`. */
   decisions: number
@@ -164,7 +167,7 @@ const PRIORITY: Record<BandAgentState, number> = { waiting: 0, working: 1, idle:
 const GROUP_RANK: Record<BandGroup, number> = { working: 0, waiting: 1, idle: 2 }
 
 /** The role colour as the canvas resolves it: the project's role colour by id, else by slug, else neutral. */
-export function roleColorFor(project: Pick<Project, 'roles'> | undefined, roleId: string | null, slug: string): string {
+export function roleColorFor(project: { roles: readonly RunRoleView[] } | undefined, roleId: string | null, slug: string): string {
   const roles = project?.roles ?? []
   return roles.find((r) => r.id === roleId)?.color ?? roles.find((r) => r.slug === slug)?.color ?? NEUTRAL_ROLE_COLOR
 }
@@ -232,7 +235,7 @@ export interface BandAgentsResult {
  * report under it is live; the rest are counted. Over `share` rows, kept by priority waiting > working > idle > done and
  * shown in tree order.
  */
-export function bandAgents(allAgents: readonly AgentInstance[], now: number, share: number, project?: Pick<Project, 'roles'>): BandAgentsResult {
+export function bandAgents(allAgents: readonly AgentInstance[], now: number, share: number, project?: { roles: readonly RunRoleView[] }): BandAgentsResult {
   const agents = normalizeParents([...allAgents])
   const settled = (a: AgentInstance): boolean => isSettledAt(a, now)
   const cands: Candidate[] = []
@@ -378,7 +381,8 @@ export function bandModel(
   const out: BandRun[] = shown.map(({ r, project, status, group }) => {
     const list = Object.values(r.agents)
     const root = rootOf(list)
-    const res = bandAgents(list, now, Math.min(caps.bandAgentsPerRun, remaining), project)
+    const roleSource = r.roster ? { roles: rolesForRun(r.roster, project?.roles) } : project
+    const res = bandAgents(list, now, Math.min(caps.bandAgentsPerRun, remaining), roleSource)
     remaining = Math.max(0, remaining - res.kept)
     let working = 0
     const agentRows = res.rows.map((a) => (a.state === 'working' ? { ...a, breath: working++ } : a))
@@ -402,7 +406,7 @@ export function bandModel(
       decisions: r.decisions,
       suffix: decisionsSuffix(r.decisions),
       rootId: root?.id ?? null,
-      rootColor: roleColorFor(project, root?.roleId ?? null, root?.roleSlug ?? ''),
+      rootColor: roleColorFor(roleSource, root?.roleId ?? null, root?.roleSlug ?? ''),
       rows: markLines(rows)
     }
   })
@@ -528,7 +532,7 @@ export function bandSignature(runs: readonly BandRunIn[], projects: readonly Pro
     parts.push(
       [
         s.id, s.projectId, s.status, s.kind, s.title ?? '', s.prompt ?? '', s.startedAt, s.quick ? 'q' : '', s.team ?? '', s.endedBy ?? '', s.endedWithApp ? 'a' : '',
-        JSON.stringify(runCostInput(s)), r.decisions, r.firstDecision ?? '', r.plan ? `${r.plan.status}/${r.plan.steps.map((x) => `${x.status}:${x.title}`).join('|')}` : '',
+        JSON.stringify(runCostInput(s)), r.decisions, r.firstDecision ?? '', rosterSignature(r.roster), r.plan ? `${r.plan.status}/${r.plan.steps.map((x) => `${x.status}:${x.title}`).join('|')}` : '',
         Object.values(r.agents)
           .map((a) => [a.id, a.parentId ?? '', a.state, a.activity, a.handle ?? '', a.name, a.roleId ?? '', a.roleSlug, a.worktree?.status ?? '', a.worktree?.mergeTarget ?? '', a.startedAt, a.endedAt ?? '', a.usage?.producedNothing ? 'n' : '', a.result ? 'r' : ''].join('~'))
           .join('^')
