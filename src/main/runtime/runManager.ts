@@ -731,6 +731,15 @@ function excerpt(prompt: string, max = 60): string {
 
 export interface RunManagerOptions {
   /**
+   * Mid-run org changes (runRoster.ts liveRosterApplies): true only on a host whose approval surface renders the org
+   * chart diff against OrgChartProposalPayload.runBaseline with every field that can move. The desktop app sets it
+   * (bootstrap.ts with `desktop`, whose only decision path for an org chart card is the renderer's ProposalCard). The
+   * CLI / TUI / exec host leaves it unset (its approval surface shows no diff), and so does any future host until it
+   * opts in: absent = an approved org chart applies from the next run, exactly as before the feature (no runBaseline,
+   * ctx.roles untouched, card effect 'next-run').
+   */
+  liveRosterCards?: true
+  /**
    * Interactive clients right now: open desktop windows plus attached TUI or interactive sockets. The headless decision
    * policy waits humanGraceMs before auto-resolving a card while this is above 0. Missing = 0.
    */
@@ -2260,7 +2269,7 @@ export class RunManager {
           else overlay('roles')
           // Only a card that was diffed against the run's own roles (runBaseline) is applied to them: one created before
           // the session took roster changes live was diffed against the stored project and applies from the next run.
-          if (card && baseline && !bare && liveRosterApplies(summary, active.session)) {
+          if (card && baseline && !bare && liveRosterApplies(summary, active.session, this.options)) {
             // L2: grants the view holds on a waiting role were approved on their own cards; nothing else grants it.
             const runIds = new Set(ctx.roles.map((r) => r.id))
             const pendingGrants = new Map(live.roles.filter((r) => !runIds.has(r.id)).map((r) => [r.id, { ...(r.mcpServers ? { mcpServers: r.mcpServers } : {}), ...(r.skills ? { skills: r.skills } : {}) }]))
@@ -2270,6 +2279,8 @@ export class RunManager {
               proposed: card,
               baseline,
               pendingGrants,
+              // Review M3: the view's waiting roles now, to catch a card raised before another card changed them.
+              currentView: new Map(live.roles.filter((r) => !runIds.has(r.id)).map((r) => [r.id, r])),
               obligations: active.ledger?.snapshot().obligations,
               refuse: rosterRefusal,
               retiredSlugs: (active.retiredRoles ?? []).map((r) => r.slug)
@@ -2319,7 +2330,8 @@ export class RunManager {
               const waiting = pendingById.get(o.id)
               if (run) show(run)
               else if (waiting) show(waiting)
-              else if (!cardIds.has(o.id) && !cardNames.has(o.name) && savedRoles.has(o.id)) show(o)
+              // A waiting role this card never saw (it appeared after the card was created) stays as the view has it.
+              else if (!cardIds.has(o.id) && !cardNames.has(o.name) && (savedRoles.has(o.id) || !baseline.some((b) => b.id === o.id))) show(o)
             }
             for (const r of ctx.roles) show(r)
             for (const r of applied.pending) show(r)
@@ -4464,7 +4476,7 @@ export class RunManager {
     req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>,
     onApplied?: (saved: Project, proposal: Proposal) => { roster?: RunRosterChange } | undefined
   ): Promise<ProposalOutcome> {
-    const live = liveRosterApplies(active.summary, active.session)
+    const live = liveRosterApplies(active.summary, active.session, this.options)
     const effect = proposalEffect(req.kind, active.summary, active.adapter, { liveRoster: live })
     const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now(), effect, revision: 1 } as Proposal
     if (proposal.kind === 'orgChart') {

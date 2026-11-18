@@ -290,6 +290,55 @@ describe('third review: the invariant "a field moves only if the card differs fr
   })
 })
 
+describe('fourth review: parallel cards', () => {
+  it('M2: a running role that joined after the card was created is never removed by it (stale)', () => {
+    const baseline = structuredClone(running())
+    const run = running()
+    // N joined through another card after this one was created; this card (and its save) do not have it.
+    run.push(role({ id: 'r-n', slug: 'n', name: 'N', reportsTo: 'r-lead' }))
+    const card = structuredClone(baseline)
+    const { change, retired } = applyRosterChange({ running: run, saved: structuredClone(card), proposed: card, baseline })
+    expect(change.removed).toEqual([])
+    expect(retired).toEqual([])
+    expect(change.deferred).toEqual([{ id: 'r-n', name: 'N', reason: ROSTER_REASONS.stale }])
+    expect(run.some((r) => r.id === 'r-n')).toBe(true)
+  })
+
+  it('M3: a waiting role another card changed since this card was created is deferred stale and keeps its current entry', () => {
+    const p = role({ id: 'r-p', slug: 'p', name: 'P', reportsTo: 'r-lead', tools: ['Read', 'Bash'], connection: 'openai' })
+    const run = running()
+    const baseline = [...structuredClone(run), structuredClone(p)]
+    // Since then, card X removed Bash from P's waiting entry.
+    const current: Role = { ...structuredClone(p), tools: ['Read'] }
+    // This older card clears P's deferral (no connection) and still shows Bash.
+    const card = [...structuredClone(run), { ...structuredClone(p), connection: undefined }]
+    const { change, pending } = applyRosterChange({ running: run, saved: structuredClone(card), proposed: card, baseline, currentView: new Map([['r-p', current]]) })
+    expect(change.added).toEqual([])
+    expect(change.deferred).toEqual([{ id: 'r-p', name: 'P', reason: ROSTER_REASONS.stale }])
+    expect(pending).toEqual([current])
+    expect(run.some((r) => r.id === 'r-p')).toBe(false)
+    // Unchanged in the view (grants aside): it joins.
+    const run2 = running()
+    const same2 = applyRosterChange({ running: run2, saved: structuredClone(card), proposed: card, baseline, currentView: new Map([['r-p', { ...structuredClone(p), mcpServers: ['m'] }]]) })
+    expect(same2.change.added).toEqual(['r-p'])
+    // A waiting role the view lost since (another card removed it): deferred, not resurrected.
+    const run3 = running()
+    const gone = applyRosterChange({ running: run3, saved: structuredClone(card), proposed: card, baseline, currentView: new Map() })
+    expect(gone.change.deferred.map((d) => d.reason)).toEqual([ROSTER_REASONS.stale])
+    expect(gone.pending).toEqual([])
+  })
+
+  it('L4: a card never changes a running role\'s slug (identity)', () => {
+    const run = running()
+    const card = structuredClone(run)
+    card[1] = { ...card[1], slug: 'builder', prompt: 'p2' }
+    const { change } = applyRosterChange({ running: run, saved: structuredClone(card), proposed: card })
+    expect(change.changed).toEqual([])
+    expect(change.deferred).toEqual([{ id: 'r-eng', name: 'Engineer', reason: ROSTER_REASONS.identity }])
+    expect(run[1]).toMatchObject({ slug: 'engineer', prompt: 'You are engineer.' })
+  })
+})
+
 describe('review H1 second route: the card, not the save, defines what joins or changes', () => {
   it('a joining role shown whole takes every field from its card entry (model as the save resolved it), never a saved-only field, no grants', () => {
     const run = running()
@@ -377,12 +426,19 @@ describe('rosterOf and liveRosterApplies', () => {
 
   it('applies to team work runs of a stored project whose session declares liveRoster only', () => {
     const on = { liveRoster: true }
-    expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, on)).toBe(true)
-    expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, {})).toBe(false)
-    expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, undefined)).toBe(false)
-    expect(liveRosterApplies({ kind: 'setup', projectId: 'p1' }, on)).toBe(false)
-    expect(liveRosterApplies({ kind: 'mcp-assist', projectId: 'harness' }, on)).toBe(false)
-    expect(liveRosterApplies({ kind: 'work', projectId: 'quick', quick: {} as never }, on)).toBe(false)
-    expect(liveRosterApplies({ kind: 'work', projectId: 'p1', team: 'single' }, on)).toBe(false)
+    const desktop = { liveRosterCards: true }
+    expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, on, desktop)).toBe(true)
+    expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, {}, desktop)).toBe(false)
+    expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, undefined, desktop)).toBe(false)
+    expect(liveRosterApplies({ kind: 'setup', projectId: 'p1' }, on, desktop)).toBe(false)
+    expect(liveRosterApplies({ kind: 'mcp-assist', projectId: 'harness' }, on, desktop)).toBe(false)
+    expect(liveRosterApplies({ kind: 'work', projectId: 'quick', quick: {} as never }, on, desktop)).toBe(false)
+    expect(liveRosterApplies({ kind: 'work', projectId: 'p1', team: 'single' }, on, desktop)).toBe(false)
+  })
+
+  it('fails closed on a host that did not opt in (review, fourth round: the CLI / TUI / exec host)', () => {
+    const on = { liveRoster: true }
+    expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, on, {})).toBe(false)
+    expect(liveRosterApplies({ kind: 'work', projectId: 'p1' }, on, { liveRosterCards: false })).toBe(false)
   })
 })

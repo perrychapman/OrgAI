@@ -1,11 +1,18 @@
 import { isVirtualProjectId, type Role, type RunRosterChange, type RunRosterRole, type RunSummary } from '@shared/types'
 
 /**
- * Whether an approved org chart reaches this run's roles: a team work run of a stored project (never setup-like,
- * assistant, quick / Chat or single-agent runs) whose session declares RuntimeSession.liveRoster. Pure.
+ * Whether an approved org chart reaches this run's roles: only on a host whose approval surface renders the org chart
+ * diff against runBaseline with every field that can move (`host.liveRosterCards`, RunManagerOptions; the desktop app
+ * sets it, the CLI / TUI / exec host does not: fail closed, a host is off until it opts in), and only for a team work
+ * run of a stored project (never setup-like, assistant, quick / Chat or single-agent runs) whose session declares
+ * RuntimeSession.liveRoster. Pure.
  */
-export function liveRosterApplies(summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick' | 'team'>, session: { liveRoster?: boolean } | undefined): boolean {
-  return summary.kind === 'work' && !summary.quick && summary.team !== 'single' && !isVirtualProjectId(summary.projectId) && session?.liveRoster === true
+export function liveRosterApplies(
+  summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick' | 'team'>,
+  session: { liveRoster?: boolean } | undefined,
+  host: { liveRosterCards?: boolean }
+): boolean {
+  return host.liveRosterCards === true && summary.kind === 'work' && !summary.quick && summary.team !== 'single' && !isVirtualProjectId(summary.projectId) && session?.liveRoster === true
 }
 
 /**
@@ -51,6 +58,13 @@ export interface RosterApplyInput {
    * while the role waited (review L2). A role joining takes these and nothing else as grants; never the save's.
    */
   pendingGrants?: ReadonlyMap<string, Pick<Role, 'mcpServers' | 'skills'>>
+  /**
+   * The run's view entries NOW for roles that are not running (waiting roles), by id. A waiting role whose baseline entry
+   * differs from its current entry (another card changed or removed it after this card was created), or that appeared
+   * in the view after this card was created, is deferred `stale` and keeps its current entry. RunManager always passes
+   * it; omitted (pure callers) = not checked.
+   */
+  currentView?: ReadonlyMap<string, Role>
   /** The run's required-delegation obligations (ledger: role id -> required report ids); {} or undefined = none. */
   obligations?: Readonly<Record<string, readonly string[]>>
   /**
@@ -218,20 +232,51 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
     delete role.skills
     return { ...role, ...pendingGrants(card.id) }
   }
+  /**
+   * Review M3: a waiting role's baseline entry must still be its entry in the run's view (another card may have changed,
+   * removed or added it since this card was created). Stale = undefined when it is current; else the entry to keep
+   * (the CURRENT view entry, or null when the view no longer has it). Not checked without `currentView`.
+   */
+  const waitingStale = (id: string): Role | null | undefined => {
+    const view = input.currentView
+    if (!view) return undefined
+    const base = baseById.get(id)
+    const now = view.get(id)
+    if (!base && !now) return undefined
+    if (base && now && !differs(base, now, NOT_COMPARED)) return undefined
+    return now ? structuredClone(now) : null
+  }
+  /** Defer a waiting role as stale, keeping its current view entry in pending. True when it was stale. */
+  const deferIfStaleWaiting = (card: Role): boolean => {
+    const keep = waitingStale(card.id)
+    if (keep === undefined) return false
+    defer(card.id, card.name, ROSTER_REASONS.stale)
+    if (keep) pending.push(keep)
+    return true
+  }
   const root = running.find((r) => r.reportsTo === null) ?? running[0]
   // The card's root decides (a pull may move a parent; only the card was approved).
   const proposedRoot = proposed.find((r) => r.reportsTo === null)
   if (!root || !proposedRoot || proposedRoot.id !== root.id) {
     for (const r of mine) {
-      defer(r.id, r.name, ROSTER_REASONS.root)
       const card = cardFor(r)
-      if (card && !running.some((x) => x.id === r.id)) pending.push(waiting(card, card.id === r.id ? r : undefined))
+      if (card && !running.some((x) => x.id === r.id)) {
+        const keep = waitingStale(card.id)
+        if (keep !== undefined) {
+          defer(r.id, r.name, ROSTER_REASONS.stale)
+          if (keep) pending.push(keep)
+          continue
+        }
+        pending.push(waiting(card, card.id === r.id ? r : undefined))
+      }
+      defer(r.id, r.name, ROSTER_REASONS.root)
     }
     return { change, retired, pending }
   }
   const byId = new Map(running.map((r) => [r.id, r]))
-  // Removals are decided first so a new role cannot take the slug of one leaving in this same change.
-  const leaving = new Set(running.filter((r) => r !== root && !isOwn(r) && !savedIdSet.has(r.id) && !obligated(obligations, r.id)).map((r) => r.id))
+  // Removals are decided first so a new role cannot take the slug of one leaving in this same change. Review M2: a
+  // running role this card's baseline does not have (it joined after the card was created) is never removed by it.
+  const leaving = new Set(running.filter((r) => r !== root && !isOwn(r) && !savedIdSet.has(r.id) && baseById.has(r.id) && !obligated(obligations, r.id)).map((r) => r.id))
   const takenSlugs = new Set([...(input.retiredSlugs ?? []), ...running.filter((r) => leaving.has(r.id)).map((r) => r.slug)])
   const runningSlugs = new Map(running.map((r) => [r.slug, r.id]))
   /** Planned rewrites of running roles: applied only after the reporting check. */
@@ -252,6 +297,11 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
       // The card was diffed against `base`; it must still be the running role, or nothing of it moves.
       if (!base || differs(base, before, NOT_COMPARED)) {
         if (!same(card, base)) defer(before.id, before.name, ROSTER_REASONS.stale)
+        continue
+      }
+      // Review L4: a running role's slug is its identity (spawn name, MCP grants by slug): a card never changes it.
+      if (card.slug !== before.slug) {
+        defer(before.id, before.name, ROSTER_REASONS.identity)
         continue
       }
       const next = underInvariant(before, card, stored)
@@ -275,6 +325,7 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
     }
     // A role that is not in the run (M1): it must be the card's own role, under the card's id and slug, and its slug
     // must be free in this run; otherwise the save matched it to some other stored role the user never saw.
+    if (deferIfStaleWaiting(card)) continue
     const clash = runningSlugs.get(card.slug)
     if (takenSlugs.has(card.slug)) {
       defer(card.id, card.name, ROSTER_REASONS.slug)
@@ -298,7 +349,7 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
   // Removals the plan cannot make: never the root, never a role the chart names, never one the saved project has.
   for (const r of running) {
     if (r === root || isOwn(r) || savedIdSet.has(r.id) || leaving.has(r.id)) continue
-    defer(r.id, r.name, ROSTER_REASONS.delegation)
+    defer(r.id, r.name, baseById.has(r.id) ? ROSTER_REASONS.delegation : ROSTER_REASONS.stale)
   }
   // L1: the run's roles after a PARTIAL application must still all reach the root. Undo the parts that cut a role off.
   const simulate = (): Role[] => {
