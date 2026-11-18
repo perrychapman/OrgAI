@@ -5,6 +5,7 @@ import type { ScheduleRowView } from '@shared/view/schedules'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
+import { ContextMenu, useContextMenu, type MenuEntry } from '../ui/ContextMenu'
 import ScheduleHistory from './ScheduleHistory'
 import { showHidden } from '../../lib/hiddenChars'
 
@@ -39,8 +40,30 @@ export default function ScheduleRow({
   const uid = useId()
   const headingId = `${uid}-name`
   const historyId = `${uid}-history`
+  const menu = useContextMenu<string>()
+  const fallbackFocus = (): HTMLElement | null => document.querySelector<HTMLElement>('[data-testid=schedules-view] h1')
+  const why = busy ? 'Working on it' : undefined
+  const menuItems = (): MenuEntry[] => [
+    { id: 'run-now', label: 'Run now', icon: Zap, onSelect: onRunNow, disabled: busy, disabledReason: why, testId: 'schedule-menu-run-now' },
+    ...(row.toggle ? [{ id: 'toggle', label: row.toggle, icon: row.toggle === 'Pause' ? Pause : Play, onSelect: onToggle, disabled: busy, disabledReason: why, testId: 'schedule-menu-toggle' }] : []),
+    { id: 'edit', label: 'Edit', icon: Pencil, onSelect: onEdit, disabled: busy, disabledReason: why, testId: 'schedule-menu-edit' },
+    'separator',
+    { id: 'delete', label: 'Delete', icon: Trash2, onSelect: onDelete, destructive: true, disabled: busy, disabledReason: why, testId: 'schedule-menu-delete' }
+  ]
   return (
-    <li className="schedule-row" data-testid="schedule-row" data-schedule-id={row.id} data-state={row.chip.label} aria-labelledby={headingId}>
+    <li
+      className="schedule-row"
+      data-testid="schedule-row"
+      data-schedule-id={row.id}
+      data-state={row.chip.label}
+      aria-labelledby={headingId}
+      onContextMenu={(e) => menu.onContextMenu(e, row.id, { fallbackFocus })}
+      onKeyDown={(e) => {
+        const t = e.target
+        // From the focused control inside the card; the menu itself handles its own keys.
+        if (t instanceof HTMLElement && t !== e.currentTarget) menu.onKeyDown(e, row.id, { anchor: t, invoker: t, fallbackFocus })
+      }}
+    >
       <div className="schedule-row-head">
         <h2 className="schedule-row-name" id={headingId} tabIndex={-1} title={showHidden(row.name)}>
           {showHidden(row.name)}
@@ -114,6 +137,7 @@ export default function ScheduleRow({
       <div id={historyId} className="schedule-row-history" hidden={!open}>
         {open && <ScheduleHistory scheduleId={row.id} scheduleName={row.name} reloadKey={historyKey} announce={announce} onLoaded={onHistoryOpened} />}
       </div>
+      <ContextMenu control={menu} label={`Actions for ${row.name}`} items={menuItems} testId="schedule-menu" />
     </li>
   )
 }

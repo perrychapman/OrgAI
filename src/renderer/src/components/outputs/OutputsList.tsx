@@ -1,9 +1,13 @@
-import type { FocusEvent, KeyboardEvent, ReactElement, Ref } from 'react'
+import type { FocusEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactElement, Ref } from 'react'
 import { useCallback, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { RunOutput } from '@shared/types'
 import { runTag } from '@shared/view/runLabels'
 import { isTypeAheadKey, nextTypeAhead, type TypeAhead } from '../../lib/knowledgeList'
-import { Check } from 'lucide-react'
+import { Check, ExternalLink, FileText, FolderOpen, Link2 } from 'lucide-react'
+import { canOpenOutput } from '../../lib/outputs'
+import { cleanIpcError } from '../../lib/ipcError'
+import { ContextMenu, useContextMenu, type MenuEntry } from '../ui/ContextMenu'
+import { OUTPUT_OPEN_HINT } from './OutputActions'
 import { OUTPUTS_PAGE, currentProvenance, dayGroups, isNewVersion, rowMetaLine, titleTypeAhead } from '../../lib/outputsList'
 import { showHidden } from '../../lib/hiddenChars'
 import { Badge } from '../ui/Badge'
@@ -17,6 +21,68 @@ export interface OutputsListHandle {
   /** Focus the row (growing the shown page when it is past it); falls back to the current row. */
   focusRow(id: string | null): void
 }
+
+/**
+ * The right-click / Menu key menu of the list and grid (docs/design/context-menus.md): Open, Open in default app, Show in
+ * folder, Copy path. One menu per list; answers go to `onNotice` (the view's announcer). Off in select mode.
+ */
+export function useOutputRowMenu(rows: readonly RunOutput[], selectMode: boolean, onOpen: (id: string) => void, onNotice?: (text: string) => void): {
+  onContextMenu: (e: ReactMouseEvent<HTMLElement>) => void
+  onKeyDown: (e: KeyboardEvent<HTMLElement>) => boolean
+  menu: ReactElement
+} {
+  const control = useContextMenu<string>()
+  const optionOf = (e: { target: EventTarget | null }): HTMLElement | null => (e.target instanceof Element ? e.target.closest<HTMLElement>('[role=option]') : null)
+  const say = (text: string): void => onNotice?.(text)
+  const shell = (call: () => Promise<string>): void => {
+    void call().then(
+      (answer) => {
+        if (answer) say(answer)
+      },
+      (e: unknown) => say(cleanIpcError(e))
+    )
+  }
+  const items = (id: string): MenuEntry[] => {
+    const o = rows.find((r) => r.id === id)
+    if (!o) return []
+    const ref = { projectId: o.projectId, outputId: o.id }
+    const canOpen = canOpenOutput(o)
+    return [
+      { id: 'open', label: 'Open', icon: FileText, onSelect: () => onOpen(o.id), testId: 'output-row-open' },
+      ...(o.missing ? [] : [{ id: 'open-app', label: 'Open in default app', icon: ExternalLink, onSelect: () => shell(() => window.orgai.outputs.open(ref)), disabled: !canOpen, disabledReason: canOpen ? undefined : OUTPUT_OPEN_HINT, testId: 'output-row-open-app' }]),
+      ...(o.missing ? [] : [{ id: 'reveal', label: 'Show in folder', icon: FolderOpen, onSelect: () => shell(() => window.orgai.outputs.reveal(ref)), testId: 'output-row-reveal' }]),
+      {
+        id: 'copy-path',
+        label: 'Copy path',
+        icon: Link2,
+        onSelect: () => {
+          void navigator.clipboard.writeText(o.path).then(
+            () => say('Copied the path.'),
+            (e: unknown) => say(cleanIpcError(e))
+          )
+        },
+        testId: 'output-row-copy-path'
+      }
+    ]
+  }
+  return {
+    onContextMenu: (e) => {
+      if (selectMode) return
+      const el = optionOf(e)
+      const id = el?.dataset.id
+      if (el && id) control.onContextMenu(e, id, { invoker: el })
+    },
+    onKeyDown: (e) => {
+      if (selectMode) return false
+      const el = optionOf(e)
+      const id = el?.dataset.id
+      return !!el && !!id && control.onKeyDown(e, id, { anchor: el, invoker: el })
+    },
+    menu: <ContextMenu control={control} label={(id) => `Actions for ${plainName(rows.find((r) => r.id === id)?.title)}`} items={items} testId="output-row-menu" />
+  }
+}
+
+const plainName = (t: string | undefined): string => (t ? showHidden(t) : 'this output')
 
 /**
  * The Outputs tab's list (docs/design/outputs.md section 8): one `role=listbox`, so the whole list is one Tab stop
@@ -35,8 +101,11 @@ export function OutputsList({
   checked,
   onToggle,
   onSelect,
-  onOpen
+  onOpen,
+  onNotice
 }: {
+  /** Answers of the row menu (Open in default app, Copy path). */
+  onNotice?: (text: string) => void
   ref?: Ref<OutputsListHandle>
   rows: readonly RunOutput[]
   indexes: ReadonlyMap<string, number>
@@ -117,7 +186,9 @@ export function OutputsList({
 
   // ---- keys ----
   const typeAhead = useRef<TypeAhead | null>(null)
+  const rowMenu = useOutputRowMenu(rows, selectMode, onOpen, onNotice)
   const onKeyDown = (e: KeyboardEvent<HTMLUListElement>): void => {
+    if (rowMenu.onKeyDown(e)) return
     const id = (e.target as HTMLElement).closest<HTMLElement>('[role=option]')?.dataset.id
     if (!id) return
     const from = rows.findIndex((r) => r.id === id)
@@ -163,7 +234,7 @@ export function OutputsList({
   const more = Math.min(OUTPUTS_PAGE, rows.length - shownCount)
   return (
     <div className="outputs-list-wrap">
-      <ul ref={listRef} className="outputs-list" role="listbox" aria-label="Outputs" aria-multiselectable={selectMode || undefined} data-select={selectMode ? 'true' : undefined} data-testid="outputs-list" tabIndex={-1} onKeyDown={onKeyDown} onFocus={onFocus}>
+      <ul ref={listRef} className="outputs-list" role="listbox" aria-label="Outputs" aria-multiselectable={selectMode || undefined} data-select={selectMode ? 'true' : undefined} data-testid="outputs-list" tabIndex={-1} onKeyDown={onKeyDown} onFocus={onFocus} onContextMenu={rowMenu.onContextMenu}>
         {groups.map((g) => (
           <li key={g.key} role="presentation" className="outputs-group" data-testid="outputs-group">
             {/* Hidden from the tree (a listbox owns options and groups only); aria-labelledby still reads it as the group's name. */}
@@ -188,6 +259,7 @@ export function OutputsList({
           </li>
         ))}
       </ul>
+      {rowMenu.menu}
       {more > 0 && (
         <div className="outputs-more">
           <Button size="sm" testId="outputs-more" onClick={() => setLimit(shownCount + OUTPUTS_PAGE)}>

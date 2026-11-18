@@ -343,7 +343,7 @@ export default function OutputsView({ project }: { project: Project }): ReactEle
 
   const empty = loaded && all.length === 0
   const noMatch = loaded && all.length > 0 && rows.length === 0
-  const listProps = { rows, selectedId, seen, selectMode, checked, onToggle: toggleChecked, onSelect: selectItem, onOpen: openItem }
+  const listProps = { rows, selectedId, seen, selectMode, checked, onToggle: toggleChecked, onSelect: selectItem, onOpen: openItem, onNotice: setNotice }
   return (
     <div className="outputs" data-testid="outputs-view" data-project={projectId}>
       <OutputsFilters filter={filter} kinds={kinds} runs={runs} countText={countText} onChange={changeFilter} />

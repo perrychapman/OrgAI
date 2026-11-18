@@ -6,7 +6,7 @@ import { OUTPUTS_PAGE, cardMetaLine, gridColumns, gridTarget, isNewVersion, titl
 import { showHidden } from '../../lib/hiddenChars'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
-import { SelectBox, type OutputsListHandle } from './OutputsList'
+import { SelectBox, useOutputRowMenu, type OutputsListHandle } from './OutputsList'
 import { OutputBadges, OutputThumb } from './OutputThumb'
 import { useOutputThumb } from './useOutputThumb'
 
@@ -25,8 +25,11 @@ export function OutputsGrid({
   checked,
   onToggle,
   onSelect,
-  onOpen
+  onOpen,
+  onNotice
 }: {
+  /** Answers of the card menu (Open in default app, Copy path). */
+  onNotice?: (text: string) => void
   ref?: Ref<OutputsListHandle>
   rows: readonly RunOutput[]
   selectedId: string | null
@@ -99,7 +102,9 @@ export function OutputsGrid({
   }
 
   const typeAhead = useRef<TypeAhead | null>(null)
+  const rowMenu = useOutputRowMenu(rows, selectMode, onOpen, onNotice)
   const onKeyDown = (e: KeyboardEvent<HTMLUListElement>): void => {
+    if (rowMenu.onKeyDown(e)) return
     const id = (e.target as HTMLElement).closest<HTMLElement>('[role=option]')?.dataset.id
     if (!id) return
     const from = rows.findIndex((r) => r.id === id)
@@ -155,6 +160,7 @@ export function OutputsGrid({
         tabIndex={-1}
         onKeyDown={onKeyDown}
         onFocus={onFocus}
+        onContextMenu={rowMenu.onContextMenu}
       >
         {shown.map((o) => (
           <OutputCard
@@ -169,6 +175,7 @@ export function OutputsGrid({
           />
         ))}
       </ul>
+      {rowMenu.menu}
       {more > 0 && (
         <div className="outputs-more">
           <Button size="sm" testId="outputs-more" onClick={() => setLimit(shownCount + OUTPUTS_PAGE)}>
