@@ -1,6 +1,8 @@
-import type { CSSProperties, ReactElement } from 'react'
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Files, FolderPlus, History as HistoryIcon } from 'lucide-react'
+import { AppWindow, ChevronDown, ChevronRight, ExternalLink, Files, FolderPlus, History as HistoryIcon, Play } from 'lucide-react'
+import { ContextMenu, MenuButton, useContextMenu, type ContextMenuControl, type MenuEntry } from './ui/ContextMenu'
+import { openRunWindow } from '../lib/menuActions'
 import type { RunSummary } from '@shared/types'
 import { QUICK_PROJECT_ID, RUN_KIND_LABELS, isVirtualProjectId } from '@shared/types'
 import { activeRun, selectedProject, useAppStore, useProjectSummaries, useRunIndexes } from '../store/useAppStore'
@@ -39,6 +41,16 @@ const STATUS_BADGE: Record<RunTone, BadgeTone> = {
   stopped: 'neutral'
 }
 
+/** Open the conversation (the Live view), then its Outputs side tab with the list showing. */
+function openChainOutputs(newestId: string, onOpen: (id: string) => Promise<void>): void {
+  void onOpen(newestId)
+    .then(() => {
+      useAppStore.getState().openRunOutput(newestId, null)
+      revealOutputsTab()
+    })
+    .catch(() => undefined)
+}
+
 /**
  * The History tab: one row per conversation (a session chain) as a table (prompt first, status, cost, age, kind) with
  * its actions. Rows are real table rows; every action is a real button. Opening a row switches to Live and shows the
@@ -73,6 +85,51 @@ export default function RunHistory(): ReactElement {
       (filter === 'ask' ? g.first.team === 'single' : filter === 'work' ? g.first.kind === 'work' && g.first.team !== 'single' : g.first.kind === 'setup')
   )
   const viewedKey = current ? groups.find((g) => g.members.some((m) => m.id === current.summary.id))?.key : undefined
+
+  const menu = useContextMenu<string>()
+  // If the row unmounts under the menu (Save as project, Retrospective), focus lands on the first Open button.
+  const fallbackFocus = (): HTMLElement | null => document.querySelector<HTMLElement>('.history-table button.run-open') ?? document.querySelector<HTMLElement>('.history-table')
+  const tagOf = (key: string): string => {
+    const g = groups.find((x) => x.key === key)
+    return g ? runTag(indexes.get(g.first.id)) : 'run'
+  }
+  const menuItems = (key: string): MenuEntry[] => {
+    const g = groups.find((x) => x.key === key)
+    if (!g) return []
+    const { first, newest, members } = g
+    const open = isOpenStatus(newest.status)
+    const st = useAppStore.getState()
+    const outputCount = first.kind === 'work' && !first.quick ? outputsOfRuns(st.outputsByProject[first.projectId], members.map((m) => m.id)).length : 0
+    const entries: MenuEntry[] = [{ id: 'open', label: 'Open', icon: ExternalLink, testId: 'history-menu-open', onSelect: () => void openRun(newest.id) }]
+    entries.push({ id: 'window', label: 'Open in new window', icon: AppWindow, testId: 'history-menu-window', onSelect: () => openRunWindow(newest.projectId, newest.id) })
+    if (canContinueIn(members, newest.id)) entries.push({ id: 'continue', label: 'Continue', icon: Play, testId: 'history-menu-continue', onSelect: () => void continueFromHistory(newest.id) })
+    if (outputCount > 0) {
+      entries.push({
+        id: 'outputs',
+        label: 'Open outputs',
+        icon: Files,
+        testId: 'history-menu-outputs',
+        onSelect: () => openChainOutputs(newest.id, openRun)
+      })
+    }
+    const save = isChat && offersSaveAsProject(newest) && !open
+    const retro = offersRetro(newest)
+    if (save || retro) entries.push('separator')
+    if (save) {
+      const ok = canPromote(newest).ok
+      entries.push({
+        id: 'save',
+        label: 'Save as project...',
+        icon: FolderPlus,
+        testId: 'history-save-as-project',
+        disabled: !ok,
+        disabledReason: ok ? undefined : SCRATCH_PROMOTE_REASON,
+        onSelect: () => setSaving(newest)
+      })
+    }
+    if (retro) entries.push({ id: 'retro', label: 'Retrospective', testId: 'history-retro', title: 'Have the Architect review this run and revise the org chart where roles struggled', onSelect: () => void startRetro(newest.id) })
+    return entries
+  }
 
   return (
     <div className="history">
@@ -155,15 +212,16 @@ export default function RunHistory(): ReactElement {
                   onToggle={() => setExpanded((e) => ({ ...e, [g.key]: !e[g.key] }))}
                   onOpen={(id) => openRun(id)}
                   onContinue={() => void continueFromHistory(g.newest.id)}
-                  onRetro={() => void startRetro(g.newest.id)}
                   chat={isChat}
-                  onSave={() => setSaving(g.newest)}
+                  menu={menu}
+                  fallbackFocus={fallbackFocus}
                 />
               ))}
             </tbody>
           </table>
         </div>
       )}
+      <ContextMenu control={menu} label={(key) => `Actions for ${tagOf(key)}`} items={menuItems} testId="history-menu" />
       {saving && <SaveAsProjectDialog summary={saving} onClose={() => setSaving(null)} />}
     </div>
   )
@@ -177,9 +235,9 @@ function HistoryChain({
   onToggle,
   onOpen,
   onContinue,
-  onRetro,
   chat,
-  onSave
+  menu,
+  fallbackFocus
 }: {
   group: ChainGroup<RunSummary>
   indexes: Map<string, number>
@@ -188,9 +246,9 @@ function HistoryChain({
   onToggle: () => void
   onOpen: (id: string) => Promise<void>
   onContinue: () => void
-  onRetro: () => void
   chat: boolean
-  onSave: () => void
+  menu: ContextMenuControl<string>
+  fallbackFocus: () => HTMLElement | null
 }): ReactElement {
   const { first, newest, members } = group
   const liveNewest = useAppStore((s) => s.runs[newest.id])
@@ -205,18 +263,15 @@ function HistoryChain({
   const orgChange = isOrgChangeRun(first)
   // What the conversation produced (docs/design/outputs.md section 12): every member run, from the loaded index.
   const outputCount = useAppStore((s) => (first.kind === 'work' && !first.quick ? outputsOfRuns(s.outputsByProject[first.projectId], members.map((m) => m.id)).length : 0))
-  const openOutputs = (): void => {
-    // Open the conversation (the Live view), then its Outputs side tab with the list showing.
-    void onOpen(newest.id)
-      .then(() => {
-        useAppStore.getState().openRunOutput(newest.id, null)
-        revealOutputsTab()
-      })
-      .catch(() => undefined)
+  const openOutputs = (): void => openChainOutputs(newest.id, onOpen)
+  // The Menu key / Shift+F10 on the row's Open button opens the row menu anchored to that button.
+  const onRowKeyDown = (e: ReactKeyboardEvent<HTMLElement>): void => {
+    const btn = e.target instanceof Element ? e.target.closest<HTMLElement>('button.run-open') : null
+    if (btn) menu.onKeyDown(e, group.key, { anchor: btn, invoker: btn, fallbackFocus })
   }
   return (
     <>
-      <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions}>
+      <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions} onContextMenu={(e) => menu.onContextMenu(e, group.key, { fallbackFocus })} onKeyDown={onRowKeyDown}>
         <td className="col-prompt">
           <div className="run-head">
             {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={`Sessions of ${tag}`} expanded={isExpanded} controls={isExpanded ? members.map((m) => memberRowId(m.id)).join(' ') : undefined} onClick={onToggle} testId="history-sessions-toggle" />}
@@ -285,24 +340,7 @@ function HistoryChain({
                 Continue
               </Button>
             )}
-            {chat && offersSaveAsProject(newest) && !open && (
-              canPromote(newest).ok ? (
-                <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" title="Save this chat as a project in its folder" onClick={onSave}>
-                  Save as project
-                </Button>
-              ) : (
-                <span className="run-act-disabled" title={SCRATCH_PROMOTE_REASON}>
-                  <Button size="sm" icon={FolderPlus} className="run-save" testId="history-save-as-project" disabled>
-                    Save as project
-                  </Button>
-                </span>
-              )
-            )}
-            {offersRetro(newest) && (
-              <Button size="sm" className="run-retro" title="Have the Architect review this run and revise the org chart where roles struggled" onClick={onRetro}>
-                Retrospective
-              </Button>
-            )}
+            <MenuButton control={menu} target={group.key} label={`More actions for ${tag}`} testId="history-more" fallbackFocus={fallbackFocus} />
           </div>
         </td>
       </tr>

@@ -2,13 +2,14 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { BellRing, Briefcase, CalendarClock, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { AppWindow, BellRing, Briefcase, ExternalLink, FolderOpen, Plus, CalendarClock, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject } from '../lib/assistants'
 import { decisionLocationLabel } from '../lib/chatPermissions'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../lib/needsYou'
-import { openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions'
+import { openRunWindow, openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions'
+import { ContextMenu, useContextMenu, type MenuEntry } from './ui/ContextMenu'
 import { groupByClient, readCollapsedClients, writeCollapsedClients } from '../lib/clientGroups'
 import { needsYou } from '../lib/runChains'
 import { oneLine } from '../lib/decisionTitle'
@@ -124,6 +125,10 @@ export default function Sidebar({
   const virtualProjects = useAppStore((s) => s.virtualProjects)
   const openRun = useAppStore((s) => s.openRun)
   const selectProject = useAppStore((s) => s.selectProject)
+  const openDraft = useAppStore((s) => s.openDraft)
+  const focusComposer = useAppStore((s) => s.focusComposer)
+  const setTabNotice = useAppStore((s) => s.setTabNotice)
+  const setProjectSettingsPane = useAppStore((s) => s.setProjectSettingsPane)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
   const auth = useAppStore((s) => s.auth)
   const usageByConnection = useAppStore((s) => s.usageByConnection)
@@ -212,6 +217,48 @@ export default function Sidebar({
 
   const newChatKey = isMacPlatform(currentPlatform()) ? '⌘⇧N' : 'Ctrl+Shift+N'
 
+  const projectMenu = useContextMenu<string>()
+  const runMenu = useContextMenu<{ projectId: string; runId: string }>()
+  const openRunRow = (projectId: string, runId: string): void => {
+    if (selectedId !== projectId) selectProject(projectId)
+    void openRun(runId)
+  }
+  /** The same steps as the Dashboard tile's New run. */
+  const newRunIn = (projectId: string): void => {
+    selectProject(projectId)
+    openDraft()
+    focusComposer()
+  }
+  /** openProjectSettings needs a section id; the General pane itself has none, so select the pane directly. */
+  const openProjectSettingsGeneral = (projectId: string): void => {
+    if (selectedId !== projectId) selectProject(projectId)
+    setProjectSettingsPane(projectId, 'general')
+    setView('settings')
+  }
+  const projectMenuItems =(projectId: string): MenuEntry[] => {
+    const p = projects.find((q) => q.id === projectId)
+    if (!p) return []
+    return [
+      { id: 'open', label: 'Open', icon: ExternalLink, testId: 'nav-project-menu-open', onSelect: () => entryById.get(projectId)?.onOpen() },
+      { id: 'new-run', label: 'New run', icon: Plus, testId: 'nav-project-menu-new-run', onSelect: () => newRunIn(projectId) },
+      {
+        id: 'open-folder',
+        label: 'Open folder',
+        icon: FolderOpen,
+        testId: 'nav-project-menu-open-folder',
+        onSelect: () => {
+          window.orgai.app
+            .openPath(p.path)
+            .then((err) => {
+              if (err) setTabNotice(`Could not open the folder: ${err}`)
+            })
+            .catch(() => setTabNotice('Could not open the folder.'))
+        }
+      },
+      { id: 'settings', label: 'Project settings', icon: Settings, testId: 'nav-project-menu-settings', onSelect: () => openProjectSettingsGeneral(projectId) }
+    ]
+  }
+
   /** Project rows and Assistants rows share one renderer so their DOM, status and open-run lists stay identical. */
   const renderEntry = (entry: NavEntry): ReactElement => {
     const { id, name, project: p } = entry
@@ -234,6 +281,7 @@ export default function Sidebar({
     const baseName = entry.accessibleName ? entry.accessibleName(st.decisions, st.needsLabel) : st.needsLabel ? `${name}, ${st.needsLabel}` : name
     // In the rail the name replaces the visible content, so it says the kind; the full row's icon carries the label.
     const accessibleName = rail && entry.kind === 'engagement' ? `${baseName}, engagement` : baseName
+    const projectEntry = entry.testId === 'nav-project'
     return (
       <div key={id} className="nav-project">
         <div className="nav-row">
@@ -260,6 +308,8 @@ export default function Sidebar({
             data-kind={entry.kind}
             title={[rail ? (entry.kind === 'engagement' ? `${baseName} · Engagement` : baseName) : '', ...entry.titleLines, st.subtitle].filter(Boolean).join('\n')}
             onClick={entry.onOpen}
+            onContextMenu={projectEntry ? (e) => projectMenu.onContextMenu(e, id) : undefined}
+            onKeyDown={projectEntry ? (e) => void projectMenu.onKeyDown(e, id) : undefined}
           >
             {rail ? (
               <span className="nav-initials">
@@ -305,10 +355,9 @@ export default function Sidebar({
                     data-run={r.summary.id}
                     data-kind={orgChange ? 'org-change' : undefined}
                     title={`${tag}: ${orgChange ? `${ORG_CHANGE_KIND_LABEL} · ` : ''}${oneLine(promptLine(first.prompt), 300)}\n${statusText(rs)}`}
-                    onClick={() => {
-                      if (selectedId !== id) selectProject(id)
-                      void openRun(r.summary.id)
-                    }}
+                    onClick={() => openRunRow(id, r.summary.id)}
+                    onContextMenu={(e) => runMenu.onContextMenu(e, { projectId: id, runId: r.summary.id })}
+                    onKeyDown={(e) => void runMenu.onKeyDown(e, { projectId: id, runId: r.summary.id })}
                   >
                     <span className={`run-dot ${rs.tone}`} aria-hidden="true" />
                     <span className="run-index">{tag}</span>
@@ -634,6 +683,16 @@ export default function Sidebar({
           <IconButton icon={Settings} label="App settings" testId="app-settings-button" onClick={() => setView('appSettings')} />
         </span>
       </div>
+      <ContextMenu control={projectMenu} label={(id) => `Actions for ${projects.find((p) => p.id === id)?.name ?? 'project'}`} items={projectMenuItems} testId="nav-project-menu" />
+      <ContextMenu
+        control={runMenu}
+        label="Actions for open run"
+        testId="nav-run-menu"
+        items={(t) => [
+          { id: 'open', label: 'Open', icon: ExternalLink, testId: 'nav-run-menu-open', onSelect: () => openRunRow(t.projectId, t.runId) },
+          { id: 'window', label: 'Open in new window', icon: AppWindow, testId: 'nav-run-menu-window', onSelect: () => openRunWindow(t.projectId, t.runId) }
+        ]}
+      />
       {!rail && <ResizeHandle label="Resize sidebar" edge="end" testId="sidebar-resize" {...resize} />}
     </aside>
   )
