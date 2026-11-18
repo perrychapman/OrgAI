@@ -528,6 +528,14 @@ ordinary `field: from -> to` lines. A role the proposal leaves as the run has it
 `orgDiff.test.ts`; `ProposalCard` reads `runBaseline` through a local intersection type until `OrgChartProposalPayload`
 declares it (drop the cast then). `e2e/proposals.mjs` ran without the field (Runtime Lead's change not yet merged).
 
+Card reach lines (security review): an added role's row names what the new role may start and must delegate to
+(`addedRoleLines` in `orgDiff.ts`: "spawns: A, B" / "spawns: any" / "spawns: cannot spawn (the listed roles are ignored)",
+"must delegate to: A"), resolved against the proposed chart with the id as fallback, same wording as a changed role's
+lines; they sit in the row's body (open the row), run through `showHidden` and count toward its hidden-characters badge.
+A tier-only change (a concrete model with no tier gaining its own tier, or the reverse) shows "tier: none (fixed) ->
+Everyday" because it flips staffing between fixed and automatic. Checked by `orgDiff.test.ts` and `e2e/proposals.mjs`
+scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1024x640 with a long spawn list.
+
 ## Run tabs: hide, re-enter, blank workspace (2026-11-18)
 
 - `dismissRun` announces through `setTabNotice` only when a tab was hidden (sequence guard, repeated text re-announced, no own timer). Checked by `store/runTabs.test.ts` with fake timers (two hides in a row, no early clear); screen-reader speech unverified. The notice is state-true (`hiddenLiveNotice`): starting/running says "It keeps working", idle/stopping "Its session stays open"; the tab Hide titles say "The session stays open." The New run page heading comes from `otherRunsHeading` (decision-based `needsYou`: "1 other run needs you", "2 other runs keep going, 1 needs you"; the needs-you run's link gets " (needs you)"); unit tested in `runTabs.test.ts`.

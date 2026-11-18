@@ -599,6 +599,8 @@ try {
   if ((await detailsBtn.isVisible().catch(() => false)) && (await rosterCard.getAttribute('data-expanded')) !== 'true') await detailsBtn.click()
   const rosterEffect = ((await page.locator('[data-testid=proposal-effect]').first().innerText().catch(() => '')) || '').trim()
   check(/This run can use the new roles now/.test(rosterEffect) && /Removed roles stop being available immediately/.test(rosterEffect), 'the org chart card says this run can use the new roles now', rosterEffect)
+  const rosterText = ((await rosterCard.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
+  check(/spawns:[^]*Roster Tester/.test(rosterText), 'the card names Roster Tester as a spawn target', rosterText.slice(0, 400))
   await shot('org-change-live-card')
   await page.locator('[data-testid=proposal-approve]').click()
   const testerNode = page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first()

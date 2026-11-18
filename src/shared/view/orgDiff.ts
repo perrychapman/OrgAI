@@ -132,6 +132,19 @@ function spawnNames(r: DiffRole, byId: Map<string, DiffRole>): string {
   return names.length > 0 ? names.join(', ') : 'any'
 }
 
+/** The lines an added role's row shows for what it may start and must delegate to, named against the proposed chart. */
+export function addedRoleLines(role: DiffRole, all: readonly DiffRole[]): string[] {
+  const byId = new Map<string, DiffRole>(all.map((r) => [r.id, r]))
+  const lines: string[] = []
+  if (role.canSpawn || (role.spawnable?.length ?? 0) > 0) {
+    lines.push(role.canSpawn ? `spawns: ${spawnNames(role, byId)}` : 'spawns: cannot spawn (the listed roles are ignored)')
+  }
+  if ((role.requiredReports?.length ?? 0) > 0) {
+    lines.push(`must delegate to: ${sortedList((role.requiredReports ?? []).map((id) => byId.get(id)?.name ?? id))}`)
+  }
+  return lines
+}
+
 function fieldChanges(before: DiffRole, after: DiffRole, cur: Map<string, DiffRole>, prop: Map<string, DiffRole>): FieldChange[] {
   const out: FieldChange[] = []
   const push = (field: string, label: string, from: string, to: string): void => {
@@ -147,6 +160,11 @@ function fieldChanges(before: DiffRole, after: DiffRole, cur: Map<string, DiffRo
   const tierFrom = tierLabel(effectiveTier(before))
   const tierTo = tierLabel(effectiveTier(after))
   if (tierFrom !== tierTo && !(modelDisplay(before.model) === tierFrom && modelDisplay(after.model) === tierTo)) push('tier', 'tier', tierFrom, tierTo)
+  else if (tierFrom === tierTo && (before.tier === undefined) !== (after.tier === undefined)) {
+    // Same tier on both sides, but a concrete model without a tier is staffed as fixed and a tier makes it automatic.
+    const fixedLabel = (r: DiffRole): string => (r.tier === undefined && settingTier(r.model) === undefined ? `${NONE} (fixed)` : tierLabel(effectiveTier(r)))
+    push('tier', 'tier', fixedLabel(before), fixedLabel(after))
+  }
   push('effort', 'effort', before.effort ?? NONE, after.effort ?? NONE)
   push('staffing', 'staffing', staffingLabel(before.staffing), staffingLabel(after.staffing))
   push('connection', 'connection', before.connection || 'project default', after.connection || 'project default')
