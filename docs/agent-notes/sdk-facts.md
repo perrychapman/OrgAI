@@ -410,3 +410,33 @@ smoke run, no tokens spent.
 - `session_writes_lost` (`SDKSessionWritesLostMessage`) is now sent only when the CLI exits 0, after the last result;
   "Safe to ignore". Nothing in `src/` reads it (grep), so the change does not affect OrgAI.
 - Live behaviour of both is unverified.
+
+## A message for the root while a shell command runs (typings and fake-query tests, 2026-11-18; NOT verified live)
+
+Problem: the CLI reads queued streaming input only at the root's next tool round, so a foreground Bash / PowerShell call
+held a user message, a peer run's message and harness notices until the command returned or hit its timeout. Read
+from the installed SDK 0.3.322 `sdk.d.ts`; no smoke run, no tokens spent.
+
+- `Query.backgroundTasks(toolUseId?)` (and `SDKControlBackgroundTasksRequest`): with an id it backgrounds the single
+  foreground task started by that tool_use block; the blocking call returns at once with a "running in the background"
+  tool_result and the turn goes on; the task emits `task_notification` when it settles. Returns false only when the id
+  matched no foreground task; throws when background tasks are disabled (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`).
+  Without an id it backgrounds every foreground task, subagents included, so OrgAI never calls it without one.
+- `task_started.is_backgrounded` (set for `local_agent` and `local_bash`): false for a task registered in the foreground
+  with its tool call blocking; a later move arrives as `task_updated` `patch.is_backgrounded`. Whether every foreground
+  Bash call is registered as a task at once, or only after a delay, is not documented.
+- `SDKUserMessage.priority` ('now' | 'next' | 'later') has no doc comment; not used. The `tool_use_result` doc says only
+  WebFetch / WebSearch calls "step aside" for a user's message today, so shell calls do not.
+- claude.ts: `pushInput` (user send, `receive`, every `notifyOrchestrator` notice) calls `backgroundRootShells`, which
+  asks `backgroundTasks(id)` for each root foreground shell call in flight (tracked from the root's own assistant
+  tool_use blocks, no `parent_tool_use_id` / `agent_id`, not `run_in_background`; removed at its tool_result; cleared at
+  the root result). Fire and forget: a rejection or a synchronous throw is logged (warn) and that call is not asked
+  again; false while the call still runs is logged (warn) and asked again at its `task_started`; false after it ended
+  is a no-op. The moved command is a non-subagent task, so it stays in `backgroundTasks` (MCP restart and exec
+  settlement wait) until its notification. An interrupt `stopTask`s the commands the harness moved (they would have
+  died in the foreground); commands the agent backgrounded itself are left as before.
+- Not done: a SendMessage to a running report whose own shell is in flight. The typings say "the single task started by
+  that tool_use block" without saying a subagent's call is a target or that the subagent then reads its queued message.
+- Checked by `src/main/runtime/claudeShellBackground.test.ts` (fake query). Live: whether the CLI actually returns the
+  placeholder and reads the queued message right after, and whether a just-started command is a registered task yet,
+  are unverified.
