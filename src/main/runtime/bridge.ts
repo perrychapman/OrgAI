@@ -243,19 +243,24 @@ export class BridgedSessions {
     const agents = this.deps.agents()
     const rootRole = parent.roles.find((r) => r.reportsTo === null)
     const parentAgent = input.parentAgentId ? agents.find((a) => a.id === input.parentAgentId) : undefined
+    // A caller's role: the live roster, then roles a mid-run org change removed (their running agents keep the rights
+    // they started with; RuntimeContext.retiredRoles), never silently the root's.
+    const roleOf = (id: string): Role | undefined => parent.roles.find((r) => r.id === id) ?? parent.retiredRoles?.().find((r) => r.id === id)
     if (!input.parentAgentId && !input.parentRoleId) {
       // Unknown caller: it counts as the root only while no non-root agent that may delegate is live.
       const anyLiveSpawner = agents.some((a) => {
         if (a.id === ROOT_AGENT_ID || !isLiveAgent(a)) return false
-        const r = a.roleId ? parent.roles.find((x) => x.id === a.roleId) : undefined
+        const r = a.roleId ? roleOf(a.roleId) : undefined
         return !!r?.canSpawn
       })
       if (anyLiveSpawner) throw new Error('OrgAI could not tell which agent called delegate_agent; call it again when your reports are done.')
     }
-    const callerRole =
-      (input.parentRoleId ? parent.roles.find((r) => r.id === input.parentRoleId) : undefined) ??
-      (parentAgent?.roleId ? parent.roles.find((r) => r.id === parentAgent.roleId) : undefined) ??
-      rootRole
+    // A named caller that cannot be resolved is refused, not treated as the root.
+    let callerRole: Role | undefined
+    if (input.parentRoleId) callerRole = roleOf(input.parentRoleId)
+    else if (input.parentAgentId) callerRole = input.parentAgentId === ROOT_AGENT_ID ? rootRole : parentAgent?.roleId ? roleOf(parentAgent.roleId) : undefined
+    else callerRole = rootRole
+    if (!callerRole && (input.parentRoleId || input.parentAgentId)) throw new Error('OrgAI could not tell which role called delegate_agent, so the delegation was refused.')
     if (!callerRole || !callerRole.canSpawn || !callerRole.spawnable.includes(role.id)) {
       throw new Error(`Role ${callerRole?.name ?? 'unknown'} may not delegate to ${role.name}.`)
     }

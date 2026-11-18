@@ -2290,19 +2290,32 @@ export class RunManager {
             // look "unchanged" on a later card and slip into ctx.roles. Grants too come from the run's roles (kept equal to
             // the view by refreshRoleGrants on every approved grant change), never from the saved roles: a pulled grant in
             // the view would otherwise reach ctx.roles through refreshRoleGrants at the next MCP / skill approval. A
-            // deferred NEW role (not in the run) keeps its saved value; a deferred change of a running role shows the run's
-            // definition, so its pulled fields cannot ride on a later card either.
+            // deferred change of a running role shows the run's definition; a deferred NEW role shows the card's value
+            // (`applied.pending`, runRoster.ts joiningRole), never its saved value, so neither can carry a pulled field onto
+            // a later card (second route of H1). A role of this card that is in neither is left out; any other role keeps
+            // the value this view already had (an earlier card's), while the saved project still has it.
             const overlaid = next.roles
-            const overlaidById = new Map(overlaid.map((r) => [r.id, r]))
             const retiredIds = new Set((active.retiredRoles ?? []).map((r) => r.id))
-            const fromRun = (r: Role): Role => structuredClone(r)
+            const pendingById = new Map(applied.pending.map((r) => [r.id, r]))
+            const cardIds = new Set(card.map((r) => r.id))
+            const cardNames = new Set(card.map((r) => r.name))
             const viewRoles: Role[] = []
+            const shown = new Set<string>()
+            const show = (r: Role): void => {
+              if (shown.has(r.id)) return
+              shown.add(r.id)
+              viewRoles.push(structuredClone(r))
+            }
             for (const o of overlaid) {
               if (retiredIds.has(o.id)) continue
               const run = ctx.roles.find((r) => r.id === o.id)
-              viewRoles.push(run ? fromRun(run) : o)
+              const waiting = pendingById.get(o.id)
+              if (run) show(run)
+              else if (waiting) show(waiting)
+              else if (!cardIds.has(o.id) && !cardNames.has(o.name) && savedRoles.has(o.id)) show(o)
             }
-            for (const r of ctx.roles) if (!overlaidById.has(r.id)) viewRoles.push(fromRun(r))
+            for (const r of ctx.roles) show(r)
+            for (const r of applied.pending) show(r)
             next.roles = viewRoles
           }
         }
