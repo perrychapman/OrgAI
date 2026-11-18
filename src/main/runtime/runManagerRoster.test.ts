@@ -91,7 +91,9 @@ function waitFor<T extends RunEvent>(pred: (e: RunEvent) => e is T, after = 0, t
   })
 }
 
-const rosterEvents = (): Extract<RunEvent, { type: 'run.roster' }>[] => events.filter((e): e is Extract<RunEvent, { type: 'run.roster' }> => e.type === 'run.roster')
+const run = (ctx: RuntimeContext): string => ctx.run.id
+
+const rosterEvents = ():Extract<RunEvent, { type: 'run.roster' }>[] => events.filter((e): e is Extract<RunEvent, { type: 'run.roster' }> => e.type === 'run.roster')
 
 describe('an approved org chart reaches the same work run (liveRoster session)', () => {
   it('updates ctx.roles in place for add, change, remove and a root change; the outcome, event and record say what moved', async () => {
@@ -220,6 +222,80 @@ describe('an approved org chart reaches the same work run (liveRoster session)',
     expect(eng.model).toBe('sonnet')
     expect(eng.tier).toBeUndefined()
     await m.stopAll()
+  })
+
+  describe('third review: the card is diffed against runBaseline, which only RunManager sets', () => {
+    const cardOf = async (m: RunManager, ctx: RuntimeContext, roles: Role[], agentBaseline: Role[]) => {
+      const before = events.length
+      const pending = ctx.requestProposal({ kind: 'orgChart', agentId: 'root', title: 't', payload: { roles, rationale: 'r', runBaseline: agentBaseline } })
+      const req = await waitFor((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request', before)
+      return { req, pending }
+    }
+    const forged = [role({ id: 'r-eng', slug: 'engineer', name: 'Engineer', reportsTo: 'r-lead', prompt: 'FORGED baseline' })]
+
+    it('(1) a running role whose card value was copied from a pulled file is a change against runBaseline; a supplied baseline is dropped', async () => {
+      const p = newProject()
+      const { m, ctxs } = rig({ liveRoster: true })
+      await m.start({ project: p, prompt: 'go' })
+      const ctx = ctxs[0]
+      // A pulled .orgai/agents file: the stored project now has another engineer prompt; the run does not.
+      store.save({ ...store.get(p.id)!, roles: store.get(p.id)!.roles.map((r) => (r.id === 'r-eng' ? { ...r, prompt: 'PULLED from disk' } : r)) })
+      // The orchestrator's card: its view plus QA, with the engineer's prompt copied from disk.
+      const card = [...structuredClone(ctx.project.roles).map((r) => (r.id === 'r-eng' ? { ...r, prompt: 'PULLED from disk' } : r)), role({ id: 'r-qa', slug: 'qa', name: 'QA', reportsTo: 'r-lead' })]
+      const { req, pending } = await cardOf(m, ctx, card, forged)
+      const payload = req.proposal.kind === 'orgChart' ? req.proposal.payload : undefined
+      // What the renderer diffs against: the RUNNING engineer, so the prompt shows as changed; never the forged one.
+      expect(payload?.runBaseline?.find((r) => r.id === 'r-eng')?.prompt).toBe('You are engineer.')
+      expect(payload?.runBaseline?.map((r) => r.id)).toEqual(['r-lead', 'r-eng', 'r-rev'])
+      expect(JSON.stringify(payload?.runBaseline)).not.toContain('FORGED')
+      m.decideProposal(run(ctx), req.proposal.id, { behavior: 'approve' })
+      const outcome = await pending
+      // Applied exactly what the diff showed: QA added, the engineer changed (its prompt).
+      expect(outcome).toMatchObject({ roster: { added: ['r-qa'], changed: ['r-eng'] } })
+      expect(ctx.roles.find((r) => r.id === 'r-eng')!.prompt).toBe('PULLED from disk')
+      // Never persisted.
+      expect(JSON.stringify(store.get(p.id))).not.toContain('runBaseline')
+      await m.stopAll()
+    })
+
+    it('(2) a waiting (deferred new) role: the baseline holds its pending value, and a supplied baseline is dropped', async () => {
+      const p = newProject()
+      const { m, ctxs } = rig({ liveRoster: true })
+      await m.start({ project: p, prompt: 'go' })
+      const ctx = ctxs[0]
+      const x = role({ id: 'r-x', slug: 'x', name: 'X', reportsTo: 'r-lead', prompt: 'Approved on card 1', connection: 'openai' })
+      await approveChart(m, ctx, [...structuredClone(ctx.project.roles), x])
+      expect(ctx.roles.some((r) => r.id === 'r-x')).toBe(false)
+      store.save({ ...store.get(p.id)!, roles: store.get(p.id)!.roles.map((r) => (r.id === 'r-x' ? { ...r, prompt: 'PULLED from disk' } : r)) })
+      const card = structuredClone(ctx.project.roles).map((r) => {
+        if (r.id !== 'r-x') return r
+        const out = { ...r, prompt: 'PULLED from disk' }
+        delete out.connection
+        return out
+      })
+      const { req, pending } = await cardOf(m, ctx, card, [{ ...x, prompt: 'FORGED baseline' }])
+      const payload = req.proposal.kind === 'orgChart' ? req.proposal.payload : undefined
+      expect(payload?.runBaseline?.find((r) => r.id === 'r-x')).toMatchObject({ prompt: 'Approved on card 1', connection: 'openai' })
+      expect(JSON.stringify(payload?.runBaseline)).not.toContain('FORGED')
+      m.decideProposal(run(ctx), req.proposal.id, { behavior: 'approve' })
+      expect(await pending).toMatchObject({ roster: { added: ['r-x'] } })
+      // It joins with what the diff showed as changed (prompt, connection gone) and nothing else.
+      expect(ctx.roles.find((r) => r.id === 'r-x')).toMatchObject({ prompt: 'PULLED from disk' })
+      expect(ctx.roles.find((r) => r.id === 'r-x')!.connection).toBeUndefined()
+      await m.stopAll()
+    })
+
+    it('a session that does not take roster changes live gets no runBaseline (and a supplied one is dropped)', async () => {
+      const p = newProject()
+      const { m, ctxs } = rig()
+      await m.start({ project: p, prompt: 'go' })
+      const ctx = ctxs[0]
+      const { req, pending } = await cardOf(m, ctx, structuredClone(ctx.project.roles), forged)
+      expect(req.proposal.kind === 'orgChart' && 'runBaseline' in req.proposal.payload).toBe(false)
+      m.decideProposal(run(ctx), req.proposal.id, { behavior: 'approve' })
+      await pending
+      await m.stopAll()
+    })
   })
 
   describe('review H1 second route: a deferred new role joins on the card it was approved on, never its saved (pulled) value', () => {
