@@ -26,7 +26,7 @@ const CONTROL_MKDIR = 'control folder creation: idempotent recursive mkdir, mode
 const JOURNAL = "journal: written only by the holder of the journal's requiredLocks (caller-held osLocks), atomicWrite or durable unlink"
 const JOURNAL_SHARED_CHECK =
   'journal: stale foreign shared locator removed under the caller-held output-file-<hash> osLock'
-// Added after Phase 1 by Schedules and team evolution: <dataDir>/schedules.json (and .bak) and <dataDir>/evolution/<projectId>.json
+// Added after Phase 1 by Schedules, to-dos and team evolution: <dataDir>/schedules.json, <dataDir>/todos.json (and .bak) and <dataDir>/evolution/<projectId>.json
 // are written by whichever host owns that data folder (the desktop or the CLI's in-process host, each on its own folder;
 // host/ownership.ts refuses a second owner). No shared-store osLock covers them yet: ownership, not a file lock, keeps a
 // second process out.
@@ -274,6 +274,8 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/skills/files.ts:writeFolder:rmSync': 'single owner',
   'src/main/schedules/store.ts:ScheduleStore.persist:this.fs.mkdirSync': DATA_FOLDER_OWNER,
   'src/main/schedules/store.ts:ScheduleStore.persist:writeFileDurable': DATA_FOLDER_OWNER,
+  'src/main/todos/store.ts:TodoStore.persist:this.fs.mkdirSync': DATA_FOLDER_OWNER,
+  'src/main/todos/store.ts:TodoStore.persist:writeFileDurable': DATA_FOLDER_OWNER,
   'src/main/schedules/testkit.ts:cleanup:rmSync': TEST_TEMP,
   'src/main/schedules/testkit.ts:fakeEnv:mkdtempSync': TEST_TEMP,
   'src/main/skills/files.ts:writeFolder:writeFileSync': 'single owner',
