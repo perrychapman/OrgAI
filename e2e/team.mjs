@@ -640,10 +640,6 @@ async function sectionDismiss(page, shot, app) {
   }
 }
 
-/**
- * Walk 4 M2: two mock work runs end, the proactive review lands, and opening Team shows "N suggestions since your last
- * run" once; leaving and coming back without a new run does not show it again.
- */
 /** The role node context menu (docs/design/context-menus.md row 9): right click, Shift+F10, Add a report, root guard. */
 async function sectionNodeMenu(page) {
   const menu = page.locator('[data-testid=role-node-menu]')
@@ -685,6 +681,10 @@ async function sectionNodeMenu(page) {
   await page.keyboard.press('Escape')
 }
 
+/**
+ * Walk 4 M2: two mock work runs end, the proactive review lands, and opening Team shows "N suggestions since your last
+ * run" once; leaving and coming back without a new run does not show it again.
+ */
 async function sectionRunsEnded(page) {
   const live = async () => {
     await page.locator('[data-testid=tab-live]').click()

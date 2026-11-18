@@ -339,41 +339,6 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   color: var(--danger-text, var(--danger));
 }
 
-/* More menu */
-.project-tile-menu {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-0h);
-}
-.project-tile-menuitem {
-  all: unset;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--control-md);
-  padding: 0 var(--space-3);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-body);
-  color: var(--text-primary);
-  cursor: pointer;
-}
-.project-tile-menuitem:hover {
-  background: var(--surface-3);
-}
-.project-tile-menuitem:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
-}
-.project-tile-menuitem.danger {
-  color: var(--danger-text, var(--danger));
-}
-.project-tile-menusep {
-  margin: var(--space-1) 0;
-  border: 0;
-  border-top: 1px solid var(--border-subtle);
-}
-
 /* ---------- New project form inside the dialog or a page panel ---------- */
 
 /* Inside the dialog the dialog is the card: no second border, fill or padding. */

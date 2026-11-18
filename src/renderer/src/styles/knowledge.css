@@ -369,10 +369,7 @@
   text-overflow: ellipsis;
 }
 
-/* ---------- Menus (the row menu and the per-row More actions popovers) ---------- */
-.knowledge-row-menu {
-  padding: var(--space-1);
-}
+/* ---------- Menus (the per-row More actions popovers; the list's row menu is the shared .ctx-menu) ---------- */
 .knowledge-menu {
   display: flex;
   flex-direction: column;

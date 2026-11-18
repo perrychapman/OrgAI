@@ -1,14 +1,14 @@
-import type { FocusEvent, KeyboardEvent, ReactElement, Ref } from 'react'
-import { useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { FocusEvent, KeyboardEvent, MouseEvent, ReactElement, Ref } from 'react'
+import { useCallback, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArchiveRestore, Archive, ArrowRight, Pencil } from 'lucide-react'
 import type { KnowledgeGroup, KnowledgeItem, RunFacts } from '../../lib/knowledge'
 import { itemName, itemRetired } from '../../lib/knowledge'
 import type { ListEntry, TypeAhead } from '../../lib/knowledgeList'
 import { WINDOW_THRESHOLD, edgeRow, flattenGroups, isTypeAheadKey, nextTypeAhead, rowIndexOf, scrollTopFor, stepRow, typeAheadMatch, windowRange } from '../../lib/knowledgeList'
 import { useArrival } from '../../lib/useArrival'
-import { Icon } from '../ui/Icon'
+import { isMenuKey } from '../../lib/contextMenu'
+import { ContextMenu, useContextMenu, type MenuEntry, type OpenOptions } from '../ui/ContextMenu'
 import { KnowledgeRow } from './KnowledgeRow'
-import { onMenuKey } from './menuKeys'
 
 export interface KnowledgeListHandle {
   /** Scroll the row into view (inside the list only) and focus it. */
@@ -56,7 +56,6 @@ export function KnowledgeList({
 }): ReactElement {
   const uid = useId()
   const listRef = useRef<HTMLUListElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
   const entries = useMemo(() => flattenGroups(groups), [groups])
   const rows = useMemo(() => entries.filter((e): e is Extract<ListEntry, { type: 'row' }> => e.type === 'row'), [entries])
   // Rows appended while the list is open fade in; windowing, filter changes and bursts of more than 12 never do.
@@ -134,56 +133,29 @@ export function KnowledgeList({
     [entries, goTo]
   )
 
-  // ---- the row menu (Shift+F10 / context menu) ----
-  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
-  const menuFor = useRef<string | null>(null)
-  menuFor.current = menu?.id ?? null
-  const menuItem = menu ? rows.find((r) => r.item.id === menu.id)?.item : undefined
-  const openMenu = useCallback(
-    (id: string, at: { x: number; y: number } | null): void => {
-      const row = document.getElementById(rowDomId(id))
-      const r = row?.getBoundingClientRect()
-      const point = at ?? (r ? { x: r.left + 24, y: r.bottom - 8 } : { x: 16, y: 16 })
-      current.current = id
-      onSelect(id)
-      setMenu({ id, ...point })
-    },
-    [rowDomId, onSelect]
-  )
-  useLayoutEffect(() => {
-    const el = menuRef.current
-    if (!el || !menu) return
-    try {
-      el.showPopover()
-    } catch {
-      return
-    }
-    const w = el.offsetWidth
-    const h = el.offsetHeight
-    el.style.left = `${Math.round(Math.max(8, Math.min(menu.x, window.innerWidth - w - 8)))}px`
-    el.style.top = `${Math.round(Math.max(8, Math.min(menu.y, window.innerHeight - h - 8)))}px`
-    el.querySelector<HTMLElement>('[role=menuitem]')?.focus()
-  }, [menu])
-  useEffect(() => {
-    const el = menuRef.current
-    if (!el) return undefined
-    const onToggle = (e: Event): void => {
-      if ((e as ToggleEvent).newState === 'open') return
-      const id = menuFor.current
-      const active = document.activeElement
-      // Esc or a light dismiss: focus goes back to the row (a menu item that moved focus elsewhere keeps it there).
-      if (id && (!active || active === document.body || el.contains(active))) setPendingFocus(id)
-      setMenu(null)
-    }
-    el.addEventListener('toggle', onToggle)
-    return () => el.removeEventListener('toggle', onToggle)
-  }, [])
-  const closeMenu = (): void => {
-    try {
-      menuRef.current?.hidePopover()
-    } catch {
-      setMenu(null)
-    }
+  // ---- the row menu (right click, Menu key, Shift+F10; components/ui/ContextMenu.tsx) ----
+  const menu = useContextMenu<string>()
+  /** Opening the menu makes its row the current, selected one (as before the migration). */
+  const menuOpts = (id: string, row: HTMLElement): OpenOptions => {
+    current.current = id
+    onSelect(id)
+    // Windowing may have unmounted the row by the time the menu closes: the row by id, else the list.
+    return { anchor: row, invoker: row, fallbackFocus: () => document.getElementById(rowDomId(id)) ?? listRef.current }
+  }
+  const onRowContextMenu = (e: MouseEvent<HTMLUListElement>): void => {
+    const row = e.target instanceof Element ? e.target.closest<HTMLElement>('[role=option]') : null
+    const id = row?.dataset.id
+    if (row && id) menu.onContextMenu(e, id, menuOpts(id, row))
+  }
+  const menuItems = (id: string): MenuEntry[] => {
+    const item = rows.find((r) => r.item.id === id)?.item
+    if (!item) return []
+    const retired = itemRetired(item)
+    return [
+      { id: 'open', label: 'Open', icon: ArrowRight, testId: 'knowledge-row-open', onSelect: () => onOpen(item.id) },
+      ...(item.type === 'note' ? [{ id: 'edit', label: 'Edit', icon: Pencil, testId: 'knowledge-row-edit-note', onSelect: () => onEditNote(item.id) }] : []),
+      { id: 'retire', label: retired ? 'Restore' : 'Retire', icon: retired ? ArchiveRestore : Archive, testId: 'knowledge-row-retire', onSelect: () => onRetire(item, !retired) }
+    ]
   }
 
   // ---- keys ----
@@ -214,14 +186,9 @@ export function KnowledgeList({
       onSelect(id)
       return
     }
-    if (e.key === 'F10' && e.shiftKey) {
-      e.preventDefault()
-      openMenu(id, null)
-      return
-    }
-    if (e.key === 'ContextMenu') {
-      e.preventDefault()
-      openMenu(id, null)
+    const row = target.closest<HTMLElement>('[role=option]')
+    if (row && isMenuKey(e)) {
+      menu.onKeyDown(e, id, menuOpts(id, row))
       return
     }
     if (isTypeAheadKey(e)) {
@@ -282,6 +249,7 @@ export function KnowledgeList({
         tabIndex={-1}
         onKeyDown={onKeyDown}
         onFocus={onFocus}
+        onContextMenu={onRowContextMenu}
         onScroll={(e) => {
           const el = e.currentTarget
           if (rows.length > WINDOW_THRESHOLD) setView({ top: el.scrollTop, height: el.clientHeight })
@@ -297,68 +265,22 @@ export function KnowledgeList({
             )}
             <ul role="group" aria-labelledby={g.titleId} aria-label={g.withTitle ? undefined : g.label} className="knowledge-group-rows">
               {g.rows.map((item) => (
-                <KnowledgeRow key={item.id} item={item} runs={runs} selected={item.id === selectedId} showAgentBadge={showAgentBadge} domId={rowDomId(item.id)} arrive={isNew(item.id)} onOpen={onOpen} onMenu={openMenu} />
+                <KnowledgeRow key={item.id} item={item} runs={runs} selected={item.id === selectedId} showAgentBadge={showAgentBadge} domId={rowDomId(item.id)} arrive={isNew(item.id)} onOpen={onOpen} />
               ))}
             </ul>
           </li>
         ))}
         {range.bottomPad > 0 && <li role="presentation" className="knowledge-spacer" style={{ height: range.bottomPad }} aria-hidden="true" />}
       </ul>
-      <div
-        ref={menuRef}
-        popover="auto"
-        role="menu"
-        aria-label={menuItem ? `More actions for ${itemName(menuItem)}` : 'More actions'}
-        tabIndex={-1}
-        className="popover-panel knowledge-row-menu"
-        data-placed={menu ? 'true' : 'false'}
-        data-testid="knowledge-row-more"
-      >
-        {menu && menuItem && (
-          <div role="presentation" className="knowledge-menu" onKeyDown={onMenuKey}>
-            <button
-              type="button"
-              role="menuitem"
-              className="knowledge-menuitem"
-              onClick={() => {
-                closeMenu()
-                onOpen(menuItem.id)
-              }}
-            >
-              <Icon icon={ArrowRight} size="sm" />
-              Open
-            </button>
-            {menuItem.type === 'note' && (
-              <button
-                type="button"
-                role="menuitem"
-                className="knowledge-menuitem"
-                data-testid="knowledge-row-edit-note"
-                onClick={() => {
-                  closeMenu()
-                  onEditNote(menuItem.id)
-                }}
-              >
-                <Icon icon={Pencil} size="sm" />
-                Edit
-              </button>
-            )}
-            <button
-              type="button"
-              role="menuitem"
-              className="knowledge-menuitem"
-              data-testid="knowledge-row-retire"
-              onClick={() => {
-                closeMenu()
-                onRetire(menuItem, !itemRetired(menuItem))
-              }}
-            >
-              <Icon icon={itemRetired(menuItem) ? ArchiveRestore : Archive} size="sm" />
-              {itemRetired(menuItem) ? 'Restore' : 'Retire'}
-            </button>
-          </div>
-        )}
-      </div>
+      <ContextMenu
+        control={menu}
+        label={(id) => {
+          const item = rows.find((r) => r.item.id === id)?.item
+          return item ? `More actions for ${itemName(item)}` : 'More actions'
+        }}
+        items={menuItems}
+        testId="knowledge-row-more"
+      />
     </>
   )
 }

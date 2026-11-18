@@ -1,4 +1,4 @@
-import type { MouseEvent, ReactElement } from 'react'
+import type { ReactElement } from 'react'
 import type { KnowledgeItem, RunFacts } from '../../lib/knowledge'
 import { itemExcerpt, itemKind, itemName, itemOrigin, itemRetired, itemSource, kindLabel, provenanceLine } from '../../lib/knowledge'
 import { Badge } from '../ui/Badge'
@@ -15,8 +15,7 @@ export function KnowledgeRow({
   showAgentBadge,
   domId,
   arrive,
-  onOpen,
-  onMenu
+  onOpen
 }: {
   /** The row was appended while the user is looking (docs/design/motion.md 3.19). */
   arrive?: boolean
@@ -27,19 +26,13 @@ export function KnowledgeRow({
   showAgentBadge: boolean
   domId: string
   onOpen: (id: string) => void
-  /** Shift+F10 / the context menu: open the row's More actions menu at the given point (null = beside the row). */
-  onMenu: (id: string, at: { x: number; y: number } | null) => void
 }): ReactElement {
   const name = itemName(item)
   const kind = itemKind(item)
   const origin = itemOrigin(item)
   const retired = itemRetired(item)
   const excerpt = itemExcerpt(item)
-  const onContextMenu = (e: MouseEvent<HTMLLIElement>): void => {
-    e.preventDefault()
-    // A keyboard context menu (Shift+F10, the Menu key) arrives with no pointer position.
-    onMenu(item.id, e.button === 2 && (e.clientX || e.clientY) ? { x: e.clientX, y: e.clientY } : null)
-  }
+  // The row menu (right click, Menu key, Shift+F10) is the list's: KnowledgeList handles both on the listbox.
   return (
     <li
       id={domId}
@@ -54,7 +47,6 @@ export function KnowledgeRow({
       aria-selected={selected}
       tabIndex={-1}
       onClick={() => onOpen(item.id)}
-      onContextMenu={onContextMenu}
     >
       <span className="knowledge-row-head">
         <span className="knowledge-row-name" data-testid="knowledge-row-name" title={name}>

@@ -1,0 +1,280 @@
+// Token-free (mock adapter, temp ORGAI_DATA_DIR). The shared context menu (docs/design/context-menus.md section 4,
+// components/ui/ContextMenu.tsx) on three surfaces: run tabs, Knowledge rows and Dashboard project tiles. Each opens by
+// right click and by keyboard (Shift+F10, the Menu key), takes focus on its first item, moves with the arrows (wrapping,
+// Home / End, type-ahead), activates with Enter and returns focus to its invoker on Escape. The platform text menu wins
+// in a text field and over a text selection: those contextmenu events are dispatched from script (a real right click
+// there would pop the native menu from main, which e2e cannot dismiss) and must not be cancelled.
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { TMP, check, cleanup, endSession, findProject, finish, gotoProjects, launch, openProject, openProjectForm, projectTab, sleep } from './lib.mjs'
+
+process.env.ORGAI_MOCK = '1'
+const base = fs.mkdtempSync(path.join(TMP, 'orgai-e2e-ctxmenu-'))
+const wf = path.join(base, 'ctx-engagement')
+fs.mkdirSync(wf, { recursive: true })
+const NAME = 'E2E context menus (orgai test)'
+
+const { app, page, shot } = await launch({ shotPrefix: 'context-menus' })
+page.setDefaultTimeout(8000)
+
+const setSize = async (w, h) => {
+  await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+  await sleep(400)
+}
+const until = async (fn, ms = 10_000) => {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    try {
+      if (await fn()) return true
+    } catch {
+      /* keep polling */
+    }
+    await sleep(150)
+  }
+  return false
+}
+/** The focused element: its testid, role and text, for checks and failure details. */
+const active = () =>
+  page.evaluate(() => {
+    const el = document.activeElement
+    if (!el || el === document.body) return { testid: 'body', role: '', text: '' }
+    return { testid: el.getAttribute('data-testid') ?? '', role: el.getAttribute('role') ?? '', text: (el.textContent ?? '').replace(/\s+/g, ' ').trim() }
+  })
+const menuOpen = (testid) => page.locator(`[data-testid=${testid}][role=menu]`)
+const itemsOf = async (testid) => (await menuOpen(testid).locator('[role=menuitem]').allInnerTexts()).map((t) => t.replace(/\s+/g, ' ').trim())
+const ctxCount = () => page.locator('.ctx-menu').count()
+
+/**
+ * The shared keyboard model, checked on an open menu: focus on the first item, ArrowDown, ArrowUp wrapping to the last,
+ * Home, End, a letter jumping to the next matching item.
+ */
+async function checkKeys(label, testid) {
+  const items = await itemsOf(testid)
+  const a0 = await active()
+  check(a0.role === 'menuitem' && a0.text.startsWith(items[0]), `${label}: focus lands on the first item`, JSON.stringify(a0))
+  if (items.length > 1) {
+    await page.keyboard.press('ArrowDown')
+    check((await active()).text.startsWith(items[1]), `${label}: ArrowDown moves to the second item`, JSON.stringify(await active()))
+    await page.keyboard.press('Home')
+    await page.keyboard.press('ArrowUp')
+    check((await active()).text.startsWith(items[items.length - 1]), `${label}: ArrowUp from the first item wraps to the last`, JSON.stringify(await active()))
+    await page.keyboard.press('Home')
+    check((await active()).text.startsWith(items[0]), `${label}: Home goes to the first item`)
+    await page.keyboard.press('End')
+    check((await active()).text.startsWith(items[items.length - 1]), `${label}: End goes to the last item`)
+    const target = items.findIndex((t, i) => i > 0 && /^[a-z]/i.test(t) && t[0].toLowerCase() !== items[0][0].toLowerCase())
+    if (target > 0) {
+      await page.keyboard.press('Home')
+      await page.keyboard.press(items[target][0].toLowerCase())
+      check((await active()).text.startsWith(items[target]), `${label}: typing "${items[target][0].toLowerCase()}" jumps to "${items[target]}"`, JSON.stringify(await active()))
+    }
+  }
+}
+
+/** Escape closes the menu and puts focus back on the element `isInvoker` recognises. */
+async function checkEscape(label, testid, isInvoker) {
+  await page.keyboard.press('Escape')
+  check(await until(async () => (await menuOpen(testid).count()) === 0, 3000), `${label}: Escape closes the menu`)
+  check(await until(() => page.evaluate(isInvoker), 3000), `${label}: Escape returns focus to the invoker`, JSON.stringify(await active()))
+}
+
+/** A script-dispatched contextmenu on `selector`: was it cancelled, and did a custom menu open? */
+const dispatchContextMenu = (selector) =>
+  page.evaluate((sel) => {
+    const el = document.querySelector(sel)
+    if (!el) return { found: false, cancelled: false }
+    const r = el.getBoundingClientRect()
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 4, clientY: r.top + 4 })
+    const ok = el.dispatchEvent(ev)
+    return { found: true, cancelled: !ok }
+  }, selector)
+
+try {
+  await setSize(1600, 1000)
+
+  // ---- An engagement with a [mock:knowledge] run: one run tab and five Knowledge rows ----
+  await gotoProjects(page)
+  const form = await openProjectForm(page)
+  await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
+  await form.getByLabel('Name', { exact: true }).fill(NAME)
+  await form.locator('[data-testid=new-project-client]').fill('Ctx Corp')
+  await form.getByLabel('Working folder', { exact: true }).fill(wf)
+  const arch = form.locator('[data-testid=architect-setup]')
+  if (await arch.isChecked()) await form.locator('label.checkbox', { hasText: 'Start with the setup interview' }).click()
+  await form.getByRole('button', { name: 'Create project', exact: true }).click()
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 60_000 })
+  const eng = await findProject(page, NAME)
+  check(!!eng, 'engagement created')
+
+  await projectTab(page, 'Live').click()
+  if (!(await page.locator('.new-run').count())) {
+    await page.keyboard.press('Control+t')
+    await page.locator('.new-run').waitFor({ timeout: 8000 })
+  }
+  await page.locator('.composer textarea').fill('Summarise the kickoff [mock:knowledge]')
+  await page.locator('.composer .btn.primary').click()
+  check(await until(async () => (await page.evaluate((id) => window.orgai.knowledge.get(id), eng.id)).nodes.length === 4, 60_000), 'the mock run recorded its knowledge items')
+  // The root's last knowledge step retires a fact; then end the session, so no late card or event moves focus (which
+  // rightly dismisses an open menu) while the checks run. The tab stays after End session.
+  check(await until(async () => (await page.evaluate((id) => window.orgai.knowledge.get(id), eng.id)).nodes.some((n) => n.facts?.some((f) => f.retired)), 30_000), 'the mock run finished its knowledge writes')
+  await endSession(page)
+  check(await until(async () => (await page.evaluate((id) => window.orgai.runs.list(id), eng.id)).every((r) => !['starting', 'running', 'idle', 'stopping'].includes(r.status)), 20_000), 'the session ended')
+  await sleep(500)
+
+  // ======== 1. Run tabs ========
+  const runTab = page.locator('.run-tablist .run-tab-wrap:not([data-run="new"]) .run-tab').first()
+  const runId = await page.locator('.run-tablist .run-tab-wrap:not([data-run="new"])').first().getAttribute('data-run')
+  const tabIsActive = `(() => document.activeElement?.closest('.run-tab-wrap')?.getAttribute('data-run') === ${JSON.stringify(runId)})`
+  await runTab.click({ button: 'right' })
+  await menuOpen('run-tab-ctx').waitFor({ timeout: 5000 })
+  // Focusing the tab scrolls the tab strip into view as the menu opens: that programmatic scroll must not close it.
+  await sleep(400)
+  check((await menuOpen('run-tab-ctx').count()) === 1, 'run tab menu: stays open through the tab strip scrolling the focused tab into view')
+  check((await itemsOf('run-tab-ctx')).join('|') === 'Open in new window|Hide', 'run tab menu: Open in new window, then Hide', (await itemsOf('run-tab-ctx')).join('|'))
+  check((await menuOpen('run-tab-ctx').locator('[role=separator]').count()) === 1, 'run tab menu: a separator before Hide')
+  check((await page.locator('[data-testid=run-tab-ctx]').evaluate((el) => el.matches(':popover-open'))) === true, 'run tab menu: shown in the top layer')
+  await checkKeys('run tab (right click)', 'run-tab-ctx')
+  await shot('run-tab-menu')
+  await checkEscape('run tab (right click)', 'run-tab-ctx', new Function(`return ${tabIsActive}()`))
+  await runTab.focus()
+  await page.keyboard.press('Shift+F10')
+  check(await until(async () => (await menuOpen('run-tab-ctx').count()) === 1, 3000), 'run tab: Shift+F10 on the focused tab opens the menu')
+  await checkEscape('run tab (Shift+F10)', 'run-tab-ctx', new Function(`return ${tabIsActive}()`))
+  await runTab.focus()
+  await page.keyboard.press('ContextMenu')
+  check(await until(async () => (await menuOpen('run-tab-ctx').count()) === 1, 3000), 'run tab: the Menu key on the focused tab opens the menu')
+  // Activation: End then Enter on Hide removes the tab (the session keeps going) and focus stays on a real element.
+  await page.keyboard.press('End')
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await page.locator(`.run-tablist .run-tab-wrap[data-run="${runId}"]`).count()) === 0, 3000), 'run tab: Enter on Hide hides the tab')
+  check(await until(async () => (await ctxCount()) === 0, 2000), 'run tab: the menu closes on activation')
+  await sleep(300)
+  check((await active()).testid !== 'body', 'run tab: focus does not drop to the body after Hide', JSON.stringify(await active()))
+  check((await page.evaluate((id) => window.orgai.runs.list(id), eng.id)).some((r) => r.id === runId), 'run tab: hiding keeps the run (it only leaves the tab strip)')
+
+  // ======== 2. Knowledge rows ========
+  await page.locator('[data-testid=tab-knowledge]').click()
+  await page.locator('[data-testid=knowledge-row]').first().waitFor({ state: 'visible', timeout: 15_000 })
+  const kRow = page.locator('[data-testid=knowledge-row]').first()
+  const kId = await kRow.getAttribute('data-id')
+  const rowIsActive = new Function(`return document.activeElement?.getAttribute('data-id') === ${JSON.stringify(kId)} && document.activeElement?.getAttribute('role') === 'option'`)
+  await kRow.click({ button: 'right', position: { x: 8, y: 8 } })
+  await menuOpen('knowledge-row-more').waitFor({ timeout: 5000 })
+  check((await itemsOf('knowledge-row-more')).join('|') === 'Open|Retire', 'knowledge row menu: Open, Retire', (await itemsOf('knowledge-row-more')).join('|'))
+  check((await kRow.getAttribute('aria-selected')) === 'true', 'knowledge row: opening its menu selects the row')
+  await checkKeys('knowledge row (right click)', 'knowledge-row-more')
+  await shot('knowledge-row-menu')
+  await checkEscape('knowledge row (right click)', 'knowledge-row-more', rowIsActive)
+  await page.keyboard.press('Shift+F10')
+  check(await until(async () => (await menuOpen('knowledge-row-more').count()) === 1, 3000), 'knowledge row: Shift+F10 on the focused row opens the menu')
+  await checkEscape('knowledge row (Shift+F10)', 'knowledge-row-more', rowIsActive)
+  await page.keyboard.press('ContextMenu')
+  check(await until(async () => (await menuOpen('knowledge-row-more').count()) === 1, 3000), 'knowledge row: the Menu key on the focused row opens the menu')
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await page.evaluate(() => document.activeElement?.id)) === 'knowledge-detail-heading', 5000), 'knowledge row: Enter on Open opens the detail pane with focus on its heading', JSON.stringify(await active()))
+  await page.keyboard.press('Escape')
+  // Past the primitive's 600 ms guard against the platform's echo of a keyboard open.
+  await sleep(800)
+
+  // The platform menu wins: a text selection inside a row, and a text field inside a row.
+  const nameSel = `[data-testid=knowledge-row][data-id="${kId}"] [data-testid=knowledge-row-name]`
+  await page.evaluate((sel) => {
+    const el = document.querySelector(sel)
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    const s = window.getSelection()
+    s.removeAllRanges()
+    s.addRange(range)
+  }, nameSel)
+  const onSelection = await dispatchContextMenu(nameSel)
+  check(onSelection.found && !onSelection.cancelled && (await ctxCount()) === 0, 'knowledge row: over a text selection the contextmenu is not cancelled and no custom menu opens', JSON.stringify(onSelection))
+  await page.evaluate(() => window.getSelection()?.removeAllRanges())
+  const noSelection = await dispatchContextMenu(nameSel)
+  check(noSelection.cancelled && (await until(async () => (await ctxCount()) === 1, 2000)), 'knowledge row: without a selection the same contextmenu opens the custom menu (control)', JSON.stringify(noSelection))
+  await page.keyboard.press('Escape')
+  await until(async () => (await ctxCount()) === 0, 2000)
+  await page.evaluate((id) => {
+    const row = document.querySelector(`[data-testid=knowledge-row][data-id="${id}"]`)
+    const input = document.createElement('input')
+    input.type = 'text'
+    input.setAttribute('data-testid', 'ctx-probe-input')
+    row?.appendChild(input)
+  }, kId)
+  const inField = await dispatchContextMenu('[data-testid=ctx-probe-input]')
+  check(inField.found && !inField.cancelled && (await ctxCount()) === 0, 'knowledge row: in a text field the contextmenu is not cancelled and no custom menu opens', JSON.stringify(inField))
+  await page.evaluate(() => document.querySelector('[data-testid=ctx-probe-input]')?.remove())
+  const searchBox = await dispatchContextMenu('[data-testid=knowledge-search]')
+  check(searchBox.found && !searchBox.cancelled && (await ctxCount()) === 0, 'the Knowledge search field keeps the platform menu', JSON.stringify(searchBox))
+
+  // ======== 3. Dashboard project tiles ========
+  await gotoProjects(page)
+  const tile = page.locator(`[data-testid=project-tile][data-name="${NAME}"]`)
+  await tile.waitFor()
+  const mainIsActive = new Function(`return document.activeElement?.getAttribute('data-testid') === 'project-tile-main' && document.activeElement.closest('[data-testid=project-tile]')?.getAttribute('data-name') === ${JSON.stringify(NAME)}`)
+  const moreIsActive = new Function(`return document.activeElement?.getAttribute('data-testid') === 'project-tile-more' && document.activeElement.closest('[data-testid=project-tile]')?.getAttribute('data-name') === ${JSON.stringify(NAME)}`)
+  // The tile body (the Open button's cover spans the whole tile), away from More and the chips.
+  const tb = await tile.boundingBox()
+  const at = { x: 24, y: Math.round((tb?.height ?? 80) - 16) }
+  await tile.click({ button: 'right', position: at })
+  await menuOpen('project-tile-menu').waitFor({ timeout: 5000 })
+  const tileItems = await itemsOf('project-tile-menu')
+  check(tileItems[0] === 'Open' && tileItems[1] === 'New run' && tileItems.includes('Open folder') && tileItems[tileItems.length - 1] === 'Forget engagement…', 'tile menu: Open, New run, ..., Open folder, then Forget engagement… last', tileItems.join('|'))
+  check((await menuOpen('project-tile-menu').locator('[data-testid=project-tile-delete]').getAttribute('class'))?.includes('danger'), 'tile menu: the destructive item is styled as danger')
+  check((await menuOpen('project-tile-menu').locator('[role=separator]').count()) === 1, 'tile menu: a separator before the destructive item')
+  const box = await menuOpen('project-tile-menu').boundingBox()
+  check(!!box && !!tb && Math.abs(box.x - (tb.x + at.x)) <= 2, 'tile menu: a right click opens it at the pointer', JSON.stringify({ box, tb, at }))
+  await checkKeys('tile (right click)', 'project-tile-menu')
+  await shot('tile-menu')
+  await checkEscape('tile (right click)', 'project-tile-menu', mainIsActive)
+  await tile.locator('[data-testid=project-tile-main]').focus()
+  await page.keyboard.press('Shift+F10')
+  check(await until(async () => (await menuOpen('project-tile-menu').count()) === 1, 3000), 'tile: Shift+F10 on the Open button opens the menu')
+  await checkEscape('tile (Shift+F10)', 'project-tile-menu', mainIsActive)
+  const more = tile.locator('[data-testid=project-tile-more]')
+  check((await more.getAttribute('aria-haspopup')) === 'menu' && (await more.getAttribute('aria-expanded')) === 'false', 'tile: More is a menu button, collapsed')
+  await more.click()
+  await menuOpen('project-tile-menu').waitFor({ timeout: 5000 })
+  check((await more.getAttribute('aria-expanded')) === 'true', 'tile: More is expanded while its menu is open')
+  check((await itemsOf('project-tile-menu')).join('|') === tileItems.join('|'), 'tile: More opens the same menu as the right click')
+  await checkEscape('tile (More)', 'project-tile-menu', moreIsActive)
+  await more.click()
+  await menuOpen('project-tile-menu').waitFor({ timeout: 5000 })
+  await more.click()
+  check(await until(async () => (await menuOpen('project-tile-menu').count()) === 0, 2000), 'tile: a second click on More closes its menu')
+  await more.click()
+  await menuOpen('project-tile-menu').waitFor({ timeout: 5000 })
+  await page.mouse.move(Math.round((tb?.x ?? 300) + 10), Math.round((tb?.y ?? 300) + 10))
+  await page.mouse.wheel(0, 200)
+  check(await until(async () => (await menuOpen('project-tile-menu').count()) === 0, 2000), 'tile: a wheel scroll outside the menu closes it')
+  check(await until(() => page.evaluate(moreIsActive), 2000), 'tile: focus returns to More after the wheel dismissal', JSON.stringify(await active()))
+  // Activation: the Menu key on Open, then Enter on Open, opens the project.
+  await tile.locator('[data-testid=project-tile-main]').focus()
+  await page.keyboard.press('ContextMenu')
+  check(await until(async () => (await menuOpen('project-tile-menu').count()) === 1, 3000), 'tile: the Menu key on the Open button opens the menu')
+  await page.keyboard.press('Enter')
+  check(await until(async () => (await page.locator('[data-testid=dashboard]').count()) === 0, 5000), 'tile: Enter on Open opens the project')
+
+  // ---- Both themes at the small size: the menu stays inside the window ----
+  await setSize(1024, 640)
+  await gotoProjects(page)
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+    const vt = page.locator(`[data-testid=project-tile][data-name="${NAME}"] [data-testid=project-tile-more]`)
+    await vt.click()
+    await menuOpen('project-tile-menu').waitFor({ timeout: 5000 })
+    const b = await menuOpen('project-tile-menu').boundingBox()
+    const vp = page.viewportSize() ?? (await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })))
+    check(!!b && b.x >= 8 && b.y >= 8 && b.x + b.width <= vp.width - 7 && b.y + b.height <= vp.height - 7, `tile menu stays 8 px inside the window at 1024x640 ${theme}`, JSON.stringify({ b, vp }))
+    await shot(`tile-menu-1024-${theme}`)
+    await page.keyboard.press('Escape')
+    await until(async () => (await ctxCount()) === 0, 2000)
+  }
+} catch (e) {
+  check(false, 'context menus flow ran without throwing', e.stack ?? String(e))
+  await shot('error').catch(() => {})
+} finally {
+  await setSize(1600, 1000).catch(() => {})
+  await cleanup(app, page, NAME)
+  fs.rmSync(base, { recursive: true, force: true })
+}
+finish('e2e/context-menus')

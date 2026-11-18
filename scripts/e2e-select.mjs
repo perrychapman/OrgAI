@@ -74,6 +74,8 @@ export const RULES = [
   { match: ['e2e/outputs-revise.part.mjs'], scripts: ['outputs-notes'], why: 'part called by outputs-notes' },
 
   // ---- renderer, narrow feature areas (specific files first) ----
+  // The shared context menu primitive: its own script plus every area script that opens one (docs/design/context-menus.md).
+  { match: [`${C}ui/ContextMenu.tsx`, `${L}contextMenu.ts`], scripts: ['context-menus', 'dashboard', 'knowledge', 'runs', 'assistants', 'team', 'outputs', 'schedules'], why: 'shared context menu' },
   { match: [`${C}settings/CliCommandRow.tsx`], scripts: ['install-row'], why: 'Terminal install row' },
   { match: [`${C}settings/CanvasSection.tsx`], scripts: ['canvas'], why: 'canvas settings' },
   { match: [`${C}settings/FolderTrustSection.tsx`, `${C}settings/useFolderTrustReview.ts`], scripts: ['folder-trust'], why: 'folder trust settings' },
@@ -92,10 +94,11 @@ export const RULES = [
   { match: [`${C}dashboard/SecretNotices.tsx`], scripts: ['secrets-notices'], why: 'secure storage notices' },
   { match: [`${C}dashboard/RepoStartPanel.tsx`, `${L}repoStart.ts`, `${L}repoCloneSession.ts`], scripts: ['clone-start'], why: 'From GitHub start' },
   { match: [`${C}dashboard/NewProjectForm.tsx`, `${C}dashboard/NewProjectDialog.tsx`], scripts: PROJECT_FORM, why: 'New project form is driven by many scripts' },
-  { match: [`${C}dashboard/ProjectTile.tsx`], scripts: ['dashboard', 'engagement'], why: 'project tile (client display)' },
+  { match: [`${C}dashboard/ProjectTile.tsx`], scripts: ['dashboard', 'engagement', 'context-menus'], why: 'project tile (client display, More menu)' },
   { match: [`${C}dashboard/**`, `${R}views/DashboardView.tsx`, `${S}dashboard*.css`, `${L}dashboard*.ts`, `${L}setupGaps.ts`], scripts: ['dashboard'], why: 'Dashboard' },
 
-  { match: [`${C}knowledge/**`, `${R}views/KnowledgeView.tsx`, `${L}knowledge*.ts`, `${L}runKnowledge.ts`, `${S}knowledge*.css`], scripts: KNOWLEDGE, why: 'Knowledge tab and graph' },
+  { match: [`${C}knowledge/KnowledgeList.tsx`, `${C}knowledge/KnowledgeRow.tsx`], scripts: [...KNOWLEDGE, 'context-menus'], why: 'Knowledge list and its row menu' },
+  { match: [`${C}knowledge/**`,`${R}views/KnowledgeView.tsx`, `${L}knowledge*.ts`, `${L}runKnowledge.ts`, `${S}knowledge*.css`], scripts: KNOWLEDGE, why: 'Knowledge tab and graph' },
   { match: [`${C}outputs/**`, `${R}views/OutputsView.tsx`, `${L}output*.ts`, `${L}csvGrid.ts`, `${L}slideStage.ts`, `${L}diagram*.ts`, `${S}outputs*.css`], scripts: OUTPUTS, why: 'Outputs' },
   { match: [`${C}usage/**`, `${C}Usage*.tsx`, `${R}views/UsageView.tsx`, `${L}usage*.ts`, `${L}trends.ts`, `${L}modelPrices.ts`, `${S}usage*.css`, `${S}history-trends.css`], scripts: USAGE, why: 'Usage pages' },
   { match: [`${C}connectors/**`, `${S}connectors.css`, `${L}connector*.ts`, `${L}roleServices.ts`], scripts: ['connectors', 'presets', 'team'], why: 'Connectors' },
@@ -113,7 +116,8 @@ export const RULES = [
   { match: [`${C}DecisionCard.tsx`, `${C}DecisionTray.tsx`, `${C}QuestionCard.tsx`, `${C}MergeReviewCard.tsx`, `${L}decisionTitle.ts`], scripts: ['proposals', 'permissions', 'runs'], why: 'decision cards' },
   { match: [`${L}transcriptMedia.ts`], scripts: ['transcript-media', 'runs'], why: 'transcript media' },
   { match: [`${C}TranscriptPanel.tsx`, `${S}transcript.css`, `${L}transcript*.ts`], scripts: ['runs', 'transcript-media', 'knowledge-run', 'outputs'], why: 'transcript rendering' },
-  { match: [`${R}views/LiveRunView.tsx`, `${C}RunTabs.tsx`, `${C}RunHistory.tsx`, `${C}RunMeta.tsx`, `${C}RunActions.tsx`, `${C}RunLabel.tsx`, `${C}FinishedList.tsx`, `${S}run.css`, `${S}run-tabs.css`, `${L}run*.ts`, `${L}chainView.ts`], scripts: RUN_VIEW, why: 'live run view' },
+  { match: [`${C}RunTabs.tsx`], scripts: [...RUN_VIEW, 'context-menus'], why: 'run tabs and their tab menu' },
+  { match: [`${R}views/LiveRunView.tsx`,`${C}RunHistory.tsx`, `${C}RunMeta.tsx`, `${C}RunActions.tsx`, `${C}RunLabel.tsx`, `${C}FinishedList.tsx`, `${S}run.css`, `${S}run-tabs.css`, `${L}run*.ts`, `${L}chainView.ts`], scripts: RUN_VIEW, why: 'live run view' },
   { match: [`${C}AppMenuLayer.tsx`, `${C}KeyboardShortcutsDialog.tsx`, `${S}menu.css`, `${L}menu*.ts`, `${L}useAppMenu.ts`, 'src/main/appMenu.ts'], scripts: ['menu', 'self-help', 'updates'], why: 'application menu (Help > Check for Updates… routes through menuActions)' },
   { match: [`${C}updates/**`, `${L}updates.ts`, `${R}store/updatesStore.ts`, `${S}updates.css`], scripts: ['updates'], why: 'desktop updater UI (About > Updates, sidebar notice)' },
   { match: [`${S}motion.css`, `${L}motion.ts`, `${L}layoutMotion.ts`], scripts: ['motion', 'layout', 'canvas', 'dashboard'], why: 'motion tokens' },
