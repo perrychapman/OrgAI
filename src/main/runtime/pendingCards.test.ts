@@ -82,6 +82,13 @@ describe('proposalEffect', () => {
     expect(proposalEffect('mcpServers', work, 'claude')).toBe('after-turn')
     expect(proposalEffect('skills', work, 'codex')).toBe('after-turn')
   })
+  it('a work-run org chart reaches the live run only on a session that takes roster changes live', () => {
+    expect(proposalEffect('orgChart', work, 'mock', { liveRoster: true })).toBe('now')
+    expect(proposalEffect('orgChart', work, 'claude', { liveRoster: true })).toBe('after-turn')
+    expect(proposalEffect('orgChart', work, 'codex', { liveRoster: false })).toBe('next-run')
+    expect(proposalEffect('orgChart', { kind: 'setup', projectId: 'p1' }, 'mock', { liveRoster: true })).toBe('next-run')
+    expect(proposalEffect('settings', work, 'mock', { liveRoster: true })).toBe('next-run')
+  })
   it('everything else applies from the next run', () => {
     expect(proposalEffect('orgChart', work, 'mock')).toBe('next-run')
     expect(proposalEffect('mcpServers', { kind: 'setup', projectId: 'p1' }, 'claude')).toBe('next-run')

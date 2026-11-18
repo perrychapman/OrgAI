@@ -290,11 +290,25 @@ export interface RuntimeContext {
   project: Project
   /**
    * The org chart to run. For setup runs this is the built-in Architect, not the project's roles. A work run gets its own
-   * copies of the roles: RunManager rewrites their grant fields (mcpServers, skills) in place when the user approves a
-   * grant change mid-run (refreshRoleGrants), so hold these objects and read the grants at call time. Ids and every
-   * other field stay as the run started (an org change applies from the next run).
+   * copies of the roles, and RunManager changes them IN PLACE, so hold this array and these objects and read fields at
+   * call time (never copy them into maps that outlive a call):
+   * - a grant change (approved MCP / skill proposal or install): the grant fields (mcpServers, skills) are rewritten
+   *   (refreshRoleGrants);
+   * - an approved org chart (propose_org_change) on a session with `RuntimeSession.liveRoster` (runRoster.ts
+   *   applyRosterChange): a changed role's object keeps its identity (id) and gets every other field rewritten except its
+   *   grants; a new role is appended (no grants of its own); a removed role leaves the array (it is then in
+   *   `retiredRoles()`). The root stays the root (same id, same object) and keeps its model, tier, effort and connection
+   *   (live model switching owns those); its prompt, description, tools, canSpawn, spawnable and the rest do change.
+   *   RunManager has done all of this before HarnessToolHooks.configChanged is called with `roles`.
+   * Setup-like, assistant, quick and single-agent runs never see a roster change.
    */
   roles: Role[]
+  /**
+   * Roles an approved org change removed from this run, as they were when removed (copies). For agents that started on
+   * one and are still running (they finish on their start-time definition), events and settlement that need the old
+   * name, colour or connection. Never spawnable. Missing or empty = none.
+   */
+  retiredRoles?(): readonly Role[]
   /** The first user message. May be empty when `images` is set. */
   prompt: string
   /**
@@ -812,6 +826,13 @@ export interface SkillAssistCatalog {
 }
 
 export interface RuntimeSession {
+  /**
+   * True when this session's HarnessToolHooks.configChanged handles `ConfigChange.roles` (an approved org chart used in
+   * the same run). RunManager reads it when the user approves an 'orgChart' card: without it the run's roles stay as
+   * they started and the chart applies from the next run (the pre-2026-11-18 behaviour). Set it only once the adapter
+   * really brings its spawn path, agent definitions and root prompt in line with ctx.roles.
+   */
+  readonly liveRoster?: boolean
   /** Change only the root model at a safe boundary; refuse without changing state when unsafe. */
   switchModel?(input: { model: string; connection?: RunConnection }): Promise<void>
   /**

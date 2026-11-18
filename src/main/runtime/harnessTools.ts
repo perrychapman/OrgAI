@@ -5,7 +5,7 @@ import type { OutputProduceInput, OutputReadInput, OutputRegisterInput, SlideDec
 import { OUTPUT_ID_RE, OUTPUT_KINDS, OUTPUT_PRODUCE_KINDS, OUTPUT_TOOLS } from '@shared/types'
 import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
 import { describeAnchor, indentLines, neutraliseUserMarker, splitLines } from '../outputs/revise'
-import type { Effort, ModelTier, ConnectionId, EngagementNote, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProjectKind, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, SkillProposalItem } from '@shared/types'
+import type { Effort, ModelTier, ConnectionId, EngagementNote, KnowledgeGraph, KnowledgeNode, KnowledgeSource, McpInstallDecision, McpLibraryEntry, McpProposalServer, McpRegistryEntry, McpServerSource, McpServerSpec, PlanStep, ProjectKind, Proposal, ProposalOutcome, QuestionAnswer, Role, RunPlan, RunRosterChange, SkillProposalItem } from '@shared/types'
 import { BRIDGE_BRIEF_MAX_CHARS, BRIDGE_HARNESS_TOOLS, CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, ENGAGEMENT_CONTEXT_TOOL_MAX_CHARS, HARNESS_PROJECT_ID, KNOWLEDGE_COMMON_KINDS, KNOWLEDGE_COMMON_RELATIONS, KNOWLEDGE_EDGE_NOTE_MAX_CHARS, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_NAME_MAX_CHARS, KNOWLEDGE_RECALL_QUERY_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_SEARCH_LIMIT, KNOWLEDGE_SUMMARY_MAX_CHARS, KNOWLEDGE_TOOL, KNOWLEDGE_TOOL_ACTIONS, MCP_HARNESS_TOOLS, PERMISSION_MODES, PROJECT_CLIENT_MAX_CHARS, PROJECT_PEEK_BRIEF_CHARS, RUN_HARNESS_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_CONFIG_ACTIONS, SKILL_HARNESS_TOOLS, SKILL_PROPOSAL_MAX_ITEMS, TOOL_CATALOG } from '@shared/types'
 import { knowledgeEdgesOf, knowledgeSearchLimit, knowledgeVocabulary, matchKnowledgeNodes, normalizeKnowledgeKey, resolveKnowledgeNode, searchKnowledge } from '@shared/knowledge'
 import { fenceDatum, fencedBlock, knowledgeField, knowledgeListItem } from '@shared/knowledgeIndex'
@@ -62,11 +62,12 @@ export interface HarnessToolHooks {
    */
   addMcpServer?(spec: McpServerSpec): Promise<string | McpAttachResult>
   /**
-   * An approved propose_mcp_servers or propose_skills proposal changed this work run's own project, and RunManager
-   * already updated the run's view (ctx.project, ctx.mcpServers(), ctx.resolvedMcpServers(), ctx.skills() now
-   * return the new configuration). Bring the live session in line (Claude: setMcpServers with the live list, a
-   * restart at idle for new tool whitelists or a rebuilt skill plugin; Codex: an app-server restart at idle for MCP;
-   * mock: at once). Missing hook or a rejection = the change applies from the next run, and the tool says so.
+   * An approved propose_mcp_servers, propose_skills or (sessions with RuntimeSession.liveRoster) propose_org_change
+   * proposal changed this work run's own project, and RunManager already updated the run's view (ctx.project,
+   * ctx.mcpServers(), ctx.resolvedMcpServers(), ctx.skills(), ctx.roles now return the new configuration). Bring the
+   * live session in line (Claude: setMcpServers with the live list, a restart at idle for new tool whitelists or a
+   * rebuilt skill plugin; Codex: an app-server restart at idle for MCP; mock: at once; roles: see ConfigChange.roles).
+   * Missing hook or a rejection = the change applies from the next run, and the tool says so.
    */
   configChanged?(change: ConfigChange): Promise<ConfigChangeResult>
   /**
@@ -111,6 +112,31 @@ export interface ConfigChange {
   mcp?: { upserted: string[]; removed: string[] }
   /** The project's skills or skill grants changed (ctx.skills() was recomputed). */
   skills?: boolean
+  /**
+   * An approved org chart (propose_org_change) changed this run's roster. Sent only when the session declares
+   * `RuntimeSession.liveRoster` and RunManager applied at least one role (ProposalOutcome.roster); role ids.
+   * `changed` = any field other than the grants and the canvas position differs (name, slug, prompt, description,
+   * responsibilities, tools, canSpawn, spawnable, reportsTo, requiredReports, model / tier / effort, connection,
+   * staffing, colour); the root may be in it (prompt, tools, spawnable...), never in `added` / `removed`.
+   *
+   * Already done by RunManager when the hook is called: ctx.roles updated IN PLACE (changed objects rewritten, new
+   * roles appended with no MCP / skill grants, removed roles out of the array and in ctx.retiredRoles()); ctx.project
+   * shows the new roles; ctx.skills() recomputed when membership changed; the bridge (ctx.bridge.roles(), spawn) and
+   * ctx.agentConnection read the live roles. Roles RunManager could not apply (another connection or adapter than the
+   * root's, an unpriced model under a budget, a required-delegation obligation, a different root) are NOT in these
+   * lists: they stay as the run started and apply from the next run. Staffing still goes through resolveStaffing,
+   * and subagent limits, permission mode, trust restrictions and the budget are untouched.
+   *
+   * What the adapter must do: make the native spawn path match ctx.roles (Claude: agent definitions for added /
+   * changed roles and none for removed ones, the spawn gate refusing a removed or unknown role at once; Codex:
+   * spawn_report / its role list read ctx.roles); bring the root's system prompt and tools in line when the root is
+   * in `changed` (a session restart at idle where the provider cannot change them live); leave running agents of a
+   * removed or changed role alone (they finish on their start-time definition). Answer 'now' only when the next
+   * spawn already uses the new roster, otherwise 'after-idle' and message the orchestrator once it is in place.
+   * Reject (throw) when it cannot apply it at all: the tool then says the chart applies from the next run, while
+   * ctx.roles has already moved, so the gates refuse removed roles either way.
+   */
+  roles?: { added: string[]; changed: string[]; removed: string[] }
 }
 
 /** What an adapter's configChanged hook reports back, so the proposal tools say exactly what is true. */
@@ -843,11 +869,15 @@ export const integrateWorktrees = defineTool({
 })
 
 /** Setup runs: proposal tools, ask_user and complete_setup, in the order the Architect uses them. */
-/** Work runs: the orchestrator proposes a revised chart when a task exposes a gap. Applies to future runs. */
+/**
+ * Work runs: the orchestrator proposes a revised chart when a task exposes a gap. Saved for future runs; on a session
+ * that takes roster changes live (RuntimeSession.liveRoster) RunManager also applies it to this run (runRoster.ts) and
+ * the result says exactly what this run can use and when.
+ */
 export const proposeOrgChange = defineTool({
   name: PROPOSAL_TOOLS.orgChange,
   description:
-    'Propose a revised org chart for future runs: the complete chart, unchanged roles included, with the smallest change that fixes a gap. Give each existing role its current slug so it keeps its id and grants. Blocks until the user approves or asks for changes; this session keeps its roles.',
+    'Propose a revised org chart: the complete chart, unchanged roles included, with the smallest change that fixes a gap. Give each existing role its current slug so it keeps its id and grants. Blocks until the user decides; the result says whether this run can use it.',
   inputSchema: z.object({
     title: z.string(),
     rationale: z.string().describe('What this run revealed and what changes'),
@@ -858,12 +888,41 @@ export const proposeOrgChange = defineTool({
     if ('error' in built) return built.error
     const d = await askProposal(ctx, { kind: 'orgChart', agentId: ROOT_AGENT_ID, title, payload: { roles: built.merged.roles, rationale } })
     hooks.onDecided?.()
-    return decisionText(
-      d,
-      'The org chart was updated for future runs. Roles you kept by slug (or by name) keep their MCP and skill grants unless you listed new ones. This session keeps its current roles; carry on with the task.'
-    )
+    if (d.behavior !== 'approve') return decisionText(d, '')
+    return decisionText(d, await orgChangeAppliedText(ctx, hooks, d.roster))
   }
 })
+
+const ORG_GRANTS_TEXT = 'Roles you kept by slug (or by name) keep their MCP and skill grants; new roles start with none (an org change never grants).'
+
+/** What an approved org chart means for this run, after the adapter was told (configChanged with `roles`). */
+async function orgChangeAppliedText(ctx: RuntimeContext, hooks: HarnessToolHooks, roster: RunRosterChange | undefined): Promise<string> {
+  if (!roster) return `The org chart was saved. It applies from the next run; this session keeps its current roles. ${ORG_GRANTS_TEXT} Carry on with the task.`
+  const nameOf = (id: string): string => datum(ctx.roles.find((r) => r.id === id)?.name ?? ctx.retiredRoles?.().find((r) => r.id === id)?.name ?? id, 60)
+  const list = (ids: string[]): string => ids.map(nameOf).join(', ')
+  const parts: string[] = ['The org chart was saved.']
+  const applied = roster.added.length + roster.changed.length + roster.removed.length > 0
+  if (!applied) parts.push("Nothing in this run's roles changed.")
+  else {
+    const what: string[] = []
+    if (roster.added.length) what.push(`added ${list(roster.added)}`)
+    if (roster.changed.length) what.push(`changed ${list(roster.changed)}`)
+    if (roster.removed.length) what.push(`removed ${list(roster.removed)} (no new agents of these; running ones finish as they started)`)
+    parts.push(`In this run: ${what.join('; ')}.`)
+    const outcome = await notifyConfigChanged(hooks, { roles: { added: [...roster.added], changed: [...roster.changed], removed: [...roster.removed] } })
+    const usable = [...roster.added, ...roster.changed].filter((id) => ctx.roles.find((r) => r.id === id)?.reportsTo !== null)
+    if (outcome.kind === 'none') parts.push('This session was not updated; the change applies from the next run.')
+    else if (outcome.kind === 'failed') parts.push(`Bringing this session in line failed (${outcome.message}); the change applies from the next run.`)
+    else if (outcome.result.availability === 'after-idle') {
+      parts.push('It takes effect once the agents are idle and the session restarts; the harness will message you. Do not delegate to the added or changed roles before then.')
+    } else parts.push(usable.length ? `Available now: you can delegate to ${list(usable)} in this run.` : 'It is in effect now.')
+  }
+  if (roster.deferred.length) {
+    parts.push(`Not in this run (from the next run): ${roster.deferred.map((x) => `${datum(x.name, 60)}: ${datum(x.reason, 200)}`).join('; ')}`)
+  }
+  parts.push(ORG_GRANTS_TEXT, 'Carry on with the task.')
+  return parts.join(' ')
+}
 
 // ---------- plan tools (work runs) ----------
 

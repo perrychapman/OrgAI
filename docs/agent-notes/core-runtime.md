@@ -315,7 +315,17 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   Verified by unit tests, fake query() / fake Codex server tests and the mock (runManagerConfig.test.ts end to end);
   nothing live. The renderer side is the proposal-cards pass (see Renderer below). A grant change also reaches the run's
   own role copies (`runManager.ts` `refreshRoleGrants`: `Role.mcpServers` / `skills` by id, in place, so every adapter
-  gate, role lookup and restart sees it; ids and other fields stay, an org change applies from the next run; review M1).
+  gate, role lookup and restart sees it; review M1).
+  - Org changes in the same run (owner request 2026-11-18; ARCHITECTURE.md "Org changes in the same run"): on a team
+    work run whose session sets `RuntimeSession.liveRoster` (`runRoster.ts` `liveRosterApplies`), an approved
+    propose_org_change also changes `ctx.roles` in place (`applyRosterChange`: changed roles keep object, id and
+    grants and take only the fields the card changed; new roles appended with no grants; removed roles go to
+    `ctx.retiredRoles()`; the root keeps model / tier / effort / connection). Roles on another placement, with an
+    unpriced model under a budget, under a required-delegation obligation, or under a different root are deferred
+    (`RunRosterChange.deferred`). RunManager records `RunRecord.roster`, emits host-only `run.roster`, returns
+    `ProposalOutcome.roster`; the tool calls `configChanged({ roles })` and says now / after idle / next run. Without
+    `liveRoster` (every adapter today) nothing changes: the chart applies from the next run. Unit-tested only
+    (runRoster.test.ts, runManagerRoster.test.ts, harnessToolsOrgChange.test.ts); adapters and renderer follow.
   - Proposal gates (2026-11-02, renderer review): main refuses control, zero-width, bidi and other invisible
     characters (`capabilities/sanitize.ts` `hiddenCharIn` / `hiddenCharProblem`; descriptions are `prose`: tab, line
     breaks, emoji ZWJ, ZWNJ and soft hyphens pass, bidi and zero-width space do not) in every MCP spec string field (`validate.ts` `hiddenCharProblems`, inside

@@ -2221,7 +2221,10 @@ interface ProposalBase {
    * When an approved proposal takes effect, set by the harness (runManager.ts proposalEffect) so the card can say so:
    * 'now' (the live run sees it from the next tool call), 'after-turn' (once the current turn ends and the session is
    * re-attached), 'next-run' (this run keeps its configuration). Work-run 'mcpServers' / 'skills' proposals:
-   * 'after-turn' on Claude and Codex, 'now' on the mock; everything else 'next-run'. Missing on older events.
+   * 'after-turn' on Claude and Codex, 'now' on the mock; work-run 'orgChart' proposals the same when the session takes
+   * roster changes live (RuntimeSession.liveRoster), else 'next-run'; everything else 'next-run'. Missing on older
+   * events. An 'orgChart' card's effect is an upper bound: roles the run cannot take are deferred to the next run
+   * (ProposalOutcome.roster.deferred).
    */
   effect?: ProposalEffect
   /** Card revision, set by RunManager when the card is created (1 for now). Decision calls may send expectedRevision. */
@@ -2265,7 +2268,16 @@ export type ProposalDecision =
  * not start until the user sets it in Settings.
  */
 export type ProposalOutcome =
-  | { behavior: 'approve'; waitingForSecrets?: string[] }
+  | {
+      behavior: 'approve'
+      waitingForSecrets?: string[]
+      /**
+       * Approved 'orgChart' proposals of a work run whose session takes roster changes live (RuntimeSession.liveRoster):
+       * what RunManager applied to the running run's roles (RunRosterChange). Absent everywhere else, and when nothing
+       * could be applied: the change then reaches the next run only. Set by RunManager only.
+       */
+      roster?: RunRosterChange
+    }
   | { behavior: 'revise'; feedback: string }
   | { behavior: 'decline'; note?: string }
 
@@ -3631,6 +3643,47 @@ export interface RunRecord {
    * continuation (its agents are new). RunManager cleans a stored value on read (`cleanRunStaffing`).
    */
   staffing?: RunStaffing
+  /**
+   * Work runs whose roles changed mid-run through an approved org chart (propose_org_change): the run's roster as
+   * RunManager last applied it, display fields only, removed roles kept with `removed: true` so agents that started on
+   * them still show their name and colour. Set and replaced by the `run.roster` event. Absent = the run's roles are the
+   * ones it started with (every run before this field existed, and every run without a mid-run org change): readers
+   * fall back to the project's roles as before. Persisted with the record and restored on relaunch.
+   */
+  roster?: RunRosterRole[]
+}
+
+/**
+ * One role of a work run's live roster (RunRecord.roster, the `run.roster` event). Display fields only (no prompt,
+ * tools or grants); structured-clone safe.
+ */
+export interface RunRosterRole {
+  id: string
+  slug: string
+  name: string
+  color: string
+  /** Parent role id; null for the root. */
+  reportsTo: string | null
+  /** The role joined this run through an approved org change. */
+  added?: true
+  /**
+   * An approved org change removed the role from this run: no new agent of it starts, agents already running on it
+   * finish on their start-time definition. Kept so their nodes and history keep a name and colour.
+   */
+  removed?: true
+}
+
+/**
+ * What an approved org chart changed in a running work run (ProposalOutcome.roster, the `run.roster` event). Role
+ * ids. `changed` = any field other than the grants (mcpServers, skills) and the canvas position differs. `deferred`
+ * = roles of the approved chart RunManager did not apply to this run, with OrgAI's own reason (never agent text);
+ * they apply from the next run like any saved change.
+ */
+export interface RunRosterChange {
+  added: string[]
+  changed: string[]
+  removed: string[]
+  deferred: { id: string; name: string; reason: string }[]
 }
 
 export interface PermissionRequest {
@@ -3905,6 +3958,13 @@ export type RunEvent =
   | { type: 'run.title'; runId: string; title: string }
   /** The required-delegation ledger changed (summary and per-agent display state). */
   | { type: 'run.delegation'; runId: string; summary: NonNullable<RunSummary['delegation']>; agents: Record<string, NonNullable<AgentInstance['delegation']>> }
+  /**
+   * RunManager only (an adapter's is dropped): an approved org chart changed this live work run's roles. `roster` is
+   * the whole roster after the change (replace RunRecord.roster with it); `change` says what moved. Emitted once per
+   * applied change, never for a change that applied nothing (everything deferred) and never on setup-like, assistant,
+   * quick or single-agent runs.
+   */
+  | { type: 'run.roster'; runId: string; roster: RunRosterRole[]; change: RunRosterChange }
   /**
    * A run moved to another project (a quick run promoted with runs:promoteQuick). One event per moved run; from now
    * on runs:list(projectId) returns it and RunSummary.projectId is `projectId`.

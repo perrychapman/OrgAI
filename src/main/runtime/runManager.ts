@@ -74,6 +74,7 @@ import type {
   RunPlan,
   RunStaffing,
   RunRecord,
+  RunRosterChange,
   RunSummary,
   SwitchRunModelInput,
   SwitchRunModelResult,
@@ -86,6 +87,7 @@ import type {
   UserQuestion
 } from '@shared/types'
 import { BridgedSessions, bridgeKey } from './bridge'
+import { applyRosterChange, liveRosterApplies, rosterChanged, rosterOf } from './runRoster'
 import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
@@ -399,6 +401,9 @@ interface ActiveRun {
   evolve?: EvolveStrategy | true
   evolveWindowRuns?: number
   session?: RuntimeSession
+  /** Mid-run org changes (runRoster.ts): roles removed from ctx.roles, as they were, and ids of roles that joined. */
+  retiredRoles?: Role[]
+  rosterAdded?: Set<string>
   pending: PendingCardMaps['pending']
   pendingProposals: PendingCardMaps['pendingProposals']
   pendingQuestions: PendingCardMaps['pendingQuestions']
@@ -1890,7 +1895,7 @@ export class RunManager {
 
     const emit = (raw: RunEvent, from?: { bridged: true }): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
-      if (raw.type === 'run.usage' || raw.type === 'run.model' || raw.type === 'run.permissionMode') return
+      if (raw.type === 'run.usage' || raw.type === 'run.model' || raw.type === 'run.permissionMode' || raw.type === 'run.roster') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       // A compaction of an agent's conversation: counted here (AgentInstance.compactions belongs to RunManager), recorded
       // and broadcast, then the agent goes out again with its new count.
@@ -2184,8 +2189,30 @@ export class RunManager {
        */
       // `settle` says what the approved change itself touched; only that moves onto the live project. The saved project
       // also carries whatever the same save ingested from the team files (a pull), and a file change never reaches a
-      // live run. An approved org chart (review M1) says it applies from the next run, so this run's grants stay.
-      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems): void => {
+      // live run. An approved org chart (review M1) never moves this run's grants; on a session that takes roster changes
+      // live (liveRosterApplies) its own roles join ctx.roles in place (runRoster.ts) and the change is returned.
+      /** Why a new or changed role of an approved chart cannot join this running work run (runRoster.ts `refuse`). */
+      const rosterRefusal = (role: Role, before: Role | undefined): string | undefined => {
+        const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
+        // Where the role would run, judged like run start (adapterForProject) against the running root.
+        const placement = (r: Role): string => {
+          const c = adapterForProject({ provider: live.provider, roles: root ? [root, r] : [r] }, this.options.catalog?.() ?? [])
+          const b = c.bridged?.find((x) => x.roleId === r.id)
+          return b ? bridgeKey(b.connection, b.adapter) : c.mismatched.includes(r.id) ? 'mismatched' : 'native'
+        }
+        const startBridged = bridging.bridged.find((b) => b.roleId === role.id)
+        const was = !before ? 'native' : startBridged ? bridgeKey(startBridged.connection, startBridged.adapter) : choice.mismatched.includes(role.id) ? 'mismatched' : 'native'
+        if (placement(role) !== was) {
+          const where = connectionName(roleConnection(role, live), this.options.appSettings?.())
+          return `It would run on ${where} with another connection or adapter than this run started it on; it applies from the next run.`
+        }
+        if (active.execBudget !== undefined && !summary.overrides?.allowUnpricedBudget && active.modelPriced && (!before || before.model !== role.model) && !active.modelPriced(role.model)) {
+          return 'Its model has no known price and this run has a budget; it applies from the next run.'
+        }
+        return undefined
+      }
+      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems, card?: readonly Role[]): RunRosterChange | undefined => {
+        let roster: RunRosterChange | undefined
         // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
         const next: Project = { ...live }
         const ownBefore = this.runOwnProject(active, live).permissionMode
@@ -2227,6 +2254,20 @@ export class RunManager {
         } else if (settle === 'orgChart') {
           if (own) next.roles = overlayOwnRoles(live.roles, saved.roles, own)
           else overlay('roles')
+          if (card && !bare && liveRosterApplies(summary, active.session)) {
+            const applied = applyRosterChange({ running: ctx.roles, saved: saved.roles, proposed: card, obligations: active.ledger?.snapshot().obligations, refuse: rosterRefusal })
+            roster = applied.change
+            if (applied.retired.length) {
+              const gone = new Set(roster.removed)
+              next.roles = next.roles.filter((r) => !gone.has(r.id))
+              active.retiredRoles = [...(active.retiredRoles ?? []).filter((r) => !gone.has(r.id)), ...applied.retired]
+            }
+            if (roster.added.length) {
+              const back = new Set(roster.added)
+              active.rosterAdded = new Set([...(active.rosterAdded ?? []), ...roster.added])
+              if (active.retiredRoles) active.retiredRoles = active.retiredRoles.filter((r) => !back.has(r.id))
+            }
+          }
         }
         else if (settle === 'folders') overlay('allowedDirectories')
         else overlay('permissionMode')
@@ -2254,15 +2295,30 @@ export class RunManager {
         this.applyExecBudget(active, ctx)
         const skills = settle === 'mcpServers' || settle === 'skills'
         // Grant changes reach the live run's roles (review M1): the adapters' gates, restarts and role lookups read these
-        // objects. An org chart approval (skills false) leaves them as they started.
+        // objects. An org chart approval (skills false) never moves a grant; it may change which roles there are.
         if (skills && !bare) refreshRoleGrants(ctx.roles, live.roles)
-        if (skills && !bare && this.options.skills) {
+        const membership = !!roster && roster.added.length + roster.removed.length > 0
+        if ((skills || membership) && !bare && this.options.skills) {
           try {
             active.skills = this.options.skills.forRun(live, ctx.roles) ?? []
           } catch (e) {
             log.warn(`Run ${summary.id}: skills unavailable (${(e as Error).message})`)
           }
         }
+        if (roster && rosterChanged(roster)) {
+          // Host-owned like run.permissionMode: recorded, persisted with the record and broadcast; never from an adapter.
+          const ev: RunEvent = { type: 'run.roster', runId: summary.id, roster: rosterOf(ctx.roles, active.retiredRoles ?? [], active.rosterAdded ?? new Set()), change: roster }
+          this.recordEvent(active, ev)
+          logRunEvent(summary, ev)
+          this.broadcast(ev)
+          const count = (n: number, what: string): string => (n ? `${n} ${what}` : '')
+          const what = [count(roster.added.length, 'added'), count(roster.changed.length, 'changed'), count(roster.removed.length, 'removed')].filter(Boolean).join(', ')
+          emit({ type: 'log', runId: summary.id, level: 'info', message: `The approved org chart changed this run's roles (${what}).` })
+        }
+        if (roster?.deferred.length) {
+          emit({ type: 'log', runId: summary.id, level: 'info', message: `Org chart roles that apply from the next run: ${roster.deferred.map((d) => logText(d.name)).join(', ')}.` })
+        }
+        return roster
       }
       // Extra folders (Project.allowedDirectories): work and setup-like runs of a real project only.
       const folderSave = this.options.saveProjectPermissions
@@ -2411,7 +2467,8 @@ export class RunManager {
           ? {
               bridge: { roles: () => bridge.roles(), spawn: (input) => bridge.spawn(input) },
               agentConnection: (roleId: string) => {
-                const r = ctx.roles.find((x) => x.id === roleId)
+                // A role removed mid-run still labels the agents that started on it.
+                const r = ctx.roles.find((x) => x.id === roleId) ?? active.retiredRoles?.find((x) => x.id === roleId)
                 return r ? roleConnection(r, live) : undefined
               }
             }
@@ -2429,9 +2486,13 @@ export class RunManager {
               setLive(saved, 'skills', { ids: payload.items.flatMap((i) => (i.libraryId ? [i.libraryId] : [])), names: payload.items.map((i) => i.draft.name) })
             } else if (req.kind === 'orgChart') {
               const payload = req.payload as OrgChartProposalPayload
-              setLive(saved, 'orgChart', { ids: payload.roles.map((r) => r.id), names: payload.roles.map((r) => r.name) })
+              const roster = setLive(saved, 'orgChart', { ids: payload.roles.map((r) => r.id), names: payload.roles.map((r) => r.name) }, payload.roles)
+              // The tool learns what this run took (ProposalOutcome.roster); absent = the chart applies from the next run.
+              if (roster) return { roster }
             }
+            return undefined
           }),
+        retiredRoles: () => active.retiredRoles ?? [],
         // Setup-like runs (setup, mcp-assist, the harness project) change servers through proposals only.
         ...(bare && !isQuick
           ? {}
@@ -2761,7 +2822,8 @@ export class RunManager {
       { obligations, strict, problems },
       {
         roleLabel: (roleId) => {
-          const r = roles.find((x) => x.id === roleId)
+          // The run's live roles (a mid-run org change renames or adds), then removed ones, then the start-time chart.
+          const r = a.ctx?.roles.find((x) => x.id === roleId) ?? a.retiredRoles?.find((x) => x.id === roleId) ?? roles.find((x) => x.id === roleId)
           return { slug: r?.slug ?? roleId, name: r?.name ?? roleId }
         },
         handle: (agentId) => a.record.agents[agentId]?.handle ?? agentId,
@@ -3811,6 +3873,9 @@ export class RunManager {
       case 'staffing.updated':
         r.staffing = e.staffing
         break
+      case 'run.roster':
+        r.roster = e.roster
+        break
       case 'run.title':
         // record.summary is the live summary object; this only schedules the save.
         r.summary.title = e.title
@@ -4302,9 +4367,9 @@ export class RunManager {
   private requestProposal(
     active: ActiveRun,
     req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>,
-    onApplied?: (saved: Project) => void
+    onApplied?: (saved: Project) => { roster?: RunRosterChange } | undefined
   ): Promise<ProposalOutcome> {
-    const effect = proposalEffect(req.kind, active.summary, active.adapter)
+    const effect = proposalEffect(req.kind, active.summary, active.adapter, { liveRoster: liveRosterApplies(active.summary, active.session) })
     const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now(), effect, revision: 1 } as Proposal
     return new Promise((resolve) => {
       active.pendingProposals.set(proposal.id, { proposal, resolve: (raw) => {
@@ -4316,6 +4381,7 @@ export class RunManager {
           return outcome
         }
         let waitingForSecrets: string[] | undefined
+        let roster: RunRosterChange | undefined
         // Round 6 item 10: the typed values go into the apply itself, which stores them before it changes any record. Values
         // the store cannot take now (vault locked, damaged, no secure storage) make it throw ProposalSecretsNotSaved with
         // the store's own reason (5.4), nothing applied; decideProposal keeps the card open for another try. Over the
@@ -4362,7 +4428,7 @@ export class RunManager {
               // SecretStore live).
               const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work', ...secrets })
               waitingForSecrets = this.proposalWaitingForSecrets(active.summary.projectId, proposal)
-              onApplied?.(updated)
+              roster = onApplied?.(updated)?.roster
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
             }
           } catch (e) {
@@ -4376,7 +4442,7 @@ export class RunManager {
             return failed
           }
         }
-        const outcome: ProposalOutcome = { behavior: 'approve', ...(waitingForSecrets ? { waitingForSecrets } : {}) }
+        const outcome: ProposalOutcome = { behavior: 'approve', ...(waitingForSecrets ? { waitingForSecrets } : {}), ...(roster ? { roster } : {}) }
         resolve(outcome)
         return outcome
       } })
