@@ -1,6 +1,6 @@
 import type { McpServerSpec, ProjectKind, Proposal, Role, RunSummary } from '@shared/types'
 import { appSettingsSummary, projectSettingRows, projectSettingsSummary } from './appSettingsCard'
-import { diffOrgChart } from './orgDiff'
+import { diffOrgChart, orgDiffBase } from './orgDiff'
 import { diffMcpProposal, mcpRowVerb, mcpServerHidden } from './mcpProposal'
 import { hasHidden } from './hiddenChars'
 import { diffSkillsProposal, skillRowVerb, type SkillCurrent } from './skillProposal'
@@ -53,7 +53,8 @@ export function proposalFoldSummary(proposal: Proposal, ctx: ProposalContext): s
       return verbs.length > 0 ? `${hasHidden(verbs.join(' ')) ? HIDDEN_PREFIX : ''}${foldList(verbs)}` : undefined
     }
     case 'orgChart':
-      return diffOrgChart(ctx.roles, proposal.payload.roles).summary || undefined
+      // The same base as the card body: the run's own roles when main supplied them (runBaseline).
+      return diffOrgChart(orgDiffBase(proposal.payload, ctx.roles), proposal.payload.roles).summary || undefined
     case 'appSettings':
       return appSettingsSummary(proposal.payload.changes) ?? (oneLine(proposal.title, 120) || undefined)
     case 'settings':

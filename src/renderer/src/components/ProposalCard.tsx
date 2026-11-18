@@ -520,8 +520,7 @@ function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement 
 
 function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { kind: 'orgChart' }>['payload']; currentRoles: Role[] }): ReactElement {
   // A run that takes roster changes live carries its own roles (runBaseline); approval changes those, not the stored project.
-  // Read through a narrow type until OrgChartProposalPayload declares the field.
-  const base = orgDiffBase(payload as typeof payload & { runBaseline?: Role[] }, currentRoles) as Role[]
+  const base = orgDiffBase(payload, currentRoles) as Role[]
   const diff = diffOrgChart(base, payload.roles)
   return (
     <div className="org-diff">
