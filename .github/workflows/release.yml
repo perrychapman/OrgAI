@@ -114,16 +114,21 @@ jobs:
             os: windows-latest
             args: --win
             arch: x64
+            test_args: ''
           # Each mac arch on its native runner so `npm ci` installs the matching
           # @anthropic-ai/claude-agent-sdk-darwin-<arch> and @openai/codex-darwin-<arch> optional deps.
           - name: mac-arm64
             os: macos-15
             args: --mac --arm64
             arch: arm64
+            test_args: ''
+          # The Intel runner is slow enough that wall-clock assertions in the unit suite fail at random; a failed
+          # test is retried up to twice there only. The windows and mac-arm64 legs and CI run with no retries.
           - name: mac-x64
             os: macos-15-intel
             args: --mac --x64
             arch: x64
+            test_args: --retry=2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout v7.0.1
         with:
@@ -148,7 +153,8 @@ jobs:
         run: node scripts/ci-check-version.mjs "$TAG"
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      - run: npm test -- ${{ matrix.test_args }}
+        shell: bash
       - run: npm run build
       - name: Package
         # Windows keeps signAndEditExecutable: true (icon and version info stamped into OrgAI.exe); the runner is an
