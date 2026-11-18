@@ -26,6 +26,21 @@ export interface DiffRole {
   responsibilities?: readonly string[]
   /** The tier behind `model` (Role.tier); remaps follow it, so a change the model line does not show is diffed too. */
   tier?: string
+  /** Role.effort. Compared whenever either side is a full role: a missing one reads as none. */
+  effort?: string
+  /** Role.staffing: mode and bounds. */
+  staffing?: { mode?: string; minTier?: string; maxEffort?: string }
+  /** Role.connection: the provider connection the role runs on; missing = the project's. */
+  connection?: string
+}
+
+/**
+ * The roles an org chart card diffs against. A work run that takes roster changes live records its own view of
+ * its roles (`runBaseline`) when the card is created; that is what approval changes, so it wins over the stored
+ * project. An empty array counts as present (a run with no roles); only an absent baseline falls back.
+ */
+export function orgDiffBase<R extends DiffRole>(payload: { runBaseline?: readonly R[] }, stored: readonly R[]): readonly R[] {
+  return payload.runBaseline ?? stored
 }
 
 export interface FieldChange {
@@ -95,6 +110,12 @@ function keyOf(r: DiffRole): string {
   return r.slug || r.id
 }
 
+function staffingLabel(s: DiffRole['staffing']): string {
+  if (!s || !s.mode) return NONE
+  const bounds = [s.minTier ? `from ${tierLabel(s.minTier)}` : '', s.maxEffort ? `up to ${s.maxEffort} effort` : ''].filter(Boolean)
+  return bounds.length > 0 ? `${s.mode} (${bounds.join(', ')})` : s.mode
+}
+
 function sortedList(v: readonly string[] | undefined): string {
   return v && v.length > 0 ? [...v].sort().join(', ') : NONE
 }
@@ -126,6 +147,9 @@ function fieldChanges(before: DiffRole, after: DiffRole, cur: Map<string, DiffRo
   const tierFrom = tierLabel(effectiveTier(before))
   const tierTo = tierLabel(effectiveTier(after))
   if (tierFrom !== tierTo && !(modelDisplay(before.model) === tierFrom && modelDisplay(after.model) === tierTo)) push('tier', 'tier', tierFrom, tierTo)
+  push('effort', 'effort', before.effort ?? NONE, after.effort ?? NONE)
+  push('staffing', 'staffing', staffingLabel(before.staffing), staffingLabel(after.staffing))
+  push('connection', 'connection', before.connection || 'project default', after.connection || 'project default')
   push('reportsTo', 'reports to', parentName(before, cur), parentName(after, prop))
   // A field the proposal leaves out (undefined) is not a change: only what it states is compared.
   if (after.description !== undefined) push('description', 'description', before.description ?? '', after.description)

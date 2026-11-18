@@ -12,7 +12,7 @@ import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
 import { orgChartEffectCopy, proposalNextFor } from '../lib/proposalNext'
 import { mcpApplyNote, proposalScope, proposalEffectCopy, secretsHelp, SKIP_MCP_FEEDBACK, uniqueSecretSlots } from '../lib/mcpProposal'
-import { diffOrgChart, modelDisplay, type ChangedRole, type DiffRole } from '../lib/orgDiff'
+import { diffOrgChart, modelDisplay, orgDiffBase, type ChangedRole, type DiffRole } from '../lib/orgDiff'
 import { proposalFoldSummary, proposerName, revisePlaceholder } from '../lib/proposalSummary'
 import DecisionCard, { useDecisionAnswer } from './DecisionCard'
 import { oneLine, proposalTitle } from '../lib/decisionTitle'
@@ -519,7 +519,10 @@ function ChangedRow({ item }: { item: ChangedRole<PayloadRole> }): ReactElement 
 }
 
 function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { kind: 'orgChart' }>['payload']; currentRoles: Role[] }): ReactElement {
-  const diff = diffOrgChart(currentRoles, payload.roles)
+  // A run that takes roster changes live carries its own roles (runBaseline); approval changes those, not the stored project.
+  // Read through a narrow type until OrgChartProposalPayload declares the field.
+  const base = orgDiffBase(payload as typeof payload & { runBaseline?: Role[] }, currentRoles) as Role[]
+  const diff = diffOrgChart(base, payload.roles)
   return (
     <div className="org-diff">
       <p className="org-diff-summary">{diff.summary}</p>
@@ -547,7 +550,7 @@ function OrgChartBody({ payload, currentRoles }: { payload: Extract<Proposal, { 
                   Removed
                 </Badge>
                 <span className="org-diff-name">{showHidden(r.name)}</span>
-                <span className="org-diff-meta">was reporting to {showHidden(parentLabel(r, currentRoles))}</span>
+                <span className="org-diff-meta">was reporting to {showHidden(parentLabel(r, base))}</span>
               </div>
             </div>
           ))}
