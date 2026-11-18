@@ -3378,8 +3378,8 @@ export interface RunSummary {
    * (finished, error, paused). Structured-clone safe.
    */
   endedBy?: RunEndedBy
-  /** Only with endedBy 'app': what the run was doing when OrgAI cut it. 'waiting': status idle or a decision card open (the user's turn). 'working': starting, running or stopping. Absent for a paused run. */
-  endedWhile?: 'working' | 'waiting'
+  /** Only with endedBy 'app': what the run was doing when OrgAI cut it. 'waiting': at least one decision card was open, or the plan was blocked. 'idle': status idle with no open decision (the turn ended, no reply required). 'working': starting, running or stopping. Absent for a paused run. Older records may hold 'waiting' for what is now 'idle'. */
+  endedWhile?: 'working' | 'waiting' | 'idle'
   /** Headless exec overrides (cli-spec 6.2). Host-set only, never from the renderer; RunStore rebuilds them on read and drops unknown keys or bad types. */
   overrides?: RunOverrides
   /** How a headless exec run ended. Host-set (RunManager.finalizeExecRun); RunStore keeps only EXEC_OUTCOMES values on read. */
@@ -3890,8 +3890,8 @@ export type RunEvent =
        * own. Adapters never set it. Structured-clone safe.
        */
       endedBy?: RunEndedBy
-      /** Only with endedBy 'app' (RunSummary.endedWhile): 'waiting' (idle or a card open) or 'working' when OrgAI cut it. */
-      endedWhile?: 'working' | 'waiting'
+      /** Only with endedBy 'app' (RunSummary.endedWhile): 'waiting' (a decision card open or the plan blocked), 'idle' (idle, no open decision) or 'working' when OrgAI cut it. */
+      endedWhile?: 'working' | 'waiting' | 'idle'
     }
   /**
    * A headless exec run reached its outcome (RunSummary.execOutcome). Emitted exactly once per run by

@@ -103,7 +103,7 @@ export function adoptEndFacts(summary: RunSummary, row: Partial<RunSummary>): Ru
  * The end facts a run.status event carries (`endedBy`, `endedWhile`): taken on 'finished' / 'error', and on 'stopping'
  * only when `endedBy` is 'user' (End session). Other statuses, or an event without them, give {}.
  */
-export function statusEventEndFacts(e: { status: RunStatus; endedBy?: RunEndedBy; endedWhile?: 'working' | 'waiting' }): { endedBy?: RunEndedBy; endedWhile?: 'working' | 'waiting' } {
+export function statusEventEndFacts(e: { status: RunStatus; endedBy?: RunEndedBy; endedWhile?: RunSummary['endedWhile'] }): { endedBy?: RunEndedBy; endedWhile?: RunSummary['endedWhile'] } {
   const terminal = e.status === 'finished' || e.status === 'error'
   if (!terminal && !(e.status === 'stopping' && e.endedBy === 'user')) return {}
   return { ...(e.endedBy ? { endedBy: e.endedBy } : {}), ...(terminal && e.endedWhile ? { endedWhile: e.endedWhile } : {}) }
@@ -210,7 +210,7 @@ export function sessionOpenRunId(message: string): string | null {
 
 // ---------- One conversation per session chain (docs/design/ux-review-continue.md, model 1-6) ----------
 
-type EndSummary = ChainSummary & Partial<Pick<RunSummary, 'endedAt' | 'endedWithApp' | 'title' | 'prompt' | 'error' | 'team'>> & { endedBy?: RunEndedBy; endedWhile?: 'working' | 'waiting' }
+type EndSummary = ChainSummary & Partial<Pick<RunSummary, 'endedAt' | 'endedWithApp' | 'title' | 'prompt' | 'error' | 'team'>> & { endedBy?: RunEndedBy; endedWhile?: RunSummary['endedWhile'] }
 
 /** The chain's key: its oldest member's id. Stable across continues, so a chain tab or a chain view keeps its identity. */
 export function chainKeyOf<T extends ChainSummary>(runs: readonly T[], id: string): string {
@@ -324,6 +324,11 @@ const clipReason = (s: string): string => {
   return one.length > 160 ? one.slice(0, 159) + '…' : one
 }
 
+/** Only an open decision reads "waiting for you"; an idle run (turn ended, no card) reads "idle". */
+function cutWhileWords(w: 'working' | 'waiting' | 'idle' | undefined): string {
+  return w === 'waiting' ? 'waiting for you' : w === 'idle' ? 'idle' : 'working'
+}
+
 /**
  * Copy for an ended run's composer. `continuable` is canContinue (newest member, a session id, ended). `cutWhile` is
  * lib/runStatus cutWhile of the record as loaded (before settling); 'working' when unknown (a clean quit settles
@@ -331,7 +336,7 @@ const clipReason = (s: string): string => {
  */
 export function endedComposerCopy(
   summary: EndSummary & Pick<RunSummary, 'status'>,
-  opts: { continuable: boolean; cutWhile?: 'working' | 'waiting'; now?: number; errorShown?: boolean }
+  opts: { continuable: boolean; cutWhile?: 'working' | 'waiting' | 'idle'; now?: number; errorShown?: boolean }
 ): EndedComposerCopy {
   if (!opts.continuable) return { mode: 'new', modeLabel: 'This run cannot be continued (no saved session).', placeholder: 'Describe the task' }
   const now = opts.now ?? Date.now()
@@ -347,7 +352,7 @@ export function endedComposerCopy(
       mode: 'continue',
       modeLabel: ended,
       placeholder: 'Pick up where it was cut off',
-      notice: `OrgAI closed while this run was ${(summary.endedWhile ?? opts.cutWhile) === 'waiting' ? 'waiting for you' : 'working'}. Send to pick up where it stopped.`
+      notice: `OrgAI closed while this run was ${cutWhileWords(summary.endedWhile ?? opts.cutWhile)}. Send to pick up where it stopped.`
     }
   }
   return { mode: 'continue', modeLabel: ended, placeholder }

@@ -117,7 +117,7 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
   if (r.endedWithApp && r.endedBy === undefined) r.endedBy = 'app'
   if (r.endedBy !== 'app') delete r.endedWithApp
   // endedWhile (also untrusted) only means something next to endedBy 'app'.
-  if (r.endedWhile !== undefined && ((r.endedWhile !== 'working' && r.endedWhile !== 'waiting') || r.endedBy !== 'app')) {
+  if (r.endedWhile !== undefined && ((r.endedWhile !== 'working' && r.endedWhile !== 'waiting' && r.endedWhile !== 'idle') || r.endedBy !== 'app')) {
     delete r.endedWhile
   }
   if (r.execOutcome !== undefined && !EXEC_OUTCOMES.includes(r.execOutcome as ExecOutcome)) delete r.execOutcome
@@ -133,7 +133,7 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
     else delete r.overrides
   }
   if (r.status !== 'finished' && r.status !== 'error') {
-    // What it was doing, from the status as saved: idle is the user's turn, paused gets none.
+    // What it was doing, from the status as saved: idle (open cards unknown) is 'idle', not 'waiting'; paused gets none.
     const was = r.status
     r.status = 'finished'
     r.endedAt = r.endedAt ?? now
@@ -143,7 +143,7 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
     if (r.endedBy === 'app') {
       r.endedWithApp = true
       if (r.endedWhile === undefined) {
-        if (was === 'idle') r.endedWhile = 'waiting'
+        if (was === 'idle') r.endedWhile = 'idle'
         else if (was === 'starting' || was === 'running' || was === 'stopping') r.endedWhile = 'working'
       }
       if (was === 'paused') delete r.endedWhile
