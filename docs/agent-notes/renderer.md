@@ -493,3 +493,19 @@ marker. Unverified: screen-reader speech, the deferred list at 1024x640 (the met
 - Re-entering a project (`openProject`) stays on the New run page when the user left it there, and `defaultRunToOpen(..., { hidden, startPage })` skips hidden chains in its fallbacks; only a run with an open decision opens over either. `settleWorkspace` passes `hidden`. Checked by `runTabs.test.ts`; `e2e/runs.mjs` and `assistants.mjs` still pass.
 - `showStartIfNothing` shows the New run page when `openRun` of a history-only run fails to load (project, assistant and `settleWorkspace` paths). Checked by `runTabs.test.ts` (a history row whose record is missing); the failing-load path was not driven in the app.
 - `cutWhile`: an agent showing "Needs approval" counts as waiting whatever its state; "Waiting for you" only on a non-idle agent (`runEnded.test.ts`).
+
+## To-dos (2026-11-18)
+
+- A project section tab "To-dos" (`App.tsx`, view `'todos'`) on every stored project and on Chat, never on the MCP /
+  Skill assistants (`todoScopeFor` in `src/shared/view/todos.ts`). Its quiet count is the open items; no dot, pulse or
+  toast when an assistant adds one. Placement reasons, behaviour and test ids: `docs/design/todos.md` "Renderer (as
+  built)".
+- `views/TodosView.tsx`, `components/todos/*`, `styles/todos.css`; data in a separate zustand store
+  `store/todosStore.ts` (not useAppStore) that follows `todos:changed`. Agent-written title, detail and role name are
+  text nodes only; shortened copies use `clampLabel`.
+- Start session (`lib/todoStart.ts`) only fills the New run page or Chat start page composer with `todoStartPrompt` and
+  focuses it; `linkedStart` wraps those two pages' `onSubmit` and calls `todos.linkRun` after the user's own send. A
+  draft emptied without sending drops the link.
+- Checked: typecheck, build, `todos.test.ts` / `todoStart.test.ts`, Reviewer (no Critical or High; Mediums fixed).
+  `e2e/todos.mjs` is in `e2e:free` but was written before the main handlers and `[mock:todo]` landed: unverified until it
+  runs on the merged tree. Not looked at in the running app (themes, sizes, keyboard, screen reader).

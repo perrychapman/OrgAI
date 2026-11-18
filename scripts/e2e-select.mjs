@@ -58,6 +58,9 @@ export const RULES = [
   // ---- Schedules: narrow shared files, ahead of the broad src/shared rule (first match wins) ----
   { match: ['src/shared/schedule.ts', 'src/shared/view/schedules.ts', 'src/main/schedules/**', `${C}schedules/**`, `${R}views/SchedulesView.tsx`, `${C}proposals/SchedulesProposalBody.tsx`, `${S}schedules.css`, `${L}scheduleProposal.ts`], scripts: ['schedules', 'proposals'], why: 'Schedules (page, proposal card, scheduler)' },
 
+  // ---- To-dos: narrow shared files, ahead of the broad src/shared rule (first match wins) ----
+  { match: ['src/shared/todos.ts', 'src/shared/view/todos.ts', 'src/main/todos/**', `${C}todos/**`, `${R}views/TodosView.tsx`, `${S}todos.css`, `${R}store/todosStore.ts`, `${L}todoStart.ts`], scripts: ['todos'], why: 'To-dos (list, start session, chat tool)' },
+
   // ---- shared or hot paths: every flow passes through them ----
   { match: ['scripts/e2e-select.mjs'], kind: 'full', scripts: [], why: 'the selector itself changed' },
   { match: ['e2e/lib.mjs', 'e2e/cliLib.mjs', 'e2e/privateDir.mjs'], kind: 'full', scripts: [], why: 'shared e2e helper' },

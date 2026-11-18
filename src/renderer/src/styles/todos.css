@@ -1,0 +1,224 @@
+/* The To-dos tab of a project and of Chat (docs/design/todos.md). Tokens only; no motion of its own. */
+
+.todos-view {
+  container: todos / inline-size;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.todos-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+.todos-page {
+  max-width: 760px;
+  margin-inline: auto;
+  padding: var(--space-4) var(--space-4) var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+@container todos (min-width: 900px) {
+  .todos-page {
+    padding-inline: var(--space-6);
+  }
+}
+.todos-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.todos-title {
+  margin: 0;
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.todos-scope,
+.todos-note,
+.todos-empty {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.todos-empty {
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+
+/* ----- add ----- */
+.todos-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.todos-add-label,
+.todo-edit-label {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.todos-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.todos-add-row .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ----- list ----- */
+.todos-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.todo-row {
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+.todo-row-main {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
+.todo-row-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+.todo-row .checkbox {
+  display: flex;
+  max-width: 100%;
+  min-width: 0;
+}
+.todo-row .checkbox-text,
+.todo-row .checkbox-label {
+  min-width: 0;
+}
+.todo-title {
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+.todo-title.is-done {
+  color: var(--text-secondary);
+  text-decoration: line-through;
+}
+
+/* The text an agent wrote stays plain: it keeps its line breaks and wraps anywhere. */
+.todo-detail {
+  margin: var(--space-1) 0 0;
+  padding-inline-start: var(--space-3);
+  border-inline-start: 2px solid var(--border-default);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.todo-detail-toggle,
+.todo-done-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 0;
+  background: transparent;
+  padding: var(--space-1) 0;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-small);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+}
+.todo-detail-toggle:hover,
+.todo-done-toggle:hover {
+  color: var(--text-primary);
+}
+.todo-detail-toggle:focus-visible,
+.todo-done-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.todo-detail-wrap {
+  padding-inline-start: var(--space-6);
+}
+.todo-meta {
+  padding-inline-start: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.todo-meta p {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+.todo-meta .link-btn {
+  font-size: inherit;
+}
+.todo-row .field-error {
+  margin: 0;
+  padding-inline-start: var(--space-6);
+}
+
+/* ----- edit ----- */
+.todo-edit {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.todo-edit .field-error,
+.todo-edit-limit {
+  margin: 0;
+  padding: 0;
+}
+.todo-edit-limit {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.todo-edit-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+/* ----- done ----- */
+.todos-done {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.todos-done-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
