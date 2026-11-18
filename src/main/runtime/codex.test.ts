@@ -13,7 +13,7 @@ import { acquireCodexStartLock, codexStartLockKey, codexStartLockState, type Cod
 import { fakeCtx, project, role, runSummary } from './testHelpers'
 import { ROOT_AGENT_ID, type RuntimeContext, type RuntimeSession } from './types'
 import { PermissionModeRefusal } from './permissionModeRefusal'
-import { buildRolePrompt } from './prompts'
+import { buildRolePrompt, todosText } from './prompts'
 import { RESUME_TEXT } from './runManager'
 import { harnessToolsFor } from './harnessTools'
 import { withRepoLock } from './worktrees'
@@ -802,8 +802,33 @@ describe('CodexAdapter session', () => {
     expect('engagementDocument' in vi.mocked(buildRolePrompt).mock.calls.at(-1)![3]!).toBe(false)
   })
 
+  describe('to-dos prompt paragraph', () => {
+    const todos = { scope: 'chat' as const, list: () => [], add: vi.fn(), setStatus: vi.fn(), update: vi.fn() }
+    const instructionsOf = async (over: Partial<RuntimeContext>): Promise<string[]> => {
+      const { adapter, servers } = setup()
+      session = await adapter.start(ctxFor({ project: project({ path: dir, isolateWriters: false }), autoContinue: false, ...over }))
+      const s = servers[0]!
+      await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+      await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c1', namespace: null, tool: 'spawn_report', arguments: { role: 'engineer', brief: 'x' } })
+      return s.of('thread/start').map((r) => r.params.developerInstructions as string)
+    }
+
+    it('the root thread carries todosText() with ctx.todos, a report thread never does', async () => {
+      const [root, report] = await instructionsOf({ todos })
+      expect(root).toContain(todosText())
+      expect(report).toBeDefined()
+      expect(report).not.toContain(todosText())
+    })
+
+    it('no paragraph without ctx.todos', async () => {
+      const all = await instructionsOf({})
+      expect(all.length).toBeGreaterThan(0)
+      for (const i of all) expect(i).not.toContain(todosText())
+    })
+  })
+
   describe('knowledge retrieval', () => {
-    const BLOCK = 'KNOWN-ITEMS-BLOCK'
+    const BLOCK ='KNOWN-ITEMS-BLOCK'
     const inputText = (r: { params: any }): string => r.params.input.map((i: { text?: string }) => i.text ?? '').join('\n')
     const known = () => vi.fn<NonNullable<RuntimeContext['knowledgeContext']>>((t) => (t.includes('Acme') ? BLOCK : null))
     const engagementCtx = (over: Partial<RuntimeContext> = {}) => ctxFor({ project: project({ path: dir, isolateWriters: false, kind: 'engagement' }), autoContinue: false, ...over })

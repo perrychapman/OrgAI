@@ -35,7 +35,7 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
 import { cliProjectSettings, projectSettingsLoad } from './claude'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, PROPOSE_SCHEDULE_TOOL } from '@shared/types'
 import { bridgedRolesOf, bridgedSpawnDenial } from './claude'
-import { BRIDGE_HARNESS_TOOLS } from '@shared/types'
+import { BRIDGE_HARNESS_TOOLS, TODO_TOOL } from '@shared/types'
 import { buildRolePrompt } from './prompts'
 import { obligationsFor } from './delegation'
 import { StaffingBook } from './staffingBook'
@@ -69,6 +69,11 @@ import { waitingNote, waitingNoteExcluded } from './waitingNote'
  * saves the context note "Kickoff call summary", searches "Acme", reads Acme Corp back and retires its fact "Fiscal
  * year ends in March" (skipped when the fact cannot be read back), then says MOCK_KNOWLEDGE_DONE; without a knowledge
  * graph (a code project) it says MOCK_KNOWLEDGE_NONE instead and the default script follows either way.
+ * [mock:todo] (todoMarkerSteps, Chat and work runs, default script): the root calls todo_list `add` (MOCK_TODO_TITLE /
+ * MOCK_TODO_DETAIL) through the real harness tool and says MOCK_TODO_ADDED; a second marker on the same list gets
+ * "Already on the list (open)" from the tool and still says MOCK_TODO_ADDED (only a refusal is not a success); a REFUSED
+ * answer or "To-dos are not available" is said back as the tool's first line; without the tool (no ctx.todos) the root
+ * says MOCK_TODO_NONE.
  * [mock:knowledge-recall] (knowledgeRecallSteps, engagement work runs): the same seeding steps, then knowledge_recall
  * "Acme billing" twice (the second shows the dedupe path), says MOCK_KNOWLEDGE_RECALLED, and plays the default script
  * with the first report's brief naming Jane Doe so knowledgeContext fires with purpose 'spawn'; MOCK_KNOWLEDGE_NONE
@@ -2002,6 +2007,8 @@ export class MockSession implements RuntimeSession {
     if (this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK) {
       const schedule = scheduleMarkerSteps(this.ctx.prompt, this.ctx.run.quick ? null : this.ctx.project.id, this.ctx.schedules?.now() ?? Date.now())
       if (schedule) return schedule
+      const todo = todoMarkerSteps(this.ctx.prompt)
+      if (todo) return todo
     }
     if (this.ctx.run.kind === 'work' && this.ctx.run.quick && this.script.work === DEFAULT_WORK) {
       if (this.ctx.prompt.includes(CHAT_EDIT_TOKEN)) return chatEditSteps(this.ctx.run.quick.folder)
@@ -2132,6 +2139,7 @@ export class MockSession implements RuntimeSession {
       ...(this.ctx.staffingGoal ? { staffingGoal: this.ctx.staffingGoal } : {}),
       ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
       ...(this.ctx.bridgedChild ? { bridged: true } : {}),
+      ...(this.ctx.todos && !this.ctx.bridgedChild ? { todos: true } : {}),
       // The mock's spawn step takes `files` like Codex spawn_report; only where a pack can be inlined.
       ...(contextPackRefusal(this.ctx.run, this.isSetup) ? {} : { spawnFiles: true })
     })
@@ -3114,6 +3122,36 @@ export function selfConfigProjectSteps(): MockStep[] {
         answers: [{ prefix: 'APPROVED', text: MOCK_SELF_CONFIG_PROJECT_DONE }],
         otherwise: MOCK_SELF_CONFIG_PROJECT_LEFT
       }
+    }
+  ]
+}
+
+/** Trigger token (Chat and work runs, default script): add one to-do through the real todo_list tool (todoMarkerSteps). */
+export const TODO_TOKEN = '[mock:todo]'
+export const MOCK_TODO_TITLE = 'Follow up with Acme about the export format'
+export const MOCK_TODO_DETAIL = 'They asked whether the export can be CSV as well as XLSX.'
+export const MOCK_TODO_ADDED = 'Added to your to-do list.'
+export const MOCK_TODO_NONE = 'To-dos are not available in this run.'
+
+/**
+ * The [mock:todo] turn: todo_list add through the bound tool (so RunManager writes the transcript row and the service
+ * pushes todos:changed). "Added to-do ..." and "Already on the list (open) ..." both say MOCK_TODO_ADDED; any other
+ * answer (REFUSED:, "To-dos are not available") is said back as its first line. Tool not bound: MOCK_TODO_NONE.
+ * null when the marker is not in the prompt.
+ */
+export function todoMarkerSteps(prompt: string): MockStep[] | null {
+  if (!prompt.includes(TODO_TOKEN)) return null
+  return [
+    {
+      type: 'harnessAnswer',
+      name: TODO_TOOL,
+      args: { action: 'add', title: MOCK_TODO_TITLE, detail: MOCK_TODO_DETAIL },
+      answers: [
+        { prefix: 'Added to-do', text: MOCK_TODO_ADDED },
+        { prefix: 'Already on the list (open)', text: MOCK_TODO_ADDED }
+      ],
+      otherwise: MOCK_TODO_NONE,
+      otherwiseResult: true
     }
   ]
 }

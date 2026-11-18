@@ -1,7 +1,7 @@
 # To-dos
 
-Status: the shared contract, the pure helpers, the main-process side and the renderer are built. The adapter prompt
-flag and the mock marker are still to come (see "Still to build").
+Status: the shared contract, the pure helpers, the main-process side, the renderer, the adapter prompt flag and the
+mock marker are built (see "Adapters (as built)").
 
 ## Purpose
 
@@ -50,7 +50,7 @@ Details and how each fact was checked: `docs/agent-notes/todos.md`.
 - Harness tool `todo_list` goes to the root of Chat runs and of work runs (team or single) of a stored project, on the
   desktop host only. RunManager picks the list from the run, so the tool takes no scope. It is non-blocking and shows no
   card, and each change writes one transcript row such as "Added to-do <title>".
-- Prompt paragraph `todosText()`: written and tested, but not shown yet. The adapters must pass `flags.todos` first.
+- Prompt paragraph `todosText()`: written and tested; the adapters now pass `flags.todos` for the root.
 
 ## Renderer (as built)
 
@@ -123,7 +123,10 @@ Tab `tab-todos`, count `todos-tab-count`; `todos-view`, `todos-loading`, `todos-
 - Not looked at in the running app: both themes, both window sizes, keyboard walk, screen-reader speech; no mock UX
   walkthrough yet (needs the merged main side).
 
-## Still to build
+## Adapters (as built)
 
-- Adapters: pass `todos: !!ctx.todos` to the root's prompt flags (Claude, Codex, mock), and add the mock marker
-  `[mock:todo]`.
+- Claude, Codex and the mock pass `todos: true` to the prompt flags when `ctx.todos` is set and the run is not a bridged
+  child; reports never get the paragraph. Checked by `claudeTodos.test.ts`, `codex.test.ts` (fake app-server) and
+  `mockTodo.test.ts`. Live model behaviour is unverified.
+- Mock marker `[mock:todo]`: one real `todo_list` add, then "Added to your to-do list." (refusals said back). Checked by
+  `mockTodo.test.ts`.
