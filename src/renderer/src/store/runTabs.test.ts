@@ -30,7 +30,7 @@ vi.stubGlobal('window', { orgai: api, dispatchEvent: vi.fn(), addEventListener: 
 vi.stubGlobal('Event', class {})
 vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0))
 
-const { useAppStore, projectTabRuns, HIDDEN_LIVE_NOTICE } = await import('./useAppStore')
+const { useAppStore, projectTabRuns, HIDDEN_LIVE_NOTICE, HIDDEN_IDLE_NOTICE, hiddenLiveNotice, otherRunsHeading } = await import('./useAppStore')
 
 const run = (id: string, projectId: string, status: string, startedAt: number): unknown => ({
   summary: summary(id, projectId, status, startedAt),
@@ -69,6 +69,23 @@ describe('dismissRun: hiding a tab never touches the session', () => {
     expect(projectTabRuns(s).map((r) => r.summary.id)).toEqual(['b'])
     expect(api.runs.stop).not.toHaveBeenCalled()
     expect(api.runs.interrupt).not.toHaveBeenCalled()
+  })
+
+  it('an idle live run says its session stays open, not that it keeps working', () => {
+    useAppStore.setState({ selectedProjectId: 'p1', runs: { a: run('a', 'p1', 'idle', 1), b: run('b', 'p1', 'finished', 2) } as never, activeRunByProject: { p1: 'a' } })
+    useAppStore.getState().dismissRun('a')
+    expect(useAppStore.getState().tabNotice).toBe('Hidden. Its session stays open: find it in the sidebar or History.')
+    expect(hiddenLiveNotice('running')).toBe(HIDDEN_LIVE_NOTICE)
+    expect(hiddenLiveNotice('starting')).toBe(HIDDEN_LIVE_NOTICE)
+    expect(hiddenLiveNotice('stopping')).toBe(HIDDEN_IDLE_NOTICE)
+  })
+
+  it('New run page heading names runs that need the user', () => {
+    expect(otherRunsHeading(1, 0)).toBe('1 other run keeps going')
+    expect(otherRunsHeading(3, 0)).toBe('3 other runs keep going')
+    expect(otherRunsHeading(1, 1)).toBe('1 other run needs you')
+    expect(otherRunsHeading(2, 1)).toBe('2 other runs keep going, 1 needs you')
+    expect(otherRunsHeading(2, 2)).toBe('2 other runs need you')
   })
 
   it('hiding the only tab (live, idle) opens the New run page; openRun brings it back un-hidden', async () => {

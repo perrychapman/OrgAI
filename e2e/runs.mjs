@@ -689,7 +689,7 @@ try {
     await page.waitForFunction((id) => !document.querySelector(`.run-tablist .run-tab-wrap[data-run="${id}"]`), liveId, { timeout: 5000 }).catch(() => {})
     check((await tabOf().count()) === 0, 'Delete hides a live tab')
     const notice = ((await page.locator('.run-tabs-notice').innerText().catch(() => '')) || '').trim()
-    check(/keeps working/.test(notice) && !/end (its|the) session/i.test(notice), 'the notice says the hidden run keeps working', notice)
+    check(/keeps working|session stays open/.test(notice) && !/end (its|the) session/i.test(notice), 'the notice says the hidden run keeps working or its session stays open', notice)
     check(await page.evaluate(() => document.activeElement?.getAttribute('role') === 'tab'), 'focus moves to a neighbouring tab after hiding a live tab')
     check(isLive(await liveStatus()), 'hiding the tab leaves the session live', await liveStatus())
     const navRow = page.locator(`[data-testid=nav-run][data-run="${liveId}"]`)

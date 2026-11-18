@@ -8,7 +8,8 @@ import { projectStartRefusal } from '../lib/remap'
 import { Banner } from './ui/Banner'
 import { newRunLead, projectKindCopy, projectNoun } from '../lib/projectKindCopy'
 import { SegmentedControl } from './ui/SegmentedControl'
-import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
+import { isRunLive, newRunDraftKey, otherRunsHeading, useAppStore, useRunIndexes } from '../store/useAppStore'
+import { needsYou } from '../lib/runChains'
 import { linkedStart } from '../lib/todoStart'
 import { promptLine, runTag } from '../lib/runLabels'
 import { displayRunName, isOrgChangeRun } from '../lib/orgChange'
@@ -65,7 +66,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
       Object.values(runs)
         .filter((r) => r.summary.projectId === project.id && isRunLive(r))
         .sort((a, b) => a.summary.startedAt - b.summary.startedAt)
-        .map((r) => ({ id: r.summary.id, kind: r.summary.kind, prompt: r.summary.prompt, title: r.summary.title })),
+        .map((r) => ({ id: r.summary.id, kind: r.summary.kind, prompt: r.summary.prompt, title: r.summary.title, waiting: needsYou(r) })),
     [runs, project.id]
   )
   const liveSetup = useMemo(() => [...others].reverse().find((o) => o.kind === 'setup'), [others])
@@ -320,13 +321,13 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
         {others.length > 0 && (
           <section className="new-run-others" aria-label="Other runs of this project">
             <h3>
-              {others.length} other run{others.length === 1 ? '' : 's'} keep{others.length === 1 ? 's' : ''} going
+              {otherRunsHeading(others.length, others.filter((o) => o.waiting).length)}
             </h3>
             <ul>
               {others.map((o) => (
                 <li key={o.id}>
                   <button type="button" className="link-btn" title={promptLine(o.prompt)} onClick={() => void openRun(o.id)}>
-                    {`${runTag(indexes.get(o.id))}: ${displayRunName(o)}`}
+                    {`${runTag(indexes.get(o.id))}: ${displayRunName(o)}${o.waiting ? ' (needs you)' : ''}`}
                   </button>
                 </li>
               ))}
