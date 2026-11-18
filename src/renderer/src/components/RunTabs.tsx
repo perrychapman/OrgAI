@@ -491,7 +491,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                   className="run-tab-close"
                   tabIndex={-1}
                   aria-label={`Hide ${v.tag || newLabel}`}
-                  title={item.run && isRunLive(item.run) ? 'Hide this tab (Ctrl+W). The session keeps working.' : 'Hide this tab (Ctrl+W)'}
+                  title={item.run && isRunLive(item.run) ? 'Hide this tab (Ctrl+W). The session stays open.' : 'Hide this tab (Ctrl+W)'}
                   onClick={() => hide(item)}
                 >
                   <Icon icon={X} size="xs" />
@@ -565,7 +565,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 role="menuitem"
                 className="run-tab-menuitem"
                 disabled={!v.closable}
-                title={item.run && isRunLive(item.run) ? 'Hide this tab (Ctrl+W). The session keeps working.' : 'Hide this tab (Ctrl+W)'}
+                title={item.run && isRunLive(item.run) ? 'Hide this tab (Ctrl+W). The session stays open.' : 'Hide this tab (Ctrl+W)'}
                 onClick={() => {
                   setCtx(null)
                   hide(item)

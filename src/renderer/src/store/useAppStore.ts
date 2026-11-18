@@ -627,6 +627,17 @@ export const activeRun = (s: AppState): RunState | undefined => {
 const HIDDEN_NOTICE = 'Hidden. Find it in History.'
 /** After hiding a tab whose session is still open: it keeps working; the sidebar's open runs and History reopen it. */
 export const HIDDEN_LIVE_NOTICE = 'Hidden. It keeps working: find it in the sidebar or History.'
+/** Same, for a live run with nothing running (idle or stopping): only the session stays open. */
+export const HIDDEN_IDLE_NOTICE = 'Hidden. Its session stays open: find it in the sidebar or History.'
+export const hiddenLiveNotice = (status: string): string => (status === 'starting' || status === 'running' ? HIDDEN_LIVE_NOTICE : HIDDEN_IDLE_NOTICE)
+
+/** The New run page heading for the project's other live runs; `waiting` is how many of them need the user (decision-based). */
+export function otherRunsHeading(total: number, waiting: number): string {
+  if (total <= 0) return ''
+  if (waiting >= total) return total === 1 ? '1 other run needs you' : `${total} other runs need you`
+  const base = `${total} other run${total === 1 ? '' : 's'} keep${total === 1 ? 's' : ''} going`
+  return waiting > 0 ? `${base}, ${waiting} needs you` : base
+}
 const LIVE_RUN_STATUSES = new Set(['starting', 'running', 'idle', 'stopping'])
 export const isRunLive = (run: RunState): boolean => LIVE_RUN_STATUSES.has(run.summary.status)
 
@@ -2359,7 +2370,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       delete unreadByRun[runId]
       // Hiding never touches the session: a live run keeps working and stays in the sidebar's open runs.
-      notice = isRunLive(run) ? HIDDEN_LIVE_NOTICE : HIDDEN_NOTICE
+      notice = isRunLive(run) ? hiddenLiveNotice(run.summary.status) : HIDDEN_NOTICE
       if (s.activeRunByProject[projectId] !== runId) return { dismissedRuns, unreadByRun }
       // Hiding the viewed tab moves to its right neighbour, else the left one; with no tab left, the New run page.
       const tabs = tabRunsOf(s, projectId)
