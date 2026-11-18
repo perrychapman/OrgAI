@@ -472,8 +472,11 @@ try {
     await sleep(800)
     check(((await page.locator('[data-testid=history-folder]').first().innerText().catch(() => '')) || '').trim() === 'Scratch', 'Chat History shows "Scratch" in history-folder')
     check((await page.getByRole('radio', { name: 'Run', exact: true }).count()) === 0, 'Chat History has no kind filter chips')
+    await page.locator('[data-testid=history-more]').first().click()
     const histSave = page.locator('[data-testid=history-save-as-project]').first()
-    check((await histSave.count()) === 1 && (await histSave.isDisabled()), 'the scratch chat row in History has a disabled Save as project')
+    await histSave.waitFor({ timeout: 5000 }).catch(() => {})
+    check((await histSave.count()) === 1 && (await histSave.getAttribute('aria-disabled')) === 'true', 'the scratch chat row in History has a disabled Save as project in its More menu')
+    await page.keyboard.press('Escape')
     await shot('chat-history-1600x1000')
 
     // An ended Chat: the sidebar row opens the start page, not the stopped run.
@@ -529,7 +532,9 @@ try {
     check((await page.locator('[data-testid=run-save-as-project]').count()) === 0, 'Save as project is gone from the run strip once the run moved')
     await page.locator('[data-testid=tab-history]').click()
     await sleep(800)
+    await page.locator('[data-testid=history-more]').first().click().catch(() => {})
     check((await page.locator('[data-testid=history-save-as-project]').count()) === 0, 'History of the new project has no Save as project')
+    await page.keyboard.press('Escape')
     await deleteProject(page, chatProject).catch(() => {})
     removeFixture(chatRepo)
 
