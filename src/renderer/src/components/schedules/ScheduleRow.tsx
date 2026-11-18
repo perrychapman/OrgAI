@@ -42,7 +42,12 @@ export default function ScheduleRow({
   const historyId = `${uid}-history`
   const menu = useContextMenu<string>()
   const fallbackFocus = (): HTMLElement | null => document.querySelector<HTMLElement>('[data-testid=schedules-view] h1')
-  const why = busy ? 'Working on it' : undefined
+  // A right click returns focus to Run now, or to the card heading while the card is busy and that button is inert.
+  const runNowOrHeading = (li: HTMLElement): HTMLElement | undefined => {
+    const btn = li.querySelector<HTMLButtonElement>('[data-testid=schedule-run-now]')
+    return (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true' ? btn : li.querySelector<HTMLElement>(`[id="${headingId}"]`)) ?? undefined
+  }
+  const why = busy ?'Working on it' : undefined
   const menuItems = (): MenuEntry[] => [
     { id: 'run-now', label: 'Run now', icon: Zap, onSelect: onRunNow, disabled: busy, disabledReason: why, testId: 'schedule-menu-run-now' },
     ...(row.toggle ? [{ id: 'toggle', label: row.toggle, icon: row.toggle === 'Pause' ? Pause : Play, onSelect: onToggle, disabled: busy, disabledReason: why, testId: 'schedule-menu-toggle' }] : []),
@@ -57,7 +62,7 @@ export default function ScheduleRow({
       data-schedule-id={row.id}
       data-state={row.chip.label}
       aria-labelledby={headingId}
-      onContextMenu={(e) => menu.onContextMenu(e, row.id, { fallbackFocus, invoker: e.currentTarget.querySelector<HTMLElement>('[data-testid=schedule-run-now]') ?? undefined })}
+      onContextMenu={(e) => menu.onContextMenu(e, row.id, { fallbackFocus, invoker: runNowOrHeading(e.currentTarget) })}
       onKeyDown={(e) => {
         const t = e.target
         // From the focused control inside the card; the menu itself handles its own keys.
