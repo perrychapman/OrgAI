@@ -63,8 +63,9 @@ import { claudeToolSizes, codexToolSizes, measureCase, sumChars, type MeasureSlu
  */
 /*
  * read_document (documentAccess.ts): one tool (453 chars Claude, 459 Codex: a path, a sheet name and five unconstrained
- * numbers, readDocument.ts clamps them) on every role with Read, reports included. It earns its place because the
- * providers' own Read refuses xlsx, docx and pptx, so without it no agent can read the office files a task names.
+ * numbers, readDocument.ts clamps them) listed for every role, reports included (a role without Read is refused at call
+ * time; setup-like runs and build sessions do not list it). It earns its place because the providers' own Read refuses
+ * xlsx, docx and pptx, so without it no agent can read the office files a task names.
  *   team root          Claude 20,597 -> 21,050   Codex 22,904 -> 23,363
  *   writing report     Claude    442 ->    895   Codex    921 ->  1,380
  *   single assistant   Claude 12,399 -> 12,852   Codex 12,974 -> 13,433

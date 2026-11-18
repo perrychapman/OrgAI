@@ -35,13 +35,17 @@ export interface DocumentSheetInfo {
 
 export type DocumentText =
   | { format: 'xlsx' | 'docx' | 'pptx' | 'text'; text: string; truncated: boolean; notes: string[]; sheets?: DocumentSheetInfo[] }
-  | { refused: string }
+  | { refused: string; data?: string[] }
 
 const SHEETS_LISTED_MAX = 100
 const SHEET_NAMES_IN_REFUSAL = 50
 const EXPORT_HINT = 'Ask the user for a fresh copy or a CSV / PDF export.'
 
-const refused = (s: string): { refused: string } => ({ refused: s })
+/**
+ * A refusal. `s` is OrgAI's own sentence and never holds text from the file; names and library messages that come from the
+ * file go in `data`, which the caller fences as data (documentAccess.ts refusalText).
+ */
+const refused = (s: string, data?: string[]): { refused: string; data?: string[] } => (data?.length ? { refused: s, data } : { refused: s })
 const num = (n: number): string => n.toLocaleString('en-US')
 
 /** Column letters for a 1-based column index (1 = A, 27 = AA). */
@@ -86,7 +90,7 @@ export async function documentText(
         return textOf(buf, plan.encoding, fileSize)
     }
   } catch (e) {
-    return refused(`OrgAI could not read this file: ${(e as Error).message}`)
+    return refused('OrgAI could not read this file. The error from the reader is listed below as data.', [`Reader error: ${e instanceof Error ? e.message : String(e)}`])
   }
 }
 
@@ -162,7 +166,7 @@ async function xlsxText(buf: Buffer, window: DocumentWindow): Promise<DocumentTe
     if (!ws) {
       const list = sheetsAll.slice(0, SHEET_NAMES_IN_REFUSAL).map((s) => `"${s.name}"`).join(', ')
       const more = sheetsAll.length > SHEET_NAMES_IN_REFUSAL ? ` and ${sheetsAll.length - SHEET_NAMES_IN_REFUSAL} more` : ''
-      return refused(`This workbook has no sheet named "${want}". Its sheets are: ${list}${more}.`)
+      return refused('This workbook has no sheet with the name you gave. Its sheet names, which come from the file, are listed below.', [`Sheets: ${list}${more}`])
     }
   }
   if (sheetsAll.length > 1 && window.sheet === undefined) notes.push(`The workbook has ${sheetsAll.length} sheets; this is the first. Use sheet to read another.`)
@@ -182,7 +186,7 @@ async function xlsxText(buf: Buffer, window: DocumentWindow): Promise<DocumentTe
     notes.push(`Sheet "${ws.name}" is empty.`)
     return { format: 'xlsx', text: '', truncated: false, notes, sheets }
   }
-  if (startRow > total) return refused(`Sheet "${ws.name}" has only ${num(total)} rows, so startRow ${num(startRow)} is past the end.`)
+  if (startRow > total) return refused(`The sheet has only ${num(total)} rows, so startRow ${num(startRow)} is past the end. Its name, which comes from the file, is listed below.`, [`Sheet: "${ws.name}"`])
 
   const lastCol = Math.min(startCol + colsCount - 1, Math.max(sheetCols, startCol))
   const colIdx: number[] = []

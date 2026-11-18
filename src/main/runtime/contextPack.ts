@@ -460,8 +460,9 @@ export const GUARDED_REASONS = { outside: OUTSIDE, control: CONTROL, unreadable:
 /**
  * The file-system half of the header's checks for one absolute path (already past firstChecks: not a network path, the
  * protected paths available): lexically inside a root before anything is touched (no existence oracle); the self-control
- * gate on the path and its real path; the real path inside a root (a missing file behind a link that leads outside reads
- * as outside); `beforeOpen(real)` may refuse; not a folder; then ONE open without following a final link, and the
+ * gate on the path (first, for a path that does not exist); the real path inside a root (a missing file behind a link
+ * that leads outside reads as outside, and a link to a control file outside the roots reads as outside too); then the
+ * self-control gate on the path and on the real path; `beforeOpen(real)` may refuse; not a folder; then ONE open without following a final link, and the
  * handle checked: where it points (Linux /proc, macOS O_NOFOLLOW_ANY), a regular file, the path still resolving to the
  * same real path and the same dev and ino, and not a protected file (the shallow set, the deep set where needed). Shared
  * by buildContextPack and read_document (documentAccess.ts). Never throws; on success the caller owns and closes `fd`.
@@ -469,11 +470,11 @@ export const GUARDED_REASONS = { outside: OUTSIDE, control: CONTROL, unreadable:
 export function openGuardedFile(abs: string, s: GuardedReadState, beforeOpen?: (real: string) => string | undefined): GuardedOpen {
   if (!s.lexicallyInside(abs)) return { reason: OUTSIDE }
   const gate = (target: string): boolean => gateDenies(target, s.protectedPaths, s.callerCwd)
-  if (gate(abs)) return { reason: CONTROL }
   let real: string
   try {
     real = realpathSync.native(abs)
   } catch {
+    if (gate(abs)) return { reason: CONTROL }
     let leadsOutside = true
     try {
       leadsOutside = outsideRoots(canonicalDeep(abs), s.roots)
@@ -482,8 +483,9 @@ export function openGuardedFile(abs: string, s: GuardedReadState, beforeOpen?: (
     }
     return { reason: leadsOutside ? OUTSIDE : 'not found' }
   }
-  if (gate(real)) return { reason: CONTROL }
+  // Outside first: a link that leaves the roots must not say whether its target is a control file.
   if (outsideRoots(real, s.roots)) return { reason: OUTSIDE }
+  if (gate(abs) || gate(real)) return { reason: CONTROL }
   const refused = beforeOpen?.(real)
   if (refused) return { reason: refused }
   try {
