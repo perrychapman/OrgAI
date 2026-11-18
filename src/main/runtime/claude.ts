@@ -1486,6 +1486,17 @@ export class ClaudeSession implements RuntimeSession {
   /** Open non-subagent tasks (task_started with another task_type) until their notification: restart blockers. */
   private backgroundTasks = new Set<string>()
   /**
+   * The root's foreground shell calls (Bash / PowerShell tool_use ids, not run_in_background) from their assistant
+   * block until their tool_result, with where a backgroundTasks(id) request for each stands: undefined (not asked),
+   * 'asking', 'wanted' (answered false while still in flight: not a registered task yet, asked again at its
+   * task_started), 'done' or 'failed' (rejected: not asked again for this call). See backgroundRootShells.
+   */
+  private rootShellCalls = new Map<string, 'asking' | 'wanted' | 'done' | 'failed' | undefined>()
+  /** A root shell call's tool_use id -> its task id (its task_started), until that task ends. */
+  private rootShellTasks = new Map<string, string>()
+  /** Root shell calls (tool_use ids) the harness moved to the background, until their task ends or an interrupt stops them. */
+  private harnessBackgroundedShells = new Set<string>()
+  /**
    * Harness messages pushed to the input, by kind. When an interrupt holds the run across a restart, unread plan nudges
    * are dropped and other unread harness notices wait for the user's next message (dropHeldHarnessMessages).
    */
@@ -1724,6 +1735,7 @@ export class ClaudeSession implements RuntimeSession {
     // Background reports stop with the interrupt, as every Codex thread does: without perTaskStopAffordance the CLI's
     // interrupt kills them (sdk.d.ts, not checked live), and stopTask makes sure. They are settled here, not integrated.
     this.stopBackgroundReports('Interrupted', true)
+    this.stopHarnessBackgroundedShells()
   }
 
   /**
@@ -2517,6 +2529,71 @@ export class ClaudeSession implements RuntimeSession {
     if (opts.userTurn) this.turnInFlight = true
     this.input.push(message)
     if (!this.queryInitSeen) this.preInit.push(message)
+    // The CLI reads queued input only at the root's next tool round: a foreground shell call must not hold it back.
+    this.backgroundRootShells()
+  }
+
+  /**
+   * A message was queued for the root (user send, peer message, harness notice): move each of the root's foreground
+   * shell calls to the background so the message is read now rather than when the command returns or times out.
+   * Query.backgroundTasks(toolUseId) (sdk.d.ts, typings only, not checked live) makes that call return at once with a
+   * "running in the background" tool_result; the command continues as a task (task_started is already counted in
+   * backgroundTasks, its task_notification ends it). Always by id: a call without one would also background the
+   * root's foreground Agent calls, which required delegation and receipt-bearing spawns rely on. Never awaited and
+   * never throws: a rejection or false is logged and the message stays queued as before.
+   */
+  private backgroundRootShells(): void {
+    for (const [id, state] of this.rootShellCalls) if (state === undefined || state === 'wanted') this.backgroundRootShell(id)
+  }
+
+  private backgroundRootShell(toolUseId: string): void {
+    const q = this.q as Partial<Query> | undefined
+    if (typeof q?.backgroundTasks !== 'function') return
+    this.rootShellCalls.set(toolUseId, 'asking')
+    let request: Promise<boolean>
+    try {
+      request = q.backgroundTasks.call(this.q, toolUseId)
+    } catch (e) {
+      request = Promise.reject(e)
+    }
+    request.then(
+      (moved) => {
+        if (moved) {
+          if (this.rootShellCalls.has(toolUseId)) this.rootShellCalls.set(toolUseId, 'done')
+          this.harnessBackgroundedShells.add(toolUseId)
+          this.log('info', 'A shell command was moved to the background so the orchestrator can read a new message.')
+          return
+        }
+        // Finished in the meantime: nothing to do. Still running: not registered as a task yet, retried at its task_started.
+        if (!this.rootShellCalls.has(toolUseId)) {
+          this.rootShellTasks.delete(toolUseId)
+          return
+        }
+        this.rootShellCalls.set(toolUseId, 'wanted')
+        this.log('warn', 'A running shell command could not be moved to the background yet; the new message waits for it.')
+      },
+      (e: unknown) => {
+        if (this.rootShellCalls.has(toolUseId)) this.rootShellCalls.set(toolUseId, 'failed')
+        else this.rootShellTasks.delete(toolUseId)
+        this.log('warn', `Could not move a running shell command to the background; the new message waits for it: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    )
+  }
+
+  /**
+   * An interrupt stops the shell commands the harness backgrounded (as it would have stopped them in the foreground);
+   * commands the agent itself started in the background are left as before.
+   */
+  private stopHarnessBackgroundedShells(): void {
+    const q = this.q as Partial<Query> | undefined
+    for (const toolUseId of [...this.harnessBackgroundedShells]) {
+      this.harnessBackgroundedShells.delete(toolUseId)
+      const taskId = this.rootShellTasks.get(toolUseId)
+      if (!taskId || !this.backgroundTasks.has(taskId)) continue
+      if (typeof q?.stopTask === 'function') {
+        void q.stopTask.call(this.q, taskId).catch((e: Error) => this.log('warn', `Could not stop a backgrounded shell command: ${e.message}`))
+      }
+    }
   }
 
   /** A subagent's SubagentHandback delivered its report: kept until its SubagentStop (newest wins; the map stays bounded). */
@@ -3816,6 +3893,11 @@ export class ClaudeSession implements RuntimeSession {
 
   /** A non-subagent task ended; the last one to end lets a waiting MCP restart go ahead. */
   private backgroundTaskEnded(taskId: string): void {
+    for (const [toolUseId, id] of this.rootShellTasks) {
+      if (id !== taskId) continue
+      this.rootShellTasks.delete(toolUseId)
+      this.harnessBackgroundedShells.delete(toolUseId)
+    }
     if (!this.backgroundTasks.delete(taskId)) return
     if (!this.backgroundTasks.size && this.restartDue()) this.scheduleMcpRestart()
   }
@@ -4642,6 +4724,11 @@ export class ClaudeSession implements RuntimeSession {
           // housekeeping) are left out: the SDK says they are not activity, and some never end.
           if (msg.task_type && msg.task_type !== 'local_agent') {
             if (!msg.ambient && !msg.skip_transcript) this.backgroundTasks.add(msg.task_id)
+            // A root shell call's task: kept for an interrupt, and asked again when a message is waiting on it.
+            if (msg.tool_use_id && this.rootShellCalls.has(msg.tool_use_id)) {
+              this.rootShellTasks.set(msg.tool_use_id, msg.task_id)
+              if (this.rootShellCalls.get(msg.tool_use_id) === 'wanted' && msg.is_backgrounded !== true) this.backgroundRootShell(msg.tool_use_id)
+            }
             break
           }
           // A SendMessage to a finished subagent resumes it with parent_task_id = the messenger (possibly its own
@@ -4862,6 +4949,10 @@ export class ClaudeSession implements RuntimeSession {
             if (agentId === ROOT_ID) this.rootToolCalls++
             this.seenBlocks.add(blockKey)
             this.toolUseIssuer.set(block.id, agentId)
+            // A root foreground shell call holds back queued input until it returns (backgroundRootShells).
+            if (agentId === ROOT_ID && SHELL_TOOLS.has(block.name) && (block.input as { run_in_background?: unknown } | undefined)?.run_in_background !== true) {
+              this.rootShellCalls.set(block.id, undefined)
+            }
             this.transcript(agentId, { kind: 'tool_use', id: block.id, name: block.name, input: block.input })
           }
         }
@@ -4887,6 +4978,12 @@ export class ClaudeSession implements RuntimeSession {
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_result') {
+              // A root shell call returned (or was moved to the background): no longer holding back input.
+              // Its task id stays while a background request may have moved it (the placeholder result can come first).
+              const shellState = this.rootShellCalls.get(block.tool_use_id)
+              if (this.rootShellCalls.delete(block.tool_use_id) && shellState !== 'asking' && shellState !== 'done' && !this.harnessBackgroundedShells.has(block.tool_use_id)) {
+                this.rootShellTasks.delete(block.tool_use_id)
+              }
               // An Agent call that failed before its agent started (refused, rejected input): forget its staffing.
               if (block.is_error) {
                 this.staffingRefused(block.tool_use_id)
