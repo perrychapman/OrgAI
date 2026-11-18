@@ -105,7 +105,8 @@ export interface EndedRunLike {
   kind?: string
   endedAt?: number
   endedBy?: RunEndedBy
-  endedWhile?: 'working' | 'waiting'
+  /** Only 'waiting' (an open decision when OrgAI closed) is "waiting on you"; 'idle' and 'working' are plain 'closed'. */
+  endedWhile?: 'working' | 'waiting' | 'idle'
   endedWithApp?: true
 }
 

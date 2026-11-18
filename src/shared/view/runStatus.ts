@@ -171,14 +171,15 @@ const WAITING_ACTIVITY = /^(Needs approval|Waiting for you)/
 
 /**
  * What a run cut off by OrgAI closing was doing, read from its saved agents before they are settled: 'waiting' when
- * nothing was working and the root sat idle or an agent waited on the user, else 'working' (also the answer when the
- * record carries no trace either way).
+ * nothing was working and an agent waited on a decision (state waiting, or "Needs approval" / "Waiting for you" on a
+ * non-idle agent), 'idle' when the root simply sat idle awaiting a reply (never "waiting on you"), else 'working'
+ * (also the answer when the record carries no trace either way).
  */
-export function cutWhile(agents: Record<string, Pick<AgentInstance, 'parentId' | 'state' | 'activity'>> | undefined): 'working' | 'waiting' {
+export function cutWhile(agents: Record<string, Pick<AgentInstance, 'parentId' | 'state' | 'activity'>> | undefined): 'working' | 'waiting' | 'idle' {
   const list = Object.values(agents ?? {})
   if (list.some((a) => WORKING_STATES.has(a.state))) return 'working'
-  const waiting = list.some((a) => a.state === 'waiting' || (a.parentId === null && a.state === 'idle') || WAITING_ACTIVITY.test(a.activity))
-  return waiting ? 'waiting' : 'working'
+  if (list.some((a) => a.state === 'waiting' || (a.state !== 'idle' && WAITING_ACTIVITY.test(a.activity)) || /^Needs approval/.test(a.activity))) return 'waiting'
+  return list.some((a) => a.parentId === null && a.state === 'idle') ? 'idle' : 'working'
 }
 
 /**

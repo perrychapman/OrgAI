@@ -386,11 +386,11 @@ export function withEndFacts(e: Extract<RunEvent, { type: 'run.status' }>, s: Pi
   return rest
 }
 
-/** RunSummary.endedWhile for a run cut by the app: idle or an open card is 'waiting', live work 'working', paused none. */
-export function quitEndedWhile(status: RunSummary['status'], openCard: boolean): 'working' | 'waiting' | undefined {
+/** RunSummary.endedWhile for a run cut by the app: an open decision (card or blocked plan) is 'waiting' whatever the status, else idle is 'idle', live work 'working', paused none. */
+export function quitEndedWhile(status: RunSummary['status'], openDecision: boolean): 'working' | 'waiting' | 'idle' | undefined {
   if (status === 'paused' || status === 'finished' || status === 'error') return undefined
-  if (status === 'idle' || openCard) return 'waiting'
-  return 'working'
+  if (openDecision) return 'waiting'
+  return status === 'idle' ? 'idle' : 'working'
 }
 
 interface ActiveRun {
@@ -444,7 +444,7 @@ interface ActiveRun {
    */
   endedBy?: RunEndedBy
   /** With endedBy 'app': what the run was doing when the quit began (RunSummary.endedWhile). Read before stopping. */
-  endedWhile?: 'working' | 'waiting'
+  endedWhile?: 'working' | 'waiting' | 'idle'
   /** The session.stop() call in flight (stopSession), so End session, quit and a late start share one stop. */
   stopCall?: Promise<void>
   /** Cancels a pending title query (user stop, project removal, app quit). A natural end lets the title land. */
@@ -4834,7 +4834,7 @@ export class RunManager {
     const st = r.summary.status
     if (st === 'finished' || st === 'error') return
     if (by === 'app' && !r.endedBy) {
-      const w = quitEndedWhile(st, hasOpenCard(r))
+      const w = quitEndedWhile(st, hasOpenCard(r) || r.record.plan?.status === 'blocked')
       if (w) r.endedWhile = w
     }
     r.userStopped = true

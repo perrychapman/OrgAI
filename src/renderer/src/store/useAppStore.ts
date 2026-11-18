@@ -218,7 +218,7 @@ export interface RunState {
    * Ended runs loaded from a record: what the run was doing when it ended (lib/runStatus cutWhile, read before the
    * agents were settled). Only meaningful for a run cut by OrgAI closing.
    */
-  cutWhile?: 'working' | 'waiting'
+  cutWhile?: 'working' | 'waiting' | 'idle'
   /** Chat runs: the user allowed a change or command for the session in this run (RunMeta's access chip). Live only. */
   sessionChanges?: true
 }
