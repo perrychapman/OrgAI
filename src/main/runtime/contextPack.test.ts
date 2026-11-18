@@ -143,6 +143,24 @@ describe('context pack', () => {
     expect(none.skipped[0]!.reason).toBe('OrgAI could not check it against its control files')
   })
 
+  it('a link inside a root to a control file outside the roots reads as outside, not as a control file (a junction here, a file link where allowed)', () => {
+    const data = join(outside, 'data')
+    mkdirSync(data)
+    writeFileSync(join(data, 'secrets.json'), '{}')
+    const protectedPaths = controlProtectedPaths(data)
+    const paths = ['junction/secrets.json']
+    symlinkSync(data, join(proj, 'junction'), process.platform === 'win32' ? 'junction' : 'dir')
+    try {
+      symlinkSync(join(data, 'secrets.json'), join(proj, 'innocent.json'))
+      paths.push('innocent.json')
+    } catch {
+      /* no file links here (Windows without the privilege): the junction covers it */
+    }
+    const pack = buildContextPack(paths, opts({ protectedPaths }))
+    expect(pack.files).toEqual([])
+    expect(pack.skipped.map((s) => s.reason)).toEqual(paths.map(() => 'outside the folders the report may read'))
+  })
+
   it('text files only: NUL bytes and invalid UTF-8 are refused; folders and missing files too', () => {
     writeFileSync(join(proj, 'bin.dat'), Buffer.from([0x41, 0x00, 0x42]))
     writeFileSync(join(proj, 'latin1.txt'), Buffer.from([0x63, 0x61, 0x66, 0xe9]))

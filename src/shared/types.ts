@@ -9187,9 +9187,9 @@ export const OUTPUT_TOOLS = { produce: 'produce_output', register: 'register_out
 /**
  * read_document (harness tool; main process only, never IPC): one file inside the folders the calling agent may read, as
  * fenced text. For files the provider's own Read refuses: xlsx / xlsm (tab-separated rows of one sheet, a row and column
- * window), docx (Markdown-like text), pptx (per slide), and UTF-8 / UTF-16 text. Offered to every role whose Role.tools
- * has 'Read' on work, single and Chat runs; never on setup-like runs. Everything else is refused with a sentence that
- * names the detected type. Module: src/main/runtime/documentAccess.ts (path safety) and src/main/outputs/readDocument.ts
+ * window), docx (Markdown-like text), pptx (per slide), and UTF-8 / UTF-16 text. Listed for every role on work, single
+ * and Chat runs, and absent on setup-like runs and build sessions; a role whose Role.tools lacks 'Read' is refused at
+ * call time. Everything else is refused with a sentence that names the detected type. Module: src/main/runtime/documentAccess.ts (path safety) and src/main/outputs/readDocument.ts
  * (formats, through the outputs preview pipeline).
  */
 export const READ_DOCUMENT_TOOL = 'read_document'
