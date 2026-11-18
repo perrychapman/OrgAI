@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffOrgChart, nameSimilarity, type DiffRole } from './orgDiff'
+import { diffOrgChart, nameSimilarity, orgDiffBase, type DiffRole } from './orgDiff'
 
 const role = (slug: string, over: Partial<DiffRole> = {}): DiffRole => ({
   id: `id-${slug}`,
@@ -188,6 +188,48 @@ describe('diffOrgChart', () => {
   it('treats a legacy role without a tier as the tier its model stands for', () => {
     const d = diffOrgChart([role('a', { model: 'sonnet' })], [role('a', { model: 'sonnet', tier: 'everyday' })])
     expect(d.unchanged).toHaveLength(1)
+  })
+
+  it('diffs effort, staffing and connection, with a missing value read as none', () => {
+    const one = (from: Partial<DiffRole>, to: Partial<DiffRole>) => diffOrgChart([role('a', from)], [role('a', to)]).changed[0]?.changes
+    expect(one({}, { effort: 'high' })).toEqual([{ field: 'effort', label: 'effort', from: 'none', to: 'high' }])
+    expect(one({ effort: 'low' }, { effort: 'low' })).toBeUndefined()
+    expect(one({ staffing: { mode: 'auto', maxEffort: 'high' } }, { staffing: { mode: 'fixed' } })).toEqual([
+      { field: 'staffing', label: 'staffing', from: 'auto (up to high effort)', to: 'fixed' }
+    ])
+    expect(one({}, { staffing: { mode: 'auto', minTier: 'fast' } })).toEqual([{ field: 'staffing', label: 'staffing', from: 'none', to: 'auto (from Fast)' }])
+    expect(one({}, { connection: 'openai' })).toEqual([{ field: 'connection', label: 'connection', from: 'project default', to: 'openai' }])
+    expect(one({ connection: 'openai' }, {})).toEqual([{ field: 'connection', label: 'connection', from: 'openai', to: 'project default' }])
+  })
+
+  it('diffs against the run baseline when present (stored prompt equals proposed, run differs)', () => {
+    const stored = [role('x', { prompt: 'pulled' })]
+    const baseline = [role('x', { prompt: 'running' })]
+    const proposed = [role('x', { prompt: 'pulled' }), role('qa', { name: 'QA' })]
+    const withBase = diffOrgChart(orgDiffBase({ runBaseline: baseline }, stored), proposed)
+    expect(withBase.changed.map((c) => c.role.slug)).toEqual(['x'])
+    expect(withBase.changed[0].changes.map((c) => c.field)).toEqual(['prompt'])
+    expect(withBase.added.map((r) => r.slug)).toEqual(['qa'])
+    const without = diffOrgChart(orgDiffBase({}, stored), proposed)
+    expect(without.unchanged.map((r) => r.slug)).toEqual(['x'])
+    expect(without.added.map((r) => r.slug)).toEqual(['qa'])
+  })
+
+  it('picks the diff base: present wins, absent falls back, an empty baseline is present', () => {
+    const stored = [role('s')]
+    const base = [role('b')]
+    expect(orgDiffBase({ runBaseline: base }, stored)).toBe(base)
+    expect(orgDiffBase({}, stored)).toBe(stored)
+    const empty: DiffRole[] = []
+    expect(orgDiffBase({ runBaseline: empty }, stored)).toBe(empty)
+  })
+
+  it('lists a role the run keeps as it is as unchanged even when the stored project differs', () => {
+    const stored = [role('x', { prompt: 'stored' })]
+    const baseline = [role('x', { prompt: 'running' })]
+    const d = diffOrgChart(orgDiffBase({ runBaseline: baseline }, stored), [role('x', { prompt: 'running' })])
+    expect(d.unchanged).toHaveLength(1)
+    expect(d.changed).toHaveLength(0)
   })
 
   it('scores name similarity', () => {

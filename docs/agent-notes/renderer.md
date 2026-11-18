@@ -519,6 +519,15 @@ through the frame announcer. Checked by `runRoster.test.ts`, `proposalNext.test.
 typecheck and build. `e2e/proposals.mjs` scenario 5 (`Staff up [mock:org-change]`) covers the flow and needs the mock
 marker. Unverified: screen-reader speech, the deferred list at 1024x640 (the meta line wraps it; not looked at).
 
+Card diff base (security fix): the org chart card diffs the proposed roles against `payload.runBaseline` (the run's own
+roles when the card was created, set by main) when present, else the stored project's roles; `orgDiffBase` in
+`shared/view/orgDiff.ts` is the one place that decides (an empty array counts as present). Without it a role whose
+proposed prompt equals a pulled stored prompt showed as unchanged although approval changed the running run. The role
+diff now also reads effort, staffing and connection (missing reads "none", connection "project default"), shown as
+ordinary `field: from -> to` lines. A role the proposal leaves as the run has it is listed as unchanged. Checked by
+`orgDiff.test.ts`; `ProposalCard` reads `runBaseline` through a local intersection type until `OrgChartProposalPayload`
+declares it (drop the cast then). `e2e/proposals.mjs` ran without the field (Runtime Lead's change not yet merged).
+
 ## Run tabs: hide, re-enter, blank workspace (2026-11-18)
 
 - `dismissRun` announces through `setTabNotice` only when a tab was hidden (sequence guard, repeated text re-announced, no own timer). Checked by `store/runTabs.test.ts` with fake timers (two hides in a row, no early clear); screen-reader speech unverified. The notice is state-true (`hiddenLiveNotice`): starting/running says "It keeps working", idle/stopping "Its session stays open"; the tab Hide titles say "The session stays open." The New run page heading comes from `otherRunsHeading` (decision-based `needsYou`: "1 other run needs you", "2 other runs keep going, 1 needs you"; the needs-you run's link gets " (needs you)"); unit tested in `runTabs.test.ts`.
