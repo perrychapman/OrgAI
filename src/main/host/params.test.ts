@@ -245,6 +245,12 @@ const PAYLOADS: Record<string, unknown[]> = {
   'schedules:remove': ['sch_0123abcd'],
   'schedules:setEnabled': [{ id: 'sch_0123abcd', enabled: false }],
   'schedules:runNow': ['sch_0123abcd'],
+  // TODOS_IPC
+  'todos:list': [{ kind: 'chat' }],
+  'todos:save': [{ scope: { kind: 'project', projectId: 'p_abc123' }, title: 'Follow up with Acme' }],
+  'todos:remove': [{ scope: { kind: 'chat' }, id: 'todo_0123abcd0123abcd' }],
+  'todos:clearDone': [{ kind: 'chat' }],
+  'todos:linkRun': [{ scope: { kind: 'chat' }, id: 'todo_0123abcd0123abcd', runId: 'run_abc' }],
   // UPDATES_IPC (desktop only)
   'updates:get': [],
   'updates:check': [],

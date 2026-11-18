@@ -63,7 +63,9 @@ export function measureCtx(project: Project, team: 'single' | undefined, dir: st
     resolvedMcpServers: async () => [],
     plugins: () => [],
     searchMcpRegistry: async () => ({ entries: [] }),
-    requestMcpInstall: async () => ({ approved: true, scope: 'run' })
+    requestMcpInstall: async () => ({ approved: true, scope: 'run' }),
+    // RunManager binds the to-do list on every work and single run of a stored project (the root gets todo_list).
+    todos: { scope: 'project', list: () => [], add: () => ({ item: {}, changed: false }), setStatus: () => ({ item: {}, changed: false }), update: () => ({ item: {}, changed: false }) }
   } as unknown as RuntimeContext
 }
 

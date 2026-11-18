@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { AppSettings, FocusRunTarget, RunEvent } from '@shared/types'
-import { IPC, SCHEDULES_IPC, TEAM_FILES_IPC, UPDATES_IPC, runWindowHash } from '@shared/types'
+import { IPC, SCHEDULES_IPC, TEAM_FILES_IPC, TODOS_IPC, UPDATES_IPC, runWindowHash } from '@shared/types'
 import { createDesktopUpdates } from './updaterRuntime'
 import type { UpdateController } from './updater'
 import { Scheduler, testTickMs } from './schedules/scheduler'
@@ -482,6 +482,12 @@ app.whenReady().then(async () => {
           if (!win.isDestroyed()) win.webContents.send(SCHEDULES_IPC.schedulesChanged, event)
         }
         scheduler?.poke()
+      },
+      // To-dos: every window hears about a change (docs/design/todos.md).
+      todosChanged: (event) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(TODOS_IPC.todosChanged, event)
+        }
       }
     },
     mock: process.env.ORGAI_MOCK === '1',

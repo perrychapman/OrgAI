@@ -277,6 +277,10 @@ const NEVER_WRITES_SECRETS: Record<string, string> = {
   'schedules:remove': 'removes a schedule and its history from schedules.json, no secrets',
   'schedules:setEnabled': 'flips a schedule in schedules.json, no secrets',
   'schedules:runNow': 'starts a run through RunManager / QuickRunService like a user start, no secrets',
+  'todos:save': 'writes an item (title, detail, status) in todos.json, no secrets',
+  'todos:remove': 'removes an item from todos.json, no secrets',
+  'todos:clearDone': 'removes done items from todos.json, no secrets',
+  'todos:linkRun': 'records a run id on an item in todos.json, no secrets',
   // Runs: setup-like and virtual-project runs carry no project MCP servers (bare); run-scoped installs carry no OAuth.
   'runs:startQuick': 'quick runs are bare (no project servers to refresh)',
   'setup:start': 'setup runs are bare',

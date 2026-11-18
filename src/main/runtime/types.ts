@@ -61,7 +61,7 @@ import type {
 } from '@shared/types'
 import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
 import type { StaffingProfile } from '../store/staffingProfile'
-import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId, PermissionMode, Schedule, SchedulesProposalPayload } from '@shared/types'
+import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId, PermissionMode, Schedule, SchedulesProposalPayload, TodoItem, TodoScope } from '@shared/types'
 
 /**
  * RuntimeContext.schedules: what list_schedules / propose_schedule may read. Every Schedule is a copy. The checks run
@@ -78,6 +78,30 @@ export interface RuntimeScheduleAccess {
   now(): number
   /** The schedules an approved proposal saved, by the payload object the tool sent (identity); undefined before approval. */
   applied(payload: SchedulesProposalPayload): Schedule[] | undefined
+}
+
+/**
+ * RuntimeContext.todos (docs/design/todos.md): the run's own to-do list, scope bound by RunManager (Chat runs: the
+ * Chat list; work runs: their project's list). Every write is checked again by TodoService (text, caps, the per-run
+ * write limit, the user-item rule); RunManager fills the source from the run, writes one harness transcript row on the
+ * root per changed item and the service pushes todos:changed. Refusals throw one plain sentence (the tool answers
+ * "REFUSED: <sentence>"). An agent never removes items.
+ */
+export interface RuntimeTodoAccess {
+  /** Which list this run writes: for wording only. */
+  scope: 'chat' | 'project'
+  list(): TodoItem[]
+  add(text: { title: string; detail?: string }, caller: { agentId?: string }): { item: TodoItem; changed: boolean }
+  setStatus(id: string, status: 'open' | 'done', caller: { agentId?: string }): { item: TodoItem; changed: boolean }
+  update(id: string, text: { title?: string; detail?: string | null }, caller: { agentId?: string }): { item: TodoItem; changed: boolean }
+}
+
+/** RunManagerOptions.todos (bootstrap.ts wires TodoService, desktop host only). */
+export interface RunManagerTodoHooks {
+  list(scope: TodoScope): TodoItem[]
+  add(scope: TodoScope, text: { title: unknown; detail?: unknown }, caller: { runId: string; agentId?: string; roleName?: string }): { item: TodoItem; changed: boolean }
+  setStatus(scope: TodoScope, id: unknown, status: 'open' | 'done', caller: { runId: string; agentId?: string; roleName?: string }): { item: TodoItem; changed: boolean }
+  update(scope: TodoScope, id: unknown, text: { title?: unknown; detail?: unknown }, caller: { runId: string; agentId?: string; roleName?: string }): { item: TodoItem; changed: boolean }
 }
 
 /**
@@ -708,6 +732,12 @@ export interface RuntimeContext {
    * build-session and virtual-project runs. A run with RunSummary.scheduleId keeps it so the tools can refuse in words.
    */
   schedules?: RuntimeScheduleAccess
+  /**
+   * To-dos (docs/design/todos.md): the todo_list tool. Set by RunManager on Chat runs and on work runs (team or single)
+   * of a stored project; never setup-like, build-session (trust-restricted) or virtual-project runs. The list is the
+   * run's own (Chat or its project), bound by RunManager; the tool takes no scope. See RuntimeTodoAccess.
+   */
+  todos?: RuntimeTodoAccess
 
   /**
    * Skill assistant runs ('skill-assist'): the skill library and, in a project session, the project's skills with

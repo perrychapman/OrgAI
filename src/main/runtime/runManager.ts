@@ -117,6 +117,8 @@ import { MCP_ASSIST_MODEL_LABEL, QUICK_RUN_MODEL_LABEL, SETUP_MODEL_LABEL, SKILL
 import { runModelLogs } from './runModels'
 import { ROOT_AGENT_ID, isSetupLikeRun, type RootTurnEnd, type CompletionInput, type KnowledgeCaller, type KnowledgeStoreApi, type ResolvedMcpServer, type RunMessageOutcome, type RunConnection, type RunSkill, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement, type SkillAssistCatalog } from './types'
 import type { DelegationGate, RunManagerScheduleHooks, SelfKnowledgeHooks } from './types'
+import type { RunManagerTodoHooks, RuntimeTodoAccess } from './types'
+import type { TodoItem, TodoScope } from '@shared/types'
 import type { EvolvePostRunResult, EvolveStrategy } from '@shared/types'
 import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
 import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
@@ -876,6 +878,8 @@ export interface RunManagerOptions {
   selfKnowledge?: SelfKnowledgeHooks
   /** Schedules (schedules/service.ts): RuntimeContext.schedules and the apply of an approved 'schedules' proposal. Missing = neither. */
   schedules?: RunManagerScheduleHooks
+  /** To-dos (todos/service.ts, desktop host only): RuntimeContext.todos. Missing = no todo_list tool. */
+  todos?: RunManagerTodoHooks
 }
 
 /** RunManager.completeForProject input: a one-shot completion on the project's own connection. */
@@ -2634,6 +2638,8 @@ export class RunManager {
         // Schedules: Chat runs and work runs (team or single) of a stored project; never setup-like, build or other
         // virtual-project runs. A scheduled run keeps the access so the tools refuse it in words (summary.scheduleId).
         ...(this.options.schedules && kind === 'work' && (isQuick || !bare) ? { schedules: this.options.schedules.access() } : {}),
+        // To-dos: the run's own list (Chat or its stored project); never setup-like, build-session or virtual-project runs.
+        ...this.bindTodos(active, kind, isQuick, bare, project.id),
         ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(project.id),
@@ -3348,6 +3354,38 @@ export class RunManager {
    * A quiet harness row (like a skill load) on the agent that wrote to the notes or the graph. An agent id the run
    * record does not know (an adapter quirk) would attach the row to no visible agent, so it falls back to the root.
    */
+  /**
+   * RuntimeContext.todos (docs/design/todos.md): the run's own list, bound here so the agent never names a scope. Chat
+   * runs write the Chat list, work runs (team or single) of a stored project that project's list; setup-like, build-session
+   * (trust-restricted) and virtual-project runs get none. The caller is filled from the run (never agent-supplied); each
+   * changed item writes one harness transcript row on the root. TodoService rechecks everything and counts writes per run.
+   */
+  private bindTodos(a: ActiveRun, kind: RunSummary['kind'], isQuick: boolean, bare: boolean, projectId: string): { todos?: RuntimeTodoAccess } {
+    const hooks = this.options.todos
+    if (!hooks || kind !== 'work') return {}
+    if (!isQuick && (bare || isTrustRestrictedRun(a.summary))) return {}
+    const scope: TodoScope = isQuick ? { kind: 'chat' } : { kind: 'project', projectId }
+    const caller = (c: { agentId?: string }): { runId: string; agentId?: string; roleName?: string } => {
+      const agentId = c.agentId && (c.agentId === ROOT_AGENT_ID || a.record.agents[c.agentId]) ? c.agentId : ROOT_AGENT_ID
+      // The tool is root-only; a non-root caller (should one ever reach it) is named by its role slug.
+      const roleName = (agentId === ROOT_AGENT_ID ? a.rootRole : a.record.agents[agentId]?.roleSlug) || undefined
+      return { runId: a.summary.id, agentId, ...(roleName ? { roleName } : {}) }
+    }
+    const row = (verb: string, r: { item: TodoItem; changed: boolean }): { item: TodoItem; changed: boolean } => {
+      if (r.changed) this.knowledgeRow(a, ROOT_AGENT_ID, `${verb} to-do ${r.item.title}`)
+      return r
+    }
+    return {
+      todos: {
+        scope: scope.kind,
+        list: () => hooks.list(scope),
+        add: (text, c) => row('Added', hooks.add(scope, text, caller(c))),
+        setStatus: (id, status, c) => row(status === 'done' ? 'Completed' : 'Reopened', hooks.setStatus(scope, id, status, caller(c))),
+        update: (id, text, c) => row('Updated', hooks.update(scope, id, text, caller(c)))
+      }
+    }
+  }
+
   private knowledgeRow(a: ActiveRun, agentId: string, text: string): void {
     const shown = agentId === ROOT_AGENT_ID || a.record.agents[agentId] ? agentId : ROOT_AGENT_ID
     a.emit({ type: 'transcript', runId: a.summary.id, entry: { id: newId('t'), agentId: shown, at: Date.now(), source: 'harness', block: { kind: 'system', text } } })

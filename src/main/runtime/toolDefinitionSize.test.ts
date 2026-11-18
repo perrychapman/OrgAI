@@ -52,10 +52,19 @@ import { claudeToolSizes, codexToolSizes, measureCase, sumChars, type MeasureSlu
  *   writing report     unchanged
  * Bounds rose to the next 50 above the new figure.
  */
+/*
+ * To-dos (docs/design/todos.md): todo_list (about 555 chars: one action enum and three optional strings) on the root of
+ * work and single runs (and Chat), only where RunManager bound the run's list. It earns its place because the user's
+ * casual "put that on my to-do list" must work in any project conversation without a card. +531 / +537 chars:
+ *   team root          Claude 20,066 -> 20,597   Codex 22,367 -> 22,904
+ *   single assistant   Claude 11,846 -> 12,399   Codex 12,415 -> 12,974
+ *   writing report     unchanged (root only)
+ * Bounds rose to the next 50 above the new figure.
+ */
 const BUDGET: Record<string, { claude: number; codex: number }> = {
-  orchestrator: { claude: 20_100, codex: 22_400 },
+  orchestrator: { claude: 20_650, codex: 22_950 },
   implementer: { claude: 500, codex: 1_000 },
-  single: { claude: 11_850, codex: 12_450 }
+  single: { claude: 12_450, codex: 13_000 }
 }
 
 const CASES: { label: string; slug: MeasureSlug; opts: { isolation: boolean; arch: boolean } }[] = [
@@ -92,5 +101,13 @@ describe('harness tool definition budget (default chart)', () => {
     const single = names('single', { isolation: false, arch: true })
     expect(single).toContain('produce_output')
     expect(single).toContain('engagement_context')
+  })
+
+  it('todo_list stays small and reaches only the root', () => {
+    const one = (slug: MeasureSlug, opts = { isolation: true, arch: true }) => codexToolSizes(measureCase(slug, opts)).find((t) => t.name === 'todo_list')
+    expect(one('orchestrator')?.chars).toBeLessThanOrEqual(600)
+    expect(one('single', { isolation: false, arch: true })?.chars).toBeLessThanOrEqual(600)
+    expect(claudeToolSizes(measureCase('orchestrator', { isolation: true, arch: true })).find((t) => t.name === 'mcp__orgai__todo_list')?.chars).toBeLessThanOrEqual(600)
+    expect(one('implementer')).toBeUndefined()
   })
 })
