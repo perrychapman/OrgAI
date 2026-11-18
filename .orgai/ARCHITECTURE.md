@@ -558,6 +558,11 @@ components/layout:
 
 - `src/renderer/src/components/ui/`
 - `src/renderer/src/components/layout/`
+- Context menus (right click, Menu key, Shift+F10) use the single primitive `components/ui/ContextMenu.tsx`
+  (`useContextMenu`, `ContextMenu`, `MenuButton`; pure rules in `lib/contextMenu.ts`). Every menu also opens from the
+  keyboard and every action exists elsewhere or behind a visible More button; the platform text menu
+  (`src/main/textContextMenu.ts`, wired in `createWindow`) wins in fields, on links and over a selection. Spec
+  `docs/design/context-menus.md`, e2e `e2e/context-menus.mjs`. The Usage ranked bars keep their own menu.
 
 ### Renderer UI
 
