@@ -4950,7 +4950,8 @@ export class ClaudeSession implements RuntimeSession {
             this.seenBlocks.add(blockKey)
             this.toolUseIssuer.set(block.id, agentId)
             // A root foreground shell call holds back queued input until it returns (backgroundRootShells).
-            if (agentId === ROOT_ID && SHELL_TOOLS.has(block.name) && (block.input as { run_in_background?: unknown } | undefined)?.run_in_background !== true) {
+            // Only the root's own calls: a subagent's message names its Agent call even before its task is known.
+            if (agentId === ROOT_ID && !msg.parent_tool_use_id && !(msg as { agent_id?: string }).agent_id && SHELL_TOOLS.has(block.name) && (block.input as { run_in_background?: unknown } | undefined)?.run_in_background !== true) {
               this.rootShellCalls.set(block.id, undefined)
             }
             this.transcript(agentId, { kind: 'tool_use', id: block.id, name: block.name, input: block.input })
@@ -5024,6 +5025,8 @@ export class ClaudeSession implements RuntimeSession {
           break
         }
         const root = this.ensureAgent(ROOT_ID)
+        // The turn is over, so none of its shell calls is still in the foreground.
+        this.rootShellCalls.clear()
         const interrupted = this.interruptPending
         this.interruptPending = false
         // The interrupted turn (or a later one) is over: spawns it cut before task_started stop counting (review L4).
