@@ -11,7 +11,9 @@ describe('org chart roster notes', () => {
   const roster = (over: object = {}): { behavior: 'approve'; roster: never } => ({ behavior: 'approve', roster: { added: ['a'], changed: [], removed: [], deferred: [], ...over } as never })
   it('says when the run can use the new roles, per effect', () => {
     expect(orgChartEffectCopy('now')).toContain('can use the new roles now')
-    expect(orgChartEffectCopy('after-turn')).toContain("once the orchestrator's current turn ends")
+    expect(orgChartEffectCopy('after-turn')).toContain('once no agent is working and the session restarts')
+    expect(orgChartEffectCopy('after-turn')).toContain('Removed roles stop being available immediately')
+    expect(orgChartEffectCopy('now')).toContain('Removed roles stop being available immediately')
     expect(orgChartEffectCopy('next-run')).toBeNull()
     expect(orgChartEffectCopy(undefined)).toBeNull()
   })
@@ -23,9 +25,9 @@ describe('org chart roster notes', () => {
   })
   it('words the note by timing and counts deferred roles', () => {
     const now = rosterNextFor(org('now'), roster(), 'p1')
-    expect(now && proposalNextLead(now)).toBe('Org chart saved. This run can use the new roles now.')
+    expect(now && proposalNextLead(now)).toBe('Org chart saved. This run can use the new roles now. Removed roles stop being available immediately.')
     const later = rosterNextFor(org('after-turn'), roster({ deferred: [{ id: 'x', name: 'X', reason: 'r' }] }), 'p1')
-    expect(later && proposalNextLead(later)).toBe('Org chart saved. This run can use the new roles once the current turn ends. 1 role waits for the next run:')
+    expect(later && proposalNextLead(later)).toBe('Org chart saved. New and changed roles can be used once no agent is working and the session restarts. Removed roles stop being available immediately. 1 role waits for the next run:')
     const only = rosterNextFor(org('now'), roster({ added: [], deferred: [{ id: 'x', name: 'X', reason: 'r' }, { id: 'y', name: 'Y', reason: 's' }] }), 'p1')
     expect(only && proposalNextLead(only)).toBe('Org chart saved. 2 roles wait for the next run:')
   })

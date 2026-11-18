@@ -590,29 +590,28 @@ try {
   await page.keyboard.press('Control+t').catch(() => {})
   await ta.waitFor({ timeout: 10_000 })
   await ta.fill('Staff up [mock:org-change]')
-  await page.locator('.composer .btn.primary').click()
+  // Scenario 4's org change session left setup unfinished, so the page offers "Start without setup" (not the primary Send).
+  await page.locator('.composer .composer-row .btn').click()
   const rosterCard = page.locator('.decision-card.kind-proposal')
   await rosterCard.waitFor({ timeout: 30_000 })
   check(/Add a Roster Tester/.test(((await rosterCard.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')), 'the org chart card is titled "Add a Roster Tester"')
   const detailsBtn = page.locator('[data-testid=decision-details], .decision-details').first()
   if ((await detailsBtn.isVisible().catch(() => false)) && (await rosterCard.getAttribute('data-expanded')) !== 'true') await detailsBtn.click()
   const rosterEffect = ((await page.locator('[data-testid=proposal-effect]').first().innerText().catch(() => '')) || '').trim()
-  check(/This run can use the new roles now/.test(rosterEffect), 'the org chart card says it applies to this run now', rosterEffect)
+  check(/This run can use the new roles now/.test(rosterEffect) && /Removed roles stop being available immediately/.test(rosterEffect), 'the org chart card says this run can use the new roles now', rosterEffect)
   await shot('org-change-live-card')
   await page.locator('[data-testid=proposal-approve]').click()
-  const testerNode = page.locator('.react-flow__node', { hasText: 'Roster Tester' }).first()
+  const testerNode = page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first()
   await testerNode.waitFor({ timeout: 30_000 })
   check(true, 'an agent named Roster Tester appears in the live view after approval')
-  await page.waitForFunction(
-    () => [...document.querySelectorAll('.react-flow__node')].some((n) => /Roster Tester/.test(n.textContent ?? '') && /Finished|Done|done/.test(n.textContent ?? '')),
-    null,
-    { timeout: 30_000 }
-  ).catch(() => {})
+  await page.locator('.react-flow__node .agent-node.state-done', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 30_000 })
+  check(true, 'the Roster Tester agent finishes')
   const nodeText = ((await testerNode.innerText().catch(() => '')) || '').replace(/\s+/g, ' ')
   check(/Roster Tester/.test(nodeText) && !/unknown/i.test(nodeText), 'the Roster Tester node shows its role name', nodeText)
   const lead = ((await page.locator('[data-testid=proposal-next-lead]').innerText().catch(() => '')) || '').trim()
   check(/can use the new roles now/.test(lead), 'the run metadata says the run can use the new roles now', lead)
   await shot('org-change-live-agent')
+  const rosterRunId = await page.locator('.run-tablist .run-tab-wrap.selected').first().getAttribute('data-run')
   await endSession(page)
 
   // The Team tab shows the role saved.
@@ -625,12 +624,11 @@ try {
   await page.reload()
   await page.locator('.sidebar').waitFor({ timeout: 20_000 })
   await sleep(1000)
-  const runRow = page.locator('.sidebar [data-testid=nav-run]').first()
-  if (await runRow.count()) await runRow.click()
-  else {
-    await projectTab(page, 'Live').click().catch(() => {})
-  }
-  await page.locator('.react-flow__node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 20_000 })
+  // The app reopens on the dashboard; the ended run is a "Recently ended" row.
+  const runRow = page.locator(`[data-testid=dash-since-row][data-row-key="${rosterRunId}"] .dash-row-main`)
+  await runRow.waitFor({ timeout: 15_000 })
+  await runRow.click()
+  await page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 20_000 })
   check(true, 'after a reload the finished run still shows Roster Tester by name')
   await shot('org-change-reloaded')
 } finally {
