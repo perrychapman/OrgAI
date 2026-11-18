@@ -9948,7 +9948,7 @@ export const TODO_TOOL_LIST_MAX = 50
  */
 export const TODO_TOOL = 'todo_list'
 
-/** Channels of this section. Not spread into IPC; not registered in the host dispatcher yet. */
+/** Channels of this section. Not spread into IPC; registered in the host dispatcher. */
 export const TODOS_IPC = {
   /** (TodoScope) -> TodoItem[], open first then done, newest first. Scope read. */
   todosList: 'todos:list',

@@ -133,6 +133,16 @@ describe('describeTool', () => {
     expect(describeTool('request_mcp_install', null, { harness: true })).toBe('Asking you to add an MCP server…')
   })
 
+  it('names a to-do change without ever showing its id', () => {
+    const h = { harness: true }
+    expect(describeTool('todo_list', { action: 'add', title: ' Call\nSam ' }, h)).toBe('Adding "Call Sam" to your to-dos…')
+    expect(describeTool('todo_list', { action: 'complete', id: 'todo_ab03a53e77b3786b' }, h)).toBe('Completing a to-do…')
+    expect(describeTool('todo_list', { action: 'reopen', id: 'todo_ab03a53e77b3786b' }, h)).toBe('Reopening a to-do…')
+    expect(describeTool('todo_list', { action: 'update', id: 'todo_x', title: 'New' }, h)).toBe('Updating "New"…')
+    expect(describeTool('todo_list', { action: 'list' }, h)).toBe('Reading your to-dos…')
+    expect(describeTool('todo_list', null, h)).toBe('Using your to-dos…')
+  })
+
   it('does not treat a bare non-harness call as a harness tool', () => {
     expect(describeTool(PROPOSAL_TOOLS.architecture, {})).toBe('Using propose_architecture')
   })

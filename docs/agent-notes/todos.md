@@ -76,9 +76,19 @@ checked. "Unverified" means no test or run confirmed it.
   - Setup-like runs, virtual-project runs and trust-restricted build sessions get no list. A build workspace is only
     allowed on MCP-assistant runs, which are setup-like.
   - The caller (run id, agent id, role name) is filled from the run.
-  - Each changed item writes one harness transcript row on the root: "Added / Completed / Reopened / Updated to-do
-    <title>".
+  - Scheduled runs (`summary.scheduleId`) get no list. Checked by "gives a scheduled run no list".
+  - Each changed item writes one harness transcript row on the root: `Added "<title>" to your to-dos`, `Completed
+    "<title>"`, `Reopened "<title>"`, `Updated "<title>"`. No id. The tool result the model reads keeps the id only for
+    an add; the user can still see that tool result row in the transcript (renderer), so a user sees for one add: the
+    tool row, this harness row, the tool result and the assistant's sentence unless the renderer folds them.
+  - `todoLine` replaces `|` with `¦` in each field so item text cannot fake columns. Checked by "cannot fake columns".
+  - `activity.ts` gives `todo_list` activity lines that never show an id ("Adding "<title>" to your to-dos…"). Checked by
+    `activity.test.ts`.
+  - The catalog entry (`harnessToolCatalog`) adds "Desktop app, stored projects and Chat only." to the description for
+    the reference service only; the model-facing definition is unchanged.
   - Checked by `harnessToolsTodos.test.ts`, using a real `TodoService`.
+- `todoStartPrompt` (`src/shared/todos.ts`): agent-written or agent-edited detail is fenced as notes (see the design
+  doc). Checked by `src/shared/todos.test.ts` including a detail that tries to close the fence.
 - Spend: the tool definition adds about 531 to 559 characters to every root request on work, single and Chat runs.
   Budgets are raised and the tool is capped at 600 characters in `toolDefinitionSize.test.ts`.
 - Prompt: `todosText()` (`prompts.ts`) is shown on the root when `flags.todos` is set, never on reports, setup-like

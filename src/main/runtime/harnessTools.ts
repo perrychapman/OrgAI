@@ -3035,7 +3035,9 @@ export function harnessToolCatalog(): HarnessToolCatalogEntry[] {
   const out = new Map<string, HarnessToolCatalogEntry>()
   for (const [kind, defs] of kinds) {
     for (const def of defs) {
-      const entry = out.get(def.name) ?? { name: def.name, description: def.description, audience: def.audience ?? 'root', runKinds: [], blocking: isBlockingHarnessTool(def.name) }
+      // The reference-only note (not in the model-facing definition): todo_list exists only where a list is bound.
+      const description = def.name === TODO_TOOL ? `${def.description} Desktop app, stored projects and Chat only.` : def.description
+      const entry = out.get(def.name) ?? { name: def.name, description, audience: def.audience ?? 'root', runKinds: [], blocking: isBlockingHarnessTool(def.name) }
       if (!entry.runKinds.includes(kind)) entry.runKinds.push(kind)
       out.set(def.name, entry)
     }
@@ -3548,8 +3550,10 @@ const TODO_UNAVAILABLE = 'To-dos are not available in this run.'
 /** One item as a data line: id | status | title | detail (all data, one line each, no angle brackets). */
 function todoLine(i: TodoItem): string {
   // A long detail is cut with a marker so the model never rewrites it from the shortened text (review L2).
-  const detail = i.detail ? ` | ${datum(i.detail, 400)}${i.detail.length > 400 ? ' […cut; never update the detail from this list]' : ''}` : ''
-  return `${datum(i.id, 80)} | ${i.status} | ${datum(i.title, TODO_TITLE_MAX_CHARS)}${detail} | by ${i.createdBy}`
+  // A "|" inside item text would fake a column, so each field has it replaced by a look-alike.
+  const f = (s: string): string => s.replace(/\|/g, '¦')
+  const detail = i.detail ? ` | ${f(datum(i.detail, 400))}${i.detail.length > 400 ? ' […cut; never update the detail from this list]' : ''}` : ''
+  return `${f(datum(i.id, 80))} | ${i.status} | ${f(datum(i.title, TODO_TITLE_MAX_CHARS))}${detail} | by ${i.createdBy}`
 }
 
 /**
@@ -3592,12 +3596,12 @@ export const todoListTool = defineTool({
       if (action === 'update') {
         if (title === undefined && detail === undefined) return 'REFUSED: an update needs a title or a detail.'
         const r = todos.update(want, { ...(title !== undefined ? { title } : {}), ...(detail !== undefined ? { detail } : {}) }, who)
-        return r.changed ? `Updated to-do ${datum(r.item.id, 80)}: ${datum(r.item.title, TODO_TITLE_MAX_CHARS)}.` : 'Nothing changed.'
+        return r.changed ? `Updated to-do: ${datum(r.item.title, TODO_TITLE_MAX_CHARS)}.` : 'Nothing changed.'
       }
       const status = action === 'complete' ? 'done' : 'open'
       const r = todos.setStatus(want, status, who)
       if (!r.changed) return `The to-do was already ${status === 'done' ? 'done' : 'open'}.`
-      return `${status === 'done' ? 'Completed' : 'Reopened'} to-do ${datum(r.item.id, 80)}: ${datum(r.item.title, TODO_TITLE_MAX_CHARS)}.`
+      return `${status === 'done' ? 'Completed' : 'Reopened'} to-do: ${datum(r.item.title, TODO_TITLE_MAX_CHARS)}.`
     } catch (e) {
       return refused(e)
     }
