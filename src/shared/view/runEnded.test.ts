@@ -43,6 +43,10 @@ describe('cutWhile', () => {
     expect(cutWhile({ r: agent('r', null, 'idle', 'Idle') })).toBe('idle')
     expect(cutWhile({ r: agent('r', null, 'waiting', 'Needs approval: Bash') })).toBe('waiting')
   })
+  it('"Needs approval" is a permission decision and counts on an idle agent; "Waiting for you" does not', () => {
+    expect(cutWhile({ r: agent('r', null, 'idle', 'Needs approval: Bash') })).toBe('waiting')
+    expect(cutWhile({ r: agent('r', null, 'idle', 'Waiting for you') })).toBe('idle')
+  })
   it('an idle root with a non-idle agent waiting for the user is waiting', () => {
     expect(cutWhile({ r: agent('r', null, 'idle', 'Idle'), w: agent('w', 'r', 'waiting', 'Waiting for you') })).toBe('waiting')
   })

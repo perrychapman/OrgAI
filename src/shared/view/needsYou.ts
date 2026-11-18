@@ -73,18 +73,24 @@ export function defaultDecisionIndex(keys: readonly string[], isRecord: (key: st
 /**
  * Which run a project opens on: the run that needs you first, else the last viewed one, else the newest open run,
  * else the newest run of all (live or in history). Undefined only for a project with no runs.
+ * `opts.hidden` lists tabs the user hid: the fallbacks skip them, so a hidden tab comes back only when the user opens
+ * it or it needs them. `opts.startPage` means the user left the project on its New run page: only a run that needs
+ * them is opened over it.
  */
 export function defaultRunToOpen(
   live: readonly WaitRun[],
   history: readonly { id: string; startedAt: number }[],
-  lastViewedId?: string
+  lastViewedId?: string,
+  opts: { hidden?: Readonly<Record<string, true>>; startPage?: boolean } = {}
 ): string | undefined {
   const byStart = [...live].sort((a, b) => a.summary.startedAt - b.summary.startedAt)
   const waiting = byStart.find((r) => needsYou(r))
   if (waiting) return waiting.summary.id
-  if (lastViewedId && (live.some((r) => r.summary.id === lastViewedId) || history.some((h) => h.id === lastViewedId))) return lastViewedId
-  const open = [...byStart].reverse().find((r) => isOpenStatus(r.summary.status))
+  if (opts.startPage) return undefined
+  const shown = (id: string): boolean => !opts.hidden?.[id]
+  if (lastViewedId && shown(lastViewedId) && (live.some((r) => r.summary.id === lastViewedId) || history.some((h) => h.id === lastViewedId))) return lastViewedId
+  const open = [...byStart].reverse().find((r) => isOpenStatus(r.summary.status) && shown(r.summary.id))
   if (open) return open.summary.id
-  const all = [...live.map((r) => ({ id: r.summary.id, startedAt: r.summary.startedAt })), ...history].sort((a, b) => b.startedAt - a.startedAt)
+  const all = [...live.map((r) => ({ id: r.summary.id, startedAt: r.summary.startedAt })), ...history].filter((r) => shown(r.id)).sort((a, b) => b.startedAt - a.startedAt)
   return all[0]?.id
 }

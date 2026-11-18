@@ -486,3 +486,10 @@ effects keep the generic line); an approved outcome with `roster` leaves a RunMe
 through the frame announcer. Checked by `runRoster.test.ts`, `proposalNext.test.ts`, `store/runRoster.test.ts`,
 typecheck and build. `e2e/proposals.mjs` scenario 5 (`Staff up [mock:org-change]`) covers the flow and needs the mock
 marker. Unverified: screen-reader speech, the deferred list at 1024x640 (the meta line wraps it; not looked at).
+
+## Run tabs: hide, re-enter, blank workspace (2026-11-18)
+
+- `dismissRun` announces through `setTabNotice` only when a tab was hidden (sequence guard, repeated text re-announced, no own timer). Checked by `store/runTabs.test.ts` with fake timers (two hides in a row, no early clear); screen-reader speech unverified.
+- Re-entering a project (`openProject`) stays on the New run page when the user left it there, and `defaultRunToOpen(..., { hidden, startPage })` skips hidden chains in its fallbacks; only a run with an open decision opens over either. `settleWorkspace` passes `hidden`. Checked by `runTabs.test.ts`; `e2e/runs.mjs` and `assistants.mjs` still pass.
+- `showStartIfNothing` shows the New run page when `openRun` of a history-only run fails to load (project, assistant and `settleWorkspace` paths). Checked by `runTabs.test.ts` (a history row whose record is missing); the failing-load path was not driven in the app.
+- `cutWhile`: an agent showing "Needs approval" counts as waiting whatever its state; "Waiting for you" only on a non-idle agent (`runEnded.test.ts`).
