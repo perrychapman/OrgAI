@@ -54,9 +54,9 @@ export function blocksToMarkdown(blocks: DocumentBlock[]): string {
   return out.join('\n\n')
 }
 
-const tab = (v: unknown): string => (v === null || v === undefined ? '' : String(v).replace(/[\t\r\n]+/g, ' '))
+export const tab = (v: unknown): string => (v === null || v === undefined ? '' : String(v).replace(/[\t\r\n]+/g, ' '))
 
-function slideText(s: SlidePreview): string {
+export function slideText(s: SlidePreview): string {
   const parts: string[] = [`## Slide ${s.n}: ${s.title ?? ''}`.trimEnd()]
   for (const sh of s.shapes) {
     if (sh.type === 'text') {

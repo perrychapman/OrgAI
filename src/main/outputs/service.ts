@@ -67,6 +67,7 @@ import {
   writeNotes,
   writeRevisions
 } from './notes'
+import { PREVIEW_BUSY, queuedHeavy } from './heavyQueue'
 import { type OutputVersionMeta, type StoredOutput, applyVersionFields, createOutputStore, newOutputId } from './store'
 import {
   VersionStorageFullError,
@@ -101,24 +102,6 @@ let formatsLoad: Promise<typeof import('./formats')> | undefined
 const writersModule = (): Promise<typeof import('./writers')> => (writersLoad ??= import('./writers'))
 const previewModule = (): Promise<typeof import('./preview')> => (previewLoad ??= import('./preview'))
 const formatsModule = (): Promise<typeof import('./formats')> => (formatsLoad ??= import('./formats'))
-
-const PREVIEW_QUEUE_MAX = 8
-const PREVIEW_BUSY = 'Too many previews are loading. Try again in a moment.'
-let previewTail: Promise<unknown> = Promise.resolve()
-let previewsPending = 0
-
-function queuedHeavy<T>(run: () => Promise<T>, busy: T): Promise<T> {
-  if (previewsPending >= PREVIEW_QUEUE_MAX) return Promise.resolve(busy)
-  previewsPending++
-  const p = previewTail.then(run)
-  previewTail = p.then(
-    () => undefined,
-    () => undefined
-  )
-  return p.finally(() => {
-    previewsPending--
-  })
-}
 
 /** Wraps a union-result job so a full version store answers { refused } instead of throwing. */
 function refuseWhenFull<R>(fn: () => Promise<R>): () => Promise<R> {
