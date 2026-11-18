@@ -270,7 +270,8 @@ try {
   await page.keyboard.press('Enter')
   await T('todo-edit-title').waitFor({ timeout: 5000 })
   check((await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'todo-edit-title', 'G Edit moves focus into the title field')
-  await page.keyboard.press('Control+a')
+  // Select all is Cmd+A on macOS; Ctrl+A there is "move to line start" (emacs binding), which would prepend the text.
+  await page.keyboard.press('ControlOrMeta+a')
   await page.keyboard.type('Keyboard item renamed')
   await page.keyboard.press('Enter')
   check(!!(await until(async () => (await store(PS2)).some((i) => i.title === 'Keyboard item renamed'), 8000)), 'G Enter in the edit title saves')
