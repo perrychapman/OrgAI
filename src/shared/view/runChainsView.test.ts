@@ -84,6 +84,13 @@ describe('endedComposerCopy', () => {
     expect(endedComposerCopy(cut, { continuable: true, now }).notice).toMatch(/working/)
     expect(endedComposerCopy(cut, { continuable: true, now }).placeholder).toBe('Pick up where it was cut off')
   })
+  it('words the notice for idle, waiting and working', () => {
+    const cut = { ...base, endedBy: 'app' as const }
+    expect(endedComposerCopy({ ...cut, endedWhile: 'idle' }, { continuable: true, now }).notice).toBe('OrgAI closed while this run was idle. Send to pick up where it stopped.')
+    expect(endedComposerCopy({ ...cut, endedWhile: 'waiting' }, { continuable: true, now }).notice).toBe('OrgAI closed while this run was waiting for you. Send to pick up where it stopped.')
+    expect(endedComposerCopy({ ...cut, endedWhile: 'working' }, { continuable: true, now }).notice).toBe('OrgAI closed while this run was working. Send to pick up where it stopped.')
+    expect(endedComposerCopy(cut, { continuable: true, cutWhile: 'idle', now }).notice).toMatch(/was idle\./)
+  })
   it('lets endedWhile from main beat the loaded cutWhile', () => {
     const cut = { ...base, endedBy: 'app' as const, endedWhile: 'waiting' as const }
     expect(endedComposerCopy(cut, { continuable: true, cutWhile: 'working', now }).notice).toMatch(/waiting for you/)

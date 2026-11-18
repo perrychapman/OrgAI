@@ -134,6 +134,8 @@ describe('endedKind', () => {
     expect(endedKind(r({ endedBy: 'app', endedWhile: 'working' }))).toBe('closed')
     expect(endedKind(r({ endedBy: 'app', endedWhile: 'waiting' }))).toBe('closed-waiting')
     expect(endedKind(r({ endedWithApp: true }))).toBe('closed')
+    // Idle at close (turn ended, no open decision) is not "waiting on you".
+    expect(endedKind(r({ endedBy: 'app', endedWhile: 'idle' }))).toBe('closed')
     expect(endedKind(r({ status: 'paused' }))).toBe('paused')
   })
   it('is null for live runs', () => {
@@ -159,6 +161,13 @@ describe('sinceLastSeen', () => {
     expect(out.items.map((i) => i.run.id)).toEqual(['a', 'b'])
     expect(out.items[1].kind).toBe('failed')
     expect(out.more).toBe(0)
+  })
+  it('an idle-at-close run is closed and is not counted among the runs waiting on you when OrgAI closed', () => {
+    const idle = run('idle', 1, { endedAt: T0 + 100, endedBy: 'app', endedWhile: 'idle' })
+    const waiting = run('waiting', 2, { endedAt: T0 + 100, endedBy: 'app', endedWhile: 'waiting' })
+    const items = sinceLastSeen([idle, waiting], 0, NOW).items
+    expect(items.find((i) => i.run.id === 'idle')!.kind).toBe('closed')
+    expect(items.filter((i) => i.kind === 'closed-waiting').map((i) => i.run.id)).toEqual(['waiting'])
   })
   it('excludes a run that ended exactly at lastSeen', () => {
     expect(sinceLastSeen([run('a', 1, { endedAt: T0 })], T0, NOW).items).toHaveLength(0)

@@ -39,9 +39,12 @@ describe('cutWhile', () => {
   it('is working when any agent was busy', () => {
     expect(cutWhile({ r: agent('r', null, 'idle', 'Idle'), w: agent('w', 'r', 'tool', 'Reading') })).toBe('working')
   })
-  it('is waiting when the root sat idle or an agent asked the user', () => {
-    expect(cutWhile({ r: agent('r', null, 'idle', 'Idle') })).toBe('waiting')
+  it('is idle when the root sat idle, waiting when an agent asked the user', () => {
+    expect(cutWhile({ r: agent('r', null, 'idle', 'Idle') })).toBe('idle')
     expect(cutWhile({ r: agent('r', null, 'waiting', 'Needs approval: Bash') })).toBe('waiting')
+  })
+  it('an idle root with a non-idle agent waiting for the user is waiting', () => {
+    expect(cutWhile({ r: agent('r', null, 'idle', 'Idle'), w: agent('w', 'r', 'waiting', 'Waiting for you') })).toBe('waiting')
   })
   it('defaults to working with no agents', () => {
     expect(cutWhile(undefined)).toBe('working')

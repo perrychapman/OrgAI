@@ -6,7 +6,7 @@ import type { AgentInstance, ImageAttachment, McpServerSpec, ModelPriceOverride,
 import { setModelTokens, type UsageOverviewNames } from './runUsage'
 import type { RunSkill, RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import { ROOT_AGENT_ID } from './types'
-import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, refreshRoleGrants, sessionChain, type RunManagerOptions } from './runManager'
+import { RESUME_TEXT, RUN_MESSAGE_INBOUND_LIMIT, RUN_MESSAGE_LIMIT, RUN_MESSAGE_QUEUE_LIMIT, RUN_MESSAGE_RECEIVE_TIMEOUT_MS, RUN_SKILL_LOAD_LIMIT, RunManager, quitEndedWhile, refreshRoleGrants, sessionChain, type RunManagerOptions } from './runManager'
 import { MockAdapter, type MockScript, type MockSession } from './mock'
 import { harnessToolsFor } from './harnessTools'
 import { RunStore } from '../store/runs'
@@ -2175,7 +2175,7 @@ describe('who ended a run (RunSummary.endedBy)', () => {
     const disk = new RunStore(join(dir, 'data'))
     for (const id of [a.id, b.id]) {
       expect(store.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true })
-      expect(disk.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' })
+      expect(disk.get(id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'idle' })
       expect(disk.get(id)!.autoResume).toBeUndefined()
     }
     // The root still settles as a cut run (not "Waiting for you").
@@ -2204,6 +2204,28 @@ describe('who ended a run (RunSummary.endedBy)', () => {
       endedWithApp: true,
       endedWhile: 'working'
     })
+  })
+
+  it('stopAll on quit counts an idle run with a blocked plan and no card as waiting', async () => {
+    const p = makeProject({ path: join(dir, 'repo') })
+    const { m, store } = manager(
+      p,
+      { work: [{ type: 'plan', goal: 'G', steps: ['A', 'B'] }, { type: 'harness', name: 'mark_blocked', args: { reason: 'Pick a database' } }] },
+      { continuationDelayMs: 5 }
+    )
+    const run = await m.start({ project: p, prompt: 'Go' })
+    await waitFor(isType('plan.updated', (e) => e.plan.status === 'blocked'))
+    await waitFor(isType('run.status', (e) => e.status === 'idle'))
+    expect(m.pendingCards(run.id).questions).toHaveLength(0)
+    await m.stopAll({ reason: 'quit' })
+    expect(store.get(run.id)).toMatchObject({ status: 'finished', endedBy: 'app', endedWhile: 'waiting' })
+  })
+
+  it('quitEndedWhile: an open decision is waiting whatever the status, idle without one is idle, paused and ended get none', () => {
+    for (const st of ['starting', 'running', 'idle', 'stopping'] as const) expect(quitEndedWhile(st, true)).toBe('waiting')
+    expect(quitEndedWhile('idle', false)).toBe('idle')
+    for (const st of ['starting', 'running', 'stopping'] as const) expect(quitEndedWhile(st, false)).toBe('working')
+    for (const st of ['paused', 'finished', 'error'] as const) expect(quitEndedWhile(st, true)).toBeUndefined()
   })
 
   it('stopAll on quit counts a running run with an open card as waiting', async () => {
@@ -2291,7 +2313,7 @@ describe('who ended a run (RunSummary.endedBy)', () => {
       await m.stopAll({ reason: 'quit' })
       const fin = statusesOf(run.id).filter((e) => e.status === 'finished')
       expect(fin.length).toBeGreaterThan(0)
-      for (const e of fin) expect(e).toMatchObject({ endedBy: 'app', endedWhile: 'waiting' })
+      for (const e of fin) expect(e).toMatchObject({ endedBy: 'app', endedWhile: 'idle' })
       expect(statusesOf(run.id).some((e) => e.status === 'stopping')).toBe(false)
     })
 

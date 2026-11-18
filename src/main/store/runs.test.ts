@@ -137,7 +137,7 @@ describe('RunStore', () => {
     s.upsert(run('user', { status: 'finished', endedBy: 'user', endedWhile: 'working' }))
     s.upsert(run('own', { status: 'finished', endedWhile: { x: 1 } as never }))
     const reloaded = new RunStore(dataDir)
-    expect(reloaded.get('idle')!.endedWhile).toBe('waiting')
+    expect(reloaded.get('idle')!.endedWhile).toBe('idle')
     for (const id of ['starting', 'running', 'stopping']) expect(reloaded.get(id)!.endedWhile).toBe('working')
     expect(reloaded.get('kept')!.endedWhile).toBe('waiting')
     for (const id of ['paused', 'junk', 'user', 'own']) expect(id + ':' + ('endedWhile' in reloaded.get(id)!)).toBe(id + ':false')
@@ -484,13 +484,25 @@ describe('RunStore exec fields (cli-spec Wave 0)', () => {
     expect(reloaded.get('stopping-budget')!.endedBy).toBe('budget')
   })
 
+  it('keeps a stored idle endedWhile (with endedBy app) and still drops junk', () => {
+    const s = new RunStore(dataDir)
+    s.upsert(run('stored-idle', { status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'idle' }))
+    s.upsert(run('stored-junk', { status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'Idle' as never }))
+    s.upsert(run('idle-no-app', { status: 'finished', endedBy: 'user', endedWhile: 'idle' }))
+    const reloaded = new RunStore(dataDir)
+    expect(reloaded.get('stored-idle')!.endedWhile).toBe('idle')
+    expect('endedWhile' in reloaded.get('stored-junk')!).toBe(false)
+    expect('endedWhile' in reloaded.get('idle-no-app')!).toBe(false)
+    expect(normalizeCrashedRunSummary(run('x', { status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'idle' }), 5).endedWhile).toBe('idle')
+  })
+
   it('drops a junk endedBy', () => {
     writeIndex([run('a', { endedBy: 'robot' as never }), run('b', { endedBy: 7 as never }), run('c', { status: 'idle', endedBy: 'POLICY' as never })])
     const s = new RunStore(dataDir)
     expect('endedBy' in s.get('a')!).toBe(false)
     expect('endedBy' in s.get('b')!).toBe(false)
     // A live run with a junk endedBy is treated like any crashed run: OrgAI cut it.
-    expect(s.get('c')).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' })
+    expect(s.get('c')).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'idle' })
   })
 
   it('keeps valid execOutcome values and drops junk', () => {
@@ -589,7 +601,7 @@ describe('RunStore exec fields (cli-spec Wave 0)', () => {
       for (const r of pure) expect(s.get(r.id)).toEqual(r)
       // Spot checks of the rules themselves.
       const byId = Object.fromEntries(pure.map((r) => [r.id, r]))
-      expect(byId.idle).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'waiting', endedAt: 777_000 })
+      expect(byId.idle).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'idle', endedAt: 777_000 })
       expect(byId.running).toMatchObject({ endedBy: 'app', endedWhile: 'working' })
       expect(byId.paused).toMatchObject({ endedBy: 'app', endedWithApp: true, pausedUntil: 5 })
       expect('endedWhile' in byId.paused).toBe(false)

@@ -402,7 +402,7 @@ describe('bootOrgAIHost', () => {
     await h.runs.stopAll({ reason: 'quit' })
   })
 
-  it('a non-forced stop (a stop request) ends a run that only waits on the user, written as cut by the app before the release', async () => {
+  it('a non-forced stop (a stop request) ends a run that is idle (it only awaits a reply), written as cut by the app before the release', async () => {
     const own = fakeOwnership()
     const h = boot({ ownership: own, hostKind: 'inproc' })
     const atRelease: (RunSummary | null)[] = []
@@ -430,8 +430,8 @@ describe('bootOrgAIHost', () => {
     await expect(h.dispatcher.invokeRpc('host.stop', [{}], ctx)).resolves.toEqual({ stopping: true })
     await h.shutdown.released()
     expect(own.release).toHaveBeenCalledTimes(1)
-    // Ended before the data folder was given up, as a quit ends it: by the app, while waiting, continuable.
-    expect(atRelease[0]).toMatchObject({ endedBy: 'app', endedWithApp: true, endedWhile: 'waiting' })
+    // Ended before the data folder was given up, as a quit ends it: by the app, while idle, continuable.
+    expect(atRelease[0]).toMatchObject({ endedBy: 'app', endedWithApp: true, endedWhile: 'idle' })
     expect(['finished', 'error']).toContain(atRelease[0]?.status)
     expect(h.runs.liveRunCount()).toBe(0)
   }, 30_000)
