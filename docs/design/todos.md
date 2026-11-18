@@ -1,6 +1,7 @@
 # To-dos
 
-Status: the shared contract and pure helpers are landed. Everything else is not built yet.
+Status: the shared contract and pure helpers are landed. The renderer is built (see "Renderer (as built)"); the main
+side is in progress.
 
 ## Purpose
 
@@ -41,5 +42,75 @@ one list for the Chat assistant. The user can read the list, edit it, and start 
   (save, remove, clearDone, linkRun, the editedBy rule, expectedUpdatedAt check, the per-scope and per-run limits),
   host channel registration and handlers, the `todos:changed` push to every window, the `todo_list` harness tool and
   its prompt text on Chat and project roots, mock marker for tests.
-- Renderer (UI lead): to-do panel for a project and for Chat, add / edit / complete / remove / clear done, "Start a
-  session" that prefills the draft, live updates from `onTodosChanged`, both themes and window sizes, an e2e script.
+- Renderer (UI lead): built, see "Renderer (as built)" below.
+
+## Renderer (as built)
+
+### Placement decision
+
+A project section tab **To-dos** in the project topbar (`App.tsx`), next to Live / History / Outputs / Knowledge, on
+every stored project (engagement and code) and on Chat; never on the MCP or Skill assistants (`todoScopeFor` returns
+null for them). Order: Live, History, Outputs, Knowledge, To-dos, Team, Settings; on Chat: Live, History, To-dos.
+Reasons:
+
+- One click from a project and from Chat, whatever the workspace shows (a run, the New run page or another section),
+  because the topbar is always on screen. A run detail tab (Plan / Usage / Outputs ...) was rejected: it does not exist
+  on the New run page or the Chat start page, so the list would be two clicks away there, and the list belongs to the
+  project, not to one run.
+- Visible next to the conversation: the tab sits directly above the conversation where the user said "put that on my
+  list", and its quiet open count (`TabItem.count`, spoken "3 open to-dos") changes when an assistant adds an item. That
+  count is the only signal: no dot, no pulse, no toast; the transcript row main writes is the confirmation.
+- No new top-level app view and no sidebar entry: a to-do list is per project, like Outputs and Knowledge, and a global
+  page would need a scope picker for something that is always read in context.
+- Not added (open): a View menu item, a keyboard accelerator and a self-help atlas surface for the tab.
+
+### Behaviour
+
+- `views/TodosView.tsx` (heading "To-dos", "For this project" / "For Chat"), `components/todos/TodoRow.tsx`,
+  `TodoEditForm.tsx`, styles `styles/todos.css` (tokens only, no motion). Pure view-model `src/shared/view/todos.ts`
+  (`todoScopeFor`, `todosCountLabel`, `todoListView`, the empty and unavailable sentences). Data in a separate zustand
+  store `store/todosStore.ts` (`load` newest-answer-wins per scope, `put` / `drop` apply main's answer at once without
+  invalidating a newer load, `initTodos` follows `todos:changed`, `useOpenTodoCount` for the tab).
+- Add: one field, Enter (or the Add button). `cleanTodoText` refuses locally first; any refusal from main (cap, read-only
+  store, changed elsewhere) shows inline in plain words and keeps the typed text.
+- Rows: native checkbox named by the title (the box shows the user's choice at once and settles on main's answer), the
+  title as plain text, a "Details" disclosure for the detail (plain text, `pre-wrap`), "Added by assistant" / "Added by
+  <role>" for agent items with "Open conversation" when the source run still exists, "Started from this: Session 1, ..."
+  for runs that still exist, Start session (open items), Edit, Delete. Done items sit under a collapsed "Done (n)"
+  disclosure with "Clear done" (confirm). Delete asks to confirm (the app's pattern, as in Schedules).
+- Inline edit: Enter in the title saves, Escape cancels, only changed fields are sent with `expectedUpdatedAt`; a refusal
+  keeps the edits. Focus returns to Edit; after complete it moves to the next open row (else previous, else the add
+  field); after reopen to the item's checkbox; after delete to the next row or the add field. One polite live region
+  (`todos-status`) announces each change.
+- Untrusted text: title, detail, role name and run names are React text nodes only (no Markdown, no links made from
+  text, no HTML). Shortened copies (aria names, dialog bodies, the role name) go through `clampLabel`.
+- Start session (`lib/todoStart.ts`): computes the draft key (`newRunDraftKey(projectId)` or the Chat start page's),
+  asks before replacing a different unsent message, opens the project's New run page (`openDraft`) or a fresh Chat
+  (`openAssistant('quick', { fresh: true })`), fills the composer with `todoStartPrompt(item)` and focuses it. It never
+  sends and never changes the item's status. A pending link is held per draft key; `linkedStart` wraps the New run page
+  and Chat start page `onSubmit` so the link is taken before the start, given back if the start throws, and sent with
+  `todos.linkRun` after success (on a project only when the shown run changed). A draft emptied without a send drops the
+  link (store subscription plus a microtask, after Composer's synchronous submit). Known limit: replacing the whole
+  prefilled text without emptying it keeps the link.
+- A missing `window.orgai.todos` (older main) shows "To-dos are not available in this version." and turns writes off.
+
+### Test ids
+
+Tab `tab-todos`, count `todos-tab-count`; `todos-view`, `todos-loading`, `todos-empty`, `todos-error`, `todos-status`;
+`todo-add-input`, `todo-add`, `todo-add-error`; `todo-list-open`, `todo-list-done`; row `todo-row` (`data-todo-id`,
+`data-status`) with `todo-check`, `todo-title`, `todo-detail-toggle`, `todo-detail`, `todo-source`, `todo-source-link`,
+`todo-runs`, `todo-run-link`, `todo-start`, `todo-edit`, `todo-delete`, `todo-row-error`; edit form `todo-edit-title`,
+`todo-edit-detail`, `todo-edit-save`, `todo-edit-cancel`; `todo-done-toggle`, `todo-clear-done`; confirms
+`todo-delete-confirm`, `todo-clear-done-confirm`, `todo-replace-draft-confirm`.
+
+### Checked and open (renderer)
+
+- Unit: `src/shared/view/todos.test.ts`, `src/renderer/src/lib/todoStart.test.ts`; typecheck and build.
+- `e2e/todos.mjs` (token-free, in `e2e:free`, mapped in `scripts/e2e-select.mjs`) was written against the contract
+  before the main handlers and `[mock:todo]` were merged: not run yet.
+- Reviewer (renderer): no Critical or High; M1 (controlled checkbox snapped back), M2 (a project start that started
+  nothing could link the open run), M3 (local patches dropped a newer load) and M4 (label in name) fixed, Lows L1, L2,
+  L7, L9 fixed; L3 (an error after navigation is not shown), L4 (Enter while loading is silent), L5 (whole-text
+  replacement keeps the link) and L8 (agent detail in the prefill is not marked as such) open.
+- Not looked at in the running app: both themes, both window sizes, keyboard walk, screen-reader speech; no mock UX
+  walkthrough yet (needs the merged main side).

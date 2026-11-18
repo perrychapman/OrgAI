@@ -305,10 +305,14 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
                   runAdapter
                 )
               : {}
+            // The run this start opened (startRun shows it); unchanged means nothing started, so no to-do is linked.
+            const shownBefore = useAppStore.getState().activeRunByProject[project.id]
             await startRun(text, { ...(images ? { images } : {}), ...(ask ? { team: 'single' as const } : {}), ...(sendGoal ? { goal: sendGoal } : {}), ...choices })
             // Started: the next draft begins from the project's defaults again. A refused start throws above and keeps every pick.
             resetPicks()
-          }, () => useAppStore.getState().activeRunByProject[project.id])}
+            const shown = useAppStore.getState().activeRunByProject[project.id]
+            return shown !== shownBefore ? shown : undefined
+          }, (runId) => runId)}
         />
 
         {dialog}

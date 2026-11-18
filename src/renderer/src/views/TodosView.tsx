@@ -190,6 +190,7 @@ export default function TodosView({ project }: { project: Project }): ReactEleme
     busyIds.current.add(row.id)
     setRowError(row.id, null)
     setNote(null)
+    setActionError(null)
     // Where focus goes when this row leaves the open list: the next open row, else the previous, else the add field.
     const at = view.open.findIndex((r) => r.id === row.id)
     const neighbour = view.open[at + 1] ?? view.open[at - 1]
@@ -278,6 +279,7 @@ export default function TodosView({ project }: { project: Project }): ReactEleme
 
   const start = async (row: TodoRowView): Promise<void> => {
     setRowError(row.id, null)
+    setActionError(null)
     try {
       await startSessionFromTodo(row.item, confirm)
     } catch (err) {

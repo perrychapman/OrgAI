@@ -470,3 +470,19 @@ Spec: `docs/design/ux-review-run-start-pre.md` (H1-H3, M1-M8). Contract: `StartR
   reduced motion and forced colours, 320 px reflow, the stale "Interrupt and change" path in the app (the idle mock cannot
   stage a mid-reply refusal; the decision is unit-tested). Popover focus-in on first open is now asserted by run-start
   section 9 (it was a NOTE).
+
+## To-dos (2026-11-18)
+
+- A project section tab "To-dos" (`App.tsx`, view `'todos'`) on every stored project and on Chat, never on the MCP /
+  Skill assistants (`todoScopeFor` in `src/shared/view/todos.ts`). Its quiet count is the open items; no dot, pulse or
+  toast when an assistant adds one. Placement reasons, behaviour and test ids: `docs/design/todos.md` "Renderer (as
+  built)".
+- `views/TodosView.tsx`, `components/todos/*`, `styles/todos.css`; data in a separate zustand store
+  `store/todosStore.ts` (not useAppStore) that follows `todos:changed`. Agent-written title, detail and role name are
+  text nodes only; shortened copies use `clampLabel`.
+- Start session (`lib/todoStart.ts`) only fills the New run page or Chat start page composer with `todoStartPrompt` and
+  focuses it; `linkedStart` wraps those two pages' `onSubmit` and calls `todos.linkRun` after the user's own send. A
+  draft emptied without sending drops the link.
+- Checked: typecheck, build, `todos.test.ts` / `todoStart.test.ts`, Reviewer (no Critical or High; Mediums fixed).
+  `e2e/todos.mjs` is in `e2e:free` but was written before the main handlers and `[mock:todo]` landed: unverified until it
+  runs on the merged tree. Not looked at in the running app (themes, sizes, keyboard, screen reader).

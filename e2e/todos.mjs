@@ -114,7 +114,7 @@ try {
   await T('todo-add-input').fill('')
 
   // complete one
-  await row('Write the v1 release notes').locator('[data-testid=todo-check]').check()
+  await row('Write the v1 release notes').locator('[data-testid=todo-check]').click()
   check(await until(async () => (await store(PSCOPE)).some((i) => i.title === 'Write the v1 release notes' && i.status === 'done'), 10_000), '1 completing stores status done')
   check(await until(async () => (await count()).includes('1') && !(await count()).includes('2'), 5000), '1 the tab count drops to 1', await count())
   check((await T('todo-done-toggle').getAttribute('aria-expanded')) !== 'true', '1 the Done section is collapsed by default')
@@ -125,12 +125,12 @@ try {
   await shot('project-done')
 
   // reopen
-  await row('Write the v1 release notes').locator('[data-testid=todo-check]').uncheck()
+  await row('Write the v1 release notes').locator('[data-testid=todo-check]').click()
   check(await until(async () => (await T('todo-list-open').locator('[data-testid=todo-row]').count()) === 2, 10_000), '1 reopening moves the item back to the open list')
   check(await until(async () => (await count()).includes('2'), 5000), '1 the count is 2 again', await count())
 
   // complete again, Clear done with confirm
-  await row('Write the v1 release notes').locator('[data-testid=todo-check]').check()
+  await row('Write the v1 release notes').locator('[data-testid=todo-check]').click()
   await until(async () => (await T('todo-clear-done').count()) > 0, 10_000)
   await openDone()
   await T('todo-clear-done').click()
@@ -183,10 +183,10 @@ try {
   check(await visible('[data-testid=todos-empty]'), '3 the Chat list starts empty (separate from the project list)')
   await addItem('Ask about the weather')
   check((await store(CSCOPE)).length === 1, '3 the Chat item is stored under the chat scope')
-  await row('Ask about the weather').locator('[data-testid=todo-check]').check()
+  await row('Ask about the weather').locator('[data-testid=todo-check]').click()
   check(await until(async () => (await store(CSCOPE))[0]?.status === 'done', 10_000), '3 completing a Chat item stores done')
   await openDone()
-  await row('Ask about the weather').locator('[data-testid=todo-check]').uncheck()
+  await row('Ask about the weather').locator('[data-testid=todo-check]').click()
   check(await until(async () => (await store(CSCOPE))[0]?.status === 'open', 10_000), '3 reopening a Chat item stores open')
   await addItem('Remove me')
   await row('Remove me').locator('[data-testid=todo-delete]').click()

@@ -43,7 +43,7 @@ export default function TodoRow({
   error?: string
   sourceLink?: TodoRunLink
   runLinks: TodoRunLink[]
-  onToggle: (row: TodoRowView, done: boolean) => void
+  onToggle: (row: TodoRowView, done: boolean) => Promise<void> | void
   onEdit: (row: TodoRowView) => void
   onDelete: (row: TodoRowView) => void
   onStart: (row: TodoRowView) => void
@@ -54,6 +54,12 @@ export default function TodoRow({
   const [showDetail, setShowDetail] = useState(false)
   const detailId = useId()
   const done = row.item.status === 'done'
+  // The box shows the user's choice at once (no snap back while main answers); main's answer or a refusal clears it.
+  const [pending, setPending] = useState<boolean | null>(null)
+  const toggle = (next: boolean): void => {
+    setPending(next)
+    void Promise.resolve(onToggle(row, next)).finally(() => setPending(null))
+  }
   return (
     <li className="todo-row" data-testid="todo-row" data-todo-id={row.id} data-status={row.item.status}>
       {editing ? (
@@ -62,8 +68,8 @@ export default function TodoRow({
         <>
           <div className="todo-row-main">
             <Checkbox
-              checked={done}
-              onChange={(next) => onToggle(row, next)}
+              checked={pending ?? done}
+              onChange={toggle}
               label={
                 <span className={`todo-title${done ? ' is-done' : ''}`} data-testid="todo-title">
                   {row.title}
@@ -78,6 +84,7 @@ export default function TodoRow({
                   type="button"
                   className="todo-detail-toggle"
                   data-testid="todo-detail-toggle"
+                  aria-label={`Details: ${row.checkLabel}`}
                   aria-expanded={showDetail}
                   aria-controls={showDetail ? detailId : undefined}
                   onClick={() => setShowDetail((v) => !v)}
@@ -100,7 +107,7 @@ export default function TodoRow({
                     {sourceLink && (
                       <>
                         {' · '}
-                        <button type="button" className="link-btn" data-testid="todo-source-link" aria-label={`Open the conversation ${row.checkLabel} came from`} onClick={() => onOpenRun(sourceLink)}>
+                        <button type="button" className="link-btn" data-testid="todo-source-link" aria-label={`Open conversation: ${row.checkLabel}`} onClick={() => onOpenRun(sourceLink)}>
                           Open conversation
                         </button>
                       </>

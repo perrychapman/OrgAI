@@ -33,14 +33,13 @@ export const useTodosStore = create<TodosStore>((set, get) => ({
     const key = todoScopeKey(scope)
     const list = get().byScope[key]
     if (!list) return
-    seqByScope.set(key, (seqByScope.get(key) ?? 0) + 1)
+    // A load in flight is not invalidated: it may be newer than this answer (a push for an agent's add); its result wins.
     set((s) => ({ byScope: { ...s.byScope, [key]: list.some((i) => i.id === item.id) ? list.map((i) => (i.id === item.id ? item : i)) : [...list, item] } }))
   },
   drop(scope, ids) {
     const key = todoScopeKey(scope)
     const list = get().byScope[key]
     if (!list) return
-    seqByScope.set(key, (seqByScope.get(key) ?? 0) + 1)
     set((s) => ({ byScope: { ...s.byScope, [key]: list.filter((i) => !ids.includes(i.id)) } }))
   },
   async load(scope) {

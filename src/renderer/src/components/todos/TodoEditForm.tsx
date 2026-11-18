@@ -86,7 +86,7 @@ export default function TodoEditForm({
         Title up to {TODO_TITLE_MAX_CHARS} characters, details up to {TODO_DETAIL_MAX_CHARS.toLocaleString()}.
       </p>
       {error && (
-        <p className="field-error" id={errorId} data-testid="todo-row-error">
+        <p className="field-error" id={errorId} data-testid="todo-row-error" role="alert">
           {error}
         </p>
       )}
