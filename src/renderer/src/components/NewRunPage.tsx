@@ -9,6 +9,7 @@ import { Banner } from './ui/Banner'
 import { newRunLead, projectKindCopy, projectNoun } from '../lib/projectKindCopy'
 import { SegmentedControl } from './ui/SegmentedControl'
 import { isRunLive, newRunDraftKey, useAppStore, useRunIndexes } from '../store/useAppStore'
+import { linkedStart } from '../lib/todoStart'
 import { promptLine, runTag } from '../lib/runLabels'
 import { displayRunName, isOrgChangeRun } from '../lib/orgChange'
 import { Button } from './ui/Button'
@@ -284,7 +285,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
           autoFocus
           focusToken={focusToken}
           onFail={(err) => err instanceof DeclinedStart}
-          onSubmit={async (text, images) => {
+          onSubmit={linkedStart(newRunDraftKey(project.id), async (text, images) => {
             // A staged mode that asks less than the project's mode now and was not confirmed against it is confirmed first.
             if (canChooseMode && pickedMode && isWideningMode(project.permissionMode, pickedMode) && pickedModeBaseline !== project.permissionMode) {
               const accepted = await confirm(wideningConfirmOptions(project.permissionMode, pickedMode))
@@ -307,7 +308,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             await startRun(text, { ...(images ? { images } : {}), ...(ask ? { team: 'single' as const } : {}), ...(sendGoal ? { goal: sendGoal } : {}), ...choices })
             // Started: the next draft begins from the project's defaults again. A refused start throws above and keeps every pick.
             resetPicks()
-          }}
+          }, () => useAppStore.getState().activeRunByProject[project.id])}
         />
 
         {dialog}

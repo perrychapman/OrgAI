@@ -10,6 +10,7 @@ import { connectionLabel } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { newRunDraftKey, useAppStore } from '../../store/useAppStore'
 import { ASK_ORGAI_SEED } from '../../lib/menuActions'
+import { linkedStart } from '../../lib/todoStart'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
 import { Input } from '../ui/Input'
@@ -246,7 +247,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
           placeholder="Ask about OrgAI or describe the task"
           autoFocus
           focusToken={focusToken}
-          onSubmit={async (prompt, images) => {
+          onSubmit={linkedStart(draftKey, async (prompt, images) => {
             if (prompt.length > QUICK_RUN_MAX_PROMPT_CHARS) {
               throw new Error(`That message is too long (the limit is ${QUICK_RUN_MAX_PROMPT_CHARS.toLocaleString()} characters). Shorten it and try again.`)
             }
@@ -256,8 +257,8 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
               const problem = pathStatus('existing', typed, fresh)
               if (problem?.blocking) throw new Error(`Cannot start in that folder. ${problem.text} Clear the folder to chat in a scratch area.`)
             }
-            await startQuick({ prompt, ...(typed ? { folder: typed } : {}), team, allowEdits,...(images ? { images } : {}) })
-          }}
+            return startQuick({ prompt, ...(typed ? { folder: typed } : {}), team, allowEdits,...(images ? { images } : {}) })
+          }, (summary) => summary.id)}
         />
       </div>
     </div>
