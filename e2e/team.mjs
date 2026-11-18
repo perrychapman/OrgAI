@@ -644,6 +644,47 @@ async function sectionDismiss(page, shot, app) {
  * Walk 4 M2: two mock work runs end, the proactive review lands, and opening Team shows "N suggestions since your last
  * run" once; leaving and coming back without a new run does not show it again.
  */
+/** The role node context menu (docs/design/context-menus.md row 9): right click, Shift+F10, Add a report, root guard. */
+async function sectionNodeMenu(page) {
+  const menu = page.locator('[data-testid=role-node-menu]')
+  const node = page.locator('.react-flow__node', { hasText: 'Reviewer' }).first()
+  const nodeFocused = () => node.evaluate((el) => el === document.activeElement)
+  await node.click({ button: 'right' })
+  await menu.waitFor({ timeout: 5000 })
+  check((await menu.getAttribute('aria-label')) === 'Actions for Reviewer', 'the node menu is named for the role', await menu.getAttribute('aria-label'))
+  check(
+    (await menu.locator('[role=menuitem]').allInnerTexts()).map((t) => t.trim()).join('|') === 'Edit role|Add a report|Remove role',
+    'the node menu offers Edit role, Add a report and Remove role'
+  )
+  check((await page.locator('[data-testid=role-menu-remove]').getAttribute('aria-disabled')) !== 'true', 'Remove role is enabled on a non-root role')
+  await page.keyboard.press('Escape')
+  await menu.waitFor({ state: 'detached' })
+  check(await nodeFocused(), 'Escape returns focus to the node')
+
+  await node.focus()
+  await page.keyboard.press('Shift+F10')
+  await menu.waitFor({ timeout: 5000 })
+  check(true, 'Shift+F10 on a focused node opens the menu')
+  await page.keyboard.press('Escape')
+  await menu.waitFor({ state: 'detached' })
+
+  const before = (await findProject(page, NAME)).roles
+  await node.click({ button: 'right' })
+  await menu.waitFor({ timeout: 5000 })
+  await page.locator('[data-testid=role-menu-add-report]').click()
+  await sleep(500)
+  const after = (await findProject(page, NAME)).roles
+  const reviewerId = before.find((r) => r.name === 'Reviewer')?.id
+  const added = after.filter((r) => !before.some((b) => b.id === r.id))
+  check(added.length === 1 && added[0].reportsTo === reviewerId, 'Add a report adds a role reporting to that role', JSON.stringify(added.map((r) => r.reportsTo)))
+
+  const rootName = before.find((r) => r.reportsTo === null)?.name
+  await page.locator('.react-flow__node', { hasText: rootName }).first().click({ button: 'right' })
+  await menu.waitFor({ timeout: 5000 })
+  check((await page.locator('[data-testid=role-menu-remove]').getAttribute('aria-disabled')) === 'true', 'Remove role is aria-disabled on the root role')
+  await page.keyboard.press('Escape')
+}
+
 async function sectionRunsEnded(page) {
   const live = async () => {
     await page.locator('[data-testid=tab-live]').click()
@@ -771,6 +812,7 @@ try {
     }
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  await sectionNodeMenu(page)
 } catch (e) {
   check(false, 'team flow ran without throwing', e.stack ?? String(e))
   await shot('error').catch(() => {})

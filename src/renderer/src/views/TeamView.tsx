@@ -1,6 +1,6 @@
-import type { KeyboardEvent, ReactElement } from 'react'
+import type { KeyboardEvent, MouseEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Download, LayoutGrid, LayoutTemplate, MousePointerClick, Plus, Undo2 } from 'lucide-react'
+import { ChevronDown, Download, LayoutGrid, LayoutTemplate, MousePointerClick, Pencil, Plus, Trash2, Undo2, UserPlus } from 'lucide-react'
 import {
   ReactFlow,
   Controls,
@@ -31,6 +31,7 @@ import { capabilityCounts, capabilityLabel } from '../lib/teamView'
 import ImportAgentsDialog from '../components/import/ImportAgentsDialog'
 import { importBannerVisible, notImportedLine, readBannerMemory, writeBannerMemory, type BannerMemory } from '../lib/agentImport'
 import { useConfirm } from '../components/ui/ConfirmDialog'
+import { ContextMenu, useContextMenu, type MenuEntry } from '../components/ui/ContextMenu'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
 import { layoutCanvas } from '../lib/layout'
@@ -508,8 +509,54 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     [selectRole]
   )
 
+  const roleMenu = useContextMenu<string>()
+  const roleMenuOpts = (roleId: string): { fallbackFocus: () => HTMLElement | null } => ({
+    // After Remove the node is gone (and the Delete path moves focus to the first node): do the same.
+    fallbackFocus: () => rootRef.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(roleId)}"]`) ?? rootRef.current?.querySelector<HTMLElement>('.react-flow__node') ?? null
+  })
+  const onNodeContextMenu: NodeMouseHandler<RoleFlowNode> = (e, node) => {
+    // Never preventDefault here: the primitive decides (fields and selections keep the platform menu).
+    roleMenu.onContextMenu(e as unknown as MouseEvent<HTMLElement>, node.id, roleMenuOpts(node.id))
+  }
+  const roleMenuItems = (roleId: string): MenuEntry[] => {
+    const role = project.roles.find((r) => r.id === roleId)
+    if (!role) return []
+    const isRoot = role.reportsTo === null
+    return [
+      {
+        id: 'edit',
+        label: 'Edit role',
+        icon: Pencil,
+        testId: 'role-menu-edit',
+        onSelect: () => {
+          setSelectedEdgeId(null)
+          focusWanted.current = true
+          setPanelOpen(true)
+          setPanelTab('role')
+          setFocusTick((t) => t + 1)
+          selectRole(roleId)
+        }
+      },
+      { id: 'add-report', label: 'Add a report', icon: UserPlus, testId: 'role-menu-add-report', onSelect: () => addRole(role) },
+      'separator',
+      {
+        id: 'remove',
+        label: 'Remove role',
+        icon: Trash2,
+        destructive: true,
+        disabled: isRoot,
+        disabledReason: isRoot ? 'The root role cannot be removed.' : undefined,
+        testId: 'role-menu-remove',
+        onSelect: () => void requestRemove(roleId)
+      }
+    ]
+  }
+
   const onRootKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>): void => {
     const el = e.target as HTMLElement
+    if (el.classList.contains('react-flow__node') && el.dataset.id) {
+      if (roleMenu.onKeyDown(e, el.dataset.id, { anchor: el, invoker: el, ...roleMenuOpts(el.dataset.id) })) return
+    }
     if ((e.key === 'Enter' || e.key === ' ') && (el.classList.contains('react-flow__node') || el.hasAttribute('data-office-agent-id') || el.hasAttribute('data-office-worker-id'))) {
       focusWanted.current = true
       setPanelOpen(true)
@@ -527,8 +574,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     directoryTarget?.focus()
   }, [])
 
-  const addRole = (): void => {
-    const manager = addParent
+  const addRole = (managerOverride?: Role): void => {
+    const manager = managerOverride ?? addParent
     const name = nextRoleName(project.roles)
     const conn = projectConnection(project)
     const everyday = modelForTier('everyday', {
@@ -615,7 +662,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       <CanvasFrame frameRef={frameRef}>
         <div className="frame-top">
           <FrameToolbar label="Team actions">
-            <Button size="sm" icon={Plus} onClick={addRole}>
+            <Button size="sm" icon={Plus} onClick={() => addRole()}>
               Add role
             </Button>
             <Button size="sm" icon={Download} onClick={() => setImportDialog({ fresh: false })} testId="import-agents">
@@ -828,6 +875,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={onNodeClick}
+            onNodeContextMenu={onNodeContextMenu}
             onPaneClick={() => {
               selectRole(null)
               setSelectedEdgeId(null)
@@ -924,6 +972,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           </div>
         </div>
       </SidePanel>
+      <ContextMenu control={roleMenu} label={(id) => `Actions for ${project.roles.find((r) => r.id === id)?.name ?? 'role'}`} items={roleMenuItems} testId="role-node-menu" />
       {templateDialog === 'save' && (
         <SaveTemplateDialog
           project={project}
