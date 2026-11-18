@@ -730,6 +730,93 @@ ul.maint-list {
   outline-offset: 2px;
 }
 
+/* ---------- Context menu (ui/ContextMenu, docs/design/context-menus.md) ---------- */
+.ctx-menu {
+  /* [popover] resets: top layer, positioned inline from the pointer or the anchor. */
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 11rem;
+  max-width: min(22rem, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: var(--space-1);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  box-shadow: var(--elev-2);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  z-index: var(--z-popover);
+  /* Enter is a short fade (motion.md: the user's own press = --dur-fast); reduced motion zeroes the token. */
+  opacity: 1;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+@starting-style {
+  .ctx-menu:popover-open {
+    opacity: 0;
+  }
+}
+.ctx-menu[data-placed='false'] {
+  visibility: hidden;
+}
+.ctx-menu:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.ctx-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  padding: 0 var(--space-3) 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ctx-menu-item:hover,
+.ctx-menu-item:focus {
+  background: var(--surface-3);
+  outline: none;
+}
+.ctx-menu-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.ctx-menu-item.danger {
+  color: var(--danger-text);
+}
+.ctx-menu-item[aria-disabled='true'] {
+  color: var(--text-disabled);
+  cursor: default;
+}
+.ctx-menu-item[aria-disabled='true']:hover {
+  background: transparent;
+}
+.ctx-menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctx-menu-noicon {
+  flex: none;
+  width: 16px;
+}
+.ctx-menu-sep {
+  height: 1px;
+  margin: var(--space-1) var(--space-1);
+  background: var(--border-default);
+}
+
 /* ---------- Tabs (underline, 2 px gradient indicator) ---------- */
 .tabs-list {
   display: flex;
