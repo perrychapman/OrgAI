@@ -69,7 +69,11 @@ export interface ContextMenuControl<T> {
   dismissed: { el: HTMLElement | null; at: number }
 }
 
-const TEXT_INPUT_SKIP = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
+/** Time of the last pointer press anywhere: tells a real right click from the platform's echo of a keyboard open. */
+let lastPointerDown = 0
+if (typeof document !== 'undefined') document.addEventListener('pointerdown', () => (lastPointerDown = performance.now()), true)
+
+const TEXT_INPUT_SKIP =new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
 
 /** The DOM facts for `nativeMenuWins`: an editable target, a link, or selected text touching the surface. */
 function nativeWins(e: ReactMouseEvent<HTMLElement>): boolean {
@@ -109,7 +113,8 @@ export function useContextMenu<T>(): ContextMenuControl<T> {
       if (nativeWins(e)) return
       e.preventDefault()
       e.stopPropagation()
-      if (performance.now() - keyOpenAt.current < 600) return
+      // The echo has no pointer press before it; a real right click soon after a keyboard open does.
+      if (performance.now() - keyOpenAt.current < 600 && lastPointerDown < keyOpenAt.current) return
       const el = e.currentTarget
       const fromPointer = e.button === 2 && (e.clientX !== 0 || e.clientY !== 0)
       if (fromPointer) open(target, opts?.invoker ?? el, { kind: 'point', x: e.clientX, y: e.clientY }, opts)
