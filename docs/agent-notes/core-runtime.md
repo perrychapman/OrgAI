@@ -328,6 +328,26 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     `ProposalOutcome.roster`; the tool calls `configChanged({ roles })` and says now / after idle / next run. Without
     `liveRoster` (every adapter today) nothing changes: the chart applies from the next run. Unit-tested only
     (runRoster.test.ts, runManagerRoster.test.ts, harnessToolsOrgChange.test.ts); adapters and renderer follow.
+    - Claude (2026-11-18): `ClaudeSession.liveRoster` is true on team work runs (not setup-like, quick, single or a
+      bridged child; `configChanged({ roles })` throws there). Agent definitions are fixed per query, so a roles change
+      joins the existing config restart at idle (`pendingConfig.roles`, coalesced with pending MCP / skill changes, the
+      configGen guard keeps a change approved while the restart is built pending for the next one): definitions are
+      rebuilt from the live `ctx.roles` (none for removed roles, the root's prompt and tools and `Options.agent` from the
+      live root), then the config notice says "The approved org chart is in place..." naming the added / changed
+      reports, a changed root and the removed roles. Answer: 'after-idle' when a role was added or changed (the root
+      included), 'now' for a pure removal (the restart still follows to drop the definitions and refresh the root's
+      prompt). Spawn gate, before any allow path: a removed role is refused at once with its own reason; an added or
+      changed role whose definition the running query lacks (`rosterStale`, cleared when a query built at or after its
+      generation starts) is refused with "once the agents are idle and the session restarts"; unknown roles get the
+      chart refusal as before. A root call to a tool the change took off the root is refused until the restart. Role
+      lookups read `ctx.roles` live (no start-time slug map; renamed / removed roles of running agents resolve through a
+      slug history and `ctx.retiredRoles()`); obligations and the automatic subagent depth stay as the session started;
+      staffing still goes only through `resolveStaffing`; new roles have no grants and the MCP / Skill gates read
+      grants live. Checked by `claudeRoster.test.ts` (fake query, real `applyRosterChange`: add, change, rename, root,
+      pure and tidy removal, running report of a removed role, MCP coalescing, change during the build, depth, notice
+      text). Live Claude behaviour is unverified, notably whether a resumed session accepts a renamed root agent
+      (`Options.agent` with a new slug) and how the CLI treats a spawn of an agent type it has no definition for (the
+      gate refuses those before the CLI sees them).
   - Proposal gates (2026-11-02, renderer review): main refuses control, zero-width, bidi and other invisible
     characters (`capabilities/sanitize.ts` `hiddenCharIn` / `hiddenCharProblem`; descriptions are `prose`: tab, line
     breaks, emoji ZWJ, ZWNJ and soft hyphens pass, bidi and zero-width space do not) in every MCP spec string field (`validate.ts` `hiddenCharProblems`, inside
