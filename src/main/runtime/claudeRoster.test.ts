@@ -246,17 +246,30 @@ describe('Claude org changes in the same run: change', () => {
     expect(decision(await spawn(q2, 'engineer'))).not.toBe('deny')
   }, 15_000)
 
-  it('a renamed role: its old slug is refused at once, its new one after the restart', async () => {
-    const { approve, q1 } = await running()
-    const next = orgChart()
-    next[2]!.slug = 'auditor'
-    next[2]!.name = 'Auditor'
-    expect((await approve(next)).availability).toBe('after-idle')
+  // The slug case is driven directly: RunManager now defers any card that changes a running role's slug (reason
+  // `identity`), so applyRosterChange never produces it. This covers the adapter's defensive slug-history handling.
+  it('a role whose slug changes: its old slug is refused at once, its new one after the restart', async () => {
+    const { ctx, session, q1 } = await running()
+    const role = ctx.roles.find((r) => r.id === 'r-rev')!
+    role.slug = 'auditor'
+    role.name = 'Auditor'
+    const roles = { added: [], changed: ['r-rev'], removed: [] }
+    session.rosterApplied(roles)
+    expect((await change(session, { roles })).availability).toBe('after-idle')
     expect(reason(await spawn(q1, 'reviewer'))).toContain('Allowed subagent_type values: engineer, auditor.')
     expect(reason(await spawn(q1, 'auditor'))).toContain('Auditor changed in this run\'s org chart')
     const q2 = await restarted(q1)
     expect(q2.options.agents.reviewer).toBeUndefined()
     expect(decision(await spawn(q2, 'auditor'))).not.toBe('deny')
+  }, 15_000)
+
+  it('a name-only rename through applyRosterChange: after-idle, spawnable under its slug after the restart', async () => {
+    const { approve, q1 } = await running()
+    const next = orgChart()
+    next[2]!.name = 'Auditor'
+    expect((await approve(next)).availability).toBe('after-idle')
+    const q2 = await restarted(q1)
+    expect(decision(await spawn(q2, 'reviewer'))).not.toBe('deny')
   }, 15_000)
 
   it('the root: its lost tool is refused at once, and its prompt and tools come in line at the restart', async () => {
