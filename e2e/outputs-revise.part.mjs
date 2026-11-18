@@ -66,8 +66,12 @@ export default async function (ctx) {
   if (!closed) return
   await sleep(300)
   check(await t('output-revision-pending').first().isVisible().catch(() => false), `${label}: the pending line shows`)
-  const pendingText = await t('output-revision-pending').first().innerText().catch(() => '')
-  check(/Waiting for the team's new version\. Sent to R\d+ at \d\d:\d\d\./.test(pendingText), `${label}: the pending line reads as the spec says`, pendingText)
+  // Read without waiting: a waiting innerText hangs for the 8 s default when the mock's answer replaces the line between
+  // the check above and this read (CI macOS: shown 15:54:53, failed 15:55:01). If the line is gone because the answer
+  // already landed, skip; an empty line with no answer still fails.
+  const pendingText = await page.evaluate(() => document.querySelector('[data-testid=output-revision-pending]')?.textContent ?? '')
+  if (!pendingText && (await t('output-revision-answered').count())) skip(`${label}: the pending line text (the answer replaced it before it was read)`)
+  else check(/Waiting for the team's new version\. Sent to R\d+ at \d\d:\d\d\./.test(pendingText.trim()), `${label}: the pending line reads as the spec says`, pendingText)
   const inFocus = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))
   check(inFocus === 'output-more', `${label}: focus returns to the More button that opened Revise`, String(inFocus))
   const chip = t('run-meta-revision')
