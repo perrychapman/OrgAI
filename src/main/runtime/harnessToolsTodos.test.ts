@@ -99,6 +99,13 @@ describe('todo_list: actions', () => {
     expect(await todoTool(fakeCtx({ run: runSummary({ kind: 'work' }), todos: access([]) }))!.call({ action: 'list' })).toBe('The to-do list is empty.')
   })
 
+  it('cannot fake columns with a pipe in item text', async () => {
+    const out = await todoTool(fakeCtx({ run: runSummary({ kind: 'work' }), todos: access([item(1, { title: 'a | open | b', detail: 'x | by user' })]) }))!.call({ action: 'list' })
+    const line = out.split('\n<<<\n')[1].split('\n>>>')[0]
+    expect(line.split(' | ')).toHaveLength(5)
+    expect(line).toContain('a ¦ open ¦ b')
+  })
+
   it('adds with title and detail and passes the caller; refusals read REFUSED', async () => {
     const todos = access()
     const tool = todoTool(fakeCtx({ run: runSummary({ kind: 'work' }), todos }))!
@@ -119,7 +126,9 @@ describe('todo_list: actions', () => {
     const todos = access()
     const tool = todoTool(fakeCtx({ run: runSummary({ kind: 'work' }), todos }))!
     expect(await tool.call({ action: 'complete' })).toMatch(/^REFUSED: complete needs an id/)
-    expect(await tool.call({ action: 'complete', id: 'todo_0000000000000001' })).toMatch(/^Completed to-do/)
+    const completed = await tool.call({ action: 'complete', id: 'todo_0000000000000001' })
+    expect(completed).toMatch(/^Completed to-do/)
+    expect(completed).not.toContain('todo_00')
     expect(await tool.call({ action: 'reopen', id: 'todo_0000000000000001' })).toMatch(/^Reopened to-do/)
     expect(await tool.call({ action: 'update', id: 'todo_0000000000000001' })).toBe('REFUSED: an update needs a title or a detail.')
     expect(await tool.call({ action: 'update', id: 'todo_0000000000000001', title: 'New' })).toMatch(/^Updated to-do/)
@@ -206,6 +215,14 @@ describe('RuntimeContext.todos: where RunManager binds it', () => {
     await m.stopAll()
   })
 
+  it('gives a scheduled run no list', async () => {
+    const { m, ctxs } = rig()
+    await m.start({ project: makeProject({ id: 'p1', path: folder('a') }), prompt: 'scheduled', schedule: { id: 'sch_1', name: 'Nightly' } })
+    expect(ctxs[0].run.scheduleId).toBe('sch_1')
+    expect(ctxs[0].todos).toBeUndefined()
+    await m.stopAll()
+  })
+
   it('is absent without the option (the CLI host)', async () => {
     const { m, ctxs } = rig(false)
     await m.start({ project: makeProject({ id: 'p1', path: folder('a') }), prompt: 'go' })
@@ -225,7 +242,8 @@ describe('RuntimeContext.todos: where RunManager binds it', () => {
     // A duplicate open title writes nothing and adds no row.
     expect(await tool.call({ action: 'add', title: 'follow up with acme about the export format' })).toMatch(/^Already on the list/)
     expect(await tool.call({ action: 'complete', id: saved.id })).toMatch(/^Completed to-do/)
-    expect(rows()).toEqual(['Added to-do Follow up with Acme about the export format', 'Completed to-do Follow up with Acme about the export format'])
+    expect(rows()).toEqual(['Added "Follow up with Acme about the export format" to your to-dos', 'Completed "Follow up with Acme about the export format"'])
+    expect(rows().join('\n')).not.toContain(saved.id)
     expect(changed).toHaveBeenCalledTimes(2)
     await m.stopAll()
   })

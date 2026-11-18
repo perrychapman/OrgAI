@@ -43,8 +43,8 @@ export interface PromptFlags {
   quick?: QuickRunInfo
   /**
    * The run has the todo_list tool (RuntimeContext.todos is set): the root of a Chat or work run (not setup-like, not a
-   * bridged child) gains the to-do paragraph (todosText). Adapters are to pass `!!ctx.todos`; NOT wired in claude.ts /
-   * codex.ts / mock.ts yet (adapter-owned), so today the tool description alone carries the rules. Missing = no paragraph.
+   * bridged child) gains the to-do paragraph (todosText). Adapters pass `!!ctx.todos` (wired in the adapters).
+   * Missing = no paragraph.
    */
   todos?: boolean
   /**

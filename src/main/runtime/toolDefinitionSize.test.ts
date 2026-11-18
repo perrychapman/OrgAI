@@ -62,9 +62,9 @@ import { claudeToolSizes, codexToolSizes, measureCase, sumChars, type MeasureSlu
  * Bounds rose to the next 50 above the new figure.
  */
 const BUDGET: Record<string, { claude: number; codex: number }> = {
-  orchestrator: { claude: 20_650, codex: 22_950 },
+  orchestrator: { claude: 20_600, codex: 22_950 },
   implementer: { claude: 500, codex: 1_000 },
-  single: { claude: 12_450, codex: 13_000 }
+  single: { claude: 12_400, codex: 13_000 }
 }
 
 const CASES: { label: string; slug: MeasureSlug; opts: { isolation: boolean; arch: boolean } }[] = [

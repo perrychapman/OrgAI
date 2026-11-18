@@ -1,7 +1,7 @@
 import { basename } from 'node:path'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import type { AgentInstance, AgentState, ConnectionId, RunStatus } from '@shared/types'
-import { BRIDGE_HARNESS_TOOLS, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS, isBuiltinConnectionId } from '@shared/types'
+import { BRIDGE_HARNESS_TOOLS, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, RUN_HARNESS_TOOLS, TODO_TOOL, isBuiltinConnectionId } from '@shared/types'
 import { PLAN_TOOLS } from './continuation'
 
 /**
@@ -29,7 +29,8 @@ export const HARNESS_TOOL_ACTIVITY: Record<string, string> = {
   [PERMISSION_HARNESS_TOOLS.request]: 'Asking you for a permission rule…',
   [RUN_HARNESS_TOOLS.list]: 'Checking other runs…',
   [RUN_HARNESS_TOOLS.message]: 'Messaging another run…',
-  [BRIDGE_HARNESS_TOOLS.delegate]: 'Delegating to a report on another connection…'
+  [BRIDGE_HARNESS_TOOLS.delegate]: 'Delegating to a report on another connection…',
+  [TODO_TOOL]: 'Using your to-dos…'
 }
 
 /** Short, single-line, length-capped text from untrusted tool input. */
@@ -46,6 +47,24 @@ function harnessToolDetail(name: string, input: unknown): string | undefined {
   if (name === BRIDGE_HARNESS_TOOLS.delegate) {
     const role = snippet(i.role)
     return role ? `Delegating to ${role} on another connection…` : undefined
+  }
+  if (name === TODO_TOOL) {
+    // Never the item id: the line names what changes, in the user's words.
+    const title = snippet(i.title)
+    switch (i.action) {
+      case 'list':
+        return 'Reading your to-dos…'
+      case 'add':
+        return title ? `Adding "${title}" to your to-dos…` : 'Adding to your to-dos…'
+      case 'complete':
+        return 'Completing a to-do…'
+      case 'reopen':
+        return 'Reopening a to-do…'
+      case 'update':
+        return title ? `Updating "${title}"…` : 'Updating a to-do…'
+      default:
+        return undefined
+    }
   }
   if (name === MCP_HARNESS_TOOLS.searchRegistry) {
     const q = snippet(i.query)

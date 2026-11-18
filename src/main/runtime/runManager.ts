@@ -3409,6 +3409,8 @@ export class RunManager {
   private bindTodos(a: ActiveRun, kind: RunSummary['kind'], isQuick: boolean, bare: boolean, projectId: string): { todos?: RuntimeTodoAccess } {
     const hooks = this.options.todos
     if (!hooks || kind !== 'work') return {}
+    // A scheduled run is unattended: it gets no list, so it cannot write items nobody is watching for.
+    if (a.summary.scheduleId) return {}
     if (!isQuick && (bare || isTrustRestrictedRun(a.summary))) return {}
     const scope: TodoScope = isQuick ? { kind: 'chat' } : { kind: 'project', projectId }
     const caller = (c: { agentId?: string }): { runId: string; agentId?: string; roleName?: string } => {
@@ -3417,8 +3419,9 @@ export class RunManager {
       const roleName = (agentId === ROOT_AGENT_ID ? a.rootRole : a.record.agents[agentId]?.roleSlug) || undefined
       return { runId: a.summary.id, agentId, ...(roleName ? { roleName } : {}) }
     }
-    const row = (verb: string, r: { item: TodoItem; changed: boolean }): { item: TodoItem; changed: boolean } => {
-      if (r.changed) this.knowledgeRow(a, ROOT_AGENT_ID, `${verb} to-do ${r.item.title}`)
+    // The one user-visible row per change: the title, never the item id.
+    const row = (verb: 'Added' | 'Completed' | 'Reopened' | 'Updated', r: { item: TodoItem; changed: boolean }): { item: TodoItem; changed: boolean } => {
+      if (r.changed) this.knowledgeRow(a, ROOT_AGENT_ID, verb === 'Added' ? `Added "${r.item.title}" to your to-dos` : `${verb} "${r.item.title}"`)
       return r
     }
     return {
