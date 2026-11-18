@@ -269,6 +269,69 @@ try {
     await page.keyboard.press('Escape')
     await until(async () => (await ctxCount()) === 0, 2000)
   }
+
+  // ======== 4. Real right clicks: custom menu XOR native text menu (main process) ========
+  // A trusted right click through the driver, with Menu.prototype.popup stubbed in main so no native menu really opens,
+  // and a counting listener on the window's 'context-menu' event. A surface whose renderer cancels the DOM contextmenu
+  // must not reach main; a field or a selection must reach it and build the text menu; a plain background reaches
+  // main but builds nothing.
+  await setSize(1600, 1000)
+  await app.evaluate(({ BrowserWindow, Menu }) => {
+    globalThis.__ctxProbe = { events: 0, popups: [] }
+    Menu.prototype.popup = function () {
+      globalThis.__ctxProbe.popups.push(this.items.map((i) => (i.type === 'separator' ? '---' : i.label)).join('|'))
+    }
+    BrowserWindow.getAllWindows()[0].webContents.on('context-menu', () => {
+      globalThis.__ctxProbe.events++
+    })
+  })
+  const probeReset = () => app.evaluate(() => { globalThis.__ctxProbe.events = 0; globalThis.__ctxProbe.popups = [] })
+  const probeRead = () => app.evaluate(() => JSON.parse(JSON.stringify(globalThis.__ctxProbe)))
+  const rightClickAt = async (loc, pos) => {
+    const b = await loc.boundingBox()
+    await page.mouse.click(b.x + (pos?.x ?? b.width / 2), b.y + (pos?.y ?? b.height / 2), { button: 'right' })
+    await sleep(600)
+  }
+  const dismissCustom = async () => {
+    await page.keyboard.press('Escape')
+    await until(async () => (await ctxCount()) === 0, 2000)
+  }
+  await gotoProjects(page)
+  const navRow = page.locator(`.sidebar [data-testid=nav-project][data-name="${NAME}"]`).first()
+  await probeReset()
+  await rightClickAt(navRow, { x: 30, y: 10 })
+  let pr = await probeRead()
+  check((await ctxCount()) === 1 && pr.events === 0 && pr.popups.length === 0, 'real right click on a sidebar project row: the custom menu opens and main sees no context-menu event', JSON.stringify(pr))
+  await dismissCustom()
+  await navRow.click()
+  await page.waitForSelector('[data-testid=dashboard]', { state: 'detached', timeout: 10_000 })
+  const composer = page.locator('.composer textarea, textarea').first()
+  await composer.fill('ctx probe text')
+  await probeReset()
+  await rightClickAt(composer)
+  pr = await probeRead()
+  check((await ctxCount()) === 0 && pr.events === 1 && pr.popups.join(';') === 'Cut|Copy|Paste|---|Select all', 'real right click in a text field: no custom menu, the native Cut / Copy / Paste / Select all menu is built', JSON.stringify(pr))
+  await composer.fill('')
+  const heading = page.locator('main h1, main h2, .topbar h1, h1, h2').first()
+  await page.evaluate(() => {
+    const el = document.querySelector('main h1, main h2, .topbar h1, h1, h2')
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    const s = window.getSelection()
+    s?.removeAllRanges()
+    s?.addRange(range)
+  })
+  await probeReset()
+  await rightClickAt(heading, { x: 5, y: 5 })
+  pr = await probeRead()
+  check((await ctxCount()) === 0 && pr.events === 1 && pr.popups.join(';') === 'Copy', 'real right click on selected text: no custom menu, the native Copy menu is built', JSON.stringify(pr))
+  await page.evaluate(() => window.getSelection()?.removeAllRanges())
+  const vpNow = page.viewportSize() ?? (await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })))
+  await probeReset()
+  await page.mouse.click(vpNow.width - 20, Math.round(vpNow.height / 2), { button: 'right' })
+  await sleep(600)
+  pr = await probeRead()
+  check((await ctxCount()) === 0 && pr.popups.length === 0, 'real right click on plain background: no custom menu and no native menu', JSON.stringify(pr))
 } catch (e) {
   check(false, 'context menus flow ran without throwing', e.stack ?? String(e))
   await shot('error').catch(() => {})
