@@ -398,26 +398,41 @@ function firstChecks(pack: ContextPack, paths: unknown[], index: number, callerC
   return abs
 }
 
+/** What openGuardedFile needs: the folders a file may be in and the protected set, prepared once per build or call. */
+export interface GuardedReadOptions {
+  /** Relative paths given to the self-control gate resolve here. */
+  callerCwd: string
+  readRoots: readonly string[]
+  protectedPaths: readonly string[]
+  pathsUnavailable?: boolean
+  deepCache?: ProtectedDeepCache
+  platform?: NodeJS.Platform
+}
+
+export interface GuardedReadState {
+  roots: string[]
+  lexicallyInside: (abs: string) => boolean
+  protectedPaths: readonly string[]
+  callerCwd: string
+  platform: NodeJS.Platform
+  openFlags: number
+  pinned: boolean
+  shallowKeys: Set<string> | null
+  deepSet: () => Set<string> | null
+}
+
 /**
- * Read the files a lead named for its report, with the checks in the header (Codex, the mock). Never throws; `paths`
- * may be anything the model sent (non-strings are skipped with a reason).
+ * The read roots and the protected set for openGuardedFile. The shallow protected set (exact files, prefix entries, the
+ * top level of each protected folder) is collected here, before any file is looked at, so a control file moved into a
+ * readable folder meanwhile is still known by its dev and ino. With the handle's path pinned (macOS, Linux) the gate on
+ * the real path covers every path into a protected folder; only a hard link needs the deep walk, done once per state
+ * when a file has more than one link. Without pinning (Windows) the deep set is checked for every file and walked once
+ * per run (deepCache), collected here.
  */
-export function buildContextPack(paths: unknown, opts: ContextPackOptions): ContextPack {
-  const pack: ContextPack = { files: [], skipped: [] }
-  if (!Array.isArray(paths) || paths.length === 0) return pack
-  if (opts.refuseAll) {
-    for (const p of paths) pack.skipped.push({ path: shown(p), reason: opts.refuseAll })
-    return pack
-  }
+export function guardedReadState(opts: GuardedReadOptions): GuardedReadState {
   const { roots, lexicallyInside } = rootsOf(opts.readRoots)
   const platform = opts.platform ?? process.platform
-  const openFlags = contextPackOpenFlags(platform)
   const pinned = handlePinned(platform)
-  // The shallow protected set (exact files, prefix entries, the top level of each protected folder), collected once per
-  // pack build before any file is looked at, so a control file moved into a readable folder during the build is still
-  // known by its dev and ino. With the handle's path pinned (macOS, Linux) the gate on the real path covers every path
-  // into a protected folder; only a hard link needs the deep walk, done once per build when a file has more than one
-  // link. Without pinning (Windows) the deep set is checked for every file, walked once per run (deepCache).
   const shallowKeys = opts.pathsUnavailable ? null : protectedFileKeys(opts.protectedPaths, platform, false)
   let deepKeys: Set<string> | null | undefined
   const deepSet = (): Set<string> | null => {
@@ -432,8 +447,110 @@ export function buildContextPack(paths: unknown, opts: ContextPackOptions): Cont
     }
     return deepKeys
   }
-  // Without pinning the deep set is needed for every file: collected (or taken from the run's cache) before the first.
   if (!pinned && shallowKeys !== null) deepSet()
+  return { roots, lexicallyInside, protectedPaths: opts.protectedPaths, callerCwd: opts.callerCwd, platform, openFlags: contextPackOpenFlags(platform), pinned, shallowKeys, deepSet }
+}
+
+/** An open, checked regular file (the caller reads from `fd` and closes it), or why it was not opened. */
+export type GuardedOpen = { fd: number; real: string; size: bigint } | { reason: string }
+
+/** The reasons openGuardedFile gives, for callers that word their own answer. */
+export const GUARDED_REASONS = { outside: OUTSIDE, control: CONTROL, unreadable: UNREADABLE, unchecked: UNCHECKED, missing: 'not found', notFile: 'not a file' } as const
+
+/**
+ * The file-system half of the header's checks for one absolute path (already past firstChecks: not a network path, the
+ * protected paths available): lexically inside a root before anything is touched (no existence oracle); the self-control
+ * gate on the path and its real path; the real path inside a root (a missing file behind a link that leads outside reads
+ * as outside); `beforeOpen(real)` may refuse; not a folder; then ONE open without following a final link, and the
+ * handle checked: where it points (Linux /proc, macOS O_NOFOLLOW_ANY), a regular file, the path still resolving to the
+ * same real path and the same dev and ino, and not a protected file (the shallow set, the deep set where needed). Shared
+ * by buildContextPack and read_document (documentAccess.ts). Never throws; on success the caller owns and closes `fd`.
+ */
+export function openGuardedFile(abs: string, s: GuardedReadState, beforeOpen?: (real: string) => string | undefined): GuardedOpen {
+  if (!s.lexicallyInside(abs)) return { reason: OUTSIDE }
+  const gate = (target: string): boolean => gateDenies(target, s.protectedPaths, s.callerCwd)
+  if (gate(abs)) return { reason: CONTROL }
+  let real: string
+  try {
+    real = realpathSync.native(abs)
+  } catch {
+    let leadsOutside = true
+    try {
+      leadsOutside = outsideRoots(canonicalDeep(abs), s.roots)
+    } catch {
+      /* fail to the outside answer */
+    }
+    return { reason: leadsOutside ? OUTSIDE : 'not found' }
+  }
+  if (gate(real)) return { reason: CONTROL }
+  if (outsideRoots(real, s.roots)) return { reason: OUTSIDE }
+  const refused = beforeOpen?.(real)
+  if (refused) return { reason: refused }
+  try {
+    if (lstatSync(real).isDirectory()) return { reason: 'not a file' }
+  } catch {
+    return { reason: UNREADABLE }
+  }
+  let fd: number
+  try {
+    fd = openSync(real, s.openFlags)
+  } catch {
+    return { reason: UNREADABLE }
+  }
+  const fail = (reason: string): GuardedOpen => {
+    try {
+      closeSync(fd)
+    } catch {
+      /* already closed */
+    }
+    return { reason }
+  }
+  try {
+    if (!handlePointsAt(fd, real, s.platform)) return fail(UNREADABLE)
+    const st = fstatSync(fd, { bigint: true })
+    if (!st.isFile()) return fail('not a file')
+    let again: string
+    let named: BigIntStats
+    try {
+      again = realpathSync.native(abs)
+      named = statSync(real, { bigint: true })
+    } catch {
+      return fail(UNREADABLE)
+    }
+    if (again !== real || fileKey(named) !== fileKey(st)) return fail(UNREADABLE)
+    const keys = s.pinned && st.nlink <= 1n ? s.shallowKeys : s.shallowKeys === null ? null : s.deepSet()
+    if (keys === null) return fail(UNCHECKED)
+    if (s.shallowKeys!.has(fileKey(st)) || keys.has(fileKey(st))) return fail(CONTROL)
+    return { fd, real, size: st.size }
+  } catch {
+    return fail(UNREADABLE)
+  }
+}
+
+/** Up to `max` bytes from an open handle, from `at`. */
+export function readHandleFrom(fd: number, max: number, at = 0): Buffer {
+  const buf = Buffer.alloc(max)
+  let n = 0
+  while (n < max) {
+    const got = readSync(fd, buf, n, max - n, at + n)
+    if (got <= 0) break
+    n += got
+  }
+  return buf.subarray(0, n)
+}
+
+/**
+ * Read the files a lead named for its report, with the checks in the header (Codex, the mock). Never throws; `paths`
+ * may be anything the model sent (non-strings are skipped with a reason).
+ */
+export function buildContextPack(paths: unknown, opts: ContextPackOptions): ContextPack {
+  const pack: ContextPack = { files: [], skipped: [] }
+  if (!Array.isArray(paths) || paths.length === 0) return pack
+  if (opts.refuseAll) {
+    for (const p of paths) pack.skipped.push({ path: shown(p), reason: opts.refuseAll })
+    return pack
+  }
+  const guard = guardedReadState(opts)
   const seen = new Set<string>()
   const admit = packWriter(pack, opts.blockMaxChars)
   for (let index = 0; index < paths.length; index++) {
@@ -444,108 +561,28 @@ export function buildContextPack(paths: unknown, opts: ContextPackOptions): Cont
     const skip = (reason: string): void => {
       pack.skipped.push({ path: shown(p), reason })
     }
-    // Before any file system call on the lead's path: outside reads the same whether it exists or not.
-    if (!lexicallyInside(abs)) {
-      skip(OUTSIDE)
-      continue
-    }
-    const gate = (target: string): boolean => gateDenies(target, opts.protectedPaths, opts.callerCwd)
-    if (gate(abs)) {
-      skip(CONTROL)
-      continue
-    }
-    let real: string
-    try {
-      real = realpathSync.native(abs)
-    } catch {
-      // Missing behind a link that leads outside (a linked folder): the same answer as an existing file there.
-      let leadsOutside = true
-      try {
-        leadsOutside = outsideRoots(canonicalDeep(abs), roots)
-      } catch {
-        /* fail to the outside answer */
-      }
-      skip(leadsOutside ? OUTSIDE : 'not found')
-      continue
-    }
-    if (gate(real)) {
-      skip(CONTROL)
-      continue
-    }
-    if (outsideRoots(real, roots)) {
-      skip(OUTSIDE)
-      continue
-    }
-    if (seen.has(real)) {
-      skip('listed twice')
-      continue
-    }
-    seen.add(real)
-    // A folder is named as such (lstat on the checked real path: no link to follow, nothing opened).
-    try {
-      if (lstatSync(real).isDirectory()) {
-        skip('not a file')
-        continue
-      }
-    } catch {
-      skip(UNREADABLE)
-      continue
-    }
-    // Open once and check the handle, so a swap between the checks above and here is caught, never read.
-    let fd: number
-    try {
-      fd = openSync(real, openFlags)
-    } catch {
-      skip(UNREADABLE)
+    const opened = openGuardedFile(abs, guard, (real) => {
+      if (seen.has(real)) return 'listed twice'
+      seen.add(real)
+      return undefined
+    })
+    if ('reason' in opened) {
+      skip(opened.reason)
       continue
     }
     let buf: Buffer
     try {
-      // Where the handle points (Linux /proc; macOS refused a linked component at the open).
-      if (!handlePointsAt(fd, real, platform)) {
-        skip(UNREADABLE)
-        continue
-      }
-      const st = fstatSync(fd, { bigint: true })
-      if (!st.isFile()) {
-        skip('not a file')
-        continue
-      }
-      if (st.size > BigInt(FILE_MAX_BYTES)) {
+      if (opened.size > BigInt(FILE_MAX_BYTES)) {
         skip(tooLong())
         continue
       }
-      let again: string
-      let named: BigIntStats
-      try {
-        again = realpathSync.native(abs)
-        named = statSync(real, { bigint: true })
-      } catch {
-        skip(UNREADABLE)
-        continue
-      }
-      if (again !== real || fileKey(named) !== fileKey(st)) {
-        skip(UNREADABLE)
-        continue
-      }
-      // The handle against the protected set, for every file: the shallow set always; the deep set for a file with
-      // more than one link (a hard link to a file deep in a protected folder) or, without pinning, for every file.
-      const keys = pinned && st.nlink <= 1n ? shallowKeys : shallowKeys === null ? null : deepSet()
-      if (keys === null) {
-        skip(UNCHECKED)
-        continue
-      }
-      if (shallowKeys!.has(fileKey(st)) || keys.has(fileKey(st))) {
-        skip(CONTROL)
-        continue
-      }
-      buf = readHandle(fd, FILE_MAX_BYTES + 1)
+      buf = readHandle(opened.fd, FILE_MAX_BYTES + 1)
     } catch {
       skip(UNREADABLE)
       continue
     } finally {
       try {
-        closeSync(fd)
+        closeSync(opened.fd)
       } catch {
         /* already closed */
       }

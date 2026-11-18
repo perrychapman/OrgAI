@@ -216,7 +216,7 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/runtime/codexNativeCatalog.ts:remove:unlinkSync': 'single owner',
   'src/main/runtime/codexNativeCatalog.ts:rename:renameSync': 'single owner',
   'src/main/runtime/codexNativeCatalog.ts:write:writeFileSync': 'single owner',
-  'src/main/runtime/contextPack.ts:buildContextPack:openSync': 'single owner',
+  'src/main/runtime/contextPack.ts:openGuardedFile:openSync': 'single owner',
   'src/main/runtime/folderConfigTrust.ts:openPlain:openSync': 'single owner',
   'src/main/runtime/mock.ts:MockSession.step:mkdirSync': 'single owner',
   'src/main/runtime/mock.ts:MockSession.step:writeFileSync': 'single owner',

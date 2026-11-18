@@ -4,7 +4,7 @@ import { briefFiles } from './contextPack'
 import { PLAN_BATCHING_TEXT, REPORT_CHECKS_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, spawnCallText, spawnLimitMark, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
 import { orgChart, project } from './testHelpers'
 import { APP_REFERENCE_TOOL, LIST_SCHEDULES_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, PROPOSE_SCHEDULE_TOOL, type Role } from '@shared/types'
-import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText, todosText } from './prompts'
+import { documentReadText, selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText, todosText } from './prompts'
 import { TODO_TOOL } from '@shared/types'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
@@ -172,10 +172,23 @@ describe('buildRolePrompt', () => {
 
   it('separates paragraphs with blank lines', () => {
     const parts = buildRolePrompt(lead, roles, withArch, { isSetup: false, isolation: true }).split('\n\n')
-    // prompt, reports, team sizing, staffing, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, outputs, tool hygiene, self-knowledge (app_reference), brief
-    expect(parts).toHaveLength(18)
+    // prompt, reports, team sizing, staffing, isolation, network, architecture, drift, unattended, org-change guidance, cross-run guidance, MCP guidance, skills guidance, permission requests, outputs, tool hygiene, read_document (the lead has Read), self-knowledge (app_reference), brief
+    expect(parts).toHaveLength(19)
     // Staffing 'fixed' drops only the staffing paragraph.
-    expect(buildRolePrompt(lead, roles, { ...withArch, staffing: 'fixed' }, { isSetup: false, isolation: true }).split('\n\n')).toHaveLength(17)
+    expect(buildRolePrompt(lead, roles, { ...withArch, staffing: 'fixed' }, { isSetup: false, isolation: true }).split('\n\n')).toHaveLength(18)
+  })
+
+  it('points roles with Read at read_document (work and Chat), never roles without Read or setup runs', () => {
+    const sentence = documentReadText()
+    expect(sentence).toContain('read_document')
+    expect(sentence).not.toMatch(/—/)
+    const withRead = { ...lead, tools: [...new Set([...lead.tools, 'Read' as const])] }
+    const noRead = { ...lead, tools: lead.tools.filter((t) => t !== 'Read') }
+    expect(buildRolePrompt(withRead, roles, withArch, { isSetup: false, isolation: true })).toContain(sentence)
+    expect(buildRolePrompt(noRead, roles, withArch, { isSetup: false, isolation: true })).not.toContain(sentence)
+    expect(buildRolePrompt(withRead, roles, withArch, { isSetup: false, isolation: false, quick: { folder: '/tmp/chat', scratch: false, allowEdits: false, team: 'none' } as never })).toContain(sentence)
+    const architect = architectRole()
+    expect(buildRolePrompt({ ...architect, tools: ['Read'] }, [architect], withArch, { isSetup: true, isolation: false })).not.toContain(sentence)
   })
 
   it('tells every work-run role to edit with the edit tools and avoid cd chains, never setup runs', () => {

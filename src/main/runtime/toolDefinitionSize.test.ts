@@ -61,10 +61,19 @@ import { claudeToolSizes, codexToolSizes, measureCase, sumChars, type MeasureSlu
  *   writing report     unchanged (root only)
  * Bounds rose to the next 50 above the new figure.
  */
+/*
+ * read_document (documentAccess.ts): one tool (453 chars Claude, 459 Codex: a path, a sheet name and five unconstrained
+ * numbers, readDocument.ts clamps them) on every role with Read, reports included. It earns its place because the
+ * providers' own Read refuses xlsx, docx and pptx, so without it no agent can read the office files a task names.
+ *   team root          Claude 20,597 -> 21,050   Codex 22,904 -> 23,363
+ *   writing report     Claude    442 ->    895   Codex    921 ->  1,380
+ *   single assistant   Claude 12,399 -> 12,852   Codex 12,974 -> 13,433
+ * Bounds rose to the next 50 above the new figure.
+ */
 const BUDGET: Record<string, { claude: number; codex: number }> = {
-  orchestrator: { claude: 20_600, codex: 22_950 },
-  implementer: { claude: 500, codex: 1_000 },
-  single: { claude: 12_400, codex: 13_000 }
+  orchestrator: { claude: 21_100, codex: 23_400 },
+  implementer: { claude: 900, codex: 1_400 },
+  single: { claude: 12_900, codex: 13_450 }
 }
 
 const CASES: { label: string; slug: MeasureSlug; opts: { isolation: boolean; arch: boolean } }[] = [
