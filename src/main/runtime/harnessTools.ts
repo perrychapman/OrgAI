@@ -211,6 +211,12 @@ export interface HarnessToolCaller {
   agentId?: string
   /** The calling agent's Role.id when the adapter knows it (Codex: the thread's role; mock). Missing = the root role. */
   roleId?: string
+  /**
+   * The calling agent's working folder as the adapter tracks it (Claude: its worktree when isolated, else the project
+   * folder). Only read_document reads it, to resolve a relative path; it is never a folder the agent may read by itself
+   * (the read roots come from RuntimeContext). Missing = the project folder.
+   */
+  cwd?: string
 }
 
 /** Options for harnessToolsFor. */

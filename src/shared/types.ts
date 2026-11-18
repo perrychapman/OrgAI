@@ -9184,6 +9184,26 @@ export function outputKindForPath(path: string): OutputKind {
 /** Harness tool names. read_output (outputs 2) lets agents read an output's text and its open notes. */
 export const OUTPUT_TOOLS = { produce: 'produce_output', register: 'register_output', read: 'read_output' } as const
 
+/**
+ * read_document (harness tool; main process only, never IPC): one file inside the folders the calling agent may read, as
+ * fenced text. For files the provider's own Read refuses: xlsx / xlsm (tab-separated rows of one sheet, a row and column
+ * window), docx (Markdown-like text), pptx (per slide), and UTF-8 / UTF-16 text. Offered to every role whose Role.tools
+ * has 'Read' on work, single and Chat runs; never on setup-like runs. Everything else is refused with a sentence that
+ * names the detected type. Module: src/main/runtime/documentAccess.ts (path safety) and src/main/outputs/readDocument.ts
+ * (formats, through the outputs preview pipeline).
+ */
+export const READ_DOCUMENT_TOOL = 'read_document'
+/** UTF-8 bytes of file text in one read_document result at most; more is cut and marked truncated. */
+export const READ_DOCUMENT_MAX_BYTES = 96 * 1024
+/** Sheet rows one read_document call returns when `rows` is not given. */
+export const READ_DOCUMENT_ROWS_DEFAULT = 200
+/** Sheet rows one read_document call returns at most (`rows`). */
+export const READ_DOCUMENT_ROWS_MAX = 1000
+/** Sheet columns one read_document call returns at most (`columns`, also the default). */
+export const READ_DOCUMENT_COLUMNS_MAX = 128
+/** Longest `path` argument read_document accepts, in characters. */
+export const READ_DOCUMENT_PATH_MAX_CHARS = 1024
+
 /** read_output input (RuntimeContext.outputs.read). */
 export interface OutputReadInput {
   action: 'list' | 'read' | 'notes'
