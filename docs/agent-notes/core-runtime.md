@@ -353,7 +353,10 @@ Application menu, run end and decision cards, settings, run titles, projects, us
       pure and tidy removal, running report of a removed role, MCP coalescing, change during the build, depth, notice
       text). Live Claude behaviour is unverified, notably whether a resumed session accepts a renamed root agent
       (`Options.agent` with a new slug) and how the CLI treats a spawn of an agent type it has no definition for (the
-      gate refuses those before the CLI sees them).
+      gate refuses those before the CLI sees them). Review fixes (same day): `rosterApplied` (called by RunManager in
+      the tick `ctx.roles` moves) does the stale marking, so the gate refuses added / changed roles even when
+      `configChanged` never runs or throws; `callerRole` (and the spawn gate's parent) prefers the recorded agent's
+      retired role, so an agent of a removed role is never judged on a new role that reuses its slug (claudeRoster.test.ts).
     - Mock (2026-11-18): `MockSession.liveRoster` is true and `configChanged({ roles })` answers 'now' (recorded in
       `configChanges`, harness tools re-bound). Every role lookup reads `ctx.roles` at call time (the start-time
       `rolesBySlug` map is gone); a spawn of a role not in `ctx.roles` is refused with a tool error (removed: names the
@@ -371,9 +374,10 @@ Application menu, run end and decision cards, settings, run titles, projects, us
       and sets `rosterRestartPending`, which shares the MCP restart at idle (`maybeRestartForMcp`, one restart and one
       harness message for both; a change landing during a restart restarts again or is told at once if the resumed
       root already has it). Threads that existed when their role was changed or removed are pinned: a restart resumes
-      them with their start-time role snapshot and the exact instructions they were given. A change of the root's own
-      tool list (canSpawn flipped) throws (Codex fixes a thread's dynamic tools at thread/start), so the tool says next
-      run; the spawn gate follows ctx.roles either way. Fake app-server tests (codexRoster.test.ts). Live Codex is
+      them with their start-time role snapshot and the exact instructions they were given; the snapshot's grants
+      (`mcpServers` / `skills`) always come from the live role, absent included, so a pin never undoes an ungrant. A
+      change of the root's own tool list (canSpawn flipped) throws (Codex fixes a thread's dynamic tools at
+      thread/start); RunManager never moves the root's canSpawn mid-run, so this path is defensive only. Fake app-server tests (codexRoster.test.ts). Live Codex is
       unverified: that thread/resume applies new developerInstructions (the MCP restart assumes the same), and that a
       new role's own model gets the native-agents catalog override before the next app-server restart.
   - Proposal gates (2026-11-02, renderer review): main refuses control, zero-width, bidi and other invisible
