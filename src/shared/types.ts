@@ -9883,3 +9883,95 @@ export interface OrgAIApi {
   }
   onUpdatesChanged(cb: (state: UpdateState) => void): () => void
 }
+
+// ---- To-dos (docs/design/todos.md; pure helpers in ./todos.ts) ----
+
+/** Which list an item is on: one per stored project (engagement or code), one for Chat. */
+export type TodoScope = { kind: 'project'; projectId: string } | { kind: 'chat' }
+export type TodoStatus = 'open' | 'done'
+
+export interface TodoItem {
+  /** 'todo_<hex>', main-owned. */
+  id: string
+  scope: TodoScope
+  /** 1..TODO_TITLE_MAX_CHARS, one line, no hidden characters. */
+  title: string
+  /** Optional context, up to TODO_DETAIL_MAX_CHARS, no hidden characters. */
+  detail?: string
+  status: TodoStatus
+  // ---- main-owned from here on; ignored on save ----
+  createdAt: number
+  updatedAt: number
+  doneAt?: number
+  createdBy: 'user' | 'agent'
+  /** Who last changed title / detail. An agent never rewrites an item the user wrote or edited. */
+  editedBy: 'user' | 'agent'
+  /** Who set the current status. */
+  statusBy: 'user' | 'agent'
+  /** Filled by main for agent-created items: the conversation it came from. */
+  source?: { runId: string; agentId?: string; roleName?: string }
+  /** Runs the user started from this item, newest first, at most TODO_STARTED_RUNS_MAX. */
+  startedRunIds?: string[]
+}
+
+/** todos:save input. No id = create (scope required). With id: only the given fields change. */
+export interface TodoSaveInput {
+  id?: string
+  scope: TodoScope
+  title?: string
+  /** null clears it. */
+  detail?: string | null
+  status?: TodoStatus
+  /** Refuse when the stored item changed since it was loaded. */
+  expectedUpdatedAt?: number
+}
+
+/** Push on TODOS_IPC.todosChanged (every window). */
+export interface TodosChangedEvent {
+  scope: TodoScope
+  ids: string[]
+  removed?: string[]
+}
+
+export const TODOS_MAX_PER_SCOPE = 200
+export const TODO_TITLE_MAX_CHARS = 200
+export const TODO_DETAIL_MAX_CHARS = 2000
+export const TODO_STARTED_RUNS_MAX = 10
+/** Agent writes (add, complete, reopen, update) one run may make. */
+export const TODO_RUN_WRITES_MAX = 30
+/** Items one tool call returns. */
+export const TODO_TOOL_LIST_MAX = 50
+
+/**
+ * Harness tool name (harnessTools.ts). One tool with `action: 'list' | 'add' | 'complete' | 'reopen' | 'update'`;
+ * agents never remove items.
+ */
+export const TODO_TOOL = 'todo_list'
+
+/** Channels of this section. Not spread into IPC; not registered in the host dispatcher yet. */
+export const TODOS_IPC = {
+  /** (TodoScope) -> TodoItem[], open first then done, newest first. Scope read. */
+  todosList: 'todos:list',
+  /** (TodoSaveInput) -> TodoItem. Scope configure. */
+  todosSave: 'todos:save',
+  /** ({ scope, id }) -> void. Scope configure. */
+  todosRemove: 'todos:remove',
+  /** (TodoScope) -> number of done items removed. Scope configure. */
+  todosClearDone: 'todos:clearDone',
+  /** ({ scope, id, runId }) -> TodoItem; records a run the user started from the item. Scope operate. */
+  todosLinkRun: 'todos:linkRun',
+  /** main -> renderer push carrying TodosChangedEvent (every window). */
+  todosChanged: 'todos:changed'
+} as const
+
+/** window.orgai additions of this section (declaration-merged into OrgAIApi). */
+export interface OrgAIApi {
+  todos: {
+    list(scope: TodoScope): Promise<TodoItem[]>
+    save(input: TodoSaveInput): Promise<TodoItem>
+    remove(input: { scope: TodoScope; id: string }): Promise<void>
+    clearDone(scope: TodoScope): Promise<number>
+    linkRun(input: { scope: TodoScope; id: string; runId: string }): Promise<TodoItem>
+  }
+  onTodosChanged(cb: (event: TodosChangedEvent) => void): () => void
+}
