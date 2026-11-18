@@ -106,9 +106,13 @@ async function checkStageTabs(label, must) {
   check((await conv.getAttribute('aria-selected')) === 'true', `${label}: Home returns to Conversation`)
 }
 
+/** Opens an assistant on its start page: the row returns to the last viewed tab (ended or not), "+" starts fresh. */
 async function openAssistant(id) {
   await row(id).click()
-  await page.locator(`[data-testid=assistant-start-${id}]`).waitFor({ timeout: 10_000 }).catch(() => {})
+  const start = page.locator(`[data-testid=assistant-start-${id}]`)
+  await page.waitForFunction((sel) => !!document.querySelector(sel) || !!document.querySelector('.run-tablist .run-tab-wrap.selected:not([data-run="new"])'), `[data-testid=assistant-start-${id}]`, { timeout: 10_000 }).catch(() => {})
+  if (!(await start.count()) && (await page.locator('.run-tab-new').count())) await page.locator('.run-tab-new').click()
+  await start.waitFor({ timeout: 10_000 }).catch(() => {})
   await sleep(300)
 }
 
@@ -356,7 +360,7 @@ try {
   if (/No handler registered/.test(probe)) {
     for (const s of [
       'Chat run starts from the start page and shows a run tab',
-      'Chat run reaches Idle with "Your turn. Reply, ask a follow-up, or end the session."',
+      'Chat run reaches Idle with "Your turn. Reply or ask a follow-up."',
       'Save as project is disabled for a scratch chat, with a reason',
       'Chat History shows Scratch in history-folder',
       'Skill assistant run shows a proposal with proposal-skill-item and Approve resolves it'
@@ -371,8 +375,8 @@ try {
     await ta.press('Enter')
     await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 }).catch(() => {})
     check((await page.locator('.run-tab[aria-selected=true]').count()) === 1, 'Chat run starts and a run tab appears')
-    await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
-    check((await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').count()) > 0, 'Chat run reaches Idle with the follow-up label')
+    await page.getByText('Your turn. Reply or ask a follow-up.').first().waitFor({ timeout: 60_000 }).catch(() => {})
+    check((await page.getByText('Your turn. Reply or ask a follow-up.').count()) > 0, 'Chat run reaches Idle with the follow-up label')
     await shot('chat-idle-1600x1000')
     const idleChip = page.locator('[data-testid=run-meta-access]')
     check((await idleChip.getAttribute('data-state').catch(() => null)) === 'asks' && ((await idleChip.innerText().catch(() => '')) || '').trim().startsWith('asks first'), 'a scratch Chat started with edits off shows the "asks first" chip')
@@ -430,7 +434,7 @@ try {
     await page.locator('.run-body .composer textarea').press('Enter')
     await sleep(600)
     check((await page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]').getAttribute('aria-selected')) === 'true' && (await visible('[data-testid=conversation-transcript]')), 'a send from the Usage tab returns the stage to Conversation')
-    await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
+    await page.getByText('Your turn. Reply or ask a follow-up.').first().waitFor({ timeout: 60_000 }).catch(() => {})
     // New-reply cue: send, move to Usage before the reply lands; Conversation is marked and named, one cue, cleared on selecting it.
     const convTab = page.locator('[data-testid=run-stage-tabs] [data-testid=run-tab-conversation]')
     await page.locator('.run-body .composer textarea').fill('And one more, briefly.')
@@ -446,7 +450,7 @@ try {
       await sleep(300)
       check((await convTab.getAttribute('aria-label')) === null && (await page.locator('[data-testid=run-tab-conversation-dot]').count()) === 0, 'selecting Conversation clears the new-reply cue')
     }
-    await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
+    await page.getByText('Your turn. Reply or ask a follow-up.').first().waitFor({ timeout: 60_000 }).catch(() => {})
     await toggle.click()
     await sleep(500)
     check((await page.locator('.run-body').first().getAttribute('data-layout')) === 'canvas' && (await page.locator('.react-flow').count()) > 0 && !(await visible('[data-testid=run-conversation]')), '"Show agents" switches to the canvas')
@@ -460,6 +464,8 @@ try {
     check(focusAfter === 'run-layout-toggle', 'focus stays on the layout toggle across the switch', String(focusAfter))
 
     await endSession(page)
+    const endedChain = await page.locator('.run-tablist .run-tab-wrap.selected').first().getAttribute('data-chain').catch(() => null)
+    check((await page.locator('.run-tablist .run-tab-wrap.selected:not([data-run="new"])').count()) === 1, 'the Chat tab stays after End session')
     const save = page.locator('[data-testid=run-save-as-project]')
     const saveOff = (await save.getAttribute('aria-disabled').catch(() => null)) === 'true' || (await save.isDisabled().catch(() => false))
     check((await save.count()) === 1 && saveOff, 'Save as project is disabled for a scratch chat')
@@ -476,10 +482,13 @@ try {
     check((await histSave.count()) === 1 && (await histSave.isDisabled()), 'the scratch chat row in History has a disabled Save as project')
     await shot('chat-history-1600x1000')
 
-    // An ended Chat: the sidebar row opens the start page, not the stopped run.
+    // An ended Chat: its tab stays, and the sidebar row returns to it (the last viewed tab), not the start page.
+    await gotoProjects(page)
     await row('quick').click()
     await sleep(600)
-    check(await visible('[data-testid=assistant-start-quick]'), 'Chat sidebar row after an ended chat shows the start page')
+    check(!(await visible('[data-testid=assistant-start-quick]')), 'Chat sidebar row after an ended chat returns to its tab, not the start page')
+    const backChain = await page.locator('.run-tablist .run-tab-wrap.selected').first().getAttribute('data-chain').catch(() => null)
+    check(!!endedChain && backChain === endedChain, 'the ended chat tab is the selected tab after leave and return', `${endedChain} -> ${backChain}`)
 
     // Save as project from a chat in a real folder: typed path, then the action is gone once the project exists.
     const chatRepo = makeFixtureRepo('chat-promote')
@@ -516,7 +525,7 @@ try {
     await setSize(1600, 1000)
     await page.locator('[data-testid=assistant-start-quick] .composer textarea').fill('Say hello in one short sentence.')
     await page.locator('[data-testid=assistant-start-quick] .composer textarea').press('Enter')
-    await page.getByText('Your turn. Reply, ask a follow-up, or end the session.').first().waitFor({ timeout: 60_000 }).catch(() => {})
+    await page.getByText('Your turn. Reply or ask a follow-up.').first().waitFor({ timeout: 60_000 }).catch(() => {})
     await endSession(page)
     const promote = page.locator('[data-testid=run-save-as-project]')
     check((await promote.count()) === 1 && !(await promote.isDisabled()), 'Save as project is enabled for a chat in a folder')
@@ -775,10 +784,12 @@ try {
     await page.locator('[data-testid=run-meta-workspace]').first().waitFor({ timeout: 20_000 }).catch(() => {})
     check(await visible('[data-testid=run-meta-workspace]'), 'an MCP assistant run with the build switch on shows run-meta-workspace')
     await endSession(page)
-    // An ended MCP run: the sidebar row and Configure with AI both land on the start page.
+    // An ended MCP run: the sidebar row returns to its tab (sessions never have to be ended, tabs never close on their
+    // own); Configure with AI is a fresh entry and lands on the start page.
+    await gotoProjects(page)
     await row('harness').click()
-    await sleep(600)
-    check(await visible('[data-testid=assistant-start-harness]'), 'MCP assistant sidebar row after an ended run shows the start page')
+    await sleep(800)
+    check(!(await visible('[data-testid=assistant-start-harness]')) && (await page.locator('.run-tablist .run-tab-wrap.selected:not([data-run="new"])').count()) === 1, 'MCP assistant sidebar row after an ended run returns to its tab')
     await gotoProjects(page)
     await openAppSettings(page)
     await page.getByRole('tab', { name: 'Connectors', exact: true }).click()

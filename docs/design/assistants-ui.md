@@ -250,9 +250,10 @@ CLAUDE.md "Chat asks"). The renderer follows the walk's "What the ask path shoul
 - Wording lives in `lib/chatPermissions.ts` (pure, unit-tested; the project wording stays in `lib/permissionCopy.ts`).
 - Permission card: `scopeLimit(request)` reads `maxScope`. 'session' (Chat, MCP build sessions) shows no "Always allow
   for project" button, no `perm-scope-project` and no settings link; the effect line is `perm-scope-session`
-  (`sessionScopeCopy`: "Allow for session: stops asking for edits in this chat's folder until you end this chat." for
-  the quick session edit offer, "... stops asking for "npm test" commands until you end this chat." for a rule; a build
-  session says "until you end this session") with the rule chips. 'once' keeps the reference-folder card. A Chat card
+  (`sessionScopeCopy`: "Allow for session: stops asking for edits in this chat's folder until this chat session ends."
+  for the quick session edit offer, "... stops asking for "npm test" commands until this chat session ends." for a
+  rule; a build session says "until this session ends"; reworded 2026-11-18 because ending a session is never a
+  required step, and the grant also ends when OrgAI quits; chatPermissions unit tests) with the rule chips. 'once' keeps the reference-folder card. A Chat card
   has `perm-location[data-kind=chat]` "Runs in <folder name>" (full path in the title, hidden characters shown) or "Runs
   in this chat's scratch area", and with `quickReadOnly` the line `perm-quick-readonly` "This chat started read-only.
   Allowing lets it change <the scratch area | folder>." (commands: "... lets it run this command in ...").

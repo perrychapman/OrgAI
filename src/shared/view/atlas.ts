@@ -1068,7 +1068,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     path: [PROJ, 'Live', 'Run strip'],
     kind: 'section',
     scope: 'run',
-    summary: 'Run tabs, one per conversation, with Interrupt, End session and Org retrospective for the shown run.',
+    summary:
+      'Run tabs, one per conversation, with Interrupt, an optional End session and Org retrospective for the shown run. Hiding a tab never ends its session, and a tab stays when its session ends; sending continues the conversation.',
     reach: [
       { via: 'tab', label: 'Run tabs' },
       { via: 'menu', action: 'close-tab' },
@@ -1578,7 +1579,7 @@ export const MENU_ACTION_DOCS: Readonly<Record<MenuAction, string>> = {
   'toggle-hide-finished': 'View > Canvas > Hide finished agents: folds finished agents on the live canvas.',
   'canvas-fit': 'View > Canvas > Fit canvas: fits the canvas to the window.',
   'keyboard-shortcuts': 'Help > Keyboard shortcuts: opens the shortcuts dialog.',
-  'close-tab': 'File > Close tab: closes the shown run tab.',
+  'close-tab': 'File > Close tab: hides the shown run tab; a working session keeps going (reopen it from the sidebar or History).',
   'go-to-decision': 'Run > Go to decision: jumps to the open decision card.',
   'show-needs-you': 'Run > Show what needs you: opens the list of waiting decisions.',
   'toggle-conversation': 'View > Canvas > Show conversation: switches the run between canvas and conversation layout.',
