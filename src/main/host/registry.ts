@@ -17,6 +17,7 @@ import {
   RPC_CONTROL_REQUEST_MAX_BYTES,
   RPC_CONTROL_RESPONSE_MAX_BYTES,
   SCHEDULES_IPC,
+  TODOS_IPC,
   SECRETS_IPC,
   OUTPUTS_IPC,
   TEAM_FILES_IPC,
@@ -132,6 +133,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'knowledge:get', 'knowledge:inferredLinks', 'kit:previewBundle', 'projects:folderConfig', 'teamFiles:listAttention', 'secrets:status',
     'app:reference', 'outputs:list', 'outputs:preview', 'outputs:deletePreview', 'outputs:versions', 'outputs:readSource', 'outputs:thumb', 'outputs:compare', 'outputs:notes', 'outputs:revisions', 'outputs:reviseOptions',
     'schedules:list', 'schedules:history',
+    'todos:list',
     'org:evolveAnalyze', 'org:evolveHistory'
   ],
   operate: [
@@ -141,7 +143,9 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'capabilities:cancel', 'capabilities:review', 'skills:evaluate', 'draft:orgChart', 'window:openRun', 'outputs:noteAdd', 'outputs:noteUpdate',
     'outputs:noteRemove', 'outputs:revise', 'outputs:watch', 'outputs:unwatch',
     // Desktop only in the handler (surface check, like runs:setPermissionMode): a schedule is standing consent to spend.
-    'schedules:runNow'
+    'schedules:runNow',
+    // Desktop surface only in the handler for now; records a run id on an item, never starts a run.
+    'todos:linkRun'
   ],
   decide: ['runs:decide', 'permissions:decideRequest', 'setup:decide', 'setup:answer', 'merges:decide', 'mcp:answerInstall'],
   configure: [
@@ -164,6 +168,8 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'secrets:undelete', 'secrets:confirmDelete', 'outputs:forget', 'outputs:delete', 'outputs:saveEdit', 'outputs:restore', 'outputs:update',
     // Desktop only in the handler (surface check), like runs:setPermissionMode.
     'schedules:save', 'schedules:remove', 'schedules:setEnabled',
+    // To-dos: desktop surface only in the handler for now (not desktop-only by design).
+    'todos:save', 'todos:remove', 'todos:clearDone',
     // Team evolution: served by dispatcher.ts for the window and the in-process CLI only; a socket client is refused.
     'org:evolveApply', 'org:evolveRollback', 'org:evolveAfterRun'
   ],
@@ -195,6 +201,7 @@ const PUSH_TABLE: Readonly<Record<string, Omit<PushChannelEntry, 'direction'>>> 
   [IPC.appNavigate]: { delivery: 'desktop_only', source: 'RunManager open_in_app -> SelfKnowledgeHooks.navigate -> DesktopHooks.navigate (index.ts, the live main window; never on the bus, never a socket)' },
   [TEAM_FILES_IPC.teamFilesChanged]: { delivery: 'desktop_only', source: 'host/bootstrap.ts TeamFilesService broadcastStatus -> DesktopHooks.teamFilesChanged (index.ts, every window; never on the bus, never a socket)' },
   [SCHEDULES_IPC.schedulesChanged]: { delivery: 'desktop_only', source: 'schedules/service.ts changed event -> index.ts (every window; never on the bus, never a socket)' },
+  [TODOS_IPC.todosChanged]: { delivery: 'desktop_only', source: 'todos/service.ts changed event -> DesktopHooks.todosChanged (index.ts, every window; never on the bus, never a socket)' },
   [UPDATES_IPC.updatesChanged]: { delivery: 'desktop_only', source: 'updater.ts UpdateController emit -> index.ts (every window; never on the bus, never a socket)' }
 }
 
@@ -258,6 +265,9 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
   'host dispatcher (SCHEDULES_IPC; schedules/service.ts, desktop surface only for writes and runNow)': [
     SCHEDULES_IPC.schedulesList, SCHEDULES_IPC.schedulesHistory, SCHEDULES_IPC.schedulesSave, SCHEDULES_IPC.schedulesRemove,
     SCHEDULES_IPC.schedulesSetEnabled, SCHEDULES_IPC.schedulesRunNow
+  ],
+  'host dispatcher (TODOS_IPC; todos/service.ts, desktop surface only for writes and linkRun)': [
+    TODOS_IPC.todosList, TODOS_IPC.todosSave, TODOS_IPC.todosRemove, TODOS_IPC.todosClearDone, TODOS_IPC.todosLinkRun
   ],
   'host dispatcher (HOST_IPC, socket only; skills/service.ts libraryAddFromBundle)': [HOST_IPC.skillLibraryAddFromBundle],
   'host dispatcher (HOST_IPC, socket only; kit/service.ts bundle channels)': [HOST_IPC.kitExportBundle, HOST_IPC.kitPreviewBundle, HOST_IPC.kitApplyBundle],

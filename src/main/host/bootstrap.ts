@@ -34,6 +34,9 @@ import { QuickRunService, projectPeeks } from '../quick/quickRuns'
 import { sweepScratchDirs, validateQuickFolder } from '../quick/scratch'
 import { ScheduleService } from '../schedules/service'
 import { ScheduleStore } from '../schedules/store'
+import { TodoService, type TodoCaller } from '../todos/service'
+import { TodoStore } from '../todos/store'
+import type { TodoScope } from '../../shared/types'
 import { ClaudeAdapter } from '../runtime/claude'
 import { sweepStaleSkillDirs } from '../runtime/claudeSkills'
 import { CodexAdapter } from '../runtime/codex'
@@ -456,7 +459,34 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   })
   // Team evolution (src/main/evolve/): the service is built right after RunManager (it completes through it); the post-run hook reads it lazily.
   let evolveService: EvolveService | undefined
+  // To-dos (docs/design/todos.md): one list per stored project plus Chat's. The service checks every write; the agent
+  // side (todo_list) is wired on the desktop host only, like the schedule tools. runScope reads RunManager lazily.
+  let todoRuns: RunManager | undefined
+  const todos = new TodoService({
+    store: new TodoStore(dataDir, { log: (m) => log.info(m) }),
+    now: () => Date.now(),
+    projectExists: (id) => !isVirtualProjectId(id) && !!projects.get(id),
+    runScope: (runId) => {
+      const s = todoRuns?.summary(runId)
+      if (!s || s.kind !== 'work') return null
+      if (s.projectId === QUICK_PROJECT_ID) return { kind: 'chat' }
+      return isVirtualProjectId(s.projectId) ? null : { kind: 'project', projectId: s.projectId }
+    },
+    // A desktop-only push (like schedules:changed): never on the socket bus.
+    changed: (event) => opts.desktop?.todosChanged?.(event),
+    log: (m) => log.info(m)
+  })
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
+    ...(opts.desktop
+      ? {
+          todos: {
+            list: (scope: TodoScope) => todos.agentList(scope),
+            add: (scope: TodoScope, text: { title: unknown; detail?: unknown }, caller: TodoCaller) => todos.agentAdd(scope, text, caller),
+            setStatus: (scope: TodoScope, id: unknown, status: 'open' | 'done', caller: TodoCaller) => todos.agentSetStatus(scope, id, status, caller),
+            update: (scope: TodoScope, id: unknown, text: { title?: unknown; detail?: unknown }, caller: TodoCaller) => todos.agentUpdate(scope, id, text, caller)
+          }
+        }
+      : {}),
     dataDir,
     // Schedules: list_schedules / propose_schedule read through access(); an approved card applies through the service.
     // Desktop only (review L8): the CLI's in-process host never fires a schedule, so it offers no schedule tools.
@@ -649,6 +679,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     log: (m) => log.info(m)
   })
   scheduleService = schedules
+  todoRuns = rm
   events.on((channel, payload) => {
     if (channel === IPC.runEvent) schedules.onRunEvent(payload as RunEvent)
   })
@@ -930,6 +961,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     capabilities: caps,
     quick,
     schedules,
+    todos,
     templates,
     kit,
     teamFiles,

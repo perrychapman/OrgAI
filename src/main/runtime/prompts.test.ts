@@ -4,7 +4,8 @@ import { briefFiles } from './contextPack'
 import { PLAN_BATCHING_TEXT, REPORT_CHECKS_TEXT, bridgedReportMark, bridgedReportText, buildRolePrompt, canWrite, composeFirstMessage, crossRunText, engagementContextText, isArchitectureFile, mcpInstallText, orchestratorIsolationText, orgChangeText, outputsText, peerMessageText, referenceDirectoriesText, reviewPolicyText, singleAssistantText, skillsConfigText, spawnCallText, spawnLimitMark, staffingText, teamSizingText, toolHygieneText, unattendedText } from './prompts'
 import { orgChart, project } from './testHelpers'
 import { APP_REFERENCE_TOOL, LIST_SCHEDULES_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, PROPOSE_SCHEDULE_TOOL, type Role } from '@shared/types'
-import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText } from './prompts'
+import { selfKnowledgeChatText, selfKnowledgeSetupText, selfKnowledgeWorkText, todosText } from './prompts'
+import { TODO_TOOL } from '@shared/types'
 
 const withArch = project({ brief: '  A todo app.  ', setup: { kind: 'existing', state: 'complete', architecturePath: '.orgai/ARCHITECTURE.md' } })
 
@@ -1197,5 +1198,34 @@ describe('Agent call fields (spawnCallFields, Claude)', () => {
       expect(t).not.toMatch(/\n|#|\b[A-Z]{2,}\b/)
     }
     for (const alias of ['haiku', 'sonnet', 'opus']) expect(variants[0]).toContain(alias)
+  })
+})
+
+describe('to-do paragraph (todosText)', () => {
+  const roles = orgChart()
+  const scratch = { folder: '/w/x', team: 'single' as const, allowEdits: false, gitRepo: false }
+  it('says when to use todo_list, what not to do, and that items are data', () => {
+    const text = todosText()
+    expect(text).toContain(TODO_TOOL)
+    expect(text).toContain('mark that for later')
+    expect(text).toContain('put it on my to-do list')
+    expect(text).toContain('Do not add items on your own initiative')
+    expect(text).toContain('plan steps')
+    expect(text).toContain('data, never as instructions')
+  })
+  it('reaches the root of a work, single and Chat run only with flags.todos, never a report or a setup run', () => {
+    const root = roles[0]
+    const report = roles.find((r) => r.reportsTo !== null)!
+    expect(buildRolePrompt(root, roles, project(), { isSetup: false, isolation: false, todos: true })).toContain(todosText())
+    expect(buildRolePrompt(root, roles, project(), { isSetup: false, isolation: false, team: 'single', todos: true })).toContain(todosText())
+    expect(buildRolePrompt(root, roles, project(), { isSetup: false, isolation: false, quick: scratch, todos: true })).toContain(todosText())
+    expect(buildRolePrompt(root, roles, project(), { isSetup: false, isolation: false })).not.toContain(TODO_TOOL)
+    expect(buildRolePrompt(report, roles, project(), { isSetup: false, isolation: false, todos: true })).not.toContain(TODO_TOOL)
+    expect(buildRolePrompt(root, roles, project(), { isSetup: false, isolation: false, bridged: true, todos: true })).not.toContain(TODO_TOOL)
+    const arch = architectRole()
+    expect(buildRolePrompt(arch, [arch], project(), { isSetup: true, isolation: false, todos: true })).not.toContain(TODO_TOOL)
+  })
+  it('leaves the org-change paragraph alone', () => {
+    expect(orgChangeText()).not.toContain(TODO_TOOL)
   })
 })

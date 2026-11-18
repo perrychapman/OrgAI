@@ -30,6 +30,8 @@ import type { McpService } from '../mcp/service'
 import type { QuickRunService } from '../quick/quickRuns'
 import type { RunManager } from '../runtime/runManager'
 import type { ScheduleService } from '../schedules/service'
+import type { TodoService } from '../todos/service'
+import type { TodosChangedEvent } from '../../shared/types'
 import type { AgentImportService } from '../setup/import/importer'
 import type { EvolveService } from '../evolve/service'
 import type { TeamFilesService } from '../teamFiles/service'
@@ -62,6 +64,8 @@ export interface DesktopHooks {
   teamFilesChanged?(status: TeamFilesStatus): void
   /** schedules:changed: send to every window (desktop-only push; never to a socket). */
   schedulesChanged?(event: SchedulesChangedEvent): void
+  /** todos:changed: send to every window (desktop-only push today; never to a socket). */
+  todosChanged?(event: TodosChangedEvent): void
   /**
    * An agent's open_in_app (RunManager -> SelfKnowledgeHooks.navigate): send an AppNavigateEvent on IPC.appNavigate to
    * the live unscoped main window (restored, focused, created when closed). false only when no window can be made.
@@ -107,6 +111,8 @@ export interface HostServices {
   templates: TemplateService
   /** Schedules (src/main/schedules/service.ts). Absent = the schedules:* channels answer that schedules are not available. */
   schedules?: ScheduleService
+  /** To-dos (src/main/todos/service.ts). Absent = the todos:* channels answer that to-dos are not available. */
+  todos?: TodoService
   /** The practice kit (src/main/kit/service.ts). Absent = the kit channels are not registered (older tests). */
   kit?: KitService
   /** Team files (src/main/teamFiles/service.ts). Absent = the teamFiles channels answer 'not available' (older tests). */

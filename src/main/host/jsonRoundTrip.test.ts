@@ -12,6 +12,7 @@ import {
   KIT_IPC,
   MCP_SCOPE_IPC,
   SCHEDULES_IPC,
+  TODOS_IPC,
   SECRETS_IPC,
   TEAM_FILES_IPC,
   EVOLVE_IPC,
@@ -50,21 +51,22 @@ function dropUndefined(v: unknown): unknown {
 }
 
 describe('(a) completeness', () => {
-  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC), ...Object.values(UPDATES_IPC)]
+  const existing: string[] = [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC), ...Object.values(UPDATES_IPC), ...Object.values(TODOS_IPC)]
   // HOST_IPC (socket only) and SECRETS_IPC (Wave 7, every surface): channels added for the host.
   const host: string[] = [...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC), ...Object.values(EVOLVE_IPC), EVOLVE_AFTER_RUN_CHANNEL]
 
-  it('matches the spec counts: 225 existing channels (209 request + 16 push, including the 7 SCHEDULES_IPC and 6 UPDATES_IPC) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
+  it('matches the spec counts: 231 existing channels (214 request + 17 push, including the 7 SCHEDULES_IPC, 6 UPDATES_IPC and 6 TODOS_IPC) plus 6 HOST_IPC and 5 SECRETS_IPC', () => {
     const push = new Set(PUSH_CHANNELS)
     expect(new Set(existing).size).toBe(existing.length)
-    expect(existing.length).toBe(225)
-    expect(existing.filter((c) => push.has(c)).length).toBe(16)
-    expect(existing.filter((c) => !push.has(c)).length).toBe(209)
+    expect(existing.length).toBe(231)
+    expect(existing.filter((c) => push.has(c)).length).toBe(17)
+    expect(existing.filter((c) => !push.has(c)).length).toBe(214)
     expect(Object.values(SCHEDULES_IPC).length).toBe(7)
+    expect(Object.values(TODOS_IPC).length).toBe(6)
     expect(Object.values(UPDATES_IPC).length).toBe(6)
     expect(Object.values(HOST_IPC).length).toBe(6)
     expect(Object.values(SECRETS_IPC).length).toBe(5)
-    expect(requestChannels().length).toBe(225)
+    expect(requestChannels().length).toBe(230)
   })
 
   it('every channel is either in CHANNEL_JSON_FIELDS or a push channel, never both', () => {
@@ -360,6 +362,11 @@ describe('(d) outputs:* channels over the wire', () => {
       expiresAt: null
     }
     expect(overWire('schedules:save', [input])).toEqual([input])
+  })
+
+  it('todos:save keeps detail null over the wire (TodoService reads null as "clear")', () => {
+    const input = { id: 'todo_0123abcd0123abcd', scope: { kind: 'project', projectId: 'p_abc' }, title: 'Call Acme', detail: null, expectedUpdatedAt: 1_700_000_000_000 }
+    expect(overWire('todos:save', [input])).toEqual([input])
   })
 
   it('covers every outputs request channel', () => {

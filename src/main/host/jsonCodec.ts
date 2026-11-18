@@ -9,7 +9,7 @@
  *
  * Standalone and pure: no electron import, no file I/O. Wave 1's src/main/host/registry.ts imports it.
  */
-import { EVOLVE_IPC, HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC, UPDATES_IPC } from '../../shared/types'
+import { EVOLVE_IPC, HOST_IPC, IPC, KIT_IPC, MCP_SCOPE_IPC, OUTPUTS_IPC, SCHEDULES_IPC, SECRETS_IPC, TEAM_FILES_IPC, TODOS_IPC, UPDATES_IPC } from '../../shared/types'
 
 // ---------- Safe parse / stringify ----------
 
@@ -84,7 +84,8 @@ export const PUSH_CHANNELS: readonly string[] = [
   IPC.appNavigate,
   OUTPUTS_IPC.outputsChanged,
   SCHEDULES_IPC.schedulesChanged,
-  UPDATES_IPC.updatesChanged
+  UPDATES_IPC.updatesChanged,
+  TODOS_IPC.todosChanged
 ]
 
 /**
@@ -98,7 +99,7 @@ export const EVOLVE_AFTER_RUN_CHANNEL = 'org:evolveAfterRun'
  * HOST_IPC, SECRETS_IPC (Wave 7).
  */
 export function allChannels(): string[] {
-  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC), ...Object.values(UPDATES_IPC), ...Object.values(EVOLVE_IPC), EVOLVE_AFTER_RUN_CHANNEL, ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC)]
+  return [...Object.values(IPC), ...Object.values(MCP_SCOPE_IPC), ...Object.values(KIT_IPC), ...Object.values(TEAM_FILES_IPC), ...Object.values(OUTPUTS_IPC), ...Object.values(SCHEDULES_IPC), ...Object.values(UPDATES_IPC), ...Object.values(EVOLVE_IPC), EVOLVE_AFTER_RUN_CHANNEL, ...Object.values(HOST_IPC), ...Object.values(SECRETS_IPC), ...Object.values(TODOS_IPC)]
 }
 
 /** Every request channel: allChannels() minus PUSH_CHANNELS. */
@@ -334,6 +335,12 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'schedules:remove': {}, // desktop only (handler)
   'schedules:setEnabled': {}, // desktop only (handler)
   'schedules:runNow': {}, // desktop only (handler)
+  // ---- to-dos (TODOS_IPC; TodoService rebuilds every input). null on save.detail clears it. ----
+  'todos:list': {},
+  'todos:save': { nullable: ['detail'], note: 'no id = create; with id only the given fields change; detail null clears it' }, // desktop surface only (handler)
+  'todos:remove': {}, // desktop surface only (handler)
+  'todos:clearDone': {}, // desktop surface only (handler)
+  'todos:linkRun': {}, // desktop surface only (handler); records the run id only
   // ---- desktop updater (UPDATES_IPC; ipc.ts registerUpdatesIpc, desktop only) ----
   'updates:get': {},
   'updates:check': {},

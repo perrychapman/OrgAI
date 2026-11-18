@@ -126,6 +126,7 @@ import {
   MCP_SCOPE_IPC,
   QUICK_PROJECT_ID,
   SCHEDULES_IPC,
+  TODOS_IPC,
   SECRETS_IPC,
   SKILLS_PROJECT_ID,
   TEAM_FILES_IPC,
@@ -142,7 +143,7 @@ import type { CapabilityServiceApi } from '../capabilities/types'
 import { claudeAuthStatus } from '../connections/anthropicAuth'
 import type { ConnectionService } from '../connections/service'
 import { applyBundleArgs, exportBundleArgs, previewBundleArgs, type KitService } from '../kit/service'
-import { logPath } from '../log'
+import { log, logPath } from '../log'
 import { assistPrompt, harnessProject as buildHarnessProject } from '../mcp/assist'
 import type { McpService } from '../mcp/service'
 import type { QuickRunService } from '../quick/quickRuns'
@@ -526,6 +527,34 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     desktopOnly(ctx)
     return scheduleService().runNow(scheduleId(raw))
   })
+  // To-dos (docs/design/todos.md): list is readable on every surface; save / remove / clearDone / linkRun are wired for
+  // the desktop surface only for now (to-dos are not desktop-only by design; the CLI has no to-do surface yet), refused
+  // with scope_denied before the input is read. TodoService rebuilds every input and checks the project, ids and caps;
+  // linkRun checks the run exists and belongs to the item's list and only records the id (nothing starts a run here).
+  const todoService = (): NonNullable<HostServices['todos']> => {
+    if (!services.todos) throw new Error('To-dos are not available in this host.')
+    return services.todos
+  }
+  const todosDesktop = (ctx: InvokeContext): void => {
+    if (ctx.surface !== 'desktop') throw new HostRpcFailure('scope_denied', 'To-dos can be changed in the desktop app only for now.')
+  }
+  handle(TODOS_IPC.todosList, (_ctx, raw: unknown) => todoService().list(raw))
+  handle(TODOS_IPC.todosSave, (ctx, raw: unknown) => {
+    todosDesktop(ctx)
+    return todoService().save(raw)
+  })
+  handle(TODOS_IPC.todosRemove, (ctx, raw: unknown) => {
+    todosDesktop(ctx)
+    todoService().remove(raw)
+  })
+  handle(TODOS_IPC.todosClearDone, (ctx, raw: unknown) => {
+    todosDesktop(ctx)
+    return todoService().clearDone(raw)
+  })
+  handle(TODOS_IPC.todosLinkRun, (ctx, raw: unknown) => {
+    todosDesktop(ctx)
+    return todoService().linkRun(raw)
+  })
   /**
    * A stored project, or the display project of a virtual id (harness, quick = "Chat", skills). Never listed by
    * projects:list. The Chat's display project has no roles and creates no directory.
@@ -596,6 +625,12 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     removeProjectData(settings.dataDir, id)
     removeSkillEvaluation(settings.dataDir, id)
     removeEvolutionLedger(settings.dataDir, id)
+    // The project's to-do list goes with it (a failed write is logged; the orphan list is unreachable without the project).
+    try {
+      services.todos?.removeScope({ kind: 'project', projectId: id })
+    } catch (e) {
+      log.warn(`To-dos of project ${id} were not removed: ${(e as Error).message}`)
+    }
     return { ...facts, runsRemoved: typeof removed === 'number' ? removed : facts.runsRemoved }
   })
   handle(IPC.projectsRemovePreview, (_e, input: unknown): ProjectRemoveResult => {
