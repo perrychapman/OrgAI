@@ -744,7 +744,8 @@ ul.maint-list {
   max-height: calc(100vh - 16px);
   overflow: auto;
   padding: var(--space-1);
-  border: 0;
+  /* Transparent normally (the shadow draws the edge); forced-colors mode drops shadows and paints this border. */
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text-primary);

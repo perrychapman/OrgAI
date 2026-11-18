@@ -145,6 +145,9 @@ export function KnowledgeList({
   const onRowContextMenu = (e: MouseEvent<HTMLUListElement>): void => {
     const row = e.target instanceof Element ? e.target.closest<HTMLElement>('[role=option]') : null
     const id = row?.dataset.id
+    // Selected text in the list keeps the platform menu (Copy): leave the selection and the row as they are.
+    const sel = window.getSelection()
+    if (sel && !sel.isCollapsed && sel.toString().trim() && sel.anchorNode && e.currentTarget.contains(sel.anchorNode)) return
     if (row && id) menu.onContextMenu(e, id, menuOpts(id, row))
   }
   const menuItems = (id: string): MenuEntry[] => {

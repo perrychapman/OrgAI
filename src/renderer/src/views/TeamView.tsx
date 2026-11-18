@@ -923,7 +923,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         </FrameTray>
         <FrameFooter>
           <span>
-            {options.presentation === 'pocket-office' ? 'Select a role to edit it. With a role focused, Enter edits it and Delete removes it.' : <>{options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it and Delete removes it.</>}
+            {options.presentation === 'pocket-office' ? 'Select a role to edit it. With a role focused, Enter edits it and Delete removes it.' : <>{options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it, Delete removes it and Shift+F10 or a right click shows more.</>}
           </span>
         </FrameFooter>
       </CanvasFrame>

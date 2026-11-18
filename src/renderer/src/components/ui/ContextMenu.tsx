@@ -82,9 +82,10 @@ function nativeWins(e: ReactMouseEvent<HTMLElement>): boolean {
   return nativeMenuWins({ editable, link, selectedText: touches && sel ? sel.toString() : '' })
 }
 
-/** Menu-key events from inside a text field belong to the field. */
+/** Menu-key events from inside a text field or on a link belong to the platform menu. */
 function inField(el: EventTarget | null): boolean {
   if (!(el instanceof Element)) return false
+  if (el.closest('a[href]')) return true
   const f = el.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
   return !!f && !(f instanceof HTMLInputElement && TEXT_INPUT_SKIP.has(f.type))
 }
@@ -181,6 +182,7 @@ export function MenuButton<T>({
         // The Menu key on the More button opens the same menu.
         if (isMenuKey(e)) {
           e.preventDefault()
+          e.stopPropagation()
           control.openFrom(e.currentTarget, target, 'end', { fallbackFocus })
         }
       }}
@@ -205,9 +207,18 @@ export function ContextMenu<T>({
   className?: string
 }): ReactElement | null {
   const st = control.state
-  if (!st) return null
-  const entries = items(st.target)
-  if (!entries.some((e) => e !== 'separator')) return null
+  const entries = st ? items(st.target) : []
+  const empty = !!st && !entries.some((e) => e !== 'separator')
+  // The target went away while the menu was open (its row was removed elsewhere): close properly, so a More button's
+  // aria-expanded resets and focus does not fall to the body.
+  const { close, fallback } = control
+  useEffect(() => {
+    if (!empty) return
+    const a = document.activeElement
+    close()
+    if (!a || a === document.body) fallback()?.focus({ preventScroll: true })
+  }, [empty, close, fallback])
+  if (!st || empty) return null
   return <MenuPanel key={st.seq} state={st} control={control} label={typeof label === 'function' ? label(st.target) : label} entries={entries} testId={testId} className={className} />
 }
 
@@ -247,6 +258,8 @@ function MenuPanel<T>({
         const inv = state.invoker
         const target = inv && inv.isConnected ? inv : c.fallback()
         target?.focus({ preventScroll: true })
+        // An invoker that cannot take focus (a table row, a card) leaves focus nowhere: use the fallback then.
+        if (target && document.activeElement !== target) c.fallback()?.focus({ preventScroll: true })
       }
       try {
         el?.hidePopover()

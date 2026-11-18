@@ -1,5 +1,34 @@
 # Renderer (general)
 
+## Context menus (2026-11-18)
+
+Contract and evaluation table: `docs/design/context-menus.md`. One primitive, `components/ui/ContextMenu.tsx`
+(`useContextMenu<T>()`, `<ContextMenu>`, `<MenuButton>`), pure rules in `lib/contextMenu.ts` (placement, roving index,
+type-ahead, `isMenuKey`, `nativeMenuWins`; unit tested in `lib/contextMenu.test.ts`). No dependency, no new IPC.
+
+- Surfaces: run tabs (`RunTabs.tsx`, testid `run-tab-ctx`), Knowledge rows (`KnowledgeList.tsx`, `knowledge-row-more`,
+  handled on the listbox; `KnowledgeRow` no longer has `onMenu`), Dashboard tiles (`ProjectTile.tsx`,
+  `project-tile-menu`, More button `project-tile-more`; was a `Popover`), sidebar project and open-run rows
+  (`nav-project-menu`, `nav-run-menu`), History rows (`history-menu`, visible `history-more`; Save as project and
+  Retrospective moved into it), schedule cards (`schedule-menu`), Outputs list rows and grid tiles
+  (`useOutputRowMenu` in `OutputsList.tsx`, `output-row-menu`, off in select mode), org chart nodes (`TeamView.tsx`,
+  `role-node-menu`). `usage/RankedBars.tsx` keeps its own row menu.
+- Item testids that e2e and helpers rely on were kept: `project-tile-new-run|continue|open-folder|delete`,
+  `knowledge-row-edit-note|retire`, `history-save-as-project`, `history-retro`.
+- Rules the code depends on: the panel is `popover="manual"` and only mounted while open (e2e waits for
+  `[data-testid=...][role=menu]`); it unhides (`data-placed`) before focusing, since focus on a `visibility: hidden`
+  element is a no-op (found by e2e: menus opened with focus left on the row); it closes on a wheel event outside, not
+  on `scroll` (focusing the tab scrolled `.run-tablist` and closed the tab menu in about half of the runs); a keyboard
+  open ignores the platform's `contextmenu` echo for 600 ms; an invoker that cannot take focus falls back to
+  `fallbackFocus`; a menu whose target disappears closes itself.
+- A real right click in a field, on a link or over a selection pops the native menu from main
+  (`src/main/textContextMenu.ts`); e2e cannot dismiss it, so `e2e/context-menus.mjs` dispatches `contextmenu` from
+  script for those cases and checks the event is not cancelled.
+- Checked by: `e2e/context-menus.mjs` (71 checks, 3 green runs in a row), `e2e/team.mjs` `sectionNodeMenu`,
+  `e2e/assistants.mjs` (History More), the existing knowledge/dashboard scripts, a Reviewer pass (no Critical or High)
+  and a mock walkthrough of all nine surfaces (`docs/design/ux-review-context-menus.md`). Unverified: screen-reader
+  speech, OS hand-offs (open folder, reveal, open in default app, new window) from a menu, Windows high contrast.
+
 ## Desktop updater UI (2026-11-17)
 
 App settings > About > Updates, the sidebar update notice and Help > Check for Updates… are described, with how each
