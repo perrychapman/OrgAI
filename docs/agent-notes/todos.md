@@ -82,12 +82,21 @@ checked. "Unverified" means no test or run confirmed it.
 - Spend: the tool definition adds about 531 to 559 characters to every root request on work, single and Chat runs.
   Budgets are raised and the tool is capped at 600 characters in `toolDefinitionSize.test.ts`.
 - Prompt: `todosText()` (`prompts.ts`) is shown on the root when `flags.todos` is set, never on reports, setup-like
-  runs or bridged children. Checked by `prompts.test.ts`. The adapters do not pass `flags.todos` yet (adapter-owned), so
-  for now the tool description alone carries the rules.
+  runs or bridged children. Checked by `prompts.test.ts`.
+- Adapters: Claude (`buildAgents`), Codex (`instructionsFor`) and the mock pass `todos: true` when `ctx.todos` is set
+  and the run is not a bridged child; `prompts.ts` shows it only on the root. Checked by `claudeTodos.test.ts` (real
+  `buildAgents`: root yes, reports no, none without `ctx.todos`, none for a bridged child) and a `codex.test.ts` case
+  (fake app-server: root thread yes, report thread no, none without `ctx.todos`). The paragraph is not in
+  `scripts/measure-prompt-size.mjs` output (a bare default run has no `ctx.todos`); no prompt budget test existed to change.
+- Mock marker `[mock:todo]` (`todoMarkerSteps`, Chat and work runs, default script): the root calls the bound `todo_list`
+  `add` (title "Follow up with Acme about the export format", detail about CSV as well as XLSX) and says "Added to your
+  to-do list.". "Already on the list (open)" counts as added; a `REFUSED:` or "To-dos are not available" answer is said
+  back as the tool's first line; without `ctx.todos` it says "To-dos are not available in this run.". Checked by
+  `mockTodo.test.ts` with a fake `todos` context (tool call input, duplicate, refusal, none).
 
 ## Open and unverified
 
-- Adapter wiring of `flags.todos` (Claude, Codex, mock) and the mock marker `[mock:todo]` are not built.
+- Live Claude and Codex behaviour with the paragraph (whether the model follows it) is unverified.
 - The per-run write count is held in memory: it resets after an app restart and is never pruned (small).
 - A Chat run promoted to a project cannot be live (promotion refuses a live chain), so a live session never writes the
   wrong list. Checked by reading `quick/quickRuns.ts` `promote`.

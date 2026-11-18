@@ -929,6 +929,8 @@ export function buildAgents(
         // Engagements: the approved engagement document, read now (a restart rebuilds agents and re-reads it).
         ...(engagementDocument ? { engagementDocument } : {}),
         ...(knowledgeBrief ? { knowledgeBrief } : {}),
+        // To-dos: the root of a run with todo_list gets the paragraph; prompts.ts keeps it off reports, and a bridged child is a report.
+        ...(ctx.todos && !ctx.bridgedChild ? { todos: true } : {}),
         ...(granted.length ? { skills: granted.map(([q, s]) => ({ name: q, description: s.description })), skillTool: 'Skill' as const } : {}),
         // Multi-provider org charts: bridged reports are marked "delegate with delegate_agent"; a bridged child's root is a report.
         ...(bridgedRoles.length ? { bridgedRoles, bridgeVia: 'delegate_agent' as const } : {}),
