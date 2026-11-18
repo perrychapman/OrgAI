@@ -74,6 +74,7 @@ import { fakeCtx, mcpSpec, orgChart, project, role, runSummary } from './testHel
 import type { RuntimeContext } from './types'
 
 type Fake = InstanceType<typeof sdk.FakeQuery>
+type Roster = { added: string[]; changed: string[]; removed: string[] }
 type HookOut = { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string; updatedInput?: Record<string, unknown> } }
 type Hook = (i: unknown, id: string, o: unknown) => Promise<HookOut>
 
@@ -102,13 +103,22 @@ function start(over: Partial<RuntimeContext> = {}, servers: McpServerSpec[] = []
   const session = new ClaudeSession(ctx)
   sessions.push(session)
   /** Approve an org chart: RunManager's in-place apply, then the tool's configChanged call. */
+  /** RunManager's in-place apply and, in the same tick, rosterApplied (as RunManager calls it). */
+  const apply = (next: Role[]): Roster => {
+    const applied = applyRosterChange({ running: ctx.roles, saved: next, proposed: next })
+    retired.push(...applied.retired)
+    const { added, changed, removed } = applied.change
+    const roles = { added, changed, removed }
+    session.rosterApplied(roles)
+    return roles
+  }
   const approve = async (next: Role[]): Promise<ConfigChangeResult> => {
     const applied = applyRosterChange({ running: ctx.roles, saved: next, proposed: next })
     retired.push(...applied.retired)
     const { added, changed, removed } = applied.change
     return change(session, { roles: { added, changed, removed } })
   }
-  return { ctx, session, retired, approve }
+  return { ctx, session, retired, approve, apply }
 }
 
 const change = (s: ClaudeSession, c: ConfigChange) => (s as unknown as { configChanged(x: ConfigChange): Promise<ConfigChangeResult> }).configChanged(c)
@@ -382,6 +392,81 @@ describe('Claude org changes in the same run: coalescing', () => {
     expect(q3.options.agents.qa).toBeDefined()
     expect(decision(await spawn(q3, 'qa'))).not.toBe('deny')
   }, 20_000)
+})
+
+describe('Claude org changes in the same run: rosterApplied (M1)', () => {
+  /** Docs added, the engineer and the root changed (the root loses Read). */
+  function addAndChange(): Role[] {
+    const next = withDocs()
+    next[0]!.tools = ['Grep']
+    next[1]!.prompt = 'You are the careful engineer.'
+    return next
+  }
+
+  it('rosterApplied alone: the added role, the changed role and the root\'s lost tool are refused at once', async () => {
+    const { apply, q1 } = await running()
+    expect(decision(await spawn(q1, 'engineer'))).not.toBe('deny')
+    expect(decision(await toolCall(q1, 'Read'))).not.toBe('deny')
+    expect(apply(addAndChange())).toEqual({ added: ['r-docs'], changed: expect.arrayContaining(['r-lead', 'r-eng']), removed: [] })
+    // No configChanged yet: the gate already follows the live roster.
+    expect(reason(await spawn(q1, 'docs'))).toContain('Docs writer joined this run\'s org chart')
+    expect(reason(await spawn(q1, 'engineer'))).toContain('Engineer changed in this run\'s org chart')
+    expect(reason(await toolCall(q1, 'Read'))).toContain('took Read off the orchestrator\'s role')
+    expect(decision(await spawn(q1, 'reviewer'))).not.toBe('deny')
+  })
+
+  it('a configChanged that throws after rosterApplied leaves those roles refused for the session', async () => {
+    let broken = false
+    const { session, apply, q1 } = await running({
+      mcpServers: () => {
+        if (broken) throw new Error('config unreadable')
+        return []
+      }
+    })
+    broken = true
+    // rosterApplied never throws, even when the live MCP list cannot be read (the root's lost tool is still refused).
+    const roles = apply(addAndChange())
+    await expect(change(session, { roles })).rejects.toThrow('config unreadable')
+    expect(reason(await spawn(q1, 'docs'))).toContain('Docs writer joined')
+    expect(reason(await spawn(q1, 'engineer'))).toContain('Engineer changed')
+    expect(reason(await toolCall(q1, 'Read'))).toContain('took Read off')
+    // No restart was scheduled, and the refusals hold after the turn ends.
+    q1.emit(result)
+    await sleep(MCP_RESTART_DELAY_MS + 300)
+    expect(sdk.queries).toHaveLength(1)
+    expect(decision(await spawn(q1, 'docs'))).toBe('deny')
+    expect(decision(await spawn(q1, 'engineer'))).toBe('deny')
+  }, 15_000)
+
+  it('the normal sequence (rosterApplied, then configChanged) restarts at idle and then allows the roles', async () => {
+    const { session, apply, q1 } = await running()
+    const roles = apply(addAndChange())
+    expect(await change(session, { roles })).toEqual({ availability: 'after-idle' })
+    expect(decision(await spawn(q1, 'docs'))).toBe('deny')
+    const q2 = await restarted(q1)
+    expect(q2.options.agents.docs).toBeDefined()
+    expect(q2.options.agents.engineer.prompt).toContain('You are the careful engineer.')
+    expect(q2.options.agents.lead.tools).not.toContain('Read')
+    q2.emit(init)
+    expect(decision(await spawn(q2, 'docs'))).not.toBe('deny')
+    expect(decision(await spawn(q2, 'engineer'))).not.toBe('deny')
+    await vi.waitFor(() => expect(texts(q2)).toContain('The approved org chart is in place in this session now.'))
+  }, 15_000)
+})
+
+describe('Claude org changes in the same run: a retired role\'s agents (M2)', () => {
+  it('a running agent of a removed role is judged on its retired copy, not on a later role that reuses its slug', async () => {
+    const { ctx, session, approve, q1 } = await running()
+    q1.emit({ type: 'system', subtype: 'task_started', task_id: 'rv1', tool_use_id: 'tu-rv', subagent_type: 'reviewer', description: 'review', session_id: 's', uuid: 'u-rv' })
+    await vi.waitFor(() => expect(lastAgent(ctx, 'rv1')?.roleId).toBe('r-rev'))
+    expect((await approve(withoutReviewer(true))).availability).toBe('after-idle')
+    // A new role with the old slug that may spawn the engineer (RunManager defers this; driven directly here).
+    ctx.roles.push(role({ id: 'r-rev2', slug: 'reviewer', name: 'Reviewer two', canSpawn: true, spawnable: ['r-eng'], reportsTo: 'r-lead' }))
+    session.rosterApplied({ added: ['r-rev2'], changed: [], removed: [] })
+    const out = await spawn(q1, 'engineer', { id: 'rv1', type: 'reviewer' })
+    expect(decision(out)).toBe('deny')
+    expect(reason(out)).toContain('does not let reviewer spawn subagents')
+  })
 })
 
 describe('Claude org changes in the same run: notice text', () => {

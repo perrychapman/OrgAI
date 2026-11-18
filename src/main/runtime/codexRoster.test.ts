@@ -252,11 +252,42 @@ describe('Codex live roster (configChanged roles)', () => {
   })
 
   it("a change of the root's own tools (it can no longer spawn) is rejected: Codex cannot change a running thread's tools", async () => {
-    const { apply } = await start()
+    // Defensive path: RunManager never moves the root's canSpawn mid-run, so the adapter is driven directly here (the
+    // root's live role rewritten in place, as an apply that did would leave it).
+    const { ctx } = await start()
+    const root = ctx.roles.find((r) => r.reportsTo === null)!
+    root.canSpawn = false
+    root.spawnable = []
+    await expect(configChanged({ roles: { added: [], changed: [root.id], removed: [] } })).rejects.toThrow(/orchestrator's own tools/)
+  })
+
+  it('a pinned report is resumed with its live grants, so a full ungrant is never undone by the pin (L4)', async () => {
+    const { ctx, servers, apply } = await start()
+    const s1 = servers[0]
+    const eng = ctx.roles.find((r) => r.id === 'r-eng')!
+    eng.mcpServers = ['github']
+    eng.skills = ['lint']
+    expect(await spawn(s1, 'engineer')).toMatchObject({ success: true })
+    const engId = ctx.events.find((e): e is Extract<RunEvent, { type: 'agent.upsert' }> => e.type === 'agent.upsert' && e.agent.handle === 'engineer-1')!.agent.id
+    // The engineer's role changes: the running thread is pinned to its start-time definition (which held both grants).
     const next = orgChart()
-    next[0] = { ...next[0], canSpawn: false, spawnable: [] }
-    const roles = apply(next)
-    await expect(configChanged({ roles })).rejects.toThrow(/orchestrator's own tools/)
+    next[1] = { ...next[1], prompt: 'Engineer, version two.', mcpServers: ['github'], skills: ['lint'] }
+    await configChanged({ roles: apply(next) })
+    const internals = session as unknown as { net: { roleOf(id: string): Role | undefined }; resumeRoleOf(id: string): Role; startRoles: Map<string, Role> }
+    expect(internals.startRoles.get(engId)).toMatchObject({ mcpServers: ['github'], skills: ['lint'] })
+    // A full ungrant deletes both fields on the live role.
+    const live = internals.net.roleOf(engId)!
+    delete live.mcpServers
+    delete live.skills
+    const resumed = internals.resumeRoleOf(engId)
+    expect(resumed.prompt).not.toContain('version two')
+    expect(resumed.mcpServers).toBeUndefined()
+    expect(resumed.skills).toBeUndefined()
+    expect('mcpServers' in resumed || 'skills' in resumed).toBe(false)
+    // A narrowed grant follows the live role too.
+    live.mcpServers = []
+    live.skills = ['lint']
+    expect(internals.resumeRoleOf(engId)).toMatchObject({ mcpServers: [], skills: ['lint'] })
   })
 
   it('coalesces with a pending MCP change: one restart, one message naming both', async () => {
