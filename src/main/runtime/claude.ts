@@ -419,6 +419,8 @@ interface RestartConfig {
   removed: string[]
   /** The skills or skill grants changed. */
   skills: boolean
+  /** Approved org changes (ConfigChange.roles, role ids, accumulated): definitions and the root's prompt / tools to rebuild. */
+  roles?: { added: string[]; changed: string[]; removed: string[] }
 }
 
 /** What a spawn runs on, as staffSpawn sent it (or the definition carries it): the staffing row's tier, model and effort. */
@@ -542,6 +544,8 @@ export function configChangeNotice(c: {
   servers: Parameters<typeof mcpAttachedNotice>[0]
   removed: string[]
   skills?: { name: string; roles: Pick<Role, 'name' | 'slug'>[] }[] | null
+  /** An approved org change is in the session now (RosterNotice). */
+  roster?: RosterNotice
 }): string {
   let text = c.servers.length ? mcpAttachedNotice(c.servers) : '[OrgAI harness] The configuration change approved this run is in effect now.'
   if (c.removed.length) {
@@ -558,7 +562,31 @@ export function configChangeNotice(c: {
     const more = c.skills.length > MCP_NOTICE_TOOL_CAP ? `, and ${c.skills.length - MCP_NOTICE_TOOL_CAP} more` : ''
     text += ` Skills in this session now: ${listed.join('; ')}${more}. Agents load one with the Skill tool and its full name, prefix included.`
   }
+  if (c.roster) text += ` ${rosterNoticeText(c.roster)}`
   return text
+}
+
+/** The org chart part of the config notice: what an approved org change made available in this session. */
+export type RosterNotice = {
+  /** Added or changed reports whose agent definitions the session holds now. */
+  roles: Pick<Role, 'name' | 'slug'>[]
+  /** The root's own prompt and tools changed. */
+  root: boolean
+  /** Names of roles removed from this run. */
+  removed: string[]
+}
+
+/** The roster sentences of the config notice; every name goes through datum(), at most MCP_NOTICE_TOOL_CAP roles listed. Pure. */
+export function rosterNoticeText(r: RosterNotice): string {
+  const parts = ['The approved org chart is in place in this session now.']
+  if (r.roles.length) {
+    const listed = r.roles.slice(0, MCP_NOTICE_TOOL_CAP).map((x) => `${datum(x.name, 60)} (${datum(x.slug, 60)})`)
+    const more = r.roles.length > MCP_NOTICE_TOOL_CAP ? `, and ${r.roles.length - MCP_NOTICE_TOOL_CAP} more` : ''
+    parts.push(`Added or changed roles you can delegate to now (where the chart lets you): ${listed.join(', ')}${more}.`)
+  }
+  if (r.root) parts.push("Your own role's instructions and tools are the new chart's now.")
+  if (r.removed.length) parts.push(`Removed from this run (no new agents of these): ${r.removed.slice(0, MCP_NOTICE_TOOL_CAP).map((n) => datum(n, 60)).join(', ')}.`)
+  return parts.join(' ')
 }
 
 /** Names of the MCP servers a role may use (mcpServersForRole), root included. */
@@ -689,11 +717,16 @@ export function completionEnv(connection: RunConnection | undefined, base: NodeJ
  * OrgAI's settings, the project's API key on the anthropic path, then the connection's env. A non-anthropic
  * connection authenticates with its own token only.
  */
-export function buildEnv(ctx: RuntimeContext, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+export function buildEnv(
+  ctx: RuntimeContext,
+  base: NodeJS.ProcessEnv = process.env,
+  /** `limitRoles`: the roles the automatic depth is derived from (a session passes its start-time roles); default ctx.roles. */
+  opts: { limitRoles?: readonly Pick<Role, 'id' | 'reportsTo'>[] } = {}
+): Record<string, string | undefined> {
   const { project } = ctx
   const proxy = usesProxy(ctx)
   // Explicit project limits win; otherwise derived from the roles this run actually has (setup runs: the Architect's).
-  const limits = effectiveSubagentLimits({ ...project, roles: ctx.roles })
+  const limits = effectiveSubagentLimits({ ...project, roles: opts.limitRoles ?? ctx.roles })
   const env: Record<string, string | undefined> = {
     ...isolateClaudeEnv(base, { proxy, keepApiKey: false }),
     CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: String(limits.depth),
@@ -1336,8 +1369,44 @@ export class ClaudeSession implements RuntimeSession {
    */
   private pendingPermissionIssuers = new Map<string, string[]>()
   private harnessCallers = new HarnessCallerTracker()
-  private rolesBySlug: Map<string, Role>
-  private root: Role
+  /**
+   * Every slug a role of this run has had -> its role id (start-time roles, then each org change's), so a running agent
+   * of a role an org change renamed or removed still resolves a name (roleOfSlug). Never used to allow a spawn.
+   */
+  private slugIds = new Map<string, string>()
+  /**
+   * RuntimeSession.liveRoster: configChanged handles ConfigChange.roles (definitions rebuilt at the idle restart, spawn
+   * gate on the live roster, removed and not-yet-defined roles refused at once). Team work runs only.
+   */
+  readonly liveRoster: boolean
+  /** The root role's id (fixed: an org change never moves the root). The live object is read from ctx.roles (root). */
+  private rootId: string
+  /** The root role as the session started, for the rare case ctx.roles has lost it (never by an org change). */
+  private rootAtStart: Role
+  /** A live model switch (switchModel): the root's model and tier now; the chart's other fields stay live. */
+  private switchedRoot?: { model: string; tier?: ModelTier }
+  /**
+   * Required-delegation obligations as the run started (role id -> required report ids). An org change never moves them
+   * (RunManager defers what would break one; a new or changed role's requiredReports count from the next run).
+   */
+  private startObligations: Record<string, string[]>
+  /** The roles' id / reportsTo as the session started: the automatic subagent depth stays as the run started. */
+  private limitRoles: Pick<Role, 'id' | 'reportsTo'>[]
+  /**
+   * Org changes in the same run: role id -> configGen of the change that added or changed it. Such a role's agent
+   * definition in the running query is missing or stale, so the spawn gate refuses it until a query built at or after
+   * that generation starts (startRestartedQuery). Cleared for removed roles (the live roster refuses them anyway).
+   */
+  private rosterStale = new Map<string, { gen: number; added: boolean }>()
+  /**
+   * Built options -> the configGen read before the build began (an org change at or below it is in its definitions)
+   * and the root slug it was built for.
+   */
+  private optionRoster = new WeakMap<Options, { gen: number; rootSlug: string }>()
+  /** The running query's root slug as built (its whitelist is queryGrants under it): the root's lost tools are refused until a restart. */
+  private queryRootSlug?: string
+  /** The root's whitelist under the live roster, as of the latest org change that changed the root (rootLostToolDenial). */
+  private rootToolsLive?: Set<string>
   private isSetup: boolean
   /** Writing reports get their own git worktree. Only for work runs inside a git repository. */
   private isolation: boolean
@@ -1606,7 +1675,11 @@ export class ClaudeSession implements RuntimeSession {
   constructor(private ctx: RuntimeContext) {
     const root = ctx.roles.find((r) => r.reportsTo === null) ?? ctx.roles[0]
     if (!root) throw new Error('Project has no roles')
-    this.root = root
+    this.rootId = root.id
+    this.rootAtStart = root
+    for (const r of ctx.roles) this.slugIds.set(r.slug, r.id)
+    this.startObligations = obligationsFor(ctx.roles, ctx.run.overrides?.strictDelegation === true)
+    this.limitRoles = ctx.roles.map((r) => ({ id: r.id, reportsTo: r.reportsTo }))
     this.staffingBook = new StaffingBook({
       // Live: RunManager may replace ctx.project; only `staffing` is read.
       project: {
@@ -1624,8 +1697,9 @@ export class ClaudeSession implements RuntimeSession {
       ...staffingProfileDep(ctx)
     })
     this.isSetup = isSetupLikeRun(ctx.run.kind)
-    this.isolation = !this.isSetup && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
-    this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
+    // Org changes in the same run (configChanged with `roles`): team work runs only; a bridged child is one report.
+    this.liveRoster = ctx.run.kind === 'work' && !this.isSetup && !ctx.bridgedChild && !ctx.run.quick && ctx.run.team !== 'single'
+    this.isolation =!this.isSetup && isolateWritersOn(ctx.project) && isGitRepo(ctx.project.path)
     // A proxy connection (LiteLLM) has no subscription plan windows: treat it like an API key.
     this.authMode = usesProxy(ctx) || ctx.project.provider.auth.kind === 'apiKey' ? 'apiKey' : 'unknown'
     this.integrator = new WorktreeIntegrator(ctx, {
@@ -1661,7 +1735,7 @@ export class ClaudeSession implements RuntimeSession {
       // tests"), so it keeps the set-plan nudge rather than settling as completed-unplanned.
       directAnswerTurn: () =>
         ctx.run.kind === 'work' && !ctx.run.overrides?.execMode && !this.isSetup && this.continuation.turnGen === 1 && this.rootToolCalls === 0 && live() === 0 && ctx.pendingInteractions() === 0 &&
-        (obligationsFor(ctx.roles, ctx.run.overrides?.strictDelegation === true)[this.root.id]?.length ?? 0) === 0,
+        (this.startObligations[this.rootId]?.length ?? 0) === 0,
       slots: () => agentSlots(ctx, live()),
       ownRoles: () => rootRoleNames(ctx.roles),
       lastReportEndedAt: () => {
@@ -1782,9 +1856,8 @@ export class ClaudeSession implements RuntimeSession {
     }
     await this.q.setModel(input.model)
     // The chart's tier described the old model; the root's tier now is the new model's (liveRootTier).
-    const { tier: _chartTier, ...rest } = this.root
     const tier = modelRefTier(input.model, this.ctx.connection?.tierModels)
-    this.root = { ...rest, model: input.model, ...(tier ? { tier } : {}) }
+    this.switchedRoot = { model: input.model, ...(tier ? { tier } : {}) }
     const root = this.agents.get(ROOT_ID)
     if (root) {
       root.model = input.model
@@ -2010,9 +2083,9 @@ export class ClaudeSession implements RuntimeSession {
     const live = [...this.agents.values()]
       .filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error' && !this.stoppedBackground.has(a.id))
       .map((a) => ({ name: a.handle ? `${a.handle} (${a.name})` : a.name, ...(a.activity ? { activity: a.activity } : {}) }))
-    const required = obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)[this.root.id] ?? []
+    const required = this.startObligations[this.rootId] ?? []
     const delivered = new Set([...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state === 'done' && !!a.result).map((a) => a.roleId))
-    const owed = required.filter((id) => !delivered.has(id)).map((id) => this.ctx.roles.find((r) => r.id === id)?.name ?? id)
+    const owed = required.filter((id) => !delivered.has(id)).map((id) => this.roleOfId(id)?.name ?? id)
     return compactionStateText({ plan: this.ctx.getPlan(), live, owed })
   }
 
@@ -2275,7 +2348,7 @@ export class ClaudeSession implements RuntimeSession {
       callerIsRoot: meta.byRoot,
       callerRunningReports: rootReports.size,
       spawnedRoleId: meta.roleId,
-      requiredRoleIds: obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)[this.root.id] ?? [],
+      requiredRoleIds: this.startObligations[this.rootId] ?? [],
       plan: this.ctx.getPlan(),
       assignments,
       runningAgentIds: ids,
@@ -2330,7 +2403,7 @@ export class ClaudeSession implements RuntimeSession {
     let a = this.agents.get(id)
     if (!a) {
       const slug = init?.roleSlug ?? 'general-purpose'
-      const role = this.rolesBySlug.get(slug)
+      const role = this.roleOfSlug(slug)
       a = {
         id,
         roleId: role?.id ?? null,
@@ -2456,7 +2529,8 @@ export class ClaudeSession implements RuntimeSession {
   /** Required delegation: `target` is an obligation of `caller`, or has obligations itself (run-start roles, strict mode). */
   private receiptBearingSpawn(caller: Role | undefined, target: Role): boolean {
     if (!this.ctx.delegation) return false
-    const obligations = obligationsFor(this.ctx.roles, this.ctx.run.overrides?.strictDelegation === true)
+    // As the run started: an org change never adds or drops an obligation in this run.
+    const obligations = this.startObligations
     return (!!caller && !!obligations[caller.id]?.includes(target.id)) || (obligations[target.id]?.length ?? 0) > 0
   }
 
@@ -2468,7 +2542,7 @@ export class ClaudeSession implements RuntimeSession {
     if (caller.agentId !== undefined && caller.agentId !== ROOT_ID) return 'only the orchestrator can delegate in the background'
     // The caller is a first-in-first-out guess: no agent id is the root only while no report that may delegate is live.
     if (caller.agentId === undefined) {
-      const spawnerLive = [...this.agents.values()].some((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error' && !!this.ctx.roles.find((r) => r.id === a.roleId)?.canSpawn)
+      const spawnerLive = [...this.agents.values()].some((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error' && !!a.roleId && !!this.roleOfId(a.roleId)?.canSpawn)
       if (spawnerLive) return 'the caller could not be confirmed as the orchestrator'
     }
     const target = this.ctx.roles.find((r) => r.id === roleId)
@@ -3162,6 +3236,13 @@ export class ClaudeSession implements RuntimeSession {
         this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: ${mcpDenial}`)
         return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: mcpDenial } }
       }
+      // An approved org change took a tool off the root's role: the running query's whitelist still has it until the
+      // restart at idle, so the root's call is refused now, before any allow path (an org change never widens).
+      const lostDenial = input.agent_id ? undefined : this.rootLostToolDenial(input.tool_name)
+      if (lostDenial) {
+        this.log('warn', `Blocked ${input.tool_name} by the orchestrator: ${lostDenial}`)
+        return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: lostDenial } }
+      }
       // delegate_agent's own caller is a first-in-first-out guess (HarnessCallerTracker), so the org chart is enforced
       // here from the hook's agent_type, before any allow path.
       if (input.tool_name === `${ORGAI_TOOL_PREFIX}${BRIDGE_HARNESS_TOOLS.delegate}`) {
@@ -3210,13 +3291,21 @@ export class ClaudeSession implements RuntimeSession {
         // delivered at SubagentStart; the one-report-and-waiting note goes on a background launch's PostToolUse; a
         // model-written run_in_background: true for a report that is not required is left as written (sdk-facts 12-14).
         const parentSlug = input.agent_type ?? this.root.slug
-        const parentRole = this.rolesBySlug.get(parentSlug)
+        // The caller as it runs (a running lead of a role an org change renamed or removed keeps its start-time role);
+        // its targets come only from the live roster below.
+        const parentRole = input.agent_type ? this.roleOfSlug(input.agent_type) : this.root
         const requested = String(toolInput.subagent_type ?? '')
         // A bridged role runs in its own child session on another connection: never a native spawn (delegate_agent only).
         const bridgedDenial = bridgedSpawnDenial(this.ctx, requested)
         if (bridgedDenial) {
           this.log('warn', `Blocked spawn: ${parentSlug} -> ${requested} (bridged role)`)
           return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: bridgedDenial } }
+        }
+        // Org changes in the same run: a role removed from this run's roster is refused at once, with its own reason.
+        const removedDenial = this.removedRoleDenial(requested)
+        if (removedDenial) {
+          this.log('warn', `Blocked spawn: ${parentSlug} -> ${requested} (removed from the org chart in this run)`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: removedDenial } }
         }
         const bridgedSlugs = new Set(bridgedRolesOf(this.ctx).map((b) => b.slug))
         const allowedSlugs = parentRole
@@ -3236,6 +3325,13 @@ export class ClaudeSession implements RuntimeSession {
             }
           }
         }
+        // Org changes in the same run: a role added or changed after the running query was built has no (or a stale)
+        // agent definition there, so it waits for the restart at idle (the harness then messages the orchestrator).
+        const pendingDenial = this.pendingRoleDenial(requested)
+        if (pendingDenial) {
+          this.log('warn', `Blocked spawn: ${parentSlug} -> ${requested} (its org chart change reaches the session at the next restart)`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: pendingDenial } }
+        }
         // The spawn is approved: what it may run under is fixed now, its caller's modes included (review M1a/b). A live
         // switch before task_started counts it; task_started moves this onto the report.
         this.spawnModes.set(input.tool_use_id, { modes: [...new Set([...this.modesInForce(), ...(this.parentModes(agentId) ?? [])])], caller: agentId })
@@ -3244,7 +3340,7 @@ export class ClaudeSession implements RuntimeSession {
         // isolated (nested isolation). A nested spawn runs from the parent's worktree, so Claude Code
         // cuts the child's branch from the parent's branch; the integrator merges it back into the
         // parent's worktree (see worktrees.ts). Writers under a non-isolated parent share its checkout.
-        const target = this.rolesBySlug.get(requested)
+        const target = this.liveRoleBySlug(requested)
         const parentIsolated = !input.agent_id || !!this.integrator.worktreeOf(input.agent_id)
         const updates: Record<string, unknown> = {}
         // Every report gets a handle so peers and its lead can reach it with SendMessage({to: handle}).
@@ -3444,7 +3540,7 @@ export class ClaudeSession implements RuntimeSession {
       const input = raw as SubagentStartHookInput
       // A report the harness stopped before it started stays settled: no live row, no pack.
       if (this.stoppedBackground.has(input.agent_id)) return {}
-      const role = this.rolesBySlug.get(input.agent_type)
+      const role = this.roleOfSlug(input.agent_type)
       const existing = this.agents.get(input.agent_id)
       if (!existing) this.noteActivity('subagent')
       this.upsert({
@@ -3580,10 +3676,52 @@ export class ClaudeSession implements RuntimeSession {
    */
   private callerRole(input: { agent_id?: string; agent_type?: string }): Role | undefined {
     if (!input.agent_id) return this.root
-    const byType = input.agent_type ? this.rolesBySlug.get(input.agent_type) : undefined
+    const byType = input.agent_type ? this.roleOfSlug(input.agent_type) : undefined
     if (byType) return byType
     const roleId = this.agents.get(input.agent_id)?.roleId
-    return roleId ? this.ctx.roles.find((r) => r.id === roleId) : undefined
+    return roleId ? this.roleOfId(roleId) : undefined
+  }
+
+  /**
+   * The root role now: the live ctx.roles object (an org change rewrites its prompt, tools and spawnable in place), with
+   * the model and tier a live model switch chose. Read at call time; never cache it.
+   */
+  private get root(): Role {
+    const live = this.ctx.roles.find((r) => r.id === this.rootId) ?? this.rootAtStart
+    if (!this.switchedRoot) return live
+    const { tier: _chartTier, ...rest } = live
+    return { ...rest, model: this.switchedRoot.model, ...(this.switchedRoot.tier ? { tier: this.switchedRoot.tier } : {}) }
+  }
+
+  /** A role of the live roster by slug: the only lookup a spawn may be allowed from. */
+  private liveRoleBySlug(slug: string): Role | undefined {
+    return this.ctx.roles.find((r) => r.slug === slug)
+  }
+
+  /** A role by id: live first, else as an org change retired it (running agents of it finish on their start-time role). */
+  private roleOfId(id: string): Role | undefined {
+    return this.ctx.roles.find((r) => r.id === id) ?? this.retiredRoles().find((r) => r.id === id)
+  }
+
+  /**
+   * The role behind an agent_type for attribution and the caller gates: the live role with that slug; else the role that
+   * had that slug earlier in this run (renamed by an org change: its live object; removed: its retired copy). Never for
+   * allowing a spawn (liveRoleBySlug).
+   */
+  private roleOfSlug(slug: string): Role | undefined {
+    const live = this.liveRoleBySlug(slug)
+    if (live) return live
+    const id = this.slugIds.get(slug)
+    return (id ? this.roleOfId(id) : undefined) ?? this.retiredRoles().find((r) => r.slug === slug)
+  }
+
+  /** Roles an org change removed from this run (ctx.retiredRoles); [] when unreadable. */
+  private retiredRoles(): readonly Role[] {
+    try {
+      return this.ctx.retiredRoles?.() ?? []
+    } catch {
+      return []
+    }
   }
 
   /**
@@ -3601,6 +3739,36 @@ export class ClaudeSession implements RuntimeSession {
     if (caller?.canSpawn && caller.spawnable.includes(target.roleId)) return undefined
     const callerName = caller?.name ?? input.agent_type ?? input.agent_id ?? 'this agent'
     return `Role ${callerName} may not delegate to ${target.name}.`
+  }
+
+  /** A native spawn of a role an approved org change removed from this run (its slug is not in the live roster). */
+  private removedRoleDenial(slug: string): string | undefined {
+    if (!slug || this.liveRoleBySlug(slug)) return undefined
+    const id = this.slugIds.get(slug)
+    const retired = this.retiredRoles().find((r) => r.slug === slug || (!!id && r.id === id && !this.ctx.roles.some((x) => x.id === id)))
+    if (!retired) return undefined
+    return `${datum(retired.name, 60)} was removed from the org chart in this run: no new agents of this role start (running ones finish as they started). Delegate to a role the chart still has, or do the work yourself.`
+  }
+
+  /** A native spawn of a role added or changed by an org change the running query's agent definitions do not hold yet. */
+  private pendingRoleDenial(slug: string): string | undefined {
+    const role = this.liveRoleBySlug(slug)
+    const mark = role ? this.rosterStale.get(role.id) : undefined
+    if (!role || !mark) return undefined
+    const what = mark.added ? 'joined this run\'s org chart' : 'changed in this run\'s org chart'
+    return `${datum(role.name, 60)} ${what}; it can be delegated to once the agents are idle and the session restarts, and the harness will message you then. Until then delegate to another role or carry on yourself.`
+  }
+
+  /**
+   * A root call to a tool an approved org change took off the root's role while the running query (built before it)
+   * still whitelists it: refused until the restart brings the root's definition in line. Only while the root's change
+   * is pending, and only exact whitelist entries (MCP and Skill calls have their own live gates).
+   */
+  private rootLostToolDenial(toolName: string): string | undefined {
+    if (!this.rosterStale.has(this.rootId) || !this.rootToolsLive || !this.queryRootSlug) return undefined
+    const was = this.queryGrants?.get(this.queryRootSlug)?.tools
+    if (!was?.has(toolName) || this.rootToolsLive.has(toolName)) return undefined
+    return `The approved org chart took ${toolName} off the orchestrator's role, so it is not available in this run any more.`
   }
 
   /** The MCP gate for one call (mcp__ tools and the resource tools). Fails closed if the live server list cannot be read. */
@@ -3687,7 +3855,9 @@ export class ClaudeSession implements RuntimeSession {
   private async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
     if (this.isSetup) throw new Error('Setup-like runs do not take project config changes.')
     if (!this.q) throw new Error('The session is not running yet.')
+    if (change.roles && !this.liveRoster) throw new Error('This session does not take org chart changes; they apply from the next run.')
     this.configGen += 1
+    const roster = change.roles ? this.noteRosterChange(change.roles) : undefined
     const upserted = [...new Set(change.mcp?.upserted ?? [])]
     const removedNames = [...new Set(change.mcp?.removed ?? [])]
     const live = this.liveMcpServers()
@@ -3731,8 +3901,11 @@ export class ClaudeSession implements RuntimeSession {
     const skillsPending = !!change.skills || this.pendingConfig.skills
     const stale = skillsPending && pluginStale(this.skillPlugin, this.ctx.skills?.() ?? [])
     const now = this.grantsNow()
-    const gainedNow = grantsGained(this.liveGrants, now) || (!!change.skills && stale)
-    const needRestart = grantsGained(this.queryGrants, now) || stale
+    if (roster?.root) this.rootToolsLive = new Set(now.get(this.root.slug)?.tools ?? [])
+    // Org changes: definitions for added / changed roles (and none for removed ones) and the root's prompt and tools
+    // only come with a re-created query, so any roster change still waiting for one keeps a restart due.
+    const gainedNow = grantsGained(this.liveGrants, now) || (!!change.skills && stale) || !!roster?.needsDefinitions
+    const needRestart = grantsGained(this.queryGrants, now) || stale || !!this.pendingConfig.roles || !!roster
     this.liveGrants = now
     if (needRestart) {
       this.pendingConfig.due = true
@@ -3740,6 +3913,14 @@ export class ClaudeSession implements RuntimeSession {
       for (const n of regranted) if (!this.pendingConfig.regranted.includes(n)) this.pendingConfig.regranted.push(n)
       for (const n of lost) if (!this.pendingConfig.removed.includes(n)) this.pendingConfig.removed.push(n)
       if (change.skills) this.pendingConfig.skills = true
+      if (change.roles) {
+        const acc = (this.pendingConfig.roles ??= { added: [], changed: [], removed: [] })
+        for (const k of ['added', 'changed', 'removed'] as const) for (const id of change.roles[k]) if (!acc[k].includes(id)) acc[k].push(id)
+        // A role removed after it was added or changed in the same wait is only removed (and a re-added one only added).
+        acc.added = acc.added.filter((id) => !change.roles!.removed.includes(id))
+        acc.changed = acc.changed.filter((id) => !change.roles!.removed.includes(id))
+        acc.removed = acc.removed.filter((id) => !change.roles!.added.includes(id))
+      }
       this.log('info', 'A configuration change was approved; the agents get it once the orchestrator\'s turn ends and no report is running (the session is resumed with the new config).')
       // Normally the orchestrator is mid-turn (it called the proposal tool); if it is already idle, check now.
       if (!mcpRestartBlocker(this.restartState())) this.scheduleMcpRestart()
@@ -3779,6 +3960,24 @@ export class ClaudeSession implements RuntimeSession {
     names.forEach((n, i) => {
       if (lists[i]!.length) tools[n] = lists[i]!
     })
+  }
+
+  /**
+   * An approved org change (ConfigChange.roles; RunManager already rewrote ctx.roles in place): added and changed roles
+   * are marked stale for the running query (the spawn gate refuses them until a query built after this generation
+   * starts), removed ones need no mark (the live roster refuses them), and every live slug is remembered so running
+   * agents of a renamed role still resolve a name.
+   */
+  private noteRosterChange(roles: NonNullable<ConfigChange['roles']>): { root: boolean; needsDefinitions: boolean } {
+    for (const r of this.ctx.roles) this.slugIds.set(r.slug, r.id)
+    for (const id of [...roles.added, ...roles.changed]) {
+      if (!this.ctx.roles.some((r) => r.id === id)) continue
+      const added = roles.added.includes(id) || (this.rosterStale.get(id)?.added ?? false)
+      this.rosterStale.set(id, { gen: this.configGen, added })
+    }
+    for (const id of roles.removed) this.rosterStale.delete(id)
+    this.log('info', 'An org chart change was approved: the added and changed roles can be delegated to once the session restarts at idle; removed roles start no new agents from now on.')
+    return { root: roles.changed.includes(this.rootId), needsDefinitions: roles.added.length + roles.changed.length > 0 }
   }
 
   /** A server left the project: drop it from every attach record so no restart, fallback or rule path brings it back. */
@@ -3964,8 +4163,14 @@ export class ClaudeSession implements RuntimeSession {
     // What this restart covers; anything a config change adds while the options are built stays pending (next restart).
     const pending = new Map(this.pendingMcp)
     const gen = this.configGen
+    const pendingRoles = this.pendingConfig.roles
     const config: RestartConfig | undefined = this.pendingConfig.due
-      ? { regranted: [...this.pendingConfig.regranted], removed: [...this.pendingConfig.removed], skills: this.pendingConfig.skills }
+      ? {
+          regranted: [...this.pendingConfig.regranted],
+          removed: [...this.pendingConfig.removed],
+          skills: this.pendingConfig.skills,
+          ...(pendingRoles ? { roles: { added: [...pendingRoles.added], changed: [...pendingRoles.changed], removed: [...pendingRoles.removed] } } : {})
+        }
       : undefined
     let plugin: SkillPlugin | null | undefined
     let built: Options
@@ -4073,8 +4278,8 @@ export class ClaudeSession implements RuntimeSession {
     this.pendingMcp.clear()
     const config = this.pendingConfig
     this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
-    const other = config.due ? { regranted: config.regranted.filter((n) => !names.includes(n)), skills: config.skills } : undefined
-    if (!names.length && !other?.regranted.length && !other?.skills) return
+    const other = config.due ? { regranted: config.regranted.filter((n) => !names.includes(n)), skills: config.skills, roles: !!config.roles } : undefined
+    if (!names.length && !other?.regranted.length && !other?.skills && !other?.roles) return
     this.tellNotAttached(names, why, false, other)
   }
 
@@ -4082,11 +4287,13 @@ export class ClaudeSession implements RuntimeSession {
    * Warn and tell the orchestrator (or, while held, the user's next message) that servers could not be attached, or
    * that the role changes (`other.regranted`) and skill changes of an approved config change could not be applied.
    */
-  private tellNotAttached(names: string[], why: string, restart = false, other?: { regranted: string[]; skills: boolean }): void {
+  private tellNotAttached(names: string[], why: string, restart = false, other?: { regranted: string[]; skills: boolean; roles?: boolean }): void {
     const plural = names.length === 1 ? '' : 's'
     const parts: string[] = []
     if (other?.regranted.length) parts.push(`the role changes for the MCP server${other.regranted.length === 1 ? '' : 's'} ${other.regranted.map((n) => datum(n, 64)).join(', ')}`)
     if (other?.skills) parts.push('the skill changes')
+    // The spawn gate keeps refusing the added and changed roles (rosterStale), so "from the next run" stays true.
+    if (other?.roles) parts.push('the org chart changes (added or changed roles)')
     const rest = parts.join(' and ')
     let text: string
     let summary: string
@@ -4130,7 +4337,14 @@ export class ClaudeSession implements RuntimeSession {
           ...(rebuilt ? ['the rebuilt skills'] : [])
         ].join(' and ')
         this.log('warn', `The resumed session failed to start again (${why}); resuming without ${left}.`)
-        next = { servers: [], tools: new Map(), dropped: servers, ...(rebuilt ? { plugin: prevPlugin ?? null, droppedSkills: true } : {}) }
+        next = {
+          servers: [],
+          tools: new Map(),
+          dropped: servers,
+          ...(rebuilt ? { plugin: prevPlugin ?? null, droppedSkills: true } : {}),
+          // Definitions come from the live roster in every build, so an org change is in the fallback too.
+          ...(config?.roles ? { config: { regranted: [], removed: [], skills: false, roles: config.roles } } : {})
+        }
       } else return { why }
       try {
         return { next: { ...next, options: await this.buildOptions(this.sessionId, { maxBudgetUsd: budget, plugin: next.plugin }) }, why }
@@ -4195,6 +4409,7 @@ export class ClaudeSession implements RuntimeSession {
     if (next.plugin !== undefined) this.skillPlugin = next.plugin ?? undefined
     this.queryGrants = this.optionGrants.get(next.options)
     this.liveGrants = this.queryGrants
+    this.rosterQueryStarted(next.options)
     this.queryBypass = next.options.allowDangerouslySkipPermissions === true
     this.queryMode = next.options.permissionMode ?? this.ctx.project.permissionMode
     this.q = query({ prompt: this.input, options: next.options })
@@ -4203,6 +4418,8 @@ export class ClaudeSession implements RuntimeSession {
     if (next.dropped?.length || next.droppedSkills) {
       const why = `the resumed session would not start with ${(next.dropped?.length ?? 0) + (next.droppedSkills ? 1 : 0) === 1 ? 'it' : 'them'}`
       this.tellNotAttached(next.dropped ?? [], why, true, next.droppedSkills ? { regranted: [], skills: true } : undefined)
+      // The fallback is built from the live roster too: an org change it carries is in place, and the orchestrator hears so.
+      if (config?.roles) this.sendAttachNotice(this.q, [], [], { removed: [], roster: this.rosterNotice(config.roles) })
     } else if (next.servers.length || config) {
       const q = this.q
       // Never left unhandled (review N4): a failure still sends a notice with the known tool names and releases a
@@ -4211,7 +4428,7 @@ export class ClaudeSession implements RuntimeSession {
         this.log('warn', `Could not read the attached MCP servers' grants: ${redactSecrets((e as Error)?.message ?? String(e), this.secrets)}`)
         try {
           const names = [...new Set([...next.servers, ...(config?.regranted ?? [])])]
-          this.sendAttachNotice(q, names.map((name) => ({ name, tools: next.tools.get(name) ?? [] })), next.servers, config && { removed: config.removed, skills: config.skills ? null : undefined })
+          this.sendAttachNotice(q, names.map((name) => ({ name, tools: next.tools.get(name) ?? [] })), next.servers, config && { removed: config.removed, skills: config.skills ? null : undefined, ...(config.roles ? { roster: this.rosterNotice(config.roles) } : {}) })
         } catch (e2) {
           this.log('warn', `Could not send the MCP attach notice: ${redactSecrets((e2 as Error)?.message ?? String(e2), this.secrets)}`)
         } finally {
@@ -4250,9 +4467,24 @@ export class ClaudeSession implements RuntimeSession {
           skills = null
         }
       }
-      extra = { removed: config.removed.filter((n) => !liveNames.has(n)), ...(skills !== undefined ? { skills } : {}) }
+      extra = { removed: config.removed.filter((n) => !liveNames.has(n)), ...(skills !== undefined ? { skills } : {}), ...(config.roles ? { roster: this.rosterNotice(config.roles) } : {}) }
     }
     this.sendAttachNotice(q, entries, servers, extra)
+  }
+
+  /**
+   * What the post-restart notice says about an org change: the added / changed reports the new query holds definitions
+   * for (live, not still marked stale by a later change), whether the root changed, and the removed roles' names.
+   */
+  private rosterNotice(ids: NonNullable<RestartConfig['roles']>): RosterNotice {
+    const roles: Role[] = []
+    for (const id of new Set([...ids.added, ...ids.changed])) {
+      const r = this.ctx.roles.find((x) => x.id === id)
+      if (r && r.id !== this.rootId && !this.rosterStale.has(r.id)) roles.push(r)
+    }
+    const live = new Set(this.ctx.roles.map((r) => r.id))
+    const removed = ids.removed.filter((id) => !live.has(id)).map((id) => this.retiredRoles().find((r) => r.id === id)?.name ?? id)
+    return { roles: roles.map((r) => ({ name: r.name, slug: r.slug })), root: ids.changed.includes(this.rootId) && !this.rosterStale.has(this.rootId), removed }
   }
 
   /**
@@ -4263,17 +4495,18 @@ export class ClaudeSession implements RuntimeSession {
     q: Query,
     entries: Parameters<typeof mcpAttachedNotice>[0],
     servers: string[],
-    extra?: { removed: string[]; skills?: SkillNoticeEntry[] | null }
+    extra?: { removed: string[]; skills?: SkillNoticeEntry[] | null; roster?: RosterNotice }
   ): void {
     if (this.abort.signal.aborted || this.q !== q) return
     let text: string
     let summary: string
     if (extra) {
-      text = configChangeNotice({ servers: entries, removed: extra.removed, ...(extra.skills !== undefined ? { skills: extra.skills } : {}) })
+      text = configChangeNotice({ servers: entries, removed: extra.removed, ...(extra.skills !== undefined ? { skills: extra.skills } : {}), ...(extra.roster ? { roster: extra.roster } : {}) })
       const parts = [
         ...(entries.length ? [`MCP server${entries.length === 1 ? '' : 's'} ${entries.map((e) => e.name).join(', ')} attached`] : []),
         ...(extra.removed.length ? [`${extra.removed.join(', ')} removed`] : []),
-        ...(extra.skills !== undefined ? ['skills updated'] : [])
+        ...(extra.skills !== undefined ? ['skills updated'] : []),
+        ...(extra.roster ? ['org chart in place'] : [])
       ]
       summary = `Configuration change in effect${parts.length ? `: ${parts.join('; ')}` : ''}`
     } else {
@@ -4343,9 +4576,12 @@ export class ClaudeSession implements RuntimeSession {
    */
   private async buildOptions(resume?: string, opts: { maxBudgetUsd?: number; plugin?: SkillPlugin | null } = {}): Promise<Options> {
     const { project } = this.ctx
+    // Read before any await: an org change approved while this build runs counts as not in it (rosterQueryStarted).
+    const rosterGen = this.configGen
     // Resolved first and per build (cli-standalone 6.1): no runtime fails the run before anything else is set up.
     const executable = requireClaudeExecutable(process.env)
-    const env = buildEnv(this.ctx)
+    // The automatic subagent depth stays as the run started: an org change never moves the subagent limits.
+    const env = buildEnv(this.ctx, process.env, { limitRoles: this.limitRoles })
     if (usesProxy(this.ctx) && env.ANTHROPIC_BASE_URL) {
       this.toolGateway ??= startClaudeToolGateway(env.ANTHROPIC_BASE_URL, {
         token: env.ANTHROPIC_AUTH_TOKEN, apiKey: env.ANTHROPIC_API_KEY
@@ -4500,7 +4736,19 @@ export class ClaudeSession implements RuntimeSession {
     const resumeId = resume ?? this.ctx.resumeSessionId
     if (resumeId) options.resume = resumeId
     if (options.agents) this.optionGrants.set(options, grantSnapshot(options.agents))
+    this.optionRoster.set(options, { gen: rosterGen, rootSlug: options.agent ?? this.root.slug })
     return options
+  }
+
+  /**
+   * A query built from `options` is starting: its agent definitions hold every org change up to the generation read
+   * before its build, so those roles may be spawned from now on; later ones stay refused until the next restart.
+   */
+  private rosterQueryStarted(options: Options): void {
+    const built = this.optionRoster.get(options)
+    if (!built) return
+    this.queryRootSlug = built.rootSlug
+    for (const [id, mark] of this.rosterStale) if (mark.gen <= built.gen) this.rosterStale.delete(id)
   }
 
   /** Allow result for a decision; session and project scopes add the suggested rules for the rest of the session. */
@@ -4581,6 +4829,7 @@ export class ClaudeSession implements RuntimeSession {
       this.harnessServer = harnessServerOf(first)
       this.queryGrants = this.optionGrants.get(first)
       this.liveGrants = this.queryGrants
+      this.rosterQueryStarted(first)
       this.queryBypass = first.allowDangerouslySkipPermissions === true
       this.queryMode = first.permissionMode ?? this.ctx.project.permissionMode
       this.q = query({ prompt: this.input, options: first })
@@ -4745,7 +4994,7 @@ export class ClaudeSession implements RuntimeSession {
           // Run staffing: the spawn decided under this Agent call started; its row is recorded once.
           if (msg.tool_use_id) this.staffingStarted(msg.tool_use_id, msg.task_id)
           const slug = msg.subagent_type ?? 'general-purpose'
-          const role = this.rolesBySlug.get(slug)
+          const role = this.roleOfSlug(slug)
           const existing = this.agents.get(msg.task_id)
           if (msg.description) this.integrator.noteBrief(msg.task_id, msg.description)
           const handle = (msg.tool_use_id ? this.spawnHandles.get(msg.tool_use_id) : undefined) ?? existing?.handle
