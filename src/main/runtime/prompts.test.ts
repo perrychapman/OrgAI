@@ -459,6 +459,16 @@ describe('single-agent runs and context notes', () => {
     expect(report).not.toContain(orgChangeText())
   })
 
+  it('orgChangeText allows a mid-run proposal when a missing role blocks the task, never claims grants and points at the result', () => {
+    const text = orgChangeText()
+    expect(text).toContain('mid-run when a missing role blocks the task')
+    expect(text).toContain('its result says whether this run can use it now, after a restart or only from the next run')
+    expect(text).toContain('delegate to a new role only once the result or the harness says it is available')
+    expect(text).toContain('an org change never changes grants')
+    expect(text).toContain('Do not propose changes for one-off situations.')
+    expect(text).not.toContain('not this one')
+  })
+
   it("a code project's prompts never mention the knowledge graph or the notes tools", () => {
     for (const r of roles) {
       const text = buildRolePrompt(r, roles, project(), flags)

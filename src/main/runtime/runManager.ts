@@ -74,6 +74,7 @@ import type {
   RunPlan,
   RunStaffing,
   RunRecord,
+  RunRosterChange,
   RunSummary,
   SwitchRunModelInput,
   SwitchRunModelResult,
@@ -86,6 +87,7 @@ import type {
   UserQuestion
 } from '@shared/types'
 import { BridgedSessions, bridgeKey } from './bridge'
+import { applyRosterChange, liveRosterApplies, rosterChanged, rosterOf } from './runRoster'
 import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
@@ -2195,7 +2197,7 @@ export class RunManager {
         // Where the role would run, judged like run start (adapterForProject) against the running root.
         const placement = (r: Role): string => {
           const c = adapterForProject({ provider: live.provider, roles: root ? [root, r] : [r] }, this.options.catalog?.() ?? [])
-          const b = c.bridged.find((x) => x.roleId === r.id)
+          const b = c.bridged?.find((x) => x.roleId === r.id)
           return b ? bridgeKey(b.connection, b.adapter) : c.mismatched.includes(r.id) ? 'mismatched' : 'native'
         }
         const startBridged = bridging.bridged.find((b) => b.roleId === role.id)
@@ -2209,7 +2211,7 @@ export class RunManager {
         }
         return undefined
       }
-      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems): RunRosterChange | undefined => {
+      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems, card?: readonly Role[]): RunRosterChange | undefined => {
         let roster: RunRosterChange | undefined
         // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
         const next: Project = { ...live }
@@ -2252,8 +2254,8 @@ export class RunManager {
         } else if (settle === 'orgChart') {
           if (own) next.roles = overlayOwnRoles(live.roles, saved.roles, own)
           else overlay('roles')
-          if (own && !bare && liveRosterApplies(summary, active.session)) {
-            const applied = applyRosterChange({ running: ctx.roles, saved: saved.roles, own, obligations: active.ledger?.snapshot().obligations, refuse: rosterRefusal })
+          if (card && !bare && liveRosterApplies(summary, active.session)) {
+            const applied = applyRosterChange({ running: ctx.roles, saved: saved.roles, proposed: card, obligations: active.ledger?.snapshot().obligations, refuse: rosterRefusal })
             roster = applied.change
             if (applied.retired.length) {
               const gone = new Set(roster.removed)
@@ -2484,7 +2486,7 @@ export class RunManager {
               setLive(saved, 'skills', { ids: payload.items.flatMap((i) => (i.libraryId ? [i.libraryId] : [])), names: payload.items.map((i) => i.draft.name) })
             } else if (req.kind === 'orgChart') {
               const payload = req.payload as OrgChartProposalPayload
-              const roster = setLive(saved, 'orgChart', { ids: payload.roles.map((r) => r.id), names: payload.roles.map((r) => r.name) })
+              const roster = setLive(saved, 'orgChart', { ids: payload.roles.map((r) => r.id), names: payload.roles.map((r) => r.name) }, payload.roles)
               // The tool learns what this run took (ProposalOutcome.roster); absent = the chart applies from the next run.
               if (roster) return { roster }
             }
@@ -2820,7 +2822,8 @@ export class RunManager {
       { obligations, strict, problems },
       {
         roleLabel: (roleId) => {
-          const r = roles.find((x) => x.id === roleId)
+          // The run's live roles (a mid-run org change renames or adds), then removed ones, then the start-time chart.
+          const r = a.ctx?.roles.find((x) => x.id === roleId) ?? a.retiredRoles?.find((x) => x.id === roleId) ?? roles.find((x) => x.id === roleId)
           return { slug: r?.slug ?? roleId, name: r?.name ?? roleId }
         },
         handle: (agentId) => a.record.agents[agentId]?.handle ?? agentId,

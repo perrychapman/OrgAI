@@ -1419,7 +1419,7 @@ describe('org change: slug, never grants (review H1), mergeOrgChart', () => {
     const real = vi.mocked(mergeOrgChart).getMockImplementation()!
     vi.mocked(mergeOrgChart).mockImplementationOnce(real).mockReturnValueOnce({ roles: marker, kept: ['Lead'], added: [], removed: [] })
     const text = await orgCall(ctx, [roleDraft('Boss', { slug: 'lead', mcpServers: ['github'], skills: ['triage'] }), draftRole('Dev', 'Boss')])
-    expect(text).toMatch(/^APPROVED\. The org chart was updated for future runs/)
+    expect(text).toMatch(/^APPROVED\. The org chart was saved\. It applies from the next run; this session keeps its current roles\./)
     expect(text).toContain('keep their MCP and skill grants')
     const [existing, converted] = vi.mocked(mergeOrgChart).mock.calls.at(-1)!
     expect(existing).toBe(ctx.project)
