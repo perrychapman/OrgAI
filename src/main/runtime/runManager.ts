@@ -2259,11 +2259,25 @@ export class RunManager {
           if (own) next.roles = overlayOwnRoles(live.roles, saved.roles, own)
           else overlay('roles')
           if (card && !bare && liveRosterApplies(summary, active.session)) {
-            const applied = applyRosterChange({ running: ctx.roles, saved: saved.roles, proposed: card, obligations: active.ledger?.snapshot().obligations, refuse: rosterRefusal })
+            const applied = applyRosterChange({
+              running: ctx.roles,
+              saved: saved.roles,
+              proposed: card,
+              obligations: active.ledger?.snapshot().obligations,
+              refuse: rosterRefusal,
+              retiredSlugs: (active.retiredRoles ?? []).map((r) => r.slug)
+            })
             roster = applied.change
+            // Same tick as the move (review M1): the session marks its spawn gate before anything awaits.
+            if (rosterChanged(roster) && active.session?.rosterApplied) {
+              try {
+                active.session.rosterApplied({ added: [...roster.added], changed: [...roster.changed], removed: [...roster.removed] })
+              } catch (e) {
+                log.warn(`Run ${summary.id}: the session's rosterApplied threw: ${logText((e as Error)?.message ?? String(e))}`)
+              }
+            }
             if (applied.retired.length) {
               const gone = new Set(roster.removed)
-              next.roles = next.roles.filter((r) => !gone.has(r.id))
               active.retiredRoles = [...(active.retiredRoles ?? []).filter((r) => !gone.has(r.id)), ...applied.retired]
             }
             if (roster.added.length) {
@@ -2271,6 +2285,25 @@ export class RunManager {
               active.rosterAdded = new Set([...(active.rosterAdded ?? []), ...roster.added])
               if (active.retiredRoles) active.retiredRoles = active.retiredRoles.filter((r) => !back.has(r.id))
             }
+            // Review H1: the run's view of its roles (ctx.project.roles, which the next propose_org_change builds its card
+            // from) is the run's own roles, never the saved ones, so a field a same-save team-file pull brought in can never
+            // look "unchanged" on a later card and slip into ctx.roles. Grants too come from the run's roles (kept equal to
+            // the view by refreshRoleGrants on every approved grant change), never from the saved roles: a pulled grant in
+            // the view would otherwise reach ctx.roles through refreshRoleGrants at the next MCP / skill approval. A
+            // deferred NEW role (not in the run) keeps its saved value; a deferred change of a running role shows the run's
+            // definition, so its pulled fields cannot ride on a later card either.
+            const overlaid = next.roles
+            const overlaidById = new Map(overlaid.map((r) => [r.id, r]))
+            const retiredIds = new Set((active.retiredRoles ?? []).map((r) => r.id))
+            const fromRun = (r: Role): Role => structuredClone(r)
+            const viewRoles: Role[] = []
+            for (const o of overlaid) {
+              if (retiredIds.has(o.id)) continue
+              const run = ctx.roles.find((r) => r.id === o.id)
+              viewRoles.push(run ? fromRun(run) : o)
+            }
+            for (const r of ctx.roles) if (!overlaidById.has(r.id)) viewRoles.push(fromRun(r))
+            next.roles = viewRoles
           }
         }
         else if (settle === 'folders') overlay('allowedDirectories')

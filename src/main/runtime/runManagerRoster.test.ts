@@ -36,7 +36,7 @@ afterEach(() => {
 })
 
 /** A fake adapter: records every ctx and answers with a session that does (or does not) take roster changes live. */
-function rig(opts: { liveRoster?: boolean; pull?: (p: Project) => Project } = {}) {
+function rig(opts: { liveRoster?: boolean; pull?: (p: Project) => Project; rosterApplied?: RuntimeSession['rosterApplied'] } = {}) {
   const ctxs: RuntimeContext[] = []
   const adapter: RuntimeAdapter = {
     id: 'mock',
@@ -44,7 +44,14 @@ function rig(opts: { liveRoster?: boolean; pull?: (p: Project) => Project } = {}
     start: async (ctx) => {
       ctxs.push(ctx)
       ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
-      const session: RuntimeSession = { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}), ...(opts.liveRoster ? { liveRoster: true } : {}) }
+      const session: RuntimeSession = {
+        send: async () => {},
+        interrupt: async () => {},
+        stop: async () => {},
+        finished: new Promise<void>(() => {}),
+        ...(opts.liveRoster ? { liveRoster: true } : {}),
+        ...(opts.rosterApplied ? { rosterApplied: opts.rosterApplied } : {})
+      }
       return session
     }
   }
@@ -184,6 +191,74 @@ describe('an approved org chart reaches the same work run (liveRoster session)',
     expect(ctx.retiredRoles!()).toEqual([expect.objectContaining({ id: 'r-rev', name: 'Reviewer', color: '#fff' })])
     expect(rosterEvents()[0].roster.at(-1)).toEqual({ id: 'r-rev', slug: 'reviewer', name: 'Reviewer', color: '#fff', reportsTo: 'r-lead', removed: true })
     await m.stopAll()
+  })
+
+  it('review H1: a same-save pull of a role on approval #1 never reaches ctx.roles on approval #2, whose card is built from ctx.project.roles', async () => {
+    const p = newProject()
+    let pulls = 0
+    // Approval #1's save also pulls new tools, model and tier for the engineer from the team files (persisted).
+    const pull = (saved: Project): Project => {
+      if (pulls++ > 0) return saved
+      return store.save({ ...saved, roles: saved.roles.map((r) => (r.id === 'r-eng' ? { ...r, tools: ['Read', 'Bash', 'WebFetch'], model: 'opus', tier: 'deep', prompt: 'PULLED' } : r)) })
+    }
+    const { m, ctxs } = rig({ liveRoster: true, pull })
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const engBefore = structuredClone(ctx.roles.find((r) => r.id === 'r-eng')!)
+    // Approval #1 renames the reviewer only.
+    const first = structuredClone(p.roles)
+    first[2] = { ...first[2], name: 'Checker' }
+    expect(await approveChart(m, ctx, first)).toMatchObject({ roster: { changed: ['r-rev'] } })
+    // The run's view of its roles is the run's own roles: the pulled fields are not there.
+    expect(ctx.project.roles.find((r) => r.id === 'r-eng')).toEqual(engBefore)
+    // Approval #2, as propose_org_change builds it: the current view plus a new role; the engineer is untouched.
+    const second = [...structuredClone(ctx.project.roles), role({ id: 'r-qa', slug: 'qa', name: 'QA', reportsTo: 'r-lead' })]
+    expect(await approveChart(m, ctx, second)).toMatchObject({ roster: { added: ['r-qa'], changed: [] } })
+    const eng = ctx.roles.find((r) => r.id === 'r-eng')!
+    expect(eng).toEqual(engBefore)
+    expect(eng.tools).toEqual(['Read', 'Edit', 'Write'])
+    expect(eng.model).toBe('sonnet')
+    expect(eng.tier).toBeUndefined()
+    await m.stopAll()
+  })
+
+  it('review M1: rosterApplied is called synchronously with the ids, after ctx.roles moved; a throw is caught and logged', async () => {
+    const p = newProject()
+    const seen: { change: unknown; rolesThen: string[] }[] = []
+    let ctxRef: RuntimeContext | undefined
+    const rosterApplied = vi.fn((change: { added: string[]; changed: string[]; removed: string[] }) => {
+      seen.push({ change, rolesThen: ctxRef!.roles.map((r) => r.id) })
+    })
+    const { m, ctxs } = rig({ liveRoster: true, rosterApplied })
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = (ctxRef = ctxs[0])
+    const card = [structuredClone(p.roles[0]), { ...structuredClone(p.roles[1]), name: 'Builder' }, role({ id: 'r-qa', slug: 'qa', name: 'QA', reportsTo: 'r-lead' })]
+    // Synchronous: decideProposal applies and calls the session before it returns.
+    const before = events.length
+    const pending = ctx.requestProposal({ kind: 'orgChart', agentId: 'root', title: 't', payload: { roles: card, rationale: 'r' } })
+    const req = await waitFor((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request', before)
+    m.decideProposal(ctx.run.id, req.proposal.id, { behavior: 'approve' })
+    expect(rosterApplied).toHaveBeenCalledTimes(1)
+    expect(seen[0]).toEqual({ change: { added: ['r-qa'], changed: ['r-eng'], removed: ['r-rev'] }, rolesThen: ['r-lead', 'r-eng', 'r-qa'] })
+    await pending
+    await m.stopAll()
+
+    // A throwing implementation does not stop the change.
+    events = []
+    const throwing = vi.fn(() => {
+      throw new Error('boom')
+    })
+    const { log } = await import('../log')
+    const warn = vi.spyOn(log, 'warn')
+    const r2 = rig({ liveRoster: true, rosterApplied: throwing })
+    await r2.m.start({ project: newProject(), prompt: 'go' })
+    const ctx2 = r2.ctxs[0]
+    const outcome = await approveChart(r2.m, ctx2, [...structuredClone(p.roles), role({ id: 'r-qa', slug: 'qa', name: 'QA', reportsTo: 'r-lead' })])
+    expect(throwing).toHaveBeenCalledTimes(1)
+    expect(outcome).toMatchObject({ behavior: 'approve', roster: { added: ['r-qa'] } })
+    expect(ctx2.roles.some((r) => r.id === 'r-qa')).toBe(true)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("rosterApplied threw: boom"))
+    await r2.m.stopAll()
   })
 
   it('defers a role on another connection with a reason and applies the rest', async () => {

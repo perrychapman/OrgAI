@@ -322,9 +322,14 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     work run whose session sets `RuntimeSession.liveRoster` (`runRoster.ts` `liveRosterApplies`), an approved
     propose_org_change also changes `ctx.roles` in place (`applyRosterChange`: changed roles keep object, id and
     grants and take only the fields the card changed; new roles appended with no grants; removed roles go to
-    `ctx.retiredRoles()`; the root keeps model / tier / effort / connection). Roles on another placement, with an
-    unpriced model under a budget, under a required-delegation obligation, or under a different root are deferred
-    (`RunRosterChange.deferred`). RunManager records `RunRecord.roster`, emits host-only `run.roster`, returns
+    `ctx.retiredRoles()`; the root keeps model / tier / effort / connection / canSpawn). Roles on another placement,
+    with an unpriced model under a budget, under a required-delegation obligation, under a different root, or new
+    with the slug of a role removed earlier in the run or in the same change are deferred (`RunRosterChange.deferred`;
+    a root canSpawn change is deferred alone). Security review fixes (2026-11-18): H1 `ctx.project.roles` is rebuilt
+    from `ctx.roles` after every applied chart so a same-save team-file pull never rides on a later card; M1
+    `RuntimeSession.rosterApplied` is called synchronously right after the move (throw caught and logged); M2 slug
+    reuse deferred; L1 `RunStore.getRecord` cleans `roster` (`cleanRunRoster`, runsRoster.test.ts). RunManager
+    records `RunRecord.roster`, emits host-only `run.roster`, returns
     `ProposalOutcome.roster`; the tool calls `configChanged({ roles })` and says now / after idle / next run. Without
     `liveRoster` nothing changes: the chart applies from the next run (Claude, Codex and the mock all set it on team
     work runs, see below). Unit-tested only (runRoster.test.ts, runManagerRoster.test.ts,
