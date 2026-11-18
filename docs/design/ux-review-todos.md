@@ -29,7 +29,7 @@ Four lines say one thing; line 3 exposes `todo_ab03a53e77b3786b`; none says whic
 Smallest fix: (a) collapse the tool row and the tool-result row into the single row 2; (b) drop the id from user-visible text; (c) make row 2 end with a link: "Added to your to-do list for this project. View list". Recommended copy: "Added “Follow up with Acme about the export format” to your to-dos." with a "View to-dos" button that opens the tab. Keep the quiet count; do not add a toast.
 Note: whether a real model's own reply line would also appear is unverified; the mock says "Added to your to-do list." with no pointer.
 
-### S2 (should-fix). The prefilled session page does not say it is a draft from a to-do
+### S2 (should-fix, done: `TodoDraftNote`). The prefilled session page does not say it is a draft from a to-do
 
 Shots: `25-start-session-draft.png`, `52-keyboard-start-session-1024.png`.
 Repro: To-dos tab, "Start session" on an item.
@@ -37,7 +37,7 @@ You land on Live > "New run" with the heading "Give Engagement Lead something to
 Smallest fix: one quiet line under the composer when a to-do prefill is pending: "Drafted from your to-do. Nothing is sent until you press Start. The item stays on your list." Recommended: same text on the Chat start page.
 After sending (`26-after-send-run-link.png`) the item shows "Started from this: Session 1" and stays open, which is correct and reads well.
 
-### S3 (should-fix). Run naming does not match: "Session 1" vs "R2 To-do Draft the invoice"
+### S3 (should-fix, done: the link uses the run's own label). Run naming does not match: "Session 1" vs "R2 To-do Draft the invoice"
 
 Shot: `26-after-send-run-link.png`.
 The item's link says "Session 1" but the sidebar and run tab call the same run "R2 To-do Draft the invoice". Two runs on the list would be "Session 1, Session 2", while the sidebar says R2, R3. A user cannot match them. The "To-do " prefix also becomes part of the run title.

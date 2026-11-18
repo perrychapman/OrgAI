@@ -100,6 +100,40 @@ describe('pending links', () => {
   })
 })
 
+describe('linkedStart', () => {
+  const lead = 'To-do: Fix the login page'
+  const linkRun = vi.fn(async () => ({}))
+  beforeEach(() => {
+    linkRun.mockClear()
+    ;(window as unknown as { orgai: unknown }).orgai = { todos: { linkRun } }
+  })
+
+  it('links the run while the text still begins with the first line, extra text included', async () => {
+    start.setPendingTodoStart({ ...link, lead })
+    await start.linkedStart('new:p1', async () => 'run_1', (r) => r)(`${lead}\n\nMore\n\nand my own words`, undefined)
+    expect(linkRun).toHaveBeenCalledWith({ scope: link.scope, id: 'todo_1', runId: 'run_1' })
+    linkRun.mockClear()
+    start.setPendingTodoStart({ ...link, lead })
+    await start.linkedStart('new:p1', async () => 'run_2', (r) => r)(`  ${lead}  `, undefined)
+    expect(linkRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops the link silently when the whole text was replaced', async () => {
+    start.setPendingTodoStart({ ...link, lead })
+    const startFn = vi.fn(async () => 'run_1')
+    await start.linkedStart('new:p1', startFn, (r) => r)('Something else entirely', undefined)
+    expect(startFn).toHaveBeenCalled()
+    expect(linkRun).not.toHaveBeenCalled()
+    expect(start.hasPendingTodoStart('new:p1')).toBe(false)
+  })
+
+  it('gives the link back when a matching start throws', async () => {
+    start.setPendingTodoStart({ ...link, lead })
+    await expect(start.linkedStart('new:p1', async (): Promise<string> => Promise.reject(new Error('no')), (r) => r)(lead, undefined)).rejects.toThrow('no')
+    expect(start.hasPendingTodoStart('new:p1')).toBe(true)
+  })
+})
+
 describe('discard rule', () => {
   it('drops the link when the draft empties without a send', async () => {
     const store = fakeStore({ 'new:p1': { text: 'To-do: x', images: [] } })
@@ -167,7 +201,7 @@ describe('startSessionFromTodo', () => {
     expect(open).toHaveBeenCalled()
     expect(select).not.toHaveBeenCalled()
     expect(useAppStore.getState().composerDrafts['new:p1'].text).toBe('To-do: Fix the login page\n\nMore')
-    expect(start.takeTodoStart('new:p1')?.id).toBe('todo_1')
+    expect(start.takeTodoStart('new:p1')?.lead).toBe('To-do: Fix the login page')
   })
 
   it('uses a fresh Chat start page for the chat list', async () => {

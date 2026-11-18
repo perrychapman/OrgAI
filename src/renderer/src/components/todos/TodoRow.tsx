@@ -11,10 +11,12 @@ import TodoEditForm, { type TodoEdits } from './TodoEditForm'
 export interface TodoRunLink {
   id: string
   projectId: string
-  /** "Session 2": the order the user started them in, oldest first. */
+  /** The run's own label ("R2: Draft the invoice"), or "Session 2" (order started, oldest first) while it has no number. */
   label: string
   /** The run's own name, for the accessible name and the tooltip. */
   name: string
+  /** Accessible name when `label` already carries the run's own label. */
+  ariaLabel?: string
 }
 
 /**
@@ -84,13 +86,13 @@ export default function TodoRow({
                   type="button"
                   className="todo-detail-toggle"
                   data-testid="todo-detail-toggle"
-                  aria-label={`Details: ${row.checkLabel}`}
+                  aria-label={`${row.item.createdBy === 'agent' ? 'Saved context' : 'Details'}: ${row.checkLabel}`}
                   aria-expanded={showDetail}
                   aria-controls={showDetail ? detailId : undefined}
                   onClick={() => setShowDetail((v) => !v)}
                 >
                   <Icon icon={showDetail ? ChevronDown : ChevronRight} size="sm" />
-                  Details
+                  {row.item.createdBy === 'agent' ? 'Saved context' : 'Details'}
                 </button>
                 {showDetail && (
                   <p className="todo-detail" id={detailId} data-testid="todo-detail">
@@ -120,7 +122,7 @@ export default function TodoRow({
                     {runLinks.map((link, i) => (
                       <span key={link.id}>
                         {i > 0 && ', '}
-                        <button type="button" className="link-btn" data-testid="todo-run-link" title={link.name} aria-label={`Open ${link.label}: ${link.name}`} onClick={() => onOpenRun(link)}>
+                        <button type="button" className="link-btn" data-testid="todo-run-link" title={link.name} aria-label={link.ariaLabel ?? `Open ${link.label}: ${link.name}`} onClick={() => onOpenRun(link)}>
                           {link.label}
                         </button>
                       </span>

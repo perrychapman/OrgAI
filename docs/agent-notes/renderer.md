@@ -507,7 +507,9 @@ marker. Unverified: screen-reader speech, the deferred list at 1024x640 (the met
   text nodes only; shortened copies use `clampLabel`.
 - Start session (`lib/todoStart.ts`) only fills the New run page or Chat start page composer with `todoStartPrompt` and
   focuses it; `linkedStart` wraps those two pages' `onSubmit` and calls `todos.linkRun` after the user's own send. A
-  draft emptied without sending drops the link.
+  draft emptied without sending drops the link, and so does a send whose text no longer begins with the prefilled
+  first line (`lead`). While linked, `TodoDraftNote` (`todo-draft-note`) sits under the composer, tied by
+  `Composer`'s `describedBy`. The item's run link uses the run's own label (`R2: name`), "Session N" as fallback; an
+  assistant item with a detail says "Saved context" on its disclosure.
 - Checked: typecheck, build, `todos.test.ts` / `todoStart.test.ts`, Reviewer (no Critical or High; Mediums fixed).
-  `e2e/todos.mjs` is in `e2e:free` but was written before the main handlers and `[mock:todo]` landed: unverified until it
-  runs on the merged tree. Not looked at in the running app (themes, sizes, keyboard, screen reader).
+  `e2e/todos.mjs` and `e2e/todos-edge.mjs` are in `e2e:free` and pass on the mock (2026-11-18). Not looked at in the running app (themes, sizes, keyboard, screen reader).

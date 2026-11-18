@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { Effort, PermissionMode, Project, StaffingGoal } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { setupPending } from '@shared/setup'
@@ -10,7 +10,8 @@ import { newRunLead, projectKindCopy, projectNoun } from '../lib/projectKindCopy
 import { SegmentedControl } from './ui/SegmentedControl'
 import { isRunLive, newRunDraftKey, otherRunsHeading, useAppStore, useRunIndexes } from '../store/useAppStore'
 import { needsYou } from '../lib/runChains'
-import { linkedStart } from '../lib/todoStart'
+import { linkedStart, useTodoDraftLinked } from '../lib/todoStart'
+import TodoDraftNote from './todos/TodoDraftNote'
 import { promptLine, runTag } from '../lib/runLabels'
 import { displayRunName, isOrgChangeRun } from '../lib/orgChange'
 import { Button } from './ui/Button'
@@ -55,6 +56,8 @@ function readNewRunMode(projectId: string): NewRunMode {
  * run. Other open runs of the project are listed as links that switch tab.
  */
 export default function NewRunPage({ project }: { project: Project }): ReactElement {
+  const todoNoteId = useId()
+  const todoDrafted = useTodoDraftLinked(newRunDraftKey(project.id))
   const startRun = useAppStore((s) => s.startRun)
   const startSetup = useAppStore((s) => s.startSetup)
   const openRun = useAppStore((s) => s.openRun)
@@ -284,6 +287,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             ) : undefined
           }
           autoFocus
+          describedBy={todoDrafted ? todoNoteId : undefined}
           focusToken={focusToken}
           onFail={(err) => err instanceof DeclinedStart}
           onSubmit={linkedStart(newRunDraftKey(project.id), async (text, images) => {
@@ -315,6 +319,7 @@ export default function NewRunPage({ project }: { project: Project }): ReactElem
             return shown !== shownBefore ? shown : undefined
           }, (runId) => runId)}
         />
+        {todoDrafted && <TodoDraftNote id={todoNoteId} sendLabel={ask ? 'Ask' : needsSetup ? 'Start without setup' : 'Start'} />}
 
         {dialog}
 

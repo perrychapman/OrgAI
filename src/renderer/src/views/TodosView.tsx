@@ -6,7 +6,8 @@ import type { Project, TodoScope } from '@shared/types'
 import { cleanTodoText } from '@shared/todos'
 import { clampLabel } from '@shared/view/clampLabel'
 import { TODO_EMPTY_TEXT, TODO_UNAVAILABLE_TEXT, todoListView, todoScopeFor, type TodoRowView } from '@shared/view/todos'
-import { useAppStore } from '../store/useAppStore'
+import { useAppStore, useRunIndexes } from '../store/useAppStore'
+import { runTag } from '../lib/runLabels'
 import { useTodosStore } from '../store/todosStore'
 import { Banner } from '../components/ui/Banner'
 import { Button } from '../components/ui/Button'
@@ -120,6 +121,7 @@ export default function TodosView({ project }: { project: Project }): ReactEleme
     return [...out]
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items])
+  const runIndexes = useRunIndexes()
   const runInfo = useRunInfo(scope.kind === 'chat' ? 'quick' : scope.projectId, ids)
   const view = useMemo(() => todoListView(list, { runExists: (id) => runInfo.has(id) }), [list, runInfo])
   const total = view.openCount + view.doneCount
@@ -146,15 +148,19 @@ export default function TodosView({ project }: { project: Project }): ReactEleme
       return { ...cur, [id]: message }
     })
 
-  const linkOf = (id: string, label: string): TodoRunLink | undefined => {
+  const linkOf = (id: string, label: string, own = false): TodoRunLink | undefined => {
     const info = runInfo.get(id)
-    return info ? { id, projectId: info.projectId, label, name: clampLabel(info.name, 60) } : undefined
+    if (!info) return undefined
+    const name = clampLabel(info.name, 60)
+    // The run's own label ("R2: Draft the invoice", as the sidebar and the run tab show it); "Session 1" only while it has no number.
+    const index = own ? runIndexes.get(id) : undefined
+    return index ? { id, projectId: info.projectId, label: `${runTag(index)}: ${clampLabel(info.name, 40)}`, name, ariaLabel: `Open ${runTag(index)}: ${name}` } : { id, projectId: info.projectId, label, name }
   }
   const runLinksOf = (row: TodoRowView): TodoRunLink[] => {
     const all = row.startedRuns
-    // Oldest first gets "Session 1": the list is newest first.
+    // The list is newest first; "Session N" (oldest first) is the fallback when the run has no number.
     return all
-      .map((r, i) => (r.exists ? linkOf(r.id, `Session ${all.length - i}`) : undefined))
+      .map((r, i) => (r.exists ? linkOf(r.id, `Session ${all.length - i}`, true) : undefined))
       .filter((l): l is TodoRunLink => !!l)
       .reverse()
   }
