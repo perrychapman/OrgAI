@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, nativeImage, nativeTheme, safeStorage, screen, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, nativeTheme, safeStorage, screen, shell, type MenuItemConstructorOptions } from 'electron'
+import { buildTextContextMenu } from './textContextMenu'
 import { parseLargerThanScreen, parseWindowHidden, parseWindowInactive, windowPlacement } from './windowPlacement'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
@@ -349,6 +350,24 @@ function createWindow(scope?: FocusRunTarget): BrowserWindow {
     e.preventDefault()
     console.warn(`Blocked a navigation away from the app to ${String(e.url).slice(0, 200)}`)
   }
+  // Native text menu (cut/copy/paste, selection copy, link address). Surfaces whose renderer code calls preventDefault()
+  // on the DOM contextmenu event never emit this, so their own menus are untouched.
+  win.webContents.on('context-menu', (_e, params) => {
+    const items = buildTextContextMenu(params)
+    if (!items || win.isDestroyed()) return
+    try {
+      const menu = Menu.buildFromTemplate(
+        items.map((item): MenuItemConstructorOptions => {
+          if (item.kind === 'separator') return { type: 'separator' }
+          if (item.kind === 'copyLink') return { label: item.label, click: () => clipboard.writeText(item.url) }
+          return { role: item.role, label: item.label, enabled: item.enabled }
+        })
+      )
+      menu.popup({ window: win })
+    } catch (err) {
+      log.warn(`Could not show the text context menu: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  })
   win.webContents.on('will-navigate', guard)
   win.webContents.on('will-redirect', guard)
   win.webContents.on('will-frame-navigate', guard)
