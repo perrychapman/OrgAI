@@ -2578,8 +2578,9 @@ class CodexSession implements RuntimeSession {
    * notes) were fixed at thread start: when instructionsFor(root) now differs from what Codex last received, the root
    * is resumed with the new ones at the next restart at idle (shared with MCP, coalesced) and told once it is in place:
    * 'after-idle'. When they are the same, 'now'. A change of the root's own tool list (canSpawn flipped) cannot reach a
-   * running thread (Codex fixes dynamic tools at thread/start): rejected, so the tool says the chart applies from the
-   * next run (ctx.roles has moved anyway, so the spawn gate already follows it).
+   * running thread (Codex fixes dynamic tools at thread/start). RunManager never moves the root's canSpawn mid-run, so
+   * this is a defensive path only: rejected, so the tool says the chart applies from the next run (were ctx.roles moved
+   * anyway, the spawn gate already follows it).
    * The combined answer is 'after-idle' when any part is.
    */
   private async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
@@ -2604,6 +2605,7 @@ class CodexSession implements RuntimeSession {
   private rosterChanged(roles: NonNullable<ConfigChange['roles']>): boolean {
     if (this.setupLike) throw new Error('This run keeps its own roles; the org chart applies from the next run.')
     const toolNames = this.toolsFor(this.root, true).names
+    // Defensive: RunManager keeps the root's canSpawn as the run started, so this only fires on a caller that did not.
     if (this.rootToolNames && !sameList(toolNames, this.rootToolNames)) {
       throw new Error("the orchestrator's own tools would change, which a running Codex thread cannot take")
     }
@@ -2643,9 +2645,15 @@ class CodexSession implements RuntimeSession {
     if (agentId === ROOT_AGENT_ID) return this.root
     const pinned = this.pinnedAgents.has(agentId) ? this.startRoles.get(agentId) : undefined
     if (pinned) {
-      // Grants still follow the live role (grant changes reach running agents); nothing else moves.
+      // Grants still follow the live role (grant changes reach running agents); nothing else moves. Both are taken from
+      // the live role as they are, absent included: a full ungrant deletes the field, and the pin must never restore it.
       const live = this.net.roleOf(agentId)
-      return { ...pinned, ...(live?.mcpServers ? { mcpServers: [...live.mcpServers] } : {}), ...(live?.skills ? { skills: [...live.skills] } : {}) }
+      const role: Role = { ...pinned }
+      delete role.mcpServers
+      delete role.skills
+      if (live?.mcpServers) role.mcpServers = [...live.mcpServers]
+      if (live?.skills) role.skills = [...live.skills]
+      return role
     }
     return this.net.roleOf(agentId) ?? this.root
   }

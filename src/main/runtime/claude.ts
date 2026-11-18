@@ -1393,7 +1393,8 @@ export class ClaudeSession implements RuntimeSession {
   /** The roles' id / reportsTo as the session started: the automatic subagent depth stays as the run started. */
   private limitRoles: Pick<Role, 'id' | 'reportsTo'>[]
   /**
-   * Org changes in the same run: role id -> configGen of the change that added or changed it. Such a role's agent
+   * Org changes in the same run: role id -> configGen of the change that added or changed it (set by rosterApplied in
+   * the tick RunManager moves ctx.roles, and again by configChanged). Such a role's agent
    * definition in the running query is missing or stale, so the spawn gate refuses it until a query built at or after
    * that generation starts (startRestartedQuery). Cleared for removed roles (the live roster refuses them anyway).
    */
@@ -1495,7 +1496,7 @@ export class ClaudeSession implements RuntimeSession {
   private pluginInFlight?: SkillPlugin
   /** Approved config changes waiting for a restart (pendingMcp holds the servers whose tools are announced). */
   private pendingConfig: RestartConfig & { due: boolean } = { due: false, regranted: [], removed: [], skills: false }
-  /** Counts configChanged calls, so a restart built before a later change leaves that change pending. */
+  /** Counts configChanged and rosterApplied calls, so a restart built before a later change leaves that change pending. */
   private configGen = 0
   /** Server name -> mcpDefinitionKey as this session last saw it: a new or changed definition counts as installed this run. */
   private knownDefs = new Map<string, string>()
@@ -3292,8 +3293,8 @@ export class ClaudeSession implements RuntimeSession {
         // model-written run_in_background: true for a report that is not required is left as written (sdk-facts 12-14).
         const parentSlug = input.agent_type ?? this.root.slug
         // The caller as it runs (a running lead of a role an org change renamed or removed keeps its start-time role);
-        // its targets come only from the live roster below.
-        const parentRole = input.agent_type ? this.roleOfSlug(input.agent_type) : this.root
+        // its targets come only from the live roster below. callerRole judges an agent of a retired role on that copy.
+        const parentRole = input.agent_type ? this.callerRole(input) : this.root
         const requested = String(toolInput.subagent_type ?? '')
         // A bridged role runs in its own child session on another connection: never a native spawn (delegate_agent only).
         const bridgedDenial = bridgedSpawnDenial(this.ctx, requested)
@@ -3673,9 +3674,14 @@ export class ClaudeSession implements RuntimeSession {
    * subagent_type the spawn gate approved. The record is second-hand: ensureAgent() creates an entry with the guessed
    * slug 'general-purpose' when a message arrives before task_started, so it may be a guess until task_started lands
    * (stream messages and hook calls are not ordered against each other). Neither value comes from the model.
+   * Exception (defence in depth): when the recorded role id is one an org change retired, the agent is judged on that
+   * retired copy, so a later role reusing its slug never lends its canSpawn, spawnable or grants to an older agent.
    */
   private callerRole(input: { agent_id?: string; agent_type?: string }): Role | undefined {
     if (!input.agent_id) return this.root
+    const recorded = this.agents.get(input.agent_id)?.roleId
+    const retired = recorded ? this.retiredRoles().find((r) => r.id === recorded) : undefined
+    if (retired) return retired
     const byType = input.agent_type ? this.roleOfSlug(input.agent_type) : undefined
     if (byType) return byType
     const roleId = this.agents.get(input.agent_id)?.roleId
@@ -3857,6 +3863,8 @@ export class ClaudeSession implements RuntimeSession {
     if (!this.q) throw new Error('The session is not running yet.')
     if (change.roles && !this.liveRoster) throw new Error('This session does not take org chart changes; they apply from the next run.')
     this.configGen += 1
+    // Normally rosterApplied has marked the roles already (same tick as ctx.roles moved); marking again is idempotent
+    // and covers a RunManager that did not call it.
     const roster = change.roles ? this.noteRosterChange(change.roles) : undefined
     const upserted = [...new Set(change.mcp?.upserted ?? [])]
     const removedNames = [...new Set(change.mcp?.removed ?? [])]
@@ -3969,6 +3977,34 @@ export class ClaudeSession implements RuntimeSession {
    * agents of a renamed role still resolve a name.
    */
   private noteRosterChange(roles: NonNullable<ConfigChange['roles']>): { root: boolean; needsDefinitions: boolean } {
+    this.markRoster(roles)
+    this.log('info', 'An org chart change was approved: the added and changed roles can be delegated to once the session restarts at idle; removed roles start no new agents from now on.')
+    return { root: roles.changed.includes(this.rootId), needsDefinitions: roles.added.length + roles.changed.length > 0 }
+  }
+
+  /**
+   * RuntimeSession.rosterApplied: RunManager has just rewritten ctx.roles in place (same tick, before configChanged).
+   * The spawn gate learns of the change here, so an added role (no agent definition in the running query) and a changed
+   * one (a stale definition) are refused from this moment, and the root's lost tools with them. Synchronous, never
+   * throws and never touches the query: a configChanged that later throws (or never comes) leaves these marks in place,
+   * so the roles stay refused until a query built after this point starts (as the give-up path).
+   */
+  rosterApplied(change: { added: string[]; changed: string[]; removed: string[] }): void {
+    try {
+      // A new generation: a restart whose options are being built now does not count as holding this change.
+      this.configGen += 1
+      this.markRoster(change)
+    } catch (e) {
+      this.log('warn', `Could not note an approved org chart change: ${(e as Error)?.message ?? String(e)}`)
+    }
+  }
+
+  /**
+   * Mark added and changed roles stale for the running query at the current configGen (idempotent: a role keeps its
+   * "added" flag), drop marks of removed ones (the live roster refuses them), remember every live slug, and, when the
+   * root changed, read the root's whitelist under the live roster for rootLostToolDenial.
+   */
+  private markRoster(roles: { added: readonly string[]; changed: readonly string[]; removed: readonly string[] }): void {
     for (const r of this.ctx.roles) this.slugIds.set(r.slug, r.id)
     for (const id of [...roles.added, ...roles.changed]) {
       if (!this.ctx.roles.some((r) => r.id === id)) continue
@@ -3976,8 +4012,28 @@ export class ClaudeSession implements RuntimeSession {
       this.rosterStale.set(id, { gen: this.configGen, added })
     }
     for (const id of roles.removed) this.rosterStale.delete(id)
-    this.log('info', 'An org chart change was approved: the added and changed roles can be delegated to once the session restarts at idle; removed roles start no new agents from now on.')
-    return { root: roles.changed.includes(this.rootId), needsDefinitions: roles.added.length + roles.changed.length > 0 }
+    if (roles.changed.includes(this.rootId)) this.rootToolsLive = this.rootToolsUnderLiveRoster()
+  }
+
+  /**
+   * The root's whitelist under the live roster. If the live MCP or skill config cannot be read, the role's own tools
+   * and harness tools without them, keeping the old whitelist's MCP and Skill entries (those calls have their own live
+   * gates); if even that fails, the previous value stays.
+   */
+  private rootToolsUnderLiveRoster(): Set<string> | undefined {
+    try {
+      return new Set(this.grantsNow().get(this.root.slug)?.tools ?? [])
+    } catch {
+      try {
+        const own = grantSnapshot(buildAgents(this.ctx, this.harnessTools, this.isolation, { mcpServers: [] })).get(this.root.slug)?.tools ?? new Set<string>()
+        const was = this.queryRootSlug ? this.queryGrants?.get(this.queryRootSlug)?.tools : undefined
+        for (const t of was ?? []) if (t === 'Skill' || t.startsWith('mcp__')) own.add(t)
+        return own
+      } catch (e) {
+        this.log('warn', `Could not read the orchestrator's tools under the approved org chart: ${(e as Error)?.message ?? String(e)}`)
+        return this.rootToolsLive
+      }
+    }
   }
 
   /** A server left the project: drop it from every attach record so no restart, fallback or rule path brings it back. */
