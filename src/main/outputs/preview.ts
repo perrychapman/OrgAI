@@ -94,8 +94,8 @@ function cellText(s: string, budget: { left: number }): string {
 
 type Primitive = string | number | boolean | null
 
-/** A cell value reduced to a primitive: dates ISO, rich text flattened, hyperlink text, error text. */
-function plainValue(v: unknown, budget: { left: number }, depth = 0): Primitive {
+/** A cell value reduced to a primitive (text capped at CELL_TEXT_MAX): dates ISO, rich text flattened, hyperlink text, error text. */
+export function plainValue(v: unknown, budget: { left: number }, depth = 0): Primitive {
   if (v === null || v === undefined) return null
   if (typeof v === 'number') return Number.isFinite(v) ? v : String(v)
   if (typeof v === 'boolean') return v
@@ -151,29 +151,49 @@ export const XLSX_PREVIEW_MAX_XML_BYTES = 8 * 1024 * 1024
 
 const XLSX_TOO_LARGE = 'This workbook is too large to preview here. Open it instead.'
 
-export async function previewXlsx(path: string, maxXmlBytes: number = XLSX_PREVIEW_MAX_XML_BYTES): Promise<OutputPreview> {
-  const buf = readCapped(path, DOC_MAX_BYTES)
-  if (buf.length > DOC_MAX_BYTES) return none('This spreadsheet is larger than 20 MB, so OrgAI does not preview it; open it instead.')
+/** Why a workbook was not loaded: `reason` is the preview's own sentence; `kind` lets another reader word its own. */
+export interface XlsxLoadProblem {
+  problem: string
+  kind: 'size' | 'package' | 'expanded' | 'large' | 'unreadable'
+}
+
+/**
+ * The guarded workbook load shared by the preview and read_document: 20 MB, zipGuard (zipInfo, zipVerifyEntries), 60 MB
+ * expanded, the XML sum and per-entry caps, then the JSZip-based full load. Never the streaming reader.
+ */
+export async function loadXlsxWorkbook(buf: Buffer, maxXmlBytes: number = XLSX_PREVIEW_MAX_XML_BYTES): Promise<{ wb: ExcelJS.Workbook } | XlsxLoadProblem> {
+  if (buf.length > DOC_MAX_BYTES) return { problem: 'This spreadsheet is larger than 20 MB, so OrgAI does not preview it; open it instead.', kind: 'size' }
   const zi = zipInfo(buf)
-  if (zi.problem) return none(`OrgAI did not preview this spreadsheet: ${zi.problem}`)
+  if (zi.problem) return { problem: `OrgAI did not preview this spreadsheet: ${zi.problem}`, kind: 'package' }
   const zv = zipVerifyEntries(buf)
-  if (zv) return none(`OrgAI did not preview this spreadsheet: ${zv}`)
-  if (zi.totalBytes > LOAD_MAX_BYTES) return none('This spreadsheet expands to more than 60 MB, so OrgAI does not preview it; open it instead.')
+  if (zv) return { problem: `OrgAI did not preview this spreadsheet: ${zv}`, kind: 'package' }
+  if (zi.totalBytes > LOAD_MAX_BYTES) return { problem: 'This spreadsheet expands to more than 60 MB, so OrgAI does not preview it; open it instead.', kind: 'expanded' }
   // exceljs holds each part as one string and builds a Cell per <c>: bound the parts it parses (sheets, shared strings,
   // styles and any other non-image part) and any single read.
   const xmlSize = zipSumSizes(buf, (n) => !isImagePart(n, 'xl/media/'))
   const biggest = zipMaxSize(buf, () => true)
-  if ((xmlSize !== null && xmlSize > maxXmlBytes) || (biggest !== null && biggest > PREVIEW_MAX_ENTRY_BYTES)) return none(XLSX_TOO_LARGE)
+  if ((xmlSize !== null && xmlSize > maxXmlBytes) || (biggest !== null && biggest > PREVIEW_MAX_ENTRY_BYTES)) return { problem: XLSX_TOO_LARGE, kind: 'large' }
   // Always the JSZip-based full load: it reads the central directory, which zipGuard checked. exceljs' streaming reader
   // walks local headers and was not safe against a crafted descriptor entry (Reviewer H1), so it is not used.
-  return (await previewXlsxLoaded(buf)) ?? none('OrgAI could not read this spreadsheet.')
-}
-
-/** Full-load reader: exact row and column totals, first OUTPUT_PREVIEW_* shown. Null when it cannot read the file. */
-async function previewXlsxLoaded(buf: Buffer): Promise<OutputPreview | null> {
   try {
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(buf as unknown as ArrayBuffer)
+    return { wb }
+  } catch {
+    return { problem: 'OrgAI could not read this spreadsheet.', kind: 'unreadable' }
+  }
+}
+
+export async function previewXlsx(path: string, maxXmlBytes: number = XLSX_PREVIEW_MAX_XML_BYTES): Promise<OutputPreview> {
+  const buf = readCapped(path, DOC_MAX_BYTES)
+  const loaded = await loadXlsxWorkbook(buf, maxXmlBytes)
+  if ('problem' in loaded) return none(loaded.problem)
+  return (await previewXlsxLoaded(loaded.wb)) ?? none('OrgAI could not read this spreadsheet.')
+}
+
+/** Full-load reader: exact row and column totals, first OUTPUT_PREVIEW_* shown. Null when it cannot read the file. */
+async function previewXlsxLoaded(wb: ExcelJS.Workbook): Promise<OutputPreview | null> {
+  try {
     const budget = { left: SHEETS_TEXT_BUDGET }
     const sheets: SheetPreview[] = []
     let truncatedSheets = 0
@@ -265,7 +285,11 @@ async function docxParts(buf: Buffer): Promise<{ names: Set<string> } | { proble
 
 /** previewDocx with the document.xml threshold as a parameter (exported for tests and measurement). */
 export async function previewDocx(path: string, maxXmlBytes: number = DOCX_PREVIEW_MAX_XML_BYTES): Promise<OutputPreview> {
-  const buf = readCapped(path, DOC_MAX_BYTES)
+  return previewDocxBuffer(readCapped(path, DOC_MAX_BYTES), maxXmlBytes)
+}
+
+/** The docx preview of bytes already read (at most DOC_MAX_BYTES + 1 of them). Never throws for bad input. */
+export async function previewDocxBuffer(buf: Buffer, maxXmlBytes: number = DOCX_PREVIEW_MAX_XML_BYTES): Promise<OutputPreview> {
   if (buf.length > DOC_MAX_BYTES) return none('This document is larger than 20 MB, so OrgAI does not preview it; open it instead.')
   const zp = zipProblem(buf)
   if (zp) return none(`OrgAI did not preview this document: ${zp}`)
