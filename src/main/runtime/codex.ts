@@ -1,7 +1,7 @@
 import { ordinal } from '@shared/view/compactionText'
 import type { AgentInstance, AgentMessage, ImageAttachment, McpServerSpec, PermissionMode, Role, RunEvent, TranscriptBlock, WorktreeInfo } from '@shared/types'
 import { canNarrowPermissionMode } from './runOverrides'
-import { KNOWLEDGE_RECALL_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
+import { KNOWLEDGE_RECALL_TOOL, READ_DOCUMENT_TOOL, SKILL_HARNESS_TOOLS, isBuiltinConnectionId, isModelTier } from '@shared/types'
 import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, projectKindOf, settingTier, staffingGoalOf } from '@shared/defaults'
 import { validModelId } from '../connections/codexAccount'
 import { PermissionModeRefusal } from './permissionModeRefusal'
@@ -1904,7 +1904,10 @@ class CodexSession implements RuntimeSession {
       const resolved = agentId === ROOT_AGENT_ID ? this.root : this.net.roleOf(agentId)
       // knowledge_recall dedupes per agent, so a thread OrgAI never bound reads as unknown (no agentId), not as the root.
       const unknownCaller = tool.name === KNOWLEDGE_RECALL_TOOL && !this.threads.has(call.threadId)
-      const text = await tool.call(call.arguments, unknownCaller ? {} : resolved ? { agentId, roleId: resolved.id } : { agentId })
+      // read_document also gets the folder the thread runs in (its worktree when isolated, else the project folder; the
+      // same value the thread was started with), only to resolve a relative path.
+      const cwd = tool.name === READ_DOCUMENT_TOOL ? { cwd: this.integrator.worktreeOf(agentId)?.path ?? this.ctx.project.path } : {}
+      const text = await tool.call(call.arguments, unknownCaller ? {} : resolved ? { agentId, roleId: resolved.id, ...cwd } : { agentId, ...cwd })
       return toolResponse(text, true)
     } catch (e) {
       return toolResponse(`${tool.name} failed: ${(e as Error).message}`, false)
