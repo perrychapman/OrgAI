@@ -868,6 +868,14 @@ export function showStartIfNothing(projectId: string): void {
   })
 }
 
+/**
+ * Projects with a focusRun in flight (how many). A window opened for one run, a notification and a jump all name the run
+ * to show: the settle that selecting the project starts must not open a remembered or default run over it. The remembered
+ * tab set is shared by every window of the profile, so a second window's settle used to win the race against a chain
+ * whose earlier members were still loading and showed another window's last viewed tab.
+ */
+const focusingRuns = new Map<string, number>()
+
 /** Opens the project's newest run (or the New run page) when its workspace shows nothing yet. */
 async function settleWorkspace(projectId: string): Promise<void> {
   const { getState, setState } = useAppStore
@@ -877,6 +885,8 @@ async function settleWorkspace(projectId: string): Promise<void> {
   try {
     const s = getState()
     if (s.selectedProjectId !== projectId || s.draftPage[projectId]) return
+    // focusRun shows the named run; it settles again itself when that run could not be shown.
+    if (focusingRuns.has(projectId)) return
     const viewed = s.activeRunByProject[projectId]
     if (viewed && s.runs[viewed]) {
       if (!s.selectedAgentId) setState({ selectedAgentId: 'root' })
@@ -2394,14 +2404,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       // A virtual project is not in projects:list, so load it on demand.
       await get().loadVirtualProject(projectId)
     } else if (!get().projects.some((p) => p.id === projectId)) return
-    if (get().selectedProjectId !== projectId) get().selectProject(projectId)
-    // L7: the chain key comes from the project's summaries; with History in first the view mounts once under its final key.
-    if (get().historyByProject[projectId] === undefined) await get().loadHistory().catch(() => undefined)
-    if (!get().runs[runId]) {
-      const record = await window.orgai.runs.get(runId).catch(() => null)
-      if (record) set((st) => (st.runs[runId] ? {} : { runs: { ...st.runs, [runId]: stateFromRecord(record) } }))
+    focusingRuns.set(projectId, (focusingRuns.get(projectId) ?? 0) + 1)
+    try {
+      if (get().selectedProjectId !== projectId) get().selectProject(projectId)
+      // L7: the chain key comes from the project's summaries; with History in first the view mounts once under its final key.
+      if (get().historyByProject[projectId] === undefined) await get().loadHistory().catch(() => undefined)
+      if (!get().runs[runId]) {
+        const record = await window.orgai.runs.get(runId).catch(() => null)
+        if (record) set((st) => (st.runs[runId] ? {} : { runs: { ...st.runs, [runId]: stateFromRecord(record) } }))
+      }
+      await get().openRun(runId)
+    } finally {
+      const left = (focusingRuns.get(projectId) ?? 1) - 1
+      if (left > 0) focusingRuns.set(projectId, left)
+      else focusingRuns.delete(projectId)
     }
-    await get().openRun(runId)
+    // The run could not be shown (it failed to load): fall back to what the workspace would have opened.
+    const viewed = get().activeRunByProject[projectId]
+    if (get().selectedProjectId === projectId && !focusingRuns.has(projectId) && !(viewed && get().runs[viewed])) void settleWorkspace(projectId)
     await seedPendingCards(runId)
   },
 

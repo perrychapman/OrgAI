@@ -18,7 +18,10 @@ const start = async (kind, projectId, marker) => page.evaluate(async ({ kind, pr
 // it too before acting on the picker (CI macOS: both Apply failures showed exactly that refusal).
 async function viewShowsMainStatus() {
   const status = await page.evaluate(async (id) => (await window.orgai.runs.get(id)).summary.status, viewRunId)
-  await view.waitForFunction((want) => document.querySelector('[data-testid=live-model-switch]')?.dataset.runStatus === want, status, { timeout: 15000 })
+  await view.waitForFunction((want) => document.querySelector('[data-testid=live-model-switch]')?.dataset.runStatus === want, status, { timeout: 15000 }).catch(async (error) => {
+    const shown = await view.evaluate(() => ({ status: document.querySelector('[data-testid=live-model-switch]')?.dataset.runStatus, tab: document.querySelector('.run-tab[aria-selected=true]')?.closest('[data-run]')?.getAttribute('data-run') })).catch(() => ({}))
+    throw new Error(`run window status never matched main for ${viewRunId}: main "${status}", window ${JSON.stringify(shown)}. ${error.message}`)
+  })
 }
 async function open(run) {
   viewRunId = run.id
@@ -31,6 +34,9 @@ async function open(run) {
   }
   if (!view) throw new Error('Run window did not open')
   await view.locator('[data-testid=live-model-change]').waitFor({ timeout: 20000 })
+  // The window must show the run it was opened for. A second window once settled onto another window's remembered tab
+  // (shared localStorage) and every later status check compared the wrong run (CI macOS: viewShowsMainStatus timed out).
+  await view.waitForFunction((id) => document.querySelector('.run-tab[aria-selected=true]')?.closest('[data-run]')?.getAttribute('data-run') === id, run.id, { timeout: 15000 })
   await view.evaluate(() => {
     window.modelFocusTrace = []
     const record = (event) => {
