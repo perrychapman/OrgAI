@@ -10,7 +10,8 @@ import { connectionLabel } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { newRunDraftKey, useAppStore } from '../../store/useAppStore'
 import { ASK_ORGAI_SEED } from '../../lib/menuActions'
-import { linkedStart } from '../../lib/todoStart'
+import { linkedStart, useTodoDraftLinked } from '../../lib/todoStart'
+import TodoDraftNote from '../todos/TodoDraftNote'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
 import { Input } from '../ui/Input'
@@ -48,6 +49,8 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
   const examplesHint = useId()
   const typed = text.trim()
   const draftKey = newRunDraftKey(project.id)
+  const todoNoteId = useId()
+  const todoDrafted = useTodoDraftLinked(draftKey)
   const focusToken = useAppStore((s) => s.composerFocusToken)
   const seed = useAppStore((s) => s.assistantSeed[project.id as VirtualProjectId])
 
@@ -246,6 +249,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
           primaryLabel="Start"
           placeholder="Ask about OrgAI or describe the task"
           autoFocus
+          describedBy={todoDrafted ? todoNoteId : undefined}
           focusToken={focusToken}
           onSubmit={linkedStart(draftKey, async (prompt, images) => {
             if (prompt.length > QUICK_RUN_MAX_PROMPT_CHARS) {
@@ -260,6 +264,7 @@ export default function ChatStartPage({ project }: { project: Project }): ReactE
             return startQuick({ prompt, ...(typed ? { folder: typed } : {}), team, allowEdits,...(images ? { images } : {}) })
           }, (summary) => summary.id)}
         />
+        {todoDrafted && <TodoDraftNote id={todoNoteId} sendLabel="Start" />}
       </div>
     </div>
   )

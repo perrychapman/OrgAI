@@ -40,8 +40,17 @@ const menu = (id) =>
     item.click()
   }, id)
 const chatField = () => page.locator('[data-testid=assistant-start-quick] .composer textarea')
+const addedShown = (t) => /Added\b[\s\S]*?to your to-do/.test(t)
+const sendLabel = async () => clean(await page.locator('.composer-row > span button').first().innerText())
 const mainText = () => page.evaluate(() => document.querySelector('#main-content')?.textContent ?? '')
 
+/** Back on the To-dos tab, press Start session on the changelog item and wait for the composer. */
+const startChangelogAgain = async () => {
+  await T('tab-todos').click()
+  await T('todos-view').waitFor({ timeout: 10_000 })
+  await row('Draft the changelog').locator('[data-testid=todo-start]').click()
+  await page.locator('.composer textarea').first().waitFor({ timeout: 10_000 })
+}
 async function openTodosTab() {
   await T('tab-todos').click()
   await T('todos-view').waitFor({ timeout: 10_000 })
@@ -167,6 +176,17 @@ try {
   check((await runsOf(pid)).length === runsBefore, '2 nothing was sent: no new run appeared')
   check(!((await store(PSCOPE))[0]?.startedRunIds?.length), '2 the item has no linked run before Send')
   await shot('project-start-prefill')
+  const note = T('todo-draft-note')
+  check(await until(async () => (await note.count()) === 1, 5000), '2 the prefilled draft shows the "Drafted from your to-do" line')
+  const sendWord = await sendLabel()
+  const noteText = clean(await note.innerText().catch(() => ''))
+  check(noteText === `Drafted from your to-do. Nothing is sent until you press ${sendWord}. The item stays on your list.`, "2 the line names the page's own send button", `${sendWord} | ${noteText}`)
+  const noteId = await note.getAttribute('id')
+  check(!!noteId && ((await composer.getAttribute('aria-describedby')) ?? '').split(' ').includes(noteId), '2 the message box is described by the line')
+  await composer.fill('')
+  check(await until(async () => (await note.count()) === 0, 5000), '2 emptying the draft removes the line')
+  await startChangelogAgain()
+  check((await until(async () => (await composer.inputValue()) === wantPrefill, 10_000)) && (await until(async () => (await note.count()) === 1, 5000)), '2 Start a session again refills the draft and shows the line')
   await composer.press('Enter')
   const linked = await until(async () => (await store(PSCOPE))[0]?.startedRunIds?.[0], 30_000)
   const projRuns = await runsOf(pid)
@@ -176,7 +196,23 @@ try {
   await endSession(page)
   await openProjectTodos()
   check(await until(async () => (await row('Draft the changelog').locator('[data-testid=todo-run-link]').count()) >= 1, 10_000), '2 the row shows a run link')
+  const linkText = clean(await row('Draft the changelog').locator('[data-testid=todo-run-link]').first().innerText())
+  check(/^R\d+: /.test(linkText), "2 the run link uses the run's own label, not \"Session 1\"", linkText)
   await shot('project-run-link')
+
+  // Replacing the whole text before Send leaves the item unlinked, and the line goes.
+  const linkedBefore = (await store(PSCOPE))[0]?.startedRunIds?.length ?? 0
+  const runsMid = (await runsOf(pid)).length
+  await startChangelogAgain()
+  await composer.fill('A different task that has nothing to do with the list')
+  check(await until(async () => (await note.count()) === 0, 5000), '2 replacing the whole text removes the line')
+  await composer.press('Enter')
+  await until(async () => (await runsOf(pid)).length === runsMid + 1, 30_000)
+  await sleep(1000)
+  check((await runsOf(pid)).length === runsMid + 1, '2 the replaced text still starts a run')
+  check(((await store(PSCOPE))[0]?.startedRunIds?.length ?? 0) === linkedBefore, '2 that run is not linked to the item')
+  await endSession(page)
+  await openProjectTodos()
 
   // ---------- 3. Chat list ----------
   await openChatTodos()
@@ -213,7 +249,7 @@ try {
   await chatField().fill('Please remember this [mock:todo]')
   await chatField().press('Enter')
   await page.locator('.run-tab[aria-selected=true]').first().waitFor({ timeout: 20_000 })
-  check(!!(await until(async () => (await mainText()).includes('Added to your to-do list.'), 30_000)), '4 the mock replies "Added to your to-do list."')
+  check(!!(await until(async () => addedShown(await mainText()), 30_000)), '4 the mock confirms the added to-do in the transcript')
   check(!!(await until(async () => (await store(CSCOPE)).some((i) => i.title === AGENT_TITLE && i.createdBy === 'agent'), 10_000)), '4 the item is stored with createdBy agent')
   const toasts = await page.locator('.toast, [data-testid=toast]').count()
   if (toasts) check(false, '4 no toast announces the added item', String(toasts))
@@ -224,9 +260,11 @@ try {
   check(!!(await until(async () => (await count()).includes('2'), 5000)), '4 the Chat tab count rose to 2 open items', await count())
   const src = row(AGENT_TITLE).locator('[data-testid=todo-source]')
   check(/^Added by /.test(clean(await src.innerText().catch(() => ''))), '4 the row says "Added by ..."', clean(await src.innerText().catch(() => '')))
+  const ctx = row(AGENT_TITLE).locator('[data-testid=todo-detail-toggle]')
+  if ((await ctx.count()) > 0) check(/Saved context/.test(clean(await ctx.innerText())), '4 an assistant item with a detail shows "Saved context" on its disclosure', clean(await ctx.innerText()))
   await shot('chat-agent-item')
   await row(AGENT_TITLE).locator('[data-testid=todo-source-link]').click()
-  check(!!(await until(async () => (await mainText()).includes('Added to your to-do list.'), 15_000)), '4 the source link opens the conversation')
+  check(!!(await until(async () => addedShown(await mainText()), 15_000)), '4 the source link opens the conversation')
 
   // ---------- 5. Persistence ----------
   // Put one done item on each list so statuses are checked too.

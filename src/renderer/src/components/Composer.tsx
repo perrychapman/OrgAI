@@ -31,6 +31,8 @@ interface Props {
   plainPlaceholder?: boolean
   /** Notices above the field (continued-by link, blocked session). */
   notices?: ReactNode
+  /** Id of a note shown under the composer that describes the message box (read after its label and hint). */
+  describedBy?: string
   /** Take focus on mount. */
   autoFocus?: boolean
   /** Take focus whenever this number changes (and is not 0). */
@@ -45,7 +47,7 @@ interface Props {
  * The message box shared by the run page and the New run page. Its text and images live in the store under
  * `draftKey`, so a half-typed task survives switching tabs, runs and projects and never lands in the wrong run.
  */
-export default function Composer({ draftKey, modeLabel, primaryLabel, placeholder, modeSwitch, settings, primaryVariant = 'primary', plainPlaceholder, notices, autoFocus, focusToken, onSubmit, onFail }: Props): ReactElement {
+export default function Composer({ draftKey, modeLabel, primaryLabel, placeholder, modeSwitch, settings, primaryVariant = 'primary', plainPlaceholder, notices, describedBy, autoFocus, focusToken, onSubmit, onFail }: Props): ReactElement {
   const fieldPlaceholder = plainPlaceholder ? placeholder : composerPlaceholder(placeholder)
   const draft = useAppStore((s) => s.composerDrafts[draftKey])
   const setDraft = useAppStore((s) => s.setComposerDraft)
@@ -170,7 +172,7 @@ export default function Composer({ draftKey, modeLabel, primaryLabel, placeholde
             ref={ref}
             className="textarea"
             aria-label={fieldPlaceholder}
-            aria-describedby={`${labelId} ${hintId}`}
+            aria-describedby={describedBy ? `${labelId} ${hintId} ${describedBy}` : `${labelId} ${hintId}`}
             value={text}
             onChange={(e) => setDraft(draftKey, { text: e.target.value, images })}
             onPaste={(e) => {

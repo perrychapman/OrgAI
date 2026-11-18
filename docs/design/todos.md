@@ -106,8 +106,17 @@ Reasons:
   sends and never changes the item's status. A pending link is held per draft key; `linkedStart` wraps the New run page
   and Chat start page `onSubmit` so the link is taken before the start, given back if the start throws, and sent with
   `todos.linkRun` after success (on a project only when the shown run changed). A draft emptied without a send drops the
-  link (store subscription plus a microtask, after Composer's synchronous submit). Known limit: replacing the whole
-  prefilled text without emptying it keeps the link.
+  link (store subscription plus a microtask, after Composer's synchronous submit). `linkedStart` links the run only while
+  the sent text still begins with the prefilled first line (`To-do: <title>`, kept on the link as `lead`); a wholly
+  replaced text drops the link silently (L5 closed).
+- S2: while a draft prefilled from a to-do is still linked, one quiet line sits under the composer on the New run and
+  Chat start pages (`TodoDraftNote`, `useTodoDraftLinked`): "Drafted from your to-do. Nothing is sent until you press
+  <the page's send button label>. The item stays on your list." It is tied to the message box with Composer's
+  `describedBy` and goes when the draft is emptied or replaced. Existing `muted` text style; no motion.
+- S3: the item's run link shows the run's own label ("R2: Draft the invoice", `runTag` plus the display name) and
+  falls back to "Session N" while the run has no number.
+- An assistant-written item with a detail names its disclosure "Saved context" (visible text and accessible name)
+  instead of "Details", so the user knows what Start session will add to the draft.
 - A missing `window.orgai.todos` (older main) shows "To-dos are not available in this version." and turns writes off.
 
 ### Test ids
@@ -117,17 +126,18 @@ Tab `tab-todos`, count `todos-tab-count`; `todos-view`, `todos-loading`, `todos-
 `data-status`) with `todo-check`, `todo-title`, `todo-detail-toggle`, `todo-detail`, `todo-source`, `todo-source-link`,
 `todo-runs`, `todo-run-link`, `todo-start`, `todo-edit`, `todo-delete`, `todo-row-error`; edit form `todo-edit-title`,
 `todo-edit-detail`, `todo-edit-save`, `todo-edit-cancel`; `todo-done-toggle`, `todo-clear-done`; confirms
-`todo-delete-confirm`, `todo-clear-done-confirm`, `todo-replace-draft-confirm`.
+`todo-delete-confirm`, `todo-clear-done-confirm`, `todo-replace-draft-confirm`; `todo-draft-note` (the line under the
+composer).
 
 ### Checked and open (renderer)
 
 - Unit: `src/shared/view/todos.test.ts`, `src/renderer/src/lib/todoStart.test.ts`; typecheck and build.
-- `e2e/todos.mjs` (token-free, in `e2e:free`, mapped in `scripts/e2e-select.mjs`) was written against the contract
-  before the main handlers and `[mock:todo]` were merged: not run yet.
+- `e2e/todos.mjs` and QA's `e2e/todos-edge.mjs` (token-free, both in `e2e:free`, mapped in `scripts/e2e-select.mjs`) pass
+  on the mock: the draft line (text, `aria-describedby`, gone on emptying or replacing), the run's own label on the link,
+  an unlinked run after replacing the whole text, "Saved context", and the edge cases.
 - Reviewer (renderer): no Critical or High; M1 (controlled checkbox snapped back), M2 (a project start that started
   nothing could link the open run), M3 (local patches dropped a newer load) and M4 (label in name) fixed, Lows L1, L2,
-  L7, L9 fixed; L3 (an error after navigation is not shown), L4 (Enter while loading is silent), L5 (whole-text
-  replacement keeps the link) and L8 (agent detail in the prefill is not marked as such) open.
+  L7, L9 fixed; L3 (an error after navigation is not shown), L4 (Enter while loading is silent) and L8 (agent detail in the prefill is not marked as such) open.
 - Not looked at in the running app: both themes, both window sizes, keyboard walk, screen-reader speech; no mock UX
   walkthrough yet (needs the merged main side).
 
