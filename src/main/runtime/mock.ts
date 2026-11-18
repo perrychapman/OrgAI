@@ -134,6 +134,15 @@ import { waitingNote, waitingNoteExcluded } from './waitingNote'
  * [mock:mode-refuse] makes it refuse, [mock:mode-reports-unchanged] makes it answer reportsUnchanged >= 1.
  * Both recovery markers yield the simple idle script when resumed, so recovery never repeats the failure.
  * [mock:media]: text/image/text tool result, unsupported audio, then a standalone assistant PNG; no files or network.
+ * [mock:org-change] (ORG_CHANGE_TOKEN, team work runs, default script; orgChangeArgs / the 'orgChange' step): the root
+ * says one line, then propose_org_change with the run's whole current chart by slug plus "Roster Tester" (slug
+ * roster-tester, reports to the root, tools Read and Grep, canSpawn false) and the root's spawnable extended with it,
+ * title "Add a Roster Tester". APPROVED: when ctx.roles has the new role (MockSession.liveRoster, so RunManager applies
+ * the chart to this run) the root spawns MOCK_ROSTER_REPORT on it, the report reads README.md and finishes with
+ * MOCK_ROSTER_RESULT, then the root says "Org change approved. <tool result>". DECLINED / REVISE: the root says
+ * MOCK_ORG_CHANGE_DECLINED. Without the tool: a warning log and MOCK_ORG_CHANGE_NONE. The turn then ends (idle).
+ * A spawn of a role that is not in the live ctx.roles (removed by an org change, or never there) is refused with a tool
+ * error (rosterSpawnDenial) and its later steps are skipped.
  *
  * Reference folders (same as the Claude adapter): a shell step touching one always asks, never through a rule, a
  * suggestion shortcut or acceptEdits; a Read / Glob / Grep card under one carries referenceFolder and no suggestions.
@@ -239,6 +248,13 @@ export type MockStep =
   | { type: 'fail'; subtype?: string }
   | MockHarnessAnswerStep
   | MockFirstProjectStep
+  /**
+   * The [mock:org-change] flow from the root: propose_org_change with orgChangeArgs(ctx.roles) (never retried on REVISE);
+   * on APPROVED, delegate one task to the Roster Tester through the normal spawn / finish path when ctx.roles has it, then
+   * say MOCK_ORG_CHANGE_APPROVED with the tool result; otherwise say MOCK_ORG_CHANGE_DECLINED (or MOCK_ORG_CHANGE_NONE
+   * when the tool is not bound, after harnessStep's warning).
+   */
+  | { type: 'orgChange' }
 
 /**
  * A harness tool call from the root, never retried on REVISE; then the root says the `text` of the first answer whose
@@ -1326,6 +1342,53 @@ export function configChangeSteps(rootSlug: string): MockStep[] {
   ]
 }
 
+/** Trigger token (work runs, default script): propose_org_change adding Roster Tester, then delegate to it (orgChangeArgs). */
+export const ORG_CHANGE_TOKEN = '[mock:org-change]'
+/** The role the [mock:org-change] script adds (toRoles derives the slug from the name). */
+export const MOCK_ROSTER_TESTER = { name: 'Roster Tester', slug: 'roster-tester' } as const
+/** The report id (agent id) of the Roster Tester the script spawns once the chart is approved. */
+export const MOCK_ROSTER_REPORT = 'mock-roster-tester-1'
+/** What the Roster Tester reports back. */
+export const MOCK_ROSTER_RESULT = 'Roster Tester checked in: the new role works in this run.'
+/** The root's closing text: approved (followed by the tool result), not approved, or the tool missing. */
+export const MOCK_ORG_CHANGE_APPROVED = 'Org change approved.'
+export const MOCK_ORG_CHANGE_DECLINED = 'The org chart stays as it is.'
+export const MOCK_ORG_CHANGE_NONE = 'Org change is not available in this run.'
+const PROPOSE_ORG_TOOL = 'propose_org_change'
+
+/**
+ * propose_org_change arguments for [mock:org-change]: the run's whole current chart, every role by its slug with its
+ * current fields (model, connection and requiredReports omitted, which keeps them), plus Roster Tester reporting to the
+ * root, and the root's spawnable extended with it (and canSpawn true). Draft references are role names. Pure.
+ */
+export function orgChangeArgs(roles: readonly Role[]): Record<string, unknown> {
+  const root = roles.find((r) => r.reportsTo === null) ?? roles[0]
+  const nameOf = (id: string): string | undefined => roles.find((r) => r.id === id)?.name
+  const names = (ids: readonly string[]): string[] => ids.map(nameOf).filter((n): n is string => !!n)
+  const drafts: Record<string, unknown>[] = roles.map((r) => ({
+    slug: r.slug,
+    name: r.name,
+    description: r.description,
+    responsibilities: [...(r.responsibilities ?? [])],
+    prompt: r.prompt,
+    tools: [...r.tools],
+    canSpawn: r === root ? true : r.canSpawn,
+    spawnable: r === root ? [...names(r.spawnable), MOCK_ROSTER_TESTER.name] : names(r.spawnable),
+    reportsTo: r.reportsTo === null ? null : (nameOf(r.reportsTo) ?? null)
+  }))
+  drafts.push({
+    name: MOCK_ROSTER_TESTER.name,
+    description: 'Checks that a role added mid-run can take work in the same run.',
+    responsibilities: ['Read the brief', 'Report back in one line'],
+    prompt: 'You are the Roster Tester. Read what the brief names, change nothing, and report back in one line.',
+    tools: ['Read', 'Grep'],
+    canSpawn: false,
+    spawnable: [],
+    reportsTo: root?.name ?? null
+  })
+  return { title: 'Add a Roster Tester', rationale: 'Mock: check that a role approved mid-run can be used in the same run.', roles: drafts }
+}
+
 export class MockSession implements RuntimeSession {
   readonly finished: Promise<void>
   /** Harness messages delivered to the orchestrator (automatic continues), in order. For tests. */
@@ -1348,15 +1411,16 @@ export class MockSession implements RuntimeSession {
   readonly connection?: { adapter: ProviderId; connection: ConnectionId }
   /** Servers attached mid-run through the harness's addMcpServer hook, in order. For tests. */
   readonly addedMcpServers: McpServerSpec[] = []
-  /** Changes reported through the harness's configChanged hook (approved propose_mcp_servers / propose_skills), in order. For tests. */
+  /** Changes reported through the harness's configChanged hook (approved propose_mcp_servers / propose_skills / propose_org_change), in order. For tests. */
   readonly configChanges: ConfigChange[] = []
+  /** configChanged handles ConfigChange.roles (RuntimeSession.liveRoster): an approved org chart is used in this run at once. */
+  readonly liveRoster = true
   /** What a real adapter would hand the model for user messages and spawn briefs, knowledge blocks included. For tests. */
   readonly deliveredMessages: { agentId: string; text: string }[] = []
   /** The standing knowledge index each agent's system prompt would carry (PromptFlags.knowledgeBrief), in spawn order. For tests. */
   readonly promptKnowledgeBriefs: { agentId: string; brief: string | undefined }[] = []
   private hooks: HarnessToolHooks
   private agents = new Map<string, AgentInstance>()
-  private rolesBySlug: Map<string, Role>
   private root: Role
   private rootModelOverride?: string
   private isSetup: boolean
@@ -1409,7 +1473,6 @@ export class MockSession implements RuntimeSession {
     if (!root) throw new Error('Project has no roles')
     this.root = root
     this.isSetup = isSetupLikeRun(ctx.run.kind)
-    this.rolesBySlug = new Map(ctx.roles.map((r) => [r.slug, r]))
     this.staffing = new StaffingBook({
       project: ctx.project,
       rootTier: root.tier ?? settingTier(root.model),
@@ -1638,10 +1701,14 @@ export class MockSession implements RuntimeSession {
    * the live server list; a skills change re-binds the harness tools so list_skills / load_skill see the live
    * ctx.skills() (the Claude adapter's Skill gate reads the live grants the same way, and answers 'after-idle' when a
    * re-created query is needed).
+   * Roles (an approved org chart, ConfigChange.roles): RunManager already rewrote ctx.roles in place, and every role
+   * lookup here (spawn, the spawn gate, firstSpawnableSlug, agent names) reads ctx.roles at call time, so the next spawn
+   * uses the new roster and a removed role is refused (rosterSpawnDenial); the mock has no system prompt to rebuild for
+   * the root. The harness tools are re-bound as for skills (membership may have changed ctx.skills()). 'now'.
    */
   async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
     this.configChanges.push(structuredClone(change))
-    if (change.skills) {
+    if (change.skills || change.roles) {
       this.tools = harnessToolsFor(this.ctx, this.hooks)
       this.harnessAudiences = new Map(this.tools.map((t) => [t.name, t.audience]))
     }
@@ -1657,7 +1724,18 @@ export class MockSession implements RuntimeSession {
   private roleOf(agentId: string): Role | undefined {
     if (agentId === ROOT_AGENT_ID) return this.root
     const a = this.agents.get(agentId)
-    return (a?.roleId ? this.ctx.roles.find((r) => r.id === a.roleId) : undefined) ?? (a ? this.rolesBySlug.get(a.roleSlug) : undefined)
+    if (!a) return undefined
+    const retired = this.ctx.retiredRoles?.() ?? []
+    // Live roles first; an agent of a role an org change removed keeps its start-time definition (ctx.retiredRoles()).
+    return (a.roleId ? (this.ctx.roles.find((r) => r.id === a.roleId) ?? retired.find((r) => r.id === a.roleId)) : undefined) ?? this.roleBySlug(a.roleSlug) ?? retired.find((r) => r.slug === a.roleSlug)
+  }
+
+  /**
+   * A spawnable role by slug, read from the live ctx.roles at call time (an approved org change rewrites, appends and
+   * removes roles in place; RuntimeContext.roles). Never a cache, so a removed role is gone and an added one is there.
+   */
+  private roleBySlug(slug: string | undefined): Role | undefined {
+    return slug === undefined ? undefined : this.ctx.roles.find((r) => r.slug === slug)
   }
 
   // ---------- events ----------
@@ -1703,7 +1781,8 @@ export class MockSession implements RuntimeSession {
   private ensureAgent(id: string, init?: Partial<AgentInstance>): AgentInstance {
     let a = this.agents.get(id)
     if (!a) {
-      const role = this.rolesBySlug.get(init?.roleSlug ?? this.root.slug)
+      const slug = init?.roleSlug ?? this.root.slug
+      const role = this.roleBySlug(slug) ?? this.ctx.retiredRoles?.().find((r) => r.slug === slug)
       a = {
         id,
         roleId: role?.id ?? null,
@@ -1952,6 +2031,9 @@ export class MockSession implements RuntimeSession {
     }
     if (!this.isSetup && this.ctx.run.kind === 'work' && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(MCP_MIDRUN_TOKEN)) return MCP_MIDRUN_STEPS
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(CONFIG_CHANGE_TOKEN)) return configChangeSteps(this.root.slug)
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(ORG_CHANGE_TOKEN)) {
+      return [{ type: 'text', text: 'This needs a role the chart does not have; proposing it.' }, { type: 'orgChange' }]
+    }
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FATIGUE_TOKEN)) return fatigueSteps(this.ctx.project.path)
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(FOLDER_CONFIG_TOKEN)) {
       // One read of the gate for the turn, like the Claude adapter's per-query snapshot.
@@ -1983,7 +2065,7 @@ export class MockSession implements RuntimeSession {
     if (execMarker) return execMarker
     if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && this.ctx.prompt.includes(DEEP_TREE_TOKEN)) {
       const lead = this.firstSpawnableSlug(this.root)
-      return deepTreeSteps(lead, this.firstSpawnableSlug(this.rolesBySlug.get(lead), lead))
+      return deepTreeSteps(lead, this.firstSpawnableSlug(this.roleBySlug(lead), lead))
     }
     if (this.answersRevisions() && isReviseMessage(this.ctx.prompt)) {
       // A revise request that started or continued this run: answer it and go idle (no default script).
@@ -2090,7 +2172,7 @@ export class MockSession implements RuntimeSession {
     const variant = prompt.includes(DELEGATION_CLAIM_TOKEN) ? 'claim' : prompt.includes(DELEGATION_SKIP_TOKEN) ? 'skip' : prompt.includes(DELEGATION_FIX_TOKEN) ? 'fix' : prompt.includes(DELEGATION_OK_TOKEN) ? 'ok' : prompt.includes(DELEGATION_EARLY_TOKEN) ? 'early' : null
     if (!variant) return null
     const managerSlug = this.firstSpawnableSlug(this.root)
-    const manager = this.rolesBySlug.get(managerSlug)
+    const manager = this.roleBySlug(managerSlug)
     const required = manager ? (cleanRequiredReports(manager) ?? manager.spawnable) : []
     const slugs = required.map((id) => this.ctx.roles.find((r) => r.id === id)?.slug).filter((x): x is string => !!x)
     return [...delegationSteps(variant, managerSlug, slugs), ...(prompt.includes(EXEC_PLAN_TOKEN) ? execPlanSteps() : [])]
@@ -2247,6 +2329,8 @@ export class MockSession implements RuntimeSession {
         return this.harnessAnswerStep(step)
       case 'firstProject':
         return this.firstProjectStep(step)
+      case 'orgChange':
+        return this.orgChangeStep()
       case 'wait':
         await this.pause(step.ms)
         return
@@ -2618,6 +2702,14 @@ export class MockSession implements RuntimeSession {
     return isFreeCdTarget(target, { ...opts, freeDirs: [...(opts.freeDirs ?? []), ...this.sessionDirs] })
   }
 
+  /** Why a spawn of `slug` is refused because the live roster (ctx.roles) does not have it, or undefined when it does. */
+  private rosterSpawnDenial(slug: string): string | undefined {
+    if (this.roleBySlug(slug)) return undefined
+    const retired = this.ctx.retiredRoles?.().find((r) => r.slug === slug)
+    if (retired) return `Role "${datum(retired.name, 60)}" was removed from this run's org chart; no new agents of it can start. Agents already running on it finish as they started.`
+    return `There is no role "${datum(slug, 60)}" in this run's org chart.`
+  }
+
   /** The first role `parent` may spawn, else the first non-root role, else `fallback` (default: the root's slug). */
   private firstSpawnableSlug(parent: Role | undefined, fallback?: string): string {
     const allowed = parent ? this.ctx.roles.filter((r) => parent.spawnable.includes(r.id)) : []
@@ -2686,13 +2778,22 @@ export class MockSession implements RuntimeSession {
   private async spawnStep(step: Extract<MockStep, { type: 'spawn' }>): Promise<void> {
     const parentId = step.parent ?? ROOT_AGENT_ID
     const parent = this.ensureAgent(parentId)
-    const slug = step.role ?? this.firstSpawnableSlug(this.rolesBySlug.get(parent.roleSlug))
+    const slug = step.role ?? this.firstSpawnableSlug(this.roleOf(parentId))
     const { handle } = spawnHandle(this.handles, slug, step.name)
     const brief = step.brief ?? step.description
     const input = { subagent_type: slug, description: step.description, prompt: brief, name: handle }
     const toolUseId = newId('tu')
     this.transcript(parentId, { kind: 'tool_use', id: toolUseId, name: SPAWN_TOOL, input })
     countUsage(parent, 'toolCalls')
+    // Like Claude's spawn gate: the role must be in the live roster (ctx.roles, read now). A role an approved org change
+    // removed, or one the run never had, is refused at once; agents already running on a removed role are untouched.
+    const rosterDenial = this.rosterSpawnDenial(slug)
+    if (rosterDenial) {
+      this.log('warn', `Blocked spawn: ${parent.roleSlug} -> ${slug} (not in this run's roles)`)
+      this.transcript(parentId, { kind: 'tool_result', toolUseId, content: rosterDenial, isError: true })
+      this.deniedSpawns.add(step.id)
+      return
+    }
     // Like Claude's PreToolUse: a bridged role is never spawned natively. The step's later steps are skipped.
     const bridgedDenial = bridgedSpawnDenial(this.ctx, slug)
     if (bridgedDenial) {
@@ -2704,7 +2805,7 @@ export class MockSession implements RuntimeSession {
     this.setState(parentId, 'delegating', describeTool(SPAWN_TOOL, input))
     this.spawnToolUse.set(step.id, toolUseId)
     if (!this.agents.has(step.id)) this.noteActivity('subagent')
-    const role = this.rolesBySlug.get(slug)
+    const role = this.roleBySlug(slug)
     // Run staffing: bind to the plan step and resolve before the report exists; apply only an override.
     const onCall = step.tier || step.effort ? { ...(step.tier ? { tier: step.tier } : {}), ...(step.effort ? { effort: step.effort } : {}) } : undefined
     const decision = role ? this.staffing.decide({ key: step.id, role, ...(parentId !== ROOT_AGENT_ID ? { parentAgentId: parentId } : {}), ...(onCall ? { onCall } : {}) }) : undefined
@@ -2911,6 +3012,30 @@ export class MockSession implements RuntimeSession {
       return
     }
     await this.harnessStep({ type: 'harness', name: KNOWLEDGE_TOOL, args: { action: 'retire', factId, ...(step.reason ? { reason: step.reason } : {}) } })
+  }
+
+  /** The orgChange step (see MockStep): the [mock:org-change] proposal, then a delegation to the new role once approved. */
+  private async orgChangeStep(): Promise<void> {
+    const result = await this.harnessStep({ type: 'harness', name: PROPOSE_ORG_TOOL, args: orgChangeArgs(this.ctx.roles), retryOnRevise: false })
+    if (this.stopped || this.interrupted) return
+    if (result === undefined) return this.step({ type: 'text', text: MOCK_ORG_CHANGE_NONE })
+    if (!result.startsWith('APPROVED')) return this.step({ type: 'text', text: MOCK_ORG_CHANGE_DECLINED })
+    // Read now: the live roster (RunManager applied the approved chart to ctx.roles before the tool returned).
+    const tester = this.ctx.roles.find((r) => r.name === MOCK_ROSTER_TESTER.name)
+    if (tester) {
+      const steps: MockStep[] = [
+        { type: 'spawn', id: MOCK_ROSTER_REPORT, role: tester.slug, description: 'Check that the new role works in this run' },
+        { type: 'tool', agent: MOCK_ROSTER_REPORT, name: 'Read', input: { file_path: 'README.md' }, result: '# Mock project\n' },
+        { type: 'finish', id: MOCK_ROSTER_REPORT, result: MOCK_ROSTER_RESULT }
+      ]
+      for (const s of steps) {
+        await this.pause(this.script.delayMs)
+        if (this.stopped || this.interrupted) return
+        await this.step(s)
+      }
+      if (this.stopped || this.interrupted) return
+    }
+    await this.step({ type: 'text', text: `${MOCK_ORG_CHANGE_APPROVED} ${result}` })
   }
 
   /** The harnessAnswer step: one call through the real harness tool (no REVISE retry), then the matching sentence. */

@@ -326,8 +326,9 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     unpriced model under a budget, under a required-delegation obligation, or under a different root are deferred
     (`RunRosterChange.deferred`). RunManager records `RunRecord.roster`, emits host-only `run.roster`, returns
     `ProposalOutcome.roster`; the tool calls `configChanged({ roles })` and says now / after idle / next run. Without
-    `liveRoster` (every adapter today) nothing changes: the chart applies from the next run. Unit-tested only
-    (runRoster.test.ts, runManagerRoster.test.ts, harnessToolsOrgChange.test.ts); adapters and renderer follow.
+    `liveRoster` nothing changes: the chart applies from the next run (Claude, Codex and the mock all set it on team
+    work runs, see below). Unit-tested only (runRoster.test.ts, runManagerRoster.test.ts,
+    harnessToolsOrgChange.test.ts); the renderer side is in renderer.md "Mid-run roster".
     - Claude (2026-11-18): `ClaudeSession.liveRoster` is true on team work runs (not setup-like, quick, single or a
       bridged child; `configChanged({ roles })` throws there). Agent definitions are fixed per query, so a roles change
       joins the existing config restart at idle (`pendingConfig.roles`, coalesced with pending MCP / skill changes, the
@@ -348,6 +349,28 @@ Application menu, run end and decision cards, settings, run titles, projects, us
       text). Live Claude behaviour is unverified, notably whether a resumed session accepts a renamed root agent
       (`Options.agent` with a new slug) and how the CLI treats a spawn of an agent type it has no definition for (the
       gate refuses those before the CLI sees them).
+    - Mock (2026-11-18): `MockSession.liveRoster` is true and `configChanged({ roles })` answers 'now' (recorded in
+      `configChanges`, harness tools re-bound). Every role lookup reads `ctx.roles` at call time (the start-time
+      `rolesBySlug` map is gone); a spawn of a role not in `ctx.roles` is refused with a tool error (removed: names the
+      role from `ctx.retiredRoles()`; unknown: "There is no role ..."), and an agent already running on a removed role
+      finishes under its old name. Marker `[mock:org-change]` (`ORG_CHANGE_TOKEN`, team work runs, default script):
+      propose_org_change with the whole chart by slug plus "Roster Tester" (slug roster-tester, under the root, Read and
+      Grep) and the root's spawnable extended, title "Add a Roster Tester"; approved, `MOCK_ROSTER_REPORT` runs on the new
+      role and finishes, then the root says "Org change approved. <tool result>"; declined or revise says "The org chart
+      stays as it is."; without the tool a warning and "Org change is not available in this run.". Unit-tested
+      (mockOrgChange.test.ts, including one run through the real RunManager with the mock adapter).
+    - Codex (2026-11-18): `CodexSession.liveRoster` is true. spawn_report already reads the live roster
+      (`CodexAgentNetwork` holds `ctx.roles` itself and the root's object), so the next spawn uses it and a removed or
+      unknown role is refused at once. The root thread's developer instructions (prompt, reports list, tool notes) are
+      compared with what Codex last received (`sentInstructions`): equal answers 'now'; different answers 'after-idle'
+      and sets `rosterRestartPending`, which shares the MCP restart at idle (`maybeRestartForMcp`, one restart and one
+      harness message for both; a change landing during a restart restarts again or is told at once if the resumed
+      root already has it). Threads that existed when their role was changed or removed are pinned: a restart resumes
+      them with their start-time role snapshot and the exact instructions they were given. A change of the root's own
+      tool list (canSpawn flipped) throws (Codex fixes a thread's dynamic tools at thread/start), so the tool says next
+      run; the spawn gate follows ctx.roles either way. Fake app-server tests (codexRoster.test.ts). Live Codex is
+      unverified: that thread/resume applies new developerInstructions (the MCP restart assumes the same), and that a
+      new role's own model gets the native-agents catalog override before the next app-server restart.
   - Proposal gates (2026-11-02, renderer review): main refuses control, zero-width, bidi and other invisible
     characters (`capabilities/sanitize.ts` `hiddenCharIn` / `hiddenCharProblem`; descriptions are `prose`: tab, line
     breaks, emoji ZWJ, ZWNJ and soft hyphens pass, bidi and zero-width space do not) in every MCP spec string field (`validate.ts` `hiddenCharProblems`, inside
