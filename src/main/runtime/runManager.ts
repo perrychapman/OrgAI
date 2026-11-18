@@ -87,7 +87,7 @@ import type {
   UserQuestion
 } from '@shared/types'
 import { BridgedSessions, bridgeKey } from './bridge'
-import { applyRosterChange, liveRosterApplies, rosterChanged, rosterOf } from './runRoster'
+import { applyRosterChange, liveRosterApplies, rosterChanged, rosterOf, runBaselineOf } from './runRoster'
 import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
@@ -2215,7 +2215,7 @@ export class RunManager {
         }
         return undefined
       }
-      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems, card?: readonly Role[]): RunRosterChange | undefined => {
+      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems, card?: readonly Role[], baseline?: readonly Role[]): RunRosterChange | undefined => {
         let roster: RunRosterChange | undefined
         // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
         const next: Project = { ...live }
@@ -2258,11 +2258,18 @@ export class RunManager {
         } else if (settle === 'orgChart') {
           if (own) next.roles = overlayOwnRoles(live.roles, saved.roles, own)
           else overlay('roles')
-          if (card && !bare && liveRosterApplies(summary, active.session)) {
+          // Only a card that was diffed against the run's own roles (runBaseline) is applied to them: one created before
+          // the session took roster changes live was diffed against the stored project and applies from the next run.
+          if (card && baseline && !bare && liveRosterApplies(summary, active.session)) {
+            // L2: grants the view holds on a waiting role were approved on their own cards; nothing else grants it.
+            const runIds = new Set(ctx.roles.map((r) => r.id))
+            const pendingGrants = new Map(live.roles.filter((r) => !runIds.has(r.id)).map((r) => [r.id, { ...(r.mcpServers ? { mcpServers: r.mcpServers } : {}), ...(r.skills ? { skills: r.skills } : {}) }]))
             const applied = applyRosterChange({
               running: ctx.roles,
               saved: saved.roles,
               proposed: card,
+              baseline,
+              pendingGrants,
               obligations: active.ledger?.snapshot().obligations,
               refuse: rosterRefusal,
               retiredSlugs: (active.retiredRoles ?? []).map((r) => r.slug)
@@ -2526,7 +2533,7 @@ export class RunManager {
         ...(kind === 'setup' && this.options.connectionModels ? { connectionModels: () => this.options.connectionModels!() } : {}),
         requestPermission: (req) => this.requestPermission(active, req),
         requestProposal: (req) =>
-          this.requestProposal(active, req, (saved) => {
+          this.requestProposal(active, req, (saved, shown) => {
             // Keep the harness tools' view of the project (and the run's skills) current after an approved change.
             if (req.kind === 'mcpServers') {
               const payload = req.payload as McpServersProposalPayload
@@ -2535,8 +2542,9 @@ export class RunManager {
               const payload = req.payload as SkillsProposalPayload
               setLive(saved, 'skills', { ids: payload.items.flatMap((i) => (i.libraryId ? [i.libraryId] : [])), names: payload.items.map((i) => i.draft.name) })
             } else if (req.kind === 'orgChart') {
-              const payload = req.payload as OrgChartProposalPayload
-              const roster = setLive(saved, 'orgChart', { ids: payload.roles.map((r) => r.id), names: payload.roles.map((r) => r.name) }, payload.roles)
+              // The card as the user saw it (RunManager's copy: its runBaseline is RunManager's own, never the agent's).
+              const payload = shown.payload as OrgChartProposalPayload
+              const roster = setLive(saved, 'orgChart', { ids: payload.roles.map((r) => r.id), names: payload.roles.map((r) => r.name) }, payload.roles, payload.runBaseline)
               // The tool learns what this run took (ProposalOutcome.roster); absent = the chart applies from the next run.
               if (roster) return { roster }
             }
@@ -4454,10 +4462,20 @@ export class RunManager {
   private requestProposal(
     active: ActiveRun,
     req: Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>,
-    onApplied?: (saved: Project) => { roster?: RunRosterChange } | undefined
+    onApplied?: (saved: Project, proposal: Proposal) => { roster?: RunRosterChange } | undefined
   ): Promise<ProposalOutcome> {
-    const effect = proposalEffect(req.kind, active.summary, active.adapter, { liveRoster: liveRosterApplies(active.summary, active.session) })
+    const live = liveRosterApplies(active.summary, active.session)
+    const effect = proposalEffect(req.kind, active.summary, active.adapter, { liveRoster: live })
     const proposal = { ...req, id: newId('prop'), runId: active.summary.id, createdAt: Date.now(), effect, revision: 1 } as Proposal
+    if (proposal.kind === 'orgChart') {
+      // OrgChartProposalPayload.runBaseline belongs to RunManager alone: whatever arrived is dropped, and on a run that
+      // takes roster changes live it is the run's own view of its roles now, which the card is diffed against.
+      const payload: OrgChartProposalPayload = { ...(proposal.payload as OrgChartProposalPayload) }
+      delete payload.runBaseline
+      const baseline = live && active.ctx ? runBaselineOf(active.ctx, active.retiredRoles ?? []) : undefined
+      if (baseline) payload.runBaseline = baseline
+      ;(proposal as Extract<Proposal, { kind: 'orgChart' }>).payload = payload
+    }
     return new Promise((resolve) => {
       active.pendingProposals.set(proposal.id, { proposal, resolve: (raw) => {
         // Secrets stop here: the tool and the proposal.resolved event only ever get the outcome.
@@ -4515,7 +4533,7 @@ export class RunManager {
               // SecretStore live).
               const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work', ...secrets })
               waitingForSecrets = this.proposalWaitingForSecrets(active.summary.projectId, proposal)
-              roster = onApplied?.(updated)?.roster
+              roster = onApplied?.(updated, proposal)?.roster
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
             }
           } catch (e) {

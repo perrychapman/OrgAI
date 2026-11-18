@@ -2106,6 +2106,16 @@ export interface ProjectSetup {
 export interface OrgChartProposalPayload {
   roles: Role[]
   rationale: string
+  /**
+   * Set by RunManager only, on work runs whose session takes roster changes live: the run's own view of its roles
+   * (ctx.project.roles: running roles plus deferred new roles as they would join) when the card was created. The card
+   * diffs against it instead of the stored project, so everything approval applies to this run is shown as a change.
+   * Absent = diff against the stored project as before. RunManager overwrites or deletes any value in an incoming
+   * payload (an agent can never supply it); it is never saved into the project. Applying the card to the run follows the
+   * invariant in runtime/runRoster.ts: a field moves in the run's roles only if the card's value differs from this
+   * baseline's value for that role.
+   */
+  runBaseline?: Role[]
 }
 
 export interface SettingsProposalPayload {

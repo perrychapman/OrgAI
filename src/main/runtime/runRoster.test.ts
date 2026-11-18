@@ -217,19 +217,117 @@ describe('applyRosterChange: an approved org chart in the same run', () => {
   })
 })
 
+describe('third review: the invariant "a field moves only if the card differs from runBaseline"', () => {
+  it('a running role whose baseline differs from it (changed after the card was shown) is deferred as stale', () => {
+    const run = running()
+    const baseline = structuredClone(run)
+    baseline[1] = { ...baseline[1], prompt: 'what the card was diffed against' }
+    const card = structuredClone(baseline)
+    card[1] = { ...card[1], tools: ['Read'] }
+    const { change } = applyRosterChange({ running: run, saved: structuredClone(card), proposed: card, baseline })
+    expect(change.changed).toEqual([])
+    expect(change.deferred).toEqual([{ id: 'r-eng', name: 'Engineer', reason: ROSTER_REASONS.stale }])
+    expect(run[1].tools).toEqual(['Read', 'Edit', 'Write'])
+  })
+
+  it('a card that copies a value equal to the baseline moves nothing; a value that differs moves (it is shown as a change)', () => {
+    const run = running()
+    const baseline = structuredClone(run)
+    const card = structuredClone(run)
+    card[1] = { ...card[1], prompt: 'PULLED from disk' }
+    const { change } = applyRosterChange({ running: run, saved: structuredClone(card), proposed: card, baseline })
+    expect(change.changed).toEqual(['r-eng'])
+    expect(run[1].prompt).toBe('PULLED from disk')
+    // Grants and position on the baseline are never compared.
+    const run2 = running()
+    const base2 = structuredClone(run2)
+    base2[1] = { ...base2[1], mcpServers: ['other'], position: { x: 5, y: 5 } }
+    expect(rosterChanged(applyRosterChange({ running: run2, saved: structuredClone(run2), proposed: structuredClone(run2), baseline: base2 }).change)).toBe(false)
+  })
+
+  it('a waiting role is compared with its baseline (pending) entry and joins with the view grants only (L2)', () => {
+    const run = running()
+    const pendingX = role({ id: 'r-x', slug: 'x', name: 'X', reportsTo: 'r-lead', prompt: 'approved on card 1', model: 'sonnet', mcpServers: ['m-ok'] })
+    const baseline = [...structuredClone(run), pendingX]
+    const card = [...structuredClone(run), { ...pendingX, model: 'haiku' }]
+    const saved = [...structuredClone(run), { ...pendingX, model: 'claude-haiku-x', prompt: 'PULLED', mcpServers: ['m-pulled'] }]
+    const { change } = applyRosterChange({ running: run, saved, proposed: card, baseline, pendingGrants: new Map([['r-x', { mcpServers: ['m-ok'] }]]) })
+    expect(change.added).toEqual(['r-x'])
+    expect(run[3]).toMatchObject({ prompt: 'approved on card 1', model: 'claude-haiku-x', mcpServers: ['m-ok'] })
+    // Without a view grant, none.
+    const run2 = running()
+    applyRosterChange({ running: run2, saved, proposed: card, baseline })
+    expect(run2[3].mcpServers).toBeUndefined()
+  })
+
+  it('L3: a card role the save holds under another identity is deferred with a reason, never dropped silently', () => {
+    const run = running()
+    // The card drops the reviewer; the save still has it, renamed by a pull to the engineer's name.
+    const card = structuredClone(run).filter((r) => r.id !== 'r-rev')
+    const saved = [...structuredClone(card), { ...structuredClone(run[2]), name: 'Engineer' }]
+    const { change } = applyRosterChange({ running: run, saved, proposed: card })
+    expect(change.deferred).toContainEqual({ id: 'r-rev', name: 'Engineer', reason: ROSTER_REASONS.unmatched })
+  })
+
+  it('L1: a partial application that would cut a role off from the root defers the role whose manager changed', () => {
+    const run = running()
+    run[2].reportsTo = 'r-eng'
+    // Swap: the engineer reports to the reviewer, the reviewer to the lead; the reviewer's change is refused.
+    const card = structuredClone(run)
+    card[1] = { ...card[1], reportsTo: 'r-rev' }
+    card[2] = { ...card[2], reportsTo: 'r-lead', prompt: 'p' }
+    const { change } = applyRosterChange({ running: run, saved: structuredClone(card), proposed: card, refuse: (r) => (r.id === 'r-rev' ? 'later' : undefined) })
+    expect(change.changed).toEqual([])
+    expect(change.deferred.map((d) => [d.id, d.reason])).toEqual([
+      ['r-rev', 'later'],
+      ['r-eng', ROSTER_REASONS.reporting]
+    ])
+    expect(run.map((r) => [r.id, r.reportsTo])).toEqual([
+      ['r-lead', null],
+      ['r-eng', 'r-lead'],
+      ['r-rev', 'r-eng']
+    ])
+  })
+})
+
 describe('review H1 second route: the card, not the save, defines what joins or changes', () => {
-  it('a joining role takes every field from its card entry, id / slug / model / tier from the save, and no grants', () => {
+  it('a joining role shown whole takes every field from its card entry (model as the save resolved it), never a saved-only field, no grants', () => {
     const run = running()
     const card = [...structuredClone(run), role({ id: 'r-x', slug: 'x', name: 'X', reportsTo: 'r-lead', prompt: 'card', tools: ['Read'], model: 'opus' })]
     const saved = structuredClone(card)
-    saved[3] = { ...saved[3], slug: 'x-2', model: 'claude-opus-x', tier: 'deep', prompt: 'PULLED', tools: ['Bash'], canSpawn: true, spawnable: ['r-eng'], effort: 'max', mcpServers: ['m1'] }
+    saved[3] = { ...saved[3], model: 'claude-opus-x', tier: 'deep', prompt: 'PULLED', tools: ['Bash'], canSpawn: true, spawnable: ['r-eng'], effort: 'max', mcpServers: ['m1'] }
     const { change } = applyRosterChange({ running: run, saved, proposed: card })
     expect(change.added).toEqual(['r-x'])
     const x = run[3]
-    expect(x).toMatchObject({ id: 'r-x', slug: 'x-2', model: 'claude-opus-x', tier: 'deep', prompt: 'card', tools: ['Read'], canSpawn: false, spawnable: [] })
+    expect(x).toMatchObject({ id: 'r-x', slug: 'x', model: 'claude-opus-x', prompt: 'card', tools: ['Read'], canSpawn: false, spawnable: [] })
+    // The card carried no tier or effort: the save's never arrive.
+    expect(x.tier).toBeUndefined()
     expect(x.effort).toBeUndefined()
     expect(x.mcpServers).toBeUndefined()
     expect(joiningRole(card[3], saved[3])).toEqual(x)
+  })
+
+  it('M1: a new role the save gave another identity (id or slug), or whose slug a running role has, is deferred, never joined', () => {
+    const newX = role({ id: 'r-x', slug: 'x', name: 'X', reportsTo: 'r-lead', prompt: 'card' })
+    // The save matched the card's X to a pulled stored role (another id and its slug).
+    const run1 = running()
+    const card1 = [...structuredClone(run1), newX]
+    const saved1 = [...structuredClone(run1), { ...newX, id: 'r-pulled', slug: 'pulled', prompt: 'PULLED' }]
+    const one = applyRosterChange({ running: run1, saved: saved1, proposed: card1 })
+    expect(one.change.added).toEqual([])
+    expect(one.change.deferred).toEqual([{ id: 'r-x', name: 'X', reason: ROSTER_REASONS.identity }])
+    expect(one.pending.map((r) => [r.id, r.slug, r.prompt])).toEqual([['r-x', 'x', 'card']])
+    // The save de-duplicated the slug.
+    const run2 = running()
+    const card2 = [...structuredClone(run2), newX]
+    const saved2 = [...structuredClone(run2), { ...newX, slug: 'x-2' }]
+    expect(applyRosterChange({ running: run2, saved: saved2, proposed: card2 }).change.deferred.map((d) => d.reason)).toEqual([ROSTER_REASONS.identity])
+    // A new role with the slug of a running role.
+    const run3 = running()
+    const dup = { ...newX, slug: 'engineer' }
+    const card3 = [...structuredClone(run3), dup]
+    expect(applyRosterChange({ running: run3, saved: structuredClone(card3), proposed: card3 }).change.deferred.map((d) => d.reason)).toEqual([ROSTER_REASONS.identity])
+    expect(run3).toHaveLength(3)
   })
 
   it('a deferred joining role is returned as it would join (pending), so the run view never shows the saved one', () => {

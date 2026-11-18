@@ -11,6 +11,13 @@ export function liveRosterApplies(summary: Pick<RunSummary, 'kind' | 'projectId'
 /**
  * Mid-run org changes (propose_org_change approved in a work run whose session sets RuntimeSession.liveRoster): what
  * RunManager applies to the running run's own roles (ctx.roles). Pure apart from the in-place update of `running`.
+ *
+ * THE INVARIANT (review, third round): the card the user approves is diffed against `OrgChartProposalPayload.runBaseline`
+ * (the run's own view of its roles when the card was created), and a field moves in ctx.roles only if the card's value
+ * differs from the baseline's value for that role. Running roles: the baseline must equal the running role (grants and
+ * position aside), else the role is deferred (`stale`). Pending (deferred new) roles: compared with their baseline
+ * entry. A role absent from the baseline is shown whole as added, so every field it brings was on the card. The save
+ * never adds anything: only model / tier where the CARD changed them take the value the save resolved.
  */
 
 /** Fields that never move with an org change: identity and grants (an org change never grants, review H1). */
@@ -21,19 +28,29 @@ const NEVER_MOVES = ['id', 'mcpServers', 'skills'] as const
  * mid-run after ctx.roles already moved; review M1).
  */
 const ROOT_KEEPS = ['model', 'tier', 'effort', 'connection', 'canSpawn'] as const
-/** Not a change of the role (canvas only). Copied anyway. */
+/** Not a change of the role (canvas only). Never moves. */
 const IGNORED_IN_DIFF = ['position'] as const
+/** Not compared between the baseline and the running role: grants follow approved grant changes on both sides. */
+const NOT_COMPARED: ReadonlySet<string> = new Set(['mcpServers', 'skills', ...IGNORED_IN_DIFF])
 
 export interface RosterApplyInput {
   /** The run's own roles (ctx.roles). Changed IN PLACE: objects keep their identity. */
   running: Role[]
   /** The project's roles as saved after the approved proposal (they may include a team-file pull of the same save). */
   saved: readonly Role[]
-  /**
-   * The roles the approved card showed (OrgChartProposalPayload.roles, the complete chart): only these move into the
-   * run, and of a changed role only the fields the card changed (see applyRosterChange).
-   */
+  /** The roles the approved card showed (OrgChartProposalPayload.roles, the complete chart). */
   proposed: readonly Role[]
+  /**
+   * OrgChartProposalPayload.runBaseline: what the card was diffed against (the run's view of its roles when the card was
+   * created, set by RunManager only). Every move is a card-vs-baseline difference (see the invariant above). RunManager
+   * always passes it; omitted (pure callers, adapter tests) = the running roles as they are now, with no pending roles.
+   */
+  baseline?: readonly Role[]
+  /**
+   * Grants the run's CURRENT view holds on a pending (deferred new) role, by id: approved on their own MCP / skill card
+   * while the role waited (review L2). A role joining takes these and nothing else as grants; never the save's.
+   */
+  pendingGrants?: ReadonlyMap<string, Pick<Role, 'mcpServers' | 'skills'>>
   /** The run's required-delegation obligations (ledger: role id -> required report ids); {} or undefined = none. */
   obligations?: Readonly<Record<string, readonly string[]>>
   /**
@@ -54,9 +71,9 @@ export interface RosterApplyResult {
   /** Copies of the roles removed from `running` by this change, as they were. */
   retired: Role[]
   /**
-   * New roles of the card that were deferred, as they would join (`joiningRole`: the card's fields, no grants). The
-   * run's view of its roles (ctx.project.roles) holds these, never the saved roles, so the next card is built from what
-   * the user approved.
+   * New roles of the card that were deferred, as they would join (the card's fields under the invariant). The run's
+   * view of its roles (ctx.project.roles) holds these, never the saved roles, so the next card is built from what the
+   * user approved.
    */
   pending: Role[]
 }
@@ -65,7 +82,11 @@ export const ROSTER_REASONS = {
   root: 'The approved chart has a different root role; it applies from the next run.',
   delegation: 'A required delegation this run already enforces depends on this role; the change applies from the next run.',
   rootCanSpawn: 'The root keeps whether it may delegate for this run; that part applies from the next run. The rest of its change is in effect.',
-  slug: 'A role removed earlier in this run used this slug; it applies from the next run.'
+  slug: 'A role removed earlier in this run used this slug; it applies from the next run.',
+  stale: 'This role changed in this run after the card was shown; the change applies from the next run.',
+  unmatched: 'The saved chart holds this role under another identity than the card showed; it applies from the next run.',
+  identity: 'The saved chart gave this new role the identity of another role, or its slug is already used in this run; it applies from the next run.',
+  reporting: 'Applying this change alone would leave a role without a path to the root in this run; it applies from the next run.'
 } as const
 
 type Loose = Record<string, unknown>
@@ -82,46 +103,35 @@ function differs(before: Role, next: Role, skip: ReadonlySet<string>): boolean {
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b)
 
 /**
- * The only fields a role entering or changing in a live run takes from the SAVE rather than the approved card: identity
- * (id; slug, which the save may de-duplicate) and the model / tier as the save resolved them (sanitizeRoleModels maps a
- * tier or unknown id onto the connection's catalog). Everything else the user approved is the card's value, so a
- * team-file pull ingested by the same save (teamFiles delta mergeFields keeps pulled values for fields the save did not
- * change, and the gate applies prompt / description / responsibilities / parent / non-spending model edits unasked)
- * never reaches a run (review H1). A pulled model / tier would still have to pass `refuse` (placement, price) on the
- * resulting role; grants never move at all.
+ * Fields whose value, where the CARD changed them, is the one the save resolved (sanitizeRoleModels maps a tier or an
+ * unknown id onto the connection's catalog). Every other changed field takes the card's value; an unchanged field
+ * keeps the baseline's. A save-resolved model still passes `refuse` (placement, price).
  */
-const SAVE_OWNS = ['id', 'slug', 'model', 'tier'] as const
-const SAVE_OWNED: ReadonlySet<string> = new Set(SAVE_OWNS)
+const SAVE_RESOLVES: ReadonlySet<string> = new Set(['model', 'tier'])
 
 /**
- * A running role's next definition, field by field: the running value where the card left the field as it was (only a
- * same-save team-file pull could have changed it); otherwise the card's value, except the save-owned fields
- * (`SAVE_OWNS`), which take the saved value.
+ * A role's next definition under the invariant: per field, the baseline value where the card equals it; else the card's
+ * value (model / tier: the save's). `base` is the running role for running roles (checked equal to the baseline first),
+ * the baseline's pending entry for a waiting role, undefined for a role the card shows whole as added.
  */
-function merged(before: Role, card: Role, saved: Role): Role {
+function underInvariant(base: Role | undefined, card: Role, saved: Role | undefined): Role {
   const out: Loose = {}
-  const b = before as unknown as Loose
+  const b = (base ?? {}) as Loose
   const c = card as unknown as Loose
-  const s = saved as unknown as Loose
-  for (const k of new Set([...Object.keys(b), ...Object.keys(s), ...Object.keys(c)])) {
-    const v = same(c[k], b[k]) ? b[k] : SAVE_OWNED.has(k) ? s[k] : c[k]
+  const s = (saved ?? card) as unknown as Loose
+  for (const k of new Set([...Object.keys(b), ...Object.keys(c)])) {
+    const v = base && same(c[k], b[k]) ? b[k] : SAVE_RESOLVES.has(k) && s[k] !== undefined ? s[k] : c[k]
     if (v !== undefined) out[k] = v
   }
   return structuredClone(out) as unknown as Role
 }
 
 /**
- * A role joining the run (or waiting to): every field from the approved card, the save-owned fields from the save, no
- * grants (an org change never grants). Never the saved role whole (review H1, second route): a deferred role's file can
- * be rewritten and ingested before a later card clears the deferral.
+ * A role joining the run (or waiting to) when the card showed it whole (no baseline entry): every field from the card
+ * (model / tier as the save resolved them), no grants (an org change never grants). Never the saved role.
  */
 export function joiningRole(card: Role, saved: Role): Role {
-  const out = structuredClone(card) as unknown as Loose
-  const s = saved as unknown as Loose
-  for (const k of SAVE_OWNS) {
-    if (s[k] === undefined) delete out[k]
-    else out[k] = structuredClone(s[k])
-  }
+  const out = underInvariant(undefined, card, saved) as unknown as Loose
   delete out.mcpServers
   delete out.skills
   return out as unknown as Role
@@ -140,29 +150,47 @@ function obligated(obligations: Readonly<Record<string, readonly string[]>>, rol
   return Object.values(obligations).some((list) => list.includes(roleId))
 }
 
+/** Ids of roles with no path to `rootId` (a missing manager, a cycle, or a second root). Pure. */
+function unreachable(roles: readonly Role[], rootId: string): Set<string> {
+  const byId = new Map(roles.map((r) => [r.id, r]))
+  const bad = new Set<string>()
+  for (const r of roles) {
+    const seen = new Set<string>()
+    let cur: Role | undefined = r
+    while (cur && cur.reportsTo !== null && !seen.has(cur.id)) {
+      seen.add(cur.id)
+      cur = byId.get(cur.reportsTo)
+    }
+    if (!cur || cur.reportsTo !== null || cur.id !== rootId) bad.add(r.id)
+  }
+  return bad
+}
+
 /**
- * Apply the approved chart's own roles to the running roles, in place:
- * - a role of the chart that the run has (by id) and that differs in anything but grants and position is rewritten in
- *   its own object with the fields the card changed, at the card's value (`merged`; id, slug, model and tier as the
- *   save resolved them); it keeps the run's grants. The root keeps its model, tier, effort, connection and canSpawn (a
- *   card that changes canSpawn gets a `rootCanSpawn` deferral; the rest of the root's change applies);
- * - a role of the chart the run does not have is appended built from its card entry (`joiningRole`: every field from
- *   the card, id / slug / model / tier from the save, no MCP / skill grants), never from the saved role;
+ * Apply the approved chart to the running roles, in place, under the invariant (see the top of this file):
+ * - a running role the card names (by id) is rewritten in its own object with exactly the fields where the card
+ *   differs from the baseline; it keeps the run's grants. The root keeps its model, tier, effort, connection and
+ *   canSpawn (a card that changes canSpawn gets a `rootCanSpawn` deferral; the rest of the root's change applies);
+ * - a role the run does not have joins: compared with its pending baseline entry if it waited, shown whole otherwise;
+ *   grants only from the view's pending entry (`pendingGrants`);
  * - a running role that is neither in the chart (id or name) nor in the saved project leaves the array;
- * - roles of the saved project that are not the chart's, and fields of the chart's roles the card did not change (a
- *   team-file pull of the same save), never move.
- * Deferred (left as the run started, applied from the next run): everything when the chart's root is not the run's
- * root; a role `refuse` names a reason for; a new role reusing the slug of a role removed earlier in the run or in this
- * change; a removal or a spawn change that would break a required delegation the run already enforces.
+ * - roles of the saved project that are not the chart's never move, and no saved field ever does.
+ * Deferred (as the run has it, applied from the next run), each with an OrgAI-written reason: everything when the
+ * card's root is not the run's root; a running role whose baseline differs from it (`stale`); a role the save holds
+ * under another identity (`unmatched`, `identity`); a role `refuse` names a reason for; a new role reusing the slug of
+ * a role removed earlier or in this change; a removal or spawn change that would break a required delegation; any
+ * change whose partial application would cut a role off from the root (`reporting`).
  */
 export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
   const { running, saved, proposed } = input
+  const baseline = input.baseline ?? running.map((r) => structuredClone(r))
   const obligations = input.obligations ?? {}
   const ids = new Set(proposed.map((r) => r.id))
   const names = new Set(proposed.map((r) => r.name))
   const isOwn = (r: Role): boolean => ids.has(r.id) || names.has(r.name)
   const cardById = new Map(proposed.map((r) => [r.id, r]))
   const cardByName = new Map(proposed.map((r) => [r.name, r]))
+  const baseById = new Map(baseline.map((r) => [r.id, r]))
   const savedIdSet = new Set(saved.map((r) => r.id))
   /**
    * The card entry a saved role was approved as: by id; by name only for a card entry whose id the save does not have
@@ -176,72 +204,169 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
   }
   const mine = saved.filter(isOwn)
   const change: RunRosterChange = { added: [], changed: [], removed: [], deferred: [] }
+  const defer = (id: string, name: string, reason: string): void => void change.deferred.push({ id, name, reason })
   const retired: Role[] = []
+  const pending: Role[] = []
+  const pendingGrants = (id: string): Pick<Role, 'mcpServers' | 'skills'> => {
+    const g = input.pendingGrants?.get(id)
+    return { ...(g?.mcpServers ? { mcpServers: [...g.mcpServers] } : {}), ...(g?.skills ? { skills: [...g.skills] } : {}) }
+  }
+  /** A role that is not running, as it would join under the invariant (grants only from the view's pending entry). */
+  const waiting = (card: Role, stored: Role | undefined): Role => {
+    const role = underInvariant(baseById.get(card.id), card, stored)
+    delete role.mcpServers
+    delete role.skills
+    return { ...role, ...pendingGrants(card.id) }
+  }
   const root = running.find((r) => r.reportsTo === null) ?? running[0]
   // The card's root decides (a pull may move a parent; only the card was approved).
   const proposedRoot = proposed.find((r) => r.reportsTo === null)
   if (!root || !proposedRoot || proposedRoot.id !== root.id) {
-    const pending: Role[] = []
     for (const r of mine) {
-      change.deferred.push({ id: r.id, name: r.name, reason: ROSTER_REASONS.root })
+      defer(r.id, r.name, ROSTER_REASONS.root)
       const card = cardFor(r)
-      if (card &&!running.some((x) => x.id === r.id)) pending.push(joiningRole(card, r))
+      if (card && !running.some((x) => x.id === r.id)) pending.push(waiting(card, card.id === r.id ? r : undefined))
     }
     return { change, retired, pending }
   }
-  const savedIds = new Set(saved.map((r) => r.id))
   const byId = new Map(running.map((r) => [r.id, r]))
   // Removals are decided first so a new role cannot take the slug of one leaving in this same change.
-  const leaving = new Set(running.filter((r) => r !== root && !isOwn(r) && !savedIds.has(r.id) && !obligated(obligations, r.id)).map((r) => r.id))
+  const leaving = new Set(running.filter((r) => r !== root && !isOwn(r) && !savedIdSet.has(r.id) && !obligated(obligations, r.id)).map((r) => r.id))
   const takenSlugs = new Set([...(input.retiredSlugs ?? []), ...running.filter((r) => leaving.has(r.id)).map((r) => r.slug)])
+  const runningSlugs = new Map(running.map((r) => [r.slug, r.id]))
+  /** Planned rewrites of running roles: applied only after the reporting check. */
+  const plans = new Map<string, { before: Role; next: Role; keep: ReadonlySet<string> }>()
   const added: Role[] = []
-  const pending: Role[] = []
   for (const stored of mine) {
+    const card = cardFor(stored)
     const before = byId.get(stored.id)
-    const isRoot = before === root
-    const keep = new Set<string>([...NEVER_MOVES, ...(isRoot ? ROOT_KEEPS : [])])
+    if (!card) {
+      // L3: never dropped silently. A running one stays as it is; a new one has no approved value to show.
+      defer(stored.id, stored.name, ROSTER_REASONS.unmatched)
+      continue
+    }
     if (before) {
-      const card = cardFor(stored)
-      if (!card) continue
-      const next = merged(before, card, stored)
-      if (isRoot && next.canSpawn !== before.canSpawn) change.deferred.push({ id: before.id, name: before.name, reason: ROSTER_REASONS.rootCanSpawn })
+      const isRoot = before === root
+      const keep = new Set<string>([...NEVER_MOVES, ...(isRoot ? ROOT_KEEPS : [])])
+      const base = baseById.get(before.id)
+      // The card was diffed against `base`; it must still be the running role, or nothing of it moves.
+      if (!base || differs(base, before, NOT_COMPARED)) {
+        if (!same(card, base)) defer(before.id, before.name, ROSTER_REASONS.stale)
+        continue
+      }
+      const next = underInvariant(before, card, stored)
+      if (isRoot && next.canSpawn !== before.canSpawn) defer(before.id, before.name, ROSTER_REASONS.rootCanSpawn)
       if (!differs(before, next, new Set([...keep, ...IGNORED_IN_DIFF]))) continue
       if (!isRoot) {
         const reason = input.refuse?.(next, before)
         if (reason) {
-          change.deferred.push({ id: next.id, name: next.name, reason })
+          defer(next.id, next.name, reason)
           continue
         }
       }
       const owed = obligations[before.id] ?? []
       if (owed.length && (!next.canSpawn || !owed.every((id) => next.spawnable.includes(id)))) {
-        change.deferred.push({ id: next.id, name: next.name, reason: ROSTER_REASONS.delegation })
+        defer(next.id, next.name, ROSTER_REASONS.delegation)
         continue
       }
-      rewrite(before, next, keep)
-      change.changed.push(before.id)
+      // Position never moves (canvas only); grants and the kept fields stay as the run has them.
+      plans.set(before.id, { before, next, keep: new Set([...keep, ...IGNORED_IN_DIFF]) })
       continue
     }
-    // A role that is not in the run: built from the card it was approved on, never taken whole from the save.
-    const card = cardFor(stored)
-    if (!card) continue
-    const fresh = joiningRole(card, stored)
-    const reason = takenSlugs.has(fresh.slug) ? ROSTER_REASONS.slug : input.refuse?.(fresh, undefined)
+    // A role that is not in the run (M1): it must be the card's own role, under the card's id and slug, and its slug
+    // must be free in this run; otherwise the save matched it to some other stored role the user never saw.
+    const clash = runningSlugs.get(card.slug)
+    if (takenSlugs.has(card.slug)) {
+      defer(card.id, card.name, ROSTER_REASONS.slug)
+      pending.push(waiting(card, stored.id === card.id ? stored : undefined))
+      continue
+    }
+    if (stored.id !== card.id || stored.slug !== card.slug || (clash !== undefined && clash !== card.id)) {
+      defer(card.id, card.name, ROSTER_REASONS.identity)
+      pending.push(waiting(card, undefined))
+      continue
+    }
+    const fresh = waiting(card, stored)
+    const reason = input.refuse?.(fresh, undefined)
     if (reason) {
-      change.deferred.push({ id: fresh.id, name: fresh.name, reason })
+      defer(fresh.id, fresh.name, reason)
       pending.push(fresh)
       continue
     }
     added.push(fresh)
   }
-  // Removals: never the root, never a role the chart names, never one the saved project still has.
+  // Removals the plan cannot make: never the root, never a role the chart names, never one the saved project has.
+  for (const r of running) {
+    if (r === root || isOwn(r) || savedIdSet.has(r.id) || leaving.has(r.id)) continue
+    defer(r.id, r.name, ROSTER_REASONS.delegation)
+  }
+  // L1: the run's roles after a PARTIAL application must still all reach the root. Undo the parts that cut a role off.
+  const simulate = (): Role[] => {
+    const out: Role[] = []
+    for (const r of running) {
+      if (leaving.has(r.id)) continue
+      const plan = plans.get(r.id)
+      if (!plan) out.push(r)
+      else {
+        const copy = structuredClone(r)
+        rewrite(copy, plan.next, plan.keep)
+        out.push(copy)
+      }
+    }
+    return [...out, ...added]
+  }
+  for (let pass = 0; pass <= running.length + added.length + 1; pass++) {
+    const bad = unreachable(simulate(), root.id)
+    if (!bad.size) break
+    let progressed = false
+    for (const id of bad) {
+      const i = added.findIndex((r) => r.id === id)
+      if (i >= 0) {
+        const [r] = added.splice(i, 1)
+        defer(r.id, r.name, ROSTER_REASONS.reporting)
+        pending.push(r)
+        progressed = true
+      } else if (plans.get(id) && plans.get(id)!.next.reportsTo !== plans.get(id)!.before.reportsTo) {
+        const { before } = plans.get(id)!
+        plans.delete(id)
+        defer(before.id, before.name, ROSTER_REASONS.reporting)
+        progressed = true
+      }
+    }
+    if (progressed) continue
+    // An unchanged role lost its manager (a removal, or its manager's own parent change): keep every removal and every
+    // parent change for the next run.
+    for (const id of [...leaving]) {
+      const r = byId.get(id)!
+      leaving.delete(id)
+      defer(r.id, r.name, ROSTER_REASONS.reporting)
+      progressed = true
+    }
+    for (const [id, plan] of [...plans]) {
+      if (plan.next.reportsTo === plan.before.reportsTo) continue
+      plans.delete(id)
+      defer(plan.before.id, plan.before.name, ROSTER_REASONS.reporting)
+      progressed = true
+    }
+    if (!progressed) {
+      // Nothing left to undo but still broken: apply nothing of this card.
+      for (const [, plan] of plans) defer(plan.before.id, plan.before.name, ROSTER_REASONS.reporting)
+      for (const r of added) {
+        defer(r.id, r.name, ROSTER_REASONS.reporting)
+        pending.push(r)
+      }
+      plans.clear()
+      added.length = 0
+      break
+    }
+  }
+  for (const [, plan] of plans) {
+    rewrite(plan.before, plan.next, plan.keep)
+    change.changed.push(plan.before.id)
+  }
   for (let i = running.length - 1; i >= 0; i--) {
     const r = running[i]
-    if (r === root || isOwn(r) || savedIds.has(r.id)) continue
-    if (!leaving.has(r.id)) {
-      change.deferred.push({ id: r.id, name: r.name, reason: ROSTER_REASONS.delegation })
-      continue
-    }
+    if (!leaving.has(r.id)) continue
     running.splice(i, 1)
     retired.unshift(structuredClone(r))
     change.removed.unshift(r.id)
@@ -251,6 +376,17 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
     change.added.push(r.id)
   }
   return { change, retired, pending }
+}
+
+/**
+ * OrgChartProposalPayload.runBaseline for a card created now: the running roles (ctx.roles, which own model, effort and
+ * grants), then the roles the run's view holds that are not running and not retired (deferred new roles as they would
+ * join). Copies. Pure.
+ */
+export function runBaselineOf(ctx: { roles: readonly Role[]; project: { roles: readonly Role[] } }, retired: readonly Role[]): Role[] {
+  const run = new Set(ctx.roles.map((r) => r.id))
+  const gone = new Set(retired.map((r) => r.id))
+  return [...ctx.roles, ...ctx.project.roles.filter((r) => !run.has(r.id) && !gone.has(r.id))].map((r) => structuredClone(r))
 }
 
 /** True when the change applied anything (a `run.roster` event and the configChanged call follow). */
