@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { OPEN_TABS_MAX, parseOpenTabs, sameRunSummaries, serializeOpenTabs, tabsSignature } from './openTabs'
+import { OPEN_TABS_MAX, openTabsKey, parseOpenTabs, sameRunSummaries, serializeOpenTabs, tabsSignature } from './openTabs'
 
 describe('sameRunSummaries (L13)', () => {
   it('is true only when every run keeps its summary object', () => {
@@ -32,6 +32,24 @@ describe('openTabs', () => {
   })
   it('refuses an id over 80 characters', () => {
     expect(parseOpenTabs(JSON.stringify({ chains: ['a'.repeat(81), 'a'.repeat(80)] })).chains).toEqual(['a'.repeat(80)])
+  })
+  it('keys an assistant (virtual project) like a project, under the same rules', () => {
+    expect(openTabsKey('quick')).toBe('orgai.openTabs.quick')
+    const many = Array.from({ length: 25 }, (_, i) => `chat_${i}`)
+    const out = parseOpenTabs(serializeOpenTabs({ chains: many, viewed: 'chat_24' }))
+    expect(out.chains).toHaveLength(OPEN_TABS_MAX)
+    expect(out.viewed).toBe('chat_24')
+  })
+  it('over the cap keeps the newest chains (the end of the list) and always the viewed one', () => {
+    const many = Array.from({ length: 25 }, (_, i) => `run_${i}`)
+    const newest = parseOpenTabs(serializeOpenTabs({ chains: many }))
+    expect(newest.chains).toEqual(many.slice(5))
+    const viewedOld = parseOpenTabs(serializeOpenTabs({ chains: many, viewed: 'run_2' }))
+    expect(viewedOld.chains).toHaveLength(OPEN_TABS_MAX)
+    expect(viewedOld.chains[0]).toBe('run_2')
+    expect(viewedOld.chains).toContain('run_24')
+    expect(viewedOld.chains).not.toContain('run_5')
+    expect(viewedOld.viewed).toBe('run_2')
   })
 })
 

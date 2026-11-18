@@ -60,8 +60,8 @@ export function scopeLimit(request: Pick<PermissionRequest, 'maxScope'>): 'once'
 }
 
 /**
- * The scope sentences of a card limited to the session (Chat, MCP build session): once, and session with "until you
- * end this chat" on a Chat (`chat` true) or "until you end this session" otherwise. No project sentence, ever.
+ * The scope sentences of a card limited to the session (Chat, MCP build session): once, and session with "until this
+ * chat session ends" on a Chat (`chat` true) or "until this session ends" otherwise. No project sentence, ever.
  */
 export function sessionScopeCopy(suggestions: readonly PermissionSuggestion[] | undefined, chat: boolean): { once: string; session?: string } {
   const once = 'Allow once: this call only.'
@@ -85,7 +85,8 @@ export function sessionScopeCopy(suggestions: readonly PermissionSuggestion[] | 
   }
   if (rules.length) parts.push(`stops asking for ${join(rules)}`)
   if (!parts.length) return { once }
-  const until = chat ? 'until you end this chat' : 'until you end this session'
+  // Grants are session-scoped in main: they end with the session (End session, quitting OrgAI), never because the user had to end it.
+  const until = chat ? 'until this chat session ends' : 'until this session ends'
   return { once, session: oneLine(`Allow for session: ${join(parts)} ${until}.`, 400) }
 }
 

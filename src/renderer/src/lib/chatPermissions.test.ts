@@ -44,10 +44,10 @@ describe('read-only line', () => {
 
 describe('session scope copy', () => {
   it('chat edit offer', () => {
-    expect(sessionScopeCopy([sessionEdit], true).session).toBe("Allow for session: stops asking for edits in this chat's folder until you end this chat.")
+    expect(sessionScopeCopy([sessionEdit], true).session).toBe("Allow for session: stops asking for edits in this chat's folder until this chat session ends.")
   })
   it('chat command rule', () => {
-    expect(sessionScopeCopy([npmTest], true).session).toBe('Allow for session: stops asking for "npm test" commands until you end this chat.')
+    expect(sessionScopeCopy([npmTest], true).session).toBe('Allow for session: stops asking for "npm test" commands until this chat session ends.')
   })
   it('no suggestions, no session sentence; never a project sentence', () => {
     const c = sessionScopeCopy(undefined, true)
@@ -55,7 +55,7 @@ describe('session scope copy', () => {
     expect(JSON.stringify(sessionScopeCopy([sessionEdit, npmTest], true))).not.toMatch(/project/)
   })
   it('a build session says session', () => {
-    expect(sessionScopeCopy([npmTest], false).session).toMatch(/until you end this session\.$/)
+    expect(sessionScopeCopy([npmTest], false).session).toMatch(/until this session ends\.$/)
   })
   it('scope limit', () => {
     expect(scopeLimit({})).toBe('project')

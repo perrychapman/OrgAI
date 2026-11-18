@@ -12,7 +12,7 @@ import { showHidden } from './hiddenChars'
 export const ASSISTANT_ORDER: VirtualProjectId[] = ['quick', 'harness', 'skills']
 
 /** Composer mode label of a virtual project's run while it is idle. */
-export const ASSISTANT_IDLE_LABEL = 'Your turn. Reply, ask a follow-up, or end the session.'
+export const ASSISTANT_IDLE_LABEL = 'Your turn. Reply or ask a follow-up.'
 /** Composer mode label while an assistant's question or proposal card is open: the card is the thing to answer. */
 export const ASSISTANT_WAITING_LABEL = 'Waiting for your answer'
 /** Composer mode label and placeholder lead of a single-agent / assistant run that is open for a reply. */

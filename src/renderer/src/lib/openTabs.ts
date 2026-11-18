@@ -1,7 +1,8 @@
 /**
- * Open tabs that survive a relaunch (ux-review-continue M2). Per project, localStorage `orgai.openTabs.<projectId>`
- * holds the chain keys (oldest member id) of the open run tabs and the chain that was viewed. Parsing is defensive:
- * the value is untrusted text from storage.
+ * Open tabs that survive a relaunch (ux-review-continue M2). Per project and per assistant (virtual project id such as
+ * `quick`), localStorage `orgai.openTabs.<projectId>` holds the chain keys (oldest member id) of the open run tabs and
+ * the chain that was viewed, whether their sessions ended or not: only the user hiding a tab removes it. Parsing is
+ * defensive: the value is untrusted text from storage.
  */
 
 export interface OpenTabs {
@@ -37,8 +38,14 @@ export function parseOpenTabs(raw: string | null | undefined): OpenTabs {
   return validId(rec.viewed) ? { chains, viewed: rec.viewed } : { chains }
 }
 
+/**
+ * Over the cap, the newest 20 chains are kept (tabs are ordered oldest first; ended tabs pile up now that they stay),
+ * and the viewed chain always stays among them.
+ */
 export function serializeOpenTabs(tabs: OpenTabs): string {
-  const chains = tabs.chains.filter(validId).slice(0, OPEN_TABS_MAX)
+  const all = [...new Set(tabs.chains.filter(validId))]
+  let chains = all.slice(-OPEN_TABS_MAX)
+  if (tabs.viewed && all.includes(tabs.viewed) && !chains.includes(tabs.viewed)) chains = [tabs.viewed, ...chains.slice(1)]
   return JSON.stringify({ chains, ...(tabs.viewed && validId(tabs.viewed) ? { viewed: tabs.viewed } : {}) })
 }
 

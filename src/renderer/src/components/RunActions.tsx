@@ -28,7 +28,7 @@ function Described({ text, children }: { text: string; children: ReactNode }): R
 
 /**
  * The viewed run's actions, at the trailing edge of the run strip: Interrupt turn and End session while the session is
- * open (a gap before the destructive one), Org retrospective once a work run has ended. The words collapse to icons
+ * open (a gap before the destructive one; ending is optional, never needed to leave or hide the tab), Org retrospective once a work run has ended. The words collapse to icons
  * in a narrow strip (the label stays the accessible name); End session is destructive and always keeps its words. It carries no status: the active tab is the run's status.
  */
 export default function RunActions({ runId }: { runId: string }): ReactElement | null {
@@ -65,7 +65,8 @@ export default function RunActions({ runId }: { runId: string }): ReactElement |
   if (!summary) return null
   if (!sessionOpen && !canRetro && !canSave) return null
   const interruptHelp = 'Stops the current turn. The session stays open.'
-  const endHelp = 'Ends the session and stops all of its agents.'
+  // Optional: a session never has to be ended to leave it, hide its tab or come back; a new message continues an ended one.
+  const endHelp = 'Optional. Ends the session and stops all of its agents. You can leave or hide the tab without it.'
   const retroHelp = `Have the Architect (${setupModel}, set in App settings > General) review this run and revise the org chart where roles struggled. Starts a session (${mock ? 'mock, no tokens' : 'spends tokens'}).`
   return (
     <div className="run-actions" role="group" aria-label="Run actions">

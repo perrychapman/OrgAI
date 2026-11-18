@@ -670,6 +670,46 @@ try {
     await page.evaluate((p) => window.orgai.projects.save(p), before)
   }
 
+  // A tab and its session's lifetime are independent: Delete on a focused live tab and Ctrl+W both hide it without
+  // touching the session (no End session needed); the sidebar's open-run row brings it back, still live.
+  {
+    await page.keyboard.press('Control+t')
+    await page.locator('.new-run').waitFor({ timeout: 5000 })
+    await startOnPage('Hide me while live')
+    await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+    const liveId = await page.locator('.run-tablist .run-tab-wrap.selected').first().getAttribute('data-run')
+    const liveStatus = () => page.evaluate(async (id) => (await window.orgai.runs.listLive()).find((r) => r.id === id)?.status ?? 'ended', liveId)
+    const tabOf = () => page.locator(`.run-tablist .run-tab-wrap[data-run="${liveId}"]`)
+    const isLive = (s) => ['starting', 'running', 'idle'].includes(s)
+    check(isLive(await liveStatus()), 'the run to hide is live', await liveStatus())
+    check((await tabOf().locator('.run-tab-close').count()) === 1, 'a live tab offers the Hide button')
+    // Delete on the focused live tab: the tab goes, focus lands on a neighbouring tab, the notice says it keeps working.
+    await tabOf().locator('.run-tab').focus()
+    await page.keyboard.press('Delete')
+    await page.waitForFunction((id) => !document.querySelector(`.run-tablist .run-tab-wrap[data-run="${id}"]`), liveId, { timeout: 5000 }).catch(() => {})
+    check((await tabOf().count()) === 0, 'Delete hides a live tab')
+    const notice = ((await page.locator('.run-tabs-notice').innerText().catch(() => '')) || '').trim()
+    check(/keeps working/.test(notice) && !/end (its|the) session/i.test(notice), 'the notice says the hidden run keeps working', notice)
+    check(await page.evaluate(() => document.activeElement?.getAttribute('role') === 'tab'), 'focus moves to a neighbouring tab after hiding a live tab')
+    check(isLive(await liveStatus()), 'hiding the tab leaves the session live', await liveStatus())
+    const navRow = page.locator(`[data-testid=nav-run][data-run="${liveId}"]`)
+    check((await navRow.count()) === 1, 'the sidebar still lists the hidden live run')
+    await navRow.click()
+    await page.locator(`.run-tablist .run-tab-wrap.selected[data-run="${liveId}"]`).waitFor({ timeout: 10_000 }).catch(() => {})
+    check((await page.locator(`.run-tablist .run-tab-wrap.selected[data-run="${liveId}"]`).count()) === 1, 'the sidebar row reopens the hidden live run as the selected tab')
+    // Ctrl+W (File > Close tab) on the live tab: hidden too, still live, no "end its session" notice.
+    await page.locator('.composer textarea').first().focus().catch(() => {})
+    await page.keyboard.press('Control+w')
+    await page.waitForFunction((id) => !document.querySelector(`.run-tablist .run-tab-wrap[data-run="${id}"]`), liveId, { timeout: 5000 }).catch(() => {})
+    check((await tabOf().count()) === 0, 'Ctrl+W hides a live tab')
+    check(isLive(await liveStatus()), 'Ctrl+W leaves the session live', await liveStatus())
+    await shot('live-tab-hidden')
+    await navRow.click()
+    await page.locator(`.run-tablist .run-tab-wrap.selected[data-run="${liveId}"]`).waitFor({ timeout: 10_000 }).catch(() => {})
+    check((await page.locator(`.run-tablist .run-tab-wrap.selected[data-run="${liveId}"]`).count()) === 1 && isLive(await liveStatus()), 'reopened again from the sidebar, still live')
+    await endSession(page)
+  }
+
   // One conversation per chain: Send on an ended run continues it in the same tab, the feed shows both turns with a divider.
   await page.keyboard.press('Control+t')
   await page.locator('.new-run').waitFor({ timeout: 5000 })
@@ -989,6 +1029,19 @@ try {
     fs.writeFileSync(scriptFile, JSON.stringify({ delayMs: 400 }))
   }
 
+  // An assistant tab outlives its session: a Chat left live when OrgAI quits comes back as the viewed tab after the
+  // relaunch (not the start page), survives leave-and-return, and Send continues it in the same tab (checked below).
+  const chatRow = () => page.locator('[data-testid=nav-assistant][data-id=quick]')
+  const selectedChain = () => page.locator('.run-tablist .run-tab-wrap.selected').first().getAttribute('data-chain').catch(() => null)
+  await chatRow().click()
+  await page.locator('[data-testid=assistant-start-quick] .composer textarea').waitFor({ timeout: 10_000 })
+  await page.locator('[data-testid=assistant-start-quick] .composer textarea').fill('Chat that outlives its session')
+  await page.locator('[data-testid=assistant-start-quick] .composer textarea').press('Enter')
+  await page.locator('.run-tablist .run-tab-wrap.selected').first().waitFor({ timeout: 20_000 })
+  const chatChain = await selectedChain()
+  check(!!chatChain, 'a Chat run tab opens', String(chatChain))
+  await openProject(page, NAME)
+
   // Closing OrgAI while a run is live: after relaunch the run reads Ended when OrgAI closed and Send continues it in the same tab.
   await tabsBar().getByRole('tab', { name: 'Live', exact: true }).click()
   await page.keyboard.press('Control+t')
@@ -1038,6 +1091,27 @@ try {
   await cutDivider.waitFor({ timeout: 10_000 })
   check((await cutDivider.count()) === 1, 'the feed shows "Continued after OrgAI closed" after the relaunch continue')
   await shot('relaunch-continued')
+  await endSession(page)
+
+  // The Chat cut by the relaunch: its tab is back and viewed (not the start page), it survives leave-and-return, and
+  // Send continues it in the same tab.
+  await chatRow().click()
+  await page.locator('.run-tablist .run-tab-wrap.selected').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  check((await selectedChain()) === chatChain, 'after a relaunch the Chat row shows the ended chat tab that was viewed', `${chatChain} -> ${await selectedChain()}`)
+  check((await page.locator('[data-testid=assistant-start-quick]').count()) === 0, 'the Chat row does not fall back to the start page for an ended chat')
+  const chatTabs = await tabTotal()
+  await openProject(page, NAME)
+  await chatRow().click()
+  await sleep(800)
+  check((await selectedChain()) === chatChain, 'leave and return keeps the ended chat tab', `${chatChain} -> ${await selectedChain()}`)
+  await page.locator('.composer textarea').first().fill('Pick the chat up')
+  await page.locator('.composer textarea').first().press('Enter')
+  await sleep(2500)
+  check((await selectedChain()) === chatChain && (await tabTotal()) === chatTabs, 'Send from the restored ended chat continues in the same tab', `${chatChain} -> ${await selectedChain()}, ${chatTabs} -> ${await tabTotal()}`)
+  const chatDivider = page.locator('[data-testid=chain-divider]').first()
+  await chatDivider.waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await chatDivider.count()) === 1, 'the continued chat shows a continuation divider')
+  await shot('chat-relaunch-continued')
   await endSession(page)
 } catch (e) {
   check(false, 'runs e2e ran without throwing', e.stack ?? String(e))
