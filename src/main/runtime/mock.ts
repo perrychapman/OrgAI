@@ -35,7 +35,7 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
 import { cliProjectSettings, projectSettingsLoad } from './claude'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, PROPOSE_SCHEDULE_TOOL } from '@shared/types'
 import { bridgedRolesOf, bridgedSpawnDenial } from './claude'
-import { BRIDGE_HARNESS_TOOLS, TODO_TOOL } from '@shared/types'
+import { BRIDGE_HARNESS_TOOLS, READ_DOCUMENT_TOOL, TODO_TOOL } from '@shared/types'
 import { buildRolePrompt } from './prompts'
 import { obligationsFor } from './delegation'
 import { StaffingBook } from './staffingBook'
@@ -104,6 +104,10 @@ import { waitingNote, waitingNoteExcluded } from './waitingNote'
  * [mock:self-config] (selfConfigSteps) and [mock:self-config-project] (selfConfigProjectSteps): the self-configuration
  * tools through the real harness tools (app_reference, open_in_app, propose_app_settings; list_projects then
  * propose_project_settings for the first project), answered by the result's first word (harnessAnswer / firstProject).
+ *
+ * [mock:read <path>] (readMarkerSteps, Chat and work runs, default script): the root calls read_document { path } through
+ * the real bound tool (caller: the root role, cwd the project folder) and says the tool's whole text, a refusal
+ * included, as its reply; without the tool it says MOCK_READ_NONE ("read_document is not available in this run.").
  *
  * Every user message and spawn brief goes through ctx.knowledgeContext like the other adapters (knowledgeDelivery.ts);
  * the mock has no model, so what a model would receive is kept in `deliveredMessages` and scripted replies echo only
@@ -274,6 +278,8 @@ export interface MockHarnessAnswerStep {
   otherwise: string
   /** When no answer matches, say the result's first line instead of `otherwise` (a refusal sentence). */
   otherwiseResult?: boolean
+  /** When no answer matches, say the tool's whole result text (read_document's reply); wins over otherwiseResult. */
+  echoAll?: boolean
 }
 
 /**
@@ -2009,6 +2015,8 @@ export class MockSession implements RuntimeSession {
       if (schedule) return schedule
       const todo = todoMarkerSteps(this.ctx.prompt)
       if (todo) return todo
+      const read = readMarkerSteps(this.ctx.prompt)
+      if (read) return read
     }
     if (this.ctx.run.kind === 'work' && this.ctx.run.quick && this.script.work === DEFAULT_WORK) {
       if (this.ctx.prompt.includes(CHAT_EDIT_TOKEN)) return chatEditSteps(this.ctx.run.quick.folder)
@@ -2925,7 +2933,7 @@ export class MockSession implements RuntimeSession {
     let text: string
     let isError = false
     try {
-      const res = await this.untilStopped(t.call(args, { agentId, roleId: role.id }))
+      const res = await this.untilStopped(t.call(args, { agentId, roleId: role.id, cwd: this.ctx.project.path }))
       if (res === STOPPED) return
       text = res
     } catch (e) {
@@ -2954,7 +2962,7 @@ export class MockSession implements RuntimeSession {
       let text: string
       let isError = false
       try {
-        const res = await this.untilStopped(t.call(step.args ?? {}, { agentId: ROOT_AGENT_ID, roleId: this.root.id }))
+        const res = await this.untilStopped(t.call(step.args ?? {}, { agentId: ROOT_AGENT_ID, roleId: this.root.id, cwd: this.ctx.project.path }))
         if (res === STOPPED) return undefined
         text = res
       } catch (e) {
@@ -3051,7 +3059,7 @@ export class MockSession implements RuntimeSession {
     const result = await this.harnessStep({ type: 'harness', name: step.name, args: step.args ?? {}, retryOnRevise: false })
     if (this.stopped || this.interrupted) return
     const answer = result === undefined ? undefined : step.answers.find((a) => result.startsWith(a.prefix))
-    const echoed = step.otherwiseResult && result !== undefined ? result.split('\n')[0]!.trim() : ''
+    const echoed = result === undefined ? '' : step.echoAll ? result : step.otherwiseResult ? result.split('\n')[0]!.trim() : ''
     await this.step({ type: 'text', text: answer?.text ?? (echoed || step.otherwise) })
   }
 
@@ -3154,6 +3162,24 @@ export function todoMarkerSteps(prompt: string): MockStep[] | null {
       otherwiseResult: true
     }
   ]
+}
+
+/** Trigger prefix (Chat and work runs, default script): `[mock:read <path>]` makes the root call read_document (readMarkerSteps). */
+export const READ_TOKEN_PREFIX = '[mock:read '
+export const MOCK_READ_NONE = 'read_document is not available in this run.'
+
+/**
+ * The `[mock:read <path>]` turn: read_document { path } through the bound tool (the root's role and the project folder as
+ * the caller), then the root says the tool's whole text (a refusal included). Tool not bound: MOCK_READ_NONE. null when
+ * the marker is not in the prompt or names no path.
+ */
+export function readMarkerSteps(prompt: string): MockStep[] | null {
+  const start = prompt.indexOf(READ_TOKEN_PREFIX)
+  if (start < 0) return null
+  const end = prompt.indexOf(']', start)
+  const path = end < 0 ? '' : prompt.slice(start + READ_TOKEN_PREFIX.length, end).trim()
+  if (!path) return null
+  return [{ type: 'harnessAnswer', name: READ_DOCUMENT_TOOL, args: { path }, answers: [], otherwise: MOCK_READ_NONE, echoAll: true }]
 }
 
 /** Trigger token (work runs, Chat or project, default script): propose_schedule one daily create (scheduleSteps). */

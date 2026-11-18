@@ -33,7 +33,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, ModelTier, PluginSpec, Project, RunSummary, Role, RunEvent, StaffingAssignment, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionMode, PermissionSuggestion, ProviderAuth } from '@shared/types'
-import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
+import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, READ_DOCUMENT_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingGoalOf, staffingModeOf, tierForModel } from '@shared/defaults'
 import { CLAUDE_TIER_ALIAS, recordStaffing, roleModelTier } from './staffing'
 import { StaffingBook } from './staffingBook'
@@ -1314,7 +1314,9 @@ export function buildHarnessServer(
   reportsLive: () => boolean,
   instructions?: string,
   /** The role id recorded for a report's agent id (delegate_agent passes it as parentRoleId so RunManager checks spawnable). */
-  roleOf?: (agentId: string) => string | undefined
+  roleOf?: (agentId: string) => string | undefined,
+  /** An agent's working folder (its worktree when isolated, else the project folder); read_document resolves relative paths against it. */
+  cwdOf?: (agentId: string) => string | undefined
 ): McpSdkServerConfigWithInstance {
   // In-process tool calls are "effectively unbounded by default" (0.3.312 sdk.d.ts createSdkMcpServer: options.timeout,
   // else MCP_TOOL_TIMEOUT), so a long delegate_agent (a whole bridged report) is not cut; no timeout is set here.
@@ -1326,15 +1328,25 @@ export function buildHarnessServer(
       tool(t.name, t.description, t.inputSchema.shape, async (args, extra) => {
         const meta = (extra as { _meta?: unknown } | undefined)?._meta
         // knowledge_recall dedupes per agent, so a guessed caller must read as unknown (no agentId), never as the root.
-        const agentId = t.name === KNOWLEDGE_RECALL_TOOL ? callers.resolveKnown(ORGAI_TOOL_PREFIX + t.name, meta, reportsLive()) : callers.resolve(ORGAI_TOOL_PREFIX + t.name, meta)
-        // delegate_agent: the delegating report's role too (missing = the root role, which is right for the root).
-        const roleId = t.name === BRIDGE_HARNESS_TOOLS.delegate && agentId && agentId !== ROOT_ID ? roleOf?.(agentId) : undefined
-        const caller = agentId ? { agentId, ...(roleId ? { roleId } : {}) } : undefined
+        // read_document gates on the caller's role, so it too must never see a guessed caller as the root.
+        const known = t.name === KNOWLEDGE_RECALL_TOOL || t.name === READ_DOCUMENT_TOOL
+        const agentId = known ? callers.resolveKnown(ORGAI_TOOL_PREFIX + t.name, meta, reportsLive()) : callers.resolve(ORGAI_TOOL_PREFIX + t.name, meta)
+        // delegate_agent and read_document: the calling report's role too (missing = the root role, which is right for the root).
+        const wantsRole = t.name === BRIDGE_HARNESS_TOOLS.delegate || t.name === READ_DOCUMENT_TOOL
+        const roleId = wantsRole && agentId && agentId !== ROOT_ID ? roleOf?.(agentId) : undefined
+        // read_document only: the caller's working folder, used to resolve a relative path (never a read root).
+        const cwd = t.name === READ_DOCUMENT_TOOL && agentId ? cwdOf?.(agentId) : undefined
+        // An unknown caller on a role-gated tool is an explicit {} (never a guess); the handler then applies the root role,
+        // which is safe only because the PreToolUse hook has already denied every report that lacks Read.
+        const caller = agentId ? { agentId, ...(roleId ? { roleId } : {}), ...(cwd ? { cwd } : {}) } : known ? {} : undefined
         return { content: [{ type: 'text' as const, text: await t.call(args, caller) }] }
       })
     )
   })
 }
+
+/** The deny text for read_document from a role whose tools do not include Read. */
+export const READ_DOCUMENT_NO_READ_DENIAL = 'Your role has no Read tool, so read_document is not available to you.'
 
 /** Appended to the deny text an agent gets for an edit under a reference folder (referenceFolderMessage stays as is). */
 export const REFERENCE_COPY_HINT = '; write a copy in the working folder instead'
@@ -3203,6 +3215,15 @@ export class ClaudeSession implements RuntimeSession {
       const selfCwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : this.agentCwd(agentId)
       const selfDenial = this.selfControlDenial(agentId, input.tool_name, input.tool_input, selfCwd)
       if (selfDenial) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: selfDenial } }
+      // read_document reads files like the Read tool does, so a role without Read (and a report whose role cannot be
+      // resolved) is refused here, before any allow path. Reports see the harness tools whatever their whitelist holds.
+      if (input.tool_name === `${ORGAI_TOOL_PREFIX}${READ_DOCUMENT_TOOL}`) {
+        const role = this.callerRole(input)
+        if (!role || !role.tools.includes('Read')) {
+          this.log('warn', `Blocked ${input.tool_name} by ${this.agents.get(agentId)?.name ?? agentId}: no Read tool in its role`)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: READ_DOCUMENT_NO_READ_DENIAL } }
+        }
+      }
       // A background report the harness stopped (interrupt, session end) is settled and shown as stopped: it may not keep
       // acting, whatever the tool (its hand-back included), until a SendMessage resume makes it live again.
       if (input.agent_id && this.stoppedBackground.has(input.agent_id)) {
@@ -4655,7 +4676,7 @@ export class ClaudeSession implements RuntimeSession {
     const skillNames = [...skillMap.keys()]
     const tools = this.harnessTools
     const reportsLive = (): boolean => [...this.agents.values()].some((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error')
-    const harnessServer = buildHarnessServer(tools, this.harnessCallers, reportsLive, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined, (id) => this.agents.get(id)?.roleId ?? undefined)
+    const harnessServer = buildHarnessServer(tools, this.harnessCallers, reportsLive, this.isSetup ? SETUP_TOOLS_INSTRUCTIONS : undefined, (id) => this.agents.get(id)?.roleId ?? undefined, (id) => this.agentCwd(id))
 
     // MCP servers: the project's (plus run-scoped installs) with secrets filled in, only these load (strictMcpConfig).
     // Servers a restarted query could not start with stay out of this session (recoverRestart).

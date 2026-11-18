@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunEvent } from '@shared/types'
+import { READ_DOCUMENT_TOOL } from '@shared/types'
 import { CodexAdapter, codexFolderTrust, codexModelFor, codexWritableRoots, offerableByRealPath, type CodexServerLike } from './codex'
 import { CodexRpcError } from './codexAppServer'
 import { folderTrustEntry } from './codexProtocol'
@@ -997,6 +998,30 @@ describe('CodexAdapter session', () => {
     expect(out.success).toBe(true)
     expect(out.contentItems[0].text).toContain('Engagement context: notes')
     expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('read_document callers carry the role and the working folder (the project folder, no isolation); other tools get no cwd', async () => {
+    const seen: unknown[] = []
+    const other = vi.fn(async (_a: unknown, _c?: unknown) => 'ok')
+    vi.mocked(harnessToolsFor).mockImplementationOnce((c, h) => [
+      ...harnessToolsActual.harnessToolsFor(c, h),
+      { name: READ_DOCUMENT_TOOL, description: 'stub', audience: 'all', inputSchema: z.object({ path: z.string() }), call: async (_a: unknown, caller?: unknown) => (seen.push(caller), 'doc text') },
+      { name: 'engagement_context', description: 'ctx', audience: 'all', inputSchema: z.object({}), call: other }
+    ])
+    const { adapter, servers } = setup()
+    session = await adapter.start(ctxFor())
+    const s = servers[0]!
+    await vi.waitFor(() => expect(s.turnStarts('th-1')).toHaveLength(1))
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-spawn', namespace: null, tool: 'spawn_report', arguments: { role: 'reviewer', brief: 'Look' } })
+    const root = await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-r1', namespace: null, tool: READ_DOCUMENT_TOOL, arguments: { path: 'a.xlsx' } })
+    expect(root.contentItems[0].text).toBe('doc text')
+    await s.ask('item/tool/call', { threadId: 'th-2', turnId: 'tu-2', callId: 'c-r2', namespace: null, tool: READ_DOCUMENT_TOOL, arguments: { path: 'a.xlsx' } })
+    expect(seen).toEqual([
+      { agentId: ROOT_AGENT_ID, roleId: 'r-lead', cwd: dir },
+      { agentId: expect.stringMatching(/^cx/), roleId: 'r-rev', cwd: dir }
+    ])
+    await s.ask('item/tool/call', { threadId: 'th-1', turnId: 'tu-1', callId: 'c-o', namespace: null, tool: 'engagement_context', arguments: {} })
+    expect(other.mock.calls[0]![1]).not.toHaveProperty('cwd')
   })
 
   it('steers the running turn when a message arrives mid-turn, and falls back to a new turn', async () => {
