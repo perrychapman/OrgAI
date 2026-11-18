@@ -11,6 +11,9 @@ import TeamView from './views/TeamView'
 import KnowledgeView from './views/KnowledgeView'
 import OutputsView from './views/OutputsView'
 import { initTeamAssistant, seedTeamReview, useTeamReviewSummary } from './store/teamAssistant'
+import { initTodos, useOpenTodoCount } from './store/todosStore'
+import { todoScopeFor, todosCountLabel } from '@shared/view/todos'
+import TodosView from './views/TodosView'
 import { SaveIndicator } from './components/layout/SaveIndicator'
 import './styles/run-tabs.css'
 import './styles/assistants.css'
@@ -40,8 +43,8 @@ import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } fr
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 import { useBellCue } from './lib/useBellCue'
 
-type SectionView = 'run' | 'history' | 'outputs' | 'knowledge' | 'team' | 'settings'
-const SECTION_VIEWS: readonly string[] = ['run', 'history', 'outputs', 'knowledge', 'team', 'settings']
+type SectionView = 'run' | 'history' | 'outputs' | 'knowledge' | 'todos' | 'team' | 'settings'
+const SECTION_VIEWS: readonly string[] = ['run', 'history', 'outputs', 'knowledge', 'todos', 'team', 'settings']
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -84,6 +87,7 @@ export default function App(): ReactElement {
   useEffect(() => {
     void init()
     initTeamAssistant()
+    initTodos()
     void useAppStore.getState().loadAppInfo()
   }, [init])
 
@@ -135,12 +139,17 @@ export default function App(): ReactElement {
   const teamPending = teamSummary?.pendingCount ?? 0
   // Knowledge (docs/design/knowledge.md, rec 1): engagements only, between History and Team; never on the assistants.
   const hasKnowledge = !!project && !isVirtual && projectKindOf(project) === 'engagement'
+  // To-dos: every stored project and Chat, never the MCP / Skill assistants. The tab carries the open count.
+  const todoScope = project ? todoScopeFor(project.id) : null
+  const hasTodos = todoScope !== null
+  const openTodos = useOpenTodoCount(todoScope)
   const sections: TabItem[] = [
     { id: 'run', label: 'Live', testId: 'tab-live' },
     { id: 'history', label: 'History', testId: 'tab-history' },
     // Outputs (docs/design/outputs.md section 1): every stored project, never the assistants.
     ...(isVirtual ? [] : [{ id: 'outputs', label: 'Outputs', testId: 'tab-outputs' }]),
     ...(hasKnowledge ? [{ id: 'knowledge', label: 'Knowledge', testId: 'tab-knowledge' }] : []),
+    ...(hasTodos ? [{ id: 'todos', label: 'To-dos', testId: 'tab-todos', count: openTodos ?? 0, countLabel: todosCountLabel(openTodos ?? 0), countTestId: 'todos-tab-count' }] : []),
     ...(isVirtual
       ? []
       : [
@@ -205,7 +214,7 @@ export default function App(): ReactElement {
                 )}
                 <Tabs
                   tabs={sections}
-                  value={SECTION_VIEWS.includes(view) && (view !== 'knowledge' || hasKnowledge) && (view !== 'outputs' || !isVirtual) ? view : 'run'}
+                  value={SECTION_VIEWS.includes(view) && (view !== 'knowledge' || hasKnowledge) && (view !== 'outputs' || !isVirtual) && (view !== 'todos' || hasTodos) ? view : 'run'}
                   onChange={(id) => setView(id as SectionView)}
                   label="Project sections"
                   idPrefix="project"
@@ -241,6 +250,8 @@ export default function App(): ReactElement {
                 <OutputsView key={project.id} project={project} />
               ) : view === 'knowledge' && hasKnowledge ? (
                 <KnowledgeView key={project.id} project={project} />
+              ) : view === 'todos' && hasTodos ? (
+                <TodosView key={project.id} project={project} />
               ) : view === 'team' ? (
                 <TeamView project={project} />
               ) : view === 'history' ? (
