@@ -477,6 +477,9 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     log: (m) => log.info(m)
   })
   const rm = new RunManager(adapters, runBroadcast, runStore, setup, keepRunsFor, {
+    // Mid-run org changes: the desktop app's only decision path for an org chart card is the renderer's ProposalCard,
+    // which diffs against runBaseline. The CLI host (TUI, exec) shows no diff, so it never opts in (fail closed).
+    ...(opts.desktop ? { liveRosterCards: true as const } : {}),
     ...(opts.desktop
       ? {
           todos: {

@@ -27,6 +27,15 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     publish (D2 fallback). release.yml has three desktop build jobs on two OSes (Windows x64, macOS arm64, macOS x64) and
     no Linux leg: Linux is covered only by verify-npm. The app no longer contains the CLI (standalone spec 5.2); `pack:verify` has no CLI-driven checks.
   - Model (docs/design/cli-standalone-default.md, implemented 2026-11-08): see the first bullet. `orgai` always runs its host in-process (`src/cli/inprocHost.ts`, ownership in `src/main/host/ownership.ts`, one `orgai` per CLI data folder, a second one is refused with exit 6; read-only commands read files beside an owner, `src/cli/client/readOnlyStore.ts`). There is no `--host`, daemon, Node or headless host, no `orgai app`, `terminal-access`, `watch`, `inbox`, `decide` or `attach`, and no launcher or shared host. Cards are answered inside the owning TUI. `ORGAI_SECRET_*` / `--secret-env` rules follow spec 4.1 (Round 6 item 8); `ORGAI_SECRET_*` names are refused as `--from-env` / `--client-secret-from-env` sources (exit 2).
+  - Mid-run org changes are DESKTOP ONLY (owner decision, fourth review of the live roster, 2026-11-18): the `orgai`
+    host's RunManager is built without `RunManagerOptions.liveRosterCards` (bootstrap.ts sets it only with `desktop`),
+    because the TUI decides org chart cards without a diff against runBaseline (`src/cli/tui/decisions.ts`). So a CLI /
+    TUI / exec run keeps the pre-feature behaviour exactly even though the adapters' sessions declare `liveRoster`: no
+    runBaseline on the payload (an agent-supplied one is dropped), `ctx.roles` untouched, card effect 'next-run', and
+    propose_org_change says "applies from the next run". The headless exec policy only ever declines a proposal.
+    Checked by runRoster.test.ts (the gate fails closed) and runManagerRoster.test.ts (a RunManager without the option on
+    a liveRoster session). Turning it on for the CLI needs a TUI org chart diff against runBaseline with every field
+    that can move, then the option in the inproc bootstrap.
   - PR 49 (in-memory dispatch, lazy loading, run choices, exec flags; review fixes 2026-11-12). Each item says how it was checked; nothing here was run against a live provider, and no e2e beyond the area scripts listed in the PR 49 fix report.
     - `orgai exec -q` / `--quiet`: stdout carries only the sanitized final answer, logs go nowhere or to stderr, JSON output is unchanged (exec.test.ts "--quiet ..." cases).
     - `--output-last-message <file>`: the final answer is written to a temporary file and renamed over the destination (relative to the cwd), never through a link; a failed write fails the command (exec.test.ts; the link case needs symlink privilege and fails with EPERM on a Windows account without it, a test-environment limit).

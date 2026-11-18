@@ -36,7 +36,8 @@ afterEach(() => {
 })
 
 /** A fake adapter: records every ctx and answers with a session that does (or does not) take roster changes live. */
-function rig(opts: { liveRoster?: boolean; pull?: (p: Project) => Project; rosterApplied?: RuntimeSession['rosterApplied'] } = {}) {
+/** `cliHost`: build the RunManager as the CLI host does, without RunManagerOptions.liveRosterCards. */
+function rig(opts: { liveRoster?: boolean; pull?: (p: Project) => Project; rosterApplied?: RuntimeSession['rosterApplied']; cliHost?: boolean } = {}) {
   const ctxs: RuntimeContext[] = []
   const adapter: RuntimeAdapter = {
     id: 'mock',
@@ -59,7 +60,7 @@ function rig(opts: { liveRoster?: boolean; pull?: (p: Project) => Project; roste
   const service = opts.pull
     ? (Object.assign(Object.create(setup) as SetupService, { applyProposal: (id: string, p: Proposal, o?: never) => opts.pull!(setup.applyProposal(id, p, o)) }) as SetupService)
     : setup
-  const m = new RunManager({ mock: adapter }, (e) => void events.push(e), new RunStore(join(dir, 'data')), service, () => 100, {})
+  const m = new RunManager({ mock: adapter }, (e) => void events.push(e), new RunStore(join(dir, 'data')), service, () => 100, opts.cliHost ? {} : { liveRosterCards: true })
   return { m, ctxs }
 }
 
@@ -405,6 +406,29 @@ describe('an approved org chart reaches the same work run (liveRoster session)',
 })
 
 describe('runs that keep their roles', () => {
+  it('fourth review: a host without liveRosterCards (the CLI / TUI / exec host) keeps the pre-feature behaviour on a liveRoster session', async () => {
+    const p = newProject()
+    const { m, ctxs } = rig({ liveRoster: true, cliHost: true })
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const before = structuredClone(ctx.roles)
+    const array = ctx.roles
+    const card = [{ ...structuredClone(p.roles[0]), prompt: 'changed' }, structuredClone(p.roles[1]), role({ id: 'r-qa', slug: 'qa', name: 'QA', reportsTo: 'r-lead' })]
+    const at = events.length
+    const pending = ctx.requestProposal({ kind: 'orgChart', agentId: 'root', title: 't', payload: { roles: card, rationale: 'r', runBaseline: structuredClone(card) } })
+    const req = await waitFor((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request', at)
+    // No runBaseline (an agent-supplied one is dropped too) and the card says next run.
+    expect(req.proposal.kind === 'orgChart' && 'runBaseline' in req.proposal.payload).toBe(false)
+    expect(req.proposal.effect).toBe('next-run')
+    m.decideProposal(ctx.run.id, req.proposal.id, { behavior: 'approve' })
+    // No roster on the outcome, so propose_org_change says "applies from the next run".
+    expect(await pending).toEqual({ behavior: 'approve' })
+    expect(ctx.roles).toBe(array)
+    expect(ctx.roles).toEqual(before)
+    expect(rosterEvents()).toEqual([])
+    await m.stopAll()
+  })
+
   it('a session without liveRoster: ctx.roles unchanged, no roster, the card says next run', async () => {
     const p = newProject()
     const { m, ctxs } = rig()
