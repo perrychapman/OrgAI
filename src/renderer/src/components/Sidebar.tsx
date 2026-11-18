@@ -8,7 +8,7 @@ import { decisionLocationLabel } from '../lib/chatPermissions'
 import { useShallow } from 'zustand/react/shallow'
 import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../lib/needsYou'
-import { openRunWindow, openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions'
+import { announceMenu, openRunWindow, openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions'
 import { ContextMenu, useContextMenu, type MenuEntry } from './ui/ContextMenu'
 import { groupByClient, readCollapsedClients, writeCollapsedClients } from '../lib/clientGroups'
 import { needsYou } from '../lib/runChains'
@@ -127,7 +127,6 @@ export default function Sidebar({
   const selectProject = useAppStore((s) => s.selectProject)
   const openDraft = useAppStore((s) => s.openDraft)
   const focusComposer = useAppStore((s) => s.focusComposer)
-  const setTabNotice = useAppStore((s) => s.setTabNotice)
   const setProjectSettingsPane = useAppStore((s) => s.setProjectSettingsPane)
   const jumpToDecision = useAppStore((s) => s.jumpToDecision)
   const auth = useAppStore((s) => s.auth)
@@ -250,9 +249,9 @@ export default function Sidebar({
           window.orgai.app
             .openPath(p.path)
             .then((err) => {
-              if (err) setTabNotice(`Could not open the folder: ${err}`)
+              if (err) announceMenu(`Could not open the folder: ${err}`)
             })
-            .catch(() => setTabNotice('Could not open the folder.'))
+            .catch(() => announceMenu('Could not open the folder.'))
         }
       },
       { id: 'settings', label: 'Project settings', icon: Settings, testId: 'nav-project-menu-settings', onSelect: () => openProjectSettingsGeneral(projectId) }
@@ -686,7 +685,10 @@ export default function Sidebar({
       <ContextMenu control={projectMenu} label={(id) => `Actions for ${projects.find((p) => p.id === id)?.name ?? 'project'}`} items={projectMenuItems} testId="nav-project-menu" />
       <ContextMenu
         control={runMenu}
-        label="Actions for open run"
+        label={(t) => {
+          const r = runs[t.runId] ?? null
+          return `Actions for ${r ? `${runTag(indexes.get(t.runId))} ${displayRunName(r.summary)}` : 'open run'}`
+        }}
         testId="nav-run-menu"
         items={(t) => [
           { id: 'open', label: 'Open', icon: ExternalLink, testId: 'nav-run-menu-open', onSelect: () => openRunRow(t.projectId, t.runId) },

@@ -76,7 +76,7 @@ if (typeof document !== 'undefined') document.addEventListener('pointerdown', ()
 const TEXT_INPUT_SKIP =new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
 
 /** The DOM facts for `nativeMenuWins`: an editable target, a link, or selected text touching the surface. */
-function nativeWins(e: ReactMouseEvent<HTMLElement>): boolean {
+export function nativeWins(e: ReactMouseEvent<HTMLElement>): boolean {
   const t = e.target instanceof Element ? e.target : null
   const field = t?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
   const editable = !!field && !(field instanceof HTMLInputElement && TEXT_INPUT_SKIP.has(field.type))
@@ -172,9 +172,12 @@ export function MenuButton<T>({
   size?: 'sm' | 'md'
   fallbackFocus?: () => HTMLElement | null
 }): ReactElement {
-  const open = control.state !== null && control.state.target === target && control.state.placement.kind === 'anchor'
+  const ref = useRef<HTMLButtonElement>(null)
+  // Expanded only when this button invoked the menu (another control, such as the row's Menu key, may have).
+  const open = control.state !== null && control.state.target === target && control.state.placement.kind === 'anchor' && control.state.invoker === ref.current
   return (
     <button
+      ref={ref}
       type="button"
       className={`icon-btn size-${size}`}
       aria-label={label}

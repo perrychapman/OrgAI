@@ -144,9 +144,7 @@ export function openRunWindow(projectId: string, runId: string): void {
   window.orgai.window
     .openRun({ projectId, runId })
     .catch((err: unknown) =>
-      useAppStore
-        .getState()
-        .setTabNotice(`Could not open a new window: ${err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : 'unknown error'}`)
+      announceMenu(`Could not open a new window: ${err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']*': (Error: )?/, '') : 'unknown error'}`)
     )
 }
 

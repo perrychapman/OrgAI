@@ -348,7 +348,6 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   // Tab context menu (right click, Menu key or Shift+F10 on a tab; components/ui/ContextMenu.tsx): Open in new window
   // (runs only), then Hide. Anchored to the tab's wrap (tab and its close X), focus returns to the tab.
   const tabMenu = useContextMenu<string>()
-  const setTabNotice = useAppStore((s) => s.setTabNotice)
   const tabMenuOpts = (id: string, tab: HTMLElement): OpenOptions => ({
     anchor: tab.parentElement ?? tab,
     invoker: tab,
@@ -379,11 +378,12 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       }
     ]
   }
-  const onMenuKey = (e: ReactKeyboardEvent, root: HTMLElement | null = menuRef.current, close: () => void = () => {
-    setMenuOpen(false)
-    moreRef.current?.focus()
-  }): void => {
-    const buttons = Array.from(root?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [])
+  const onMenuKey = (e: ReactKeyboardEvent): void => {
+    const close = (): void => {
+      setMenuOpen(false)
+      moreRef.current?.focus()
+    }
+    const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [])
     const at = buttons.indexOf(document.activeElement as HTMLElement)
     if (e.key === 'Escape') {
       e.preventDefault()

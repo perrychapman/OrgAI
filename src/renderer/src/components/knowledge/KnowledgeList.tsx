@@ -7,7 +7,7 @@ import type { ListEntry, TypeAhead } from '../../lib/knowledgeList'
 import { WINDOW_THRESHOLD, edgeRow, flattenGroups, isTypeAheadKey, nextTypeAhead, rowIndexOf, scrollTopFor, stepRow, typeAheadMatch, windowRange } from '../../lib/knowledgeList'
 import { useArrival } from '../../lib/useArrival'
 import { isMenuKey } from '../../lib/contextMenu'
-import { ContextMenu, useContextMenu, type MenuEntry, type OpenOptions } from '../ui/ContextMenu'
+import { ContextMenu, nativeWins, useContextMenu, type MenuEntry, type OpenOptions } from '../ui/ContextMenu'
 import { KnowledgeRow } from './KnowledgeRow'
 
 export interface KnowledgeListHandle {
@@ -145,9 +145,8 @@ export function KnowledgeList({
   const onRowContextMenu = (e: MouseEvent<HTMLUListElement>): void => {
     const row = e.target instanceof Element ? e.target.closest<HTMLElement>('[role=option]') : null
     const id = row?.dataset.id
-    // Selected text in the list keeps the platform menu (Copy): leave the selection and the row as they are.
-    const sel = window.getSelection()
-    if (sel && !sel.isCollapsed && sel.toString().trim() && sel.anchorNode && e.currentTarget.contains(sel.anchorNode)) return
+    // A link, a field or selected text keeps the platform menu (Copy): leave the selection and the row as they are.
+    if (nativeWins(e)) return
     if (row && id) menu.onContextMenu(e, id, menuOpts(id, row))
   }
   const menuItems = (id: string): MenuEntry[] => {

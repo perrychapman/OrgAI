@@ -6,7 +6,8 @@ with pure rules in `lib/contextMenu.ts` (tested in `lib/contextMenu.test.ts`). e
 ## 1. Rules
 
 1. Right click is never the only way to an action. Every menu opens from the keyboard (the Menu key or Shift+F10 on
-   the focused row, tab, tile or node), and every action in it also exists elsewhere: as a visible button, or behind
+   the focused row, tab, tile or node; on History rows, Dashboard tiles and schedule cards the menu opens from a
+   control inside the row, not the row itself), and every action in it also exists elsewhere: as a visible button, or behind
    one visible "More actions" button (`MenuButton`) that opens the same menu.
 2. The primary action of a row or card stays a visible button. A visible button is removed only where the surface is
    crowded and the action is secondary; nothing a first-time user needs to find the feature is hidden.
@@ -34,7 +35,7 @@ with pure rules in `lib/contextMenu.ts` (tested in `lib/contextMenu.test.ts`). e
 - Keys inside: Up / Down wrap, Home / End, a letter jumps to the next item starting with it, Enter / Space activate,
   Escape and Tab close. Every key is kept inside the menu (it may be rendered inside a list with its own keys), and
   Escape is cancelled so it never also closes a dialog underneath.
-- Dismissal: pointerdown outside, window resize, a wheel scroll outside the menu, window blur, focus moving elsewhere.
+- Dismissal: pointerdown outside, window resize, a user wheel scroll outside the menu, window blur, focus moving elsewhere.
   Programmatic scrolls do not dismiss (built: focusing a tab scrolls its strip into view as the menu opens, and a
   streaming transcript scrolls itself; a `scroll` listener closed the menu at once, about half the time). Keyboard
   scrolling cannot happen while the menu holds every key, and a scrollbar drag starts with a pointerdown outside.
@@ -42,7 +43,7 @@ with pure rules in `lib/contextMenu.ts` (tested in `lib/contextMenu.test.ts`). e
   while focus was in the menu. When the invoker has left the document (the action removed its row) or cannot take
   focus (a table row, a card), an optional `fallbackFocus` is used, so focus never drops to the body. Surfaces whose
   right-click target is not focusable pass a focusable `invoker` (History: the row's More button; Schedules: the
-  card's Run now). When the menu's target disappears while it is open (no items left), the menu closes and focus
+  card's Run now, or its heading while the card is busy). When the menu's target disappears while it is open (no items left), the menu closes and focus
   goes to the fallback.
 - The Menu key and Shift+F10 inside a text field or on a link are left to the platform.
 - Motion: a `--dur-fast` opacity fade on enter only, which both reduced-motion switches zero. Tokens only; both themes
@@ -55,7 +56,7 @@ remove (secondary on a crowded surface; reachable through the row's More button 
 
 | # | Surface | Fit | Items (in order; `---` is a separator; D = destructive) | Dup buttons: keep / remove |
 |---|---|---|---|---|
-| 1 | Run tabs (`RunTabs.tsx`) | Yes, existed. Tabs are objects with secondary actions and no room for buttons. Migrated to the primitive. | Open in new window (runs only); --- ; Hide (built: any run tab can be hidden, hiding never ends the session; disabled with a reason only on the only, blank tab. Before the migration Hide came first; the order now follows this table) | Tab close X: keep (hover affordance, Ctrl+W). |
+| 1 | Run tabs (`RunTabs.tsx`) | Yes, existed. Tabs are objects with secondary actions and no room for buttons. Migrated to the primitive. | Open in new window (runs only); --- ; Hide (built: any run tab can be hidden, live runs included, and hiding never ends the session; disabled only when it is the only tab, with the reason "The only tab cannot be hidden." Before the migration Hide came first; the order now follows this table) | Tab close X: keep (hover affordance, Ctrl+W). |
 | 2 | Knowledge rows (`KnowledgeList.tsx`) | Yes, existed (Shift+F10 / right click, no row buttons by design, rec 16). Migrated. | Open; Edit (notes only); Retire or Restore | None (actions also in the detail pane). |
 | 3 | Dashboard project tiles (`ProjectTile.tsx`) | Yes. The tile already had a More popover menu; right click on the tile and the Menu key on its Open button now open the same menu. Migrated from `Popover` to the primitive. | Open; New run; Continue "<run>" (when one can continue); Open folder; --- ; Delete project / engagement (D, existing confirm) | More button: keep (it is the visible path). |
 | 4 | Sidebar project rows (`Sidebar.tsx`, `nav-project`) | Yes. Frequent, compact rows with no room for buttons; today Open folder and Project settings are several clicks away. | Open; New run; Open folder; Project settings | None (no visible row buttons). |
