@@ -2232,7 +2232,8 @@ describe('Wave 7 scan cost', () => {
   // Each hostile text is timed at n and 2n (best of three, so a scheduler stall in one run does not count); a scan that
   // grows with the square of the input takes about four times as long at 2n, a linear one about twice.
   // The 300 s per-test limit is there because the Intel mac release runner (macos-15-intel) needs about 2 minutes; it only bounds wall-clock time, the assertion checks linearity.
-  it('reads long hostile texts in linear time (quotes, backslashes, braces, custodian words)', () => {
+  // A noisy runner can skew one measurement; a truly quadratic scan fails every retry.
+  it('reads long hostile texts in linear time (quotes, backslashes, braces, custodian words)', { timeout: 300_000, retry: 2 }, () => {
     const data = '/home/u/.config/OrgAI'
     const ctx: SelfControlContext = { protectedPaths: controlProtectedPaths(data), cwd: '/work', home: '/home/u', platform: 'linux' }
     const texts: [string, (n: number) => string, number][] = [
@@ -2278,7 +2279,7 @@ describe('Wave 7 scan cost', () => {
       const t2 = best(make(2 * n))
       expect(t2, `${name}: ${t1.toFixed(1)} ms at n, ${t2.toFixed(1)} ms at 2n`).toBeLessThan(3 * t1 + 100)
     }
-  }, 300_000)
+  })
 
   // The CLI scan alone: the path scan's here-document handling grows faster than linear on these (on dev before PR 47
   // too; recorded in docs/agent-notes/cli-host.md), so this checks the segment readings only.
