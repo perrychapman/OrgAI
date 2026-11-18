@@ -15,7 +15,7 @@ const record = (s: Record<string, unknown>): Record<string, unknown> => ({ summa
 const quickRows = [summary('c1', 'quick', 'finished', 1), summary('c2', 'quick', 'finished', 2)]
 const api = {
   runs: {
-    list: vi.fn(async (pid: string) => (pid === 'quick' ? quickRows : [])),
+    list: vi.fn(async (pid: string) => (pid === 'quick' ? quickRows : pid === 'ghost' ? [summary('g1', 'ghost', 'finished', 1)] : [])),
     get: vi.fn(async (id: string) => {
       const row = quickRows.find((r) => r.id === id)
       return row ? record(row) : null
@@ -87,10 +87,72 @@ describe('dismissRun: hiding a tab never touches the session', () => {
     expect(s.runs.a.summary.status).toBe('idle')
   })
 
+  it('two hides in a row announce both times through setTabNotice, and no stray timer clears the second', () => {
+    vi.useFakeTimers()
+    try {
+      useAppStore.setState({ selectedProjectId: 'p1', runs: { a: run('a', 'p1', 'running', 1), b: run('b', 'p1', 'running', 2), c: run('c', 'p1', 'finished', 3) } as never, activeRunByProject: { p1: 'c' } })
+      const spy = vi.spyOn(useAppStore.getState(), 'setTabNotice')
+      useAppStore.getState().dismissRun('a')
+      expect(spy).toHaveBeenCalledWith(HIDDEN_LIVE_NOTICE)
+      expect(useAppStore.getState().tabNotice).toBe(HIDDEN_LIVE_NOTICE)
+      vi.advanceTimersByTime(3000)
+      useAppStore.getState().dismissRun('b')
+      expect(spy).toHaveBeenCalledTimes(2)
+      // Same text again: cleared first, then set again so the status region reads it again.
+      expect(useAppStore.getState().tabNotice).toBeNull()
+      vi.advanceTimersByTime(100)
+      expect(useAppStore.getState().tabNotice).toBe(HIDDEN_LIVE_NOTICE)
+      // The first hide's 4 s timer fires here and must not clear the second notice.
+      vi.advanceTimersByTime(3900)
+      expect(useAppStore.getState().tabNotice).toBe(HIDDEN_LIVE_NOTICE)
+      vi.advanceTimersByTime(500)
+      expect(useAppStore.getState().tabNotice).toBeNull()
+      spy.mockRestore()
+      // Hiding an unknown run says nothing.
+      useAppStore.getState().dismissRun('nope')
+      vi.advanceTimersByTime(200)
+      expect(useAppStore.getState().tabNotice).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('an ended tab still says "Find it in History"', () => {
     useAppStore.setState({ selectedProjectId: 'p1', runs: { a: run('a', 'p1', 'finished', 1) } as never, activeRunByProject: { p1: 'a' } })
     useAppStore.getState().dismissRun('a')
     expect(useAppStore.getState().tabNotice).toBe('Hidden. Find it in History.')
+  })
+})
+
+describe('re-entering a project', () => {
+  it('stays on the New run page after every tab was hidden, and keeps the hidden live run hidden', async () => {
+    useAppStore.setState({ projects: [{ id: 'p1', name: 'P', roles: [] }] as never, selectedProjectId: 'p1', runs: { a: run('a', 'p1', 'idle', 1) } as never, activeRunByProject: { p1: 'a' } })
+    useAppStore.getState().dismissRun('a')
+    expect(useAppStore.getState().draftPage.p1).toBe(true)
+    await useAppStore.getState().openProject('p1')
+    const s = useAppStore.getState()
+    expect(s.draftPage.p1).toBe(true)
+    expect(s.dismissedRuns.a).toBe(true)
+    expect(s.activeRunByProject.p1).toBeUndefined()
+  })
+
+  it('a hidden run is skipped by the fallbacks but a run that needs you still opens', async () => {
+    const { defaultRunToOpen } = await import('../../../shared/view/needsYou')
+    const live = [run('a', 'p1', 'running', 1), run('b', 'p1', 'running', 2)] as never[]
+    expect(defaultRunToOpen(live, [], undefined, { hidden: { b: true } })).toBe('a')
+    expect(defaultRunToOpen(live, [], undefined, { hidden: { a: true, b: true } })).toBeUndefined()
+    expect(defaultRunToOpen(live, [{ id: 'h', startedAt: 0 }], 'b', { hidden: { a: true, b: true } })).toBe('h')
+    expect(defaultRunToOpen(live, [], undefined, { startPage: true })).toBeUndefined()
+    const asking = { ...(run('b', 'p1', 'running', 2) as object), permissions: [{ id: 'x', agentId: 'root', toolName: 'Bash' }] } as never
+    expect(defaultRunToOpen([live[0], asking], [], undefined, { hidden: { b: true }, startPage: true })).toBe('b')
+  })
+
+  it('shows the New run page when a run known only from history fails to load', async () => {
+    useAppStore.setState({ projects: [{ id: 'ghost', name: 'G', roles: [] }] as never })
+    await useAppStore.getState().openProject('ghost')
+    const s = useAppStore.getState()
+    expect(s.runs.g1).toBeUndefined()
+    expect(s.draftPage.ghost).toBe(true)
   })
 })
 

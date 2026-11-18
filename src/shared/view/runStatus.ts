@@ -171,8 +171,8 @@ const WAITING_ACTIVITY = /^(Needs approval|Waiting for you)/
 
 /**
  * What a run cut off by OrgAI closing was doing, read from its saved agents before they are settled: 'waiting' when
- * nothing was working and an agent waited on a decision (state waiting, or "Needs approval" / "Waiting for you" on a
- * non-idle agent), 'idle' when the root simply sat idle awaiting a reply (never "waiting on you"), else 'working'
+ * nothing was working and an agent waited on a decision (state waiting; "Needs approval" is a permission decision, so
+ * an agent showing it counts whatever its state; "Waiting for you" counts only on a non-idle agent), 'idle' when the root simply sat idle awaiting a reply (never "waiting on you"), else 'working'
  * (also the answer when the record carries no trace either way).
  */
 export function cutWhile(agents: Record<string, Pick<AgentInstance, 'parentId' | 'state' | 'activity'>> | undefined): 'working' | 'waiting' | 'idle' {
