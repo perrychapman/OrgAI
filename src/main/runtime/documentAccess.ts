@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { READ_DOCUMENT_PATH_MAX_CHARS, type Role } from '@shared/types'
@@ -206,10 +206,13 @@ function globBody(glob: string): string | null {
  * what is inside it. On Windows a backslash is a separator and a drive-letter body (`C:/x`, `/C:/x`, `//C:/x`, `//c/x`)
  * is compared case-insensitively against the real absolute path. Glob syntax (`*`, `**`, `?`) applies to the rule's own
  * text only; the project, settings and home paths are matched literally, whatever characters they hold.
+ * With `canon` (the real spelling of a path, or null) every literal base, and the wildcard-free start of the rule's own
+ * path, is also anchored at its real spelling, so a base or rule written through a link, junction, substituted drive or
+ * short name covers the real path of a target, and the other way round when the target is given as written too.
  * null = a body OrgAI does not fully understand, so the caller fails closed: `[ ] { } !` in the rule, a `..` segment, a
  * backslash off Windows (an escape there), a drive-relative `C:x` on Windows. Never false for those.
  */
-export function readRuleCovers(body: string, target: string, opts: { projectPath: string; settingsDir: string; home: string; platform: NodeJS.Platform }): boolean | null {
+export function readRuleCovers(body: string, target: string, opts: { projectPath: string; settingsDir: string; home: string; platform: NodeJS.Platform; canon?: (p: string) => string | null }): boolean | null {
   let b = body.trim()
   if (b === '' || b === '*' || b === '**' || b === '/**' || b === '//**') return true
   const win = opts.platform === 'win32'
@@ -228,24 +231,30 @@ export function readRuleCovers(body: string, target: string, opts: { projectPath
   const lit = (s: string): string => fold(s, opts.platform).replace(/\/+$/, '')
   const trim = (s: string): string => s.replace(/\/+$/, '')
   // One candidate is a literal base plus the rule's own glob part below it.
-  const cands: Array<{ lit: string; glob: string }> = []
+  // `raw` is the literal base as written (not folded), the input of the canonical spelling below.
+  const cands: Array<{ lit: string; raw: string; glob: string }> = []
+  const base = (raw: string, glob: string): void => {
+    cands.push({ lit: lit(raw), raw, glob })
+  }
   const drive = (letter: string, rest: string | undefined): void => {
-    cands.push({ lit: `${letter.toLowerCase()}:`, glob: trim(rest ?? '') })
+    cands.push({ lit: `${letter.toLowerCase()}:`, raw: `${letter}:`, glob: trim(rest ?? '') })
   }
   if (double) {
     const rest = b
     const m = win ? /^\/([A-Za-z]):(?:\/(.*))?$/s.exec(rest) ?? /^\/([A-Za-z])(?:\/(.*))?$/s.exec(rest) : null
     if (m) drive(m[1]!, m[2])
-    else cands.push({ lit: '', glob: trim(rest.slice(1)) })
+    else base('', trim(rest.slice(1)))
   } else if (b === '~' || b.startsWith('~/')) {
-    cands.push({ lit: lit(opts.home), glob: trim(b.slice(2)) })
+    base(opts.home, trim(b.slice(2)))
   } else if (win && /^\/?[A-Za-z]:/.test(b)) {
     const m = /^\/?([A-Za-z]):(?:\/(.*))?$/s.exec(b)
     if (!m) return null
     drive(m[1]!, m[2])
   } else if (b.startsWith('/')) {
     const rest = trim(b.slice(1))
-    cands.push({ lit: '', glob: rest }, { lit: lit(opts.projectPath), glob: rest }, { lit: lit(opts.settingsDir), glob: rest })
+    base('', rest)
+    base(opts.projectPath, rest)
+    base(opts.settingsDir, rest)
   } else {
     const r = trim(b)
     if (r !== '' && !r.includes('/')) {
@@ -255,7 +264,24 @@ export function readRuleCovers(body: string, target: string, opts: { projectPath
       const re = new RegExp(`^${body1}$`)
       return t.split('/').some((seg) => re.test(seg))
     }
-    cands.push({ lit: lit(opts.projectPath), glob: r })
+    base(opts.projectPath, r)
+  }
+  // The same candidates anchored at the canonical spelling of their literal part (the base plus the rule's own wildcard-free
+  // leading segments), so a base or rule written through a link, junction or short name also covers the real path.
+  const canon = opts.canon
+  if (canon) {
+    for (const c of [...cands]) {
+      const parts = c.glob.split('/')
+      const wild = parts.findIndex((s) => /[*?]/.test(s))
+      const fixed = wild < 0 ? parts : parts.slice(0, wild)
+      const rest = wild < 0 ? '' : parts.slice(wild).join('/')
+      const baseRaw = c.raw.replace(/[\\/]+$/, '')
+      const written = fixed.length ? `${baseRaw}/${fixed.join('/')}` : /^[A-Za-z]:$/.test(baseRaw) ? `${baseRaw}/` : baseRaw
+      if (written === '') continue
+      const real = canon(written)
+      if (real === null || fold(real, opts.platform) === fold(written, opts.platform)) continue
+      cands.push({ lit: lit(real), raw: real, glob: rest })
+    }
   }
   for (const c of cands) {
     const body1 = c.glob === '' ? '' : globBody(fold(c.glob, opts.platform))
@@ -265,17 +291,41 @@ export function readRuleCovers(body: string, target: string, opts: { projectPath
   return false
 }
 
+/**
+ * The canonical (real) spelling of an absolute path through the file system: realpath, or for a path that does not exist
+ * yet the real path of its nearest existing folder plus the rest. null when nothing resolves. Memoised by the caller.
+ */
+export function canonicalPath(p: string): string | null {
+  const rest: string[] = []
+  let cur = p
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = realpathSync.native(cur)
+      return rest.length ? path.join(real, ...rest.reverse()) : real
+    } catch {
+      const parent = path.dirname(cur)
+      if (parent === cur) return null
+      rest.push(path.basename(cur))
+      cur = parent
+    }
+  }
+  return null
+}
+
 /** Why the project's or the user's Claude Read rules refuse these paths (rule 5), or null. */
 export function readRuleDenial(targets: readonly string[], src: ReadRuleSources): string | null {
   const platform = src.platform ?? process.platform
   const home = src.home ?? homedir()
+  // Canonical spellings are looked up once per distinct path in this call (the bases are the same for every rule).
+  const memo = new Map<string, string | null>()
+  const canon = platform === process.platform ? (p: string): string | null => (memo.has(p) ? memo.get(p)! : (memo.set(p, canonicalPath(p)), memo.get(p)!)) : undefined
   for (const file of settingsFiles(src)) {
     const r = readRulesOf(file)
     if ('problem' in r) return 'OrgAI could not read a Claude settings file to check its Read rules, so read_document reads nothing in this project. Use your own Read tool, or ask the user to fix the settings file.'
     const settingsDir = path.dirname(file)
     for (const body of r.bodies) {
       for (const t of targets) {
-        const covered = readRuleCovers(body, t, { projectPath: src.projectPath, settingsDir, home, platform })
+        const covered = readRuleCovers(body, t, { projectPath: src.projectPath, settingsDir, home, platform, ...(canon ? { canon } : {}) })
         if (covered === null) return 'A Read rule in the Claude settings uses a pattern OrgAI cannot check, so read_document reads nothing in this project. Use your own Read tool.'
         if (covered) return 'A Read deny or ask rule in the Claude settings covers this file, so read_document does not read it. Use your own Read tool, which asks the user where allowed.'
       }

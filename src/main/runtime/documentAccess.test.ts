@@ -264,6 +264,81 @@ describe('read_document: Claude Read rules', () => {
     if (!link(join(proj, 'secret', 'a.txt'), join(proj, 'alias.txt'))) return
     expect(await read(ctxFor(), { path: 'alias.txt' })).toMatch(/^REFUSED: A Read deny or ask rule/)
   })
+
+  it('anchors a rule at the canonical spelling of its bases with an injected canon (the macOS /var and Windows 8.3 shape)', () => {
+    const canonProj = join(base, 'canonproj')
+    const canon = (p: string): string | null => (p.startsWith(proj) ? canonProj + p.slice(proj.length) : null)
+    const target = join(canonProj, 'secret', 'a.txt')
+    expect(readRuleCovers('./secret/**', target, opts())).toBe(false)
+    expect(readRuleCovers('./secret/**', target, { ...opts(), canon })).toBe(true)
+    expect(readRuleCovers('./open/**', target, { ...opts(), canon })).toBe(false)
+    expect(readRuleCovers('src/[ab].txt', target, { ...opts(), canon })).toBeNull()
+  })
+
+  // Directory junctions can be made without privilege on Windows (file symlinks cannot), so these run here.
+  describe('rules hold for every spelling of a base (links, junctions, short names)', () => {
+    const denied = /^REFUSED: A Read deny or ask rule/
+    const seed = (real: string): void => {
+      mkdirSync(join(real, 'secret'), { recursive: true })
+      writeFileSync(join(real, 'secret', 'a.txt'), 'hidden')
+      writeFileSync(join(real, 'open.txt'), 'shown')
+    }
+
+    it('the project folder is reached through a link: the rule still covers the real path of a second link inside it', async () => {
+      const real = join(base, 'realproj')
+      mkdirSync(join(real, '.claude'), { recursive: true })
+      seed(real)
+      writeFileSync(join(real, '.claude', 'settings.json'), JSON.stringify({ permissions: { deny: ['Read(./secret/**)'] } }))
+      const viaLink = join(base, 'projlink')
+      if (!link(real, viaLink, 'junction')) return
+      if (!link(join(real, 'secret'), join(real, 'aliasdir'), 'junction')) return
+      const ctx = fakeCtx({ project: project({ path: viaLink }), controlProtectedPaths: () => [join(base, 'data', 'run')] })
+      const rules = { settingsFiles: [join(real, '.claude', 'settings.json')] }
+      expect(await read(ctx, { path: 'secret/a.txt' }, undefined, rules)).toMatch(denied)
+      expect(await read(ctx, { path: 'aliasdir/a.txt' }, undefined, rules)).toMatch(denied)
+      expect(await read(ctx, { path: join(viaLink, 'aliasdir', 'a.txt') }, undefined, rules)).toMatch(denied)
+      expect(await read(ctx, { path: 'open.txt' }, undefined, rules)).toContain('shown')
+    })
+
+    it('the project folder is canonical and the target is reached through a link inside it', async () => {
+      seed(proj)
+      writeFileSync(settings, JSON.stringify({ permissions: { deny: ['Read(./secret/**)'] } }))
+      if (!link(join(proj, 'secret'), join(proj, 'aliasdir'), 'junction')) return
+      expect(await read(ctxFor(), { path: 'aliasdir/a.txt' })).toMatch(denied)
+      expect(await read(ctxFor(), { path: 'open.txt' })).toContain('shown')
+    })
+
+    it('a ~/ rule holds when the home folder is given through a link', async () => {
+      const realHome = join(base, 'realhome')
+      const inside = join(realHome, 'proj')
+      mkdirSync(join(inside, '.claude'), { recursive: true })
+      seed(inside)
+      const homeLink = join(base, 'homelink')
+      if (!link(realHome, homeLink, 'junction')) return
+      const settingsFile = join(inside, '.claude', 'settings.json')
+      writeFileSync(settingsFile, JSON.stringify({ permissions: { deny: ['Read(~/proj/secret/**)'] } }))
+      const ctx = fakeCtx({ project: project({ path: inside }), controlProtectedPaths: () => [join(base, 'data', 'run')] })
+      const rules = { settingsFiles: [settingsFile], home: homeLink }
+      expect(await read(ctx, { path: 'secret/a.txt' }, undefined, rules)).toMatch(denied)
+      expect(await read(ctx, { path: 'open.txt' }, undefined, rules)).toContain('shown')
+    })
+
+    it('an absolute rule written through a link covers the canonical path of the file, and the reverse', async () => {
+      const real = join(base, 'realproj')
+      mkdirSync(join(real, '.claude'), { recursive: true })
+      seed(real)
+      const viaLink = join(base, 'projlink')
+      if (!link(real, viaLink, 'junction')) return
+      const abs = (p: string): string => `//${p.replace(/\\/g, '/').replace(/^\//, '')}`
+      const ctx = fakeCtx({ project: project({ path: real }), controlProtectedPaths: () => [join(base, 'data', 'run')] })
+      for (const written of [join(viaLink, 'secret', '**'), join(real, 'secret', '**')]) {
+        const file = join(real, '.claude', 'settings.json')
+        writeFileSync(file, JSON.stringify({ permissions: { deny: [`Read(${abs(written)})`] } }))
+        expect(await read(ctx, { path: 'secret/a.txt' }, undefined, { settingsFiles: [file] })).toMatch(denied)
+        expect(await read(ctx, { path: 'open.txt' }, undefined, { settingsFiles: [file] })).toContain('shown')
+      }
+    })
+  })
 })
 
 const win = process.platform === 'win32'
