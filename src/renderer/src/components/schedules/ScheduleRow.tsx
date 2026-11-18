@@ -57,7 +57,7 @@ export default function ScheduleRow({
       data-schedule-id={row.id}
       data-state={row.chip.label}
       aria-labelledby={headingId}
-      onContextMenu={(e) => menu.onContextMenu(e, row.id, { fallbackFocus })}
+      onContextMenu={(e) => menu.onContextMenu(e, row.id, { fallbackFocus, invoker: e.currentTarget.querySelector<HTMLElement>('[data-testid=schedule-run-now]') ?? undefined })}
       onKeyDown={(e) => {
         const t = e.target
         // From the focused control inside the card; the menu itself handles its own keys.
@@ -137,7 +137,7 @@ export default function ScheduleRow({
       <div id={historyId} className="schedule-row-history" hidden={!open}>
         {open && <ScheduleHistory scheduleId={row.id} scheduleName={row.name} reloadKey={historyKey} announce={announce} onLoaded={onHistoryOpened} />}
       </div>
-      <ContextMenu control={menu} label={`Actions for ${row.name}`} items={menuItems} testId="schedule-menu" />
+      <ContextMenu control={menu} label={`Actions for ${showHidden(row.name)}`} items={menuItems} testId="schedule-menu" />
     </li>
   )
 }

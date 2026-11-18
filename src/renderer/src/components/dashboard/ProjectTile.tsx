@@ -1,6 +1,6 @@
-import type { CSSProperties, KeyboardEvent, ReactElement } from 'react'
-import { useState } from 'react'
-import { ArrowRight, FolderOpen, GitBranch, MoreHorizontal, Play, RotateCcw, ShieldAlert, Sparkles, Trash2, type LucideIcon } from 'lucide-react'
+import type { CSSProperties, ReactElement } from 'react'
+import { useRef, useState } from 'react'
+import { ArrowRight, FolderOpen, GitBranch, Play, RotateCcw, ShieldAlert, Sparkles, Trash2, type LucideIcon } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { projectKindOf } from '@shared/defaults'
@@ -12,7 +12,7 @@ import type { StatusWord } from '../../lib/runStatus'
 import { Badge } from '../ui/Badge'
 import { Cost } from '../ui/Cost'
 import { Icon } from '../ui/Icon'
-import { Popover } from '../ui/Popover'
+import { ContextMenu, MenuButton, useContextMenu, type MenuEntry } from '../ui/ContextMenu'
 import { continueLabel, openLabel, statusParts, type TileCaption, type TileChip, type TileChipKind, type TileTeam } from './dashboardProjects'
 
 /** The newest run of a project, as the tile shows it. */
@@ -48,18 +48,6 @@ export interface TileModel {
 }
 
 const CHIP_ICON: Record<TileChipKind, LucideIcon> = { branches: GitBranch, suggestions: Sparkles, 'folder-trust': ShieldAlert }
-
-/** Arrow keys, Home and End move between the menu's items (the Popover focuses the first one on open). */
-function onMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
-  const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
-  if (!keys.includes(e.key)) return
-  const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role=menuitem]:not(:disabled)'))
-  if (items.length === 0) return
-  e.preventDefault()
-  const at = items.indexOf(document.activeElement as HTMLButtonElement)
-  const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : e.key === 'ArrowDown' ? (at + 1) % items.length : (at - 1 + items.length) % items.length
-  items[next]?.focus()
-}
 
 /**
  * One project on the Dashboard (docs/design/dashboard-2.md 10.1). The name is a native button whose ::after covers the
@@ -112,8 +100,28 @@ export function ProjectTile({
       })
   }
 
+  // The More menu (components/ui/ContextMenu.tsx): the visible More button, a right click anywhere on the tile, and the
+  // Menu key or Shift+F10 on the tile's Open button all open it. Focus returns to the element that opened it.
+  const menu = useContextMenu<string>()
+  const mainRef = useRef<HTMLButtonElement>(null)
+  const menuItems = (): MenuEntry[] => [
+    { id: 'open', label: 'Open', icon: ArrowRight, testId: 'project-tile-open', onSelect: onOpen },
+    { id: 'new-run', label: 'New run', icon: Play, testId: 'project-tile-new-run', onSelect: onNewRun },
+    ...(continuable ? [{ id: 'continue', label: continueLabel(continuable.name), icon: RotateCcw, title: continuable.name, testId: 'project-tile-continue', onSelect: () => onContinue(continuable.id) }] : []),
+    { id: 'open-folder', label: 'Open folder', icon: FolderOpen, testId: 'project-tile-open-folder', onSelect: openFolder },
+    'separator',
+    { id: 'delete', label: tileRemoveLabel(projectKindOf(project)), icon: Trash2, destructive: true, testId: 'project-tile-delete', onSelect: onDelete }
+  ]
+
   return (
-    <li className={enter ? 'project-tile motion-enter' : 'project-tile'} data-testid="project-tile" data-name={project.name} data-id={project.id} data-state={state}>
+    <li
+      className={enter ? 'project-tile motion-enter' : 'project-tile'}
+      data-testid="project-tile"
+      data-name={project.name}
+      data-id={project.id}
+      data-state={state}
+      onContextMenu={(e) => menu.onContextMenu(e, project.id, { invoker: mainRef.current ?? undefined })}
+    >
       {client && (
         <p className="project-tile-client" data-testid="tile-client" title={client}>
           {client}
@@ -127,7 +135,9 @@ export function ProjectTile({
             data-testid="project-tile-main"
             aria-label={openLabel({ name: project.name, statusLine, team, newestName: newest?.name, setupPending: pending })}
             title={project.path}
+            ref={mainRef}
             onClick={onOpen}
+            onKeyDown={(e) => void menu.onKeyDown(e, project.id)}
           >
             <span className="project-tile-name">{project.name}</span>
           </button>
@@ -194,90 +204,9 @@ export function ProjectTile({
       )}
       {/* Last in the DOM so the tab order is Open, chips, More; placed top right by the CSS. */}
       <div className="project-tile-more">
-          <Popover
-            trigger={<Icon icon={MoreHorizontal} size="sm" />}
-            triggerClassName="icon-btn size-sm"
-            triggerLabel={`More actions for ${project.name}`}
-            triggerTitle={`More actions for ${project.name}`}
-            triggerTestId="project-tile-more"
-            label={`Actions for ${project.name}`}
-            role="menu"
-            placement="bottom-end"
-          >
-            {({ close }) => (
-              <div className="project-tile-menu" role="presentation" onKeyDown={onMenuKey}>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="project-tile-menuitem"
-                  onClick={() => {
-                    close()
-                    onOpen()
-                  }}
-                >
-                  <Icon icon={ArrowRight} size="sm" />
-                  Open
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="project-tile-menuitem"
-                  data-testid="project-tile-new-run"
-                  onClick={() => {
-                    close()
-                    onNewRun()
-                  }}
-                >
-                  <Icon icon={Play} size="sm" />
-                  New run
-                </button>
-                {continuable && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="project-tile-menuitem"
-                    data-testid="project-tile-continue"
-                    title={continuable.name}
-                    onClick={() => {
-                      close()
-                      onContinue(continuable.id)
-                    }}
-                  >
-                    <Icon icon={RotateCcw} size="sm" />
-                    {continueLabel(continuable.name)}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="project-tile-menuitem"
-                  data-testid="project-tile-open-folder"
-                  onClick={() => {
-                    close()
-                    openFolder()
-                  }}
-                >
-                  <Icon icon={FolderOpen} size="sm" />
-                  Open folder
-                </button>
-                <hr className="project-tile-menusep" role="separator" />
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="project-tile-menuitem danger"
-                  data-testid="project-tile-delete"
-                  onClick={() => {
-                    close()
-                    onDelete()
-                  }}
-                >
-                  <Icon icon={Trash2} size="sm" />
-                  {tileRemoveLabel(projectKindOf(project))}
-                </button>
-              </div>
-            )}
-          </Popover>
+        <MenuButton control={menu} target={project.id} label={`More actions for ${project.name}`} testId="project-tile-more" />
       </div>
+      <ContextMenu control={menu} label={`Actions for ${project.name}`} items={menuItems} testId="project-tile-menu" />
     </li>
   )
 }

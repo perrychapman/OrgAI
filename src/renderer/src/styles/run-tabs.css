@@ -271,13 +271,6 @@
   background: var(--surface-2);
   color: var(--text-primary);
 }
-.run-tab-ctx {
-  position: fixed;
-}
-.run-tab-menuitem:disabled {
-  color: var(--text-disabled);
-  cursor: default;
-}
 .run-tabs-notice {
   flex: 0 1 auto;
   align-self: center;

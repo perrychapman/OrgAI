@@ -69,7 +69,11 @@ export interface ContextMenuControl<T> {
   dismissed: { el: HTMLElement | null; at: number }
 }
 
-const TEXT_INPUT_SKIP = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
+/** Time of the last pointer press anywhere: tells a real right click from the platform's echo of a keyboard open. */
+let lastPointerDown = 0
+if (typeof document !== 'undefined') document.addEventListener('pointerdown', () => (lastPointerDown = performance.now()), true)
+
+const TEXT_INPUT_SKIP =new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image'])
 
 /** The DOM facts for `nativeMenuWins`: an editable target, a link, or selected text touching the surface. */
 function nativeWins(e: ReactMouseEvent<HTMLElement>): boolean {
@@ -82,9 +86,10 @@ function nativeWins(e: ReactMouseEvent<HTMLElement>): boolean {
   return nativeMenuWins({ editable, link, selectedText: touches && sel ? sel.toString() : '' })
 }
 
-/** Menu-key events from inside a text field belong to the field. */
+/** Menu-key events from inside a text field or on a link belong to the platform menu. */
 function inField(el: EventTarget | null): boolean {
   if (!(el instanceof Element)) return false
+  if (el.closest('a[href]')) return true
   const f = el.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
   return !!f && !(f instanceof HTMLInputElement && TEXT_INPUT_SKIP.has(f.type))
 }
@@ -108,7 +113,8 @@ export function useContextMenu<T>(): ContextMenuControl<T> {
       if (nativeWins(e)) return
       e.preventDefault()
       e.stopPropagation()
-      if (performance.now() - keyOpenAt.current < 600) return
+      // The echo has no pointer press before it; a real right click soon after a keyboard open does.
+      if (performance.now() - keyOpenAt.current < 600 && lastPointerDown < keyOpenAt.current) return
       const el = e.currentTarget
       const fromPointer = e.button === 2 && (e.clientX !== 0 || e.clientY !== 0)
       if (fromPointer) open(target, opts?.invoker ?? el, { kind: 'point', x: e.clientX, y: e.clientY }, opts)
@@ -181,6 +187,7 @@ export function MenuButton<T>({
         // The Menu key on the More button opens the same menu.
         if (isMenuKey(e)) {
           e.preventDefault()
+          e.stopPropagation()
           control.openFrom(e.currentTarget, target, 'end', { fallbackFocus })
         }
       }}
@@ -205,9 +212,18 @@ export function ContextMenu<T>({
   className?: string
 }): ReactElement | null {
   const st = control.state
-  if (!st) return null
-  const entries = items(st.target)
-  if (!entries.some((e) => e !== 'separator')) return null
+  const entries = st ? items(st.target) : []
+  const empty = !!st && !entries.some((e) => e !== 'separator')
+  // The target went away while the menu was open (its row was removed elsewhere): close properly, so a More button's
+  // aria-expanded resets and focus does not fall to the body.
+  const { close, fallback } = control
+  useEffect(() => {
+    if (!empty) return
+    const a = document.activeElement
+    close()
+    if (!a || a === document.body) fallback()?.focus({ preventScroll: true })
+  }, [empty, close, fallback])
+  if (!st || empty) return null
   return <MenuPanel key={st.seq} state={st} control={control} label={typeof label === 'function' ? label(st.target) : label} entries={entries} testId={testId} className={className} />
 }
 
@@ -247,6 +263,8 @@ function MenuPanel<T>({
         const inv = state.invoker
         const target = inv && inv.isConnected ? inv : c.fallback()
         target?.focus({ preventScroll: true })
+        // An invoker that cannot take focus (a table row, a card) leaves focus nowhere: use the fallback then.
+        if (target && document.activeElement !== target) c.fallback()?.focus({ preventScroll: true })
       }
       try {
         el?.hidePopover()
@@ -273,12 +291,14 @@ function MenuPanel<T>({
     const at = p.kind === 'point' ? placeAtPoint({ x: p.x, y: p.y }, size, vp) : placeAtAnchor(p.el.getBoundingClientRect(), size, vp, p.align)
     el.style.left = `${at.x}px`
     el.style.top = `${at.y}px`
+    // Unhide now, not on the next render: focus() on an element still under visibility: hidden does nothing.
+    el.dataset.placed = 'true'
     setPlaced(true)
     const buttons = Array.from(el.querySelectorAll<HTMLElement>('[role=menuitem]'))
     ;(buttons.find((b) => b.getAttribute('aria-disabled') !== 'true') ?? buttons[0] ?? el).focus({ preventScroll: true })
   }, [state.placement])
 
-  // Dismissal: a pointerdown outside, resize, scroll outside the menu, window blur, focus moving elsewhere.
+  // Dismissal: a pointerdown outside, resize, a wheel scroll outside the menu, window blur, focus moving elsewhere.
   useEffect(() => {
     const el = ref.current
     if (!el) return undefined
@@ -292,7 +312,10 @@ function MenuPanel<T>({
       d.el = onInvoker ? inv : null
       d.at = performance.now()
     }
-    const onScroll = (e: Event): void => {
+    // The user scrolling (the wheel or a touchpad outside the menu) closes it. Programmatic scrolls do not: focusing the
+    // invoker scrolls its tablist or list into view right as the menu opens, and a streaming transcript scrolls itself.
+    // Keyboard scrolling cannot happen (the menu keeps every key) and a scrollbar drag starts with a pointerdown outside.
+    const onWheel = (e: Event): void => {
       if (e.target instanceof Node && el.contains(e.target)) return
       finish('dismiss')
     }
@@ -303,13 +326,13 @@ function MenuPanel<T>({
       if (next instanceof Node && !el.contains(next)) finish('focusout')
     }
     document.addEventListener('pointerdown', onDown, true)
-    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('wheel', onWheel, { capture: true, passive: true })
     window.addEventListener('resize', onResize)
     window.addEventListener('blur', onBlur)
     el.addEventListener('focusout', onFocusOut)
     return () => {
       document.removeEventListener('pointerdown', onDown, true)
-      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('wheel', onWheel, { capture: true })
       window.removeEventListener('resize', onResize)
       window.removeEventListener('blur', onBlur)
       el.removeEventListener('focusout', onFocusOut)

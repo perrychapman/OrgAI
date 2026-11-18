@@ -13,6 +13,8 @@ import { runTag, shortPrompt } from '../lib/runLabels'
 import { displayRunName, runKindWord } from '../lib/orgChange'
 import { statusOfRun, statusText, type RunTone } from '../lib/runStatus'
 import { Icon } from './ui/Icon'
+import { ContextMenu, useContextMenu, type MenuEntry, type OpenOptions } from './ui/ContextMenu'
+import { isMenuKey } from '../lib/contextMenu'
 import { useArrival } from '../lib/useArrival'
 import { tokenMs } from '../lib/useExitPresence'
 
@@ -310,9 +312,9 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     else if (e.key === 'ArrowLeft') next = ids[(at - 1 + ids.length) % ids.length]
     else if (e.key === 'Home') next = ids[0]
     else if (e.key === 'End') next = ids[ids.length - 1]
-    else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
-      e.preventDefault()
-      openCtx(rovingId)
+    else if (isMenuKey(e)) {
+      const el = tabRefs.current.get(rovingId)
+      if (el) tabMenu.onKeyDown(e as ReactKeyboardEvent<HTMLElement>, rovingId, tabMenuOpts(rovingId, el))
       return
     } else if (e.key === 'Delete') {
       const item = visible[at]
@@ -343,51 +345,39 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
   useEffect(() => {
     if (hidden.length === 0) setMenuOpen(false)
   }, [hidden.length])
-  // Tab context menu (right click, ContextMenu key or Shift+F10 on a tab): Hide, Open in new window.
-  const [ctx, setCtx] = useState<{ id: string; left: number; top: number } | null>(null)
-  const ctxRef = useRef<HTMLDivElement>(null)
+  // Tab context menu (right click, Menu key or Shift+F10 on a tab; components/ui/ContextMenu.tsx): Open in new window
+  // (runs only), then Hide. Anchored to the tab's wrap (tab and its close X), focus returns to the tab.
+  const tabMenu = useContextMenu<string>()
   const setTabNotice = useAppStore((s) => s.setTabNotice)
-  const openCtx = (id: string): void => {
-    const el = tabRefs.current.get(id)?.parentElement
-    const rect = el?.getBoundingClientRect()
-    if (rect) setCtx({ id, left: rect.left, top: rect.bottom })
-  }
-  useEffect(() => {
-    if (!ctx) return undefined
-    ctxRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus()
-    const onDown = (e: PointerEvent): void => {
-      if (!ctxRef.current?.contains(e.target as Node)) setCtx(null)
-    }
-    const close = (): void => setCtx(null)
-    document.addEventListener('pointerdown', onDown)
-    window.addEventListener('resize', close)
-    window.addEventListener('scroll', close, true)
-    return () => {
-      document.removeEventListener('pointerdown', onDown)
-      window.removeEventListener('resize', close)
-      window.removeEventListener('scroll', close, true)
-    }
-  }, [ctx])
-  // Keep the menu inside the viewport: pull it left, or open it above the tab when it would run off the bottom.
-  useLayoutEffect(() => {
-    const el = ctxRef.current
-    if (!ctx || !el) return
-    const margin = 8
-    const r = el.getBoundingClientRect()
-    const tabTop = tabRefs.current.get(ctx.id)?.parentElement?.getBoundingClientRect().top ?? ctx.top
-    el.style.left = `${Math.max(margin, Math.min(ctx.left, window.innerWidth - r.width - margin))}px`
-    el.style.top = `${ctx.top + r.height + margin > window.innerHeight ? Math.max(margin, tabTop - r.height) : ctx.top}px`
-  }, [ctx])
-  const closeCtx = (): void => {
-    const id = ctx?.id
-    setCtx(null)
-    // The tab may have moved into the "+n" overflow meanwhile.
-    if (id) (tabRefs.current.get(id) ?? moreRef.current)?.focus()
-  }
+  const tabMenuOpts = (id: string, tab: HTMLElement): OpenOptions => ({
+    anchor: tab.parentElement ?? tab,
+    invoker: tab,
+    // Hide removed the tab, or it moved into the "+n" overflow meanwhile: the roving tab, else "+n", else "+".
+    fallbackFocus: () => tabRefs.current.get(id) ?? listRef.current?.querySelector<HTMLElement>('[role=tab][tabindex="0"]') ?? moreRef.current ?? newRef.current
+  })
   const openInWindow = (item: TabItem): void => {
     const run = item.run
     if (!run) return
     openRunWindow(run.summary.projectId, run.summary.id)
+  }
+  const tabMenuItems = (id: string): MenuEntry[] => {
+    const item = items.find((t) => t.id === id)
+    if (!item) return []
+    const v = view(item)
+    const live = !!item.run && isRunLive(item.run)
+    return [
+      ...(item.kind === 'run' ? [{ id: 'window', label: 'Open in new window', icon: AppWindow, testId: 'run-tab-menu-window', onSelect: () => openInWindow(item) }, 'separator' as const] : []),
+      {
+        id: 'hide',
+        label: 'Hide',
+        icon: EyeOff,
+        testId: 'run-tab-menu-hide',
+        title: live ? 'Hide this tab (Ctrl+W). The session stays open.' : 'Hide this tab (Ctrl+W)',
+        disabled: !v.closable,
+        disabledReason: v.closable ? undefined : 'The only tab cannot be hidden.',
+        onSelect: () => hide(item)
+      }
+    ]
   }
   const onMenuKey = (e: ReactKeyboardEvent, root: HTMLElement | null = menuRef.current, close: () => void = () => {
     setMenuOpen(false)
@@ -412,7 +402,6 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
       buttons[buttons.length - 1]?.focus()
     } else if (e.key === 'Tab') {
       setMenuOpen(false)
-      setCtx(null)
     }
   }
 
@@ -466,10 +455,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                 onPointerDown={(e) => e.currentTarget.setAttribute('data-pointer', '')}
                 onBlur={(e) => e.currentTarget.removeAttribute('data-pointer')}
                 onClick={() => activate(item)}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  openCtx(item.id)
-                }}
+                onContextMenu={(e) => tabMenu.onContextMenu(e, item.id, tabMenuOpts(item.id, e.currentTarget))}
               >
                 {item.kind === 'draft' ? (
                   <span className="run-tab-glyph">
@@ -546,51 +532,16 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
           )}
         </div>
       )}
-      {ctx &&
-        (() => {
-          const item = items.find((t) => t.id === ctx.id)
-          if (!item) return null
-          const v = view(item)
-          return (
-            <div
-              className="run-tab-menu run-tab-ctx"
-              role="menu"
-              aria-label={`${v.tag ? `${v.tag}: ${v.title}` : newLabel} actions`}
-              ref={ctxRef}
-              style={{ left: ctx.left, top: ctx.top }}
-              onKeyDown={(e) => onMenuKey(e, ctxRef.current, closeCtx)}
-            >
-              <button
-                type="button"
-                role="menuitem"
-                className="run-tab-menuitem"
-                disabled={!v.closable}
-                title={item.run && isRunLive(item.run) ? 'Hide this tab (Ctrl+W). The session stays open.' : 'Hide this tab (Ctrl+W)'}
-                onClick={() => {
-                  setCtx(null)
-                  hide(item)
-                }}
-              >
-                <Icon icon={EyeOff} size="xs" />
-                Hide
-              </button>
-              {item.kind === 'run' && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="run-tab-menuitem"
-                  onClick={() => {
-                    setCtx(null)
-                    openInWindow(item)
-                  }}
-                >
-                  <Icon icon={AppWindow} size="xs" />
-                  Open in new window
-                </button>
-              )}
-            </div>
-          )
-        })()}
+      <ContextMenu
+        control={tabMenu}
+        label={(id) => {
+          const item = items.find((t) => t.id === id)
+          const v = item ? view(item) : null
+          return `${v && v.tag ? `${v.tag}: ${v.title}` : newLabel} actions`
+        }}
+        items={tabMenuItems}
+        testId="run-tab-ctx"
+      />
       <button type="button" ref={newRef} className="run-tab-new" aria-label={newLabel} title={`${newLabel} (Ctrl+T)`} onClick={openDraft}>
         <Icon icon={Plus} size="sm" />
       </button>

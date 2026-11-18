@@ -60,7 +60,7 @@ test('shared and hot paths force full, even next to a narrow change', () => {
 })
 
 test('a narrow renderer change selects its scripts plus the smoke set, in chain order', () => {
-  const r = sel('src/renderer/src/components/knowledge/KnowledgeRow.tsx')
+  const r = sel('src/renderer/src/components/knowledge/KnowledgeDetail.tsx')
   assert.equal(r.mode, 'selected')
   assert.deepEqual(r.scripts, all.filter((s) => ['knowledge', 'knowledge-graph', 'knowledge-run', ...SMOKE].includes(s)))
   assert.equal(r.scripts.length, 6)

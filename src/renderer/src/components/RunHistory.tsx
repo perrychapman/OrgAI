@@ -119,7 +119,7 @@ export default function RunHistory(): ReactElement {
       const ok = canPromote(newest).ok
       entries.push({
         id: 'save',
-        label: 'Save as project...',
+        label: 'Save as project',
         icon: FolderPlus,
         testId: 'history-save-as-project',
         disabled: !ok,
@@ -127,7 +127,7 @@ export default function RunHistory(): ReactElement {
         onSelect: () => setSaving(newest)
       })
     }
-    if (retro) entries.push({ id: 'retro', label: 'Retrospective', testId: 'history-retro', title: 'Have the Architect review this run and revise the org chart where roles struggled', onSelect: () => void startRetro(newest.id) })
+    if (retro) entries.push({ id: 'retro', label: 'Retrospective', icon: HistoryIcon, testId: 'history-retro', title: 'Have the Architect review this run and revise the org chart where roles struggled', onSelect: () => void startRetro(newest.id) })
     return entries
   }
 
@@ -271,7 +271,7 @@ function HistoryChain({
   }
   return (
     <>
-      <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions} onContextMenu={(e) => menu.onContextMenu(e, group.key, { fallbackFocus })} onKeyDown={onRowKeyDown}>
+      <tr className={`run-row ${viewed ? 'active' : ''}`} data-chain={group.key} data-sessions={sessions} onContextMenu={(e) => menu.onContextMenu(e, group.key, { fallbackFocus, invoker: e.currentTarget.querySelector<HTMLElement>('[data-testid=history-more]') ?? e.currentTarget.querySelector<HTMLElement>('button.run-open') ?? undefined })} onKeyDown={onRowKeyDown}>
         <td className="col-prompt">
           <div className="run-head">
             {sessions > 1 && <IconButton icon={isExpanded ? ChevronDown : ChevronRight} size="sm" label={`Sessions of ${tag}`} expanded={isExpanded} controls={isExpanded ? members.map((m) => memberRowId(m.id)).join(' ') : undefined} onClick={onToggle} testId="history-sessions-toggle" />}
