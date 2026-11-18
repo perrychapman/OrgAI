@@ -45,12 +45,33 @@ const waitText = async (needle, timeout = 30_000) => {
   return transcriptHas(needle)
 }
 
+/**
+ * The start page grabs focus for the field a little after it mounts (the seed's animation frame, then askOrgAI's focusComposer
+ * once the assistant finished opening). A script that moves focus before those land gets it pulled back, and an Enter meant
+ * for a chip then sends the seed (CI macOS: the start page was gone after the chip step; reproduced on Windows as focusin
+ * TEXTAREA 2 ms before the key). Wait them out, then check the field still holds focus.
+ */
+async function settleFocus() {
+  for (let i = 0; i < 2; i++) await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 150)))))
+}
+/** Focus a chip and make sure it keeps focus for two frames, so the Enter that follows lands on it. */
+async function focusChip(example) {
+  const chip = page.locator(`[data-testid=chat-example][data-example=${example}]`)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await chip.focus()
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    if (await chip.evaluate((el) => el === document.activeElement)) return
+  }
+  throw new Error(`the ${example} chip could not keep focus`)
+}
+
 /** Help > Ask OrgAI about itself: a fresh Chat start page with the seed, focus in the field, caret at the end. */
 async function askFromMenu(tag) {
   await menu('ask-about-orgai')
   await page.locator('[data-testid=assistant-start-quick]').waitFor({ timeout: 10_000 })
   await page.waitForFunction(() => document.querySelector('[data-testid=assistant-start-quick] .composer textarea')?.value === 'How do I ', null, { timeout: 5000 }).catch(() => {})
   check((await startField().inputValue()) === 'How do I ', `Help > Ask OrgAI about itself seeds "How do I " ${tag}`)
+  await settleFocus()
   const caret = await page.evaluate(() => {
     const ta = document.activeElement
     return ta instanceof HTMLTextAreaElement ? { focused: !!ta.closest('[data-testid=assistant-start-quick]'), at: ta.selectionStart, len: ta.value.length } : null
@@ -155,7 +176,7 @@ try {
     check(chips.length === 3 && chips.includes('theme'), `the Chat start page shows three example chips ${tag}`, chips.join(','))
     check(await visible('.chat-examples-hint'), `the start page hint names what Chat can answer ${tag}`)
     // Keyboard: the theme chip by Tab order and Enter.
-    await page.locator('[data-testid=chat-example][data-example=theme]').focus()
+    await focusChip('theme')
     await page.keyboard.press('Enter')
     await sleep(150)
     check((await startField().inputValue()) === 'Where do I change the theme?', `Enter on a chip fills the instruction ${tag}`)

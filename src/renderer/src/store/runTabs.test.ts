@@ -13,11 +13,14 @@ const summary = (id: string, projectId: string, status: string, startedAt: numbe
 const record = (s: Record<string, unknown>): Record<string, unknown> => ({ summary: s, agents: {}, transcript: [], logs: [] })
 
 const quickRows = [summary('c1', 'quick', 'finished', 1), summary('c2', 'quick', 'finished', 2)]
+// A second window's assistant: s1 was the last viewed tab elsewhere; s3 continues s2 (a chain of two) and loads slowly.
+const skillsRows = [summary('s1', 'skills', 'finished', 1), summary('s2', 'skills', 'finished', 2), { ...summary('s3', 'skills', 'idle', 3), resumedFrom: 's2' }]
 const api = {
   runs: {
-    list: vi.fn(async (pid: string) => (pid === 'quick' ? quickRows : pid === 'ghost' ? [summary('g1', 'ghost', 'finished', 1)] : [])),
+    list: vi.fn(async (pid: string) => (pid === 'quick' ? quickRows : pid === 'skills' ? skillsRows : pid === 'ghost' ? [summary('g1', 'ghost', 'finished', 1)] : [])),
     get: vi.fn(async (id: string) => {
-      const row = quickRows.find((r) => r.id === id)
+      if (id === 's2') await new Promise((resolve) => setTimeout(resolve, 60))
+      const row = [...quickRows, ...skillsRows].find((r) => r.id === id)
       return row ? record(row) : null
     }),
     pendingCards: vi.fn(async () => []),
@@ -184,5 +187,39 @@ describe('assistant tabs survive their session ending and a relaunch', () => {
     // The watcher keeps writing the assistant's tabs once restored.
     useAppStore.getState().dismissRun('c2')
     await vi.waitFor(() => expect(JSON.parse(storage.get('orgai.openTabs.quick') ?? '{}')).toEqual({ chains: ['c1'], viewed: 'c1' }))
+  })
+
+  it('a window opened for one run keeps it: the first settle never swaps in the tab another window remembered', async () => {
+    // Another window left s1 as its viewed tab; this window opens s3, a chain whose earlier member loads slowly. The
+    // first settle of the assistant used to finish before focusRun showed s3 and opened s1 over it.
+    storage.set('orgai.openTabs.skills', JSON.stringify({ chains: ['s1'], viewed: 's1' }))
+    await useAppStore.getState().focusRun('skills', 's3')
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const s = useAppStore.getState()
+    expect(s.activeRunByProject.skills).toBe('s3')
+    expect(s.draftPage.skills).toBeUndefined()
+    expect(s.runs.s3).toBeDefined()
+  })
+
+  it('a seeded entry stays on the start page however late the history and the remembered tabs settle', async () => {
+    storage.set('orgai.openTabs.quick', JSON.stringify({ chains: ['c1', 'c2'], viewed: 'c2' }))
+    const slow = api.runs.list.getMockImplementation()!
+    api.runs.list.mockImplementation(async (pid: string) => { await new Promise((resolve) => setTimeout(resolve, 80)); return slow(pid) })
+    try {
+      await useAppStore.getState().openAssistant('quick', { instruction: 'How do I ', fresh: true })
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      const s = useAppStore.getState()
+      expect(s.draftPage.quick).toBe(true)
+      expect(s.activeRunByProject.quick).toBeUndefined()
+      expect(s.assistantSeed.quick).toBe('How do I ')
+    } finally {
+      api.runs.list.mockImplementation(slow)
+    }
+  })
+
+  it('a named run that cannot load falls back to the start page instead of a blank workspace', async () => {
+    await useAppStore.getState().focusRun('harness', 'gone')
+    await vi.waitFor(() => expect(useAppStore.getState().draftPage.harness).toBe(true))
+    expect(useAppStore.getState().activeRunByProject.harness).toBeUndefined()
   })
 })
