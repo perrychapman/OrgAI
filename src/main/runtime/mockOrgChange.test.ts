@@ -208,7 +208,7 @@ describe('[mock:org-change] through RunManager (the path e2e drives)', () => {
       const store = new ProjectStore(join(dir, 'data'))
       const created = store.create({ name: 'Roster', path: join(dir, 'repo'), brief: '' })
       const p = store.save({ ...created, provider: { ...created.provider, id: 'mock' }, roles: orgChart() })
-      const m = new RunManager({ mock: new MockAdapter({ script: { delayMs: 0 } }) }, (e) => void events.push(e), new RunStore(join(dir, 'data')), new SetupService(store), () => 100, {})
+      const m = new RunManager({ mock: new MockAdapter({ script: { delayMs: 0 } }) }, (e) => void events.push(e), new RunStore(join(dir, 'data')), new SetupService(store), () => 100, { liveRosterCards: true })
       const run = await m.start({ project: p, prompt: `Add a role ${ORG_CHANGE_TOKEN}` })
       await vi.waitFor(() => expect(events.some((e) => e.type === 'proposal.request')).toBe(true), { timeout: 5000 })
       const card = events.find((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request')!
