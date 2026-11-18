@@ -175,6 +175,46 @@ describe('applyRosterChange: an approved org chart in the same run', () => {
     ])
     expect(run.map((r) => r.id)).toEqual(['r-lead', 'r-eng', 'r-rev'])
   })
+
+  it('the root keeps canSpawn (review M1): the rest of its change applies and the deferral says so', () => {
+    const run = running()
+    const saved = savedFrom(run, (r) => {
+      r[0] = { ...r[0], canSpawn: false, prompt: 'Solo lead' }
+      return r
+    })
+    const { change } = applyRosterChange({ running: run, saved, proposed: saved })
+    expect(run[0]).toMatchObject({ canSpawn: true, prompt: 'Solo lead' })
+    expect(change.changed).toEqual(['r-lead'])
+    expect(change.deferred).toEqual([{ id: 'r-lead', name: 'Lead', reason: ROSTER_REASONS.rootCanSpawn }])
+    // canSpawn alone: nothing applies, the deferral is still reported.
+    const run2 = running()
+    const only = savedFrom(run2, (r) => {
+      r[0] = { ...r[0], canSpawn: false }
+      return r
+    })
+    const second = applyRosterChange({ running: run2, saved: only, proposed: only }).change
+    expect(rosterChanged(second)).toBe(false)
+    expect(second.deferred.map((d) => d.reason)).toEqual([ROSTER_REASONS.rootCanSpawn])
+  })
+
+  it('defers a new role reusing the slug of a role removed earlier in the run or in this same change (review M2)', () => {
+    const run = running()
+    const earlier = savedFrom(run, (r) => [...r, role({ id: 'r-new1', slug: 'auditor', reportsTo: 'r-lead' })])
+    const first = applyRosterChange({ running: run, saved: earlier, proposed: earlier, retiredSlugs: ['auditor'] }).change
+    expect(first.added).toEqual([])
+    expect(first.deferred).toEqual([{ id: 'r-new1', name: 'auditor', reason: ROSTER_REASONS.slug }])
+    // The reviewer leaves and a new role takes its slug in the same change.
+    const run2 = running()
+    const same = savedFrom(run2, (r) => [...r.filter((x) => x.id !== 'r-rev'), role({ id: 'r-rev2', slug: 'reviewer', name: 'Reviewer 2', reportsTo: 'r-lead' })])
+    const second = applyRosterChange({ running: run2, saved: same, proposed: same }).change
+    expect(second.removed).toEqual(['r-rev'])
+    expect(second.added).toEqual([])
+    expect(second.deferred).toEqual([{ id: 'r-rev2', name: 'Reviewer 2', reason: ROSTER_REASONS.slug }])
+    // A slug nobody used is fine.
+    const run3 = running()
+    const fresh = savedFrom(run3, (r) => [...r, role({ id: 'r-qa', slug: 'qa', reportsTo: 'r-lead' })])
+    expect(applyRosterChange({ running: run3, saved: fresh, proposed: fresh, retiredSlugs: ['auditor'] }).change.added).toEqual(['r-qa'])
+  })
 })
 
 describe('rosterOf and liveRosterApplies', () => {

@@ -15,8 +15,12 @@ export function liveRosterApplies(summary: Pick<RunSummary, 'kind' | 'projectId'
 
 /** Fields that never move with an org change: identity and grants (an org change never grants, review H1). */
 const NEVER_MOVES = ['id', 'mcpServers', 'skills'] as const
-/** The root additionally keeps what live model switching owns (run.model, the root's effort choice) and its connection. */
-const ROOT_KEEPS = ['model', 'tier', 'effort', 'connection'] as const
+/**
+ * The root additionally keeps what live model switching owns (run.model, the root's effort choice), its connection and
+ * whether it may delegate at all (canSpawn: a flip would change the root's own tool list, which an adapter may refuse
+ * mid-run after ctx.roles already moved; review M1).
+ */
+const ROOT_KEEPS = ['model', 'tier', 'effort', 'connection', 'canSpawn'] as const
 /** Not a change of the role (canvas only). Copied anyway. */
 const IGNORED_IN_DIFF = ['position'] as const
 
@@ -37,6 +41,12 @@ export interface RosterApplyInput {
    * connection / adapter placement and an unpriced model under a budget. Never called for the root.
    */
   refuse?: (role: Role, before: Role | undefined) => string | undefined
+  /**
+   * Slugs of roles removed earlier in this run (RuntimeContext.retiredRoles). A new role reusing one, or the slug of a
+   * role this same change removes, is deferred: an agent still running on the old role would be confused with it by
+   * slug (review M2).
+   */
+  retiredSlugs?: readonly string[]
 }
 
 export interface RosterApplyResult {
@@ -47,7 +57,9 @@ export interface RosterApplyResult {
 
 export const ROSTER_REASONS = {
   root: 'The approved chart has a different root role; it applies from the next run.',
-  delegation: 'A required delegation this run already enforces depends on this role; the change applies from the next run.'
+  delegation: 'A required delegation this run already enforces depends on this role; the change applies from the next run.',
+  rootCanSpawn: 'The root keeps whether it may delegate for this run; that part applies from the next run. The rest of its change is in effect.',
+  slug: 'A role removed earlier in this run used this slug; it applies from the next run.'
 } as const
 
 type Loose = Record<string, unknown>
@@ -98,14 +110,15 @@ function obligated(obligations: Readonly<Record<string, readonly string[]>>, rol
  * Apply the approved chart's own roles to the running roles, in place:
  * - a role of the chart that the run has (by id) and that differs in anything but grants and position is rewritten in
  *   its own object with the fields the card changed (`merged`); it keeps the run's grants. The root keeps its model,
- *   tier, effort and connection;
+ *   tier, effort, connection and canSpawn (a card that changes canSpawn gets a `rootCanSpawn` deferral; the rest of the
+ *   root's change applies);
  * - a role of the chart the run does not have is appended as saved, with no MCP / skill grants;
  * - a running role that is neither in the chart (id or name) nor in the saved project leaves the array;
  * - roles of the saved project that are not the chart's, and fields of the chart's roles the card did not change (a
  *   team-file pull of the same save), never move.
  * Deferred (left as the run started, applied from the next run): everything when the chart's root is not the run's
- * root; a role `refuse` names a reason for; a removal or a spawn change that would break a required delegation the
- * run already enforces.
+ * root; a role `refuse` names a reason for; a new role reusing the slug of a role removed earlier in the run or in this
+ * change; a removal or a spawn change that would break a required delegation the run already enforces.
  */
 export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
   const { running, saved, proposed } = input
@@ -126,6 +139,9 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
   }
   const savedIds = new Set(saved.map((r) => r.id))
   const byId = new Map(running.map((r) => [r.id, r]))
+  // Removals are decided first so a new role cannot take the slug of one leaving in this same change.
+  const leaving = new Set(running.filter((r) => r !== root && !isOwn(r) && !savedIds.has(r.id) && !obligated(obligations, r.id)).map((r) => r.id))
+  const takenSlugs = new Set([...(input.retiredSlugs ?? []), ...running.filter((r) => leaving.has(r.id)).map((r) => r.slug)])
   const added: Role[] = []
   for (const stored of mine) {
     const before = byId.get(stored.id)
@@ -134,6 +150,7 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
     if (before) {
       const card = cardById.get(stored.id) ?? cardByName.get(stored.name) ?? stored
       const next = merged(before, card, stored)
+      if (isRoot && next.canSpawn !== before.canSpawn) change.deferred.push({ id: before.id, name: before.name, reason: ROSTER_REASONS.rootCanSpawn })
       if (!differs(before, next, new Set([...keep, ...IGNORED_IN_DIFF]))) continue
       if (!isRoot) {
         const reason = input.refuse?.(next, before)
@@ -151,7 +168,7 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
       change.changed.push(before.id)
       continue
     }
-    const reason = input.refuse?.(stored, undefined)
+    const reason = takenSlugs.has(stored.slug) ? ROSTER_REASONS.slug : input.refuse?.(stored, undefined)
     if (reason) {
       change.deferred.push({ id: stored.id, name: stored.name, reason })
       continue
@@ -165,7 +182,7 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
   for (let i = running.length - 1; i >= 0; i--) {
     const r = running[i]
     if (r === root || isOwn(r) || savedIds.has(r.id)) continue
-    if (obligated(obligations, r.id)) {
+    if (!leaving.has(r.id)) {
       change.deferred.push({ id: r.id, name: r.name, reason: ROSTER_REASONS.delegation })
       continue
     }

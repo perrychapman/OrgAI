@@ -298,8 +298,9 @@ export interface RuntimeContext {
    *   applyRosterChange): a changed role's object keeps its identity (id) and gets every other field rewritten except its
    *   grants; a new role is appended (no grants of its own); a removed role leaves the array (it is then in
    *   `retiredRoles()`). The root stays the root (same id, same object) and keeps its model, tier, effort and connection
-   *   (live model switching owns those); its prompt, description, tools, canSpawn, spawnable and the rest do change.
-   *   RunManager has done all of this before HarnessToolHooks.configChanged is called with `roles`.
+   *   (live model switching owns those) and canSpawn (review M1); its prompt, description, tools, spawnable and the
+   *   rest do change. RunManager has done all of this, and called RuntimeSession.rosterApplied, before
+   *   HarnessToolHooks.configChanged is called with `roles`.
    * Setup-like, assistant, quick and single-agent runs never see a roster change.
    */
   roles: Role[]
@@ -833,6 +834,14 @@ export interface RuntimeSession {
    * really brings its spawn path, agent definitions and root prompt in line with ctx.roles.
    */
   readonly liveRoster?: boolean
+  /**
+   * Called by RunManager synchronously, in the same tick as the in-place update of ctx.roles for an approved org chart
+   * (after ctx.roles moved, before anything awaits), with the role ids that moved; only when something was applied.
+   * Mark your spawn gate now (a removed role, or a changed one whose agent definition is stale, must be refused from
+   * this moment); HarnessToolHooks.configChanged({ roles }) follows and only schedules the restart. Must not throw
+   * (RunManager catches and logs a throw and goes on), must not call back into the session, must not await.
+   */
+  rosterApplied?(change: { added: string[]; changed: string[]; removed: string[] }): void
   /** Change only the root model at a safe boundary; refuse without changing state when unsafe. */
   switchModel?(input: { model: string; connection?: RunConnection }): Promise<void>
   /**

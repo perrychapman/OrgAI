@@ -5,7 +5,7 @@ import { renameSyncRetry } from '../host/fsRetry'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
-import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, QUICK_PROJECT_ID, isEffort, isPermissionMode, isStaffingGoal } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, OUTPUT_COLOR_RE, QUICK_PROJECT_ID, isEffort, isPermissionMode, isStaffingGoal } from '@shared/types'
 import type {
   ExecOutcome,
   HeadlessDecisionPolicy,
@@ -14,6 +14,7 @@ import type {
   RunEndedBy,
   RunOverrides,
   RunRecord,
+  RunRosterRole,
   RunSummary,
   RunUsage,
   TranscriptEntry
@@ -166,6 +167,38 @@ export function parseRunIndex(parsed: unknown): RunSummary[] {
 }
 
 /** The file name RunStore uses for a run's record under `<dataDir>/runs/` (characters outside [A-Za-z0-9_-] become '_'). */
+/** Most entries a stored RunRecord.roster keeps on read, and the longest id / slug / name kept. */
+export const RUN_ROSTER_MAX = 200
+const ROSTER_TEXT_MAX = { id: 200, slug: 100, name: 200 } as const
+
+/**
+ * RunRecord.roster as read from disk (review L1): an array of at most RUN_ROSTER_MAX entries, each rebuilt from
+ * { id, slug, name, color, reportsTo: string | null, added?: true, removed?: true }. An entry without a non-empty
+ * string id or a string slug / name is dropped; over-long text is cut; a colour that is not #rrggbb becomes '' (the
+ * renderer then falls back to its neutral colour); a reportsTo that is not a string reads as null. undefined when
+ * nothing valid remains. Pure.
+ */
+export function cleanRunRoster(raw: unknown): RunRosterRole[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: RunRosterRole[] = []
+  for (const e of raw) {
+    if (out.length >= RUN_ROSTER_MAX) break
+    if (!isPlainObject(e)) continue
+    if (typeof e.id !== 'string' || !e.id || typeof e.slug !== 'string' || typeof e.name !== 'string') continue
+    const entry: RunRosterRole = {
+      id: e.id.slice(0, ROSTER_TEXT_MAX.id),
+      slug: e.slug.slice(0, ROSTER_TEXT_MAX.slug),
+      name: e.name.slice(0, ROSTER_TEXT_MAX.name),
+      color: typeof e.color === 'string' && OUTPUT_COLOR_RE.test(e.color) ? e.color.toLowerCase() : '',
+      reportsTo: typeof e.reportsTo === 'string' ? e.reportsTo.slice(0, ROSTER_TEXT_MAX.id) : null
+    }
+    if (e.added === true) entry.added = true
+    if (e.removed === true) entry.removed = true
+    out.push(entry)
+  }
+  return out.length ? out : undefined
+}
+
 export function runRecordFileName(runId: string): string {
   return `${runId.replace(/[^a-z0-9_-]/gi, '_')}.json`
 }
@@ -355,6 +388,12 @@ export class RunStore {
     try {
       const parsed = JSON.parse(readFileSync(file, 'utf8')) as RunRecord
       const record: RunRecord = { ...parsed, transcript: this.rehydrateImages(runId, parsed.transcript) }
+      // A mid-run roster (run.roster) is rebuilt field by field; nothing valid left drops the field (review L1).
+      if (record.roster !== undefined) {
+        const roster = cleanRunRoster(record.roster)
+        if (roster) record.roster = roster
+        else delete record.roster
+      }
       // The index is the source of truth for status; a crash can leave a record marked live.
       const summary = this.runs.find((r) => r.id === runId)
       return summary ? { ...record, summary } : record
