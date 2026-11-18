@@ -1404,7 +1404,9 @@ const gitPresent = ((): boolean => {
   }
 })()
 
-describe.skipIf(!gitPresent)('mock mode', () => {
+// These run the real where.exe / which through resolveBinary (8 s limit). A loaded CI runner can exceed it once, which
+// reads as "Git is not installed" (dev run 44320327430, 8373 ms); a truly missing git fails every retry.
+describe.skipIf(!gitPresent)('mock mode', { retry: 2 }, () => {
   function mockService(env: NodeJS.ProcessEnv = {}, sleep?: (ms: number, signal?: AbortSignal) => Promise<void>) {
     const calls: Call[] = []
     const run: RunFn = (file, args, opts) => {
