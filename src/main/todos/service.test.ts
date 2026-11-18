@@ -101,6 +101,13 @@ describe('TodoService user writes', () => {
     )
   })
 
+  it('refuses an expectedUpdatedAt that is present but not a number (review L1)', () => {
+    const s = make()
+    const a = s.save({ scope: CHAT, title: 'x' })
+    expect(() => s.save({ scope: CHAT, id: a.id, title: 'y', expectedUpdatedAt: String(a.updatedAt) })).toThrow('That is not a to-do.')
+    expect(s.list(CHAT)[0].title).toBe('x')
+  })
+
   it('refuses bad input with one sentence', () => {
     const s = make()
     expect(() => s.save({ scope: { kind: 'nope' }, title: 'x' })).toThrow('That is not a to-do list.')

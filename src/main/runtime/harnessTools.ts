@@ -3547,7 +3547,9 @@ const TODO_UNAVAILABLE = 'To-dos are not available in this run.'
 
 /** One item as a data line: id | status | title | detail (all data, one line each, no angle brackets). */
 function todoLine(i: TodoItem): string {
-  return `${datum(i.id, 80)} | ${i.status} | ${datum(i.title, TODO_TITLE_MAX_CHARS)}${i.detail ? ` | ${datum(i.detail, 400)}` : ''} | by ${i.createdBy}`
+  // A long detail is cut with a marker so the model never rewrites it from the shortened text (review L2).
+  const detail = i.detail ? ` | ${datum(i.detail, 400)}${i.detail.length > 400 ? ' […cut; never update the detail from this list]' : ''}` : ''
+  return `${datum(i.id, 80)} | ${i.status} | ${datum(i.title, TODO_TITLE_MAX_CHARS)}${detail} | by ${i.createdBy}`
 }
 
 /**

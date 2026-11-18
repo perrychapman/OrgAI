@@ -201,6 +201,8 @@ describe('RuntimeContext.todos: where RunManager binds it', () => {
     const ws = folder('ws')
     await m.start({ project: makeProject({ id: 'harness', roles: [], path: ws }), prompt: 'build', kind: 'mcp-assist', buildWorkspace: ws })
     expect(ctxs.map((c) => c.todos?.scope)).toEqual(['project', 'project', undefined, 'chat', undefined])
+    // A build session can only be an MCP assistant run (setup-like), so no work run is ever trust-restricted but Chat (review L5).
+    await expect(m.start({ project: makeProject({ id: 'p1', path: ws }), prompt: 'build', buildWorkspace: ws })).rejects.toThrow('A build workspace belongs to an MCP assistant run.')
     await m.stopAll()
   })
 

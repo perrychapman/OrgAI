@@ -1,6 +1,7 @@
 # To-dos
 
-Status: the shared contract and pure helpers are landed. Everything else is not built yet.
+Status: the shared contract, the pure helpers and the main-process side are built. The adapter prompt flag, the mock
+marker and the renderer are still to come.
 
 ## Purpose
 
@@ -16,8 +17,7 @@ one list for the Chat assistant. The user can read the list, edit it, and start 
   (`todo_list`, one tool with `action: 'list' | 'add' | 'complete' | 'reopen' | 'update'`), `TODOS_IPC` (declared like
   `SCHEDULES_IPC`, not spread into `IPC`) and `OrgAIApi.todos` / `onTodosChanged`.
 - Channels: `todos:list` (read), `todos:save`, `todos:remove`, `todos:clearDone` (configure), `todos:linkRun`
-  (operate), and the push `todos:changed`. They are not registered in the host dispatcher, `jsonCodec`, `params.ts` or
-  `registry.ts` yet; the main lead does that together with the handlers.
+  (operate), and the push `todos:changed` (desktop windows only). Registered in the host (see "As built").
 - `src/shared/todos.ts` (pure): `todoScopeKey`, `sameTodoScope`, `cleanTodoScope`, `cleanTodoText`, `sortTodos`,
   `todoStartPrompt`. Unit-tested in `src/shared/todos.test.ts`.
 
@@ -35,11 +35,26 @@ one list for the Chat assistant. The user can read the list, edit it, and start 
 - An agent may make at most `TODO_RUN_WRITES_MAX` writes per run, and one tool call returns at most
   `TODO_TOOL_LIST_MAX` items.
 
-## To build (not built yet)
+## As built (main process)
 
-- Main (runtime lead): store (`<data>/todos.json`, durable atomic writes like the schedules store), service
-  (save, remove, clearDone, linkRun, the editedBy rule, expectedUpdatedAt check, the per-scope and per-run limits),
-  host channel registration and handlers, the `todos:changed` push to every window, the `todo_list` harness tool and
-  its prompt text on Chat and project roots, mock marker for tests.
+Details and how each fact was checked: `docs/agent-notes/todos.md`.
+
+- Store `src/main/todos/store.ts`: `<data>/todos.json` (version 1, keyed by `todoScopeKey`), durable atomic writes with
+  `.bak`; an unreadable file is never overwritten and the store goes read-only (the schedules store's rules).
+- Service `src/main/todos/service.ts` `TodoService`: user list / save / remove / clearDone / linkRun / removeScope and
+  agent list / add / setStatus / update. Every rule above is enforced there.
+- Channels are registered in the host dispatcher, `jsonCodec`, `params.ts` and `registry.ts`. `todos:list` answers on
+  every surface. The writes and `linkRun` are wired for the desktop surface only for now, and any other surface gets
+  `scope_denied`. To-dos are not desktop-only by design. `todos:changed` goes to every window and never to a socket.
+- Deleting a project deletes its list (`projects:remove` in the dispatcher).
+- Harness tool `todo_list` goes to the root of Chat runs and of work runs (team or single) of a stored project, on the
+  desktop host only. RunManager picks the list from the run, so the tool takes no scope. It is non-blocking and shows no
+  card, and each change writes one transcript row such as "Added to-do <title>".
+- Prompt paragraph `todosText()`: written and tested, but not shown yet. The adapters must pass `flags.todos` first.
+
+## Still to build
+
+- Adapters: pass `todos: !!ctx.todos` to the root's prompt flags (Claude, Codex, mock), and add the mock marker
+  `[mock:todo]`.
 - Renderer (UI lead): to-do panel for a project and for Chat, add / edit / complete / remove / clear done, "Start a
   session" that prefills the draft, live updates from `onTodosChanged`, both themes and window sizes, an e2e script.

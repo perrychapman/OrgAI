@@ -61,6 +61,8 @@ export class TodoService {
     const id = this.cleanId(input.id)
     const prev = this.deps.store.get(scope, id)
     if (!prev) throw new Error('No such to-do.')
+    // Present but not a number: refused, so a malformed field never skips the stale-edit check (review L1).
+    if (input.expectedUpdatedAt !== undefined && (typeof input.expectedUpdatedAt !== 'number' || !Number.isFinite(input.expectedUpdatedAt))) throw new Error('That is not a to-do.')
     if (typeof input.expectedUpdatedAt === 'number' && input.expectedUpdatedAt !== prev.updatedAt) {
       throw new Error('This to-do changed since you opened it. Reload it and try again.')
     }
@@ -206,7 +208,11 @@ export class TodoService {
   private sourceOf(caller: TodoCaller): TodoItem['source'] {
     const source: NonNullable<TodoItem['source']> = { runId: caller.runId }
     if (caller.agentId !== undefined) source.agentId = caller.agentId
-    if (caller.roleName !== undefined) source.roleName = caller.roleName.slice(0, ROLE_MAX)
+    // The store drops a role name with hidden characters; drop it here too so the returned item equals the stored one (review L4).
+    if (caller.roleName !== undefined) {
+      const role = caller.roleName.slice(0, ROLE_MAX)
+      if (role.trim() && cleanTodoText({ title: role }).ok) source.roleName = role
+    }
     return source
   }
 
@@ -248,7 +254,8 @@ export class TodoService {
       return item
     })
     this.push({ scope, ids: [stored.id] })
-    return structuredClone(stored)
+    // What the store kept after its sanitizer, not the draft (review L4).
+    return this.deps.store.get(scope, stored.id) ?? structuredClone(stored)
   }
 
   /** Applies text and status changes to a stored item. No change at all returns it untouched (changed false). */
@@ -284,7 +291,7 @@ export class TodoService {
       return structuredClone(item)
     })
     this.push({ scope, ids: [prev.id] })
-    return { item: next, changed: true }
+    return { item: this.deps.store.get(scope, prev.id) ?? next, changed: true }
   }
 
   private checkWriteLimit(caller: TodoCaller): void {
