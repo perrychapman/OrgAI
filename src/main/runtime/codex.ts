@@ -1084,7 +1084,7 @@ class CodexSession implements RuntimeSession {
       text = `${host.join('\n\n')}\n\n---\n${text}`
     }
     this.sendToRoot(text, activity, opts).catch((e: Error) => {
-      if (e !== ROOT_DROPPED) this.log('warn', `Could not deliver a harness message to the orchestrator: ${e.message}`)
+      if (e !== ROOT_DROPPED) this.log('warn', `Could not deliver a harness message to the orchestrator: ${this.redact(e?.message ?? String(e))}`)
     })
     this.noteActivity('message')
   }
@@ -2935,7 +2935,7 @@ class CodexSession implements RuntimeSession {
           await this.startThread({ threadId, ...resume }, METHOD.threadResume)
         } catch (e) {
           if (info.agentId === ROOT_AGENT_ID) throw e
-          this.log('warn', `Could not resume the thread of ${this.agents.get(info.agentId)?.name ?? info.agentId}: ${(e as Error).message}`)
+          this.log('warn', `Could not resume the thread of ${this.agents.get(info.agentId)?.name ?? info.agentId}: ${this.redact((e as Error)?.message ?? String(e))}`)
           this.setState(info.agentId, 'error', 'Lost its session in a restart')
         }
       }

@@ -283,20 +283,36 @@ describe('Claude hostConfigChanged (fake query)', () => {
     expect(sent.match(/The user changed this project/g)).toHaveLength(1)
   }, 15_000)
 
-  it('mid-turn, no restart needed: delivered in line at once', async () => {
+  it('mid-turn, no restart needed: nothing goes to the input; the notice rides on the next message, once (eager reader)', async () => {
+    // The fake CLI here reads every pushed message at once, as the SDK's Query.streamInput does (sdk.mjs): a notice
+    // pushed mid-turn would be in the CLI's hands, and a turn that ends before reading it would start one of its own.
     const gh = mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] })
     const servers = [gh]
-    const { session, q1 } = await running(servers)
+    const { ctx, session, q1 } = await running(servers)
     const before = q1.inputs.length
     servers[0] = { ...gh, roles: [] }
     expect(await host(session, { mcp: { upserted: ['github'], removed: [] } })).toEqual({ availability: 'now' })
+    await sleep(100)
+    // Regression (review H1, third round): it was pushed to the input mid-turn.
+    expect(q1.inputs.length).toBe(before)
+    expect(rows(ctx).some((b) => b.detail?.includes(HOST_CHANGE_LEAD))).toBe(true)
+    // The turn ends without another tool round: still nothing for the CLI to start a turn with.
+    q1.emit(result)
+    await sleep(100)
+    expect(q1.inputs.length).toBe(before)
+    await session.send('next step')
     await vi.waitFor(() => expect(q1.inputs.length).toBe(before + 1))
-    const text = texts(q1)
-    expect(text).toContain(HOST_CHANGE_LEAD)
+    const sent = String((q1.inputs.at(-1)!.message as { content: unknown }).content)
+    expect(sent).toContain(HOST_CHANGE_LEAD)
+    expect(sent).toContain('next step')
     // Regression (review L3): an ungrant said "The MCP server github is attached now."
-    expect(text).not.toContain('The MCP server github is attached now.')
-    expect(text).toContain('The MCP server github was already attached; which roles may use it changed.')
-    expect(text).toContain('No role in the org chart is granted it, so no agent can call it in this run.')
+    expect(sent).not.toContain('The MCP server github is attached now.')
+    expect(sent).toContain('The MCP server github was already attached; which roles may use it changed.')
+    expect(sent).toContain('No role in the org chart is granted it, so no agent can call it in this run.')
+    // Exactly once: a later harness message does not repeat it.
+    await session.nudge('Harness: keep going.')
+    await vi.waitFor(() => expect(q1.inputs.length).toBe(before + 2))
+    expect(texts(q1).match(/The user changed this project/g)).toHaveLength(1)
   })
 
   it('idle, no restart needed: no turn; the notice comes with the next message to the orchestrator', async () => {
@@ -483,67 +499,118 @@ describe('Claude hostConfigChanged: a change the user saves never starts a turn 
     expect(paused.pausedUntil).toBeGreaterThan(Date.now())
   }, 20_000)
 
-  /** A running session whose CLI reads its input only when the test says so (state.manualRead). */
-  async function manual(servers: McpServerSpec[]) {
-    sdk.manualRead = true
-    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-cfg-restart-')))
-    dirs.push(dir)
-    const rs = roles()
-    const ctx = fakeCtx({
-      project: project({ path: dir, roles: rs, isolateWriters: false }),
-      roles: rs,
-      run: runSummary(),
-      autoContinue: false,
-      mcpServers: () => servers,
-      resolvedMcpServers: async () => servers.map((spec) => ({ spec, env: {}, headers: {} }))
-    })
-    const session = new ClaudeSession(ctx)
-    sessions.push(session)
-    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
-    const q1 = sdk.queries[0]!
-    q1.emit(init)
-    await q1.read()
-    return { ctx, session, q1 }
-  }
   const unread = (s: ClaudeSession) => (s as unknown as { input: { peek(): unknown[] } }).input.peek()
   const contentOf = (m: Record<string, unknown> | undefined) => String((m?.message as { content: unknown } | undefined)?.content)
 
-  it('M1a: an in-line notice still unread when the turn ends is taken back and rides on the next message', async () => {
+  it('M1: a host change mid-turn, then an interrupt: nothing reaches the CLI until the user\'s next message, which carries it once', async () => {
     const gh = mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] })
     const servers = [gh]
-    const { session, q1 } = await manual(servers)
-    servers[0] = { ...gh, roles: [] }
-    // Mid-turn: delivered in line (queued on the input stream), but the CLI has not read it when the turn ends.
-    expect(await host(session, { mcp: { upserted: ['github'], removed: [] } })).toEqual({ availability: 'now' })
-    expect(unread(session)).toHaveLength(1)
-    q1.emit(result)
-    // Regression: the queued notice stayed in the input, and the CLI's next read would start a turn of its own.
-    await vi.waitFor(() => expect(unread(session)).toHaveLength(0))
-    await session.send('next step')
-    const sent = contentOf(await q1.read())
-    expect(sent).toContain(HOST_CHANGE_LEAD)
-    expect(sent).toContain('next step')
-    expect(unread(session)).toHaveLength(0)
-  })
-
-  it('M1b: an in-line notice unread at an interrupt waits for the user\'s next message', async () => {
-    const gh = mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] })
-    const servers = [gh]
-    const { session, q1 } = await manual(servers)
+    const { session, q1 } = await running(servers)
+    const before = q1.inputs.length
     servers[0] = { ...gh, roles: [] }
     await host(session, { mcp: { upserted: ['github'], removed: [] } })
-    expect(unread(session)).toHaveLength(1)
     await session.interrupt()
-    // Regression: interrupt() left it queued, so it started a turn after the interrupted one ended.
-    expect(unread(session)).toHaveLength(0)
     q1.emit({ ...result, subtype: 'error_during_execution' })
-    await sleep(50)
-    expect(unread(session)).toHaveLength(0)
+    await sleep(100)
+    expect(q1.inputs.length).toBe(before)
     await session.send('go on')
-    const sent = contentOf(await q1.read())
+    await vi.waitFor(() => expect(q1.inputs.length).toBe(before + 1))
+    const sent = String((q1.inputs.at(-1)!.message as { content: unknown }).content)
     expect(sent).toContain(HOST_CHANGE_LEAD)
     expect(sent).toContain('go on')
+    expect(texts(q1).match(/The user changed this project/g)).toHaveLength(1)
   })
+
+  it('M (third round): a hand-back turn run on the closing query leaves the root idle, and a later restart still happens', async () => {
+    sdk.lingerAfterInput = true
+    const servers: McpServerSpec[] = []
+    const { session, q1 } = await running(servers)
+    q1.emit(result)
+    await sleep(50)
+    servers.push(notes())
+    await host(session, { mcp: { upserted: ['notes'], removed: [] } })
+    await vi.waitFor(() => expect(q1.inputClosed).toBe(true), restartWait)
+    // The CLI runs a hand-back turn on the closing query: the root works, and its result is skipped (nextQuery).
+    q1.emit({ type: 'assistant', message: { id: 'm-hb', role: 'assistant', model: 'm', content: [{ type: 'text', text: 'Reading the report.' }] }, parent_tool_use_id: null, session_id: 's', uuid: 'a-hb' })
+    await sleep(50)
+    q1.emit(result)
+    await sleep(50)
+    q1.end()
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2))
+    const s = session as unknown as { restartState(): { rootIdle: boolean }; rootBusy(): boolean }
+    // Regression: the root stayed 'thinking' for ever, so rootIdle was false and no restart could happen again.
+    expect(s.restartState().rootIdle).toBe(true)
+    expect(s.rootBusy()).toBe(false)
+    servers.push(mcpSpec({ id: 'mcp-docs', name: 'docs', roles: ['engineer'], secretEnv: [] }))
+    expect((await host(session, { mcp: { upserted: ['docs'], removed: [] } })).availability).toBe('after-idle')
+    const q2 = sdk.queries[1]!
+    await vi.waitFor(() => expect(q2.inputClosed).toBe(true), restartWait)
+    q2.end()
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3), restartWait)
+    expect(sdk.queries[2]!.options.agents.engineer.tools).toContain('mcp__docs')
+  }, 20_000)
+
+  it('L (third round): a restarted query that dies before its init takes its waiting notice back; retry and fallback each say it once', async () => {
+    const servers: McpServerSpec[] = []
+    const { ctx, session, q1 } = await running(servers)
+    q1.emit(result)
+    await sleep(50)
+    servers.push(notes())
+    await host(session, { mcp: { upserted: ['notes'], removed: [] } })
+    const inEffect = (b: { text?: string }) => !!b.text?.startsWith('Configuration change in effect')
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    await vi.waitFor(() => expect(rows(ctx).filter(inEffect)).toHaveLength(1))
+    sdk.queries[1]!.fail(new Error('spawn failed'))
+    // The retry announces again.
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3), restartWait)
+    await vi.waitFor(() => expect(rows(ctx).filter(inEffect)).toHaveLength(2))
+    const q3 = sdk.queries[2]!
+    await session.send('one')
+    await vi.waitFor(() => expect(q3.inputs).toHaveLength(1))
+    // Regression: the dead query's notice was still waiting, so the message carried "attached now" twice.
+    expect(texts(q3).match(/The MCP server notes is attached now\./g)).toHaveLength(1)
+    // q3 dies before its init too, after reading the message: the fallback replays it without the notice.
+    q3.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(4), restartWait)
+    const q4 = sdk.queries[3]!
+    await vi.waitFor(() => expect(q4.inputs).toHaveLength(1))
+    expect(texts(q4)).toContain('one')
+    expect(texts(q4)).not.toContain('attached now')
+    await session.send('two')
+    await vi.waitFor(() => expect(q4.inputs).toHaveLength(2))
+    // The fallback's notice comes once, and no "in effect" for the change it could not apply.
+    expect(texts(q4)).not.toContain('attached now')
+    expect(texts(q4).match(/could not be attached to this session/g)).toHaveLength(1)
+  }, 20_000)
+
+  it('L (third round): a notice moved out at an interrupt before a restarted query\'s init is not replayed when that query dies', async () => {
+    const servers: McpServerSpec[] = []
+    const { session, q1 } = await running(servers)
+    q1.emit(result)
+    await sleep(50)
+    // Restarted queries read their input only when the test says so.
+    sdk.manualRead = true
+    servers.push(notes())
+    await change(session, { mcp: { upserted: ['notes'], removed: [] } })
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    // The restart's own notice and a harness message wait unread for the new query (before its init).
+    await vi.waitFor(() => expect(unread(session)).toHaveLength(1))
+    await session.nudge('Harness: check the plan.')
+    expect(unread(session)).toHaveLength(2)
+    await session.interrupt()
+    expect(unread(session)).toHaveLength(0)
+    sdk.queries[1]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3), restartWait)
+    const q3 = sdk.queries[2]!
+    await sleep(100)
+    expect(unread(session)).toHaveLength(0)
+    await session.send('go on')
+    const sent = contentOf(await q3.read())
+    // Regression: both were replayed into the retry and moved to the held notices a second time.
+    expect(sent.match(/Harness: check the plan\./g)).toHaveLength(1)
+    expect(sent.match(/The MCP server notes is attached now\./g)).toHaveLength(1)
+    expect(sent).toContain('go on')
+  }, 20_000)
 
   it('M2: the trailing init and empty result of a query closed for a restart are no turn', async () => {
     sdk.lingerAfterInput = true

@@ -332,17 +332,6 @@ class PushStream<T> implements AsyncIterable<T> {
     return [...this.queue]
   }
 
-  /** Take the unread values `pick` selects out of the stream (the rest stay queued, in order). */
-  take(pick: (value: T) => boolean): T[] {
-    const taken: T[] = []
-    this.queue = this.queue.filter((v) => {
-      if (!pick(v)) return true
-      taken.push(v)
-      return false
-    })
-    return taken
-  }
-
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: () => {
@@ -1642,7 +1631,7 @@ export class ClaudeSession implements RuntimeSession {
    * Harness messages pushed to the input, by kind. When an interrupt holds the run across a restart, unread plan nudges
    * are dropped and other unread harness notices wait for the user's next message (dropHeldHarnessMessages).
    */
-  private harnessMessages = new WeakMap<SDKUserMessage, { nudge: boolean; text: string; restart?: boolean; host?: boolean }>()
+  private harnessMessages = new WeakMap<SDKUserMessage, { nudge: boolean; text: string; restart?: boolean }>()
   /** Attach notices that arrived while the run was held: prepended to the user's next message. */
   private heldNotices: string[] = []
   /**
@@ -1650,6 +1639,13 @@ export class ClaudeSession implements RuntimeSession {
    * never start a turn of their own and come with the next message to the orchestrator (the user's, or a harness one).
    */
   private hostNotices: string[] = []
+  /**
+   * Notices of the restart being started that wait in heldNotices / hostNotices (or rode on a message) until the restarted
+   * query's init; a query that dies before it drops them (dropFailedRestartNotes), and the retry sends its own.
+   */
+  private restartNotes = new Set<string>()
+  /** Messages that carry waiting notices ahead of their own text: which notices, and how to compose them without some. */
+  private noteCarriers = new WeakMap<SDKUserMessage, { notes: string[]; rebuild: (notes: string[]) => SDKUserMessage['message']['content'] }>()
   /** Where the changes waiting for the next restart came from (RestartConfig.host / tool); reset when a restart takes them. */
   private restartOrigin = { host: false, tool: false }
   /** Root turn ends in a row with a restart due but blocked (RESTART_WAIT_WARN_TURNS). */
@@ -1863,15 +1859,13 @@ export class ClaudeSession implements RuntimeSession {
     // The transcript entry is what the user typed; the knowledge block's own row follows it.
     this.transcript(ROOT_ID, userBlock(text, images))
     const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
-    const composed = note ? (body ? `${note}\n\n---\n${body}` : note) : body
-    this.pushInput(
-      {
-        type: 'user',
-        message: { role: 'user', content: userContent(composed, images) },
-        parent_tool_use_id: null
-      },
-      { userTurn: true }
-    )
+    const compose = (parts: string[]) => {
+      const n = parts.length ? parts.join('\n\n') : null
+      return userContent(n ? (body ? `${n}\n\n---\n${body}` : n) : body, images)
+    }
+    const message: SDKUserMessage = { type: 'user', message: { role: 'user', content: compose(notes) }, parent_tool_use_id: null }
+    if (note) this.noteCarriers.set(message, { notes, rebuild: compose })
+    this.pushInput(message, { userTurn: true })
     this.setState(ROOT_ID, 'thinking', 'Thinking…')
   }
 
@@ -2670,17 +2664,17 @@ export class ClaudeSession implements RuntimeSession {
   private notifyOrchestrator(
     text: string,
     activity = 'Integrating a report…',
-    opts: { transcript?: boolean; summary?: string; nudge?: boolean; restart?: boolean; host?: boolean } = {}
+    opts: { transcript?: boolean; summary?: string; nudge?: boolean; restart?: boolean } = {}
   ): void {
     // Notices about the user's own changes waiting for the next message ride on this one (their rows are written). A
     // restart notice is re-sent by a retried restart without them, so they wait for the next message instead.
     const host = opts.restart ? [] : this.hostNotices.splice(0)
-    const content = host.length ? `${host.join('\n\n')}\n\n---\n${text}` : text
+    const compose = (notes: string[]) => (notes.length ? `${notes.join('\n\n')}\n\n---\n${text}` : text)
+    const content = compose(host)
     const message: SDKUserMessage = { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null }
+    if (host.length) this.noteCarriers.set(message, { notes: host, rebuild: compose })
     // A plan nudge carrying host notices is no longer only a nudge: a held run keeps it for the user's next message.
-    // `host`: only notices about the user's own change (deliverHostNotice, in line): one still unread when the turn
-    // ends is taken back out (reclaimHostNotices), so it never starts a turn of its own.
-    this.harnessMessages.set(message, { nudge: !!opts.nudge && !host.length, text: content, ...(opts.restart ? { restart: true } : {}), ...(opts.host ? { host: true } : {}) })
+    this.harnessMessages.set(message, { nudge: !!opts.nudge && !host.length, text: content, ...(opts.restart ? { restart: true } : {}) })
     this.pushInput(message)
     this.noteActivity('message')
     if (opts.transcript !== false) {
@@ -3977,10 +3971,14 @@ export class ClaudeSession implements RuntimeSession {
    * - The orchestrator did not ask, so it is told: one harness message naming what changed and what is callable now
    *   (names through datum(), tool names through safeMcpToolNames, capped). When a restart is needed the restart notice
    *   carries it (one notice).
-   * - It never starts a turn: mid-turn the notice is delivered in line (read at the next tool round); while the
-   *   orchestrator is idle it waits for the next message to it (the user's, or a harness message such as a plan nudge),
-   *   and a restart notice that holds only the user's change waits the same way. A held run keeps it for the user's
-   *   next message. A restart still happens at once when the run is idle with nothing running.
+   * - It never starts a turn: the notice is never pushed to the input on its own, mid-turn or idle. It waits for the
+   *   next message that goes to the orchestrator anyway (the user's, or a harness message the run itself causes such as
+   *   a report hand-back or a plan nudge), and a restart notice that holds only the user's change waits the same way. A
+   *   held run keeps it for the user's next message. The SDK writes every pushed message to the CLI at once
+   *   (Query.streamInput in sdk.mjs loops over the prompt), so a notice pushed mid-turn could not be taken back if the
+   *   turn ended before the CLI read it: the CLI would run it as a turn of its own. The orchestrator therefore learns of
+   *   the change only with its next message, although the gates follow it at once. A restart still happens at once
+   *   when the run is idle with nothing running.
    * Rejects for a setup-like or ending session and a session that is not running (the change applies from the next run).
    */
   async hostConfigChanged(change: ConfigChange): Promise<ConfigChangeResult> {
@@ -4033,39 +4031,51 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /**
-   * Deliver a notice about the user's own change without starting a turn: held runs keep it for the user's next message,
-   * a busy orchestrator reads it in line, an idle one gets it with the next message to it. Returns true when it waits.
+   * Deliver a notice about the user's own change without starting a turn (review H1, third round): it is never pushed to
+   * the input on its own, because the SDK hands every pushed message to the CLI at once (Query.streamInput) and the CLI
+   * runs one that arrives after a turn's last tool round as a turn of its own. Held runs keep it for the user's next
+   * message; otherwise it waits in hostNotices for the next message to the orchestrator. `restart`: the notice of the
+   * restarted query being started (dropped again if that query dies before its init, dropFailedRestartNotes).
    */
-  private deliverHostNotice(text: string, summary: string): boolean {
+  private deliverHostNotice(text: string, summary: string, opts: { restart?: boolean } = {}): void {
+    if (opts.restart) this.noteRestartNotice(text)
     if (this.held || this.capTripped) {
       this.holdNotice(text, summary)
-      return true
-    }
-    if (this.rootBusy()) {
-      // Read at the turn's next tool round; if the turn ends first, reclaimHostNotices takes it back (no turn of its own).
-      this.notifyOrchestrator(text, 'Reading a configuration change…', { summary, host: true })
-      return false
+      return
     }
     this.hostNotices.push(text)
     this.transcript(ROOT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
-    this.log('info', 'The user changed the configuration while the orchestrator was idle; it is told with the next message.')
-    return true
+    this.log('info', 'The user changed the configuration; the orchestrator is told with the next message to it.')
+  }
+
+  /** A notice of the restarted query being started waits (held or for the next message): remember it until its init. */
+  private noteRestartNotice(text: string): void {
+    // After the restarted query's init the notice belongs to a query that started: no later failure takes it back.
+    if (this.restarts > 0 && !this.queryInitSeen) this.restartNotes.add(text)
   }
 
   /**
-   * A root turn ended: an in-line host notice (deliverHostNotice) the CLI has not read yet would start a turn of its own
-   * once read. Take it back out of the input; it waits for the next message to the orchestrator (or, while the run is
-   * held, the user's next message). Its transcript row is written already.
+   * A restarted query died before its init (review L, third round): the notices its restart left waiting (in heldNotices
+   * or hostNotices, or carried by a message the dead query may have read) are taken out, so a retry's notice is the only
+   * one and a fallback's "could not be applied" never follows an "in effect" for the same change.
    */
-  private reclaimHostNotices(): void {
-    const taken = this.input.take((m) => !!this.harnessMessages.get(m)?.host)
-    if (!taken.length) return
-    for (const m of taken) {
-      const text = this.harnessMessages.get(m)!.text
-      if (this.held || this.capTripped) this.heldNotices.push(text)
-      else this.hostNotices.push(text)
+  private dropFailedRestartNotes(): void {
+    const drop = this.restartNotes
+    if (!drop.size) return
+    this.restartNotes = new Set()
+    this.heldNotices = this.heldNotices.filter((t) => !drop.has(t))
+    this.hostNotices = this.hostNotices.filter((t) => !drop.has(t))
+    for (const m of new Set([...this.preInit, ...this.input.peek()])) {
+      const carrier = this.noteCarriers.get(m)
+      if (!carrier) continue
+      const kept = carrier.notes.filter((t) => !drop.has(t))
+      if (kept.length === carrier.notes.length) continue
+      const content = carrier.rebuild(kept)
+      m.message.content = content
+      this.noteCarriers.set(m, { ...carrier, notes: kept })
+      const h = this.harnessMessages.get(m)
+      if (h && typeof content === 'string') h.text = content
     }
-    this.log('info', 'The turn ended before the orchestrator read the configuration change; it is told with the next message.')
   }
 
   /**
@@ -4649,9 +4659,12 @@ export class ClaudeSession implements RuntimeSession {
     if (host) text = text.replace(/^\[OrgAI harness\] /, `[OrgAI harness] ${HOST_CHANGE_LEAD} `)
     // The user's change alone never starts a turn (hostConfigChanged).
     if (host === 'only') {
-      if (this.deliverHostNotice(text, summary)) this.releaseTurnEnd()
-    } else if (this.held || this.capTripped) this.holdNotice(text, summary)
-    else this.notifyOrchestrator(text, 'Thinking…', { summary, restart })
+      this.deliverHostNotice(text, summary, { restart })
+      this.releaseTurnEnd()
+    } else if (this.held || this.capTripped) {
+      if (restart) this.noteRestartNotice(text)
+      this.holdNotice(text, summary)
+    } else this.notifyOrchestrator(text, 'Thinking…', { summary, restart })
   }
 
   /**
@@ -4719,12 +4732,28 @@ export class ClaudeSession implements RuntimeSession {
     if (!this.held && !this.capTripped) return
     const queued = this.input.drain()
     let dropped = 0
+    const moved = new Set<SDKUserMessage>()
     for (const m of queued) {
       const h = this.harnessMessages.get(m)
-      if (!h) this.input.push(m)
-      else if (h.nudge) dropped += 1
-      else this.heldNotices.push(h.text)
+      if (!h) {
+        this.input.push(m)
+        continue
+      }
+      moved.add(m)
+      if (h.nudge) dropped += 1
+      else {
+        // A restart notice moved here is sent again by a retried restart: the failed one's copy goes (dropFailedRestartNotes).
+        if (h.restart) this.noteRestartNotice(h.text)
+        // The notices it carried are kept one by one, so a failed restart can still take its own back.
+        const carrier = this.noteCarriers.get(m)
+        const own = carrier?.rebuild([])
+        if (carrier && typeof own === 'string') this.heldNotices.push(...carrier.notes, own)
+        else this.heldNotices.push(h.text)
+      }
     }
+    // Taken out of the input, so a restarted query that dies before its init must not replay them too (review L, third
+    // round: the same notice reached heldNotices twice).
+    if (moved.size) this.preInit = this.preInit.filter((m) => !moved.has(m))
     if (dropped) this.log('info', `Dropped ${dropped} queued plan nudge${dropped === 1 ? '' : 's'}: the run is held for the user.`)
   }
 
@@ -4742,6 +4771,14 @@ export class ClaudeSession implements RuntimeSession {
     this.interruptPending = false
     // What the new query may read before its init: everything queued now plus what is pushed until then.
     this.preInit = this.input.peek()
+    // A hand-back turn the CLI ran on the closing query left the root working / thinking, and that query's result is
+    // skipped (nextQuery): no turn of the old query runs any more, so the root is idle (review M, third round), unless a
+    // message already waits for the new query. Otherwise restartState().rootIdle stayed false and no restart came again.
+    const root = this.agents.get(ROOT_ID)
+    if (root && root.state !== 'idle' && root.state !== 'done' && root.state !== 'error' && !this.preInit.length) {
+      const reportsRunning = [...this.agents.values()].some((x) => x.id !== ROOT_ID && x.state !== 'done' && x.state !== 'error')
+      this.setState(ROOT_ID, 'idle', reportsRunning ? 'Waiting on reports…' : 'Waiting for you')
+    }
     this.lastRestart = {
       servers: next.servers,
       tools: next.tools,
@@ -4874,11 +4911,13 @@ export class ClaudeSession implements RuntimeSession {
     // Only the user's own change (hostConfigChanged): never a turn of its own. The turn end held back for this restart
     // goes to the continuation driver, whose nudge (if any) then carries the notice.
     if (extra?.host === 'only') {
-      if (this.deliverHostNotice(text, summary)) this.releaseTurnEnd()
+      this.deliverHostNotice(text, summary, { restart: true })
+      this.releaseTurnEnd()
       return
     }
     // Held by an interrupt meanwhile: no new turn now; the notice goes with the user's next message.
     if (this.held || this.capTripped) {
+      this.noteRestartNotice(text)
       this.holdNotice(text, summary)
       return
     }
@@ -5205,7 +5244,9 @@ export class ClaudeSession implements RuntimeSession {
           if (this.nextQuery) {
             // The old query was closed for an MCP restart; the next one takes over below.
           } else if (this.restarts > 0 && !this.queryInitSeen && this.sessionId) {
-            // A restarted query failed before it started: never fail the run for it (review M4).
+            // A restarted query failed before it started: never fail the run for it (review M4). The notices its restart
+            // left waiting go; a retry sends its own, a fallback says what could not be applied.
+            this.dropFailedRestartNotes()
             const { next, why } = await this.recoverRestart(redactSecrets((e as Error).message ?? String(e), this.secrets))
             if (!next) {
               this.endPausedAfterRestart(why)
@@ -5332,6 +5373,8 @@ export class ClaudeSession implements RuntimeSession {
           this.backgroundHandBackSince = undefined
           this.queryInitSeen = true
           this.preInit = []
+          // The restarted query started: the notices its restart left waiting are its own now.
+          this.restartNotes.clear()
           // A restarted query that starts clears the failure count, so a later restart gets its own retries.
           this.restartFailures = 0
           // A query that started holds its own plugin: plugins it replaced (or a failed restart built) can go now.
@@ -5660,8 +5703,6 @@ export class ClaudeSession implements RuntimeSession {
         const root = this.ensureAgent(ROOT_ID)
         // The turn is over, so none of its shell calls is still in the foreground.
         this.rootShellCalls.clear()
-        // An in-line host notice the CLI has not read must not start a turn of its own (review M1).
-        this.reclaimHostNotices()
         const interrupted = this.interruptPending
         this.interruptPending = false
         // The interrupted turn (or a later one) is over: spawns it cut before task_started stop counting (review L4).

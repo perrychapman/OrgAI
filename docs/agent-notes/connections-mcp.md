@@ -453,9 +453,11 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
   - `hostConfigChanged(change)` (RuntimeSession member the Runtime Lead adds; public on ClaudeSession, CodexSession and
     MockSession): the host's entry point for a change the user saved in OrgAI (or approved in another session), called
     after RunManager moved ctx exactly as for configChanged. Same application as configChanged, plus one harness notice
-    that starts with `HOST_CHANGE_LEAD` (hostConfigNotice.ts) and never starts a turn of its own: mid-turn it is delivered
-    in line; while the root is idle it waits and rides on the next message to the orchestrator (the user's, or on
-    Claude and Codex any harness message such as a plan nudge or report hand-back); a held run keeps it for the user's
+    that starts with `HOST_CHANGE_LEAD` (hostConfigNotice.ts) and never starts a turn of its own. Claude never pushes
+    it to the input on its own, mid-turn or idle: it waits in `hostNotices` and rides on the next message to the
+    orchestrator (the user's, or a harness message the run itself causes such as a report hand-back or plan nudge), so
+    the orchestrator learns of the change only then, although the gates follow it at once. Codex steers it into a
+    running root turn (`turn/steer`, never turn/start), else it waits the same way. A held run keeps it for the user's
     next message. When a restart is needed the restart notice carries it (one notice): a restart for the user's change
     alone still happens at once at idle, but its notice waits the same way (Claude also hands the deferred turn end to
     the continuation driver); a restart that also carries this run's own approved change is delivered as before and
@@ -474,11 +476,26 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
       auto-resume into RESUME_TEXT). A restart that also carries the run's own change keeps the auto-resume. The
       fallback query (second failure) now keeps the change's origin even without roles, so its "could not be applied"
       notice for a host-only change waits instead of starting a turn, and says "the user made in OrgAI".
-    - Claude, in-line notices: a host notice queued mid-turn is tagged; at the root turn's end any still unread is
-      taken back out of the input (`reclaimHostNotices`) and waits for the next message; `interrupt()` moves unread
-      harness messages out as `dropHeldHarnessMessages` does (nudges dropped, notices to the user's next message).
-      Whether the real CLI can have read a queued message before OrgAI handles the result is unverified; one it has
-      read is not taken back.
+    - Claude, in-line notices (third round, replaces the take-back of the second): the installed SDK settles it.
+      `Query.streamInput` (sdk.mjs, 0.3.312) loops `for await` over the prompt and writes each message to the CLI's
+      stdin as soon as it is pushed (after the initialize handshake), so a pushed message never waits in OrgAI's queue
+      and cannot be taken back; a notice pushed mid-turn that the turn's last tool round missed became the CLI's next
+      turn. So a host-only notice is never pushed on its own: it always waits in `hostNotices` (held: `heldNotices`).
+      `reclaimHostNotices`, the `host` tag and `PushStream.take` are gone. Test: the fake CLI reads eagerly as the SDK
+      does; a host change mid-turn puts nothing on the input, the turn ends, and the notice arrives with the user's next
+      message exactly once (also after an interrupt). Remaining limit: the orchestrator does not hear of a change in the
+      turn it is in. `interrupt()`'s `dropHeldHarnessMessages` only reaches messages the SDK has not read yet (before a
+      query's initialize handshake); others are with the CLI.
+    - Claude, restart bookkeeping (third round): `startRestartedQuery` sets the root idle unless a message waits for the
+      new query (a hand-back turn the CLI ran on the closing query left it working while its result was skipped, so
+      `restartState().rootIdle` stayed false and no later restart came; test restarts again afterwards). Notices a
+      restart leaves waiting before the new query's init (`restartNotes`: host-only restart and fallback notices, held
+      restart notices, restart notices an interrupt moved out) are dropped when that query dies before init
+      (`dropFailedRestartNotes`), also from a message that carried them (`noteCarriers` rebuilds it without them before
+      the replay), so a retry says "in effect" once and a fallback's "could not be attached" is never preceded by an
+      "in effect" for the same change. `dropHeldHarnessMessages` removes the messages it moves out from `preInit`, so a
+      dead query's replay does not move them to `heldNotices` a second time. The transcript keeps one "Configuration
+      change in effect" row per attempt.
     - Claude, trailing init / empty result (sdk-facts check 12): while `nextQuery` is set (the old query's input is
       closed for a restart) init and result do no turn bookkeeping (no turnInFlight, no turn end, no continuation),
       and `startRestartedQuery` clears turnInFlight and interruptPending. A real hand-back turn that the CLI starts on
@@ -486,7 +503,12 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     - Claude: a background report's SubagentStop while the root is idle starts the hand-back wait
       (`backgroundHandBackSince`) at once, not only at its task_notification.
     - Codex, in-line notices: steered only (`steerRootWithHostNotice`, in the root thread's FIFO); no running root turn
-      or a refused steer leaves the notice in hostNotes (or held) for the next message, never turn/start.
+      or a refused steer leaves the notice in hostNotes (or held) for the next message, never turn/start. Checked
+      against the Claude finding by reading codex.ts (third round): OrgAI never sends turn/start for a host notice; the
+      steer names `expectedTurnId`, so a turn that already ended refuses it and the notice waits. A steer the app-server
+      accepts just before the turn completes is input to that turn: whether Codex then samples once more inside it
+      (spending a little) or could drop it is decided inside the native app-server and is unverified (no source in
+      the installed package). Thread-resume and harness-delivery failure logs are redacted now.
     - Codex, restart that throws: when only the user's change asked for it the run ends `paused` with
       `autoResume: false` and one run warning (before: `fail`, an errored run). The run's own change still fails it.
       Restart error texts and the "could not list" warning are redacted (connection key, gateway path, MCP secret
