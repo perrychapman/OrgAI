@@ -4,7 +4,8 @@ import { datum } from './harnessTools'
 /**
  * Shared by the adapters' RuntimeSession.hostConfigChanged: the user changed the run's project in OrgAI (or approved it in
  * another session) while the run was going. The orchestrator did not ask for it, so it is told, never with a turn of its
- * own (the adapters deliver it in line mid-turn, else with the next message to the orchestrator). Pure text helpers.
+ * own (Claude: always with the next message to the orchestrator; Codex: steered into a running root turn, else with the
+ * next message; the mock records which). Pure text helpers.
  */
 
 /** The first sentence of every notice about a change the user made in OrgAI, not this run. */
