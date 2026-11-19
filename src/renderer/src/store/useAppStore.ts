@@ -15,6 +15,7 @@ import type { OutputsChangedEvent, RunOutput, StaffingGoal, StartRunInput } from
 import { addRecalled, cleanRecalledEvent, type RecalledEvent } from '../lib/runKnowledge'
 import { adoptEndFacts, statusEventEndFacts, CHAIN_EAGER_MEMBERS, CHAIN_FETCH_CONCURRENCY, CHAIN_WALK_MAX_HOPS, chainGroups, chainIdsToLoad, chainKeyOf, chainOf, needsYou, runBatched, type ChainGroup } from '../lib/runChains'
 import { cutWhile, settleEndedAgents } from '../lib/runStatus'
+import { isWorkingAgent } from '../lib/agentActivity'
 import { readOpenTabs, sameRunSummaries, tabsSignature, writeOpenTabs } from '../lib/openTabs'
 import { mergePendingCards, type PendingCards } from '../lib/pendingCards'
 import { runIndexMap } from '../lib/runLabels'
@@ -575,6 +576,10 @@ interface AppState {
   fillSummary(runId: string): Promise<void>
   /** Hide a run's tab, whatever its status; the session is never touched. Stops viewing it if it was the viewed run. */
   dismissRun(runId: string): void
+  /** Sidebar Close: hide the run's tab and end its session (the caller asked first when live work ends). Resolves once the stop call settled. */
+  closeRun(runId: string): Promise<void>
+  /** Shared hide path of dismissRun and closeRun. */
+  hideTab(runId: string, closeAll: boolean): Promise<void>
   /** Select a project and view one of its runs (e.g. from a clicked notification). */
   focusRun(projectId: string, runId: string): Promise<void>
 
@@ -630,6 +635,30 @@ export const HIDDEN_LIVE_NOTICE = 'Hidden. It keeps working: find it in the side
 /** Same, for a live run with nothing running (idle or stopping): only the session stays open. */
 export const HIDDEN_IDLE_NOTICE = 'Hidden. Its session stays open: find it in the sidebar or History.'
 export const hiddenLiveNotice = (status: string): string => (status === 'starting' || status === 'running' ? HIDDEN_LIVE_NOTICE : HIDDEN_IDLE_NOTICE)
+/** After hiding the tab of an idle run with nothing pending: its session was ended too. */
+export const HIDDEN_ENDED_NOTICE = 'Hidden. Its session ended: find it in History.'
+/** The stop call behind a hide or Close was refused: the tab is hidden, the session is still open. */
+export const HIDDEN_END_FAILED_NOTICE = 'Hidden. Its session could not be ended: find it in the sidebar.'
+
+/**
+ * Whether hiding this run's tab also ends its session: the root is idle, no card is open and no report is still working.
+ * A usage-limit hold on an idle run is not visible to the renderer (only a paused status carries it), so it is not part of the rule.
+ */
+export function hideEndsSession(run: Pick<RunState, 'summary' | 'agents' | 'permissions' | 'proposals' | 'questions' | 'ruleRequests' | 'mergeReviews' | 'mcpInstalls'>): boolean {
+  if (run.summary.status !== 'idle') return false
+  if (pendingDecisionCount(run) > 0) return false
+  return !Object.values(run.agents).some((a) => a.id !== 'root' && isWorkingAgent(a.state))
+}
+
+/** Close from the sidebar menu asks first when live work would end: null when it needs no question. */
+export function closeConfirmFor(run: Pick<RunState, 'summary' | 'agents' | 'permissions' | 'proposals' | 'questions' | 'ruleRequests' | 'mergeReviews' | 'mcpInstalls'>): { title: string; body: string } | null {
+  const st = run.summary.status
+  if (st !== 'idle' && st !== 'running' && st !== 'starting' && st !== 'paused') return null
+  if (hideEndsSession(run)) return null
+  const title = 'Close this run?'
+  if (pendingDecisionCount(run) > 0) return { title, body: 'It is waiting on a decision. Closing ends its session and cancels the open cards.' }
+  return { title, body: 'It is still working. Closing ends its session and stops all of its agents.' }
+}
 
 /** The New run page heading for the project's other live runs; `waiting` is how many of them need the user (decision-based). */
 export function otherRunsHeading(total: number, waiting: number): string {
@@ -2366,7 +2395,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   dismissRun(runId) {
+    void get().hideTab(runId, false)
+  },
+
+  closeRun(runId) {
+    return get().hideTab(runId, true)
+  },
+
+  /** Hide a run's tab (its whole chain). `closeAll` (sidebar Close) ends a live run too; otherwise only an idle run with nothing pending ends. */
+  hideTab(runId, closeAll) {
     let notice: string | null = null
+    let stop = false
     set((s) => {
       const run = s.runs[runId]
       if (!run) return {}
@@ -2379,8 +2418,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         delete unreadByRun[m.id]
       }
       delete unreadByRun[runId]
-      // Hiding never touches the session: a live run keeps working and stays in the sidebar's open runs.
-      notice = isRunLive(run) ? hiddenLiveNotice(run.summary.status) : HIDDEN_NOTICE
+      // Hiding ends the session only for an idle run with nothing pending (or on an explicit Close); anything else stays open.
+      const st = run.summary.status
+      stop = closeAll ? st === 'idle' || st === 'running' || st === 'starting' || st === 'paused' : hideEndsSession(run)
+      notice = stop ? HIDDEN_ENDED_NOTICE : isRunLive(run) ? hiddenLiveNotice(st) : HIDDEN_NOTICE
       if (s.activeRunByProject[projectId] !== runId) return { dismissedRuns, unreadByRun }
       // Hiding the viewed tab moves to its right neighbour, else the left one; with no tab left, the New run page.
       const tabs = tabRunsOf(s, projectId)
@@ -2397,6 +2438,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
     // setTabNotice owns the timer and re-announces repeated text; only a tab that was really hidden speaks.
     if (notice) get().setTabNotice(notice)
+    if (!stop) return Promise.resolve()
+    // The hide above never waits on IPC; a refused stop leaves the session open and says so.
+    return new Promise<void>((resolve) => resolve(window.orgai.runs.stop(runId)))
+      .then(
+        () => undefined,
+        () => {
+          get().setTabNotice(HIDDEN_END_FAILED_NOTICE)
+        }
+      )
   },
 
   async focusRun(projectId, runId) {

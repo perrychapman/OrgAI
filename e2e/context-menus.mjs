@@ -152,6 +152,31 @@ try {
   check((await active()).testid !== 'body', 'run tab: focus does not drop to the body after Hide', JSON.stringify(await active()))
   check((await page.evaluate((id) => window.orgai.runs.list(id), eng.id)).some((r) => r.id === runId), 'run tab: hiding keeps the run (it only leaves the tab strip)')
 
+  // ---- Sidebar run row menu: Open, Open in new window, then Close (ends an idle run and hides its tab) ----
+  if (!(await page.locator('.new-run').count())) {
+    await page.keyboard.press('Control+t')
+    await page.locator('.new-run').waitFor({ timeout: 8000 })
+  }
+  await page.locator('.composer textarea').fill('A second, idle run for the sidebar menu [mock:model-switch]')
+  await page.locator('.composer .btn.primary').click()
+  const navRun = page.locator('.sidebar [data-testid=nav-run]').first()
+  await navRun.waitFor({ timeout: 20_000 })
+  const navRunId = await navRun.getAttribute('data-run')
+  const statusOfNav = () => page.evaluate(async (id) => (await window.orgai.runs.listLive()).find((r) => r.id === id)?.status ?? 'ended', navRunId)
+  check(await until(async () => (await statusOfNav()) === 'idle', 30_000), 'the second mock run settles idle')
+  await navRun.click({ button: 'right' })
+  await menuOpen('nav-run-menu').waitFor({ timeout: 5000 })
+  check((await itemsOf('nav-run-menu')).join('|') === 'Open|Open in new window|Close', 'sidebar run menu: Open, Open in new window, Close', (await itemsOf('nav-run-menu')).join('|'))
+  check((await menuOpen('nav-run-menu').locator('[role=separator]').count()) === 1, 'sidebar run menu: a separator before Close')
+  await page.locator('[data-testid=nav-run-menu-close]').click()
+  check(await until(async () => (await ctxCount()) === 0, 2000), 'sidebar run menu: the menu closes on Close')
+  check(await until(async () => (await statusOfNav()) === 'ended', 10_000), 'Close on an idle run ended its session')
+  check(await until(async () => (await page.locator(`.sidebar [data-testid=nav-run][data-run="${navRunId}"]`).count()) === 0, 5000), 'Close removed the row from the sidebar open runs')
+  check((await page.locator(`.run-tablist .run-tab-wrap[data-run="${navRunId}"]`).count()) === 0, 'Close hid the run tab')
+  await sleep(300)
+  check((await active()).testid !== 'body', 'sidebar run menu: focus does not drop to the body after Close', JSON.stringify(await active()))
+  check((await page.evaluate((id) => window.orgai.runs.list(id), eng.id)).some((r) => r.id === navRunId), 'Close keeps the run in History')
+
   // ======== 2. Knowledge rows ========
   await page.locator('[data-testid=tab-knowledge]').click()
   await page.locator('[data-testid=knowledge-row]').first().waitFor({ state: 'visible', timeout: 15_000 })
