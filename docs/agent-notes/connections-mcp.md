@@ -410,9 +410,57 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     a server rule); `mcp__*`, other wildcards, `mcp__orgai` and `mcp__orgai__*` are refused by `isValidRule` and
     `isUnsafeAllowRule`. `permissionRules.ts` `ruleLabel` reads both forms as "All tools of <server>" (the rules card
     still shows raw strings). Unit-tested.
-  - Skills have no mid-run path: `active.skills` is read once at run start and the Claude skill plugin is built once
-    in `prepare()`, before the first query (a restart reuses it), so a skill added or granted during a live run reaches only the next run.
-    `Query.reloadSkills()` / `reloadPlugins` exist in the 0.3.312 typings and are untested.
+  - Skills mid-run (corrects an older note that said there was no path): an approved propose_skills (and, through
+    `hostConfigChanged`, a skill change the user saves in OrgAI) reaches a live work run. RunManager recomputes
+    `active.skills` (`ctx.skills()`); Claude's Skill gate reads the live grants at every call (ungrant / removal at
+    once), and a skill the run plugin lacks or whose files changed (`pluginStale`) makes a config restart due: the
+    restart builds a fresh plugin from `ctx.skills()`, the root's "Skills available to you" and each role's Skill tool
+    come from it (`buildAgents` reads the live ctx and the new plugin), and the old plugin is removed after the new
+    query's init. Codex answers 'now': list_skills / load_skill exist on every non-native work run and read
+    `ctx.skills()` at call time, so a thread started before the change can list and load the new skill
+    (codexConfigHost.test.ts lists it from the pre-change root thread). Checked with fake `query()` / fake app-server
+    tests only (claudeConfigChange.test.ts, codexConfigHost.test.ts); unverified live. `Query.reloadSkills()` /
+    `reloadPlugins` exist in the 0.3.312 typings and are unused and untested.
+  - Config restart at the first safe boundary (2026-11-19, Adapter Engineer; fake `query()` regressions in
+    `claudeConfigRestart.test.ts`, each failing before its fix; none run live):
+    - A turn the CLI starts on its own (a report hand-back) showed the root as 'idle' until its first assistant message,
+      so a restart check landing between that turn's init and its first message closed the old query's input mid-turn
+      (and force-closed it after 15 s). `McpRestartState.rootIdle` now also requires no root turn in flight
+      (`turnInFlight`, set at init).
+    - New blocker `handingBack`: a background report ended while the root was idle and the CLI has not started the
+      hand-back turn (`backgroundHandBackPending`, bounded by `BACKGROUND_HANDBACK_WAIT_MS` 30 s); closing the input
+      then could lose the hand-back. The scheduled check re-arms while only that wait holds it.
+    - A report reaching done / error while the root is idle schedules a restart check (`reportSettled`): before, only a
+      root turn end or a background task end did, so a hand-back that never came left the change waiting forever.
+    - A root turn end with a restart due but blocked is counted; at `RESTART_WAIT_WARN_TURNS` (3), then every 5 more, a
+      run warning names the blocker ("has waited N turns for the session to restart (reports are still running)").
+      Codex logs the same after 3 root turn ends while other turns keep its restart from starting
+      (`CODEX_RESTART_WAIT_WARN_TURNS`, codexConfigHost.test.ts).
+    - The config notice now ends with "Reports you spawn from now on get the new configuration." (a restart only
+      happens with no report running, so every report after it gets the new definitions). A finished report resumed
+      with SendMessage after the restart: which definition it runs on is unverified.
+    - Ruled out by reading and existing tests: `buildOptions` reads the live ctx for every restart (agent definitions,
+      root prompt and `Options.agent` through the live root, `mcpServers` / strictMcpConfig from the live resolved list,
+      allowedTools rebuilt, plugin from the restart); pending changes landing during a build stay pending (configGen);
+      `pendingMode` re-schedules when the mode change ends; a held run delivers the notice with the user's next message.
+  - Codex restart notice while held (2026-11-19, codexConfigHost.test.ts, fails before the fix): an MCP or roster restart
+    that completed after the user's interrupt (the interrupted turn's completion triggers it) sent its harness message
+    and so started a root turn against the interrupt. It now waits in `heldBridged` for the user's next message.
+  - `hostConfigChanged(change)` (RuntimeSession member the Runtime Lead adds; public on ClaudeSession, CodexSession and
+    MockSession): the host's entry point for a change the user saved in OrgAI (or approved in another session), called
+    after RunManager moved ctx exactly as for configChanged. Same application as configChanged, plus one harness notice
+    that starts with `HOST_CHANGE_LEAD` (hostConfigNotice.ts) and never starts a turn of its own: mid-turn it is delivered
+    in line; while the root is idle it waits and rides on the next message to the orchestrator (the user's, or on
+    Claude and Codex any harness message such as a plan nudge or report hand-back); a held run keeps it for the user's
+    next message. When a restart is needed the restart notice carries it (one notice): a restart for the user's change
+    alone still happens at once at idle, but its notice waits the same way (Claude also hands the deferred turn end to
+    the continuation driver); a restart that also carries this run's own approved change is delivered as before and
+    says "This notice also covers changes approved in this run." Rejects (the change applies from the next run) for a
+    setup-like or ending session (Claude also before its first query exists, and for `roles` without liveRoster, as
+    configChanged); never for a run that is merely idle. Mock: 'now', recorded in
+    `configChanges` with `host: true` and in `hostNotices` with its delivery ('inline' | 'held' | 'next-message').
+    Checked by claudeConfigRestart.test.ts, codexConfigHost.test.ts, mockConfigChange.test.ts; unverified live, and
+    the RunManager caller is the Runtime Lead's.
   - `request_mcp_install` needs exact pinned versions and the user's approval. A denial tells the agent to find
     another route. The calling agent's id reaches `McpInstallRequest.agentId`: Codex derives it from the thread, and
     Claude reads it from the PreToolUse `agent_id`. Claude matches the MCP call by a tool_use id in `extra._meta` if

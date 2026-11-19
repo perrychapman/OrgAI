@@ -8,7 +8,8 @@ import { cleanRequiredReports, effortOptionsFor, mcpServersForRole, newId, proje
 import { PermissionModeRefusal } from './permissionModeRefusal'
 import { ROOT_AGENT_ID, isSetupLikeRun, type AdapterModelInfo,type BridgeSpawnResult, type CompletionInput, type ExecActivityReason, type PeerMessage, type RootTurnEnd, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type SessionSettlement } from './types'
 import { datum, harnessToolsFor, isBlockingHarnessTool, type BackgroundReport, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
-import { agentInstalledServers, mcpCallDenial, withoutServerRules } from './mcpGrants'
+import { agentInstalledServers, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
+import { hostChangeNotice } from './hostConfigNotice'
 import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import {
   REFERENCE_EDIT_TOOLS,
@@ -1423,7 +1424,12 @@ export class MockSession implements RuntimeSession {
   /** Servers attached mid-run through the harness's addMcpServer hook, in order. For tests. */
   readonly addedMcpServers: McpServerSpec[] = []
   /** Changes reported through the harness's configChanged hook (approved propose_mcp_servers / propose_skills / propose_org_change), in order. For tests. */
-  readonly configChanges: ConfigChange[] = []
+  readonly configChanges: (ConfigChange & { host?: true })[] = []
+  /**
+   * Notices hostConfigChanged sent or kept for the orchestrator, in order (tests and e2e): 'inline' = delivered during a
+   * root turn; 'held' = the run was held, it comes with the user's next message; 'next-message' = the root was idle, same.
+   */
+  readonly hostNotices: { text: string; delivery: 'inline' | 'held' | 'next-message' }[] = []
   /** configChanged handles ConfigChange.roles (RuntimeSession.liveRoster): an approved org chart is used in this run at once. */
   readonly liveRoster = true
   /** What a real adapter would hand the model for user messages and spawn briefs, knowledge blocks included. For tests. */
@@ -1447,6 +1453,8 @@ export class MockSession implements RuntimeSession {
   private held = false
   /** Harness notices that arrived while held: they come with the user's next message (Claude's heldNotices). */
   private heldNotices: string[] = []
+  /** hostConfigChanged notices waiting for the user's next message (Claude's hostNotices). */
+  private hostHeld: string[] = []
   /** Bridged reports delegate_agent started in the background and still working: agent id -> report. */
   private bridgedLive = new Map<string, BackgroundReport>()
   /** Epoch ms the newest background bridged report ended; bookkeeping for the continuation wait. */
@@ -1572,7 +1580,7 @@ export class MockSession implements RuntimeSession {
     this.held = false
     this.transcript(ROOT_AGENT_ID, images?.length ? { kind: 'user', text, images } : { kind: 'user', text })
     // Notices held while the run waited for the user come first, like the Claude adapter's.
-    const notes = this.heldNotices.splice(0)
+    const notes = [...this.heldNotices.splice(0), ...this.hostHeld.splice(0)]
     const body = withUserMessageKnowledge(text, userMessageKnowledge(this.ctx, text, (m) => this.log('warn', m)))
     this.deliveredMessages.push({ agentId: ROOT_AGENT_ID, text: notes.length ? `${notes.join('\n\n')}\n\n---\n${body}` : body })
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
@@ -1719,9 +1727,63 @@ export class MockSession implements RuntimeSession {
    */
   async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
     this.configChanges.push(structuredClone(change))
+    this.rebindForConfig(change)
+    return { availability: 'now' }
+  }
+
+  /** A skills or roster change re-binds the harness tools (list_skills / load_skill, the spawn tools read the live ctx). */
+  private rebindForConfig(change: ConfigChange): void {
     if (change.skills || change.roles) {
       this.tools = harnessToolsFor(this.ctx, this.hooks)
       this.harnessAudiences = new Map(this.tools.map((t) => [t.name, t.audience]))
+    }
+  }
+
+  /**
+   * Reference RuntimeSession.hostConfigChanged: the user changed the run's project in OrgAI and RunManager already moved
+   * ctx. Applied at once like configChanged ('now'), recorded in `configChanges` with `host: true`, and the orchestrator
+   * is told once without a turn of its own (hostConfigNotice.ts hostChangeNotice): in line while the root is in a turn,
+   * held for the user's next message while the run is held or the root is idle (the mock has no harness message that
+   * would carry it sooner). Every notice is recorded in `hostNotices` with how it was delivered. Rejects for a
+   * setup-like or stopped session (the change applies from the next run); never for a run that is merely idle.
+   */
+  async hostConfigChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    if (this.isSetup) throw new Error('Setup-like runs do not take project config changes.')
+    if (this.stopped || this.ended) throw new Error('The session is ending; the change applies from the next run.')
+    this.configChanges.push({ ...structuredClone(change), host: true })
+    this.rebindForConfig(change)
+    const live = this.liveMcpServers()
+    const on = new Set(live.filter((s) => s.enabled).map((s) => s.name))
+    const upserted = change.mcp?.upserted ?? []
+    const text = hostChangeNotice({
+      prefix: 'Harness:',
+      ...(change.mcp
+        ? {
+            servers: upserted.filter((n) => on.has(n)).map((name) => ({ name, roles: rolesGrantedServer(this.ctx.roles, live, name) })),
+            removed: [...upserted.filter((n) => !on.has(n)), ...change.mcp.removed]
+          }
+        : {}),
+      ...(change.skills
+        ? { skills: (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.length).map((s) => ({ name: s.name, roles: this.ctx.roles.filter((r) => s.roleIds.includes(r.id)) })), skillTool: SKILL_HARNESS_TOOLS.load }
+        : {}),
+      ...(change.roles
+        ? {
+            roster: {
+              roles: [...change.roles.added, ...change.roles.changed].map((id) => this.ctx.roles.find((r) => r.id === id)).filter((r): r is Role => !!r && r.reportsTo !== null),
+              removed: change.roles.removed.map((id) => this.ctx.retiredRoles?.().find((r) => r.id === id)?.name ?? id)
+            }
+          }
+        : {})
+    })
+    const summary = 'The user changed the configuration; in effect now'
+    if (!this.held && this.inTurn) {
+      this.hostNotices.push({ text, delivery: 'inline' })
+      this.deliverHarness(text, 'Reading a configuration change…', { summary })
+    } else {
+      this.hostNotices.push({ text, delivery: this.held ? 'held' : 'next-message' })
+      // Not in heldNotices: a notice waiting for the user does not keep the session from settling (settlement()).
+      this.hostHeld.push(text)
+      this.transcript(ROOT_AGENT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
     }
     return { availability: 'now' }
   }

@@ -51,6 +51,7 @@ import { countUsage, setModelTokens } from './runUsage'
 import { requireClaudeExecutable } from './claudeBinary'
 import { PartialText } from './claudePartial'
 import { buildSkillPlugin, livePluginNames, pluginStale, skillGate, type SkillPlugin } from './claudeSkills'
+import { HOST_CHANGE_LEAD } from './hostConfigNotice'
 import { SETUP_TOOLS_INSTRUCTIONS, datum, harnessToolsFor, isBlockingHarnessTool, type BackgroundReport, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolAudience, type HarnessToolCaller, type McpAttachResult } from './harnessTools'
 import { agentInstalledServers, isMcpGated, mcpCallDenial, rolesGrantedServer, withoutServerRules } from './mcpGrants'
 import {
@@ -421,7 +422,21 @@ interface RestartConfig {
   skills: boolean
   /** Approved org changes (ConfigChange.roles, role ids, accumulated): definitions and the root's prompt / tools to rebuild. */
   roles?: { added: string[]; changed: string[]; removed: string[] }
+  /** Some of it came from the user's change in OrgAI (hostConfigChanged). */
+  host?: boolean
+  /** Some of it came from this run's own tool calls (an approved proposal or request_mcp_install). */
+  tool?: boolean
 }
+
+/** How a host change's notice reads: 'only' = the user's change alone (held while the orchestrator is idle), 'also' = with this run's. */
+function hostPart(c: Pick<RestartConfig, 'host' | 'tool'> | undefined): 'only' | 'also' | undefined {
+  if (!c?.host) return undefined
+  return c.tool ? 'also' : 'only'
+}
+
+/** Root turn ends with a config restart due but blocked before the run says so in a warning, and then every this many more. */
+export const RESTART_WAIT_WARN_TURNS = 3
+export const RESTART_WAIT_REPEAT_TURNS = 5
 
 /** What a spawn runs on, as staffSpawn sent it (or the definition carries it): the staffing row's tier, model and effort. */
 type StaffingRan = { model: string; tier?: ModelTier; effort?: Effort }
@@ -482,8 +497,13 @@ export interface McpRestartState {
   held: boolean
   /** The provider rejected a request on a usage limit. */
   limited: boolean
-  /** The orchestrator's turn has ended. */
+  /** The orchestrator's turn has ended (no root turn in flight: a turn the CLI started counts from its init). */
   rootIdle: boolean
+  /**
+   * A background report ended while the orchestrator was idle and the CLI has not started the turn that hands its
+   * report back yet (bounded, BACKGROUND_HANDBACK_WAIT_MS). Closing the input then could lose that hand-back.
+   */
+  handingBack?: boolean
   /** Reports still running. */
   liveReports: number
   /** Open decision cards. */
@@ -498,6 +518,7 @@ export function mcpRestartBlocker(s: McpRestartState): string | undefined {
   if (s.held) return 'the run is held for the user'
   if (s.limited) return 'the run is at a usage limit'
   if (!s.rootIdle) return 'the orchestrator is mid-turn'
+  if (s.handingBack) return 'a finished report is being handed back to the orchestrator'
   if (s.liveReports > 0) return 'reports are still running'
   if (s.pendingInteractions > 0) return 'a decision card is open'
   if (s.backgroundTasks > 0) return 'background tasks are still running'
@@ -534,6 +555,8 @@ export function mcpAttachedNotice(servers: { name: string; tools: string[]; role
   return `[OrgAI harness] ${parts.join(' ')} Calls to it may still ask the user for permission under the project's permission mode. Reports you spawn from now on get it if their role is granted it.`
 }
 
+export { HOST_CHANGE_LEAD }
+
 /**
  * The harness message after a restart that applied an approved config change: the attached or re-granted servers (as
  * mcpAttachedNotice), the servers removed or turned off, and the skills now in the session. `skills` undefined = no
@@ -546,8 +569,18 @@ export function configChangeNotice(c: {
   skills?: { name: string; roles: Pick<Role, 'name' | 'slug'>[] }[] | null
   /** An approved org change is in the session now (RosterNotice). */
   roster?: RosterNotice
+  /**
+   * The user changed the project in OrgAI (hostConfigChanged), not a proposal this run made: 'only' = nothing else is in
+   * this notice, 'also' = it comes with changes approved in this run.
+   */
+  host?: 'only' | 'also'
 }): string {
-  let text = c.servers.length ? mcpAttachedNotice(c.servers) : '[OrgAI harness] The configuration change approved this run is in effect now.'
+  const fallback = c.host === 'only' ? 'It is in effect now.' : 'The configuration change approved this run is in effect now.'
+  let text = c.servers.length ? mcpAttachedNotice(c.servers) : `[OrgAI harness] ${fallback}`
+  if (c.host) {
+    const lead = c.host === 'only' ? HOST_CHANGE_LEAD : `${HOST_CHANGE_LEAD} This notice also covers changes approved in this run.`
+    text = text.replace(/^\[OrgAI harness\] /, `[OrgAI harness] ${lead} `)
+  }
   if (c.removed.length) {
     const one = c.removed.length === 1
     text += ` The MCP server${one ? '' : 's'} ${c.removed.map((n) => datum(n, 64)).join(', ')} ${one ? 'was' : 'were'} removed or turned off: ${one ? 'its' : 'their'} tools are no longer available.`
@@ -563,6 +596,8 @@ export function configChangeNotice(c: {
     text += ` Skills in this session now: ${listed.join('; ')}${more}. Agents load one with the Skill tool and its full name, prefix included.`
   }
   if (c.roster) text += ` ${rosterNoticeText(c.roster)}`
+  // mcpAttachedNotice already ends with its own sentence on new reports.
+  if (!c.servers.length) text += ' Reports you spawn from now on get the new configuration.'
   return text
 }
 
@@ -1587,6 +1622,15 @@ export class ClaudeSession implements RuntimeSession {
   private harnessMessages = new WeakMap<SDKUserMessage, { nudge: boolean; text: string; restart?: boolean }>()
   /** Attach notices that arrived while the run was held: prepended to the user's next message. */
   private heldNotices: string[] = []
+  /**
+   * Notices about a change the user made in OrgAI (hostConfigChanged) that arrived while the orchestrator was idle: they
+   * never start a turn of their own and come with the next message to the orchestrator (the user's, or a harness one).
+   */
+  private hostNotices: string[] = []
+  /** Where the changes waiting for the next restart came from (RestartConfig.host / tool); reset when a restart takes them. */
+  private restartOrigin = { host: false, tool: false }
+  /** Root turn ends in a row with a restart due but blocked (RESTART_WAIT_WARN_TURNS). */
+  private restartWaits = 0
   /** Bridged reports delegate_agent started in the background and still working (not in `agents`): agent id -> report. */
   private bridgedLive = new Map<string, BackgroundReport>()
   /** Epoch ms the newest background bridged report ended; bookkeeping for the continuation wait. */
@@ -1785,7 +1829,8 @@ export class ClaudeSession implements RuntimeSession {
     // After a window-cap stop, the orchestrator learns why with the user's next message, and the cap
     // measures afresh from here.
     // Attach notices that arrived while the run was held come with it too.
-    const notes = [this.pendingCapNote, ...this.heldNotices.splice(0)].filter((n): n is string => !!n)
+    // So do notices about changes the user made in OrgAI while the orchestrator was idle (hostConfigChanged).
+    const notes = [this.pendingCapNote, ...this.heldNotices.splice(0), ...this.hostNotices.splice(0)].filter((n): n is string => !!n)
     const note = notes.length ? notes.join('\n\n') : null
     this.pendingCapNote = null
     if (this.capTripped) {
@@ -2107,6 +2152,7 @@ export class ClaudeSession implements RuntimeSession {
   private reportFinished(): void {
     this.handBackSince = Date.now()
     this.noteActivity('report')
+    this.reportSettled()
   }
 
   // ---------- background reports (split-execution 3.3) ----------
@@ -2596,8 +2642,13 @@ export class ClaudeSession implements RuntimeSession {
     activity = 'Integrating a report…',
     opts: { transcript?: boolean; summary?: string; nudge?: boolean; restart?: boolean } = {}
   ): void {
-    const message: SDKUserMessage = { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null }
-    this.harnessMessages.set(message, { nudge: !!opts.nudge, text, ...(opts.restart ? { restart: true } : {}) })
+    // Notices about the user's own changes waiting for the next message ride on this one (their rows are written). A
+    // restart notice is re-sent by a retried restart without them, so they wait for the next message instead.
+    const host = opts.restart ? [] : this.hostNotices.splice(0)
+    const content = host.length ? `${host.join('\n\n')}\n\n---\n${text}` : text
+    const message: SDKUserMessage = { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null }
+    // A plan nudge carrying host notices is no longer only a nudge: a held run keeps it for the user's next message.
+    this.harnessMessages.set(message, { nudge: !!opts.nudge && !host.length, text: content, ...(opts.restart ? { restart: true } : {}) })
     this.pushInput(message)
     this.noteActivity('message')
     if (opts.transcript !== false) {
@@ -3859,6 +3910,7 @@ export class ClaudeSession implements RuntimeSession {
     if (error) throw new Error(redactSecrets(error, this.secrets))
     const tools = await this.serverTools(spec.name, MCP_STATUS_WAIT_MS)
     this.pendingMcp.set(spec.name, tools)
+    this.restartOrigin.tool = true
     this.log('info', `MCP server ${spec.name} is connected; the agents get its tools once the orchestrator's turn ends and no report is running (the session is resumed with the new tools).`)
     return { prefix: `mcp__${spec.name}__`, availability: 'after-idle', ...(tools.length ? { tools } : {}) }
   }
@@ -3882,6 +3934,98 @@ export class ClaudeSession implements RuntimeSession {
    * session is not running or the live config cannot be read.
    */
   private async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    return (await this.applyConfigChange(change, 'tool')).result
+  }
+
+  /**
+   * RuntimeSession.hostConfigChanged: the user changed this run's project in OrgAI (or approved it in another session)
+   * and RunManager has already moved ctx (project, roles, grants; rosterApplied for roles), exactly as before
+   * configChanged. Applied the same way (setMcpServers now, a restart at idle when a whitelist grows, the skill plugin is
+   * stale or the roster needs definitions; the live gates follow an ungrant or removal at once), with two differences:
+   * - The orchestrator did not ask, so it is told: one harness message naming what changed and what is callable now
+   *   (names through datum(), tool names through safeMcpToolNames, capped). When a restart is needed the restart notice
+   *   carries it (one notice).
+   * - It never starts a turn: mid-turn the notice is delivered in line (read at the next tool round); while the
+   *   orchestrator is idle it waits for the next message to it (the user's, or a harness message such as a plan nudge),
+   *   and a restart notice that holds only the user's change waits the same way. A held run keeps it for the user's
+   *   next message. A restart still happens at once when the run is idle with nothing running.
+   * Rejects for a setup-like or ending session and a session that is not running (the change applies from the next run).
+   */
+  async hostConfigChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    if (this.ending || this.authFailed || this.abort.signal.aborted) throw new Error('The session is ending; the change applies from the next run.')
+    const applied = await this.applyConfigChange(change, 'host')
+    if (applied.restart) return applied.result
+    let text: string
+    try {
+      text = this.hostNowNotice(change, applied)
+    } catch (e) {
+      // Never fails the change itself (the gates already follow it): a plain notice without the lists.
+      this.log('warn', `Could not list the changed configuration for the orchestrator: ${redactSecrets((e as Error)?.message ?? String(e), this.secrets)}`)
+      text = configChangeNotice({ servers: [], removed: [], host: 'only' })
+    }
+    this.deliverHostNotice(text, 'The user changed the configuration; in effect now')
+    return applied.result
+  }
+
+  /** The 'now' notice of a host change: what it attached, removed or regranted, the skills and roles in the session now. */
+  private hostNowNotice(change: ConfigChange, applied: { tools: Record<string, string[]>; upserted: string[]; lost: string[] }): string {
+    const live = this.liveMcpServers()
+    const on = new Set(live.filter((s) => s.enabled && !this.droppedMcp.has(s.name)).map((s) => s.name))
+    const servers = applied.upserted
+      .filter((n) => on.has(n) && !applied.lost.includes(n))
+      .map((name) => ({ name, tools: applied.tools[name] ?? [], roles: rolesGrantedServer(this.ctx.roles, live, name) }))
+    let skills: SkillNoticeEntry[] | null | undefined
+    if (change.skills) {
+      try {
+        skills = [...this.skillNamesFor(this.skillPlugin)]
+          .filter(([, s]) => s.roleIds.length)
+          .map(([name, s]) => ({ name, roles: this.ctx.roles.filter((r) => s.roleIds.includes(r.id)) }))
+      } catch {
+        skills = null
+      }
+    }
+    return configChangeNotice({
+      servers,
+      removed: applied.lost,
+      ...(skills !== undefined ? { skills } : {}),
+      ...(change.roles ? { roster: this.rosterNotice(change.roles) } : {}),
+      host: 'only'
+    })
+  }
+
+  /** The orchestrator is in a turn (or one is about to start for a message already queued). */
+  private rootBusy(): boolean {
+    const root = this.agents.get(ROOT_ID)
+    return this.turnInFlight || (!!root && root.state !== 'idle' && root.state !== 'done' && root.state !== 'error')
+  }
+
+  /**
+   * Deliver a notice about the user's own change without starting a turn: held runs keep it for the user's next message,
+   * a busy orchestrator reads it in line, an idle one gets it with the next message to it. Returns true when it waits.
+   */
+  private deliverHostNotice(text: string, summary: string): boolean {
+    if (this.held || this.capTripped) {
+      this.holdNotice(text, summary)
+      return true
+    }
+    if (this.rootBusy()) {
+      this.notifyOrchestrator(text, 'Reading a configuration change…', { summary })
+      return false
+    }
+    this.hostNotices.push(text)
+    this.transcript(ROOT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
+    this.log('info', 'The user changed the configuration while the orchestrator was idle; it is told with the next message.')
+    return true
+  }
+
+  /**
+   * configChanged's work for both callers (`origin`): the tool path (an approved proposal of this run) and the host path
+   * (hostConfigChanged). `restart` = this change made a config restart due (its notice will say what is in effect).
+   */
+  private async applyConfigChange(
+    change: ConfigChange,
+    origin: 'tool' | 'host'
+  ): Promise<{ result: ConfigChangeResult; restart: boolean; tools: Record<string, string[]>; upserted: string[]; lost: string[] }> {
     if (this.isSetup) throw new Error('Setup-like runs do not take project config changes.')
     if (!this.q) throw new Error('The session is not running yet.')
     if (change.roles && !this.liveRoster) throw new Error('This session does not take org chart changes; they apply from the next run.')
@@ -3940,6 +4084,7 @@ export class ClaudeSession implements RuntimeSession {
     this.liveGrants = now
     if (needRestart) {
       this.pendingConfig.due = true
+      this.restartOrigin[origin] = true
       for (const n of fresh) this.pendingMcp.set(n, tools[n] ?? [])
       for (const n of regranted) if (!this.pendingConfig.regranted.includes(n)) this.pendingConfig.regranted.push(n)
       for (const n of lost) if (!this.pendingConfig.removed.includes(n)) this.pendingConfig.removed.push(n)
@@ -3958,9 +4103,18 @@ export class ClaudeSession implements RuntimeSession {
     } else {
       // Nothing a restart would add: an earlier pending config restart is not needed any more.
       this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
-      if (!this.restartDue()) this.releaseTurnEnd()
+      if (!this.restartDue()) {
+        this.restartOrigin = { host: false, tool: false }
+        this.releaseTurnEnd()
+      }
     }
-    return { availability: gainedNow ? 'after-idle' : 'now', ...(Object.keys(tools).length ? { tools } : {}) }
+    return {
+      result: { availability: gainedNow ? 'after-idle' : 'now', ...(Object.keys(tools).length ? { tools } : {}) },
+      restart: needRestart,
+      tools,
+      upserted,
+      lost
+    }
   }
 
   /**
@@ -4139,7 +4293,10 @@ export class ClaudeSession implements RuntimeSession {
       stopping: this.ending || this.authFailed || this.abort.signal.aborted,
       held: this.held || this.capTripped,
       limited: this.limited,
-      rootIdle: !!root && root.state === 'idle',
+      // A turn the CLI started on its own (a report hand-back) shows as idle until its first assistant message arrives;
+      // turnInFlight is set from its init, so the restart never closes the input under it.
+      rootIdle: !!root && root.state === 'idle' && !this.turnInFlight,
+      handingBack: this.backgroundHandBackPending(),
       liveReports: [...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error').length,
       pendingInteractions: this.ctx.pendingInteractions(),
       backgroundTasks: this.backgroundTasks.size
@@ -4180,6 +4337,38 @@ export class ClaudeSession implements RuntimeSession {
     if (!this.backgroundTasks.size && this.restartDue()) this.scheduleMcpRestart()
   }
 
+  /**
+   * A report reached done / error. If it was the last thing holding a due restart back while the orchestrator is idle,
+   * nothing else may come to check again (the CLI need not start a turn for it), so check shortly.
+   */
+  private reportSettled(): void {
+    // Mid-turn the turn's own end checks again.
+    if (this.rootBusy() || !this.restartDue() || this.ending || this.abort.signal.aborted || this.restarting || this.nextQuery) return
+    this.scheduleMcpRestart()
+  }
+
+  /**
+   * A root turn ended with a restart due: count the turn ends it could not happen at, and say so in the run log
+   * (RESTART_WAIT_WARN_TURNS, then every RESTART_WAIT_REPEAT_TURNS) rather than wait silently. An unattended orchestrator
+   * that keeps reports or background tasks running at every turn end never reaches the safe point.
+   */
+  private noteRestartWait(): void {
+    if (!this.restartDue()) {
+      this.restartWaits = 0
+      return
+    }
+    const why = mcpRestartBlocker(this.restartState())
+    if (!why) return
+    this.restartWaits += 1
+    const n = this.restartWaits
+    if (n === RESTART_WAIT_WARN_TURNS || (n > RESTART_WAIT_WARN_TURNS && (n - RESTART_WAIT_WARN_TURNS) % RESTART_WAIT_REPEAT_TURNS === 0)) {
+      this.log(
+        'warn',
+        `An approved configuration change has waited ${n} turns for the session to restart (${why}). It reaches the agents once the orchestrator ends a turn with no report, background task or decision card open.`
+      )
+    }
+  }
+
   /** Give the continuation driver the turn end held back for a restart that did not happen. */
   private releaseTurnEnd(): void {
     if (!this.turnEndDeferred) return
@@ -4194,7 +4383,14 @@ export class ClaudeSession implements RuntimeSession {
       this.restartTimer = null
       void this.maybeRestartForMcp()
         .then((started) => {
-          if (!started) this.releaseTurnEnd()
+          if (started) return
+          // Waiting on the CLI to hand a finished background report back (bounded, BACKGROUND_HANDBACK_WAIT_MS): check
+          // again, so a hand-back that never comes cannot leave the restart waiting for an event that never fires.
+          if (this.restartDue() && !this.ending && !this.abort.signal.aborted && this.backgroundHandBackPending()) {
+            this.scheduleMcpRestart()
+            return
+          }
+          this.releaseTurnEnd()
         })
         .catch((e) => {
           this.log('warn', `MCP restart check failed: ${redactSecrets((e as Error).message ?? String(e), this.secrets)}`)
@@ -4248,7 +4444,10 @@ export class ClaudeSession implements RuntimeSession {
           regranted: [...this.pendingConfig.regranted],
           removed: [...this.pendingConfig.removed],
           skills: this.pendingConfig.skills,
-          ...(pendingRoles ? { roles: { added: [...pendingRoles.added], changed: [...pendingRoles.changed], removed: [...pendingRoles.removed] } } : {})
+          ...(pendingRoles ? { roles: { added: [...pendingRoles.added], changed: [...pendingRoles.changed], removed: [...pendingRoles.removed] } } : {}),
+          // Servers request_mcp_install attached count as the run's own (addMcpServer sets restartOrigin.tool).
+          ...(this.restartOrigin.host ? { host: true } : {}),
+          ...(this.restartOrigin.tool ? { tool: true } : {})
         }
       : undefined
     let plugin: SkillPlugin | null | undefined
@@ -4280,7 +4479,11 @@ export class ClaudeSession implements RuntimeSession {
     const tools = pending
     const servers = [...tools.keys()]
     for (const [name, t] of pending) if (this.pendingMcp.get(name) === t) this.pendingMcp.delete(name)
-    if (this.configGen === gen) this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
+    if (this.configGen === gen) {
+      this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
+      this.restartOrigin = { host: false, tool: false }
+    }
+    this.restartWaits = 0
     this.restartForConfig = !!config
     this.nextQuery = {
       options: built,
@@ -4357,16 +4560,19 @@ export class ClaudeSession implements RuntimeSession {
     this.pendingMcp.clear()
     const config = this.pendingConfig
     this.pendingConfig = { due: false, regranted: [], removed: [], skills: false }
+    const origin = this.restartOrigin
+    this.restartOrigin = { host: false, tool: false }
+    this.restartWaits = 0
     const other = config.due ? { regranted: config.regranted.filter((n) => !names.includes(n)), skills: config.skills, roles: !!config.roles } : undefined
     if (!names.length && !other?.regranted.length && !other?.skills && !other?.roles) return
-    this.tellNotAttached(names, why, false, other)
+    this.tellNotAttached(names, why, false, other, hostPart(origin))
   }
 
   /**
    * Warn and tell the orchestrator (or, while held, the user's next message) that servers could not be attached, or
    * that the role changes (`other.regranted`) and skill changes of an approved config change could not be applied.
    */
-  private tellNotAttached(names: string[], why: string, restart = false, other?: { regranted: string[]; skills: boolean; roles?: boolean }): void {
+  private tellNotAttached(names: string[], why: string, restart = false, other?: { regranted: string[]; skills: boolean; roles?: boolean }, host?: 'only' | 'also'): void {
     const plural = names.length === 1 ? '' : 's'
     const parts: string[] = []
     if (other?.regranted.length) parts.push(`the role changes for the MCP server${other.regranted.length === 1 ? '' : 's'} ${other.regranted.map((n) => datum(n, 64)).join(', ')}`)
@@ -4386,7 +4592,11 @@ export class ClaudeSession implements RuntimeSession {
       text = `[OrgAI harness] ${rest[0]!.toUpperCase()}${rest.slice(1)} approved this run could not be applied to this session (${datum(why, 300)}). They apply from the next run; continue without them.`
       summary = 'Could not apply the configuration change to this session'
     }
-    if (this.held || this.capTripped) this.holdNotice(text, summary)
+    if (host) text = text.replace(/^\[OrgAI harness\] /, `[OrgAI harness] ${HOST_CHANGE_LEAD} `)
+    // The user's change alone never starts a turn (hostConfigChanged).
+    if (host === 'only') {
+      if (this.deliverHostNotice(text, summary)) this.releaseTurnEnd()
+    } else if (this.held || this.capTripped) this.holdNotice(text, summary)
     else this.notifyOrchestrator(text, 'Thinking…', { summary, restart })
   }
 
@@ -4422,7 +4632,7 @@ export class ClaudeSession implements RuntimeSession {
           dropped: servers,
           ...(rebuilt ? { plugin: prevPlugin ?? null, droppedSkills: true } : {}),
           // Definitions come from the live roster in every build, so an org change is in the fallback too.
-          ...(config?.roles ? { config: { regranted: [], removed: [], skills: false, roles: config.roles } } : {})
+          ...(config?.roles ? { config: { regranted: [], removed: [], skills: false, roles: config.roles, ...(config.host ? { host: true } : {}), ...(config.tool ? { tool: true } : {}) } } : {})
         }
       } else return { why }
       try {
@@ -4496,9 +4706,9 @@ export class ClaudeSession implements RuntimeSession {
     const config = next.config
     if (next.dropped?.length || next.droppedSkills) {
       const why = `the resumed session would not start with ${(next.dropped?.length ?? 0) + (next.droppedSkills ? 1 : 0) === 1 ? 'it' : 'them'}`
-      this.tellNotAttached(next.dropped ?? [], why, true, next.droppedSkills ? { regranted: [], skills: true } : undefined)
+      this.tellNotAttached(next.dropped ?? [], why, true, next.droppedSkills ? { regranted: [], skills: true } : undefined, hostPart(config))
       // The fallback is built from the live roster too: an org change it carries is in place, and the orchestrator hears so.
-      if (config?.roles) this.sendAttachNotice(this.q, [], [], { removed: [], roster: this.rosterNotice(config.roles) })
+      if (config?.roles) this.sendAttachNotice(this.q, [], [], { removed: [], roster: this.rosterNotice(config.roles), ...(hostPart(config) ? { host: hostPart(config) } : {}) })
     } else if (next.servers.length || config) {
       const q = this.q
       // Never left unhandled (review N4): a failure still sends a notice with the known tool names and releases a
@@ -4507,7 +4717,7 @@ export class ClaudeSession implements RuntimeSession {
         this.log('warn', `Could not read the attached MCP servers' grants: ${redactSecrets((e as Error)?.message ?? String(e), this.secrets)}`)
         try {
           const names = [...new Set([...next.servers, ...(config?.regranted ?? [])])]
-          this.sendAttachNotice(q, names.map((name) => ({ name, tools: next.tools.get(name) ?? [] })), next.servers, config && { removed: config.removed, skills: config.skills ? null : undefined, ...(config.roles ? { roster: this.rosterNotice(config.roles) } : {}) })
+          this.sendAttachNotice(q, names.map((name) => ({ name, tools: next.tools.get(name) ?? [] })), next.servers, config && { removed: config.removed, skills: config.skills ? null : undefined, ...(config.roles ? { roster: this.rosterNotice(config.roles) } : {}), ...(hostPart(config) ? { host: hostPart(config) } : {}) })
         } catch (e2) {
           this.log('warn', `Could not send the MCP attach notice: ${redactSecrets((e2 as Error)?.message ?? String(e2), this.secrets)}`)
         } finally {
@@ -4534,7 +4744,7 @@ export class ClaudeSession implements RuntimeSession {
       const fresh = await this.serverTools(name, MCP_STATUS_WAIT_MS, q)
       entries.push({ name, tools: fresh.length ? fresh : (known.get(name) ?? []), roles: rolesGrantedServer(this.ctx.roles, live, name) })
     }
-    let extra: { removed: string[]; skills?: SkillNoticeEntry[] | null } | undefined
+    let extra: Parameters<ClaudeSession['sendAttachNotice']>[3]
     if (config) {
       let skills: SkillNoticeEntry[] | null | undefined
       if (config.skills) {
@@ -4546,7 +4756,12 @@ export class ClaudeSession implements RuntimeSession {
           skills = null
         }
       }
-      extra = { removed: config.removed.filter((n) => !liveNames.has(n)), ...(skills !== undefined ? { skills } : {}), ...(config.roles ? { roster: this.rosterNotice(config.roles) } : {}) }
+      extra = {
+        removed: config.removed.filter((n) => !liveNames.has(n)),
+        ...(skills !== undefined ? { skills } : {}),
+        ...(config.roles ? { roster: this.rosterNotice(config.roles) } : {}),
+        ...(hostPart(config) ? { host: hostPart(config) } : {})
+      }
     }
     this.sendAttachNotice(q, entries, servers, extra)
   }
@@ -4574,13 +4789,19 @@ export class ClaudeSession implements RuntimeSession {
     q: Query,
     entries: Parameters<typeof mcpAttachedNotice>[0],
     servers: string[],
-    extra?: { removed: string[]; skills?: SkillNoticeEntry[] | null; roster?: RosterNotice }
+    extra?: { removed: string[]; skills?: SkillNoticeEntry[] | null; roster?: RosterNotice; host?: 'only' | 'also' }
   ): void {
     if (this.abort.signal.aborted || this.q !== q) return
     let text: string
     let summary: string
     if (extra) {
-      text = configChangeNotice({ servers: entries, removed: extra.removed, ...(extra.skills !== undefined ? { skills: extra.skills } : {}), ...(extra.roster ? { roster: extra.roster } : {}) })
+      text = configChangeNotice({
+        servers: entries,
+        removed: extra.removed,
+        ...(extra.skills !== undefined ? { skills: extra.skills } : {}),
+        ...(extra.roster ? { roster: extra.roster } : {}),
+        ...(extra.host ? { host: extra.host } : {})
+      })
       const parts = [
         ...(entries.length ? [`MCP server${entries.length === 1 ? '' : 's'} ${entries.map((e) => e.name).join(', ')} attached`] : []),
         ...(extra.removed.length ? [`${extra.removed.join(', ')} removed`] : []),
@@ -4591,6 +4812,12 @@ export class ClaudeSession implements RuntimeSession {
     } else {
       text = mcpAttachedNotice(entries)
       summary = `MCP server${servers.length === 1 ? '' : 's'} ${servers.join(', ')} attached`
+    }
+    // Only the user's own change (hostConfigChanged): never a turn of its own. The turn end held back for this restart
+    // goes to the continuation driver, whose nudge (if any) then carries the notice.
+    if (extra?.host === 'only') {
+      if (this.deliverHostNotice(text, summary)) this.releaseTurnEnd()
+      return
     }
     // Held by an interrupt meanwhile: no new turn now; the notice goes with the user's next message.
     if (this.held || this.capTripped) {
@@ -5396,6 +5623,7 @@ export class ClaudeSession implements RuntimeSession {
         else this.onTurnEnded(turnGen)
         // MCP servers approved this turn reach the agents through a restart once everything is idle.
         if (this.restartDue()) this.scheduleMcpRestart()
+        this.noteRestartWait()
         if (this.limited && !this.ending) {
           // Every further request would be rejected too. End the session; the run manager pauses the
           // run and continues it when the window resets.
