@@ -440,7 +440,7 @@ export function engagementDocumentText(doc: string | undefined): string {
 export function orgChangeText(): string {
   return (
     'The org chart is yours to keep honest. If this task shows a gap, such as a missing specialty, a role whose prompt misled its report, ' +
-    'tools a role lacked, or work you had to do yourself because no role fit, call propose_org_change with the full chart and the smallest change that fixes it; give every existing role its current slug so it is updated and keeps its MCP and skill grants (an org change never changes grants: use propose_mcp_servers or propose_skills for that). ' +
+    'tools a role lacked, or work you had to do yourself because no role fit, call propose_org_change listing only the roles you change or add (roles you do not list are kept unchanged; drop one only through remove); give each existing role you list its current slug so it is updated and keeps its MCP and skill grants (an org change never changes grants: use propose_mcp_servers or propose_skills for that). ' +
     'Propose at the end of the run, or mid-run when a missing role blocks the task. The user approves it; it is saved for future runs, and its result says whether this run can use it now, after a restart or only from the next run: delegate to a new role only once the result or the harness says it is available. Do not propose changes for one-off situations.'
   )
 }

@@ -203,7 +203,7 @@ describe('propose_org_change model keeping (full chart)', () => {
     const roles = (vi.mocked(ctx.requestProposal).mock.calls[0][0] as { payload: { roles: Role[] } }).payload.roles
     expect(roles.find((r) => r.slug === 'lead')).toMatchObject({ id: 'r-lead', model: 'gw/big', tier: 'deep' })
     expect(roles.find((r) => r.name === 'Newcomer')).toMatchObject({ model: 'gw/big', tier: 'deep' })
-    // Full-chart semantics: the roles the draft left out are removed.
-    expect(roles).toHaveLength(2)
+    // The roles the draft left out are kept (only `remove` drops a role).
+    expect(roles).toHaveLength(p.roles.length + 1)
   })
 })
