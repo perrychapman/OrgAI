@@ -406,15 +406,49 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     `RunManager.applyProjectChange` (`runtime/hostChange.ts`; handlers in `host/dispatcher.ts`, `liveRunsOf`, only for
     `ctx.surface === 'desktop'`; `RunManagerOptions.liveHostChanges` set by bootstrap.ts with `desktop`). Each run's
     `ActiveRun.hostApply` reuses `setLive` (new settle 'grants') and `applyRosterChange` with the run's own baseline;
-    the handler reads the stored project before the save, so a team-file ingest of the same save never rides along
-    (`runManagerHostChange.test.ts` "INVARIANT", which fails if the diff reads the saved roles). The session hears it
-    through the optional `RuntimeSession.hostConfigChanged` (adapter side on its own branch); absent = 'next-run' and
-    nothing moves, rejection = 'next-run' with the reason. Held, usage-limited and card-waiting runs take the state now
-    and are never woken (the session keeps its notice for the user's next message). One log line per run; the result is
-    `McpMutationResult.liveRuns` / `SkillMutationResult.liveRuns` (`LiveRunChange`), projects:save keeps returning the
-    Project. Fan-out of a card skips the card's own run. Not covered: request_mcp_install approvals, projects:save fields
-    other than roles and grants. Unit-tested only (`hostChange.test.ts`, `runManagerHostChange.test.ts`,
-    `host/dispatcherLiveChanges.test.ts`); live providers, the 10 s 'pending' path and any renderer display are unverified.
+    the handler reads the stored project before the save (a structuredClone copy, every handler), so a team-file ingest
+    of the same save does not ride along on roles and grants (`runManagerHostChange.test.ts` "INVARIANT", which fails if
+    the diff reads the saved roles). For a named server / skill without a `fields` limit (mcp:upsert, skills:update with
+    a draft, card fan-out) a same-save ingest change of that item can come along; the team-files gate applies only
+    narrowings (removal, turn-off, fewer roles) automatically, so that can only take away (re-review L-c, accepted).
+    Review fixes (2026-11-19):
+    - M1: MCP and skill changes no longer overlay the whole stored item and its stored grants (`overlayOwnItems` is the
+      card route only). `hostChange.ts` `itemEditOf` moves only fields of the named items that differ between `before`
+      and saved, limited to `HostItemChange.fields`; `itemGrantEditsOf` moves only grant pairs the input carried (skills
+      `roleIds`; mcp:* name none, so the run's grants stay; a removed item's grants leave). Tests "M1: mcp:upsert ...",
+      "M1: mcp:setProjectOverrides ...", "M1: skills:update ..." (each fails on the old overlay).
+    - M2 / L5 / L6: narrowing (removed, turned off, smaller MCP `roles`, ungrants) moves first whatever the session can
+      do; widening only with `hostConfigChanged`, and a rejection puts it back (narrowing kept; org chart roster moves
+      stay). Without the method: "This run's session cannot take changes while it is live."; session not open yet: "The
+      run is still starting."; both say what applies now. Tests "M2: a rejection puts back ...", "M2: a rejection of a
+      change that only takes away ...", "L5: ...", "L6: ...".
+    - L7: `LIVE_RUN_CHANGE_WAIT_MS` is 2 s (was 10 s): the mcp:* / skills:* / projects:save IPC reply waits at most that
+      long (runs are asked in parallel), then the run answers 'pending', nothing is put back, and the run log says "OrgAI
+      is still applying it to this run" and later when it is in place. `RunManagerOptions.liveHostChangeWaitMs` lets
+      tests shorten it, so the 'pending' test ("M2 / L7: ...") is real, not skipped.
+    - L1: skills:create names the skill by draft name and linkLibrary by library id, both new since `before`. L2: the
+      label is stripped of control / format characters before the log. L3: `ConfigChange.mcp.upserted` names only
+      servers redefined, turned off, added or granted; an ungrant-only change sends empty lists (Claude re-reads
+      `ctx.roles` with no restart; Codex restarts at idle). L4: `storedProjectFor` returns a copy.
+    - Re-review (reviewer recheck, pass with fixes, no Critical / High): L-a the undo is field by field (an added item
+      leaves by id; a redefined field goes back only while it still holds the value put in), test "re-review L-a"; L-b
+      only grants that can apply count as widening, skipped ones say "from the next run", test "re-review L-b"; L-d a
+      rejection answers 'next-run' only when something was put back; L-e the copy says "already out of this run's
+      configuration" (Codex has no live MCP gate; an attached server may run until its restart). Not fixed: L-f
+      (`before` is the raw stored project while `saved` is the library-refreshed result, so a linked item's library
+      fields can look like the user's edit and trigger a needless restart; gates unaffected, they refresh from the
+      library at read time); grant undo can still drop a pair a later change granted during a pending wait (fails closed).
+    - End to end: "a desktop save of a grant and of an org chart role reaches an idle mock run" drives the real
+      RunManager and MockAdapter: `MockSession.configChanges` gets one `host: true` entry, `hostNotices` one
+      'next-message' notice, RunManager sends nothing, one "You changed ..." log line.
+    Held, usage-limited and card-waiting runs take the state now and are never woken (the session keeps its notice for
+    the user's next message). One log line per run; the result is `McpMutationResult.liveRuns` /
+    `SkillMutationResult.liveRuns` (`LiveRunChange`), projects:save keeps returning the Project. Fan-out of a card skips
+    the card's own run; MCP / skill card fan-out needs `RunManagerOptions.resolveProject` (bootstrap sets it) to read
+    `before`. Not covered: request_mcp_install approvals, projects:save fields other than roles and grants, org chart
+    role removals on a session without `hostConfigChanged` (they wait with the rest). Unit-tested only
+    (`hostChange.test.ts`, `runManagerHostChange.test.ts`, `host/dispatcherLiveChanges.test.ts`); live providers,
+    whether Codex refuses an ungranted MCP tool before its idle restart, and any renderer display are unverified.
   - Proposal gates (2026-11-02, renderer review): main refuses control, zero-width, bidi and other invisible
     characters (`capabilities/sanitize.ts` `hiddenCharIn` / `hiddenCharProblem`; descriptions are `prose`: tab, line
     breaks, emoji ZWJ, ZWNJ and soft hyphens pass, bidi and zero-width space do not) in every MCP spec string field (`validate.ts` `hiddenCharProblems`, inside

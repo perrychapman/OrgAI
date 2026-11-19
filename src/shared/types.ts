@@ -1262,22 +1262,27 @@ export interface McpMutationResult {
  * What one live work run did with a change the user saved in the desktop app (projects:save, mcp:*, skills:*) or
  * approved on another session's card for the same project (RunManager.applyProjectChange). Structured-clone safe.
  * 'now': in effect for the run's next tool call. 'after-idle': in effect once the run's agents are idle and the session
- * restarted (the run tells its orchestrator). 'next-run': this run keeps what it has; `reason` says why. 'pending': the
- * run had not answered within LIVE_RUN_CHANGE_WAIT_MS; its run log says when it has.
+ * restarted (the run tells its orchestrator). 'next-run': what the change adds waits for the next run; `reason` says
+ * why and whether what it took away (a removal, a turn-off, an ungrant) already applies. 'pending': the run's session
+ * had not answered within LIVE_RUN_CHANGE_WAIT_MS; the change is still being applied and the run log says when it is in
+ * place (or, if the session then refuses it, that what it adds waits for the next run).
  */
 export interface LiveRunChange {
   runId: string
   /** The run's title (or its prompt's first line), for the note. */
   title: string
   availability: 'now' | 'after-idle' | 'next-run' | 'pending'
-  /** With 'next-run': OrgAI's reason, one sentence. */
+  /** With 'next-run': OrgAI's reason, one or two sentences. With 'now' / 'after-idle': what parts wait, when some do. */
   reason?: string
   /** Org chart roles this run could not take (they apply from the next run), with OrgAI's reason. */
   deferred?: { name: string; reason: string }[]
 }
 
-/** How long a desktop save waits for each live run's answer before it reports 'pending' (LiveRunChange). */
-export const LIVE_RUN_CHANGE_WAIT_MS = 10_000
+/**
+ * How long a desktop save waits for each live run's answer before it reports 'pending' (LiveRunChange). The handler's
+ * IPC reply waits this long at most (the runs are asked in parallel), so it stays short.
+ */
+export const LIVE_RUN_CHANGE_WAIT_MS = 2_000
 
 /** mcp:setSecret input. `value: null` deletes the stored value. Write-only: values are never read back. */
 export interface McpSecretInput {

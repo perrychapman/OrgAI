@@ -427,7 +427,7 @@ export function proposalEffectCopy(effect: ProposalEffect | undefined, proposer:
     }
     case 'next-run':
       return opts.otherLiveRuns
-        ? 'Takes effect from the next run; this session keeps what it has. Live team runs of this project take it as soon as they can.'
+        ? 'Takes effect from the next run; this session keeps what it has. Other live team runs of this project take it when their session can; each run log says when.'
         : 'Takes effect from the next run. This run keeps what it has.'
     default:
       return null

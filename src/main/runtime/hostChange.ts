@@ -10,17 +10,46 @@ import type { Project, Role } from '@shared/types'
  * run. So the caller names the items (servers / skills by id and name), and for projects:save RunManager diffs the
  * request against the project as stored BEFORE the save (and before any ingest): a field only the ingest changed is in
  * neither side of that diff. A named change also has to be in the saved project (the save may have refused or kept it).
- * Pure module.
+ * For servers and skills (itemEditOf) the diff is before vs saved on the named items, so a same-save ingest change of
+ * a NAMED item comes along when the action sets no `fields` limit; the team-files gate applies only narrowings
+ * automatically, so that can only take something away. Pure module.
  */
 export type HostProjectChange =
   /** mcp:upsert / mcp:remove / mcp:linkLibrary / mcp:setProjectOverrides: these servers (definition and grants to them). */
-  | { kind: 'mcp'; ids: string[]; names: string[]; label: string }
+  | ({ kind: 'mcp' } & HostItemChange)
   /** skills:create / update / remove / linkLibrary: these skills (content and grants to them). */
-  | { kind: 'skills'; ids: string[]; names: string[]; label: string }
+  | ({ kind: 'skills' } & HostItemChange)
   /** projects:save (org chart editor, role grants): `before` is the stored project read before the save. */
   | { kind: 'projectSave'; before: Project; request: Project }
   /** An approved org chart card of another session: `before` is the stored project read before the apply. */
   | { kind: 'orgChart'; before: Project; roles: Role[] }
+
+/**
+ * A change of named servers or skills (mcp:* / skills:* handlers, or another session's approved card). Only what the
+ * action itself changed moves: `before` (the stored project read before the save, a copy) against the saved project,
+ * for the named items only, limited to `fields` and `grants`.
+ */
+export interface HostItemChange {
+  /** Server or skill ids, library entry ids included. */
+  ids: string[]
+  /** Server or skill names. */
+  names: string[]
+  /** For the run log ("You changed <label>"); raw, RunManager passes it through logText. */
+  label: string
+  /** The stored project read BEFORE the save (structuredClone'd by the caller). */
+  before: Project
+  /**
+   * The definition fields the action's input set (mcp:upsert: the spec's keys; setProjectOverrides: envOverrides /
+   * headerOverrides). Missing = any field the save changed on a named item.
+   */
+  fields?: readonly string[]
+  /**
+   * Grants the action's input carried, per item (`item`: an id, name or library id of a named item): `roleIds` is the
+   * complete set of roles holding it after the action (skills roleIds replace the set). Missing = the action named no
+   * grant: the run's grants to the items stay (a removed item still loses them).
+   */
+  grants?: readonly { item: string; roleIds: readonly string[] }[]
+}
 
 /** Role fields an org chart edit never moves through this route: identity, grants (their own route) and the canvas. */
 const NOT_A_ROLE_EDIT: ReadonlySet<string> = new Set(['id', 'mcpServers', 'skills', 'position'])
@@ -170,4 +199,141 @@ export function applyGrantEdits(
     applied.push(e)
   }
   return { roles: out, applied, skipped }
+}
+
+/** What an item edit (itemEditOf) does to the run's list, split into what takes away and what adds. */
+export interface ItemEdit<T> {
+  /** The run's list with only the narrowing part applied: removals, a turn-off, a smaller MCP `roles` list. */
+  narrowed: T[] | undefined
+  /** The run's list with the whole edit applied (narrowed plus redefinitions and new items). */
+  widened: T[] | undefined
+  /** The run's items the action removed. */
+  removed: T[]
+  /** Items the action created (in neither `before` nor the run). */
+  added: T[]
+  /** Ids of the run's items whose narrowing fields moved. */
+  narrowedIds: string[]
+  /** Ids of the run's items whose other fields moved. */
+  widenedIds: string[]
+  /** Ids of every named item (run, before or saved). */
+  ownIds: Set<string>
+}
+
+/** True when the change of `field` from the run's `run` value to `next` only takes something away. */
+function narrowsField(field: string, run: Loose, next: Loose): boolean {
+  if (field === 'enabled') return next.enabled === false
+  if (field === 'roles') {
+    // McpServerSpec.roles: undefined = every role.
+    const to = next.roles
+    if (!Array.isArray(to)) return false
+    const from = run.roles
+    return !Array.isArray(from) || to.every((x) => from.includes(x))
+  }
+  return false
+}
+
+/**
+ * The servers / skills the action named, `before` -> `saved`, applied to the run's `live` list. Only fields the action
+ * changed move (before vs saved, limited to `fields` when given): a stored change the run did not take (approved for
+ * the next run, a pull) is equal on both sides and never rides in on an unrelated edit of the same item. An item the
+ * action removed leaves; an item it created (in neither `before` nor the run) is added whole; a stored item the run
+ * does not have stays out. Items are matched by id, then by name. Pure.
+ */
+export function itemEditOf<T extends { id: string; name: string; libraryId?: string }>(
+  live: readonly T[] | undefined,
+  before: readonly T[] | undefined,
+  saved: readonly T[] | undefined,
+  own: { ids: readonly string[]; names: readonly string[] },
+  fields?: readonly string[]
+): ItemEdit<T> {
+  const ids = new Set(own.ids)
+  const names = new Set(own.names)
+  const isOwn = (x: T): boolean => ids.has(x.id) || names.has(x.name) || (!!x.libraryId && ids.has(x.libraryId))
+  const find = (list: readonly T[] | undefined, x: { id: string; name: string }): T | undefined =>
+    (list ?? []).find((y) => y.id === x.id) ?? (list ?? []).find((y) => y.name === x.name)
+  const only = fields ? new Set(fields) : undefined
+  const narrowed: T[] = []
+  const widened: T[] = []
+  const edit: ItemEdit<T> = { narrowed, widened, removed: [], added: [], narrowedIds: [], widenedIds: [], ownIds: new Set() }
+  for (const x of [...(live ?? []), ...(before ?? []), ...(saved ?? [])]) if (isOwn(x)) edit.ownIds.add(x.id)
+  const matched = new Set<string>()
+  for (const x of live ?? []) {
+    if (!isOwn(x)) {
+      narrowed.push(x)
+      widened.push(x)
+      continue
+    }
+    const b = find(before, x)
+    const s = find(saved, x)
+    if (s) matched.add(s.id)
+    if (b && !s) {
+      edit.removed.push(x)
+      continue
+    }
+    if (!b || !s) {
+      // Not something this action changed as the run has it.
+      narrowed.push(x)
+      widened.push(x)
+      continue
+    }
+    const bl = b as unknown as Loose
+    const sl = s as unknown as Loose
+    const n = structuredClone(x) as unknown as Loose
+    let narrows = false
+    const wide: [string, unknown][] = []
+    for (const k of new Set([...Object.keys(bl), ...Object.keys(sl)])) {
+      if (k === 'id' || (only && !only.has(k)) || same(bl[k], sl[k])) continue
+      if (narrowsField(k, x as unknown as Loose, sl)) {
+        n[k] = structuredClone(sl[k])
+        narrows = true
+      } else wide.push([k, sl[k]])
+    }
+    const w = wide.length ? (structuredClone(n) as Loose) : n
+    for (const [k, v] of wide) {
+      if (v === undefined) delete w[k]
+      else w[k] = structuredClone(v)
+    }
+    narrowed.push((narrows ? n : x) as unknown as T)
+    widened.push((narrows || wide.length ? w : x) as unknown as T)
+    if (narrows) edit.narrowedIds.push(x.id)
+    if (wide.length) edit.widenedIds.push(x.id)
+  }
+  for (const s of saved ?? []) {
+    if (!isOwn(s) || matched.has(s.id) || find(before, s) || find(live, s)) continue
+    const copy = structuredClone(s)
+    edit.added.push(copy)
+    widened.push(copy)
+  }
+  if (live === undefined) {
+    edit.narrowed = undefined
+    if (!edit.added.length) edit.widened = undefined
+  }
+  return edit
+}
+
+/**
+ * The grant edits of named items an action made (before.roles -> saved.roles, field `field`), limited to the grants its
+ * input carried: per item, a role in `roleIds` may gain it, a role outside may lose it. Items are resolved by id, name or
+ * library id among `items`. No `scopes` = none. Pure.
+ */
+export function itemGrantEditsOf<T extends { id: string; name: string; libraryId?: string }>(
+  before: readonly Role[],
+  saved: readonly Role[],
+  field: GrantEdit['field'],
+  items: readonly T[],
+  scopes: HostItemChange['grants']
+): GrantEdit[] {
+  if (!scopes?.length) return []
+  const resolved = scopes.map((sc) => ({
+    ids: new Set(items.filter((x) => x.id === sc.item || x.name === sc.item || (!!x.libraryId && x.libraryId === sc.item)).map((x) => x.id)),
+    roleIds: new Set(sc.roleIds)
+  }))
+  return grantEditsOf(before, saved, saved).filter(
+    (e) => e.field === field && resolved.some((sc) => sc.ids.has(e.id) && (e.granted ? sc.roleIds.has(e.roleId) : !sc.roleIds.has(e.roleId)))
+  )
+}
+
+/** Ungrant edits for every grant `roles` hold to `ids` in `field` (a removed item's grants leave with it). Pure. */
+export function ungrantsOf(roles: readonly Role[], field: GrantEdit['field'], ids: ReadonlySet<string>): GrantEdit[] {
+  return roles.flatMap((r) => (r[field] ?? []).filter((id) => ids.has(id)).map((id) => ({ roleId: r.id, field, id, granted: false })))
 }
