@@ -72,6 +72,7 @@ describe('mcpProposal', () => {
   it('words the effect by proposer and drops unknown values', () => {
     expect(proposalEffectCopy('now')).toBe('Takes effect now.')
     expect(proposalEffectCopy('next-run')).toBe('Takes effect from the next run. This run keeps what it has.')
+    expect(proposalEffectCopy('next-run', 'assistant', { otherLiveRuns: true })).toBe('Takes effect from the next run; this session keeps what it has. Live team runs of this project take it as soon as they can.')
     expect(proposalEffectCopy('after-turn')).toBe("Takes effect after the orchestrator's current turn. Reports already running keep what they have.")
     expect(proposalEffectCopy('after-turn', 'assistant')).toContain("the assistant's current turn")
     expect(proposalEffectCopy('after-turn', 'architect')).toContain("the Architect's current turn")
@@ -94,11 +95,11 @@ describe('mcpProposal', () => {
     // Main saves `enabled !== false`: an omitted flag switches a disabled server on, so it reads as a toggle.
     const omitted = { ...base, enabled: undefined } as unknown as McpProposalServer
     expect(classifyUpsert(omitted, [cur], 'project').change).toBe('toggle')
-    expect(toggleLine(omitted, cur)).toBe('Switches pg on. It runs code on this machine from the next run.')
+    expect(toggleLine(omitted, cur)).toBe('Switches pg on. It runs code on this machine once a run uses it.')
     expect(classifyUpsert(omitted, [{ ...cur, enabled: true }], 'project').change).not.toBe('toggle')
-    expect(toggleLine(on, cur)).toBe('Switches pg on. It runs code on this machine from the next run.')
+    expect(toggleLine(on, cur)).toBe('Switches pg on. It runs code on this machine once a run uses it.')
     const remote = spec({ id: 'a', transport: 'http', url: 'https://h.example.com/mcp', enabled: false, command: undefined, args: undefined })
-    expect(toggleLine({ ...base, transport: 'http', url: 'https://h.example.com/mcp', enabled: true } as McpProposalServer, remote)).toBe('Switches pg on. It connects to h.example.com from the next run.')
+    expect(toggleLine({ ...base, transport: 'http', url: 'https://h.example.com/mcp', enabled: true } as McpProposalServer, remote)).toBe('Switches pg on. It connects to h.example.com once a run uses it.')
     expect(toggleLine({ ...base, enabled: false } as McpProposalServer, spec({ id: 'a', enabled: true }))).toBe('Switches pg off.')
     expect(toggleLine(on, spec({ id: 'a', enabled: true }))).toBeNull()
   })

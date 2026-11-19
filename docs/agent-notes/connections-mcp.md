@@ -410,9 +410,13 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     a server rule); `mcp__*`, other wildcards, `mcp__orgai` and `mcp__orgai__*` are refused by `isValidRule` and
     `isUnsafeAllowRule`. `permissionRules.ts` `ruleLabel` reads both forms as "All tools of <server>" (the rules card
     still shows raw strings). Unit-tested.
-  - Skills have no mid-run path: `active.skills` is read once at run start and the Claude skill plugin is built once
-    in `prepare()`, before the first query (a restart reuses it), so a skill added or granted during a live run reaches only the next run.
-    `Query.reloadSkills()` / `reloadPlugins` exist in the 0.3.312 typings and are untested.
+  - Skills mid-run (superseded): this note once said a skill added or granted during a live run reaches only the next
+    run. Since 2026-11-02 approved propose_skills / propose_mcp_servers cards reach their own run (setLive +
+    configChanged; Claude rebuilds the skill plugin at an idle restart), and since 2026-11-19 desktop saves (mcp:*,
+    skills:*, role grants in projects:save) and other sessions' approved cards reach live team work runs of the project
+    too (`RunManager.applyProjectChange`, `RuntimeSession.hostConfigChanged`; core-runtime.md "Host changes in a live
+    run"); the CLI / TUI / exec host still applies them from the next run. `Query.reloadSkills()` / `reloadPlugins`
+    exist in the 0.3.312 typings and are untested (not used).
   - `request_mcp_install` needs exact pinned versions and the user's approval. A denial tells the agent to find
     another route. The calling agent's id reaches `McpInstallRequest.agentId`: Codex derives it from the thread, and
     Claude reads it from the PreToolUse `agent_id`. Claude matches the MCP call by a tool_use id in `extra._meta` if

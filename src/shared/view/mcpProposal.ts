@@ -301,16 +301,20 @@ export function toggleDirection(s: McpProposalServer, current: McpServerSpec | u
   return next ? 'on' : 'off'
 }
 
-/** "Switches github on. It runs code on this machine from the next run." / "... connects to <host> ..." / "Switches github off." */
+/**
+ * "Switches github on. It runs code on this machine once a run uses it." / "... connects to <host> ..." / "Switches
+ * github off." (Not "from the next run": on the desktop app a live team run of the project can take it at once,
+ * RunManager.applyProjectChange.)
+ */
 export function toggleLine(s: McpProposalServer, current: McpServerSpec | undefined): string | null {
   const dir = toggleDirection(s, current)
   if (!dir) return null
   const name = clampLabel(s.name)
   if (dir === 'off') return `Switches ${name} off.`
   const spec = current ?? s
-  if (spec.transport === 'stdio') return `Switches ${name} on. It runs code on this machine from the next run.`
+  if (spec.transport === 'stdio') return `Switches ${name} on. It runs code on this machine once a run uses it.`
   const host = remoteHost(spec.url ?? s.url)
-  return `Switches ${name} on. It connects to ${host ?? 'a remote host'} from the next run.`
+  return `Switches ${name} on. It connects to ${host ?? 'a remote host'} once a run uses it.`
 }
 
 /** Effect line for a new or linked row; a server added switched off does not start. */
@@ -408,8 +412,12 @@ export function mcpRowVerb(r: McpRow): string {
 /** Who made the proposal, as the effect line names it. */
 export type EffectProposer = 'assistant' | 'architect' | 'orchestrator'
 
-/** When an approved change takes effect (Proposal.effect), as the card's helper says it; null for an unknown value. */
-export function proposalEffectCopy(effect: ProposalEffect | undefined, proposer: EffectProposer = 'orchestrator'): string | null {
+/**
+ * When an approved change takes effect (Proposal.effect), as the card's helper says it; null for an unknown value.
+ * `otherLiveRuns` (the desktop app only, where RunManager.applyProjectChange runs): an approved MCP, skill or org chart
+ * card also reaches the project's other live team runs, so 'next-run' says so instead of implying nothing changes now.
+ */
+export function proposalEffectCopy(effect: ProposalEffect | undefined, proposer: EffectProposer = 'orchestrator', opts: { otherLiveRuns?: boolean } = {}): string | null {
   switch (effect) {
     case 'now':
       return 'Takes effect now.'
@@ -418,7 +426,9 @@ export function proposalEffectCopy(effect: ProposalEffect | undefined, proposer:
       return `Takes effect after ${who} current turn. Reports already running keep what they have.`
     }
     case 'next-run':
-      return 'Takes effect from the next run. This run keeps what it has.'
+      return opts.otherLiveRuns
+        ? 'Takes effect from the next run; this session keeps what it has. Live team runs of this project take it as soon as they can.'
+        : 'Takes effect from the next run. This run keeps what it has.'
     default:
       return null
   }

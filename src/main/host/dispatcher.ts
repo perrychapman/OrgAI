@@ -62,6 +62,7 @@ import type {
   McpLibraryEntry,
   McpLibraryInfo,
   McpLinkLibraryInput,
+  LiveRunChange,
   McpMutationResult,
   McpRegistrySearchInput,
   McpRegistrySearchResult,
@@ -151,6 +152,7 @@ import { createScratchDir } from '../quick/scratch'
 import { folderConfigReview } from '../runtime/folderConfigTrust'
 import { addRules, listIgnoredRules, listRules, removeRule } from '../runtime/permissionRules'
 import type { RunManager, StartUserChoice } from '../runtime/runManager'
+import type { HostProjectChange } from '../runtime/hostChange'
 import type { EvolveService } from '../evolve/service'
 import { EVOLVE_AFTER_RUN_CHANNEL } from './jsonCodec'
 import { overridesWidening } from '../runtime/runOverrides'
@@ -598,9 +600,16 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.projectsApplyImport, (_e, input: AgentImportApplyInput): AgentImportApplyResult => importer.apply(input))
   handle(IPC.projectsExportOrg, (_e, projectId: string): OrgExportResult => importer.exportOrg(projectId))
   // The renderer's copy never changes mcpServers or plugins; those go through mcp:* and plugins:*.
-  handle(IPC.projectsSave, (_e, project: Project) => {
+  handle(IPC.projectsSave, (ctx, project: Project): Project | Promise<Project> => {
     if (typeof project?.id === 'string' && isVirtualProjectId(project.id)) throw new Error('This assistant project cannot be saved.')
-    return projects.saveFromRenderer(project)
+    // Read BEFORE the save: the save ingests team files inside the service, and a live run must not see that as the user's edit.
+    // A copy: nothing the save or its ingest does to the stored object may reach the comparison.
+    const stored = ctx.surface === 'desktop' && typeof project?.id === 'string' ? projects.get(project.id) : null
+    const before = stored ? structuredClone(stored) : null
+    const saved = projects.saveFromRenderer(project)
+    // Sync for any other surface (and when there is nothing to compare against), exactly as before.
+    if (!before) return saved
+    return liveRunsOf(ctx, runs, saved.id, saved, { kind: 'projectSave', before, request: project }).then(() => saved)
   })
   // Folder config trust: what the folder's own agent config would do (read from disk now). The user's decision
   // (projects:setFolderConfigTrust) is desktop only and is served by ipc.ts alone: no socket handler exists for it.
@@ -913,8 +922,8 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   )
 
   registerConnectionIpc(handle, projects, connections)
-  registerMcpIpc(handle, runs, mcp, projectOrHarness, { quick, settings, effectiveSettings: () => connections.effectiveSettings(), mock })
-  registerSkillIpc(handle, skills, skillEvaluation)
+  registerMcpIpc(handle, runs, mcp, projectOrHarness, (id) => projects.get(id), { quick, settings, effectiveSettings: () => connections.effectiveSettings(), mock })
+  registerSkillIpc(handle, skills, skillEvaluation, runs, (id) => projects.get(id))
   registerCapabilityIpc(handle, capabilities)
   if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
   if (kit) registerKitBundleIpc(handle, kit)
@@ -1052,7 +1061,40 @@ function registerTemplateEngagementIpc(handle: Register, { projects, templates, 
 }
 
 /** Project skills, the skill library, the repo import and evaluation: the services 1:1, ids checked first. */
-function registerSkillIpc(handle: Register, skills: SkillServiceApi, evaluation: SkillEvaluationApi): void {
+/**
+ * Live work runs of the project and a change the user saved in the desktop window (RunManager.applyProjectChange).
+ * Desktop surface only; undefined for any other surface, an empty answer or a failure (the save's own result and error
+ * are never affected).
+ */
+async function liveRunsOf(
+  ctx: InvokeContext,
+  runs: RunManager,
+  projectId: string,
+  saved: Project,
+  change: HostProjectChange
+): Promise<LiveRunChange[] | undefined> {
+  if (ctx.surface !== 'desktop') return undefined
+  try {
+    const live = await runs.applyProjectChange(projectId, saved, change, { source: 'user' })
+    return Array.isArray(live) && live.length ? live : undefined
+  } catch (e) {
+    log.warn(`Live run change for project ${projectId} failed: ${(e as Error).message}`)
+    return undefined
+  }
+}
+
+const clampName = (name: string): string => (name.length > 80 ? `${name.slice(0, 79)}…` : name)
+const mcpChange = (ids: string[], names: string[]): HostProjectChange => ({ kind: 'mcp', ids, names, label: `the MCP server ${clampName(names[0] ?? ids[0] ?? '')}` })
+const skillChange = (ids: string[], names: string[]): HostProjectChange => ({ kind: 'skills', ids, names, label: `the skill ${clampName(names[0] ?? ids[0] ?? '')}` })
+const uniq = (list: string[]): string[] => [...new Set(list.filter((s) => typeof s === 'string' && s))]
+
+function registerSkillIpc(
+  handle: Register,
+  skills: SkillServiceApi,
+  evaluation: SkillEvaluationApi,
+  runs: RunManager,
+  getProject: (id: string) => Project | null
+): void {
   type ProjectSkill = { projectId: string; skillId: string }
   const projectSkill = (input: unknown): ProjectSkill => {
     const i = obj<ProjectSkill>(input)
@@ -1072,15 +1114,45 @@ function registerSkillIpc(handle: Register, skills: SkillServiceApi, evaluation:
   }
   handle(IPC.skillsList, (_e, projectId: unknown): SkillInfo[] => skills.list(projectIdArg(projectId)))
   handle(IPC.skillsRead, (_e, input: unknown): SkillContent => skills.read(projectSkill(input)))
-  handle(IPC.skillsCreate, (_e, input: unknown): SkillMutationResult => skills.create(withProject<SkillCreateInput>(input)))
-  handle(IPC.skillsUpdate, (_e, input: unknown): SkillMutationResult => {
-    const i = withProject<SkillUpdateInput>(input)
-    return skills.update({ ...i, ...projectSkill(i) })
+  /** Attach liveRuns (desktop only, non-empty only) to a skills mutation result. */
+  const withLive = (ctx: InvokeContext, result: SkillMutationResult, projectId: string, change: HostProjectChange): SkillMutationResult | Promise<SkillMutationResult> => {
+    if (ctx.surface !== 'desktop') return result
+    return liveRunsOf(ctx, runs, projectId, result.project, change).then((live) => (live ? { ...result, liveRuns: live } : result))
+  }
+  const skillName = (p: Project | null | undefined, id: string): string | undefined => p?.skills?.find((s) => s.id === id)?.name
+  handle(IPC.skillsCreate, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
+    const i = withProject<SkillCreateInput>(input)
+    const before = getProject(i.projectId)
+    const result = skills.create(i)
+    const had = new Set((before?.skills ?? []).map((s) => s.id))
+    const made = result.project.skills?.find((s) => !had.has(s.id)) ?? result.project.skills?.find((s) => s.name === i.draft?.name)
+    if (!made) return result
+    return withLive(ctx, result, i.projectId, skillChange([made.id], [made.name]))
   })
-  handle(IPC.skillsRemove, (_e, input: unknown): SkillMutationResult => skills.remove(projectSkill(input)))
-  handle(IPC.skillsLinkLibrary, (_e, input: unknown): SkillMutationResult => {
+  handle(IPC.skillsUpdate, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
+    const i = withProject<SkillUpdateInput>(input)
+    const args = { ...i, ...projectSkill(i) }
+    const before = getProject(i.projectId)
+    const result = skills.update(args)
+    const names = uniq([skillName(before, args.skillId) ?? '', skillName(result.project, args.skillId) ?? ''])
+    return withLive(ctx, result, i.projectId, skillChange([args.skillId], names))
+  })
+  handle(IPC.skillsRemove, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
+    const i = projectSkill(input)
+    const before = getProject(i.projectId)
+    const result = skills.remove(i)
+    return withLive(ctx, result, i.projectId, skillChange([i.skillId], uniq([skillName(before, i.skillId) ?? i.skillId])))
+  })
+  handle(IPC.skillsLinkLibrary, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
     const i = withProject<SkillLinkLibraryInput>(input)
-    return skills.linkLibrary({ ...i, ...libraryArg(i) })
+    const args = { ...i, ...libraryArg(i) }
+    const before = getProject(i.projectId)
+    const result = skills.linkLibrary(args)
+    const had = new Set((before?.skills ?? []).map((s) => s.id))
+    const linked =
+      result.project.skills?.find((s) => s.libraryId === args.libraryId && !had.has(s.id)) ?? result.project.skills?.find((s) => s.libraryId === args.libraryId)
+    if (!linked) return result
+    return withLive(ctx, result, i.projectId, skillChange(uniq([args.libraryId, linked.id]), [linked.name]))
   })
   handle(IPC.skillsPromote, (_e, input: unknown): SkillMutationResult => skills.promote(projectSkill(input)))
   // Import: read-only scans of the stored project's folder; the renderer supplies choices and the preview digest.
@@ -1168,11 +1240,25 @@ function registerMcpIpc(
   runs: RunManager,
   mcp: McpService,
   projectOrHarness: (id: string) => Project | null,
+  getProject: (id: string) => Project | null,
   assist: { quick: QuickRunService; settings: SettingsStore; effectiveSettings: () => AppSettings; mock: boolean }
 ): void {
   handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
-  handle(IPC.mcpUpsert, (_e, input: McpUpsertInput): McpMutationResult => mcp.upsert(input))
-  handle(IPC.mcpRemove, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.remove(input))
+  /** Attach liveRuns (desktop only, non-empty only) to an MCP mutation result. */
+  const withLive = (ctx: InvokeContext, result: McpMutationResult, projectId: string, change: HostProjectChange): McpMutationResult | Promise<McpMutationResult> => {
+    if (ctx.surface !== 'desktop') return result
+    return liveRunsOf(ctx, runs, projectId, result.project, change).then((live) => (live ? { ...result, liveRuns: live } : result))
+  }
+  const serverName = (p: Project | null | undefined, id: string): string | undefined => p?.mcpServers?.find((s) => s.id === id)?.name
+  handle(IPC.mcpUpsert, (ctx, input: McpUpsertInput): McpMutationResult | Promise<McpMutationResult> => {
+    const result = mcp.upsert(input)
+    return withLive(ctx, result, input.projectId, mcpChange([input.spec.id], [input.spec.name]))
+  })
+  handle(IPC.mcpRemove, (ctx, input: { projectId: string; serverId: string }): McpMutationResult | Promise<McpMutationResult> => {
+    const before = getProject(input.projectId)
+    const result = mcp.remove(input)
+    return withLive(ctx, result, input.projectId, mcpChange([input.serverId], [serverName(before, input.serverId) ?? input.serverId]))
+  })
   handle(IPC.mcpSetSecret, (_e, input: unknown): McpMutationResult => mcp.setSecret(mcpSecretArgs(input)))
   handle(IPC.mcpTest, (_e, input: { projectId: string; serverId: string }): Promise<McpTestResult> => mcp.test(input))
   handle(IPC.mcpRegistrySearch, (_e, input: McpRegistrySearchInput): Promise<McpRegistrySearchResult> => mcp.registrySearch(input))
@@ -1201,7 +1287,15 @@ function registerMcpIpc(
     if (!project) throw new Error('Project not found')
     return runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, instruction) })
   })
-  handle(IPC.mcpLinkLibrary, (_e, input: McpLinkLibraryInput): McpMutationResult => mcp.linkLibrary(input))
+  handle(IPC.mcpLinkLibrary, (ctx, input: McpLinkLibraryInput): McpMutationResult | Promise<McpMutationResult> => {
+    const before = getProject(input.projectId)
+    const result = mcp.linkLibrary(input)
+    const had = new Set((before?.mcpServers ?? []).map((s) => s.id))
+    const linked =
+      result.project.mcpServers?.find((s) => s.libraryId === input.libraryId && !had.has(s.id)) ?? result.project.mcpServers?.find((s) => s.libraryId === input.libraryId)
+    if (!linked) return result
+    return withLive(ctx, result, input.projectId, mcpChange(uniq([linked.id, input.libraryId]), [linked.name]))
+  })
   handle(IPC.mcpPromote, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.promote(input))
   // Resolves when the browser flow ends (or fails, as state 'error'); client id and secret are write-only.
   handle(IPC.mcpAuthorize, (_e, input: McpAuthorizeInput): Promise<McpAuthStatus> => mcp.authorize(input))
@@ -1221,7 +1315,11 @@ function registerMcpIpc(
 
   // ---- MCP per-project secrets and custom connector presets ----
   handle(MCP_SCOPE_IPC.mcpCopyFromLibrary, (_e, input: unknown) => mcp.copyFromLibrary(mcpCopyArgs(input)))
-  handle(MCP_SCOPE_IPC.mcpSetProjectOverrides, (_e, input: unknown) => mcp.setProjectOverrides(mcpOverridesArgs(input)))
+  handle(MCP_SCOPE_IPC.mcpSetProjectOverrides, (ctx, input: unknown): McpMutationResult | Promise<McpMutationResult> => {
+    const args = mcpOverridesArgs(input)
+    const result = mcp.setProjectOverrides(args)
+    return withLive(ctx, result, args.projectId, mcpChange([args.serverId], [serverName(result.project, args.serverId) ?? args.serverId]))
+  })
   handle(MCP_SCOPE_IPC.connectorPresetsList, () => mcp.connectorPresetsList())
   // The service validates the whole definition (validateUserPreset); the handler passes the raw structured-clone input.
   handle(MCP_SCOPE_IPC.connectorPresetsUpsert, (_e, input: unknown) => mcp.connectorPresetsUpsert(input))

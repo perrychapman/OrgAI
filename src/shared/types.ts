@@ -1251,7 +1251,33 @@ export interface McpUpsertInput {
 export interface McpMutationResult {
   project: Project
   servers: McpServerInfo[]
+  /**
+   * Desktop app only (mcp:upsert, mcp:remove, mcp:linkLibrary, mcp:setProjectOverrides): what each live work run of the
+   * project did with the change (RunManager.applyProjectChange). Absent on other hosts and when no work run was live.
+   */
+  liveRuns?: LiveRunChange[]
 }
+
+/**
+ * What one live work run did with a change the user saved in the desktop app (projects:save, mcp:*, skills:*) or
+ * approved on another session's card for the same project (RunManager.applyProjectChange). Structured-clone safe.
+ * 'now': in effect for the run's next tool call. 'after-idle': in effect once the run's agents are idle and the session
+ * restarted (the run tells its orchestrator). 'next-run': this run keeps what it has; `reason` says why. 'pending': the
+ * run had not answered within LIVE_RUN_CHANGE_WAIT_MS; its run log says when it has.
+ */
+export interface LiveRunChange {
+  runId: string
+  /** The run's title (or its prompt's first line), for the note. */
+  title: string
+  availability: 'now' | 'after-idle' | 'next-run' | 'pending'
+  /** With 'next-run': OrgAI's reason, one sentence. */
+  reason?: string
+  /** Org chart roles this run could not take (they apply from the next run), with OrgAI's reason. */
+  deferred?: { name: string; reason: string }[]
+}
+
+/** How long a desktop save waits for each live run's answer before it reports 'pending' (LiveRunChange). */
+export const LIVE_RUN_CHANGE_WAIT_MS = 10_000
 
 /** mcp:setSecret input. `value: null` deletes the stored value. Write-only: values are never read back. */
 export interface McpSecretInput {
@@ -1445,6 +1471,8 @@ export interface SkillMutationResult {
    * asks before removing from SkillInfo.grantedTo.
    */
   rolesUpdated?: { roleId: string; roleName: string }[]
+  /** Desktop app only (skills:create / update / remove / linkLibrary): see McpMutationResult.liveRuns. */
+  liveRuns?: LiveRunChange[]
 }
 
 /** The repository folders the skill import reads, in this order. Each holds `<name>/SKILL.md` folders. */

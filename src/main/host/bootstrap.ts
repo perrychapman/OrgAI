@@ -480,6 +480,8 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     // Mid-run org changes: the desktop app's only decision path for an org chart card is the renderer's ProposalCard,
     // which diffs against runBaseline. The CLI host (TUI, exec) shows no diff, so it never opts in (fail closed).
     ...(opts.desktop ? { liveRosterCards: true as const } : {}),
+    // The desktop window's saves (projects:save, mcp:*, skills:*) reach the project's live work runs (applyProjectChange).
+    ...(opts.desktop ? { liveHostChanges: true as const } : {}),
     ...(opts.desktop
       ? {
           todos: {
