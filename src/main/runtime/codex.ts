@@ -6,7 +6,7 @@ import { effectiveSubagentLimits, effortOptionsFor, isolateWritersOn, newId, pro
 import { validModelId } from '../connections/codexAccount'
 import { PermissionModeRefusal } from './permissionModeRefusal'
 import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnResult,type BridgedRole, type CompletionInput, type PeerMessage, type RunConnection, type RuntimeAdapter, type RuntimeContext, type RuntimeSession, type RootTurnEnd, type SessionSettlement, type ExecActivityReason } from './types'
-import { CodexAppServer, CodexRpcError, codexExitMessage, codexStartLockKey, withCodexStartLock, type CodexAppServerOptions } from './codexAppServer'
+import { CodexAppServer, CodexRpcError, codexExitMessage, codexStartLockKey, maskKeyLike, redactSecrets, withCodexStartLock, type CodexAppServerOptions } from './codexAppServer'
 import { catalogStartFailure, nativeAgentsCatalogConfig, rejectNativeCatalog, type NativeCatalogInput, type NativeCatalogResult } from './codexNativeCatalog'
 import { startCodexToolGateway } from './codexToolGateway'
 import type { ClaudeToolGateway } from './claudeToolGateway'
@@ -370,6 +370,8 @@ class CodexSession implements RuntimeSession {
   private metadataWarned = false
   private toolGateway?: Promise<ClaudeToolGateway>
   private gatewaySecrets: string[] = []
+  /** Env and header values of the MCP servers this session launched with (redact): they may echo in an error. */
+  private mcpSecretValues = new Set<string>()
   private agents = new Map<string, AgentInstance>()
   private threads = new Map<string, ThreadInfo>()
   private agentThread = new Map<string, string>()
@@ -867,6 +869,20 @@ class CodexSession implements RuntimeSession {
 
   private emit(e: RunEvent): void {
     this.ctx.emit(this.scrubGateway(e) as RunEvent)
+  }
+
+  /** An error text fit for the run log: the connection key, gateway path, MCP env / header values and key-like tokens masked. */
+  private redact(text: string): string {
+    const secrets = [this.ctx.connection?.apiKey ?? '', ...this.gatewaySecrets, ...this.mcpSecretValues]
+    return maskKeyLike(redactSecrets(text, secrets))
+  }
+
+  private noteMcpSecrets(servers: readonly ResolvedMcpServer[]): void {
+    for (const s of servers) {
+      // Only the secret slots: plain env values (paths, flags) would mangle ordinary words in a message.
+      const values = [...(s.spec.secretEnv ?? []).map((k) => s.env?.[k]), ...(s.spec.secretHeaders ?? []).map((k) => s.headers?.[k])]
+      for (const v of values) if (typeof v === 'string' && v.length >= 4) this.mcpSecretValues.add(v)
+    }
   }
 
   private log(level: 'info' | 'warn' | 'error', message: string): void {
@@ -1381,7 +1397,7 @@ class CodexSession implements RuntimeSession {
     this.endRun(message)
   }
 
-  private endRun(error?: string): void {
+  private endRun(error?: string, paused?: { reason: string }): void {
     if (this.ended) return
     this.ended = true
     this.ending = true
@@ -1394,7 +1410,9 @@ class CodexSession implements RuntimeSession {
         this.upsert(a)
       }
     }
-    this.emit(error ? { type: 'run.status', runId: this.ctx.run.id, status: 'error', error } : { type: 'run.status', runId: this.ctx.run.id, status: 'finished' })
+    // Paused for the user (never auto-resumed, no pausedUntil): the run waits for their next message.
+    if (paused) this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'paused', pauseReason: paused.reason, autoResume: false })
+    else this.emit(error ? { type: 'run.status', runId: this.ctx.run.id, status: 'error', error } : { type: 'run.status', runId: this.ctx.run.id, status: 'finished' })
     this.server?.close()
     if (this.toolGateway) void this.toolGateway.then(gateway => gateway.close(), () => {})
     this.closeSignal()
@@ -1414,6 +1432,7 @@ class CodexSession implements RuntimeSession {
         if (leftover) firstMessage += `\n\n---\n${leftover}`
       }
       const servers = withoutControlEnv(ctx.resolvedMcpServers ? await ctx.resolvedMcpServers() : [])
+      this.noteMcpSecrets(servers)
       const writableRoots = codexWritableRoots(ctx)
       const launch = this.buildLaunch(servers, { ...trustLaunchOpts(ctx), writableRoots })
       this.launch = launch instanceof Promise ? await launch : launch
@@ -2644,7 +2663,7 @@ class CodexSession implements RuntimeSession {
         : undefined
       text = hostChangeNotice({ prefix: 'Harness:', ...(skills ? { skills, skillTool: SKILL_HARNESS_TOOLS.load } : {}), ...(roster ? { roster } : {}) })
     } catch (e) {
-      this.log('warn', `Could not list the changed configuration for the orchestrator: ${(e as Error)?.message ?? String(e)}`)
+      this.log('warn', `Could not list the changed configuration for the orchestrator: ${this.redact((e as Error)?.message ?? String(e))}`)
       text = hostChangeNotice({ prefix: 'Harness:' })
     }
     this.deliverHostNotice(text, 'The user changed the configuration; in effect now')
@@ -2668,13 +2687,50 @@ class CodexSession implements RuntimeSession {
       return true
     }
     if (this.rootBusy()) {
-      this.notifyOrchestrator(text, 'Reading a configuration change…', { summary })
+      // Steer only (review M1): sendToThread falls back to turn/start when the steer fails or no turn is running, which
+      // would start a turn of its own. Not steerable: the notice waits for the next message to the orchestrator.
+      this.transcript(ROOT_AGENT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
+      this.noteActivity('message')
+      void this.steerRootWithHostNotice(text)
       return false
     }
     this.hostNotes.push(text)
     this.transcript(ROOT_AGENT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
     this.log('info', 'The user changed the configuration while the orchestrator was idle; it is told with the next message.')
     return true
+  }
+
+  /**
+   * Put a host notice into the root's running turn with turn/steer, in the root thread's FIFO (so a turn/start queued
+   * before it has its id by then). Never turn/start: with no running root turn, or when the steer is refused, the
+   * notice waits in hostNotes for the next message to the orchestrator (or, once the run is held, the user's next message).
+   */
+  private steerRootWithHostNotice(text: string): Promise<void> {
+    const threadId = this.rootThreadId
+    const wait = (): void => {
+      if (this.ending) return
+      if (this.continuation.isHeld()) this.heldBridged.push({ parentId: ROOT_AGENT_ID, text })
+      else this.hostNotes.push(text)
+    }
+    if (!threadId) {
+      wait()
+      return Promise.resolve()
+    }
+    return this.serialized(threadId, async () => {
+      const turnId = this.activeTurn.get(threadId)
+      if (turnId && !this.ending && !this.continuation.isHeld()) {
+        try {
+          await this.server.request(METHOD.turnSteer, { threadId, input: userInput(text), expectedTurnId: turnId })
+          return
+        } catch (e) {
+          this.log('info', `Could not steer the running turn with the configuration change (${this.redact((e as Error)?.message ?? String(e))}); it is told with the next message.`)
+        }
+      }
+      wait()
+    }).catch((e: unknown) => {
+      this.log('warn', `Could not deliver the configuration change notice: ${this.redact((e as Error)?.message ?? String(e))}`)
+      wait()
+    })
   }
 
   /** configChanged's work for the tool path and the host path (`origin`, which the restart notice names). */
@@ -2841,6 +2897,7 @@ class CodexSession implements RuntimeSession {
     try {
       // A roster-only restart of a run without resolvedMcpServers relaunches with what the run started with: none.
       const servers = withoutControlEnv(this.ctx.resolvedMcpServers ? await this.ctx.resolvedMcpServers() : [])
+      this.noteMcpSecrets(servers)
       if (this.ending) return abandon()
       const writableRoots = codexWritableRoots(this.ctx)
       const launch = await this.buildLaunch(servers, {
@@ -2907,7 +2964,18 @@ class CodexSession implements RuntimeSession {
       // stop() closed the new server while it started: the run is ending, not failing.
       if (this.ending) return abandon()
       this.restarting = false
-      this.fail(`Could not restart Codex to ${mcpRestart ? 'attach the MCP server' : 'apply the org chart change'}: ${(e as Error).message}`)
+      const why = this.redact((e as Error)?.message ?? String(e))
+      if (origin.host && !origin.tool) {
+        // Only the user's own change in OrgAI asked for this restart (review M3): a desktop save must not fail the run.
+        // The old app-server is gone, so the session ends paused and waits for the user (no automatic resume: nothing
+        // was going to start a turn, as on Claude).
+        this.log('warn', `Could not restart Codex to apply the change you made in OrgAI: ${why}. The run is paused until you continue it.`)
+        this.transcript(ROOT_AGENT_ID, { kind: 'system', text: 'The session could not be restarted after the change you made in OrgAI. The run is paused.', detail: why }, { source: 'harness' })
+        this.setState(ROOT_AGENT_ID, 'idle', 'Paused')
+        this.endRun(undefined, { reason: 'The session could not be restarted after the change you made in OrgAI. Your change could not be applied to this session; the run waits for your next message.' })
+        return
+      }
+      this.fail(`Could not restart Codex to ${mcpRestart ? 'attach the MCP server' : 'apply the org chart change'}: ${why}`)
       return
     }
     this.restarting = false

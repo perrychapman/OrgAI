@@ -61,6 +61,13 @@ export function hostChangeNotice(c: {
     if (c.roster.roles.length) parts.push(`Roles you can delegate to now (where the chart lets you): ${roleList(c.roster.roles)}.`)
     if (c.roster.removed.length) parts.push(`Removed from this run (no new agents of these): ${c.roster.removed.slice(0, HOST_NOTICE_LIST_CAP).map((n) => datum(n, 60)).join(', ')}.`)
   }
-  parts.push('Reports you start from now on get the new configuration; removed or ungranted tools are refused at once.')
+  // "Refused at once" is said of MCP tools only when the caller passed an MCP part (the mock refuses them at once). On
+  // Codex an MCP removal waits for the restart at idle and never comes through this notice.
+  const mcpPart = (c.servers?.length ?? 0) > 0 || (c.removed?.length ?? 0) > 0
+  parts.push(
+    mcpPart
+      ? 'Reports you start from now on get the new configuration; removed or ungranted tools are refused at once.'
+      : 'Reports you start from now on get the new configuration; skills and roles taken away are refused at once.'
+  )
   return parts.join(' ')
 }

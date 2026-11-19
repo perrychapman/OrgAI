@@ -465,6 +465,39 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     `configChanges` with `host: true` and in `hostNotices` with its delivery ('inline' | 'held' | 'next-message').
     Checked by claudeConfigRestart.test.ts, codexConfigHost.test.ts, mockConfigChange.test.ts; unverified live, and
     the RunManager caller is `applyProjectChange` (runManagerHostChange.test.ts, fake session).
+  - Host change review fixes (2026-11-19, Adapter Engineer; each a fake `query()` / fake app-server regression that
+    fails before its fix; none run live). The rule: a change the user saves never starts a turn or spends by itself.
+    - Claude, restart that cannot start: when the restart carried only the user's change (`restartHostOnly`: config
+      host and not tool), no turn end was deferred and no harness or user message is unread, `endPausedAfterRestart`
+      ends paused with `autoResume: false`, no `pausedUntil`, and the reason "...after the change you made in OrgAI.
+      Your change could not be applied to this session; the run waits for your next message." (before: a 5-minute
+      auto-resume into RESUME_TEXT). A restart that also carries the run's own change keeps the auto-resume. The
+      fallback query (second failure) now keeps the change's origin even without roles, so its "could not be applied"
+      notice for a host-only change waits instead of starting a turn, and says "the user made in OrgAI".
+    - Claude, in-line notices: a host notice queued mid-turn is tagged; at the root turn's end any still unread is
+      taken back out of the input (`reclaimHostNotices`) and waits for the next message; `interrupt()` moves unread
+      harness messages out as `dropHeldHarnessMessages` does (nudges dropped, notices to the user's next message).
+      Whether the real CLI can have read a queued message before OrgAI handles the result is unverified; one it has
+      read is not taken back.
+    - Claude, trailing init / empty result (sdk-facts check 12): while `nextQuery` is set (the old query's input is
+      closed for a restart) init and result do no turn bookkeeping (no turnInFlight, no turn end, no continuation),
+      and `startRestartedQuery` clears turnInFlight and interruptPending. A real hand-back turn that the CLI starts on
+      the closing query is therefore not reported either (handingBack makes that rare).
+    - Claude: a background report's SubagentStop while the root is idle starts the hand-back wait
+      (`backgroundHandBackSince`) at once, not only at its task_notification.
+    - Codex, in-line notices: steered only (`steerRootWithHostNotice`, in the root thread's FIFO); no running root turn
+      or a refused steer leaves the notice in hostNotes (or held) for the next message, never turn/start.
+    - Codex, restart that throws: when only the user's change asked for it the run ends `paused` with
+      `autoResume: false` and one run warning (before: `fail`, an errored run). The run's own change still fails it.
+      Restart error texts and the "could not list" warning are redacted (connection key, gateway path, MCP secret
+      slot values, key-like tokens).
+    - Codex MCP removals (and ungrants) wait for the restart at idle: Codex reads MCP servers at app-server start, so a
+      removed server's tools stay callable until then. Codex's 'now' notice (skills, roster) therefore never says
+      removed MCP tools are refused at once ("skills and roles taken away are refused at once"); the MCP part is told by
+      the restart notice.
+    - Notice text: a host 'now' notice names a server whose definition did not change as "was already attached; which
+      roles may use it changed" (an ungrant said "is attached now"); role lists per server and per skill and the
+      removed-server list are capped at MCP_NOTICE_TOOL_CAP with "and N more".
   - `request_mcp_install` needs exact pinned versions and the user's approval. A denial tells the agent to find
     another route. The calling agent's id reaches `McpInstallRequest.agentId`: Codex derives it from the thread, and
     Claude reads it from the PreToolUse `agent_id`. Claude matches the MCP call by a tool_use id in `extra._meta` if

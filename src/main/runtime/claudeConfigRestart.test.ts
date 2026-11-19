@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -13,33 +13,56 @@ const sdk = vi.hoisted(() => {
     inputs: Msg[] = []
     setMcpCalls: Record<string, unknown>[] = []
     private out: Msg[] = []
-    private waiters: ((r: IteratorResult<Msg>) => void)[] = []
+    private waiters: { resolve: (r: IteratorResult<Msg>) => void; reject: (e: Error) => void }[] = []
     private done = false
+    private failure?: Error
+    /** Manual mode (state.manualRead at construction): the CLI reads its input only when the test calls read(). */
+    private reader?: AsyncIterator<Msg>
     constructor(
       prompt: AsyncIterable<Msg>,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       readonly options: Record<string, any>
     ) {
+      if (state.manualRead) {
+        this.reader = prompt[Symbol.asyncIterator]()
+        return
+      }
       void (async () => {
         for await (const m of prompt) this.inputs.push(m)
-        this.end()
+        this.inputClosed = true
+        // state.lingerAfterInput: the CLI keeps emitting after its input closed until the test ends it (sdk-facts check 12).
+        if (!state.lingerAfterInput) this.end()
       })()
+    }
+    inputClosed = false
+    /** Manual mode: read the next input message (resolves once one is pushed). */
+    async read(): Promise<Msg | undefined> {
+      const r = await this.reader!.next()
+      if (r.done) return undefined
+      this.inputs.push(r.value)
+      return r.value
     }
     emit(m: Msg): void {
       const w = this.waiters.shift()
-      if (w) w({ value: m, done: false })
+      if (w) w.resolve({ value: m, done: false })
       else this.out.push(m)
     }
     end(): void {
       this.done = true
-      for (const w of this.waiters.splice(0)) w({ value: undefined as never, done: true })
+      for (const w of this.waiters.splice(0)) w.resolve({ value: undefined as never, done: true })
+    }
+    /** The CLI process dies (a restarted query that fails before its init). */
+    fail(e: Error): void {
+      this.failure = e
+      for (const w of this.waiters.splice(0)) w.reject(e)
     }
     [Symbol.asyncIterator](): AsyncIterator<Msg> {
       return {
         next: () => {
+          if (this.failure) return Promise.reject(this.failure)
           if (this.out.length) return Promise.resolve({ value: this.out.shift()!, done: false })
           if (this.done) return Promise.resolve({ value: undefined as never, done: true })
-          return new Promise((resolve) => this.waiters.push(resolve))
+          return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }))
         }
       }
     }
@@ -56,7 +79,7 @@ const sdk = vi.hoisted(() => {
       this.end()
     }
   }
-  const state = { FakeQuery, queries: [] as FakeQuery[], status: [] as { name: string; status: string; tools?: { name: string }[] }[] }
+  const state = { FakeQuery, queries: [] as FakeQuery[], status: [] as { name: string; status: string; tools?: { name: string }[] }[], manualRead: false, lingerAfterInput: false }
   return state
 })
 vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
@@ -71,10 +94,10 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
   }
 })
 
-import { BACKGROUND_HANDBACK_WAIT_MS, ClaudeSession, HOST_CHANGE_LEAD, MCP_RESTART_DELAY_MS, RESTART_WAIT_WARN_TURNS } from './claude'
+import { BACKGROUND_HANDBACK_WAIT_MS, ClaudeSession, HOST_CHANGE_LEAD, MCP_NOTICE_TOOL_CAP, MCP_RESTART_DELAY_MS, RESTART_WAIT_WARN_TURNS, configChangeNotice } from './claude'
 import type { ConfigChange, ConfigChangeResult } from './harnessTools'
 import { fakeCtx, mcpSpec, project, role, runSummary } from './testHelpers'
-import type { RuntimeContext } from './types'
+import type { RunSkill, RuntimeContext } from './types'
 
 type Fake = InstanceType<typeof sdk.FakeQuery>
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -87,6 +110,8 @@ afterEach(async () => {
   for (const s of sessions.splice(0)) await s.stop()
   sdk.queries.length = 0
   sdk.status = []
+  sdk.manualRead = false
+  sdk.lingerAfterInput = false
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
 })
 
@@ -268,7 +293,9 @@ describe('Claude hostConfigChanged (fake query)', () => {
     await vi.waitFor(() => expect(q1.inputs.length).toBe(before + 1))
     const text = texts(q1)
     expect(text).toContain(HOST_CHANGE_LEAD)
-    expect(text).toContain('The MCP server github is attached now.')
+    // Regression (review L3): an ungrant said "The MCP server github is attached now."
+    expect(text).not.toContain('The MCP server github is attached now.')
+    expect(text).toContain('The MCP server github was already attached; which roles may use it changed.')
     expect(text).toContain('No role in the org chart is granted it, so no agent can call it in this run.')
   })
 
@@ -327,12 +354,268 @@ describe('Claude hostConfigChanged (fake query)', () => {
     expect(q2.inputs).toHaveLength(1)
   }, 15_000)
 
-  it('rejects for a setup-like or ending session; never widens beyond the live grants', async () => {
+  it('rejects for a setup-like or ending session', async () => {
     const setup = await running([], { run: runSummary({ kind: 'setup' }) })
     await expect(host(setup.session, { skills: true })).rejects.toThrow('Setup-like runs')
     const servers: McpServerSpec[] = []
     const { session } = await running(servers)
     await session.stop()
     await expect(host(session, { skills: true })).rejects.toThrow('ending')
+  })
+
+  it('never widens beyond the live grants: an ungrant the user saves is refused at the next call, with no restart', async () => {
+    const gh = mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] })
+    const servers = [gh]
+    const { session, q1 } = await running(servers)
+    const eng = { agent_id: 'a1', agent_type: 'engineer' }
+    const gate = async (tool: string) =>
+      ((await hooksOf(q1, 'PreToolUse')({ ...base, hook_event_name: 'PreToolUse', tool_name: tool, tool_input: {}, tool_use_id: `tu-${Math.random()}`, ...eng }, 'x', {})) as {
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string }
+      }).hookSpecificOutput
+    expect((await gate('mcp__github__list'))?.permissionDecision).not.toBe('deny')
+    servers[0] = { ...gh, roles: [] }
+    expect(await host(session, { mcp: { upserted: ['github'], removed: [] } })).toEqual({ availability: 'now' })
+    const denied = await gate('mcp__github__list')
+    expect(denied?.permissionDecision).toBe('deny')
+    expect(denied?.permissionDecisionReason).toContain('does not grant the MCP server "github"')
+    q1.emit(result)
+    await sleep(MCP_RESTART_DELAY_MS + 400)
+    expect(sdk.queries).toHaveLength(1)
+  }, 10_000)
+
+  it('a second host change while a restart is being built is not lost, and neither starts a turn', async () => {
+    const servers: McpServerSpec[] = []
+    let hold: Promise<void> | undefined
+    let resolvedCalls = 0
+    const { session, q1 } = await running(servers, {
+      resolvedMcpServers: async () => {
+        resolvedCalls += 1
+        if (hold) await hold
+        return servers.map((spec) => ({ spec, env: {}, headers: {} }))
+      }
+    })
+    q1.emit(result)
+    await sleep(50)
+    const before = q1.inputs.length
+    servers.push(notes())
+    expect((await host(session, { mcp: { upserted: ['notes'], removed: [] } })).availability).toBe('after-idle')
+    // The restart at idle is being built (buildOptions waits on the resolved server list) when the second change lands.
+    let release!: () => void
+    hold = new Promise<void>((r) => (release = r))
+    const calls = resolvedCalls
+    await vi.waitFor(() => expect(resolvedCalls).toBeGreaterThan(calls), restartWait)
+    servers.push(mcpSpec({ id: 'mcp-docs', name: 'docs', roles: ['engineer'], secretEnv: [] }))
+    const second = host(session, { mcp: { upserted: ['docs'], removed: [] } })
+    release()
+    hold = undefined
+    expect((await second).availability).toBe('after-idle')
+    await vi.waitFor(() => expect(sdk.queries.length).toBeGreaterThanOrEqual(2), restartWait)
+    const s = session as unknown as { restartDue(): boolean }
+    // Either the restart already took the second change (the build reads the live list) or it is still due for the next one.
+    const latest = sdk.queries.at(-1)!
+    expect(latest.options.agents.engineer.tools).toContain('mcp__notes')
+    expect(latest.options.agents.engineer.tools.includes('mcp__docs') || s.restartDue()).toBe(true)
+    await sleep(MCP_RESTART_DELAY_MS + 400)
+    // No turn of its own: nothing reached any query's input.
+    expect(q1.inputs.length).toBe(before)
+    for (const q of sdk.queries.slice(1)) expect(q.inputs).toHaveLength(0)
+  }, 20_000)
+})
+
+const skillDirs: string[] = []
+afterEach(() => {
+  for (const d of skillDirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
+})
+function skill(name: string, roleIds: string[]): RunSkill {
+  const root = mkdtempSync(join(tmpdir(), 'orgai-cfg-skill-'))
+  skillDirs.push(root)
+  const dir = join(root, name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: d\n---\nUse ${name}.`)
+  return { id: `id-${name}`, name, description: `${name} desc`, dir, files: [{ path: 'SKILL.md', bytes: 1 }], roleIds }
+}
+
+describe('Claude hostConfigChanged: a change the user saves never starts a turn (review fixes)', () => {
+  it('H1: a restart for the user\'s change alone that cannot start pauses for the user, never auto-resumed', async () => {
+    const alpha = skill('alpha', ['r-lead'])
+    let skills = [alpha]
+    const { ctx, session, q1 } = await running([], { skills: () => skills })
+    q1.emit(result)
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle')).toBe(true))
+    skills = [alpha, skill('beta', ['r-lead'])]
+    expect((await host(session, { skills: true })).availability).toBe('after-idle')
+    // Restart at once (idle); every restarted query dies before its init.
+    for (let i = 1; i <= 3; i++) {
+      await vi.waitFor(() => expect(sdk.queries).toHaveLength(i + 1), restartWait)
+      sdk.queries[i]!.fail(new Error('spawn failed'))
+    }
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(true))
+    const paused = ctx.events.find((e) => e.type === 'run.status' && e.status === 'paused') as { autoResume?: boolean; pausedUntil?: number; pauseReason?: string }
+    // Regression: autoResume was true with pausedUntil 5 minutes ahead, so RunManager continued the run (RESUME_TEXT).
+    expect(paused.autoResume).toBe(false)
+    expect(paused.pausedUntil).toBeUndefined()
+    expect(paused.pauseReason).toBe('The session could not be resumed after the change you made in OrgAI. Your change could not be applied to this session; the run waits for your next message.')
+    // L3: the fallback's notice names the user's change, not one "approved this run".
+    const detail = rows(ctx).map((b) => b.detail ?? '').find((d) => d.includes('could not be applied to this session')) ?? ''
+    expect(detail).toContain('The skill changes the user made in OrgAI could not be applied to this session')
+    expect(detail).not.toContain('approved this run')
+    // Nothing reached any query's input: the notices waited for the user.
+    for (const q of sdk.queries.slice(1)) expect(q.inputs).toHaveLength(0)
+  }, 20_000)
+
+  it('H1 counterpart: a restart that also carries the run\'s own change keeps the automatic resume', async () => {
+    const alpha = skill('alpha', ['r-lead'])
+    let skills = [alpha]
+    const servers: McpServerSpec[] = []
+    const { ctx, session, q1 } = await running(servers, { skills: () => skills })
+    servers.push(notes())
+    await change(session, { mcp: { upserted: ['notes'], removed: [] } })
+    skills = [alpha, skill('beta', ['r-lead'])]
+    await host(session, { skills: true })
+    q1.emit(result)
+    for (let i = 1; i <= 3; i++) {
+      await vi.waitFor(() => expect(sdk.queries).toHaveLength(i + 1), restartWait)
+      sdk.queries[i]!.fail(new Error('spawn failed'))
+    }
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(true))
+    const paused = ctx.events.find((e) => e.type === 'run.status' && e.status === 'paused') as { autoResume?: boolean; pausedUntil?: number }
+    expect(paused.autoResume).toBe(true)
+    expect(paused.pausedUntil).toBeGreaterThan(Date.now())
+  }, 20_000)
+
+  /** A running session whose CLI reads its input only when the test says so (state.manualRead). */
+  async function manual(servers: McpServerSpec[]) {
+    sdk.manualRead = true
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-cfg-restart-')))
+    dirs.push(dir)
+    const rs = roles()
+    const ctx = fakeCtx({
+      project: project({ path: dir, roles: rs, isolateWriters: false }),
+      roles: rs,
+      run: runSummary(),
+      autoContinue: false,
+      mcpServers: () => servers,
+      resolvedMcpServers: async () => servers.map((spec) => ({ spec, env: {}, headers: {} }))
+    })
+    const session = new ClaudeSession(ctx)
+    sessions.push(session)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(1))
+    const q1 = sdk.queries[0]!
+    q1.emit(init)
+    await q1.read()
+    return { ctx, session, q1 }
+  }
+  const unread = (s: ClaudeSession) => (s as unknown as { input: { peek(): unknown[] } }).input.peek()
+  const contentOf = (m: Record<string, unknown> | undefined) => String((m?.message as { content: unknown } | undefined)?.content)
+
+  it('M1a: an in-line notice still unread when the turn ends is taken back and rides on the next message', async () => {
+    const gh = mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] })
+    const servers = [gh]
+    const { session, q1 } = await manual(servers)
+    servers[0] = { ...gh, roles: [] }
+    // Mid-turn: delivered in line (queued on the input stream), but the CLI has not read it when the turn ends.
+    expect(await host(session, { mcp: { upserted: ['github'], removed: [] } })).toEqual({ availability: 'now' })
+    expect(unread(session)).toHaveLength(1)
+    q1.emit(result)
+    // Regression: the queued notice stayed in the input, and the CLI's next read would start a turn of its own.
+    await vi.waitFor(() => expect(unread(session)).toHaveLength(0))
+    await session.send('next step')
+    const sent = contentOf(await q1.read())
+    expect(sent).toContain(HOST_CHANGE_LEAD)
+    expect(sent).toContain('next step')
+    expect(unread(session)).toHaveLength(0)
+  })
+
+  it('M1b: an in-line notice unread at an interrupt waits for the user\'s next message', async () => {
+    const gh = mcpSpec({ name: 'github', roles: ['engineer'], secretEnv: [] })
+    const servers = [gh]
+    const { session, q1 } = await manual(servers)
+    servers[0] = { ...gh, roles: [] }
+    await host(session, { mcp: { upserted: ['github'], removed: [] } })
+    expect(unread(session)).toHaveLength(1)
+    await session.interrupt()
+    // Regression: interrupt() left it queued, so it started a turn after the interrupted one ended.
+    expect(unread(session)).toHaveLength(0)
+    q1.emit({ ...result, subtype: 'error_during_execution' })
+    await sleep(50)
+    expect(unread(session)).toHaveLength(0)
+    await session.send('go on')
+    const sent = contentOf(await q1.read())
+    expect(sent).toContain(HOST_CHANGE_LEAD)
+    expect(sent).toContain('go on')
+  })
+
+  it('M2: the trailing init and empty result of a query closed for a restart are no turn', async () => {
+    sdk.lingerAfterInput = true
+    const turnEnds = vi.fn()
+    const servers: McpServerSpec[] = []
+    const { session, q1 } = await running(servers, { onRootTurnEnded: turnEnds })
+    q1.emit(result)
+    await vi.waitFor(() => expect(turnEnds).toHaveBeenCalledTimes(1))
+    servers.push(notes())
+    await host(session, { mcp: { upserted: ['notes'], removed: [] } })
+    // The restart at idle closes q1's input; the CLI then emits one more init and an empty result (sdk-facts check 12).
+    await vi.waitFor(() => expect(q1.inputClosed).toBe(true), restartWait)
+    q1.emit(init)
+    q1.emit({ ...result, result: '' })
+    await sleep(50)
+    q1.end()
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2))
+    await sleep(MCP_RESTART_DELAY_MS + 200)
+    // Regression: the trailing result was reported as a root turn end (and handed to the continuation driver).
+    expect(turnEnds).toHaveBeenCalledTimes(1)
+    expect((session as unknown as { turnInFlight: boolean }).turnInFlight).toBe(false)
+  }, 15_000)
+
+  it('M2: a query closed for a restart and killed between its trailing init and result leaves no turn in flight', async () => {
+    sdk.lingerAfterInput = true
+    const servers: McpServerSpec[] = []
+    const { session, q1 } = await running(servers)
+    q1.emit(result)
+    await sleep(50)
+    servers.push(notes())
+    await host(session, { mcp: { upserted: ['notes'], removed: [] } })
+    await vi.waitFor(() => expect(q1.inputClosed).toBe(true), restartWait)
+    q1.emit(init)
+    await sleep(50)
+    // The close timer kills it before its result.
+    q1.end()
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2))
+    // Regression: turnInFlight stayed true for ever (rootBusy always true, every later restart blocked).
+    expect((session as unknown as { turnInFlight: boolean }).turnInFlight).toBe(false)
+    expect((session as unknown as { rootBusy(): boolean }).rootBusy()).toBe(false)
+  }, 15_000)
+
+  it('L1: a background report that stops while the orchestrator is idle holds the restart before its notification arrives', async () => {
+    const servers: McpServerSpec[] = []
+    const { ctx, session, q1 } = await running(servers)
+    await backgroundReport(ctx, q1, 'a1', 't1')
+    servers.push(notes())
+    await change(session, { mcp: { upserted: ['notes'], removed: [] } })
+    q1.emit(result)
+    await sleep(MCP_RESTART_DELAY_MS + 400)
+    expect(sdk.queries).toHaveLength(1)
+    // SubagentStop only: its task_notification (and the CLI's hand-back turn) come later than the restart check.
+    await hooksOf(q1, 'SubagentStop')({ ...base, hook_event_name: 'SubagentStop', agent_id: 'a1', agent_type: 'engineer', stop_hook_active: false }, 'x', {})
+    await sleep(MCP_RESTART_DELAY_MS + 600)
+    // Regression: the check reportSettled scheduled found nothing running and closed the input before the hand-back.
+    expect(sdk.queries).toHaveLength(1)
+  }, 15_000)
+})
+
+describe('configChangeNotice caps (review L4)', () => {
+  it('caps the removed servers, the roles per server and the roles per skill', () => {
+    const many = Array.from({ length: MCP_NOTICE_TOOL_CAP + 3 }, (_, i) => ({ name: `Role ${i}`, slug: `role-${i}` }))
+    const text = configChangeNotice({
+      servers: [{ name: 'gh', tools: [], roles: many }],
+      removed: Array.from({ length: MCP_NOTICE_TOOL_CAP + 2 }, (_, i) => `srv${i}`),
+      skills: [{ name: 'alpha', roles: many }]
+    })
+    expect(text).toContain(`Role ${MCP_NOTICE_TOOL_CAP - 1} (role-${MCP_NOTICE_TOOL_CAP - 1}), and 3 more.`)
+    expect(text).not.toContain(`Role ${MCP_NOTICE_TOOL_CAP} (`)
+    expect(text).toContain(`srv${MCP_NOTICE_TOOL_CAP - 1}, and 2 more were removed or turned off`)
+    expect(text).not.toContain(`srv${MCP_NOTICE_TOOL_CAP},`)
+    expect(text).toContain(`alpha for Role 0 (role-0)`)
+    expect((text.match(/, and 3 more/g) ?? []).length).toBe(2)
   })
 })
