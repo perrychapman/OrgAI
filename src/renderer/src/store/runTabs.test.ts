@@ -33,7 +33,7 @@ vi.stubGlobal('window', { orgai: api, dispatchEvent: vi.fn(), addEventListener: 
 vi.stubGlobal('Event', class {})
 vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0))
 
-const { useAppStore, projectTabRuns, HIDDEN_LIVE_NOTICE, HIDDEN_IDLE_NOTICE, hiddenLiveNotice, otherRunsHeading } = await import('./useAppStore')
+const { useAppStore, projectTabRuns, HIDDEN_LIVE_NOTICE, HIDDEN_IDLE_NOTICE, HIDDEN_ENDED_NOTICE, HIDDEN_END_FAILED_NOTICE, hideEndsSession, closeConfirmFor, hiddenLiveNotice, otherRunsHeading } = await import('./useAppStore')
 
 const run = (id: string, projectId: string, status: string, startedAt: number): unknown => ({
   summary: summary(id, projectId, status, startedAt),
@@ -74,13 +74,69 @@ describe('dismissRun: hiding a tab never touches the session', () => {
     expect(api.runs.interrupt).not.toHaveBeenCalled()
   })
 
-  it('an idle live run says its session stays open, not that it keeps working', () => {
-    useAppStore.setState({ selectedProjectId: 'p1', runs: { a: run('a', 'p1', 'idle', 1), b: run('b', 'p1', 'finished', 2) } as never, activeRunByProject: { p1: 'a' } })
+  const withRun = (status: string, patch: Record<string, unknown> = {}): never =>
+    ({ a: { ...(run('a', 'p1', status, 1) as object), ...patch }, b: run('b', 'p1', 'finished', 2) }) as never
+  const hide = (r: never): void => {
+    useAppStore.setState({ selectedProjectId: 'p1', runs: r, activeRunByProject: { p1: 'a' }, dismissedRuns: {}, tabNotice: null })
     useAppStore.getState().dismissRun('a')
-    expect(useAppStore.getState().tabNotice).toBe('Hidden. Its session stays open: find it in the sidebar or History.')
+  }
+
+  it('an idle run with nothing pending ends its session when hidden', () => {
+    hide(withRun('idle'))
+    expect(api.runs.stop).toHaveBeenCalledTimes(1)
+    expect(api.runs.stop).toHaveBeenCalledWith('a')
+    expect(useAppStore.getState().tabNotice).toBe(HIDDEN_ENDED_NOTICE)
+    expect(useAppStore.getState().dismissedRuns.a).toBe(true)
     expect(hiddenLiveNotice('running')).toBe(HIDDEN_LIVE_NOTICE)
     expect(hiddenLiveNotice('starting')).toBe(HIDDEN_LIVE_NOTICE)
     expect(hiddenLiveNotice('stopping')).toBe(HIDDEN_IDLE_NOTICE)
+  })
+
+  it('a running run, an idle run with an open card, an idle run with a working report and an ended run are not stopped', () => {
+    hide(withRun('running'))
+    expect(useAppStore.getState().tabNotice).toBe(HIDDEN_LIVE_NOTICE)
+    hide(withRun('idle', { permissions: [{ requestId: 'x' }] }))
+    expect(useAppStore.getState().tabNotice).toBe(HIDDEN_IDLE_NOTICE)
+    hide(withRun('idle', { agents: { root: { id: 'root', state: 'idle' }, w: { id: 'w', state: 'tool' } } }))
+    expect(useAppStore.getState().tabNotice).toBe(HIDDEN_IDLE_NOTICE)
+    hide(withRun('finished'))
+    expect(api.runs.stop).not.toHaveBeenCalled()
+  })
+
+  it('a refused stop keeps the tab hidden and says the session could not be ended', async () => {
+    api.runs.stop.mockRejectedValueOnce(new Error('no'))
+    hide(withRun('idle'))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(useAppStore.getState().dismissedRuns.a).toBe(true)
+    expect(useAppStore.getState().tabNotice).toBe(HIDDEN_END_FAILED_NOTICE)
+  })
+
+  it('hideEndsSession and closeConfirmFor decide from status, cards and working reports', () => {
+    const r = (status: string, patch: Record<string, unknown> = {}) => ({ ...(run('a', 'p1', status, 1) as object), ...patch }) as never
+    expect(hideEndsSession(r('idle'))).toBe(true)
+    expect(hideEndsSession(r('idle', { agents: { root: { id: 'root', state: 'thinking' }, w: { id: 'w', state: 'done' } } }))).toBe(true)
+    for (const s of ['starting', 'running', 'stopping', 'paused', 'finished']) expect(hideEndsSession(r(s))).toBe(false)
+    expect(hideEndsSession(r('idle', { questions: [{ id: 'q' }] }))).toBe(false)
+    expect(closeConfirmFor(r('idle'))).toBeNull()
+    expect(closeConfirmFor(r('finished'))).toBeNull()
+    expect(closeConfirmFor(r('stopping'))).toBeNull()
+    expect(closeConfirmFor(r('running'))?.body).toMatch(/still working/)
+    expect(closeConfirmFor(r('idle', { permissions: [{ requestId: 'x' }] }))?.body).toMatch(/waiting on a decision/)
+  })
+
+  it('closeRun ends a running run and hides it; a refused stop keeps the failure notice', async () => {
+    useAppStore.setState({ selectedProjectId: 'p1', runs: withRun('running'), activeRunByProject: { p1: 'b' } })
+    await useAppStore.getState().closeRun('a')
+    expect(api.runs.stop).toHaveBeenCalledWith('a')
+    expect(useAppStore.getState().tabNotice).toBe(HIDDEN_ENDED_NOTICE)
+    api.runs.stop.mockRejectedValueOnce(new Error('no'))
+    useAppStore.setState({ dismissedRuns: {}, tabNotice: null })
+    await useAppStore.getState().closeRun('a')
+    expect(useAppStore.getState().tabNotice).toBe(HIDDEN_END_FAILED_NOTICE)
+    api.runs.stop.mockClear()
+    useAppStore.setState({ runs: withRun('finished') })
+    await useAppStore.getState().closeRun('a')
+    expect(api.runs.stop).not.toHaveBeenCalled()
   })
 
   it('New run page heading names runs that need the user', () => {

@@ -670,12 +670,12 @@ try {
     await page.evaluate((p) => window.orgai.projects.save(p), before)
   }
 
-  // A tab and its session's lifetime are independent: Delete on a focused live tab and Ctrl+W both hide it without
-  // touching the session (no End session needed); the sidebar's open-run row brings it back, still live.
+  // Hiding the tab of an idle run with nothing pending (Delete, the X, Ctrl+W) ends its session too; a working run or
+  // one with an open card keeps going (unit-tested in runTabs.test.ts; the mock has no steady working state here).
   {
     await page.keyboard.press('Control+t')
     await page.locator('.new-run').waitFor({ timeout: 5000 })
-    await startOnPage('Hide me while live')
+    await startOnPage('Hide me while live [mock:model-switch]')
     await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
     const liveId = await page.locator('.run-tablist .run-tab-wrap.selected').first().getAttribute('data-run')
     const liveStatus = () => page.evaluate(async (id) => (await window.orgai.runs.listLive()).find((r) => r.id === id)?.status ?? 'ended', liveId)
@@ -683,31 +683,22 @@ try {
     const isLive = (s) => ['starting', 'running', 'idle'].includes(s)
     check(isLive(await liveStatus()), 'the run to hide is live', await liveStatus())
     check((await tabOf().locator('.run-tab-close').count()) === 1, 'a live tab offers the Hide button')
-    // Delete on the focused live tab: the tab goes, focus lands on a neighbouring tab, the notice says it keeps working.
+    // The mock turn ends and the run goes idle with nothing pending: hiding its tab then ends the session too.
+    for (let i = 0; i < 240 && (await liveStatus()) !== 'idle'; i++) await sleep(500)
+    check((await liveStatus()) === 'idle', 'the mock run settles idle before it is hidden', JSON.stringify(await page.evaluate(async (id) => { const r = await window.orgai.runs.get(id); return { s: r.summary.status, a: Object.values(r.agents).map((x) => `${x.id}:${x.state}`) } }, liveId)))
+    check(/Ends its idle session/.test((await tabOf().locator('.run-tab-close').getAttribute('title')) ?? ''), 'the Hide button says it ends an idle session')
+    // Delete on the focused idle tab: the tab goes, focus lands on a neighbouring tab, the notice says the session ended.
     await tabOf().locator('.run-tab').focus()
     await page.keyboard.press('Delete')
     await page.waitForFunction((id) => !document.querySelector(`.run-tablist .run-tab-wrap[data-run="${id}"]`), liveId, { timeout: 5000 }).catch(() => {})
-    check((await tabOf().count()) === 0, 'Delete hides a live tab')
+    check((await tabOf().count()) === 0, 'Delete hides an idle tab')
     const notice = ((await page.locator('.run-tabs-notice').innerText().catch(() => '')) || '').trim()
-    check(/keeps working|session stays open/.test(notice) && !/end (its|the) session/i.test(notice), 'the notice says the hidden run keeps working or its session stays open', notice)
-    check(await page.evaluate(() => document.activeElement?.getAttribute('role') === 'tab'), 'focus moves to a neighbouring tab after hiding a live tab')
-    check(isLive(await liveStatus()), 'hiding the tab leaves the session live', await liveStatus())
-    const navRow = page.locator(`[data-testid=nav-run][data-run="${liveId}"]`)
-    check((await navRow.count()) === 1, 'the sidebar still lists the hidden live run')
-    await navRow.click()
-    await page.locator(`.run-tablist .run-tab-wrap.selected[data-run="${liveId}"]`).waitFor({ timeout: 10_000 }).catch(() => {})
-    check((await page.locator(`.run-tablist .run-tab-wrap.selected[data-run="${liveId}"]`).count()) === 1, 'the sidebar row reopens the hidden live run as the selected tab')
-    // Ctrl+W (File > Close tab) on the live tab: hidden too, still live, no "end its session" notice.
-    await page.locator('.composer textarea').first().focus().catch(() => {})
-    await page.keyboard.press('Control+w')
-    await page.waitForFunction((id) => !document.querySelector(`.run-tablist .run-tab-wrap[data-run="${id}"]`), liveId, { timeout: 5000 }).catch(() => {})
-    check((await tabOf().count()) === 0, 'Ctrl+W hides a live tab')
-    check(isLive(await liveStatus()), 'Ctrl+W leaves the session live', await liveStatus())
-    await shot('live-tab-hidden')
-    await navRow.click()
-    await page.locator(`.run-tablist .run-tab-wrap.selected[data-run="${liveId}"]`).waitFor({ timeout: 10_000 }).catch(() => {})
-    check((await page.locator(`.run-tablist .run-tab-wrap.selected[data-run="${liveId}"]`).count()) === 1 && isLive(await liveStatus()), 'reopened again from the sidebar, still live')
-    await endSession(page)
+    check(/session ended/.test(notice), 'the notice says the hidden idle run ended its session', notice)
+    check(await page.evaluate(() => document.activeElement?.getAttribute('role') === 'tab'), 'focus moves to a neighbouring tab after hiding a tab')
+    for (let i = 0; i < 20 && isLive(await liveStatus()); i++) await sleep(500)
+    check(!isLive(await liveStatus()), 'hiding an idle tab ended the session', await liveStatus())
+    check((await page.locator(`[data-testid=nav-run][data-run="${liveId}"]`).count()) === 0, 'the sidebar no longer lists the ended run as open')
+    await shot('idle-tab-hidden')
   }
 
   // One conversation per chain: Send on an ended run continues it in the same tab, the feed shows both turns with a divider.

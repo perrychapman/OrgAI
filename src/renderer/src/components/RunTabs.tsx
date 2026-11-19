@@ -5,7 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import type { Project, RunSummary, VirtualProjectId } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { newSessionLabel } from '../lib/assistants'
-import { isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
+import { hideEndsSession, isDraftEmpty, isRunLive, newRunDraftKey, projectTabRuns, useAppStore, useProjectSummaries, useRunIndexes, type RunState } from '../store/useAppStore'
 import { chainGroups, needsYou } from '../lib/runChains'
 import { runMenuAction } from '../lib/menuRegistry'
 import { openRunWindow } from '../lib/menuActions'
@@ -130,6 +130,12 @@ export function useRunTabShortcuts(): void {
  * the session's lifetime are independent). Tabs that do not fit collapse
  * into a "+n" menu (never a scrollbar); the viewed tab always stays visible and "+" stays at the end.
  */
+/** The hide control's tooltip: says whether the session ends (idle, nothing pending) or stays open (still live). */
+function hideTitle(run: RunState | undefined): string {
+  if (!run || !isRunLive(run)) return 'Hide this tab (Ctrl+W)'
+  return hideEndsSession(run) ? 'Hide this tab (Ctrl+W). Ends its idle session.' : 'Hide this tab (Ctrl+W). The session stays open.'
+}
+
 export default function RunTabs({ project }: { project: Project }): ReactElement {
   const runs = useAppStore(useShallow(projectTabRuns))
   const viewedId = useAppStore((s) => s.activeRunByProject[project.id])
@@ -363,7 +369,6 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
     const item = items.find((t) => t.id === id)
     if (!item) return []
     const v = view(item)
-    const live = !!item.run && isRunLive(item.run)
     return [
       ...(item.kind === 'run' ? [{ id: 'window', label: 'Open in new window', icon: AppWindow, testId: 'run-tab-menu-window', onSelect: () => openInWindow(item) }, 'separator' as const] : []),
       {
@@ -371,7 +376,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
         label: 'Hide',
         icon: EyeOff,
         testId: 'run-tab-menu-hide',
-        title: live ? 'Hide this tab (Ctrl+W). The session stays open.' : 'Hide this tab (Ctrl+W)',
+        title: hideTitle(item.run),
         disabled: !v.closable,
         disabledReason: v.closable ? undefined : 'The only tab cannot be hidden.',
         onSelect: () => hide(item)
@@ -477,7 +482,7 @@ export default function RunTabs({ project }: { project: Project }): ReactElement
                   className="run-tab-close"
                   tabIndex={-1}
                   aria-label={`Hide ${v.tag || newLabel}`}
-                  title={item.run && isRunLive(item.run) ? 'Hide this tab (Ctrl+W). The session stays open.' : 'Hide this tab (Ctrl+W)'}
+                  title={hideTitle(item.run)}
                   onClick={() => hide(item)}
                 >
                   <Icon icon={X} size="xs" />

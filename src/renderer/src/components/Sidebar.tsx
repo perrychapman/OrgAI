@@ -2,11 +2,12 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { AppWindow, BellRing, Briefcase, ExternalLink, FolderOpen, Plus, CalendarClock, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, type LucideIcon } from 'lucide-react'
+import { AppWindow, BellRing, Briefcase, ExternalLink, FolderOpen, Plus, CalendarClock, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, X, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject } from '../lib/assistants'
 import { decisionLocationLabel } from '../lib/chatPermissions'
 import { useShallow } from 'zustand/react/shallow'
-import { isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
+import { useConfirm } from './ui/ConfirmDialog'
+import { closeConfirmFor, isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
 import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../lib/needsYou'
 import { announceMenu, openRunWindow, openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions'
 import { ContextMenu, useContextMenu, type MenuEntry } from './ui/ContextMenu'
@@ -216,11 +217,34 @@ export default function Sidebar({
 
   const newChatKey = isMacPlatform(currentPlatform()) ? '⌘⇧N' : 'Ctrl+Shift+N'
 
+  const { confirm, dialog: confirmDialog } = useConfirm()
+  const closeRun = useAppStore((s) => s.closeRun)
   const projectMenu = useContextMenu<string>()
   const runMenu = useContextMenu<{ projectId: string; runId: string }>()
   const openRunRow = (projectId: string, runId: string): void => {
     if (selectedId !== projectId) selectProject(projectId)
     void openRun(runId)
+  }
+  /** Close from the run menu: ask first when live work would end, then end the session and hide the tab. */
+  const closeRunRow = async (runId: string): Promise<void> => {
+    const run = useAppStore.getState().runs[runId]
+    const ask = run ? closeConfirmFor(run) : null
+    if (ask && !(await confirm({ ...ask, confirmLabel: 'Close run', danger: true, confirmTestId: 'nav-run-close-confirm' }))) return
+    await closeRun(runId)
+  }
+  /** Where focus goes when Close removes the row: the next run row, else the previous one, else the project's row. */
+  const runRowFallback = (row: HTMLElement): (() => HTMLElement | null) => {
+    const li = row.closest('li')
+    const sibs = [li?.nextElementSibling, li?.previousElementSibling]
+    const ids = sibs.map((s) => s?.querySelector<HTMLElement>('[data-testid=nav-run]')?.dataset.run).filter((v): v is string => !!v)
+    const project = row.closest('.nav-runs')?.parentElement?.querySelector<HTMLElement>('.nav-project-btn') ?? null
+    return () => {
+      for (const sid of ids) {
+        const el = document.querySelector<HTMLElement>(`[data-testid=nav-run][data-run="${sid}"]`)
+        if (el) return el
+      }
+      return project && document.contains(project) ? project : document.querySelector<HTMLElement>('.nav-project-btn')
+    }
   }
   /** The same steps as the Dashboard tile's New run. */
   const newRunIn = (projectId: string): void => {
@@ -355,8 +379,8 @@ export default function Sidebar({
                     data-kind={orgChange ? 'org-change' : undefined}
                     title={`${tag}: ${orgChange ? `${ORG_CHANGE_KIND_LABEL} · ` : ''}${oneLine(promptLine(first.prompt), 300)}\n${statusText(rs)}`}
                     onClick={() => openRunRow(id, r.summary.id)}
-                    onContextMenu={(e) => runMenu.onContextMenu(e, { projectId: id, runId: r.summary.id })}
-                    onKeyDown={(e) => void runMenu.onKeyDown(e, { projectId: id, runId: r.summary.id })}
+                    onContextMenu={(e) => runMenu.onContextMenu(e, { projectId: id, runId: r.summary.id }, { fallbackFocus: runRowFallback(e.currentTarget) })}
+                    onKeyDown={(e) => void runMenu.onKeyDown(e, { projectId: id, runId: r.summary.id }, { fallbackFocus: runRowFallback(e.currentTarget) })}
                   >
                     <span className={`run-dot ${rs.tone}`} aria-hidden="true" />
                     <span className="run-index">{tag}</span>
@@ -692,9 +716,19 @@ export default function Sidebar({
         testId="nav-run-menu"
         items={(t) => [
           { id: 'open', label: 'Open', icon: ExternalLink, testId: 'nav-run-menu-open', onSelect: () => openRunRow(t.projectId, t.runId) },
-          { id: 'window', label: 'Open in new window', icon: AppWindow, testId: 'nav-run-menu-window', onSelect: () => openRunWindow(t.projectId, t.runId) }
+          { id: 'window', label: 'Open in new window', icon: AppWindow, testId: 'nav-run-menu-window', onSelect: () => openRunWindow(t.projectId, t.runId) },
+          'separator' as const,
+          {
+            id: 'close',
+            label: 'Close',
+            icon: X,
+            testId: 'nav-run-menu-close',
+            title: 'Ends the run\'s session and hides its tab. It stays in History.',
+            onSelect: () => void closeRunRow(t.runId)
+          }
         ]}
       />
+      {confirmDialog}
       {!rail && <ResizeHandle label="Resize sidebar" edge="end" testId="sidebar-resize" {...resize} />}
     </aside>
   )
