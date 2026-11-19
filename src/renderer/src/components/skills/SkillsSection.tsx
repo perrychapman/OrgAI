@@ -247,7 +247,7 @@ export default function SkillsSection({ project, onSelectRole }: { project: Proj
       testId="catalog-skills"
     >
       <div className="mcp-body" data-testid="skills-section">
-        <LiveChangeNote projectId={project.id} />
+        <LiveChangeNote projectId={project.id} surface="skills" />
         {askError && (
           <div role="alert">
             <Banner tone="danger" title="Could not start the Skill assistant" onDismiss={() => setAskError(null)}>

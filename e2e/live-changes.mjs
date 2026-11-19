@@ -77,17 +77,29 @@ try {
   await form.waitFor({ state: 'detached', timeout: 10_000 })
   const row = section.locator('[data-testid=skill-row][data-name="api-design"]')
   await row.waitFor({ timeout: 10_000 })
+  const line = section.locator('[data-testid=live-change-line]')
+  await line.first().waitFor({ timeout: 15_000 })
+  const createdText = await line.first().innerText()
+  check(/^(Has|Gets|Applying) api-design.*; no role can load it yet · run “.+”$/.test(createdText), 'a skill saved with no role says no role can load it yet (not "in use now")', createdText)
   await row.locator('[data-testid=skill-choose-roles]').click()
   await row.locator('[data-testid=skill-roles][aria-expanded=true]').waitFor({ timeout: 5000 })
   await row.locator('input[type=checkbox]').first().check({ force: true })
-  const line = section.locator('[data-testid=live-change-line]')
-  await line.first().waitFor({ timeout: 15_000 })
+  await section.locator('[data-testid=live-change-line]', { hasText: /Can use api-design|Applying access to api-design/ }).first().waitFor({ timeout: 15_000 })
   check((await line.count()) === 1, 'one status line for the one live run', String(await line.count()))
   const text = await line.first().innerText()
-  check(/^.+: (in use now|once the agents are idle|from the next run.*|being applied)$/.test(text),'the line names the run and when it applies', text)
+  check(/^(Can use api-design (now|once its agents are idle|from the next run)|Applying access to api-design) · run “.+”$/.test(text), 'the line says what changed, then names the run', text)
+  check(!/in use now/.test(text) || /Updated|Change/.test(text), 'a grant does not use the bare "in use now" wording', text)
   check(((await line.first().getAttribute('title')) ?? '').length >= text.length - 1, 'the full text is available on hover')
+  // One save, one line, one announcing region: the Connections section and the role inspector stay silent.
+  const visible = await page.evaluate(() => document.querySelectorAll('[data-testid=live-change-line]').length)
+  check(visible === 1, 'one save produces exactly one visible line on the page', String(visible))
+  const regions = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid=live-change-note][role=status]')].filter((n) => (n.textContent ?? '').trim().length > 0).map((n) => n.getAttribute('data-surface'))
+  )
+  check(regions.length === 1 && regions[0] === 'skills', 'exactly one role=status region has text, the skills one', JSON.stringify(regions))
+  check((await page.locator('[data-testid=catalog-connections] [data-testid=live-change-line]').count()) === 0, 'the Connections section shows no line for a skill save')
   check((await line.first().getAttribute('data-run-id')) === runId, 'the line belongs to the live run')
-  const sh = await line.first().evaluate((el) => ({ over: el.scrollWidth > el.clientWidth, ellipsis: getComputedStyle(el).textOverflow }))
+  const sh = await line.first().locator('.live-change-text').evaluate((el) => ({ over: el.scrollWidth > el.clientWidth, ellipsis: getComputedStyle(el).textOverflow }))
   check(sh.ellipsis === 'ellipsis', 'long lines truncate with an ellipsis', JSON.stringify(sh))
   await sleep(500)
   const skillLogs = (await logsOf(runId)).filter((m) => /^You changed .*skills?/i.test(m) || /^You changed role grants/.test(m))
@@ -109,6 +121,18 @@ try {
   }
   await resizeTo(1600, 1000)
   await setTheme('dark')
+
+  // Nothing moves when the line clears: the row below the note keeps its place (the region keeps the room while a run is live).
+  await row.scrollIntoViewIfNeeded().catch(() => {})
+  if ((await line.count()) === 1) {
+    const topWith = (await row.boundingBox())?.y
+    await section.locator('[data-testid=live-change-line]').first().waitFor({ state: 'detached', timeout: 30_000 })
+    const topWithout = (await row.boundingBox())?.y
+    check(topWith !== undefined && topWith === topWithout, 'the block below does not move when the line clears', `${topWith} -> ${topWithout}`)
+    check((await section.locator('[data-testid=live-change-note][role=status]').count()) === 1, 'the status region stays mounted after the line clears')
+  } else {
+    check(false, 'the line was still up for the layout check', String(await line.count()))
+  }
 
   // (b) The org chart editor: rename a role. projects:save has no result; the run's log says what happened.
   await page.locator('.react-flow__node').first().click()

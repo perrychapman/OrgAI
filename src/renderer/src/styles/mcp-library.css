@@ -139,7 +139,11 @@
 }
 
 /* What a saved change did in each live run (LiveChangeNote): one truncated line per run, full text in the tooltip. */
-.live-change-note:empty {
+/* While a run is live the region keeps the room of its rows (--live-rows), so a line appearing or clearing moves nothing. */
+.live-change-note {
+  min-height: calc(var(--live-rows, 0) * var(--text-small-lh) + max(var(--live-rows, 0) - 1, 0) * var(--space-1));
+}
+.live-change-note:empty:not([style]) {
   display: none;
 }
 .live-change-list {
@@ -154,8 +158,20 @@
   color: var(--text-secondary);
 }
 .live-change-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--success-text);
+}
+.live-change-icon {
+  display: inline-flex;
+  flex: none;
+}
+.live-change-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--text-secondary);
 }

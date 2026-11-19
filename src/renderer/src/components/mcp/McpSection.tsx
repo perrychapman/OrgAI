@@ -7,6 +7,7 @@ import { adapterForProject, projectConnection, projectKindOf } from '@shared/def
 import { secretEnvClashes, type McpSecretClash } from '@shared/mcpSecretClash'
 import { useAppStore } from '../../store/useAppStore'
 import { reportLiveRuns } from '../../store/liveChangeStore'
+import { inferAction, serverReach } from '../../lib/liveRunChange'
 import { LiveChangeNote } from '../LiveChangeNote'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { mcpProjectApi, secretScopeOf } from '../../lib/mcpScope'
@@ -149,12 +150,20 @@ export default function McpSection({ project, onSelectRole }: { project: Project
     clearMcpFocus()
   }, [focus, servers, project.id, clearMcpFocus])
 
+  const serversNow = useRef<McpServerInfo[] | null>(null)
+  serversNow.current = servers
   const applyResult = useCallback((result: McpMutationResult): void => {
     seq.current++
+    const before = serversNow.current
     setServers(result.servers)
     setLoadError(null)
     useAppStore.getState().replaceProject(result.project)
-    reportLiveRuns(result.project.id, result.liveRuns)
+    reportLiveRuns(
+      result.project.id,
+      'mcp',
+      result.liveRuns,
+      inferAction(before ? before.map((s) => serverReach(s.spec)) : null, result.servers.map((s) => serverReach(s.spec)))
+    )
     refreshLibrary()
   }, [refreshLibrary])
   const writer = useMemo(() => projectWriter(project, applyResult), [project, applyResult])
@@ -233,7 +242,7 @@ export default function McpSection({ project, onSelectRole }: { project: Project
         <p className="sr-only" role="status" data-testid="mcp-section-status">
           {status}
         </p>
-        <LiveChangeNote projectId={project.id} />
+        <LiveChangeNote projectId={project.id} surface="mcp" />
         {assistRun && (
           <Banner
             tone="neutral"
