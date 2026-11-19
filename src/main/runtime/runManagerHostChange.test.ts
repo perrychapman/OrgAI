@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { McpServerSpec, Project, Proposal, RunEvent } from '@shared/types'
+import type { McpServerSpec, Project, Proposal, RunEvent, SkillSpec } from '@shared/types'
 import { RunManager } from './runManager'
 import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
 import type { ConfigChange, ConfigChangeResult } from './harnessTools'
@@ -10,6 +10,7 @@ import { RunStore } from '../store/runs'
 import { ProjectStore } from '../store/projects'
 import { SetupService } from '../setup/service'
 import { orgChart, role } from './testHelpers'
+import { MockAdapter, type MockSession } from './mock'
 
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
 
@@ -40,7 +41,7 @@ const server = (id: string, name: string): McpServerSpec =>
 
 type Hook = ((change: ConfigChange) => Promise<ConfigChangeResult>) | 'absent'
 
-function rig(opts: { hook?: Hook; cliHost?: boolean } = {}) {
+function rig(opts: { hook?: Hook; cliHost?: boolean; gate?: Promise<void>; waitMs?: number } = {}) {
   const ctxs: RuntimeContext[] = []
   const calls: ConfigChange[] = []
   const sends: string[] = []
@@ -50,6 +51,7 @@ function rig(opts: { hook?: Hook; cliHost?: boolean } = {}) {
     complete: async () => '',
     start: async (ctx) => {
       ctxs.push(ctx)
+      if (opts.gate) await opts.gate
       ctx.emit({ type: 'run.status', runId: ctx.run.id, status: 'running' })
       const session: RuntimeSession = {
         send: async (text: string) => void sends.push(text),
@@ -69,7 +71,12 @@ function rig(opts: { hook?: Hook; cliHost?: boolean } = {}) {
       return session
     }
   }
-  const options = opts.cliHost ? {} : { liveRosterCards: true as const, liveHostChanges: true as const }
+  const options = {
+    ...(opts.cliHost ? {} : { liveRosterCards: true as const, liveHostChanges: true as const }),
+    ...(opts.waitMs ? { liveHostChangeWaitMs: opts.waitMs } : {}),
+    // As bootstrap.ts wires it: a card's fan-out reads the stored project before the apply through it.
+    resolveProject: (id: string) => store.get(id)
+  }
   const m = new RunManager({ mock: adapter }, (e) => void events.push(e), new RunStore(join(dir, 'data')), setup, () => 100, options)
   return { m, ctxs, calls, sends }
 }
@@ -198,33 +205,232 @@ describe('applyProjectChange: org chart edits from the editor (projects:save)', 
   })
 })
 
+/** An mcp:* / skills:* save: `before` is a copy of the stored project read first, as the handlers read it. */
+function itemSave(p: Project, edit: (copy: Project) => Project): { before: Project; saved: Project } {
+  const before = structuredClone(store.get(p.id)!)
+  const saved = store.save(edit(structuredClone(before)))
+  return { before, saved }
+}
+
+const skill = (id: string, name: string, over: Partial<SkillSpec> = {}): SkillSpec => ({ id, name, description: 'd', enabled: true, source: 'local', ...over }) as SkillSpec
+const mcpOf = (ctx: RuntimeContext, id: string): McpServerSpec | undefined => ctx.mcpServers!().find((s) => s.id === id)
+const roleOf = (ctx: RuntimeContext, id: string) => ctx.roles.find((r) => r.id === id)!
+
 describe('applyProjectChange: MCP servers and skills (mcp:* / skills:*)', () => {
   it('a server the user added reaches ctx.mcpServers(); a pulled server in the same save does not', async () => {
     const p = newProject()
     const { m, ctxs, calls } = rig({ hook: async () => ({ availability: 'after-idle' }) })
     const run = await m.start({ project: p, prompt: 'go' })
     const ctx = ctxs[0]
-    const saved = store.save({ ...store.get(p.id)!, mcpServers: [server('m-docs', 'docs'), server('m-new', 'tracker'), server('m-pulled', 'pulled')] })
-    const [res] = await m.applyProjectChange(p.id, saved, { kind: 'mcp', ids: ['m-new'], names: ['tracker'], label: 'the MCP server tracker' })
-    expect(ctx.mcpServers!().map((s) => s.id)).toEqual(['m-docs', 'm-new'])
+    const s = itemSave(p, (c) => ({ ...c, mcpServers: [server('m-docs', 'docs'), server('m-new', 'tracker'), server('m-pulled', 'pulled')] }))
+    const [res] = await m.applyProjectChange(p.id, s.saved, { kind: 'mcp', ids: ['m-new'], names: ['tracker'], label: 'the MCP server tracker', before: s.before })
+    expect(ctx.mcpServers!().map((x) => x.id)).toEqual(['m-docs', 'm-new'])
     expect(calls).toEqual([{ mcp: { upserted: ['tracker'], removed: [] } }])
     expect(res.availability).toBe('after-idle')
     expect(logs(run.id)).toContain('You changed the MCP server tracker; this run uses it once the agents are idle.')
     // Removal.
-    const saved2 = store.save({ ...store.get(p.id)!, mcpServers: [server('m-docs', 'docs')] })
-    await m.applyProjectChange(p.id, saved2, { kind: 'mcp', ids: ['m-new'], names: ['tracker'], label: 'the MCP server tracker' })
-    expect(ctx.mcpServers!().map((s) => s.id)).toEqual(['m-docs'])
+    const s2 = itemSave(p, (c) => ({ ...c, mcpServers: [server('m-docs', 'docs'), server('m-pulled', 'pulled')] }))
+    await m.applyProjectChange(p.id, s2.saved, { kind: 'mcp', ids: ['m-new'], names: ['tracker'], label: 'the MCP server tracker', before: s2.before, fields: [] })
+    expect(ctx.mcpServers!().map((x) => x.id)).toEqual(['m-docs'])
     expect(calls[1]).toEqual({ mcp: { upserted: [], removed: ['tracker'] } })
     await m.stopAll()
   })
 
-  it('a skills change tells the session skills: true', async () => {
+  it('M1: mcp:upsert of a server never brings in a stored grant or a stored launch change the run did not take', async () => {
+    const p = newProject()
+    const { m, ctxs, calls } = rig()
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    // Stored while the run was live but not taken by it (e.g. approved for the next run in Team files review).
+    store.save({ ...store.get(p.id)!, roles: store.get(p.id)!.roles.map((r) => (r.id === 'r-eng' ? { ...r, mcpServers: ['m-docs'] } : r)), mcpServers: [{ ...server('m-docs', 'docs'), command: 'evil' }] })
+    expect(roleOf(ctx, 'r-eng').mcpServers).toEqual([])
+    // The user's Settings edit of the same server: the form holds the stored spec; only its args change.
+    const s = itemSave(p, (c) => ({ ...c, mcpServers: c.mcpServers!.map((x) => (x.id === 'm-docs' ? { ...x, args: ['-y', 'docs@2.0.0'] } : x)) }))
+    const spec = s.saved.mcpServers!.find((x) => x.id === 'm-docs')!
+    await m.applyProjectChange(p.id, s.saved, { kind: 'mcp', ids: ['m-docs'], names: ['docs'], label: 'the MCP server docs', before: s.before, fields: Object.keys(spec) })
+    expect(roleOf(ctx, 'r-eng').mcpServers).toEqual([])
+    expect(ctx.project.roles.find((r) => r.id === 'r-eng')!.mcpServers).toEqual([])
+    expect(mcpOf(ctx, 'm-docs')).toMatchObject({ command: 'npx', args: ['-y', 'docs@2.0.0'] })
+    expect(calls).toEqual([{ mcp: { upserted: ['docs'], removed: [] } }])
+    await m.stopAll()
+  })
+
+  it('M1: mcp:setProjectOverrides moves only the override maps, never a stored launch change of that server', async () => {
+    const p = newProject()
+    const { m, ctxs } = rig()
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    store.save({ ...store.get(p.id)!, mcpServers: [{ ...server('m-docs', 'docs'), command: 'evil', args: ['--pwn'] }] })
+    const s = itemSave(p, (c) => ({ ...c, mcpServers: c.mcpServers!.map((x) => (x.id === 'm-docs' ? { ...x, envOverrides: { REGION: 'eu' } } : x)) }))
+    await m.applyProjectChange(p.id, s.saved, { kind: 'mcp', ids: ['m-docs'], names: ['docs'], label: 'the MCP server docs', before: s.before, fields: ['envOverrides'] })
+    expect(mcpOf(ctx, 'm-docs')).toMatchObject({ command: 'npx', args: ['-y', 'docs@1.0.0'], envOverrides: { REGION: 'eu' } })
+    await m.stopAll()
+  })
+
+  it('M1: skills:update of a skill never brings in a stored grant the run did not take; its own roleIds do move', async () => {
+    const p0 = newProject()
+    const p = store.save({ ...p0, skills: [skill('s-notes', 'notes')] })
+    const { m, ctxs, calls } = rig()
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    store.save({ ...store.get(p.id)!, roles: store.get(p.id)!.roles.map((r) => (r.id === 'r-rev' ? { ...r, skills: ['s-notes'] } : r)) })
+    expect(roleOf(ctx, 'r-rev').skills).toBeUndefined()
+    // A draft edit (description) with no roleIds: the stored grant to the reviewer stays out.
+    const s = itemSave(p, (c) => ({ ...c, skills: c.skills!.map((x) => (x.id === 's-notes' ? { ...x, description: 'Better notes.' } : x)) }))
+    await m.applyProjectChange(p.id, s.saved, { kind: 'skills', ids: ['s-notes'], names: ['notes'], label: 'the skill notes', before: s.before })
+    expect(roleOf(ctx, 'r-rev').skills).toBeUndefined()
+    expect(ctx.project.skills!.find((x) => x.id === 's-notes')!.description).toBe('Better notes.')
+    expect(calls).toEqual([{ skills: true }])
+    // roleIds [r-eng] (the complete set): the engineer gains it; the reviewer's stored grant is dropped by the save.
+    const s2 = itemSave(p, (c) => ({ ...c, roles: c.roles.map((r) => (r.id === 'r-eng' ? { ...r, skills: ['s-notes'] } : r.id === 'r-rev' ? { ...r, skills: [] } : r)) }))
+    await m.applyProjectChange(p.id, s2.saved, { kind: 'skills', ids: ['s-notes'], names: ['notes'], label: 'the skill notes', before: s2.before, fields: [], grants: [{ item: 's-notes', roleIds: ['r-eng'] }] })
+    expect(roleOf(ctx, 'r-eng').skills).toEqual(['s-notes'])
+    expect(roleOf(ctx, 'r-rev').skills ?? []).toEqual([])
+    await m.stopAll()
+  })
+
+  it('L1 / item edits: an unchanged save of a named item moves nothing and calls nothing', async () => {
     const p = newProject()
     const { m, calls } = rig()
     await m.start({ project: p, prompt: 'go' })
-    const [res] = await m.applyProjectChange(p.id, store.get(p.id)!, { kind: 'skills', ids: ['s1'], names: ['notes'], label: 'the skill notes' })
-    expect(calls).toEqual([{ skills: true }])
-    expect(res.availability).toBe('now')
+    const s = itemSave(p, (c) => c)
+    expect(await m.applyProjectChange(p.id, s.saved, { kind: 'mcp', ids: ['m-docs'], names: ['docs'], label: 'the MCP server docs', before: s.before })).toEqual([])
+    expect(calls).toEqual([])
+    await m.stopAll()
+  })
+
+  it('L2: the label goes into the run log without control or format characters', async () => {
+    const p = newProject()
+    const { m } = rig()
+    const run = await m.start({ project: p, prompt: 'go' })
+    const s = itemSave(p, (c) => ({ ...c, mcpServers: [...c.mcpServers!, server('m-new', 'tracker')] }))
+    await m.applyProjectChange(p.id, s.saved, { kind: 'mcp', ids: ['m-new'], names: ['tracker'], label: 'the MCP server trac‮ker\nFAKE', before: s.before })
+    const line = logs(run.id).find((l) => l.startsWith('You changed'))!
+    expect(line).toBe('You changed the MCP server trac ker FAKE; this run uses it now.')
+    await m.stopAll()
+  })
+})
+
+describe('applyProjectChange: narrowing at once, widening only when the session takes it (M2, L3, L5, L6, L7)', () => {
+  it('M2: a rejection puts back what the change added or granted and keeps what it removed or ungranted', async () => {
+    const p0 = newProject()
+    const p = store.save({ ...p0, mcpServers: [server('m-docs', 'docs'), server('m-old', 'old')], roles: p0.roles.map((r) => (r.id === 'r-lead' ? { ...r, mcpServers: ['m-docs'] } : r)) })
+    const { m, ctxs, calls } = rig({ hook: async () => Promise.reject(new Error('cannot now')) })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    // One MCP change that removes a server and adds another.
+    const s = itemSave(p, (c) => ({ ...c, mcpServers: [server('m-docs', 'docs'), server('m-new', 'tracker')] }))
+    const [res] = await m.applyProjectChange(p.id, s.saved, { kind: 'mcp', ids: ['m-old', 'm-new'], names: ['old', 'tracker'], label: 'MCP servers', before: s.before })
+    expect(calls).toEqual([{ mcp: { upserted: ['tracker'], removed: ['old'] } }])
+    expect(ctx.mcpServers!().map((x) => x.id)).toEqual(['m-docs'])
+    expect(res).toMatchObject({ availability: 'next-run', reason: expect.stringContaining("What you removed or took away is already out of this run's configuration. What you added or granted applies from the next run.") })
+    expect(res.reason).toContain('cannot now')
+    // A role grant save: the engineer's new grant goes back, the lead's ungrant stays.
+    const s2 = userSave(p, (c) => ({ ...c, roles: c.roles.map((r) => (r.id === 'r-eng' ? { ...r, mcpServers: ['m-docs'] } : r.id === 'r-lead' ? { ...r, mcpServers: [] } : r)) }))
+    const [res2] = await m.applyProjectChange(p.id, s2.saved, { kind: 'projectSave', before: s2.before, request: s2.request })
+    expect(roleOf(ctx, 'r-eng').mcpServers).toEqual([])
+    expect(roleOf(ctx, 'r-lead').mcpServers).toEqual([])
+    expect(ctx.project.roles.find((r) => r.id === 'r-eng')!.mcpServers).toEqual([])
+    expect(res2.availability).toBe('next-run')
+    expect(logs(run.id).filter((l) => l.includes('could not take it'))).toHaveLength(2)
+    await m.stopAll()
+  })
+
+  it('re-review L-a: a rejected change puts back only its own fields; a later change of the same server stays', async () => {
+    const p = newProject()
+    const finishers: ((e?: Error) => void)[] = []
+    const { m, ctxs } = rig({ hook: () => new Promise<ConfigChangeResult>((res, rej) => finishers.push((e) => (e ? rej(e) : res({ availability: 'now' })))), waitMs: 10 })
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const a = itemSave(p, (c) => ({ ...c, mcpServers: c.mcpServers!.map((x) => ({ ...x, args: ['-y', 'docs@2.0.0'] })) }))
+    expect((await m.applyProjectChange(p.id, a.saved, { kind: 'mcp', ids: ['m-docs'], names: ['docs'], label: 'A', before: a.before }))[0].availability).toBe('pending')
+    const b = itemSave(p, (c) => ({ ...c, mcpServers: c.mcpServers!.map((x) => ({ ...x, envOverrides: { R: 'eu' } })) }))
+    await m.applyProjectChange(p.id, b.saved, { kind: 'mcp', ids: ['m-docs'], names: ['docs'], label: 'B', before: b.before, fields: ['envOverrides'] })
+    finishers[1]()
+    finishers[0](new Error('no'))
+    await vi.waitFor(() => expect(mcpOf(ctx, 'm-docs')!.args).toEqual(['-y', 'docs@1.0.0']))
+    expect(mcpOf(ctx, 'm-docs')!.envOverrides).toEqual({ R: 'eu' })
+    await m.stopAll()
+  })
+
+  it('re-review L-b: a grant to a skill the run does not have is not reported as in use', async () => {
+    const p = newProject()
+    const { m, ctxs, calls } = rig()
+    const run = await m.start({ project: p, prompt: 'go' })
+    // Stored after the run started: the run does not have it.
+    store.save({ ...store.get(p.id)!, skills: [skill('s-late', 'late')] })
+    const s = itemSave(p, (c) => ({ ...c, roles: c.roles.map((r) => (r.id === 'r-eng' ? { ...r, skills: ['s-late'] } : r)) }))
+    const [res] = await m.applyProjectChange(p.id, s.saved, { kind: 'skills', ids: ['s-late'], names: ['late'], label: 'the skill late', before: s.before, fields: [], grants: [{ item: 's-late', roleIds: ['r-eng'] }] })
+    expect(res).toMatchObject({ availability: 'next-run', reason: expect.stringContaining('does not have') })
+    expect(roleOf(ctxs[0], 'r-eng').skills).toBeUndefined()
+    expect(calls).toEqual([])
+    expect(logs(run.id).some((l) => l.includes('uses it now'))).toBe(false)
+    await m.stopAll()
+  })
+
+  it('M2: a rejection of a change that only takes away answers now and keeps it', async () => {
+    const p0 = newProject()
+    const p = store.save({ ...p0, roles: p0.roles.map((r) => (r.id === 'r-lead' ? { ...r, mcpServers: ['m-docs'] } : r)) })
+    const { m, ctxs, calls } = rig({ hook: async () => Promise.reject(new Error('busy')) })
+    await m.start({ project: p, prompt: 'go' })
+    const s = userSave(p, (c) => ({ ...c, roles: c.roles.map((r) => (r.id === 'r-lead' ? { ...r, mcpServers: [] } : r)) }))
+    const [res] = await m.applyProjectChange(p.id, s.saved, { kind: 'projectSave', before: s.before, request: s.request })
+    // L3: an ungrant names no server; the empty list still tells the session to re-read the grants.
+    expect(calls).toEqual([{ mcp: { upserted: [], removed: [] } }])
+    expect(roleOf(ctxs[0], 'r-lead').mcpServers).toEqual([])
+    expect(res).toMatchObject({ availability: 'now', reason: expect.stringContaining("What you removed or took away is already out of this run's configuration.") })
+    await m.stopAll()
+  })
+
+  it("M2 / L7: no answer within the wait is 'pending': nothing is put back and the log says it is still being applied", async () => {
+    const p = newProject()
+    let finish: (r: ConfigChangeResult) => void = () => {}
+    const { m, ctxs } = rig({ hook: () => new Promise<ConfigChangeResult>((r) => (finish = r)), waitMs: 20 })
+    const run = await m.start({ project: p, prompt: 'go' })
+    const s = userSave(p, (c) => ({ ...c, roles: c.roles.map((r) => (r.id === 'r-eng' ? { ...r, mcpServers: ['m-docs'] } : r)) }))
+    const [res] = await m.applyProjectChange(p.id, s.saved, { kind: 'projectSave', before: s.before, request: s.request })
+    expect(res.availability).toBe('pending')
+    expect(roleOf(ctxs[0], 'r-eng').mcpServers).toEqual(['m-docs'])
+    expect(logs(run.id)).toContain('You changed role grants; OrgAI is still applying it to this run. This log says when it is in place.')
+    expect(logs(run.id).some((l) => l.includes('next run'))).toBe(false)
+    finish({ availability: 'after-idle' })
+    await vi.waitFor(() => expect(logs(run.id)).toContain('You changed role grants; this run uses it once the agents are idle.'))
+    expect(roleOf(ctxs[0], 'r-eng').mcpServers).toEqual(['m-docs'])
+    await m.stopAll()
+  })
+
+  it('L5: a session without hostConfigChanged takes removals and ungrants at once; grants and new servers wait', async () => {
+    const p0 = newProject()
+    const p = store.save({ ...p0, mcpServers: [server('m-docs', 'docs'), server('m-old', 'old')], roles: p0.roles.map((r) => (r.id === 'r-lead' ? { ...r, mcpServers: ['m-docs', 'm-old'] } : r)) })
+    const { m, ctxs } = rig({ hook: 'absent' })
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    const s = itemSave(p, (c) => ({ ...c, mcpServers: [server('m-docs', 'docs'), server('m-new', 'tracker')] }))
+    const [res] = await m.applyProjectChange(p.id, s.saved, { kind: 'mcp', ids: ['m-old', 'm-new'], names: ['old', 'tracker'], label: 'MCP servers', before: s.before })
+    expect(ctx.mcpServers!().map((x) => x.id)).toEqual(['m-docs'])
+    expect(roleOf(ctx, 'r-lead').mcpServers).toEqual(['m-docs'])
+    expect(res).toMatchObject({ availability: 'next-run', reason: "This run's session cannot take changes while it is live. What you removed or took away is already out of this run's configuration. The rest applies from the next run." })
+    const s2 = userSave(p, (c) => ({ ...c, roles: c.roles.map((r) => (r.id === 'r-lead' ? { ...r, mcpServers: [] } : r.id === 'r-eng' ? { ...r, mcpServers: ['m-docs'] } : r)) }))
+    await m.applyProjectChange(p.id, s2.saved, { kind: 'projectSave', before: s2.before, request: s2.request })
+    expect(roleOf(ctx, 'r-lead').mcpServers).toEqual([])
+    expect(roleOf(ctx, 'r-eng').mcpServers).toEqual([])
+    await m.stopAll()
+  })
+
+  it('L6: a run whose session is not open yet says it is still starting and takes only what was taken away', async () => {
+    const p0 = newProject()
+    const p = store.save({ ...p0, roles: p0.roles.map((r) => (r.id === 'r-lead' ? { ...r, mcpServers: ['m-docs'] } : r)) })
+    let open: () => void = () => {}
+    const { m, ctxs } = rig({ gate: new Promise<void>((r) => (open = r)) })
+    const started = m.start({ project: p, prompt: 'go' })
+    await vi.waitFor(() => expect(ctxs).toHaveLength(1))
+    const s = userSave(p, (c) => ({ ...c, roles: c.roles.map((r) => (r.id === 'r-lead' ? { ...r, mcpServers: [] } : r.id === 'r-eng' ? { ...r, mcpServers: ['m-docs'] } : r)) }))
+    const [res] = await m.applyProjectChange(p.id, s.saved, { kind: 'projectSave', before: s.before, request: s.request })
+    expect(res).toMatchObject({ availability: 'next-run', reason: "The run is still starting. What you removed or took away is already out of this run's configuration. The rest applies from the next run." })
+    expect(roleOf(ctxs[0], 'r-lead').mcpServers).toEqual([])
+    expect(roleOf(ctxs[0], 'r-eng').mcpServers).toEqual([])
+    open()
+    await started
     await m.stopAll()
   })
 })
@@ -259,7 +465,8 @@ describe('applyProjectChange: hosts, sessions and run states', () => {
     const p = newProject()
     const { m } = rig({ hook: async () => Promise.reject(new Error('cannot now')) })
     const run = await m.start({ project: p, prompt: 'go' })
-    const [res] = await m.applyProjectChange(p.id, store.get(p.id)!, { kind: 'skills', ids: ['s1'], names: ['notes'], label: 'the skill notes' })
+    const s = itemSave(p, (c) => ({ ...c, skills: [skill('s1', 'notes')] }))
+    const [res] = await m.applyProjectChange(p.id, s.saved, { kind: 'skills', ids: ['s1'], names: ['notes'], label: 'the skill notes', before: s.before })
     expect(res).toMatchObject({ availability: 'next-run', reason: expect.stringContaining('cannot now') })
     expect(logs(run.id).some((l) => l.includes('could not take it'))).toBe(true)
     await m.stopAll()
@@ -289,9 +496,46 @@ describe('applyProjectChange: hosts, sessions and run states', () => {
     const p = newProject()
     const { m, calls } = rig()
     const a = await m.start({ project: p, prompt: 'go' })
-    expect(await m.applyProjectChange(p.id, store.get(p.id)!, { kind: 'skills', ids: ['s1'], names: ['n'], label: 'l' }, { exceptRunId: a.id })).toEqual([])
-    expect(await m.applyProjectChange('other', { ...store.get(p.id)!, id: 'other' }, { kind: 'skills', ids: ['s1'], names: ['n'], label: 'l' })).toEqual([])
+    const s = itemSave(p, (c) => ({ ...c, skills: [skill('s1', 'n')] }))
+    expect(await m.applyProjectChange(p.id, s.saved, { kind: 'skills', ids: ['s1'], names: ['n'], label: 'l', before: s.before }, { exceptRunId: a.id })).toEqual([])
+    expect(await m.applyProjectChange('other', { ...s.saved, id: 'other' }, { kind: 'skills', ids: ['s1'], names: ['n'], label: 'l', before: s.before })).toEqual([])
     expect(calls).toEqual([])
+    await m.stopAll()
+  })
+})
+
+describe('end to end: the real RunManager with the mock adapter', () => {
+  it('a desktop save of a grant and of an org chart role reaches an idle mock run: host configChanges, a next-message notice, no send, one log line', async () => {
+    // Accept edits: the mock's engineer edits a file, and no permission card should hold the run before it is idle.
+    const p = store.save({ ...newProject(), permissionMode: 'acceptEdits' })
+    const adapter = new MockAdapter({ script: { delayMs: 0 } })
+    const sessions: MockSession[] = []
+    const sent: string[] = []
+    const start = adapter.start.bind(adapter)
+    adapter.start = async (ctx) => {
+      const s = (await start(ctx)) as MockSession
+      const send = s.send.bind(s)
+      s.send = async (text: string) => {
+        sent.push(text)
+        return send(text)
+      }
+      sessions.push(s)
+      return s
+    }
+    const m = new RunManager({ mock: adapter }, (e) => void events.push(e), new RunStore(join(dir, 'data')), setup, () => 100, { liveRosterCards: true, liveHostChanges: true, resolveProject: (id) => store.get(id) })
+    const run = await m.start({ project: p, prompt: 'go' })
+    await vi.waitFor(() => expect(events.filter((e) => e.type === 'run.status' && e.runId === run.id).map((e) => (e as { status: string }).status)).toContain('idle'), { timeout: 10_000 })
+    const session = sessions[0]
+    expect(session.liveRoster).toBe(true)
+    const sentBefore = sent.length
+    const s = userSave(p, (c) => ({ ...c, roles: c.roles.map((r) => (r.id === 'r-eng' ? { ...r, mcpServers: ['m-docs'], prompt: 'Build with docs.' } : r)) }))
+    const [res] = await m.applyProjectChange(p.id, s.saved, { kind: 'projectSave', before: s.before, request: s.request })
+    expect(res).toMatchObject({ runId: run.id, availability: 'now' })
+    expect(session.configChanges).toEqual([{ roles: { added: [], changed: ['r-eng'], removed: [] }, mcp: { upserted: ['docs'], removed: [] }, host: true }])
+    expect(session.hostNotices).toHaveLength(1)
+    expect(session.hostNotices[0].delivery).toBe('next-message')
+    expect(sent.length).toBe(sentBefore)
+    expect(logs(run.id).filter((l) => l.startsWith('You changed'))).toEqual(['You changed the org chart and role grants; this run uses it now.'])
     await m.stopAll()
   })
 })

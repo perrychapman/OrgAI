@@ -152,7 +152,7 @@ import { createScratchDir } from '../quick/scratch'
 import { folderConfigReview } from '../runtime/folderConfigTrust'
 import { addRules, listIgnoredRules, listRules, removeRule } from '../runtime/permissionRules'
 import type { RunManager, StartUserChoice } from '../runtime/runManager'
-import type { HostProjectChange } from '../runtime/hostChange'
+import type { HostItemChange, HostProjectChange } from '../runtime/hostChange'
 import type { EvolveService } from '../evolve/service'
 import { EVOLVE_AFTER_RUN_CHANNEL } from './jsonCodec'
 import { overridesWidening } from '../runtime/runOverrides'
@@ -1084,9 +1084,37 @@ async function liveRunsOf(
 }
 
 const clampName = (name: string): string => (name.length > 80 ? `${name.slice(0, 79)}…` : name)
-const mcpChange = (ids: string[], names: string[]): HostProjectChange => ({ kind: 'mcp', ids, names, label: `the MCP server ${clampName(names[0] ?? ids[0] ?? '')}` })
-const skillChange = (ids: string[], names: string[]): HostProjectChange => ({ kind: 'skills', ids, names, label: `the skill ${clampName(names[0] ?? ids[0] ?? '')}` })
+/** What the input set beyond the item list (hostChange.ts HostItemChange): definition fields and grants. */
+type ItemScope = Pick<HostItemChange, 'fields' | 'grants'>
+const mcpChange = (before: Project, ids: string[], names: string[], scope: ItemScope = {}): HostProjectChange => ({
+  kind: 'mcp',
+  ids,
+  names,
+  label: `the MCP server ${clampName(names[0] ?? ids[0] ?? '')}`,
+  before,
+  ...scope
+})
+const skillChange = (before: Project, ids: string[], names: string[], scope: ItemScope = {}): HostProjectChange => ({
+  kind: 'skills',
+  ids,
+  names,
+  label: `the skill ${clampName(names[0] ?? ids[0] ?? '')}`,
+  before,
+  ...scope
+})
 const uniq = (list: string[]): string[] => [...new Set(list.filter((s) => typeof s === 'string' && s))]
+/**
+ * The stored project BEFORE a desktop save, as a copy (projects:save does the same): the save and its team-file ingest
+ * change the store's object, and live runs take only what this save changed against it (review M1). Null elsewhere.
+ */
+const beforeSave = (ctx: InvokeContext, getProject: (id: string) => Project | null, projectId: unknown): Project | null => {
+  if (ctx.surface !== 'desktop' || typeof projectId !== 'string') return null
+  const p = getProject(projectId)
+  return p ? structuredClone(p) : null
+}
+/** Skill roleIds given in the input: the complete set of roles holding the skill afterwards (SkillService.setGrants). */
+const skillGrants = (item: string, roleIds: unknown): ItemScope =>
+  Array.isArray(roleIds) ? { grants: [{ item, roleIds: roleIds.filter((r): r is string => typeof r === 'string') }] } : {}
 
 function registerSkillIpc(
   handle: Register,
@@ -1122,37 +1150,45 @@ function registerSkillIpc(
   const skillName = (p: Project | null | undefined, id: string): string | undefined => p?.skills?.find((s) => s.id === id)?.name
   handle(IPC.skillsCreate, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
     const i = withProject<SkillCreateInput>(input)
-    const before = getProject(i.projectId)
+    const before = beforeSave(ctx, getProject, i.projectId)
     const result = skills.create(i)
-    const had = new Set((before?.skills ?? []).map((s) => s.id))
-    const made = result.project.skills?.find((s) => !had.has(s.id)) ?? result.project.skills?.find((s) => s.name === i.draft?.name)
+    if (!before) return result
+    // Review L1: the skill this call created (its name, new since before), never another new item of the same save.
+    const had = new Set((before.skills ?? []).map((s) => s.id))
+    const name = typeof i.draft?.name === 'string' ? i.draft.name.trim() : ''
+    const made = result.project.skills?.find((s) => !had.has(s.id) && s.name === name)
     if (!made) return result
-    return withLive(ctx, result, i.projectId, skillChange([made.id], [made.name]))
+    return withLive(ctx, result, i.projectId, skillChange(before, [made.id], [made.name], skillGrants(made.id, i.roleIds)))
   })
   handle(IPC.skillsUpdate, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
     const i = withProject<SkillUpdateInput>(input)
     const args = { ...i, ...projectSkill(i) }
-    const before = getProject(i.projectId)
+    const before = beforeSave(ctx, getProject, i.projectId)
     const result = skills.update(args)
+    if (!before) return result
     const names = uniq([skillName(before, args.skillId) ?? '', skillName(result.project, args.skillId) ?? ''])
-    return withLive(ctx, result, i.projectId, skillChange([args.skillId], names))
+    // A draft rewrites the skill (any field the save changed); otherwise only `enabled`, when given.
+    const fields = i.draft !== undefined ? undefined : i.enabled !== undefined ? ['enabled'] : []
+    return withLive(ctx, result, i.projectId, skillChange(before, [args.skillId], names, { ...(fields ? { fields } : {}), ...skillGrants(args.skillId, i.roleIds) }))
   })
   handle(IPC.skillsRemove, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
     const i = projectSkill(input)
-    const before = getProject(i.projectId)
+    const before = beforeSave(ctx, getProject, i.projectId)
     const result = skills.remove(i)
-    return withLive(ctx, result, i.projectId, skillChange([i.skillId], uniq([skillName(before, i.skillId) ?? i.skillId])))
+    if (!before) return result
+    return withLive(ctx, result, i.projectId, skillChange(before, [i.skillId], uniq([skillName(before, i.skillId) ?? i.skillId]), { fields: [] }))
   })
   handle(IPC.skillsLinkLibrary, (ctx, input: unknown): SkillMutationResult | Promise<SkillMutationResult> => {
     const i = withProject<SkillLinkLibraryInput>(input)
     const args = { ...i, ...libraryArg(i) }
-    const before = getProject(i.projectId)
+    const before = beforeSave(ctx, getProject, i.projectId)
     const result = skills.linkLibrary(args)
-    const had = new Set((before?.skills ?? []).map((s) => s.id))
-    const linked =
-      result.project.skills?.find((s) => s.libraryId === args.libraryId && !had.has(s.id)) ?? result.project.skills?.find((s) => s.libraryId === args.libraryId)
+    if (!before) return result
+    // Review L1: the link this call made (its library id, new since before).
+    const had = new Set((before.skills ?? []).map((s) => s.id))
+    const linked = result.project.skills?.find((s) => s.libraryId === args.libraryId && !had.has(s.id))
     if (!linked) return result
-    return withLive(ctx, result, i.projectId, skillChange(uniq([args.libraryId, linked.id]), [linked.name]))
+    return withLive(ctx, result, i.projectId, skillChange(before, uniq([args.libraryId, linked.id]), [linked.name], skillGrants(linked.id, i.roleIds)))
   })
   handle(IPC.skillsPromote, (_e, input: unknown): SkillMutationResult => skills.promote(projectSkill(input)))
   // Import: read-only scans of the stored project's folder; the renderer supplies choices and the preview digest.
@@ -1251,13 +1287,20 @@ function registerMcpIpc(
   }
   const serverName = (p: Project | null | undefined, id: string): string | undefined => p?.mcpServers?.find((s) => s.id === id)?.name
   handle(IPC.mcpUpsert, (ctx, input: McpUpsertInput): McpMutationResult | Promise<McpMutationResult> => {
+    const before = beforeSave(ctx, getProject, input?.projectId)
     const result = mcp.upsert(input)
-    return withLive(ctx, result, input.projectId, mcpChange([input.spec.id], [input.spec.name]))
+    if (!before) return result
+    // The spec replaces the stored one: the fields it sets and the ones it leaves out (cleared). Grants are not named:
+    // the run's grants to the server stay (review M1).
+    const stored = before.mcpServers?.find((s) => s.id === input.spec.id)
+    const fields = uniq([...Object.keys(input.spec ?? {}), ...Object.keys(stored ?? {})])
+    return withLive(ctx, result, input.projectId, mcpChange(before, [input.spec.id], [input.spec.name], { fields }))
   })
   handle(IPC.mcpRemove, (ctx, input: { projectId: string; serverId: string }): McpMutationResult | Promise<McpMutationResult> => {
-    const before = getProject(input.projectId)
+    const before = beforeSave(ctx, getProject, input?.projectId)
     const result = mcp.remove(input)
-    return withLive(ctx, result, input.projectId, mcpChange([input.serverId], [serverName(before, input.serverId) ?? input.serverId]))
+    if (!before) return result
+    return withLive(ctx, result, input.projectId, mcpChange(before, [input.serverId], [serverName(before, input.serverId) ?? input.serverId], { fields: [] }))
   })
   handle(IPC.mcpSetSecret, (_e, input: unknown): McpMutationResult => mcp.setSecret(mcpSecretArgs(input)))
   handle(IPC.mcpTest, (_e, input: { projectId: string; serverId: string }): Promise<McpTestResult> => mcp.test(input))
@@ -1288,13 +1331,14 @@ function registerMcpIpc(
     return runs.start({ project, kind: 'mcp-assist', prompt: assistPrompt(project, instruction) })
   })
   handle(IPC.mcpLinkLibrary, (ctx, input: McpLinkLibraryInput): McpMutationResult | Promise<McpMutationResult> => {
-    const before = getProject(input.projectId)
+    const before = beforeSave(ctx, getProject, input?.projectId)
     const result = mcp.linkLibrary(input)
-    const had = new Set((before?.mcpServers ?? []).map((s) => s.id))
-    const linked =
-      result.project.mcpServers?.find((s) => s.libraryId === input.libraryId && !had.has(s.id)) ?? result.project.mcpServers?.find((s) => s.libraryId === input.libraryId)
+    if (!before) return result
+    // Review L1: the link this call made (its library id, new since before).
+    const had = new Set((before.mcpServers ?? []).map((s) => s.id))
+    const linked = result.project.mcpServers?.find((s) => s.libraryId === input.libraryId && !had.has(s.id))
     if (!linked) return result
-    return withLive(ctx, result, input.projectId, mcpChange(uniq([linked.id, input.libraryId]), [linked.name]))
+    return withLive(ctx, result, input.projectId, mcpChange(before, uniq([linked.id, input.libraryId]), [linked.name]))
   })
   handle(IPC.mcpPromote, (_e, input: { projectId: string; serverId: string }): McpMutationResult => mcp.promote(input))
   // Resolves when the browser flow ends (or fails, as state 'error'); client id and secret are write-only.
@@ -1317,8 +1361,12 @@ function registerMcpIpc(
   handle(MCP_SCOPE_IPC.mcpCopyFromLibrary, (_e, input: unknown) => mcp.copyFromLibrary(mcpCopyArgs(input)))
   handle(MCP_SCOPE_IPC.mcpSetProjectOverrides, (ctx, input: unknown): McpMutationResult | Promise<McpMutationResult> => {
     const args = mcpOverridesArgs(input)
+    const before = beforeSave(ctx, getProject, args.projectId)
     const result = mcp.setProjectOverrides(args)
-    return withLive(ctx, result, args.projectId, mcpChange([args.serverId], [serverName(result.project, args.serverId) ?? args.serverId]))
+    if (!before) return result
+    // Only the override maps the input gave (review M1): a stored launch change of the same server stays out.
+    const fields = [...(args.env !== undefined ? ['envOverrides'] : []), ...(args.headers !== undefined ? ['headerOverrides'] : [])]
+    return withLive(ctx, result, args.projectId, mcpChange(before, [args.serverId], [serverName(result.project, args.serverId) ?? args.serverId], { fields }))
   })
   handle(MCP_SCOPE_IPC.connectorPresetsList, () => mcp.connectorPresetsList())
   // The service validates the whole definition (validateUserPreset); the handler passes the raw structured-clone input.

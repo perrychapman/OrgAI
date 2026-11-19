@@ -72,7 +72,7 @@ describe('mcpProposal', () => {
   it('words the effect by proposer and drops unknown values', () => {
     expect(proposalEffectCopy('now')).toBe('Takes effect now.')
     expect(proposalEffectCopy('next-run')).toBe('Takes effect from the next run. This run keeps what it has.')
-    expect(proposalEffectCopy('next-run', 'assistant', { otherLiveRuns: true })).toBe('Takes effect from the next run; this session keeps what it has. Live team runs of this project take it as soon as they can.')
+    expect(proposalEffectCopy('next-run', 'assistant', { otherLiveRuns: true })).toBe('Takes effect from the next run; this session keeps what it has. Other live team runs of this project take it when their session can; each run log says when.')
     expect(proposalEffectCopy('after-turn')).toBe("Takes effect after the orchestrator's current turn. Reports already running keep what they have.")
     expect(proposalEffectCopy('after-turn', 'assistant')).toContain("the assistant's current turn")
     expect(proposalEffectCopy('after-turn', 'architect')).toContain("the Architect's current turn")

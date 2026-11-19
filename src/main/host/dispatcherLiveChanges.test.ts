@@ -134,19 +134,36 @@ describe('desktop saves reach live runs (applyProjectChange)', () => {
     expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
   })
 
-  it('mcp:upsert names the saved server', async () => {
+  /** The change's `before`: a copy of the stored project as it was before the save (review M1). */
+  const beforeOf = (r: ReturnType<typeof rig>, i = 0): Project => (r.calls[i].change as { before: Project }).before
+  const startProject = (r: ReturnType<typeof rig>): Project => r.calls[0].storedAtCall!
+
+  it('mcp:upsert names the saved server, passes a copy of the project read before the save, and names no grants', async () => {
     const r = rig()
+    const original = r.store[0]
     const out = await r.call(IPC.mcpUpsert, { projectId: P, spec: server('mcp_a', 'alpha') })
     expect(r.calls).toHaveLength(1)
-    expect(r.calls[0].change).toEqual({ kind: 'mcp', ids: ['mcp_a'], names: ['alpha'], label: 'the MCP server alpha' })
+    expect(r.calls[0].change).toEqual({ kind: 'mcp', ids: ['mcp_a'], names: ['alpha'], label: 'the MCP server alpha', before: original, fields: ['id', 'name', 'transport', 'command'] })
+    expect(beforeOf(r)).not.toBe(original)
+    expect(beforeOf(r).mcpServers?.map((s) => s.id)).toEqual(['mcp_old'])
+    expect(startProject(r).mcpServers?.map((s) => s.id)).toContain('mcp_a')
+    expect('grants' in (r.calls[0].change as object)).toBe(false)
     expect(r.calls[0].saved.mcpServers?.map((s) => s.id)).toContain('mcp_a')
     expect(out.liveRuns).toEqual(CANNED)
+  })
+
+  it('mcp:upsert of a stored server limits fields to the spec and the stored keys (a key left out is cleared)', async () => {
+    const r = rig()
+    r.store[0] = { ...r.store[0], mcpServers: [server('mcp_old', 'old-srv', { args: ['a'] })] }
+    await r.call(IPC.mcpUpsert, { projectId: P, spec: server('mcp_old', 'old-srv', { env: { A: 'b' } }) })
+    expect((r.calls[0].change as { fields: string[] }).fields.sort()).toEqual(['args', 'command', 'env', 'id', 'name', 'transport'])
   })
 
   it('mcp:remove takes the name from the project as it was before', async () => {
     const r = rig()
     const out = await r.call(IPC.mcpRemove, { projectId: P, serverId: 'mcp_old' })
-    expect(r.calls[0].change).toEqual({ kind: 'mcp', ids: ['mcp_old'], names: ['old-srv'], label: 'the MCP server old-srv' })
+    expect(r.calls[0].change).toMatchObject({ kind: 'mcp', ids: ['mcp_old'], names: ['old-srv'], label: 'the MCP server old-srv', fields: [] })
+    expect(beforeOf(r).mcpServers?.map((s) => s.id)).toEqual(['mcp_old'])
     expect(out.liveRuns).toEqual(CANNED)
   })
 
@@ -159,43 +176,79 @@ describe('desktop saves reach live runs (applyProjectChange)', () => {
   it('mcp:linkLibrary names the new server and the library id', async () => {
     const r = rig()
     const out = await r.call(IPC.mcpLinkLibrary, { projectId: P, libraryId: 'lib_1' })
-    expect(r.calls[0].change).toEqual({ kind: 'mcp', ids: ['mcp_new', 'lib_1'], names: ['linked-srv'], label: 'the MCP server linked-srv' })
+    expect(r.calls[0].change).toMatchObject({ kind: 'mcp', ids: ['mcp_new', 'lib_1'], names: ['linked-srv'], label: 'the MCP server linked-srv' })
     expect(out.liveRuns).toEqual(CANNED)
   })
 
-  it('mcp:setProjectOverrides names the server from the saved project', async () => {
+  it('L1: mcp:linkLibrary names its own link, never another new server the same save brought in', async () => {
+    const r = rig()
+    r.mcp.linkLibrary.mockImplementation((i: { libraryId: string }) => ({
+      project: (r.store[0] = { ...r.store[0], mcpServers: [...r.store[0].mcpServers!, server('mcp_other', 'gate-approved', { libraryId: 'lib_other' }), server('mcp_new', 'linked-srv', { libraryId: i.libraryId })] }),
+      servers: []
+    }))
+    await r.call(IPC.mcpLinkLibrary, { projectId: P, libraryId: 'lib_1' })
+    expect(r.calls[0].change).toMatchObject({ ids: ['mcp_new', 'lib_1'], names: ['linked-srv'] })
+  })
+
+  it('mcp:setProjectOverrides names the server and only the override maps the input gave', async () => {
     const r = rig()
     const out = await r.call(MCP_SCOPE_IPC.mcpSetProjectOverrides, { projectId: P, serverId: 'mcp_old', env: { A: 'b' } })
-    expect(r.calls[0].change).toEqual({ kind: 'mcp', ids: ['mcp_old'], names: ['old-srv'], label: 'the MCP server old-srv' })
+    expect(r.calls[0].change).toMatchObject({ kind: 'mcp', ids: ['mcp_old'], names: ['old-srv'], label: 'the MCP server old-srv', fields: ['envOverrides'] })
     expect(out.liveRuns).toEqual(CANNED)
   })
 
-  it('skills:create names the new skill', async () => {
+  it('skills:create names the new skill and its roleIds as the complete grant set', async () => {
     const r = rig()
-    const out = await r.call(IPC.skillsCreate, { projectId: P, draft: { name: 'fresh', description: 'd', body: 'b' } })
-    expect(r.calls[0].change).toEqual({ kind: 'skills', ids: ['sk_new'], names: ['fresh'], label: 'the skill fresh' })
+    const out = await r.call(IPC.skillsCreate, { projectId: P, draft: { name: 'fresh', description: 'd', body: 'b' }, roleIds: ['r1'] })
+    expect(r.calls[0].change).toMatchObject({ kind: 'skills', ids: ['sk_new'], names: ['fresh'], label: 'the skill fresh', grants: [{ item: 'sk_new', roleIds: ['r1'] }] })
+    expect(beforeOf(r).skills?.map((s) => s.id)).toEqual(['sk_old'])
     expect(out.liveRuns).toEqual(CANNED)
   })
 
-  it('skills:update names the skill before and after', async () => {
+  it('L1: skills:create names the skill it created, never another new skill the same save brought in first', async () => {
+    const r = rig()
+    r.skillsSvc.create.mockImplementation((i: { draft: { name: string } }) => ({
+      project: (r.store[0] = { ...r.store[0], skills: [...r.store[0].skills!, skill('sk_pulled', 'pulled'), skill('sk_new', i.draft.name)] }),
+      skills: []
+    }))
+    await r.call(IPC.skillsCreate, { projectId: P, draft: { name: 'fresh', description: 'd', body: 'b' } })
+    expect(r.calls[0].change).toMatchObject({ ids: ['sk_new'], names: ['fresh'] })
+  })
+
+  it('skills:update names the skill before and after; enabled only = fields enabled; roleIds = grants', async () => {
     const r = rig()
     const out = await r.call(IPC.skillsUpdate, { projectId: P, skillId: 'sk_old', enabled: false })
-    expect(r.calls[0].change).toEqual({ kind: 'skills', ids: ['sk_old'], names: ['old-skill', 'renamed'], label: 'the skill old-skill' })
+    expect(r.calls[0].change).toMatchObject({ kind: 'skills', ids: ['sk_old'], names: ['old-skill', 'renamed'], label: 'the skill old-skill', fields: ['enabled'] })
+    expect('grants' in (r.calls[0].change as object)).toBe(false)
     expect(out.liveRuns).toEqual(CANNED)
+    await r.call(IPC.skillsUpdate, { projectId: P, skillId: 'sk_old', roleIds: ['r2'] })
+    expect(r.calls[1].change).toMatchObject({ fields: [], grants: [{ item: 'sk_old', roleIds: ['r2'] }] })
+    await r.call(IPC.skillsUpdate, { projectId: P, skillId: 'sk_old', draft: { name: 'old-skill', description: 'x', body: 'b' } })
+    expect('fields' in (r.calls[2].change as object)).toBe(false)
   })
 
   it('skills:remove takes the name from before', async () => {
     const r = rig()
     const out = await r.call(IPC.skillsRemove, { projectId: P, skillId: 'sk_old' })
-    expect(r.calls[0].change).toEqual({ kind: 'skills', ids: ['sk_old'], names: ['old-skill'], label: 'the skill old-skill' })
+    expect(r.calls[0].change).toMatchObject({ kind: 'skills', ids: ['sk_old'], names: ['old-skill'], label: 'the skill old-skill', fields: [] })
     expect(out.liveRuns).toEqual(CANNED)
   })
 
   it('skills:linkLibrary names the library id and the new skill', async () => {
     const r = rig()
-    const out = await r.call(IPC.skillsLinkLibrary, { projectId: P, libraryId: 'lib_9' })
-    expect(r.calls[0].change).toEqual({ kind: 'skills', ids: ['lib_9', 'sk_lib'], names: ['lib-skill'], label: 'the skill lib-skill' })
+    const out = await r.call(IPC.skillsLinkLibrary, { projectId: P, libraryId: 'lib_9', roleIds: ['r1'] })
+    expect(r.calls[0].change).toMatchObject({ kind: 'skills', ids: ['lib_9', 'sk_lib'], names: ['lib-skill'], label: 'the skill lib-skill', grants: [{ item: 'sk_lib', roleIds: ['r1'] }] })
     expect(out.liveRuns).toEqual(CANNED)
+  })
+
+  it('L1: skills:linkLibrary names its own link, never another new linked skill of the same save', async () => {
+    const r = rig()
+    r.skillsSvc.linkLibrary.mockImplementation((i: { libraryId: string }) => ({
+      project: (r.store[0] = { ...r.store[0], skills: [...r.store[0].skills!, skill('sk_x', 'other', { libraryId: 'lib_x' }), skill('sk_lib', 'lib-skill', { libraryId: i.libraryId })] }),
+      skills: []
+    }))
+    await r.call(IPC.skillsLinkLibrary, { projectId: P, libraryId: 'lib_9' })
+    expect(r.calls[0].change).toMatchObject({ ids: ['lib_9', 'sk_lib'], names: ['lib-skill'] })
   })
 
   it('clamps long names in the label to 80 characters', async () => {
