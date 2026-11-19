@@ -886,14 +886,15 @@ export const integrateWorktrees = defineTool({
 export const proposeOrgChange = defineTool({
   name: PROPOSAL_TOOLS.orgChange,
   description:
-    'Propose a revised org chart: the complete chart, unchanged roles included, with the smallest change that fixes a gap. Give each existing role its current slug so it keeps its id and grants. Blocks until the user decides; the result says whether this run can use it.',
+    'Propose an org chart change: list only roles you change or add, existing ones by slug; unlisted roles are kept. Blocks until the user decides; the result says whether this run can use it.',
   inputSchema: z.object({
     title: z.string(),
     rationale: z.string().describe('What this run revealed and what changes'),
-    roles: z.array(draftRoleSchema)
+    roles: z.array(draftRoleSchema),
+    remove: z.array(z.string()).optional().describe('Slugs of roles to drop')
   }),
-  async handler(ctx, { title, rationale, roles }, hooks) {
-    const built = rolesFromDrafts(ctx, rationale, roles)
+  async handler(ctx, { title, rationale, roles, remove }, hooks) {
+    const built = rolesFromDrafts(ctx, rationale, roles, [], { remove: remove ?? [] })
     if ('error' in built) return built.error
     const d = await askProposal(ctx, { kind: 'orgChart', agentId: ROOT_AGENT_ID, title, payload: { roles: built.merged.roles, rationale } })
     hooks.onDecided?.()

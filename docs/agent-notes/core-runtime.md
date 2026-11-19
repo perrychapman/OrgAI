@@ -379,7 +379,9 @@ Application menu, run end and decision cards, settings, run titles, projects, us
       `rolesBySlug` map is gone); a spawn of a role not in `ctx.roles` is refused with a tool error (removed: names the
       role from `ctx.retiredRoles()`; unknown: "There is no role ..."), and an agent already running on a removed role
       finishes under its old name. Marker `[mock:org-change]` (`ORG_CHANGE_TOKEN`, team work runs, default script):
-      propose_org_change with the whole chart by slug plus "Roster Tester" (slug roster-tester, under the root, Read and
+      propose_org_change (the mock still sends the whole chart by slug; the tool itself now takes only changed or added
+      roles, keeps the rest and drops a role only through `remove`, 2026-11-18 fix, checked by
+      `harnessToolsOrgChange.test.ts`; live model behavior unverified) plus "Roster Tester" (slug roster-tester, under the root, Read and
       Grep) and the root's spawnable extended, title "Add a Roster Tester"; approved, `MOCK_ROSTER_REPORT` runs on the new
       role and finishes, then the root says "Org change approved. <tool result>"; declined or revise says "The org chart
       stays as it is."; without the tool a warning and "Org change is not available in this run.". Unit-tested

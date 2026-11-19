@@ -152,7 +152,8 @@ describe('mock spawn path reads the live roster', () => {
     const args = orgChangeArgs(orgChart()) as { roles: Record<string, unknown>[] }
     const roles = args.roles.filter((r) => r.name !== 'Reviewer').map((r) => (r.name === MOCK_ROSTER_TESTER.name ? { ...r, name: 'QA' } : r))
     roles[0] = { ...roles[0], spawnable: ['Engineer', 'QA'] }
-    return { title: 'Swap reviewer for QA', rationale: 'r', roles }
+    // Roles left out of the list are kept; the reviewer goes only through remove.
+    return { title: 'Swap reviewer for QA', rationale: 'r', roles, remove: ['reviewer'] }
   }
 
   it('refuses a removed role at once, spawns an added one at once, and lets a running agent of the removed role finish', async () => {

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ProposalOutcome, Role, RunRosterChange } from '@shared/types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
 import { workTools, type ConfigChange, type ConfigChangeResult, type HarnessToolHooks } from './harnessTools'
-import { fakeCtx, orgChart, role } from './testHelpers'
+import { fakeCtx, orgChart, project, role } from './testHelpers'
 
 vi.mock('./worktrees', () => ({ pendingWorktrees: vi.fn(async () => []) }))
 
@@ -44,6 +44,93 @@ function rig(roster: RunRosterChange | undefined, hooks: HarnessToolHooks = {}) 
   const call = (): Promise<string> =>
     tool.call({ title: 'T', rationale: 'r', roles: [draft('Lead', null, { slug: 'lead', canSpawn: true, spawnable: ['Engineer', 'QA'] }), draft('Engineer', 'Lead', { slug: 'engineer' }), draft('QA', 'Lead')] })
   return { ctx, call }
+}
+
+/** A four-role project whose roles carry grants; the card payload of one call is what the user would approve. */
+function grantedProject() {
+  const roles: Role[] = [
+    role({ id: 'r-lead', slug: 'lead', name: 'Lead', canSpawn: true, spawnable: ['r-eng', 'r-rev', 'r-doc'], mcpServers: ['mcp-1'], skills: ['sk-1'], position: { x: 5, y: 6 } }),
+    role({ id: 'r-eng', slug: 'engineer', name: 'Engineer', tools: ['Read', 'Edit'], reportsTo: 'r-lead', mcpServers: ['mcp-1'], skills: ['sk-1'] }),
+    role({ id: 'r-rev', slug: 'reviewer', name: 'Reviewer', reportsTo: 'r-lead', skills: ['sk-1'] }),
+    role({ id: 'r-doc', slug: 'writer', name: 'Writer', reportsTo: 'r-lead', mcpServers: ['mcp-1'] })
+  ]
+  return project({ roles, mcpServers: [{ id: 'mcp-1', name: 'github' } as never], skills: [{ id: 'sk-1', name: 'triage' } as never] })
+}
+
+describe('propose_org_change lists only what changes', () => {
+  async function propose(args: Record<string, unknown>) {
+    const p = grantedProject()
+    const before = structuredClone(p.roles)
+    const ctx = fakeCtx({ project: p })
+    const tool = workTools(ctx).find((t) => t.name === PROPOSAL_TOOLS.orgChange)!
+    const text = await tool.call({ title: 'T', rationale: 'r', ...args })
+    const req = vi.mocked(ctx.requestProposal).mock.calls[0]?.[0]
+    const roles = req ? (req.payload as { roles: Role[] }).roles : undefined
+    return { text, roles, before, ctx }
+  }
+
+  it('one new role: every existing role is unchanged and the new one is under the root', async () => {
+    const { roles, before } = await propose({ roles: [draft('QA', 'Lead')] })
+    expect(roles).toHaveLength(5)
+    for (const b of before) {
+      const now = roles!.find((r) => r.id === b.id)!
+      // The root gains the new role as a spawn target; everything else is exactly as it was.
+      expect(b.id === 'r-lead' ? { ...now, spawnable: b.spawnable } : now).toEqual(b)
+    }
+    const qa = roles!.find((r) => r.name === 'QA')!
+    expect(qa.reportsTo).toBe('r-lead')
+    expect(qa.mcpServers).toBeUndefined()
+    expect(qa.skills).toBeUndefined()
+    expect(roles!.filter((r) => r.reportsTo === null).map((r) => r.id)).toEqual(['r-lead'])
+  })
+
+  it('a new role with reportsTo null goes under the kept root', async () => {
+    const { roles } = await propose({ roles: [draft('QA', null)] })
+    expect(roles!.find((r) => r.name === 'QA')!.reportsTo).toBe('r-lead')
+    expect(roles!.filter((r) => r.reportsTo === null)).toHaveLength(1)
+  })
+
+  it('one existing role by slug with a new prompt changes that role only', async () => {
+    const { roles, before } = await propose({ roles: [draft('Engineer', 'Lead', { slug: 'engineer', prompt: 'New prompt' })] })
+    expect(roles).toHaveLength(4)
+    expect(roles!.find((r) => r.id === 'r-eng')).toMatchObject({ prompt: 'New prompt', mcpServers: ['mcp-1'], skills: ['sk-1'] })
+    for (const id of ['r-lead', 'r-rev', 'r-doc']) expect(roles!.find((r) => r.id === id)).toMatchObject({ prompt: before.find((b) => b.id === id)!.prompt, slug: before.find((b) => b.id === id)!.slug })
+  })
+
+  it('remove drops exactly that role', async () => {
+    const { roles } = await propose({ roles: [draft('QA', 'Lead')], remove: ['writer'] })
+    expect(roles!.find((r) => r.name === 'QA')).toBeDefined()
+    roles!.splice(roles!.findIndex((r) => r.name === 'QA'), 1)
+    expect(roles!.map((r) => r.id).sort()).toEqual(['r-eng', 'r-lead', 'r-rev'])
+    expect(roles!.find((r) => r.id === 'r-lead')!.spawnable).not.toContain('r-doc')
+  })
+
+  it('an unknown remove slug, or a slug both listed and removed, is REVISE and shows no card', async () => {
+    const a = await propose({ roles: [], remove: ['ghost'] })
+    expect(a.text).toMatch(/^REVISE\./)
+    expect(a.ctx.requestProposal).not.toHaveBeenCalled()
+    const b = await propose({ roles: [draft('Engineer', 'Lead', { slug: 'engineer' })], remove: ['engineer'] })
+    expect(b.text).toMatch(/^REVISE\..*both in remove and in roles/)
+    expect(b.ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('the complete chart still gives the same chart with nothing dropped', async () => {
+    const { roles, before } = await propose({
+      roles: [
+        draft('Lead', null, { slug: 'lead', canSpawn: true, spawnable: ['Engineer', 'Reviewer', 'Writer'], prompt: before0('r-lead') }),
+        draft('Engineer', 'Lead', { slug: 'engineer', prompt: before0('r-eng') }),
+        draft('Reviewer', 'Lead', { slug: 'reviewer', prompt: before0('r-rev') }),
+        draft('Writer', 'Lead', { slug: 'writer', prompt: before0('r-doc') })
+      ]
+    })
+    expect(roles!.map((r) => r.id)).toEqual(['r-lead', 'r-eng', 'r-rev', 'r-doc'])
+    expect(roles!.find((r) => r.id === 'r-eng')).toMatchObject({ mcpServers: ['mcp-1'], skills: ['sk-1'] })
+    expect(before).toHaveLength(4)
+  })
+})
+
+function before0(id: string): string {
+  return grantedProject().roles.find((r) => r.id === id)!.prompt
 }
 
 const applied: RunRosterChange = { added: ['r-qa'], changed: ['r-lead'], removed: ['r-rev'], deferred: [{ id: 'r-far', name: 'Far', reason: 'It would run on OpenAI; it applies from the next run.' }] }
