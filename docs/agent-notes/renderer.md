@@ -560,3 +560,21 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
   assistant item with a detail says "Saved context" on its disclosure.
 - Checked: typecheck, build, `todos.test.ts` / `todoStart.test.ts`, Reviewer (no Critical or High; Mediums fixed).
   `e2e/todos.mjs` and `e2e/todos-edge.mjs` are in `e2e:free` and pass on the mock (2026-11-18). Not looked at in the running app (themes, sizes, keyboard, screen reader).
+
+## Saves reach live runs: status line (2026-11-19)
+
+- Main answers every desktop MCP / skills mutation with optional `liveRuns` (`LiveRunChange`); `projects:save` returns only the
+  Project (its feedback is the run's log line, so the org chart editor shows nothing and has no "keeps its team" note).
+- `lib/liveRunChange.ts` (`liveChangeLines`, pure, unit tested) maps each entry to "<title>: in use now" / "once the agents are
+  idle" / "from the next run: <reason>" / "being applied" (title clamped to 48 chars, full text in `title`). `store/liveChangeStore.ts`
+  (`reportLiveRuns(projectId, liveRuns)`) keeps the newest lines per project for 20 s; a later save without live runs clears them.
+  `components/LiveChangeNote.tsx` is an always-mounted polite `role=status` region (`live-change-note`, lines
+  `live-change-line`, one truncated row each, hidden when empty) in `McpSection`, `SkillsSection` and `RoleCapabilities`.
+- Reporting sites: `McpSection.applyResult` (covers ConnectedServices, dialogs, writers), `RoleCapabilities.applyResult` and
+  `useProjectSkills.apply` (every skills mutation, import and suggestion). Other `mcp.*` call sites that pass their own result
+  elsewhere (Team-only editors) do not report.
+- `ProposalCard` passes `{ otherLiveRuns }` to `proposalEffectCopy`: true for mcpServers / skills / orgChart cards when another open
+  `work` run of the same stored project is in the store (no IPC).
+- Checked: typecheck, build, `liveRunChange.test.ts`, `e2e/live-changes.mjs` (idle mock run: skill create + grant, role rename,
+  status line, run log lines, only harness notices added to the transcript, line inside the section at 1600x1000 and 1024x640 in
+  both themes). Not looked at: screen-reader speech, a run with a long title beyond the mock's, 'after-idle' / 'pending' on a live provider.

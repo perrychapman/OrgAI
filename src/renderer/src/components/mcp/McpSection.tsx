@@ -6,6 +6,8 @@ import type { McpMutationResult, McpServerInfo, McpServerSpec, McpTestResult, Pr
 import { adapterForProject, projectConnection, projectKindOf } from '@shared/defaults'
 import { secretEnvClashes, type McpSecretClash } from '@shared/mcpSecretClash'
 import { useAppStore } from '../../store/useAppStore'
+import { reportLiveRuns } from '../../store/liveChangeStore'
+import { LiveChangeNote } from '../LiveChangeNote'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { mcpProjectApi, secretScopeOf } from '../../lib/mcpScope'
 import { projectNoun } from '../../lib/projectKindCopy'
@@ -152,6 +154,7 @@ export default function McpSection({ project, onSelectRole }: { project: Project
     setServers(result.servers)
     setLoadError(null)
     useAppStore.getState().replaceProject(result.project)
+    reportLiveRuns(result.project.id, result.liveRuns)
     refreshLibrary()
   }, [refreshLibrary])
   const writer = useMemo(() => projectWriter(project, applyResult), [project, applyResult])
@@ -230,6 +233,7 @@ export default function McpSection({ project, onSelectRole }: { project: Project
         <p className="sr-only" role="status" data-testid="mcp-section-status">
           {status}
         </p>
+        <LiveChangeNote projectId={project.id} />
         {assistRun && (
           <Banner
             tone="neutral"

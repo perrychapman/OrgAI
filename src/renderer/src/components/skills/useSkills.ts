@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SkillDraft, SkillInfo, SkillMutationResult, SkillUpdateInput } from '@shared/types'
 import { cleanIpcError } from '../../lib/ipcError'
 import { useAppStore } from '../../store/useAppStore'
+import { reportLiveRuns } from '../../store/liveChangeStore'
 
 export interface ProjectSkills {
   skills: SkillInfo[]
@@ -50,6 +51,7 @@ export function useProjectSkills(projectId: string): ProjectSkills {
       setError(null)
       setLoading(false)
     }
+    reportLiveRuns(result.project.id, result.liveRuns)
     applied.current = skillsKey(result.project)
     useAppStore.getState().replaceProject(result.project)
   }, [])

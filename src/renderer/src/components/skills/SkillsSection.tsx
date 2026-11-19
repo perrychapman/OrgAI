@@ -29,6 +29,7 @@ import {
   skillElevatedHint,
   type SkillAddVerb
 } from '../../lib/skills'
+import { LiveChangeNote } from '../LiveChangeNote'
 import { Badge } from '../ui/Badge'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -246,6 +247,7 @@ export default function SkillsSection({ project, onSelectRole }: { project: Proj
       testId="catalog-skills"
     >
       <div className="mcp-body" data-testid="skills-section">
+        <LiveChangeNote projectId={project.id} />
         {askError && (
           <div role="alert">
             <Banner tone="danger" title="Could not start the Skill assistant" onDismiss={() => setAskError(null)}>
