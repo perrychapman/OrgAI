@@ -603,7 +603,9 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   handle(IPC.projectsSave, (ctx, project: Project): Project | Promise<Project> => {
     if (typeof project?.id === 'string' && isVirtualProjectId(project.id)) throw new Error('This assistant project cannot be saved.')
     // Read BEFORE the save: the save ingests team files inside the service, and a live run must not see that as the user's edit.
-    const before = ctx.surface === 'desktop' && typeof project?.id === 'string' ? projects.get(project.id) : null
+    // A copy: nothing the save or its ingest does to the stored object may reach the comparison.
+    const stored = ctx.surface === 'desktop' && typeof project?.id === 'string' ? projects.get(project.id) : null
+    const before = stored ? structuredClone(stored) : null
     const saved = projects.saveFromRenderer(project)
     // Sync for any other surface (and when there is nothing to compare against), exactly as before.
     if (!before) return saved

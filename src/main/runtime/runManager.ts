@@ -126,7 +126,7 @@ import type { EvolvePostRunResult, EvolveStrategy } from '@shared/types'
 import { OPEN_IN_APP_MIN_INTERVAL_MS, OPEN_IN_APP_PER_RUN_MAX, type AppNavigateEvent, type AppNavigateOutcome, type AppReferenceQuery } from '@shared/types'
 import { atlasPath, atlasSurface, isAtlasSurfaceId, type AtlasSurfaceId } from '@shared/view/atlas'
 import { clampText } from '../capabilities/sanitize'
-import { datum } from './harnessTools'
+import { datum, type ConfigChange, type ConfigChangeResult } from './harnessTools'
 import type { OutputScope, OutputWriteResult, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
 import { RunStore } from '../store/runs'
@@ -409,6 +409,11 @@ interface ActiveRun {
   /** Mid-run org changes (runRoster.ts): roles removed from ctx.roles, as they were, and ids of roles that joined. */
   retiredRoles?: Role[]
   rosterAdded?: Set<string>
+  /**
+   * Host changes in a live run (applyProjectChange): start()'s applier over the same setLive machinery as approved cards.
+   * Set once ctx exists; undefined = the change applies from the next run. Undefined result = nothing in it for this run.
+   */
+  hostApply?: (saved: Project, change: HostProjectChange, source: 'user' | 'card') => Promise<LiveRunChange | undefined>
   pending: PendingCardMaps['pending']
   pendingProposals: PendingCardMaps['pendingProposals']
   pendingQuestions: PendingCardMaps['pendingQuestions']
@@ -1198,7 +1203,7 @@ export function continuedOverrides(prev: RunOverrides | undefined, opts: Continu
  * their role grants, the org chart, the allowed folders or the permission mode. Nothing else moves, so team-file changes
  * the same save ingested stay out of a live run.
  */
-type LiveSettle = 'mcpServers' | 'skills' | 'orgChart' | 'folders' | 'permissionMode'
+type LiveSettle = 'mcpServers' | 'skills' | 'orgChart' | 'folders' | 'permissionMode' | 'grants'
 
 /** The items an approved change named itself: only these move onto a live run's project (setLive). */
 export interface LiveOwnItems {
@@ -2233,7 +2238,7 @@ export class RunManager {
         }
         return undefined
       }
-      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems, card?: readonly Role[], baseline?: readonly Role[]): RunRosterChange | undefined => {
+      const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems, card?: readonly Role[], baseline?: readonly Role[], grantEdits?: readonly GrantEdit[]): RunRosterChange | undefined => {
         let roster: RunRosterChange | undefined
         // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
         const next: Project = { ...live }
@@ -2267,6 +2272,10 @@ export class RunManager {
             else delete next.skills
             next.roles = o.roles
           }
+        } else if (settle === 'grants') {
+          // Host changes (hostChange.ts): only the grant pairs the user's own save named, on items this run has; never an
+          // item definition and never a grant the save's team-file ingest brought in.
+          next.roles = applyGrantEdits(next.roles, grantEdits ?? [], (f, id) => (live[f] ?? []).some((x) => x.id === id)).roles
         } else if (settle === 'mcpServers') {
           overlay('mcpServers')
           grants('mcpServers')
@@ -2371,7 +2380,7 @@ export class RunManager {
         ctx.autoContinue = ctx.project.autoContinue !== false && planNudgesApply(summary)
         ctx.maxAutoContinues = ctx.project.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES
         this.applyExecBudget(active, ctx)
-        const skills = settle === 'mcpServers' || settle === 'skills'
+        const skills = settle === 'mcpServers' || settle === 'skills' || settle === 'grants'
         // Grant changes reach the live run's roles (review M1): the adapters' gates, restarts and role lookups read these
         // objects. An org chart approval (skills false) never moves a grant; it may change which roles there are.
         if (skills && !bare) refreshRoleGrants(ctx.roles, live.roles)
@@ -2774,6 +2783,109 @@ export class RunManager {
         this.store.upsert(summary)
       }
       active.ctx = ctx
+      // Host changes in a live run (applyProjectChange, hostChange.ts): the setLive machinery approved cards use, fed
+      // only what the user's own action named. State moves now (gates read it at their next call, so anything taken
+      // away is refused at once); the session is then told through hostConfigChanged and never starts a turn for it.
+      active.hostApply = async (saved, change, source) => {
+        const session = active.session
+        const takes = !!session?.hostConfigChanged && !bare
+        const config: ConfigChange = {}
+        const deferred: { name: string; reason: string }[] = []
+        const partly: string[] = []
+        let label: string
+        if (change.kind === 'mcp' || change.kind === 'skills') {
+          label = change.label
+          if (takes) {
+            const own = { ids: change.ids, names: change.names }
+            if (change.kind === 'mcp') {
+              const named = (x: McpServerSpec): boolean => own.ids.includes(x.id) || own.names.includes(x.name) || (!!x.libraryId && own.ids.includes(x.libraryId))
+              const had = (live.mcpServers ?? []).filter(named).map((x) => x.name)
+              setLive(saved, 'mcpServers', own)
+              const now = (live.mcpServers ?? []).filter(named).map((x) => x.name)
+              const removed = had.filter((n) => !now.includes(n))
+              if (now.length || removed.length) config.mcp = { upserted: now, removed }
+            } else {
+              setLive(saved, 'skills', own)
+              config.skills = true
+            }
+          }
+        } else {
+          const after = change.kind === 'projectSave' ? change.request.roles : change.roles
+          const edit = roleEditOf(change.before.roles, after, saved.roles)
+          // An org chart card never grants (its grants travel on their own cards); only the user's save names grants.
+          const grants = change.kind === 'projectSave' ? grantEditsOf(change.before.roles, after, saved.roles) : []
+          const parts = [...(roleEditEmpty(edit) ? [] : ['the org chart']), ...(grants.length ? ['role grants'] : [])]
+          if (!parts.length) return undefined
+          label = parts.join(' and ')
+          if (takes && !roleEditEmpty(edit)) {
+            if (liveRosterApplies(summary, session, this.options)) {
+              const baseline = runBaselineOf(ctx, active.retiredRoles ?? [])
+              const inRun = new Set(baseline.map((r) => r.id))
+              const nameOf = (id: string): string => after.find((r) => r.id === id)?.name ?? change.before.roles.find((r) => r.id === id)?.name ?? id
+              for (const id of [...edit.changed.keys(), ...edit.removed]) {
+                if (!inRun.has(id)) deferred.push({ name: nameOf(id), reason: 'This run does not have this role; the change applies from the next run.' })
+              }
+              // Own ids only for roles the run has or the edit adds: a saved-only role (a pull) never enters the run's view.
+              const ids = [...[...edit.changed.keys(), ...edit.removed].filter((id) => inRun.has(id)), ...edit.added.map((r) => r.id)]
+              const roster = setLive(saved, 'orgChart', { ids, names: [] }, proposedFromEdit(baseline, edit), baseline)
+              if (roster) {
+                deferred.push(...roster.deferred.map((d) => ({ name: d.name, reason: d.reason })))
+                if (rosterChanged(roster)) config.roles = { added: [...roster.added], changed: [...roster.changed], removed: [...roster.removed] }
+              }
+            } else partly.push('This run takes org chart changes from the next run.')
+          }
+          if (takes && grants.length) {
+            const has = (f: GrantEdit['field'], id: string): boolean => (live[f] ?? []).some((x) => x.id === id)
+            const g = applyGrantEdits(live.roles, grants, has)
+            if (g.applied.length) {
+              setLive(saved, 'grants', undefined, undefined, undefined, g.applied)
+              const servers = [...new Set(g.applied.filter((e) => e.field === 'mcpServers').map((e) => (live.mcpServers ?? []).find((s) => s.id === e.id)?.name).filter((n): n is string => !!n))]
+              if (servers.length) config.mcp = { upserted: servers, removed: [] }
+              if (g.applied.some((e) => e.field === 'skills')) config.skills = true
+            }
+            if (g.skipped.length) partly.push('Some grants name a server, skill or role this run does not have; they apply from the next run.')
+          }
+        }
+        const title = logText(summary.title || excerpt(summary.prompt, 80) || summary.id)
+        const lead = source === 'user' ? `You changed ${label}` : `You approved ${label} in another session`
+        const waiting = deferred.length ? ` Waiting for the next run: ${deferred.map((d) => logText(d.name)).join(', ')}.` : ''
+        const part = partly.length ? ` ${partly.join(' ')}` : ''
+        const base = { runId: summary.id, title, ...(deferred.length ? { deferred } : {}) }
+        const nextRun = (reason: string): LiveRunChange => {
+          emit({ type: 'log', runId: summary.id, level: 'info', message: `${lead}; this run uses it from the next run: ${reason}${waiting}` })
+          return { ...base, availability: 'next-run', reason }
+        }
+        if (!takes) return nextRun('This run cannot take it while it is live.')
+        if (!config.mcp && !config.skills && !config.roles) {
+          if (deferred.length || partly.length) return nextRun(partly[0] ?? deferred[0].reason)
+          return undefined
+        }
+        // A held or usage-limited run is never woken: the session keeps its notice for the user's next message.
+        const held = active.held || active.limitHold ? ' The orchestrator hears about it with your next message.' : ''
+        const answer = (async (): Promise<LiveRunChange> => {
+          let r: ConfigChangeResult
+          try {
+            r = await session!.hostConfigChanged!(config)
+          } catch (e) {
+            const reason = `The session could not take it (${logText((e as Error)?.message ?? String(e))}).`
+            emit({ type: 'log', runId: summary.id, level: 'warn', message: `${lead}; this run uses it from the next run: ${reason}${waiting}` })
+            return { ...base, availability: 'next-run', reason }
+          }
+          const when = r.availability === 'now' ? 'this run uses it now' : 'this run uses it once the agents are idle'
+          emit({ type: 'log', runId: summary.id, level: 'info', message: `${lead}; ${when}.${part}${waiting}${held}` })
+          return { ...base, availability: r.availability === 'now' ? 'now' : 'after-idle', ...(partly.length ? { reason: partly.join(' ') } : {}) }
+        })()
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const late = new Promise<LiveRunChange>((resolve) => {
+          timer = setTimeout(() => resolve({ ...base, availability: 'pending' }), LIVE_RUN_CHANGE_WAIT_MS)
+          timer.unref?.()
+        })
+        try {
+          return await Promise.race([answer, late])
+        } finally {
+          if (timer) clearTimeout(timer)
+        }
+      }
       if (gate && active.ledger) {
         const problems = active.ledger.snapshot().problems
         for (const message of problems) emit({ type: 'log', runId: summary.id, level: exec ? 'error' : 'warn', message: `Required delegation: ${message}` })
@@ -4552,10 +4664,15 @@ export class RunManager {
             } else {
               // The values are stored before onApplied: a stored secret lets the server start (enabledServers reads the
               // SecretStore live).
+              // Host changes in a live run: the stored project before the apply (and before any team-file ingest it does).
+              const before = this.options.liveHostChanges && proposal.kind === 'orgChart' ? this.storedProjectFor(active.summary.projectId) : undefined
               const updated = this.setup.applyProposal(active.summary.projectId, proposal, { projectOnly: active.summary.kind === 'work', ...secrets })
               waitingForSecrets = this.proposalWaitingForSecrets(active.summary.projectId, proposal)
               roster = onApplied?.(updated, proposal)?.roster
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
+              // Every OTHER live work run of the project takes what this card named (applyProjectChange; desktop only).
+              const fanOut = this.cardChange(proposal, before)
+              if (fanOut) void this.applyProjectChange(active.summary.projectId, updated, fanOut, { exceptRunId: active.summary.id, source: 'card' })
             }
           } catch (e) {
             // The store refused the values before anything was applied (round 6 item 10): the card keeps waiting for them.
@@ -4602,12 +4719,62 @@ export class RunManager {
    * returns [] and touches nothing. Never throws; each run's answer is waited for at most LIVE_RUN_CHANGE_WAIT_MS.
    */
   async applyProjectChange(projectId: string, saved: Project, change: HostProjectChange, opts: { exceptRunId?: string; source?: 'user' | 'card' } = {}): Promise<LiveRunChange[]> {
-    if (!this.options.liveHostChanges) return []
-    void projectId
-    void saved
-    void change
-    void opts
-    return []
+    if (!this.options.liveHostChanges || typeof projectId !== 'string' || isVirtualProjectId(projectId) || saved?.id !== projectId) return []
+    const out: Promise<LiveRunChange | undefined>[] = []
+    for (const a of this.runs.values()) {
+      const s = a.summary
+      // Team work runs of this stored project: the runs that take MCP / skill / org chart cards today. Setup-like,
+      // assistant, Chat and single-agent runs keep what they started with. Ended or ending runs need nothing: a
+      // continuation reads the saved project.
+      if (s.projectId !== projectId || s.kind !== 'work' || s.quick || s.team === 'single' || s.id === opts.exceptRunId) continue
+      if (a.userStopped || a.finalizing || a.outcome !== undefined || s.status === 'stopping') continue
+      if (!a.hostApply) {
+        // Still starting: start() read the project before this save. Said, never dropped silently.
+        const reason = 'The run was still starting when the change was saved.'
+        const title = logText(s.title || excerpt(s.prompt, 80) || s.id)
+        a.emit({ type: 'log', runId: s.id, level: 'info', message: `A project change was saved while this run was starting; it applies from the next run.` })
+        out.push(Promise.resolve({ runId: s.id, title, availability: 'next-run', reason }))
+        continue
+      }
+      out.push(
+        a.hostApply(saved, change, opts.source ?? 'user').catch((e: unknown) => {
+          log.warn(`Run ${s.id}: a host change could not be applied: ${logText((e as Error)?.message ?? String(e))}`)
+          return { runId: s.id, title: logText(s.title || s.id), availability: 'next-run' as const, reason: 'OrgAI could not apply it to this run.' }
+        })
+      )
+    }
+    const results = await Promise.all(out)
+    return results.filter((r): r is LiveRunChange => !!r)
+  }
+
+  /**
+   * What an approved card named, for the other live runs of its project (applyProjectChange): the same items setLive
+   * moves on the card's own run. An org chart card is diffed against what the user saw as "before": its runBaseline when
+   * it has one (a work run's card), else the stored project read before the apply. Undefined = nothing to fan out.
+   */
+  private cardChange(proposal: Proposal, stored: Project | undefined): HostProjectChange | undefined {
+    if (!this.options.liveHostChanges) return undefined
+    const names = (xs: readonly string[]): string => xs.map((n) => logText(n)).join(', ')
+    if (proposal.kind === 'mcpServers') {
+      const p = proposal.payload as McpServersProposalPayload
+      const upsert = Array.isArray(p.upsert) ? p.upsert : []
+      const ids = [...upsert.map((s) => s.id), ...(p.remove ?? [])]
+      if (!ids.length) return undefined
+      return { kind: 'mcp', ids, names: upsert.map((s) => s.name), label: upsert.length ? `the MCP servers ${names(upsert.map((s) => s.name))}` : 'MCP servers' }
+    }
+    if (proposal.kind === 'skills') {
+      const p = proposal.payload as SkillsProposalPayload
+      const items = Array.isArray(p.items) ? p.items : []
+      if (!items.length) return undefined
+      return { kind: 'skills', ids: items.flatMap((i) => (i.libraryId ? [i.libraryId] : [])), names: items.map((i) => i.draft.name), label: `the skills ${names(items.map((i) => i.draft.name))}` }
+    }
+    if (proposal.kind === 'orgChart') {
+      const p = proposal.payload as OrgChartProposalPayload
+      const before = p.runBaseline ?? stored?.roles
+      if (!before || !Array.isArray(p.roles)) return undefined
+      return { kind: 'orgChart', before: { ...(stored as Project), roles: before }, roles: p.roles }
+    }
+    return undefined
   }
 
   decideProposal(runId: string, proposalId: string, decision: ProposalDecision, opts: DecisionOptions = {}): DecisionOutcome {

@@ -399,6 +399,22 @@ Application menu, run end and decision cards, settings, run titles, projects, us
       thread/start); RunManager never moves the root's canSpawn mid-run, so this path is defensive only. Fake app-server tests (codexRoster.test.ts). Live Codex is
       unverified: that thread/resume applies new developerInstructions (the MCP restart assumes the same), and that a
       new role's own model gets the native-agents catalog override before the next app-server restart.
+  - Host changes in a live run (owner request 2026-11-19; ARCHITECTURE.md Conventions "Host changes in a live run";
+    desktop only): desktop saves (projects:save roles and role grants, mcp:upsert / remove / linkLibrary /
+    setProjectOverrides, skills:create / update / remove / linkLibrary) and approved MCP / skill / org chart cards of
+    another session of the same project reach every other live team work run through
+    `RunManager.applyProjectChange` (`runtime/hostChange.ts`; handlers in `host/dispatcher.ts`, `liveRunsOf`, only for
+    `ctx.surface === 'desktop'`; `RunManagerOptions.liveHostChanges` set by bootstrap.ts with `desktop`). Each run's
+    `ActiveRun.hostApply` reuses `setLive` (new settle 'grants') and `applyRosterChange` with the run's own baseline;
+    the handler reads the stored project before the save, so a team-file ingest of the same save never rides along
+    (`runManagerHostChange.test.ts` "INVARIANT", which fails if the diff reads the saved roles). The session hears it
+    through the optional `RuntimeSession.hostConfigChanged` (adapter side on its own branch); absent = 'next-run' and
+    nothing moves, rejection = 'next-run' with the reason. Held, usage-limited and card-waiting runs take the state now
+    and are never woken (the session keeps its notice for the user's next message). One log line per run; the result is
+    `McpMutationResult.liveRuns` / `SkillMutationResult.liveRuns` (`LiveRunChange`), projects:save keeps returning the
+    Project. Fan-out of a card skips the card's own run. Not covered: request_mcp_install approvals, projects:save fields
+    other than roles and grants. Unit-tested only (`hostChange.test.ts`, `runManagerHostChange.test.ts`,
+    `host/dispatcherLiveChanges.test.ts`); live providers, the 10 s 'pending' path and any renderer display are unverified.
   - Proposal gates (2026-11-02, renderer review): main refuses control, zero-width, bidi and other invisible
     characters (`capabilities/sanitize.ts` `hiddenCharIn` / `hiddenCharProblem`; descriptions are `prose`: tab, line
     breaks, emoji ZWJ, ZWNJ and soft hyphens pass, bidi and zero-width space do not) in every MCP spec string field (`validate.ts` `hiddenCharProblems`, inside
