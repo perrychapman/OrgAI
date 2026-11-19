@@ -61,6 +61,7 @@ import type {
 } from '@shared/types'
 import type { OutputReadResult, OutputWriteResult } from '../outputs/api'
 import type { StaffingProfile } from '../store/staffingProfile'
+import type { ConfigChange, ConfigChangeResult } from './harnessTools'
 import type { AppNavigateEvent, AppNavigateOutcome, AppReferenceQuery, AppReferenceResult, AppSettings, AppSettingsProposalPayload, AtlasSurfaceId, PermissionMode, Schedule, SchedulesProposalPayload, TodoItem, TodoScope } from '@shared/types'
 
 /**
@@ -872,6 +873,19 @@ export interface RuntimeSession {
    * (RunManager catches and logs a throw and goes on), must not call back into the session, must not await.
    */
   rosterApplied?(change: { added: string[]; changed: string[]; removed: string[] }): void
+  /**
+   * A change the user made in the desktop app (projects:save, mcp:*, skills:*) or approved on another session's card for
+   * this run's project reached this live work run (RunManager.applyProjectChange, hostChange.ts). Called by RunManager
+   * after it has moved ctx.project / ctx.mcpServers() / ctx.skills() / the role grants on ctx.roles and, for roles,
+   * ctx.roles itself (rosterApplied was called in that same tick). Same meaning of `change` as
+   * HarnessToolHooks.configChanged, but no tool call is waiting: the session brings itself in line as for configChanged
+   * and tells the orchestrator itself, once (one harness notice; with the restart notice when a restart is needed). It
+   * never starts a turn on its own: on an idle or held run (interrupt, usage limit, open cards) the notice travels with
+   * the user's next message. Reject (throw) when it cannot apply the change. Absent method or a rejection = the change
+   * applies from the next run (RunManager then leaves the run's view as it was when the method is absent; after a
+   * rejection the view has moved, so gates already refuse what was taken away). Never called on the CLI / TUI / exec host.
+   */
+  hostConfigChanged?(change: ConfigChange): Promise<ConfigChangeResult>
   /** Change only the root model at a safe boundary; refuse without changing state when unsafe. */
   switchModel?(input: { model: string; connection?: RunConnection }): Promise<void>
   /**

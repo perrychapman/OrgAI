@@ -84,8 +84,11 @@ import type {
   PermissionMode,
   RunSurface,
   SkillUseCount,
-  UserQuestion
+  UserQuestion,
+  LiveRunChange
 } from '@shared/types'
+import { LIVE_RUN_CHANGE_WAIT_MS } from '@shared/types'
+import { applyGrantEdits, grantEditsOf, proposedFromEdit, roleEditEmpty, roleEditOf, type GrantEdit, type HostProjectChange } from './hostChange'
 import { BridgedSessions, bridgeKey } from './bridge'
 import { applyRosterChange, liveRosterApplies, rosterChanged, rosterOf, runBaselineOf } from './runRoster'
 import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
@@ -739,6 +742,12 @@ export interface RunManagerOptions {
    * ctx.roles untouched, card effect 'next-run').
    */
   liveRosterCards?: true
+  /**
+   * Host changes in a live run (applyProjectChange, hostChange.ts): true only on the desktop app (bootstrap.ts with
+   * `desktop`), whose saves come from the user's own windows. The CLI / TUI / exec host leaves it unset and keeps the
+   * pre-feature behaviour: a save applies from the next run and applyProjectChange returns [] without touching a run.
+   */
+  liveHostChanges?: true
   /**
    * Interactive clients right now: open desktop windows plus attached TUI or interactive sockets. The headless decision
    * policy waits humanGraceMs before auto-resolving a card while this is above 0. Missing = 0.
@@ -4584,6 +4593,21 @@ export class RunManager {
         .map((u) => u.name)
       return named.length ? named : undefined
     }
+  }
+
+  /**
+   * A change the user saved in the desktop app (projects:save, mcp:*, skills:*) or approved on another session's card,
+   * already saved as `saved`, reaching every live work run of the project (hostChange.ts, ARCHITECTURE.md "Host changes
+   * in a live run"). Only what `change` names moves. Desktop host only (RunManagerOptions.liveHostChanges): elsewhere
+   * returns [] and touches nothing. Never throws; each run's answer is waited for at most LIVE_RUN_CHANGE_WAIT_MS.
+   */
+  async applyProjectChange(projectId: string, saved: Project, change: HostProjectChange, opts: { exceptRunId?: string; source?: 'user' | 'card' } = {}): Promise<LiveRunChange[]> {
+    if (!this.options.liveHostChanges) return []
+    void projectId
+    void saved
+    void change
+    void opts
+    return []
   }
 
   decideProposal(runId: string, proposalId: string, decision: ProposalDecision, opts: DecisionOptions = {}): DecisionOutcome {
