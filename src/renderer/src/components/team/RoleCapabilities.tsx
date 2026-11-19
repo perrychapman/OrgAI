@@ -13,6 +13,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { reportLiveRuns } from '../../store/liveChangeStore'
 import { LiveChangeNote } from '../LiveChangeNote'
 import { cleanIpcError } from '../../lib/ipcError'
+import { inferAction, serverReach } from '../../lib/liveRunChange'
 import { grantServerRoles, grantedServers, revokePlan, toolsSummaryParts } from '../../lib/roleCapabilities'
 import { perProjectState } from '../mcp/mcpHelpers'
 import { CapabilityGroup, type CapabilityKind } from './CapabilityBlock'
@@ -109,15 +110,19 @@ export default function RoleCapabilities({
     return () => window.clearTimeout(t)
   }, [focusId, servers, project])
 
+  const serversNow = useRef<McpServerInfo[] | null>(null)
+  serversNow.current = servers
+  const surface = `role:${role.id}` as const
   const applyResult = useCallback(
     (r: McpMutationResult): void => {
       seq.current++
+      const before = serversNow.current
       setServers(r.servers)
       setConnError(null)
       replaceProject(r.project)
-      reportLiveRuns(r.project.id, r.liveRuns)
+      reportLiveRuns(r.project.id, surface, r.liveRuns, inferAction(before ? before.map((s) => serverReach(s.spec)) : null, r.servers.map((s) => serverReach(s.spec))))
     },
-    [replaceProject]
+    [replaceProject, surface]
   )
 
   const toggleTool = (t: ToolName): void => {
@@ -150,10 +155,14 @@ export default function RoleCapabilities({
       applyResult(await window.orgai.mcp.linkLibrary({ projectId: project.id, libraryId, roles: [role.slug], enabled: true }))
     },
     applyResult,
-    grantSkill: (skillId) => {
-      updateRoles(project.id, (roles) =>
-        roles.map((x) => (x.id === role.id && !(x.skills ?? []).includes(skillId) ? { ...x, skills: [...(x.skills ?? []), skillId] } : x))
-      )
+    // Through the skills call (not the org chart save) so the result says what reached the live runs.
+    grantSkill: async (skillId) => {
+      const list = await window.orgai.skills.list(project.id)
+      const info = list.find((i) => i.spec.id === skillId)
+      if (!info || info.grantedTo.includes(role.id)) return
+      const result = await window.orgai.skills.update({ projectId: project.id, skillId, roleIds: [...info.grantedTo, role.id] })
+      replaceProject(result.project)
+      reportLiveRuns(result.project.id, surface, result.liveRuns, { kind: 'grant', name: info.spec.name })
     }
   }
 
@@ -212,7 +221,7 @@ export default function RoleCapabilities({
       </CapabilityGroup>
 
       <RoleServices role={role} servers={servers} error={connError} onRevoke={revoke} onAdd={() => setChooser('connections')} onAsk={askFor('connections')} />
-      <LiveChangeNote projectId={project.id} />
+      <LiveChangeNote projectId={project.id} surface={surface} />
 
       {servers && waitingForValues.length > 0 && (
         <ul className="role-cap-list" aria-label={`Connections of ${role.name} that need values`} data-testid="role-needs-values-list">

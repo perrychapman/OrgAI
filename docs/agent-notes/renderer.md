@@ -565,16 +565,26 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
 
 - Main answers every desktop MCP / skills mutation with optional `liveRuns` (`LiveRunChange`); `projects:save` returns only the
   Project (its feedback is the run's log line, so the org chart editor shows nothing and has no "keeps its team" note).
-- `lib/liveRunChange.ts` (`liveChangeLines`, pure, unit tested) maps each entry to "<title>: in use now" / "once the agents are
-  idle" / "from the next run: <reason>" / "being applied" (title clamped to 48 chars, full text in `title`). `store/liveChangeStore.ts`
-  (`reportLiveRuns(projectId, liveRuns)`) keeps the newest lines per project for 20 s; a later save without live runs clears them.
-  `components/LiveChangeNote.tsx` is an always-mounted polite `role=status` region (`live-change-note`, lines
-  `live-change-line`, one truncated row each, hidden when empty) in `McpSection`, `SkillsSection` and `RoleCapabilities`.
-- Reporting sites: `McpSection.applyResult` (covers ConnectedServices, dialogs, writers), `RoleCapabilities.applyResult` and
-  `useProjectSkills.apply` (every skills mutation, import and suggestion). Other `mcp.*` call sites that pass their own result
+- `lib/liveRunChange.ts` (pure, unit tested) words each line from what the user did (`LiveChangeAction`: grant, revoke,
+  saved-ungranted, updated, changed) and the run's availability, status first and the run title last in quotes so truncation never
+  lands before the effect: "Can use api-design now · run “Idle run”", "No longer uses Context7 · ...", "Has api-design; no role can
+  load it yet · ...", "Updated X is in use now" ("in use now" is the one phrase for the generic wording). `inferAction` reads the
+  action from the item list before and after a save (`serverReach` / `skillReach`: how many roles can use it);
+  `useProjectSkills.update` names a text edit explicitly. A deferral's reason is only in the tooltip (`full`).
+  `store/liveChangeStore.ts` (`reportLiveRuns(projectId, surface, liveRuns, action)`) keeps one note per project for 20 s, tagged
+  with the surface that saved (`mcp`, `skills`, `role:<roleId>`); a later save replaces it, one without live runs clears it.
+  `components/LiveChangeNote.tsx` (`projectId` + `surface`) is an always-mounted polite `role=status` region that draws only the
+  note of its own surface, so one save is one visible line and one announcement. Rows have a success check icon and token text.
+  While the project has a live work run the region reserves `--live-rows` rows (min-height in `mcp-library.css`), so the content
+  below does not move when a line appears or clears.
+- Reporting sites: `McpSection.applyResult` (covers ConnectedServices, dialogs, writers), `RoleCapabilities.applyResult` (its
+  skill grant now goes through `skills.update`, so it reports like the Catalog) and
+  `useProjectSkills.apply` (every skills mutation, import and suggestion; the role chooser passes `role:<id>` as its surface). Other `mcp.*` call sites that pass their own result
   elsewhere (Team-only editors) do not report.
 - `ProposalCard` passes `{ otherLiveRuns }` to `proposalEffectCopy`: true for mcpServers / skills / orgChart cards when another open
   `work` run of the same stored project is in the store (no IPC).
 - Checked: typecheck, build, `liveRunChange.test.ts`, `e2e/live-changes.mjs` (idle mock run: skill create + grant, role rename,
-  status line, run log lines, only harness notices added to the transcript, line inside the section at 1600x1000 and 1024x640 in
-  both themes). Not looked at: screen-reader speech, a run with a long title beyond the mock's, 'after-idle' / 'pending' on a live provider.
+  status line wording, one visible line and one text-bearing status region per save, no layout move when it clears, run log lines,
+  only harness notices added to the transcript, line inside the section at 1600x1000 and 1024x640 in both themes, screenshots
+  looked at). Org chart saves still show no line (needs a main contract). Not looked at: a skill revoked in the role inspector
+  (still the org chart path), the role-inspector and Connections placements in the browser, screen-reader speech, a run with a long title beyond the mock's, 'after-idle' / 'pending' on a live provider.

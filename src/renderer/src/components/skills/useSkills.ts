@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SkillDraft, SkillInfo, SkillMutationResult, SkillUpdateInput } from '@shared/types'
 import { cleanIpcError } from '../../lib/ipcError'
 import { useAppStore } from '../../store/useAppStore'
-import { reportLiveRuns } from '../../store/liveChangeStore'
+import { reportLiveRuns, type LiveChangeSurface } from '../../store/liveChangeStore'
+import { inferAction, skillReach, type LiveChangeAction } from '../../lib/liveRunChange'
 
 export interface ProjectSkills {
   skills: SkillInfo[]
@@ -16,7 +17,7 @@ export interface ProjectSkills {
   linkLibrary: (libraryId: string, roleIds?: string[]) => Promise<SkillMutationResult>
   promote: (skillId: string) => Promise<SkillMutationResult>
   /** Take any SkillMutationResult (import apply/undo, applySuggestion) into the list and the store. */
-  apply: (result: SkillMutationResult) => void
+  apply: (result: SkillMutationResult, action?: LiveChangeAction) => void
 }
 
 /** Value key over what the skills list depends on: skill ids, links, enabled flags and each role's skill grants. */
@@ -28,9 +29,15 @@ function skillsKey(p: { skills?: { id: string; libraryId?: string; enabled?: boo
 }
 
 /** The skills of one project with their grants. Mutations also push the saved project (Role.skills changed) into the store. */
-export function useProjectSkills(projectId: string): ProjectSkills {
+export function useProjectSkills(projectId: string, surface: LiveChangeSurface = 'skills'): ProjectSkills {
   const [skills, setSkills] = useState<SkillInfo[]>([])
+  const skillsNow = useRef<SkillInfo[] | null>(null)
+  skillsNow.current = skills
+  const surfaceRef = useRef(surface)
+  surfaceRef.current = surface
   const [loading, setLoading] = useState(true)
+  const loadingRef = useRef(true)
+  loadingRef.current = loading
   const [error, setError] = useState<string | null>(null)
   const seq = useRef(0)
   const projectIdRef = useRef(projectId)
@@ -44,14 +51,21 @@ export function useProjectSkills(projectId: string): ProjectSkills {
   /** The key of the project our own apply() pushed into the store: not a change to react to. */
   const applied = useRef<string | null>(null)
 
-  const apply = useCallback((result: SkillMutationResult): void => {
+  const apply = useCallback((result: SkillMutationResult, action?: LiveChangeAction): void => {
+    // The list before this save (the project's own list; another project's result has nothing to compare with).
+    const before = result.project.id === projectIdRef.current && !loadingRef.current ? skillsNow.current : null
     if (result.project.id === projectIdRef.current) {
       seq.current++
       setSkills(result.skills)
       setError(null)
       setLoading(false)
     }
-    reportLiveRuns(result.project.id, result.liveRuns)
+    reportLiveRuns(
+      result.project.id,
+      surfaceRef.current,
+      result.liveRuns,
+      action ?? inferAction(before ? before.map(skillReach) : null, result.skills.map(skillReach))
+    )
     applied.current = skillsKey(result.project)
     useAppStore.getState().replaceProject(result.project)
   }, [])
@@ -92,10 +106,10 @@ export function useProjectSkills(projectId: string): ProjectSkills {
   }, [projectId, storeKey, reload])
 
   const mutate = useCallback(
-    async (fn: () => Promise<SkillMutationResult>): Promise<SkillMutationResult> => {
+    async (fn: () => Promise<SkillMutationResult>, action?: LiveChangeAction): Promise<SkillMutationResult> => {
       try {
         const result = await fn()
-        apply(result)
+        apply(result, action)
         return result
       } catch (e) {
         // The caller shows the failure next to what it was doing; the list-level banner is for load errors only.
@@ -109,7 +123,15 @@ export function useProjectSkills(projectId: string): ProjectSkills {
     (draft: SkillDraft, roleIds?: string[]) => mutate(() => window.orgai.skills.create({ projectId, draft, ...(roleIds ? { roleIds } : {}) })),
     [mutate, projectId]
   )
-  const update = useCallback((input: Omit<SkillUpdateInput, 'projectId'>) => mutate(() => window.orgai.skills.update({ ...input, projectId })), [mutate, projectId])
+  // Editing the text of a skill (no change of grants or switch) is "updated"; grants and the switch are read from the lists.
+  const update = useCallback(
+    (input: Omit<SkillUpdateInput, 'projectId'>) =>
+      mutate(
+        () => window.orgai.skills.update({ ...input, projectId }),
+        input.draft && input.roleIds === undefined && input.enabled === undefined ? { kind: 'updated', name: input.draft.name } : undefined
+      ),
+    [mutate, projectId]
+  )
   const remove = useCallback((skillId: string) => mutate(() => window.orgai.skills.remove({ projectId, skillId })), [mutate, projectId])
   const linkLibrary = useCallback(
     (libraryId: string, roleIds?: string[]) => mutate(() => window.orgai.skills.linkLibrary({ projectId, libraryId, ...(roleIds ? { roleIds } : {}) })),

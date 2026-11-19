@@ -35,7 +35,7 @@ export interface ChooserActions {
   linkLibraryServer: (libraryId: string) => Promise<void>
   /** The wrapped gallery dialog saved a project change. */
   applyResult: (r: McpMutationResult) => void
-  grantSkill: (skillId: string) => void
+  grantSkill: (skillId: string) => Promise<void>
 }
 
 interface Pick {
@@ -97,7 +97,7 @@ export function CapabilityChooser({
   const setView = useAppStore((s) => s.setView)
   const { connectors, error: connectorsError } = useConnectors()
   const { library } = useMcpLibrary()
-  const skillsApi = useProjectSkills(project.id)
+  const skillsApi = useProjectSkills(project.id, `role:${role.id}`)
   const skillLib = useSkillLibrary()
 
   // Skills on this computer: token-free, local sources only.
@@ -473,7 +473,7 @@ export function CapabilityChooser({
           project={project}
           skillsApi={skillsApi}
           onSaved={(saved) => {
-            if (saved.created && saved.skillId) actions.grantSkill(saved.skillId)
+            if (saved.created && saved.skillId) void actions.grantSkill(saved.skillId).catch(() => undefined)
             onDone(saved.skillId)
           }}
           onClose={() => setSub(null)}
