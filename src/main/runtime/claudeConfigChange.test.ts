@@ -392,7 +392,9 @@ describe('config change helpers', () => {
     expect(text).toContain('The MCP server notes is attached now. Its tools: mcp__notes__read.')
     expect(text).toContain('The MCP server old was removed or turned off: its tools are no longer available.')
     expect(text).toContain('Skills in this session now: orgai-12345678:alpha for Lead (lead).')
-    expect(configChangeNotice({ servers: [], removed: [], skills: [] })).toBe('[OrgAI harness] The configuration change approved this run is in effect now. No skills are granted in this session now.')
+    expect(configChangeNotice({ servers: [], removed: [], skills: [] })).toBe(
+      '[OrgAI harness] The configuration change approved this run is in effect now. No skills are granted in this session now. Reports you spawn from now on get the new configuration.'
+    )
     expect(configChangeNotice({ servers: [], removed: [], skills: null })).toContain("The project's skills changed")
     const many = Array.from({ length: 25 }, (_, i) => ({ name: `p:s${i}`, roles: [] }))
     expect(configChangeNotice({ servers: [], removed: [], skills: many })).toContain(', and 5 more.')

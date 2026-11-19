@@ -490,7 +490,7 @@ describe('Claude org changes in the same run: notice text', () => {
     const many = Array.from({ length: 25 }, (_, i) => ({ name: `R${i}`, slug: `r${i}` }))
     expect(rosterNoticeText({ roles: many, root: false, removed: [] })).toContain(', and 5 more.')
     expect(configChangeNotice({ servers: [], removed: [], roster: { roles: [], root: false, removed: ['Old'] } })).toBe(
-      '[OrgAI harness] The configuration change approved this run is in effect now. The approved org chart is in place in this session now. Removed from this run (no new agents of these): Old.'
+      '[OrgAI harness] The configuration change approved this run is in effect now. The approved org chart is in place in this session now. Removed from this run (no new agents of these): Old. Reports you spawn from now on get the new configuration.'
     )
   })
 })

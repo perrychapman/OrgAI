@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { MCP_HARNESS_TOOLS, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS } from '@shared/types'
 import { CONFIG_CHANGE_TOKEN, MOCK_CONFIG_SERVER, MOCK_CONFIG_SKILL, MockAdapter, configChangeSteps, type MockSession } from './mock'
 import { ROOT_AGENT_ID, type RunSkill } from './types'
-import { fakeCtx } from './testHelpers'
+import { HOST_CHANGE_LEAD } from './hostConfigNotice'
+import { fakeCtx, mcpSpec, runSummary } from './testHelpers'
 
 const toolNames = (s: MockSession) => (s as unknown as { tools: { name: string }[] }).tools.map((t) => t.name)
 
@@ -20,6 +21,62 @@ describe('mock configChanged hook', () => {
     expect(toolNames(session)).toEqual(expect.arrayContaining([SKILL_HARNESS_TOOLS.list, SKILL_HARNESS_TOOLS.load]))
     await session.stop()
     await session.finished
+  })
+})
+
+describe('mock hostConfigChanged (the user changed the project in OrgAI)', () => {
+  const idle = (ctx: { events: { type: string; status?: string }[] }) => ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle')
+
+  it('idle root: applies now, records host: true, starts no turn, and the notice comes with the user\'s next message', async () => {
+    let skills: RunSkill[] = []
+    const ctx = fakeCtx({ autoContinue: false, skills: () => skills })
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    await vi.waitFor(() => expect(idle(ctx)).toBe(true))
+    const harnessBefore = session.harnessMessages.length
+    skills = [{ id: 's1', name: 'alpha', description: 'd', dir: '/nowhere', files: [{ path: 'SKILL.md', bytes: 1 }], roleIds: ['r-lead'] }]
+    await expect(session.hostConfigChanged({ skills: true })).resolves.toEqual({ availability: 'now' })
+    expect(session.configChanges).toEqual([{ skills: true, host: true }])
+    expect(session.hostNotices).toHaveLength(1)
+    expect(session.hostNotices[0]!.delivery).toBe('next-message')
+    expect(session.hostNotices[0]!.text).toContain(HOST_CHANGE_LEAD)
+    expect(session.hostNotices[0]!.text).toContain('Skills granted now: alpha for Lead (lead). Load one with load_skill.')
+    expect(session.harnessMessages.length).toBe(harnessBefore)
+    expect(toolNames(session)).toContain(SKILL_HARNESS_TOOLS.load)
+    await session.send('carry on')
+    await vi.waitFor(() => expect(session.deliveredMessages.at(-1)?.text).toContain(HOST_CHANGE_LEAD))
+    expect(session.deliveredMessages.at(-1)!.text).toContain('carry on')
+    await session.stop()
+    await session.finished
+  })
+
+  it('mid-turn: delivered in line as a harness message', async () => {
+    const ctx = fakeCtx({ autoContinue: false, mcpServers: () => [mcpSpec({ name: 'notes', roles: ['engineer'] })] })
+    const session = (await new MockAdapter({ script: { delayMs: 150 } }).start(ctx)) as MockSession
+    await vi.waitFor(() => expect((session as unknown as { inTurn: boolean }).inTurn).toBe(true))
+    await expect(session.hostConfigChanged({ mcp: { upserted: ['notes'], removed: ['old'] } })).resolves.toEqual({ availability: 'now' })
+    expect(session.hostNotices[0]!.delivery).toBe('inline')
+    const text = session.harnessMessages.at(-1)!
+    expect(text).toContain('MCP server notes: Its tool names start with mcp__notes__. Roles that may use it: Engineer (engineer).')
+    expect(text).toContain('MCP servers removed or turned off (their tools are refused): old.')
+    await session.stop()
+    await session.finished
+  })
+
+  it('held by an interrupt: kept for the user\'s next message; setup-like and stopped sessions reject', async () => {
+    const ctx = fakeCtx({ autoContinue: false })
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    await vi.waitFor(() => expect(idle(ctx)).toBe(true))
+    await session.interrupt()
+    await session.hostConfigChanged({ roles: { added: [], changed: [], removed: ['r-gone'] } })
+    expect(session.hostNotices.at(-1)!.delivery).toBe('held')
+    expect(session.hostNotices.at(-1)!.text).toContain('Removed from this run (no new agents of these): r-gone.')
+    await session.stop()
+    await session.finished
+    await expect(session.hostConfigChanged({ skills: true })).rejects.toThrow('ending')
+    const setup = (await new MockAdapter({ script: { delayMs: 0 } }).start(fakeCtx({ autoContinue: false, run: runSummary({ kind: 'setup' }) }))) as MockSession
+    await expect(setup.hostConfigChanged({ skills: true })).rejects.toThrow('Setup-like')
+    await setup.stop()
+    await setup.finished
   })
 })
 

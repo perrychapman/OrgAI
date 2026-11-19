@@ -60,6 +60,7 @@ import {
 } from './codexAgents'
 import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { ContinuationDriver, agentSlots, rootRoleNames, stepActivity } from './continuation'
+import { HOST_CHANGE_LEAD, hostChangeNotice } from './hostConfigNotice'
 import { obligationsFor } from './delegation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { staffingProfileDep, withRootStaffingBrief } from '../store/staffingProfile'
@@ -185,6 +186,9 @@ import { tmpdir } from 'node:os'
 import { scrubControlEnv } from './childEnv'
 import { SELF_CONTROL_PATHS_UNAVAILABLE_LOG, SELF_CONTROL_REFUSAL_TEXT, checkSelfControlDenial, readControlProtectedPaths, selfControlLogLine } from './selfControlGate'
 import type { ResolvedMcpServer } from './types'
+
+/** Root turn ends with a restart pending but blocked by other turns before the run says so in a warning. */
+export const CODEX_RESTART_WAIT_WARN_TURNS = 3
 
 /**
  * MCP servers without OrgAI's control variables in their env (cli-spec 3.4(3)): plain values go into the `-c
@@ -446,6 +450,15 @@ class CodexSession implements RuntimeSession {
   private retryableStart?: CodexServerLike
   /** Bridged results that landed while the run was held for the user (interrupt) or for a stopped child, delivered after the user's next message. */
   private heldBridged: { parentId: string; text: string }[] = []
+  /**
+   * Notices about a change the user made in OrgAI (hostConfigChanged) that arrived while the orchestrator was idle: they
+   * never start a turn and come with the next message to the orchestrator (the user's, or a harness message).
+   */
+  private hostNotes: string[] = []
+  /** Where the changes the next restart applies came from: this run's tools, the user's change in OrgAI, or both. */
+  private restartOrigin = { host: false, tool: false }
+  /** Root turn ends in a row with a restart pending while other turns kept it from starting. */
+  private restartWaits = 0
   private mcpRestartPending = false
   /**
    * An approved org chart (configChanged roles) left the root thread's developer instructions behind the live roster:
@@ -604,7 +617,8 @@ class CodexSession implements RuntimeSession {
     this.continuation.userMessage()
     // Bridged results held for the user (bridgedFinished): the orchestrator's come with this message, a report's go to it now.
     const held = this.heldBridged.splice(0)
-    const rootNotes = held.filter((h) => h.parentId === ROOT_AGENT_ID).map((h) => h.text)
+    // Notices about the user's own changes in OrgAI that waited for the next message come with it too.
+    const rootNotes = [...held.filter((h) => h.parentId === ROOT_AGENT_ID).map((h) => h.text), ...this.hostNotes.splice(0)]
     this.transcript(ROOT_AGENT_ID, userBlock(text, images))
     this.setState(ROOT_AGENT_ID, 'thinking', 'Thinking…')
     // The transcript entry above is what the user typed; the knowledge block goes only to the model.
@@ -1044,6 +1058,15 @@ class CodexSession implements RuntimeSession {
    * `agentMessage` deliveries: those carry another agent's words and stay unmarked, like Claude's native SendMessage.
    */
   private notifyOrchestrator(text: string, activity = 'Integrating a report…', opts: { transcript?: boolean; summary?: string; agentMessage?: boolean } = {}): void {
+    // Notices about the user's own changes that waited for the next message ride on a harness message (their rows are
+    // written already); another agent's words stay as they are.
+    const host = opts.agentMessage ? [] : this.hostNotes.splice(0)
+    if (host.length) {
+      // The transcript row keeps the original text (the waiting notices have rows of their own).
+      if (opts.transcript !== false) this.transcript(ROOT_AGENT_ID, { kind: 'system', text: opts.summary ?? text, ...(opts.summary ? { detail: text } : {}) }, { source: 'harness' })
+      opts = { ...opts, transcript: false }
+      text = `${host.join('\n\n')}\n\n---\n${text}`
+    }
     this.sendToRoot(text, activity, opts).catch((e: Error) => {
       if (e !== ROOT_DROPPED) this.log('warn', `Could not deliver a harness message to the orchestrator: ${e.message}`)
     })
@@ -1711,6 +1734,7 @@ class CodexSession implements RuntimeSession {
     // Only a completed turn may be nudged; a failed or interrupted one is settled at once.
     if (u.status === 'completed') this.continuation.turnEnded(turnGen)
     else this.continuation.skipTurn(turnGen)
+    this.noteRestartWait()
     if (this.limited && !this.ending) {
       this.log('info', 'Ending the session at the usage limit; it continues when the window resets.')
       void this.stop()
@@ -2560,6 +2584,7 @@ class CodexSession implements RuntimeSession {
   private async addMcpServer(spec: McpServerSpec): Promise<McpAttachResult> {
     if (!this.ctx.resolvedMcpServers) throw new Error('This run cannot attach MCP servers; the server is available from the next run.')
     this.mcpRestartPending = true
+    this.restartOrigin.tool = true
     this.pendingMcpPrefixes.push(mcpToolPrefix(spec.name))
     this.log('info', `MCP server ${spec.name} will be attached when the agents are idle (Codex reads MCP servers at start-up).`)
     void this.maybeRestartForMcp()
@@ -2587,6 +2612,73 @@ class CodexSession implements RuntimeSession {
    * The combined answer is 'after-idle' when any part is.
    */
   private async configChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    return this.applyConfigChange(change, 'tool')
+  }
+
+  /**
+   * RuntimeSession.hostConfigChanged: the user changed this run's project in OrgAI (or approved it in another session);
+   * RunManager already moved ctx (project, servers, skills, roles; rosterApplied for roles) as for configChanged, and it
+   * is applied the same way. The orchestrator did not ask, so it is told once, never with a turn of its own:
+   * - 'after-idle' (an MCP change, or a roster change the root's instructions must take): the restart at idle (at once
+   *   when nothing runs) carries the notice; a restart that holds only the user's change keeps it for the next message.
+   * - 'now' (skills: list_skills / load_skill read ctx.skills() at call time; a roster change the root's instructions
+   *   already match): one notice naming the skills and roles in effect, in line while the orchestrator is in a turn,
+   *   else with the next message to it (the user's, or a harness message). A held run keeps it for the user's next message.
+   * Rejects for a setup-like or ending session (the change applies from the next run).
+   */
+  async hostConfigChanged(change: ConfigChange): Promise<ConfigChangeResult> {
+    if (this.setupLike) throw new Error('Setup-like runs do not take project config changes.')
+    if (this.ending || this.ended) throw new Error('The session is ending; the change applies from the next run.')
+    const result = await this.applyConfigChange(change, 'host')
+    if (result.availability === 'after-idle') return result
+    let text: string
+    try {
+      const skills = change.skills
+        ? (this.ctx.skills?.() ?? []).filter((s) => s.roleIds.length).map((s) => ({ name: s.name, roles: this.ctx.roles.filter((r) => s.roleIds.includes(r.id)) }))
+        : undefined
+      const roster = change.roles
+        ? {
+            roles: [...change.roles.added, ...change.roles.changed].map((id) => this.ctx.roles.find((r) => r.id === id)).filter((r): r is Role => !!r && r.reportsTo !== null),
+            removed: change.roles.removed.filter((id) => !this.ctx.roles.some((r) => r.id === id)).map((id) => this.ctx.retiredRoles?.().find((r) => r.id === id)?.name ?? id)
+          }
+        : undefined
+      text = hostChangeNotice({ prefix: 'Harness:', ...(skills ? { skills, skillTool: SKILL_HARNESS_TOOLS.load } : {}), ...(roster ? { roster } : {}) })
+    } catch (e) {
+      this.log('warn', `Could not list the changed configuration for the orchestrator: ${(e as Error)?.message ?? String(e)}`)
+      text = hostChangeNotice({ prefix: 'Harness:' })
+    }
+    this.deliverHostNotice(text, 'The user changed the configuration; in effect now')
+    return result
+  }
+
+  /** The orchestrator is in a turn (or one is starting for a message already sent). */
+  private rootBusy(): boolean {
+    const root = this.agents.get(ROOT_AGENT_ID)
+    return (!!this.rootThreadId && this.activeTurn.has(this.rootThreadId)) || (!!root && root.state !== 'idle' && root.state !== 'done' && root.state !== 'error')
+  }
+
+  /**
+   * Deliver a notice about the user's own change without starting a turn: a held run keeps it for the user's next
+   * message, a busy orchestrator reads it in line, an idle one gets it with the next message to it. True when it waits.
+   */
+  private deliverHostNotice(text: string, summary: string): boolean {
+    if (this.continuation.isHeld()) {
+      this.heldBridged.push({ parentId: ROOT_AGENT_ID, text })
+      this.transcript(ROOT_AGENT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
+      return true
+    }
+    if (this.rootBusy()) {
+      this.notifyOrchestrator(text, 'Reading a configuration change…', { summary })
+      return false
+    }
+    this.hostNotes.push(text)
+    this.transcript(ROOT_AGENT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
+    this.log('info', 'The user changed the configuration while the orchestrator was idle; it is told with the next message.')
+    return true
+  }
+
+  /** configChanged's work for the tool path and the host path (`origin`, which the restart notice names). */
+  private async applyConfigChange(change: ConfigChange, origin: 'tool' | 'host'): Promise<ConfigChangeResult> {
     let after = false
     if (change.roles) after = this.rosterChanged(change.roles) || after
     if (change.mcp) {
@@ -2600,7 +2692,10 @@ class CodexSession implements RuntimeSession {
       this.log('info', 'The MCP configuration changed; Codex is restarted to apply it when the agents are idle.')
       after = true
     }
-    if (after) void this.maybeRestartForMcp()
+    if (after) {
+      this.restartOrigin[origin] = true
+      void this.maybeRestartForMcp()
+    }
     return { availability: after ? 'after-idle' : 'now' }
   }
 
@@ -2670,17 +2765,63 @@ class CodexSession implements RuntimeSession {
     return `Harness: the org chart change is in place now: your instructions list the roles as they are in this run.${names.length ? ` You can delegate to ${names.join(', ')}.` : ''}`
   }
 
+  /** Where the pending restart's changes came from; reset, since the restart about to run takes them all. */
+  private takeRestartOrigin(): { host: boolean; tool: boolean } {
+    const origin = this.restartOrigin
+    this.restartOrigin = { host: false, tool: false }
+    this.restartWaits = 0
+    // A change of the run's own with no recorded origin (an older caller) counts as the run's.
+    return origin.host || origin.tool ? origin : { host: false, tool: true }
+  }
+
+  /**
+   * The message after a restart (or a roster refresh that needed none). The run's own change was promised a message, so
+   * it starts a turn when the orchestrator is idle; while the run is held for the user it waits for their next message
+   * (review fix: it used to start a turn against the interrupt). The user's change alone (hostConfigChanged) never starts
+   * a turn (deliverHostNotice). Returns true when the notice waits.
+   */
+  private deliverRestartNotice(text: string, activity: string, origin: { host: boolean; tool: boolean }): boolean {
+    const body = origin.host ? text.replace(/^Harness: /, `Harness: ${HOST_CHANGE_LEAD}${origin.tool ? ' This message also covers changes approved in this run.' : ''} `) : text
+    const summary = origin.host ? 'The user changed the configuration; in effect now' : 'Configuration change in effect'
+    if (origin.host && !origin.tool) return this.deliverHostNotice(body, summary)
+    if (this.continuation.isHeld()) {
+      this.heldBridged.push({ parentId: ROOT_AGENT_ID, text: body })
+      this.transcript(ROOT_AGENT_ID, { kind: 'system', text: summary, detail: body }, { source: 'harness' })
+      return true
+    }
+    this.notifyOrchestrator(body, activity)
+    return false
+  }
+
+  /**
+   * A root turn ended with a restart pending that other turns (reports still working) keep from starting: count it and,
+   * after a few, say so in the run log rather than wait silently (the Claude adapter's noteRestartWait).
+   */
+  private noteRestartWait(): void {
+    if (!(this.mcpRestartPending || this.rosterRestartPending) || this.restarting || this.activeTurn.size === 0) {
+      if (!(this.mcpRestartPending || this.rosterRestartPending)) this.restartWaits = 0
+      return
+    }
+    this.restartWaits += 1
+    const n = this.restartWaits
+    if (n === CODEX_RESTART_WAIT_WARN_TURNS || (n > CODEX_RESTART_WAIT_WARN_TURNS && (n - CODEX_RESTART_WAIT_WARN_TURNS) % 5 === 0)) {
+      this.log('warn', `An approved configuration change has waited ${n} turns for Codex to restart (reports are still working). It reaches the agents once no agent is in a turn.`)
+    }
+  }
+
   private async maybeRestartForMcp(): Promise<void> {
     if (!(this.mcpRestartPending || this.rosterRestartPending) || this.restarting || this.ending || this.activeTurn.size > 0) return
     // A roster-only restart that an earlier restart already covered (the root was resumed with the live roster): no
     // restart, just the message the tool promised.
     if (!this.mcpRestartPending && !this.rootInstructionsStale()) {
       this.rosterRestartPending = false
-      this.notifyOrchestrator(this.rosterNotice(this.pendingRosterRoles.splice(0)), 'Reading the new org chart…')
+      const origin = this.takeRestartOrigin()
+      this.deliverRestartNotice(this.rosterNotice(this.pendingRosterRoles.splice(0)), 'Reading the new org chart…', origin)
       return
     }
     const mcpRestart = this.mcpRestartPending
     const rosterRestart = this.rosterRestartPending
+    const origin = this.takeRestartOrigin()
     this.restarting = true
     this.mcpRestartPending = false
     this.rosterRestartPending = false
@@ -2747,9 +2888,10 @@ class CodexSession implements RuntimeSession {
       const parts: string[] = []
       if (mcpRestart) {
         const prefixes = this.pendingMcpPrefixes.splice(0)
+        const whose = origin.tool ? ' you requested' : ''
         parts.push(
           prefixes.length
-            ? `Harness: the MCP server${prefixes.length === 1 ? '' : 's'} you requested ${prefixes.length === 1 ? 'is' : 'are'} connected now. Tool names start with ${prefixes.join(' and ')}. Calls may still ask the user for permission.`
+            ? `Harness: the MCP server${prefixes.length === 1 ? '' : 's'}${whose} ${prefixes.length === 1 ? 'is' : 'are'} connected now. Tool names start with ${prefixes.join(' and ')}. Calls may still ask the user for permission.`
             : 'Harness: the MCP configuration change is in place now. Tools of servers that were disabled or removed are gone.'
         )
       }
@@ -2759,8 +2901,8 @@ class CodexSession implements RuntimeSession {
         this.rosterRestartPending = false
         parts.push(this.rosterNotice(this.pendingRosterRoles.splice(0)))
       }
-      if (parts.length) this.notifyOrchestrator(parts.join('\n\n'), mcpRestart ? 'Using a new MCP server…' : 'Reading the new org chart…')
-      notified = parts.length > 0
+      // A held run, or a restart for the user's change alone, starts no turn: the notice waits (deliverRestartNotice).
+      notified = parts.length > 0 && !this.deliverRestartNotice(parts.join('\n\n'), mcpRestart ? 'Using a new MCP server…' : 'Reading the new org chart…', origin)
     } catch (e) {
       // stop() closed the new server while it started: the run is ending, not failing.
       if (this.ending) return abandon()
