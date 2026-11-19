@@ -6,7 +6,7 @@ import type { McpServerSpec, RunEvent } from '@shared/types'
 import { CODEX_RESTART_WAIT_WARN_TURNS, CodexAdapter, type CodexServerLike } from './codex'
 import type { CodexAppServerOptions } from './codexAppServer'
 import type { ConfigChange, ConfigChangeResult } from './harnessTools'
-import { HOST_CHANGE_LEAD } from './hostConfigNotice'
+import { HOST_CHANGE_LEAD, hostChangeNotice } from './hostConfigNotice'
 import type { RunSkill, RuntimeContext, RuntimeSession } from './types'
 import { fakeCtx, mcpSpec, project, runSummary } from './testHelpers'
 
@@ -35,6 +35,8 @@ class FakeServer implements CodexServerLike {
   }
   async request<T>(method: string, params?: unknown): Promise<T> {
     this.requests.push({ method, params })
+    if (method === 'turn/steer' && faults.steer) throw new Error('no active turn to steer')
+    if (method === 'thread/resume' && faults.resume) throw new Error(faults.resume)
     switch (method) {
       case 'thread/start':
         return { thread: { id: `th-${++this.counters.threads}` }, model: 'gpt-test', cwd: (params as { cwd?: string })?.cwd } as T
@@ -81,10 +83,15 @@ class FakeServer implements CodexServerLike {
 
 const turnDone = (threadId: string, turnId: string, status = 'completed') => ({ threadId, turn: { id: turnId, status, items: [], error: null } })
 
+/** Scripted failures of the fake app-server: a refused turn/steer, a thread/resume that throws (with this message). */
+const faults: { steer: boolean; resume: string } = { steer: false, resume: '' }
+
 let dir = ''
 let session: RuntimeSession | undefined
 beforeEach(() => {
   dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'orgai-codex-host-')))
+  faults.steer = false
+  faults.resume = ''
 })
 afterEach(async () => {
   await session?.stop()
@@ -192,6 +199,101 @@ describe('Codex hostConfigChanged', () => {
     expect(await host({ skills: true })).toEqual({ availability: 'now' })
     await vi.waitFor(() => expect(s1.of('turn/steer')).toHaveLength(1))
     expect(s1.sent('th-1').at(-1)).toContain(HOST_CHANGE_LEAD)
+  })
+
+  it('M1: a refused steer never falls back to turn/start; the notice waits for the next message', async () => {
+    const { ctx, servers, setSkills } = await start()
+    const s1 = servers[0]!
+    faults.steer = true
+    setSkills([{ id: 's1', name: 'alpha', description: 'd', dir: '/nowhere', files: [{ path: 'SKILL.md', bytes: 1 }], roleIds: ['r-lead'] }])
+    expect(await host({ skills: true })).toEqual({ availability: 'now' })
+    await vi.waitFor(() => expect(s1.of('turn/steer')).toHaveLength(1))
+    await sleep(50)
+    // Regression: sendToThread fell back to turn/start, a turn of its own for the user's change.
+    expect(s1.of('turn/start')).toHaveLength(1)
+    expect(rows(ctx).some((b) => b.detail?.includes(HOST_CHANGE_LEAD))).toBe(true)
+    s1.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle')).toBe(true))
+    await sleep(30)
+    expect(s1.of('turn/start')).toHaveLength(1)
+    faults.steer = false
+    await session!.send('next')
+    await vi.waitFor(() => expect(s1.of('turn/start')).toHaveLength(2))
+    const sent = s1.sent('th-1').at(-1)!
+    expect(sent).toContain(HOST_CHANGE_LEAD)
+    expect(sent).toContain('next')
+    expect(sent.match(/The user changed this project/g)).toHaveLength(1)
+  })
+
+  it('M1: busy by state with no running root turn: nothing is sent; the notice waits', async () => {
+    const { ctx, servers, setSkills } = await start()
+    const s1 = servers[0]!
+    s1.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle')).toBe(true))
+    // The root still shows busy (e.g. a state not yet settled) while no root turn is active.
+    ;(session as unknown as { setState(id: string, s: string, a: string): void }).setState('root', 'thinking', 'Thinking…')
+    setSkills([{ id: 's1', name: 'alpha', description: 'd', dir: '/nowhere', files: [{ path: 'SKILL.md', bytes: 1 }], roleIds: ['r-lead'] }])
+    expect(await host({ skills: true })).toEqual({ availability: 'now' })
+    await sleep(50)
+    expect(s1.of('turn/start')).toHaveLength(1)
+    expect(s1.of('turn/steer')).toHaveLength(0)
+    await session!.send('go')
+    await vi.waitFor(() => expect(s1.of('turn/start')).toHaveLength(2))
+    expect(s1.sent('th-1').at(-1)).toContain(HOST_CHANGE_LEAD)
+  })
+
+  it('M3: a restart for the user\'s change alone that throws pauses for the user (no auto-resume) instead of failing the run', async () => {
+    const { ctx, servers, mcp } = await start()
+    servers[0]!.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle')).toBe(true))
+    faults.resume = 'resume refused Bearer abc.def.ghi'
+    mcp.push(mcpSpec({ id: 'mcp-notes', name: 'notes', roles: ['lead'] }))
+    expect(await host({ mcp: { upserted: ['notes'], removed: [] } })).toEqual({ availability: 'after-idle' })
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && (e.status === 'paused' || e.status === 'error'))).toBe(true))
+    // Regression: the run ended 'error' ("Could not restart Codex to attach the MCP server").
+    expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(false)
+    const paused = ctx.events.find((e) => e.type === 'run.status' && e.status === 'paused') as { autoResume?: boolean; pausedUntil?: number; pauseReason?: string }
+    expect(paused.autoResume).toBe(false)
+    expect(paused.pausedUntil).toBeUndefined()
+    expect(paused.pauseReason).toContain('the run waits for your next message')
+    const warns = ctx.events.filter((e) => e.type === 'log' && e.level === 'warn').map((e) => (e as { message: string }).message)
+    expect(warns.filter((m) => m.includes('Could not restart Codex to apply the change you made in OrgAI'))).toHaveLength(1)
+    expect(warns.join('\n')).not.toContain('abc.def.ghi')
+  })
+
+  it('M3 counterpart: a restart for the run\'s own change that throws still fails the run', async () => {
+    const { ctx, servers, mcp } = await start()
+    servers[0]!.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle')).toBe(true))
+    faults.resume = 'resume refused'
+    mcp.push(mcpSpec({ id: 'mcp-notes', name: 'notes', roles: ['lead'] }))
+    await configChanged({ mcp: { upserted: ['notes'], removed: [] } })
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'error')).toBe(true))
+    expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(false)
+  })
+
+  it('L5: a failure listing the change is logged redacted', async () => {
+    let fail = false
+    const { ctx } = await start({
+      skills: () => {
+        if (fail) throw new Error('could not read skills (Bearer tok-123456789 sk-live-abcdef123)')
+        return []
+      }
+    })
+    fail = true
+    expect(await host({ skills: true })).toEqual({ availability: 'now' })
+    const line = ctx.events.filter((e) => e.type === 'log').map((e) => (e as { message: string }).message).find((m) => m.startsWith('Could not list the changed configuration')) ?? ''
+    expect(line).toContain('could not read skills')
+    expect(line).not.toContain('tok-123456789')
+    expect(line).not.toContain('sk-live-abcdef123')
+  })
+
+  it('L2: a Codex notice without an MCP part never says removed MCP tools are refused at once', () => {
+    const text = hostChangeNotice({ prefix: 'Harness:', skills: [{ name: 'alpha', roles: [{ name: 'Lead', slug: 'lead' }] }] })
+    expect(text).not.toContain('removed or ungranted tools are refused at once')
+    expect(text).not.toContain('MCP')
+    expect(text).toContain('skills and roles taken away are refused at once')
+    expect(hostChangeNotice({ prefix: 'Harness:', removed: ['gh'] })).toContain('removed or ungranted tools are refused at once')
   })
 
   it('rejects for a setup-like or ending session', async () => {

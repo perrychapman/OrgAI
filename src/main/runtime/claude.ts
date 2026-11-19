@@ -332,6 +332,17 @@ class PushStream<T> implements AsyncIterable<T> {
     return [...this.queue]
   }
 
+  /** Take the unread values `pick` selects out of the stream (the rest stay queued, in order). */
+  take(pick: (value: T) => boolean): T[] {
+    const taken: T[] = []
+    this.queue = this.queue.filter((v) => {
+      if (!pick(v)) return true
+      taken.push(v)
+      return false
+    })
+    return taken
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return {
       next: () => {
@@ -535,7 +546,9 @@ export function safeMcpToolNames(names: readonly unknown[]): string[] {
  * roles granted them. Tool names come from the server (untrusted): only plain identifiers are listed, at most
  * MCP_NOTICE_TOOL_CAP per server, and every name (server, tools, roles) goes through datum().
  */
-export function mcpAttachedNotice(servers: { name: string; tools: string[]; roles?: Pick<Role, 'name' | 'slug'>[] }[]): string {
+export function mcpAttachedNotice(servers: { name: string; tools: string[]; roles?: Pick<Role, 'name' | 'slug'>[]; regranted?: boolean }[]): string {
+  const roleList = (roles: Pick<Role, 'name' | 'slug'>[]): string =>
+    roles.slice(0, MCP_NOTICE_TOOL_CAP).map((r) => `${datum(r.name, 60)} (${datum(r.slug, 60)})`).join(', ') + (roles.length > MCP_NOTICE_TOOL_CAP ? `, and ${roles.length - MCP_NOTICE_TOOL_CAP} more` : '')
   const parts = servers.map((s) => {
     const name = datum(s.name, 64)
     const prefix = `mcp__${name}__`
@@ -548,9 +561,11 @@ export function mcpAttachedNotice(servers: { name: string; tools: string[]; role
     const roles = !s.roles
       ? 'Only roles the org chart grants it may call it.'
       : s.roles.length
-        ? `Roles that may use it: ${s.roles.map((r) => `${datum(r.name, 60)} (${datum(r.slug, 60)})`).join(', ')}.`
+        ? `Roles that may use it: ${roleList(s.roles)}.`
         : 'No role in the org chart is granted it, so no agent can call it in this run.'
-    return `The MCP server ${name} is attached now. ${tools} ${roles}`
+    // regranted: attached already with the same definition; only which roles may use it changed (an ungrant included).
+    const lead = s.regranted ? `The MCP server ${name} was already attached; which roles may use it changed.` : `The MCP server ${name} is attached now.`
+    return `${lead} ${tools} ${roles}`
   })
   return `[OrgAI harness] ${parts.join(' ')} Calls to it may still ask the user for permission under the project's permission mode. Reports you spawn from now on get it if their role is granted it.`
 }
@@ -583,13 +598,16 @@ export function configChangeNotice(c: {
   }
   if (c.removed.length) {
     const one = c.removed.length === 1
-    text += ` The MCP server${one ? '' : 's'} ${c.removed.map((n) => datum(n, 64)).join(', ')} ${one ? 'was' : 'were'} removed or turned off: ${one ? 'its' : 'their'} tools are no longer available.`
+    const more = c.removed.length > MCP_NOTICE_TOOL_CAP ? `, and ${c.removed.length - MCP_NOTICE_TOOL_CAP} more` : ''
+    text += ` The MCP server${one ? '' : 's'} ${c.removed.slice(0, MCP_NOTICE_TOOL_CAP).map((n) => datum(n, 64)).join(', ')}${more} ${one ? 'was' : 'were'} removed or turned off: ${one ? 'its' : 'their'} tools are no longer available.`
   }
   if (c.skills === null) text += ' The project\'s skills changed and are loaded in this session now; load one with the Skill tool and its full name.'
   else if (c.skills && !c.skills.length) text += ' No skills are granted in this session now.'
   else if (c.skills) {
     const listed = c.skills.slice(0, MCP_NOTICE_TOOL_CAP).map((s) => {
-      const roles = s.roles.length ? s.roles.map((r) => `${datum(r.name, 60)} (${datum(r.slug, 60)})`).join(', ') : 'no role'
+      const roles = s.roles.length
+        ? s.roles.slice(0, MCP_NOTICE_TOOL_CAP).map((r) => `${datum(r.name, 60)} (${datum(r.slug, 60)})`).join(', ') + (s.roles.length > MCP_NOTICE_TOOL_CAP ? `, and ${s.roles.length - MCP_NOTICE_TOOL_CAP} more` : '')
+        : 'no role'
       return `${datum(s.name, 140)} for ${roles}`
     })
     const more = c.skills.length > MCP_NOTICE_TOOL_CAP ? `, and ${c.skills.length - MCP_NOTICE_TOOL_CAP} more` : ''
@@ -1579,6 +1597,11 @@ export class ClaudeSession implements RuntimeSession {
   private lastRestart: Omit<NextQuery, 'options' | 'dropped' | 'droppedSkills'> = { servers: [], tools: new Map() }
   /** The latest restart (or its fallback) came from a config change: the pause wording names that. */
   private restartForConfig = false
+  /**
+   * The latest restart carried only the user's own change in OrgAI (hostConfigChanged), nothing this run asked for: if
+   * it cannot start, the run waits for the user rather than auto-resuming into a turn nobody asked for (endPausedAfterRestart).
+   */
+  private restartHostOnly = false
   /** Restarted queries that failed before their init since the last one that started (reset at init). */
   private restartFailures = 0
   /** Servers left out of every later query after a restart with them could not start. */
@@ -1619,7 +1642,7 @@ export class ClaudeSession implements RuntimeSession {
    * Harness messages pushed to the input, by kind. When an interrupt holds the run across a restart, unread plan nudges
    * are dropped and other unread harness notices wait for the user's next message (dropHeldHarnessMessages).
    */
-  private harnessMessages = new WeakMap<SDKUserMessage, { nudge: boolean; text: string; restart?: boolean }>()
+  private harnessMessages = new WeakMap<SDKUserMessage, { nudge: boolean; text: string; restart?: boolean; host?: boolean }>()
   /** Attach notices that arrived while the run was held: prepended to the user's next message. */
   private heldNotices: string[] = []
   /**
@@ -1856,6 +1879,9 @@ export class ClaudeSession implements RuntimeSession {
     // An interrupted turn waits for the user; no automatic continue (and no MCP restart) until they reply.
     this.continuation.hold()
     this.held = true
+    // Harness messages queued but not read yet would start a turn once the interrupted one ends: unread plan nudges go,
+    // other unread notices (their rows are written) wait for the user's next message. User messages stay queued.
+    this.dropHeldHarnessMessages()
     // The result that ends this turn reports it as interrupted (RootTurnEnd.interrupted), never as a failed turn.
     if (this.turnInFlight) this.interruptPending = true
     // Approved spawns the interrupt may cut before task_started (review L4): swept when their caller's turn is over.
@@ -2149,8 +2175,12 @@ export class ClaudeSession implements RuntimeSession {
     return compactionStateText({ plan: this.ctx.getPlan(), live, owed })
   }
 
-  private reportFinished(): void {
+  private reportFinished(agentId?: string): void {
     this.handBackSince = Date.now()
+    // A background report that ends while the orchestrator is idle is handed back by a turn the CLI starts itself; its
+    // task_notification (backgroundReported) may come after the restart check reportSettled schedules, so the wait for
+    // that hand-back starts here already (the restart must not close the input before it).
+    if (agentId && this.backgroundReports.has(agentId) && !this.turnInFlight && !this.ending && !this.abort.signal.aborted) this.backgroundHandBackSince = Date.now()
     this.noteActivity('report')
     this.reportSettled()
   }
@@ -2640,7 +2670,7 @@ export class ClaudeSession implements RuntimeSession {
   private notifyOrchestrator(
     text: string,
     activity = 'Integrating a report…',
-    opts: { transcript?: boolean; summary?: string; nudge?: boolean; restart?: boolean } = {}
+    opts: { transcript?: boolean; summary?: string; nudge?: boolean; restart?: boolean; host?: boolean } = {}
   ): void {
     // Notices about the user's own changes waiting for the next message ride on this one (their rows are written). A
     // restart notice is re-sent by a retried restart without them, so they wait for the next message instead.
@@ -2648,7 +2678,9 @@ export class ClaudeSession implements RuntimeSession {
     const content = host.length ? `${host.join('\n\n')}\n\n---\n${text}` : text
     const message: SDKUserMessage = { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null }
     // A plan nudge carrying host notices is no longer only a nudge: a held run keeps it for the user's next message.
-    this.harnessMessages.set(message, { nudge: !!opts.nudge && !host.length, text: content, ...(opts.restart ? { restart: true } : {}) })
+    // `host`: only notices about the user's own change (deliverHostNotice, in line): one still unread when the turn
+    // ends is taken back out (reclaimHostNotices), so it never starts a turn of its own.
+    this.harnessMessages.set(message, { nudge: !!opts.nudge && !host.length, text: content, ...(opts.restart ? { restart: true } : {}), ...(opts.host ? { host: true } : {}) })
     this.pushInput(message)
     this.noteActivity('message')
     if (opts.transcript !== false) {
@@ -3664,7 +3696,7 @@ export class ClaudeSession implements RuntimeSession {
       this.staffingBook.ended(a.id, { failed })
       this.partial.clear(a.id, true)
       this.upsert(a)
-      this.reportFinished()
+      this.reportFinished(a.id)
       if (failed) void this.integrator.holdFailed(a.id, decision.missing ?? 'required reports missing')
       else void this.integrator.onSubagentFinished(a.id)
       return {}
@@ -3968,12 +4000,13 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /** The 'now' notice of a host change: what it attached, removed or regranted, the skills and roles in the session now. */
-  private hostNowNotice(change: ConfigChange, applied: { tools: Record<string, string[]>; upserted: string[]; lost: string[] }): string {
+  private hostNowNotice(change: ConfigChange, applied: { tools: Record<string, string[]>; upserted: string[]; lost: string[]; regranted: string[] }): string {
     const live = this.liveMcpServers()
     const on = new Set(live.filter((s) => s.enabled && !this.droppedMcp.has(s.name)).map((s) => s.name))
+    // A server whose definition did not change only had its grants changed (an ungrant included): not "attached now".
     const servers = applied.upserted
       .filter((n) => on.has(n) && !applied.lost.includes(n))
-      .map((name) => ({ name, tools: applied.tools[name] ?? [], roles: rolesGrantedServer(this.ctx.roles, live, name) }))
+      .map((name) => ({ name, tools: applied.tools[name] ?? [], roles: rolesGrantedServer(this.ctx.roles, live, name), ...(applied.regranted.includes(name) ? { regranted: true } : {}) }))
     let skills: SkillNoticeEntry[] | null | undefined
     if (change.skills) {
       try {
@@ -4009,7 +4042,8 @@ export class ClaudeSession implements RuntimeSession {
       return true
     }
     if (this.rootBusy()) {
-      this.notifyOrchestrator(text, 'Reading a configuration change…', { summary })
+      // Read at the turn's next tool round; if the turn ends first, reclaimHostNotices takes it back (no turn of its own).
+      this.notifyOrchestrator(text, 'Reading a configuration change…', { summary, host: true })
       return false
     }
     this.hostNotices.push(text)
@@ -4019,13 +4053,29 @@ export class ClaudeSession implements RuntimeSession {
   }
 
   /**
+   * A root turn ended: an in-line host notice (deliverHostNotice) the CLI has not read yet would start a turn of its own
+   * once read. Take it back out of the input; it waits for the next message to the orchestrator (or, while the run is
+   * held, the user's next message). Its transcript row is written already.
+   */
+  private reclaimHostNotices(): void {
+    const taken = this.input.take((m) => !!this.harnessMessages.get(m)?.host)
+    if (!taken.length) return
+    for (const m of taken) {
+      const text = this.harnessMessages.get(m)!.text
+      if (this.held || this.capTripped) this.heldNotices.push(text)
+      else this.hostNotices.push(text)
+    }
+    this.log('info', 'The turn ended before the orchestrator read the configuration change; it is told with the next message.')
+  }
+
+  /**
    * configChanged's work for both callers (`origin`): the tool path (an approved proposal of this run) and the host path
    * (hostConfigChanged). `restart` = this change made a config restart due (its notice will say what is in effect).
    */
   private async applyConfigChange(
     change: ConfigChange,
     origin: 'tool' | 'host'
-  ): Promise<{ result: ConfigChangeResult; restart: boolean; tools: Record<string, string[]>; upserted: string[]; lost: string[] }> {
+  ): Promise<{ result: ConfigChangeResult; restart: boolean; tools: Record<string, string[]>; upserted: string[]; lost: string[]; regranted: string[] }> {
     if (this.isSetup) throw new Error('Setup-like runs do not take project config changes.')
     if (!this.q) throw new Error('The session is not running yet.')
     if (change.roles && !this.liveRoster) throw new Error('This session does not take org chart changes; they apply from the next run.')
@@ -4113,7 +4163,8 @@ export class ClaudeSession implements RuntimeSession {
       restart: needRestart,
       tools,
       upserted,
-      lost
+      lost,
+      regranted
     }
   }
 
@@ -4485,6 +4536,7 @@ export class ClaudeSession implements RuntimeSession {
     }
     this.restartWaits = 0
     this.restartForConfig = !!config
+    this.restartHostOnly = !!config?.host && !config.tool
     this.nextQuery = {
       options: built,
       servers,
@@ -4580,16 +4632,18 @@ export class ClaudeSession implements RuntimeSession {
     // The spawn gate keeps refusing the added and changed roles (rosterStale), so "from the next run" stays true.
     if (other?.roles) parts.push('the org chart changes (added or changed roles)')
     const rest = parts.join(' and ')
+    // The user's change alone was not approved in this run (review L3).
+    const whose = host === 'only' ? 'the user made in OrgAI' : 'approved this run'
     let text: string
     let summary: string
     if (names.length) {
       this.log('warn', `Could not attach the MCP server${plural} ${names.join(', ')} to this session: ${why}`)
       text = `[OrgAI harness] The MCP server${plural} ${names.map((n) => datum(n, 64)).join(', ')} could not be attached to this session (${datum(why, 300)}). It is available from the next run; continue without it.`
-      if (rest) text += ` ${rest[0]!.toUpperCase()}${rest.slice(1)} approved this run could not be applied either; they apply from the next run.`
+      if (rest) text += ` ${rest[0]!.toUpperCase()}${rest.slice(1)} ${whose} could not be applied either; they apply from the next run.`
       summary = `Could not attach the MCP server${plural} ${names.join(', ')}`
     } else {
-      this.log('warn', `Could not apply the approved configuration change to this session: ${why}`)
-      text = `[OrgAI harness] ${rest[0]!.toUpperCase()}${rest.slice(1)} approved this run could not be applied to this session (${datum(why, 300)}). They apply from the next run; continue without them.`
+      this.log('warn', `Could not apply the ${host === 'only' ? '' : 'approved '}configuration change to this session: ${why}`)
+      text = `[OrgAI harness] ${rest[0]!.toUpperCase()}${rest.slice(1)} ${whose} could not be applied to this session (${datum(why, 300)}). They apply from the next run; continue without them.`
       summary = 'Could not apply the configuration change to this session'
     }
     if (host) text = text.replace(/^\[OrgAI harness\] /, `[OrgAI harness] ${HOST_CHANGE_LEAD} `)
@@ -4631,8 +4685,9 @@ export class ClaudeSession implements RuntimeSession {
           tools: new Map(),
           dropped: servers,
           ...(rebuilt ? { plugin: prevPlugin ?? null, droppedSkills: true } : {}),
-          // Definitions come from the live roster in every build, so an org change is in the fallback too.
-          ...(config?.roles ? { config: { regranted: [], removed: [], skills: false, roles: config.roles, ...(config.host ? { host: true } : {}), ...(config.tool ? { tool: true } : {}) } } : {})
+          // Definitions come from the live roster in every build, so an org change is in the fallback too. The origin
+          // stays with it either way: a fallback for the user's change alone never starts a turn with its notice.
+          ...(config ? { config: { regranted: [], removed: [], skills: false, ...(config.roles ? { roles: config.roles } : {}), ...(config.host ? { host: true } : {}), ...(config.tool ? { tool: true } : {}) } } : {})
         }
       } else return { why }
       try {
@@ -4682,6 +4737,9 @@ export class ClaudeSession implements RuntimeSession {
     this.spawnsCutByInterrupt.clear()
     this.restarts += 1
     this.queryInitSeen = false
+    // No turn of the old query is running any more (review M2): the new query's init marks the next one.
+    this.turnInFlight = false
+    this.interruptPending = false
     // What the new query may read before its init: everything queued now plus what is pushed until then.
     this.preInit = this.input.peek()
     this.lastRestart = {
@@ -5207,13 +5265,24 @@ export class ClaudeSession implements RuntimeSession {
     this.pausedEnd = true
     this.ending = true
     const undelivered = this.undeliveredUserMessages()
+    // A restart for the user's own change in OrgAI alone, with no turn end held back for it and no message waiting for
+    // the orchestrator: nothing was going to start a turn, so an automatic resume (RESUME_TEXT) would be a turn nobody
+    // asked for (review H1). It waits for the user like a held run.
+    const unreadHarness = [...new Set([...this.preInit, ...this.input.peek()])].filter((m) => this.harnessMessages.has(m)).length
+    const hostOnly = this.restartHostOnly && !this.turnEndDeferred && unreadHarness === 0 && undelivered === 0
     // A run the user interrupted (or the window cap stopped) waits for the user, never auto-resumes (review N1).
-    const autoResume = !(this.held || this.capTripped || undelivered > 0)
+    const autoResume = !(this.held || this.capTripped || undelivered > 0 || hostOnly)
     const pausedUntil = autoResume ? Date.now() + MCP_RESTART_PAUSE_MS : undefined
-    const base = this.restartForConfig ? 'The session could not be resumed after a configuration change.' : 'The session could not be resumed after attaching an MCP server.'
+    const base = hostOnly
+      ? 'The session could not be resumed after the change you made in OrgAI.'
+      : this.restartForConfig
+        ? 'The session could not be resumed after a configuration change.'
+        : 'The session could not be resumed after attaching an MCP server.'
     const resend = undelivered
       ? ` ${undelivered === 1 ? 'Your last message was' : `Your last ${undelivered} messages were`} not delivered; send ${undelivered === 1 ? 'it' : 'them'} again to continue.`
-      : ''
+      : hostOnly
+        ? ' Your change could not be applied to this session; the run waits for your next message.'
+        : ''
     const reason = base + resend
     const when = pausedUntil ? `it resumes at ${new Date(pausedUntil).toLocaleString()} or when you continue it` : 'it waits until you continue it'
     this.log('error', `${base} Pausing the run; ${when}. Last error: ${why}`)
@@ -5251,6 +5320,9 @@ export class ClaudeSession implements RuntimeSession {
     switch (msg.type) {
       case 'system': {
         if (msg.subtype === 'init') {
+          // The trailing init of a query closed for a restart (sdk-facts check 12): no turn starts on it. Taking it as one
+          // would leave turnInFlight set (rootBusy for ever) if the close timer kills the query before its result.
+          if (this.nextQuery) break
           const root = this.ensureAgent(ROOT_ID)
           root.model = msg.model
           this.upsert(root)
@@ -5422,7 +5494,7 @@ export class ClaudeSession implements RuntimeSession {
             this.readTexts.forget(a.id)
             this.staffingBook.ended(a.id, { failed: msg.status === 'failed' })
             this.upsert(a)
-            if (firstFinish) this.reportFinished()
+            if (firstFinish) this.reportFinished(a.id)
             else this.noteActivity('report')
             void this.integrator.onSubagentFinished(a.id)
             if (background) this.backgroundReported(a.id, msg.status)
@@ -5579,9 +5651,17 @@ export class ClaudeSession implements RuntimeSession {
           this.failAuth(authRaw)
           break
         }
+        // A query whose input was closed for a restart emits one more init and an empty result as it exits (sdk-facts
+        // check 12): no turn of the session's, so no turn end is reported, counted or nudged (review M2).
+        if (this.nextQuery) {
+          this.rootShellCalls.clear()
+          break
+        }
         const root = this.ensureAgent(ROOT_ID)
         // The turn is over, so none of its shell calls is still in the foreground.
         this.rootShellCalls.clear()
+        // An in-line host notice the CLI has not read must not start a turn of its own (review M1).
+        this.reclaimHostNotices()
         const interrupted = this.interruptPending
         this.interruptPending = false
         // The interrupted turn (or a later one) is over: spawns it cut before task_started stop counting (review L4).
