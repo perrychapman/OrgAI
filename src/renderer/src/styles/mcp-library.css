@@ -137,3 +137,25 @@
   min-width: 0;
   cursor: pointer;
 }
+
+/* What a saved change did in each live run (LiveChangeNote): one truncated line per run, full text in the tooltip. */
+.live-change-note:empty {
+  display: none;
+}
+.live-change-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.live-change-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -106,8 +106,9 @@ export const RULES = [
   { match: [`${C}usage/**`, `${C}Usage*.tsx`, `${R}views/UsageView.tsx`, `${L}usage*.ts`, `${L}trends.ts`, `${L}modelPrices.ts`, `${S}usage*.css`, `${S}history-trends.css`], scripts: USAGE, why: 'Usage pages' },
   { match: [`${C}connectors/**`, `${S}connectors.css`, `${L}connector*.ts`, `${L}roleServices.ts`], scripts: ['connectors', 'presets', 'team'], why: 'Connectors' },
   { match: [`${C}connections/**`, `${S}connections.css`, `${S}project-connection.css`, `${L}proxy*.ts`, `${L}remap.ts`, `${L}tierMapping.ts`, `${C}Remap*.tsx`, `${C}ProviderAuthPicker.tsx`], scripts: ['connections', 'project-connection', 'multi-provider'], why: 'Connections' },
-  { match: [`${C}mcp/**`, `${C}McpInstallCard.tsx`, `${S}mcp*.css`, `${L}mcp*.ts`], scripts: ['per-project', 'presets', 'connections', 'proposals'], why: 'MCP settings and install card' },
-  { match: [`${C}skills/**`, `${S}skill-library.css`, `${L}skills.ts`, `${L}skillProposal.ts`], scripts: ['skills'], why: 'Skills' },
+  { match: [`${C}mcp/**`, `${C}McpInstallCard.tsx`, `${S}mcp*.css`, `${L}mcp*.ts`], scripts: ['per-project', 'presets', 'connections', 'proposals', 'live-changes'], why: 'MCP settings and install card' },
+  { match: [`${C}skills/**`, `${S}skill-library.css`, `${L}skills.ts`, `${L}skillProposal.ts`], scripts: ['skills', 'live-changes'], why: 'Skills' },
+  { match: [`${C}LiveChangeNote.tsx`, `${R}store/liveChangeStore.ts`, `${L}liveRunChange.ts`, `${S}mcp-library.css`], scripts: ['live-changes', 'skills', 'connectors'], why: 'live run change status line' },
 
   { match: [`${C}canvas/**`, `${S}canvas*.css`, `${S}flow.css`, `${S}office.css`, `${L}canvas*.ts`, `${L}office/**`], scripts: ['canvas'], why: 'canvas themes and Pocket Office' },
   { match: [`${C}AgentNode.tsx`, `${C}DoneGroupNode.tsx`, `${C}RoleNode.tsx`], scripts: ['canvas', 'runs', 'team'], why: 'canvas nodes' },

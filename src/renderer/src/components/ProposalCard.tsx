@@ -7,7 +7,8 @@ import { connectionLabel } from '../lib/connectionLabel'
 import { projectSettingRows, type ProjectSettingRow } from '../lib/appSettingsCard'
 import { AppSettingsProposalBody } from './proposals/AppSettingsProposalBody'
 import { ProjectSettingsChanges } from './proposals/ProjectSettingsChanges'
-import { PERMISSION_MODE_OPTIONS, PROPOSAL_NOTE_MAX_CHARS, proposalSecretKey } from '@shared/types'
+import { PERMISSION_MODE_OPTIONS, PROPOSAL_NOTE_MAX_CHARS, isVirtualProjectId, proposalSecretKey } from '@shared/types'
+import { isOpenStatus } from '../lib/runChains'
 import { initials } from '../lib/layout'
 import { useAppStore } from '../store/useAppStore'
 import { orgChartEffectCopy, proposalNextFor } from '../lib/proposalNext'
@@ -126,9 +127,16 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
     [proposal, currentRoles, mcpCurrent.servers, skillCurrent, mcpLoading, targetKind, existingSchedules]
   )
   const hasSecrets = !!mcp && uniqueSecretSlots(mcp).length > 0
+  // Another live team work run of the stored project takes an approved change too (main reaches it), so the card says so.
+  const otherLiveRuns = useAppStore((st) => {
+    if (!(proposal.kind === 'mcpServers' || proposal.kind === 'skills' || proposal.kind === 'orgChart')) return false
+    const pid = runSummary?.projectId
+    if (!pid || isVirtualProjectId(pid)) return false
+    return Object.values(st.runs).some((r) => r.summary.id !== runId && r.summary.projectId === pid && r.summary.kind === 'work' && isOpenStatus(r.summary.status))
+  })
   const effectCopy =
     (proposal.kind === 'orgChart' && !isSetup ? orgChartEffectCopy(proposal.effect) : null) ??
-    proposalEffectCopy(proposal.effect, isSetup ? 'architect' : runSummary?.kind === 'mcp-assist' || runSummary?.kind === 'skill-assist' || runSummary?.quick ? 'assistant' : 'orchestrator')
+    proposalEffectCopy(proposal.effect, isSetup ? 'architect' : runSummary?.kind === 'mcp-assist' || runSummary?.kind === 'skill-assist' || runSummary?.quick ? 'assistant' : 'orchestrator', { otherLiveRuns })
   const helperText =
     proposal.kind === 'mcpServers'
       ? mcpApplyNote(scope, hasSecrets)

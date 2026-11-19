@@ -10,6 +10,8 @@ import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
 import { useAppStore } from '../../store/useAppStore'
+import { reportLiveRuns } from '../../store/liveChangeStore'
+import { LiveChangeNote } from '../LiveChangeNote'
 import { cleanIpcError } from '../../lib/ipcError'
 import { grantServerRoles, grantedServers, revokePlan, toolsSummaryParts } from '../../lib/roleCapabilities'
 import { perProjectState } from '../mcp/mcpHelpers'
@@ -113,6 +115,7 @@ export default function RoleCapabilities({
       setServers(r.servers)
       setConnError(null)
       replaceProject(r.project)
+      reportLiveRuns(r.project.id, r.liveRuns)
     },
     [replaceProject]
   )
@@ -209,6 +212,7 @@ export default function RoleCapabilities({
       </CapabilityGroup>
 
       <RoleServices role={role} servers={servers} error={connError} onRevoke={revoke} onAdd={() => setChooser('connections')} onAsk={askFor('connections')} />
+      <LiveChangeNote projectId={project.id} />
 
       {servers && waitingForValues.length > 0 && (
         <ul className="role-cap-list" aria-label={`Connections of ${role.name} that need values`} data-testid="role-needs-values-list">
