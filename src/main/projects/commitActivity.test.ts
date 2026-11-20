@@ -191,7 +191,7 @@ describe('killProcessTree', () => {
     let onError: (() => void) | undefined
     const fakeSpawn = ((file: string, args: string[], opts: Record<string, unknown>) => {
       calls.push({ file, args, opts })
-      return { on: (_e: string, cb: () => void) => { onError = cb }, unref: () => undefined }
+      return { on: (e: string, cb: () => void) => { if (e === 'error') onError = cb }, unref: () => undefined }
     }) as unknown as typeof spawn
     const kill = vi.fn(() => true)
     expect(killProcessTree({ pid: 4321, kill }, 'SIGKILL', { platform: 'win32', spawn: fakeSpawn })).toBe(true)
@@ -202,6 +202,31 @@ describe('killProcessTree', () => {
     expect(kill).not.toHaveBeenCalled()
     onError?.()
     expect(kill).toHaveBeenCalledTimes(1)
+  })
+
+  it('win32: a non-zero taskkill exit falls back to the direct kill, a zero exit does not', () => {
+    const exits: Array<(code: number | null) => void> = []
+    const fakeSpawn = (() => ({ on: (e: string, cb: (code: number | null) => void) => { if (e === 'exit') exits.push(cb) }, unref: () => undefined })) as unknown as typeof spawn
+    const kill = vi.fn(() => true)
+    killProcessTree({ pid: 10, kill }, 'SIGKILL', { platform: 'win32', spawn: fakeSpawn })
+    exits[0](0)
+    expect(kill).not.toHaveBeenCalled()
+    killProcessTree({ pid: 11, kill }, 'SIGKILL', { platform: 'win32', spawn: fakeSpawn })
+    exits[1](128)
+    expect(kill).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not run a tree kill against a child that has already exited', () => {
+    const spawnFn = vi.fn()
+    const killGroup = vi.fn()
+    const kill = vi.fn(() => true)
+    for (const gone of [{ exitCode: 0 }, { signalCode: 'SIGKILL' as const }]) {
+      killProcessTree({ pid: 99, kill, ...gone }, 'SIGKILL', { platform: 'win32', spawn: spawnFn as unknown as typeof spawn })
+      killProcessTree({ pid: 99, kill, ...gone }, 'SIGKILL', { platform: 'linux', killGroup })
+    }
+    expect(spawnFn).not.toHaveBeenCalled()
+    expect(killGroup).not.toHaveBeenCalled()
+    expect(kill).not.toHaveBeenCalled()
   })
 
   it('POSIX: signals the process group, and falls back to the direct child when that fails', () => {
@@ -390,6 +415,33 @@ describe.skipIf(!GIT_OK)('commit activity against real temporary repositories', 
     expect(await gitCommitTimes(redirect, new Date(2000, 0, 1).getTime())).toEqual({ ok: false, times: [] })
     const svc = new CommitActivityService({ listProjects: () => [{ id: 'rd', name: 'rd', path: redirect } as Project], folderTrusted: () => true })
     expect((await svc.activity())[0]).toMatchObject({ available: false, total: 0 })
+  })
+
+  it('a .git directory with a commondir file or a non-empty alternates file is unavailable; a normal repository counts', async () => {
+    const mk = (name: string): string => {
+      const dir = join(base, name)
+      mkdirSync(dir)
+      g(dir, ['init', '-q'])
+      commit(dir, 'f.txt', iso(0, 4))
+      return dir
+    }
+    const since = new Date(2000, 0, 1).getTime()
+    const normal = mk('normal-ok')
+    mkdirSync(join(normal, '.git', 'objects', 'info'), { recursive: true })
+    writeFileSync(join(normal, '.git', 'objects', 'info', 'alternates'), '\n')
+    expect(hasPlainGitDir(normal)).toBe(true) // an empty alternates file is harmless
+    expect((await gitCommitTimes(normal, since)).times).toHaveLength(1)
+    const common = mk('with-commondir')
+    writeFileSync(join(common, '.git', 'commondir'), '../other/.git\n')
+    const alt = mk('with-alternates')
+    mkdirSync(join(alt, '.git', 'objects', 'info'), { recursive: true })
+    writeFileSync(join(alt, '.git', 'objects', 'info', 'alternates'), '\\\\server\\share\\objects\n')
+    for (const [id, path] of [['cd', common], ['al', alt]]) {
+      expect(hasPlainGitDir(path)).toBe(false)
+      expect(await gitCommitTimes(path, since)).toEqual({ ok: false, times: [] })
+      const svc = new CommitActivityService({ listProjects: () => [{ id, name: id, path } as Project], folderTrusted: () => true })
+      expect((await svc.activity())[0]).toMatchObject({ available: false, total: 0 })
+    }
   })
 
   it('an empty .git directory inside a repository with commits does not count the parent repository (M1)', async () => {
