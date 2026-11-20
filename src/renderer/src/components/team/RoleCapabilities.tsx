@@ -20,12 +20,11 @@ import { CapabilityGroup, type CapabilityKind } from './CapabilityBlock'
 import { CapabilityChooser, type ChooserActions } from './CapabilityChooser'
 import RoleToolGroups from './RoleToolGroups'
 
-const GROUPS = resolveGroups(TOOL_CATALOG)
-
 /** "Can read files, change files and run commands.": elevated phrases carry the warning colour and an icon plus the words. */
 function ToolsSummary({ tools }: { tools: readonly string[] }): ReactElement {
-  const parts = summaryParts(GROUPS, tools)
-  if (parts.length === 0) return <>{summarySentence(GROUPS, tools)}</>
+  const groups = resolveGroups(TOOL_CATALOG, tools)
+  const parts = summaryParts(groups, tools)
+  if (parts.length === 0) return <>{summarySentence(groups, tools)}</>
   return (
     <>
       Can{' '}

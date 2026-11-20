@@ -4,7 +4,8 @@ import { ArrowRight, ChevronDown, ChevronRight, FileSearch } from 'lucide-react'
 import type { AgentImportAction, AgentImportItem, AgentImportMode, AgentImportPreview, AgentImportScan, Project } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { projectConnection } from '@shared/defaults'
-import { importedRoleSpend } from '../../lib/roleStaffing'
+import { roleModelSentenceFor } from '../../lib/roleModelSentence'
+import { showHidden } from '../../lib/hiddenChars'
 import { useAppStore } from '../../store/useAppStore'
 import { connectionLabel } from '../../lib/connectionLabel'
 import {
@@ -31,8 +32,8 @@ import { SegmentedControl } from '../ui/SegmentedControl'
 import { Select } from '../ui/Select'
 
 const MODES: { value: AgentImportMode; label: string; title: string }[] = [
-  { value: 'merge', label: 'Add to the chart', title: 'Keep the current roles and add the imported ones' },
-  { value: 'replace', label: 'Replace the chart', title: 'Swap the whole chart for the imported roles' }
+  { value: 'merge', label: 'Add to the team', title: 'Keep the current roles and add the imported ones' },
+  { value: 'replace', label: 'Replace the team', title: 'Swap the whole team for the imported roles' }
 ]
 
 const SEARCHED = '.claude/agents, .opencode/agents, opencode.json, .codex/agents, .github/agents, .gemini/agents, .kiro/agents, .roomodes and .orgai/org.json'
@@ -67,7 +68,10 @@ function ImportRow({
   const models = modelOptions.some((o) => o.value === item.model) ? modelOptions : [{ value: item.model, label: item.model }, ...modelOptions]
   const elevated = elevatedLabels(item.elevatedTools)
   const importedRole = preview.roles.find((r) => r.id === item.roleId)
-  const spend = importedRoleSpend(importedRole, project, importedRole?.reportsTo === null)
+  // The same sentence the role editor opens its Model section with; a tier role maps its tier to its own model id.
+  const spend = importedRole
+    ? roleModelSentenceFor({ roles: preview.roles, staffing: project.staffing }, importedRole, importedRole.tier ? { [importedRole.tier]: importedRole.model } : {})
+    : null
   return (
     <li className={`import-row${included ? '' : ' is-skipped'}`} data-testid="import-row" data-slug={item.slug}>
       <div className="import-row-head">
@@ -86,7 +90,7 @@ function ImportRow({
         <div className="import-field">
           <label htmlFor={`${uid}-rt`}>Reports to</label>
           {item.reportsTo === null && !manager ? (
-            <span className="muted import-static">Top of the chart</span>
+            <span className="muted import-static">Top of the team</span>
           ) : (
             <Select
               id={`${uid}-rt`}
@@ -116,8 +120,7 @@ function ImportRow({
           {item.tier && item.modelReason === 'tier' && <span className="hint">Mapped to your {item.tier} tier.</span>}
           {spend && (
             <span className="hint" data-testid="import-spend">
-              {spend.text}
-              {spend.note ? `. ${spend.note}` : ''}
+              {spend}
             </span>
           )}
         </div>
@@ -173,7 +176,7 @@ function ImportRow({
           </p>
         </div>
       )}
-      <span className="muted mono import-file">{item.file}</span>
+      <span className="muted mono import-file">{showHidden(item.file)}</span>
     </li>
   )
 }
@@ -352,8 +355,8 @@ export default function ImportAgentsDialog({
               {scan.sources.map((s) => (
                 <li key={s.source}>
                   <strong>{s.label}</strong> <span className="muted">{s.agentCount} agent{s.agentCount === 1 ? '' : 's'}</span>
-                  <span className="mono muted import-files" title={s.files.join('\n')}>
-                    {s.files.length > 1 ? `${s.files.length} files` : s.files[0]}
+                  <span className="mono muted import-files" title={showHidden(s.files.join('\n'))}>
+                    {s.files.length > 1 ? `${s.files.length} files` : showHidden(s.files[0] ?? '')}
                   </span>
                 </li>
               ))}

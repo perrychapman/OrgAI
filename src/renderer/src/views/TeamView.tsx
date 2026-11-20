@@ -26,7 +26,7 @@ import TeamAssistantTray from '../components/team/TeamAssistantTray'
 import TeamCatalog from '../components/team/TeamCatalog'
 import { capabilityCounts, capabilityLabel } from '../lib/teamView'
 import ImportAgentsDialog from '../components/import/ImportAgentsDialog'
-import { importBannerVisible, readBannerMemory, writeBannerMemory, type BannerMemory } from '../lib/agentImport'
+import { importBannerVisible, markImported, unmarkImported, wasImported, readBannerMemory, writeBannerMemory, type BannerMemory } from '../lib/agentImport'
 import { useConfirm } from '../components/ui/ConfirmDialog'
 import { ContextMenu, useContextMenu, type MenuEntry } from '../components/ui/ContextMenu'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
@@ -37,7 +37,7 @@ import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
 import { DEFAULT_STYLE, EDGE_TYPE, beginCanvasGlide, edgeStroke, fitMs, refitMs, reportingLineRole, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
 import { isLayoutMoving, onLayoutSettled } from '../lib/layoutMotion'
-import { addRoleUnder, moveNotice, nextRoleName, removeRole, restoreRole, setReportsTo, wouldCycle, type RemovedRole } from '../lib/roleOps'
+import { addRoleUnder, moveNotice, moveNoticeSummary, newRoleSlug, nextRoleName, removeRole, restoreRole, setReportsTo, wouldCycle, type RemovedRole } from '../lib/roleOps'
 import { placeNewRole, revealShift, type StageRect } from '../lib/rolePlacement'
 import TeamFilesChip from '../components/team/TeamFilesChip'
 import ArchitectDialog from '../components/team/ArchitectDialog'
@@ -122,7 +122,7 @@ function storeNotice(n: ImportNotice, at: number): TeamNotice {
   if (n.state === 'error') {
     return { ...base, kind: 'error', text: n.error ?? 'Undo did not work.', testId: `${t}-notice`, actions: [{ id: 'undo', label: 'Retry undo', testId: `${t}-undo` }] }
   }
-  if (n.state === 'expired') return { ...base, kind: 'edit', text: 'Undo ended because you changed a role.', testId: `${t}-notice` }
+  if (n.state === 'expired') return { ...base, kind: 'edit', text: 'Undo ended because you changed a role.', testId: `${t}-notice`, quiet: true, expiresAt: at + SHORT_NOTICE_MS }
   return {
     ...base,
     kind: 'edit',
@@ -326,6 +326,14 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   // The Start from menu's import count: null while the scan runs, 'error' when it failed.
   const [scanFailed, setScanFailed] = useState(false)
   const scanFound: number | null | 'error' = scanFailed ? 'error' : scan ? foundSources.reduce((n, x) => n + x.agentCount, 0) : null
+  // The scan cannot say which found agents the team already holds, so once an import was done here the row says "Imported".
+  const importDone = importNotice !== undefined && importNotice.source !== 'template' && (importNotice.state === 'available' || importNotice.state === 'busy' || importNotice.state === 'expired')
+  const importUndone = importNotice?.source !== 'template' && importNotice?.state === 'reverted'
+  useEffect(() => {
+    if (importDone) markImported(project.id)
+    else if (importUndone) unmarkImported(project.id)
+  }, [importDone, importUndone, project.id])
+  const importedHere = importDone || (!importUndone && wasImported(project.id))
 
   /** Focus to the Team files chip when the element that had it was removed (focus fell to the body). */
   const settleFocus = (): void => {
@@ -505,7 +513,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         {
           key: NOTICE_ROLE_EDIT,
           kind: 'edit',
-          text: reparentedText(moved.name, manager.name, moveNotice(before, after, roleId)),
+          text: reparentedText(moved.name, manager.name, moveNoticeSummary(before, after, roleId)),
+          title: reparentedText(moved.name, manager.name, moveNotice(before, after, roleId)),
           actions: [{ id: 'undo', label: 'Undo', testId: 'team-notice-undo' }]
         },
         EDIT_NOTICE_MS
@@ -765,9 +774,11 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       catalog: modelCatalogs[conn]
     })
     const position = placeNewRole(current, manager?.id ?? null, ROLE_SIZE, { layout: layoutDir, sizeOf: (id) => nodeDims.dims[id] })
+    const roleId = newId('role')
+    const storeProject = useAppStore.getState().projects.find((p) => p.id === project.id) ?? project
     const role: Role = {
-      id: newId('role'),
-      slug: slugify(name),
+      id: roleId,
+      slug: newRoleSlug(storeProject, current, roleId, name),
       name,
       description: 'Describe when a manager should delegate to this role.',
       responsibilities: [],
@@ -849,6 +860,14 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }
   if (!hintSeen) derived.push({ key: 'hint', kind: 'hint', text: HINT_TEXT, at: 0, testId: 'team-hint', actions: [{ id: 'got-it', label: 'Got it', testId: 'team-hint-dismiss' }] })
   const ranked = rankNotices([...queue, ...derived], Date.now())
+  // Derived notices (an expired Undo note) carry their own expiry; the queue's timer above does not see them.
+  const [, setDerivedTick] = useState(0)
+  const derivedExpiry = nextExpiry(derived, Date.now())
+  useEffect(() => {
+    if (derivedExpiry === null) return undefined
+    const t = window.setTimeout(() => setDerivedTick((n) => n + 1), Math.max(0, derivedExpiry - Date.now()) + 20)
+    return () => window.clearTimeout(t)
+  }, [derivedExpiry])
 
   const onNoticeAction = (n: TeamNotice, action: string): void => {
     if (action === 'undo' && n.key === NOTICE_ROLE_EDIT) {
@@ -907,7 +926,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             startFrom={{
               project,
               found: scanFound,
-              dot: typeof scanFound === 'number' && importBannerVisible(scanFound, memory),
+              dot: typeof scanFound === 'number' && !importedHere && importBannerVisible(scanFound, memory),
+              imported: importedHere,
               onOpened: () => {
                 if (typeof scanFound !== 'number' || scanFound === 0) return
                 writeBannerMemory(window.localStorage, project.id, 'dismissed')

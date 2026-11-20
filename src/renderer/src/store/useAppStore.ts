@@ -598,6 +598,7 @@ let tabNoticeSeq = 0
 const summaryLookups = new Set<string>()
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 function debouncedSave(project: Project): void {
+  const sentServers = JSON.stringify(project.mcpServers ?? null)
   useAppStore.getState().setSaveStatus({ state: 'saving' })
   const t = saveTimers.get(project.id)
   if (t) clearTimeout(t)
@@ -613,7 +614,10 @@ function debouncedSave(project: Project): void {
           // answer. The roles stay the store's, which may hold a newer unsaved edit.
           if (!saved || saved.id !== project.id) return
           const cur = useAppStore.getState().projects.find((p) => p.id === saved.id)
-          if (!cur || JSON.stringify(cur.mcpServers ?? null) === JSON.stringify(saved.mcpServers ?? null)) return
+          if (!cur) return
+          const curServers = JSON.stringify(cur.mcpServers ?? null)
+          // A quicker mcp:upsert / mcp:remove may have changed the list while main was answering: keep the newer one.
+          if (curServers !== sentServers || curServers === JSON.stringify(saved.mcpServers ?? null)) return
           useAppStore.setState((s) => ({
             projects: s.projects.map((p) => (p.id === saved.id ? { ...p, mcpServers: saved.mcpServers } : p))
           }))

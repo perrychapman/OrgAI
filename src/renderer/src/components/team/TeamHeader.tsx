@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement, ReactNode } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, CircleCheck, LayoutGrid, Check } from 'lucide-react'
+import { ChevronDown, LayoutGrid, Check } from 'lucide-react'
 import { Icon } from '../ui/Icon'
 import { Popover } from '../ui/Popover'
 import StartFromMenu, { type StartFromMenuProps } from './StartFromMenu'
@@ -141,11 +141,7 @@ export default function TeamHeader({ roleCount, layout, onLayoutChange, onArrang
         <span className="team-header-count" data-testid="team-role-count">
           {countText}
         </span>
-        {/* Static in phase 2 (phase 4 makes it live): neutral, never "0 problems". */}
-        <span className="team-problems-chip" data-state="none" data-testid="team-problems-chip" title="No problems">
-          <Icon icon={CircleCheck} size="sm" />
-          <span className="team-problems-text">No problems</span>
-        </span>
+        {/* The problems chip (`team-problems-chip`) stays out of the DOM until the check is live (phase 4). */}
         {/* Empty until the Chart | List | Capabilities switch lands (phases 4 and 5). */}
         <div className="team-view-switch" data-testid="team-view-switch" />
       </div>
