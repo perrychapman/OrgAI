@@ -96,6 +96,16 @@ export interface CanvasOptions {
   minimap: boolean
 }
 
+/** True for every presentation that is a scene (anything but the graph), so a view never special-cases one scene. */
+export function isScenePresentation(presentation: CanvasPresentation | undefined): boolean {
+  return presentation !== undefined && presentation !== 'graph'
+}
+
+/** True only for a scene that is painted with the scene palette setting (Pocket Office). Factory Floor follows the app theme. */
+export function usesScenePalette(presentation: CanvasPresentation | undefined): boolean {
+  return presentation === 'pocket-office'
+}
+
 /** The <html> attributes lib/theme.ts writes, in the order canvases read them. */
 export const CANVAS_ATTRS = [
   'data-canvas-presentation',

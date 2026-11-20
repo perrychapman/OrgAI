@@ -21,7 +21,7 @@
   padding-block: var(--space-2);
   background: var(--surface-0);
 }
-.canvas-section-body:not([data-presentation='pocket-office']) .canvas-section-preview { position: sticky; top: 0; z-index: var(--z-sticky); }
+.canvas-section-body:not(:is([data-presentation='pocket-office'], [data-presentation='factory-floor'])) .canvas-section-preview { position: sticky; top: 0; z-index: var(--z-sticky); }
 
 .settings-scroll:has(.canvas-section) {
   scroll-padding-top: calc(160px + 2px + var(--space-2) * 2 + var(--space-4));
@@ -44,10 +44,10 @@
     padding-block: 0;
     background: transparent;
   }
-  .canvas-section-body[data-presentation='pocket-office'] {
+  .canvas-section-body:is([data-presentation='pocket-office'], [data-presentation='factory-floor']) {
     grid-template-columns: minmax(0, 1fr);
   }
-  .canvas-section-body[data-presentation='pocket-office'] .canvas-section-preview {
+  .canvas-section-body:is([data-presentation='pocket-office'], [data-presentation='factory-floor']) .canvas-section-preview {
     grid-column: 1;
   }
   .canvas-section-main {
@@ -79,7 +79,7 @@
   height: 100%;
 }
 
-.canvas-preview[data-presentation='pocket-office'] { height: 260px; }
+.canvas-preview:is([data-presentation='pocket-office'], [data-presentation='factory-floor']) { height: 260px; }
 .canvas-preview .office-controls, .canvas-preview .office-directory, .canvas-preview [data-testid='office-deliveries'] { display: none; }
 .canvas-preview .office-stage { overflow: hidden; }
 
@@ -274,10 +274,15 @@
 .canvas-office-thumb > span { position: absolute; display: block; image-rendering: pixelated; }
 .canvas-office-thumb-desk { left: 24px; top: 8px; }
 .canvas-office-thumb-person { left: 11px; top: 17px; }
+/* Factory Floor's thumbnail is the same inert sample the preview shows, cropped to the thumbnail box. */
+.canvas-factory-thumb { position: relative; display: block; flex: none; width: 72px; height: 48px; overflow: hidden; border: 1px solid var(--border-default); border-radius: var(--radius-sm); }
+.canvas-factory-thumb > * { width: 100%; height: 100%; }
 .canvas-style-popover-body .canvas-choice-groups { padding: 0; }
 .canvas-style-popover-body .canvas-choice { flex-direction: column; align-items: flex-start; }
 .canvas-style-popover-body .canvas-choice-check { position: absolute; right: var(--space-2); top: var(--space-2); }
 .canvas-style-popover-body h4 { margin: 0; font-size: var(--text-body); }
+/* "Back to floor" at the top of the live and team panels while Factory Floor is shown. */
+.factory-inspector-action { padding: var(--space-2); border-bottom: 1px solid var(--border-default); background: var(--surface-1); }
 .canvas-style-trigger { gap: var(--space-2); }
 @container frame (max-width: 760px) { .canvas-style-trigger span { display: none; } }
 

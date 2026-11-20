@@ -1,7 +1,7 @@
 import type { KeyboardEvent, ReactElement, Ref } from 'react'
 import { useId } from 'react'
 import { Check } from 'lucide-react'
-import { CANVAS_STYLE_OPTIONS, shownStyle, type CanvasStyleId } from '../../lib/canvas'
+import { CANVAS_STYLE_OPTIONS, isScenePresentation, shownStyle, type CanvasStyleId } from '../../lib/canvas'
 import type { CanvasSettings } from '../../lib/canvasSettings'
 import { Icon } from '../ui/Icon'
 import { CanvasThumb } from './CanvasThumb'
@@ -46,7 +46,7 @@ export function CanvasPresetGroup({
     e.preventDefault()
     const next = options[to]
     e.currentTarget.querySelector<HTMLElement>(`[data-preset="${next.id}"]`)?.focus()
-    if (next.id !== shown || canvas.presentation === 'pocket-office') onPick(next.id)
+    if (next.id !== shown || isScenePresentation(canvas.presentation)) onPick(next.id)
   }
 
   return (
