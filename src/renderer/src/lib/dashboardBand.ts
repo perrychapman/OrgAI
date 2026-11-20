@@ -1,6 +1,7 @@
 /**
- * The Dashboard's Right now band as a pure model (docs/design/dashboard-2.md section 6): which runs, which agent rows,
- * the caps and their priority, tree order, depth, reporting-line facts and the accessible names. No React, no store.
+ * The Dashboard's Working now section as a pure model (docs/design/dashboard-overhaul.md 7.6, dashboard-2.md section 6): which
+ * runs, which agent rows, the caps and their priority, tree order, depth, reporting-line facts and the accessible names.
+ * No React, no store, no height budget: the section never sizes itself to a neighbouring column.
  */
 import type { AgentInstance, AgentState, Project, RunPlan, RunRosterRole, RunSummary } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
@@ -120,7 +121,7 @@ export interface BandRun {
   name: string
   chip?: string
   planStep: string | null
-  /** Line 2 without the Needs you suffix. */
+  /** Line 2 without the "Waiting on you" suffix. */
   line2: string
   decisions: number
   suffix: string
@@ -144,8 +145,6 @@ export interface BandModel {
   hiddenRuns: number
 }
 
-const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
-
 export function bandAgentState(state: AgentState): BandAgentState {
   if (isWorkingAgent(state)) return 'working'
   if (state === 'waiting') return 'waiting'
@@ -164,7 +163,8 @@ export const BAND_STATE_WORD: Record<BandAgentState, string> = {
 }
 
 const PRIORITY: Record<BandAgentState, number> = { waiting: 0, working: 1, idle: 2, done: 3, failed: 3 }
-const GROUP_RANK: Record<BandGroup, number> = { working: 0, waiting: 1, idle: 2 }
+/** A run waiting on the person sorts first, then the working ones, then idle ones (docs/design/dashboard-overhaul.md 7.6). */
+const GROUP_RANK: Record<BandGroup, number> = { waiting: 0, working: 1, idle: 2 }
 
 /** The role colour as the canvas resolves it: the project's role colour by id, else by slug, else neutral. */
 export function roleColorFor(project: { roles: readonly RunRoleView[] } | undefined, roleId: string | null, slug: string): string {
@@ -313,8 +313,9 @@ export function currentStep(plan: RunPlan | undefined): string | undefined {
   return s ? oneLine(s.title, 120) : undefined
 }
 
+/** A run with an open decision says so in plain words, no count and no tint: the decision itself lives in Waiting on you. */
 export function decisionsSuffix(n: number): string {
-  return n > 0 ? ` · ${plural(n, 'decision', 'decisions')} in Needs you` : ''
+  return n > 0 ? ' · Waiting on you' : ''
 }
 
 export interface BandOptions {
@@ -402,7 +403,8 @@ export function bandModel(
       name: displayRunName(r.summary),
       ...(isVirtualProjectId(r.summary.projectId) || r.summary.quick || r.summary.kind !== 'work' || r.summary.team === 'single' ? { chip: runKindWord(r.summary) } : {}),
       planStep: planStepLabel(r.plan),
-      line2: decisionLine(r.decisions > 0 ? r.firstDecision : undefined) ?? step ?? (root ? nodeActivity(root, { isRoot: true }) : ''),
+      // A run with an open decision prints the decision's label, never the root's activity (it can carry the raw command).
+      line2: r.decisions > 0 ? (decisionLine(r.firstDecision) ?? '') : (step ?? (root ? nodeActivity(root, { isRoot: true }) : '')),
       decisions: r.decisions,
       suffix: decisionsSuffix(r.decisions),
       rootId: root?.id ?? null,
@@ -425,55 +427,6 @@ export function bandModel(
   return { counts, total: runs.length, projects: [...byProject.values()], shownRuns: out.length, hiddenRuns: runs.length - out.length }
 }
 
-/** Measured row heights of the band (dashboard-band.css), for `bandHeightEstimate`. */
-export const BAND_PX = { chrome: 60, project: 28, run: 57, row: 32, button: 36 } as const
-
-/** About how tall the band draws a model: heading and padding, each project's h3, each run's header and rows. */
-export function bandHeightEstimate(model: BandModel, showMoreButton = false): number {
-  let h = BAND_PX.chrome
-  for (const p of model.projects) {
-    h += BAND_PX.project
-    for (const r of p.runs) h += BAND_PX.run + r.rows.length * BAND_PX.row
-  }
-  return showMoreButton ? h + BAND_PX.button : h
-}
-
-/** Never squeeze the band below this many agent rows, whatever the budget says. */
-export const BAND_MIN_AGENT_ROWS = 2
-/** The budget never falls under this: the band is the page's main instrument. */
-export const BAND_BUDGET_FLOOR_PX = 440
-/** How much taller than the other column the band may grow (spec 2.3: no column ends 200 px early). */
-export const BAND_SLACK_PX = 180
-
-/** The band's height budget from the other column's height (px), or undefined when there is no other column. */
-export function bandBudget(otherColumnPx: number): number | undefined {
-  if (!Number.isFinite(otherColumnPx) || otherColumnPx <= 0) return undefined
-  return Math.max(BAND_BUDGET_FLOOR_PX, Math.round(otherColumnPx) + BAND_SLACK_PX)
-}
-
-/** The run cap never falls under this while fitting (the narrow cap). */
-export const BAND_MIN_RUNS = 3
-
-/**
- * The model for these caps, lowered until the band fits `budget` (px): first the agent-row cap one row at a time down
- * to `BAND_MIN_AGENT_ROWS`, then the run cap down to `BAND_MIN_RUNS` ("Show N more runs" keeps the rest one click
- * away; runs sort working, waiting, idle, so the idle ones go first).
- */
-export function fitBandModel(caps: BandCaps, budget: number | undefined, build: (c: BandCaps) => BandModel): BandModel {
-  let c = caps
-  let model = build(c)
-  if (budget === undefined) return model
-  while (bandHeightEstimate(model) > budget && c.bandAgents > BAND_MIN_AGENT_ROWS) {
-    c = { ...c, bandAgents: c.bandAgents - 1 }
-    model = build(c)
-  }
-  while (bandHeightEstimate(model, model.hiddenRuns > 0) > budget && c.bandRuns > BAND_MIN_RUNS) {
-    c = { ...c, bandRuns: c.bandRuns - 1 }
-    model = build(c)
-  }
-  return model
-}
-
 /** "2 working · 1 waiting for you · 1 idle", empty parts left out. */
 export function countParts(counts: Record<BandGroup, number>): { group: BandGroup; text: string }[] {
   const parts: { group: BandGroup; text: string }[] = []
@@ -481,11 +434,6 @@ export function countParts(counts: Record<BandGroup, number>): { group: BandGrou
   if (counts.waiting > 0) parts.push({ group: 'waiting', text: `${counts.waiting} waiting for you` })
   if (counts.idle > 0) parts.push({ group: 'idle', text: `${counts.idle} idle` })
   return parts
-}
-
-/** The empty line (spec 6.7). */
-export function emptyLine(paused: number): string {
-  return paused > 0 ? `Nothing is running. ${paused} paused, see Paused.` : 'Nothing is running.'
 }
 
 export function moreRunsLabel(hidden: number): string {

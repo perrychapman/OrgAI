@@ -3,21 +3,27 @@ import { costView, formatDuration, runCostInput, sumCosts, type CostInput } from
 import { statusOfRun } from './runStatus'
 
 /**
- * The "Last 14 days" strip's numbers (docs/design/dashboard-2.md section 7). Pure: summaries in, one bucket per local
- * calendar day out. A run counts on the local day it started, with its whole cost; nothing is split at midnight.
+ * The Your week ledger's numbers (docs/design/dashboard-overhaul.md 7.7.1). Pure: summaries in, one bucket per local
+ * calendar day out. A run counts on the local day it started, with its whole cost and working time; nothing is split at
+ * midnight. The instrument shows one fact (runs per day); cost and working time live in the names and the readout.
  */
 
 export type Outcome = 'finished' | 'failed' | 'stopped' | 'open' | 'paused'
 
-/** Nearest the baseline first: the rarer, louder outcomes (spec 7.3). */
-export const OUTCOME_ORDER: readonly Outcome[] = ['failed', 'open', 'paused', 'finished', 'stopped']
-
 export type CostKind = 'none' | 'known' | 'partial' | 'unknown'
 
-/** Waiting under a second would read "0s"; it counts as none ("Waited on you" shows only when above zero, spec 7.2). */
-export function waitedShown(ms: number): boolean {
-  return ms >= 1000
-}
+/** Days in the ledger: the last 7 local days including today. */
+export const LEDGER_DAYS = 7
+/** Track heights in px (the bar area above the baseline), declared so e2e can measure them. */
+export const TRACK_NARROW_PX = 40
+export const TRACK_WIDE_PX = 56
+/** A day with runs never draws a bar shorter than this. */
+export const MIN_BAR_PX = 2
+/** Weekday initials need columns at least this wide; the container query in dashboard-strip.css applies it. */
+export const MIN_INITIAL_COLUMN_PX = 24
+/** Below this section width the initials drop first (and the ledger moves under the figures); end dates drop under END_DATES_MIN_SECTION_PX. */
+export const INITIALS_MIN_SECTION_PX = 560
+export const END_DATES_MIN_SECTION_PX = 360
 
 export type LedgerRun = Pick<RunSummary, 'id' | 'startedAt' | 'status' | 'totalCostUsd'> &
   Partial<Pick<RunSummary, 'kind' | 'usage' | 'endedBy' | 'endedWithApp'>>
@@ -30,19 +36,22 @@ export interface DayBucket {
   today: boolean
   runs: number
   outcomes: Record<Outcome, number>
-  /** The summed cost (unknown stays unknown, a partial sum is a lower bound). */
+  /** The summed cost (unknown stays unknown, a partial sum is a lower bound; a reported zero is 'none'). */
   cost: CostInput
   costKind: CostKind
-  /** The known part of the cost (0 when none or unknown). */
-  costUsd: number
-  waitingMs: number
+  /** Time the day's runs were busy (see `runWorkMs`), ms, summed over the runs that have usage. */
+  workMs: number
+  /** True when at least one run of the day has no usage, so `workMs` is a lower bound. */
+  workPartial: boolean
 }
 
 export interface LedgerTotals {
   runs: number
+  failed: number
   cost: CostInput
   costKind: CostKind
-  waitingMs: number
+  workMs: number
+  workPartial: boolean
 }
 
 const pad = (n: number): string => String(n).padStart(2, '0')
@@ -75,12 +84,42 @@ function emptyOutcomes(): Record<Outcome, number> {
 }
 
 const noneCost: CostInput = { costUsd: 0, costSource: 'none' }
+const unknownCost: CostInput = { costUsd: null, costSource: 'unknown' }
 
 /**
- * Today and the 13 days before it, oldest first. Days are built from calendar parts (`new Date(y, m, d - i)`), never
- * by subtracting 24 hours, so a daylight saving change cannot repeat or skip a day. Each run id counts once.
+ * A cost the page may print: a reported zero is "nothing spent" (never "$0.00"), and a lower bound of zero beside an
+ * unpriced run is simply unknown.
  */
-export function dayLedger(summaries: readonly LedgerRun[], now: number, days = 14): DayBucket[] {
+export function honestCost(cost: CostInput): CostInput {
+  const v = costView(cost)
+  if (v.kind === 'known' && cost.costUsd === 0) return noneCost
+  if (v.kind === 'partial' && !cost.costUsd) return unknownCost
+  return cost
+}
+
+const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
+
+/**
+ * The time a run was busy, ms: `wallMs - idleMs - waitingMs`, floored at 0; null for a run without `usage` (an older
+ * record), which the figure then leaves out and marks as a lower bound.
+ *
+ * Why `limitHoldMs` is not subtracted: waitingMs (a decision card open), idleMs (status idle) and limitHoldMs (from a
+ * usage-limit report until the person's next send) are three independent timers in `computeRunUsage` and they overlap.
+ * A usage-limited run's turn has ended, so its hold sits inside its idle time; subtracting both would count it twice and
+ * floor honest busy time to zero.
+ */
+export function runWorkMs(usage: LedgerRun['usage']): number | null {
+  if (!usage || !finite(usage.wallMs)) return null
+  const idle = finite(usage.idleMs) ? usage.idleMs : 0
+  const waiting = finite(usage.waitingMs) ? usage.waitingMs : 0
+  return Math.max(0, usage.wallMs - idle - waiting)
+}
+
+/**
+ * Today and the days before it (7 by default), oldest first. Days are built from calendar parts (`new Date(y, m, d - i)`),
+ * never by subtracting 24 hours, so a daylight saving change cannot repeat or skip a day. Each run id counts once.
+ */
+export function dayLedger(summaries: readonly LedgerRun[], now: number, days = LEDGER_DAYS): DayBucket[] {
   const n = new Date(now)
   const todayKey = dayKey(now)
   const buckets: DayBucket[] = []
@@ -88,7 +127,7 @@ export function dayLedger(summaries: readonly LedgerRun[], now: number, days = 1
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(n.getFullYear(), n.getMonth(), n.getDate() - i)
     const key = dayKey(d.getTime())
-    const bucket: DayBucket = { key, start: d.getTime(), today: key === todayKey, runs: 0, outcomes: emptyOutcomes(), cost: noneCost, costKind: 'none', costUsd: 0, waitingMs: 0 }
+    const bucket: DayBucket = { key, start: d.getTime(), today: key === todayKey, runs: 0, outcomes: emptyOutcomes(), cost: noneCost, costKind: 'none', workMs: 0, workPartial: false }
     buckets.push(bucket)
     byKey.set(key, { bucket, costs: [] })
   }
@@ -102,44 +141,44 @@ export function dayLedger(summaries: readonly LedgerRun[], now: number, days = 1
     slot.bucket.runs += 1
     slot.bucket.outcomes[outcomeOf(run)] += 1
     slot.costs.push(runCostInput(run))
-    const waited = run.usage?.waitingMs
-    if (typeof waited === 'number' && Number.isFinite(waited) && waited > 0) slot.bucket.waitingMs += waited
+    const work = runWorkMs(run.usage)
+    if (work === null) slot.bucket.workPartial = true
+    else slot.bucket.workMs += work
   }
   for (const { bucket, costs } of byKey.values()) {
-    bucket.cost = costs.length > 0 ? sumCosts(costs) : noneCost
+    bucket.cost = costs.length > 0 ? honestCost(sumCosts(costs)) : noneCost
     bucket.costKind = costView(bucket.cost).kind
-    bucket.costUsd = bucket.costKind === 'known' || bucket.costKind === 'partial' ? (bucket.cost.costUsd ?? 0) : 0
   }
   return buckets
 }
 
-/** Runs, cost and waiting over every bucket. */
+/** Runs, cost and working time over every bucket. */
 export function ledgerTotals(days: readonly DayBucket[]): LedgerTotals {
-  const cost = sumCosts(days.filter((d) => d.runs > 0).map((d) => d.cost))
-  return { runs: days.reduce((a, d) => a + d.runs, 0), cost, costKind: costView(cost).kind, waitingMs: days.reduce((a, d) => a + d.waitingMs, 0) }
+  const cost = honestCost(sumCosts(days.filter((d) => d.runs > 0).map((d) => d.cost)))
+  return {
+    runs: days.reduce((a, d) => a + d.runs, 0),
+    failed: days.reduce((a, d) => a + d.outcomes.failed, 0),
+    cost,
+    costKind: costView(cost).kind,
+    workMs: days.reduce((a, d) => a + d.workMs, 0),
+    workPartial: days.some((d) => d.workPartial)
+  }
 }
 
-/** Bar height in px: a linear share of the largest known day cost, at least `minPx` for any cost above zero; 0 for none. */
-export function barHeight(day: Pick<DayBucket, 'costUsd' | 'costKind'>, maxCost: number, trackPx: number, minPx = 2): number {
-  if ((day.costKind !== 'known' && day.costKind !== 'partial') || day.costUsd <= 0 || maxCost <= 0) return 0
-  return Math.min(trackPx, Math.max(minPx, (day.costUsd / maxCost) * trackPx))
+/** The track height in px for the section's width class. */
+export function trackHeight(wide: boolean): number {
+  return wide ? TRACK_WIDE_PX : TRACK_NARROW_PX
 }
 
-/** The largest known day cost (the scale of the bars). */
-export function maxDayCost(days: readonly DayBucket[]): number {
-  return days.reduce((m, d) => ((d.costKind === 'known' || d.costKind === 'partial') && d.costUsd > m ? d.costUsd : m), 0)
+/** Bar height in px: a linear share of the busiest day (scale from zero), at least `minPx` for any day with runs; 0 for none. */
+export function barHeight(runs: number, maxRuns: number, trackPx: number, minPx = MIN_BAR_PX): number {
+  if (runs <= 0 || maxRuns <= 0) return 0
+  return Math.min(trackPx, Math.max(minPx, (runs / maxRuns) * trackPx))
 }
 
-export interface Tick {
-  outcome: Outcome | 'more'
-}
-
-/** One tick per run in OUTCOME_ORDER, at most `max`; past that the last slot becomes the "more" tick. */
-export function ledgerTicks(outcomes: Record<Outcome, number>, max: number): Tick[] {
-  const all: Tick[] = []
-  for (const o of OUTCOME_ORDER) for (let i = 0; i < outcomes[o]; i++) all.push({ outcome: o })
-  if (all.length <= max) return all
-  return [...all.slice(0, Math.max(0, max - 1)), { outcome: 'more' }]
+/** The busiest day's run count (the top of the scale). */
+export function maxDayRuns(days: readonly DayBucket[]): number {
+  return days.reduce((m, d) => (d.runs > m ? d.runs : m), 0)
 }
 
 // ---------------------------------------------------------------- words
@@ -157,41 +196,63 @@ export function shortDate(start: number): string {
   return new Date(start).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
 }
 
-/** One weekday initial ("M", "T"...) for the tall strip. */
+/** One weekday initial ("M", "T"...). */
 export function weekdayInitial(start: number): string {
   return new Date(start).toLocaleDateString('en-GB', { weekday: 'narrow' })
 }
 
-/** The cost part of a line: the compact figure, "cost unknown", or '' when nothing was spent. */
+/** What sits under each column: the weekday initial under every column, the short date under the first and "Today" under the last. */
+export interface ColumnLabels {
+  initial: string
+  /** Set on the first and the last column only. */
+  end?: string
+}
+
+export function columnLabels(days: readonly DayBucket[]): ColumnLabels[] {
+  return days.map((d, i) => ({
+    initial: weekdayInitial(d.start),
+    ...(i === days.length - 1 ? { end: 'Today' } : i === 0 ? { end: shortDate(d.start) } : {})
+  }))
+}
+
+/** The cost part of a line: the compact figure, "cost unknown", or '' when nothing was spent (never "$0.00"). */
 export function costPart(cost: CostInput): string {
-  const v = costView(cost, { compact: true })
+  const v = costView(honestCost(cost), { compact: true })
   if (v.kind === 'none') return ''
   return v.kind === 'unknown' ? 'cost unknown' : v.text
 }
 
-/** The readout line under the days (spec 7.4). */
+/** The working-time part: "2h 10m working", a lower bound "2h 10m+ working"; '' under a second. */
+export function workPart(day: Pick<DayBucket, 'workMs' | 'workPartial'>): string {
+  if (day.workMs < 1000) return ''
+  return `${formatDuration(day.workMs)}${day.workPartial ? '+' : ''} working`
+}
+
+function runsPart(day: DayBucket): string {
+  const failed = day.outcomes.failed
+  return `${plural(day.runs, 'run', 'runs')}${failed > 0 ? ` (${failed} failed)` : ''}`
+}
+
+/** The readout line under the days: "Today: 3 runs (1 failed) · $1.42 · 2h 10m working". */
 export function dayReadout(day: DayBucket): string {
   const when = day.today ? 'Today' : dayName(day.start)
   if (day.runs === 0) return `${when}: no runs`
-  const failed = day.outcomes.failed
-  const parts = [`${plural(day.runs, 'run', 'runs')} started${failed > 0 ? ` (${failed} failed)` : ''}`]
+  const parts = [runsPart(day)]
   const cost = costPart(day.cost)
   if (cost) parts.push(cost)
-  if (waitedShown(day.waitingMs)) parts.push(`waited on you ${formatDuration(day.waitingMs)}`)
+  const work = workPart(day)
+  if (work) parts.push(work)
   return `${when}: ${parts.join(' · ')}`
 }
 
-/** The accessible name of a day's button (spec 7.3): zero parts are left out. */
+/** The accessible name of a day's button: "Thu 19 Nov: 3 runs (1 failed), cost $1.42, 2h 10m working". Zero parts are left out. */
 export function dayAriaLabel(day: DayBucket): string {
   const when = day.today ? `Today, ${dayName(day.start)}` : dayName(day.start)
   if (day.runs === 0) return `${when}: no runs`
-  const o = day.outcomes
-  const detail = ([['finished', o.finished], ['failed', o.failed], ['stopped', o.stopped], ['open', o.open + o.paused]] as const)
-    .filter(([, n]) => n > 0)
-    .map(([w, n]) => `${n} ${w}`)
-    .join(', ')
+  const tail: string[] = []
   const cost = costPart(day.cost)
   // "cost unknown" already says it (walk-3 L1): never "cost cost unknown".
-  const tail = [cost ? (cost === 'cost unknown' ? cost : `cost ${cost}`) : '',waitedShown(day.waitingMs) ? `waited on you ${formatDuration(day.waitingMs)}` : ''].filter(Boolean)
-  return `${when}: ${plural(day.runs, 'run', 'runs')} (${detail})${tail.length > 0 ? `, ${tail.join(', ')}` : ''}`
+  if (cost) tail.push(cost === 'cost unknown' ? cost : `cost ${cost}`)
+  if (day.workMs >= 1000) tail.push(`${day.workPartial ? 'at least ' : ''}${formatDuration(day.workMs)} working`)
+  return `${when}: ${runsPart(day)}${tail.length > 0 ? `, ${tail.join(', ')}` : ''}`
 }
