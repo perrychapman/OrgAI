@@ -352,7 +352,7 @@ describe('Codex hostConfigChanged', () => {
 
   it('M1: a removal that lands after the restart read the server list keeps its "still reachable" notice (true for that app-server) and one more restart follows', async () => {
     const gh = mcpSpec({ name: 'github', roles: ['lead'], secretEnv: [] })
-    let mcpRef: McpServerSpec[] = []
+    let mcpRef: McpServerSpec[] = [gh]
     let calls = 0
     let release!: () => void
     const gate = new Promise<void>((r) => (release = r))

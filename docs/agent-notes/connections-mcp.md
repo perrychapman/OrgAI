@@ -536,7 +536,11 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
       a call before it runs", and for the user's change sends the orchestrator `hostChangeNotice({ reachableUntilRestart })`
       ("Do not call their tools. They stay reachable until Codex restarts when the agents are idle: OrgAI cannot refuse
       a call to them before then."), steered into a running root turn or waiting for the next message, never
-      turn/start; if the restart comes first, the unsent notice is taken back and the restart notice alone is delivered.
+      turn/start. Every such notice is kept with the servers it names (`reachableNotes`). After a restart, unsent ones are
+      taken back; a server the new app-server was still launched with (the removal landed after the restart read the
+      server list) is still reachable, so the unsent notices naming it are merged into one fresh notice, one more restart
+      is due, and the restart's own notice does not claim removed tools are gone. A notice already steered into a turn
+      cannot be taken back. A failed bridged report's text is redacted before any log, row or delivery.
       The answer stays 'after-idle' (the status line's "once the agents are idle" is true; the log carries the detail;
       no ConfigChangeResult field, main's decision). Codex enforces no per-role MCP grants (M6), so an ungrant changes
       nothing on Codex before or after the restart. Tests: codexConfigHost.test.ts "item 4" (mid-turn steer, idle
