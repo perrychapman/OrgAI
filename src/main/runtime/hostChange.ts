@@ -187,7 +187,7 @@ export function staleSlugTexts<T extends { id: string; roles?: string[] }>(
   items: readonly T[] | undefined,
   pairs: readonly { roleId: string; itemId: string }[],
   running: readonly Role[],
-  saved: Pick<Project, 'roles' | 'mcpServers'>
+  saved: { roles: readonly Role[]; mcpServers?: readonly { id: string; roles?: string[] }[] }
 ): { items: T[] | undefined; convert: GrantEdit[]; lost: GrantEdit[] } {
   const convert: GrantEdit[] = []
   const lost: GrantEdit[] = []

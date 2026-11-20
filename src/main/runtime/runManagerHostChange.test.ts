@@ -1389,6 +1389,24 @@ describe('third review: slug texts, renames and cards', () => {
     }
   }, 60_000)
 
+  it('a role joining the run takes a slug text of the run\'s server list only where the saved project lists its slug too', async () => {
+    const p0 = newProject()
+    // "tester" names no role when the run starts; the text enters the run's list as it is.
+    const p = store.save({ ...p0, mcpServers: [{ ...server('m-docs', 'docs'), roles: ['tester'] }] })
+    const { m, ctxs } = rig()
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    expect(mcpOf(ctx, 'm-docs')!.roles).toEqual(['tester'])
+    // A save the run never takes (a team-file pull) drops "tester" from the stored list.
+    store.save({ ...store.get(p.id)!, mcpServers: [{ ...server('m-docs', 'docs'), roles: [] }] })
+    // The user adds a Tester: it joins the run; the store grants it nothing, so neither does the run.
+    await projectsSave(m, p.id, (c) => ({ ...c, roles: [...c.roles, role({ id: 'r-test', slug: 'tester', name: 'Tester', reportsTo: 'r-lead' })] }))
+    expect(roleOf(ctx, 'r-test')).toBeDefined()
+    expect(refused(ctx, 'r-test')).toBe(true)
+    expect(mcpOf(ctx, 'm-docs')!.roles).toEqual([])
+    await m.stopAll()
+  })
+
   it("N2: the Reviewer's example: the card names the role the save grants (Builder), never the stored role now holding the old slug", async () => {
     const p = newProject()
     const { m, ctxs } = rig()

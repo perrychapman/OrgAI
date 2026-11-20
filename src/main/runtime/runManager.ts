@@ -2433,6 +2433,18 @@ export class RunManager {
             for (const r of ctx.roles) show(r)
             for (const r of applied.pending) show(r)
             next.roles = viewRoles
+            // Third review (slug invariant): a role that joins takes a slug text in the run's server list only where the saved
+            // project lists that role's slug too. A text the store no longer backs (a waiting role renamed away from it, an old
+            // slug) is dropped, never turned into a grant: a joining role's grants come only through pendingGrants above.
+            if (roster.added.length && kind === 'work') {
+              const items = next.mcpServers
+              const pairs = roster.added.flatMap((id) => {
+                const r = ctx.roles.find((x) => x.id === id)
+                return r ? (items ?? []).filter((s) => Array.isArray(s.roles) && s.roles.includes(r.slug)).map((s) => ({ roleId: id, itemId: s.id })) : []
+              })
+              const st = staleSlugTexts(items, pairs, ctx.roles, saved)
+              if (st.items !== items) next.mcpServers = st.items
+            }
           }
         }
         else if (settle === 'folders') overlay('allowedDirectories')

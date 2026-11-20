@@ -472,8 +472,7 @@ Application menu, run end and decision cards, settings, run titles, projects, us
           waiting roles too, so a waiting role under a slug a running role kept mapped to that slug text and the running
           role gained its grant). Rule: a slug naming a stored role that is running maps to that role's run slug (by id); a
           slug naming a stored role that is not running is dropped when a running role holds that slug text, else kept; a
-          slug no stored role has is kept (it means what it meant at run start, e.g. an old slug left in the list by a
-          rename). A waiting role's slug grant therefore reaches no running role; it is remembered under its slug only when
+          slug no stored role has was kept (third review N1 changed that: kept only while no running role holds the text). A waiting role's slug grant therefore reaches no running role; it is remembered under its slug only when
           no running role holds that slug, and applies if the role joins under it (a role whose slug a running role holds
           cannot join this run: slugTaken, retired slugs). Tests "H1: mcp:upsert ..." and "H1: ... (fan-out)", plus
           hostChange.test.ts "H1: a waiting role's slug grant ...".
@@ -482,12 +481,12 @@ Application menu, run end and decision cards, settings, run titles, projects, us
           (work runs of a stored project only; setup-like and assistant runs' roles are not the project's). Slug-keyed
           roles are read from the saved project into a live run only there and on the host route; skills grants are
           Role.skills by id, org chart cards never move grants. Tests "M1 / a: ..." (both directions, and the install).
-        - a: `RunManager.proposalForStore` maps role slugs the run's agents wrote, at apply time, through the run's role
-          id to the stored role (`hostChange.ts` `slugsForStore`): MCP card `upsert[].roles` (project scope), skill card
-          `items[].roles` (project scope), and an install's `spec.roles` when saved to the project (`settleInstall`; a
-          run-scope install keeps the run's slugs). The card shows and the run takes the proposal as the agent wrote it; the
-          save gets the mapped one, and the skill fan-out to other runs reads its grants from it. A slug both a running and
-          a waiting role hold means the running role. Tests "M1 / a: ...", "a: the run's own skill card ...".
+        - a: role slugs the run's agents wrote are mapped through the run's role id to the stored role (`hostChange.ts`
+          `slugsForStore`). Superseded for MCP and skill cards by the third review's N2 (below): they are mapped when the
+          card is CREATED, so the card the user sees already carries the stored slugs. An install's `spec.roles` saved to the
+          project is still mapped at approval (`settleInstall`; a run-scope install keeps the run's slugs; the install card
+          shows no roles). A slug both a running and a waiting role hold means the running role. Tests "M1 / a: ...", "a:
+          the run's own skill card ...".
         - b: the run's own org chart card goes to SetupService through `cardRolesForStore`: a card role that is a running
           role still under the slug the run has (matched by id when the card kept ids, else by slug) takes the stored slug,
           and the stored name when the card left the name as its runBaseline (else the run's roles) had it. Without it
@@ -511,11 +510,78 @@ Application menu, run end and decision cards, settings, run titles, projects, us
         - Role inspector rename (renderer `lib/roleOps.ts` `renamePatch`, Team tab phase 1): one patch sets name and slug
           and grants by id (Role.mcpServers) every server the role held by its old slug; McpServerSpec.roles keeps the old
           slug. On the host route that is a rename (slug kept, note) plus a widening id grant of a server the role already
-          uses; mcpRolesForRun keeps the stale old slug (no stored role has it) and, once a new role takes that slug in the
-          store, drops it on both sides of a later diff, so the run sees no change. Test "the role inspector's rename
-          shape ...". Not ours to fix but worth knowing: in the STORED project a role later added under that old slug gains
-          those servers by slug.
+          uses. Changed by the third review (below): the run's copy drops the old slug text at the rename (the role keeps the
+          server by id), and a desktop projects:save no longer leaves the old slug in the stored list. Test "the role
+          inspector's rename shape ...".
         Unverified: the renderer side, live providers.
+      - Third review (2026-11-19, two Highs from one root: a run keeps an old slug while the store uses a new one, and
+        `McpServerSpec.roles` grants by slug TEXT, `mcpServersForRole` in `src/shared/defaults.ts`). THE SLUG INVARIANT:
+        inside a live run a slug text in the run's server list means exactly one running role, the one it named BY ID when
+        the text entered the run; no slug text the run did not map by id grants anything to a running role; what an MCP or
+        skill card shows the user is what the save grants; a reported "no longer uses" is true at the gates. Enforced by:
+        - `mcpRolesForRun` (every saved list entering the run: the mcp:* / MCP card host route on both sides of the diff, the
+          run's own MCP card and project-scope install): a stored slug maps by id to the run slug of EVERY running role
+          holding it in the store (duplicates included: projects:save does not refuse duplicate slugs); any other text (a
+          stored role that is not running, or no stored role, e.g. an old slug a rename left) is carried only while no
+          running role holds that text. So a kept old slug, a stale write of it (a renderer copy from before the rename) or
+          another session's card saving it never reaches the renamed running role.
+        - `staleSlugTexts` via hostApply `reconcileSlugTexts`: when a projects:save or org chart card renames a running
+          role (`keepRunSlugs` kept), and whenever an ungrant of a (role, server) pair applies (projects:save role grants or
+          an item route), a run slug text the saved server no longer backs for that role (its `roles` neither undefined nor
+          listing the role's SAVED slug) leaves the run's copy: as an id grant when the saved role holds the server by id
+          (the role inspector's renamePatch shape, and every desktop save now: below), else the role loses it and the
+          answer reports it (`granted: false`). Never widens, so it applies whatever the session can take and is never
+          undone by a rejection. Decision: a rename whose saved project drops the role's access (an org chart card's rename:
+          orgMerge keeps server roles on the old slug) takes it away in the run too, like the next run; before, the run
+          kept it by the old text.
+        - A role JOINING the run (setLive 'orgChart', both host and card routes) keeps a slug text of the run's list only
+          where the saved server lists its slug (`staleSlugTexts`, the drop only: a joining role's grants come only through
+          pendingGrants).
+        - hostApply's `LiveRunChange.grants` drops a `granted: false` entry while the run's gates still give the role that
+          server (`mcpServersForRole` on the run's list, e.g. through "every role" or a slug the save still lists).
+        - N2: `RunManager.cardRolesForStoreAtCreation` rewrites a work run's MCP (project scope) and skill card role slugs
+          IN PLACE before the card is broadcast: a slug a running role holds becomes that role's stored slug (by id), a slug
+          no stored role holds is dropped (the tools already refuse unknown slugs; `ctx.requestProposal` callers such as the
+          mock do not), each change is logged on the run ("The card's roles were matched to the project's current role
+          names ..."). The renderer resolves card slugs against the STORED roles (LiveRunView passes project.roles to
+          `whoCanUse` / `roleNames`, SkillsProposalBody to its names), so it names the role the save grants; the save is the
+          identity (`proposalForStore` maps only org chart cards now). The stored role ids each slug named are kept in the
+          request's closure; at approval `cardSlugsStillMean` checks them against the store and, on any difference, nothing
+          is saved: the tool gets `revise` ("Roles were renamed while this card was open, so nothing was saved. Read the
+          current roles and propose it again.") and the run log says "Roles were renamed while this card was open, so
+          nothing was saved. Ask the agent to propose it again." The run still takes the change through `mcpRolesForRun` /
+          the saved Role.skills by id. `roleNames` (src/shared/view/mcpProposal.ts) names every role sharing a slug.
+        - L-1: `diffOrgChart` (src/shared/view/orgDiff.ts) matches a role by id when both sides have it under the same
+          slug, else by slug but never with a current role whose id another proposed role carries, so a kept slug and a
+          waiting role sharing it pair with their own rows.
+        - Saved-shape change (owner-approved through the orchestrator, renderer run told): `ProjectStore.saveFromRenderer`
+          (projects:save only; `save()` / `saveInternal()`, i.e. team-file ingest and the services' own saves, never) runs
+          `renamedSlugGrants`: for each role id whose slug the save changes, when no OTHER stored role held the old slug,
+          every stored server listing the old slug drops it and the role gets the server by id (Role.mcpServers), also when
+          another incoming role takes the old slug (a swap or a new role: nobody inherits); when another stored role held
+          it (a duplicate, e.g. a slug typed key by key through another role's slug) nothing changes. projects:save returns
+          that saved project (the dispatcher passes saveFromRenderer's result through). Checked by
+          `src/main/store/projects.test.ts` "renames move slug-keyed server grants to id grants" (rename, per-keystroke
+          saves through another role's slug, swap, a new role on the old slug, save() / saveInternal() untouched) and
+          `host/dispatcherLiveChanges.test.ts` "third review: projects:save returns the saved project ...".
+        Answers: projects:save does NOT refuse duplicate slugs (no check in `saveFromRenderer` or `save`; not added because
+        per-keystroke saves pass through other roles' slugs); readers handle duplicates instead (mcpRolesForRun, roleNames,
+        cardSlugsStillMean, renamedSlugGrants). MCP and skill proposals refuse unknown role slugs in the TOOLS
+        (`harnessTools.ts` propose_mcp_servers "there is no role ... in this project" against the run's view; skills through
+        `skills/assist.ts` with `roleSlugs` from the run's view), not in RunManager; card creation now drops them for direct
+        `ctx.requestProposal` callers. Store-level limits (not fixed): an mcp:upsert whose `roles` carries a slug no stored
+        role holds (e.g. a stale renderer copy writing the old slug back) is stored as given and grants nobody now, but a
+        role created later under that slug gains it in the store (a run refuses it unless the saved list lists the joining
+        role's slug, which it then does); dropping unknown slugs at mcp:upsert was not done because a grant to a role whose
+        projects:save has not landed yet (debounced) would be lost. The renderer's debounced projects:save discards the
+        returned project (useAppStore `debouncedSave`), so its copy of the servers stays stale until the next refresh: the
+        Team tab run's to fix. Tests: `runManagerHostChange.test.ts` "third review: slug texts, renames and cards" (N1
+        revoke in both stored shapes, the Team tab shape in both orders, a stale whole-spec write, another session's card
+        with the old slug, a property test over 27 orders in both shapes checking the run and the store, a joining role, the
+        Reviewer's N2 example, the swap, a rename while the card is open, the skill card), `hostChange.test.ts`
+        staleSlugTexts / mcpRolesForRun N1, `orgDiff.test.ts` L-1, `mcpProposal.test.ts` duplicate slugs. All but the Team
+        tab shape test (a coverage test that also passed before) failed on the parent commit. Unverified: the renderer's
+        display of the mapped cards (read, not run), live providers.
     - End to end: "a desktop save of a grant and of an org chart role reaches an idle mock run" drives the real
       RunManager and MockAdapter: `MockSession.configChanges` gets one `host: true` entry, `hostNotices` one
       'next-message' notice, RunManager sends nothing, one "You changed ..." log line.
