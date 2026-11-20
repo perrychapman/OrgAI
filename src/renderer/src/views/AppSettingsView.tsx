@@ -5,6 +5,8 @@ import { devBuildLabel, isDevBuild } from '../lib/buildChannel'
 import type { AppearanceSettings, AppSettings, AppSettingsInfo, ModelPriceOverride, PermissionMode, ThemeMode } from '@shared/types'
 import { PERMISSION_MODE_OPTIONS } from '@shared/types'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
+import { cleanDisplayName, DISPLAY_NAME_MAX_CHARS } from '@shared/displayName'
+import { NAME_NOT_SAVED, NAME_REFUSED, saveDisplayName } from '../lib/dashboardName'
 import { useAppStore } from '../store/useAppStore'
 import { setAppearance, normalizeHex } from '../lib/theme'
 import { Badge } from '../components/ui/Badge'
@@ -82,6 +84,74 @@ const PANES: SettingsNavItem[] = [
 function stripInfo(info: AppSettingsInfo): AppSettings {
   const { dataDir: _dataDir, appVersion: _appVersion, ...settings } = info
   return settings
+}
+
+/**
+ * "Your name" (docs/design/dashboard-overhaul.md 4.1): the Dashboard greeting's name. It saves on blur and Enter through
+ * `saveDisplayName`, not the page's debounced patch, and shows an inline error under the field when that fails. While not
+ * editing it follows the stored value (another window, the greeting's own field). The name is never put in a log or error.
+ */
+function DisplayNameRow({ stored, onSaved }: { stored: string | undefined; onSaved: (name: string | undefined) => void }): ReactElement {
+  const [draft, setDraft] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const commit = async (): Promise<void> => {
+    if (draft === null) return
+    const clean = cleanDisplayName(draft)
+    if (draft.trim() !== '' && clean === undefined) {
+      setError(NAME_REFUSED)
+      return
+    }
+    if (clean === stored) {
+      setDraft(null)
+      setError(null)
+      return
+    }
+    try {
+      await saveDisplayName(clean ?? null)
+      onSaved(clean)
+      setDraft(null)
+      setError(null)
+    } catch {
+      setError(`${NAME_NOT_SAVED} Try again.`)
+    }
+  }
+  return (
+    <SettingRow
+      title="Your name"
+      id="display-name-title"
+      width="select"
+      control={
+        <Input
+          data-testid="display-name-input"
+          aria-labelledby="display-name-title"
+          aria-describedby={error ? 'display-name-hint display-name-error' : 'display-name-hint'}
+          value={draft ?? stored ?? ''}
+          maxLength={DISPLAY_NAME_MAX_CHARS}
+          autoComplete="off"
+          spellCheck={false}
+          invalid={error !== null}
+          onChange={(v) => {
+            setDraft(v)
+            setError(null)
+          }}
+          onBlur={() => void commit()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void commit()
+          }}
+        />
+      }
+      hint={
+        <>
+          <span id="display-name-hint">Used for the greeting on the Dashboard. It stays on this computer. Leave it empty for no name.</span>
+          {error && (
+            <span className="field-error" id="display-name-error" role="alert" data-testid="display-name-error">
+              {error}
+            </span>
+          )}
+        </>
+      }
+    />
+  )
 }
 
 export default function AppSettingsView(): ReactElement {
@@ -331,6 +401,11 @@ export default function AppSettingsView(): ReactElement {
         )}
         {pane === 'general' && (
           <>
+            <SettingsSection id="app-settings-about-you" title="About you" testId="appsettings-section-about-you">
+              <SettingsCard>
+                <DisplayNameRow stored={info.displayName} onSaved={(displayName) => setInfo((i) => (i ? { ...i, displayName } : i))} />
+              </SettingsCard>
+            </SettingsSection>
             <SettingsSection id={APP_SETTINGS_SECTIONS.appearance} title="Appearance" testId="appearance-section">
               <SettingsCard>
                   <SettingRow
