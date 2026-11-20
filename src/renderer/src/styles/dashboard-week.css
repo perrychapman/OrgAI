@@ -1,0 +1,113 @@
+/* ---------- Dashboard: Your week (docs/design/dashboard-overhaul.md 7.7) ----------
+   Owned by components/dashboard/WeekSection.tsx and WeekLimits.tsx; the ledger is dashboard-strip.css. The section is
+   unboxed (the shared .dash-section frame draws the hairline and the h2). `week` is the size container the ledger's label
+   rules read. Tokens only; nothing here animates. */
+
+.dash-week {
+  container: week / inline-size;
+}
+
+/* Three figures beside the ledger; under 560 px of section width the ledger drops under a row of figures. */
+.dash-week-body {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  column-gap: var(--space-8);
+  row-gap: var(--space-3);
+  min-width: 0;
+}
+.dash-week-figures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  min-width: 0;
+}
+@container week (max-width: 559px) {
+  .dash-week-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dash-week-figures {
+    flex-direction: row;
+    flex-wrap: wrap;
+    column-gap: var(--space-6);
+  }
+}
+.dash-week-figure {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.dash-week-figure dt {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.dash-week-figure dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+/* While history loads the ledger keeps its place (its height is set inline); no spinner. */
+.dash-ledger-pending {
+  min-width: 0;
+}
+
+/* The most active project: a ghost button whose long project name clips with an ellipsis. */
+.dash-week-top {
+  max-width: 100%;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+/* ---------- Plan limits (moved from the old status bar, 7.7) ---------- */
+
+.dash-limits {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.dash-limit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  white-space: nowrap;
+}
+.dash-limit-name {
+  color: var(--text-secondary);
+}
+.dash-limit-main {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.dash-limit-resets {
+  color: var(--text-secondary);
+}
+.dash-limit[data-level='danger'] .dash-limit-main {
+  color: var(--danger-text);
+}
+.dash-limit[data-level='warn'] .dash-limit-main {
+  color: var(--warning-text);
+}
+/* The 40 x 4 px bar after the text; the text carries the meaning. */
+.dash-limit .usage-mini {
+  flex: none;
+  width: 40px;
+  min-width: 0;
+  max-width: none;
+}
+.dash-limit-more {
+  color: var(--text-tertiary);
+}

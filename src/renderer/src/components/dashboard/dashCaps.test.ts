@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { SHORT_REGION_PX, capsFor, isShortRegion } from './dashCaps'
+import { NARROW_CAPS, WIDE_CAPS, capsFor } from './dashCaps'
 
 describe('dashCaps', () => {
-  it('is wide from 1280 px', () => {
-    expect(capsFor(1279).wide).toBe(false)
-    expect(capsFor(1280).wide).toBe(true)
+  it('is wide from 1000 px of page width', () => {
+    expect(capsFor(999).wide).toBe(false)
+    expect(capsFor(1000).wide).toBe(true)
   })
-  it('calls a region short under 700 px, never before it is measured', () => {
-    expect(isShortRegion(584)).toBe(true)
-    expect(isShortRegion(SHORT_REGION_PX - 1)).toBe(true)
-    expect(isShortRegion(SHORT_REGION_PX)).toBe(false)
-    expect(isShortRegion(920)).toBe(false)
-    expect(isShortRegion(0)).toBe(false)
+  it('carries the overhaul caps (narrow / wide)', () => {
+    expect([NARROW_CAPS.needs, WIDE_CAPS.needs]).toEqual([3, 5])
+    expect([NARROW_CAPS.setup, WIDE_CAPS.setup]).toEqual([3, 5])
+    expect([NARROW_CAPS.resume, WIDE_CAPS.resume]).toEqual([4, 6])
+    expect([NARROW_CAPS.schedules, WIDE_CAPS.schedules]).toEqual([4, 6])
+    expect([NARROW_CAPS.todos, WIDE_CAPS.todos]).toEqual([3, 5])
+    expect([NARROW_CAPS.bandRuns, WIDE_CAPS.bandRuns]).toEqual([3, 5])
+    expect([NARROW_CAPS.bandAgentsPerRun, WIDE_CAPS.bandAgentsPerRun]).toEqual([4, 6])
   })
 })

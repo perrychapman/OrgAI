@@ -1,10 +1,9 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { Project, RunSummary } from '@shared/types'
-import { isRunLive, pendingDecisionCount, useAppStore, type RunState } from '../../store/useAppStore'
+import { isRunLive, useAppStore, type RunState } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
 import { projectKindOf } from '@shared/defaults'
-import { currentStep, decisionLine } from '../../lib/dashboardBand'
 import { hasFolderTrustField } from '../../lib/folderTrust'
 import { openProjectSettings } from '../../lib/openProjectSettings'
 import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
@@ -12,22 +11,22 @@ import { canContinue } from '../../lib/runChains'
 import { openFolderTrustReview } from '../FolderTrustNotice'
 import { projectQueue } from './projectQueue'
 import { useProjectSignals, type ProjectSignal } from './useProjectSignals'
-import { buildAttentionCtx, deleteProjectBody, projectAttentionOrder, removeConfirmLabel } from '../../lib/dashboard'
+import { buildAttentionCtx, deleteProjectBody, removeConfirmLabel } from '../../lib/dashboard'
 import { useForgetEngagement } from './useForgetEngagement'
-import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../../lib/needsYou'
+import { combinedDecisionCount, teamDecisionsFor } from '../../lib/needsYou'
 import { useTeamAttentionItems } from '../../lib/menuActions'
 import type { TeamAttentionItem } from '../../lib/teamFiles'
-import { projectStatus } from '../../lib/projectStatus'
 import { displayRunName } from '../../lib/orgChange'
-import { statusOfRun, statusText } from '../../lib/runStatus'
 import { useArrival } from '../../lib/useArrival'
+import { PIN_LIMIT } from '../../lib/dashboardLayout'
 import { Input } from '../ui/Input'
 import { useConfirm } from '../ui/ConfirmDialog'
-import { ProjectTile, type TileModel } from './ProjectTile'
-import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, newestSummary, SEARCH_AFTER, tileChips, tileRunCaption, tileStatusLine, tileTeam, type TileChipKind } from './dashboardProjects'
+import { DashSection, sectionHeadingId, useDashboard } from './DashboardContext'
+import { ProjectTile, type PinSource, type TileModel } from './ProjectTile'
+import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, newestSummary, pinnedFirst, SEARCH_AFTER, tileChips, tileStatusLine, tileTeam, type TileChipKind } from './dashboardProjects'
 
 /** The tile model of one project from its live runs and saved history. */
-function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number, teamItems: readonly TeamAttentionItem[], signal: ProjectSignal | undefined): TileModel {
+function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number, teamItems: readonly TeamAttentionItem[], signal: ProjectSignal | undefined, pinned: boolean): TileModel {
   const live = runs.filter(isRunLive)
   // Live copies first: a live run wins over its saved record.
   const summaries = mergeSummaries(
@@ -36,30 +35,19 @@ function tileModel(project: Project, runs: readonly RunState[], history: readonl
   )
   const newest = newestSummary(summaries)
   const newestRun = newest ? runs.find((r) => r.summary.id === newest.id) : undefined
-  const status = newest ? statusOfRun(newestRun ? { ...newestRun } : { summary: newest }, project, newestRun ? pendingDecisionCount(newestRun) > 0 : false) : undefined
   const decisions = combinedDecisionCount(runs, teamDecisionsFor(teamItems, project.id))
-  const st = projectStatus({ open: live.length, decisions, newest: newest && status ? { startedAt: newest.startedAt, status } : undefined, now })
   const isLive = !!newestRun && isRunLive(newestRun)
-  // The caption never prints the root's raw activity (walk-3 M5): the first open decision's Needs you label, else the plan step.
-  const firstDecision = newestRun && isLive ? waitingItems(newestRun, projectKindOf(project))[0]?.label : undefined
   const team = tileTeam(project.roles)
   const continuable = newest && !isLive && canContinue(summaries, newest.id) ? { id: newest.id, name: displayRunName(newest) } : null
+  const working = runs.some((r) => r.summary.status === 'running' || r.summary.status === 'starting')
   return {
     project,
     decisions,
     live: live.length,
-    working: runs.some((r) => r.summary.status === 'running' || r.summary.status === 'starting'),
-    statusLine: tileStatusLine({ subtitle: st.subtitle, open: live.length, decisions, newestStartedAt: newest?.startedAt, now }),
+    working,
+    statusLine: tileStatusLine({ open: live.length, decisions, working, newestStartedAt: newest?.startedAt, now }),
     team,
-    newest:
-      newest && status
-        ? {
-            id: newest.id,
-            name: displayRunName(newest),
-            word: status.word,
-            caption: tileRunCaption({ live: isLive, statusWord: statusText(status), decisionLine: decisionLine(firstDecision), step: currentStep(newestRun?.plan) })
-          }
-        : null,
+    pinned,
     continuable,
     chips: tileChips({
       projectName: project.name,
@@ -109,7 +97,6 @@ const tileSelector = (id: string): string => `[data-testid=project-tile][data-id
  * "Delete project…" live here; deletes and errors speak through `onAnnounce` (the page's one live region).
  */
 export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => void }): ReactElement {
-  const headingId = useId()
   const projects = useAppStore((s) => s.projects)
   const runs = useAppStore((s) => s.runs)
   const history = useAppStore((s) => s.historyByProject)
@@ -133,8 +120,14 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
   }, [])
 
   const teamItems = useTeamAttentionItems()
-  const ordered = useMemo(() => projectAttentionOrder(projects, buildAttentionCtx(Object.values(runs), history, teamItems)), [projects, runs, history, teamItems])
+  const { layout, customising, togglePin } = useDashboard()
+  const pinned = layout.pinned
+  const [rings, setRings] = useState<Record<string, number>>({})
+  const ordered = useMemo(() => pinnedFirst(projects, pinned, buildAttentionCtx(Object.values(runs), history, teamItems)), [projects, pinned, runs, history, teamItems])
+  const pinnedIds = useMemo(() => new Set(projects.filter((p) => pinned.includes(p.id)).map((p) => p.id)), [projects, pinned])
+  const pinFull = pinnedIds.size >= PIN_LIMIT
   const searching = projects.length > SEARCH_AFTER
+  const filtering = searching && query.trim() !== ''
   // A tile created or cloned while the page is open rises in; first paint and search filtering never animate.
   const tileArrived = useArrival(
     projects.map((p) => p.id),
@@ -151,8 +144,17 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       if (list) list.push(r)
       else byProject.set(r.summary.projectId, [r])
     }
-    return shown.map((p) => tileModel(p, byProject.get(p.id) ?? [], history[p.id] ?? [], now, teamItems, signals[p.id]))
-  }, [shown, runs, history, now, teamItems, signals])
+    return shown.map((p) => tileModel(p, byProject.get(p.id) ?? [], history[p.id] ?? [], now, teamItems, signals[p.id], pinnedIds.has(p.id)))
+  }, [shown, runs, history, now, teamItems, signals, pinnedIds])
+
+  // Pin or unpin: the tile moves, focus is re-found on the same control of the same tile, and a pin plays one ring there.
+  const pin = (m: TileModel, source: PinSource): void => {
+    const wasPinned = m.pinned
+    if (!togglePin(m.project.id, m.project.name)) return
+    if (!wasPinned) setRings((r) => ({ ...r, [m.project.id]: (r[m.project.id] ?? 0) + 1 }))
+    const control = source === 'button' ? 'project-tile-pin' : 'project-tile-more'
+    focusLater(() => document.querySelector<HTMLElement>(`${tileSelector(m.project.id)} [data-testid=${control}]`))
+  }
 
   const open = (id: string): void => {
     void openProject(id)
@@ -234,11 +236,14 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
   }
 
   return (
-    <section className="dash-projects-region" data-testid="dash-projects" aria-labelledby={headingId}>
-      <div className="dash-projects-head">
-        <h2 id={headingId}>Projects</h2>
-        <span className="dash-projects-count mono">{searching && query.trim() ? `${shown.length} of ${projects.length}` : projects.length}</span>
-      </div>
+    <DashSection
+      id="projects"
+      testId="dash-projects"
+      className="dash-projects-region"
+      empty={projects.length === 0}
+      count={filtering ? undefined : projects.length}
+      headExtra={filtering ? <span className="dash-projects-count mono">{`${shown.length} of ${projects.length}`}</span> : undefined}
+    >
       {searching && (
         <div className="dash-projects-search">
           <Input type="search" aria-label="Find a project" placeholder="Find a project" value={query} onChange={setQuery} data-testid="dash-project-search" />
@@ -252,11 +257,16 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       {models.length === 0 ? (
         <p className="dash-projects-none">{query.trim() ? `No project matches "${query.trim()}".` : 'No projects yet.'}</p>
       ) : (
-        <ul className="dash-projects-grid" aria-labelledby={headingId}>
+        <div className="dash-projects-fit">
+        <ul className="dash-projects-grid" aria-labelledby={sectionHeadingId('projects')}>
           {models.map((m) => (
             <ProjectTile
               key={m.project.id}
               enter={tileArrived(m.project.id)}
+              customising={customising}
+              pinFull={pinFull}
+              ring={rings[m.project.id] ?? 0}
+              onTogglePin={(source) => pin(m, source)}
               model={m}
               onOpen={() => open(m.project.id)}
               onDelete={() => void remove(m)}
@@ -267,9 +277,10 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
             />
           ))}
         </ul>
+        </div>
       )}
       {dialog}
       {forgetDialog}
-    </section>
+    </DashSection>
   )
 }

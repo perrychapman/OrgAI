@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactElement } from 'react'
-import { useRef, useState } from 'react'
-import { ArrowRight, FolderOpen, GitBranch, Play, RotateCcw, ShieldAlert, Sparkles, Trash2, type LucideIcon } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ArrowRight, FolderOpen, GitBranch, Pin, PinOff, Play, RotateCcw, ShieldAlert, Sparkles, Trash2, type LucideIcon } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
 import { projectKindOf } from '@shared/defaults'
@@ -8,22 +8,16 @@ import { clientOf } from '../../lib/clientGroups'
 import { costView, type CostInput } from '../../lib/cost'
 import { tileRemoveLabel } from '../../lib/dashboard'
 import { folderName } from '../../lib/paths'
-import type { StatusWord } from '../../lib/runStatus'
+import { PIN_LIMIT } from '../../lib/dashboardLayout'
+import { tokenMs } from '../../lib/useExitPresence'
 import { Badge } from '../ui/Badge'
 import { Cost } from '../ui/Cost'
 import { Icon } from '../ui/Icon'
 import { ContextMenu, MenuButton, useContextMenu, type MenuEntry } from '../ui/ContextMenu'
-import { continueLabel, openLabel, statusParts, type TileCaption, type TileChip, type TileChipKind, type TileTeam } from './dashboardProjects'
+import { continueLabel, openLabel, type TileChip, type TileChipKind, type TileTeam } from './dashboardProjects'
 
-/** The newest run of a project, as the tile shows it. */
-export interface TileRun {
-  id: string
-  name: string
-  /** The status word (Running, Idle, Finished ...), for `data-status`. */
-  word: StatusWord
-  /** "Needs you · Allow: Run npm test", "Running · <plan step>" or the outcome of an ended run. */
-  caption: TileCaption
-}
+/** Which control of a tile asked for the pin change, so focus can be put back on it. */
+export type PinSource = 'button' | 'menu'
 
 /** What one tile shows. Built by ProjectsGrid from the store; the tile itself reads nothing. */
 export interface TileModel {
@@ -34,12 +28,12 @@ export interface TileModel {
   live: number
   /** A run is working now (not merely open): the tile gets its working edge. */
   working: boolean
-  /** `tileStatusLine`: the decisions and runs, "Last run 9 d ago", or "No runs yet". */
+  /** `tileStatusLine`: one fact, plain text. */
   statusLine: string
   /** The org chart as the team row draws it. */
   team: TileTeam
-  /** The newest run, or null without runs. */
-  newest: TileRun | null
+  /** The person pinned this project. */
+  pinned: boolean
   /** The chain's newest member when it can be continued. */
   continuable: { id: string; name: string } | null
   chips: TileChip[]
@@ -61,11 +55,22 @@ export function ProjectTile({
   onNewRun,
   onContinue,
   onChip,
-  onAnnounce
+  onAnnounce,
+  customising = false,
+  pinFull = false,
+  ring = 0,
+  onTogglePin
 }: {
   model: TileModel
   /** The tile appeared after first paint (create, clone). */
   enter?: boolean
+  /** Customise mode: the tile shows its pin toggle. */
+  customising?: boolean
+  /** The pin limit is reached, so an unpinned tile cannot be pinned from the menu. */
+  pinFull?: boolean
+  /** Rises on every pin of this tile; each rise plays one ring in the new place (0: none). */
+  ring?: number
+  onTogglePin?: (source: PinSource) => void
   onOpen: () => void
   onDelete: () => void
   onNewRun: () => void
@@ -73,8 +78,18 @@ export function ProjectTile({
   onChip: (kind: TileChipKind) => void
   onAnnounce?: (text: string) => void
 }): ReactElement {
-  const { project, decisions, working, statusLine, team, newest, continuable, chips, weekCost } = model
-  const parts = statusParts(statusLine, decisions)
+  const { project, decisions, working, statusLine, team, pinned, continuable, chips, weekCost } = model
+  const rootRef = useRef<HTMLLIElement>(null)
+  // One ring per pin, restarted on a second pin; the class goes away when it ends. Reduced motion never mounts it.
+  useEffect(() => {
+    const el = rootRef.current
+    if (!ring || !el || tokenMs('--dur-slow') < 1) return undefined
+    el.classList.remove('motion-ring')
+    void el.offsetWidth
+    el.classList.add('motion-ring')
+    const done = window.setTimeout(() => el.classList.remove('motion-ring'), tokenMs('--dur-slow') * 2.3 + 50)
+    return () => window.clearTimeout(done)
+  }, [ring])
   const [error, setError] = useState<string | null>(null)
   const folder = folderName(project.path)
   const client = projectKindOf(project) === 'engagement' ? clientOf(project) : ''
@@ -109,6 +124,15 @@ export function ProjectTile({
     { id: 'new-run', label: 'New run', icon: Play, testId: 'project-tile-new-run', onSelect: onNewRun },
     ...(continuable ? [{ id: 'continue', label: continueLabel(continuable.name), icon: RotateCcw, title: continuable.name, testId: 'project-tile-continue', onSelect: () => onContinue(continuable.id) }] : []),
     { id: 'open-folder', label: 'Open folder', icon: FolderOpen, testId: 'project-tile-open-folder', onSelect: openFolder },
+    {
+      id: 'pin',
+      label: pinned ? 'Unpin' : 'Pin to top',
+      icon: pinned ? PinOff : Pin,
+      testId: 'project-tile-pin-item',
+      disabled: !pinned && pinFull,
+      disabledReason: !pinned && pinFull ? `You can pin up to ${PIN_LIMIT} projects.` : undefined,
+      onSelect: () => onTogglePin?.('menu')
+    },
     'separator',
     { id: 'delete', label: tileRemoveLabel(projectKindOf(project)), icon: Trash2, destructive: true, testId: 'project-tile-delete', onSelect: onDelete }
   ]
@@ -120,6 +144,9 @@ export function ProjectTile({
       data-name={project.name}
       data-id={project.id}
       data-state={state}
+      data-pinned={pinned ? '' : undefined}
+      data-customising={customising ? '' : undefined}
+      ref={rootRef}
       onContextMenu={(e) => menu.onContextMenu(e, project.id, { invoker: mainRef.current ?? undefined })}
     >
       {client && (
@@ -133,12 +160,17 @@ export function ProjectTile({
             type="button"
             className="project-tile-main"
             data-testid="project-tile-main"
-            aria-label={openLabel({ name: project.name, statusLine, team, newestName: newest?.name, setupPending: pending })}
+            aria-label={openLabel({ name: project.name, statusLine, team, pinned, setupPending: pending })}
             title={project.path}
             ref={mainRef}
             onClick={onOpen}
             onKeyDown={(e) => void menu.onKeyDown(e, project.id)}
           >
+            {pinned && (
+              <span className="project-tile-pinned" data-testid="tile-pinned-glyph">
+                <Icon icon={Pin} size="sm" />
+              </span>
+            )}
             <span className="project-tile-name">{project.name}</span>
           </button>
         </h3>
@@ -160,23 +192,10 @@ export function ProjectTile({
       <p className="project-tile-status">
         <span className={`project-tile-dot ${state}`} aria-hidden="true" />
         <span className="project-tile-status-text">
-          {parts.decision ? <span className="project-tile-decisions">{parts.decision}</span> : null}
-          {parts.rest}
+          {statusLine}
         </span>
-        {pending && <Badge tone="warning">Setup pending</Badge>}
+        {pending && <Badge>Setup pending</Badge>}
       </p>
-      {newest && (
-        <div className="project-tile-run" data-testid="tile-run" data-status={newest.word}>
-          <span className="project-tile-run-name" title={newest.name}>
-            {newest.name}
-          </span>
-          <span className="project-tile-run-cap">
-            {newest.caption.lead ? <span className="project-tile-run-lead">{newest.caption.lead}</span> : null}
-            {newest.caption.lead ? ' · ' : ''}
-            {newest.caption.text}
-          </span>
-        </div>
-      )}
       {chips.length > 0 && (
         <div className="tile-chips" data-testid="tile-chips">
           {chips.map((c) => (
@@ -204,6 +223,19 @@ export function ProjectTile({
       )}
       {/* Last in the DOM so the tab order is Open, chips, More; placed top right by the CSS. */}
       <div className="project-tile-more">
+        {customising && (
+          <button
+            type="button"
+            className="icon-btn size-sm"
+            data-testid="project-tile-pin"
+            aria-pressed={pinned}
+            aria-label={pinned ? `Unpin ${project.name}` : `Pin ${project.name} to the top`}
+            title={pinned ? `Unpin ${project.name}` : `Pin ${project.name} to the top`}
+            onClick={() => onTogglePin?.('button')}
+          >
+            <Icon icon={pinned ? PinOff : Pin} size="sm" />
+          </button>
+        )}
         <MenuButton control={menu} target={project.id} label={`More actions for ${project.name}`} testId="project-tile-more" />
       </div>
       <ContextMenu control={menu} label={`Actions for ${project.name}`} items={menuItems} testId="project-tile-menu" />

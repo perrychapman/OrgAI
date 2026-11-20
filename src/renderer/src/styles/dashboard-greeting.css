@@ -1,0 +1,98 @@
+/* Dashboard greeting (docs/design/dashboard-overhaul.md sections 3 and 5). Tokens only; both themes come from the tokens.
+   The row holds the salutation and the name control on the left and the Customise button on the right; the brief sits
+   under it and keeps two lines of height so a sentence arriving after history loads moves nothing. */
+.dash-greeting {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.dash-greeting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+}
+.dash-greeting-end {
+  flex: none;
+  margin-inline-start: auto;
+  padding-inline-start: var(--space-3);
+}
+/* The Popover wrapper around the pencil must not take the row's slack, so the name never gets pushed. */
+.dash-greeting-row > .popover-wrap {
+  flex: none;
+}
+
+/* Salutation: --text-title-lg below 1000 px of the dash container, --text-display from there. */
+.dash-salutation {
+  margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  /* One text node on one line, clipped with an ellipsis; the whole greeting is in the title. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+@container dash (min-width: 1000px) {
+  .dash-salutation {
+    font-size: var(--text-display);
+    line-height: var(--text-display-lh);
+  }
+}
+
+/* The brief: not a live region, at most two sentences, two lines of reserved height. */
+.dash-brief {
+  margin: 0;
+  max-width: 64ch;
+  min-height: calc(var(--text-title-sm-lh) * 2);
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+.dash-name-add-row {
+  display: flex;
+  align-items: center;
+  margin-inline-start: calc(var(--space-2) * -1);
+}
+
+/* The name popover body. */
+.dash-name-panel {
+  width: min(20rem, calc(100vw - var(--space-6)));
+}
+.dash-name-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+.dash-name-label {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.dash-name-hint {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.dash-name-error {
+  margin: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--danger-text);
+}
+.dash-name-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding-top: var(--space-1);
+}

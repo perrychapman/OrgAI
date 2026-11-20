@@ -304,83 +304,41 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   secrets and the decline note; the mock has no secret-slot or toggle proposals; the skill link, grant and remove rows
   and the before/after view are not driven by e2e.
 - Org change sessions (owner decision 2026-11-07, walk `docs/design/ux-review-org-change-session-pre.md` "Status after the change"): Team > Design "Revise with the Architect" (`org-change-start`) and Settings > Maintenance "Review the org chart and setup" (`maintenance-org-review`, on every project) start an ordinary setup run through one hook, `components/team/useOrgChange.ts` (`startSetup(orgChangePrompt(text, kind))`, focus to the composer, run-tabs notice "Org change session started..."); while one is open both send into it / open it instead (button "Send to the open session"), so two Architects never revise one chart. It has a run tab, a sidebar row (`nav-run[data-kind=org-change]` with `nav-run-kind-mark`), History (`run-kind[data-kind=org-change]` "Org change", under the Setup filter), Dashboard and Needs-you rows, and restores after a relaunch like any run. The renderer no longer starts or hides `surface: 'team'` runs (`lib/runSurface.ts`, `ArchitectDecisions`, `designRun` / `designJump` are gone; main still accepts the field, old records list and get R numbers). `lib/orgChange.ts` (pure, tested) holds the prompt contract (`ORG_CHANGE_PREFIX`, `ORG_REVIEW_PROMPT[_ENGAGEMENT]`, legacy Maintenance prefix), `isOrgChangeRun` (kind 'setup' + prompt), `orgChangeTitle` / `displayRunName` ("Org chart: add a database specialist", "Org chart review"; used by run tabs, sidebar, History, RunLabel, Needs-you, Dashboard, NewRunPage, document title), `runKindWord`, `setupBannerShows` (the "Setup complete" / "Org change applied" banner never shows on a run cut off by a quit, and an org change needs an approval seen in that view; walk M2) and `liveOrgChangeRun`. The Team tray shows `org-change-pointer` / `org-change-open` above both modes while a session is live; RunMeta `run-meta-kind` reads "Org change session". `RunLabel` never prints "R?" (name only while unindexed). e2e `e2e/org-change.mjs` (in e2e:free; both sizes and themes, relaunch) and team.mjs `sectionDesignDecisions`. Open: the banner's approvals are view-local (gone after a remount or a decision in another window), other `runTag` callers can still print "R?" while history loads, no History "Org change" filter.
-- Dashboard (pass 2, GitHub #36; spec `docs/design/dashboard-2.md`, which supersedes `dashboard.md` 2-5 and 7-9;
-  pre-walk `ux-review-dashboard-3-pre.md`): `views/DashboardView.tsx` (store View id stays 'projects') is the page
-  scroll; `.dashboard-grid` is the `dash` container; the work area `.dash-work` is one track in DOM order (needs, now,
-  strip, setup, paused, ended) and from 880 px two tracks with the band spanning the right column. Fix-up after walk 3
-  (e9c6fc54 plus the UI Lead's finish; spec section 21.1): instruments are boxed (Needs you rows, the only amber surface;
-  Right now; Last 14 days), lists unboxed (To set up, Paused, Recently ended: gap 0 and a hairline; Needs you keeps
-  `--space-2`; its rules are `styles/dashboard-needs.css`, imported after dashboard.css); tiles never tint, decisions
-  included. Quiet states: with no decision Needs you stays mounted but `hidden` with no empty line and `.dash-work` gets
-  `data-needs-empty`; with no open run the band is hidden and it gets `data-now-empty`; band live without a decision puts
-  the band left and the strip and lists right; decisions without a band put Needs you beside the tall strip and the lists
-  full width below; both quiet is the tall strip across, then the lists in a wrapping row (a lone list takes the whole
-  row). The tall strip is 190 px; under 700 px of region (`useShortRegion`) a compact strip beside decisions draws
-  `data-dense`. The band's height budget (`useBandBudget`: the other column + 180, at least 440, never reads the band;
-  `fitBandModel` lowers agent rows to 2, then runs to 3) is `dash-now[data-budget]`. Two-track rows carry no row gap (areas below the
-  first space themselves with a top margin), so an empty region leaves no hole. Caps narrow / wide (1280 px,
-  `dashCaps.ts` through a ResizeObserver): Needs 3/5, band runs 3/5, agent rows 6/12 (4/6 per run), To set up 3/5,
-  Paused / Recently ended 4/6, each with "Show N more". Regions: status bar `dashboard-hero` (`HeroBand.tsx`:
-  `dash-status-line[data-working|open|paused]` from `lib/dashboard.ts` `statusSentence`, `dash-limits` / `dash-limit`
-  hidden under the mock adapter and for API keys, `dashboard-app-facts`, the page's one polite region `dashboard-live`
-  with the 1.5 s join; 36 px at 1024x640, 40 px at 1600x1000, at most 72); Needs you `dash-needs-you` (count = the bell;
-  rows `dash-needs-row[data-kind][data-run][data-key][data-inline=allow|options|none]`, `NeedsInline.tsx`, pure
-  `lib/needsInline.ts`); Right now `dash-now[data-working|waiting|idle]` (`RightNowBand.tsx` / `BandRun.tsx`, pure
-  `lib/dashboardBand.ts` `bandModel`, snapshot recomputed at most every 250 ms in `useDashboardData.ts`
-  `useBandSnapshot`; `dash-now-counts`, `dash-now-project[data-project]`, run header `dash-running-row[data-status]
-  [data-needs]`, `dash-agent-row[data-state][data-agent][data-depth]`, `dash-agent-more`, `dash-agent-done[data-count]`,
-  `dash-now-more`, `dash-now-empty`; working marks `.dash-mark[data-breathe]` breathe, off under both reduced-motion
-  switches; Enter on an agent row opens Live with that node selected and focused, `lib/agentActivity.ts` shared with
-  AgentNode); Last 14 days `dash-strip[data-size]` (`ActivityStrip.tsx`, pure `lib/activityStrip.ts` `dayLedger`, local
-  days, 14 `dash-strip-day` buttons as one roving Tab stop, `dash-strip-readout`, totals `dash-strip-runs`, `dash-cost`
-  (compact, unknown never $0), `dash-strip-waiting` only from 1 s); To set up `dash-setup` (`SetupGaps.tsx`, pure
-  `lib/setupGaps.ts`; `dash-setup-row[data-kind]`, `dash-setup-action`; names and labels only, never a secret value;
-  `connectionsNeeded`: mock-provider projects use no connection and under the mock adapter the default connection does
-  not count, else a machine with no Claude login showed "Anthropic is not connected"); Paused `dash-paused` and
-  Recently ended `dash-since` (`AttentionColumn.tsx`; a run the user ended in this window is left out, `dash-since-clear`
-  "Clear", focus then goes to the next section heading); Projects `dash-projects` with `project-tile[data-name][data-id][data-state]` (`ProjectTile.tsx`: `tile-client`,
-  `tile-team[data-count]` (decorative: root plus up to seven role marks breadth first, `tile-team-more` "+N" past eight;
-  the Open button's name adds "team of N: A, B, C and M more"), `tile-run[data-status]` whose caption is "Needs you ·
-  <decision line>", "Running · <plan step>" or the outcome alone (an ended tile's status line is "Last run <time> ago"
-  without the outcome; never the root's raw activity), More as the li's last child so Tab goes Open, chips, More, `tile-chips` / `tile-chip[data-kind=branches|suggestions|folder-trust]`, `tile-folder`,
-  `tile-cost` only when something was spent, menu `project-tile-new-run` / `-continue` / `-open-folder` (`app.openPath`
-  on the project's own path only) / `-delete`). Inline answers: Allow once sends only `{ behavior: 'allow', scope: 'once' }`
-  and Deny only the card's deny message (`decideIn` / `answerQuestionIn` in the store take the run id), never session or
-  project scope, rules or the settings link, whatever `suggestions`, `maxScope` or `referenceFolder` say. Inline Allow is
-  offered only when what it approves is shown whole on the row and in the buttons' names: a shell command (compound
-  ones too: split on `&&` `||` `;` outside quotes, each step whole on its own line with its operator kept, unclamped) of
-  at most 200 chars, 2 non-empty lines and 4 steps, with no hidden characters, no lone CR / LS / PS, no runs of spaces or
-  tabs and no quoting the split cannot follow (backslash or backtick before a quote, typographic quotes, `$(`, backticks,
-  an open quote); each refusal caption names its true reason; a file tool
-  whose `permissionLocation` (the card's helper) is the project, a worktree, an allowed or a reference folder, with the
-  full path (no line break in it) and the location line `dash-needs-where`; WebFetch / WebSearch with the URL or query (at most 200); never MCP,
-  Agent or unknown tools. A question gets one-click options only for single choice, 2-4 options of at most 40 chars
-  without descriptions. A sent answer locks the row (aria-disabled, focus kept) until its `*.resolved` event removes it;
-  failures show `dash-needs-error`. Per-project signals: `useProjectSignals.ts` over `projectQueue.ts` (listWorktrees,
-  seedTeamReview, `mcp.list`): at most 3 in flight, after first paint on mount only, never on a timer or run event, a
-  session cache (team reviews once, worktrees and `mcp.list` again after 10 min), failures cached as null, a project
-  deleted while queued is skipped. Checked by unit tests (needsInline, dashboardBand, activityStrip, setupGaps,
-  dashboard, agentActivity, projectQueue, useProjectSignals, cost), e2e `e2e/dashboard.mjs` (mock: inline Allow once,
-  no wider scope on the page, band rows and folding, data-needs, strip, no false chips, no To set up or Limits under the
-  mock, reduced motion, both sizes and themes, relaunch Recently ended) and by eye on mock data (1024x640 rail and
-  1600x1000, dark and light: deep-tree live, permission waiting, ended, paused, an engagement, empty band after a
-  relaunch). Reviewer: three Highs in the inline Allow path (clamped command, file without location, MCP args unseen)
-  fixed with M1-M3. Fix-up checks (UI Lead, 2026-11-07): typecheck, `npx vitest run src/renderer` (1180), build, and
-  e2e dashboard / layout / engagement / team-files green; dashboard.mjs adds the tile captions (live, ended "Last run"),
-  `tile-team` count 4 with no `tile-team-more` on a 4-role project and the "team of 4" name, no amber background on a
-  `[data-state=decisions]` tile, More a direct child and Tab Open-chips-More, an empty Needs you `hidden` with no empty
-  line, and a `[mock:fatigue]` compound `cd <worktree> && npm test` answered inline (two lines, whole command in both
-  names, the following outside edit not inline). Seen by eye at both sizes and themes in states one decision + live deep
-  tree, three decisions, relaunched, all quiet (measurements in spec 21.1). Final Reviewer (needsInline, NeedsInline,
-  AttentionColumn, AttentionSection, band budget): no Critical or High, no layout thrash; M1 (lone CR / LS / PS), M2
-  (escaped or typographic quotes, `$(`, backticks), L3 (line breaks in paths) and L6 (frozen decisions) fixed and
-  unit-tested. Open: Reviewer L1 (single `&` / `|` are not step separators; shown whole on one line), L4 (Glob / Grep
-  inline shows only the path, not the pattern), L5 (the pressed button's name does not say "Sending"); the band lists
-  waiting runs newest first while Needs you lists oldest first; `data-budget` keeps a stale value while the band is
-  hidden; no paused row was held on screen (the mock pause lasts 1.5 s; the clamp was checked by computed style);
-  review L3 (focus when a section's last row leaves), L7 (`decideIn` takes any decision); not driven: real plan
-  windows, proxy spend, chips, To set up rows, question options, `tile-team-more` past eight roles, a screen reader,
-  macOS. Not built (need contracts): dashboard-2.md section 18.
+- Dashboard (overhaul, pass 3, 2026-11-19; spec `docs/design/dashboard-overhaul.md`, which supersedes dashboard-2.md
+  2-4, 6-9 and 12-16; renderer only, the one main contract is `AppSettings.displayName`). `views/DashboardView.tsx`
+  (store View id stays 'projects'): `.dashboard` is the page scroll, `.dash-page` the `dash` inline-size container. One
+  column in DOM order: secret and forget notices, the greeting `dashboard-hero` (`Greeting.tsx`: salutation by local
+  hour, the brief from pure `lib/dashboardBrief.ts`, the name control, the Customise button, the page's one polite
+  region `dashboard-live` in `DashboardLive.tsx`), the customise bar, the fixed Waiting on you `dash-needs-you`
+  (`AttentionColumn.tsx`, order from pure `lib/waitingOrder.ts`, recomputed only when the key set changes) and To finish
+  setting up `dash-setup` (`SetupGaps.tsx`), then the five arrangeable sections in the person's order inside
+  `.dash-arranged`: Pick up where you left off `dash-resume` (`ResumeSection.tsx`, pure `lib/resumeRows.ts`, outputs
+  through the `projectQueue` kind 'outputs'), Today `dash-today` (`TodaySection.tsx`, pure `lib/todayModel.ts`),
+  Working now `dash-now` (`RightNowBand.tsx`, `lib/dashboardBand.ts`, no height budget, waiting runs first, " · Waiting on
+  you" in plain text, decision label never a raw command), Your week `dash-week` (`WeekSection.tsx`, `WeekLedger.tsx`
+  7-day ledger, pure `lib/weekRecap.ts` over `lib/activityStrip.ts` `dayLedger`, limits `WeekLimits.tsx`), Projects
+  `dash-projects` (`ProjectsGrid.tsx` / `ProjectTile.tsx`, pins first via `pinnedFirst`, slim tile without `tile-run`),
+  then the footer `dashboard-app-facts`. Every arrangeable section renders through `DashSection`
+  (`DashboardContext.tsx`): slot `dash-section[data-section][data-state=shown|hidden|empty][data-span=half|full]`, h2,
+  count, customise control row; outside customise a hidden or empty section renders nothing and reports itself empty
+  so `placeSections` (pure `lib/dashboardLayout.ts`) pairs only visible halves in two tracks (from 1000 px of
+  `.dash-page`, `dashCaps.ts` `WIDE_AT_PX`; caps needs 3/5, setup 3/5, resume 4/6 up to 12, schedules 4/6, to-dos 3/5,
+  band runs 3/5). Layout `orgai.dashboardLayout` in localStorage (`useDashboardLayout`: read once, written on change,
+  follows the `storage` event; order, hidden, pins up to 24; corrupt values load the default). Customise: one
+  button (`dash-customise`, aria-expanded, label Customise / Done, icon-only under 560 px), sticky bar with Reset
+  (keeps pins), per-section Move up / Move down (native `icon-btn` buttons with aria-disabled at the ends, so they still
+  announce) and Hide / Show with the focus rules of spec 6.3, Esc leaves unless a dialog, menu, listbox or popover holds
+  it, a one-shot `.motion-ring` on a moved section (skipped under reduced motion). `useLastSeen` returns `lastSeen` and
+  `firstVisit`; Clear, `clearedAt`, `orgai.dashboardClearedAt`, `statusSentence`, HeroBand, ActivityStrip, Paused and
+  Recently ended are gone. Display name: `lib/dashboardName.ts` `saveDisplayName` (serialised read-merge-write; clearing
+  sends an own `displayName: undefined`), shown only in the salutation, the popover input and Settings > General >
+  About you `display-name-input`. Time working = per run `max(0, wallMs - idleMs - waitingMs)`: `limitHoldMs` is not
+  subtracted because a usage-limited run's turn ends and its hold sits inside idle time (runManager timers). Inline
+  answers and `NeedsInline.tsx` / `lib/needsInline.ts` are unchanged (rules in ARCHITECTURE.md). Checked by unit tests
+  (dashboardLayout, dashboardBrief, dashboardName, waitingOrder, resumeRows, todayModel, weekRecap, activityStrip,
+  dashboardBand, dashCaps, dashboardProjects, dashboard), `e2e/dashboard.mjs` (rewritten against spec 12 and 13) plus
+  proposals / usage-app selector updates, and a Reviewer pass (no Critical or High). Open items and what was not
+  verified: spec section 17 "Implementation notes".
 - Cost and usage (#10): every cost goes through `lib/cost.ts` `costView` and `components/ui/Cost.tsx` (unknown is
   never $0, "$0.42+" is a lower bound). The run side panel has a Usage tab (`components/UsagePanel.tsx`, `SideTab`
   'usage'); History switches Runs | Trends (`components/UsageTrends.tsx`, `runs:usageStats`). App settings >

@@ -626,8 +626,8 @@ try {
   await page.reload()
   await page.locator('.sidebar').waitFor({ timeout: 20_000 })
   await sleep(1000)
-  // The app reopens on the dashboard; the ended run is a "Recently ended" row.
-  const runRow = page.locator(`[data-testid=dash-since-row][data-row-key="${rosterRunId}"] .dash-row-main`)
+  // The app reopens on the dashboard; the ended run is a "Pick up where you left off" row.
+  const runRow = page.locator(`[data-testid=dash-resume-row][data-run="${rosterRunId}"] [data-testid=dash-resume-main]`)
   await runRow.waitFor({ timeout: 15_000 })
   await runRow.click()
   await page.locator('.react-flow__node .agent-node', { hasText: 'Roster Tester' }).first().waitFor({ timeout: 20_000 })

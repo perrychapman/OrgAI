@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, Project, RunSummary } from '@shared/types'
 import {
-  BAND_BUDGET_FLOOR_PX,
   BAND_MAX_DEPTH,
-  BAND_MIN_AGENT_ROWS,
-  BAND_MIN_RUNS,
-  BAND_PX,
-  BAND_SLACK_PX,
-  bandBudget,
-  bandHeightEstimate,
-  fitBandModel,
   agentRowName,
   bandAgentState,
   bandAgents,
@@ -22,7 +14,6 @@ import {
   currentStep,
   decisionsSuffix,
   doneText,
-  emptyLine,
   groupOf,
   markLines,
   moreAgentsText,
@@ -33,11 +24,8 @@ import {
   type BandRow,
   type BandRunIn
 } from './dashboardBand'
-import { statusSentence } from './dashboard'
 
-describe('bandWorkFacts (walk-3 M1: one source for the status sentence and the band)', () => {
-  const sentence = (f: ReturnType<typeof bandWorkFacts>): string =>
-    statusSentence({ workingAgents: f.workingAgents, agentRuns: f.counts.working, workingRuns: f.counts.working, openRuns: f.total, pausedRuns: 0, closedWaiting: 0 })
+describe('bandWorkFacts (walk-3 M1: one source for the greeting brief and the band)', () => {
   it('counts no working agents in a run that waits on a decision', () => {
     const runs = [
       // The root still says "Delegating" while its report waits on a card: the run waits, nobody counts as working.
@@ -47,7 +35,6 @@ describe('bandWorkFacts (walk-3 M1: one source for the status sentence and the b
     const f = bandWorkFacts(runs, [project()], {})
     expect(f.workingAgents).toBe(0)
     expect(f.counts).toEqual({ working: 0, waiting: 1, idle: 1 })
-    expect(sentence(f)).toBe('2 runs open, none working.')
   })
   it('agrees with bandModel counts', () => {
     const runs = [
@@ -60,7 +47,6 @@ describe('bandWorkFacts (walk-3 M1: one source for the status sentence and the b
     const m = bandModel(runs, [project()], {}, NOW, { ...caps, bandRuns: 10 })
     expect(f.counts).toEqual(m.counts)
     expect(f.workingAgents).toBe(4)
-    expect(sentence(f)).toBe('4 agents working in 2 runs.')
   })
 })
 
@@ -93,6 +79,17 @@ describe('decisionLine and clipAtWord (walk-3 M5)', () => {
     ]
     const m = bandModel(runs, [project()], {}, NOW, caps)
     expect(m.projects[0].runs[0].line2).toBe('Allow: Run npm test')
+  })
+  it('never falls back to the root activity (it can carry the raw command) when the label is missing', () => {
+    const runs = [input('wait', [root({ state: 'delegating', activity: 'Needs approval: $ npm test' })], { decisions: 1 })]
+    expect(bandModel(runs, [project()], {}, NOW, caps).projects[0].runs[0].line2).toBe('')
+  })
+  it('keeps a waiting run inside the cap when many working runs are older or newer', () => {
+    const runs = [
+      ...['a', 'b', 'c', 'd'].map((id, i) => input(id, [root()], { summary: summary(id, { startedAt: 10 + i }) })),
+      input('wait', [root({ state: 'waiting' })], { decisions: 1, summary: summary('wait', { startedAt: 1 }) })
+    ]
+    expect(bandModel(runs, [project()], {}, NOW, caps).projects[0].runs.map((r) => r.id)).toEqual(['wait', 'd', 'c'])
   })
 })
 
@@ -248,10 +245,9 @@ describe('groups and words', () => {
     expect(countParts({ working: 2, waiting: 1, idle: 0 }).map((p) => p.text)).toEqual(['2 working', '1 waiting for you'])
     expect(countParts({ working: 0, waiting: 0, idle: 0 })).toEqual([])
     expect(decisionsSuffix(0)).toBe('')
-    expect(decisionsSuffix(1)).toBe(' · 1 decision in Needs you')
-    expect(decisionsSuffix(3)).toBe(' · 3 decisions in Needs you')
-    expect(emptyLine(0)).toBe('Nothing is running.')
-    expect(emptyLine(2)).toBe('Nothing is running. 2 paused, see Paused.')
+    // Plain text, no count: the decision itself lives in Waiting on you.
+    expect(decisionsSuffix(1)).toBe(' · Waiting on you')
+    expect(decisionsSuffix(3)).toBe(' · Waiting on you')
     expect(moreRunsLabel(1)).toBe('Show 1 more run')
     expect(moreRunsLabel(4)).toBe('Show 4 more runs')
     expect(moreAgentsText(1)).toBe('1 more agent')
@@ -264,7 +260,7 @@ describe('groups and words', () => {
 describe('bandModel', () => {
   const projects = [project(), project({ id: 'p2', name: 'Beta', kind: 'engagement', client: 'Acme' } as never)]
 
-  it('counts groups over every open run and orders working, waiting, idle then newest', () => {
+  it('counts groups over every open run and orders waiting first, then working, idle, newest first within a group', () => {
     const runs = [
       input('idle1', [root({ state: 'idle', activity: 'Waiting for you' })], { summary: summary('idle1', { status: 'idle', startedAt: 5 }) }),
       input('work-old', [root()], { summary: summary('work-old', { startedAt: 1 }) }),
@@ -273,9 +269,9 @@ describe('bandModel', () => {
     ]
     const m = bandModel(runs, projects, {}, NOW, { ...caps, bandRuns: 10 })
     expect(m.counts).toEqual({ working: 2, waiting: 1, idle: 1 })
-    expect(m.projects[0].runs.map((r) => r.id)).toEqual(['work-new', 'work-old', 'wait', 'idle1'])
-    expect(m.projects[0].runs[2].suffix).toBe(' · 2 decisions in Needs you')
-    expect(m.projects[0].runs[2].group).toBe('waiting')
+    expect(m.projects[0].runs.map((r) => r.id)).toEqual(['wait', 'work-new', 'work-old', 'idle1'])
+    expect(m.projects[0].runs[0].suffix).toBe(' · Waiting on you')
+    expect(m.projects[0].runs[0].group).toBe('waiting')
     expect(m.projects[0].runs[3].line2).toBe('Waiting for your reply')
   })
 
@@ -338,41 +334,24 @@ describe('bandModel', () => {
   })
 })
 
-describe('band height budget (walk-3 M4)', () => {
+describe('band caps (no height budget, docs/design/dashboard-overhaul.md 2.2)', () => {
   const projects = [project()]
   const many = (n: number): AgentInstance[] => [root(), ...Array.from({ length: n }, (_, i) => ag(`x${i}`, { startedAt: i + 1 }))]
   const runs = ['a', 'b', 'c'].map((id, i) => input(id, many(6), { summary: summary(id, { startedAt: 9 - i }) }))
   const wide = { ...caps, bandRuns: 5, bandAgents: 12, bandAgentsPerRun: 6 }
   const build = (c: typeof caps) => bandModel(runs, projects, {}, NOW, c)
 
-  it('estimates the height from projects, runs and rows', () => {
+  it('keeps the caps as given: nothing is fitted to a height', () => {
     const m = build(wide)
-    const rows = m.projects.flatMap((p) => p.runs).reduce((n, r) => n + r.rows.length, 0)
-    expect(bandHeightEstimate(m)).toBe(BAND_PX.chrome + BAND_PX.project + 3 * BAND_PX.run + rows * BAND_PX.row)
-  })
-  it('turns the other column into a budget with a floor, and none without one', () => {
-    expect(bandBudget(0)).toBeUndefined()
-    expect(bandBudget(Number.NaN)).toBeUndefined()
-    expect(bandBudget(100)).toBe(BAND_BUDGET_FLOOR_PX)
-    expect(bandBudget(500)).toBe(500 + BAND_SLACK_PX)
-  })
-  it('lowers the agent cap until the band fits, never under the minimum rows', () => {
-    const free = fitBandModel(wide, undefined, build)
-    const fitted = fitBandModel(wide, 460, build)
-    expect(bandHeightEstimate(fitted)).toBeLessThanOrEqual(460)
-    expect(bandHeightEstimate(fitted)).toBeLessThan(bandHeightEstimate(free))
-    const agentRows = (m: ReturnType<typeof build>): number => m.projects.flatMap((p) => p.runs).reduce((n, r) => n + r.rows.filter((x) => x.kind === 'agent').length, 0)
-    expect(agentRows(fitBandModel(wide, 1, build))).toBeGreaterThanOrEqual(BAND_MIN_AGENT_ROWS)
-    expect(fitBandModel(wide, 1, build).shownRuns).toBe(3)
-  })
-  it('then lowers the run cap to the narrow cap, keeping the rest behind "Show more"', () => {
+    expect(m.shownRuns).toBe(3)
+    expect(m.projects[0].runs.map((r) => r.rows.filter((x) => x.kind === 'agent').length)).toEqual([6, 6, 0])
     const five = ['a', 'b', 'c', 'd', 'e'].map((id, i) => input(id, many(2), { summary: summary(id, { startedAt: 9 - i }) }))
-    const buildFive = (c: typeof caps) => bandModel(five, projects, {}, NOW, c)
-    expect(fitBandModel(wide, undefined, buildFive).shownRuns).toBe(5)
-    const tight = fitBandModel(wide, 300, buildFive)
-    expect(tight.shownRuns).toBe(BAND_MIN_RUNS)
-    expect(tight.hiddenRuns).toBe(2)
-    expect(tight.total).toBe(5)
+    const wideModel = bandModel(five, projects, {}, NOW, wide)
+    expect(wideModel.shownRuns).toBe(5)
+    expect(wideModel.hiddenRuns).toBe(0)
+    const narrow = bandModel(five, projects, {}, NOW, { bandRuns: 3, bandAgents: 6, bandAgentsPerRun: 4 })
+    expect(narrow.shownRuns).toBe(3)
+    expect(narrow.hiddenRuns).toBe(2)
   })
 })
 

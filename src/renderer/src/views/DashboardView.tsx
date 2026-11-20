@@ -1,20 +1,40 @@
-import type { ReactElement } from 'react'
-import { useEffect, useState } from 'react'
-import { MessageSquare, Plus } from 'lucide-react'
+import type { KeyboardEvent, ReactElement } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { MessageSquare, Plus, SlidersHorizontal } from 'lucide-react'
 import { openNewChat, useAppStore } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
 import { Banner } from '../components/ui/Banner'
+import { Badge } from '../components/ui/Badge'
+import { Icon } from '../components/ui/Icon'
 import { forgetNoticeText } from '../lib/dashboard'
+import { isDevBuild } from '../lib/buildChannel'
+import { tokenMs } from '../lib/useExitPresence'
+import {
+  SECTION_TITLES,
+  atEndText,
+  moveSection,
+  movedText,
+  placeSections,
+  pruneLayoutPins,
+  resetLayout,
+  setHidden,
+  togglePin as togglePinIn,
+  PIN_LIMIT,
+  type DashSectionId
+} from '../lib/dashboardLayout'
 import { hasParkedDraft } from '../components/dashboard/NewProjectForm'
-import { HeroBand, useDecisionTotal, type DashboardAnnouncement } from '../components/dashboard/HeroBand'
-import { EndedRegion, NeedsYouRegion, PausedRegion } from '../components/dashboard/AttentionColumn'
+import { DashboardContext, type DashboardAnnouncement, type DashboardCtx } from '../components/dashboard/DashboardContext'
+import { useDashboardLayout } from '../components/dashboard/useDashboardLayout'
+import { Greeting } from '../components/dashboard/Greeting'
+import { NeedsYouRegion } from '../components/dashboard/AttentionColumn'
 import { useLastSeen } from '../components/dashboard/useLastSeen'
 import { ProjectsGrid } from '../components/dashboard/ProjectsGrid'
 import { RightNowBand } from '../components/dashboard/RightNowBand'
-import { ActivityStrip } from '../components/dashboard/ActivityStrip'
+import { ResumeSection } from '../components/dashboard/ResumeSection'
+import { TodaySection } from '../components/dashboard/TodaySection'
+import { WeekSection } from '../components/dashboard/WeekSection'
 import { SetupGaps } from '../components/dashboard/SetupGaps'
-import { useBandBudget, useDashCaps, useShortRegion } from '../components/dashboard/dashCaps'
-import { useLiveRuns } from '../components/dashboard/useDashboardData'
+import { useDashCaps } from '../components/dashboard/dashCaps'
 import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
 import { FirstLaunch } from '../components/dashboard/FirstLaunch'
 import { SecretNotices } from '../components/dashboard/SecretNotices'
@@ -23,9 +43,30 @@ import AppNavigateBanner from '../components/AppNavigateBanner'
 /** The last openNewProject() request this view acted on, so a request is consumed once. */
 let consumedNewProjectRequest = 0
 
+const CONTROL = (id: DashSectionId, testId: string): string => `[data-testid=dash-section-controls][data-section="${id}"] [data-testid="${testId}"]`
+
+/** Focus an element found after React has rendered (a moved section's DOM node may have been re-inserted). */
+function focusLater(selector: string): void {
+  requestAnimationFrame(() => document.querySelector<HTMLElement>(selector)?.focus({ preventScroll: false }))
+}
+
+/** One `.motion-ring` on a section's slot after a move (restarts on a second move); none under reduced motion. */
+function ringSection(id: DashSectionId): void {
+  if (tokenMs('--dur-slow') < 1) return
+  requestAnimationFrame(() => {
+    const el = document.querySelector<HTMLElement>(`[data-testid=dash-section][data-section="${id}"]`)
+    if (!el) return
+    el.classList.remove('motion-ring')
+    void el.offsetWidth
+    el.classList.add('motion-ring')
+    el.addEventListener('animationend', () => el.classList.remove('motion-ring'), { once: true })
+  })
+}
+
 /**
- * The home page (docs/design/dashboard-2.md): status bar, then the work area (Needs you, Right now, Last 14 days, To set
- * up, Paused, Recently ended), then the project tiles. First launch keeps dashboard.md section 6.
+ * The home page (docs/design/dashboard-overhaul.md): the greeting with its brief, then the fixed sections (Waiting on you,
+ * To finish setting up), then the five arrangeable sections in the person's order, then the footer. First launch keeps
+ * the start choice under the greeting.
  */
 export default function DashboardView(): ReactElement {
   const projects = useAppStore((s) => s.projects)
@@ -35,11 +76,11 @@ export default function DashboardView(): ReactElement {
   const newProjectRequest = useAppStore((s) => s.newProjectRequest)
   const forgetNotice = useAppStore((s) => s.forgetNotice)
   const setForgetNotice = useAppStore((s) => s.setForgetNotice)
-  const { lastSeen, clearedAt, markAllSeen } = useLastSeen()
+  const { lastSeen, firstVisit } = useLastSeen()
   // A form parked by its connection link comes back open.
   const [formOpen, setFormOpen] = useState(() => hasParkedDraft())
   const [announce, setAnnounce] = useState<DashboardAnnouncement | null>(null)
-  const say = (text: string): void => setAnnounce((a) => ({ text, seq: (a?.seq ?? 0) + 1 }))
+  const say = useCallback((text: string): void => setAnnounce((a) => ({ text, seq: (a?.seq ?? 0) + 1 })), [])
 
   useEffect(() => {
     void loadAppInfo()
@@ -56,15 +97,122 @@ export default function DashboardView(): ReactElement {
 
   const mockAvailable = !!appInfo?.mockAdapter
   const empty = projects.length === 0
-  const [workEl, setWorkEl] = useState<HTMLDivElement | null>(null)
-  const caps = useDashCaps(workEl)
-  // No open run: the band is one line and the strip takes its column at the tall size (dashboard-2.md 6.7, 7.5).
-  const nowEmpty = useLiveRuns().filter((r) => r.summary.status !== 'paused').length === 0
-  // No decision (the bell's count): Needs you is hidden and the band leads (walk-3 M4).
-  const needsEmpty = useDecisionTotal() === 0
-  const short = useShortRegion(workEl)
-  const bandBudget = useBandBudget(workEl)
 
+  // ---- Layout and customise (sections 4.2, 6) ----
+  const [layout, updateLayout] = useDashboardLayout()
+  const layoutRef = useRef(layout)
+  layoutRef.current = layout
+  const [customising, setCustomising] = useState(false)
+  const [pageEl, setPageEl] = useState<HTMLDivElement | null>(null)
+  const caps = useDashCaps(pageEl)
+  const [emptyOf, setEmptyOf] = useState<Partial<Record<DashSectionId, boolean>>>({})
+  const reportEmpty = useCallback((id: DashSectionId, isEmpty: boolean) => setEmptyOf((m) => (m[id] === isEmpty ? m : { ...m, [id]: isEmpty })), [])
+  const customiseRef = useRef<HTMLButtonElement>(null)
+
+  // A deleted project's pin goes with it. Only once projects are known, so a load in progress never drops pins.
+  useEffect(() => {
+    if (projects.length > 0) updateLayout((l) => pruneLayoutPins(l, projects.map((p) => p.id)))
+  }, [projects, updateLayout])
+
+  const visible = layout.order.filter((id) => !layout.hidden.includes(id) && emptyOf[id] === false)
+  const placed = placeSections(visible, caps.wide && !customising)
+  const spanKey = placed.map((p) => `${p.id}:${p.span}`).join(',')
+
+  const move = useCallback(
+    (id: DashSectionId, dir: 'up' | 'down') => {
+      const next = moveSection(layoutRef.current, id, dir)
+      if (next === layoutRef.current) {
+        say(atEndText(id, dir))
+        return
+      }
+      updateLayout(() => next)
+      say(movedText(next, id, dir))
+      focusLater(CONTROL(id, `dash-section-${dir}`))
+      ringSection(id)
+    },
+    [say, updateLayout]
+  )
+  const setSectionHidden = useCallback(
+    (id: DashSectionId, hide: boolean) => {
+      updateLayout((l) => setHidden(l, id, hide))
+      say(`${SECTION_TITLES[id]} ${hide ? 'hidden' : 'shown'}.`)
+      focusLater(CONTROL(id, hide ? 'dash-section-show' : 'dash-section-hide'))
+    },
+    [say, updateLayout]
+  )
+  const togglePin = useCallback(
+    (projectId: string, name: string): boolean => {
+      const prev = layoutRef.current
+      const next = togglePinIn(prev, projectId)
+      if (next === prev) {
+        say(`The pin limit is ${PIN_LIMIT}.`)
+        return false
+      }
+      updateLayout(() => next)
+      // Pins keep pin order, so a new pin is first only when it is the only one; otherwise say where it went.
+      const at = next.pinned.indexOf(projectId)
+      say(at < 0 ? `Unpinned ${name}.` : at === 0 ? `Pinned ${name}. It is now first.` : `Pinned ${name}. It is pin ${at + 1} of ${next.pinned.length}.`)
+      return true
+    },
+    [say, updateLayout]
+  )
+  const reset = (): void => {
+    updateLayout(resetLayout)
+    say('Layout reset to the default.')
+  }
+  const leaveCustomise = (): void => {
+    setCustomising(false)
+    requestAnimationFrame(() => customiseRef.current?.focus({ preventScroll: true }))
+  }
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
+    if (!customising || e.key !== 'Escape' || e.defaultPrevented) return
+    const t = e.target as HTMLElement
+    // A popover, menu or dialog takes its own Escape first.
+    if (t.closest('dialog, [role=dialog], [role=alertdialog], [role=menu], [role=listbox], [popover], .popover-panel')) return
+    e.preventDefault()
+    leaveCustomise()
+  }
+
+  const ctx = useMemo<DashboardCtx>(
+    () => ({
+      layout,
+      customising,
+      caps,
+      announce: say,
+      togglePin,
+      move,
+      setSectionHidden,
+      reportEmpty,
+      spanOf: (id) => placed.find((p) => p.id === id)?.span ?? 'full'
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [layout, customising, caps, say, togglePin, move, setSectionHidden, reportEmpty, spanKey]
+  )
+
+  const sections: Record<DashSectionId, ReactElement> = {
+    resume: <ResumeSection key="resume" lastSeen={lastSeen} />,
+    today: <TodaySection key="today" />,
+    working: <RightNowBand key="working" caps={caps} onAnnounce={say} />,
+    week: <WeekSection key="week" />,
+    projects: <ProjectsGrid key="projects" onAnnounce={say} />
+  }
+
+  const customiseButton = empty ? undefined : (
+    <button
+      ref={customiseRef}
+      type="button"
+      className="btn ghost dash-customise"
+      data-testid="dash-customise"
+      aria-expanded={customising}
+      aria-controls={customising ? 'dash-customise-bar' : undefined}
+      onClick={() => (customising ? leaveCustomise() : setCustomising(true))}
+    >
+      <Icon icon={SlidersHorizontal} size="sm" />
+      <span className="dash-customise-label">{customising ? 'Done' : 'Customise'}</span>
+    </button>
+  )
+
+  const version = appInfo?.version
   return (
     <>
       <div className="topbar">
@@ -82,46 +230,43 @@ export default function DashboardView(): ReactElement {
         )}
       </div>
       <AppNavigateBanner />
-      <div className="dashboard" data-testid="dashboard">
-        <div className="dashboard-grid">
-          <SecretNotices />
-          {forgetNotice && (
-            <div className="dash-forget-notice">
-              <Banner tone="success" testId="forget-notice" onDismiss={() => setForgetNotice(null)}>
-                {forgetNoticeText(forgetNotice.name, forgetNotice.result)}
-              </Banner>
-            </div>
-          )}
-          <HeroBand firstLaunch={empty} announce={announce} lastSeen={lastSeen} clearedAt={clearedAt} />
-          {empty ? (
-            <FirstLaunch mockAvailable={mockAvailable} />
-          ) : (
-            <>
-              {/* DOM order is reading order: needs, now, strip, setup, paused, ended (dashboard-2.md 2.1). */}
-              <div className="dash-work" ref={setWorkEl} data-now-empty={nowEmpty ? '' : undefined} data-needs-empty={needsEmpty ? '' : undefined}>
-                <div className="dash-area dash-area-needs">
-                  <NeedsYouRegion caps={caps} onAnnounce={say} />
-                </div>
-                <div className="dash-area dash-area-now">
-                  <RightNowBand caps={caps} budget={bandBudget} onAnnounce={say} />
-                </div>
-                <div className="dash-area dash-area-strip">
-                  <ActivityStrip size={nowEmpty ? 'tall' : 'compact'} dense={short && !needsEmpty} />
-                </div>
-                <div className="dash-area dash-area-setup">
-                  <SetupGaps caps={caps} />
-                </div>
-                <div className="dash-area dash-area-paused">
-                  <PausedRegion caps={caps} />
-                </div>
-                <div className="dash-area dash-area-ended">
-                  <EndedRegion caps={caps} lastSeen={lastSeen} clearedAt={clearedAt} onMarkAllSeen={markAllSeen} />
-                </div>
+      <div className="dashboard" data-testid="dashboard" data-customising={customising ? '' : undefined} onKeyDown={onKeyDown}>
+        <DashboardContext.Provider value={ctx}>
+          <div className="dash-page" ref={setPageEl} data-tracks={caps.wide && !customising ? '2' : '1'}>
+            <SecretNotices />
+            {forgetNotice && (
+              <div className="dash-forget-notice">
+                <Banner tone="success" testId="forget-notice" onDismiss={() => setForgetNotice(null)}>
+                  {forgetNoticeText(forgetNotice.name, forgetNotice.result)}
+                </Banner>
               </div>
-              <ProjectsGrid onAnnounce={say} />
-            </>
-          )}
-        </div>
+            )}
+            <Greeting firstLaunch={empty} announce={announce} onAnnounce={say} customise={customiseButton} lastSeen={lastSeen} firstVisit={firstVisit} />
+            {!empty && customising && (
+              <div className="dash-customise-bar motion-fade" id="dash-customise-bar" data-testid="dash-customise-bar">
+                <p>Move, hide or show sections. Changes save as you go.</p>
+                <Button variant="ghost" size="sm" testId="dash-customise-reset" onClick={reset}>
+                  Reset layout
+                </Button>
+              </div>
+            )}
+            {empty ? (
+              <FirstLaunch mockAvailable={mockAvailable} />
+            ) : (
+              <>
+                {/* Fixed: first and second, never hidden or moved (a decision or a blocker must not be hideable). */}
+                <NeedsYouRegion caps={caps} onAnnounce={say} />
+                <SetupGaps caps={caps} />
+                <div className="dash-arranged">{layout.order.map((id) => sections[id])}</div>
+              </>
+            )}
+            <footer className="dash-footer" data-testid="dashboard-app-facts">
+              {version && <span className="dash-num">OrgAI {version}</span>}
+              {isDevBuild(version) && <Badge tone="info">Dev</Badge>}
+              {appInfo?.mockAdapter && <Badge tone="warning">Mock adapter</Badge>}
+            </footer>
+          </div>
+        </DashboardContext.Provider>
       </div>
       {!empty && <NewProjectDialog open={formOpen} onClose={() => setFormOpen(false)} mockAvailable={mockAvailable} />}
     </>

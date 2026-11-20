@@ -10,7 +10,6 @@ import {
   forgetNoticeText,
   removeConfirmLabel,
   tileRemoveLabel,
-  FIRST_LAUNCH_LINE,
   clockLabel,
   pausedRuns,
   resetsAtText,
@@ -19,10 +18,8 @@ import {
   readLastSeen,
   resetsInLabel,
   sinceLastSeen,
-  statusSentence,
   writeLastSeen,
-  type EndedRunLike,
-  type StatusInput
+  type EndedRunLike
 } from './dashboard'
 
 const MIN = 60_000
@@ -202,14 +199,12 @@ describe('sinceLastSeen', () => {
     const second = run('c2', 2, { status: 'running', sessionId: 's', resumedFrom: 'c1' })
     expect(sinceLastSeen([first, second], 0, NOW).items).toHaveLength(0)
   })
-  it('keeps a run cut while waiting until clearedAt passes it, other kinds follow lastSeen', () => {
+  it('a run cut while waiting follows lastSeen like the others (the Clear time is retired)', () => {
     const cut = run('cut', 1, { endedAt: T0 + 100, endedBy: 'app', endedWhile: 'waiting' })
     const done = run('done', 2, { endedAt: T0 + 100 })
     const rows = [cut, done]
-    const lastSeen = T0 + 500
-    expect(sinceLastSeen(rows, lastSeen, NOW, { clearedAt: T0 }).items.map((i) => i.run.id)).toEqual(['cut'])
-    expect(sinceLastSeen(rows, lastSeen, NOW, { clearedAt: T0 + 500 }).items).toHaveLength(0)
-    expect(sinceLastSeen(rows, lastSeen, NOW).items).toHaveLength(0)
+    expect(sinceLastSeen(rows, T0 + 500, NOW).items).toHaveLength(0)
+    expect(sinceLastSeen(rows, T0, NOW).items.map((i) => i.kind).sort()).toEqual(['closed-waiting', 'finished'])
   })
 })
 
@@ -268,45 +263,6 @@ describe('planStepLabel', () => {
     expect(planStepLabel(undefined)).toBeNull()
     expect(planStepLabel({ steps: [] })).toBeNull()
     expect(planStepLabel(plan('active', 'skipped'))).toBeNull()
-  })
-})
-
-describe('statusSentence', () => {
-  const base: StatusInput = { workingAgents: 0, agentRuns: 0, workingRuns: 0, openRuns: 0, pausedRuns: 0, closedWaiting: 0 }
-  const s = (over: Partial<StatusInput>): string => statusSentence({ ...base, ...over })
-  it('names working agents and their runs', () => {
-    expect(s({ workingAgents: 1, agentRuns: 1, workingRuns: 1, openRuns: 1 })).toBe('1 agent working in 1 run.')
-    expect(s({ workingAgents: 3, agentRuns: 2, workingRuns: 2, openRuns: 4 })).toBe('3 agents working in 2 runs.')
-  })
-  it('falls back to working runs, then open runs, then nothing', () => {
-    expect(s({ workingRuns: 2, openRuns: 2 })).toBe('2 runs working.')
-    expect(s({ workingRuns: 1, openRuns: 1 })).toBe('1 run working.')
-    expect(s({ openRuns: 1 })).toBe('1 run open, none working.')
-    expect(s({ openRuns: 3 })).toBe('3 runs open, none working.')
-    expect(s({})).toBe('Nothing is running.')
-  })
-  it('never mentions decisions', () => {
-    expect(s({ openRuns: 2 })).not.toMatch(/decision|need/i)
-  })
-  it('adds paused, with the soonest resume time when there is one', () => {
-    expect(s({ pausedRuns: 2 })).toBe('Nothing is running. 2 paused.')
-    const at = new Date(2026, 10, 7, 14, 5).getTime()
-    const time = new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    expect(s({ pausedRuns: 1, pausedUntil: at })).toBe(`Nothing is running. 1 paused until ${time}.`)
-    expect(s({ pausedRuns: 1, pausedUntil: null })).toBe('Nothing is running. 1 paused.')
-  })
-  it('keeps the runs cut by a quit', () => {
-    expect(s({ closedWaiting: 1 })).toBe('Nothing is running. 1 was waiting on you when OrgAI closed.')
-    expect(s({ closedWaiting: 2, openRuns: 1, workingRuns: 1, pausedRuns: 1 })).toBe('1 run working. 1 paused. 2 were waiting on you when OrgAI closed.')
-  })
-  it('says "Nothing needs you." last, only when asked, never a number', () => {
-    expect(s({ nothingNeedsYou: true })).toBe('Nothing is running. Nothing needs you.')
-    expect(s({ nothingNeedsYou: true, workingAgents: 1, agentRuns: 1, pausedRuns: 1, closedWaiting: 1 })).toBe('1 agent working in 1 run. 1 paused. 1 was waiting on you when OrgAI closed. Nothing needs you.')
-    expect(s({ nothingNeedsYou: false })).toBe('Nothing is running.')
-    expect(s({ firstLaunch: true, nothingNeedsYou: true })).toBe(`Welcome to OrgAI. ${FIRST_LAUNCH_LINE}`)
-  })
-  it('welcomes on first launch', () => {
-    expect(s({ firstLaunch: true, workingAgents: 4 })).toBe(`Welcome to OrgAI. ${FIRST_LAUNCH_LINE}`)
   })
 })
 

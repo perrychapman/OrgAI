@@ -154,11 +154,9 @@ export function sinceLastSeen<T extends EndedRunLike>(
   summaries: readonly T[],
   lastSeen: number,
   now: number,
-  opts: { cap?: number; clearedAt?: number } = {}
+  opts: { cap?: number } = {}
 ): { items: EndedItem<T>[]; more: number } {
   const cap = Math.max(0, opts.cap ?? SINCE_LAST_SEEN_CAP)
-  // M1: a run cut while it waited on the user stays until "Mark all seen" (clearedAt), whatever the last-seen time says.
-  const closedWaitingSince = Math.min(lastSeen, opts.clearedAt ?? lastSeen)
   const all: EndedItem<T>[] = []
   for (const run of chainNewest(summaries)) {
     if (run.status !== 'finished' && run.status !== 'error') continue
@@ -166,7 +164,7 @@ export function sinceLastSeen<T extends EndedRunLike>(
     const kind = endedKind(run)
     if (!kind || kind === 'paused') continue
     const endedAt = run.endedAt ?? run.startedAt
-    if (endedAt <= (kind === 'closed-waiting' ? closedWaitingSince : lastSeen) || endedAt < now - SINCE_WINDOW_MS) continue
+    if (endedAt <= lastSeen || endedAt < now - SINCE_WINDOW_MS) continue
     all.push({ run, kind, endedAt })
   }
   all.sort((a, b) => b.endedAt - a.endedAt || b.run.startedAt - a.run.startedAt || a.run.id.localeCompare(b.run.id))
@@ -221,49 +219,6 @@ export function planStepLabel(plan: { status?: string; steps: readonly { status:
 }
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
-
-export const FIRST_LAUNCH_LINE = 'Start a project or just chat. Nothing runs until you say so.'
-
-export interface StatusInput {
-  firstLaunch?: boolean
-  /** Agents of open runs in starting, thinking, tool or delegating. */
-  workingAgents: number
-  /** Open runs holding at least one of those agents. */
-  agentRuns: number
-  /** Open runs whose status word is Running and that are not in Needs you. */
-  workingRuns: number
-  /** Open runs (live, not paused). */
-  openRuns: number
-  pausedRuns: number
-  /** The soonest `pausedUntil` of paused runs that resume by themselves (epoch ms). */
-  pausedUntil?: number | null
-  /** Runs OrgAI cut while they waited on the user. */
-  closedWaiting: number
-  /** True when there are projects and no decision is open (the bell's count is 0): the sentence says so. */
-  nothingNeedsYou?: boolean
-}
-
-/**
- * The status bar's sentence (docs/design/dashboard-2.md 4.1): what is working, what is paused, what was cut by a quit.
- * Decisions are never named (Needs you sits beside it). Parts are joined with ". " and the whole ends with ".".
- */
-export function statusSentence(input: StatusInput): string {
-  if (input.firstLaunch) return `Welcome to OrgAI. ${FIRST_LAUNCH_LINE}`
-  const parts: string[] = []
-  if (input.workingAgents > 0) parts.push(`${plural(input.workingAgents, 'agent', 'agents')} working in ${plural(Math.max(1, input.agentRuns), 'run', 'runs')}`)
-  else if (input.workingRuns > 0) parts.push(`${plural(input.workingRuns, 'run', 'runs')} working`)
-  else if (input.openRuns > 0) parts.push(`${plural(input.openRuns, 'run', 'runs')} open, none working`)
-  else parts.push('Nothing is running')
-  if (input.pausedRuns > 0) {
-    const until = input.pausedUntil
-    const when = typeof until === 'number' && Number.isFinite(until) ? new Date(until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
-    parts.push(when ? `${input.pausedRuns} paused until ${when}` : `${input.pausedRuns} paused`)
-  }
-  const cut = Math.max(0, Math.floor(input.closedWaiting))
-  if (cut > 0) parts.push(`${cut} ${cut === 1 ? 'was' : 'were'} waiting on you when OrgAI closed`)
-  if (input.nothingNeedsYou) parts.push('Nothing needs you')
-  return `${parts.join('. ')}.`
-}
 
 /**
  * "resets in under a minute", "resets in 25 min", "resets in 2 h 10 min", and from 24 h on "resets Thu 09:00".
