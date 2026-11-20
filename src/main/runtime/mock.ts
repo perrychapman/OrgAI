@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { validModelId } from '../connections/codexAccount'
 import { normalizeTranscriptContent, normalizeTranscriptMedia } from './transcriptMedia'
 import { dirname, join } from 'node:path'
-import type { AgentInstance, ConnectionId, Effort, ModelTier, ImageAttachment, McpServerSpec, PermissionMode, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock } from '@shared/types'
+import type { AgentInstance, ConnectionId, Effort, ModelTier, ImageAttachment, McpServerSpec, PermissionMode, PermissionSuggestion, PluginSpec, ProviderId, Role, RunEvent, RunPlan, TokenUsage, TranscriptBlock, WorktreeStatus } from '@shared/types'
 import { CHAT_HARNESS_TOOLS, ENGAGEMENT_CONTEXT_TOOL, HARNESS_PROJECT_ID, KNOWLEDGE_FACT_MAX_CHARS, KNOWLEDGE_RECALL_TOOL, KNOWLEDGE_TOOL, MCP_HARNESS_TOOLS, OUTPUT_TOOLS, SKILLS_PROJECT_ID, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS, SPAWN_TOOL } from '@shared/types'
 import { cleanRequiredReports, effortOptionsFor, mcpServersForRole, newId, projectKindOf, settingTier, staffingGoalOf } from '@shared/defaults'
 import { PermissionModeRefusal } from './permissionModeRefusal'
@@ -52,7 +52,9 @@ import { waitingNote, waitingNoteExcluded } from './waitingNote'
  *
  * Prompt markers (default script only): [mock:auth-fail], [mock:skill], [mock:mcp-midrun], [mock:config-change],
  * [mock:no-price], [mock:computed-cost], [mock:title-fail] (complete()), [mock:deep-tree] (deepTreeSteps: root ->
- * mock-lead -> mock-lead-report-1 / -2, every report finishes) and [mock:fatigue] (fatigueSteps): the root
+ * mock-lead -> mock-lead-report-1 / -2, every report finishes), [mock:factory-floor] / [mock:factory-floor-pause]
+ * (factoryFloorSteps: 39 spawns at depth 3, every agent state, worktree statuses, messages, a plan, agent.remove; -pause
+ * ends at a usage limit; see docs/agent-notes/core-runtime.md "Factory Floor mock") and [mock:fatigue] (fatigueSteps): the root
  * runs `cd <project>/.claude/worktrees/agent-x && npm test` with a provider-style compound rule suggestion (the card
  * offers `Bash(npm test:*)`), a report edits `<parent of project>/sibling-notes/README.md` with setMode acceptEdits +
  * addDirectories suggestions, then the root runs `cd <project>/sub && npm test` (no card once `Bash(npm test:*)` is
@@ -201,7 +203,15 @@ export type MockStep =
       onAllow?: string
       /** After a deny: the root says this and the turn ends (the rest of the steps are skipped). */
       onDeny?: string
+      /** Stay in state 'tool' for this many ms (cut short by interrupt and stop), so a test can observe it. */
+      holdMs?: number
     }
+  /** Set an agent's state (and activity) as written, for states a script cannot otherwise rest in (starting, idle, error). */
+  | { type: 'agentState'; agent: string; state: AgentInstance['state']; activity?: string }
+  /** Give an agent a worktree record as written (no git is touched), for views that show worktree statuses. */
+  | { type: 'worktree'; agent: string; status: WorktreeStatus; mergeTarget?: 'main' | 'parent'; parentAgent?: string; changedFiles?: string[] }
+  /** Remove an agent from the run (agent.remove), as an adapter does for a report whose start failed. */
+  | { type: 'remove'; agent: string }
   /** Spawn a report. `role` is a slug; default: the first role the parent may spawn. */
   | { type: 'spawn'; id: string; role?: string; description: string; parent?: string; /** Run staffing: the tier and effort stated on the spawn call itself. */ tier?: ModelTier; effort?: Effort; /** Handle; default <role>-<n>. */ name?: string; /** The brief it receives; default `description`. */ brief?: string; /** Context pack (contextPack.ts): paths the lead read, inlined into the report's first message. */ files?: string[] }
   /** An agent messages another by handle or role slug (SendMessage). `from` defaults to the root. */
@@ -886,6 +896,86 @@ export function deepTreeSteps(leadSlug: string, reportSlug: string): MockStep[] 
     { type: 'finish', id: MOCK_DEEP_LEAD, result: 'Both halves done by mock-lead-report-1 and mock-lead-report-2.' },
     { type: 'text', text: 'The lead finished: both halves are done. Anything else?' }
   ]
+}
+
+/** Trigger tokens (work runs, default script): the Factory Floor tour (factoryFloorSteps); -pause ends it at a usage limit. */
+export const FACTORY_FLOOR_TOKEN = '[mock:factory-floor]'
+export const FACTORY_FLOOR_PAUSE_TOKEN = '[mock:factory-floor-pause]'
+/** The root's sentences before and after the final held tool step. */
+export const MOCK_FACTORY_FLOOR_READY = 'MOCK_FACTORY_FLOOR_READY'
+export const MOCK_FACTORY_FLOOR_DONE = 'MOCK_FACTORY_FLOOR_DONE'
+/** How long the last tool step keeps its agent in state 'tool' (ms). */
+export const FACTORY_FLOOR_TOOL_HOLD_MS = 5000
+/** Agent ids (= handles) of the tour: ff-l1..3 leads, ff-s11..33 sub-leads, ff-w111..333 workers (3 + 9 + 27 = 39). */
+export const FACTORY_FLOOR_IDS = {
+  leads: [1, 2, 3].map((a) => `ff-l${a}`),
+  subs: [1, 2, 3].flatMap((a) => [1, 2, 3].map((b) => `ff-s${a}${b}`)),
+  workers: [1, 2, 3].flatMap((a) => [1, 2, 3].flatMap((b) => [1, 2, 3].map((c) => `ff-w${a}${b}${c}`)))
+}
+
+/**
+ * The [mock:factory-floor] turn: 39 spawns (root -> 3 leads -> 9 sub-leads -> 27 workers, depth 3), a plan owned by two
+ * agents, three finished sub-trees' workers, then every state left standing at the same time: ff-w121 starting, ff-w122
+ * idle, ff-w123 error, ff-w131/2/3 and ff-s13 done, ff-w211 waiting (a background permission card the user answers),
+ * leads and sub-leads delegating, and ff-w111 in state 'tool' for FACTORY_FLOOR_TOOL_HOLD_MS after MOCK_FACTORY_FLOOR_READY
+ * (its toolCalls rises by one per Read). Worktree records (no git): ff-w111 active, ff-w112 merging, ff-w113 merged into
+ * main, ff-w131 merged into its parent ff-s13, ff-w132 review, ff-w133 held, ff-w211 empty, ff-w212 conflict, ff-w213
+ * removed, ff-s13 waiting-children. Messages: lead to sub-lead, worker to the user, worker to an unknown handle. ff-w333 is
+ * removed (agent.remove). With `pause` the turn ends at a usage limit (RunManager pauses the run).
+ */
+export function factoryFloorSteps(leadSlug: string, reportSlug: string, pause = false): MockStep[] {
+  const { leads, subs, workers } = FACTORY_FLOOR_IDS
+  const steps: MockStep[] = [
+    { type: 'text', text: 'Setting up the floor: three leads, nine sub-leads, twenty-seven workers.' },
+    { type: 'plan', goal: 'Run the factory floor tour', steps: [{ title: 'Frame the floor', owner: 'ff-l1' }, { title: 'Run the line', owner: 'ff-w111' }, 'Ship it'] }
+  ]
+  leads.forEach((lead, a) => {
+    steps.push({ type: 'spawn', id: lead, name: lead, role: leadSlug, description: `Lead ${a + 1}` })
+    for (let b = 0; b < 3; b++) {
+      const sub = subs[a * 3 + b]!
+      steps.push({ type: 'spawn', id: sub, name: sub, parent: lead, role: leadSlug, description: `Sub-lead ${a + 1}.${b + 1}` })
+      for (let c = 0; c < 3; c++) {
+        const w = workers[(a * 3 + b) * 3 + c]!
+        steps.push({ type: 'spawn', id: w, name: w, parent: sub, role: reportSlug, description: `Worker ${a + 1}.${b + 1}.${c + 1}` })
+      }
+    }
+  })
+  const wt = (agent: string, status: WorktreeStatus, extra: { mergeTarget?: 'main' | 'parent'; parentAgent?: string } = {}): MockStep => ({
+    type: 'worktree', agent, status, changedFiles: [`src/${agent}.ts`], ...extra
+  })
+  steps.push(
+    { type: 'message', from: 'ff-l1', to: 'ff-s11', text: 'Start with the intake side.' },
+    { type: 'message', from: 'ff-w111', to: 'user', text: 'Status for you: the line is running.' },
+    { type: 'message', from: 'ff-w112', to: 'nobody-here', text: 'Anyone there?' },
+    wt('ff-w111', 'active'),
+    wt('ff-w112', 'merging'),
+    wt('ff-w113', 'merged', { mergeTarget: 'main' }),
+    wt('ff-w131', 'merged', { mergeTarget: 'parent', parentAgent: 'ff-s13' }),
+    wt('ff-w132', 'review'),
+    wt('ff-w133', 'held'),
+    wt('ff-w211', 'empty'),
+    wt('ff-w212', 'conflict'),
+    wt('ff-w213', 'removed'),
+    { type: 'finish', id: 'ff-w131', result: 'Done.' },
+    { type: 'finish', id: 'ff-w132', result: 'Done.' },
+    { type: 'finish', id: 'ff-w133', result: 'Done.' },
+    wt('ff-s13', 'waiting-children'),
+    { type: 'finish', id: 'ff-s13', result: 'All three workers are done.' },
+    { type: 'agentState', agent: 'ff-w121', state: 'starting', activity: 'Starting…' },
+    { type: 'agentState', agent: 'ff-w122', state: 'idle', activity: 'Waiting for you' },
+    { type: 'agentState', agent: 'ff-w123', state: 'error', activity: 'Ended without a result' },
+    { type: 'remove', agent: 'ff-w333' },
+    { type: 'planUpdate', steps: [{ id: 'p1', status: 'in_progress' }, { id: 'p2', status: 'blocked', note: 'Waiting on a decision' }] }
+  )
+  for (const n of [1, 2, 3]) steps.push({ type: 'tool', agent: 'ff-w111', name: 'Read', input: { file_path: `src/part-${n}.ts` }, result: `// part ${n}\n` })
+  steps.push(
+    { type: 'tool', agent: 'ff-w211', name: 'Bash', input: { command: 'npm test' }, ask: true, background: true, result: 'ok' },
+    { type: 'text', text: MOCK_FACTORY_FLOOR_READY },
+    { type: 'tool', agent: 'ff-w111', name: 'Read', input: { file_path: 'src/last.ts' }, result: '// last\n', holdMs: FACTORY_FLOOR_TOOL_HOLD_MS },
+    { type: 'text', text: MOCK_FACTORY_FLOOR_DONE }
+  )
+  if (pause) steps.push({ type: 'rateLimit', untilInMs: 60 * 60 * 1000 })
+  return steps
 }
 
 /** Trigger token (engagement work runs, default script): the root records what it learned in the knowledge graph (knowledgeSteps). */
@@ -2172,6 +2262,10 @@ export class MockSession implements RuntimeSession {
       const lead = this.firstSpawnableSlug(this.root)
       return deepTreeSteps(lead, this.firstSpawnableSlug(this.roleBySlug(lead), lead))
     }
+    if (!this.isSetup && this.ctx.run.kind === 'work' && !this.ctx.run.quick && this.script.work === DEFAULT_WORK && (this.ctx.prompt.includes(FACTORY_FLOOR_TOKEN) || this.ctx.prompt.includes(FACTORY_FLOOR_PAUSE_TOKEN))) {
+      const lead = this.firstSpawnableSlug(this.root)
+      return factoryFloorSteps(lead, this.firstSpawnableSlug(this.roleBySlug(lead), lead), this.ctx.prompt.includes(FACTORY_FLOOR_PAUSE_TOKEN))
+    }
     if (this.answersRevisions() && isReviseMessage(this.ctx.prompt)) {
       // A revise request that started or continued this run: answer it and go idle (no default script).
       return [{ type: 'text', text: MOCK_REVISE_START }, { type: 'reviseOutput', message: this.ctx.prompt }]
@@ -2440,6 +2534,28 @@ export class MockSession implements RuntimeSession {
       case 'wait':
         await this.pause(step.ms)
         return
+      case 'agentState': {
+        this.setState(step.agent, step.state, step.activity)
+        return
+      }
+      case 'worktree': {
+        const a = this.ensureAgent(step.agent)
+        const parent = step.parentAgent ? this.agents.get(step.parentAgent) : undefined
+        a.worktree = {
+          path: join(this.ctx.project.path, '.claude', 'worktrees', step.agent),
+          branch: `orgai/${step.agent}`,
+          status: step.status,
+          ...(step.changedFiles ? { changedFiles: step.changedFiles } : {}),
+          ...(step.mergeTarget ? { mergeTarget: step.mergeTarget } : {}),
+          ...(parent ? { parentAgentId: parent.id, parentBranch: `orgai/${parent.id}` } : {})
+        }
+        this.upsert(a)
+        return
+      }
+      case 'remove': {
+        if (this.agents.delete(step.agent)) this.emit({ type: 'agent.remove', runId: this.ctx.run.id, agentId: step.agent })
+        return
+      }
       case 'fail':
         this.turnFailure = step.subtype ?? 'error_during_execution'
         return
@@ -2516,6 +2632,7 @@ export class MockSession implements RuntimeSession {
     this.charge(agentId, JSON.stringify(input))
     countUsage(this.ensureAgent(agentId), 'toolCalls')
     this.setState(agentId, 'tool', describeTool(step.name, input))
+    if (step.holdMs) await this.pause(step.holdMs)
     // Same self-control gate as the Claude adapter's PreToolUse (cli-spec 3.4(1)), before every other check, rule and
     // mode: the orgai command and OrgAI's control files are refused outright.
     const selfDenial = this.selfControlDenial(agentId, step.name, input)

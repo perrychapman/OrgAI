@@ -806,3 +806,28 @@ summaries) and `scripts/smoke-compaction.mjs` here.
   The adapters call `acceptEditsGranted` and drop their session grant on an applied mode below acceptEdits; their live
   mode change is checked with fake SDK / app-server events (`claude.test.ts`, `codex.test.ts`) and is typings-only for
   the real Claude SDK (`sdk-facts.md`, "Live permission mode change"): live behaviour is unverified.
+
+## Factory Floor mock (`[mock:factory-floor]`)
+
+Token-free fixture for `e2e/factory-floor.mjs` (docs/design/factory-floor.md slice 3). Work runs of a stored project, default
+script (set `ORGAI_MOCK_SCRIPT` to `{"delayMs": 50}` only; a custom `work` array turns the marker off). Checked by
+`runtime/mockFactoryFloor.test.ts` (fake context); the live app path is unverified.
+
+- Markers: `[mock:factory-floor]` plays `factoryFloorSteps`; `[mock:factory-floor-pause]` is the same and ends with a usage
+  limit (turn 1 hour; set autoResume off so the run stays `paused`). Run status `finished` comes from End session.
+- 39 spawns: root -> `ff-l1..3` -> `ff-s11..33` -> `ff-w111..333` (depth 3). Ids equal handles. The mock never enforces
+  subagent limits, spawnable lists or a plan guard (`maxConcurrentSubagents` / depth only reach the Claude SDK settings);
+  scripted spawns are not checked against the parent's spawnable list, and the default project has no required reports. Roles
+  used are the first spawnable role of the root and of that role (`implementer` on the default chart). `ff-w333` is then
+  removed (`agent.remove`), so 39 agents stand (38 plus the root).
+- Standing at `MOCK_FACTORY_FLOOR_READY` (a root text): `ff-w121` starting, `ff-w122` idle, `ff-w123` error, `ff-w131/2/3` and
+  `ff-s13` done, `ff-w211` waiting (a background Bash card the e2e answers; it then goes thinking), leads and sub-leads
+  delegating, the root thinking. `ff-w111` is in state `tool` for `FACTORY_FLOOR_TOOL_HOLD_MS` (5 s) after READY, then
+  `MOCK_FACTORY_FLOOR_DONE`; the run goes idle. `usage.toolCalls` of `ff-w111` goes 1, 2, 3, 4 (counted when a tool step
+  starts, in the same upsert that sets `tool`).
+- Worktree records are synthetic (no git, `agent.upsert` only): `ff-w111` active, `ff-w112` merging, `ff-w113` merged
+  (main), `ff-w131` merged (parent `ff-s13`), `ff-w132` review, `ff-w133` held, `ff-w211` empty, `ff-w212` conflict, `ff-w213`
+  removed, `ff-s13` waiting-children. A real fixture repo is not needed.
+- Messages: `ff-l1` -> `ff-s11`, `ff-w111` -> `user` (to null), `ff-w112` -> `nobody-here` (to null). Plan: p1 owner
+  `ff-l1` in_progress, p2 owner `ff-w111` blocked, p3 pending (plan status stays active; `[mock:exec-blocked]` gives a blocked plan).
+- New generic steps, usable in any custom script: tool `holdMs` (stay in `tool`), `agentState`, `worktree`, `remove`.
