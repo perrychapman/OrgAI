@@ -60,7 +60,9 @@ function roleNodeSize(style: CanvasNodeStyle, layout: CanvasLayout): { width: nu
 }
 import { addRoleUnder, moveNotice, nextRoleName, removeRole, restoreRole, setReportsTo, spawnNotice, wouldCycle, type RemovedRole } from '../lib/roleOps'
 import { placeNewRole, revealShift, type StageRect } from '../lib/rolePlacement'
-import TeamFilesLine from '../components/team/TeamFilesLine'
+import TeamFilesChip from '../components/team/TeamFilesChip'
+import StartFromMenu from '../components/team/StartFromMenu'
+import ArchitectDialog from '../components/team/ArchitectDialog'
 import TeamFilesCard from '../components/team/TeamFilesCard'
 import TeamFilesAppliedNotice from '../components/team/TeamFilesAppliedNotice'
 import { useTeamFilesActions } from '../components/team/useTeamFilesActions'
@@ -247,7 +249,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const filesFocus = useAppStore((s) => s.teamFilesFocus)
   const [cardFocusN, setCardFocusN] = useState(0)
   const [assistantShown, setAssistantShown] = useState(false)
-  const lineRef = useRef<HTMLDivElement>(null)
+  const lineRef = useRef<HTMLButtonElement>(null)
+  const [architectOpen, setArchitectOpen] = useState(false)
   const filesOn = !!filesStatus && filesStatus.state !== 'off'
   const showCard = cardVisible(filesStatus)
   const importRequest = useAppStore((s) => s.importRequest)
@@ -289,6 +292,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }, [showCard])
   // The agent files the chart has not taken in. `.orgai` agents are the team files' own while those are on.
   const foundSources = useMemo(() => importSourcesFor(scan?.sources ?? [], filesOn), [scan, filesOn])
+  // The Start from menu's import count: null while the scan runs, 'error' when it failed.
+  const [scanFailed, setScanFailed] = useState(false)
+  const scanFound: number | null | 'error' = scanFailed ? 'error' : scan ? foundSources.reduce((n, x) => n + x.agentCount, 0) : null
 
   const decide = async (kind: 'approve' | 'reject'): Promise<void> => {
     const digest = filesStatus?.digest
@@ -315,10 +321,11 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   useEffect(() => {
     let live = true
     setMemory(readBannerMemory(window.localStorage, project.id))
+    setScanFailed(false)
     window.orgai.projects
       .scanAgents(project.path)
       .then((r) => live && setScan(r))
-      .catch(() => {})
+      .catch(() => live && setScanFailed(true))
     return () => {
       live = false
     }
@@ -833,17 +840,32 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             {/* Beside Auto-layout, in the button row: on the wrapped row with the note a 28 px button grew the toolbar
                 at 1024x640 and took that height from the Team assistant tray. */}
             <CanvasStyleButton testId="canvas-style-button" />
-            <TeamFilesLine
+            <StartFromMenu
+              project={project}
+              found={scanFound}
+              dot={typeof scanFound === 'number' && importBannerVisible(scanFound, memory)}
+              onOpened={() => {
+                if (typeof scanFound !== 'number' || scanFound === 0) return
+                writeBannerMemory(window.localStorage, project.id, 'dismissed')
+                setMemory('dismissed')
+              }}
+              templateCount={templates?.length}
+              roleCount={project.roles.length}
+              onTemplate={() => setTemplateDialog('apply')}
+              onImport={() => setImportDialog({ fresh: false })}
+              onArchitect={() => setArchitectOpen(true)}
+              onSave={() => setTemplateDialog('save')}
+            />
+            <TeamFilesChip
               status={filesStatus}
               busy={filesActions.busy}
               message={filesActions.message}
-              lineRef={lineRef}
+              chipRef={lineRef}
               onCommit={() => void filesActions.commit().then(settleFocus)}
               onEnable={() => void filesActions.enable().then(settleFocus)}
               onReview={() => setCardFocusN((n) => n + 1)}
-            >
-              {filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />}
-            </TeamFilesLine>
+              applied={filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />}
+            />
             {dropNote && (
               <span className="toolbar-status" role="status" data-testid="team-drop-note">
                 {dropNote}
@@ -1106,6 +1128,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         />
       )}
       {templateDialog === 'apply' && <ApplyTemplateDialog project={project} onClose={closeTemplateDialog} onApplied={closeTemplateDialog} />}
+      {architectOpen && <ArchitectDialog project={project} onClose={() => setArchitectOpen(false)} />}
       {importDialog && (
         <ImportAgentsDialog project={project} defaultMode={importDialog.fresh ? 'replace' : 'merge'} fresh={importDialog.fresh} onClose={closeImport} />
       )}
