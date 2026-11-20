@@ -134,7 +134,7 @@ describe('material roles', () => {
 
   it('decals use polygon offset and the glass is transparent without writing depth', () => {
     const m = factoryKits.createMaterials('light', TOKENS)
-    for (const role of ['paint', 'vacant', 'ring', 'blob']) expect(m.get(role).polygonOffset, role).toBe(true)
+    for (const role of ['paint', 'paintMark', 'vacant', 'ring', 'blob']) expect(m.get(role).polygonOffset, role).toBe(true)
     const glass = m.get('glass')
     expect(glass.transparent).toBe(true)
     expect(glass.depthWrite).toBe(false)

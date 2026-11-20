@@ -28,6 +28,11 @@ export const STATION_ANCHORS: Record<string, Anchor> = {
   nameplate: { x: 0, y: NAMEPLATE_Y, z: 0, rotY: 0 }
 }
 
+/** The output bin at the belt's end (grey, so it reads against the dark belt). */
+function bin(): BufferGeometry {
+  return box(0.8, 0.3, 0.4, BELT_X, 0, BIN_Z)
+}
+
 function belt(): { body: BufferGeometry; rollers: BufferGeometry } {
   const len = BELT_Z1 - BELT_Z0
   const cz = (BELT_Z0 + BELT_Z1) / 2
@@ -37,8 +42,7 @@ function belt(): { body: BufferGeometry; rollers: BufferGeometry } {
     box(0.05, 0.1, len, BELT_X + BELT_W / 2 - 0.025, BELT_Y + BELT_H, cz),
     // Two legs under the part of the belt that overhangs the plate, and the output bin at its end.
     box(0.08, BELT_Y, 0.08, BELT_X - 0.38, 0, BELT_Z1 - 0.12),
-    box(0.08, BELT_Y, 0.08, BELT_X + 0.38, 0, BELT_Z1 - 0.12),
-    box(0.8, 0.3, 0.4, BELT_X, 0, BIN_Z)
+    box(0.08, BELT_Y, 0.08, BELT_X + 0.38, 0, BELT_Z1 - 0.12)
   ])
   const rollers: BufferGeometry[] = []
   for (let z = BELT_Z0 + 0.15; z < BELT_Z1 - 0.05; z += 0.2) rollers.push(cylX(0.05, 0.78, 6, BELT_X, BELT_Y + BELT_H + 0.04, z))
@@ -97,7 +101,7 @@ function linePlate(): { slab: BufferGeometry; marks: BufferGeometry } {
 export function station(kind: 'lead' | 'bench'): ObjectKit {
   const b = belt()
   const c = kind === 'lead' ? dispatchDesk() : console_()
-  const casing = [...c.casing]
+  const casing = [...c.casing, bin()]
   const screen = [...c.screen]
   if (kind === 'lead') {
     // The lead keeps a small console too, so the bench pose set works at the desk.
@@ -114,7 +118,7 @@ export function station(kind: 'lead' | 'bench'): ObjectKit {
   ]
   if (kind === 'lead') {
     const lp = linePlate()
-    parts.push(part('station.plaque', lp.slab, 'paint', { cast: false }), part('station.plaque.mark', lp.marks, 'belt', { cast: false }))
+    parts.push(part('station.plaque', lp.slab, 'paint', { cast: false }), part('station.plaque.mark', lp.marks, 'paintMark', { cast: false }))
   }
   return { name: `station.${kind}`, parts, anchors: { ...STATION_ANCHORS } }
 }

@@ -39,6 +39,7 @@ export interface FactoryRoleColours {
   pole: string
   robotBody: string
   robotJoint: string
+  robotBase: string
   robotVisor: string
   robotWheel: string
   paint: string
@@ -97,20 +98,21 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       boardPanel: '#161a22',
       pole: '#1a1e27',
       robotBody: '#dce3f1',
-      robotJoint: '#4a5368',
+      robotJoint: '#97a3bf',
+      robotBase: '#2a3040',
       robotVisor: '#0d1016',
       robotWheel: '#14171d',
       paint: '#b8932a',
       vacant: '#8995ad',
       blob: '#000000'
     },
-    light: { sky: '#9fb3d1', ground: '#4a5265', hemisphere: 0.7, key: '#f4f7ff', keyIntensity: 1.7, ambient: 0.2, dimPaused: 0.55, dimEnded: 0.5 }
+    light: { sky: '#b4c4e0', ground: '#6a748b', hemisphere: 1.1, key: '#f4f7ff', keyIntensity: 1.7, ambient: 0.35, dimPaused: 0.55, dimEnded: 0.5 }
   },
   light: {
     clear: '#f4f5f9',
     gridFaint: '#c3c9d4',
     gridStrong: '#b4bcca',
-    lampOff: '#a9b0bc',
+    lampOff: '#737c90',
     roles: {
       floor: '#cfd4de',
       wall: '#9ba5b8',
@@ -133,8 +135,9 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       bollard: '#c99a1a',
       boardPanel: '#2a303e',
       pole: '#2a2f3a',
-      robotBody: '#3a4662',
-      robotJoint: '#8f9ab2',
+      robotBody: '#34447f',
+      robotJoint: '#8c9bc4',
+      robotBase: '#1c2236',
       robotVisor: '#0d1016',
       robotWheel: '#1d2129',
       paint: '#c99a1a',

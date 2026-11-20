@@ -8,8 +8,8 @@ import { part } from './common'
 import type { ObjectKit } from './types'
 
 const SEG = 10
-const LAMP_R = 0.12
-const LAMP_H = 0.2
+const LAMP_R = 0.18
+const LAMP_H = 0.26
 const POLE_H = 0.7
 const BASE_H = 0.06
 const LAMP_Y0 = POLE_H
@@ -18,10 +18,10 @@ export const STACK_LIGHT_HEIGHT = LAMP_Y0 + 3 * LAMP_H
 
 export function stackLight(): ObjectKit {
   const housing: BufferGeometry[] = [
-    cyl(0.14, 0.16, BASE_H, 8, 0, 0, 0, false),
-    cyl(0.03, 0.03, POLE_H - BASE_H, 8, 0, BASE_H, 0, true)
+    cyl(0.2, 0.24, BASE_H, 8, 0, 0, 0, false),
+    cyl(0.045, 0.045, POLE_H - BASE_H, 8, 0, BASE_H, 0, true)
   ]
-  const lamp = (i: number): BufferGeometry => cyl(LAMP_R, LAMP_R, LAMP_H - 0.01, SEG, 0, LAMP_Y0 + i * LAMP_H, 0, false)
+  const lamp = (i: number): BufferGeometry => cyl(LAMP_R, LAMP_R, LAMP_H - 0.045, SEG, 0, LAMP_Y0 + i * LAMP_H, 0, false)
   return {
     name: 'stackLight',
     parts: [

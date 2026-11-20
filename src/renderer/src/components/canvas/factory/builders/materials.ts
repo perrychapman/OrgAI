@@ -46,10 +46,13 @@ const ROLES: Record<string, RoleDef> = {
   boardPanel: { colour: 'boardPanel', kind: 'flat', roughness: 0.5, metalness: 0.1 },
   pole: { colour: 'pole', kind: 'smooth', roughness: 0.6, metalness: 0.2 },
   'robot.body': { colour: 'robotBody', kind: 'flat', roughness: 0.55, metalness: 0.1 },
+  'robot.base': { colour: 'robotBase', kind: 'flat', roughness: 0.7, metalness: 0.15 },
   'robot.joint': { colour: 'robotJoint', kind: 'smooth', roughness: 0.6, metalness: 0.2 },
   'robot.visor': { colour: 'robotVisor', kind: 'smooth', roughness: 0.2, metalness: 0.2 },
   'robot.wheel': { colour: 'robotWheel', kind: 'smooth', roughness: 0.9, metalness: 0 },
   paint: { colour: 'paint', kind: 'flat', roughness: 0.9, metalness: 0 },
+  /** Dark marks printed on a paint decal (the lead's line plate): offset further than the paint. */
+  paintMark: { colour: 'belt', kind: 'flat', roughness: 0.9, metalness: 0 },
   vacant: { colour: 'vacant', kind: 'basic' },
   /** Lit lamps and the board lamps: white unlit; the engine multiplies it by instanceColor. */
   lamp: { kind: 'basic' },
@@ -100,7 +103,7 @@ export function createMaterials(theme: FactoryTheme, tokens: FactoryTokenColours
   glass.depthWrite = false
   glass.side = DoubleSide
   // Flat floor decals sit 2 cm above the floor; polygon offset keeps them from z-fighting at distance.
-  for (const role of ['paint', 'vacant', 'ring', 'blob']) {
+  for (const role of ['paint', 'paintMark', 'vacant', 'ring', 'blob']) {
     const m = materials.get(role)!
     m.polygonOffset = true
     m.polygonOffsetFactor = -2
@@ -112,6 +115,9 @@ export function createMaterials(theme: FactoryTheme, tokens: FactoryTokenColours
   blob.opacity = BLOB_OPACITY
   blob.depthWrite = false
   basic('ring').depthWrite = false
+  const mark = materials.get('paintMark')!
+  mark.polygonOffsetFactor = -4
+  mark.polygonOffsetUnits = -8
 
   const applyTheme = (next: FactoryTheme, nextTokens: FactoryTokenColours): void => {
     const p = FACTORY_PALETTE[next]

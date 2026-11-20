@@ -60,7 +60,7 @@ export function robot(): ObjectKit {
   return {
     name: 'robot',
     parts: [
-      part('robot.chassis', chassis, 'robot.joint', near),
+      part('robot.chassis', chassis, 'robot.base', near),
       part('robot.wheels', wheels, 'robot.wheel', near),
       part('robot.torso', torso, 'robot.body', near),
       part('robot.head', head, 'robot.body', near),
