@@ -4,8 +4,8 @@
 // test state, and exposes the zoom / fit / focus handle. Slice 2: layout, stations, static lamps, camera, keyboard,
 // labels; the model, cues and log arrive in later slices.
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type Ref } from 'react'
-import type { AgentMessage, RunPlan, RunStatus } from '@shared/types'
-import type { FactoryAgentInput, FloorLayout, LayoutMemory, Lamp } from '../../../lib/factory/types'
+import type { AgentMessage, RunPlan, RunStatus, WorktreeStatus } from '@shared/types'
+import type { FactoryAgentInput, FloorLayout, LayoutMemory } from '../../../lib/factory/types'
 import {
   CONTEXT_RESTORE_TIMEOUT_MS,
   cachedWebGL2Probe,
@@ -16,7 +16,7 @@ import {
   type ProbeCanvas,
   type WebGL2Probe
 } from '../../../lib/factory/capability'
-import { TEST_STATE_INTERVAL_MS, factoryTestState, motionState, type FactoryReason, type WorkerSummary } from '../../../lib/factory/snapshot'
+import { TEST_STATE_INTERVAL_MS, factoryTestState, motionState, type FactoryReason } from '../../../lib/factory/snapshot'
 import {
   BOARD_CENTER,
   BOARD_SIZE,
@@ -33,14 +33,13 @@ import {
   lineSigns,
   pickRoot
 } from '../../../lib/factory/layout'
-import { nextFocus, tabStop, floorKeyAction } from '../../../lib/factory/navigation'
+import { PLAN_BOARD_ID, nextFocus, tabStop, floorKeyAction } from '../../../lib/factory/navigation'
 import type { Box3, CameraView, Stage } from '../../../lib/factory/camera'
-import { factoryLamp, factoryWord } from '../../../lib/factory/agentView'
 import { buildFloorModel } from '../../../lib/factory/model'
 import { useReducedMotion } from '../../../lib/canvas'
 import { tokenMs } from '../../../lib/useExitPresence'
 import { useFrameAnnounce } from '../../layout/CanvasFrame'
-import { FactoryMirror, placeAll, type MirrorEntry, type PlacementRegistry, type PlanSign } from './FactoryMirror'
+import { FactoryMirror, placeAll, type MirrorBoard, type MirrorEntry, type PlacementRegistry, type PlanSign } from './FactoryMirror'
 import { FactoryLabels, type FactoryLabelsHandle, type NameplateData, type SignData } from './FactoryLabels'
 import { FactoryNotice, type FactoryNoticeKind } from './FactoryNotice'
 import { FactoryControls } from './FactoryControls'
@@ -137,15 +136,35 @@ function readSwitch(): ReturnType<typeof readForcedRenderer> {
 
 type LostState = 'none' | 'restoring' | 'gave-up' | 'third'
 
-const WORKTREE_PHRASE: Partial<Record<string, string>> = {
+/**
+ * Section 7.1 worktree phrases. "Branch held" (held) and "No changes" (empty) are additions to the spec's list; removed
+ * says nothing (the branch is gone).
+ */
+export const WORKTREE_PHRASE: Partial<Record<WorktreeStatus, string>> = {
   active: 'Working in its own branch',
+  merging: 'Working in its own branch',
+  'waiting-children': 'Working in its own branch',
+  held: 'Branch held',
   merged: 'Branch merged',
   conflict: 'Merge conflict',
-  review: 'Waiting for your review'
+  review: 'Waiting for your review',
+  empty: 'No changes'
 }
 
-/** Section 7.1 description: activity; line and station or the line it runs; who it reports to; the worktree phrase. */
-function describe(a: FactoryAgentInput, layout: FloorLayout, names: ReadonlyMap<string, string>, mode: 'live' | 'team'): string {
+/** The hidden description's cap (section 7.1). */
+const DESCRIPTION_MAX = 200
+
+/**
+ * Section 7.1 description: activity; line and station or the line it runs; who it reports to; the worktree phrase; a
+ * paused run (booth); each plan step the worker owns. Agent text is untrusted: it only ever reaches React text.
+ */
+function describe(
+  a: FactoryAgentInput,
+  layout: FloorLayout,
+  names: ReadonlyMap<string, string>,
+  mode: 'live' | 'team',
+  extra: { stepIds: readonly string[]; stepTitles: ReadonlyMap<string, string>; paused: boolean }
+): string {
   const st = layout.stations[a.id]
   const parts: string[] = []
   if (mode === 'live' && a.activity) parts.push(a.activity)
@@ -156,12 +175,14 @@ function describe(a: FactoryAgentInput, layout: FloorLayout, names: ReadonlyMap<
   if (parent) parts.push(`Reports to ${parent}`)
   const wt = mode === 'live' && a.worktree ? WORKTREE_PHRASE[a.worktree.status] : undefined
   if (wt) parts.push(wt)
+  if (mode === 'live' && extra.paused && st?.kind === 'booth') parts.push('Run paused')
+  for (const id of extra.stepIds) parts.push(`Plan step ${id}: ${extra.stepTitles.get(id) ?? ''}`.trimEnd())
   const text = parts.join('. ')
-  return text.length > 200 ? `${text.slice(0, 199)}…` : text
+  return text.length > DESCRIPTION_MAX ? `${text.slice(0, DESCRIPTION_MAX - 1)}…` : text
 }
 
 export function FactoryScene(props: FactorySceneProps): ReactElement {
-  const { mode, agents, plan, runStatus, needsYouIds, selectedId, onSelect, onRemove, onUseGraph, controlRef, runId, projectId } = props
+  const { mode, agents, plan, runStatus, needsYouIds, selectedId, onSelect, onRemove, onOpenPlan, onUseGraph, controlRef, runId, projectId } = props
   const mountedAt = useRef(performance.now())
   const [forced] = useState(readSwitch)
   const [attempt, setAttempt] = useState(0)
@@ -203,31 +224,49 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const count = current.length
 
   const needsYouKey = (needsYouIds ?? []).join('\n')
-  const { entries, summaries, plates } = useMemo(() => {
-    const needs = new Set(needsYouKey ? needsYouKey.split('\n') : [])
+  // ---- the pure floor model (section 1.4 end states): the engine, mirror, labels and test state all read it ----
+  const floorModel = useMemo(
+    () => buildFloorModel(agents, layout, needsYouKey ? needsYouKey.split('\n') : [], plan, runStatus, mode),
+    [agents, layout, needsYouKey, plan, runStatus, mode]
+  )
+  const hall = floorModel.hall
+  const { entries, plates } = useMemo(() => {
     const byId = new Map(agents.map((a) => [a.id, a]))
     const names = new Map(agents.map((a) => [a.id, a.name]))
+    const stepTitles = new Map((plan?.steps ?? []).map((s) => [s.id, s.title]))
     const list: MirrorEntry[] = []
-    const sums: Record<string, WorkerSummary> = {}
     const plateList: NameplateData[] = []
     for (const id of layout.order) {
       const a = byId.get(id)
       const st = layout.stations[id]
-      if (!a || !st) continue
-      const lamp: Lamp = factoryLamp(a, needs)
-      const word = factoryWord(a, lamp)
-      const e: MirrorEntry = { id, name: a.name, kind: st.kind, state: a.state, lamp, word, line: st.line, slot: st.slot, description: describe(a, layout, names, mode) }
+      const w = floorModel.workers[id]
+      if (!a || !st || !w) continue
+      const e: MirrorEntry = {
+        id,
+        name: a.name,
+        kind: st.kind,
+        state: a.state,
+        lamp: w.lamp,
+        word: w.statusWord,
+        line: st.line,
+        slot: st.slot,
+        description: describe(a, layout, names, mode, { stepIds: w.stepIds, stepTitles, paused: hall === 'paused' }),
+        pose: w.pose,
+        fenced: w.fenced,
+        ...(w.crate ? { crate: w.crate.at, crateLamp: w.crate.lamp } : {}),
+        stepIds: w.stepIds
+      }
       list.push(e)
-      sums[id] = { lamp, statusWord: word }
       plateList.push({
         entry: e,
-        activity: mode === 'live' ? a.activity : '',
+        activity: w.activity,
         anchor: { x: st.center.x, y: 0, z: st.center.z },
-        conflict: a.worktree?.status === 'conflict'
+        conflict: a.worktree?.status === 'conflict',
+        ...(mode === 'live' && hall === 'paused' && st.kind === 'booth' ? { shownWord: 'Paused' as const } : {})
       })
     }
-    return { entries: list, summaries: sums, plates: plateList }
-  }, [agents, layout, needsYouKey, mode])
+    return { entries: list, plates: plateList }
+  }, [agents, layout, floorModel, plan, hall, mode])
 
   let reason: FactoryReason | undefined
   if (forced === 'floor-plan') reason = 'forced'
@@ -325,8 +364,21 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   projectionRef.current = projection
 
   const boxFor = useCallback((id: string): Box3 => {
-    const st = layoutRef.current.stations[id]
     const h = heights.current
+    if (id === PLAN_BOARD_ID) {
+      // The board's face on the gantry (3D), or its zone in the plan.
+      const c = layoutRef.current.board
+      const plan = projectionRef.current === 'plan'
+      return {
+        minX: c.x - BOARD_SIZE.w / 2,
+        maxX: c.x + BOARD_SIZE.w / 2,
+        minY: plan ? 0 : GANTRY_TOP,
+        maxY: plan ? 0 : h.boardTop,
+        minZ: c.z - BOARD_SIZE.d / 2,
+        maxZ: c.z + BOARD_SIZE.d / 2 + (plan ? 0.6 : 0)
+      }
+    }
+    const st = layoutRef.current.stations[id]
     if (!st) return { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 }
     if (st.kind === 'booth') {
       const plan = projectionRef.current === 'plan'
@@ -438,7 +490,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     if (!action) return
     e.preventDefault()
     if (action.type === 'focus') {
-      const target = nextFocus(layoutRef.current, id, action.key)
+      const target = nextFocus(layoutRef.current, id, action.key, { board: boardRef.current })
       if (target) focusWorker(target)
     } else if (action.type === 'pan') controller.panMetres(action.dx, action.dz)
     else if (action.type === 'zoom') {
@@ -467,11 +519,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   }, [selectedId, refreshLabels])
 
   // ---- engine input (3D) ----
-  // Slice 3 contract: the engine draws the pure floor model (lib/factory/model.ts).
-  const floorModel = useMemo(
-    () => buildFloorModel(agents, layout, needsYouKey ? needsYouKey.split('\n') : [], plan, runStatus, mode),
-    [agents, layout, needsYouKey, plan, runStatus, mode]
-  )
+  // The engine draws the pure floor model (lib/factory/model.ts, built above).
   const engineFloor = useMemo<EngineFloor>(() => ({ model: floorModel, selectedId: selectedId ?? null }), [floorModel, selectedId])
 
   // ---- labels ----
@@ -510,19 +558,23 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     }
     return planSigns.map((s) => ({ key: s.key, line: s.line, text: `Line ${s.line} · ${cut(s.lead)}`, anchor: { x: layout.hall.minX + HEAD_W - 0.3, y: 0, z: s.z } }))
   }, [planSigns, projection, layout])
+  const dockCrates = floorModel.dockCrates
   const dockLabel = useMemo(() => {
     if (mode !== 'live' || projection === 'plan') return null
-    const merged = current.filter((a) => a.worktree?.status === 'merged' && a.worktree.mergeTarget === 'main').length
-    return { text: `Main checkout · ${merged} merged`, anchor: { x: DOCK_CENTER.x, y: GANTRY_TOP + 0.8, z: DOCK_CENTER.z - DOCK_SIZE.d / 2 } }
-  }, [mode, projection, current])
+    return { text: `Main checkout · ${dockCrates} merged`, count: dockCrates, anchor: { x: DOCK_CENTER.x, y: GANTRY_TOP + 0.8, z: DOCK_CENTER.z - DOCK_SIZE.d / 2 } }
+  }, [mode, projection, dockCrates])
+  const board = floorModel.board
+  const boardCounts = useMemo<MirrorBoard | null>(
+    () => (board ? { total: board.total, done: board.done, blocked: board.blocked } : null),
+    [board]
+  )
   const boardLabel = useMemo(() => {
-    if (!boardOn || !plan || projection === 'plan') return null
-    const total = plan.steps.length
-    const done = plan.steps.filter((s) => s.status === 'done').length
-    const blocked = plan.steps.filter((s) => s.status === 'blocked').length
+    if (!boardCounts || projection === 'plan') return null
+    const { total, done, blocked } = boardCounts
     return { text: `Plan · ${done} of ${total} done${blocked ? ` · ${blocked} blocked` : ''}`, anchor: { x: BOARD_CENTER.x, y: heights.current.boardTop + 0.2, z: BOARD_CENTER.z } }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardOn, plan, projection, heightsVersion])
+  }, [boardCounts, projection, heightsVersion])
+  const boardBox = useMemo(() => boxFor(PLAN_BOARD_ID), [boxFor, projection, heightsVersion]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- Find a worker (chrome, slice 2c): entries and the choose handler ----
   const findEntries = useMemo<FindEntry[]>(() => {
@@ -547,7 +599,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   // ---- test state (section 10.3): on every change of what it shows, and at most twice a second for frames ----
   const outRef = useRef<HTMLOutputElement>(null)
   const statsRef = useRef<FactoryEngineStats | null>(null)
-  const shown = { renderer, reason, quality, mode, motion, layout, summaries, model: floorModel } as const
+  const shown = { renderer, reason, quality, mode, motion, layout, model: floorModel } as const
   const shownRef = useRef(shown)
   shownRef.current = shown
   const lastWrite = useRef(0)
@@ -569,7 +621,6 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         motion: s.motion,
         model: s.model,
         layout: s.layout,
-        summaries: s.summaries,
         view: viewRef.current,
         loop: stats?.loop ?? 'stopped',
         frames: stats?.frames ?? 0,
@@ -622,6 +673,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
       data-motion={motion}
       data-quality={quality}
       data-reason={reason}
+      data-hall={hall}
     >
       {notice && (
         <FactoryNotice
@@ -659,7 +711,10 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
           boxFor={boxFor}
           registry={registry}
           buttons={buttons}
-          board={boardOn}
+          board={boardCounts}
+          boardBox={boardBox}
+          onOpenPlan={onOpenPlan}
+          dockCount={mode === 'live' && projection === 'plan' ? dockCrates : null}
           planSigns={projection === 'plan' ? planSigns : NO_SIGNS}
           onSelect={onSelect}
           onKey={onKey}
