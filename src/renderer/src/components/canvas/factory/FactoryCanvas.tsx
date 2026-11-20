@@ -12,8 +12,11 @@ import type { CameraView } from '../../../lib/factory/camera'
 import type { CueFeed } from '../../../lib/factory/types'
 
 export interface FactoryCanvasHandle {
-  /** Applies a camera view and renders it at once (the mirror moves in the same frame). */
-  setView(view: CameraView): void
+  /**
+   * Applies a camera view and renders it at once (the mirror moves in the same frame). `tween`: a frame of a camera
+   * tween, which counts as animation for the quality steps (section 9.2).
+   */
+  setView(view: CameraView, tween?: boolean): void
   /** Slice 4: cues were pushed or the motion state changed: render (the loop runs on while the feed is busy). */
   invalidate(): void
 }
@@ -58,10 +61,10 @@ export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {
   latest.current = props
 
   useImperativeHandle(props.handleRef, () => ({
-    setView: (view: CameraView) => {
+    setView: (view: CameraView, tween?: boolean) => {
       const engine = engineRef.current
       if (!engine) return
-      engine.setView(view)
+      engine.setView(view, tween === true)
       engine.flush()
     },
     invalidate: () => engineRef.current?.requestFrame()

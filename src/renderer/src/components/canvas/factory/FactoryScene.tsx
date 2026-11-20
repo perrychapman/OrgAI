@@ -11,17 +11,10 @@ import { CueScheduler, diffCues } from '../../../lib/factory/cues'
 import { ambientSet, motionSession } from '../../../lib/factory/motion'
 import { AnnounceGate, appendLog } from '../../../lib/factory/floorLog'
 import { projectFootprint } from '../../../lib/factory/camera'
-import {
-  CONTEXT_RESTORE_TIMEOUT_MS,
-  cachedWebGL2Probe,
-  factorySession,
-  readForcedRenderer,
-  recordContextLoss,
-  resetWebGL2Probe,
-  type ProbeCanvas,
-  type WebGL2Probe
-} from '../../../lib/factory/capability'
-import { TEST_STATE_INTERVAL_MS, factoryTestState, motionState, type FactoryReason } from '../../../lib/factory/snapshot'
+import { cachedWebGL2Probe, factorySession, readForcedRenderer, resetWebGL2Probe, type ProbeCanvas, type WebGL2Probe } from '../../../lib/factory/capability'
+import { ContextLossWatch, RESTORING_TEXT, currentAgentCount, factoryNotice, factoryReason, type LostState } from '../../../lib/factory/fallback'
+import { hiddenKey, hiddenStations } from '../../../lib/factory/cueVisibility'
+import { TEST_STATE_INTERVAL_MS, factoryTestState, motionState, type FactoryQuality } from '../../../lib/factory/snapshot'
 import {
   BOARD_CENTER,
   BOARD_SIZE,
@@ -46,7 +39,7 @@ import { tokenMs } from '../../../lib/useExitPresence'
 import { useFrameAnnounce } from '../../layout/CanvasFrame'
 import { FactoryMirror, placeAll, type MirrorBoard, type MirrorEntry, type PlacementRegistry, type PlanSign } from './FactoryMirror'
 import { FactoryLabels, type FactoryLabelsHandle, type NameplateData, type SignData } from './FactoryLabels'
-import { FactoryNotice, type FactoryNoticeKind } from './FactoryNotice'
+import { FactoryNotice } from './FactoryNotice'
 import { FactoryControls } from './FactoryControls'
 import { FactoryFind } from './FactoryFind'
 import { FactoryLog } from './FactoryLog'
@@ -61,6 +54,8 @@ export interface FactorySceneHandle {
   fit(): void
   /** Focuses the worker's button and pans it into view; false when the id is not on the floor. */
   focusWorker(id: string): boolean
+  /** Focuses "Find a worker" (section 6.8: "Load earlier sessions" and Back to floor for an earlier agent); false when it is not mounted. */
+  focusFind(): boolean
 }
 
 export interface FactorySceneProps {
@@ -93,8 +88,8 @@ export interface FindEntry {
   session: 'current' | 'earlier'
 }
 
-/** Section 8: more current-session agents than this show the floor plan. */
-export const FACTORY_3D_MAX_AGENTS = 120
+/** Section 8: more current-session agents than this show the floor plan (the decision is lib/factory/fallback.ts). */
+export { FACTORY_3D_MAX_AGENTS } from '../../../lib/factory/fallback'
 
 /**
  * Heights used before the 3D kits report theirs (and always in the floor plan, which ignores height): booth and
@@ -139,8 +134,6 @@ function readSwitch(): ReturnType<typeof readForcedRenderer> {
     return null
   }
 }
-
-type LostState = 'none' | 'restoring' | 'gave-up' | 'third'
 
 type AmbientMap = ReadonlyMap<string, { kind: Exclude<Ambient, 'none'>; phase: number }>
 const NO_AMBIENT: AmbientMap = new Map()
@@ -234,6 +227,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     Canvas: forced !== 'chunk-failed' ? loadedCanvas : null
   }))
   const [lost, setLost] = useState<LostState>(() => (factorySession.floorPlanForSession ? 'third' : 'none'))
+  /** The quality the engine stepped down to this mount (section 9.2), or null while it runs at the probe's choice. */
+  const [steppedQuality, setSteppedQuality] = useState<FactoryQuality | null>(null)
   const [rendererFailed, setRendererFailed] = useState(false)
   const [noWebGL2Dismissed, setNoWebGL2Dismissed] = useState(factorySession.noWebGL2Dismissed)
   const reduced = useReducedMotion()
@@ -266,7 +261,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   }, [mode, agents, runKey])
   const current = useMemo(() => agents.filter((a) => a.session === 'current'), [agents])
   const hasRoot = useMemo(() => pickRoot(current) !== null, [current])
-  const count = current.length
+  const count = currentAgentCount(agents)
 
   const needsYouKey = (needsYouIds ?? []).join('\n')
   // ---- the pure floor model (section 1.4 end states): the engine, mirror, labels and test state all read it ----
@@ -314,24 +309,20 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     return { entries: list, plates: plateList }
   }, [agents, layout, floorModel, plan, hall, mode])
 
-  let reason: FactoryReason | undefined
-  if (forced === 'floor-plan') reason = 'forced'
-  else if (!probe.ok || rendererFailed) reason = 'no-webgl2'
-  else if (count > FACTORY_3D_MAX_AGENTS) reason = 'too-many'
-  else if (lost === 'gave-up' || lost === 'third') reason = 'context-lost'
-  else if (chunk.status === 'failed') reason = 'chunk-failed'
+  // Section 8 (lib/factory/fallback.ts): forced > no-webgl2 > too-many > context-lost > chunk-failed.
+  const reason = factoryReason({ forced, webgl2: probe.ok, rendererFailed, currentAgents: count, lost, chunkFailed: chunk.status === 'failed' })
   const renderer = reason ? 'floor-plan' : 'webgl2'
   const wants3D = renderer === 'webgl2'
-  const quality = probe.ok ? probe.quality : 'minimal'
+  /** The probe's choice (software WebGL starts at minimal); the engine may step down from it during the mount. */
+  const qualityStart: FactoryQuality = probe.ok ? probe.quality : 'minimal'
+  const quality: FactoryQuality = wants3D && steppedQuality ? steppedQuality : qualityStart
+  const qualityStartRef = useRef(qualityStart)
+  qualityStartRef.current = qualityStart
   // Pause motion is hidden in team mode, where nothing moves.
   const motion = motionState(reduced, mode === 'live' && paused)
   const projection = renderer === 'webgl2' ? 'perspective' : 'plan'
 
-  let notice: FactoryNoticeKind | null = null
-  if (reason === 'no-webgl2') notice = noWebGL2Dismissed ? null : 'no-webgl2'
-  else if (reason === 'too-many') notice = 'too-many'
-  else if (reason === 'context-lost') notice = lost === 'third' ? 'third-loss' : 'lost'
-  else if (reason === 'chunk-failed') notice = 'chunk-failed'
+  const notice = factoryNotice(reason, lost, noWebGL2Dismissed)
 
   // Load the three chunk when the 3D view is wanted.
   useEffect(() => {
@@ -346,33 +337,26 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     }
   }, [wants3D, chunk.status, forced])
 
-  // ---- context loss (section 8) ----
-  const restoreTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const clearRestoreTimer = (): void => {
-    if (restoreTimer.current) clearTimeout(restoreTimer.current)
-    restoreTimer.current = null
+  // ---- context loss (section 8; the 5 s restore timeout and the third-loss rule are lib/factory/fallback.ts) ----
+  const lossWatch = useRef<ContextLossWatch | null>(null)
+  if (!lossWatch.current) {
+    lossWatch.current = new ContextLossWatch({
+      now: () => Date.now(),
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+      session: factorySession,
+      onChange: (s) => {
+        if (alive.current) setLost(s)
+      }
+    })
   }
-  useEffect(() => clearRestoreTimer, [])
+  useEffect(() => () => lossWatch.current?.dispose(), [])
   const onContextLost = useCallback(() => {
     if (!alive.current) return
-    const r = recordContextLoss(factorySession.losses, Date.now())
-    factorySession.losses = r.history
-    clearRestoreTimer()
-    if (r.third) {
-      factorySession.floorPlanForSession = true
-      setLost('third')
-      return
-    }
-    setLost('restoring')
-    announce?.('The 3D view stopped. Restoring…')
-    restoreTimer.current = setTimeout(() => {
-      restoreTimer.current = null
-      setLost('gave-up')
-    }, CONTEXT_RESTORE_TIMEOUT_MS)
+    if (lossWatch.current!.lost() === 'restoring') announce?.(RESTORING_TEXT)
   }, [announce])
   const onContextRestored = useCallback(() => {
-    clearRestoreTimer()
-    setLost('none')
+    lossWatch.current!.restored()
   }, [])
   const onCanvasFailed = useCallback(() => {
     // The probe said yes but the renderer could not get a context: the no-WebGL2 floor plan.
@@ -384,10 +368,9 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     mountedAt.current = performance.now()
     resetWebGL2Probe()
     setRendererFailed(false)
-    factorySession.losses = []
-    factorySession.floorPlanForSession = false
-    clearRestoreTimer()
+    lossWatch.current!.reset()
     setLost('none')
+    setSteppedQuality(null)
     setChunk({ status: 'idle', Canvas: null })
     setAttempt((a) => a + 1)
   }, [])
@@ -474,10 +457,12 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   /** Re-picks the looping stations (section 5.1: on-screen ones first) after a camera move. */
   const ambientUpdateRef = useRef<() => void>(() => {})
 
+  /** Stations the cue layer keeps off the floor now (tote in flight, arrive waiting): their nameplates hide too. */
+  const hiddenRef = useRef<{ set: ReadonlySet<string>; key: string }>({ set: new Set(), key: '' })
   const refreshLabels = useCallback(() => {
     const c = controllerRef.current
     if (!c || !viewRef.current) return
-    labelsRef.current?.update(viewRef.current, c.stageInfo, { selectedId: selectedRef.current, ...focus.current })
+    labelsRef.current?.update(viewRef.current, c.stageInfo, { selectedId: selectedRef.current, ...focus.current, hidden: hiddenRef.current.set })
   }, [])
 
   const controllerRef = useRef<CameraController | null>(null)
@@ -496,9 +481,10 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
       },
       onView: (view: CameraView, stage: Stage) => {
         viewRef.current = view
-        canvasRef.current?.setView(view)
+        // A tween's frames count as animation for the quality steps (section 9.2); drags and one-off moves do not.
+        canvasRef.current?.setView(view, controllerRef.current?.tweening === true)
         placeAll(registry, view, stage)
-        labelsRef.current?.update(view, stage, { selectedId: selectedRef.current, ...focus.current })
+        labelsRef.current?.update(view, stage, { selectedId: selectedRef.current, ...focus.current, hidden: hiddenRef.current.set })
         ambientUpdateRef.current()
         scheduleWriteRef.current()
       }
@@ -597,6 +583,19 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
       ambient: () => (motionRef.current === 'full' ? ambientRef.current : NO_AMBIENT)
     }
   }
+  /**
+   * Nameplates of stations the cue layer hides (a tote flying to a new worker, its arrive waiting) hide with them, from
+   * the same active cue set (lib/factory/cueVisibility.ts). Motion 'full' only: otherwise no cue runs and nothing hides.
+   * Called after cues are pushed or finished and on every engine frame; places the labels again only on a change.
+   */
+  const syncHidden = useCallback(() => {
+    const active = motionRef.current === 'full' && projectionRef.current === 'perspective' ? cueRef.current!.scheduler.advance(performance.now()) : NO_ACTIVE
+    const set = active.length ? hiddenStations(active) : new Set<string>()
+    const key = hiddenKey(set)
+    if (key === hiddenRef.current.key) return
+    hiddenRef.current = { set, key }
+    refreshLabels()
+  }, [refreshLabels])
 
   // ---- labels ----
   const plateAnchors = useMemo<NameplateData[]>(() => {
@@ -675,7 +674,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   // ---- test state (section 10.3): on every change of what it shows, and at most twice a second for frames ----
   const outRef = useRef<HTMLOutputElement>(null)
   const statsRef = useRef<FactoryEngineStats | null>(null)
-  const shown = { renderer, reason, quality, mode, motion, layout, model: floorModel, logEntries: log.length } as const
+  const shown = { renderer, reason, quality, qualityStart, mode, motion, layout, model: floorModel, logEntries: log.length } as const
   const shownRef = useRef(shown)
   shownRef.current = shown
   const lastWrite = useRef(0)
@@ -697,6 +696,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         renderer: s.renderer,
         reason: s.reason,
         quality: s.quality,
+        qualityStart: s.qualityStart,
         mode: s.mode,
         motion: s.motion,
         model: s.model,
@@ -724,12 +724,16 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   scheduleWriteRef.current = scheduleWrite
   const onStats = useCallback((stats: FactoryEngineStats) => {
     statsRef.current = stats
+    if (!alive.current) return
+    // A quality step (section 9.2) shows in the test state and data-quality; it never steps back up in this mount.
+    if (stats.quality !== qualityStartRef.current) setSteppedQuality((q) => (q === stats.quality ? q : stats.quality))
+    syncHidden()
     scheduleWrite()
-  }, [scheduleWrite])
+  }, [scheduleWrite, syncHidden])
   useEffect(() => {
     if (renderer !== 'webgl2') statsRef.current = null
     writeState()
-  }, [renderer, reason, quality, mode, motion, entries, layout, floorModel, log, writeState])
+  }, [renderer, reason, quality, qualityStart, mode, motion, entries, layout, floorModel, log, writeState])
   useEffect(() => () => {
     if (writeTimer.current) clearTimeout(writeTimer.current)
     writeTimer.current = null
@@ -762,8 +766,9 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const finishCues = useCallback(() => {
     cueRef.current!.scheduler.finishAll()
     canvasRef.current?.invalidate()
+    syncHidden()
     scheduleWriteRef.current()
-  }, [])
+  }, [syncHidden])
 
   const updateAmbient = useCallback(() => {
     const model = modelRef.current
@@ -793,8 +798,10 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   }, [updateAmbient, floorModel, motion, renderer, selectedId])
 
   // The diff (section 1.4, 5.4): baseline at mount and on a run id change; every later model change cues what changed.
+  // A layout effect (slice 6): a new worker's tote is pushed, and its nameplate hidden, before the frame that first shows
+  // the plate is painted, so the plate never flashes over the empty slot.
   const messages = props.messages
-  useEffect(() => {
+  useLayoutEffect(() => {
     const frame: FloorFrame = { model: floorModel, agents, messages }
     let holder = cueRef.current!
     if (holder.run !== runKey) {
@@ -836,6 +843,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         canvasRef.current?.invalidate()
       }
     }
+    syncHidden()
     // Written now, not only on the 500 ms timer, so short cues reach the test state; then pumped to their ends.
     writeState()
     pump()
@@ -899,12 +907,19 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   }, [])
 
   // ---- handle ----
+  const focusFind = useCallback((): boolean => {
+    const el = findButtonRef.current
+    if (!el || !el.isConnected) return false
+    el.focus()
+    return document.activeElement === el
+  }, [])
   useImperativeHandle(controlRef, () => ({
     zoomIn: () => controller.zoomIn(),
     zoomOut: () => controller.zoomOut(),
     fit: () => controller.fit(),
-    focusWorker
-  }), [controller, focusWorker])
+    focusWorker,
+    focusFind
+  }), [controller, focusWorker, focusFind])
 
   const Canvas = wants3D && chunk.status === 'ready' ? chunk.Canvas : null
   const tabStopId = tabStop(layout, selectedId)
@@ -939,7 +954,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         {Canvas && (
           <Canvas
             key={attempt}
-            quality={quality}
+            quality={qualityStart}
             floor={engineFloor}
             feed={feed.current}
             initialView={initialView}
@@ -981,7 +996,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         )}
         {wants3D && lost === 'restoring' && (
           <div className="factory-stage-note" data-testid="factory-context-lost">
-            <span>The 3D view stopped. Restoring…</span>
+            <span>{RESTORING_TEXT}</span>
           </div>
         )}
       </div>

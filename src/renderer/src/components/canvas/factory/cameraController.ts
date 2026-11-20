@@ -65,6 +65,10 @@ export class CameraController {
   get userMoved(): boolean {
     return this.moved
   }
+  /** True while a tween is running (inside onView: this view is a tween frame, its last one included). */
+  get tweening(): boolean {
+    return this.tween !== null
+  }
 
   /** Listens on the stage element: pointer drag, wheel and size. Returns nothing; call dispose() to stop. */
   attach(element: HTMLElement): void {
