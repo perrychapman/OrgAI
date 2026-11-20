@@ -157,6 +157,18 @@
   --chart-grid: var(--border-subtle);
   --chart-axis: var(--text-tertiary);
   --chart-focus: var(--accent-text);
+
+  /* Project identity (dashboard-overhaul.md "Visual pass"): eight hues of even lightness, one per project by a hash of its
+     id (lib/projectIdentity.ts). Measured: --project-ink on each 10.5 to 14.9; each against --surface-1 9.8 or more. */
+  --project-1: #93c5fd;
+  --project-2: #67e8f9;
+  --project-3: #5eead4;
+  --project-4: #86efac;
+  --project-5: #bef264;
+  --project-6: #fdba74;
+  --project-7: #f9a8d4;
+  --project-8: #c4b5fd;
+  --project-ink: #0b0d12;
 }
 
 /* ---------- 2. Light ---------- */
@@ -292,6 +304,17 @@
   --chart-grid: var(--border-subtle);
   --chart-axis: var(--text-tertiary);
   --chart-focus: var(--accent);
+
+  /* Project identity. Measured: --project-ink (white) on each 5.0 to 7.3; each against --surface-1 4.8 or more. */
+  --project-1: #1d4ed8;
+  --project-2: #155e75;
+  --project-3: #0f766e;
+  --project-4: #15803d;
+  --project-5: #3f6212;
+  --project-6: #c2410c;
+  --project-7: #be185d;
+  --project-8: #6d28d9;
+  --project-ink: #ffffff;
 }
 
 /* ---------- 3. System: light values when the OS prefers light ---------- */
@@ -425,6 +448,17 @@
     --chart-grid: var(--border-subtle);
     --chart-axis: var(--text-tertiary);
     --chart-focus: var(--accent);
+
+    /* Project identity: same measured values as the light block. */
+    --project-1: #1d4ed8;
+    --project-2: #155e75;
+    --project-3: #0f766e;
+    --project-4: #15803d;
+    --project-5: #3f6212;
+    --project-6: #c2410c;
+    --project-7: #be185d;
+    --project-8: #6d28d9;
+    --project-ink: #ffffff;
   }
 }
 

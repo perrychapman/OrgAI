@@ -1,6 +1,6 @@
 import type { FocusEventHandler, ReactElement, ReactNode, Ref } from 'react'
 import { createContext, useContext, useLayoutEffect } from 'react'
-import { ChevronDown, ChevronUp } from 'lucide-react'
+import { ChevronDown, ChevronUp, type LucideIcon } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { DASH_SECTIONS, SECTION_TITLES, type DashboardLayout, type DashSectionId } from '../../lib/dashboardLayout'
@@ -58,6 +58,8 @@ export interface DashSectionProps {
   testId: string
   /** True when there is nothing to show: outside customise mode nothing renders. */
   empty: boolean
+  /** Decorative glyph before the h2 (the section card's header icon). */
+  icon?: LucideIcon
   /** Full number shown in mono beside the h2; omitted when undefined or zero. */
   count?: number
   /** Extra content on the heading line after the count (a date caption, the band's counts line). */
@@ -80,7 +82,7 @@ export const sectionHeadingId = (id: DashSectionId): string => `dash-h-${id}`
  * The frame of one arrangeable section: a grid slot (`dash-section[data-section][data-state]`) holding, while customising,
  * the control row, and the `section` with its h2. Outside customise mode a hidden or empty section renders nothing.
  */
-export function DashSection({ id, testId, empty, count, headExtra, className, sectionRef, headingRef, sectionData, onFocus, onBlur, children }: DashSectionProps): ReactElement | null {
+export function DashSection({ id, testId, empty, icon, count, headExtra, className, sectionRef, headingRef, sectionData, onFocus, onBlur, children }: DashSectionProps): ReactElement | null {
   const { layout, customising, reportEmpty, spanOf, move, setSectionHidden } = useDashboard()
   const hidden = layout.hidden.includes(id)
   useLayoutEffect(() => reportEmpty(id, empty), [id, empty, reportEmpty])
@@ -144,6 +146,11 @@ export function DashSection({ id, testId, empty, count, headExtra, className, se
           {...sectionData}
         >
           <div className="dash-section-head">
+            {icon && (
+              <span className="dash-section-icon" aria-hidden="true">
+                <Icon icon={icon} size="sm" />
+              </span>
+            )}
             <h2 id={sectionHeadingId(id)} ref={headingRef} tabIndex={-1} data-section-heading="">
               {title}
             </h2>

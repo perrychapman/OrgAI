@@ -174,19 +174,105 @@
 .dash-section > button {
   align-self: flex-start;
 }
-/* A section is unboxed (section 3): a top hairline, the h2 at title-sm, an optional mono count, then the content. */
+/* A section is a card (Visual pass, replacing the hairline of section 3): a --surface-1 surface, --radius-lg, a soft
+   border and --elev-1, generous padding; the header carries an icon chip, the h2, an optional mono count. */
 .dash-section {
-  border-top: 1px solid var(--border-subtle);
-  padding-top: var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}
+@container dash (max-width: 559px) {
+  .dash-section {
+    padding: var(--space-3) var(--space-4) var(--space-4);
+  }
 }
 .dash-section-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
   column-gap: var(--space-2);
-  min-height: 24px;
-  margin-bottom: var(--space-2);
+  min-height: 28px;
+  margin-bottom: var(--space-3);
 }
+/* The header icon: a small rounded chip in the accent's soft tint, so every card is recognisable at a glance. */
+.dash-section-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+[data-testid='dash-needs-you'] .dash-section-icon {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+
+/* ---------- Project identity badge (ProjectBadge.tsx) ---------- */
+.dash-pbadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+  border-radius: var(--radius-md);
+  background: var(--text-tertiary);
+  color: var(--project-ink);
+  font-family: var(--font-sans);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+  letter-spacing: 0;
+  user-select: none;
+}
+.dash-pbadge[data-hue='0'] {
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+.dash-pbadge:not([data-hue='0']) {
+  background: var(--dash-hue);
+}
+.dash-pbadge[data-size='xs'] {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+}
+.dash-pbadge[data-size='sm'] {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-caption);
+}
+.dash-pbadge[data-size='md'] {
+  width: 28px;
+  height: 28px;
+  font-size: var(--text-small);
+}
+.dash-pbadge[data-size='lg'] {
+  width: 36px;
+  height: 36px;
+  font-size: var(--text-body);
+}
+/* Forced colours: the fill is dropped, so the badge keeps a frame and its letters. */
+@media (forced-colors: active) {
+  .dash-pbadge {
+    border: 1px solid CanvasText;
+  }
+}
+/* Any element can take its project's hue as --dash-hue (bars, bands, dots): set data-hue on it. */
+[data-hue='0'] { --dash-hue: var(--text-tertiary); }
+[data-hue='1'] { --dash-hue: var(--project-1); }
+[data-hue='2'] { --dash-hue: var(--project-2); }
+[data-hue='3'] { --dash-hue: var(--project-3); }
+[data-hue='4'] { --dash-hue: var(--project-4); }
+[data-hue='5'] { --dash-hue: var(--project-5); }
+[data-hue='6'] { --dash-hue: var(--project-6); }
+[data-hue='7'] { --dash-hue: var(--project-7); }
+[data-hue='8'] { --dash-hue: var(--project-8); }
 .dash-section-head h2 {
   margin: 0;
   font-size: var(--text-title-sm);
