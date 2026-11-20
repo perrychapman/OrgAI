@@ -834,7 +834,12 @@ pass at both sizes and themes, keyboard customise path, reduced motion, relaunch
 (selector updates) and `layout.mjs` pass. Reviewer: no Critical or High; M1 (Esc in native dialogs), L1, L2, L3, L4
 fixed. Screenshots of both sizes and themes in `e2e/shots/dashboard-*.png`, looked at by the UI Lead.
 
-Open: the UX walkthrough `ux-review-dashboard-4.md` (acceptance 32) is not written yet; not verified: the Allow once
+UX walk: `ux-review-dashboard-4.md` (acceptance 32; both sizes and themes, keyboard, reduced motion): no High, five
+Medium left open for a follow-up: M1 pause times without a day ("until 10:40 PM" for tomorrow; the Pick up caption
+comes from `needsInline.ts` `pausedCaption`, which this build may not edit), M2 saving a name on first launch shows no
+change and "Add your name" reads as a caption, M3 the quiet brief beside idle runs that wait for a reply, M4 three
+phrases for one state ("Needs you", "Waiting on you", "waiting for you"), M5 the pause reason clipped mid-word.
+Open; not verified: the Allow once
 IPC argument by spy, a failed name save on screen, the 25th pin, a real second window, a decision entering 2 s after
 load, brief variants other than no-runs / waiting / closed on screen (unit tests only), real plan limits, a screen
 reader, macOS. Reviewer M3 (main `settings.ts` logs the JSON parse error, which may quote settings text) and L5 (a
