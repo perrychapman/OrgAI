@@ -142,6 +142,21 @@ test('bundled reference docs select self-help, other docs do not', () => {
   assert.deepEqual(sel('docs/agent-notes/cli-host.md').scripts, [])
 })
 
+test('the org chart benchmark and the ignore list select no e2e, not even the smoke set', () => {
+  for (const files of [
+    ['scripts/bench-org-chart.mjs'],
+    ['scripts/lib/org-bench/score.mjs', 'scripts/lib/org-bench/scenarios.mjs', 'scripts/lib/org-bench/fixtures/sample-results.json', 'scripts/lib/org-bench/score.test.mjs'],
+    ['.gitignore'],
+  ]) {
+    const r = sel(...files)
+    assert.equal(r.mode, 'selected', files.join())
+    assert.deepEqual(r.scripts, [], files.join())
+  }
+  // package.json (the bench:org script) is still a shared file, and the benchmark's design doc is a bundled doc: self-help only.
+  assert.equal(sel('package.json', 'scripts/bench-org-chart.mjs').mode, 'full')
+  assert.deepEqual(sel('docs/design/org-chart-benchmark.md').scripts.filter((s) => !SMOKE.includes(s)), ['self-help'])
+})
+
 test('docs plus code still gets the smoke set', () => {
   const r = sel('CLAUDE.md', 'src/main/repoClone.ts')
   assert.ok(SMOKE.every((s) => r.scripts.includes(s)))
