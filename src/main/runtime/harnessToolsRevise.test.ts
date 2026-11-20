@@ -383,3 +383,144 @@ describe('first-time setup drafts', () => {
     expect(text).toMatch(/match no role in the proposal/)
   })
 })
+
+describe('omitted canSpawn and spawnable on new roles (Reviewer findings M1, L1, L2 of afd978bc)', () => {
+  /** A draft written by hand: the draft() helper always sets canSpawn and spawnable. */
+  const hand = (name: string, reportsTo: string | null, over: Record<string, unknown> = {}) => ({
+    name,
+    description: `${name} does things`,
+    responsibilities: ['x'],
+    prompt: `You are ${name}.`,
+    tools: ['Read'],
+    reportsTo,
+    ...over
+  })
+  const roleOf = (roles: Role[] | undefined, name: string): Role => roles!.find((r) => r.name === name)!
+
+  it('a new role in a revision omitting both fields is accepted as false / [] (propose_org_chart)', async () => {
+    const { roles, text } = await propose(revisionProject(), { roles: [hand('Security', 'Reviewer')] }, proxyConn)
+    expect(text).toMatch(/^APPROVED/)
+    expect(roleOf(roles, 'Security')).toMatchObject({ canSpawn: false, spawnable: [] })
+  })
+
+  it('a new role omitting both fields is accepted as false / [] (propose_org_change)', async () => {
+    const ctx = fakeCtx({ project: revisionProject(), connection: proxyConn as never })
+    const text = await byName(workTools(ctx), 'propose_org_change').call({ title: 'T', rationale: 'r', roles: [hand('Security', 'Reviewer')] })
+    expect(text).toMatch(/^APPROVED/)
+    const roles = (vi.mocked(ctx.requestProposal).mock.calls[0][0] as { payload: { roles: Role[] } }).payload.roles
+    expect(roleOf(roles, 'Security')).toMatchObject({ canSpawn: false, spawnable: [] })
+  })
+
+  it('a new role with a non-empty spawnable and no canSpawn ends with canSpawn true (revision)', async () => {
+    const { roles, text } = await propose(revisionProject(), { roles: [hand('Release Lead', 'Lead', { spawnable: ['Engineer'] })] }, proxyConn)
+    expect(text).toMatch(/^APPROVED/)
+    const rl = roleOf(roles, 'Release Lead')
+    expect(rl.canSpawn).toBe(true)
+    expect(rl.spawnable).toEqual(['r-eng'])
+  })
+
+  it('a new role with a non-empty spawnable and no canSpawn ends with canSpawn true (first-time setup)', async () => {
+    const { roles, text } = await propose(
+      revisionProject('in_progress'),
+      { roles: [hand('Boss', null, { spawnable: ['Dev'] }), hand('Dev', 'Boss')] },
+      proxyConn
+    )
+    expect(text).toMatch(/^APPROVED/)
+    expect(roleOf(roles, 'Boss')).toMatchObject({ canSpawn: true, spawnable: [roleOf(roles, 'Dev').id] })
+    expect(roleOf(roles, 'Dev')).toMatchObject({ canSpawn: false, spawnable: [] })
+  })
+
+  it.each([
+    ['revision', () => revisionProject(), []],
+    ['first-time setup', () => revisionProject('in_progress'), [hand('Lead', null)]]
+  ])('L1: canSpawn true with no spawnable and no report is a REVISE (%s)', async (_l, make, lead) => {
+    const { text, ctx } = await propose(make(), { roles: [...lead, hand('Scout', 'Lead', { canSpawn: true })] }, proxyConn)
+    expect(text).toMatch(/^REVISE\. The org chart was not shown to the user: role "Scout" sets canSpawn true but lists no spawnable and no role reports to it/)
+    expect(text).toMatch(/omit canSpawn/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('L1: canSpawn true with no spawnable is fine when another draft reports to it', async () => {
+    const { roles, text } = await propose(revisionProject(), { roles: [hand('Scout', 'Lead', { canSpawn: true }), hand('Mapper', 'Scout')] }, proxyConn)
+    expect(text).toMatch(/^APPROVED/)
+    expect(roleOf(roles, 'Scout')).toMatchObject({ canSpawn: true, spawnable: [roleOf(roles, 'Mapper').id] })
+  })
+
+  it('M1: a draft with no slug whose name slugifies to a live role of another name is a REVISE, not a rename', async () => {
+    const p = revisionProject()
+    // The role that holds slug "qa" was renamed to "Quality Lead" earlier; "QA" is a different-looking name for it.
+    p.roles.find((r) => r.slug === 'qa')!.name = 'Quality Lead'
+    const { text, ctx } = await propose(p, { roles: [hand('QA', 'Reviewer', { prompt: 'You are a brand new QA role, with a different prompt.' })] }, proxyConn)
+    expect(text).toMatch(/^REVISE\. The org chart was not shown to the user: a role with slug "qa" already exists \(named "Quality Lead"\)/)
+    expect(text).toMatch(/Give slug "qa" to change that role, or choose another name/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('M1: giving the slug is the way through, and it is a patch of that role', async () => {
+    const p = revisionProject()
+    p.roles.find((r) => r.slug === 'qa')!.name = 'Quality Lead'
+    const { roles, text } = await propose(p, { roles: [{ slug: 'qa', name: 'QA', prompt: 'Sharper QA prompt.' }] }, proxyConn)
+    expect(text).toMatch(/^APPROVED/)
+    expect(roles!.find((r) => r.id === 'r-qa')).toMatchObject({ name: 'QA', prompt: 'Sharper QA prompt.', reportsTo: 'r-rev' })
+    expect(roles).toHaveLength(4)
+  })
+
+  it('M1: a name that matches an existing role by name is still a patch', async () => {
+    const { roles, text } = await propose(revisionProject(), { roles: [{ name: 'QA', prompt: 'Sharper QA prompt.' }] }, proxyConn)
+    expect(text).toMatch(/^APPROVED/)
+    expect(roles!.find((r) => r.id === 'r-qa')!.prompt).toBe('Sharper QA prompt.')
+    expect(roles).toHaveLength(4)
+  })
+
+  it('L2: requiredReports on a new role with no spawnable is a REVISE', async () => {
+    const { text, ctx } = await propose(revisionProject(), { roles: [hand('Security', 'Lead', { requiredReports: ['Engineer'] })] }, proxyConn)
+    expect(text).toMatch(/^REVISE\. The org chart was not shown to the user: role "Security" gives requiredReports but no spawnable/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('L2: requiredReports naming only drafts that report to the new role are kept, with no spawnable given', async () => {
+    const { roles, text } = await propose(revisionProject(), { roles: [hand('Scout', 'Lead', { requiredReports: ['Mapper'] }), hand('Mapper', 'Scout')] }, proxyConn)
+    expect(text).toMatch(/^APPROVED/)
+    expect(roleOf(roles, 'Scout').requiredReports).toEqual([roleOf(roles, 'Mapper').id])
+  })
+
+  it('L2: with spawnable given, requiredReports are accepted as before', async () => {
+    const { roles, text } = await propose(
+      revisionProject(),
+      { roles: [hand('Security', 'Lead', { spawnable: ['Engineer'], requiredReports: ['Engineer'] })] },
+      proxyConn
+    )
+    expect(text).toMatch(/^APPROVED/)
+    expect(roleOf(roles, 'Security').requiredReports).toEqual(['r-eng'])
+  })
+
+  it('first-time setup over an existing chart: a name-matched manager omitting spawnable is narrowed to its direct reports (pins current behaviour)', async () => {
+    // Existing Reviewer spawns QA. The proposal keeps Reviewer by name but puts QA under Lead and leaves spawnable out.
+    const { roles, text } = await propose(
+      revisionProject('in_progress'),
+      { roles: [hand('Lead', null), hand('Reviewer', 'Lead'), hand('QA', 'Lead')] },
+      proxyConn
+    )
+    expect(text).toMatch(/^APPROVED/)
+    const rev = roleOf(roles, 'Reviewer')
+    expect(rev.id).toBe('r-rev')
+    expect(rev.spawnable).toEqual([])
+    expect(rev.canSpawn).toBe(false)
+    expect(roleOf(roles, 'Lead').spawnable.slice().sort()).toEqual(['r-qa', 'r-rev'])
+  })
+
+  it('fromTemplate: a given draft that omits spawnable replaces the template role whole (pins current behaviour)', async () => {
+    const tpl = [
+      role({ id: 't-boss', slug: 'boss', name: 'Boss', model: 'gw/big', canSpawn: true, spawnable: ['t-dev', 't-ops'] }),
+      role({ id: 't-dev', slug: 'dev', name: 'Dev', model: 'gw/mid', reportsTo: 't-boss', canSpawn: true, spawnable: ['t-ops'] }),
+      role({ id: 't-ops', slug: 'ops', name: 'Ops', model: 'gw/mid', reportsTo: 't-boss' })
+    ]
+    const ctx = fakeCtx({ project: revisionProject(), connection: proxyConn as never, orgTemplate: () => ({ name: 'T', roles: tpl }) } as never)
+    await byName(setupTools(ctx), PROPOSAL_TOOLS.orgChart).call({ title: 'T', rationale: 'r', fromTemplate: 'tpl', roles: [hand('Dev', 'Boss')] })
+    const roles = (vi.mocked(ctx.requestProposal).mock.calls[0][0] as { payload: { roles: Role[] } }).payload.roles
+    // The template's Dev could spawn Ops (not a report of Dev); the given Dev omitted both fields, so it cannot.
+    expect(roleOf(roles, 'Dev')).toMatchObject({ canSpawn: false, spawnable: [] })
+    expect(roleOf(roles, 'Boss').spawnable.slice().sort()).toEqual([roleOf(roles, 'Dev').id, roleOf(roles, 'Ops').id].sort())
+    expect(roles.map((r) => r.name).sort()).toEqual(['Boss', 'Dev', 'Ops'])
+  })
+})

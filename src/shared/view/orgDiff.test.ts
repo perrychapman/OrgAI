@@ -209,7 +209,7 @@ describe('diffOrgChart', () => {
       expect(addedRoleLines(r, all)).toEqual(['spawns: Dev, QA, gone', 'must delegate to: Dev'])
     })
     it('says any for an open spawn list and nothing when there is nothing to say', () => {
-      expect(addedRoleLines(role('h', { canSpawn: true, spawnable: [] }), all)).toEqual(['spawns: any'])
+      expect(addedRoleLines(role('h', { canSpawn: true, spawnable: [] }), all)).toEqual(['spawns: none listed'])
       expect(addedRoleLines(role('h', { canSpawn: false, spawnable: [] }), all)).toEqual([])
     })
     it('does not claim a role that cannot spawn leads its listed roles', () => {
