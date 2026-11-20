@@ -829,6 +829,29 @@ async function sectionAddAndDrag(page, app, shot) {
   const wrong = []
   for (const r of final) if (delegable(r.id) === 0 && (await chip(r.id).count()) !== 0) wrong.push(r.name)
   check(wrong.length === 0, 'no role without a delegable report shows "leads"', wrong.join(', '))
+
+  // (5) D1: a report added to a leaf gives it spawn rights (inspector banner); removing that report takes them back and
+  // the undo row says so.
+  const menu = page.locator('[data-testid=role-node-menu]')
+  await page.locator(`.react-flow__node[data-id="${first.id}"]`).click({ button: 'right' })
+  await menu.waitFor({ timeout: 5000 })
+  await page.locator('[data-testid=role-menu-add-report]').click()
+  await sleep(700)
+  const leafNow = (await rolesNow()).find((r) => r.id === first.id)
+  const child = (await rolesNow()).find((r) => r.reportsTo === first.id)
+  check(!!child && leafNow.canSpawn && leafNow.spawnable.includes(child.id), 'Add a report gives the manager spawn rights over it')
+  check(/can now create subagents, because .* reports to it/.test(await page.locator('.team-panel-pane .banner, .team-panel-pane [role=status], .team-panel-pane [role=alert]').first().innerText().catch(() => '')), 'the inspector says the manager gained spawn rights')
+  await page.locator('.team-panel-pane').getByRole('button', { name: 'Remove', exact: true }).click()
+  await page.getByRole('button', { name: 'Remove role', exact: true }).click()
+  const row = page.locator('[data-testid=team-undo-row]')
+  await row.waitFor({ timeout: 5000 })
+  check(/can no longer create subagents: nobody it may delegate to is left\./.test(await row.innerText()), 'the undo row says the manager lost spawn rights', await row.innerText())
+  await sleep(600)
+  check((await rolesNow()).find((r) => r.id === first.id)?.canSpawn === false, 'removing the only delegable report clears the manager\'s spawn rights')
+  await row.getByRole('button', { name: 'Undo' }).click()
+  await sleep(500)
+  const back = (await rolesNow()).find((r) => r.id === first.id)
+  check(back.canSpawn && back.spawnable.includes(child.id), 'Undo gives the spawn rights back')
 }
 
 /**
