@@ -11,7 +11,7 @@ import { connectionProblems } from './dashboardProjects'
 import { afterFirstPaint, projectQueue } from './projectQueue'
 
 /**
- * To set up (docs/design/dashboard-2.md section 8): what will make a run fail or skip a service. Rows come from the
+ * To finish setting up (docs/design/dashboard-2.md section 8, dashboard-overhaul.md 7.3): what will make a run fail or skip a service. Rows come from the
  * connection list, the MCP library, the connector gallery and (through the shared project queue) each project's own
  * servers. Never counted as decisions, never in the bell. Loads after first paint and again when the library changes;
  * a failed call leaves its rows out silently. Renders nothing when empty, so its grid area collapses.
@@ -112,7 +112,7 @@ export function SetupGaps({ caps }: { caps: DashCaps }): ReactElement | null {
   return (
     <AttentionSection
       testId="dash-setup"
-      title="To set up"
+      title="To finish setting up"
       count={rows.length}
       items={rows}
       cap={caps.setup}

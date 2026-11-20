@@ -1,4 +1,4 @@
-import type { CSSProperties, FocusEvent, ReactElement, ReactNode } from 'react'
+import type { CSSProperties, FocusEvent, ReactElement, ReactNode, RefObject } from 'react'
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useArrival } from '../../lib/useArrival'
 import { exitProps, tokenMs } from '../../lib/useExitPresence'
@@ -104,20 +104,67 @@ export function focusAfterRemoval(target: HTMLElement | null): void {
 }
 
 /**
- * One section of the attention column (spec 4): h2 with a count, a list of rows capped with an in-place
- * "Show N more" / "Show fewer" ghost button, and the focus rule of spec 7: when the focused row disappears, focus
- * moves to the row now at its place, else to the section heading (tabIndex -1).
+ * Arrival settle: true 1.5 s after `ready` (every project's history is in). Rows present until then are the baseline and
+ * never animate; one that arrives later enters. Shared by Waiting on you and Pick up so the page loading in stays still.
  */
-export function AttentionSection<T>({ testId, title, count, items, cap, itemKey, renderItem, empty, quiet, action, moreTestId, arrive, exits }: AttentionSectionProps<T>): ReactElement | null {
-  const headingId = useId()
+export function useArrivalSettle(ready: boolean): boolean {
+  const [settled, setSettled] = useState(false)
+  useEffect(() => {
+    if (!ready) return undefined
+    const t = window.setTimeout(() => setSettled(true), 1500)
+    return () => window.clearTimeout(t)
+  }, [ready])
+  return settled
+}
+
+export interface AttentionListOptions<T> {
+  items: readonly T[]
+  /** Visible rows before "Show N more". */
+  cap: number
+  /** Hard limit even when expanded (Pick up lists at most 12). */
+  max?: number
+  itemKey: (item: T) => string
+  /** The section has no heading to take focus when it empties: the next section's heading does. */
+  quiet?: boolean
+  arrive?: boolean
+  exits?: RowExits
+  /** The section's own heading and element, for the focus rules. */
+  headingRef?: RefObject<HTMLElement | null>
+  sectionRef?: RefObject<HTMLElement | null>
+}
+
+export interface AttentionListModel<T> {
+  rows: { item: T; leaving: boolean }[]
+  motionOf: ReadonlyMap<string, RowMotion>
+  itemKey: (item: T) => string
+  /** Rows the cap cuts (zero once expanded to the end). */
+  hiddenCount: number
+  expanded: boolean
+  toggle: () => void
+  listRef: RefObject<HTMLUListElement | null>
+  /** DOM id of the Show more / Show fewer button. */
+  moreId: string
+  onFocus: (e: FocusEvent<HTMLUListElement>) => void
+  onBlur: (e: FocusEvent<HTMLUListElement>) => void
+}
+
+/**
+ * The body of an attention list (spec 7): the capped rows, the user's exits, the arrival baseline and the focus rules.
+ * When the focused row disappears, focus moves to the row now at its place, else to the section heading (tabIndex -1),
+ * else, when the whole section goes away, to the next section's heading. "Show more" never moves focus; "Show fewer"
+ * keeps it on the button that opened it, which is the same button.
+ */
+export function useAttentionList<T>({ items, cap, max, itemKey, quiet, arrive, exits, headingRef, sectionRef }: AttentionListOptions<T>): AttentionListModel<T> {
   const [expanded, setExpanded] = useState(false)
   const listRef = useRef<HTMLUListElement>(null)
-  const headingRef = useRef<HTMLHeadingElement>(null)
-  const sectionRef = useRef<HTMLElement>(null)
+  const moreId = useId()
   const last = useRef<{ key: string; index: number } | null>(null)
+  const fallback = useRef<HTMLElement | null>(null)
+  const moreFocused = useRef(false)
 
-  const hidden = Math.max(0, items.length - cap)
-  const shown = expanded ? items : items.slice(0, cap)
+  const capped = max === undefined ? items : items.slice(0, max)
+  const hiddenCount = Math.max(0, capped.length - cap)
+  const shown = expanded ? capped : capped.slice(0, cap)
   const keys = shown.map(itemKey)
   const keySignature = keys.join('\u0000')
 
@@ -160,12 +207,52 @@ export function AttentionSection<T>({ testId, title, count, items, cap, itemKey,
       rows[Math.min(prev.index, rows.length - 1)].focus({ preventScroll: true })
     } else if (quiet) {
       // The section is hidden now: its heading cannot take focus, so the next one does.
-      focusAfterRemoval(headingAfter(sectionRef.current))
+      focusAfterRemoval(headingAfter(sectionRef?.current ?? null))
+    } else if (headingRef?.current?.isConnected) {
+      headingRef.current.focus({ preventScroll: true })
     } else {
-      headingRef.current?.focus({ preventScroll: true })
+      // The section is gone with its last row (a DashSection renders nothing when empty): the next heading takes focus.
+      focusAfterRemoval(fallback.current)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keySignature])
+
+  // The Show more / Show fewer button goes when the list shrinks to the cap: forget the expansion, and if the button had
+  // focus the last row takes it.
+  useEffect(() => {
+    const onIn = (e: globalThis.FocusEvent): void => {
+      moreFocused.current = (e.target as Element | null)?.id === moreId
+    }
+    document.addEventListener('focusin', onIn)
+    return () => document.removeEventListener('focusin', onIn)
+  }, [moreId])
+  useLayoutEffect(() => {
+    if (hiddenCount > 0) return
+    setExpanded(false)
+    if (moreFocused.current) {
+      moreFocused.current = false
+      const mains = listRef.current?.querySelectorAll<HTMLElement>('[data-row-key]:not([data-state="out"]) [data-row-main]')
+      mains?.[mains.length - 1]?.focus({ preventScroll: true })
+    }
+  }, [hiddenCount])
+
+  // The whole section goes away (its last row left) while focus was in a row: the next section's heading takes it,
+  // but only if nothing else has focus by then (a row that opened a run has moved it already).
+  useLayoutEffect(
+    () => () => {
+      if (!last.current) return
+      const target = fallback.current
+      requestAnimationFrame(() => {
+        const a = document.activeElement
+        if (a && a !== document.body && a !== document.documentElement) return
+        if (target && target.isConnected) {
+          if (!target.hasAttribute('tabindex')) target.tabIndex = -1
+          target.focus({ preventScroll: true })
+        }
+      })
+    },
+    []
+  )
 
   const onFocus = (e: FocusEvent<HTMLUListElement>): void => {
     const li = (e.target as HTMLElement).closest<HTMLElement>('[data-row-key]')
@@ -173,11 +260,45 @@ export function AttentionSection<T>({ testId, title, count, items, cap, itemKey,
     if (!li || !list || !list.contains(li)) return
     const all = Array.from(list.querySelectorAll<HTMLElement>('[data-row-key]'))
     last.current = { key: li.dataset.rowKey ?? '', index: all.indexOf(li) }
+    fallback.current = headingAfter(sectionRef?.current ?? li.closest('section'))
   }
   const onBlur = (e: FocusEvent<HTMLUListElement>): void => {
     // Focus moved to another element: forget the row. A removed row blurs with no relatedTarget and is kept.
     if (e.relatedTarget) last.current = null
   }
+
+  return { rows, motionOf, itemKey, hiddenCount, expanded, toggle: () => setExpanded((v) => !v), listRef, moreId, onFocus, onBlur }
+}
+
+/** The rows and the "Show N more" / "Show fewer" button of a list model. Renders nothing for an empty list. */
+export function AttentionRows<T>({ model, renderItem, moreTestId, className }: { model: AttentionListModel<T>; renderItem: (item: T, motion: RowMotion) => ReactNode; moreTestId: string; className?: string }): ReactElement | null {
+  const { rows, motionOf, itemKey, hiddenCount, expanded, toggle, listRef, moreId, onFocus, onBlur } = model
+  return (
+    <>
+      {rows.length > 0 && (
+        <ul className={className ? `dash-rows ${className}` : 'dash-rows'} ref={listRef} onFocus={onFocus} onBlur={onBlur}>
+          {rows.map((r) => renderItem(r.item, r.leaving ? { arrived: false, index: 0, leaving: true } : (motionOf.get(itemKey(r.item)) as RowMotion)))}
+        </ul>
+      )}
+      {hiddenCount > 0 && (
+        <Button id={moreId} variant="ghost" size="sm" onClick={toggle} testId={moreTestId}>
+          {expanded ? 'Show fewer' : `Show ${hiddenCount} more`}
+        </Button>
+      )}
+    </>
+  )
+}
+
+/**
+ * One section of the attention column (spec 4): h2 with a count and the list of `useAttentionList`. Used by Waiting on
+ * you and To finish setting up; Pick up uses the hook inside `DashSection`.
+ */
+export function AttentionSection<T>({ testId, title, count, items, cap, itemKey, renderItem, empty, quiet, action, moreTestId, arrive, exits }: AttentionSectionProps<T>): ReactElement | null {
+  const headingId = useId()
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const sectionRef = useRef<HTMLElement>(null)
+  const model = useAttentionList({ items, cap, itemKey, quiet, arrive, exits, headingRef, sectionRef })
+  const { rows } = model
 
   if (rows.length === 0 && !empty && !quiet) return null
   return (
@@ -189,18 +310,8 @@ export function AttentionSection<T>({ testId, title, count, items, cap, itemKey,
         {count > 0 && <span className="dash-count">{count}</span>}
         {action && <span className="dash-section-action">{action}</span>}
       </div>
-      {rows.length === 0 ? (
-        empty ? <p className="dash-empty">{empty}</p> : null
-      ) : (
-        <ul className="dash-rows" ref={listRef} onFocus={onFocus} onBlur={onBlur}>
-          {rows.map((r) => renderItem(r.item, r.leaving ? { arrived: false, index: 0, leaving: true } : (motionOf.get(itemKey(r.item)) as RowMotion)))}
-        </ul>
-      )}
-      {hidden > 0 && (
-        <Button variant="ghost" size="sm" onClick={() => setExpanded((v) => !v)} testId={moreTestId ?? `${testId}-more`}>
-          {expanded ? 'Show fewer' : `Show ${hidden} more`}
-        </Button>
-      )}
+      {rows.length === 0 && empty ? <p className="dash-empty">{empty}</p> : null}
+      <AttentionRows model={model} renderItem={renderItem} moreTestId={moreTestId ?? `${testId}-more`} />
     </section>
   )
 }

@@ -1,1 +1,31 @@
 /* Dashboard resume (docs/design/dashboard-overhaul.md). Tokens only. */
+
+/* Pick up where you left off: plain rows (no fill, hairline between rows, 44 px minimum, from dashboard.css). */
+
+/* The action slot keeps the width of the widest label ("Open outputs"), so a late "Open output" never shifts a row. */
+.dash-row-resume .dash-resume-side {
+  justify-content: flex-end;
+  min-width: 112px;
+  padding-left: var(--space-2);
+}
+
+/* A paused reason or a closed note may use two lines (walk 3 L7); the error line of a failed run clips to one. */
+.dash-row-resume .dash-row-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+}
+
+/* The one left rule a list keeps: a failed run (the status word says it too). */
+.dash-row.dash-row-resume[data-status='Failed'] {
+  border-left: 2px solid var(--state-error);
+}
+
+/* The cost sits muted after the caption. */
+.dash-row-resume .dash-row-cap .cost {
+  flex: none;
+  color: var(--text-tertiary);
+}

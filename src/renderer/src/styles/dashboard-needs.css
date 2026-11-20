@@ -76,15 +76,6 @@
   height: 16px;
   color: var(--text-secondary);
 }
-/* L7: the Paused reason may use two lines. */
-.dash-row-paused .dash-row-detail {
-  white-space: normal;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  overflow: hidden;
-}
 .dash-needs-code {
   font-family: var(--font-mono);
   font-size: var(--text-mono);
