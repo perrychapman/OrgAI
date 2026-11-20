@@ -221,8 +221,11 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   `docs/design/team-tab-overhaul.md` is phase 2). D1 spawn rights follow delegation: `lib/roleOps.ts` `setReportsTo` and
   `removeRole` clear `canSpawn` on a role whose `spawnable` list the change empties (a role with no delegates before the
   change keeps a hand-ticked right; no new persisted field); `addRoleUnder` grants it; `RemovedRole.delegation` snapshots
-  `canSpawn` / `spawnable` / `requiredReports` so `restoreRole` puts them back exactly (later edits to that manager are kept
-  instead); `spawnNotice(before, after, cause)` is the one banner text for gained and lost rights, used by addRole, drag,
+  `canSpawn` / `spawnable` / `requiredReports` and `RemovedRole.leftBy` records the same fields right after the removal;
+  `restoreRole` works field by field: a field still equal to `leftBy` goes back to its pre-removal value, a field the user
+  changed since keeps the user's value (`spawnable` then only gets the role appended; `canSpawn` is never raised above a
+  value the user set, so unticking "May create subagents" or a Required box after the removal survives Undo; review M1);
+  `spawnNotice(before, after, cause)` is the one banner text for gained and lost rights, used by addRole, drag,
   Delete-on-edge (reparentToRoot) and the inspector's Reports to (a change with no spawn effect clears the banner); a removal
   appends the lost sentence to the toolbar undo row (`team-undo-row`). D2 `lib/rolePlacement.ts` `placeNewRole` (pure):
   first report below the manager, later ones right of the rightmost sibling (left-right layout: right of the manager, stacked
@@ -244,14 +247,38 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   untracked flag would be needed to say "new"); Commit opens a confirm listing `uncommittedFiles` (12 named, then
   "and N more", "at least" at `TEAM_FILES_LIST_MAX`; `commitConfirmText`), Cancel commits nothing; the line's parts are
   separated by an `aria-hidden` dot. Main re-reads git at commit time, so a file that changed between the confirm and the
-  click is committed too (it is still only team files). D8 rename: grants `McpServerSpec.roles` are role slugs and
+  click is committed too (it is still only team files); the confirm says so (review M2: lead "Git reports N changed team
+  files in .orgai/ right now:", footnote "OrgAI commits the team files git reports as changed when you press Commit, and
+  only team files. ..."; a stricter check in main is a follow-up). D8 rename: grants `McpServerSpec.roles` are role slugs and
   `projects:save` keeps the stored `mcpServers` (store/projects.ts `saveFromRenderer`), so a rename dropped slug grants;
-  `renamePatch` / `slugPatch` now add the server ids to `Role.mcpServers` in the same role patch. Skills (`Role.skills`),
-  `spawnable` and `requiredReports` are ids and were unaffected. Residual: the old slug stays in `McpServerSpec.roles`, so a
-  later role that takes that slug inherits the grant (cleaning it needs `mcp.upsert`, not done). Checked by unit tests
-  (roleOps, rolePlacement, delegation, teamFiles) and e2e team.mjs (add target, no overlap and in-stage at both sizes,
-  body drop, cycle reason, leads chip, banners, undo), canvas.mjs (body drop per node style), team-files.mjs (confirm,
-  Cancel, keyboard commit, separators); layout.mjs unchanged. Not checked: the delegation list by eye at every size and
+  `renamePatch` / `slugPatch` add the server ids to `Role.mcpServers` in the same role patch. Review H1: the patch is
+  computed against a `RenameStart` (slug and `mcpServers`) RoleInspector takes when the Name or Slug edit begins (focus, or
+  the first keystroke when no focus came; keyed to role and project id), always `start grants ∪ servers naming the start
+  slug`, so an in-between slug while typing ("QA Lead" passes through `qa`) never copies another role's server in. Review
+  M3: when the edit ends (blur, role switch or unmount through an effect cleanup) and the slug changed, `settleRename`
+  saves the store's project with `projects:save` (awaited, through `trackSave`; its result is not put back in the store,
+  so an edit typed meanwhile is not overwritten), then re-reads `mcp.list`, and only when no role holds the old slug sends
+  one `mcp.upsert` per server whose explicit `roles` still names it and that the renamed role holds by id, dropping the old
+  slug (and never writing back any slug no role holds). A failed save sends nothing; a failure says so in the inspector
+  banner if that role is still shown. From the upsert answer only `mcpServers` is applied over the store copy. A rename
+  therefore makes 0 calls per keystroke and at its end one save plus at most one upsert per affected server (0 when main
+  already dropped the slug itself). `revokePlan` also drops slugs no role holds. L1: a drop on the manager a role already
+  reports to does nothing; `moveNotice` names roles that no longer delegate to the moved role. L2: "Nobody (root
+  orchestrator)" is offered only on the root. Known gap: `RoleCapabilities` applies an `mcp.upsert` answer with
+  `replaceProject(r.project)` whole, which can replace newer unsaved role edits (pending 350 ms debounce) with main's copy
+  in the store; not fixed here (file owned by another run). Skills (`Role.skills`), `spawnable` and `requiredReports` are
+  ids and were unaffected. Checked by unit tests (roleOps, roleCapabilities, rolePlacement, delegation, teamFiles) and e2e
+  team.mjs (add target, no overlap and in-stage at both sizes, body drop, same-parent drop, cycle reason, leads chip,
+  banners, undo), canvas.mjs (body drop per node style), team-files.mjs (confirm wording, Cancel, keyboard commit,
+  separators); layout.mjs unchanged. The rename settle path has no e2e (unit tests with fake save/list/upsert only).
+  QA phase 1 follow-ups (2026-11-19): S1 the pan after an add (`revealRole`) measures the rendered node when it exists
+  and uses `lib/rolePlacement.ts` `revealShift` (pure) to keep it inside the stage and 8 px clear of
+  `.react-flow__controls` (bottom right) and `.react-flow__minimap` (bottom left); e2e team.mjs checks adds 2 and 3 at
+  1440x900 and the add at 1024x640 against both (other graph styles, e.g. Constellation, not checked by e2e). S2 the
+  commit confirm repeats `status.warnings` (file and message through `showHidden`, capped at 12, warning Banner
+  `team-files-commit-warnings`), the lead says some team files have warnings and the button reads "Commit anyway"; it does
+  not block (unit test only: no cheap fixture makes main produce a warning in team-files.mjs). P4 the direct reports group
+  of the delegation list is labelled "Direct reports". P6 `team-drop-note` clears on the next drag start or a pane click. Not checked: the delegation list by eye at every size and
   theme, touch drags, screen-reader speech, radial / left-right placement by eye.
 - Proposal cards (`docs/design/proposal-cards.md`): an org chart card shows a changed role's new prompt ("Show new prompt") and an added role's prompt ("Show prompt") in an `org-diff-prompt` disclosure through `ClampText`/`showHidden` with the hidden-characters badge (review M3; e2e/proposals.mjs); card read errors speak through the frame's one `tray-announce` (`useFrameAnnounce` in `CanvasFrame`). Long proposals (fix 2026-11-07, proposal-cards.md section 12): a proposal body is always its own scroller (`overflow: auto` beside its cap in cards.css; the Team tab's Architect tray set `overflow: visible`, so a capped body ran on under the footer and never scrolled), and while it overflows `DecisionCard` gives it one Tab stop (`data-scrolls`, `role=group`, inset focus ring). e2e/proposals.mjs scenario 4 drives a 29-change org chart in the Live tray of a work run and of an org change session (the Team tab's Architect tray is gone, see Org change sessions) at both sizes and themes.
 - Proposal cards (spec `docs/design/proposal-cards.md`, merged at e655838): `components/proposals/*` (`McpProposalBody`,

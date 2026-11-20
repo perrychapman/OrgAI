@@ -165,13 +165,18 @@ export interface RevokePlan {
   roleMcpServers?: string[]
 }
 
-/** Everything a revoke changes: the server's role list and the role's own grant. An "every role" server becomes the explicit list minus the role. */
+/**
+ * Everything a revoke changes: the server's role list and the role's own grant. An "every role" server becomes the
+ * explicit list minus the role. Review M3 (b): the list it writes also drops every slug no role in the project holds
+ * (left over from a rename), so a role created later under that slug does not inherit the server.
+ */
 export function revokePlan(
   server: Pick<McpServerSpec, 'id' | 'roles'>,
   projectRoles: readonly Pick<Role, 'slug'>[],
   role: Pick<Role, 'slug' | 'mcpServers'>
 ): RevokePlan {
-  const plan: RevokePlan = { roles: revokeServerRoles(server, projectRoles, role) }
+  const held = new Set(projectRoles.map((r) => r.slug))
+  const plan: RevokePlan = { roles: revokeServerRoles(server, projectRoles, role).filter((s) => held.has(s)) }
   if (role.mcpServers?.includes(server.id)) plan.roleMcpServers = withoutRoleServer(role, server.id)
   return plan
 }

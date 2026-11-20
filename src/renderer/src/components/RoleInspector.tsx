@@ -1,5 +1,5 @@
 import type { KeyboardEvent, ReactElement } from 'react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Trash2, UserPlus } from 'lucide-react'
 import type { Project, Role } from '@shared/types'
 import { projectConnection, roleConnection } from '@shared/defaults'
@@ -16,7 +16,17 @@ import { Input } from './ui/Input'
 import { Textarea } from './ui/Textarea'
 import { initials } from '../lib/layout'
 import { delegationChoices } from '../lib/delegation'
-import { renamePatch, setReportsTo, slugPatch, spawnNotice, withRequiredReport, withSpawnableToggled, wouldCycle } from '../lib/roleOps'
+import {
+  moveNotice,
+  renamePatch,
+  setReportsTo,
+  settleRename,
+  slugPatch,
+  withRequiredReport,
+  withSpawnableToggled,
+  wouldCycle,
+  type RenameStart
+} from '../lib/roleOps'
 import { roleModelSummary } from '../lib/roleModels'
 import { modelFoldSummary } from '../lib/roleConnection'
 
@@ -38,6 +48,7 @@ interface Props {
 
 export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape, onAskAssistant, onAddReport }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
+  const replaceProject = useAppStore((s) => s.replaceProject)
   const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === roleConnection(role, project))?.connection.tierModels)
   const others = project.roles.filter((r) => r.id !== role.id)
   const isRoot = role.reportsTo === null
@@ -53,9 +64,57 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
   const changeParent = (value: string): void => {
     const reportsTo = value || null
     const before = useAppStore.getState().projects.find((p) => p.id === project.id)?.roles ?? project.roles
+    if (before.find((r) => r.id === role.id)?.reportsTo === reportsTo) return
     updateRoles(project.id, (roles) => setReportsTo(roles, role.id, reportsTo))
-    onNotice?.(spawnNotice(before, setReportsTo(before, role.id, reportsTo), role.name))
+    onNotice?.(moveNotice(before, setReportsTo(before, role.id, reportsTo), role.id))
   }
+
+  // Review H1 / M3: a Name or Slug edit is computed against the role as it was when the edit began, and settled once
+  // when it ends (blur, switching role, closing the inspector). See renamePatch and settleRename in lib/roleOps.
+  const renameStart = useRef<(RenameStart & { roleId: string; projectId: string }) | null>(null)
+  const shownRoleId = useRef(role.id)
+  const noticeRef = useRef(onNotice)
+  useEffect(() => {
+    shownRoleId.current = role.id
+    noticeRef.current = onNotice
+  })
+  /** Takes the start snapshot on focus, or on the first keystroke when no focus event came (autofocus, scripted input). */
+  const beginRename = (): RenameStart => {
+    if (!renameStart.current || renameStart.current.roleId !== role.id || renameStart.current.projectId !== project.id) {
+      renameStart.current = { roleId: role.id, projectId: project.id, slug: role.slug, mcpServers: role.mcpServers ? [...role.mcpServers] : undefined }
+    }
+    return renameStart.current
+  }
+  const endRename = useRef<() => void>(() => undefined)
+  endRename.current = (): void => {
+    const s = renameStart.current
+    renameStart.current = null
+    if (!s) return
+    const projectOf = (): Project | undefined => useAppStore.getState().projects.find((p) => p.id === s.projectId)
+    void settleRename(s.roleId, s.slug, {
+      current: projectOf,
+      // Awaited before any upsert: the save carries the id grants that keep the renamed role's access. Its result is not
+      // put back in the store, so an edit typed meanwhile is not overwritten (the debounced save writes that edit).
+      save: (p) => useAppStore.getState().trackSave(() => window.orgai.projects.save(p)),
+      // Re-read after the save: main may already have dropped the old slug itself, and the spec sent must be current.
+      servers: async () => (await window.orgai.mcp.list(s.projectId)).map((i) => i.spec),
+      upsert: (spec) => window.orgai.mcp.upsert({ projectId: s.projectId, spec }),
+      // Only the server list comes from main's answer; the roles stay the store's, which may be newer than main's copy.
+      applied: (r) => {
+        const cur = projectOf()
+        if (cur) replaceProject({ ...cur, mcpServers: r.project.mcpServers })
+      }
+    }).then((res) => {
+      if (!res.error || shownRoleId.current !== s.roleId) return
+      noticeRef.current?.(
+        res.error === 'save'
+          ? `The project could not be saved, so connections still name the old slug "${s.slug}". This role keeps its connections.`
+          : `${res.left === 1 ? '1 connection still names' : `${res.left} connections still name`} the old slug "${s.slug}": a role given that slug later would get ${res.left === 1 ? 'it' : 'them'}. Removing ${res.left === 1 ? 'it' : 'them'} from this role and granting again cleans that up.`
+      )
+    })
+  }
+  // Switching role or closing the inspector ends an edit that had no blur.
+  useEffect(() => () => endRename.current(), [role.id])
 
   const choices = delegationChoices(project.roles, role)
   const delegateRow = (r: Role): ReactElement => (
@@ -120,7 +179,13 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
 
         <div className="field">
           <label htmlFor="role-name-input">Name</label>
-          <Input id="role-name-input" value={role.name} onChange={(v) => patch(renamePatch(project, role, v))} />
+          <Input
+            id="role-name-input"
+            value={role.name}
+            onFocus={() => void beginRename()}
+            onBlur={() => endRename.current()}
+            onChange={(v) => patch(renamePatch(project, beginRename(), v))}
+          />
         </div>
 
         <RoleCapabilities project={project} role={role} onChange={patch} onAskAssistant={onAskAssistant} />
@@ -134,7 +199,14 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
           </summary>
           <div className="field">
             <label htmlFor={id('slug')}>Slug (subagent type)</label>
-            <Input id={id('slug')} value={role.slug} mono onChange={(v) => patch(slugPatch(project, role, slugify(v)))} />
+            <Input
+              id={id('slug')}
+              value={role.slug}
+              mono
+              onFocus={() => void beginRename()}
+              onBlur={() => endRename.current()}
+              onChange={(v) => patch(slugPatch(project, beginRename(), slugify(v)))}
+            />
           </div>
           <div className="field">
             <label htmlFor={id('description')}>When should a manager delegate to this role?</label>
@@ -148,7 +220,8 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
               value={role.reportsTo ?? ''}
               onChange={(e) => changeParent(e.target.value)}
             >
-              <option value="">Nobody (root orchestrator)</option>
+              {/* Review L2: only the root reports to nobody; another role cannot be made a second root here. */}
+              {isRoot && <option value="">Nobody (root orchestrator)</option>}
               {others.map((r) => (
                 <option key={r.id} value={r.id} disabled={wouldCycle(project.roles, role.id, r.id)}>
                   {r.name}
@@ -208,7 +281,15 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
             <>
               <span className="hint">Required: this role must hand work to that report before it finishes.</span>
               {others.length === 0 && <span className="hint">Add more roles to delegate to.</span>}
-              {choices.direct.length > 0 && <div className="delegate-list">{choices.direct.map(delegateRow)}</div>}
+              {choices.direct.length > 0 && (
+                <div className="stack-1" role="group" aria-labelledby={id('delegate-direct')}>
+                  {/* QA P4: the first group is named, as "Other roles" below is. */}
+                  <span className="field-label" id={id('delegate-direct')}>
+                    Direct reports
+                  </span>
+                  <div className="delegate-list">{choices.direct.map(delegateRow)}</div>
+                </div>
+              )}
               {choices.other.length > 0 && (
                 <details className="delegate-other" open={choices.other.some((r) => role.spawnable.includes(r.id))} data-testid="role-delegate-other">
                   <summary>

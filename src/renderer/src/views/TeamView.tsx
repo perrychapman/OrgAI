@@ -58,8 +58,8 @@ function roleNodeSize(style: CanvasNodeStyle, layout: CanvasLayout): { width: nu
   if (style === 'hex') return { width: HEX_TILE.width, height: HEX_TILE.height }
   return ROLE_NODE_SIZE[style === 'compact' ? 'compact' : 'card']
 }
-import { addRoleUnder, nextRoleName, removeRole, restoreRole, setReportsTo, spawnNotice, wouldCycle, type RemovedRole } from '../lib/roleOps'
-import { placeNewRole } from '../lib/rolePlacement'
+import { addRoleUnder, moveNotice, nextRoleName, removeRole, restoreRole, setReportsTo, spawnNotice, wouldCycle, type RemovedRole } from '../lib/roleOps'
+import { placeNewRole, revealShift, type StageRect } from '../lib/rolePlacement'
 import TeamFilesLine from '../components/team/TeamFilesLine'
 import TeamFilesCard from '../components/team/TeamFilesCard'
 import TeamFilesAppliedNotice from '../components/team/TeamFilesAppliedNotice'
@@ -79,8 +79,8 @@ const PANEL_TABS = [
 const UNDO_MS = 12_000
 /** How long the reason for a refused reporting line stays in the toolbar. */
 const DROP_NOTE_MS = 8_000
-/** Room kept between a new role and the stage edges when the chart pans to it (the bottom corners hold the zoom controls and minimap). */
-const REVEAL_MARGIN = { top: 24, right: 24, bottom: 64, left: 24 }
+/** Room kept between a new role and the stage edges when the chart pans to it (the controls and minimap are cleared separately, revealShift). */
+const REVEAL_MARGIN = { top: 24, right: 24, bottom: 24, left: 24 }
 
 /** The current roles of a project from the store (the render's `project` can lag a just-made change). */
 function storedRoles(projectId: string, fallback: Role[]): Role[] {
@@ -436,7 +436,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       const child = project.roles.find((r) => r.id === childId)
       if (!child || child.reportsTo === root.id) return
       const before = storedRoles(project.id, project.roles)
-      const spawn = spawnNotice(before, setReportsTo(before, childId, root.id), child.name)
+      const spawn = moveNotice(before, setReportsTo(before, childId, root.id), childId)
       updateRoles(project.id, (roles) => setReportsTo(roles, childId, root.id))
       setSelectedEdgeId(null)
       selectRole(childId)
@@ -516,11 +516,18 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       const target = c.target
       const before = storedRoles(project.id, project.roles)
       if (wouldCycle(before, target, source)) return
+      // Review L1: a drop on the manager it already reports to changes nothing (setReportsTo would still strip the
+      // role from every other role's delegation list).
+      if (before.find((r) => r.id === target)?.reportsTo === source) {
+        setDropNote(null)
+        return
+      }
       const after = setReportsTo(before, target, source)
       updateRoles(project.id, (roles) => (wouldCycle(roles, target, source) ? roles : setReportsTo(roles, target, source)))
       setDropNote(null)
-      // The banner for the moved role: a manager that gained or lost spawn rights. A drag with no such change clears a stale one.
-      const text = spawnNotice(before, after, before.find((r) => r.id === target)?.name ?? 'The role')
+      // The banner for the moved role: who no longer delegates to it, and a manager that gained or lost spawn rights.
+      // A drag with no such change clears a stale one.
+      const text = moveNotice(before, after, target)
       setNotice(text ? { roleId: target, text } : null)
     },
     [project.id, project.roles, updateRoles]
@@ -639,23 +646,27 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }, [])
 
   /** Pan (never zoom) so a role at `pos` is fully inside the stage, clear of the zoom controls and minimap. */
-  const revealRole = (pos: { x: number; y: number }, size: { width: number; height: number }): void => {
+  const revealRole = (roleId: string, pos: { x: number; y: number }, size: { width: number; height: number }): void => {
     window.setTimeout(() => {
       const flow = flowRef.current
       const stage = frameRef.current?.querySelector<HTMLElement>('.frame-stage')
       if (!flow || !stage) return
       const vp = flow.getViewport()
       const view = stage.getBoundingClientRect()
-      const left = pos.x * vp.zoom + vp.x
-      const top = pos.y * vp.zoom + vp.y
-      const right = left + size.width * vp.zoom
-      const bottom = top + size.height * vp.zoom
-      let dx = 0
-      let dy = 0
-      if (right > view.width - REVEAL_MARGIN.right) dx = view.width - REVEAL_MARGIN.right - right
-      if (left + dx < REVEAL_MARGIN.left) dx = REVEAL_MARGIN.left - left
-      if (bottom > view.height - REVEAL_MARGIN.bottom) dy = view.height - REVEAL_MARGIN.bottom - bottom
-      if (top + dy < REVEAL_MARGIN.top) dy = REVEAL_MARGIN.top - top
+      const inStage = (el: Element | null): StageRect | null => {
+        if (!el) return null
+        const b = el.getBoundingClientRect()
+        return b.width > 0 && b.height > 0 ? { x: b.left - view.left, y: b.top - view.top, w: b.width, h: b.height } : null
+      }
+      // The rendered box when the node is already drawn (graph styles differ in size), else the computed one.
+      const node =
+        inStage(stage.querySelector(`.react-flow__node[data-id="${CSS.escape(roleId)}"]`)) ??
+        { x: pos.x * vp.zoom + vp.x, y: pos.y * vp.zoom + vp.y, w: size.width * vp.zoom, h: size.height * vp.zoom }
+      // QA S1: the zoom controls and the minimap float over the stage's bottom corners; the new node must clear both.
+      const obstacles = [stage.querySelector('.react-flow__controls'), stage.querySelector('.react-flow__minimap')]
+        .map(inStage)
+        .filter((r): r is StageRect => r !== null)
+      const { dx, dy } = revealShift(node, { w: view.width, h: view.height }, REVEAL_MARGIN, obstacles)
       if (dx !== 0 || dy !== 0) void flow.setViewport({ x: vp.x + dx, y: vp.y + dy, zoom: vp.zoom }, { duration: fitMs(reducedMotion) })
     }, 60)
   }
@@ -699,7 +710,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     setPanelTab('role')
     setFocusTick((t) => t + 1)
     selectRole(role.id)
-    if (options.presentation !== 'pocket-office') revealRole(position, roleSize)
+    if (options.presentation !== 'pocket-office') revealRole(role.id, position, roleSize)
   }
 
   // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
@@ -967,6 +978,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onConnectStart={() => setDropNote(null)}
             onConnectEnd={onConnectEnd}
             isValidConnection={isValidConnection}
             onNodeClick={onNodeClick}
@@ -974,6 +986,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             onPaneClick={() => {
               selectRole(null)
               setSelectedEdgeId(null)
+              // QA P6: the reason for a refused drop goes with the next drag or a click on the chart.
+              setDropNote(null)
             }}
             onBeforeDelete={onBeforeDelete}
             onInit={(inst) => {

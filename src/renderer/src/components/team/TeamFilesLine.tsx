@@ -3,6 +3,7 @@ import { TriangleAlert } from 'lucide-react'
 import { TEAM_FILES_LIST_MAX, type TeamFilesStatus } from '@shared/types'
 import { COMMIT_CONFIRM_NOTE, commitConfirmText, teamFilesLine } from '../../lib/teamFiles'
 import { hasHidden, showHidden } from '../../lib/hiddenChars'
+import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { useConfirm } from '../ui/ConfirmDialog'
@@ -64,10 +65,23 @@ export default function TeamFilesLine({
               {c.more > 0 && <li className="muted">and {c.more} more</li>}
             </ul>
           )}
+          {c.warnings.length > 0 && (
+            <Banner tone="warning" label="Team files warnings" testId="team-files-commit-warnings">
+              <ul className="team-files-commit-list">
+                {c.warnings.map((w, i) => (
+                  <li key={i}>
+                    <span className="mono">{showHidden(w.file)}</span>: {showHidden(w.message)}
+                    {hasHidden(w.file + w.message) && <span className="sr-only"> (hidden characters shown)</span>}
+                  </li>
+                ))}
+                {c.moreWarnings > 0 && <li>and {c.moreWarnings} more warnings</li>}
+              </ul>
+            </Banner>
+          )}
           <p className="muted">{COMMIT_CONFIRM_NOTE}</p>
         </div>
       ),
-      confirmLabel: 'Commit',
+      confirmLabel: c.confirmLabel,
       confirmTestId: 'team-files-commit-confirm-button'
     })
     if (ok) onCommit()
