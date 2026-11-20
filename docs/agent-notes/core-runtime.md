@@ -637,7 +637,7 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     slugs; a removed manager becomes the current root). A new role, and every role in first-time setup, needs name,
     description, responsibilities, prompt, tools, canSpawn, spawnable and reportsTo, else REVISE naming the missing
     fields. reportsTo / spawnable / requiredReports resolve by name or slug (case-insensitive, then the slug form; also
-    in `toRoles`, so drafts and imports gain slug lookup); one that matches nothing (in a revision: no draft and no
+    in `toRoles`, so the quick drafter `draftOrgChart` gains slug lookup; the agent importer does not use toRoles); one that matches nothing (in a revision: no draft and no
     current role that is not removed) is a REVISE naming each, instead of the old silent re-parent to the root or drop.
     An unknown slug is a new role in first-time setup, and in a revision only when it is the slug of the draft's own
     name (the fast-tier baseline's rejected first proposals were new roles given an invented slug). A listed current
@@ -649,7 +649,14 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     tools, canSpawn, spawnable (slugs), description and prompt through promptDatum inside <<< >>> (prompt 1,500 chars,
     block 24,000 chars; past it later roles keep only the summary line). Checked by `harnessToolsRevise.test.ts`,
     `harnessToolsRequiredReports.test.ts`, `draft.test.ts`, `serviceContext.test.ts` and the bench self-check
-    (patch-style revision case); live Architect behaviour is unverified until the next benchmark pass.
+    (patch-style revision case); live Architect behaviour is unverified until the next benchmark pass. Reviewer
+    (2026-11-19) approved with fixes, all fixed with regressions: M1 a name-matched patch pins the role's slug so the
+    merge hits the same role; M2 listed roles stay findable by their current name and slug, and an unresolved manager in
+    the revision pass is a REVISE; M3 a patch whose removed manager was the removed root is a REVISE (never promoted);
+    L2 a starter role with an edited prompt or tools, or a grant, is the user's. Open Lows: L3 propose_org_change fills
+    patches from the run's view of the roles while the save re-merges against the stored project (the existing "Still
+    open" run-view item, made likelier); L4 promptDatum does not strip U+2028/2029, bidi or zero-width characters, and
+    a role's description precedes its prompt on one line.
   - A `PreToolUse` hook answering `permissionDecision: 'allow'` bypasses the permission system in every mode
     (verified in `scripts/smoke-permission-hook.mjs` on haiku under `dontAsk`: the first Bash call was denied, the
     in-process MCP tool got through on the hook alone, and the retried Bash call ran with zero `canUseTool` calls).

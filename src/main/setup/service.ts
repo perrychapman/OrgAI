@@ -91,13 +91,17 @@ export const CHART_PROMPT_MAX = 1_500
 export const CHART_DETAILS_MAX = 24_000
 
 /**
- * True when a project that is not set up yet holds only OrgAI's starter chart for its kind (every slug is a starter
- * slug): a placeholder made at creation, not a decision, so the Architect is not shown it as something to revise.
+ * True when a project that is not set up yet holds only OrgAI's starter chart for its kind: every role is a starter
+ * role by slug with the starter's prompt and tools and no grants (review L2: a role the user edited or granted counts
+ * as theirs). A placeholder made at creation, not a decision, so the Architect is not shown it as something to revise.
  */
 export function isStarterChart(project: Project): boolean {
   if (project.setup?.state === 'complete' || !project.roles.length) return false
-  const starter = new Set((projectKindOf(project) === 'engagement' ? engagementRoles() : defaultRoles()).map((r) => r.slug))
-  return project.roles.every((r) => starter.has(r.slug))
+  const starter = new Map((projectKindOf(project) === 'engagement' ? engagementRoles() : defaultRoles()).map((r) => [r.slug, r]))
+  return project.roles.every((r) => {
+    const s = starter.get(r.slug)
+    return !!s && r.prompt === s.prompt && r.tools.join(',') === s.tools.join(',') && !r.mcpServers?.length && !r.skills?.length
+  })
 }
 
 /**

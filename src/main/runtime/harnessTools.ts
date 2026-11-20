@@ -432,6 +432,8 @@ export function completeDrafts(existing: readonly Role[], drafts: readonly Draft
     else delete d.slug
     const cur = revision ? (slug ? existing.find((r) => r.slug === slug) : existing.find((r) => lower(r.name) === lower(d.name) && lower(d.name))) : undefined
     if (cur) {
+      // Review M1: pin the slug, so mergeOrgChart matches the same role this patch was filled from.
+      d.slug = cur.slug
       d.name ??= cur.name
       d.description ??= cur.description
       d.responsibilities ??= [...cur.responsibilities]
@@ -439,7 +441,12 @@ export function completeDrafts(existing: readonly Role[], drafts: readonly Draft
       d.tools ??= [...cur.tools]
       d.canSpawn ??= cur.canSpawn
       d.spawnable ??= cur.spawnable.map((id) => live.find((r) => r.id === id)?.slug).filter((s): s is string => !!s)
-      if (d.reportsTo === undefined) d.reportsTo = cur.reportsTo === null ? null : removeSlugs.has(existing.find((r) => r.id === cur.reportsTo)?.slug ?? '') ? slugOfId(root?.id ?? null) : slugOfId(cur.reportsTo)
+      if (d.reportsTo === undefined) {
+        const managerRemoved = cur.reportsTo !== null && removeSlugs.has(existing.find((r) => r.id === cur.reportsTo)?.slug ?? '')
+        // Review M3: a role whose removed manager was the root is never promoted to root by a fill: ask instead.
+        if (managerRemoved && !root) return { error: `${NOT_SHOWN} role "${datum(d.name, 60)}" reported to a removed role and the root is removed too. Give its reportsTo.` }
+        d.reportsTo = cur.reportsTo === null ? null : managerRemoved ? slugOfId(root!.id) : slugOfId(cur.reportsTo)
+      }
     } else {
       const missing = DRAFT_REQUIRED.filter((k) => d[k] === undefined)
       if (missing.length) {
@@ -645,24 +652,29 @@ function reviseKeepingUnmentioned(
   drafts.forEach((d, i) => {
     for (const n of [lower(d.slug), slugify(d.name ?? '')]) if (n && !draftIndex.has(n)) draftIndex.set(n, i)
   })
+  // Review M2: a listed (matched) role is still found by its current name and slug (a rename in the same proposal).
+  matched.forEach((cur, i) => {
+    for (const n of [lower(cur.name), lower(cur.slug)]) if (n && !draftIndex.has(n)) draftIndex.set(n, i)
+  })
   const draftIndexByName = { get: (n: unknown): number | undefined => refLookup(draftIndex, n) }
 
   // Manager intent per draft: another draft, a kept role, or none (root candidate).
   const keptManager = new Map<number, Role>()
   const unresolved = new Set<number>() // names a manager nobody in the chart has: treated like "no manager"
   const rootCandidates: number[] = []
-  drafts.forEach((d, i) => {
+  for (const [i, d] of drafts.entries()) {
     const ref = lower(d.reportsTo)
     const at = ref ? draftIndexByName.get(d.reportsTo) : undefined
-    if (at !== undefined && at !== i) return
+    if (at !== undefined && at !== i) continue
     const k = ref ? keptByRef(d.reportsTo) : undefined
     if (k) {
       keptManager.set(i, k)
-      return
+      continue
     }
-    if (ref && at === undefined) unresolved.add(i)
+    // Review M2: completeDrafts validated every reference, so an unresolved one here is a REVISE, never a silent move.
+    if (ref && at === undefined) return { error: `REVISE. The org chart was not shown to the user: ${datum(d.name, 60)} reportsTo "${datum(String(d.reportsTo), 60)}" matches no role. Use a role's name or slug from the chart.` }
     rootCandidates.push(i)
-  })
+  }
   const keptRoot = keptRoles.find((k) => k.reportsTo === null)
   // A draft that names no manager is the new root; one whose manager is unknown (or removed) is never promoted to root,
   // it goes under the root.
@@ -817,7 +829,7 @@ export const proposeOrgChart = defineTool({
     roles: z
       .array(draftRoleSchema)
       .optional()
-      .describe('The roles. Required unless fromTemplate is given; with fromTemplate each role here replaces the template role of the same name or is added'),
+      .describe('The roles. Required unless fromTemplate is given; with fromTemplate each role here (every field) replaces the template role of the same name or is added'),
     fromTemplate: z
       .string()
       .optional()

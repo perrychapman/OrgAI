@@ -278,6 +278,31 @@ describe('revision patches (a listed existing slug changes only the fields given
     expect(roles!.find((r) => r.name === 'Helper')!.reportsTo).toBe('r-lead')
   })
 
+  it('review M1: a name-matched patch changes the role it was filled from, not another role holding that slug', async () => {
+    const p = rich()
+    // "Reviewer" is now the role with slug security-reviewer; slug "reviewer" belongs to "Code Reviewer".
+    p.roles.find((r) => r.slug === 'reviewer')!.name = 'Code Reviewer'
+    p.roles.push(role({ id: 'r-sec', slug: 'security-reviewer', name: 'Reviewer', model: 'gw/mid', tier: 'everyday', reportsTo: 'r-lead', tools: ['Read', 'Grep'], prompt: 'Security prompt.' }))
+    const { roles } = await propose(p, { roles: [{ name: 'Reviewer', prompt: 'Sharper security prompt.' }] }, proxyConn)
+    expect(roles!.find((r) => r.id === 'r-sec')).toMatchObject({ prompt: 'Sharper security prompt.', tools: ['Read', 'Grep'] })
+    expect(roles!.find((r) => r.id === 'r-rev')).toMatchObject({ name: 'Code Reviewer', prompt: 'You are reviewer.', spawnable: ['r-qa'] })
+  })
+
+  it('review M2: a report keeps its manager when the manager is renamed in the same proposal', async () => {
+    const p = rich()
+    const { roles, text } = await propose(p, { roles: [{ slug: 'reviewer', name: 'QA Lead' }, { slug: 'qa', prompt: 'Sharper QA.' }] }, proxyConn)
+    expect(text).toMatch(/^APPROVED/)
+    expect(roles!.find((r) => r.id === 'r-qa')).toMatchObject({ reportsTo: 'r-rev', prompt: 'Sharper QA.' })
+    expect(roles!.find((r) => r.id === 'r-rev')).toMatchObject({ name: 'QA Lead', spawnable: ['r-qa'] })
+  })
+
+  it('review M3: a patch whose manager was the removed root is a REVISE, never promoted to root', async () => {
+    const p = rich()
+    const { text, ctx } = await propose(p, { roles: [{ slug: 'engineer', prompt: 'x' }, draft('New Lead', null)], remove: ['lead'] }, proxyConn)
+    expect(text).toMatch(/role "Engineer" reported to a removed role and the root is removed too/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
   it('propose_org_change takes the same patch', async () => {
     const p = rich()
     const ctx = fakeCtx({ project: p, connection: proxyConn as never })

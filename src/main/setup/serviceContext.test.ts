@@ -43,6 +43,13 @@ describe('Architect context', () => {
     const starter = project({ path: join(dir, 'repo'), roles: defaultRoles(), setup: { kind: 'new', state: 'in_progress' } as never })
     expect(isStarterChart(project({ roles: engagementRoles(), kind: 'engagement', setup: { kind: 'new', state: 'in_progress' } as never }))).toBe(true)
     expect(isStarterChart(project({ roles: [...defaultRoles(), role({ id: 'x', slug: 'imported-agent' })], setup: { kind: 'new', state: 'in_progress' } as never }))).toBe(false)
+    // Review L2: a starter role the user edited or granted is theirs.
+    const edited = defaultRoles()
+    edited[1].prompt = 'My own prompt.'
+    expect(isStarterChart(project({ roles: edited, setup: { kind: 'new', state: 'in_progress' } as never }))).toBe(false)
+    const granted = defaultRoles()
+    granted[1].mcpServers = ['m1']
+    expect(isStarterChart(project({ roles: granted, setup: { kind: 'new', state: 'in_progress' } as never }))).toBe(false)
     expect(starter.roles.length).toBeGreaterThan(0)
     expect(isStarterChart(starter)).toBe(true)
     const text = service.hiddenContext(starter)
