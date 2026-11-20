@@ -464,7 +464,9 @@ export class FactoryEngine {
     }
     if (live) {
       lists.dock.push({ key: 'dock', matrix: place(DOCK_CENTER.x, GANTRY_TOP, DOCK_CENTER.z) })
-      if (floor.board) lists.board.push({ key: 'board', matrix: place(BOARD_CENTER.x, GANTRY_TOP, BOARD_CENTER.z) })
+      // Step lamps stay off until slice 3 maps plan steps to them (without a colour the unlit lamps drew white, which
+      // read as twelve lit lamps; slice 2 screenshots).
+      if (floor.board) lists.board.push({ key: 'board', matrix: place(BOARD_CENTER.x, GANTRY_TOP, BOARD_CENTER.z), colours: { 'board.lamps': this.lampColours.off } })
     }
     for (const id of layout.order) {
       const st = layout.stations[id]

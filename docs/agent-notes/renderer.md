@@ -20,6 +20,28 @@ section 8 notices and the test state (`<output hidden data-testid="factory-state
   on the RTX 3060, `e2e/canvas.mjs` and `e2e/office.mjs` unchanged, screenshots in
   `docs/design/factory-floor-shots/slice-1/`. Unverified: the packed asar app, screen-reader speech, macOS and Linux.
 
+## Factory Floor, slice 2 (2026-11-20)
+
+Layout, procedural kits, camera input, mirror keyboard, labels, Find a worker and the control row are wired (spec
+"Implementation notes, Slice 2"). Facts for the next slice:
+
+- Kits: `FactoryCanvas.tsx` passes `factoryKits` from `builders/index.ts`; the placeholder kits are gone. The engine
+  reports real heights through `onHeights`; `FactoryScene` bumps a version so label anchors recompute.
+- `cameraController.ts` (beside the components, not under `lib/`) owns pointer, wheel, key and tween input for both the
+  3D view and the floor plan; the maths stays in `lib/factory/camera.ts`. The floor plan has its own zoom limits
+  (`PLAN_LIMITS`: zoom 12 to 60, fit 22 to 40 px per metre) so tiles keep their text.
+- Nameplates anchor 0.75 m north of the station centre (booth 1 m) at the kit's plate height; line signs end at the head
+  zone's east edge and grow west (`align: 'end'` in `FactoryLabels`), so neither covers a station.
+- Software WebGL (the e2e default) runs at quality `minimal`: far LOD and no shadows at every zoom. Look at the scene
+  on the GPU (`E2E_FACTORY_SWGL=0`) before judging art.
+- A new decision card takes focus on mount (`DecisionCard`'s existing auto-focus). The `[mock:factory-floor]` tour's
+  background permission ask arrives after the floor is complete, so `e2e/factory-floor.mjs` waits for the card before
+  its 40-agent keyboard walk.
+- Machine variants follow `stableHash(roleSlug) % 4`; the default team's roles give variants 1, 2 and 3 only
+  (orchestrator and implementer 1, reviewer 2, researcher 3), so variant 0 (press) has not been seen in the app.
+- Checked: `e2e/factory-floor.mjs` 147/147 on SwiftShader and on the RTX 3060, 142/142 with `E2E_FACTORY_PLAN=1`;
+  `e2e/canvas.mjs` and `e2e/office.mjs` pass; screenshots in `docs/design/factory-floor-shots/slice-2/`.
+
 ## Context menus (2026-11-18)
 
 Contract and evaluation table: `docs/design/context-menus.md`. One primitive, `components/ui/ContextMenu.tsx`

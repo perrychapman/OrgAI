@@ -26,6 +26,7 @@ import {
   DOCK_SIZE,
   EMPTY_LAYOUT_MEMORY,
   GANTRY_TOP,
+  HEAD_W,
   STATION_SIZE,
   layoutFloor,
   layoutTeam,
@@ -91,7 +92,7 @@ export const FACTORY_3D_MAX_AGENTS = 120
 
 /**
  * Heights used before the 3D kits report theirs (and always in the floor plan, which ignores height): booth and
- * stations as built by the slice 2 placeholder kits, rounded up.
+ * stations of about the procedural kits' size, rounded up. The engine replaces them with the kits' real heights.
  */
 const DEFAULT_HEIGHTS: KitHeights = {
   boothTop: GANTRY_TOP + 3,
@@ -106,6 +107,9 @@ const DEFAULT_HEIGHTS: KitHeights = {
 /** Worker buttons cover the station footprint up to this height (robot and console; the stack light rises above). */
 const BUTTON_TOP = 1.8
 const NO_SIGNS: readonly PlanSign[] = []
+/** Nameplate anchors sit this far north of the station / booth centre (metres; see plateAnchors). */
+const PLATE_BACK_Z = -0.75
+const BOOTH_PLATE_BACK_Z = -1
 
 type CanvasComponent = (props: FactoryCanvasProps) => ReactElement
 let loadedCanvas: CanvasComponent | null = null
@@ -409,8 +413,11 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     controller.reapply()
   }, [controller, entries, layout, renderer, boardOn, chunk.Canvas])
 
+  // Bumped when the kits report their heights, so the label anchors (which read them) are recomputed.
+  const [heightsVersion, setHeightsVersion] = useState(0)
   const onHeights = useCallback((h: KitHeights) => {
     heights.current = h
+    setHeightsVersion((v) => v + 1)
     controller.refitIfUntouched()
     controller.reapply()
   }, [controller])
@@ -467,13 +474,21 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   // ---- labels ----
   const plateAnchors = useMemo<NameplateData[]>(() => {
     if (projection === 'plan') return []
+    // Section 6.2 "above each station". Anchored at the station centre, the 55 degree pitch put the plate's bottom below
+    // the projected top of the machine at the back of the plate, so plates hid machine tops; anchored at the plate's
+    // north edge they floated nearer the row above (slice 2 screenshots). PLATE_BACK_Z moves the anchor north so its
+    // projection matches the machine's back top edge (machine anchor z -0.45, depth 1.2, height 1.9 on the plate).
+    const h = heights.current
     return plates.map((p) => ({
       ...p,
-      anchor: { x: p.anchor.x, y: p.entry.kind === 'booth' ? heights.current.boothPlate : heights.current.stationPlate, z: p.entry.kind === 'booth' ? BOOTH_CENTER.z : p.anchor.z }
+      anchor:
+        p.entry.kind === 'booth'
+          ? { x: p.anchor.x, y: h.boothPlate, z: BOOTH_CENTER.z + BOOTH_PLATE_BACK_Z }
+          : { x: p.anchor.x, y: h.stationPlate, z: p.anchor.z + PLATE_BACK_Z }
     }))
     // heights.current changes only with the canvas; chunk.Canvas covers it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plates, projection, chunk.Canvas])
+  }, [plates, projection, chunk.Canvas, heightsVersion])
   const planSigns = useMemo<PlanSign[]>(() => {
     const names = new Map(agents.map((a) => [a.id, a.name]))
     return lineSigns(layout).map((s) => {
@@ -483,7 +498,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   }, [agents, layout])
   const signs = useMemo<SignData[]>(() => {
     if (projection === 'plan') return []
-    return planSigns.map((s) => ({ key: s.key, line: s.line, text: `Line ${s.line} · ${s.lead}`, anchor: { x: layout.hall.minX + 0.3, y: 0, z: s.z } }))
+    return planSigns.map((s) => ({ key: s.key, line: s.line, text: `Line ${s.line} · ${s.lead}`, anchor: { x: layout.hall.minX + HEAD_W - 0.3, y: 0, z: s.z } }))
   }, [planSigns, projection, layout])
   const dockLabel = useMemo(() => {
     if (mode !== 'live' || projection === 'plan') return null
@@ -496,7 +511,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     const done = plan.steps.filter((s) => s.status === 'done').length
     const blocked = plan.steps.filter((s) => s.status === 'blocked').length
     return { text: `Plan · ${done} of ${total} done${blocked ? ` · ${blocked} blocked` : ''}`, anchor: { x: BOARD_CENTER.x, y: heights.current.boardTop + 0.2, z: BOARD_CENTER.z } }
-  }, [boardOn, plan, projection])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardOn, plan, projection, heightsVersion])
 
   // ---- Find a worker (chrome, slice 2c): entries and the choose handler ----
   const findEntries = useMemo<FindEntry[]>(() => {
