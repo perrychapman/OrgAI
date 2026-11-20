@@ -77,7 +77,7 @@ Left group, in order:
 | --- | --- | --- |
 | Title | `Team` (h1, `--text-primary`, 15 px semibold) | `data-testid="team-title"`. One line under 560 px: title only, count moves into the title tooltip. |
 | Role count | `5 roles` / `1 role` (13 px, `--text-secondary`) | `team-role-count`. |
-| Problem count (placeholder in phase 2) | Neutral chip `No problems` with a check icon. Rendered in phase 2 as a static chip with `data-state="none"` and no click. Phase 4 makes it live. | `team-problems-chip`. Never shows "0 problems". |
+| Problem count (placeholder in phase 2) | Neutral chip `No problems` with a check icon. Not rendered until phase 4 makes the check live (a static "No problems" read as an unchecked verdict); the slot stays out of the DOM. | `team-problems-chip`. Never shows "0 problems". |
 | View switch (placeholder in phase 2) | The slot `team-view-switch` exists in the DOM. In phase 2 it renders nothing (only the chart exists). Phase 4 renders `Chart | List`, phase 5 adds `Capabilities`. | Segmented control (`Tabs compact`), `aria-label="Team view"`. Persisted per project in `localStorage` key `orgai.teamView.<projectId>`. |
 
 Right group, in order (left to right):
@@ -341,7 +341,7 @@ The tests that assert these labels (`roleStaffing.test.ts` lines 93 and 94 and t
 
 Default mock project "Walk" (Orchestrator, Implementer, Reviewer, Researcher), dark and light, both sizes.
 
-- [ ] The header is one row at 1440x900 and 1024x640. It shows `Team`, `4 roles`, `No problems`, Layout, Start from, the Team files chip and `Add role`. No `Canvas style`, Templates, Import or Auto-layout button is on the toolbar.
+- [ ] The header is one row at 1440x900 and 1024x640. It shows `Team`, `4 roles`, Layout, Start from, the Team files chip and `Add role`. No `Canvas style`, Templates, Import or Auto-layout button is on the toolbar.
 - [ ] Exactly one primary-colored button is visible on the tab (Add role).
 - [ ] Add role opens a popover with `Name` selected and `Reports to` set to the root. After selecting Implementer on the chart and opening it again, `Reports to` is Implementer. Choosing Reviewer and pressing Enter adds the role under Reviewer, selects it, opens the editor and puts focus in `What is this role for?`.
 - [ ] The notice row says `Added New role under Reviewer.` with Undo; Undo removes it and the notice row height does not change during the whole sequence (measure the stage top and bottom before and after: equal).

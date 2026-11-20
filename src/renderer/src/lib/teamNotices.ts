@@ -37,6 +37,8 @@ export interface TeamNotice {
   /** Testid of the message element (kept so older e2e selectors still find import and template messages). */
   testId?: string
   actions?: NoticeAction[]
+  /** Never outranks a non-quiet notice of the same rank, however new (an "Undo ended" note behind a fresh edit). */
+  quiet?: boolean
   /** Shows a Dismiss button. */
   dismissible?: boolean
   /** Longer text for the tooltip when the visible one is clamped; defaults to `text`. */
@@ -77,7 +79,7 @@ const rank = (k: NoticeKind): number => (k === 'saved' ? NOTICE_PRIORITY.edit : 
 
 /** Priority first (error before hint; edit and saved share a rank), then the newest. */
 export function compareNotices(a: TeamNotice, b: TeamNotice): number {
-  return rank(a.kind) - rank(b.kind) || b.at - a.at
+  return rank(a.kind) - rank(b.kind) || Number(!!a.quiet) - Number(!!b.quiet) || b.at - a.at
 }
 
 /**

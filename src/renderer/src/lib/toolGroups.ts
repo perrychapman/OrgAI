@@ -1,12 +1,12 @@
 /** Plain-language groups over TOOL_CATALOG for the role editor ("What it can use" > Tools). Pure. */
 
-export type ToolGroupId = 'read' | 'change' | 'run' | 'web' | 'plan'
+export type ToolGroupId = 'read' | 'change' | 'run' | 'web' | 'plan' | 'other'
 
 export interface ToolGroupDef {
   id: ToolGroupId
   label: string
   description: string
-  /** Fixed members; `plan` also takes every catalog tool no group names. */
+  /** Fixed members. `other` has none: it takes what no group names. */
   tools: readonly string[]
   elevated: boolean
   /** Chip text for elevated groups. */
@@ -51,13 +51,24 @@ export interface ToolGroup extends ToolGroupDef {
   members: string[]
 }
 
-/** The groups with their members resolved against the catalog; catalog tools no group names land in `plan`. */
-export function resolveGroups(catalog: readonly string[]): ToolGroup[] {
+const OTHER: ToolGroupDef = {
+  id: 'other',
+  label: 'Other tools',
+  description: 'Tools with no plain-language group. Check what each does before turning it on.',
+  tools: [],
+  elevated: true,
+  chip: 'Can use other tools',
+  phrase: 'use other tools'
+}
+
+/**
+ * The groups with their members resolved against the catalog, plus `other`: catalog tools no group names and the
+ * role's own tools outside the catalog, by raw name. `other` is elevated, so an unknown tool never reads as harmless.
+ */
+export function resolveGroups(catalog: readonly string[], roleTools: readonly string[] = []): ToolGroup[] {
   const named = new Set(TOOL_GROUPS.flatMap((g) => g.tools))
-  return TOOL_GROUPS.map((g) => ({
-    ...g,
-    members: catalog.filter((t) => (g.id === 'plan' ? g.tools.includes(t) || !named.has(t) : g.tools.includes(t)))
-  }))
+  const other = [...catalog.filter((t) => !named.has(t)), ...roleTools.filter((t) => !named.has(t) && !catalog.includes(t))]
+  return [...TOOL_GROUPS.map((g) => ({ ...g, members: catalog.filter((t) => g.tools.includes(t)) })), { ...OTHER, members: [...new Set(other)] }]
 }
 
 export type GroupState = 'on' | 'off' | 'mixed'

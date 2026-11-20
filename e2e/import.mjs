@@ -50,9 +50,9 @@ try {
   await shot('review')
   // Untick one role: the count follows main's preview.
   await dialog.locator('[data-testid=import-include]').nth(1).uncheck({ force: true })
-  await dialog.getByRole('button', { name: 'Replace chart with 1 role', exact: true }).waitFor({ timeout: 10_000 })
+  await dialog.getByRole('button', { name: 'Replace team with 1 role', exact: true }).waitFor({ timeout: 10_000 })
   await dialog.locator('[data-testid=import-include]').nth(1).check({ force: true })
-  await dialog.getByRole('button', { name: 'Replace chart with 2 roles', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Replace team with 2 roles', exact: true }).click()
   await dialog.waitFor({ state: 'detached', timeout: 20_000 })
 
   const notice = page.locator('[data-testid=import-notice]')
@@ -81,7 +81,7 @@ try {
   await openImportFromMenu()
   const again = page.locator('[data-testid=import-dialog]')
   await again.waitFor({ state: 'visible', timeout: 20_000 })
-  check(await again.getByRole('radio', { name: 'Add to the chart' }).isChecked(), 'Import agents from the toolbar defaults to Add')
+  check(await again.getByRole('radio', { name: 'Add to the team' }).isChecked(), 'Import agents from the toolbar defaults to Add')
   await again.getByRole('button', { name: 'Cancel' }).click()
   await again.waitFor({ state: 'detached', timeout: 10_000 })
 
@@ -112,7 +112,11 @@ try {
   await page.locator('[data-testid=team-add-role]').click()
   await page.locator('[data-testid=add-role-name]').press('Enter')
   await page.locator('[data-testid=import-undo]').waitFor({ state: 'detached', timeout: 10_000 })
-  check(/chart|edit|changed|Undo/i.test(await notice.innerText()), 'banner stays but Undo is gone after a chart edit', await notice.innerText())
+  // N2: the newer "Added ..." edit holds the row; the quiet "Undo ended" note waits behind it (+1) and expires on its own.
+  check(/^Added /.test(await page.locator('[data-testid=team-notice-row] .team-notice-text').innerText()), 'the newer edit notice outranks "Undo ended"')
+  await page.locator('[data-testid=team-notice-more]').click()
+  check(/Undo ended/.test(await page.locator('[data-testid=team-notice-waiting]').innerText()), 'the expired-undo note waits behind the edit', await page.locator('[data-testid=team-notice-waiting]').innerText())
+  await page.keyboard.press('Escape')
   await shot('undo-expired')
 
   // The team files are the source of truth; there is no separate export any more.

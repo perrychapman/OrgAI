@@ -8,8 +8,6 @@ import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
 import { groupState, resolveGroups, toggleGroup, type ToolGroup } from '../../lib/toolGroups'
 
-const GROUPS = resolveGroups(TOOL_CATALOG)
-
 function GroupRow({ group, tools, onChange }: { group: ToolGroup; tools: readonly string[]; onChange: (next: string[]) => void }): ReactElement {
   const ref = useRef<HTMLInputElement>(null)
   const state = groupState(group, tools)
@@ -23,7 +21,6 @@ function GroupRow({ group, tools, onChange }: { group: ToolGroup; tools: readonl
           ref={ref}
           type="checkbox"
           checked={state === 'on'}
-          aria-checked={state === 'mixed' ? 'mixed' : state === 'on'}
           data-testid={`role-tool-group-${group.id}`}
           onChange={() => onChange(toggleGroup(group, tools))}
         />
@@ -54,11 +51,12 @@ function GroupRow({ group, tools, onChange }: { group: ToolGroup; tools: readonl
  * them, a closed disclosure with the per-tool grid for exact control.
  */
 export default function RoleToolGroups({ tools, onChange }: { tools: readonly string[]; onChange: (tools: string[]) => void }): ReactElement {
+  const groups = resolveGroups(TOOL_CATALOG, tools)
   const toggleTool = (t: ToolName): void => onChange(tools.includes(t) ? tools.filter((x) => x !== t) : [...tools, t])
   return (
     <div className="role-tool-groups stack-2" data-testid="role-tools-grid">
       <ul className="role-tool-group-list" aria-label="Tool groups">
-        {GROUPS.filter((g) => g.members.length > 0).map((g) => (
+        {groups.filter((g) => g.members.length > 0).map((g) => (
           <GroupRow key={g.id} group={g} tools={tools} onChange={onChange} />
         ))}
       </ul>

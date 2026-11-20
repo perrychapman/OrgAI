@@ -6,6 +6,7 @@ import { Icon } from '../ui/Icon'
 import { IconButton } from '../ui/IconButton'
 import { Popover } from '../ui/Popover'
 import type { NoticeKind, TeamNotice } from '../../lib/teamNotices'
+import { showHidden } from '../../lib/hiddenChars'
 
 const KIND_ICON = { error: CircleAlert, edit: CircleCheck, session: Info, saved: CircleCheck, hint: Info } as const
 
@@ -70,15 +71,15 @@ export default function TeamNoticeRow({ current, waiting, onAction, onDismiss, o
   }, [identity])
 
   return (
-    <div className="team-notice-row" ref={rowRef} role="status" aria-live="polite" data-testid="team-notice-row" data-has-message={current ? 'true' : 'false'}>
-      <div className="team-notice-main">
+    <div className="team-notice-row" ref={rowRef} data-testid="team-notice-row" data-has-message={current ? 'true' : 'false'}>
+      <div className="team-notice-main" role="status" aria-live="polite">
         {current && (
           <>
             <span className={`team-notice-icon kind-${current.kind}`} aria-hidden="true">
               <Icon icon={KIND_ICON[current.kind as NoticeKind]} size="sm" />
             </span>
-            <span className="team-notice-text" data-kind={current.kind} data-testid={current.testId} data-notice-key={current.key} title={current.title ?? current.text}>
-              {current.text}
+            <span className="team-notice-text" data-kind={current.kind} data-testid={current.testId} data-notice-key={current.key} title={showHidden(current.title ?? current.text)}>
+              {showHidden(current.text)}
             </span>
           </>
         )}
@@ -100,7 +101,7 @@ export default function TeamNoticeRow({ current, waiting, onAction, onDismiss, o
               <ul className="team-notice-list">
                 {waiting.map((n) => (
                   <li key={n.key} data-kind={n.kind}>
-                    <span>{n.text}</span>
+                    <span title={showHidden(n.title ?? n.text)}>{showHidden(n.text)}</span>
                     {/* A waiting message keeps its actions (an add's Undo behind a newer "Saved" confirmation). */}
                     {n.actions?.map((a) => (
                       <Button key={a.id} size="sm" variant="ghost" loading={a.busy} onClick={() => onAction(n, a.id)}>

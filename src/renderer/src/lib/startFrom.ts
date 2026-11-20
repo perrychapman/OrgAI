@@ -18,6 +18,8 @@ export interface StartFromState {
   templateCount: number | undefined
   roleCount: number
   sessionOpen: boolean
+  /** An import was done for this project in this session (see agentImport.wasImported). */
+  imported?: boolean
 }
 
 /** Accessible name of the trigger: the dot is decorative, so the count is spoken instead. */
@@ -26,9 +28,11 @@ export function startFromLabel(found: number | null | 'error', dot: boolean): st
   return 'Start from'
 }
 
-export function importSide(found: number | null | 'error'): Pick<StartFromItem, 'side' | 'sideTone'> {
+export function importSide(found: number | null | 'error', imported = false): Pick<StartFromItem, 'side' | 'sideTone'> {
   if (found === null) return { side: 'Checking...', sideTone: 'muted' }
   if (found === 'error') return { side: 'Could not check', sideTone: 'muted' }
+  // The scan cannot say which found agents the team holds already, so after an import this session the count is dropped.
+  if (found > 0 && imported) return { side: 'Imported', sideTone: 'muted' }
   if (found > 0) return { side: `${found} found`, sideTone: 'accent' }
   return { side: 'None found', sideTone: 'muted' }
 }
@@ -49,7 +53,7 @@ export function startFromItems(s: StartFromState): StartFromItem[] {
       id: 'import',
       title: 'Import agent files...',
       description: 'Roles from .claude, .codex, .opencode and other tools in this folder.',
-      ...importSide(s.found)
+      ...importSide(s.found, s.imported)
     },
     s.sessionOpen
       ? {

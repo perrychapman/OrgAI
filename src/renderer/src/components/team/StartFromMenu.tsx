@@ -16,6 +16,8 @@ export interface StartFromMenuProps {
   found: number | null | 'error'
   /** The accent dot on the button (found > 0 and the banner memory is not 'dismissed'). */
   dot: boolean
+  /** An import was done for this project this session: the row says "Imported" instead of a count. */
+  imported?: boolean
   /** Opening the menu while found > 0 counts as seeing it: TeamView writes the banner memory 'dismissed'. */
   onOpened: () => void
   /** Saved templates (store `templates`); undefined while loading. */
@@ -41,9 +43,9 @@ function onMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
 }
 
 export default function StartFromMenu(props: StartFromMenuProps): ReactElement {
-  const { project, found, dot, onOpened, templateCount, roleCount, compact, onTemplate, onImport, onArchitect, onSave } = props
+  const { project, found, dot, imported, onOpened, templateCount, roleCount, compact, onTemplate, onImport, onArchitect, onSave } = props
   const { liveRunId } = useOrgChange(project)
-  const items = startFromItems({ found, templateCount, roleCount, sessionOpen: liveRunId !== null })
+  const items = startFromItems({ found, templateCount, roleCount, sessionOpen: liveRunId !== null, imported })
   const label = startFromLabel(found, dot)
   const act: Record<StartFromItemId, () => void> = {
     template: onTemplate,

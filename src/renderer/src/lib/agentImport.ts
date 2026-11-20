@@ -113,7 +113,7 @@ export function importCount(preview: Pick<AgentImportPreview, 'items'> | null | 
 
 export function importButtonLabel(count: number, mode: AgentImportMode = 'merge'): string {
   const roles = `${count} role${count === 1 ? '' : 's'}`
-  return mode === 'replace' ? `Replace chart with ${roles}` : `Import ${roles}`
+  return mode === 'replace' ? `Replace team with ${roles}` : `Import ${roles}`
 }
 
 /** One line on what the chosen mode does to the chart, with counts. */
@@ -180,3 +180,13 @@ export function writeBannerMemory(storage: Pick<Storage, 'setItem'> | undefined,
 export function importBannerVisible(agentCount: number, memory: BannerMemory | null): boolean {
   return agentCount > 0 && memory === null
 }
+
+/**
+ * Projects whose agent files were imported in this session. The scan (`scanAgents`) counts files and agents per source
+ * but not which of them the team already holds, so "N found" cannot be recomputed after an import: the Start from menu
+ * says "Imported" instead until the app restarts or the import is undone.
+ */
+const importedThisSession = new Set<string>()
+export const markImported = (projectId: string): void => void importedThisSession.add(projectId)
+export const unmarkImported = (projectId: string): void => void importedThisSession.delete(projectId)
+export const wasImported = (projectId: string): boolean => importedThisSession.has(projectId)

@@ -4,6 +4,8 @@ import { serverGranted } from './roleCapabilities'
 import {
   addRoleUnder,
   moveNotice,
+  moveNoticeSummary,
+  newRoleSlug,
   nextRoleName,
   parentOptions,
   removeRole,
@@ -436,12 +438,37 @@ describe('Undo of a removal keeps later edits (M1)', () => {
   })
 })
 
+describe('newRoleSlug (M2)', () => {
+  it('suffixes a slug another name already produced', () => {
+    const roles = [{ id: 'a', slug: 'qa' }]
+    expect(newRoleSlug({ mcpServers: [] }, roles, 'n', 'QA!')).toBe('qa-2')
+  })
+
+  it('suffixes a slug a server still names, so the new role is not granted it', () => {
+    const server = { id: 'db', roles: ['qa'] } as unknown as McpServerSpec
+    const slug = newRoleSlug({ mcpServers: [server] }, [], 'n', 'QA')
+    expect(slug).toBe('qa-2')
+    expect(serverGranted(server, { slug })).toBe(false)
+  })
+})
+
 describe('moveNotice (L1)', () => {
   it('names every other role that no longer delegates to the moved role', () => {
     const orch = { ...role('o', null, ['m', 'x']), name: 'Orchestrator', requiredReports: ['x'] }
     const before = [orch, { ...role('m', 'o'), name: 'Manager' }, { ...role('x', 'o'), name: 'X' }]
     const after = setReportsTo(before, 'x', 'm')
     expect(moveNotice(before, after, 'x')).toBe('Orchestrator no longer delegates to X. Manager can now hand work to other roles, because X reports to it.')
+  })
+
+  it('has a one-sentence summary naming one role or counting several', () => {
+    const orch = { ...role('o', null, ['m', 'x']), name: 'Orchestrator', requiredReports: ['x'] }
+    const before = [orch, { ...role('m', 'o'), name: 'Manager' }, { ...role('x', 'o'), name: 'X' }]
+    const after = setReportsTo(before, 'x', 'm')
+    expect(moveNoticeSummary(before, after, 'x')).toBe('Delegation changed for 2 roles.')
+    const b2 = [role('o', null, ['m', 'x']), role('m', 'o', []), role('x', 'o')]
+    const a2 = b2.map((r) => (r.id === 'o' ? { ...r, spawnable: ['m'] } : r.id === 'x' ? { ...r, reportsTo: 'm' } : r.id === 'm' ? { ...r, spawnable: ['x'], canSpawn: true } : r))
+    expect(moveNoticeSummary(b2, a2, 'x')).toMatch(/^Delegation changed for (o|m|2 roles)/)
+    expect(moveNoticeSummary([role('o', null), role('x', 'o')], [role('o', null), role('x', 'o')], 'x')).toBeNull()
   })
 
   it('says nothing when only the reporting line changed', () => {

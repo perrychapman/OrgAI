@@ -20,6 +20,16 @@ import {
 
 const note = (key: string, kind: NoticeKind, at: number, extra: Partial<TeamNotice> = {}): TeamNotice => ({ key, kind, text: key, at, ...extra })
 
+describe('quiet notices (N2)', () => {
+  it('never outrank a newer or older edit notice and expire on their own', () => {
+    const ended = note('store:import', 'edit', 50, { quiet: true, expiresAt: 58 })
+    const edit = note('role-edit', 'edit', 10)
+    expect(rankNotices([ended, edit], 20).current?.key).toBe('role-edit')
+    expect(rankNotices([ended, edit], 60).waiting).toEqual([])
+    expect(rankNotices([ended], 59).current).toBeNull()
+  })
+})
+
 describe('notice priority', () => {
   it('shows the highest priority and lists the rest in order behind it', () => {
     const list = [note('hint', 'hint', 1), note('saved', 'saved', 2), note('edit', 'edit', 3), note('session', 'session', 4), note('err', 'error', 5)]

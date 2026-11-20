@@ -180,6 +180,22 @@ export function moveNotice(before: readonly Role[], after: readonly Role[], move
   return parts.length > 0 ? parts.join(' ') : null
 }
 
+/**
+ * The one-line form of `moveNotice` (one short sentence): "Delegation changed for {Role}." for one affected role,
+ * "Delegation changed for {n} roles." for more, null when `moveNotice` is null. The detailed sentences stay in `moveNotice`.
+ */
+export function moveNoticeSummary(before: readonly Role[], after: readonly Role[], movedId: string): string | null {
+  if (moveNotice(before, after, movedId) === null) return null
+  const affected = new Map<string, string>()
+  for (const r of before) {
+    if (r.id !== movedId && r.spawnable.includes(movedId) && !after.find((a) => a.id === r.id)?.spawnable.includes(movedId)) affected.set(r.id, r.name)
+  }
+  const { gained, lost } = spawnRightsChange(before, after)
+  for (const r of [...gained, ...lost]) affected.set(r.id, r.name)
+  const n = affected.size
+  return n === 1 ? `Delegation changed for ${[...affected.values()][0]}.` : `Delegation changed for ${n} roles.`
+}
+
 /** One option of a "Reports to" select: chart order (depth first from the root), label indented two spaces per level. */
 export interface ParentOption {
   id: string
@@ -285,6 +301,19 @@ export function uniqueSlug(
 ): string {
   if (!slugTaken(roles, roleId, base, reserved)) return base
   for (let n = 2; ; n++) if (!slugTaken(roles, roleId, `${base}-${n}`, reserved)) return `${base}-${n}`
+}
+
+/**
+ * The slug for a role being added: `slugify(name)` made unique among the roles and clear of every slug a server's
+ * explicit `roles` still names (a role removed with Undo on screen), so the new role inherits no connection.
+ */
+export function newRoleSlug(
+  project: Pick<Project, 'mcpServers'>,
+  roles: readonly Pick<Role, 'id' | 'slug'>[] | undefined,
+  roleId: string,
+  name: string
+): string {
+  return uniqueSlug(roles, roleId, slugify(name), reservedSlugs(project, ''))
 }
 
 /**

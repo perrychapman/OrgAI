@@ -13,6 +13,8 @@ describe('startFrom', () => {
     expect(importSide('error').side).toBe('Could not check')
     expect(importSide(0).side).toBe('None found')
     expect(importSide(3)).toEqual({ side: '3 found', sideTone: 'accent' })
+    expect(importSide(3, true)).toEqual({ side: 'Imported', sideTone: 'muted' })
+    expect(importSide(0, true).side).toBe('None found')
   })
   it('disables template and save with their reasons', () => {
     const items = startFromItems({ found: 0, templateCount: 0, roleCount: 1, sessionOpen: false })

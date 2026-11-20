@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TOOL_CATALOG } from '@shared/types'
-import { groupState, resolveGroups, summaryParts, summarySentence, toggleGroup } from './toolGroups'
+import { TOOL_GROUPS, groupState, resolveGroups, summaryParts, summarySentence, toggleGroup } from './toolGroups'
 
 const groups = resolveGroups(TOOL_CATALOG)
 const g = (id: string) => groups.find((x) => x.id === id)!
@@ -11,9 +11,22 @@ describe('toolGroups', () => {
     expect([...all].sort()).toEqual([...TOOL_CATALOG].sort())
   })
 
-  it('sends an unlisted catalog tool to plan', () => {
-    const extra = resolveGroups([...TOOL_CATALOG, 'Mystery'])
-    expect(extra.find((x) => x.id === 'plan')!.members).toContain('Mystery')
+  it('names every catalog tool in a group, so a new tool forces a grouping decision', () => {
+    const named = new Set(TOOL_GROUPS.flatMap((x) => x.tools))
+    expect(TOOL_CATALOG.filter((t) => !named.has(t))).toEqual([])
+    expect(g('other').members).toEqual([])
+  })
+
+  it('sends an unlisted catalog tool and a role tool outside the catalog to the elevated other group', () => {
+    const extra = resolveGroups([...TOOL_CATALOG, 'Mystery'], ['Read', 'Rogue'])
+    const other = extra.find((x) => x.id === 'other')!
+    expect(other.members).toEqual(['Mystery', 'Rogue'])
+    expect(other.elevated).toBe(true)
+    expect(extra.find((x) => x.id === 'plan')!.members).not.toContain('Mystery')
+    expect(summaryParts(extra, ['Read', 'Rogue'])).toEqual([
+      { text: 'read files', elevated: false },
+      { text: 'use other tools', elevated: true }
+    ])
   })
 
   it('reports on, off and mixed', () => {

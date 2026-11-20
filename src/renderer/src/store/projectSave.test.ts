@@ -42,6 +42,20 @@ describe('store: debounced project save (carry-over c)', () => {
     expect(p.roles[0].name).toBe('Developer 2')
   })
 
+  it('keeps a newer server list that landed between send and answer', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ projects: [project([role('a', 'Dev')], [srv('db', ['dev'])])] })
+    let resolve!: (p: Project) => void
+    save.mockImplementation(() => new Promise<Project>((r) => (resolve = r)))
+    useAppStore.getState().updateRoles('p1', (roles) => roles)
+    await vi.advanceTimersByTimeAsync(400)
+    // The grant is revoked (mcp:remove) before main answers with the older list.
+    useAppStore.setState((s) => ({ projects: s.projects.map((p) => ({ ...p, mcpServers: [] })) }))
+    resolve(project([role('a', 'Dev')], [srv('db', ['dev'])]))
+    await vi.runAllTimersAsync()
+    expect(useAppStore.getState().projects[0].mcpServers).toEqual([])
+  })
+
   it('a failed save changes nothing', async () => {
     vi.useFakeTimers()
     useAppStore.setState({ projects: [project([role('a', 'Dev')], [srv('db', ['dev'])])] })
