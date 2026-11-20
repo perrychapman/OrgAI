@@ -363,7 +363,9 @@ export class SettingsStore {
         this.settings = normalizeSettings(parsed.settings)
       }
     } catch (e) {
-      console.error('Failed to read settings.json, using defaults:', e)
+      // Never log the error message: a JSON parse error can quote file text (which may hold displayName).
+      const kind = e instanceof Error ? e.name : 'Error'
+      console.error(`Failed to read settings.json (${kind}), using defaults. File: ${this.file}`)
       this.settings = normalizeSettings(null)
     }
   }
@@ -404,7 +406,7 @@ export class SettingsStore {
       try {
         listener(saved)
       } catch (e) {
-        console.error('Settings listener failed:', e)
+        console.error(`Settings listener failed (${e instanceof Error ? e.name : 'Error'})`)
       }
     }
     return saved
