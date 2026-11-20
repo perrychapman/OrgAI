@@ -67,8 +67,18 @@ try {
   project = await findProject(page, NAME)
   check(!project?.roles.some((r) => r.slug === 'backend-dev'), 'undo restores the previous chart')
 
-  // Team tab entry points.
-  await page.locator('[data-testid=import-agents]').click()
+  // Team tab entry points: Start from > Import agent files. The fixture's agent files are imported and undone, so the
+  // menu still counts them; the count shows before the first click and the dot goes once the menu was opened.
+  const openImportFromMenu = async () => {
+    await page.locator('[data-testid=team-start-from]').click()
+    await page.locator('[data-testid=start-from-import]').click()
+  }
+  const startFrom = page.locator('[data-testid=team-start-from]')
+  await startFrom.click()
+  check(/\b[1-9]\d* found/.test(await page.locator('[data-testid=start-from-import]').innerText()), 'the menu counts the agent files found', await page.locator('[data-testid=start-from-import]').innerText())
+  await page.keyboard.press('Escape')
+  check(await page.locator('[data-testid=team-start-from-dot]').count().then((n) => n === 0), 'the dot is gone once the menu was opened')
+  await openImportFromMenu()
   const again = page.locator('[data-testid=import-dialog]')
   await again.waitFor({ state: 'visible', timeout: 20_000 })
   check(await again.getByRole('radio', { name: 'Add to the chart' }).isChecked(), 'Import agents from the toolbar defaults to Add')
@@ -76,7 +86,7 @@ try {
   await again.waitFor({ state: 'detached', timeout: 10_000 })
 
   // Apply error: the folder changes after the preview, so Import is refused and Refresh preview recovers.
-  await page.locator('[data-testid=import-agents]').click()
+  await openImportFromMenu()
   const stale = page.locator('[data-testid=import-dialog]')
   await stale.waitFor({ state: 'visible', timeout: 20_000 })
   await stale.locator('[data-testid=import-row]').first().waitFor({ timeout: 20_000 })
@@ -105,7 +115,7 @@ try {
 
   // The team files are the source of truth; there is no separate export any more.
   check((await page.locator('[data-testid=export-org]').count()) === 0, 'no Export to repo button on the Team tab')
-  check(/Import from other tools/.test(await page.locator('[data-testid=import-agents]').innerText()), 'the import button reads "Import from other tools"')
+  check((await page.locator('[data-testid=start-from-import]').count()) === 0, 'the Start from menu is closed again')
   await sleep(200)
   await shot('export')
 } catch (e) {
