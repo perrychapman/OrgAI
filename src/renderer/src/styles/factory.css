@@ -1,6 +1,7 @@
 /*
- * Factory Floor: scene, stage, mirror, floor plan and notices (docs/design/factory-floor.md sections 6, 7 and 8).
- * Tokens only. Shares nothing with the Pocket Office styles. Controls, find and log live in factory-chrome.css.
+ * Factory Floor: scene, stage, mirror, floor plan, labels and notices (docs/design/factory-floor.md sections 6, 7 and 8).
+ * Tokens only. Shares nothing with the Pocket Office styles. Controls, find and log live in factory-chrome.css (which
+ * also sets the scene's container query context).
  */
 
 .factory-scene {
@@ -13,8 +14,6 @@
   min-height: 0;
   overflow: hidden;
   background: var(--surface-0);
-  container-type: inline-size;
-  container-name: factory-scene;
 }
 
 .factory-notice {
@@ -22,11 +21,21 @@
   padding: var(--space-2) var(--space-2) 0;
 }
 
+/*
+ * The stage clips (overflow: clip, never scrollable): off-screen worker buttons stay focusable, and focusing one must
+ * not scroll the stage; the camera pans it into view instead (section 7.1).
+ */
 .factory-stage {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow: clip;
+  touch-action: none;
+  user-select: none;
+}
+
+.factory-stage[data-panning='true'] {
+  cursor: grabbing;
 }
 
 /* ---- 3D canvas ---- */
@@ -77,93 +86,39 @@
   text-align: center;
 }
 
-/* ---- mirror and floor plan ---- */
+/* ---- mirror (3D: transparent buttons over the stations; floor plan: the station tiles) ---- */
 
 .factory-mirror {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-/* Floor plan: the mirror made visible, filling the stage and scrolling inside it. */
-.factory-mirror[data-renderer='floor-plan'] {
   position: absolute;
   inset: 0;
-  overflow: auto;
-  padding: var(--space-4);
-  background: var(--surface-0);
-}
-
-/*
- * 3D view, slice 1: no projected positions yet (slice 2), so the buttons sit as plates along the bottom of the stage.
- * The stage stays visible above them.
- */
-.factory-mirror[data-renderer='webgl2'] {
-  position: absolute;
-  left: var(--space-2);
-  right: var(--space-2);
-  bottom: var(--space-2);
-  max-height: 45%;
-  overflow: auto;
-  /* Room for the 2 px focus ring at 2 px offset inside the scroll box. */
-  padding: var(--space-1);
-  z-index: var(--z-canvas-overlay);
-}
-
-.factory-gantry {
-  display: flex;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
-}
-
-.factory-mirror[data-renderer='webgl2'] .factory-gantry {
-  border: 0;
-  padding: 0;
-  background: none;
-}
-
-.factory-tiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(144px, 1fr));
-  gap: var(--space-2);
+  overflow: clip;
+  pointer-events: none;
 }
 
 .factory-worker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: var(--space-1);
+  justify-content: flex-start;
   min-width: 0;
-  min-height: 44px;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-default);
+  margin: 0;
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  background: transparent;
   color: var(--text-primary);
   font: inherit;
   text-align: left;
-}
-
-button.factory-worker {
+  pointer-events: auto;
   cursor: pointer;
 }
 
-.factory-gantry > .factory-worker {
-  min-width: 160px;
-  max-width: 100%;
-}
-
-.factory-mirror[data-renderer='webgl2'] .factory-worker {
-  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
-  box-shadow: var(--elev-1);
-}
-
-button.factory-worker:hover {
-  background: var(--surface-3);
-  border-color: var(--border-strong);
+.factory-stage[data-panning='true'] .factory-worker {
+  cursor: grabbing;
 }
 
 /* Section 7.2: 2 px focus ring at 2 px offset plus a 1 px inner surface ring, instant. */
@@ -173,9 +128,40 @@ button.factory-worker:focus-visible {
   box-shadow: 0 0 0 1px var(--surface-0);
 }
 
-.factory-worker[aria-current='true'] {
+/* Floor plan tiles. */
+.factory-mirror[data-renderer='floor-plan'] .factory-worker {
+  gap: 2px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  background: var(--surface-2);
+  overflow: hidden;
+  container-type: size;
+}
+
+.factory-mirror[data-renderer='floor-plan'] .factory-worker[data-kind='booth'] {
+  background: var(--surface-3);
+}
+
+.factory-mirror[data-renderer='floor-plan'] button.factory-worker:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+.factory-mirror[data-renderer='floor-plan'] .factory-worker[aria-current='true'] {
   border-color: var(--accent-text);
   box-shadow: inset 0 0 0 1px var(--accent-text);
+}
+
+.factory-mirror[data-renderer='floor-plan'] .factory-worker[aria-current='true']:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent-text), 0 0 0 1px var(--surface-0);
+}
+
+.factory-worker-face {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .factory-worker-name {
@@ -189,6 +175,10 @@ button.factory-worker:focus-visible {
 }
 
 .factory-worker-kind {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   color: var(--text-tertiary);
@@ -198,23 +188,195 @@ button.factory-worker:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   color: var(--text-secondary);
 }
 
+.factory-worker-status svg {
+  flex: none;
+}
+
+/* Small tiles (zoomed out): the word goes, the icon and the name stay; the word is in the button's name. */
+@container (max-height: 52px) {
+  .factory-worker-kind {
+    display: none;
+  }
+}
+@container (max-height: 40px) or (max-width: 96px) {
+  .factory-worker-word {
+    display: none;
+  }
+}
+@container (max-height: 30px) {
+  .factory-worker-status {
+    display: none;
+  }
+}
+
 /* The status icon carries the lamp colour; the word stays in the text colour for contrast. */
-.factory-worker[data-lamp='running'] .factory-worker-status svg {
+.factory-worker[data-lamp='running'] .factory-worker-status svg,
+.factory-nameplate[data-lamp='running'] .factory-nameplate-status svg {
   color: var(--success-text);
 }
-.factory-worker[data-lamp='needs-you'] .factory-worker-status svg {
+.factory-worker[data-lamp='needs-you'] .factory-worker-status svg,
+.factory-nameplate[data-lamp='needs-you'] .factory-nameplate-status svg {
   color: var(--warning-text);
 }
-.factory-worker[data-lamp='failed'] .factory-worker-status svg {
+.factory-worker[data-lamp='failed'] .factory-worker-status svg,
+.factory-nameplate[data-lamp='failed'] .factory-nameplate-status svg {
   color: var(--danger-text);
 }
 
-/* ---- settings sample (inert floor plan of the five-agent sample) ---- */
+/* ---- floor plan backdrop (straight top-down: hall, gantry, dock, board, routes, vacant slots) ---- */
+
+.factory-stage[data-renderer='floor-plan'] {
+  background: var(--surface-0);
+}
+
+.factory-plan,
+.factory-plan > * {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+}
+
+.factory-plan {
+  inset: 0;
+}
+
+.factory-plan-hall {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+
+.factory-plan-gantry {
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-2);
+}
+
+.factory-plan-zone {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  white-space: nowrap;
+}
+
+.factory-plan-route {
+  background: var(--border-strong);
+  border-radius: 1px;
+}
+
+.factory-plan-sign {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+  overflow: hidden;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+
+.factory-plan-sign > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factory-plan-sign-line {
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.factory-plan-vacant {
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+/* ---- labels (section 6.2): DOM plates positioned by the camera callback ---- */
+
+.factory-labels {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  pointer-events: none;
+}
+
+.factory-nameplate,
+.factory-line-sign,
+.factory-zone-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  max-width: 260px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  box-shadow: var(--elev-1);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.factory-nameplate[data-shown='false'],
+.factory-line-sign[data-shown='false'],
+.factory-zone-label[data-shown='false'] {
+  visibility: hidden;
+}
+
+.factory-nameplate {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px var(--space-2);
+}
+
+.factory-nameplate-name {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+}
+
+.factory-nameplate-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  overflow: hidden;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+
+.factory-nameplate-activity {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.factory-line-sign,
+.factory-zone-label {
+  padding: 2px var(--space-2);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+
+/* ---- settings sample (inert floor plan of the five-agent sample, until slice 6's images) ---- */
 
 .factory-sample {
   position: relative;
@@ -226,22 +388,47 @@ button.factory-worker:focus-visible {
   background: var(--surface-0);
 }
 
-.factory-sample .factory-mirror[data-renderer='floor-plan'] {
+.factory-sample .factory-mirror {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100%;
   overflow: hidden;
   padding: var(--space-3);
+}
+
+.factory-sample .factory-gantry {
+  display: flex;
   gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
 }
 
 .factory-sample .factory-tiles {
+  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
 }
 
-.factory-sample .factory-worker {
-  min-height: 0;
+.factory-sample .factory-mirror .factory-worker {
+  position: static;
+  container-type: normal;
+  overflow: visible;
+  gap: var(--space-1);
   padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  background: var(--surface-2);
+  cursor: default;
 }
 
-/* Slice 1 has no motion; the rule keeps any later chrome transition honest under both reduced-motion selectors. */
+.factory-sample .factory-gantry > .factory-worker {
+  min-width: 160px;
+  max-width: 100%;
+}
+
+/* Slice 2 has no motion; the rule keeps any later chrome transition honest under both reduced-motion selectors. */
 @media (prefers-reduced-motion: reduce) {
   .factory-scene *,
   .factory-sample * {
