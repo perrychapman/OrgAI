@@ -508,7 +508,13 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
       steer names `expectedTurnId`, so a turn that already ended refuses it and the notice waits. A steer the app-server
       accepts just before the turn completes is input to that turn: whether Codex then samples once more inside it
       (spending a little) or could drop it is decided inside the native app-server and is unverified (no source in
-      the installed package). Thread-resume and harness-delivery failure logs are redacted now.
+      the installed package). Redaction (fourth round): every Codex run log line is redacted in `CodexSession.log`
+      (`redact`: connection key, gateway path, MCP secret slot values, key-like tokens), so the root thread resume at
+      run start, the restart's thread resumes, harness and report delivery failures, app-server errors and turn
+      failures are all covered; `fail()` redacts its text before it becomes the root's activity and the run's error, a
+      failed turn's error text is redacted in the root's and a report's activity and in the failure report to its
+      parent, and a bridged report's error text too. Not redacted: a harness tool's own error returned to the model
+      (`<tool> failed: ...`). Tests: codexConfigHost.test.ts "item 2" (resume at run start, turn failure), failing before.
     - Codex, restart that throws: when only the user's change asked for it the run ends `paused` with
       `autoResume: false` and one run warning (before: `fail`, an errored run). The run's own change still fails it.
       Restart error texts and the "could not list" warning are redacted (connection key, gateway path, MCP secret
@@ -517,9 +523,56 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
       removed server's tools stay callable until then. Codex's 'now' notice (skills, roster) therefore never says
       removed MCP tools are refused at once ("skills and roles taken away are refused at once"); the MCP part is told by
       the restart notice.
+    - Codex, why a removed server cannot be refused before the restart (fourth round, checked against
+      `codex app-server generate-ts --experimental` of the installed 0.167.0): OrgAI sees no native MCP tool call before
+      it runs. The server-to-client requests are command / file / permissions approvals, `item/tool/call` (OrgAI's own
+      dynamic tools only), `item/tool/requestUserInput`, `mcpServer/elicitation/request` (started by the MCP server
+      itself, not a gate before a call), auth refresh, attestation and current time; `item/started` for an
+      `mcpToolCall` is a notification with no answer; `thread/start` takes `config` overrides only at thread start, and
+      `thread/settings/update` / `turn/start` have no MCP or tool fields. So no gate is faked. Instead, when an MCP
+      change removes or turns off a server the running app-server has (`launchedMcp`: enabled and not skipped at
+      launch), Codex logs a warning "MCP server X was removed or turned off, but stays reachable to every agent of this
+      run until Codex restarts when the agents are idle: Codex runs MCP tools itself and gives OrgAI no point to refuse
+      a call before it runs", and for the user's change sends the orchestrator `hostChangeNotice({ reachableUntilRestart })`
+      ("Do not call their tools. They stay reachable until Codex restarts when the agents are idle: OrgAI cannot refuse
+      a call to them before then."), steered into a running root turn or waiting for the next message, never
+      turn/start; if the restart comes first, the unsent notice is taken back and the restart notice alone is delivered.
+      The answer stays 'after-idle' (the status line's "once the agents are idle" is true; the log carries the detail;
+      no ConfigChangeResult field, main's decision). Codex enforces no per-role MCP grants (M6), so an ungrant changes
+      nothing on Codex before or after the restart. Tests: codexConfigHost.test.ts "item 4" (mid-turn steer, idle
+      take-back, the run's own removal logs only). Unverified live.
+    - Open (not started, main's decision): the 0.167.0 typings also list Codex hooks (`HookEventName` includes
+      `preToolUse` and `permissionRequest`; `ConfiguredHookHandler` has a `mcp_tool` handler type that calls a tool of
+      an MCP server; `hooks/list`; `HookSource` includes `sessionFlags`; `HookTrustStatus` untrusted / trusted /
+      managed / modified). A preToolUse hook calling an OrgAI MCP tool might gate native MCP calls (and per-role
+      grants), but the typings hold no hook output / deny contract, nor whether preToolUse fires for MCP calls, nor
+      whether a hook from `-c` overrides runs without trust. All unverified; it would be a new mechanism.
     - Notice text: a host 'now' notice names a server whose definition did not change as "was already attached; which
       roles may use it changed" (an ungrant said "is attached now"); role lists per server and per skill and the
       removed-server list are capped at MCP_NOTICE_TOOL_CAP with "and N more".
+    - Claude, late attach notice of a dead restarted query (fourth round): `announceAttached` waits on the new query's
+      mcpServerStatus (up to 5 s); when that query died before init, `this.q` still pointed at it while
+      `recoverRestart` awaited the next build, so its notice landed after `dropFailedRestartNotes` and the retry added a
+      second one. The run loop now marks the dead query (`deadQueries`) before dropping its notes; `sendAttachNotice`
+      and the announce failure path ignore a dead query (no notice, no turn-end release: the retry, fallback or pause
+      handles it). Test: claudeConfigRestart.test.ts, a status that answers after the query threw and while the retry's
+      build waits; fails before.
+    - Claude, pause after a host-only restart with a deferred turn end (fourth round): `endPausedAfterRestart` no longer
+      auto-resumes just because a turn end was held back. For a restart that carried only the user's change, it asks
+      `deferredTurnWouldNudge()` (pure `nextNudge` with the driver's inputs: plan, autoContinue, limit, held, compaction
+      stop, set-plan already sent; nothing consumed) before `ending` is set; only a turn end the driver would have
+      nudged for keeps the 5-minute auto-resume, otherwise the run waits for the user ("after the change you made in
+      OrgAI"). Reached when the restarted query dies before its attach notice and the retry / fallback builds fail (no
+      later query releases the turn end). Tests: auto-continue off and limit reached pause (fail before), an active plan
+      under its limit still auto-resumes.
+    - Mock answer markers for hostConfigChanged (fourth round; mock.ts `HOST_*_TOKEN`, read from the run's first
+      prompt, combine with `[mock:model-switch]` so the run idles): `[mock:host-after-idle]` answers 'after-idle' (the
+      notice is never in line, it waits for the next message, as after a real restart at idle); `[mock:host-slow]`
+      answers after `MOCK_HOST_SLOW_MS` (LIVE_RUN_CHANGE_WAIT_MS + 1.5 s; Claude really waits up to 5 s on
+      mcpServerStatus), so the host shows 'pending' then the final answer ('after-idle' with the first marker, else
+      'now'), and the change is applied when it answers; `[mock:host-reject]` rejects with `MOCK_HOST_REJECT_REASON`
+      ("This session does not take this change; it applies from the next run.") and applies nothing. Unit-tested in
+      mockConfigChange.test.ts; no e2e uses them yet.
   - `request_mcp_install` needs exact pinned versions and the user's approval. A denial tells the agent to find
     another route. The calling agent's id reaches `McpInstallRequest.agentId`: Codex derives it from the thread, and
     Claude reads it from the PreToolUse `agent_id`. Claude matches the MCP call by a tool_use id in `extra._meta` if

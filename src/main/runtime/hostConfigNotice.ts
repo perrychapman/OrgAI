@@ -38,8 +38,22 @@ export function hostChangeNotice(c: {
   roster?: { roles: readonly Named[]; removed: readonly string[] }
   /** Set when the change applies only once the session restarts at idle (the adapter tells the orchestrator again then). */
   pending?: string
+  /**
+   * Codex: MCP servers removed or turned off that the running app-server still has. Codex gives OrgAI no point to refuse
+   * a native MCP call before it runs, so they stay reachable until the restart at idle; the notice says exactly that
+   * (and nothing else: the restart's own notice says what is in place afterwards).
+   */
+  reachableUntilRestart?: readonly string[]
 }): string {
   const parts = [`${c.prefix} ${HOST_CHANGE_LEAD}`]
+  if (c.reachableUntilRestart?.length) {
+    const names = c.reachableUntilRestart
+    const list = names.slice(0, HOST_NOTICE_LIST_CAP).map((n) => datum(n, 64)).join(', ') + (names.length > HOST_NOTICE_LIST_CAP ? `, and ${names.length - HOST_NOTICE_LIST_CAP} more` : '')
+    parts.push(
+      `MCP servers removed or turned off: ${list}. Do not call their tools. They stay reachable until Codex restarts when the agents are idle: OrgAI cannot refuse a call to them before then. You are told again once the restart is done.`
+    )
+    return parts.join(' ')
+  }
   if (c.pending) parts.push(c.pending)
   else parts.push('It is in effect now.')
   for (const s of c.servers ?? []) {

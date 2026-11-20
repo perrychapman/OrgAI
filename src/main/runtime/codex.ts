@@ -60,7 +60,7 @@ import {
 } from './codexAgents'
 import { SETUP_TOOLS_INSTRUCTIONS, bridgedResultText, datum, harnessToolsFor, isBlockingHarnessTool, type ConfigChange, type ConfigChangeResult, type HarnessTool, type HarnessToolHooks, type McpAttachResult } from './harnessTools'
 import { ContinuationDriver, agentSlots, rootRoleNames, stepActivity } from './continuation'
-import { HOST_CHANGE_LEAD, hostChangeNotice } from './hostConfigNotice'
+import { HOST_CHANGE_LEAD, HOST_NOTICE_LIST_CAP, hostChangeNotice } from './hostConfigNotice'
 import { obligationsFor } from './delegation'
 import { buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { staffingProfileDep, withRootStaffingBrief } from '../store/staffingProfile'
@@ -462,6 +462,13 @@ class CodexSession implements RuntimeSession {
   /** Root turn ends in a row with a restart pending while other turns kept it from starting. */
   private restartWaits = 0
   private mcpRestartPending = false
+  /** MCP servers the running app-server was launched with (enabled, not skipped): callable by every thread until it restarts. */
+  private launchedMcp = new Set<string>()
+  /**
+   * The waiting notice that told the orchestrator removed servers stay reachable until the restart (stillReachable); the
+   * restart's own notice replaces it, so it is taken back if still unsent then.
+   */
+  private reachableNote?: string
   /**
    * An approved org chart (configChanged roles) left the root thread's developer instructions behind the live roster:
    * the next restart at idle resumes the root with instructions rebuilt from ctx.roles, then messages the orchestrator.
@@ -1443,6 +1450,7 @@ class CodexSession implements RuntimeSession {
       const writableRoots = codexWritableRoots(ctx)
       const launch = this.buildLaunch(servers, { ...trustLaunchOpts(ctx), writableRoots })
       this.launch = launch instanceof Promise ? await launch : launch
+      this.noteLaunchedMcp(servers, this.launch)
       this.launchWritableRoots = writableRoots
       for (const s of this.launch.skipped) this.log('warn', `MCP server ${s.name} was skipped: ${s.reason}`)
       for (const line of this.launch.summary) this.log('info', `Codex: ${line}`)
@@ -2754,12 +2762,48 @@ class CodexSession implements RuntimeSession {
       this.mcpRestartPending = true
       this.log('info', 'The MCP configuration changed; Codex is restarted to apply it when the agents are idle.')
       after = true
+      this.stillReachable(change.mcp, origin)
     }
     if (after) {
       this.restartOrigin[origin] = true
       void this.maybeRestartForMcp()
     }
     return { availability: after ? 'after-idle' : 'now' }
+  }
+
+  /** Record which MCP servers the app-server being started runs (enabled and not skipped by buildLaunchConfig). */
+  private noteLaunchedMcp(servers: readonly ResolvedMcpServer[], launch: LaunchConfig): void {
+    const skipped = new Set(launch.skipped.map((s) => s.name))
+    this.launchedMcp = new Set(servers.filter((s) => s.spec.enabled && !skipped.has(s.spec.name)).map((s) => s.spec.name))
+  }
+
+  /**
+   * An MCP change removed or switched off servers the running app-server has. Codex runs MCP tools inside its app-server:
+   * the app-server protocol (0.167.0 typings) sends OrgAI no request before a native MCP tool call runs (its server
+   * requests are command / file / permission approvals, OrgAI's own dynamic tools, user input and MCP elicitations an
+   * MCP server starts; item/started is a notification), and thread/settings/update has no MCP or tool fields. So OrgAI
+   * cannot refuse such a call before the restart at idle, and says so plainly: a run warning, and for the user's change
+   * a notice to the orchestrator (never a turn of its own) asking it not to call them. Codex does not enforce per-role
+   * grants either (review M6), so an ungrant changes nothing here before or after the restart.
+   */
+  private stillReachable(mcp: NonNullable<ConfigChange['mcp']>, origin: 'tool' | 'host'): void {
+    let liveEnabled: Set<string>
+    try {
+      liveEnabled = new Set((this.ctx.mcpServers?.() ?? []).filter((s) => s.enabled).map((s) => s.name))
+    } catch {
+      liveEnabled = new Set()
+    }
+    const names = [...new Set([...mcp.removed, ...mcp.upserted])].filter((n) => this.launchedMcp.has(n) && !liveEnabled.has(n))
+    if (!names.length) return
+    const list = names.slice(0, HOST_NOTICE_LIST_CAP).join(', ') + (names.length > HOST_NOTICE_LIST_CAP ? `, and ${names.length - HOST_NOTICE_LIST_CAP} more` : '')
+    this.log(
+      'warn',
+      `MCP server${names.length === 1 ? '' : 's'} ${list} ${names.length === 1 ? 'was' : 'were'} removed or turned off, but ${names.length === 1 ? 'stays' : 'stay'} reachable to every agent of this run until Codex restarts when the agents are idle: Codex runs MCP tools itself and gives OrgAI no point to refuse a call before it runs.`
+    )
+    if (origin !== 'host') return
+    const text = hostChangeNotice({ prefix: 'Harness:', reachableUntilRestart: names })
+    this.reachableNote = text
+    this.deliverHostNotice(text, `MCP server${names.length === 1 ? '' : 's'} ${list} removed; reachable until Codex restarts`)
   }
 
   /** configChanged's roles part. True when the root must be brought in line at the next restart ('after-idle'). Throws when it cannot. */
@@ -2917,6 +2961,7 @@ class CodexSession implements RuntimeSession {
       await Promise.race([old.exited, new Promise((r) => setTimeout(r, EXIT_WAIT_MS))])
       if (this.ending) return abandon()
       this.launch = launch
+      this.noteLaunchedMcp(servers, launch)
       this.launchWritableRoots = writableRoots
       this.workspaceTemp = undefined
       await this.startServer(launch, (server) => {
@@ -2947,6 +2992,14 @@ class CodexSession implements RuntimeSession {
         }
       }
       this.activeTurn.clear()
+      // The removed servers are gone now: a "still reachable until the restart" notice nobody read yet is out of date, and
+      // this restart's notice says what is in place.
+      if (this.reachableNote !== undefined) {
+        const stale = this.reachableNote
+        this.reachableNote = undefined
+        this.hostNotes = this.hostNotes.filter((t) => t !== stale)
+        this.heldBridged = this.heldBridged.filter((m) => m.text !== stale)
+      }
       this.log('info', `Codex restarted with ${servers.filter((s) => s.spec.enabled).length} MCP server(s).`)
       // One harness message for everything this restart brought in (MCP and / or the roster).
       const parts: string[] = []

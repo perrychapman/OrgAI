@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
-import { MCP_HARNESS_TOOLS, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS } from '@shared/types'
-import { CONFIG_CHANGE_TOKEN, MOCK_CONFIG_SERVER, MOCK_CONFIG_SKILL, MockAdapter, configChangeSteps, type MockSession } from './mock'
+import { LIVE_RUN_CHANGE_WAIT_MS, MCP_HARNESS_TOOLS, SKILL_ASSIST_HARNESS_TOOLS, SKILL_HARNESS_TOOLS } from '@shared/types'
+import {
+  CONFIG_CHANGE_TOKEN,
+  HOST_AFTER_IDLE_TOKEN,
+  HOST_REJECT_TOKEN,
+  HOST_SLOW_TOKEN,
+  MOCK_CONFIG_SERVER,
+  MOCK_CONFIG_SKILL,
+  MOCK_HOST_REJECT_REASON,
+  MOCK_HOST_SLOW_MS,
+  MODEL_SWITCH_TOKEN,
+  MockAdapter,
+  configChangeSteps,
+  type MockSession
+} from './mock'
 import { ROOT_AGENT_ID, type RunSkill } from './types'
 import { HOST_CHANGE_LEAD } from './hostConfigNotice'
 import { fakeCtx, mcpSpec, runSummary } from './testHelpers'
@@ -77,6 +90,84 @@ describe('mock hostConfigChanged (the user changed the project in OrgAI)', () =>
     await expect(setup.hostConfigChanged({ skills: true })).rejects.toThrow('Setup-like')
     await setup.stop()
     await setup.finished
+  })
+})
+
+describe('mock hostConfigChanged answer markers', () => {
+  const idle = (ctx: { events: { type: string; status?: string }[] }) => ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle')
+  const started = async (prompt: string) => {
+    const ctx = fakeCtx({ prompt, autoContinue: false })
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    await vi.waitFor(() => expect(idle(ctx)).toBe(true))
+    return { ctx, session }
+  }
+  const done = async (s: MockSession) => {
+    await s.stop()
+    await s.finished
+  }
+
+  it("[mock:host-after-idle] with [mock:model-switch]: the run idles, the answer is 'after-idle' and the notice waits for the next message", async () => {
+    const { session } = await started(`Hi ${MODEL_SWITCH_TOKEN} ${HOST_AFTER_IDLE_TOKEN}`)
+    const before = session.harnessMessages.length
+    await expect(session.hostConfigChanged({ skills: true })).resolves.toEqual({ availability: 'after-idle' })
+    expect(session.configChanges).toEqual([{ skills: true, host: true }])
+    expect(session.hostNotices.at(-1)!.delivery).toBe('next-message')
+    expect(session.harnessMessages.length).toBe(before)
+    await done(session)
+  })
+
+  it('[mock:host-after-idle] mid-turn: never in line', async () => {
+    const ctx = fakeCtx({ prompt: `Go ${HOST_AFTER_IDLE_TOKEN}`, autoContinue: false })
+    const session = (await new MockAdapter({ script: { delayMs: 150 } }).start(ctx)) as MockSession
+    await vi.waitFor(() => expect((session as unknown as { inTurn: boolean }).inTurn).toBe(true))
+    await expect(session.hostConfigChanged({ skills: true })).resolves.toEqual({ availability: 'after-idle' })
+    expect(session.hostNotices.at(-1)!.delivery).toBe('next-message')
+    await done(session)
+  })
+
+  it('[mock:host-slow]: answers only after the host\'s wait (pending first), then the final answer; with after-idle it is after-idle', async () => {
+    const { session } = await started(`Hi ${MODEL_SWITCH_TOKEN} ${HOST_SLOW_TOKEN}`)
+    expect(MOCK_HOST_SLOW_MS).toBeGreaterThan(LIVE_RUN_CHANGE_WAIT_MS)
+    vi.useFakeTimers()
+    try {
+      let answer: unknown
+      const p = session.hostConfigChanged({ skills: true }).then((r) => (answer = r))
+      await vi.advanceTimersByTimeAsync(LIVE_RUN_CHANGE_WAIT_MS)
+      expect(answer).toBeUndefined()
+      expect(session.configChanges).toEqual([])
+      await vi.advanceTimersByTimeAsync(MOCK_HOST_SLOW_MS - LIVE_RUN_CHANGE_WAIT_MS)
+      await p
+      expect(answer).toEqual({ availability: 'now' })
+      expect(session.configChanges).toEqual([{ skills: true, host: true }])
+    } finally {
+      vi.useRealTimers()
+    }
+    await done(session)
+    const both = await started(`Hi ${MODEL_SWITCH_TOKEN} ${HOST_SLOW_TOKEN} ${HOST_AFTER_IDLE_TOKEN}`)
+    vi.useFakeTimers()
+    try {
+      const p = both.session.hostConfigChanged({ skills: true })
+      await vi.advanceTimersByTimeAsync(MOCK_HOST_SLOW_MS)
+      await expect(p).resolves.toEqual({ availability: 'after-idle' })
+    } finally {
+      vi.useRealTimers()
+    }
+    await done(both.session)
+  })
+
+  it('[mock:host-reject]: rejects with a short reason and applies nothing', async () => {
+    const { session } = await started(`Hi ${MODEL_SWITCH_TOKEN} ${HOST_REJECT_TOKEN}`)
+    await expect(session.hostConfigChanged({ skills: true })).rejects.toThrow(MOCK_HOST_REJECT_REASON)
+    expect(MOCK_HOST_REJECT_REASON.length).toBeLessThan(120)
+    expect(session.configChanges).toEqual([])
+    expect(session.hostNotices).toEqual([])
+    await done(session)
+  })
+
+  it('without a marker the answer stays now', async () => {
+    const { session } = await started(`Hi ${MODEL_SWITCH_TOKEN}`)
+    await expect(session.hostConfigChanged({ skills: true })).resolves.toEqual({ availability: 'now' })
+    await done(session)
   })
 })
 

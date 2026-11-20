@@ -99,7 +99,7 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
 })
 
-async function start(over: Partial<RuntimeContext> = {}) {
+async function start(over: Partial<RuntimeContext> = {}, initialMcp: McpServerSpec[] = []) {
   const servers: FakeServer[] = []
   const counters = { threads: 0, turns: 0 }
   const adapter = new CodexAdapter({
@@ -109,7 +109,7 @@ async function start(over: Partial<RuntimeContext> = {}) {
       return s
     }
   })
-  const mcp: McpServerSpec[] = []
+  const mcp: McpServerSpec[] = [...initialMcp]
   let skills: RunSkill[] = []
   const p = project({ path: dir, isolateWriters: false })
   const ctx = fakeCtx({
@@ -306,6 +306,58 @@ describe('Codex hostConfigChanged', () => {
     const text = JSON.stringify(ctx.events)
     expect(text).toContain('upstream said')
     expect(text).not.toContain('tok-123456789')
+  })
+
+  it('item 4: a server the user removes mid-turn stays reachable until the restart, and the orchestrator is told so in line (no turn of its own)', async () => {
+    const gh = mcpSpec({ name: 'github', roles: ['lead'], secretEnv: [] })
+    const { ctx, servers, mcp } = await start({}, [gh])
+    const s1 = servers[0]!
+    expect((s1.options.config ?? []).some((l) => l.startsWith('mcp_servers.github.'))).toBe(true)
+    mcp.splice(0, 1)
+    expect(await host({ mcp: { upserted: [], removed: ['github'] } })).toEqual({ availability: 'after-idle' })
+    // Steered into the running root turn; never turn/start.
+    await vi.waitFor(() => expect(s1.of('turn/steer')).toHaveLength(1))
+    expect(s1.of('turn/start')).toHaveLength(1)
+    const steered = s1.sent('th-1').at(-1)!
+    expect(steered).toContain(HOST_CHANGE_LEAD)
+    expect(steered).toContain('MCP servers removed or turned off: github. Do not call their tools. They stay reachable until Codex restarts when the agents are idle')
+    // Regression: nothing said the server was still reachable; "refused" would be untrue on Codex.
+    expect(steered).not.toContain('refused')
+    const warns = ctx.events.filter((e) => e.type === 'log' && e.level === 'warn').map((e) => (e as { message: string }).message)
+    expect(warns.some((m) => m.includes('MCP server github was removed or turned off, but stays reachable to every agent of this run until Codex restarts'))).toBe(true)
+    // The turn ends: the restart at idle drops the server.
+    s1.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(servers).toHaveLength(2))
+    expect((servers[1]!.options.config ?? []).some((l) => l.startsWith('mcp_servers.github.'))).toBe(false)
+  })
+
+  it('item 4: idle, the restart comes at once: the "still reachable" notice is taken back, the restart notice alone is delivered', async () => {
+    const gh = mcpSpec({ name: 'github', roles: ['lead'], secretEnv: [] })
+    const { ctx, servers, mcp } = await start({}, [gh])
+    servers[0]!.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'idle')).toBe(true))
+    mcp.splice(0, 1)
+    expect(await host({ mcp: { upserted: [], removed: ['github'] } })).toEqual({ availability: 'after-idle' })
+    await vi.waitFor(() => expect(servers).toHaveLength(2))
+    const s2 = servers[1]!
+    await vi.waitFor(() => expect(rows(ctx).filter((b) => b.detail?.includes(HOST_CHANGE_LEAD)).length).toBeGreaterThanOrEqual(2))
+    expect(s2.of('turn/start')).toHaveLength(0)
+    await session!.send('next')
+    await vi.waitFor(() => expect(s2.sent('th-1')).toHaveLength(1))
+    const text = s2.sent('th-1')[0]!
+    expect(text).not.toContain('They stay reachable until Codex restarts')
+    expect(text).toContain('Tools of servers that were disabled or removed are gone.')
+    expect(text.match(/The user changed this project/g)).toHaveLength(1)
+  })
+
+  it('item 4: the run\'s own approved removal is logged as still reachable, with no extra notice', async () => {
+    const gh = mcpSpec({ name: 'github', roles: ['lead'], secretEnv: [] })
+    const { ctx, servers, mcp } = await start({}, [gh])
+    mcp.splice(0, 1)
+    await configChanged({ mcp: { upserted: [], removed: ['github'] } })
+    await sleep(30)
+    expect(servers[0]!.of('turn/steer')).toHaveLength(0)
+    expect(ctx.events.some((e) => e.type === 'log' && e.message.includes('stays reachable to every agent of this run until Codex restarts'))).toBe(true)
   })
 
   it('L2: a Codex notice without an MCP part never says removed MCP tools are refused at once', () => {
