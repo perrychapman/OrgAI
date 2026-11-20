@@ -1,6 +1,6 @@
 import type { FormEvent, ReactElement, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useMemo, useState } from 'react'
-import { Pencil } from 'lucide-react'
+import { Pencil, Plus } from 'lucide-react'
 import { cleanDisplayName, DISPLAY_NAME_MAX_CHARS } from '@shared/displayName'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
@@ -19,7 +19,7 @@ import { runCostInput, sumCosts } from '../../lib/cost'
 /**
  * The greeting `dashboard-hero` (docs/design/dashboard-overhaul.md section 5): the salutation, the brief, the name control,
  * the Customise button and the page's one live region. Props are the contract with DashboardView:
- * - `firstLaunch`: no projects ("Welcome to OrgAI." and its line, no name in the salutation).
+ * - `firstLaunch`: no projects ("Welcome to OrgAI." and its line; "Welcome to OrgAI, Sam." once a name is saved).
  * - `announce`: the message for the page's one live region, rendered here through `DashboardLive`.
  * - `onAnnounce`: speak a message (name saved / removed).
  * - `customise`: the Customise button, owned by DashboardView, placed at the end of the greeting row (absent on first launch).
@@ -151,7 +151,15 @@ function NameControl({ name, onSaved }: { name: string | undefined; onSaved: (sa
     )
   }
   return (
-    <Popover trigger="Add your name" triggerClassName="btn ghost sm" triggerTestId="dash-name-add" label="Your name" className="dash-name-panel" testId="dash-name-panel">
+    <Popover
+      trigger={
+        <>
+          <Icon icon={Plus} size="sm" />
+          Add your name
+        </>
+      }
+      triggerClassName="btn secondary sm"
+      triggerTestId="dash-name-add" label="Your name" className="dash-name-panel" testId="dash-name-panel">
       {panel}
     </Popover>
   )
@@ -189,6 +197,7 @@ export function Greeting({ firstLaunch, announce, onAnnounce, customise, lastSee
       closedWaiting: since.filter((i) => i.kind === 'closed-waiting').length,
       ...(ran.length > 0 ? { cost: sumCosts(ran.map((i) => runCostInput(i.run))) } : {}),
       decisions,
+      awaitingReply: work.awaitingReply,
       workingAgents: work.workingAgents,
       workingRuns: work.counts.working,
       paused: paused.length,
@@ -197,8 +206,7 @@ export function Greeting({ firstLaunch, announce, onAnnounce, customise, lastSee
   }, [summaries, snapshot, decisions, now, lastSeen, firstVisit, firstLaunch, ready])
 
   const hour = new Date(now).getHours()
-  const shownName = firstLaunch ? undefined : name
-  const text = salutation(hour, shownName, firstLaunch)
+  const text = salutation(hour, name, firstLaunch)
 
   const saved = useCallback(
     (next: string | undefined): void => {
@@ -222,7 +230,7 @@ export function Greeting({ firstLaunch, announce, onAnnounce, customise, lastSee
   return (
     <section className="dash-greeting" data-testid="dashboard-hero" aria-label="Overview">
       <div className="dash-greeting-row">
-        <p className="dash-salutation" data-testid="dash-greeting-salutation" title={shownName ? text : undefined}>
+        <p className="dash-salutation" data-testid="dash-greeting-salutation" title={name ? text : undefined}>
           {text}
         </p>
         {name && <NameControl name={name} onSaved={saved} />}

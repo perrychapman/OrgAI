@@ -59,7 +59,7 @@ describe('greetingWord and salutation', () => {
     expect(salutation(23, undefined, false)).toBe('Hello.')
   })
   it('welcomes on first launch and never uses the name there', () => {
-    expect(salutation(9, 'Sam', true)).toBe('Welcome to OrgAI.')
+    expect(salutation(9, 'Sam', true)).toBe('Welcome to OrgAI, Sam.')
     expect(salutation(9, undefined, true)).toBe('Welcome to OrgAI.')
   })
 })
@@ -209,9 +209,25 @@ describe('dashboardBrief before history is ready', () => {
   })
 })
 
+describe('idle runs awaiting a reply (walk 4 M3)', () => {
+  it('never says nothing is waiting while a live run waits for the reply', () => {
+    expect(brief({ awaitingReply: 1 })).toBe('1 run is idle and waiting on your reply.')
+    expect(brief({ awaitingReply: 2 })).toBe('2 runs are idle and waiting on your reply.')
+    expect(brief({ awaitingReply: 1 })).not.toMatch(/nothing is waiting/i)
+  })
+  it('follows decisions and leads the rest, two sentences at most', () => {
+    expect(brief({ decisions: 1, awaitingReply: 2, finished: 1 })).toBe('1 decision is waiting on you. 2 runs are idle and waiting on your reply.')
+    expect(brief({ awaitingReply: 1, finished: 1, paused: 1 })).toBe('1 run is idle and waiting on your reply. 1 run finished since you were last here.')
+  })
+  it('does not need history to be ready', () => {
+    expect(brief({ ready: false, awaitingReply: 1 })).toBe('1 run is idle and waiting on your reply.')
+  })
+})
+
 describe('copy rules', () => {
   it('no emoji, exclamation mark or em dash in any variant', () => {
     const variants = [
+      brief({ awaitingReply: 2 }),
       brief({}),
       brief({ anyRunEver: false }),
       brief({ decisions: 2, finished: 3, failed: 1, cost: partial(1.42) }),

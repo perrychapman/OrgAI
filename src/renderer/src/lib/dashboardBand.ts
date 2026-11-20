@@ -156,7 +156,7 @@ export function bandAgentState(state: AgentState): BandAgentState {
 /** The canvas legend's words. */
 export const BAND_STATE_WORD: Record<BandAgentState, string> = {
   working: 'Working',
-  waiting: 'Needs you',
+  waiting: 'Waiting on you',
   idle: 'Idle',
   done: 'Finished',
   failed: 'Failed'
@@ -328,6 +328,8 @@ export interface BandWorkFacts {
   counts: Record<BandGroup, number>
   /** Working agents (starting, thinking, tool, delegating) in runs of the working group only: a run waiting on a decision counts none. */
   workingAgents: number
+  /** Idle runs whose root waits for the person's reply (the row says "Waiting for your reply"); not decisions. */
+  awaitingReply: number
   /** Every open run the band holds. */
   total: number
 }
@@ -348,12 +350,17 @@ export function bandWorkFacts(runs: readonly BandRunIn[], projects: readonly Pro
   const projectOf = lookupOf(projects, virtualProjects)
   const counts: Record<BandGroup, number> = { working: 0, waiting: 0, idle: 0 }
   let workingAgents = 0
+  let awaitingReply = 0
   for (const r of runs) {
     const { group } = classify(r, projectOf(r.summary.projectId))
     counts[group]++
     if (group === 'working') workingAgents += Object.values(r.agents).filter((a) => isWorkingAgent(a.state)).length
+    if (group === 'idle') {
+      const root = rootOf(Object.values(r.agents))
+      if (root && root.state === 'idle' && root.activity === 'Waiting for you') awaitingReply++
+    }
   }
-  return { counts, workingAgents, total: runs.length }
+  return { counts, workingAgents, awaitingReply, total: runs.length }
 }
 
 /** Projects > runs > rows plus counts (spec 6.8). */
@@ -427,11 +434,11 @@ export function bandModel(
   return { counts, total: runs.length, projects: [...byProject.values()], shownRuns: out.length, hiddenRuns: runs.length - out.length }
 }
 
-/** "2 working · 1 waiting for you · 1 idle", empty parts left out. */
+/** "2 working · 1 waiting on you · 1 idle", empty parts left out. */
 export function countParts(counts: Record<BandGroup, number>): { group: BandGroup; text: string }[] {
   const parts: { group: BandGroup; text: string }[] = []
   if (counts.working > 0) parts.push({ group: 'working', text: `${counts.working} working` })
-  if (counts.waiting > 0) parts.push({ group: 'waiting', text: `${counts.waiting} waiting for you` })
+  if (counts.waiting > 0) parts.push({ group: 'waiting', text: `${counts.waiting} waiting on you` })
   if (counts.idle > 0) parts.push({ group: 'idle', text: `${counts.idle} idle` })
   return parts
 }

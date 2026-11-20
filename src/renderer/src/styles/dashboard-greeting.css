@@ -60,7 +60,6 @@
 .dash-name-add-row {
   display: flex;
   align-items: center;
-  margin-inline-start: calc(var(--space-2) * -1);
 }
 
 /* The name popover body. */

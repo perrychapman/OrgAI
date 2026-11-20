@@ -4,6 +4,7 @@ import {
   CLOSED_WAITING_DETAIL,
   NO_RUNS_DETAIL,
   outputProjects,
+  pausedResumeCaption,
   resumeAction,
   resumeActionLabel,
   resumeActionName,
@@ -255,5 +256,31 @@ describe('strings', () => {
   it('a paused row says when it resumes instead of its age', () => {
     const paused = rows([run({ id: 'p', status: 'paused' })])[0]
     expect(resumeCaption(paused, { project: 'Docs', age: '1 h ago' })).toBe('Docs · waits for you to continue')
+  })
+
+  describe('pausedResumeCaption (walk 4 M1, fixed local clock)', () => {
+    const clean = (s: string): string => s.replace(/\s/g, ' ')
+    const at = (d: number, h: number, m: number): number => new Date(2026, 10, d, h, m).getTime()
+    const now = at(19, 22, 40)
+    const p = (until: number): { autoResume: boolean; pausedUntil: number } => ({ autoResume: true, pausedUntil: until })
+    it('today is the time only', () => {
+      expect(clean(pausedResumeCaption(p(at(19, 23, 55)), now, 'en-US'))).toBe('resumes at 11:55 PM if OrgAI stays open')
+    })
+    it('the next local day says tomorrow, even less than 24 hours away', () => {
+      expect(clean(pausedResumeCaption(p(at(20, 22, 39)), now, 'en-US'))).toBe('resumes tomorrow at 10:39 PM if OrgAI stays open')
+      expect(clean(pausedResumeCaption(p(at(20, 0, 5)), now, 'en-US'))).toBe('resumes tomorrow at 12:05 AM if OrgAI stays open')
+    })
+    it('later in the week names the weekday, later still the date', () => {
+      expect(clean(pausedResumeCaption(p(at(22, 9, 0)), now, 'en-US'))).toBe('resumes Sunday at 9:00 AM if OrgAI stays open')
+      expect(clean(pausedResumeCaption(p(at(30, 9, 0)), now, 'en-US'))).toBe('resumes Nov 30 at 9:00 AM if OrgAI stays open')
+    })
+    it('without an automatic resume it waits for the person', () => {
+      expect(pausedResumeCaption({ autoResume: false }, now, 'en-US')).toBe('waits for you to continue')
+    })
+    it('the row caption uses it', () => {
+      const paused = rows([run({ id: 'p', status: 'paused' })])[0]
+      const row = { flavor: paused.flavor, run: { ...paused.run!, ...p(at(20, 22, 39)) } }
+      expect(clean(resumeCaption(row, { project: 'Docs', age: '1 h ago', now, locale: 'en-US' }))).toBe('Docs · resumes tomorrow at 10:39 PM if OrgAI stays open')
+    })
   })
 })

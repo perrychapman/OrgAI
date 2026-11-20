@@ -16,7 +16,11 @@
   -webkit-line-clamp: 2;
   line-clamp: 2;
   overflow: hidden;
+  text-overflow: ellipsis;
   white-space: normal;
+  /* Break between words; a single long token wraps rather than running out of the column. */
+  word-break: normal;
+  overflow-wrap: break-word;
 }
 
 /* The one left rule a list keeps: a failed run (the status word says it too). */
