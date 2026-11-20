@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { History } from 'lucide-react'
 import { isVirtualProjectId, type Project, type RunOutput, type RunSummary } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { pendingDecisionCount, useAppStore } from '../../store/useAppStore'
@@ -7,6 +8,7 @@ import { Cost } from '../ui/Cost'
 import { revealOutputsTab } from '../outputs/revealOutputsTab'
 import { AttentionRows, useArrivalSettle, useAttentionList, useRowExits, rowMotionProps, type RowMotion } from './AttentionSection'
 import { DashSection, useDashboard } from './DashboardContext'
+import { ProjectBadge } from './ProjectBadge'
 import { RESUME_MAX } from './dashCaps'
 import { afterFirstPaint, projectQueue } from './projectQueue'
 import { useAllSummaries, useNow } from './useDashboardData'
@@ -15,9 +17,11 @@ import { readLastSeen } from '../../lib/dashboard'
 import { locationLabel } from '../../lib/assistants'
 import { clientOf } from '../../lib/clientGroups'
 import { displayRunName } from '../../lib/orgChange'
+import { projectHue } from '../../lib/projectIdentity'
 import { relativeTime } from '../../lib/runChains'
 import { statusOfRun, statusText } from '../../lib/runStatus'
 import {
+  NO_RUNS_DETAIL,
   chainOutputs,
   outputProjects,
   resumeAction,
@@ -185,8 +189,13 @@ export function ResumeSection({ lastSeen }: { lastSeen?: number }): ReactElement
     const action = resumeAction(row, outs.length)
     // The action slot keeps its width while the project's outputs are still on the way, so a late "Open output" shifts nothing.
     const reserve = action !== null || (wantsOutputs(row) && outputsByProject[row.projectId] === undefined && !isVirtualProjectId(row.projectId))
-    const line2 = run ? resumeCaption(row, { project: projectName, client, age: relativeTime(run.endedAt ?? run.startedAt, now), now }) : ''
-    const motionProps = rowMotionProps(motion, 'dash-row dash-row-resume')
+    const line2 = run ? resumeCaption(row, { project: projectName, client, age: relativeTime(run.endedAt ?? run.startedAt, now), now }) : NO_RUNS_DETAIL
+    const motionProps = rowMotionProps(motion, 'dash-tile dash-resume-tile')
+    // The detail (why it stopped, the pause reason, the closed note) is not drawn: it is the button's tooltip and description.
+    // A pinned project with no runs says "No runs yet." as its one meta line instead.
+    const detail = run ? row.detail : ''
+    const detailId = `dash-resume-detail-${row.key}`
+    const badgeProject = isVirtualProjectId(row.projectId) ? '' : row.projectId
     return (
       <li
         key={row.key}
@@ -195,43 +204,47 @@ export function ResumeSection({ lastSeen }: { lastSeen?: number }): ReactElement
         data-kind={row.kind}
         data-run={run?.id}
         data-project={row.projectId}
+        data-hue={projectHue(badgeProject)}
         data-status={view?.word}
         data-row-key={row.key}
         data-has-action={reserve ? 'true' : undefined}
       >
         <button
           type="button"
-          className="dash-row-main"
+          className="dash-tile-main"
           data-row-main=""
           data-testid="dash-resume-main"
+          title={detail ? `${name}. ${detail}` : name}
           aria-label={run ? undefined : `${projectName}, no runs yet`}
+          aria-describedby={detail ? detailId : undefined}
           onClick={() => (run ? open(run.projectId, run.id) : (void openProject(row.projectId), setView('run'), settleFocusIfIdle()))}
         >
-          <Dot tone={view?.tone ?? 'idle'} />
-          <span className="dash-row-text">
-            <span className="dash-row-line">
-              {word && <span className="dash-status">{word}</span>}
-              <span className="dash-row-name" title={name}>
-                {name}
-              </span>
-            </span>
-            {run && (
-              <span className="dash-row-cap">
-                <span className="dash-clip" title={line2}>
-                  {line2}
-                </span>
-                {showsRunCost(runCostInput(run)) && <Cost value={runCostInput(run)} compact className="dash-num" />}
-              </span>
-            )}
-            {row.detail && (
-              <span className={`dash-row-cap dash-row-detail${row.kind === 'paused' ? ' dash-row-clamp' : ''}`} title={row.detail}>
-                {row.detail}
+          <span className="dash-tile-head">
+            <ProjectBadge projectId={badgeProject} name={projectName} size="md" />
+            {word && (
+              <span className="dash-tile-status" data-tone={view?.tone ?? 'idle'}>
+                <Dot tone={view?.tone ?? 'idle'} />
+                {word}
               </span>
             )}
           </span>
+          <span className="dash-tile-title" title={name}>
+            {name}
+          </span>
+          <span className="dash-tile-meta">
+            <span className="dash-clip" title={line2}>
+              {line2}
+            </span>
+            {run && showsRunCost(runCostInput(run)) && <Cost value={runCostInput(run)} compact className="dash-num" />}
+          </span>
         </button>
+        {detail && (
+          <span id={detailId} className="sr-only">
+            {detail}
+          </span>
+        )}
         {reserve && (
-          <span className="dash-row-side dash-resume-side">
+          <span className="dash-tile-foot">
             {action && (
               // The shared Button carries no data-* hook; the spec's test id needs data-action, so this is the Button's markup.
               <button
@@ -252,8 +265,8 @@ export function ResumeSection({ lastSeen }: { lastSeen?: number }): ReactElement
   }
 
   return (
-    <DashSection id="resume" testId="dash-resume" empty={rows.length === 0} count={rows.length} sectionRef={sectionRef} headingRef={headingRef}>
-      <AttentionRows model={model} renderItem={(row, motion) => renderRow(row, motion)} moreTestId="dash-resume-more" />
+    <DashSection id="resume" testId="dash-resume" icon={History} empty={rows.length === 0} count={rows.length} sectionRef={sectionRef} headingRef={headingRef}>
+      <AttentionRows model={model} renderItem={(row, motion) => renderRow(row, motion)} moreTestId="dash-resume-more" className="dash-resume-grid" />
     </DashSection>
   )
 }
