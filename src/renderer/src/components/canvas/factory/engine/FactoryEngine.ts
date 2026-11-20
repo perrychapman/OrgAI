@@ -342,6 +342,9 @@ export class FactoryEngine {
         frameP95Ms: p95(this.frameMs),
         intervalP95Ms: p95(this.intervalMs),
         firstFrameMs: this.firstFrameMs,
+        // Slice 6a replaces the placeholder with the sum of own DataTextures and the shadow map.
+        memoryBytes: 0,
+        pixelRatio: this.renderer.getPixelRatio(),
         ...(this.gpu ? { gpu: this.gpu } : {})
       }
     }

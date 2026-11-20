@@ -29,6 +29,8 @@ export interface FactorySnapshotInput {
   renderer: FactoryRendererKind
   reason?: FactoryReason
   quality: FactoryQuality
+  /** Slice 6: the quality the mount started at; defaults to quality. */
+  qualityStart?: FactoryQuality
   mode: 'live' | 'team'
   motion: FactoryMotion
   model?: FloorModel | null
@@ -106,6 +108,7 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
   const state: FactoryTestState = {
     renderer: input.renderer,
     quality: input.quality,
+    qualityStart: input.qualityStart ?? input.quality,
     mode: input.mode,
     motion: input.motion,
     workers,
@@ -137,6 +140,8 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
       frameP95Ms: round(perf.frameP95Ms),
       intervalP95Ms: round(perf.intervalP95Ms),
       firstFrameMs: round(perf.firstFrameMs),
+      memoryBytes: perf.memoryBytes,
+      pixelRatio: round(perf.pixelRatio),
       ...(perf.gpu ? { gpu: perf.gpu } : {})
     }
   }

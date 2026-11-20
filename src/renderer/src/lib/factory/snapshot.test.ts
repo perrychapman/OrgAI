@@ -123,13 +123,14 @@ describe('factoryTestState', () => {
       loop: 'running',
       frames: 1,
       engines: 1,
-      perf: { drawCalls: 5, shadowCalls: 4, triangles: 120, geometries: 4, textures: 1, frameP95Ms: 1.23456, intervalP95Ms: 0, firstFrameMs: 88.888, gpu: 'ANGLE (Test GPU)' },
+      perf: { drawCalls: 5, shadowCalls: 4, triangles: 120, geometries: 4, textures: 1, frameP95Ms: 1.23456, intervalP95Ms: 0, firstFrameMs: 88.888, gpu: 'ANGLE (Test GPU)', memoryBytes: 16_777_216, pixelRatio: 1.5 },
       cues: [{ id: 'c1', kind: 'capsule', from: 'a', to: null, start: 0, duration: 500, progress: 0.5, opacity: 1 }],
       cuesStarted: 2,
       messageCursor: '1|a|b|hi'
     })
     expect(s.view).toEqual({ ppm: 19.67, targetX: 15, targetZ: -4 })
-    expect(s.perf).toEqual({ drawCalls: 5, shadowCalls: 4, triangles: 120, geometries: 4, textures: 1, frameP95Ms: 1.23, intervalP95Ms: 0, firstFrameMs: 88.89, gpu: 'ANGLE (Test GPU)' })
+    expect(s.perf).toEqual({ drawCalls: 5, shadowCalls: 4, triangles: 120, geometries: 4, textures: 1, frameP95Ms: 1.23, intervalP95Ms: 0, firstFrameMs: 88.89, gpu: 'ANGLE (Test GPU)', memoryBytes: 16_777_216, pixelRatio: 1.5 })
+    expect(s.qualityStart).toBe('minimal')
     expect(s.cues).toEqual([{ kind: 'capsule', from: 'a', to: null }])
     expect(s.cuesStarted).toBe(2)
     expect(s.messageCursor).toBe('1|a|b|hi')
@@ -138,7 +139,7 @@ describe('factoryTestState', () => {
   it('omits an unknown GPU string', () => {
     const s = factoryTestState({
       renderer: 'webgl2', quality: 'high', mode: 'live', motion: 'full', loop: 'idle', frames: 1, engines: 1,
-      perf: { drawCalls: 1, shadowCalls: 0, triangles: 2, geometries: 1, textures: 0, frameP95Ms: 0, intervalP95Ms: 0, firstFrameMs: 0 }
+      perf: { drawCalls: 1, shadowCalls: 0, triangles: 2, geometries: 1, textures: 0, frameP95Ms: 0, intervalP95Ms: 0, firstFrameMs: 0, memoryBytes: 0, pixelRatio: 1 }
     })
     expect(s.perf && 'gpu' in s.perf).toBe(false)
   })
