@@ -72,3 +72,122 @@ Shot: `30-two-runs-1600-dark`. Titles are cut to 48 characters and the run's gen
 - Hover tooltip of the line (read the `title` attribute only).
 - The MCP row toggle on/off ("switch on an MCP server") as a separate action; I used Add and Remove.
 - Packaged build, real providers.
+
+---
+
+# Re-walk, 2026-11-19
+
+- Reviewer: UX Researcher. Build: `52f99364` (dev, `npm run build` ok).
+- How it ran: built app, `ORGAI_MOCK=1`, throwaway data dir, mock script `delayMs: 200`, no tokens. The project was created from a folder that holds `.orgai/` (roles Lead and Dev) so the team-files approval card could be raised. Runs were started with `window.orgai.runs.start` and `[mock:model-switch]` so they idle; the four answers came from `[mock:host-after-idle]`, `[mock:host-slow]` + `[mock:host-after-idle]`, `[mock:host-reject]`, plus a long-prompt run. 1600x1000 and 1024x640 (setContentSize), dark and light (`data-theme`), mouse first, then a Tab pass at 1600x1000.
+- Compared with: this review, `e2e/live-changes.mjs`, `LiveChangeNote.tsx`.
+- Shots and walk scripts: `e2e/shots/ux/live-changes-2/` (gitignored; scripts `a.mjs` to `f.mjs`). Shot names are in that folder, prefix `uxlc2-NN-`.
+- Mock caveat: the mock titles a run from its first prompt, so runs show as "Mockhost-reject rejecting run…". That is the mock, not the app; I do not count it.
+
+## Verdict: PARTLY FIXED
+
+The wording and the one-line-per-save design work: each save now names what it did ("Can use api-design now", "No longer uses api-design", "Renamed to Lead Prime. This run keeps calling it lead until the next run."), each save speaks from one place, and the line lasts. But the org chart line lives in the canvas footer, and that footer is the weak spot. At 1024x640 with three or more live runs it grows to 248 px, runs 52 px off the bottom of the window, cuts off the last line and crushes the Team assistant to 25 px. With the team-files approval card open (any window under 720 px high) the footer is hidden, so a rename shows nothing at all. Fix those two before release.
+
+## Status of earlier findings
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| H1 duplicate lines in several places | Fixed | A skill grant made exactly one line on the page; a rename one line in the footer; a connection grant one line in the inspector. Only one region held text each time (`data-surface` `orgChart` or `role:<id>`). Shots `b03-role-skill-granted-1024-dark`, `a01-rename-1600-dark`. Remaining: the rename's detail sentence repeats once per run (M3 below). |
+| H2 "in use now" contradicts, no subject | Mostly fixed | Lines now say "Can use api-design now", "once its agents are idle", "from the next run", "Applying access to api-design", "No longer uses api-design". The no-role skill wording ("Has api-design; no role can load it yet") I did not re-drive; `e2e/live-changes.mjs` asserts it. |
+| H3 org chart saves give no status | Partly fixed | A line now appears (0.9 s after typing) for rename, prompt edit, add role and remove role, shot `a01-rename-1600-dark`. It is hidden while the approval card is open at 1024x640 (H2 below), clipped with several runs (H1 below), and sits at the bottom of the window, not by the Name field. The Slug field still changes silently (`lead` to `lead-prime`, same shot, right panel). |
+| M1 role skill grant gave no line | Fixed | `b03-role-skill-granted-1024-dark`: "Can use api-design now · run “Idle run for the”" in the inspector. New inconsistency: M2 below. |
+| M2 layout shift / easy to miss | Partly fixed | Catalog and inspector lines reserve their rows, so nothing moved there. The footer line still shifts the page (M1 below) and the reserved rows are now a blank gap (M4). It has a check icon now, which helps. |
+| M3 focus lost after the dialog | Fixed for the role inspector | After Add Context7 from "Add a connection" the focus was on `role-add-connection`; after a skill remove, `role-add-skill`. The catalog "Use in this project" path was not re-walked. |
+| L1 truncated run title | Open | `d03-four-runs-1600-dark`: lines are cut with an ellipsis at 321 px (see M2 below). |
+| L2 wording variety | Partly open | "in use now" is gone from the inspector lines but the footer still says "Org chart changes are in use now", the log says "this run uses it now". Acceptable, one vocabulary would be better. |
+
+## Findings
+
+### H1. At 1024x640 with several live runs the org chart footer overflows the window and crushes the Team assistant
+Shots: `f01-4lines-1024-dark`, `f01-4lines-1024-light`, `e02-card-4lines-1024-dark`.
+Repro: start four work runs (the three markers plus a plain one), open Team at 1024x640, select Lead, rename it.
+Measured: footer 48 px before; 248 px after (bottom at 692 in a 640 px window, so the last line and its detail are off screen); Team assistant tray 148 px before, 25 px after (only its top edge is left); the canvas stays 326 px. With one run the tray drops from 148 to 92 px (`a03-1024-dark-rename`). At 1600x1000 the same four lines make the footer 230 px and shrink the canvas from 612 to 381 px next to the card (`e03-card-4lines-1600-dark`).
+What the user experiences: saving a rename makes the Team assistant vanish for 20 s, the fourth run's line is not visible and there is no way to scroll to it (footer `overflow: visible`). Then everything jumps back.
+Recommend: cap the footer line area. Show the first line and "and 3 more runs" as a summary ("Org chart changes reached 4 runs. 2 apply now, 1 once idle, 1 from the next run"), the full list in the tooltip or a Details disclosure; give the note a `max-height` with its own scroll; or reserve the note a fixed row beside the hint instead of stacking under it.
+
+### H2. With the team-files approval card open, the org chart line is not shown (and not announced) at 1024x640
+Shots: `e01-card-1024-dark`, `e02-card-4lines-1024-light`.
+Repro: put a power change in `.orgai/agents/dev.md` (add Bash) so "1 change needs your approval" shows the card, 1024x640 (any height under 720 px), then rename Lead with a live run.
+Observed: `.frame-footer` is `display: none` while the card is open (`teamFiles.css` line 136), so the line is attached to the DOM but `isVisible()` is false. The text was in the region (all four lines, read from `textContent`), nobody could see it, and a display-none region is not read by assistive tech. At 1600x1000 the line shows under the card and does not overlap it, but pushes the card and canvas up (canvas 612 to 381 with four runs).
+What the user experiences: they rename a role in the middle of a team-files review and get no feedback at all, the exact gap H3 described.
+Recommend: put the org chart line in the Role inspector under the Name field (the surface that already works for grants) and keep the footer for the hint only, or move the line out of the hidden footer when the card is open.
+
+### M1. The footer line pushes the canvas and tray, then pulls them back at expiry
+Shots: `a01-rename-1600-dark`, `a02-1024-dark-idle`, `a03-1024-dark-rename`.
+At 1600x1000 the canvas went 612 to 582 px high when the line appeared and 582 to 638 px when it cleared (t+19 s present, t+21 s gone), so the nodes move twice. At 1024x640 the tray took the loss instead (148 to 92 px). The earlier M2 asked for reserved room; the catalog and inspector lines do that, the footer line does not.
+Recommend: reserve one row at the foot of the footer while a run is live (as the others do), and keep a long list inside it.
+
+### M2. The skill grant's line sits under Connections, and revoke lands in a different place
+Shots: `b03-role-skill-granted-1024-dark`, `b04` (`uxlc2-05-b04-role-skill-revoked-1024-dark`), `c04-conn-revoked-1024-dark`.
+Repro: select Dev, Add a skill > api-design. The line "Can use api-design now" appears between the "Add a connection" row and the Skills header, so it reads as a connection message. Then remove the skill with the X: the line "No longer uses api-design" shows in the canvas footer, at the bottom of the window, not in the inspector. A connection grant and its removal both stay in the inspector (`data-surface` `role:<id>`).
+What the user experiences: the same panel gives feedback in two places, and the skill one is far from the control. Also "Can use context7 now" uses the slug where the row says "Context7".
+Recommend: show every inspector grant or revoke in the line directly under the group header it belongs to (Skills for skills, Connections for connections), use the display name, and never send inspector revokes to the footer.
+
+### M3. The rename sentence repeats once per run and four runs make a wall of text
+Shot: `e03-card-4lines-1600-dark`.
+With four runs the footer has four identical "Renamed to Lead Primer. This run keeps calling it lead until the next run." sentences, one under each line. The order of the lines also changed (the slow run moved last when its answer came), so the list reshuffles.
+Recommend: when every run has the same note, say it once ("Renamed to Lead Primer. Runs keep calling it Lead until their next run."), keep lines in the order of the run tabs (R1, R2...).
+
+### M4. Reserved room shows as an empty gap in the Role inspector
+Shots: `d03-four-runs-1600-dark`, `f01-4lines-1024-dark`.
+With four live runs the inspector keeps four rows free under "Add a connection" at all times, about 100 px of blank space before Skills, even when nothing was saved. It trades the layout shift for a hole that looks like a rendering bug and costs height at 1024x640.
+Recommend: reserve one row only; let extra rows push the content once, in a place where the user is already looking.
+
+### M5. Four lines are cut at 321 px and differ only at the end
+Shots: `d02-four-runs-1024-dark-t3`, `d03-four-runs-1600-dark`.
+"Can use api-design once its agents are idle · run “Moc…” " appears twice with different runs, indistinguishable without a hover. Full text is in `title` (hover only). Title text also repeats the run's first words, which are not distinctive.
+Recommend: lead with the run number the sidebar uses ("R2 · after its agents are idle") and drop the quoted title, or wrap the line to two lines in the narrow panel.
+
+### M6. The footer line is far from where the user is looking
+Shots: `a01-rename-1600-dark`, `a03-1024-light-rename`.
+The user types in the Name field at the top right; the confirmation appears at the bottom left, 6 px from the window edge, in a footer under the Team assistant. At 1600x1000 it sat at y 950 to 994. It does appear (checked 0.9 s after typing) and a new user who watches the footer will see it; one who watches the inspector will not. The 12 px grey text with a check icon is easy to miss.
+Recommend: also show the first line beside the "Saved 09:40 PM" indicator at the top right, or under the Name field.
+
+### L1. Add role, remove role and a prompt edit show the same generic line
+Shots: `a04-prompt-1024-dark`, `a05` (`uxlc2-08-a05-addrole-1024-dark`), `a07-removed-1024-dark`.
+All three read "Org chart changes are in use now · run “Idle run for the”" with no detail. I could not tell from the screen whether the second and third saves were taken or whether it was the line of the first one still showing, since the text is identical and the 20 s timer was still running. Recommend a subject: "Added the role New role. This run can use it now." / "Removed New role. This run no longer sees it." (I did not read the run log for these two.)
+
+### L2. Timer
+Single idle run: line present at t+19 s, gone at t+21 s. With the slow run, the footer still showed the lines about 22 s after the save (the slow answer replaced its line, which likely restarted the clock). Fine, but it means the line can outlast the 20 s promise.
+
+### L3. A silent slug change remains
+Shot `a01-rename-1600-dark`: renaming changes the Slug field and the identity line to `lead-prime` with no word about it. The footer note now explains the run keeps the old name. Recommend a helper under Name: "The internal name (slug) follows the name until the first run uses it."
+
+## Did the rename note read clearly?
+
+For "Lead" the sentence "This run keeps calling it lead until the next run" reads naturally; the word slug never appears, which is right. I only tried single-word names. For a name like "Code Reviewer" the old slug is `code-reviewer`, which will look like a typo; recommend showing the old display name: "This run keeps calling it Code Reviewer until the next run." (not walked).
+
+## Keyboard and announcements
+
+- Tab order from the Name field: Edit tools, Add a connection, Ask the Team assistant, Add a skill, Ask the Team assistant, Identity, Model, then the fields, then the page chrome. The footer line and its detail rows are not tab stops (correct for text); they are not reachable except through the screen reader's browse mode, in DOM order: line text, then the detail rows in a list labelled "Details".
+- After a role-inspector revoke, focus stays on the control that owns the row (`role-add-skill`, `role-add-connection`).
+- Each region is `role=status` with `aria-live=polite`; `aria-atomic` is not set. The org chart region and the role region are separate regions, and only the one that was saved holds text. With the card open at 1024x640 the org chart region is inside a `display: none` footer, so it cannot speak (H2).
+- A second save with identical text ("Org chart changes are in use now" twice) may not be re-announced because the text does not change. Not verifiable here.
+- Screen-reader speech cannot be verified in this environment; all of the above is DOM, attributes and tab order only.
+
+## What works now
+
+- One line per save, in one region (H1 of the first walk).
+- Plain wording of what changed and when ("now", "once its agents are idle", "from the next run", "Applying access to…"), with the reason for a next-run answer as plain text under the line ("Some grants name a server or skill this run does not have; they apply from the next run.").
+- Each theme and size showed no horizontal scroll and the lines did not clip sideways.
+- Focus returns to the owning control after a revoke.
+- A connection grant from the inspector gives a line, so grant and revoke are symmetric for connections.
+
+## Fix before release
+
+1. H1 (footer overflow and crushed Team assistant at 1024x640 with several runs).
+2. H2 (line invisible while the approval card is open).
+3. M2 (inspector revoke lands in the footer; skill line under Connections) is a small change and worth doing in the same pass; M1 and M4 follow from the same fix as H1.
+
+## Not driven
+
+- Screen-reader speech: not verified.
+- The catalog "Use in this project" path and the "no role can load it yet" line: not re-walked.
+- The run log text for the add and remove role saves.
+- A busy (non-idle) run, an ended run, and the "being applied" case for an MCP grant; the slow case was driven only on a skill grant and a rename.
+- Role names with spaces; the real provider; the packaged build.
+- Time from clicking a skill to the dialog closing while a slow run is pending: at 0.5 s the chooser was still open and no line was shown, at 3 s all lines were up; the exact moment was not measured.
