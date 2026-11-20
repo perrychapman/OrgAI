@@ -6,6 +6,7 @@
 @import './dashboard-today.css';
 @import './dashboard-week.css';
 @import './dashboard-commits.css';
+@import './dashboard-engagements.css';
 
 /* ---------- Dashboard (docs/design/dashboard-overhaul.md) ----------
    Page shell (section 2): greeting, the fixed sections, the arranged sections in one or two tracks, the footer; the
