@@ -3673,7 +3673,7 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     await m.stopAll()
   })
 
-  it('wires the library and the skill catalog into work runs only (not setup runs)', async () => {
+  it('wires the library and the skill catalog into work runs and, scoped to the project, setup runs', async () => {
     const catalog = vi.fn(() => ({ library: [], project: [] }))
     const read = vi.fn(() => null)
     const libraryEntries = vi.fn(() => [])
@@ -3698,8 +3698,13 @@ describe('approved installs and proposals keep the run current (setLive)', () =>
     work.readSkill!({ libraryId: 'lib1' })
     expect(read).toHaveBeenCalledWith(p.id, { libraryId: 'lib1' })
     expect(setupCtx.mcpLibrary).toBeTypeOf('function')
-    expect(setupCtx.skillCatalog).toBeUndefined()
-    expect(setupCtx.readSkill).toBeUndefined()
+    // The Architect attaches skills through propose_skills (project scope, behind the card), never the orgai command.
+    catalog.mockClear()
+    read.mockClear()
+    setupCtx.skillCatalog!()
+    expect(catalog).toHaveBeenCalledWith(p.id)
+    setupCtx.readSkill!({ skillId: 's1' })
+    expect(read).toHaveBeenCalledWith(p.id, { skillId: 's1' })
     await m.stopAll()
   })
 
