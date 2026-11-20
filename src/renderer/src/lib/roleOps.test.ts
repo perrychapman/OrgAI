@@ -10,9 +10,13 @@ import {
   setReportsTo,
   renamePatch,
   settleRename,
+  SLUG_TAKEN_TEXT,
+  slugFieldEdit,
   slugPatch,
   spawnNotice,
   staleSlugServers,
+  uniqueSlug,
+  type RenameProject,
   withRequiredReport,
   withSpawnableToggled,
   wouldCycle,
@@ -156,12 +160,13 @@ describe('renamePatch', () => {
     const twice = { ...once, ...renamePatch(proj, once, 'Dev AB') } as Role
     expect(twice.mcpServers).toEqual(['s1'])
     expect(slugPatch(proj, dev, 'dv')).toEqual({ slug: 'dv', mcpServers: ['s1'] })
-    expect(renamePatch(proj, dev, 'DEV')).toEqual({ name: 'DEV', slug: 'dev' })
+    // Back at the starting slug the carried id stays (recheck M, main's rename rule).
+    expect(renamePatch(proj, dev, 'DEV')).toEqual({ name: 'DEV', slug: 'dev', mcpServers: ['s1'] })
   })
 
   // Review H1: every keystroke is computed against the slug and grants the edit started with.
-  const typeLetters = (project: { mcpServers: McpServerSpec[] }, r: Role, text: string): Role => {
-    const start = { slug: r.slug, mcpServers: r.mcpServers }
+  const typeLetters = (project: RenameProject, r: Role, text: string): Role => {
+    const start = { id: r.id, slug: r.slug, mcpServers: r.mcpServers }
     let cur = r
     for (let i = 1; i <= text.length; i++) cur = { ...cur, ...renamePatch(project, start, text.slice(0, i)) }
     return cur
@@ -181,7 +186,7 @@ describe('renamePatch', () => {
   it('backspacing through another role slug adds nothing either (H1)', () => {
     const project = { mcpServers: [srv('dev-db', ['dev'])] }
     const developer = { ...role('x', 'root'), name: 'developer', slug: 'developer' } as Role
-    const start = { slug: developer.slug, mcpServers: developer.mcpServers }
+    const start = { id: developer.id, slug: developer.slug, mcpServers: developer.mcpServers }
     let cur = developer
     for (const text of ['develope', 'develop', 'develo', 'devel', 'deve', 'dev', 'de']) cur = { ...cur, ...renamePatch(project, start, text) }
     expect(cur.slug).toBe('de')
@@ -191,11 +196,59 @@ describe('renamePatch', () => {
     expect(atDev.mcpServers ?? []).toEqual([])
   })
 
-  it('a grant held by the starting slug survives typing, and typing back to the start gives the starting grants', () => {
+  it('a grant held by the starting slug survives typing, and typing back to the start keeps the id grant', () => {
     const typed = typeLetters(proj, dev, 'Developer')
     expect(typed.mcpServers).toEqual(['s1'])
-    const start = { slug: dev.slug, mcpServers: dev.mcpServers }
-    expect({ ...typed, ...renamePatch(proj, start, 'Dev') }.mcpServers).toBeUndefined()
+    const start = { id: dev.id, slug: dev.slug, mcpServers: dev.mcpServers }
+    expect({ ...typed, ...renamePatch(proj, start, 'Dev') }.mcpServers).toEqual(['s1'])
+  })
+
+  it('typing back to the starting slug in the Slug field keeps the id grant (recheck M, main rename rule)', () => {
+    const project = { mcpServers: [srv('db', ['builder'])], roles: [builder] }
+    const start = { id: builder.id, slug: builder.slug, mcpServers: builder.mcpServers }
+    let cur = builder
+    for (const v of ['builde', 'build', 'b', 'bu', 'builder']) {
+      const r = slugFieldEdit(project, start, v)
+      if ('patch' in r) cur = { ...cur, ...r.patch }
+    }
+    expect(cur.slug).toBe('builder')
+    expect(cur.mcpServers).toEqual(['db'])
+  })
+
+  describe('unique slugs (recheck M)', () => {
+    const b = { ...role('qa', 'root'), name: 'QA', slug: 'qa' } as Role
+    const project = { mcpServers: [srv('qa-db', ['qa']), srv('mine', ['builder'])], roles: [builder, b] }
+
+    it('typing a name whose slug another role holds keeps the name and suffixes the slug; no grants of that role', () => {
+      const after = typeLetters(project, builder, 'QA')
+      expect(after.name).toBe('QA')
+      expect(after.slug).toBe('qa-2')
+      expect(after.mcpServers).toEqual(['mine'])
+      expect(serverGranted(project.mcpServers[0], after)).toBe(false)
+      // The next free suffix.
+      const crowded = { ...project, roles: [...project.roles, { ...role('q2', 'root'), slug: 'qa-2' } as Role] }
+      expect(renamePatch(crowded, builder, 'QA').slug).toBe('qa-3')
+      expect(uniqueSlug(crowded.roles, 'qa', 'qa')).toBe('qa')
+    })
+
+    it('typing "QA Lead" letter by letter never produces another role slug', () => {
+      const start = { id: builder.id, slug: builder.slug, mcpServers: builder.mcpServers }
+      const text = 'QA Lead'
+      const slugs: string[] = []
+      for (let i = 1; i <= text.length; i++) slugs.push(renamePatch(project, start, text.slice(0, i)).slug!)
+      expect(slugs).not.toContain('qa')
+      expect(slugs.at(-1)).toBe('qa-lead')
+      expect(typeLetters(project, builder, text).mcpServers).toEqual(['mine'])
+    })
+
+    it('a direct Slug edit to a taken value is refused and not applied', () => {
+      const start = { id: builder.id, slug: builder.slug, mcpServers: builder.mcpServers }
+      expect(slugFieldEdit(project, start, 'QA')).toEqual({ error: SLUG_TAKEN_TEXT })
+      expect(SLUG_TAKEN_TEXT).toBe('Another role already uses this ID.')
+      expect(slugFieldEdit(project, start, 'qa-x')).toEqual({ patch: { slug: 'qa-x', mcpServers: ['mine'] } })
+      // Its own slug is never "taken".
+      expect(slugFieldEdit(project, start, 'builder')).toEqual({ patch: { slug: 'builder', mcpServers: ['mine'] } })
+    })
   })
 
   it('a double rename (two edits) does not duplicate grants', () => {
@@ -212,11 +265,18 @@ describe('stale slug after a rename (M3 a)', () => {
   const project = (roles: Role[], servers: McpServerSpec[]): Project =>
     ({ id: 'p', name: 'P', roles, mcpServers: servers }) as unknown as Project
 
-  it('plans to drop the old slug only from explicit lists the renamed role now holds by id, and never re-adds a stale slug', () => {
-    const servers = [srv('s1', ['dev', 'lead', 'ghost']), srv('s2'), srv('s3', ['dev'])]
+  it('plans to drop the old slug only from explicit lists the renamed role now holds by id', () => {
+    const servers = [srv('s1', ['dev', 'lead']), srv('s2'), srv('s3', ['dev'])]
     const plan = staleSlugServers(project([lead, renamed], servers), servers, 'd', 'dev')
     // s3 is not held by id, so dropping the slug there would cut access: left alone. s2 is every role: left alone.
     expect(plan.map((p) => [p.spec.id, p.roles])).toEqual([['s1', ['lead']]])
+  })
+
+  it('removes only the renamed role old slug; another absent role slug is left alone (recheck M)', () => {
+    // `ghost` belongs to no current role: a role removed with Undo on screen, or one named by team files awaiting approval.
+    const servers = [srv('s1', ['dev', 'ghost', 'lead'])]
+    const plan = staleSlugServers(project([lead, renamed], servers), servers, 'd', 'dev')
+    expect(plan.map((p) => [p.spec.id, p.roles])).toEqual([['s1', ['ghost', 'lead']]])
   })
 
   it('plans nothing while another role holds the old slug', () => {
