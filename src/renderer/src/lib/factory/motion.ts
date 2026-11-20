@@ -1,6 +1,6 @@
 // Factory Floor motion constants and the ambient set (docs/design/factory-floor.md section 5). Pure: no three, no DOM.
 // Every duration, speed and cap of section 5 lives here and nowhere else. Slice 4 contract (UI Lead): the constants are
-// fixed by the spec; the Scene Engineer (4a) implements the functions below and their tests. Nothing here is shared with
+// fixed by the spec; the functions below are implemented and tested by the Scene Engineer (4a, motion.test.ts). Nothing here is shared with
 // any other scene presentation.
 import type { Ambient, CueKind, FloorModel } from './types'
 
@@ -77,7 +77,7 @@ export function travelMs(distance: number, speed: number, min: number, max: numb
 
 /**
  * Eased progress for a cue kind at linear progress t (0 to 1): ease-out for arrive, shutter, barrier; ease-in-out for
- * tote, capsule, crate and pose; linear for the part's ride (its pop and drop are phases of the part cue). 4a implements.
+ * tote, capsule, crate and pose; linear for the part's ride (its pop and drop are phases of the part cue); linear for leave (a fade) and hall (a light level).
  */
 export function cueEase(kind: CueKind, t: number): number {
   const s = Math.min(1, Math.max(0, t))
@@ -97,7 +97,7 @@ export function cueEase(kind: CueKind, t: number): number {
 
 /**
  * Ambient loop value 0 to 1 at `now` for phase index `phase` (ease-in-out about FACTORY_CYCLE_MS, offset by
- * phase * AMBIENT_PHASE_MS): 0 at rest, 1 at the far end of the stroke or the bright end of the glow. 4a implements.
+ * phase * AMBIENT_PHASE_MS): 0 at rest, 1 at the far end of the stroke or the bright end of the glow. A raised cosine: one full cycle (rest, far end, rest) per FACTORY_CYCLE_MS.
  */
 export function ambientWave(now: number, phase: number): number {
   const t = (((now - phase * AMBIENT_PHASE_MS) % FACTORY_CYCLE_MS) + FACTORY_CYCLE_MS) % FACTORY_CYCLE_MS / FACTORY_CYCLE_MS
@@ -108,22 +108,26 @@ export function ambientWave(now: number, phase: number): number {
  * Section 5.1: the stations that loop now. Candidates are workers whose model `ambient` is not 'none' (tool: 'machine';
  * starting, thinking, delegating: 'screen'). Priority: `selectedId`, then `onScreen` stations in layout order, then the
  * rest in layout order; at most AMBIENT_CAP. Phase index = position in that priority list. Empty when the hall is not
- * 'on' or the model is in team mode. 4a implements and tests (stub returns the first AMBIENT_CAP candidates).
+ * 'on' or the model is in team mode. Map iteration order is the priority order.
  */
 export function ambientSet(
   model: FloorModel,
   onScreen: (id: string) => boolean,
   selectedId: string | null = null
 ): Map<string, { kind: Exclude<Ambient, 'none'>; phase: number }> {
-  void onScreen
-  void selectedId
   const out = new Map<string, { kind: Exclude<Ambient, 'none'>; phase: number }>()
   if (model.mode !== 'live' || model.hall !== 'on') return out
-  for (const id of model.layout.order) {
-    const a = model.workers[id]?.ambient
-    if (!a || a === 'none') continue
-    out.set(id, { kind: a, phase: out.size })
-    if (out.size >= AMBIENT_CAP) break
+  const kindOf = (id: string): Exclude<Ambient, 'none'> | null => {
+    const a = model.layout.stations[id] ? model.workers[id]?.ambient : undefined
+    return a && a !== 'none' ? a : null
   }
+  const add = (id: string): void => {
+    if (out.size >= AMBIENT_CAP || out.has(id)) return
+    const kind = kindOf(id)
+    if (kind) out.set(id, { kind, phase: out.size })
+  }
+  if (selectedId !== null) add(selectedId)
+  for (const id of model.layout.order) if (onScreen(id)) add(id)
+  for (const id of model.layout.order) add(id)
   return out
 }

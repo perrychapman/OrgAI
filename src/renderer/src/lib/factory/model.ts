@@ -1,10 +1,10 @@
 // What the Factory Floor shows (docs/design/factory-floor.md sections 1.4, 4.4 and 10.3): the pure scene model, the
-// static end state of every agent, worktree, plan step and run status. Slice 3 has no motion: `ambient` stays 'none'
-// (slice 4 adds the loops and cues on top of these end states). Pure: no three, no DOM.
+// static end state of every agent, worktree, plan step and run status, and (slice 4) the ambient loop each running
+// station would run; motion.ts ambientSet picks the ones that loop now. Pure: no three, no DOM.
 import type { AgentState, PlanStep, RunPlan, RunStatus, WorktreeStatus } from '@shared/types'
 import type { StatusWord } from '../runStatus'
 import { factoryLamp, factoryWord } from './agentView'
-import type { CrateAt, FactoryAgentInput, FloorLayout, FloorModel, Lamp, Pose, StationKind, WorkerModel } from './types'
+import type { Ambient, CrateAt, FactoryAgentInput, FloorLayout, FloorModel, Lamp, Pose, StationKind, WorkerModel } from './types'
 
 /** The plan board shows one lamp per step for at most this many steps; the rest count as overflow. */
 export const BOARD_LAMPS = 12
@@ -36,6 +36,18 @@ export function factoryPose(state: AgentState | 'role', lamp: Lamp, kind: Statio
       // idle, role (and waiting / error, which the lamp already covered)
       return 'rest'
   }
+}
+
+/**
+ * Sections 1.4 and 5.1: the loop a running station would run (live mode, hall on; the caller checks those). Only a lit
+ * Running lamp loops: tool runs the machine stroke, starting / thinking / delegating the screen glow. Needs you,
+ * Failed, idle and done never loop.
+ */
+export function factoryAmbient(state: AgentState | 'role', lamp: Lamp): Ambient {
+  if (lamp !== 'running') return 'none'
+  if (state === 'tool') return 'machine'
+  if (state === 'starting' || state === 'thinking' || state === 'delegating') return 'screen'
+  return 'none'
 }
 
 /** Section 1.4: the worktree's fence and crate (end states). No worktree: neither. */
@@ -128,6 +140,7 @@ export function buildFloorModel(
   const current = input.filter((a) => a.session === 'current')
   const steps = live ? stepOwners(plan, current) : new Map<string, string[]>()
   const planBlocked = live && plan?.status === 'blocked'
+  const hall = factoryHall(runStatus, mode)
   const workers: Record<string, WorkerModel> = {}
   let dockCrates = 0
   for (const a of current) {
@@ -147,7 +160,7 @@ export function buildFloorModel(
       activity: live ? a.activity : '',
       lamp,
       pose: factoryPose(live ? a.state : 'role', lamp, st.kind),
-      ambient: 'none',
+      ambient: live && hall === 'on' ? factoryAmbient(a.state, lamp) : 'none',
       shutter: live && a.state === 'done',
       barrier: live && a.state === 'error',
       fenced: wt.fenced,
@@ -164,7 +177,7 @@ export function buildFloorModel(
     mode,
     layout,
     workers,
-    hall: factoryHall(runStatus, mode),
+    hall,
     ...(live && plan ? { board: factoryBoard(plan) } : {}),
     dockCrates: live ? dockCrates : 0,
     earlier
