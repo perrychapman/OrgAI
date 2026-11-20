@@ -3,7 +3,10 @@
 // Live only by owner decision 2026-11-19), the renderer it picked (the script
 // passes on either path: 'webgl2' or 'floor-plan'), the developer key that forces the floor plan or the section 8 notices,
 // "Use Graph", both themes, both window sizes with no page scroll, zero CSP violations, the mirror group and the hidden
-// canvas, and that Pocket Office is still selectable. Slice 2+ checks (layout, stations, cues) are not here.
+// canvas, and that Pocket Office is still selectable. Slice 2 and 3 add layout, stations and live state; slice 4 adds the
+// cue checks (section "Slice 4: cues and motion": no replay at mount, capsules, totes, parts and crates for events after
+// mount, the caps under a burst, reduced motion and Pause motion, the floor log, idle frames). Gated scripts: see
+// docs/agent-notes/core-runtime.md "Factory Floor mock".
 //
 // Software WebGL: this launch (and only this one) adds Chromium's SwiftShader switches so a runner without a GPU still
 // takes the 3D path. Measured on Electron here: without them the GPU is used; with them the context reports
@@ -12,7 +15,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { _electron as electron } from 'playwright-core'
-import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, sleep } from './lib.mjs'
+import { APP_DIR, DATA_DIR, SHOTS_DIR, TMP, check, cleanup, createProject, electronBinary, endSession, finish, log, makeFixtureRepo, openAppSettings, openProject, openTeam, projectTab, setReduceMotion, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-factory-script-')), 'script.json')
@@ -456,6 +459,7 @@ try {
   await page.locator('.react-flow').first().waitFor({ timeout: 15_000 }).catch(() => {})
   check((await page.locator('.react-flow').count()) > 0, 'Team shows the Graph while Factory Floor is chosen')
   check((await page.locator('[data-testid=factory-scene]').count()) === 0, 'Team never mounts the factory scene')
+  check((await page.locator('[data-testid=factory-pause-motion]').count()) === 0, '[slice4] Team has no Pause motion button (live only)')
   await shot('team-graph')
 
   await projectTab(page, 'Live').click()
@@ -660,12 +664,17 @@ try {
     } else chk3(false, 'the permission card still has an Allow button after the keyboard walk', await page.locator('.decision-card').count())
     // Idle: once the tour is over nothing changes and the render loop stays still (3D path only).
     const calm = await untilState((s) => s.hall === 'on' && wOf(s, 'ff-w111')?.pose !== 'machine', 15_000)
+    // Slice 4: a running station loops (section 5.1), so the render loop is only idle when no station is running. The tour
+    // leaves leads in `delegating`, which is running; there the frame growth is recorded, not asserted (section 9.1), and
+    // the slice 4 section below asserts the idle case on a script that ends with every agent at rest.
     if (calm?.renderer === 'webgl2') {
       await sleep(1500)
-      const f0 = (await state()).frames
+      const s0 = await state()
+      const anyRunning = s0.workers.some((w) => w.lamp === 'running')
       await sleep(3000)
-      const f1 = (await state()).frames
-      chk3(typeof f0 === 'number' && f0 === f1, 'idle: frames unchanged over 3 s once nothing changes', { f0, f1 })
+      const s1 = await state()
+      if (!anyRunning) chk3(typeof s0.frames === 'number' && s0.frames === s1.frames, 'idle: frames unchanged over 3 s once nothing changes', { f0: s0.frames, f1: s1.frames })
+      else log(`tour: ${s1.frames - s0.frames} frames in 3 s with ${s0.workers.filter((w) => w.lamp === 'running').length} running stations (ambient only, recorded)`)
     } else log('skip idle frames check: no 3D render loop on the floor plan')
     // The plan board button opens the Plan side tab.
     const pbtn = page.locator('[data-testid=factory-plan-board]').first()
@@ -713,6 +722,353 @@ try {
   const paused = await untilState((s) => s.hall === 'paused', 60_000)
   chk3(!!paused, '[mock:factory-floor-pause]: the hall is paused', await state().then((s) => s.hall).catch(() => null))
   chk3((await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall')) === 'paused', 'factory-scene data-hall is paused', await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall'))
+  // ---------- Slice 4: cues and motion (sections 1.4, 5, 6.5, 6.7, 7.5, 9.1, 10.3, 10.4) ----------
+  // Fixtures are timed custom work scripts (core-runtime.md "Factory Floor mock": tool holdMs, agentState, worktree, message).
+  // Every gated script starts with a permission card on the root (`ask`): the run stands still until this script answers it,
+  // so the scene is mounted and its test state read BEFORE the events happen, and nothing here depends on a sleep.
+  // The cue lists are read from the state's `recentCues` (the state is written twice a second), accumulated across polls.
+  const chk4 = (ok, name, got) => check(ok, `[slice4] ${name}`, `got: ${typeof got === 'string' ? got : JSON.stringify(got)}`)
+  const MSG_AGENT = 'Please review the cue fixture now, zebra-lunch-7'
+  const MSG_USER = 'Cue fixture is ready for your review, otter-dock-9'
+  // Text after the 32 characters the message cursor may carry: must never reach the test state.
+  const TAILS = [MSG_AGENT.slice(35), MSG_USER.slice(38)]
+  const GATE = { type: 'tool', name: 'Bash', input: { command: 'cue-gate --hold' }, ask: true, result: 'ok' }
+  const writeTimed = (work, delayMs) => fs.writeFileSync(scriptFile, JSON.stringify({ delayMs, work }))
+  /** One lead (cq-a), two workers under it (cq-b, cq-c): spawn with parent, message to an agent and to the user, a tool call, a merge into main, a conflict, end states. */
+  const cueEvents = () => [
+    { type: 'spawn', id: 'cq-a', name: 'cq-a', role: slug, description: 'Cue lead' },
+    { type: 'spawn', id: 'cq-b', name: 'cq-b', role: slug, parent: 'cq-a', description: 'Cue worker' },
+    { type: 'spawn', id: 'cq-c', name: 'cq-c', role: slug, parent: 'cq-a', description: 'Cue second worker' },
+    { type: 'message', from: 'cq-a', to: 'cq-b', text: MSG_AGENT },
+    { type: 'message', from: 'cq-b', to: 'user', text: MSG_USER },
+    { type: 'tool', agent: 'cq-b', name: 'Read', input: { file_path: 'cue.ts' }, result: 'x', holdMs: 2500 },
+    { type: 'worktree', agent: 'cq-b', status: 'active' },
+    { type: 'worktree', agent: 'cq-b', status: 'merging', mergeTarget: 'main' },
+    { type: 'worktree', agent: 'cq-b', status: 'merged', mergeTarget: 'main' },
+    { type: 'worktree', agent: 'cq-c', status: 'conflict', mergeTarget: 'main' },
+    { type: 'agentState', agent: 'cq-c', state: 'error', activity: 'Merge failed' },
+    { type: 'agentState', agent: 'cq-b', state: 'done' },
+    { type: 'agentState', agent: 'cq-a', state: 'done' },
+    { type: 'text', text: 'Cue events done.' }
+  ]
+  const cueDone = (s) => s.mode === 'live' && !!wOf(s, 'cq-b')?.shutter && wOf(s, 'cq-b')?.crate === 'dock' && !!wOf(s, 'cq-c')?.barrier && s.workers[0]?.lamp === 'off'
+  /** Poll the state until `pred`; `each(state)` sees every state read. Returns the satisfying state or null. */
+  const watch = async (pred, timeout, each = () => {}) => {
+    const end = Date.now() + timeout
+    while (Date.now() < end) {
+      const st = await state().catch(() => null)
+      if (st) {
+        each(st)
+        if (pred(st)) return st
+      }
+      await sleep(120)
+    }
+    return null
+  }
+  /** Accumulates what the polls saw: every cue ever listed, the most stations looping, any message text in the state. */
+  const collector = () => {
+    const c = { cues: new Map(), maxLooping: 0, kinds: new Set(), leaked: false, each: null }
+    c.each = (st) => {
+      for (const q of [...(st.recentCues ?? []), ...(st.cues ?? [])]) c.cues.set(JSON.stringify(q), q)
+      const looping = st.workers.filter((w) => w.ambient && w.ambient !== 'none')
+      c.maxLooping = Math.max(c.maxLooping, looping.length)
+      for (const w of looping) c.kinds.add(`${w.id}:${w.ambient}`)
+      const json = JSON.stringify(st)
+      if (TAILS.some((t) => json.includes(t))) c.leaked = true
+    }
+    c.has = (kind, from, to) => [...c.cues.values()].some((q) => q.kind === kind && q.from === from && (to === undefined || q.to === to))
+    return c
+  }
+  const allowGate = async () => {
+    const allow = page.locator('.decision-card .decision-footer .btn.primary').first()
+    await allow.waitFor({ timeout: 20_000 })
+    await allow.click()
+  }
+  /** Start a gated run and return the state read while it waits at the gate (the scene is mounted, nothing has happened). */
+  const startGated = async (label, work, delayMs) => {
+    writeTimed([GATE, ...work], delayMs)
+    await startLiveRun(`Factory floor cues ${label}`)
+    await page.locator('.decision-card').first().waitFor({ timeout: 30_000 })
+    return untilState((s) => s.mode === 'live' && s.workers[0]?.lamp === 'needs-you', 40_000)
+  }
+  /** Idle render loop (3D path): no cue, nothing looping, loop idle, frames constant over 3 s. The floor plan has no loop. */
+  const idleFrames = async (label) => {
+    const calm = await untilState((s) => s.cues.length === 0 && s.workers.every((w) => w.ambient === 'none' && w.lamp !== 'running') && (s.renderer !== 'webgl2' || s.loop === 'idle'), 20_000)
+    chk4(!!calm, `${label}: no cue, no running station and (3D) loop idle`, await state().then((s) => ({ cues: s.cues.length, loop: s.loop, running: s.workers.filter((w) => w.lamp === 'running').map((w) => w.id) })).catch(() => null))
+    if (calm?.renderer === 'webgl2') {
+      await sleep(1000)
+      const f0 = (await state()).frames
+      await sleep(3000)
+      const s1 = await state()
+      chk4(typeof f0 === 'number' && f0 === s1.frames && s1.loop === 'idle', `${label}: frames stay constant over 3 s and the loop is idle`, { f0, f1: s1.frames, loop: s1.loop })
+    } else log(`skip ${label} frames check: no 3D render loop on the floor plan`)
+  }
+  /** Switch to the conversation and back through the run layout toggle (the scene unmounts and mounts again). */
+  const viaConversation = async () => {
+    const t = page.locator('[data-testid=run-layout-toggle]')
+    await t.click()
+    await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {})
+    await page.locator('[data-testid=run-conversation]').first().waitFor({ timeout: 10_000 }).catch(() => {})
+    await t.click()
+    await scene('live').waitFor({ timeout: 20_000 })
+    return untilState((s) => s.mode === 'live', 20_000)
+  }
+  /** A fresh mount reads the events as baseline: nothing cues, nothing logs, the message cursor is set, and it stays so. */
+  const checkNoReplay = async (label, via, motion) => {
+    const st = await via()
+    chk4(!!st && st.cuesStarted === 0 && st.recentCues.length === 0 && st.cues.length === 0, `${label}: a fresh mount starts no cue`, st && { cuesStarted: st.cuesStarted, recent: st.recentCues.length, cues: st.cues.length })
+    chk4(!!st && st.logEntries === 0, `${label}: a fresh mount has an empty floor log`, st?.logEntries)
+    chk4(!!st && typeof st.messageCursor === 'string' && st.messageCursor.length > 0, `${label}: the message cursor is set at mount`, st?.messageCursor)
+    if (motion) chk4(st?.motion === motion, `${label}: the mount's motion is ${motion}`, st?.motion)
+    await sleep(3000)
+    const st2 = await state().catch(() => null)
+    chk4(!!st2 && st2.cuesStarted === 0 && st2.recentCues.length === 0 && st2.logEntries === 0, `${label}: still nothing cued or logged 3 s later`, st2 && { cuesStarted: st2.cuesStarted, recent: st2.recentCues.length, log: st2.logEntries })
+    return st2
+  }
+  const pauseBtn = page.locator('[data-testid=factory-pause-motion]')
+  const focusedTestId = () => page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? null)
+  /** Section 6.7: walk the toolbar from Fit to Pause motion with the keyboard (Tab, then ArrowRight if the row roves). Returns the key that worked. */
+  const reachPauseByKeyboard = async () => {
+    for (const key of ['Tab', 'ArrowRight', 'Shift+Tab']) {
+      await page.locator('[data-testid=factory-fit]').focus()
+      for (let i = 0; i < 8; i++) {
+        if ((await focusedTestId()) === 'factory-pause-motion') return key
+        await page.keyboard.press(key)
+        await sleep(80)
+      }
+      if ((await focusedTestId()) === 'factory-pause-motion') return key
+    }
+    return null
+  }
+  const pressed = () => pauseBtn.getAttribute('aria-pressed')
+  /** Section 5.5 invariants for any state written under reduced motion or Pause motion. `base` is the state read at the gate. */
+  const quietViolations = (s, base) => {
+    const bad = []
+    if (s.cues.length) bad.push(`cues active ${JSON.stringify(s.cues)}`)
+    if (s.cuesStarted !== base.cuesStarted) bad.push(`cuesStarted ${s.cuesStarted} != ${base.cuesStarted}`)
+    if (s.recentCues.length !== base.recentCues.length) bad.push(`recentCues grew to ${s.recentCues.length}`)
+    for (const w of s.workers) {
+      if (w.ambient !== 'none') bad.push(`${w.id} ambient ${w.ambient}`)
+      if (w.barrier !== (w.lamp === 'failed')) bad.push(`${w.id} barrier ${w.barrier} with lamp ${w.lamp}`)
+      if (w.barrier && w.pose !== 'down') bad.push(`${w.id} barrier but pose ${w.pose}`)
+      if (w.shutter && w.pose !== 'docked') bad.push(`${w.id} shutter but pose ${w.pose}`)
+      if (w.crate === 'dock' && w.fenced) bad.push(`${w.id} crate on the dock but still fenced`)
+      if (w.lamp === 'needs-you' && w.pose !== 'signal') bad.push(`${w.id} needs-you but pose ${w.pose}`)
+    }
+    return bad
+  }
+
+  // -- Pre-mount events are baseline: the whole script runs, THEN the scene mounts again (graph, then Factory Floor). --
+  writeTimed(cueEvents(), 300)
+  await startLiveRun('Factory floor cues before mount')
+  const preDone = await watch(cueDone, 90_000)
+  chk4(!!preDone, 'pre-mount run: the events finished (cq-b shutter and dock crate, cq-c barrier, root idle)', await state().then((s) => s.workers.map((w) => `${w.id}:${w.lamp}`)).catch(() => null))
+  await sleep(2500)
+  await checkNoReplay('remount after events (presentation switch)', async () => {
+    await remount()
+    await scene('live').waitFor({ timeout: 20_000 })
+    return untilState((s) => s.mode === 'live' && wOf(s, 'cq-b'), 20_000)
+  })
+  const baseline = await state().catch(() => null)
+  if (baseline) {
+    // Everything already true at mount is shown in its end state (section 1.4), without a cue.
+    chk4(!!wOf(baseline, 'cq-b')?.shutter && wOf(baseline, 'cq-b')?.crate === 'dock' && wOf(baseline, 'cq-b')?.pose === 'docked', 'mount after events: cq-b is docked with its crate on the dock', wOf(baseline, 'cq-b'))
+    chk4(!!wOf(baseline, 'cq-c')?.barrier && wOf(baseline, 'cq-c')?.lamp === 'failed', 'mount after events: cq-c shows its barrier and Failed lamp', wOf(baseline, 'cq-c'))
+    chk4(baseline.cuePeaks.carriers === 0 && baseline.cuePeaks.parts === 0 && baseline.cuePeaks.crates === 0 && baseline.cuePeaks.ambient === 0, 'mount after events: no cue peak was ever reached', baseline.cuePeaks)
+  }
+  await idleFrames('idle run after remount')
+
+  // -- Full motion: events after mount cue; the floor log lists what moved. --
+  const basePre = await startGated('full motion', cueEvents(), 500)
+  chk4(!!basePre && basePre.motion === 'full', 'full motion run: the scene starts in motion full', basePre?.motion)
+  chk4(!!basePre && Array.isArray(basePre.recentCues) && basePre.cuePeaks && typeof basePre.logEntries === 'number' && 'messageCursor' in basePre, 'the test state carries recentCues, cuePeaks, logEntries and messageCursor', basePre && Object.keys(basePre))
+  // Pause motion exists in live mode only (Team never mounts the scene, checked above), is in the toolbar and a toggle.
+  const bar = page.locator('[data-testid=factory-controls]').first()
+  chk4((await pauseBtn.count()) === 1 && (await bar.locator('[data-testid=factory-pause-motion]').count()) === 1, 'Pause motion is one button inside the factory toolbar in live mode', await pauseBtn.count())
+  chk4((await pauseBtn.getAttribute('aria-pressed')) === 'false', 'Pause motion starts not pressed (aria-pressed false)', await pauseBtn.getAttribute('aria-pressed'))
+  const logBefore = page.locator('[data-testid=factory-log]').first()
+  chk4((await logBefore.count()) === 1 && (await logBefore.evaluate((d) => d.tagName === 'DETAILS' && !d.open)), 'the floor log is a closed details by default', await logBefore.count())
+  const col = collector()
+  col.each(basePre ?? { recentCues: [], cues: [], workers: [] })
+  await allowGate()
+  const fullDone = await watch(cueDone, 90_000, col.each)
+  chk4(!!fullDone, 'full motion run: the events finished', await state().then((s) => s.workers.map((w) => `${w.id}:${w.lamp}`)).catch(() => null))
+  const fin = fullDone ?? (await state())
+  chk4(fin.cuesStarted > basePre.cuesStarted, 'events after mount start cues (cuesStarted grows)', { before: basePre.cuesStarted, after: fin.cuesStarted })
+  chk4(col.has('capsule', 'cq-a', 'cq-b'), 'a message to an agent is a capsule from the sender to the recipient', [...col.cues.values()].filter((q) => q.kind === 'capsule'))
+  chk4(col.has('capsule', 'cq-b', null), 'a message to the user is a capsule with to null', [...col.cues.values()].filter((q) => q.kind === 'capsule'))
+  chk4(col.has('tote', 'cq-a', 'cq-b'), 'a spawn with a parent flies a tote from the parent to the child', [...col.cues.values()].filter((q) => q.kind === 'tote'))
+  chk4(col.has('arrive', 'cq-b'), 'the spawned station gets an arrive cue', [...col.cues.values()].filter((q) => q.kind === 'arrive'))
+  chk4(col.has('part', 'cq-b'), 'a tool call on a station pops a part there', [...col.cues.values()].filter((q) => q.kind === 'part'))
+  chk4(col.has('crate', 'cq-b', 'dock'), 'a branch merged into main sends a crate to the dock', [...col.cues.values()].filter((q) => q.kind === 'crate'))
+  chk4([...col.kinds].some((k) => k.startsWith('cq-b:')), 'a running station loops (cq-b has an ambient loop while it works)', [...col.kinds])
+  chk4(!col.leaked, 'message text never appears in the factory-state JSON (sampled on every poll)')
+  chk4(fin.cuePeaks.carriers >= 1 && fin.cuePeaks.carriers <= 6 && fin.cuePeaks.perSender <= 2, 'the cue peaks count the carriers within the caps', fin.cuePeaks)
+  // The floor log: opens, lists what moved, newest first, matches logEntries.
+  const logEl = page.locator('[data-testid=factory-log]').first()
+  const logN = await untilState((s) => s.logEntries >= 8, 8000)
+  chk4(!!logN, 'the floor log holds at least 8 entries for the scripted events', await state().then((s) => s.logEntries).catch(() => null))
+  await logEl.locator('summary').click()
+  await sleep(300)
+  const stLog = await state()
+  const summaryText = ((await logEl.locator('summary').textContent()) ?? '').replace(/\s+/g, ' ').trim()
+  chk4(summaryText === `Floor log (${stLog.logEntries})`, 'the summary says "Floor log (n)" with n = logEntries', { summaryText, logEntries: stLog.logEntries })
+  const entries = await page.locator('[data-testid=factory-log-entry]').evaluateAll((els) => els.map((e) => ({ text: (e.textContent ?? '').replace(/\s+/g, ' ').trim(), at: e.querySelector('time')?.getAttribute('datetime') ?? null })))
+  chk4(entries.length === stLog.logEntries && entries.length <= 50, 'one factory-log-entry per entry (at most 50)', { rendered: entries.length, logEntries: stLog.logEntries })
+  const idx = (re) => entries.findIndex((e) => re.test(e.text))
+  const wordB = wOf(stLog, 'cq-b')?.statusWord
+  const wordC = wOf(stLog, 'cq-c')?.statusWord
+  const expectLines = [
+    ['assigned', /cq-a assigned work to cq-b/],
+    ['message to an agent with the quoted text', new RegExp(`cq-a to cq-b: .{0,2}${MSG_AGENT}`)],
+    ['message to the user with the quoted text', new RegExp(`cq-b to \\S+: .{0,2}${MSG_USER}`)],
+    ['state word of the failed worker', new RegExp(`cq-c: ${wordC}`)],
+    ['state word of the finished worker', new RegExp(`cq-b: ${wordB}`)],
+    ['merged into the main checkout', /cq-b[’']s branch merged into the main checkout/],
+    ['merge conflict', /cq-c[’']s branch has a merge conflict/]
+  ]
+  for (const [what, re] of expectLines) chk4(idx(re) >= 0, `the floor log has the ${what} line`, entries.slice(0, 12).map((e) => e.text))
+  chk4(wordC === 'Failed', 'cq-c reads Failed in the state', wordC)
+  const iAssigned = idx(/cq-a assigned work to cq-b/)
+  const iMerged = idx(/branch merged into the main checkout/)
+  const iConflict = idx(/branch has a merge conflict/)
+  chk4(iAssigned >= 0 && iMerged >= 0 && iConflict >= 0 && iConflict < iMerged && iMerged < iAssigned, 'the floor log is newest first (conflict above merged above assigned)', { iAssigned, iMerged, iConflict })
+  const times = entries.map((e) => Date.parse(e.at ?? '')).filter((t) => !Number.isNaN(t))
+  chk4(times.length === 0 || times.every((t, i) => i === 0 || t <= times[i - 1]), 'entry times never increase down the list', times.slice(0, 6))
+  chk4((await page.locator('[data-testid=factory-log] [aria-live], [data-testid=factory-log][aria-live]').count()) === 0, 'the floor log is not a live region')
+  await shot('cues-log-open')
+  // Idle after the run, then remount: the events of this run are baseline for the next mount.
+  await idleFrames('full motion run at rest')
+  await checkNoReplay('remount via the conversation', viaConversation, 'full')
+  await checkNoReplay('remount via the presentation switch', async () => {
+    await remount()
+    await scene('live').waitFor({ timeout: 20_000 })
+    return untilState((s) => s.mode === 'live', 20_000)
+  }, 'full')
+
+  // -- Burst: the caps of section 5.2 hold. --
+  const leads = ['bl1', 'bl2', 'bl3', 'bl4']
+  const workers = Array.from({ length: 14 }, (_, i) => `bw${String(i + 1).padStart(2, '0')}`)
+  const burst = [
+    ...leads.map((id) => ({ type: 'spawn', id, name: id, role: slug, description: `Burst ${id}` })),
+    ...workers.map((id, i) => ({ type: 'spawn', id, name: id, role: slug, parent: leads[i % 4], description: `Burst ${id}` })),
+    // Four senders, six messages each to different recipients, interleaved, plus workers messaging the user.
+    ...Array.from({ length: 6 }, (_, k) => leads.map((l, li) => ({ type: 'message', from: l, to: workers[(li * 3 + k) % 14], text: `Burst ${l} note ${k}` }))).flat(),
+    ...workers.slice(0, 3).map((w) => ({ type: 'message', from: w, to: 'user', text: `Burst ${w} done` })),
+    // Many stations, two tool calls each.
+    ...[0, 1].flatMap((r) => workers.map((w) => ({ type: 'tool', agent: w, name: 'Read', input: { file_path: `${w}-${r}.ts` }, result: 'x' }))),
+    // Stations that keep running: 7 at their machine, 7 at the console, over the cap of 12 (4 leads are delegating too).
+    ...workers.map((w, i) => ({ type: 'agentState', agent: w, state: i < 7 ? 'tool' : 'thinking', activity: 'Burst work' })),
+    // Several merges at once: all merging, then all merged (6 crates against a cap of 4), two conflicts.
+    ...workers.slice(0, 6).map((w) => ({ type: 'worktree', agent: w, status: 'merging', mergeTarget: 'main' })),
+    ...workers.slice(0, 6).map((w) => ({ type: 'worktree', agent: w, status: 'merged', mergeTarget: 'main' })),
+    ...workers.slice(6, 8).map((w) => ({ type: 'worktree', agent: w, status: 'conflict', mergeTarget: 'main' })),
+    { type: 'wait', ms: 2500 },
+    ...[...workers, ...leads].map((id) => ({ type: 'agentState', agent: id, state: 'done' })),
+    { type: 'text', text: 'Burst done.' }
+  ]
+  const burstBase = await startGated('burst', burst, 25)
+  chk4(!!burstBase, 'burst run: the scene is mounted at the gate', null)
+  const bcol = collector()
+  await allowGate()
+  const burstDone = await watch((s) => s.mode === 'live' && workers.every((w) => wOf(s, w)?.shutter) && s.workers[0]?.lamp === 'off', 120_000, bcol.each)
+  chk4(!!burstDone, 'burst run: every station finished', await state().then((s) => ({ n: s.workers.length, shutters: s.workers.filter((w) => w.shutter).length })).catch(() => null))
+  const bst = burstDone ?? (await state())
+  const pk = bst.cuePeaks
+  log('burst peaks:', JSON.stringify(pk), 'cuesStarted', bst.cuesStarted, 'log', bst.logEntries, 'max looping seen', bcol.maxLooping)
+  chk4(pk.carriers <= 6 && pk.perSender <= 2, 'burst: at most 6 carriers in flight and 2 per sender', pk)
+  chk4(pk.parts <= 12, 'burst: at most 12 parts in flight', pk)
+  chk4(pk.crates <= 4, 'burst: at most 4 crates in flight', pk)
+  chk4(pk.arrivalsPerSecond <= 12, 'burst: at most 12 arrivals animate per second', pk)
+  chk4(pk.ambient <= 12 && bcol.maxLooping <= 12, 'burst: at most 12 stations loop at once', { pk: pk.ambient, polled: bcol.maxLooping })
+  chk4(pk.carriers >= 1 && pk.parts >= 1 && pk.crates >= 1 && pk.arrivalsPerSecond >= 1, 'burst: the counters saw carriers, parts, crates and arrivals', pk)
+  chk4(pk.ambient > 0 && bcol.maxLooping > 0, 'burst: stations that run do loop (ambient peak above 0)', { pk: pk.ambient, polled: bcol.maxLooping })
+  // 18 assignments, 27 messages, 18 finished words and 8 merge lines are far more than 50: the cap is what holds.
+  chk4(bst.logEntries === 50, 'burst: the floor log is capped at 50 (the burst has more than 50 events)', bst.logEntries)
+  const burstOpen = await page.locator('[data-testid=factory-log]').first().evaluate((d) => d.open)
+  if (!burstOpen) await page.locator('[data-testid=factory-log] summary').first().click()
+  await sleep(300)
+  const burstRendered = await page.locator('[data-testid=factory-log-entry]').count()
+  const stBurst = await state()
+  chk4(burstRendered === stBurst.logEntries && burstRendered <= 50, 'burst: the open log renders exactly logEntries entries (at most 50)', { burstRendered, logEntries: stBurst.logEntries })
+  await idleFrames('burst run at rest')
+
+  // -- Reduced motion (html data-reduce-motion="on") and Pause motion: end states at once, no cue, no loop. --
+  const quietRun = async (mode) => {
+    const want = mode === 'reduced' ? 'reduced' : 'paused'
+    if (mode === 'reduced') await setReduceMotion(page, 'on')
+    let base = await startGated(`${mode}`, cueEvents(), 400)
+    chk4(!!base, `${mode}: the scene is mounted at the gate`, null)
+    if (!base) return
+    if (mode === 'paused') {
+      const how = await reachPauseByKeyboard()
+      chk4(!!how, 'Pause motion is reachable by keyboard in the toolbar', how)
+      if (!how) await pauseBtn.focus()
+      await page.keyboard.press('Space')
+      await page.waitForFunction(() => document.querySelector('[data-testid=factory-pause-motion]')?.getAttribute('aria-pressed') === 'true', null, { timeout: 5000 }).catch(() => {})
+      chk4((await pressed()) === 'true', 'Pause motion pressed: aria-pressed true', await pressed())
+      // Keyboard toggle both ways, then pressed again for the run.
+      await page.keyboard.press('Space')
+      chk4((await pressed()) === 'false', 'Space toggles Pause motion off again', await pressed())
+      await page.keyboard.press('Space')
+      chk4((await pressed()) === 'true', 'Space toggles Pause motion on again', await pressed())
+    }
+    base = await untilState((s) => s.motion === want, 8000)
+    chk4(!!base, `${mode}: the test state motion is ${want}`, await state().then((s) => s.motion).catch(() => null))
+    if (!base) return
+    chk4((await scene('live').getAttribute('data-motion')) === want, `${mode}: factory-scene data-motion is ${want}`, await scene('live').getAttribute('data-motion'))
+    chk4(base.cues.length === 0 && base.workers.every((w) => w.ambient === 'none'), `${mode}: no cue and no ambient loop at the gate`, base.cues)
+    if (mode === 'reduced') chk4(base.cuesStarted === 0 && base.recentCues.length === 0, 'reduced: no cue was ever started', { cuesStarted: base.cuesStarted, recent: base.recentCues.length })
+    const bad = []
+    const qcol = collector()
+    await allowGate()
+    const done = await watch(cueDone, 90_000, (s) => {
+      qcol.each(s)
+      bad.push(...quietViolations(s, base).map((v) => v))
+    })
+    chk4(!!done, `${mode}: the events finished and the end states are on the floor`, await state().then((s) => s.workers.map((w) => `${w.id}:${w.lamp}`)).catch(() => null))
+    chk4(bad.length === 0, `${mode}: every state written has no cue, no ambient and consistent end states (lamp, pose, shutter, barrier, crate)`, [...new Set(bad)].slice(0, 6))
+    const fin = done ?? (await state())
+    chk4(fin.cuesStarted === base.cuesStarted && fin.recentCues.length === base.recentCues.length, `${mode}: cuesStarted did not change over the events`, { before: base.cuesStarted, after: fin.cuesStarted })
+    chk4(fin.cuePeaks.carriers === base.cuePeaks.carriers && fin.cuePeaks.parts === base.cuePeaks.parts && fin.cuePeaks.crates === base.cuePeaks.crates && fin.cuePeaks.ambient === 0, `${mode}: the cue peaks did not move`, { base: base.cuePeaks, after: fin.cuePeaks })
+    chk4(fin.motion === want, `${mode}: motion stays ${want} through the events`, fin.motion)
+    chk4(!qcol.leaked, `${mode}: message text never appears in the factory-state JSON`)
+    // The end states are final facts, not tweens.
+    chk4(wOf(fin, 'cq-b')?.pose === 'docked' && wOf(fin, 'cq-b')?.crate === 'dock' && wOf(fin, 'cq-c')?.pose === 'down' && wOf(fin, 'cq-c')?.lamp === 'failed', `${mode}: cq-b is docked with its dock crate, cq-c is down and Failed`, [wOf(fin, 'cq-b'), wOf(fin, 'cq-c')])
+    // The log still lists what happened (it is text, not motion).
+    chk4(fin.logEntries >= 8, `${mode}: the floor log still lists the events`, fin.logEntries)
+    if (fin.renderer === 'webgl2') {
+      const idle = await untilState((s) => s.loop === 'idle', 6000)
+      chk4(!!idle, `${mode}: the render loop is idle shortly after the events`, await state().then((s) => s.loop).catch(() => null))
+      await sleep(800)
+      const f0 = (await state()).frames
+      await sleep(3000)
+      const s1 = await state()
+      chk4(f0 === s1.frames && s1.loop === 'idle', `${mode}: frames do not grow over 3 s with nothing changing`, { f0, f1: s1.frames, loop: s1.loop })
+    } else log(`skip ${mode} loop and frames checks: no 3D render loop on the floor plan`)
+    if (mode === 'paused') {
+      // Pause motion is remembered across remounts for the session (a module-level value).
+      for (const [label, via] of [['the conversation', viaConversation], ['the presentation switch', async () => { await remount(); await scene('live').waitFor({ timeout: 20_000 }); return untilState((s) => s.mode === 'live', 20_000) }]]) {
+        await checkNoReplay(`paused, remount via ${label}`, via, 'paused')
+        await pauseBtn.waitFor({ timeout: 10_000 })
+        chk4((await pressed()) === 'true', `paused, remount via ${label}: Pause motion is still pressed`, await pressed())
+      }
+    }
+  }
+  await quietRun('reduced')
+  chk4((await html('data-reduce-motion')) === 'on', 'reduced: the html attribute data-reduce-motion is on', await html('data-reduce-motion'))
+  await setReduceMotion(page, 'off')
+  const afterReduced = await untilState((s) => s.motion === 'full', 8000)
+  chk4(!!afterReduced, 'turning reduced motion off returns the scene to full motion', await state().then((s) => s.motion).catch(() => null))
+  await quietRun('paused')
+  // Release Pause motion so nothing later runs paused (the value lives for the app session).
+  if ((await pauseBtn.count()) && (await pressed()) === 'true') {
+    await pauseBtn.click()
+    chk4(!!(await untilState((s) => s.motion === 'full', 8000)), 'a second press of Pause motion returns the scene to full motion', await state().then((s) => s.motion).catch(() => null))
+  }
+  await shot('cues-done')
+  writeScript(null)
+
   // A paused run offers Resume now and Cancel auto-resume, not End session: the ended hall is checked on the tour run above.
   // A plain run keeps a scene mounted for the forced-renderer checks below.
   writeScript([{ type: 'text', text: 'Only the root is on the floor.' }])

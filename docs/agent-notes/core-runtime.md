@@ -955,3 +955,10 @@ script (set `ORGAI_MOCK_SCRIPT` to `{"delayMs": 50}` only; a custom `work` array
 - Messages: `ff-l1` -> `ff-s11`, `ff-w111` -> `user` (to null), `ff-w112` -> `nobody-here` (to null). Plan: p1 owner
   `ff-l1` in_progress, p2 owner `ff-w111` blocked, p3 pending (plan status stays active; `[mock:exec-blocked]` gives a blocked plan).
 - New generic steps, usable in any custom script: tool `holdMs` (stay in `tool`), `agentState`, `worktree`, `remove`.
+- Slice 4 e2e (`e2e/factory-floor.mjs`, section "Slice 4"): custom `work` scripts with a gate. The first step is a root
+  `tool` with `ask: true` (a Bash card), so the run stands still, the scene mounts and the test state is read at the gate,
+  and the e2e answers the card (`.decision-card .decision-footer .btn.primary`) to release the events: no sleeps decide
+  what is "after mount". Events: `spawn` with `parent`, `message` (`to: 'user'` gives `to` null), `tool` with `holdMs`
+  (keeps a station at its machine so the ambient loop is observable), `worktree` merging -> merged (`mergeTarget: 'main'`)
+  and conflict, `agentState` done / error / tool / thinking (`agentState` does not block, so many stations can run at
+  once). A burst script uses `delayMs: 25`. Written against the slice 4 contract; not run before the UI Lead integrated it.
