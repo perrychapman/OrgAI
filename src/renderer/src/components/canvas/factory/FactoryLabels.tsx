@@ -14,6 +14,11 @@ export interface LabelFocus {
   selectedId: string | null
   focusedId: string | null
   hoveredId: string | null
+  /**
+   * Stations the cue layer keeps off the floor now (a tote flying to a new worker, its arrive waiting; motion 'full'
+   * only): their plates are not placed, so none floats over an empty slot (lib/factory/cueVisibility.ts).
+   */
+  hidden?: ReadonlySet<string>
 }
 
 export interface FactoryLabelsHandle {
@@ -108,6 +113,7 @@ export function FactoryLabels({ mode, plates, signs, dock, board, handleRef }: F
       }
       ps.forEach((p, i) => {
         const id = p.entry.id
+        if (focus.hidden?.has(id)) return
         const reason: LabelReason =
           id === focus.selectedId ? 'selected' : id === focus.focusedId ? 'focused' : id === focus.hoveredId ? 'hovered' : baseReason(p)
         add('nameplate', id, p.anchor, i, 'above', reason)

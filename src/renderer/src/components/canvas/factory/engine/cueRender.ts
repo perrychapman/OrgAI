@@ -26,6 +26,7 @@ import {
   SCREEN_GLOW_MIN
 } from '../../../../lib/factory/motion'
 import { arcApex } from '../../../../lib/factory/routes'
+import { hiddenStations } from '../../../../lib/factory/cueVisibility'
 import { GANTRY_MAX_Z, GANTRY_MIN_Z, GANTRY_TOP } from '../../../../lib/factory/layout'
 import { CAPSULE_COALESCED_SCALE, type Anchor, type LodBand, type ObjectKit, type PartSpec } from '../builders/types'
 import type { InstanceSpec } from './instancing'
@@ -251,16 +252,12 @@ export class CueRenderer {
     }
 
     // ---- what is hidden or growing this frame ----
-    const hidden = new Set<string>()
+    // The same answer hides the station's nameplate (lib/factory/cueVisibility.ts, FactoryLabels).
+    const hidden = hiddenStations(cues)
     const arriving = new Map<string, number>()
     for (const c of cues) {
-      if (c.kind === 'tote' && typeof c.to === 'string' && c.to !== 'dock') hidden.add(c.to)
-      else if (c.kind === 'arrive' && c.from) {
-        if (c.progress <= 0) hidden.add(c.from)
-        else arriving.set(c.from, ARRIVE_SCALE_FROM + (1 - ARRIVE_SCALE_FROM) * cueEase('arrive', c.progress))
-      }
+      if (c.kind === 'arrive' && c.from && c.progress > 0) arriving.set(c.from, ARRIVE_SCALE_FROM + (1 - ARRIVE_SCALE_FROM) * cueEase('arrive', c.progress))
     }
-    for (const id of arriving.keys()) hidden.delete(id)
 
     for (const c of cues) {
       const fade = Math.max(0, Math.min(1, c.opacity))
