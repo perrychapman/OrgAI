@@ -121,6 +121,80 @@
   overflow-wrap: anywhere;
 }
 
+/* Floor log: bottom right of the stage, grows upward when open. Closed it is one summary row (about 36 px). */
+.factory-log {
+  position: absolute;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  z-index: var(--z-canvas-overlay);
+  width: min(360px, calc(100cqw - 2 * var(--space-2)));
+  box-sizing: border-box;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  box-shadow: var(--elev-1);
+}
+.factory-log > summary {
+  min-height: var(--control-md);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  cursor: pointer;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.factory-log > summary:focus-visible,
+.factory-log-scroll:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.factory-log-scroll {
+  max-height: 160px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-default);
+}
+.factory-log-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1) 0;
+}
+.factory-log-entry {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.factory-log-time {
+  flex: none;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.factory-log-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.factory-log-empty {
+  margin: 0;
+  padding: var(--space-2);
+  border-top: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+
+/* Below 560 px the controls are icon-only (about 120 px); keep the log clear of them. */
+@container factory-scene (max-width: 559.98px) {
+  .factory-log {
+    width: min(360px, calc(100cqw - 152px));
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .factory-controls *,
   .factory-find-panel * {
