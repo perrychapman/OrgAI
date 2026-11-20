@@ -8,8 +8,10 @@ import { part } from './common'
 import type { ObjectKit } from './types'
 
 const SEG = 10
+// Slice 6: at the 55 degree pitch the lower lamps show only their side band (6 px at ppm 52 against the top lamp's 21 px with
+// its cap), so the lamp pitch is 0.32 m (was 0.26) with the same 4.5 cm gap: the middle and bottom bands read as bands.
 const LAMP_R = 0.18
-const LAMP_H = 0.26
+const LAMP_H = 0.32
 const POLE_H = 0.7
 const BASE_H = 0.06
 const LAMP_Y0 = POLE_H

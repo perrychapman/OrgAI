@@ -29,6 +29,26 @@ export function readForcedRenderer(getItem: ((key: string) => string | null) | n
 /** The part of a WebGL2 context the probe touches. */
 export interface ProbeContext {
   getExtension(name: string): unknown
+  getParameter?(pname: number): unknown
+}
+
+/** UNMASKED_RENDERER_WEBGL of WEBGL_debug_renderer_info. */
+const UNMASKED_RENDERER = 0x9246
+/**
+ * Software rasterisers that still pass failIfMajorPerformanceCaveat (measured in slice 6: Chromium's SwiftShader under
+ * --use-angle=swiftshader gives a strict context, so the caveat alone started it at high quality).
+ */
+export const SOFTWARE_RENDERER = /swiftshader|llvmpipe|softpipe|basic render driver|software/i
+
+/** The unmasked renderer string when the context exposes it, else ''. */
+function rendererString(ctx: ProbeContext): string {
+  try {
+    if (!ctx.getParameter || !ctx.getExtension('WEBGL_debug_renderer_info')) return ''
+    const r = ctx.getParameter(UNMASKED_RENDERER)
+    return typeof r === 'string' ? r : ''
+  } catch {
+    return ''
+  }
 }
 /** The part of an HTMLCanvasElement the probe touches. */
 export interface ProbeCanvas {
@@ -72,8 +92,9 @@ function release(ctx: ProbeContext): void {
 export function probeWebGL2(createCanvas: () => ProbeCanvas): WebGL2Probe {
   const hw = tryContext(createCanvas, true)
   if (hw) {
+    const software = SOFTWARE_RENDERER.test(rendererString(hw))
     release(hw)
-    return { ok: true, software: false, quality: 'high' }
+    return software ? { ok: true, software: true, quality: 'minimal' } : { ok: true, software: false, quality: 'high' }
   }
   const sw = tryContext(createCanvas, false)
   if (sw) {

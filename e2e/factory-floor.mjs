@@ -6,7 +6,11 @@
 // canvas, and that Pocket Office is still selectable. Slice 2 and 3 add layout, stations and live state; slice 4 adds the
 // cue checks (section "Slice 4: cues and motion": no replay at mount, capsules, totes, parts and crates for events after
 // mount, the caps under a burst, reduced motion and Pause motion, the floor log, idle frames). Gated scripts: see
-// docs/agent-notes/core-runtime.md "Factory Floor mock".
+// docs/agent-notes/core-runtime.md "Factory Floor mock". Slice 6 (hardening) adds: the 40-agent stress with the whole cue burst
+// (draw calls, shadow calls, triangles, the label and ambient caps at fit and near zoom), the 20-toggle mount leak check, the
+// Large team fallback (121 scripted spawns), the settings sample (static image, no second engine), the CSP count after the 3D
+// and the floor-plan sections, and the E2E_FACTORY_PERF=1 mode (asserts the section 9.1 timing targets; run it with
+// E2E_FACTORY_SWGL=0 on a real GPU). The "PERF ..." lines at the end print the numbers in every mode.
 //
 // Software WebGL: this launch (and only this one) adds Chromium's SwiftShader switches so a runner without a GPU still
 // takes the 3D path. Measured on Electron here: without them the GPU is used; with them the context reports
@@ -29,6 +33,12 @@ const SWGL = process.env.E2E_FACTORY_SWGL !== '0'
 // every slice 2 case also runs on the path a runner without WebGL2 (GitHub's macOS) takes. Default: the machine's own path.
 const PLAN = process.env.E2E_FACTORY_PLAN === '1'
 const KEY = 'orgai.factory.renderer'
+// E2E_FACTORY_PERF=1 (local, with E2E_FACTORY_SWGL=0 on a real GPU) asserts the section 9.1 timing targets. Without it the
+// timing numbers are only recorded and printed ("PERF ..." lines at the end); the structural ones are always asserted.
+const PERF = process.env.E2E_FACTORY_PERF === '1'
+/** Numbers for the PERF block (printed at the end of every run). */
+const rec = {}
+const SOFTWARE_GPU = /swiftshader|llvmpipe|software|basic render/i
 
 fs.mkdirSync(SHOTS_DIR, { recursive: true })
 const app = await electron.launch({
@@ -434,6 +444,60 @@ async function checkWorker(label, st, id, want) {
 }
 const WORKTREE_PHRASE = { active: 'Working in its own branch', merging: 'Working in its own branch', merged: 'Branch merged', conflict: 'Merge conflict', review: 'Waiting for your review' }
 
+// ---------- Slice 6 helpers: budgets, quality, near zoom (sections 9.1, 9.2, 12) ----------
+const chk6 = (ok, name, got) => check(ok, `[slice6] ${name}`, `got: ${typeof got === 'string' ? got : JSON.stringify(got)}`)
+const QUALITY_RANK = { minimal: 0, low: 1, high: 2 }
+const BUDGET = { drawCalls: 120, shadowCalls: 40, triangles: 250_000, plates: 24, ambient: 12, memoryBytes: 24 * 1024 * 1024, pixelRatio: 1.5 }
+const shownPlates = () => page.locator('[data-testid=factory-nameplate][data-shown="true"]').count()
+/** A read of the test state that carries `perf` (3D path only, after the first frame). */
+const untilPerf = (timeout = 15_000) => untilState((s) => s.renderer === 'webgl2' && !!s.perf && s.perf.drawCalls > 0, timeout)
+/** Section 9.1 structural budgets on one state read of the 3D path: draw calls, shadow calls, triangles, labels, ambient loops, memory, pixel ratio, quality. */
+async function checkBudgets(label, st, { plates = true } = {}) {
+  if (!st || st.renderer !== 'webgl2') return log(`skip budgets for ${label}: the floor plan has no render pass`)
+  const p = st.perf
+  chk6(!!p, `${label}: the test state carries perf`, st && Object.keys(st))
+  if (!p) return
+  chk6(p.drawCalls > 0 && p.drawCalls <= BUDGET.drawCalls, `${label}: at most ${BUDGET.drawCalls} draw calls`, p.drawCalls)
+  chk6(p.shadowCalls <= BUDGET.shadowCalls, `${label}: at most ${BUDGET.shadowCalls} shadow-pass calls`, p.shadowCalls)
+  chk6(p.triangles > 0 && p.triangles <= BUDGET.triangles, `${label}: at most ${BUDGET.triangles} triangles`, p.triangles)
+  const looping = st.workers.filter((w) => w.ambient && w.ambient !== 'none').length
+  chk6(looping <= BUDGET.ambient, `${label}: at most ${BUDGET.ambient} stations loop`, looping)
+  if (plates) {
+    const n = await shownPlates()
+    chk6(n <= BUDGET.plates, `${label}: at most ${BUDGET.plates} nameplates are shown`, n)
+    rec[`${label} plates`] = n
+  }
+  rec[`${label} drawCalls/shadowCalls/triangles`] = `${p.drawCalls}/${p.shadowCalls}/${p.triangles}`
+}
+/** Memory, pixel ratio and quality rules on a state read of the 3D path (the section 9.1 rows that do not depend on timing). */
+function checkQualityState(label, st) {
+  if (!st || st.renderer !== 'webgl2' || !st.perf) return
+  const p = st.perf
+  chk6(typeof p.memoryBytes === 'number' && p.memoryBytes > 0, `${label}: perf.memoryBytes is reported (own textures plus shadow map, above 0)`, p.memoryBytes)
+  chk6(p.memoryBytes <= BUDGET.memoryBytes, `${label}: texture and shadow memory is at most 24 MB`, p.memoryBytes)
+  chk6(typeof p.pixelRatio === 'number' && p.pixelRatio > 0 && p.pixelRatio <= BUDGET.pixelRatio, `${label}: pixel ratio is at most 1.5`, p.pixelRatio)
+  if (st.quality !== 'high') chk6(p.pixelRatio === 1, `${label}: pixel ratio is 1 at ${st.quality} quality`, { quality: st.quality, pixelRatio: p.pixelRatio })
+  chk6(st.qualityStart in QUALITY_RANK && QUALITY_RANK[st.quality] <= QUALITY_RANK[st.qualityStart], `${label}: quality never rises above where the mount started (start ${st.qualityStart}, now ${st.quality})`, { start: st.qualityStart, now: st.quality })
+}
+/** Zoom in with the toolbar until the near band (ppm 36 or more; the limit is 60), each press waiting for the camera. */
+async function zoomNear() {
+  let v = (await state()).view
+  for (let i = 0; i < 10 && v.ppm < 36; i++) {
+    const before = v.ppm
+    await page.locator('[data-testid=factory-zoom-in]').click()
+    await untilState((s) => s.view.ppm > before + 0.01, 3000)
+    // The tween is over once two reads 350 ms apart agree.
+    let prev = -1
+    for (let k = 0; k < 12; k++) {
+      v = (await state()).view
+      if (Math.abs(v.ppm - prev) < 0.005) break
+      prev = v.ppm
+      await sleep(350)
+    }
+  }
+  return v
+}
+
 let projectOpen = false
 try {
   await resizeTo(1024, 640)
@@ -473,6 +537,24 @@ try {
   check(/^Factory floor, \d+ workers?$/.test(liveName ?? ''), 'Live: the mirror says workers', String(liveName))
   await shot('live')
   log('live renderer:', liveRenderer, 'gpu:', (await state().catch(() => ({}))).perf?.gpu)
+  // Slice 6: the first (cold) 3D mount of this launch. Its first-frame time is the cold figure of section 9.1.
+  rec.renderer = liveRenderer
+  if (liveRenderer === 'webgl2') {
+    const first = await untilState((s) => s.renderer === 'webgl2' && !!s.perf && s.perf.drawCalls > 0, 15_000)
+    if (first) {
+      rec.firstFrameColdMs = first.perf.firstFrameMs
+      rec.gpu = first.perf.gpu ?? '(not exposed)'
+      rec.qualityStartFirstMount = first.qualityStart
+      rec.firstMountGeometries = first.perf.geometries
+      rec.firstMountTextures = first.perf.textures
+      // Section 9.2: software WebGL starts at minimal (SwiftShader passes failIfMajorPerformanceCaveat, so the probe
+      // reads the renderer string); a hardware GPU starts at high.
+      if (first.perf.gpu) {
+        const sw = SOFTWARE_GPU.test(first.perf.gpu)
+        check(first.qualityStart === (sw ? 'minimal' : 'high'), `[slice6] the first mount starts at ${sw ? 'minimal (software WebGL)' : 'high (hardware GPU)'}`, { gpu: first.perf.gpu, start: first.qualityStart })
+      }
+    }
+  }
 
   // ---------- Both themes and both sizes (Live) ----------
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
@@ -670,6 +752,10 @@ try {
     // leaves leads in `delegating`, which is running; there the frame growth is recorded, not asserted (section 9.1), and
     // the slice 4 section below asserts the idle case on a script that ends with every agent at rest.
     if (calm?.renderer === 'webgl2') {
+      // Slice 6: the steady 40-agent floor at fit is inside the budgets (the stress run below adds the burst and near zoom).
+      const tourPerf = await untilPerf(8000)
+      chk6(!!tourPerf && tourPerf.workers.length === 39, '40-agent tour: the floor holds 39 workers (40 spawned, ff-w333 removed) when the budgets are read', tourPerf?.workers.length)
+      await checkBudgets('40-agent tour at fit', tourPerf)
       await sleep(1500)
       const s0 = await state()
       const anyRunning = s0.workers.some((w) => w.lamp === 'running')
@@ -760,7 +846,7 @@ try {
     while (Date.now() < end) {
       const st = await state().catch(() => null)
       if (st) {
-        each(st)
+        await each(st)
         if (pred(st)) return st
       }
       await sleep(120)
@@ -827,7 +913,9 @@ try {
       await sleep(3000)
       const s1 = await state()
       chk4(typeof f0 === 'number' && f0 === s1.frames && s1.loop === 'idle', `${label}: frames stay constant over 3 s and the loop is idle`, { f0, f1: s1.frames, loop: s1.loop })
+      return s1.frames - f0
     } else log(`skip ${label} frames check: no 3D render loop on the floor plan`)
+    return null
   }
   /** Switch to the conversation and back through the run layout toggle (the scene unmounts and mounts again). */
   const viaConversation = async () => {
@@ -977,26 +1065,31 @@ try {
   }, 'full')
 
   // -- Burst: the caps of section 5.2 hold. --
-  const leads = ['bl1', 'bl2', 'bl3', 'bl4']
-  const workers = Array.from({ length: 14 }, (_, i) => `bw${String(i + 1).padStart(2, '0')}`)
-  const burst = [
+  /**
+   * The burst script for `leads` and `workers` (ids). `hold`: ms to wait after the last burst event; `finish`: mark every agent
+   * done at the end (false leaves the workers running so a later window can measure ambient-only frames).
+   */
+  const burstSteps = (leads, workers, { hold = 2500, finish = true } = {}) => [
     ...leads.map((id) => ({ type: 'spawn', id, name: id, role: slug, description: `Burst ${id}` })),
-    ...workers.map((id, i) => ({ type: 'spawn', id, name: id, role: slug, parent: leads[i % 4], description: `Burst ${id}` })),
+    ...workers.map((id, i) => ({ type: 'spawn', id, name: id, role: slug, parent: leads[i % leads.length], description: `Burst ${id}` })),
     // Four senders, six messages each to different recipients, interleaved, plus workers messaging the user.
-    ...Array.from({ length: 6 }, (_, k) => leads.map((l, li) => ({ type: 'message', from: l, to: workers[(li * 3 + k) % 14], text: `Burst ${l} note ${k}` }))).flat(),
+    ...Array.from({ length: 6 }, (_, k) => leads.map((l, li) => ({ type: 'message', from: l, to: workers[(li * 3 + k) % workers.length], text: `Burst ${l} note ${k}` }))).flat(),
     ...workers.slice(0, 3).map((w) => ({ type: 'message', from: w, to: 'user', text: `Burst ${w} done` })),
     // Many stations, two tool calls each.
     ...[0, 1].flatMap((r) => workers.map((w) => ({ type: 'tool', agent: w, name: 'Read', input: { file_path: `${w}-${r}.ts` }, result: 'x' }))),
-    // Stations that keep running: 7 at their machine, 7 at the console, over the cap of 12 (4 leads are delegating too).
+    // Stations that keep running: 7 at their machine, the rest at the console, over the cap of 12 (4 leads are delegating too).
     ...workers.map((w, i) => ({ type: 'agentState', agent: w, state: i < 7 ? 'tool' : 'thinking', activity: 'Burst work' })),
     // Several merges at once: all merging, then all merged (6 crates against a cap of 4), two conflicts.
     ...workers.slice(0, 6).map((w) => ({ type: 'worktree', agent: w, status: 'merging', mergeTarget: 'main' })),
     ...workers.slice(0, 6).map((w) => ({ type: 'worktree', agent: w, status: 'merged', mergeTarget: 'main' })),
     ...workers.slice(6, 8).map((w) => ({ type: 'worktree', agent: w, status: 'conflict', mergeTarget: 'main' })),
-    { type: 'wait', ms: 2500 },
-    ...[...workers, ...leads].map((id) => ({ type: 'agentState', agent: id, state: 'done' })),
+    ...(hold ? [{ type: 'wait', ms: hold }] : []),
+    ...(finish ? [...workers, ...leads].map((id) => ({ type: 'agentState', agent: id, state: 'done' })) : []),
     { type: 'text', text: 'Burst done.' }
   ]
+  const leads = ['bl1', 'bl2', 'bl3', 'bl4']
+  const workers = Array.from({ length: 14 }, (_, i) => `bw${String(i + 1).padStart(2, '0')}`)
+  const burst = burstSteps(leads, workers)
   const burstBase = await startGated('burst', burst, 25)
   chk4(!!burstBase, 'burst run: the scene is mounted at the gate', null)
   const bcol = collector()
@@ -1022,6 +1115,148 @@ try {
   const stBurst = await state()
   chk4(burstRendered === stBurst.logEntries && burstRendered <= 50, 'burst: the open log renders exactly logEntries entries (at most 50)', { burstRendered, logEntries: stBurst.logEntries })
   await idleFrames('burst run at rest')
+
+  // ---------- Slice 6: 40-agent stress (sections 9.1 and 12) ----------
+  // Root, 4 leads and 35 workers (exactly 40 agents) at 1600 x 1000 with the whole burst on top, so every cue cap is reached.
+  // The draw calls, shadow calls, triangles, label cap, ambient cap and frame timings are read while it runs (fit), again in
+  // an ambient-only window (frames over a few seconds), and at near zoom. The structural numbers are always asserted on the
+  // 3D path; the timing targets only with E2E_FACTORY_PERF=1 on a real GPU (otherwise recorded for the PERF block).
+  const perfCheck = (ok, name, got) => {
+    // A software renderer's timings say nothing about section 9.1: with the flag they are still recorded, not asserted.
+    const software = SOFTWARE_GPU.test(rec.gpu ?? '')
+    if (PERF && !software) chk6(ok, `[perf] ${name}`, got)
+    else log(`${ok ? 'within' : 'over'} target (recorded only${PERF ? ': software renderer' : ''}): ${name} ${typeof got === 'string' ? got : JSON.stringify(got)}`)
+  }
+  /** Frames per second from state reads: the time each distinct frame count was first seen, over `ms`. */
+  const frameRate = async (ms) => {
+    const seen = []
+    const end = Date.now() + ms
+    while (Date.now() < end) {
+      const s = await state().catch(() => null)
+      if (s && (seen.length === 0 || seen[seen.length - 1].frames !== s.frames)) seen.push({ frames: s.frames, at: Date.now() })
+      await sleep(80)
+    }
+    if (seen.length < 2) return { fps: 0, frames: 0, seconds: ms / 1000 }
+    const a = seen[0]
+    const b = seen[seen.length - 1]
+    return { fps: ((b.frames - a.frames) * 1000) / (b.at - a.at), frames: b.frames - a.frames, seconds: (b.at - a.at) / 1000 }
+  }
+  const sLeads = ['sl1', 'sl2', 'sl3', 'sl4']
+  const sWorkers = Array.from({ length: 35 }, (_, i) => `sw${String(i + 1).padStart(2, '0')}`)
+  await resizeTo(1600, 1000)
+  const stressBase = await startGated('stress forty agents', burstSteps(sLeads, sWorkers, { hold: 0, finish: false }), 25)
+  chk6(!!stressBase, '40-agent stress: the scene is mounted at the gate (1600x1000)', null)
+  const scol = collector()
+  const mx = { calls: 0, shadow: 0, tris: 0, frameP95: 0, intervalP95: 0, plates: 0, animated: 0, reads: 0, qualities: new Set() }
+  let tick = 0
+  let burstFrom = Date.now()
+  const sampleStress = async (s) => {
+    scol.each(s)
+    mx.qualities.add(s.quality)
+    if (s.renderer !== 'webgl2' || !s.perf) return
+    const p = s.perf
+    mx.reads++
+    mx.calls = Math.max(mx.calls, p.drawCalls)
+    mx.shadow = Math.max(mx.shadow, p.shadowCalls)
+    mx.tris = Math.max(mx.tris, p.triangles)
+    // Timing rings fill while frames render: count a read once a cue is in flight and the burst is a second old.
+    if (s.cues.length > 0 && Date.now() - burstFrom > 1000) {
+      mx.animated++
+      mx.frameP95 = Math.max(mx.frameP95, p.frameP95Ms)
+      mx.intervalP95 = Math.max(mx.intervalP95, p.intervalP95Ms)
+    }
+    if (++tick % 3 === 0) mx.plates = Math.max(mx.plates, await shownPlates())
+  }
+  burstFrom = Date.now()
+  await allowGate()
+  // Section 9.1's method for the frame interval: rAF timestamps over 5 s from the start of the burst (once the gate is
+  // released, so no pre-burst idle frames dilute it), in the page.
+  await page.evaluate(() => {
+    const ts = []
+    window.__ffRaf = ts
+    const end = performance.now() + 5000
+    const step = (t) => {
+      ts.push(t)
+      if (t < end) requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  })
+  const stressRun = await watch((s) => s.mode === 'live' && s.workers.length === 40 && sWorkers.slice(0, 6).every((w) => wOf(s, w)?.crate === 'dock') && s.cues.length === 0, 120_000, sampleStress)
+  chk6(!!stressRun, '40-agent stress: all 40 agents are on the floor and the six merged crates reached the dock', await state().then((s) => ({ n: s.workers.length, cues: s.cues.length })).catch(() => null))
+  const sst = stressRun ?? (await state())
+  const spk = sst.cuePeaks
+  log('stress burst peaks:', JSON.stringify(spk), 'cuesStarted', sst.cuesStarted, 'looping seen', scol.maxLooping, 'renderer', sst.renderer, 'quality', sst.qualityStart, '->', sst.quality)
+  chk6(spk.carriers <= 6 && spk.perSender <= 2 && spk.parts <= 12 && spk.crates <= 4 && spk.arrivalsPerSecond <= 12, '40-agent stress: carriers 6 (2 per sender), parts 12, crates 4 and arrivals 12 per second are never exceeded', spk)
+  chk6(spk.ambient <= 12 && scol.maxLooping <= 12, '40-agent stress: at most 12 stations loop at once (peak and polled)', { peak: spk.ambient, polled: scol.maxLooping })
+  chk6(spk.carriers >= 1 && spk.parts >= 1 && spk.crates >= 1 && spk.arrivalsPerSecond >= 1 && spk.ambient > 0, '40-agent stress: the counters saw carriers, parts, crates, arrivals and ambient loops', spk)
+  rec['stress cue peaks'] = JSON.stringify(spk)
+  if (PERF) chk6(spk.carriers === 6 && spk.parts === 12 && spk.crates === 4 && spk.ambient === 12, '[perf] 40-agent stress: every cue cap is full (carriers 6, parts 12, crates 4, ambient 12)', spk)
+  if (sst.renderer === 'webgl2') {
+    chk6(mx.reads >= 5, '40-agent stress: the budgets were read on at least 5 states during the burst', mx.reads)
+    chk6(mx.calls <= BUDGET.drawCalls, `40-agent stress (fit, burst): draw calls stay at most ${BUDGET.drawCalls} (peak of ${mx.reads} reads)`, mx.calls)
+    chk6(mx.shadow <= BUDGET.shadowCalls, `40-agent stress (fit, burst): shadow-pass calls stay at most ${BUDGET.shadowCalls}`, mx.shadow)
+    chk6(mx.tris <= BUDGET.triangles, `40-agent stress (fit, burst): triangles stay at most ${BUDGET.triangles}`, mx.tris)
+    chk6(mx.plates <= BUDGET.plates, `40-agent stress (fit, burst): at most ${BUDGET.plates} nameplates are shown`, mx.plates)
+    rec['stress burst frameP95Ms (max)'] = mx.frameP95
+    rec['stress burst intervalP95Ms (max)'] = mx.intervalP95
+    rec['stress burst budgets (draw/shadow/triangles/plates)'] = `${mx.calls}/${mx.shadow}/${mx.tris}/${mx.plates}`
+    rec['stress animated reads'] = mx.animated
+    perfCheck(mx.animated >= 3 && mx.frameP95 <= 6, 'frame CPU time p95 at most 6 ms during the burst (40 agents, 1600x1000, caps full)', { frameP95Ms: mx.frameP95, reads: mx.animated })
+    // The engine's ring (last 120 full-rate intervals) is recorded as a worst rolling read; the asserted figure is the
+    // spec's: the p95 of page rAF intervals over the burst's first 5 s.
+    const raf = await page.evaluate(() => {
+      const ts = window.__ffRaf ?? []
+      const d = ts.slice(1).map((t, i) => t - ts[i]).sort((a, b) => a - b)
+      // The display period is the median interval; "dropped" are intervals over 1.5 periods (the 20 ms target is for 60 Hz).
+      const period = d.length ? d[Math.floor(d.length / 2)] : 0
+      const dropped = d.filter((x) => x > 1.5 * period).length
+      return { n: d.length, p95: d.length ? d[Math.min(d.length - 1, Math.ceil(d.length * 0.95) - 1)] : 0, max: d.length ? d[d.length - 1] : 0, period, droppedShare: d.length ? dropped / d.length : 0 }
+    })
+    rec['stress burst rAF interval p95 over 5 s (page)'] = `${raf.p95.toFixed(1)} ms over ${raf.n} intervals, max ${raf.max.toFixed(1)} ms, display period ${raf.period.toFixed(1)} ms, ${(raf.droppedShare * 100).toFixed(1)} % over 1.5 periods`
+    perfCheck(raf.n >= 100 && raf.p95 <= 20, 'frame interval p95 at most 20 ms during the burst (page rAF over 5 s)', raf)
+    checkQualityState('40-agent stress after the burst', sst)
+    rec.qualityStart = sst.qualityStart
+    rec.qualityAfterBurst = sst.quality
+    rec.memoryBytes = sst.perf?.memoryBytes
+    rec.pixelRatio = sst.perf?.pixelRatio
+    rec.gpu = sst.perf?.gpu ?? rec.gpu ?? '(not exposed)'
+
+    // Ambient-only: running stations loop, no cue, no camera move.
+    const amb = await quiet(40_000)
+    const ambRunning = amb ? amb.workers.filter((w) => w.lamp === 'running').length : 0
+    const ambLooping = amb ? amb.workers.filter((w) => w.ambient !== 'none').length : 0
+    chk6(!!amb && ambRunning > 12 && ambLooping >= 1 && ambLooping <= 12, '40-agent stress: more than 12 stations run and 1 to 12 of them loop (no cue in flight)', { running: ambRunning, looping: ambLooping })
+    const fr = await frameRate(4000)
+    rec['ambient-only frames per second'] = Number(fr.fps.toFixed(1))
+    rec['ambient-only frames/seconds'] = `${fr.frames}/${fr.seconds.toFixed(2)}`
+    chk6(fr.frames > 0, '40-agent stress: the render loop runs while stations loop (frames grow in the ambient window)', fr)
+    perfCheck(fr.fps <= 31, 'ambient-only frame rate at most 31 fps', { fps: Number(fr.fps.toFixed(1)), frames: fr.frames, seconds: Number(fr.seconds.toFixed(2)) })
+    const ambState = await untilPerf(5000)
+    await checkBudgets('40-agent stress at fit (ambient)', ambState)
+    checkQualityState('40-agent stress at fit (ambient)', ambState)
+
+    // Near zoom: the LOD that draws the most.
+    const near = await zoomNear()
+    rec['near zoom ppm'] = near.ppm
+    chk6(near.ppm >= 24, '40-agent stress: the toolbar zoom reaches the near band (ppm 24 or more)', near)
+    await sleep(700)
+    const nearState = await untilPerf(5000)
+    chk6(!!nearState && nearState.workers.length === 40, '40-agent stress at near zoom: still 40 workers', nearState?.workers.length)
+    await checkBudgets('40-agent stress at near zoom', nearState)
+    checkQualityState('40-agent stress at near zoom', nearState)
+    await page.locator('[data-testid=factory-fit]').click()
+    await untilState((s) => Math.abs(s.view.ppm - near.ppm) > 1, 4000)
+    await settledView()
+    // PERF: quality never stepped down on a GPU.
+    mx.qualities.add((await state()).quality)
+    rec.qualitiesSeen = [...mx.qualities].join(',')
+    if (PERF && !SOFTWARE_GPU.test(rec.gpu ?? '')) chk6(sst.qualityStart === 'high' && [...mx.qualities].every((q) => q === 'high'), '[perf] qualityStart and quality are high on a GPU through the whole stress run', { start: sst.qualityStart, seen: [...mx.qualities] })
+  } else log('skip the 40-agent stress budgets: the floor plan has no render pass')
+  // The stress floor at rest: ending the session stops every station; the render loop goes idle (0 frames in 3 s).
+  await endSession(page)
+  const idleDelta = await idleFrames('40-agent stress run at rest')
+  if (idleDelta !== null) rec['idle frames over 3 s'] = idleDelta
+  await resizeTo(1024, 640)
 
   // -- Reduced motion (html data-reduce-motion="on") and Pause motion: end states at once, no cue, no loop. --
   const quietRun = async (mode) => {
@@ -1100,12 +1335,135 @@ try {
   await shot('cues-done')
   writeScript(null)
 
+  // ---------- Slice 6: Large team fallback (section 8): more than 120 current-session agents ----------
+  // The mock takes any number of scripted spawns: a `spawn` step is never checked against the root's spawnable list or
+  // against maxConcurrentSubagents (src/main/runtime/mock.ts, spawnStep and the deep-tree comment: scripted spawns are the
+  // harness's own fixture), so 121 spawns under the root put 122 current-session agents on the floor. The reason is judged in
+  // FactoryScene's order (forced, no WebGL2, too many, ...), so the notice can only show where the 3D path would run.
+  if (liveRenderer === 'webgl2' && !PLAN) {
+    const LARGE = 121
+    const big = Array.from({ length: LARGE }, (_, i) => ({ type: 'spawn', id: `lt${String(i + 1).padStart(3, '0')}`, name: `lt${String(i + 1).padStart(3, '0')}`, role: slug, description: `Large team ${i + 1}` }))
+    writeTimed([...big, { type: 'text', text: 'The large team is staffed.' }], 15)
+    await startLiveRun('Factory floor large team')
+    const bigState = await untilState((s) => s.mode === 'live' && s.workers.length >= LARGE + 1, 150_000)
+    chk6(!!bigState, `large team: ${LARGE + 1} agents (root and ${LARGE} spawns) are on the floor`, await state().then((s) => s.workers.length).catch(() => null))
+    if (bigState) {
+      const n = bigState.workers.length
+      await page.waitForFunction((k) => document.querySelectorAll('[data-testid=factory-worker]').length === k, n, { timeout: 15_000 }).catch(() => {})
+      const notice = page.locator('[data-testid=factory-notice]').first()
+      await notice.waitFor({ timeout: 15_000 }).catch(() => {})
+      const fin = (await untilState((s) => s.reason === 'too-many' && s.workers.length === n, 15_000)) ?? (await state())
+      chk6(n > 120, 'large team: more than 120 agents', n)
+      chk6(fin.renderer === 'floor-plan' && fin.reason === 'too-many', 'large team: the test state says floor-plan with reason too-many', { renderer: fin.renderer, reason: fin.reason })
+      chk6((await scene('live').getAttribute('data-renderer')) === 'floor-plan' && (await scene('live').getAttribute('data-reason')) === 'too-many', 'large team: factory-scene data-renderer floor-plan and data-reason too-many')
+      chk6((await notice.getAttribute('data-notice')) === 'too-many', 'large team: factory-notice has data-notice too-many', await notice.getAttribute('data-notice').catch(() => null))
+      const noticeText = ((await notice.innerText()) ?? '').replace(/\s+/g, ' ').trim()
+      chk6(noticeText.includes('Large team'), 'large team: the notice title is "Large team"', noticeText)
+      chk6(noticeText.includes(`This team has ${n} agents. The 3D floor shows up to 120, so the floor plan is shown.`), `large team: the body reads "This team has ${n} agents. The 3D floor shows up to 120, so the floor plan is shown."`, noticeText)
+      chk6((await page.locator('[data-testid=factory-use-graph]').count()) === 1, 'large team: Use Graph is offered')
+      chk6((await page.locator('[data-testid=factory-retry-3d]').count()) === 0, 'large team: there is no Try 3D again (retrying cannot help)')
+      chk6((await page.locator('[data-testid=factory-canvas]').count()) === 0 && fin.engines === 0, 'large team: no canvas and no engine', { engines: fin.engines })
+      chk6((await page.locator('[data-testid=factory-worker]').count()) === n, 'large team: the floor plan mirror lists every agent', await page.locator('[data-testid=factory-worker]').count())
+      for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+        await resizeTo(w, h)
+        for (const theme of ['dark', 'light']) {
+          await setAppearance({ theme })
+          await notice.waitFor({ timeout: 10_000 }).catch(() => {})
+          chk6(await noPageScroll(), `large team: no page scroll at ${w}x${h} ${theme}`)
+          await shot(`notice-large-team-${theme}-${w}x${h}`)
+        }
+      }
+      await resizeTo(1024, 640)
+      await setAppearance({ theme: 'dark' })
+    }
+    await endSession(page)
+    writeScript(null)
+  } else log(`skip the Large team case: the 3D path is not what this run takes (renderer ${liveRenderer}${PLAN ? ', floor plan forced' : ''}); the too-many reason is judged after forced and no-WebGL2`)
+
   // A paused run offers Resume now and Cancel auto-resume, not End session: the ended hall is checked on the tour run above.
   // A plain run keeps a scene mounted for the forced-renderer checks below.
   writeScript([{ type: 'text', text: 'Only the root is on the floor.' }])
   await startLiveRun('Factory floor after live state')
   await waitForFloor(1)
   writeScript(null)
+
+  // ---------- Slice 6: mount and unmount leak (section 9.1 "Leak", section 12) ----------
+  // The presentation is toggled graph <-> factory floor 20 times on this one-agent run (no cue, so the quality governor
+  // never steps). Geometries and textures of the next mount equal those of the first mount on this run, `engines` is 1 (the 3D
+  // path) with exactly one canvas; on the floor plan there is no engine and no canvas at any mount. The toggle writes the
+  // setting straight away and waits on the DOM (no fixed sleeps), so the loop takes seconds.
+  {
+    const setPresentationFast = (presentation) =>
+      page.evaluate(async (pr) => {
+        const info = await window.orgai.settings.get()
+        const { dataDir: _d, appVersion: _v, ...s } = info
+        await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, canvas: { ...s.appearance.canvas, presentation: pr } } })
+      }, presentation)
+    /** The scene is mounted again: its renderer is chosen and (3D) the first frame's perf is in the state. */
+    const mounted = async () => {
+      await scene('live').waitFor({ timeout: 20_000 })
+      await page.waitForFunction(() => !!document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer'), null, { timeout: 20_000 })
+      const kind = await scene('live').getAttribute('data-renderer')
+      if (kind === 'webgl2') {
+        await page.locator('[data-testid=factory-canvas]').first().waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {})
+        return untilPerf(15_000)
+      }
+      return untilState((s) => s.mode === 'live', 15_000)
+    }
+    /** Two reads 600 ms apart agree on geometries and textures (kits finish building after the first frame). */
+    const settledCounts = async () => {
+      let prev = await untilPerf(10_000)
+      for (let i = 0; prev && i < 8; i++) {
+        await sleep(600)
+        const cur = await untilPerf(5000)
+        if (!cur) break
+        if (cur.perf.geometries === prev.perf.geometries && cur.perf.textures === prev.perf.textures) return cur
+        prev = cur
+      }
+      return prev
+    }
+    const toggled = await mounted()
+    const kind = toggled?.renderer ?? (await scene('live').getAttribute('data-renderer'))
+    const firstMount = kind === 'webgl2' ? await settledCounts() : toggled
+    const first = firstMount?.perf ? { geometries: firstMount.perf.geometries, textures: firstMount.perf.textures } : null
+    chk6(kind === 'floor-plan' || !!first, 'leak: the first 3D mount reports geometries and textures', firstMount?.perf)
+    const seen = []
+    const t0 = Date.now()
+    for (let i = 1; i <= 20; i++) {
+      await setPresentationFast('graph')
+      await page.locator('[data-testid=factory-scene]').first().waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {})
+      await setPresentationFast('factory-floor')
+      const st = await mounted()
+      const canvases = await page.locator('[data-testid=factory-canvas]').count()
+      seen.push({ i, renderer: st?.renderer ?? null, engines: st?.engines ?? -1, canvases, geometries: st?.perf?.geometries ?? null, textures: st?.perf?.textures ?? null })
+    }
+    const last = kind === 'webgl2' ? await settledCounts() : await state()
+    log(`leak: 20 toggles in ${((Date.now() - t0) / 1000).toFixed(1)} s; first ${JSON.stringify(first)}; last ${JSON.stringify(last?.perf && { geometries: last.perf.geometries, textures: last.perf.textures })}`)
+    rec['leak first mount geometries/textures'] = first ? `${first.geometries}/${first.textures}` : 'n/a (floor plan)'
+    if (kind === 'webgl2') {
+      chk6(seen.every((s) => s.renderer === 'webgl2'), 'leak: all 20 remounts take the 3D path again', seen.filter((s) => s.renderer !== 'webgl2').slice(0, 3))
+      chk6(!!first && !!last?.perf && last.perf.geometries === first.geometries && last.perf.textures === first.textures, 'leak: after 20 toggles the next mount has the same geometries and textures as the first', { first, last: last?.perf && { geometries: last.perf.geometries, textures: last.perf.textures } })
+      chk6(!!first && seen.every((s) => s.geometries !== null && s.geometries <= first.geometries && s.textures <= first.textures), 'leak: no mount in between ever held more geometries or textures than the first', seen.filter((s) => !first || s.geometries > first.geometries || s.textures > first.textures).slice(0, 3))
+      chk6(last?.engines === 1 && seen.every((s) => s.engines === 1), 'leak: exactly one engine after every toggle (state engines is 1)', { last: last?.engines, others: seen.filter((s) => s.engines !== 1).slice(0, 3) })
+      chk6((await page.locator('[data-testid=factory-canvas]').count()) === 1 && seen.every((s) => s.canvases === 1), 'leak: exactly one factory-canvas in the document after every toggle', seen.filter((s) => s.canvases !== 1).slice(0, 3))
+      rec.firstFrameCachedMs = last?.perf?.firstFrameMs
+      rec.memoryBytes = last?.perf?.memoryBytes ?? rec.memoryBytes
+      checkQualityState('leak: the 21st mount', last)
+    } else {
+      chk6(seen.every((s) => s.renderer === 'floor-plan' && s.engines === 0 && s.canvases === 0) && last?.engines === 0, 'leak: on the floor plan path no engine exists and no canvas is mounted at any of the 20 remounts', seen.filter((s) => s.engines !== 0 || s.canvases !== 0).slice(0, 3))
+    }
+    // First-frame figures of section 9.1: cold is the launch's first 3D mount, cached a later one.
+    if (kind === 'webgl2') {
+      if (rec.firstFrameColdMs !== undefined) perfCheck(rec.firstFrameColdMs <= 700, 'time to first frame at most 700 ms on the cold first mount', rec.firstFrameColdMs)
+      perfCheck(typeof rec.firstFrameCachedMs === 'number' && rec.firstFrameCachedMs <= 250, 'time to first frame at most 250 ms on a later (cached) mount', rec.firstFrameCachedMs)
+    }
+  }
+
+  // CSP after the 3D sections (the listener counts every violation since the page loaded).
+  {
+    const v = await page.evaluate(() => window.__cspViolations ?? [])
+    check(v.length === 0, `zero securitypolicyviolation events after the ${liveRenderer} renderer sections`, v.slice(0, 3).join(' | '))
+  }
 
   // ---------- Forced floor plan, notices, Use Graph (Live scene, reads the key at mount) ----------
   await setKey('floor-plan')
@@ -1147,6 +1505,12 @@ try {
     await shot(`notice-${value}`)
   }
 
+  // CSP after the floor-plan sections (forced, no WebGL2, chunk failure): the count is cumulative and must still be zero.
+  {
+    const v = await page.evaluate(() => window.__cspViolations ?? [])
+    check(v.length === 0, 'zero securitypolicyviolation events after the floor-plan renderer sections', v.slice(0, 3).join(' | '))
+  }
+
   // Use Graph returns to the graph canvas.
   await page.locator('[data-testid=factory-use-graph]').click()
   await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'graph', null, { timeout: 10_000 }).catch(() => {})
@@ -1168,6 +1532,53 @@ try {
   check((await page.locator('[data-testid=factory-scene]').count()) === 0, 'no factory scene beside Pocket Office')
   await setCanvas({ presentation: 'graph' })
 
+  // ---------- Slice 6: the settings sample (section 6.6): a static PNG for the app theme, never a second engine ----------
+  // FactorySample.tsx (Technical Artist, slice 6): wrapper div.factory-sample[role=img][aria-label="Static sample factory
+  // floor"] holding ONE <img alt="" data-testid=factory-sample-image data-sample-theme="dark|light"> and no canvas. Both the
+  // presentation choice's thumbnail and (with Factory Floor chosen) the preview render it. The checks FAIL until that change lands.
+  await setCanvas({ presentation: 'factory-floor' })
+  await openAppSettings(page)
+  await page.locator('[data-testid=canvas-section]').waitFor({ timeout: 10_000 })
+  const readSamples = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid=factory-sample]')].map((el) => {
+        const img = el.querySelector('[data-testid=factory-sample-image]')
+        return {
+          role: el.getAttribute('role'),
+          name: el.getAttribute('aria-label'),
+          images: el.querySelectorAll('img').length,
+          canvases: el.querySelectorAll('canvas').length,
+          alt: img ? img.getAttribute('alt') : null,
+          theme: img ? img.getAttribute('data-sample-theme') : null,
+          naturalWidth: img ? img.naturalWidth : 0,
+          preview: !!el.closest('[data-testid=canvas-preview]')
+        }
+      })
+    )
+  for (const theme of ['dark', 'light']) {
+    await setAppearance({ theme })
+    await page.waitForFunction((t) => { const i = document.querySelector('[data-testid=factory-sample-image]'); return !!i && i.getAttribute('data-sample-theme') === t && i.complete && i.naturalWidth > 0 }, theme, { timeout: 8000 }).catch(() => {})
+    check((await html('data-theme')) === theme, `[slice6 sample] the app theme is ${theme}`, String(await html('data-theme')))
+    const samples = await readSamples()
+    check(samples.length >= 1 && samples.some((s) => s.preview), `[slice6 sample] ${theme}: the settings page shows the sample (the preview with Factory Floor chosen, and the thumbnail)`, `${samples.length} samples, ${samples.filter((s) => s.preview).length} previews`)
+    check(samples.every((s) => s.role === 'img' && s.name === 'Static sample factory floor'), `[slice6 sample] ${theme}: every factory-sample is role img named "Static sample factory floor"`, JSON.stringify(samples.map((s) => [s.role, s.name])))
+    check(samples.every((s) => s.images === 1 && s.alt === ''), `[slice6 sample] ${theme}: each sample holds exactly one <img alt="">`, JSON.stringify(samples.map((s) => [s.images, s.alt])))
+    check(samples.every((s) => s.theme === theme), `[slice6 sample] ${theme}: each image's data-sample-theme is ${theme}`, JSON.stringify(samples.map((s) => s.theme)))
+    check(samples.length > 0 && samples.every((s) => s.naturalWidth > 0), `[slice6 sample] ${theme}: each image loaded (naturalWidth above 0)`, JSON.stringify(samples.map((s) => s.naturalWidth)))
+    check(samples.every((s) => s.canvases === 0), `[slice6 sample] ${theme}: no canvas inside a sample`, JSON.stringify(samples.map((s) => s.canvases)))
+    // No second engine: no canvas outside a live scene anywhere on the page; a live scene mounted elsewhere keeps engines at 1.
+    const strayCanvases = await page.evaluate(() => [...document.querySelectorAll('[data-testid=factory-canvas]')].filter((c) => !c.closest('[data-testid=factory-scene]')).length)
+    check(strayCanvases === 0, `[slice6 sample] ${theme}: no factory-canvas outside a live scene on the settings page`, String(strayCanvases))
+    const liveScenes = await page.locator('[data-testid=factory-scene]').count()
+    if (liveScenes > 0) {
+      const st = await state().catch(() => null)
+      check(!!st && (st.renderer === 'floor-plan' ? st.engines === 0 : st.engines === 1) && (await page.locator('[data-testid=factory-canvas]').count()) <= 1, `[slice6 sample] ${theme}: a live scene elsewhere keeps its one engine (the sample adds none)`, JSON.stringify(st && { renderer: st.renderer, engines: st.engines }))
+    } else log(`settings ${theme}: no live scene is mounted beside the sample (no state to read), canvases on the page: ${await page.locator('[data-testid=factory-canvas]').count()}`)
+    check((await page.locator('[data-testid=factory-canvas]').count()) <= 1, `[slice6 sample] ${theme}: at most one factory-canvas on the page`, String(await page.locator('[data-testid=factory-canvas]').count()))
+    await shot(`settings-sample-${theme}`)
+  }
+  await setAppearance({ theme: 'dark' })
+
   // ---------- CSP ----------
   const violations = await page.evaluate(() => window.__cspViolations ?? [])
   check(violations.length === 0, 'zero securitypolicyviolation events', violations.slice(0, 3).join(' | '))
@@ -1175,6 +1586,11 @@ try {
   check(false, 'factory-floor script ran to the end', e.stack ?? String(e))
   await shot('failure')
 } finally {
+  // One block of numbers for the UI Lead's table (section 9.1): always printed, asserted only with E2E_FACTORY_PERF=1 on a real GPU.
+  rec.devicePixelRatio = await page.evaluate(() => window.devicePixelRatio).catch(() => undefined)
+  log(`PERF ---- Factory Floor timing and budget numbers (${PERF ? 'asserted: E2E_FACTORY_PERF=1' : 'recorded only'}; ${SWGL ? 'SwiftShader switches on' : 'the machine GPU'}${PLAN ? '; floor plan forced' : ''}) ----`)
+  for (const [k, v] of Object.entries(rec)) log(`PERF ${k}: ${v}`)
+  log('PERF ---- end ----')
   await page.evaluate((k) => localStorage.removeItem(k), KEY).catch(() => {})
   if (projectOpen) await endSession(page).catch(() => {})
   await cleanup(app, page, NAME)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { factoryTestState, motionState, p95 } from './snapshot'
+import { factoryTestState, motionState, p95, redactCursor } from './snapshot'
 import type { FloorModel, WorkerModel } from './types'
 
 function worker(id: string, extra: Partial<WorkerModel> = {}): WorkerModel {
@@ -65,6 +65,7 @@ describe('factoryTestState', () => {
       renderer: 'floor-plan',
       reason: 'forced',
       quality: 'high',
+      qualityStart: 'high',
       mode: 'team',
       motion: 'reduced',
       workers: [],
@@ -123,24 +124,103 @@ describe('factoryTestState', () => {
       loop: 'running',
       frames: 1,
       engines: 1,
-      perf: { drawCalls: 5, shadowCalls: 4, triangles: 120, geometries: 4, textures: 1, frameP95Ms: 1.23456, intervalP95Ms: 0, firstFrameMs: 88.888, gpu: 'ANGLE (Test GPU)' },
+      perf: { drawCalls: 5, shadowCalls: 4, triangles: 120, geometries: 4, textures: 1, frameP95Ms: 1.23456, intervalP95Ms: 0, firstFrameMs: 88.888, gpu: 'ANGLE (Test GPU)', memoryBytes: 16_777_216, pixelRatio: 1.5 },
       cues: [{ id: 'c1', kind: 'capsule', from: 'a', to: null, start: 0, duration: 500, progress: 0.5, opacity: 1 }],
       cuesStarted: 2,
       messageCursor: '1|a|b|hi'
     })
     expect(s.view).toEqual({ ppm: 19.67, targetX: 15, targetZ: -4 })
-    expect(s.perf).toEqual({ drawCalls: 5, shadowCalls: 4, triangles: 120, geometries: 4, textures: 1, frameP95Ms: 1.23, intervalP95Ms: 0, firstFrameMs: 88.89, gpu: 'ANGLE (Test GPU)' })
+    expect(s.perf).toEqual({ drawCalls: 5, shadowCalls: 4, triangles: 120, geometries: 4, textures: 1, frameP95Ms: 1.23, intervalP95Ms: 0, firstFrameMs: 88.89, gpu: 'ANGLE (Test GPU)', memoryBytes: 16_777_216, pixelRatio: 1.5 })
+    expect(s.qualityStart).toBe('minimal')
     expect(s.cues).toEqual([{ kind: 'capsule', from: 'a', to: null }])
     expect(s.cuesStarted).toBe(2)
-    expect(s.messageCursor).toBe('1|a|b|hi')
+    // The cursor keeps time and ids; the message text is replaced by a hash.
+    expect(s.messageCursor).toMatch(/^1\|a\|b\|#[0-9a-f]{8}$/)
+    expect(s.messageCursor).not.toContain('hi')
   })
 
   it('omits an unknown GPU string', () => {
     const s = factoryTestState({
       renderer: 'webgl2', quality: 'high', mode: 'live', motion: 'full', loop: 'idle', frames: 1, engines: 1,
-      perf: { drawCalls: 1, shadowCalls: 0, triangles: 2, geometries: 1, textures: 0, frameP95Ms: 0, intervalP95Ms: 0, firstFrameMs: 0 }
+      perf: { drawCalls: 1, shadowCalls: 0, triangles: 2, geometries: 1, textures: 0, frameP95Ms: 0, intervalP95Ms: 0, firstFrameMs: 0, memoryBytes: 0, pixelRatio: 1 }
     })
     expect(s.perf && 'gpu' in s.perf).toBe(false)
+  })
+})
+
+describe('redactCursor', () => {
+  it('keeps time and ids, hashes the text, and changes when the text does', () => {
+    expect(redactCursor(null)).toBeNull()
+    const a = redactCursor('17|lead|w1|Please run the tests now')
+    expect(a).toMatch(/^17\|lead\|w1\|#[0-9a-f]{8}$/)
+    expect(redactCursor('17|lead|w1|Please run the tests now')).toBe(a)
+    expect(redactCursor('17|lead|w1|Please run the tests later')).not.toBe(a)
+    // A text with its own bars, a missing recipient and a malformed cursor.
+    expect(redactCursor('5|a||x|y|z')).toMatch(/^5\|a\|\|#[0-9a-f]{8}$/)
+    expect(redactCursor('garbage')).toMatch(/^#[0-9a-f]{8}$/)
+  })
+})
+
+describe('the test state carries no agent text (guard)', () => {
+  // Every free-text field an agent or a user can fill, each with a marker that must never reach the test state.
+  const MARK = 'zqxj'
+  const textModel: FloorModel = {
+    ...model,
+    workers: {
+      root: worker('root', { kind: 'booth', name: `${MARK} root name`, activity: `${MARK} root activity` }),
+      a: worker('a', { kind: 'lead', name: `${MARK} lead name`, activity: `${MARK} reading C:\\secret\\${MARK}.txt`, stepIds: ['p1'] }),
+      b: worker('b', { name: `${MARK} bench name`, activity: `${MARK} $ rm -rf ${MARK}` })
+    },
+    board: { total: 2, done: 1, blocked: 0, lamps: ['done', 'active'], overflow: 0 },
+    earlier: [{ id: 'old', name: `${MARK} earlier name`, statusWord: 'Finished' }]
+  }
+  const s = factoryTestState({
+    renderer: 'webgl2',
+    quality: 'low',
+    qualityStart: 'high',
+    mode: 'live',
+    motion: 'full',
+    model: textModel,
+    cues: [
+      { id: 'c1', kind: 'capsule', from: 'a', to: 'b', count: 3, start: 0, duration: 500, progress: 0.5, opacity: 1 },
+      { id: 'c2', kind: 'tote', from: 'a', to: 'b', start: 0, duration: 500, progress: 0.1, opacity: 1 }
+    ],
+    recentCues: [{ kind: 'capsule', from: 'a', to: null }],
+    ambient: new Map([['b', { kind: 'machine' as const, phase: 0 }]]),
+    messageCursor: `99|a|b|${MARK} the message text ${MARK}`,
+    view: { ppm: 30, targetX: 1, targetZ: 2 },
+    loop: 'running',
+    frames: 10,
+    engines: 1,
+    perf: { drawCalls: 40, shadowCalls: 14, triangles: 50_000, geometries: 61, textures: 5, frameP95Ms: 0.7, intervalP95Ms: 8.8, firstFrameMs: 120, gpu: 'ANGLE (NVIDIA, Test GPU)', memoryBytes: 16_803_157, pixelRatio: 1 }
+  })
+  const json = JSON.stringify(s)
+
+  it('has none of the names, activities, paths, commands or message text', () => {
+    expect(json).not.toContain(MARK)
+    expect(json.toLowerCase()).not.toContain(MARK)
+  })
+
+  it('holds only ids, fixed words, numbers, booleans, the GPU string and the redacted cursor', () => {
+    const ids = new Set(['root', 'a', 'b', 'p1'])
+    const words = new Set([
+      'webgl2', 'floor-plan', 'high', 'low', 'minimal', 'live', 'team', 'full', 'reduced', 'paused', 'on', 'ended',
+      'off', 'running', 'needs-you', 'failed', 'console', 'machine', 'dispatch', 'signal', 'rest', 'docked', 'down',
+      'none', 'screen', 'pad', 'hold', 'hold-striped', 'dock', 'parent-pad', 'pending', 'active', 'done', 'blocked',
+      'skipped', 'arrive', 'leave', 'tote', 'capsule', 'part', 'crate', 'shutter', 'barrier', 'pose', 'hall', 'idle',
+      'stopped', 'Running', 'Needs you', 'Idle', 'Paused', 'Finished', 'Stopped', 'Failed', 'Role'
+    ])
+    const bad: string[] = []
+    const walk = (v: unknown, path: string): void => {
+      if (typeof v === 'string') {
+        const ok = ids.has(v) || words.has(v) || (path === '.perf.gpu' && v === 'ANGLE (NVIDIA, Test GPU)') || (path === '.messageCursor' && /^\d+\|[^|]*\|[^|]*\|#[0-9a-f]{8}$/.test(v))
+        if (!ok) bad.push(`${path}=${v}`)
+      } else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}[${i}]`))
+      else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, `${path}.${k}`)
+      else if (!(v === null || typeof v === 'number' || typeof v === 'boolean')) bad.push(`${path}: ${typeof v}`)
+    }
+    walk(JSON.parse(json), '')
+    expect(bad).toEqual([])
   })
 })
 

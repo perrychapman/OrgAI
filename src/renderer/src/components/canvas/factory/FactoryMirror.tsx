@@ -108,7 +108,9 @@ export function wordIcon(word: MirrorEntry['word']): LucideIcon | undefined {
 
 function accessibleName(e: MirrorEntry, mode: 'live' | 'team'): string {
   if (mode === 'team') return `${e.name}, role`
-  return e.kind === 'booth' ? `${e.name}, control booth, ${e.word}` : `${e.name}, ${e.word}`
+  // The visible word ("Paused" on the booth while the run is paused) is the word in the name (WCAG 2.5.3).
+  const word = e.shownWord ?? e.word
+  return e.kind === 'booth' ? `${e.name}, control booth, ${word}` : `${e.name}, ${word}`
 }
 
 /** Section 7.1 hint (live wording; team adds the Delete sentence). */

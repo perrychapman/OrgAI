@@ -265,5 +265,11 @@ export interface FactoryTestState {
     intervalP95Ms: number
     firstFrameMs: number
     gpu?: string
+    /** Slice 6: bytes of the engine's own DataTextures plus the shadow map (section 9.1, at most 24 MB). */
+    memoryBytes: number
+    /** Slice 6: the renderer's pixel ratio in use (section 9.1: min(dpr, 1.5) high, 1 low and minimal). */
+    pixelRatio: number
   }
+  /** Slice 6: the quality this mount started at (the probe's choice); `quality` is the current one after any step down. */
+  qualityStart: 'high' | 'low' | 'minimal'
 }

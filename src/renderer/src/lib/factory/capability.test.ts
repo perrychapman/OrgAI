@@ -76,6 +76,24 @@ describe('probeWebGL2', () => {
   })
 })
 
+describe('probeWebGL2 renderer string', () => {
+  const withRenderer = (renderer: string | null): ProbeCanvas => ({
+    getContext: () => ({
+      getExtension: (name: string) => (name === 'WEBGL_debug_renderer_info' ? (renderer === null ? null : {}) : name === 'WEBGL_lose_context' ? { loseContext: () => {} } : null),
+      getParameter: (p: number) => (p === 0x9246 ? renderer : null)
+    })
+  })
+  it('starts a strict context on a software rasteriser at minimal (SwiftShader passes the caveat)', () => {
+    for (const r of ['ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)', 'llvmpipe (LLVM 15.0.7, 256 bits)', 'ANGLE (Microsoft, Microsoft Basic Render Driver Direct3D11)']) {
+      expect(probeWebGL2(() => withRenderer(r))).toEqual({ ok: true, software: true, quality: 'minimal' })
+    }
+  })
+  it('keeps a hardware GPU, or an unexposed renderer string, at high', () => {
+    expect(probeWebGL2(() => withRenderer('ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)'))).toEqual({ ok: true, software: false, quality: 'high' })
+    expect(probeWebGL2(() => withRenderer(null))).toEqual({ ok: true, software: false, quality: 'high' })
+  })
+})
+
 describe('cachedWebGL2Probe', () => {
   beforeEach(() => resetWebGL2Probe())
 

@@ -940,8 +940,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       focusFactoryEntry()
     })
   }
-  /** Find a worker (slice 2); until it exists, the floor's first worker button. Focus never falls to the page body. */
+  /** Find a worker through the scene handle (section 6.8); else the floor's first worker button. Focus never falls to the page body. */
   const focusFactoryEntry = (): void => {
+    if (factoryRef.current?.focusFind()) return
     const body = bodyRef.current
     const target = body?.querySelector<HTMLElement>('[data-testid="factory-find"]') ?? body?.querySelector<HTMLElement>('[data-testid="factory-worker"]')
     target?.focus()

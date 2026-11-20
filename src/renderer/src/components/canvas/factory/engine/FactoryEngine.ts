@@ -6,11 +6,14 @@
 // end state (engine/floorInstances.ts: poses, lamps, shutter, barrier, fence, crates, board lamps; hall dim here). Each
 // change renders one frame. Slice 4: cues and ambient loops from the scene's CueFeed, drawn by engine/cueRender.ts over
 // the end states; the loop runs while a camera tween, a cue or an ambient loop needs it (ambient-only frames at most
-// every 30 ms) and stops when nothing does (section 9.2).
-import { Box3, Color, Matrix4, type BufferGeometry, type DirectionalLight, PCFShadowMap, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from 'three'
+// every 30 ms) and stops when nothing does (section 9.2). Slice 6: quality steps (lib/factory/quality.ts) fed with the
+// display-frame intervals of animating frames only, applied in place (pixel ratio, shadow map, LOD; the context and its
+// MSAA attribute stay), and the texture plus shadow memory count of section 9.1.
+import { Box3, Color, Matrix4, type BufferGeometry, type DataTexture, type DirectionalLight, type Material, PCFShadowMap, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from 'three'
 import type { ActiveCue, CueFeed, FloorModel, Lamp } from '../../../../lib/factory/types'
 import { factorySession } from '../../../../lib/factory/capability'
 import { p95, type FactoryLoop, type FactoryPerf, type FactoryQuality } from '../../../../lib/factory/snapshot'
+import { createQualityGovernor, qualitySettings, shadowMapBytes, textureBytes, type QualityGovernor } from '../../../../lib/factory/quality'
 import { cameraPose, FOV_DEG, lodBand, sameView, type CameraView, type LodBand } from '../../../../lib/factory/camera'
 import { GANTRY_TOP } from '../../../../lib/factory/layout'
 import type { FactoryKitSource, FactoryLighting, FactoryMaterials, FactoryTheme, FactoryTokenColours, FloorRect, ObjectKit } from '../builders/types'
@@ -54,6 +57,22 @@ export interface FactoryEngineStats {
   perf: FactoryPerf | null
   /** LOD band in use. */
   lod: LodBand
+  /** Slice 6: the quality in use now (it only ever steps down from the one the engine was made with). */
+  quality: FactoryQuality
+}
+
+/** The device pixel ratio (1 outside a window). */
+function devicePixelRatio(): number {
+  return typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+}
+
+/**
+ * The current display frame's time: inside a rAF callback, document.timeline's time is that callback's timestamp, so a
+ * frame rendered through flush() from the camera tween's own rAF shares the engine loop's time base (no double count).
+ */
+function frameTime(): number {
+  const t = typeof document !== 'undefined' ? document.timeline?.currentTime : null
+  return typeof t === 'number' ? t : performance.now()
 }
 
 /** World heights of the drawn objects' tops and label anchors (camera fit, mirror boxes, nameplates). */
@@ -91,7 +110,17 @@ export class FactoryEngine {
   private readonly options: FactoryEngineOptions
   private readonly kits: FactoryKitSource
   private theme: FactoryTheme
-  private readonly quality: FactoryQuality
+  /** Current quality: steps down only, one way per engine (section 9.2). */
+  private quality: FactoryQuality
+  private readonly governor: QualityGovernor
+  /** Display-frame time of the last animating frame (0: the previous frame did not animate). */
+  private animTickAt = 0
+  /** setFloor ran since the last governor tick (that interval is host work, not animation). */
+  private floorChanged = false
+  /** The frame being rendered through flush() belongs to a camera tween (an animating frame). */
+  private tweenFrame = false
+  /** Bytes of the engine's own DataTextures (fixed per engine; counted once after the first frame). */
+  private ownTextureBytes = -1
   private readonly materials: FactoryMaterials
   private readonly lighting: FactoryLighting
   private readonly key: DirectionalLight
@@ -150,9 +179,12 @@ export class FactoryEngine {
     this.kits = options.kits
     this.theme = options.theme
     this.quality = options.quality
+    this.governor = createQualityGovernor(options.quality)
+    const settings = qualitySettings(options.quality, devicePixelRatio())
     // Minimal quality (software WebGL) draws the far LOD at every zoom (section 9.2).
-    this.band = options.quality === 'minimal' ? 'far' : 'near'
-    // Throws when no context can be made; the caller shows the no-WebGL2 floor plan.
+    this.band = settings.farLodOnly ? 'far' : 'near'
+    // Throws when no context can be made; the caller shows the no-WebGL2 floor plan. MSAA is a context attribute: a later
+    // step down keeps it (recreating the context would rebuild every GPU resource mid-animation).
     this.renderer = new WebGLRenderer({
       canvas,
       antialias: options.quality === 'high',
@@ -164,9 +196,8 @@ export class FactoryEngine {
     let materials: FactoryMaterials | null = null
     let lighting: FactoryLighting | null = null
     try {
-      const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
-      this.renderer.setPixelRatio(options.quality === 'high' ? Math.min(dpr, 1.5) : 1)
-      const shadows = options.quality !== 'minimal'
+      this.renderer.setPixelRatio(settings.pixelRatio)
+      const shadows = settings.shadowMapSize > 0
       this.renderer.shadowMap.enabled = shadows
       this.renderer.shadowMap.type = PCFShadowMap
       this.renderer.shadowMap.autoUpdate = false
@@ -180,12 +211,9 @@ export class FactoryEngine {
       this.lighting = lighting
       this.key = lighting.key as DirectionalLight
       this.key.castShadow = shadows
-      if (shadows) {
-        const size = options.quality === 'high' ? 2048 : 1024
-        this.key.shadow.mapSize.set(size, size)
-        this.key.shadow.bias = -0.0005
-        this.key.shadow.normalBias = 0.02
-      }
+      this.key.shadow.bias = -0.0005
+      this.key.shadow.normalBias = 0.02
+      if (shadows) this.key.shadow.mapSize.set(settings.shadowMapSize, settings.shadowMapSize)
       for (const l of lighting.lights) this.scene.add(l)
       if (!this.scene.children.includes(this.key)) this.scene.add(this.key)
       this.scene.add(this.key.target)
@@ -194,9 +222,14 @@ export class FactoryEngine {
       this.ensureHall({ minX: 0, maxX: 30, minZ: -10, maxZ: 2 })
       this.applyTheme(tokens)
     } catch (error) {
-      // Setup failed part-way: release everything at once so a failed engine never holds a GPU context.
+      // Setup failed part-way: release everything at once so a failed engine never holds a GPU context. The hall pool
+      // too (Reviewer L5, slice 2): ensureHall may have built it before the failure.
       for (const pool of this.pools.values()) pool.dispose()
+      this.pools.clear()
+      this.hallPool?.dispose()
+      this.hallPool = null
       for (const g of this.geometries) g.dispose()
+      this.geometries.clear()
       materials?.dispose()
       lighting?.dispose()
       this.renderer.dispose()
@@ -239,6 +272,7 @@ export class FactoryEngine {
   setFloor(floor: EngineFloor): void {
     if (this.disposed) return
     this.floor = floor
+    this.floorChanged = true
     if (this.syncFloor()) this.requestFrame()
   }
 
@@ -263,12 +297,16 @@ export class FactoryEngine {
     this.requestFrame()
   }
 
-  /** The camera view (owned by the scene's camera controller). LOD follows once the zoom settles. */
-  setView(view: CameraView): void {
+  /**
+   * The camera view (owned by the scene's camera controller). LOD follows once the zoom settles. `tween` marks a frame of
+   * a camera tween (an animating frame for the quality steps); direct manipulation and one-off moves are not.
+   */
+  setView(view: CameraView, tween = false): void {
     if (this.disposed) return
     // The scene re-places its mirror on model changes with the same view: nothing moved, no frame (section 9.2).
     if (this.frames > 0 && sameView(this.view, view)) return
     this.view = { ...view }
+    this.tweenFrame = tween
     this.applyCamera()
     this.scheduleLod()
     this.requestFrame()
@@ -279,7 +317,7 @@ export class FactoryEngine {
     if (!this.raf) return
     cancelAnimationFrame(this.raf)
     this.raf = 0
-    this.frame(performance.now())
+    this.frame(performance.now(), frameTime())
   }
 
   /** Document visible and stage on screen. Hidden stops the loop; becoming visible renders one frame. */
@@ -342,10 +380,36 @@ export class FactoryEngine {
         frameP95Ms: p95(this.frameMs),
         intervalP95Ms: p95(this.intervalMs),
         firstFrameMs: this.firstFrameMs,
+        memoryBytes: this.memoryBytes(),
+        pixelRatio: this.renderer.getPixelRatio(),
         ...(this.gpu ? { gpu: this.gpu } : {})
       }
     }
-    return { loop, frames: this.frames, perf, lod: this.band }
+    return { loop, frames: this.frames, perf, lod: this.band, quality: this.quality }
+  }
+
+  /**
+   * Section 9.1 memory: the engine's own DataTextures (pixel data, plus a third for a mip chain) and the key light's
+   * shadow map at width x height x 4 bytes (the spec's 16 MB for 2048), 0 with shadows off.
+   */
+  private memoryBytes(): number {
+    if (this.ownTextureBytes < 0) {
+      const seen = new Set<DataTexture>()
+      this.scene.traverse((o) => {
+        const m = (o as { material?: Material | Material[] }).material
+        for (const mat of Array.isArray(m) ? m : m ? [m] : []) {
+          for (const v of Object.values(mat)) if ((v as DataTexture | null)?.isDataTexture) seen.add(v as DataTexture)
+        }
+      })
+      let bytes = 0
+      for (const t of seen) {
+        const data = t.image?.data as ArrayBufferView | null | undefined
+        bytes += textureBytes(data?.byteLength ?? 0, t.generateMipmaps)
+      }
+      this.ownTextureBytes = bytes
+    }
+    const shadows = this.renderer.shadowMap.enabled && this.key.castShadow
+    return this.ownTextureBytes + shadowMapBytes(shadows ? this.key.shadow.mapSize.x : 0)
   }
 
   /** Cancels the loop and the LOD timer, frees every pool, geometry, material and texture, then the renderer and its context. */
@@ -529,7 +593,8 @@ export class FactoryEngine {
     this.raf = 0
   }
 
-  private frame(now: number): void {
+  /** `now`: the rAF timestamp (or performance.now() from flush); `tickAt`: this display frame's time for the quality steps. */
+  private frame(now: number, tickAt = now): void {
     this.raf = 0
     if (this.disposed || this.lost || !this.visible) return
     const t0 = performance.now()
@@ -540,6 +605,11 @@ export class FactoryEngine {
     const cuesBusy = full && feed.busy(t0)
     const ambient = full ? feed.ambient() : NO_AMBIENT
     const ambientOn = ambient.size > 0
+    const tween = this.tweenFrame
+    this.tweenFrame = false
+    // Quality steps watch every display frame of animation, including the ambient frames skipped below (their interval
+    // is the display's, not the 30 ms ambient cap); a one-off invalidation or a drag is not animation.
+    this.tick(tickAt, cuesBusy || ambientOn || tween)
     const fullRate = this.invalid || cuesBusy
     if (!fullRate && ambientOn && this.lastRenderAt && now - this.lastRenderAt < AMBIENT_FRAME_MS) {
       // Ambient only: skip this display frame (at most 31 fps).
@@ -557,6 +627,7 @@ export class FactoryEngine {
     // Main pass only: what was counted before the first pool mesh's onBeforeRender belongs to the shadow pass.
     const before = this.callsAtMainPass >= 0 ? this.callsAtMainPass : 0
     if (shadowFrame) this.shadowCalls = before
+    else if (!this.renderer.shadowMap.enabled) this.shadowCalls = 0
     this.drawCalls = info.calls - before
     this.triangles = info.triangles - (this.callsAtMainPass >= 0 ? this.trianglesAtMainPass : 0)
     this.frames++
@@ -572,6 +643,64 @@ export class FactoryEngine {
     this.lastFullRate = fullRate
     // Keep going while a cue or a loop needs frames; stop (0 frames) when nothing does.
     if ((cuesBusy || ambientOn) && !this.raf) this.raf = requestAnimationFrame((t) => this.frame(t))
+    this.options.onChange?.()
+  }
+
+  /**
+   * One display frame for the quality governor: the interval since the last animating display frame (the same frame
+   * reached twice, through the loop and a tween's flush, counts once; a gap with no animation restarts the count).
+   */
+  private tick(at: number, animating: boolean): void {
+    if (!animating) {
+      this.animTickAt = 0
+      return
+    }
+    const prev = this.animTickAt
+    // An interval in which the floor changed carries the host's React commit and the pool writes for that model change
+    // (a one-off invalidation, section 9.2), which a lower quality cannot shorten: it is not counted. Measured in slice 6:
+    // the 40-agent arrival burst stepped an RTX 3060 down to low on those frames alone (page rAF p95 13.9 ms).
+    const hostWork = this.floorChanged
+    this.floorChanged = false
+    if (prev && at > prev && !hostWork) {
+      const step = this.governor.push(at - prev)
+      if (step) this.applyQuality(step)
+    }
+    if (at > prev) this.animTickAt = at
+  }
+
+  /**
+   * A quality step (section 9.2), in place: low is pixel ratio 1 and a 1024 shadow map; minimal turns shadows off and
+   * draws the far LOD at every zoom. The context (and its MSAA attribute) is kept. One frame follows.
+   */
+  private applyQuality(quality: FactoryQuality): void {
+    if (quality === this.quality || this.disposed) return
+    this.quality = quality
+    const s = qualitySettings(quality, devicePixelRatio())
+    // setPixelRatio resizes the drawing buffer at once (three calls setSize with the current size).
+    if (this.renderer.getPixelRatio() !== s.pixelRatio) this.renderer.setPixelRatio(s.pixelRatio)
+    const on = s.shadowMapSize > 0
+    const wasOn = this.renderer.shadowMap.enabled
+    // The old map is freed; three makes a new one at the new size on the next shadow pass.
+    this.key.shadow.map?.dispose()
+    this.key.shadow.map = null
+    this.renderer.shadowMap.enabled = on
+    this.key.castShadow = on
+    if (on) this.key.shadow.mapSize.set(s.shadowMapSize, s.shadowMapSize)
+    this.renderer.shadowMap.needsUpdate = on
+    if (wasOn !== on) {
+      // Shadow sampling is compiled into the programs: recompile once.
+      this.scene.traverse((o) => {
+        const m = (o as { material?: Material | Material[] }).material
+        if (Array.isArray(m)) for (const x of m) x.needsUpdate = true
+        else if (m) m.needsUpdate = true
+      })
+    }
+    if (s.farLodOnly && this.band !== 'far') {
+      if (this.lodTimer) clearTimeout(this.lodTimer)
+      this.lodTimer = null
+      this.applyLod('far')
+    }
+    this.requestFrame()
     this.options.onChange?.()
   }
 

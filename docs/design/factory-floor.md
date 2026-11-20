@@ -405,7 +405,8 @@ constants live in one pure module, `lib/factory/motion.ts`; chrome around the sc
 
 - On mount (and on a run id change) the scene records a **message cursor**: the key
   `{at}|{from}|{to}|{text first 32 chars}` of the newest message. Only messages after it animate. The store keeps the
-  last 100, so the cursor compares `at` first and the key second.
+  last 100, so the cursor compares `at` first and the key second. (As built, slice 6: the test state's
+  `messageCursor` shows the text part only as a hash, `{at}|{from}|{to}|#{fnv hash}`, so no message text reaches it.)
 - Tool-call counts, worktree statuses and states present at mount are baselines; only later changes cue.
 - Remounting (switching to the conversation and back, changing presentation) never replays.
 
@@ -425,6 +426,8 @@ constants live in one pure module, `lib/factory/motion.ts`; chrome around the sc
 ### 6.1 Pointer
 
 - **Hover** a worker button: its nameplate shows and its station gets a 0.15 emissive lift, instant (no tween).
+  (As built: the nameplate shows; the emissive lift is **not built**, see the slice 2 deviations and the final summary.
+  For the Product Designer to drop or keep as one highlight-overlay instance.)
 - **Click** a worker: `onSelect(id)`. Live opens the existing agent inspector in the live panel; team opens the
   existing role panel. The selected station gets the selection ring. Clicking empty floor does nothing (pan only);
   selection clears through the inspector as today.
@@ -674,6 +677,10 @@ The modules never import three; a test file may (the camera agreement test impor
 | `palette.ts` | `FACTORY_PALETTE.dark` / `.light`, `lampFor(state)` |
 | `snapshot.ts` | `factoryTestState(...)` → `FactoryTestState` |
 | `capability.ts` | `probeWebGL2(createCanvas)` (canvas factory injected so it is testable), forced-fallback key |
+| `quality.ts` | Slice 6: `createQualityGovernor`, `lowerQuality`, `qualitySettings`, memory sums (`shadowMapBytes`, `textureBytes`) |
+| `fallback.ts` | Slice 6: `factoryReason` (section 8 precedence), `currentAgentCount`, `noticeCopy`, `ContextLossWatch` |
+| `cueVisibility.ts` | Slice 6: stations the cue layer hides (a child while its tote flies), shared by the engine and the nameplates |
+| `find.ts` | Slice 2: Find a worker rows and filtering |
 | `boundary.test.ts` | The import boundary check |
 
 ### 10.2 Components: `src/renderer/src/components/canvas/factory/`
@@ -1572,3 +1579,225 @@ e2e samples on every poll); no mock UX walkthrough (slice 6 runs one on the whol
 "assigned" line's child name with providers whose first upsert lacks a handle; nameplates over hidden arriving stations;
 quality steps, perf mode and sample PNGs (slice 6); the bundle budgets; slice 2 and 3 open items not touched here
 (Reviewer M2, L1, L4, L5, hover lift, the paused run's End session).
+
+### Slice 6 (2026-11-20): hardening and sample
+
+Built in parallel against a contract the UI Lead committed first (`perf.memoryBytes`, `perf.pixelRatio`, `qualityStart`
+in the test state; `lib/factory/quality.ts` signatures): a Scene Engineer (6a: `lib/factory/{quality,fallback,
+cueVisibility,snapshot}.ts` with tests, `engine/FactoryEngine.ts`, `engine/cueRender.ts`, `FactoryCanvas`, `FactoryScene`,
+`FactoryLabels`, `FactoryNotice`, `cameraController.ts`), the Technical Artist (`builders/{carriers,materials,stackLight}.ts`,
+`kits.test.ts`, `palette.ts` and test, the sample PNGs, `FactorySample.tsx`, `styles/factory-sample.css`,
+`scripts/render-factory-sample.mjs`, `scripts/render-factory-carriers.mjs`) and a UI Engineer standing in for QA (6-e2e:
+`e2e/factory-floor.mjs`; the QA role was not available to the UI Lead). Slice 5 (bundled models) is not built. Integrated,
+fixed, measured and looked at by the UI Lead. Machine: Windows 11, NVIDIA GeForce RTX 3060 ("ANGLE (NVIDIA, NVIDIA
+GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)"), display device pixel ratio 1, Electron 45.2.3.
+
+**What landed.**
+
+- Quality steps (9.2): `createQualityGovernor` over a sliding 2 s window of animation intervals (cue, ambient and camera
+  tween display frames; intervals over 250 ms ignored); p95 over 24 ms steps high to low to minimal, one way per mount.
+  Steps are applied in place (pixel ratio, shadow map 1024 or off with one material recompile, far LOD at every zoom);
+  MSAA stays as created (a context attribute). Checked: 15 unit tests; in the app with CDP CPU throttling at 30x the
+  engine stepped high to low in about 4 s and to minimal 17 s later with `data-quality` following and one engine; it never
+  stepped on the RTX 3060 in normal use.
+- Software WebGL starts at minimal: the probe now also reads `WEBGL_debug_renderer_info` (SwiftShader passes
+  `failIfMajorPerformanceCaveat`, so the caveat alone had started it at high; found on the SwiftShader e2e numbers).
+  Unit tests for SwiftShader, llvmpipe and the Basic Render Driver; the e2e asserts the start quality per GPU string.
+- Test state: `perf.memoryBytes` (own DataTextures, plus a third when mipmapped, plus the shadow map at width x height x 4),
+  `perf.pixelRatio`, `qualityStart`; `shadowCalls` reads 0 with shadows off.
+- Fallbacks: `lib/factory/fallback.ts` holds `factoryReason` (forced > no-webgl2 > too-many > context-lost > chunk-failed),
+  `currentAgentCount` (earlier sessions do not count), the exact section 8 copy and `ContextLossWatch` (5 s restore timeout,
+  third loss in 10 minutes, a late restore ignored); unit tests with fake timers. The e2e drives the Large team notice
+  with 121 scripted mock spawns (122 agents).
+- Carried defects: Reviewer slice 2 L5 (a failed engine setup disposes the hall pool, every pool and geometry, then loses
+  the context); L1 (`findButtonRef` backs the new `FactorySceneHandle.focusFind()`, which `LiveRunView`'s "Load earlier
+  sessions" now calls before its query fallback); nameplates hide for stations the cue layer hides (`cueVisibility.ts`,
+  full motion only: a new worker's plate appeared 943 ms after its button with full motion, at once under reduced
+  motion); the stack light: lamp pitch 0.26 to 0.32 m (stack 1.66 m) and the dark off-lamp `#3a4150` to `#6c7893` (1.85:1
+  against the plate), so the lit lamp's height reads (screenshots below).
+- Test state privacy: the message cursor held the first 32 characters of the newest message (agent text in the hidden
+  test state, against 10.3); it is now `{at}|{from}|{to}|#{fnv hash}` (section 5.4 note), and a unit guard walks every
+  string of a state built from marked text.
+- Sample: `sample-dark.png` and `sample-light.png` (960 x 520 px, 480 x 260 at 2x, 106,945 and 115,524 B) rendered from the
+  real scene by `node scripts/render-factory-sample.mjs` (after `npm run build`, needs a GPU, run by hand): the five-agent
+  team of 3.3 with Orchestrator and Architect Running, Reviewer Idle, Developer Needs you, Tester Finished, Pause motion
+  on, the scene's own Fit, window zoom factor 2, `capturePage` cropped to the stage. `FactorySample.tsx` is one
+  `<img alt="">` chosen by the html `data-theme` (updates on a theme switch) inside `role="img"` "Static sample factory
+  floor"; no canvas, no three; `contain` in the preview, `cover` in the 72 x 48 thumbnail.
+- Carriers (Technical Artist): tote violet with a dark liner (white in light), capsule cyan with a band, part near-white,
+  one new shared `carrierBand` material, sizes up about 20 percent within the triangle budgets (tote 72 of 80, capsule
+  100 of 120, part 12 of 12), no new draw calls. On-screen contrast against the floor (offscreen harness with the real
+  kits, not the app): tote 2.25 to 5.27 dark and 2.68 to 5.01 light, capsule 2.22 to 5.10 dark and 1.40 to 4.49 light,
+  part against its belt 5.06 to 11.13 dark and 3.11 to 9.58 light. `palette.test.ts` asserts at least 3:1 against the
+  floor and 2:1 against the plate for tote and capsule in both themes.
+- e2e (`e2e/factory-floor.mjs`, `[slice6]` checks): 40-agent stress with draw calls, shadow calls, triangles, label cap 24
+  and ambient cap 12 asserted on the 3D path at fit and near zoom during and after a burst with every cue cap full; the
+  20-toggle mount and unmount leak case; the Large team fallback (3D path only, since forced and no-WebGL2 take
+  precedence); the settings sample (role, name, one loaded image per theme, no canvas, no second engine); CSP zero after
+  the 3D and the floor plan sections and at the end; the start quality per GPU; `E2E_FACTORY_PERF=1`.
+
+**Fixes made during integration (UI Lead).**
+
+- The quality governor skips the interval in which `setFloor` ran: a model change carries the host's React commit and
+  the pool writes, which a lower quality cannot shorten. Before the fix one `E2E_FACTORY_PERF=1` run stepped the RTX 3060
+  to low during the 40-agent arrival burst while the page's own rAF p95 was 13.9 ms.
+- The perf interval check uses section 9.1's method: page rAF timestamps over the first 5 s after the burst is released
+  (the engine's 120-frame ring, read as a worst rolling p95, is still printed). The first slice 6 run reported 47.4 ms
+  from the ring; the page measure is 13.9 ms. The display period (median) and the share over 1.5 periods are printed.
+- `LiveRunView.focusFactoryEntry` calls `focusFind()` first.
+- Reviewer Lows fixed: the paused booth's accessible name uses the shown word "Paused"; a focused worker that leaves the
+  floor hands focus to the tab stop instead of the page body; the engine's `onChange` reads the engine from its ref;
+  `render-factory-carriers.mjs` quotes its `--src` paths with `JSON.stringify`. The dead floor-plan sample rules left in
+  `factory.css` were removed.
+
+**Deviations.**
+
+- Sample PNGs: the engine caps the pixel ratio at 1.5, so the WebGL canvas behind the 2x capture is 720 x 390 and scaled
+  to 960 x 520; nameplates are left out (at 480 px the five plates cover the stations); Fit is ppm 8.7 (far band, robots
+  are capsules) and the east half of the hall is empty floor. The PNGs are own renders, not listed in the GLB manifest.
+- MSAA is not turned off by a quality step (a context attribute; recreating the context was not worth it).
+- The governor ignores model-change intervals (above), a refinement of 9.2's "frame interval p95 over 2 s of animation".
+- The default e2e mode (SwiftShader) now runs at minimal quality (no shadows, far LOD), so the high-quality budgets are
+  asserted by the GPU mode only.
+- Carrier art was judged in an offscreen harness with the real kits, not on in-app mid-flight frames.
+
+**Measured** against section 9.1 (built app, GPU path, quality high, 1600 x 1000, dark; `E2E_FACTORY_SWGL=0
+E2E_FACTORY_PERF=1 node e2e/factory-floor.mjs`, all asserted and passed; the stress run is 1 root, 4 leads and 35 workers
+with a gated burst that fills every cap: carriers 6, per sender 2, parts 12, crates 4, arrivals 12 per second, ambient 12).
+
+| Measure | Target | Measured | How |
+| --- | --- | --- | --- |
+| Idle frames | 0 in 3 s | 0 (every mode, asserted) | test state frame counter, loop idle |
+| Ambient-only frame rate | at most 31 fps | 29 to 30 fps (116 frames in 4.0 s; SwiftShader 3.7 fps) | frame counter over the window |
+| Frame CPU p95, 40 agents, 1600 x 1000, caps full | at most 6 ms | 0.8 to 1.1 ms (worst rolling read) | engine ring of 120 frames |
+| Frame interval p95 during the burst | at most 20 ms on 60 Hz | 13.9 ms over about 650 intervals, max 20.9 to 27.8 ms; display period 7.0 ms (about 144 Hz), 9.1 percent of intervals over 1.5 periods | page rAF over the first 5 s of the burst |
+| Draw calls main / shadow | 120 / 40 | at most 54 / 20 (burst 54 / 15; near zoom 46 / 20; 15 agents 48 / 14) | `renderer.info` main pass and shadow pass |
+| Triangles at 40 agents, near | 250,000 | at most 52,628 | `renderer.info.render.triangles` |
+| Texture and shadow memory | 24 MB | 16,803,157 B high (4,220,245 low; 25,941 minimal) | `perf.memoryBytes` |
+| Device pixel ratio | min(dpr, 1.5); 1 at low | 1 (this display's dpr is 1; the 1.5 cap and 1 below high are unit tested) | `perf.pixelRatio` |
+| Time to first frame | 700 ms cold, 250 ms cached | 299.5 to 329.4 ms cold, 48.1 to 49.9 ms cached (SwiftShader 463 / 315) | `perf.firstFrameMs` from mount |
+| Lazy chunk gzip | 230 kB | **302,076 B** (1,446,841 raw): over | `npm run build`, zlib level 9 on `FactoryCanvas-*.js` |
+| Main chunk growth gzip | 4 kB | not isolated; `index-*.js` 1,494,226 B gzip as built (slice 1 alone added 4,498 B): over | same |
+| GLB total | 0 | 0 (manifest empty) | manifest test |
+| Leak after 20 mounts | equal counts, one engine | 29 geometries / 5 textures on the first and the 21st mount, engines 1, one canvas after every toggle (SwiftShader minimal: 22 / 3) | e2e leak case, asserted |
+
+**Screenshots** (`docs/design/factory-floor-shots/slice-6/`, GPU path unless stated, looked at by the UI Lead):
+
+- `settings-{dark,light}-{1024x640,1600x1000}.png`: the Factory Floor card carries the new thumbnail (a cropped view of
+  the hall) and the preview below shows the whole sample floor: gantry with booth and dock, two lead stations with green
+  lamps, the Developer with an amber lamp, the Tester shuttered. At 1024 x 640 the preview is below the fold (only its top
+  shows).
+- `live-{5,15,40}-{dark,light}-{1024x640,1600x1000}.png`: fit on the final build. 5 agents: the whole hall, booth plate
+  "Orchestrator Idle · Waiting on reports…", line signs, plates for every station. 15 agents: four lines, robots and
+  green bottom lamps readable at ppm 11 (1024) and 20 (1600). 40 agents (the `[mock:factory-floor]` tour with its
+  permission card open, stage 450 px tall): a long perspective strip at ppm 7 with line signs and the Failed (ff-w123)
+  and Needs you (ff-w211) plates.
+- `stack-{failed,needs-you,running}-{dark,light}.png` (ppm 42 to 60, after the stack light fix): Failed has the red lamp at
+  the top of the column with the barrier down; Needs you the amber lamp in the middle with one grey lamp above;
+  Running the green lamp at the bottom with two grey lamps above. Position reads in both themes. Seen on the Needs you
+  shot: the focus ring's top edge runs through the nameplate's second line where the plate overlaps the ring (Low).
+- `notice-restoring-*` (taken 400 ms after the loss; the note had not painted yet, the frame still shows the scene),
+  `notice-3d-stopped-{dark,light}-{1600x1000,1024x640}.png`: the warning banner "3D view stopped" with the exact body,
+  "Try 3D again" and "Use Graph"; the floor plan under it shows the booth band and the first line (the stage is short with
+  the card open, the first tile row sits under the control row).
+- `notice-large-team-{dark,light}-{1024x640,1600x1000}.png` (from the SwiftShader e2e run): info banner "Large team",
+  "This team has 122 agents. The 3D floor shows up to 120, so the floor plan is shown.", "Use Graph"; the floor plan
+  below with the booth tile and the first eight station tiles.
+- `art/`: Technical Artist's carrier before and after frames from the offscreen harness.
+- Packed app: not shot (below).
+
+**Packed app.** Not verified. `npm run pack` was run in the UI Lead's worktree and stopped at once with "pack-local:
+electron-vite is not installed in node_modules; run npm install first": worktrees have no `node_modules` of their own
+(the build resolves the parent checkout's), and installing or linking `node_modules` in a worktree is not allowed. It
+needs a run in the main checkout.
+
+**Reviewer (whole interactive change, read-only).** Verdict: pass with fixes; no Critical or High.
+- Medium, pre-existing (open item a): the shared `DecisionCard` moves focus to a new card's primary button on mount; on
+  the floor, where users press Enter repeatedly, a card mounting between two key presses can take an Enter that allows a
+  permission, merges or approves an MCP install unread. Should: never move focus off a control the user is operating
+  (auto-focus only from the body or inside the tray), announce instead, and ignore activation keys on an auto-focused
+  primary for about 500 ms. Outside the factory files and kept unchanged by the owner; to be tracked privately per
+  SECURITY.md. Open.
+- Low (b): the Find popover (`role=dialog`) is a DOM descendant of the toolbar; keyboard handling is fenced correctly;
+  screen-reader presentation unverified. Open: render it outside the toolbar and check with NVDA.
+- Low (c): hover emissive lift not built; section 6.1 now says so. Open for the Product Designer.
+- Low (d): the perf interval window opened before the burst and ignored the refresh rate: fixed (window after the gate,
+  period and dropped share printed).
+- Low: paused booth's name vs visible word: fixed. Low: focus falls to the body when the focused worker leaves: fixed.
+- Low, pre-existing: `CanvasPreview` puts `role="img"` and its label on an `inert` wrapper, which Chromium drops from the
+  accessibility tree, and `FactorySample` nests a second `role="img"` with the same label (the same pattern serves Graph
+  and Pocket Office). Open: move `inert` to an inner wrapper.
+- Low: bundle budgets over (above). Open, owner decision (minify the renderer build or raise 9.1).
+- Info: `three` in `dependencies` is copied into app.asar although Vite bundles it (pre-existing pattern); the
+  `onChange` closure (fixed); the carriers script's `--src` (fixed; its temp dir is still removed only on success); the
+  hidden test state ships with the GPU string (accepted); warning notices mount as `role=status` through the shared
+  `Banner` (accepted).
+- Confirmed clean: agent text only as React text, none in the test state (cursor hash), no eval, `new Function`, fetch,
+  blob or workers in the chunk, CSP byte-identical to main, the developer key accepts three values only, exact pins,
+  dispose paths, the import boundary.
+
+**Checks (UI Lead, integrated worktree, final build).** `npm run typecheck` clean. `npx vitest run`: 14,688 passed,
+17 failed, 207 skipped; the failures are the six symlink EPERM tests (exec 1, images 1, claudeSplit 2, contextPack 2) and
+the worktree-only CLI tests (npmPackage load, inkVersion 2, TUI Brand, Composer 2, OrgTreePane, PlanPane, StatusBar,
+TranscriptPane 2, WorktreesPane); factory tests 583 of 583. `npm run test:scripts` 206 passed, 3 skipped. `npm run build`
+passes. `e2e/factory-floor.mjs`, each mode on its own, all checks passed: 506 on SwiftShader, 502 on the RTX 3060
+(`E2E_FACTORY_SWGL=0`), 421 with `E2E_FACTORY_PLAN=1`, 509 with `E2E_FACTORY_SWGL=0 E2E_FACTORY_PERF=1`. `e2e/canvas.mjs`
+and `e2e/office.mjs`: all checks passed (run on the build before the last capability change, which touches only the
+probe's software detection).
+
+**Mock UX walkthrough** (UX Researcher, `docs/design/ux-review-factory-floor.md`, shots in
+`docs/design/factory-floor-shots/slice-6/ux/`; Live at both sizes and themes, mouse and keyboard, 39-worker tour, forced
+floor plan, 122-agent Large team). Verdict: good; a first-time user can choose it, read it, find the failed worker, open
+the inspector and drive the floor by keyboard. Rated High by the walkthrough, both open: H1, with a decision card open
+the stage is 450 px (1600 x 1000) or 240 px (1024 x 640) tall and Fit stops at ppm 7 (section 2's minimum), so a
+40-agent floor's lower lines (at 1024 the Needs-you worker on line 7) are off screen and Fit gives no feedback (by spec
+since slice 2; needs a design decision: a lower minimum for short stages or a re-fit when the card arrives); H2, the
+`DecisionCard` auto-focus (the Reviewer's Medium above). Medium, open: "Back to floor" shown with only the default root
+inspector open; the inspector title reads the role ("Implementer") rather than the agent; the log's "assigned work to
+Implementer" for every mock spawn and the log count resetting to 0 after a presentation switch mid-run; at 1024 with the
+inspector open the log strip overlaps Pause motion; "Use Graph" on the Large team banner drops focus to the body (the
+banner is not dismissible by section 8, which makes only "3D view unavailable" dismissible); the Canvas settings copy
+"including Live and Team" (slice 1 Reviewer M2); no key for lamps and stations. Nine Lows are in the file. None was
+changed in this slice.
+
+### Final summary (slices 1 to 4 and 6)
+
+Factory Floor is a Live-only third canvas presentation: a lazily loaded plain three 0.187.0 scene of one hall with a
+control booth, lines of stations and wheeled robots, stack lights, plan board and dock; a DOM mirror of native buttons
+over an aria-hidden canvas with one Tab stop, keyboard camera, Find a worker, Pause motion and a floor log; event-traced
+cues under caps with no replay; and a complete floor plan fallback. Team mode exists in the pure modules but is not
+mounted (owner decision). Bundled models (slice 5) were not built.
+
+Every section 9.1 row is met on an RTX 3060 except the two bundle rows (lazy chunk 302 kB gzip against 230 kB; main
+chunk growth over 4 kB) because the renderer build is not minified; that is an owner decision.
+
+Deviations across the slices (details in each slice): Live only; key light x sign; context-lost note over a hidden
+canvas instead of a dimmed frame; camera input in `cameraController.ts`; floor plan zoom limits; nameplate anchor and line
+sign placement; hover emissive lift not built; lead plaque without text; worktree phrases beyond 7.1; fades by scale;
+parts over the cap dropped; the floor plan reports the same ambient set; the governor's model-change skip; MSAA kept
+after a step; the test-state cursor hash; sample PNG rendering limits.
+
+Section 15, final status:
+
+| Item | Status | How |
+| --- | --- | --- |
+| three r187 size and tree shaking | Settled: 302 kB gzip unminified in this build | built chunk, zlib |
+| No `eval` / `new Function` in r187 core | Confirmed | grep of the built chunk, Reviewer in slices 1 and 6 |
+| GLTFLoader blob URLs, Vite `?inline` for `.glb` | Not applicable (no GLB phase) | slice 5 not built |
+| Lazy chunk in the packed asar app | Still unverified | `npm run pack` cannot run in a worktree (above) |
+| WebGL2 on GitHub runners; software switches in Electron 45 | Switches confirmed locally (SwiftShader, now started at minimal); runners still unverified here | slice 1; e2e passes on either renderer |
+| WebGPU in Electron 45 | Not used, unverified | |
+| Chromium's live-context limit | Still unverified; the leak case keeps one live context through 21 mounts | e2e |
+| Performance targets (section 9) | Confirmed on the RTX 3060 except the bundle rows (disproved) | table above |
+| Perspective size variation, 55 degree pitch, palettes | Confirmed on screenshots | slices 2 to 4, 6 |
+| Mock: 39 spawns, tool states, toolCalls, worktrees | Confirmed (also 121 spawns) | e2e |
+| LiveRunView's pending decisions and agent ids | Settled (derived per kind) | slice 3 |
+| Short time formatter for the log | Settled (`toLocaleTimeString()`) | slice 4 |
+| Screen-reader speech for the mirror | Still unverified | nobody ran a screen reader |
+
+**Open after slice 6.** The walkthrough's H1 (fit on a short stage) and Mediums; the packed asar app; the bundle budgets (owner); `DecisionCard` auto-focus (Medium, private
+tracking); Find popover inside the toolbar; hover lift decision; `CanvasPreview` inert `role="img"`; the focus ring
+crossing an overlapping nameplate; carriers seen only in the harness, not mid-flight in the app; the floor plan at a
+short stage hides the first tile row under the control row; a paused run's End session (product question); the
+"assigned" line's child name with real providers; a real (unthrottled) GPU slowdown triggering a quality step; 60 Hz
+displays, other GPUs, macOS and Linux; screen-reader speech.

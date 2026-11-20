@@ -29,6 +29,8 @@ export interface FactorySnapshotInput {
   renderer: FactoryRendererKind
   reason?: FactoryReason
   quality: FactoryQuality
+  /** Slice 6: the quality the mount started at; defaults to quality. */
+  qualityStart?: FactoryQuality
   mode: 'live' | 'team'
   motion: FactoryMotion
   model?: FloorModel | null
@@ -106,6 +108,7 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
   const state: FactoryTestState = {
     renderer: input.renderer,
     quality: input.quality,
+    qualityStart: input.qualityStart ?? input.quality,
     mode: input.mode,
     motion: input.motion,
     workers,
@@ -120,7 +123,7 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
     recentCues: (input.recentCues ?? []).slice(-40).map(cueRef),
     cuePeaks: { ...(input.cuePeaks ?? NO_PEAKS) },
     logEntries: input.logEntries ?? 0,
-    messageCursor: input.messageCursor ?? null,
+    messageCursor: redactCursor(input.messageCursor ?? null),
     view: { ppm: round(view.ppm), targetX: round(view.targetX), targetZ: round(view.targetZ) },
     loop: input.loop,
     frames: input.frames,
@@ -137,10 +140,34 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
       frameP95Ms: round(perf.frameP95Ms),
       intervalP95Ms: round(perf.intervalP95Ms),
       firstFrameMs: round(perf.firstFrameMs),
+      memoryBytes: perf.memoryBytes,
+      pixelRatio: round(perf.pixelRatio),
       ...(perf.gpu ? { gpu: perf.gpu } : {})
     }
   }
   return state
+}
+
+/** FNV-1a, 32 bit, as 8 hex digits: a stable stand-in for text the test state must not carry. */
+function textHash(text: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(16).padStart(8, '0')
+}
+
+/**
+ * The message cursor (cues.ts messageKey: `at|from|to|first 32 characters of the text`) without the message text: the
+ * text part becomes a hash, so the test state still changes when the cursor moves and never carries agent words.
+ */
+export function redactCursor(cursor: string | null): string | null {
+  if (cursor === null) return null
+  const parts = cursor.split('|')
+  if (parts.length < 4) return `#${textHash(cursor)}`
+  const [at, from, to] = parts
+  return `${at}|${from}|${to}|#${textHash(parts.slice(3).join('|'))}`
 }
 
 /** 95th percentile (nearest rank) of a sample; 0 for an empty one. */
