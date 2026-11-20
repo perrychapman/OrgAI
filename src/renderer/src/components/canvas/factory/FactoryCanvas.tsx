@@ -1,23 +1,30 @@
-// The only React file that loads three (with engine/): FactoryScene imports it dynamically, so three and the engine
-// land in their own chunk. Mounts the canvas, creates one FactoryEngine and wires resize, theme, visibility and
-// context-loss events (docs/design/factory-floor.md sections 8 and 9.2).
+// The only React file that loads three (with engine/ and builders/): FactoryScene imports it dynamically, so three and
+// the engine land in their own chunk. Mounts the canvas, creates one FactoryEngine with the kit source, and wires
+// resize, theme, visibility and context-loss events (docs/design/factory-floor.md sections 8 and 9.2). The camera view
+// comes from the scene's camera controller (cameraController.ts) through the handle; this component never owns it.
 import { useEffect, useImperativeHandle, useRef, type ReactElement, type Ref } from 'react'
-import { FactoryEngine, type FactoryEngineStats, type FactoryTheme } from './engine/FactoryEngine'
+import { FactoryEngine, type EngineFloor, type FactoryEngineStats, type FactoryTheme, type KitHeights } from './engine/FactoryEngine'
+// Kit source: the integration swaps this one line for `import { factoryKits as kits } from './builders'`.
+import { placeholderKits as kits } from './engine/placeholderKits'
+import type { FactoryTokenColours } from './builders/types'
 import type { FactoryQuality } from '../../../lib/factory/snapshot'
+import type { CameraView } from '../../../lib/factory/camera'
 
 export interface FactoryCanvasHandle {
-  zoomIn(): void
-  zoomOut(): void
-  fit(): void
+  /** Applies a camera view and renders it at once (the mirror moves in the same frame). */
+  setView(view: CameraView): void
 }
 
 export interface FactoryCanvasProps {
   quality: FactoryQuality
-  /** The run has a current-session root: show the booth. */
-  booth: boolean
+  floor: EngineFloor
+  /** The view to start with (the controller's current one). */
+  initialView: CameraView
   /** performance.now() when the scene mounted. */
   mountedAt: number
   onStats(stats: FactoryEngineStats): void
+  /** Real heights of the kits (camera fit and mirror boxes). */
+  onHeights(heights: KitHeights): void
   /** The renderer could not be created (no context after all). */
   onFailed(): void
   onContextLost(): void
@@ -25,13 +32,18 @@ export interface FactoryCanvasProps {
   handleRef?: Ref<FactoryCanvasHandle>
 }
 
-const ZOOM_STEP = 1.25
-
 /** The resolved app theme: data-theme on <html> (lib/theme.ts writes dark or light), else the OS scheme. */
 function readTheme(): FactoryTheme {
   const t = document.documentElement.getAttribute('data-theme')
   if (t === 'light' || t === 'dark') return t
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+}
+
+/** Status token colours for lamps and the selection ring (section 4.3), read from the theme's custom properties. */
+function readTokens(): FactoryTokenColours {
+  const s = getComputedStyle(document.documentElement)
+  const v = (name: string, fallback: string): string => s.getPropertyValue(name).trim() || fallback
+  return { success: v('--success', '#22c58b'), warning: v('--warning', '#f5a524'), danger: v('--danger', '#ff6b6b'), accentText: v('--accent-text', '#a592ff') }
 }
 
 export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {
@@ -41,9 +53,12 @@ export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {
   latest.current = props
 
   useImperativeHandle(props.handleRef, () => ({
-    zoomIn: () => engineRef.current?.zoomBy(ZOOM_STEP),
-    zoomOut: () => engineRef.current?.zoomBy(1 / ZOOM_STEP),
-    fit: () => engineRef.current?.fit()
+    setView: (view: CameraView) => {
+      const engine = engineRef.current
+      if (!engine) return
+      engine.setView(view)
+      engine.flush()
+    }
   }), [])
 
   useEffect(() => {
@@ -62,6 +77,8 @@ export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {
       engine = new FactoryEngine(canvas, {
         quality: latest.current.quality,
         theme: readTheme(),
+        kits,
+        tokens: readTokens,
         mountedAt: latest.current.mountedAt,
         onChange: () => latest.current.onStats(engine.stats())
       })
@@ -71,9 +88,11 @@ export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {
       return
     }
     engineRef.current = engine
-    engine.setBooth(latest.current.booth)
     const rect = host.getBoundingClientRect()
     engine.setSize(rect.width, rect.height)
+    engine.setFloor(latest.current.floor)
+    engine.setView(latest.current.initialView)
+    latest.current.onHeights(engine.heights())
 
     const onLost = (e: Event): void => {
       // Without preventDefault the browser never restores the context.
@@ -133,8 +152,8 @@ export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {
   }, [])
 
   useEffect(() => {
-    engineRef.current?.setBooth(props.booth)
-  }, [props.booth])
+    engineRef.current?.setFloor(props.floor)
+  }, [props.floor])
 
   return <div ref={hostRef} className="factory-canvas-host" />
 }
