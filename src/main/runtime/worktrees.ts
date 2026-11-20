@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { scrubControlEnv } from './childEnv'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { devNull } from 'node:os'
@@ -66,6 +66,99 @@ function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; 
     })
     // Git under the repo lock is ended with the host at the shutdown's hard limit (cli-standalone.md 4.3).
     trackChildProcess(child, 'git')
+  })
+}
+
+/** `-c` overrides every read-only history query passes: nothing in a hostile repository's own config may start a program. */
+const HOSTILE_CONFIG_OVERRIDES = [
+  '-c', 'core.fsmonitor=false',
+  '-c', `core.hooksPath=${devNull}`,
+  '-c', 'core.pager=cat',
+  '-c', 'core.sshCommand=false',
+  '-c', 'core.askPass=',
+  '-c', 'log.showSignature=false',
+  '-c', 'gc.auto=0',
+  '-c', 'maintenance.auto=false'
+]
+
+/** The environment of a read-only history query: control variables scrubbed and every inherited GIT_* dropped (GIT_DIR, GIT_CONFIG_*, GIT_SSH...). */
+function readOnlyGitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [k, v] of Object.entries(scrubControlEnv(process.env))) if (!k.toUpperCase().startsWith('GIT_')) env[k] = v
+  return {
+    ...env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_OPTIONAL_LOCKS: '0',
+    GIT_PAGER: 'cat',
+    GIT_NO_REPLACE_OBJECTS: '1',
+    GIT_CONFIG_NOSYSTEM: '1'
+  }
+}
+
+export interface CommitTimesOptions {
+  /** Kill git after this long (default 5 s). */
+  timeoutMs?: number
+  /** Stop reading after this many commits (default 5000). */
+  maxCommits?: number
+}
+
+/**
+ * Committer timestamps (unix seconds) of the commits reachable from HEAD at or after `sinceMs`, merge commits left out.
+ * Asks git for `%ct` and nothing else, so no message, author, file name or path is ever read. Spawns git directly (no
+ * shell, argument array, no pager, no prompts, hostile-config overrides, GIT_* environment dropped, a timeout), reads at
+ * most `maxCommits` lines and then kills it. `root` must itself contain `.git` (a project folder inside another
+ * repository does not count that repository's commits). Never throws: any failure is `{ ok: false }`.
+ */
+export function gitCommitTimes(root: string, sinceMs: number, opts: CommitTimesOptions = {}): Promise<{ ok: boolean; times: number[] }> {
+  const bin = gitExecutable()
+  const failed = { ok: false, times: [] as number[] }
+  if (!bin || !isGitRepo(root)) return Promise.resolve(failed)
+  const maxCommits = opts.maxCommits ?? 5000
+  const args = [
+    '--no-pager',
+    ...HOSTILE_CONFIG_OVERRIDES,
+    'log', 'HEAD', '--no-merges', '--no-show-signature', `--since=${new Date(sinceMs).toISOString()}`, `--max-count=${maxCommits}`, '--format=%ct'
+  ]
+  return new Promise((resolve) => {
+    let settled = false
+    let buf = ''
+    const times: number[] = []
+    const finish = (r: { ok: boolean; times: number[] }): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(r)
+    }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(bin, args, { cwd: root, env: readOnlyGitEnv(), windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'ignore'] })
+    } catch {
+      resolve(failed)
+      return
+    }
+    trackChildProcess(child, 'git')
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(failed)
+    }, opts.timeoutMs ?? 5000)
+    const take = (line: string): void => {
+      const n = Number(line.trim())
+      if (line.trim() !== '' && Number.isInteger(n) && n > 0) times.push(n)
+    }
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      buf += chunk
+      const parts = buf.split('\n')
+      buf = parts.pop() ?? ''
+      for (const p of parts) take(p)
+      if (times.length >= maxCommits || buf.length > 1024) child.kill()
+    })
+    child.on('error', () => finish(failed))
+    child.on('close', (code) => {
+      if (buf) take(buf)
+      const capped = times.length >= maxCommits
+      finish(code === 0 || capped ? { ok: true, times: times.slice(0, maxCommits) } : failed)
+    })
   })
 }
 

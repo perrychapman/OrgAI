@@ -134,6 +134,8 @@ export const CHANNEL_PARAMS: Readonly<Record<string, readonly ParamSpec[]>> = {
   // Folder config trust: folderConfigProjectArg / folderConfigTrustArgs rebuild the input.
   [IPC.projectsFolderConfig]: ID,
   [IPC.projectsSetFolderConfigTrust]: OBJECT,
+  // Desktop only (projects/commitActivity.ts): no argument; the service reads the stored projects itself.
+  [IPC.projectsCommitActivity]: NONE,
 
   // ---- TEAM_FILES_IPC ---- (teamFilesArgs rebuilds each input: safe project id, 64-hex digest)
   [TEAM_FILES_IPC.teamFilesStatus]: OBJECT,

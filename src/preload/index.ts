@@ -45,7 +45,8 @@ const api: OrgAIApi = {
     scanAgents: (path: string) => ipcRenderer.invoke(IPC.projectsScanAgents, path),
     previewImport: (input) => ipcRenderer.invoke(IPC.projectsPreviewImport, input),
     applyImport: (input) => ipcRenderer.invoke(IPC.projectsApplyImport, input),
-    exportOrg: (projectId: string) => ipcRenderer.invoke(IPC.projectsExportOrg, projectId)
+    exportOrg: (projectId: string) => ipcRenderer.invoke(IPC.projectsExportOrg, projectId),
+    commitActivity: () => ipcRenderer.invoke(IPC.projectsCommitActivity)
   },
   connections: {
     list: () => ipcRenderer.invoke(IPC.connectionsList),

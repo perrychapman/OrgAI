@@ -197,6 +197,7 @@ const PAYLOADS: Record<string, unknown[]> = {
   'kit:applyImport': [{ path: '/tmp/x.orgai-kit.json', digest: 'd'.repeat(64), choices: [] }],
   // Dev's later channels
   'permissions:ignored': ['p_abc123'],
+  'projects:commitActivity': [],
   'projects:folderConfig': ['p_abc123'],
   'projects:setFolderConfigTrust': [{ projectId: 'p_abc123', trust: true, digest: 'a'.repeat(64) }],
   'teamFiles:status': [{ projectId: 'p_abc123' }],
