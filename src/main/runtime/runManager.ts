@@ -5125,6 +5125,21 @@ export class RunManager {
    */
   private cardRolesForStoreAtCreation(active: ActiveRun, proposal: Proposal): Map<string, string[]> | undefined {
     const ctx = active.ctx
+    if (active.summary.kind === 'setup' && proposal.kind === 'skills' && !isVirtualProjectId(active.summary.projectId)) {
+      // A setup run's roles already are the stored roles: no mapping, only the slug record checked at approval.
+      const storedSetup = this.storedProjectFor(active.summary.projectId)
+      const items = (proposal.payload as SkillsProposalPayload).items
+      if (!storedSetup || !Array.isArray(items)) return undefined
+      const recorded = new Map<string, string[]>()
+      for (const item of items) {
+        if (!item || item.scope === 'library' || !Array.isArray(item.roles)) continue
+        for (const slug of item.roles) {
+          const ids = storedSetup.roles.filter((r) => r.slug === slug).map((r) => r.id)
+          if (typeof slug === 'string' && ids.length) recorded.set(slug, ids)
+        }
+      }
+      return recorded.size ? recorded : undefined
+    }
     if (!ctx || active.summary.kind !== 'work' || active.summary.quick || isVirtualProjectId(active.summary.projectId)) return undefined
     if (proposal.kind !== 'mcpServers' && proposal.kind !== 'skills') return undefined
     const stored = this.storedProjectFor(active.summary.projectId)

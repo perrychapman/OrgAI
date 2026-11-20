@@ -371,6 +371,41 @@ describe('setup runs: the Architect attaches skills through propose_skills', () 
     expect(await pending).toMatch(/^APPROVED\. Linked triage from the skill library to this project/)
     expect(setup.raw.applyProposal).toHaveBeenLastCalledWith('real', expect.objectContaining({ kind: 'skills' }), { projectOnly: true })
   })
+
+  describe('the slug record of a setup skills card (N2)', () => {
+    const card = { agentId: 'root', title: 's', kind: 'skills', payload: { items: [{ action: 'link', scope: 'project', libraryId: 'lib1', draft: { name: 'triage', description: 'd', body: 'b' }, roles: ['engineer'] }], rationale: 'r' } } as never
+
+    async function open() {
+      let stored = makeProject({ id: 'real', path: folder() })
+      const { m, ctxs, setup } = rig({ resolveProject: () => stored }, { live: true })
+      const run = await m.start({ project: stored, prompt: 'x', kind: 'setup' })
+      const pending = ctxs[0].requestProposal(card)
+      return { m, run, pending, setup, edit: (f: (p: Project) => Project) => { stored = f(stored) } }
+    }
+
+    it('refuses at approval when the slug moved to another role, saving nothing', async () => {
+      const { m, run, pending, setup, edit } = await open()
+      edit((p) => ({ ...p, roles: p.roles.map((r) => (r.id === 'r-eng' ? { ...r, slug: 'builder' } : r.id === 'r-rev' ? { ...r, slug: 'engineer' } : r)) }))
+      m.decideProposal(run.id, lastRequest(run.id).proposal.id, { behavior: 'approve' })
+      expect(await pending).toMatchObject({ behavior: 'revise', feedback: expect.stringContaining('nothing was saved') })
+      expect(setup.raw.applyProposal).not.toHaveBeenCalled()
+    })
+
+    it('refuses at approval when the slug was removed', async () => {
+      const { m, run, pending, setup, edit } = await open()
+      edit((p) => ({ ...p, roles: p.roles.filter((r) => r.slug !== 'engineer') }))
+      m.decideProposal(run.id, lastRequest(run.id).proposal.id, { behavior: 'approve' })
+      expect(await pending).toMatchObject({ behavior: 'revise' })
+      expect(setup.raw.applyProposal).not.toHaveBeenCalled()
+    })
+
+    it('approves and applies when the chart is unchanged', async () => {
+      const { m, run, pending, setup } = await open()
+      m.decideProposal(run.id, lastRequest(run.id).proposal.id, { behavior: 'approve' })
+      expect(await pending).toEqual({ behavior: 'approve' })
+      expect(setup.raw.applyProposal).toHaveBeenCalledWith('real', expect.objectContaining({ kind: 'skills' }), { projectOnly: true })
+    })
+  })
 })
 
 describe('MCP assistant build workspace', () => {
