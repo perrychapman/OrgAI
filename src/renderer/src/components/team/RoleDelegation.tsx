@@ -137,9 +137,12 @@ export default function RoleDelegation({
               </summary>
               <div className="stack-2 rd-other-body">
                 <p className="rd-note">Delegating across branches skips the roles in between. Use it only when you mean it.</p>
-                {view.branches.map((g) => (
-                  <div key={g.head.id} className="stack-1" role="group" aria-label={`${g.head.name} branch`}>
-                    <span className="field-label">{g.head.name} branch</span>
+                {view.branches.map((g) => {
+                  // A branch of one role that heads itself needs no heading: the row is the branch.
+                  const single = g.roles.length === 1 && g.roles[0].id === g.head.id
+                  return (
+                  <div key={g.head.id} className="stack-1" role={single ? undefined : 'group'} aria-label={single ? undefined : `${g.head.name} branch`}>
+                    {!single && <span className="field-label">{g.head.name} branch</span>}
                     <ul className="rd-list">
                       {g.roles.map((r) => (
                         <li key={r.id} className="rd-row">
@@ -149,7 +152,8 @@ export default function RoleDelegation({
                       ))}
                     </ul>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             </details>
           )}
