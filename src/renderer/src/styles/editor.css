@@ -175,15 +175,26 @@
     --avatar-ring: 60%;
   }
 }
+/* QA S1: a long unbroken name or ID clips with an ellipsis on one line; the card keeps its size. */
+.role-node .head-text {
+  min-width: 0;
+  flex: 1 1 auto;
+}
 .role-node .name {
   font-weight: var(--weight-semibold);
   font-size: var(--text-body);
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .role-node .slug {
   font-family: var(--font-mono);
   font-size: var(--text-caption);
   color: var(--canvas-node-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .role-node .meta {
   display: flex;

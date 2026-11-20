@@ -44,22 +44,6 @@
   color: var(--text-secondary);
   white-space: nowrap;
 }
-.team-problems-chip {
-  flex: 0 1 auto;
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-0h) var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-full);
-  background: var(--surface-2);
-  color: var(--text-secondary);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  white-space: nowrap;
-  overflow: hidden;
-}
 .team-view-switch:empty {
   display: none;
 }
@@ -73,22 +57,7 @@
 .team-header[data-compact='true'] .btn.team-header-btn:not(.primary) {
   padding-inline: var(--space-2);
 }
-/* A narrow header: the chip keeps its icon and gives its words to assistive technology and the tooltip, so it is never
-   clipped mid-word; under 560 px the count goes too (it is in the title's tooltip). */
-@container teamhdr (max-width: 640px) {
-  .team-problems-text {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-  .team-problems-chip {
-    position: relative;
-    padding: var(--space-0h);
-  }
-}
+/* A narrow header: under 560 px the count goes (it is in the title's tooltip). */
 @container teamhdr (max-width: 560px) {
   .team-header-count {
     display: none;

@@ -50,6 +50,16 @@ describe('toolGroups', () => {
     expect(summarySentence(groups, ['Read', 'Edit', 'Bash'])).toBe('Can read files, change files and run commands.')
   })
 
+  it('never writes two spaces in a row, whatever groups are on (QA P1)', () => {
+    const reps = ['Read', 'Edit', 'Bash', 'WebFetch', 'TodoWrite', 'Rogue']
+    for (let mask = 0; mask < 1 << reps.length; mask++) {
+      const tools = reps.filter((_, i) => mask & (1 << i))
+      const text = summarySentence(resolveGroups(TOOL_CATALOG, tools), tools)
+      expect(text).not.toMatch(/\s{2}/)
+      expect(text).toBe(text.trim())
+    }
+  })
+
   it('marks elevated phrases', () => {
     expect(summaryParts(groups, ['Read', 'Bash']).map((p) => p.elevated)).toEqual([false, true])
   })

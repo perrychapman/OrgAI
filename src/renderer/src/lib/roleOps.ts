@@ -114,7 +114,10 @@ export function restoreRole(roles: Role[], removed: RemovedRole): Role[] {
     }
     return back
   })
-  next.splice(Math.min(removed.index, next.length), 0, removed.role)
+  // The ID may have been taken meanwhile (another role added or renamed to it): the restored role then gets the next free
+  // one, so no two roles ever share an ID (and so a team file).
+  const slug = uniqueSlug(next, rid, removed.role.slug)
+  next.splice(Math.min(removed.index, next.length), 0, slug === removed.role.slug ? removed.role : { ...removed.role, slug })
   return next
 }
 

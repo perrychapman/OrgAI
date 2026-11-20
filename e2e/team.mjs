@@ -1091,6 +1091,86 @@ async function sectionRunsEnded(page) {
   check((await tray.locator('[data-testid=team-since]').count()) === 0, 'the since line is not repeated without a new run')
 }
 
+/**
+ * QA follow-up (B1, S1, P1, P4): Add role gives every role its own non-empty ID whatever the name; a very long unbroken
+ * name is clipped inside the chart card and keeps the card size; the role editor's header keeps Remove on the name's row;
+ * the collapsed tools summary has no double space.
+ */
+async function sectionAddIdsAndLongName(page, app, shot) {
+  await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [1440, 900])
+  await sleep(600)
+  const addBtn = page.locator('[data-testid=team-add-role]')
+  const pop = page.locator('[data-testid=add-role-popover]')
+  const rolesNow = async () => (await findProject(page, NAME)).roles
+  const addNamed = async (name) => {
+    await addBtn.click()
+    await pop.waitFor({ timeout: 5000 })
+    await pop.locator('[data-testid=add-role-name]').fill(name)
+    await pop.locator('[data-testid=add-role-name]').press('Enter')
+    await pop.waitFor({ state: 'hidden', timeout: 5000 })
+    await sleep(350)
+  }
+  const names = ['Role 1', 'Role-1', 'Role 1.', 'role_1', '!!!', '???', '经理人员', 'مدير']
+  const before = await rolesNow()
+  for (const n of names) await addNamed(n)
+  const after = await rolesNow()
+  const added = after.filter((r) => !before.some((b) => b.id === r.id))
+  check(added.length === names.length, `all ${names.length} roles were added`, JSON.stringify(added.map((r) => r.name)))
+  const slugs = after.map((r) => r.slug)
+  check(slugs.every((s) => typeof s === 'string' && s.length > 0), 'every role ID is non-empty', JSON.stringify(slugs))
+  check(new Set(slugs).size === slugs.length, 'every role ID is distinct (QA B1)', JSON.stringify(added.map((r) => [r.name, r.slug])))
+  check(new Set(after.map((r) => r.id)).size === after.length, 'every internal role id is distinct')
+  // The popover does not show an ID, so a suffixed ID needs no message there.
+  await addBtn.click()
+  await pop.waitFor({ timeout: 5000 })
+  check(!/\bID\b|role-1/.test(await pop.innerText()), 'the Add role popover shows no ID')
+  await page.keyboard.press('Escape')
+  await pop.waitFor({ state: 'hidden', timeout: 5000 })
+
+  // S1 and P4: a 200-character unbroken name.
+  const long = 'W'.repeat(200)
+  await addNamed(long)
+  const longRole = (await rolesNow()).find((r) => r.name === long)
+  check(!!longRole, 'a 200-character name is accepted')
+  if (!longRole) return
+  const node = page.locator(`.react-flow__node[data-id="${longRole.id}"]`)
+  await node.waitFor({ timeout: 5000 })
+  const box = await page.evaluate((id) => {
+    const wrap = document.querySelector(`.react-flow__node[data-id="${id}"]`)
+    const card = wrap.querySelector('.role-node')
+    const rect = (el) => { const b = el.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height, r: b.right, b: b.bottom } }
+    const nm = card.querySelector('.name')
+    const other = [...document.querySelectorAll('.react-flow__node .role-node')].find((c) => c !== card && c.querySelector('.name')?.textContent === 'Implementer')
+    return { card: rect(card), name: rect(nm), slug: rect(card.querySelector('.slug')), otherH: other ? other.getBoundingClientRect().height : 0, zoom: card.getBoundingClientRect().width / card.offsetWidth, nameOverflow: getComputedStyle(nm).textOverflow, title: nm.getAttribute('title'), aria: card.querySelector('[data-testid=role-node-caps]')?.getAttribute('aria-label') ?? '' }
+  }, longRole.id)
+  const inside = (c, p) => c.x >= p.x - 0.5 && c.r <= p.r + 0.5 && c.y >= p.y - 0.5 && c.b <= p.b + 0.5
+  check(inside(box.name, box.card) && inside(box.slug, box.card), 'a 200-character name and its ID line stay inside the role card (QA S1)', JSON.stringify(box))
+  check(box.nameOverflow === 'ellipsis' && box.title === long, 'the card name clips with an ellipsis and keeps the full name in its tooltip')
+  check(box.aria.startsWith(long), 'the card keeps the full name in its accessible name')
+  check(Math.abs(box.card.h - box.otherH) <= 1 && Math.abs(box.card.w / box.zoom - 220) <= 1, 'the long-name card keeps the normal card size', JSON.stringify({ h: box.card.h, other: box.otherH, w: box.card.w, zoom: box.zoom }))
+  await shot('long-name-card')
+  // P4: the editor header stays one row with Remove beside the name.
+  await node.click()
+  await teamPanelTab(page, 'Role').waitFor()
+  const head = await page.evaluate(() => {
+    const hd = document.querySelector('aside.side-panel .side-header, .team-panel-pane .side-header') ?? document.querySelector('.side-header')
+    const h2 = hd.querySelector('h2')
+    const btn = [...hd.querySelectorAll('button')].find((b) => /Remove/.test(b.textContent ?? ''))
+    const hb = hd.getBoundingClientRect(), tb = h2.getBoundingClientRect(), bb = btn.getBoundingClientRect()
+    return { headH: hb.height, h2Mid: tb.top + tb.height / 2, btnMid: bb.top + bb.height / 2, btnBottom: bb.bottom, headBottom: hb.bottom, btnRight: bb.right, headRight: hb.right, title: h2.getAttribute('title'), ellipsis: getComputedStyle(h2).textOverflow }
+  })
+  check(Math.abs(head.h2Mid - head.btnMid) <= 3 && head.btnBottom <= head.headBottom && head.btnRight <= head.headRight + 0.5, 'the role editor header keeps Remove on the name row (QA P4)', JSON.stringify(head))
+  check(head.title === long && head.ellipsis === 'ellipsis', 'the long header name truncates and keeps its full text in the title')
+  // P1: the collapsed tools summary has no double space.
+  const summary = await page.evaluate(() => {
+    const els = [...document.querySelectorAll('[data-testid=role-capabilities] *')].filter((e) => /^Can\b/.test((e.textContent ?? '').trim()) && e.children.length > 0 && /files|commands|web/.test(e.textContent ?? ''))
+    return els.length ? els[els.length - 1].textContent : ''
+  })
+  check(summary === '' || !/\s{2}/.test(summary), 'the collapsed tools summary has no double space (QA P1)', JSON.stringify(summary))
+  const all = await page.evaluate(() => document.querySelector('[data-testid=role-capabilities]')?.textContent ?? '')
+  check(!/Can\s{2,}/.test(all), 'no "Can  " double space in the role capabilities block', JSON.stringify(all.slice(0, 120)))
+}
+
 const { app, page, shot } = await launch({ shotPrefix: 'team' })
 try {
   await createProject(page, { path: repo, name: NAME })
@@ -1176,6 +1256,7 @@ try {
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
   await sectionNodeMenu(page)
   await sectionAddAndDrag(page, app, shot)
+  await sectionAddIdsAndLongName(page, app, shot)
 } catch (e) {
   check(false, 'team flow ran without throwing', e.stack ?? String(e))
   await shot('error').catch(() => {})

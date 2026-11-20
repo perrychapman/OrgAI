@@ -50,6 +50,15 @@ describe('roleOps', () => {
     expect(back.find((r) => r.id === 'root')?.spawnable).toEqual(['a'])
   })
 
+  it('Undo of a removal gives the role a free ID when another role took its ID meanwhile', () => {
+    const { roles: after, removed } = removeRole(roles, 'b')
+    const taken = [...after, { ...role('x', 'root'), slug: 'b' }]
+    const back = restoreRole(taken, removed!)
+    const slugs = back.map((r) => r.slug)
+    expect(new Set(slugs).size).toBe(slugs.length)
+    expect(back.find((r) => r.id === 'b')?.slug).toBe('b-2')
+  })
+
   it('re-parents to root and detects cycles', () => {
     const next = setReportsTo(roles, 'b', 'root')
     expect(next.find((r) => r.id === 'b')?.reportsTo).toBe('root')

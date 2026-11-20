@@ -106,8 +106,8 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
       {!station && !hex && <div className="head">
         <div className="avatar">{initials(role.name)}</div>
         <div className="head-text">
-          <div className="name">{role.name}</div>
-          {!compact && <div className="slug">{role.slug}</div>}
+          <div className="name" title={role.name}>{role.name}</div>
+          {!compact && <div className="slug" title={role.slug}>{role.slug}</div>}
         </div>
       </div>}
       {compact && (
