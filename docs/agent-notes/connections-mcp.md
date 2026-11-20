@@ -161,7 +161,27 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
   `error` with that one-line message, writes a harness system row whose detail is the scrubbed raw text, and
   `complete()` throws it. `[mock:auth-fail]` drives the mock the same way. The live failure shape is unverified
   (from the 0.3.312 typings and the user's report).
-- Codex (`@openai/codex` 0.167.0 pinned since 2026-11-12; facts below were checked on 0.166.0 unless they name 0.167.0):
+- Codex (`@openai/codex` 0.169.0 pinned since 2026-11-20; facts below were checked on 0.166.0 unless they name 0.167.0
+  or 0.169.0):
+  - Move to 0.169.0 (Dependabot PR #60, 2026-11-20). `CODEX_PINNED_VERSION` / `CODEX_SUPPORTED_RANGE` are now
+    0.169.0 / 0.169.x (`codexBinary.ts`); 0.167.x is refused like any other untested version, except through
+    `ORGAI_CODEX_PATH` (a warning). How it was checked, all token-free (no login, no model call):
+    - `codex app-server generate-ts --experimental` of 0.167.0 (installed into a temp folder) and 0.169.0 diffed:
+      `ServerRequest`, `ServerNotification`, `InitializeParams` / capabilities, thread/turn start and resume params,
+      approval request params, `SandboxPolicy` and the rate-limit shapes are unchanged. Additive only: agentMessage
+      items gain `moderation: { moderated, display } | null`, `item/completed` an optional `contentTokenCount`, `Thread`
+      `attachedToThreadId`, `GetAccountResponse.userId`, `ModelListParams.modelProvider`, thread/turn settings
+      `environments`, `ThreadItemsListParams.deferOutput`, `Config.client_search_provider`; a new
+      `inferenceHookDenied` `CodexErrorInfo` value (parsed as a plain failure, like any unknown value); new client
+      methods `modelProvider/list`, `modelProvider/config/write`, `thread/prepareApprovedPlan` and optional params
+      on the gateway OAuth calls. OrgAI uses none of the additions. What a `moderated: true` agent message means for
+      its text (the adapter shows the text it gets) is unverified.
+    - Real 0.169.0 binary: `ORGAI_CODEX_INTEGRATION=1 ORGAI_TEST_INSTALLED_CODEX=1` runs of `codexAppServer.test.ts`
+      and `codexInstalled.test.ts` (loopback fake Responses and MCP endpoints) pass, none skipped (Windows);
+      `scripts/probe-codex-trust.mjs`: with the untrusted override every scenario keeps a folder's config, hooks and
+      MCP servers disabled (also the dotted-path form, scenario H); only the no-override danger-full-access case loads them
+      (the case the override exists for).
+    - Live behaviour with a model is unverified, as for 0.167.0.
   - Move to 0.167.0 (Dependabot PR #53, owner decision, 2026-11-12). `CODEX_PINNED_VERSION` / `CODEX_SUPPORTED_RANGE`
     are now 0.167.0 / 0.167.x (`codexBinary.ts`); 0.166.x is refused like any other untested version, except through
     `ORGAI_CODEX_PATH` (a warning). How it was checked, all token-free (no login, no model call):

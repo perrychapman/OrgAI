@@ -12,6 +12,10 @@ import type { ResolvedMcpServer, RunConnection } from './types'
  * for 0.167.0 and diffed (2026-11-12): no shape used here changed; 0.167.0 adds the `humanCommand` command-approval
  * kind (parseCommandApproval), `InitializeCapabilities.requiredHumanApproval` (not sent), `thread/guardianReview`,
  * `thread/section/changed`, a `fileId` form of audio input and `ThreadSampleParams.interruptOnCancel` (none used).
+ * Re-generated for 0.169.0 and diffed (2026-11-20): ServerRequest, ServerNotification and InitializeParams unchanged; only
+ * additive fields and new client methods (agentMessage `moderation`, ItemCompleted `contentTokenCount`,
+ * Thread `attachedToThreadId`, the `inferenceHookDenied` CodexErrorInfo, `modelProvider/list`, `thread/prepareApprovedPlan`;
+ * none used, an unknown error info already reads as a plain failure).
  * VERIFIED against that schema: names and field shapes below. UNVERIFIED (needs a model turn, see
  * scripts/smoke-codex.mjs): the order and exact content of notifications during a real turn.
  */

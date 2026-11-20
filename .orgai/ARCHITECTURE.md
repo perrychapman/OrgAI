@@ -17,7 +17,7 @@ The UI overhaul's shell pass and its parallel restyles have landed (docs/design/
 - lucide-react 1.64 (SVG icons that take their color from currentColor)
 - Plain CSS with custom-property design tokens (no CSS framework)
 - @anthropic-ai/claude-agent-sdk 0.3.312 (Claude adapter), zod 4 for harness tool schemas
-- @openai/codex 0.167.0, exact pin, tested range 0.167.x (Codex adapter and the OpenAI connection: `codex app-server`, JSON-RPC over stdio)
+- @openai/codex 0.169.0, exact pin, tested range 0.169.x (Codex adapter and the OpenAI connection: `codex app-server`, JSON-RPC over stdio; moved from 0.167.0 on 2026-11-20 after a token-free generate-ts diff, the installed-binary integration tests and the trust probe, see `docs/agent-notes/connections-mcp.md`)
 - vitest 3 (node env) for unit tests; playwright-core Electron driver for e2e
 - electron-builder (Windows nsis + portable tested; mac dmg and linux AppImage configured, untested)
 - electron-updater 6.8.11, exact pin (runtime dependency; builder-util-runtime 9.7.0 shared with electron-builder 26.18): the desktop updater's GitHub provider, loaded lazily by `src/main/updaterRuntime.ts` in packaged apps only (docs/agent-notes/updates.md)

@@ -3,7 +3,8 @@ import type { CodexAppServer } from '../runtime/codexAppServer'
 /**
  * Account, login, model and rate-limit calls against `codex app-server`. Every method name and shape for
  * these lives here. Shapes come from `codex app-server generate-ts --experimental` (@openai/codex 0.166.0;
- * re-generated for 0.167.0 with no change to the account, login, model or rate-limit shapes).
+ * re-generated for 0.167.0 with no change to the account, login, model or rate-limit shapes; for 0.169.0 (2026-11-20)
+ * only additive optional fields: `GetAccountResponse.userId`, `ModelListParams.modelProvider`, neither used).
  * VERIFIED live (token-free): initialize + account/read on an empty CODEX_HOME -> { account: null,
  * requiresOpenaiAuth: true }. UNVERIFIED live (need a login): account/login/start, account/login/completed,
  * model/list, account/rateLimits/read. All parsing is defensive: unknown or missing fields degrade, never throw.
