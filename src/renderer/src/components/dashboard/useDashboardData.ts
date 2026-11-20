@@ -3,7 +3,8 @@ import { useShallow } from 'zustand/react/shallow'
 import { isVirtualProjectId, type Project, type RunSummary } from '@shared/types'
 import { isRunLive, useAppStore, waitingRuns, type RunState } from '../../store/useAppStore'
 import { projectKindOf } from '@shared/defaults'
-import { waitingItems } from '../../lib/needsYou'
+import { combinedDecisionCount, waitingItems } from '../../lib/needsYou'
+import { useTeamAttentionItems } from '../../lib/menuActions'
 import { BAND_RECOMPUTE_MS, bandSignature, type BandRunIn } from '../../lib/dashboardBand'
 
 /**
@@ -37,6 +38,13 @@ export function useWaitingRuns(): RunState[] {
         .sort((a, b) => a.summary.startedAt - b.summary.startedAt || a.summary.id.localeCompare(b.summary.id)),
     [list, projects]
   )
+}
+
+/** The bell's count: open decisions of runs plus team-files items (lib/needsYou.ts). */
+export function useDecisionTotal(): number {
+  const waiting = useWaitingRuns()
+  const teamItems = useTeamAttentionItems()
+  return useMemo(() => combinedDecisionCount(waiting, teamItems), [waiting, teamItems])
 }
 
 /** Live runs (starting, running, idle, stopping), every project, assistants included, in start order. */

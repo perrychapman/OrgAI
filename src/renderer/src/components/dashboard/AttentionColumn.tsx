@@ -252,12 +252,12 @@ export function NeedsYouRegion({ caps, onAnnounce }: { caps: DashCaps; onAnnounc
 /** Paused (section 9.1), its own grid area; renders nothing without paused runs. */
 export function PausedRegion({ caps }: { caps: DashCaps }): ReactElement | null {
   const summaries = useAllSummaries()
-  return <PausedSection cap={caps.paused} summaries={summaries} />
+  return <PausedSection cap={caps.resume} summaries={summaries} />
 }
 
 /** Recently ended (section 9.2), its own grid area; renders nothing when empty. */
 export function EndedRegion({ caps, lastSeen, clearedAt, onMarkAllSeen }: { caps: DashCaps; lastSeen: number; clearedAt: number; onMarkAllSeen: () => void }): ReactElement | null {
   const now = useNow()
   const summaries = useAllSummaries()
-  return <SinceSection cap={caps.ended} lastSeen={lastSeen} clearedAt={clearedAt} onMarkAllSeen={onMarkAllSeen} now={now} summaries={summaries} />
+  return <SinceSection cap={caps.resume} lastSeen={lastSeen} clearedAt={clearedAt} onMarkAllSeen={onMarkAllSeen} now={now} summaries={summaries} />
 }
