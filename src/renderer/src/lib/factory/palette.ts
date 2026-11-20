@@ -49,6 +49,12 @@ export interface FactoryRoleColours {
   tote: string
   capsule: string
   part: string
+  /**
+   * Slice 6: the contrasting second tone of the carriers (the tote's liner and the capsule's band): near black on the dark
+   * theme's light carriers, white on the light theme's dark ones, so each carrier has a high-contrast stripe or hollow
+   * whatever it flies over (floor, plate or machine).
+   */
+  carrierBand: string
   paint: string
   vacant: string
   blob: string
@@ -85,7 +91,9 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
     clear: '#0b0d12',
     gridFaint: '#2f3541',
     gridStrong: '#3b4252',
-    lampOff: '#3a4150',
+    // Slice 6: lighter (was #3a4150, 1.3:1 from the plate it stands on) so an unlit lens outlines the column on the plate and
+    // the lit lamp's position among three reads at a glance.
+    lampOff: '#6c7893',
     roles: {
       floor: '#272c37',
       wall: '#444c5f',
@@ -120,9 +128,13 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       // Unlit and near white: at fit the far capsule is a few pixels wide and must beat the lit floor by 3:1 by itself.
       robotFar: '#f7f9ff',
       crate: '#a07a4a',
-      tote: '#5b6b8c',
-      capsule: '#d8dde8',
-      part: '#9aa2b1',
+      // Slice 6: the travellers are the brightest, most saturated things on the floor (slice 4's blue-grey tote and grey
+      // capsule sat 1.2 to 2.7:1 from the plate and floor at mid zoom). Hue is distinct from every state colour (lamps are
+      // green, amber and red; the crate is brown; the robot is pale with sky-blue limbs): tote violet, capsule cyan, part white.
+      tote: '#c9a6ff',
+      capsule: '#4fd6f6',
+      part: '#f1f4fb',
+      carrierBand: '#0b0e14',
       paint: '#b8932a',
       vacant: '#8995ad',
       blob: '#000000'
@@ -166,9 +178,11 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       robotWheel: '#1d2129',
       robotFar: '#232d63',
       crate: '#94693a',
-      tote: '#6c7c9c',
-      capsule: '#ffffff',
-      part: '#7d8696',
+      // Slice 6: dark and saturated on the pale floor (the white capsule was 1.49:1 against it).
+      tote: '#5a2bb5',
+      capsule: '#046b8c',
+      part: '#f1f4fb',
+      carrierBand: '#ffffff',
       paint: '#c99a1a',
       vacant: '#5b667c',
       blob: '#000000'
