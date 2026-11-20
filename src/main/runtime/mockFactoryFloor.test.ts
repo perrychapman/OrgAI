@@ -111,11 +111,12 @@ describe('mock [mock:factory-floor]', () => {
 
   it('a tool step with holdMs keeps the agent in state tool until the hold ends', async () => {
     const ctx = fakeCtx({ autoContinue: false, prompt: 'x' })
-    const session = await new MockAdapter({ script: { delayMs: 0, work: [{ type: 'tool', name: 'Read', input: { file_path: 'a' }, holdMs: 150 }] } }).start(ctx)
+    const session = await new MockAdapter({ script: { delayMs: 0, work: [{ type: 'tool', name: 'Read', input: { file_path: 'a' }, holdMs: 1500 }] } }).start(ctx)
+    // The hold is long against the 60 ms look so a loaded machine (waitFor polls every 50 ms) cannot outlast it.
     await vi.waitFor(() => expect(latest(ctx.events).get(ROOT_AGENT_ID)?.state).toBe('tool'))
     await new Promise((r) => setTimeout(r, 60))
     expect(latest(ctx.events).get(ROOT_AGENT_ID)?.state).toBe('tool')
-    await vi.waitFor(() => expect(latest(ctx.events).get(ROOT_AGENT_ID)?.state).not.toBe('tool'))
+    await vi.waitFor(() => expect(latest(ctx.events).get(ROOT_AGENT_ID)?.state).not.toBe('tool'), { timeout: 10_000 })
     await session.stop()
     await session.finished
   })
