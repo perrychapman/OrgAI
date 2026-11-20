@@ -58,7 +58,7 @@ describe('heroStats', () => {
 
   it('does not call it all clear while a run waits for a reply', () => {
     const t = make({ awaitingReply: 2 }).tiles[0]!
-    expect(t).toMatchObject({ stat: 'waiting', tone: 'warning', calm: false, figure: '2', target: 'working' })
+    expect(t).toMatchObject({ stat: 'waiting', tone: 'warning', calm: false, figure: '2', target: 'needs' })
     expect(t.summary).toBe('2 runs idle and awaiting reply')
   })
 

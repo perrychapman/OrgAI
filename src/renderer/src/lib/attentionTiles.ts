@@ -64,6 +64,16 @@ export type AttentionTile<I extends TileItem> = DecisionTile<I> | ReplyTile
 // ---------- Plain text ----------
 
 const FENCE = /^\s*(```|~~~).*$/
+/** Longest line the summary patterns ever see. */
+const LINE_MAX = 400
+
+/** A markdown table separator ("|---|:--|") or a thematic break ("---", "* * *", "___"), tested in linear time. */
+function isRuleLine(line: string): boolean {
+  const t = line.replace(/\s+/g, '')
+  if (t.length < 3) return false
+  if (/^[:|-]+$/.test(t) && t.includes('-')) return true
+  return /^(?:-+|\*+|_+)$/.test(t)
+}
 
 /**
  * One line of plain text from model output: markdown marks removed (fences, headings, quotes, list bullets, emphasis, code
@@ -71,9 +81,12 @@ const FENCE = /^\s*(```|~~~).*$/
  * `max` characters. Never produces markup and finds no links: a URL stays the characters it was.
  */
 export function plainSummary(text: string, max = SUMMARY_MAX): string {
+  // Every line is capped before any pattern runs, and the separator tests are linear: model output can be shaped to make a
+  // backtracking pattern take seconds, and this runs in a store selector (Reviewer finding, Visual pass).
   const lines = showHidden(text.slice(0, max * 8))
     .split(/\r?\n/)
-    .filter((l) => !FENCE.test(l) && !/^\s*\|?[\s:|-]{3,}\|?\s*$/.test(l) && !/^\s*([-*_])(\s*\1){2,}\s*$/.test(l))
+    .map((l) => l.slice(0, LINE_MAX))
+    .filter((l) => !FENCE.test(l) && !isRuleLine(l))
     .map((l) =>
       l
         .replace(/^\s{0,3}(#{1,6}|>+)\s*/, '')

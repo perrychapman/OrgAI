@@ -85,7 +85,7 @@ function waitingTile(i: HeroInput): HeroTile {
   }
   if (r > 0) {
     // Not a decision card, but "nothing is waiting" would be untrue.
-    return { stat: 'waiting', tone: 'warning', glyph: 'reply', figure: String(r), figureWord: false, label: 'Awaiting reply', summary: `${plural(r, 'run', 'runs')} idle and awaiting reply`, target: 'working', calm: false }
+    return { stat: 'waiting', tone: 'warning', glyph: 'reply', figure: String(r), figureWord: false, label: 'Awaiting reply', summary: `${plural(r, 'run', 'runs')} idle and awaiting reply`, target: 'needs', calm: false }
   }
   return { stat: 'waiting', tone: 'success', glyph: 'clear', figure: 'All clear', figureWord: true, label: 'Nothing waiting', summary: 'All clear, nothing waiting on you', target: 'needs', calm: true }
 }

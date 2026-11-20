@@ -5,6 +5,8 @@ import { useAppStore } from '../../store/useAppStore'
 import { decisionLocationLabel } from '../../lib/chatPermissions'
 import { openTeamFilesDecision } from '../../lib/menuActions'
 import { displayRunName } from '../../lib/orgChange'
+import { oneLine } from '../../lib/decisionTitle'
+import { showHidden } from '../../lib/hiddenChars'
 import { locationLabel } from '../../lib/assistants'
 import { projectHue } from '../../lib/projectIdentity'
 import { TILE_ROW_CAP, tileActionName, waitedLong, waitedShort, type AttentionTile as TileModel, type DecisionTile } from '../../lib/attentionTiles'
@@ -52,7 +54,8 @@ export function AttentionTileView({ tile, motion, ctx }: { tile: TileModel<Needs
   const projectName = locationLabel(tile.projectId, projects)
   const badgeProject = isVirtualProjectId(tile.projectId) ? '' : tile.projectId
   const runName = tile.kind === 'reply' ? tile.title : decisionRunName(tile, projects)
-  const title = tile.kind === 'team' ? projectName : runName
+  // Run titles are model or user text: hidden and bidi characters are shown as escapes, one line, as NeedsRow does.
+  const title = tile.kind === 'team' ? projectName : oneLine(showHidden(runName), 120)
   const waitedAt = tile.since
   const waited = waitedShort(waitedAt, now)
   const waitedWords = waitedLong(waitedAt, now)

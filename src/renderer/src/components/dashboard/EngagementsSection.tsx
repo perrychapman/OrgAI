@@ -59,8 +59,10 @@ export function EngagementsSection(): ReactElement | null {
           .enqueue('outputs', id, async () => {
             const [notes, graph] = await Promise.allSettled([window.orgai.engagement.listNotes(id), window.orgai.knowledge.get(id)])
             const out: EngagementLoaded = {}
-            if (notes.status === 'fulfilled' && Array.isArray(notes.value)) out.notes = notes.value.length
-            if (graph.status === 'fulfilled' && graph.value && Array.isArray(graph.value.nodes)) out.knowledge = graph.value.nodes.length
+            // Retired items are hidden by default on the engagement pages, so they are not counted here either.
+            const live = (xs: readonly unknown[]): number => xs.filter((x) => (x as { retired?: boolean } | null)?.retired !== true).length
+            if (notes.status === 'fulfilled' && Array.isArray(notes.value)) out.notes = live(notes.value)
+            if (graph.status === 'fulfilled' && graph.value && Array.isArray(graph.value.nodes)) out.knowledge = live(graph.value.nodes)
             return out
           })
           .then((r) => {
@@ -98,14 +100,14 @@ export function EngagementsSection(): ReactElement | null {
               >
                 <span className="dash-eng-name">{t.project.name}</span>
               </button>
-              <p className="dash-eng-meta">
+              {/* One meta line: client and last activity, then the fact marks at its end (two text lines per tile). */}
+              <div className="dash-eng-meta">
                 {t.client && (
                   <span className="dash-eng-client" title={t.client}>
                     {t.client}
                   </span>
                 )}
                 <span className="dash-eng-when">{t.activity}</span>
-              </p>
               <ul className="dash-eng-facts" aria-label="Facts">
                 {t.facts.map((f) => (
                   <li key={f.kind} className="dash-eng-fact" data-testid="dash-engagement-fact" data-fact={f.kind} title={f.label}>
@@ -115,6 +117,7 @@ export function EngagementsSection(): ReactElement | null {
                   </li>
                 ))}
               </ul>
+              </div>
             </div>
           </li>
         ))}

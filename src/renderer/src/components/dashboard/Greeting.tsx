@@ -367,6 +367,7 @@ export function Greeting({ firstLaunch, announce, onAnnounce, customise, lastSee
           data-testid="dash-hero-stats"
           data-pending={hero.pending ? '' : undefined}
           aria-label={hero.pending ? undefined : 'At a glance'}
+          aria-hidden={hero.pending && hero.tiles.length === 0 ? true : undefined}
           style={{ '--n': Math.max(hero.tiles.length, 1) } as CSSProperties}
         >
           {hero.tiles.map((tile) => (

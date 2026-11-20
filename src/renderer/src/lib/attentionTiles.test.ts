@@ -23,6 +23,21 @@ const summary = (id: string, over: Partial<RunSummary> = {}): RunSummary => ({ i
 const project = (): Project => ({ id: 'p1', name: 'Alpha', roles: [] }) as unknown as Project
 const text = (at: number, t: string, over: Partial<TranscriptEntry> = {}): TranscriptEntry => ({ id: `e${at}`, agentId: 'root', at, block: { kind: 'text', text: t }, ...over })
 
+describe('plainSummary: shaped input stays fast (Reviewer finding)', () => {
+  it('runs in well under 50 ms on long separator-like lines and many brackets or stars', () => {
+    const inputs = [' '.repeat(2559) + 'x', '-'.repeat(2559) + 'x', '|:- '.repeat(640) + 'x', '['.repeat(2560), '(*'.repeat(1280), `a${' -'.repeat(1279)}`]
+    for (const s of inputs) {
+      const t0 = performance.now()
+      plainSummary(s)
+      expect(performance.now() - t0).toBeLessThan(50)
+    }
+  })
+  it('still drops table separators and thematic breaks', () => {
+    expect(plainSummary('| a | b |\n|---|:--:|\n| 1 | 2 |')).toBe('a b 1 2')
+    expect(plainSummary('one\n---\n* * *\n___\ntwo')).toBe('one two')
+  })
+})
+
 describe('plainSummary: untrusted text becomes one plain line', () => {
   it('removes markdown marks and keeps the words', () => {
     expect(plainSummary('# Plan\n\n- **Fix** the `parser`\n- see [the docs](https://x.test/a)\n\n```ts\nconst a = 1\n```\n> done')).toBe('Plan Fix the parser see the docs const a = 1 done')

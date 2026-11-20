@@ -12,7 +12,7 @@ import { nextLocalMidnight, startOfLocalDay } from './todayModel'
 
 export const MIN_SPAN_MS = 6 * 3_600_000
 /** Smallest distance between two dot centres: a 16 px dot plus air. */
-export const DOT_GAP_PX = 20
+export const DOT_GAP_PX = 24
 /** Room kept left and right of the line for the first and last label. */
 export const RAIL_PAD_PX = 36
 /** Gap between two labels in one lane. */
@@ -84,6 +84,8 @@ export function spreadDots(xs: readonly number[], lo: number, hi: number, gap = 
     out[out.length - 1] = hi
     for (let i = out.length - 2; i >= 0; i--) out[i] = Math.min(out[i], out[i + 1] - gap)
   }
+  // Too many to fit at `gap`: never past the left end (they may then overlap, which the cap keeps rare).
+  for (let i = 0; i < out.length; i++) out[i] = Math.max(out[i], lo)
   return out
 }
 

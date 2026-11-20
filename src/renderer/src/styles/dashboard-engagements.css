@@ -44,7 +44,7 @@
   cursor: pointer;
   color: var(--text-primary);
   font-size: var(--text-body);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   line-height: var(--text-body-lh);
 }
 .dash-eng-open::after {
@@ -66,7 +66,9 @@
 }
 .dash-eng-meta {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
+  white-space: nowrap;
   min-width: 0;
   margin: 0;
   color: var(--text-secondary);
@@ -87,12 +89,15 @@
   flex: 0 0 auto;
   white-space: nowrap;
 }
+/* The facts end the meta line and sit above the name button's tile cover so their tooltips show. */
 .dash-eng-facts {
   list-style: none;
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-3);
-  margin: 0;
+  flex: none;
+  gap: var(--space-2);
+  margin: 0 0 0 auto;
+  position: relative;
+  z-index: 1;
   padding: 0;
   color: var(--text-secondary);
   font-size: var(--text-caption);
