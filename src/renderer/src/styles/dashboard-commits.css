@@ -134,10 +134,13 @@
   }
 }
 
-/* The readout: one plain paragraph (not live), two lines of room so a long day does not move the legend. */
+/* The readout: one plain paragraph (not live) under the legend, so a long day grows into free space and moves nothing.
+   Empty (no day hovered, focused or pinned) it draws nothing. */
+.dash-commits-readout:empty {
+  display: none;
+}
 .dash-commits-readout {
   margin: 0;
-  min-height: calc(var(--text-small-lh) * 2);
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
   color: var(--text-secondary);
@@ -146,8 +149,8 @@
 
 .dash-commits-legend {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-4);
+  flex-direction: column;
+  gap: var(--space-1);
   list-style: none;
   margin: 0;
   padding: 0;
@@ -164,8 +167,8 @@
   color: var(--text-secondary);
 }
 .dash-commits-name {
+  flex: 1 1 auto;
   min-width: 0;
-  max-width: 18ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -192,7 +195,7 @@
 /* Loading: the chart's frame without bars (no spinner, no jump): track, label rows, the readout's two lines, a legend line. */
 .dash-commits-placeholder {
   box-sizing: border-box;
-  height: calc(var(--space-1) + var(--commit-track) + var(--space-1) + 32px + var(--text-small-lh) * 2 + var(--text-caption-lh) + var(--space-4));
+  height: calc(var(--space-1) + var(--commit-track) + var(--space-1) + 32px + var(--text-caption-lh) * 2 + var(--space-4));
   border-radius: var(--radius-md);
   background: var(--surface-2);
 }

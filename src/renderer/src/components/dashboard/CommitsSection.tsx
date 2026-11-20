@@ -190,7 +190,7 @@ function LegendItem({ item }: { item: CommitLegendItem }): ReactElement {
   )
 }
 
-function Chart({ columns, legend, weekReadout, text }: { columns: CommitColumn[]; legend: CommitLegendItem[]; weekReadout: string; text: string }): ReactElement {
+function Chart({ columns, legend, text }: { columns: CommitColumn[]; legend: CommitLegendItem[]; text: string }): ReactElement {
   const [pinned, setPinned] = useState<string | null>(null)
   const [hover, setHover] = useState<string | null>(null)
   const [focused, setFocused] = useState<string | null>(null)
@@ -219,7 +219,7 @@ function Chart({ columns, legend, weekReadout, text }: { columns: CommitColumn[]
   return (
     <div className="dash-commits-body" data-testid="dash-commits-chart">
       <div className="dash-commits-inner">
-        <div ref={groupRef} className="dash-commits-days" role="group" aria-label="Commits per day, last 7 days" onKeyDown={onKeyDown} onFocus={roving.onFocus}>
+        <div ref={groupRef} className="dash-commits-days" role="group" aria-label="Commits per day, last 7 days" aria-describedby="dash-commits-text" onKeyDown={onKeyDown} onFocus={roving.onFocus}>
           {columns.map((c) => (
             <Day
               key={c.date}
@@ -231,15 +231,16 @@ function Chart({ columns, legend, weekReadout, text }: { columns: CommitColumn[]
             />
           ))}
         </div>
-        <p className="dash-commits-readout" data-testid="dash-commits-readout">
-          {shown ? shown.readout : weekReadout}
-        </p>
         <ul className="dash-commits-legend" aria-hidden="true">
           {legend.map((l) => (
             <LegendItem key={l.id} item={l} />
           ))}
         </ul>
-        <p className="sr-only" data-testid="dash-commits-text">
+        {/* Only the pointed-at day: the week's figures are the legend and the text alternative below. Empty draws nothing. */}
+        <p className="dash-commits-readout" data-testid="dash-commits-readout" aria-hidden={shown ? undefined : true}>
+          {shown ? shown.readout : ''}
+        </p>
+        <p className="sr-only" id="dash-commits-text" data-testid="dash-commits-text">
           {text}
         </p>
       </div>
@@ -271,7 +272,7 @@ export function CommitsSection(): ReactElement | null {
           <span>No commits this week.</span>
         </p>
       ) : (
-        <Chart columns={chart.columns} legend={chart.legend} weekReadout={chart.weekReadout} text={chart.text} />
+        <Chart columns={chart.columns} legend={chart.legend} text={chart.text} />
       )}
     </section>
   )

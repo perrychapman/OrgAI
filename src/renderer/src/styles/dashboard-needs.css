@@ -177,6 +177,8 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
   gap: var(--space-3);
+  /* Tiles take their own height (no stretch to the tallest in the row). */
+  align-items: start;
   /* A leaving tile folds in a grid cell: there is no list gap to fold away with it. */
   --leave-gap: 0px;
 }
@@ -277,9 +279,23 @@
   list-style: none;
   --leave-gap: var(--space-2);
 }
-/* A row inside a tile sits on the surface, framed in the warning border: the tile carries the tint. */
-.dash-attn-tile .dash-needs-row {
-  background: var(--surface-1);
+/* A row inside a tile is flat: the tile is the one surface (no inner border, background or radius, tighter padding).
+   Only box styling changes here; no text is hidden, clipped or reordered. */
+.dash-attn-tile .dash-needs-row,
+.dash-attn-tile .dash-needs-row:hover {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.dash-attn-tile .dash-needs-row .dash-needs-main {
+  padding-inline: 0;
+}
+.dash-attn-tile .dash-needs-row .dash-needs-actions {
+  padding-inline-end: 0;
+}
+.dash-attn-tile .dash-attn-items {
+  gap: var(--space-1);
 }
 /* In a narrow tile the answer buttons go under the ask (the row is its own container, so its own rule cannot see its width;
    the tile is the container here). Nothing is hidden or reworded: only where the buttons sit. */
