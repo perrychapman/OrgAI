@@ -1901,8 +1901,8 @@ export type CanvasEdgeStyle = 'curved' | 'orthogonal' | 'straight'
 export const CANVAS_EDGE_STYLES: readonly CanvasEdgeStyle[] = ['curved', 'orthogonal', 'straight']
 
 /** Presentation is independent of the saved graph layout, pattern and node preferences. */
-export type CanvasPresentation = 'graph' | 'pocket-office'
-export const CANVAS_PRESENTATIONS: readonly CanvasPresentation[] = ['graph', 'pocket-office']
+export type CanvasPresentation = 'graph' | 'pocket-office' | 'factory-floor'
+export const CANVAS_PRESENTATIONS: readonly CanvasPresentation[] = ['graph', 'pocket-office', 'factory-floor']
 export type CanvasScenePalette = 'color' | 'neutral' | 'green'
 export const CANVAS_SCENE_PALETTES: readonly CanvasScenePalette[] = ['color', 'neutral', 'green']
 

@@ -5,10 +5,16 @@ import { setAppearance } from './theme'
 /** Canvas settings are the `canvas` object of AppearanceSettings. */
 export type CanvasSettings = AppearanceSettings['canvas']
 
-export const PRESENTATION_OPTIONS: { value: CanvasPresentation; label: string }[] = [
-  { value: 'graph', label: 'Graph' },
-  { value: 'pocket-office', label: 'Pocket Office' }
+export const PRESENTATION_OPTIONS: { value: CanvasPresentation; label: string; description: string }[] = [
+  { value: 'graph', label: 'Graph', description: 'A connected view of your team' },
+  { value: 'pocket-office', label: 'Pocket Office', description: 'A spatial view of your team' },
+  { value: 'factory-floor', label: 'Factory Floor', description: 'A 3D factory view of your team' }
 ]
+
+/** The user-facing name of a presentation ("Pocket Office"), for announcements. */
+export function presentationLabel(presentation: CanvasPresentation): string {
+  return PRESENTATION_OPTIONS.find((option) => option.value === presentation)?.label ?? 'Graph'
+}
 export const SCENE_PALETTE_OPTIONS: { value: CanvasScenePalette; label: string }[] = [
   { value: 'color', label: 'Color' },
   { value: 'neutral', label: 'Neutral' },

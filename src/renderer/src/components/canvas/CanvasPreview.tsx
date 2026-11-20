@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useRef } from 'react'
 import { ReactFlow, ReactFlowProvider, useReactFlow } from '@xyflow/react'
-import { useCanvasOptions } from '../../lib/canvas'
+import { isScenePresentation, useCanvasOptions } from '../../lib/canvas'
 import { buildSample, type SampleInks } from '../../lib/canvasSample'
 import { useCssVar } from '../../lib/useCssVar'
 import { AgentNode } from '../AgentNode'
@@ -10,6 +10,7 @@ import { CanvasBackdrop } from './CanvasBackdrop'
 import { CanvasMinimap } from './CanvasMinimap'
 import { CANVAS_EDGE_TYPES } from './RadialEdge'
 import { OfficeSample } from './CanvasPresentationChoices'
+import { FactorySample } from './factory/FactorySample'
 import '../../styles/office.css'
 
 const nodeTypes = { agent: AgentNode, 'done-group': DoneGroupNode }
@@ -95,9 +96,12 @@ function PreviewFlow(): ReactElement {
  */
 export function CanvasPreview(): ReactElement {
   const options = useCanvasOptions()
+  const factory = options.presentation === 'factory-floor'
   return (
-    <div className="canvas-preview" data-testid="canvas-preview" data-presentation={options.presentation} role="img" aria-label={options.presentation === 'pocket-office' ? 'Static sample office in the current style' : 'Sample canvas in the current style'} inert>
-      {options.presentation === 'pocket-office' ? (
+    <div className="canvas-preview" data-testid="canvas-preview" data-presentation={options.presentation} role="img" aria-label={factory ? 'Static sample factory floor' : options.presentation === 'pocket-office' ? 'Static sample office in the current style' : 'Sample canvas in the current style'} inert>
+      {factory ? (
+        <FactorySample />
+      ) : isScenePresentation(options.presentation) ? (
         <OfficeSample palette={options.scenePalette} />
       ) : (
       <ReactFlowProvider>

@@ -12,14 +12,34 @@ import {
   effectiveNodeStyle,
   groupNodeSize,
   handlesFor,
+  isScenePresentation,
   minimapSize,
   readCanvasOptions,
   reportingLineRole,
   ringStepFor,
   shownPreset,
   stationGeometry,
-  stationHandleStyle
+  stationHandleStyle,
+  usesScenePalette
 } from './canvas'
+
+describe('scene presentation helpers', () => {
+  it('treats every presentation but the graph as a scene', () => {
+    expect(isScenePresentation('graph')).toBe(false)
+    expect(isScenePresentation('pocket-office')).toBe(true)
+    expect(isScenePresentation('factory-floor')).toBe(true)
+    expect(isScenePresentation(undefined)).toBe(false)
+  })
+  it('applies the scene palette to Pocket Office only', () => {
+    expect(usesScenePalette('pocket-office')).toBe(true)
+    expect(usesScenePalette('factory-floor')).toBe(false)
+    expect(usesScenePalette('graph')).toBe(false)
+    expect(usesScenePalette(undefined)).toBe(false)
+  })
+  it('reads factory-floor from the attribute', () => {
+    expect(readCanvasOptions((n) => (n === 'data-canvas-presentation' ? 'factory-floor' : null)).presentation).toBe('factory-floor')
+  })
+})
 
 describe('readCanvasOptions', () => {
   it('falls back to the defaults for missing and unknown values', () => {

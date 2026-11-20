@@ -13,16 +13,20 @@ import {
 import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { OfficeScene, type OfficeSceneHandle } from '../components/canvas/office/OfficeScene'
+import { FactoryScene, type FactorySceneHandle } from '../components/canvas/factory/FactoryScene'
+import type { FactoryAgentInput } from '../lib/factory/types'
+import type { StatusWord } from '../lib/runStatus'
 import { officeAgentView } from '../lib/office/agentView'
 import { runRoleColor } from '../lib/runRoster'
 import { withOfficeDepartments } from '../lib/office/departments'
 import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
+import { saveCanvas } from '../lib/canvasSettings'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
 import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
-import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, beginCanvasGlide, breatheIndex, edgeStroke, fitMs, groupNodeSize, handlesFor, reportingLineRole, ringStepFor, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, beginCanvasGlide, breatheIndex, edgeStroke, fitMs, groupNodeSize, handlesFor, isScenePresentation, reportingLineRole, ringStepFor, useCanvasOptions, useNodeArrival, useNodeDims, usesScenePalette, useReducedMotion } from '../lib/canvas'
 import { isLayoutMoving, onLayoutSettled } from '../lib/layoutMotion'
-import { isWorkingAgent } from '../lib/agentActivity'
-import type { AgentInstance, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind, RunSummary } from '@shared/types'
+import { isWorkingAgent, nodeActivity } from '../lib/agentActivity'
+import type { AgentInstance, AgentState, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind, RunSummary } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
 import { ASSISTANT_REPLY_LABEL, assistantModeLabel, hasRunSidePanel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
@@ -116,6 +120,29 @@ function fitCanvas(rf: { fitView: (o?: FitViewOptions) => unknown }, reduced: bo
 const MESSAGE_FRESH_MS = 1500
 
 type CanvasNode = AgentFlowNode | DoneGroupFlowNode
+
+const FACTORY_STATUS_WORD: Record<AgentState, StatusWord> = {
+  starting: 'Running', thinking: 'Running', tool: 'Running', delegating: 'Running',
+  waiting: 'Needs you', idle: 'Idle', done: 'Finished', error: 'Failed'
+}
+
+/** One agent as the Factory Floor scene takes it (the same words and activity line the graph nodes show). */
+function factoryAgentInput(agent: AgentInstance, session: 'current' | 'earlier'): FactoryAgentInput {
+  return {
+    id: agent.id,
+    name: agentLabel(agent),
+    parentId: agent.parentId,
+    roleKey: agent.roleSlug,
+    handle: agent.handle,
+    state: agent.state,
+    statusWord: FACTORY_STATUS_WORD[agent.state],
+    activity: nodeActivity(agent, { isRoot: agent.parentId === null }),
+    toolCalls: agent.usage?.toolCalls ?? 0,
+    ...(agent.worktree ? { worktree: { status: agent.worktree.status, mergeTarget: agent.worktree.mergeTarget ?? 'main' } } : {}),
+    startedAt: agent.startedAt,
+    session
+  }
+}
 
 /** The fold's name for an agent (handle first, as its node shows it), or undefined when it is not known. */
 function lookupLabel(a: AgentInstance | undefined): string | undefined {
@@ -229,10 +256,15 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const officeRef = useRef<OfficeSceneHandle>(null)
   const officeModeRef = useRef(false)
   officeModeRef.current = options.presentation === 'pocket-office'
+  const factoryRef = useRef<FactorySceneHandle>(null)
+  const factoryModeRef = useRef(false)
+  factoryModeRef.current = options.presentation === 'factory-floor'
+  const sceneModeRef = useRef(false)
+  sceneModeRef.current = isScenePresentation(options.presentation)
   const reducedMotion = useReducedMotion()
   const nodeDims = useNodeDims()
   // The stage collapses to height 0 while an expanded proposal takes a compact frame: nothing to fit then.
-  const stageHidden = (): boolean => officeModeRef.current || (canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8
+  const stageHidden = (): boolean => sceneModeRef.current || (canvasRef.current?.querySelector('.frame-stage')?.clientHeight ?? 1) < 8
   const radial = options.layout === 'radial'
   const edgeType = radial ? 'radial' : EDGE_TYPE[options.edges]
   const agentSize = useMemo(() => agentNodeSize(options.nodeStyle, options.layout), [options.nodeStyle, options.layout])
@@ -464,7 +496,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const layoutKey = `${topologyKey}#${options.layout}#${options.nodeStyle}`
   const placed = useMemo(
     () =>
-      options.presentation === 'pocket-office' ? { positions: {} as Record<string, { x: number; y: number }>, rings: undefined } : layoutCanvas(
+      isScenePresentation(options.presentation) ? { positions: {} as Record<string, { x: number; y: number }>, rings: undefined } : layoutCanvas(
         options.layout,
         [
           ...visibleAgents.map((a) => ({ id: a.id, parentId: a.parentId, width: agentSize.width, height: agentSize.height })),
@@ -495,7 +527,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const glideSeen = useRef<string | null>(null)
   const glideUntil = useRef(0)
   useLayoutEffect(() => {
-    if (officeModeRef.current) { glideSeen.current = null; return }
+    if (sceneModeRef.current) { glideSeen.current = null; return }
     if (glideSeen.current === null) {
       glideSeen.current = layoutKey
       return
@@ -814,10 +846,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       run()
     }
     const offs = [
-      registerMenuHandler('canvas-zoom-in', () => onCanvas(() => officeModeRef.current ? officeRef.current?.zoomIn() : zoomInCanvas({ zoomIn }, reducedRef.current))),
-      registerMenuHandler('canvas-zoom-out', () => onCanvas(() => officeModeRef.current ? officeRef.current?.zoomOut() : zoomOutCanvas({ zoomOut }, reducedRef.current))),
-      registerMenuHandler('canvas-fit', () => onCanvas(() => officeModeRef.current ? officeRef.current?.fit() : fitCanvas({ fitView }, reducedRef.current))),
-      registerMenuHandler('toggle-hide-finished', () => officeModeRef.current ? 'All agents are shown in Pocket Office.' : onCanvas(() => menuRef.current.toggleCollapse())),
+      registerMenuHandler('canvas-zoom-in', () => onCanvas(() => factoryModeRef.current ? factoryRef.current?.zoomIn() : officeModeRef.current ? officeRef.current?.zoomIn() : zoomInCanvas({ zoomIn }, reducedRef.current))),
+      registerMenuHandler('canvas-zoom-out', () => onCanvas(() => factoryModeRef.current ? factoryRef.current?.zoomOut() : officeModeRef.current ? officeRef.current?.zoomOut() : zoomOutCanvas({ zoomOut }, reducedRef.current))),
+      registerMenuHandler('canvas-fit', () => onCanvas(() => factoryModeRef.current ? factoryRef.current?.fit() : officeModeRef.current ? officeRef.current?.fit() : fitCanvas({ fitView }, reducedRef.current))),
+      registerMenuHandler('toggle-hide-finished', () => factoryModeRef.current ? 'All agents are shown on the Factory Floor.' : officeModeRef.current ? 'All agents are shown in Pocket Office.' : onCanvas(() => menuRef.current.toggleCollapse())),
       registerMenuHandler('toggle-conversation', () => menuRef.current.toggleLayout()),
       registerMenuHandler('go-to-decision', () => {
         if (!menuRef.current.hasDecision || !bodyRef.current?.querySelector('.frame-tray')) return 'No decision is waiting on this run.'
@@ -920,6 +952,19 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       ;(entry ?? body?.querySelector<HTMLElement>('[data-testid="office-stage"]'))?.focus()
     })
   }
+  /** Back to floor (and Escape in the panel): focus the worker's button on the floor; nothing in the run changes. */
+  const returnToFloor = (id: string): void => {
+    requestAnimationFrame(() => {
+      if (factoryRef.current?.focusWorker(id)) return
+      // An earlier-session agent is not on the floor: land on Find a worker instead.
+      bodyRef.current?.querySelector<HTMLElement>('[data-testid="factory-find"]')?.focus()
+    })
+  }
+  const factoryOn = options.presentation === 'factory-floor'
+  const factoryAgents = useMemo<FactoryAgentInput[]>(
+    () => (factoryOn ? [...agentLookup.values()].map((agent) => factoryAgentInput(agent, chain.origin.has(agent.id) ? 'earlier' : 'current')) : []),
+    [factoryOn, agentLookup, chain.origin]
+  )
   // The root's transcript is the whole conversation: every session's root entries with a divider where each
   // continuation starts (model 2). Another agent's transcript is that one session's entries.
   const feed = useMemo(
@@ -1023,6 +1068,19 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // Answered install records sit first so a real decision is never hidden behind one.
   const isRecord = (key: string): boolean => resolvedInstalls.some((r) => r.request.id === key)
   decisionItems.sort((a, b) => Number(isRecord(b.key)) - Number(isRecord(a.key)))
+  // Factory Floor: the agents the open decisions wait on, from the same lists the tray is built from (a DecisionItem
+  // carries no agent id). Proposals count against the root; an answered install record is not a decision.
+  const needsYouKey = factoryOn
+    ? [
+        ...(run.ruleRequests ?? []).map((r) => r.agentId),
+        ...(run.questions ?? []).map((q) => q.agentId),
+        ...(run.proposals.length > 0 ? [rootAgent?.id ?? 'root'] : []),
+        ...(run.mergeReviews ?? []).map((m) => m.agentId),
+        ...run.permissions.map((p) => p.agentId),
+        ...cardItems.filter((it) => !it.outcome).map((it) => it.request.agentId)
+      ].join('\n')
+    : ''
+  const needsYouIds = useMemo(() => (needsYouKey ? [...new Set(needsYouKey.split('\n'))] : []), [needsYouKey])
   const pickedAt = decisionItems.findIndex((d) => d.key === pickedDecision)
   // Until the user picks one, the tray shows the first open decision (blocking kinds first), not the newest arrival.
   const firstPending = defaultDecisionIndex(
@@ -1108,7 +1166,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
           <FrameToolbar dense label="Canvas toolbar">
             <RunMeta run={run} project={project} agentCount={agents.length + chain.earlier.reduce((n, g) => n + g.agents.length, 0)} />
             <div className="frame-toolbar-end">
-              {!conversation && options.presentation !== 'pocket-office' && (agents.length > 1 || chain.earlier.length > 0) && (
+              {!conversation && !isScenePresentation(options.presentation) && (agents.length > 1 || chain.earlier.length > 0) && (
                 <span className="run-fold" title="Folds finished agents into one node under the agent still shown above them. Turn off to show every agent; turn on again to fold everything back.">
                   <Switch
                     checked={collapseFinished}
@@ -1123,14 +1181,15 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   </span>
                 </span>
               )}
-              {!conversation && (options.presentation === 'pocket-office' ? <CanvasStyleButton testId="canvas-style-button" /> : <CanvasTools />)}
-              {!conversation && options.presentation === 'pocket-office' && earlierToLoad > 0 && (
+              {!conversation && (isScenePresentation(options.presentation) ? <CanvasStyleButton testId="canvas-style-button" /> : <CanvasTools />)}
+              {!conversation && isScenePresentation(options.presentation) && earlierToLoad > 0 && (
                 <Button size="sm" loading={loadingEarlier} onClick={() => {
                   if (loadingEarlier) return
                   setLoadingEarlier(true)
                   void loadEarlierSessions(runId).finally(() => {
                     setLoadingEarlier(false)
                     requestAnimationFrame(() => {
+                      if (factoryModeRef.current) { bodyRef.current?.querySelector<HTMLElement>('[data-testid="factory-find"]')?.focus(); return }
                       const person = bodyRef.current?.querySelector<HTMLElement>('[data-office-worker-id]')
                       if (person) { person.focus(); return }
                       const directoryTarget = bodyRef.current?.querySelector<HTMLElement>('[data-office-agent-id]')
@@ -1162,6 +1221,21 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   onReply={() => setArrival((a) => ({ text: 'New reply in the conversation', n: (a?.n ?? 0) + 1 }))}
                 />
               </div>
+            ) : factoryOn ? (
+              <FactoryScene
+                mode="live"
+                runId={runId}
+                controlRef={factoryRef}
+                agents={factoryAgents}
+                messages={messages ?? []}
+                plan={run.plan}
+                runStatus={status}
+                needsYouIds={needsYouIds}
+                selectedId={selectedAgentId ?? undefined}
+                onSelect={selectAgent}
+                onOpenPlan={() => setSideTab('plan')}
+                onUseGraph={() => void saveCanvas((c) => ({ ...c, presentation: 'graph' })).catch(() => setArrival((a) => ({ text: 'Could not switch to Graph.', n: (a?.n ?? 0) + 1 })))}
+              />
             ) : options.presentation === 'pocket-office' ? (
               <OfficeScene mode="live" runId={runId} palette={options.scenePalette} controlRef={officeRef} agents={withOfficeDepartments([...agentLookup.values()].map((agent) => ({ ...officeAgentView(agent), parentId: agent.parentId, departmentContext: chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : undefined, context: [chain.origin.has(agent.id) ? `Earlier session ${chainSummaries.findIndex((m) => m.id === chain.origin.get(agent.id)?.runId) + 1}` : 'Current session', agent.parentId ? `Reports to ${agentLookup.get(agent.parentId) ? agentLabel(agentLookup.get(agent.parentId)!) : 'lead'}` : 'Lead'].join(' · ') })))} messages={messages ?? []} selectedId={selectedAgentId ?? undefined} onSelect={selectAgent} />
             ) : (
@@ -1292,8 +1366,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
         </div>
         {sidePanel && (
         <SidePanel label="run panel" autoCollapseBelow={1100} persistKey="run" revealOn={selectedAgentId} revealOnMount={!hadSidePanel.current && sidePanel && !!selectedAgentId} arrival={usageArrival}>
-          <div className={`live-panel${options.presentation === 'pocket-office' && selectedAgent ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && options.presentation === 'pocket-office' && selectedAgent) { event.preventDefault(); returnToOffice(selectedAgent.id) } }}>
-            {options.presentation === 'pocket-office' && selectedAgent && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
+          <div className={`live-panel${usesScenePalette(options.presentation) && selectedAgent ? ' office-inspector' : ''}`} data-office-palette={options.scenePalette} onKeyDown={(event) => { if (event.key === 'Escape' && !event.defaultPrevented && selectedAgent) { if (usesScenePalette(options.presentation)) { event.preventDefault(); returnToOffice(selectedAgent.id) } else if (factoryOn) { event.preventDefault(); returnToFloor(selectedAgent.id) } } }}>
+            {usesScenePalette(options.presentation) && selectedAgent && <div className="office-inspector-action"><Button size="sm" testId="office-agent-back" onClick={() => returnToOffice(selectedAgent.id)}>Back to office</Button></div>}
+            {factoryOn && selectedAgent && <div className="factory-inspector-action"><Button size="sm" testId="factory-agent-back" onClick={() => returnToFloor(selectedAgent.id)}>Back to floor</Button></div>}
             <TranscriptPanel
               runId={runId}
               tagRunId={chainIds[chainIds.length - 1]}
@@ -1304,7 +1379,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               logs={run.logs ?? []}
               finished={finishedGroup}
             />
-            {options.presentation === 'pocket-office' && selectedAgent && (messages ?? []).some(message => message.from === selectedAgent.id || message.to === selectedAgent.id) && <section className="office-inspector-messages" tabIndex={0} aria-label="Office messages"><h3>Office messages</h3>{(messages ?? []).filter(message => message.from === selectedAgent.id || message.to === selectedAgent.id).map((message, i) => <p key={i}><strong>{agentLookup.get(message.from)?.name ?? message.from} to {message.to ? agentLookup.get(message.to)?.name ?? message.to : 'team'}</strong><br />{message.text}</p>)}</section>}
+            {usesScenePalette(options.presentation) && selectedAgent && (messages ?? []).some(message => message.from === selectedAgent.id || message.to === selectedAgent.id) && <section className="office-inspector-messages" tabIndex={0} aria-label="Office messages"><h3>Office messages</h3>{(messages ?? []).filter(message => message.from === selectedAgent.id || message.to === selectedAgent.id).map((message, i) => <p key={i}><strong>{agentLookup.get(message.from)?.name ?? message.from} to {message.to ? agentLookup.get(message.to)?.name ?? message.to : 'team'}</strong><br />{message.text}</p>)}</section>}
           </div>
         </SidePanel>
         )}

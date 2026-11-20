@@ -1,7 +1,9 @@
 import { useId, type CSSProperties, type ReactElement } from 'react'
 import type { CanvasPresentation, CanvasScenePalette } from '@shared/types'
 import { Check } from 'lucide-react'
+import { usesScenePalette } from '../../lib/canvas'
 import { PRESENTATION_OPTIONS, SCENE_PALETTE_OPTIONS, type CanvasSettings } from '../../lib/canvasSettings'
+import { FactorySample } from './factory/FactorySample'
 import atlas from '../../assets/pocket-office/atlas.json'
 import tilesColor from '../../assets/pocket-office/tiles-color.png'
 import tilesNeutral from '../../assets/pocket-office/tiles-neutral.png'
@@ -30,6 +32,11 @@ function OfficeThumb({ palette }: { palette: CanvasScenePalette }): ReactElement
     <span className="canvas-office-thumb-desk" style={sprite(props, atlas.sheets.props.frames['prop.desk'])} />
     <span className="canvas-office-thumb-person" style={sprite(workers, atlas.sheets.workers.frames['worker.crop.down.idle'])} />
   </span>
+}
+
+/** The presentation choice's thumbnail for Factory Floor: the same inert sample the settings preview shows, never a live scene. */
+function FactoryThumb(): ReactElement {
+  return <span className="canvas-factory-thumb" aria-hidden="true" inert><FactorySample /></span>
 }
 
 /** A deliberately framed, inert room rather than a cropped viewport of the live building. */
@@ -65,13 +72,13 @@ export function CanvasPresentationChoices({ canvas, onPresentation, onPalette }:
       <div className="canvas-choices">
         {PRESENTATION_OPTIONS.map(option => <label className="canvas-choice" key={option.value} data-testid="canvas-presentation-choice" data-presentation={option.value}>
           <input type="radio" data-testid={`canvas-presentation-${option.value}`} name={presentationName} value={option.value} checked={presentation === option.value} onChange={() => onPresentation(option.value)} />
-          {option.value === 'graph' ? <CanvasThumb spec={canvas} /> : <OfficeThumb palette={palette} />}
-          <span><strong>{option.label}</strong><span className="canvas-choice-description">{option.value === 'graph' ? 'A connected view of your team' : 'A spatial view of your team'}</span></span>
+          {option.value === 'graph' ? <CanvasThumb spec={canvas} /> : option.value === 'factory-floor' ? <FactoryThumb /> : <OfficeThumb palette={palette} />}
+          <span><strong>{option.label}</strong><span className="canvas-choice-description">{option.description}</span></span>
           {presentation === option.value && <span className="canvas-choice-check" aria-hidden="true"><Icon icon={Check} size="sm" /></span>}
         </label>)}
       </div>
     </fieldset>
-    {presentation === 'pocket-office' && <fieldset className="canvas-choice-group" data-testid="canvas-scene-palette">
+    {usesScenePalette(presentation) && <fieldset className="canvas-choice-group" data-testid="canvas-scene-palette">
       <legend>Office palette</legend>
       <div className="canvas-choices canvas-palette-choices">
         {SCENE_PALETTE_OPTIONS.map(option => <label className="canvas-choice" key={option.value} data-testid="canvas-palette-choice" data-palette={option.value}>
