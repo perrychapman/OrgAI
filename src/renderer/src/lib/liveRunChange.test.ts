@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LiveRunChange } from '@shared/types'
-import { effectOf, inferAction, isOrgChartChange, liveChangeLines, serverReach, skillReach, type LiveChangeAction } from './liveRunChange'
+import { effectOf, inferAction, isOrgChartChange, liveChangeLines, roleChangeAction, serverReach, skillReach, summarizeLines, type LiveChangeAction } from './liveRunChange'
 
 const AVAIL: LiveRunChange['availability'][] = ['now', 'after-idle', 'pending', 'next-run']
 
@@ -131,6 +131,40 @@ describe('liveChangeLines', () => {
       'Renamed to Implementer Prime. This run keeps calling it implementer until the next run.',
       'Tester waits for the next run: It is working on a task now.'
     ])
+  })
+
+  it('words a summary from the availabilities and says a shared caveat once', () => {
+    const note = 'Renamed to Lead Prime. This run keeps calling it lead until the next run.'
+    const lines = liveChangeLines(
+      [
+        { runId: 'a', title: 'A', availability: 'now', notes: [{ name: 'Lead', note }] },
+        { runId: 'b', title: 'B', availability: 'now', notes: [{ name: 'Lead', note }] },
+        { runId: 'c', title: 'C', availability: 'next-run', reason: 'Not now.', notes: [{ name: 'Lead', note }] }
+      ],
+      { kind: 'orgchart' }
+    )
+    const s = summarizeLines(lines, { kind: 'orgchart' })
+    expect(s.summary).toBe('Org chart changes · 3 live runs: 2 now · 1 from the next run')
+    expect(s.shared).toEqual([note])
+    expect(s.own).toEqual([[], [], ['Not now.']])
+  })
+
+  it('names one added, removed or prompt-edited role, and leaves a rename generic', () => {
+    const lead = { id: 'l', name: 'Lead', prompt: 'p' }
+    const dev = { id: 'd', name: 'Dev', prompt: 'p' }
+    expect(roleChangeAction([lead], [lead, dev])).toEqual({ kind: 'role-added', name: 'Dev' })
+    expect(roleChangeAction([lead, dev], [lead])).toEqual({ kind: 'role-removed', name: 'Dev' })
+    expect(roleChangeAction([lead], [{ ...lead, prompt: 'q' }])).toEqual({ kind: 'updated', name: 'Lead' })
+    expect(roleChangeAction([lead], [{ ...lead, name: 'Lead Prime' }])).toBeNull()
+    expect(roleChangeAction([lead, dev], [lead, { ...dev, prompt: 'x' }, { id: 'n', name: 'N', prompt: '' }])).toBeNull()
+    expect(roleChangeAction(null, [lead])).toBeNull()
+    expect(effectOf({ kind: 'role-added', name: 'Dev' }, 'now')).toBe('Added Dev to this run')
+    expect(effectOf({ kind: 'role-removed', name: 'Dev' }, 'next-run')).toBe('Removes Dev from the next run')
+  })
+
+  it('shows a connection by its display name, not its slug', () => {
+    expect(serverReach({ id: 's1', name: 'context7', connectorId: 'context7', enabled: true, roles: ['a'] }).name).toBe('Context7')
+    expect(serverReach({ id: 's2', name: 'My server', enabled: true }).name).toBe('My server')
   })
 
   it('tells the org chart editor save from an item save', () => {

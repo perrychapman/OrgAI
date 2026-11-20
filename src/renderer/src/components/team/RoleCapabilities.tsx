@@ -10,7 +10,7 @@ import { Button } from '../ui/Button'
 import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
 import { useAppStore } from '../../store/useAppStore'
-import { reportLiveRuns } from '../../store/liveChangeStore'
+import { expectInspectorSave, reportLiveRuns } from '../../store/liveChangeStore'
 import { LiveChangeNote } from '../LiveChangeNote'
 import { cleanIpcError } from '../../lib/ipcError'
 import { inferAction, serverReach } from '../../lib/liveRunChange'
@@ -120,7 +120,7 @@ export default function RoleCapabilities({
       setServers(r.servers)
       setConnError(null)
       replaceProject(r.project)
-      reportLiveRuns(r.project.id, surface, r.liveRuns, inferAction(before ? before.map((s) => serverReach(s.spec)) : null, r.servers.map((s) => serverReach(s.spec))))
+      reportLiveRuns(r.project.id, surface, r.liveRuns, inferAction(before ? before.map((s) => serverReach(s.spec)) : null, r.servers.map((s) => serverReach(s.spec))), 'connections')
     },
     [replaceProject, surface]
   )
@@ -137,6 +137,8 @@ export default function RoleCapabilities({
       .then((r) => {
         applyResult(r)
         if (plan.roleMcpServers !== undefined) {
+          // This role save has its own run.liveChange event; it reports here, under Connections, not in the org chart note.
+          expectInspectorSave(project.id, surface, 'connections')
           const next = plan.roleMcpServers
           updateRoles(project.id, (roles) => roles.map((x) => (x.id === role.id ? { ...x, mcpServers: next } : x)))
         }
@@ -162,7 +164,7 @@ export default function RoleCapabilities({
       if (!info || info.grantedTo.includes(role.id)) return
       const result = await window.orgai.skills.update({ projectId: project.id, skillId, roleIds: [...info.grantedTo, role.id] })
       replaceProject(result.project)
-      reportLiveRuns(result.project.id, surface, result.liveRuns, { kind: 'grant', name: info.spec.name })
+      reportLiveRuns(result.project.id, surface, result.liveRuns, { kind: 'grant', name: info.spec.name }, 'skills')
     }
   }
 
@@ -221,7 +223,7 @@ export default function RoleCapabilities({
       </CapabilityGroup>
 
       <RoleServices role={role} servers={servers} error={connError} onRevoke={revoke} onAdd={() => setChooser('connections')} onAsk={askFor('connections')} />
-      <LiveChangeNote projectId={project.id} surface={surface} />
+      <LiveChangeNote projectId={project.id} surface={surface} part="connections" />
 
       {servers && waitingForValues.length > 0 && (
         <ul className="role-cap-list" aria-label={`Connections of ${role.name} that need values`} data-testid="role-needs-values-list">
@@ -252,12 +254,15 @@ export default function RoleCapabilities({
         project={project}
         role={role}
         onChange={(skills) => {
+          // The project save has its own run.liveChange event; it reports here, under Skills, not in the org chart note.
+          expectInspectorSave(project.id, surface, 'skills')
           onChange({ skills })
           setFocusId('group:role-add-skill')
         }}
         onAdd={() => setChooser('skills')}
         onAsk={askFor('skills')}
       />
+      <LiveChangeNote projectId={project.id} surface={surface} part="skills" />
 
       {chooser && (
         <CapabilityChooser
