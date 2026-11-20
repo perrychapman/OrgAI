@@ -105,7 +105,6 @@ export function isScenePresentation(presentation: CanvasPresentation | undefined
 export function usesScenePalette(presentation: CanvasPresentation | undefined): boolean {
   return presentation === 'pocket-office'
 }
-
 /** The <html> attributes lib/theme.ts writes, in the order canvases read them. */
 export const CANVAS_ATTRS = [
   'data-canvas-presentation',

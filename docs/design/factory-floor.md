@@ -1,6 +1,7 @@
 # Factory Floor: a 3D overhead scene of a working team
 
-Status: spec, not built. Written 2026-11-19 for the next run, which builds it in the slices of section 11.
+Status: slice 1 built 2026-11-19 (see "Implementation notes"); slices 2, 3, 4 and 6 to follow. Live only by owner
+decision 2026-11-19 (Team keeps the Graph). Written 2026-11-19 for the next run, which builds it in the slices of section 11.
 Owner's words, which carry the authority: "a 3rd person overhead factory theme", "in 3D", "decent fidelity", and
 "this should feel separate from the other themes entirely".
 
@@ -1023,4 +1024,120 @@ the scene palette setting does not apply to it.
 
 ## Implementation notes
 
-(Empty until slice 1 lands. The UI Lead records deviations, measured numbers and screenshots here.)
+### Slice 1 (2026-11-19): dependency, contract, empty floor, fallback
+
+Built by the Scene Engineer (1b), a UI Engineer (1a) and a second UI Engineer standing in for QA (1c, the QA role was
+not available to the UI Lead); integrated, measured and documented by the UI Lead. Machine: Windows 11, NVIDIA GeForce
+RTX 3060, Electron 45.2.3.
+
+**Owner decisions taken during the slice (deviations from section 11).**
+
+- **Live only.** Factory Floor is not mounted in `TeamView.tsx` and that file was not edited (the Team tab run is
+  removing scenes from the Team editor). Dropped from 1a: the Team mount, `factory-role-back` and the Team hint line.
+  `FactoryScene` keeps `mode: 'team'` in its props, pure modules and tests; it is just unreachable. With
+  `'factory-floor'` saved, Team shows the Graph (its checks only test `'pocket-office'`); `e2e/factory-floor.mjs`
+  asserts that. Section 6.6's Team column and 6.8's team items are therefore not built.
+- `package.json` belonged to 1b; the UI Lead applied it with `npm install --package-lock-only` (no `npm install` in
+  worktrees), then restored the lockfile's existing `libc` fields that the local npm dropped, so the lockfile diff is
+  additions only (three, @types/three and its five dev-only dependencies).
+
+**Other deviations.**
+
+- Key light direction (0.45, -1, 0.35): section 4.2's (-0.45, -1, 0.35) points south-west, contradicting its own words
+  "from the north-west, pointing south-east"; the x sign was taken as a typo.
+- Ambient light: 0.15 dark, 0.25 light (section 4.3 gives no value); for the Technical Artist to tune.
+- Context lost: the canvas is hidden behind the note instead of "a dimmed last frame" (Chromium discards the frame and
+  paints a grey broken-image placeholder).
+- After a restore, three re-creates its background state with a black clear colour; `rebuild()` now re-applies the
+  theme (found on the slice 1 screenshot, fixed and re-shot).
+- Mirror and floor plan: slice 1 tiles flow (booth band first, then a grid in creation order) because layout arrives in
+  slice 2. In the 3D view the tiles sit over the bottom of the stage (at most 45 percent of its height); no arrow keys,
+  no hint text, `focusWorker` focuses without panning. Lamp rule and status word live in `FactoryMirror` until
+  `model.ts`. The empty-hall size, booth constants, palette and a minimal fit live in the engine until slice 2's
+  `layout.ts`, `palette.ts` and `camera.ts`.
+- `needsYouIds` source (section 15 item): `DecisionItem` has no agent id, so `RunView` derives `needsYouIds` from
+  `run.permissions`, `run.questions`, `run.ruleRequests`, `run.mergeReviews` and open MCP install requests (by
+  `agentId`), plus the root when `run.proposals` is non-empty. The state-to-word map is local to `LiveRunView.tsx`
+  until slice 3's `agentView.ts`.
+- "Back to floor" or "Load earlier sessions" for an agent not on the floor focus Find a worker, and until Find exists
+  (slice 2) the first worker button (Reviewer M1).
+- Settings sample: the floor plan of a fixed five-agent team (Orchestrator, Architect, Reviewer, Developer, Tester)
+  until slice 6's PNGs.
+- `e2e/pocket-office.mjs` now expects three presentation choices.
+
+**Measured.**
+
+| Measure | Value | How |
+| --- | --- | --- |
+| Lazy chunk `FactoryCanvas-*.js` (three + engine) | 1,242,585 B raw, **250,906 B gzip** as built (final head): over the 230 kB target | `npm run build`, Node `zlib.gzipSync` level 9 on the file in `out/renderer/assets` |
+| Same chunk minified (estimate) | 542,980 B raw, 134,033 B gzip | Scene Engineer, rolldown `minifySync` on the built chunk; the app's renderer build is not minified (owner: no build-config change in this slice) |
+| Main renderer JS chunk | 1,371,346 B gzip base (1bb61695) to 1,375,844 B at the final head: **+4,498 B**, over the 4 kB target | Same method, base built from `git archive` of the base commit |
+| Main CSS | 117,758 B to 119,018 B gzip: +1,260 B | Same |
+| `eval(`, `new Function`, `WebAssembly`, `.wasm` files | 0 in both chunks and under `out/` | grep of the built files; Reviewer confirmed |
+| WebGL2 on this machine | yes; GPU "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)" | `WEBGL_debug_renderer_info` in the test state |
+| renderer.info, empty hall with booth | 7 draw calls main pass, 6 shadow pass, 74 triangles, 7 geometries, 4 textures | test state `perf` |
+| Time to first frame | 621 ms cold first launch, 196.5 ms next launch, 25 to 59 ms warm remounts (Scene Engineer); 252.7 ms in the UI Lead's screenshot launch | test state `perf.firstFrameMs` |
+| Idle frames | 0 over 3 s; a theme switch costs one frame and keeps `engines` 1 | test state |
+| Fit | ppm 20.68 at 1024 x 640, 27.55 at 1600 x 1000 (live stage with the decision tray open) | test state `view` |
+| 20 mounts and unmounts | `engines` 1, 7 geometries and 4 textures on the first and last mount, one canvas | Scene Engineer, built app |
+
+**Section 15 items.**
+
+- Confirmed: the lazy three chunk loads in the built app under the unchanged CSP (zero `securitypolicyviolation`
+  events in `e2e/factory-floor.mjs`); r187's shipped chunk has no `eval` or `new Function`; WebGL2 is available here.
+- Confirmed: Chromium's software WebGL switches `--use-angle=swiftshader --enable-unsafe-swiftshader` work in Electron
+  45 on this machine: GPU string "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader
+  driver)", and the context passes `failIfMajorPerformanceCaveat`, so the probe takes the 3D path. `--use-gl=angle`
+  adds nothing. `--disable-gpu` alone gives no strict context and a "Microsoft Basic Render Driver" loose one. The
+  switches are on by default in `e2e/factory-floor.mjs` only (`E2E_FACTORY_SWGL=0` uses the GPU).
+- Size: three r187 in this build is 250.9 kB gzip unminified (the 181 kB figure is not reached without minification).
+- Still unverified: the packed asar app (`npm run pack` was not run), GitHub runners, Chromium's live-context limit,
+  every section 9 target beyond those above, screen-reader speech, macOS and Linux.
+
+**Checks (UI Lead, integrated worktree).** `npm run typecheck` clean. Whole unit suite: 21 failures out of 13,863,
+none in changed files: the six known symlink EPERM tests, CLI tests that read `node_modules` inside the worktree (which
+has none: ink, the Claude Agent SDK, TUI colour panes) and two load timeouts (`folderConfigTrust`, `selfControlGate`)
+that pass alone; renderer, shared and settings tests 2,967 of 2,967 after the final fixes. `npm run build` passes.
+`e2e/factory-floor.mjs` 54 of 54 on SwiftShader and on the GPU; `e2e/canvas.mjs` 612 passed, 0 failed (also re-run
+after the final fixes: all checks passed);
+`e2e/office.mjs` 422 passed, 0 failed (`pocket-office.mjs` runs inside both).
+
+**Reviewer (dependency pass).** No Critical or High. M1 (focus to a missing Find button): fixed. M2 (with Factory
+Floor chosen, Graph styles are hidden in the Team popover and in settings although Team still shows the Graph; the
+description "A 3D factory view of your team" is untrue for Team): open, it depends on the Team tab run removing scenes
+from Team and is for the owner. L1, L2 (budgets): recorded above. L3 (engine constructor leak on a part-way failure):
+fixed. L4 (a harmless stray timer after unmount): open. L5 ("Try 3D again" after a genuine chunk failure may fail at
+once, Chromium caches failed module fetches): open, unverified. L6 (boundary test scanned only the factory folders):
+fixed, the three and static-`FactoryCanvas` rules now scan every renderer file. L7 (docs): done in this pass.
+
+**Screenshots** (`docs/design/factory-floor-shots/slice-1/`, live mode on a mock run with the orchestrator and one
+implementer waiting on a permission card; looked at by the UI Lead):
+
+- `live-dark-1600x1000-webgl.png`: dark floor slab, a faint grid visible only on the southern strip, a raised gantry deck
+  along the north, the booth box casting a shadow onto the deck, walls as a darker rim. Clear colour matches the stage.
+  Slice 1 tiles bottom left ("Orchestrator, Control booth, Running"; "implementer-1, Needs you"). Most of the hall at
+  fit is gantry deck, so the empty floor reads as a raised platform rather than a hall.
+- `live-light-1600x1000-webgl.png`: same in light grey; deck and floor values are close, the wall rim is lighter than the
+  floor. Readable.
+- `live-dark-1024x640-webgl.png`, `live-light-1024x640-webgl.png`: the stage is about 240 px tall with the decision card
+  open; the booth box's top is cut by the stage top, and the second tile ("implementer-1") is clipped at the bottom with
+  a scrollbar on the mirror. Defect for slice 2 (fit and mirror positions).
+- `live-*-floorplan.png` (both themes, both sizes): the booth band with the Orchestrator tile, then the implementer
+  tile; tokens in both themes; no page scroll.
+- `notice-no-webgl2-*.png`: info banner "3D view unavailable" with the exact body and "Use Graph", dismiss button,
+  floor plan below. `notice-chunk-failed-*.png`: warning banner "3D view did not load", "Try 3D again" and "Use
+  Graph". Copy matches section 8 in both themes.
+- `notice-context-lost-dark-1600x1000.png`: the stage is dark with the centred note "The 3D view stopped. Restoring…";
+  tiles stay usable. `context-restored-dark-1600x1000.png`: the hall is back with the correct clear colour (after the
+  fix; the first shot had a black clear colour).
+- `settings-dark-1600x1000.png`, `settings-light-1600x1000.png`: three presentation cards; the Factory Floor thumbnail
+  is a cropped floor plan showing "Orchest" cut off, weaker than the Graph and Pocket Office thumbnails (slice 6 PNG
+  replaces it). The preview below is the inert five-agent floor plan.
+- `live-dark-1600x1000-new-run.png`: before a run starts the Live tab shows the existing "Give Orchestrator something
+  to do" start screen, so "The floor opens when the run starts." is not seen there.
+- Section 8 notices not shot: "3D view stopped" (not restored in 5 s, third loss), "Large team" (needs more than 120
+  agents) and the model-asset note (GLB phase only).
+
+**Open after slice 1.** Reviewer M2, L4, L5; the 1024 x 640 crop and mirror clipping (slice 2); the Technical Artist's
+palette pass (the empty hall reads as a platform; deck and floor are close in light); the settings thumbnail (slice 6);
+the lazy chunk and main chunk budgets (minification is an owner decision); the packed asar app.

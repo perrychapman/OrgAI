@@ -957,8 +957,14 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     requestAnimationFrame(() => {
       if (factoryRef.current?.focusWorker(id)) return
       // An earlier-session agent is not on the floor: land on Find a worker instead.
-      bodyRef.current?.querySelector<HTMLElement>('[data-testid="factory-find"]')?.focus()
+      focusFactoryEntry()
     })
+  }
+  /** Find a worker (slice 2); until it exists, the floor's first worker button. Focus never falls to the page body. */
+  const focusFactoryEntry = (): void => {
+    const body = bodyRef.current
+    const target = body?.querySelector<HTMLElement>('[data-testid="factory-find"]') ?? body?.querySelector<HTMLElement>('[data-testid="factory-worker"]')
+    target?.focus()
   }
   const factoryOn = options.presentation === 'factory-floor'
   const factoryAgents = useMemo<FactoryAgentInput[]>(
@@ -1189,7 +1195,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
                   void loadEarlierSessions(runId).finally(() => {
                     setLoadingEarlier(false)
                     requestAnimationFrame(() => {
-                      if (factoryModeRef.current) { bodyRef.current?.querySelector<HTMLElement>('[data-testid="factory-find"]')?.focus(); return }
+                      if (factoryModeRef.current) { focusFactoryEntry(); return }
                       const person = bodyRef.current?.querySelector<HTMLElement>('[data-office-worker-id]')
                       if (person) { person.focus(); return }
                       const directoryTarget = bodyRef.current?.querySelector<HTMLElement>('[data-office-agent-id]')

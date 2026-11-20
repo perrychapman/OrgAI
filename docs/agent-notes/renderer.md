@@ -1,5 +1,25 @@
 # Renderer (general)
 
+## Factory Floor, slice 1 (2026-11-19)
+
+Spec and implementation notes: `docs/design/factory-floor.md`. Live only (owner decision 2026-11-19): `LiveRunView`
+mounts `components/canvas/factory/FactoryScene.tsx` when the presentation is `'factory-floor'`; `TeamView` keeps the
+Graph and was not edited. Slice 1 is the dependency (three 0.187.0), the contract, an empty hall (floor, walls, gantry,
+booth box, lights, both themes), render on demand, context loss and restore, dispose, the floor plan fallback, the
+section 8 notices and the test state (`<output hidden data-testid="factory-state">`, JSON, written at most every
+500 ms, so poll it). Stations, robots, layout, camera input and keyboard navigation come in slice 2.
+
+- Developer switch (not user-facing): `localStorage['orgai.factory.renderer']`, read when the scene mounts: `floor-plan`
+  forces the floor plan (reason `forced`, no notice); `no-webgl2` shows the "3D view unavailable" notice; `chunk-failed`
+  shows "3D view did not load" (Try 3D again keeps failing while the key is set). Anything else is ignored. Used by
+  `e2e/factory-floor.mjs`.
+- `e2e/factory-floor.mjs` launches with `--use-angle=swiftshader --enable-unsafe-swiftshader` (only in that script;
+  `E2E_FACTORY_SWGL=0` uses the machine's GPU). On this Windows machine both give a WebGL2 context that passes
+  `failIfMajorPerformanceCaveat`; GitHub runners are unverified.
+- Checked: `lib/factory` unit tests (capability, snapshot, boundary), `e2e/factory-floor.mjs` 54/54 on SwiftShader and
+  on the RTX 3060, `e2e/canvas.mjs` and `e2e/office.mjs` unchanged, screenshots in
+  `docs/design/factory-floor-shots/slice-1/`. Unverified: the packed asar app, screen-reader speech, macOS and Linux.
+
 ## Context menus (2026-11-18)
 
 Contract and evaluation table: `docs/design/context-menus.md`. One primitive, `components/ui/ContextMenu.tsx`

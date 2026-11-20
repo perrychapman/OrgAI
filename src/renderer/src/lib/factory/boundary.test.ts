@@ -49,6 +49,8 @@ const inside = (p: string, dir: string): boolean => p === dir || p.startsWith(di
 const rel = (p: string): string => relative(RENDERER_SRC, p).split(sep).join('/')
 
 const factoryFiles = [...filesUnder(FACTORY_LIB), ...filesUnder(FACTORY_COMPONENTS)]
+/** Every renderer source file: the three-only and lazy-chunk rules hold app-wide, not only inside the factory folders. */
+const rendererFiles = filesUnder(RENDERER_SRC)
 const officeFiles = [...filesUnder(OFFICE_LIB), ...filesUnder(OFFICE_COMPONENTS)]
 const isTest = (f: string): boolean => /\.test\.(ts|tsx)$/.test(f)
 
@@ -71,7 +73,8 @@ describe('specifiers', () => {
 })
 
 describe('factory import boundary', () => {
-  it('has factory sources to check', () => {
+  it('has factory and renderer sources to check', () => {
+    expect(rendererFiles.some((f) => f.endsWith('LiveRunView.tsx'))).toBe(true)
     expect(factoryFiles.some((f) => f.endsWith('types.ts'))).toBe(true)
     expect(factoryFiles.some((f) => f.endsWith('FactoryScene.tsx'))).toBe(true)
   })
@@ -106,7 +109,7 @@ describe('factory import boundary', () => {
       return r === 'components/canvas/factory/FactoryCanvas.tsx' || r.startsWith('components/canvas/factory/engine/') || r.startsWith('components/canvas/factory/builders/')
     }
     const bad: string[] = []
-    for (const file of factoryFiles) {
+    for (const file of rendererFiles) {
       // A pure module's test may import three's math classes (the camera agreement test, section 2).
       if (isTest(file) && inside(file, FACTORY_LIB)) continue
       for (const spec of specifiers(readFileSync(file, 'utf8'))) {
@@ -118,7 +121,7 @@ describe('factory import boundary', () => {
 
   it('never loads FactoryCanvas or the engine statically from outside the lazy chunk', () => {
     const bad: string[] = []
-    for (const file of factoryFiles) {
+    for (const file of rendererFiles) {
       const r = rel(file)
       if (r === 'components/canvas/factory/FactoryCanvas.tsx' || r.includes('/engine/') || r.includes('/builders/')) continue
       const src = readFileSync(file, 'utf8')

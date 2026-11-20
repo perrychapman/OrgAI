@@ -176,8 +176,7 @@ export class FactoryEngine {
       powerPreference: 'default',
       preserveDrawingBuffer: false
     })
-    // Engines constructed and not yet disposed (the leak check, section 9.1).
-    factorySession.engines++
+    try {
     const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
     this.renderer.setPixelRatio(options.quality === 'high' ? Math.min(dpr, 1.5) : 1)
     const shadows = options.quality !== 'minimal'
@@ -214,6 +213,17 @@ export class FactoryEngine {
 
     this.applyTheme()
     this.buildHall()
+    } catch (error) {
+      // Setup failed part-way: release everything at once so a failed engine never holds a GPU context.
+      for (const g of this.geometries) g.dispose()
+      for (const m of this.materials) m.dispose()
+      for (const t of this.textures) t.dispose()
+      this.renderer.dispose()
+      this.renderer.forceContextLoss()
+      throw error
+    }
+    // Engines constructed and not yet disposed (the leak check, section 9.1); counted only once setup succeeded.
+    factorySession.engines++
   }
 
   // ---- public API ----
@@ -273,6 +283,8 @@ export class FactoryEngine {
     for (const t of this.textures) t.needsUpdate = true
     for (const m of this.materials) m.needsUpdate = true
     this.renderer.shadowMap.needsUpdate = this.renderer.shadowMap.enabled
+    // Re-apply the clear colour, grid and lights: the slice 1 screenshot after a restore showed a black clear colour.
+    this.applyTheme()
     this.requestFrame()
   }
 
