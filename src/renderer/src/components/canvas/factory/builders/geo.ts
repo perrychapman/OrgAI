@@ -176,6 +176,22 @@ export function strut(a: [number, number, number], b: [number, number, number], 
 }
 
 /**
+ * Upright parallelogram in the XY plane at depth z facing +z (south): its edge at y0 spans x .. x + w, its edge at y1
+ * (y1 > y0) is shifted by `skew` along x. Two triangles. Diagonal hazard stripes and chevrons on a front face.
+ */
+export function paraV(x: number, w: number, y0: number, y1: number, skew: number, z = 0): BufferGeometry {
+  const g = new BufferGeometry()
+  const a = [x, y0, z]
+  const b = [x + w, y0, z]
+  const c = [x + w + skew, y1, z]
+  const d = [x + skew, y1, z]
+  g.setAttribute('position', new Float32BufferAttribute([...a, ...b, ...c, ...a, ...c, ...d], 3))
+  g.setAttribute('uv', new Float32BufferAttribute(new Array(12).fill(0), 2))
+  g.computeVertexNormals()
+  return g
+}
+
+/**
  * Flat parallelogram in the XZ plane facing up at height y: its edge at z0 spans x .. x + w, its edge at z1 (z1 > z0) is
  * shifted by `skew` (diagonal hazard stripes). Two triangles.
  */

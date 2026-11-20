@@ -42,6 +42,9 @@ export interface FactoryRoleColours {
   robotBase: string
   robotVisor: string
   robotWheel: string
+  /** Far-LOD robot capsule: unlit, so a few pixels of it keep their contrast against the lit floor (slice 3). */
+  robotFar: string
+  crate: string
   paint: string
   vacant: string
   blob: string
@@ -103,6 +106,9 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       robotBase: '#2a3040',
       robotVisor: '#0d1016',
       robotWheel: '#14171d',
+      // Unlit and near white: at fit the far capsule is a few pixels wide and must beat the lit floor by 3:1 by itself.
+      robotFar: '#f7f9ff',
+      crate: '#a07a4a',
       paint: '#b8932a',
       vacant: '#8995ad',
       blob: '#000000'
@@ -142,6 +148,8 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       robotBase: '#1c2236',
       robotVisor: '#0d1016',
       robotWheel: '#1d2129',
+      robotFar: '#232d63',
+      crate: '#94693a',
       paint: '#c99a1a',
       vacant: '#5b667c',
       blob: '#000000'

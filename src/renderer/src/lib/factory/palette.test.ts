@@ -44,6 +44,23 @@ describe('FACTORY_PALETTE', () => {
       expect(contrastRatio(r.robotVisor, r.robotBody)).toBeGreaterThanOrEqual(2)
     })
 
+    it(`${theme}: the far-LOD robot (unlit capsule) is at least ${ROBOT}:1 against the floor, plate and machine, also with the floor lit up to twice`, () => {
+      expect(contrastRatio(r.robotFar, r.floor)).toBeGreaterThanOrEqual(ROBOT)
+      expect(contrastRatio(r.robotFar, r.plate)).toBeGreaterThanOrEqual(ROBOT)
+      expect(contrastRatio(r.robotFar, r.machine)).toBeGreaterThanOrEqual(ROBOT)
+      // The unlit capsule keeps its colour; the lit floor can read up to twice its nominal linear luminance.
+      const robot = relativeLuminance(r.robotFar)
+      const floorLit = Math.min(1, relativeLuminance(r.floor) * 2)
+      expect((Math.max(robot, floorLit) + 0.05) / (Math.min(robot, floorLit) + 0.05)).toBeGreaterThanOrEqual(ROBOT)
+      // And the near robot body, which is lit, stays in the same family (not the opposite extreme).
+      expect(Math.sign(relativeLuminance(r.robotFar) - relativeLuminance(r.floor))).toBe(Math.sign(relativeLuminance(r.robotBody) - relativeLuminance(r.floor)))
+    })
+
+    it(`${theme}: the crate is separable from the floor and the plate`, () => {
+      expect(contrastRatio(r.crate, r.floor)).toBeGreaterThanOrEqual(1.5)
+      expect(contrastRatio(r.crate, r.plate)).toBeGreaterThanOrEqual(1.3)
+    })
+
     it(`${theme}: hall, deck, booth, plate and machine are each separable from the floor (${SEPARATION}:1)`, () => {
       for (const role of ['wall', 'deck', 'booth', 'plate', 'machine', 'console', 'dock', 'belt'] as const) {
         expect(contrastRatio(r[role], r.floor), role).toBeGreaterThanOrEqual(SEPARATION)
