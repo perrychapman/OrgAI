@@ -1,142 +1,144 @@
 @import './dashboard-projects.css';
 @import './dashboard-band.css';
 @import './dashboard-strip.css';
+@import './dashboard-greeting.css';
+@import './dashboard-resume.css';
+@import './dashboard-today.css';
+@import './dashboard-week.css';
 
-/* ---------- Dashboard (docs/design/dashboard-2.md) ----------
-   Page grid (section 2) and the attention rows (Needs you, Paused, Recently ended). Status bar, strip and To set up:
-   dashboard-strip.css. Right now band: dashboard-band.css. Project tiles: dashboard-projects.css. */
+/* ---------- Dashboard (docs/design/dashboard-overhaul.md) ----------
+   Page shell (section 2): greeting, the fixed sections, the arranged sections in one or two tracks, the footer; the
+   customise bar and control rows (section 6) and the shared section and row rules. Greeting: dashboard-greeting.css.
+   Pick up: dashboard-resume.css. Today: dashboard-today.css. Your week and its ledger: dashboard-week.css and
+   dashboard-strip.css. Working now: dashboard-band.css. Project tiles: dashboard-projects.css. */
 
-/* The scroll region under the topbar. One page scroll, no per-column scroll. Its padding sits on the grid, because a
-   container cannot be styled by its own container query. */
+/* The scroll region under the topbar. One page scroll, no per-column scroll; the window never scrolls. */
 .dashboard {
-  container: dashboard / size;
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
   overflow: auto;
 }
-/* Rows: status bar, forget notice, work area, projects. `dash` is the inline-size container the regions query. */
-.dashboard-grid {
+/* One column of sections, always (2.1). `dash` is the inline-size container every section queries. */
+.dash-page {
   container: dash / inline-size;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-content: start;
-  gap: var(--space-4);
-  padding: var(--space-4);
-}
-@container dashboard (min-width: 1100px) {
-  .dashboard-grid {
-    padding: var(--space-6);
-  }
-}
-.dashboard-grid > * {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-6);
   min-width: 0;
+}
+.dash-page > * {
+  min-width: 0;
+}
+@container dash (min-width: 1000px) {
+  .dash-arranged {
+    row-gap: var(--space-8);
+  }
 }
 
-/* The work area: one track in DOM order (needs, now, strip, setup, paused, ended); two tracks from 880 px, the band
-   spanning every row on the right. An area whose region renders nothing collapses. */
-.dash-work {
+/* The arranged sections. Pairing is computed in JS (placeSections): a slot is half or full; visual order is DOM order. */
+.dash-arranged {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-4);
   align-items: start;
+  gap: var(--space-6);
 }
-.dash-area {
+.dash-arranged:empty {
+  display: none;
+}
+.dash-page[data-tracks='2'] .dash-arranged {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--space-8);
+}
+.dash-slot {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
-.dash-area:empty {
+.dash-slot[data-span='full'] {
+  grid-column: 1 / -1;
+}
+.dash-arranged > .dash-section {
+  grid-column: 1 / -1;
+}
+
+/* Customise (section 6): the entry button, the sticky bar and each section's control row. */
+.dash-customise {
+  flex: none;
+}
+@container dash (max-width: 559px) {
+  .dash-customise .dash-customise-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+.dash-customise-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  background: var(--surface-0);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.dash-customise-bar p {
+  margin: 0;
+  flex: 1 1 240px;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.dash-section-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+}
+.dash-section-controls-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.dash-slot:not([data-state='shown']) .dash-section-controls-title {
+  color: var(--text-tertiary);
+}
+.dash-section-controls [aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The footer line: version and the Dev and Mock badges. */
+.dash-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.dash-footer:empty {
   display: none;
 }
-/* Quiet states (walk-3 M4). A region with nothing to say is not drawn: Needs you without a decision is hidden
-   (`data-needs-empty`), the band without an open run is hidden (`data-now-empty`, the status sentence says it). */
-.dash-work[data-needs-empty] .dash-area-needs,
-.dash-work[data-now-empty] .dash-area-now,
-.dash-area-now:has(> .dash-now[hidden]) {
-  display: none;
-}
+
 .dash-section[hidden] {
   display: none;
-}
-@container dash (min-width: 880px) {
-  .dash-work {
-    grid-template-columns: minmax(340px, 5fr) minmax(0, 7fr);
-    grid-template-areas:
-      'needs  now'
-      'strip  now'
-      'setup  now'
-      'paused now'
-      'ended  now';
-    grid-template-rows: repeat(4, auto) 1fr;
-    /* A named row whose region renders nothing still has its gaps, so a quiet left column opened 16 px holes per
-       empty row. Rows carry no gap; every area below the first row spaces itself with a top margin instead (an empty
-       area is display: none, so it adds nothing). */
-    row-gap: 0;
-  }
-  .dash-area-strip,
-  .dash-area-setup,
-  .dash-area-paused,
-  .dash-area-ended {
-    margin-block-start: var(--space-4);
-  }
-  .dash-area-needs {
-    grid-area: needs;
-  }
-  .dash-area-now {
-    grid-area: now;
-  }
-  .dash-area-strip {
-    grid-area: strip;
-  }
-  .dash-area-setup {
-    grid-area: setup;
-  }
-  .dash-area-paused {
-    grid-area: paused;
-  }
-  .dash-area-ended {
-    grid-area: ended;
-  }
-  /* No decision, band live: the band leads on the left, the strip and the lists stack beside it. */
-  .dash-work[data-needs-empty]:not([data-now-empty]) {
-    grid-template-columns: minmax(0, 7fr) minmax(340px, 5fr);
-    grid-template-areas:
-      'now strip'
-      'now setup'
-      'now paused'
-      'now ended';
-    grid-template-rows: auto auto auto 1fr;
-  }
-  .dash-work[data-needs-empty]:not([data-now-empty]) .dash-area-strip {
-    margin-block-start: 0;
-  }
-  /* Decisions, band empty: Needs you left, the strip at its tall size right, the lists full width under both. */
-  .dash-work[data-now-empty]:not([data-needs-empty]) {
-    grid-template-areas:
-      'needs  strip'
-      'setup  setup'
-      'paused paused'
-      'ended  ended';
-    grid-template-rows: auto auto auto 1fr;
-  }
-  .dash-work[data-now-empty]:not([data-needs-empty]) .dash-area-strip {
-    margin-block-start: 0;
-  }
-  /* Both quiet: the strip at its tall size across the page, then the lists side by side. A wrapping row, not an
-     auto-fit grid: with one list the grid kept empty tracks under the spanning strip and the list sat in one of
-     them with a blank beside it; here a lone list takes the whole row. */
-  .dash-work[data-now-empty][data-needs-empty] {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    gap: var(--space-4);
-  }
-  .dash-work[data-now-empty][data-needs-empty] .dash-area {
-    flex: 1 1 320px;
-    margin-block-start: 0;
-  }
-  .dash-work[data-now-empty][data-needs-empty] .dash-area-strip {
-    flex-basis: 100%;
-  }
 }
 
 /* Numbers are mono everywhere on this page. */
@@ -163,15 +165,23 @@
 .dash-section > button {
   align-self: flex-start;
 }
+/* A section is unboxed (section 3): a top hairline, the h2 at title-sm, an optional mono count, then the content. */
+.dash-section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--space-3);
+}
 .dash-section-head {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 28px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: var(--space-2);
+  min-height: 24px;
+  margin-bottom: var(--space-2);
 }
 .dash-section-head h2 {
   margin: 0;
-  font-size: var(--text-title);
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
   border-radius: var(--radius-sm);
@@ -181,27 +191,10 @@
   outline-offset: 2px;
 }
 .dash-count {
-  color: var(--text-secondary);
-}
-/* Lists (To set up, Paused, Recently ended) are quiet: a small heading, a mono count, no box (walk-3 / advice 2). */
-[data-testid='dash-setup'] .dash-section-head,
-[data-testid='dash-paused'] .dash-section-head,
-[data-testid='dash-since'] .dash-section-head {
-  min-height: 24px;
-}
-[data-testid='dash-setup'] .dash-section-head h2,
-[data-testid='dash-paused'] .dash-section-head h2,
-[data-testid='dash-since'] .dash-section-head h2 {
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
-  color: var(--text-secondary);
-}
-[data-testid='dash-setup'] .dash-count,
-[data-testid='dash-paused'] .dash-count,
-[data-testid='dash-since'] .dash-count {
+  font-size: var(--text-caption);
   color: var(--text-tertiary);
 }
-/* Amber belongs to the Needs you row alone; its count reads as the alert while a decision waits. */
+/* Amber belongs to the Waiting on you rows alone; its count reads as the alert while a decision waits. */
 [data-testid='dash-needs-you'] .dash-count {
   color: var(--warning-text);
 }
