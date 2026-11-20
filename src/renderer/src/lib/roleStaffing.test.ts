@@ -90,8 +90,17 @@ describe('controls', () => {
     expect(roleStaffingControls(role({ model: 'inherit', tier: undefined }), project(), 'claude').explanation).toMatch(/started it/)
   })
   it('mode default names the project mode', () => {
-    expect(roleStaffingControls(role(), project(), 'claude').modeOptions[0].label).toBe('Follow the project (Automatic)')
-    expect(roleStaffingControls(role(), project({ staffing: 'fixed' }), 'claude').modeOptions[0].label).toBe('Follow the project (Always as configured)')
+    expect(roleStaffingControls(role(), project(), 'claude').modeOptions[0].label).toBe('Same as the project (chosen per task)')
+    expect(roleStaffingControls(role(), project({ staffing: 'fixed' }), 'claude').modeOptions[0].label).toBe('Same as the project (always this model)')
+  })
+  it('uses the plain labels for the floor, the cap and the notes', () => {
+    const c = roleStaffingControls(role(), project(), 'claude')
+    expect(c.modeOptions.map((o) => o.label)).toEqual(['Same as the project (chosen per task)', 'Chosen per task', 'Always this model'])
+    expect(c.minTierOptions[0].label).toBe('Any model')
+    expect(c.maxEffortOptions[0].label).toBe('Up to high (default)')
+    expect(roleStaffingControls(role({ effort: 'low' }), project(), 'claude').maxEffortOptions[0].label).toBe("This role's effort (low)")
+    expect(roleStaffingControls(role(), project({ staffing: 'fixed' }), 'claude').explanation).toBe('This project always uses the configured model, so this role does not change per task.')
+    expect(roleStaffingLine(role(), project(), false).note).toBe('No effort is set, so OrgAI may use up to high effort.')
   })
   it('keeps an unsupported stored cap visible', () => {
     const c = roleStaffingControls(role({ staffing: { mode: 'auto', maxEffort: 'max' } }), project(), 'codex', 'OpenAI')

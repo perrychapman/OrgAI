@@ -1,6 +1,6 @@
 // Token-free (mock). Multi-provider org charts in the renderer (docs/design/multi-provider.md "Renderer"):
 // - Team: the Reviewer is pinned to a mock proxy through "Runs on" (role-runs-on); the node chip names the provider
-//   (role-model-chip[data-connection]) and the Model fold summary too.
+//   (role-model-chip[data-connection]) and the Model and effort sentence too.
 // - Project settings: project-connection-roles-line counts the pinned role; a connection switch preview lists it under
 //   "Not changed (own connection)" (remap-kept).
 // - A [mock:bridged] run on the mock project shows the bridged agent with its provider tag (agent-connection) and it
@@ -39,7 +39,7 @@ async function selectReviewer() {
   // The Model fold starts closed on short windows; re-open it if a re-render remounts the panel.
   await page.waitForFunction(
     () => {
-      const fold = document.querySelector('[data-testid=role-model-fold]')
+      const fold = document.querySelector('[data-testid=role-section-model]')
       if (fold && !fold.open) fold.open = true
       const sel = document.querySelector('[data-testid=role-runs-on]')
       return !!sel && sel.getClientRects().length > 0
@@ -59,12 +59,12 @@ async function pinReviewer(name, id) {
   check(/^Project default \(/.test(labels[0] ?? ''), `Runs on starts with "Project default (...)" on ${name}`, labels.join(' | '))
   check(labels.some((l) => l.startsWith(PROXY)), 'Runs on lists the proxy by its own name', labels.join(' | '))
   const order = await page.evaluate(() => {
-    const fold = document.querySelector('[data-testid=role-model-fold]')
+    const fold = document.querySelector('[data-testid=role-section-model]')
     const runs = fold?.querySelector('[data-testid=role-runs-on]')
     const model = fold?.querySelector('[data-testid=role-model]')
     return !!runs && !!model && !!(runs.compareDocumentPosition(model) & Node.DOCUMENT_POSITION_FOLLOWING)
   })
-  check(order, 'Runs on is the first control in the Model fold, above Model')
+  check(order, 'Runs on is the first control in the Model and effort section, above Model')
   await sel.selectOption(id)
   await sleep(900)
   const p = await findProject(page, name)
@@ -107,14 +107,14 @@ try {
   await chip.waitFor({ timeout: 10_000 })
   check(((await chip.textContent()) ?? '').includes(PROXY), 'the node chip adds the provider ("Everyday · <proxy>")', (await chip.textContent()) ?? '')
   check(/^Runs on /.test((await chip.getAttribute('title')) ?? ''), 'the chip tooltip names the provider in full', (await chip.getAttribute('title')) ?? '')
-  const summary = (await page.locator('[data-testid=role-model-fold] > summary').innerText()).replace(/\s+/g, ' ')
-  check(summary.includes(`Runs on ${PROXY}`), 'the Model fold summary reads "<tier> · Runs on <name>" when pinned', summary)
+  const sentence = (await page.locator('[data-testid=role-model-sentence]').innerText()).replace(/\s+/g, ' ')
+  check(sentence.includes(`It runs on ${PROXY}`), 'the Model and effort sentence names the connection when pinned', sentence)
   const hint = ((await page.locator('[data-testid=role-runs-on-hint]').textContent()) ?? '').replace(/\s+/g, ' ')
   check(hint.includes('its own session') && hint.includes('answers its lead once and cannot be messaged') && hint.includes('not bridged'), 'the Runs on hint states the bridged limits', hint)
   check(!hint.includes('no worktree'), 'a read-only role gets no worktree line', hint)
   const describedBy = await page.locator('[data-testid=role-runs-on]').getAttribute('aria-describedby')
   check(!!describedBy && (await page.locator(`[id="${describedBy}"]`).count()) === 1, 'Runs on keeps aria-describedby on the hint', String(describedBy))
-  check((await page.locator('[data-testid=role-model-fold] .role-fold-summary').count()) === 1, 'one fold summary')
+  check((await page.locator('[data-testid=role-section-model] [data-testid=role-model-sentence]').count()) === 1, 'one Model and effort sentence')
   // Keyboard: Runs on is a focusable native select.
   await page.locator('[data-testid=role-runs-on]').focus()
   check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'role-runs-on'), 'Runs on takes keyboard focus')
@@ -131,8 +131,8 @@ try {
 
   // The root has no Runs on; its Model section says where it runs.
   await page.locator('.react-flow__node', { hasText: 'Orchestrator' }).first().click()
-  await page.waitForFunction(() => !!document.querySelector('[data-testid=role-model-fold]'), undefined, { timeout: 10_000 })
-  await page.evaluate(() => { const f = document.querySelector('[data-testid=role-model-fold]'); if (f) f.open = true })
+  await page.waitForFunction(() => !!document.querySelector('[data-testid=role-section-model]'), undefined, { timeout: 10_000 })
+  await page.evaluate(() => { const f = document.querySelector('[data-testid=role-section-model]'); if (f) f.open = true })
   const rootLine = page.locator('[data-testid=role-runs-on-root]')
   await rootLine.waitFor({ timeout: 10_000 })
   check(/The orchestrator runs on the project's connection \(.+\); change it in Project settings > Connection\./.test((await rootLine.textContent()) ?? ''), 'the root role shows its one quiet "runs on" line', (await rootLine.textContent()) ?? '')

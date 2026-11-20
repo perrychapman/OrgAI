@@ -18,10 +18,10 @@ function effectiveModel(project: Project, role: Role): string | undefined {
 }
 
 /**
- * "Tier and effort" in the role editor: one line saying what the role's model and effort mean now, and the controls
- * for staffing (mode, lowest tier, highest effort). Saves through updateRoles like the model picker beside it. It sits
- * inside the role's Model fold, whose visible text says "Model" once (e2e/connections.mjs N4), so nothing here shows
- * that word again.
+ * The role editor's "Staffing details" fold: how the model is chosen (mode), the cheapest model the role may use and the
+ * most effort it may use, plus the notes that explain a setting that has no effect. The sentence above the fold (see
+ * RoleModelSentence) says what the role runs on, so no summary line repeats it here. Saves through updateRoles like the
+ * model picker beside it.
  */
 export default function RoleStaffingControls({ project, role }: { project: Project; role: Role }): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
@@ -47,9 +47,6 @@ export default function RoleStaffingControls({ project, role }: { project: Proje
 
   return (
     <div className="role-staffing stack-2" data-testid="role-staffing" data-kind={c.kind}>
-      <p className="role-staffing-line" data-testid="role-staffing-line">
-        <strong>Tier and effort:</strong> {line.text}
-      </p>
       {line.note && (
         <span className="hint" data-testid="role-staffing-note">
           {line.note}
@@ -63,7 +60,7 @@ export default function RoleStaffingControls({ project, role }: { project: Proje
       {c.kind === 'editable' && (
         <>
           <div className="field">
-            <label htmlFor={id('mode')}>Staffing</label>
+            <label htmlFor={id('mode')}>How the model is chosen</label>
             <select id={id('mode')} className="select" data-testid="role-staffing-mode" value={c.mode} onChange={(e) => write(withStaffingMode(role, e.target.value as StaffingModeChoice))}>
               {c.modeOptions.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -75,7 +72,7 @@ export default function RoleStaffingControls({ project, role }: { project: Proje
           {c.showBounds && (
             <>
               <div className="field">
-                <label htmlFor={id('min-tier')}>Lowest tier</label>
+                <label htmlFor={id('min-tier')}>Cheapest model it may use</label>
                 <select id={id('min-tier')} className="select" data-testid="role-staffing-min-tier" value={c.minTier} onChange={(e) => write(withMinTier(role, e.target.value as ModelTier | ''))}>
                   {c.minTierOptions.map((o) => (
                     <option key={o.value} value={o.value}>
@@ -85,7 +82,7 @@ export default function RoleStaffingControls({ project, role }: { project: Proje
                 </select>
               </div>
               <div className="field">
-                <label htmlFor={id('max-effort')}>Highest effort</label>
+                <label htmlFor={id('max-effort')}>Most effort it may use</label>
                 <select id={id('max-effort')} className="select" data-testid="role-staffing-max-effort" value={c.maxEffort} onChange={(e) => write(withMaxEffort(role, e.target.value as Effort | ''))}>
                   {c.maxEffortOptions.map((o) => (
                     <option key={o.value} value={o.value}>

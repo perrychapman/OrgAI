@@ -1,35 +1,23 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
-import { Trash2, UserPlus } from 'lucide-react'
+import { Eye, Trash2 } from 'lucide-react'
 import type { Project, Role } from '@shared/types'
-import { projectConnection, roleConnection } from '@shared/defaults'
 import RoleModelPicker from './RoleModelPicker'
 import RoleCapabilities from './team/RoleCapabilities'
 import RoleStaffingControls from './team/RoleStaffingControls'
+import RoleDelegation from './team/RoleDelegation'
+import RoleModelSentence from './team/RoleModelSentence'
 import type { CapabilityKind } from './team/CapabilityBlock'
 import { ROLE_COLORS, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
-import { Banner } from './ui/Banner'
 import { Button } from './ui/Button'
-import { Checkbox } from './ui/Checkbox'
 import { Input } from './ui/Input'
 import { Textarea } from './ui/Textarea'
 import { initials } from '../lib/layout'
-import { delegationChoices } from '../lib/delegation'
-import {
-  moveNotice,
-  renamePatch,
-  setReportsTo,
-  settleRename,
-  renameSnapshot,
-  slugFieldEdit,
-  withRequiredReport,
-  withSpawnableToggled,
-  wouldCycle,
-  type RenameStart
-} from '../lib/roleOps'
-import { roleModelSummary } from '../lib/roleModels'
-import { modelFoldSummary } from '../lib/roleConnection'
+import { parentOptions, renamePatch, setReportsTo, settleRename, renameSnapshot, slugFieldEdit, type RenameStart } from '../lib/roleOps'
+
+/** The description a new role is seeded with (TeamView, the CLI). The editor shows it as a placeholder and treats it as empty. */
+const SEEDED_DESCRIPTION = 'Describe when a manager should delegate to this role.'
 
 interface Props {
   project: Project
@@ -45,9 +33,9 @@ interface Props {
   onRemove: () => void
   /** Escape inside the inspector hands focus back to the node. */
   onEscape?: () => void
-  /** Hands a scope to the Team assistant from an empty capability group. */
+  /** Kept for the capability groups; ignored until the Suggestions drawer takes over (phase 3). */
   onAskAssistant?: (scope: CapabilityKind) => void
-  /** Adds a new role under this one. */
+  /** Opens the Add role popover with this role as the parent (the delegation section's empty state). */
   onAddReport?: () => void
 }
 
@@ -60,17 +48,13 @@ const sameIds = (a: readonly string[] | undefined, b: readonly string[] | undefi
 export default function RoleInspector({ project, role, onReportsToChanged, onSettleError, onRemove, onEscape, onAskAssistant, onAddReport }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
   const replaceProject = useAppStore((s) => s.replaceProject)
-  const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === roleConnection(role, project))?.connection.tierModels)
-  const others = project.roles.filter((r) => r.id !== role.id)
   const isRoot = role.reportsTo === null
   const id = (name: string): string => `role-${name}`
-  // On a short or narrow window Identity and Model start folded behind a one-line summary; "What it can use" comes first.
+  // On a short or narrow window "Model and effort" stays folded behind its one-line sentence; every other section is open.
   const [roomy] = useState(() => window.innerHeight >= 800 && window.innerWidth >= 1280)
 
   const patch = (p: Partial<Role>): void =>
     updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, ...p } : r)))
-
-  const toggleSpawnable = (rid: string): void => patch(withSpawnableToggled(role, rid))
 
   const changeParent = (value: string): void => {
     const reportsTo = value || null
@@ -157,42 +141,16 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
     [role.id, project.id]
   )
 
-  const choices = delegationChoices(project.roles, role)
-  const delegateRow = (r: Role): ReactElement => (
-    <div key={r.id} className="delegate-row">
-      <Checkbox
-        checked={role.spawnable.includes(r.id)}
-        onChange={() => toggleSpawnable(r.id)}
-        testId={`role-delegate-${r.slug}`}
-        title={r.name}
-        label={
-          <span className="delegate-name">
-            <span className="avatar xs" style={{ ['--role' as string]: r.color }} aria-hidden="true" />
-            <span className="delegate-name-text">{r.name}</span>
-          </span>
-        }
-      />
-      <Checkbox
-        checked={(role.requiredReports ?? []).includes(r.id)}
-        onChange={(v) => patch(withRequiredReport(role, r.id, v))}
-        disabled={!role.spawnable.includes(r.id)}
-        title="The harness requires this report to be delegated to every time this role finishes"
-        testId={`role-required-report-${r.slug}`}
-        label={
-          <>
-            Required<span className="sr-only">: {r.name}</span>
-          </>
-        }
-      />
-    </div>
-  )
-
   const onKeyDown = (e: KeyboardEvent<HTMLElement>): void => {
     if (e.key === 'Escape' && !e.defaultPrevented && onEscape) {
       e.stopPropagation()
       onEscape()
     }
   }
+
+  // The seeded sentence is a hint, not a description: shown as the placeholder and counted as empty.
+  const seeded = role.description === SEEDED_DESCRIPTION
+  const parents = isRoot ? [] : parentOptions(project.roles, role.id)
 
   return (
     <>
@@ -202,94 +160,65 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
         </div>
         <h2>{role.name || 'Role'}</h2>
         <div className="grow" />
-        <div className="role-header-actions">
-          {onAddReport && (
-            <Button size="sm" icon={UserPlus} onClick={onAddReport} testId="role-add-report">
-              Add a report
-            </Button>
-          )}
-          {!isRoot && (
+        {!isRoot && (
+          <div className="role-header-actions">
             <Button size="sm" variant="danger" icon={Trash2} onClick={onRemove}>
               Remove
             </Button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
-      <div className="side-body stack-3" onKeyDown={onKeyDown}>
-
-        <div className="field">
-          <label htmlFor="role-name-input">Name</label>
-          <Input
-            id="role-name-input"
-            value={role.name}
-            onFocus={() => void beginRename()}
-            onBlur={() => endRename.current()}
-            onChange={(v) => {
-              const start = beginRename()
-              renameApply(start, renamePatch(project, start, v))
-            }}
-          />
-        </div>
-
-        <RoleCapabilities project={project} role={role} onChange={patch} onAskAssistant={onAskAssistant} />
-
-        <details className="role-fold stack-2" open={roomy} data-testid="role-identity-fold">
-          <summary className="side-section-title" id={id('identity')}>
-            Identity
-            <span className="role-fold-summary muted">
-              {role.slug || 'no slug'} · {role.reportsTo ? (project.roles.find((r) => r.id === role.reportsTo)?.name ?? 'unknown') : 'root'}
-            </span>
-          </summary>
+      <div className="side-body stack-3 role-editor" onKeyDown={onKeyDown}>
+        <section className="stack-2" aria-labelledby={id('who-title')} data-testid="role-section-who">
+          <h3 className="side-section-title" id={id('who-title')}>
+            Who it is
+          </h3>
           <div className="field">
-            <label htmlFor={id('slug')}>Slug (subagent type)</label>
+            <label htmlFor="role-name-input">Name</label>
             <Input
-              id={id('slug')}
-              value={slugError ? slugError.text : role.slug}
-              mono
-              invalid={!!slugError}
-              aria-describedby={slugError ? id('slug-error') : undefined}
+              id="role-name-input"
+              value={role.name}
               onFocus={() => void beginRename()}
-              onBlur={() => {
-                setSlugDraft(null)
-                endRename.current()
-              }}
+              onBlur={() => endRename.current()}
               onChange={(v) => {
                 const start = beginRename()
-                const edit = slugFieldEdit(project, start, v)
-                if ('error' in edit) {
-                  setSlugDraft({ roleId: role.id, text: slugify(v), error: edit.error })
-                  return
-                }
-                setSlugDraft(null)
-                renameApply(start, edit.patch)
+                renameApply(start, renamePatch(project, start, v))
               }}
             />
-            {slugError && (
-              <span className="field-error" id={id('slug-error')} role="alert" data-testid="role-slug-error">
-                {slugError.error}
-              </span>
+          </div>
+          <div className="field">
+            <label htmlFor={id('description')}>What is this role for?</label>
+            <Textarea
+              id={id('description')}
+              value={seeded ? '' : role.description}
+              placeholder={SEEDED_DESCRIPTION}
+              aria-describedby={id('description-help')}
+              onChange={(v) => patch({ description: v })}
+            />
+            <span className="re-hint" id={id('description-help')}>
+              Managers read this to decide when to hand work to it.
+            </span>
+          </div>
+          <div className="field">
+            {isRoot ? (
+              <>
+                <span className="field-label">Reports to</span>
+                <p className="re-static" data-testid="role-reports-to-root">
+                  Top of the team. It does not report to anyone.
+                </p>
+              </>
+            ) : (
+              <>
+                <label htmlFor={id('reports-to')}>Reports to</label>
+                <select id={id('reports-to')} className="select" data-testid="role-reports-to" value={role.reportsTo ?? ''} onChange={(e) => changeParent(e.target.value)}>
+                  {parents.map((o) => (
+                    <option key={o.id} value={o.id} disabled={o.disabled}>
+                      {`${'  '.repeat(o.depth)}${o.name}`}
+                    </option>
+                  ))}
+                </select>
+              </>
             )}
-          </div>
-          <div className="field">
-            <label htmlFor={id('description')}>When should a manager delegate to this role?</label>
-            <Textarea id={id('description')} value={role.description} onChange={(v) => patch({ description: v })} />
-          </div>
-          <div className="field">
-            <label htmlFor={id('reports-to')}>Reports to</label>
-            <select
-              id={id('reports-to')}
-              className="select"
-              value={role.reportsTo ?? ''}
-              onChange={(e) => changeParent(e.target.value)}
-            >
-              {/* Review L2: only the root reports to nobody; another role cannot be made a second root here. */}
-              {isRoot && <option value="">Nobody (root orchestrator)</option>}
-              {others.map((r) => (
-                <option key={r.id} value={r.id} disabled={wouldCycle(project.roles, role.id, r.id)}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
           </div>
           <div className="field">
             <span className="field-label">Color</span>
@@ -323,50 +252,47 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
               ))}
             </div>
           </div>
-        </details>
-
-        <details className="role-fold stack-2" open={roomy} data-testid="role-model-fold">
-          <summary className="side-section-title" id={id('model')}>
-            Model
-            <span className="role-fold-summary muted">{modelFoldSummary(roleModelSummary(role, tierModels ?? {}), roleConnection(role, project), projectConnection(project))}</span>
-          </summary>
-          <RoleModelPicker project={project} role={role} />
-          <RoleStaffingControls project={project} role={role} />
-        </details>
-
-        <section className="stack-2" aria-labelledby={id('delegation')}>
-          <h3 className="side-section-title" id={id('delegation')}>
-            Delegation
-          </h3>
-          <Checkbox checked={role.canSpawn} onChange={(v) => patch({ canSpawn: v })} label="May create subagents" />
-          {role.canSpawn && (
-            <>
-              <span className="hint">Required: this role must hand work to that report before it finishes.</span>
-              {others.length === 0 && <span className="hint">Add more roles to delegate to.</span>}
-              {choices.direct.length > 0 && (
-                <div className="stack-1" role="group" aria-labelledby={id('delegate-direct')}>
-                  {/* QA P4: the first group is named, as "Other roles" below is. */}
-                  <span className="field-label" id={id('delegate-direct')}>
-                    Direct reports
-                  </span>
-                  <div className="delegate-list">{choices.direct.map(delegateRow)}</div>
-                </div>
+          <details className="re-fold" data-testid="role-details-fold">
+            <summary>Details</summary>
+            <div className="field re-fold-body">
+              <label htmlFor={id('slug')}>ID used in team files</label>
+              <Input
+                id={id('slug')}
+                value={slugError ? slugError.text : role.slug}
+                mono
+                invalid={!!slugError}
+                aria-describedby={slugError ? `${id('slug-help')} ${id('slug-error')}` : id('slug-help')}
+                onFocus={() => void beginRename()}
+                onBlur={() => {
+                  setSlugDraft(null)
+                  endRename.current()
+                }}
+                onChange={(v) => {
+                  const start = beginRename()
+                  const edit = slugFieldEdit(project, start, v)
+                  if ('error' in edit) {
+                    setSlugDraft({ roleId: role.id, text: slugify(v), error: edit.error })
+                    return
+                  }
+                  setSlugDraft(null)
+                  renameApply(start, edit.patch)
+                }}
+              />
+              <span className="re-hint" id={id('slug-help')}>
+                Used in .orgai/ files and when a manager starts this role. It follows the name unless you edit it.
+              </span>
+              {slugError && (
+                <span className="field-error" id={id('slug-error')} role="alert" data-testid="role-slug-error">
+                  {slugError.error}
+                </span>
               )}
-              {choices.other.length > 0 && (
-                <details className="delegate-other" open={choices.other.some((r) => role.spawnable.includes(r.id))} data-testid="role-delegate-other">
-                  <summary>
-                    Other roles <span className="muted">({choices.other.length})</span>
-                  </summary>
-                  <div className="delegate-list">{choices.other.map(delegateRow)}</div>
-                </details>
-              )}
-            </>
-          )}
+            </div>
+          </details>
         </section>
 
-        <section className="stack-2" aria-labelledby={id('instructions')}>
-          <h3 className="side-section-title" id={id('instructions')}>
-            Instructions
+        <section className="stack-2" aria-labelledby={id('does-title')} data-testid="role-section-does">
+          <h3 className="side-section-title" id={id('does-title')}>
+            What it does
           </h3>
           <div className="field">
             <label htmlFor={id('responsibilities')}>Responsibilities</label>
@@ -380,11 +306,50 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
             />
           </div>
           <div className="field">
-            <label htmlFor={id('prompt')}>System prompt</label>
-            <Textarea id={id('prompt')} mono rows={8} value={role.prompt} onChange={(v) => patch({ prompt: v })} />
-            <span className="hint">Responsibilities, the list of reports and the project brief are appended automatically at run time.</span>
+            <label htmlFor={id('prompt')}>Instructions</label>
+            <Textarea id={id('prompt')} mono rows={8} value={role.prompt} aria-describedby={id('prompt-help')} onChange={(v) => patch({ prompt: v })} />
+            <span className="re-hint" id={id('prompt-help')}>
+              Responsibilities, the roles it can delegate to and the project brief are added when it runs.
+            </span>
+          </div>
+          {/* Placeholder until main can hand the assembled prompt over (docs/design/team-tab-overhaul.md 1.13). Stays focusable so its reason is read. */}
+          <div className="re-preview">
+            <Button size="sm" icon={Eye} inert ariaDescribedBy={id('preview-note')} testId="role-preview-prompt">
+              Preview final prompt
+            </Button>
+            <span className="re-preview-note" id={id('preview-note')}>
+              Not available yet.
+            </span>
           </div>
         </section>
+
+        <RoleCapabilities project={project} role={role} onChange={patch} onAskAssistant={onAskAssistant} />
+
+        <section className="stack-2" aria-labelledby={id('delegate-title')} data-testid="role-section-delegate">
+          <h3 className="side-section-title" id={id('delegate-title')}>
+            Who it can delegate to
+          </h3>
+          <RoleDelegation roles={project.roles} role={role} onChange={patch} onAddReport={onAddReport} headingId={id('delegate-title')} />
+        </section>
+
+        {/* Folded behind its sentence on a short window: the summary holds the title and the sentence, so closed it still says what the role runs on. */}
+        <details className="re-model stack-2" open={roomy} data-testid="role-section-model">
+          <summary>
+            <h3 className="side-section-title" id={id('model-title')}>
+              Model and effort
+            </h3>
+            <RoleModelSentence project={project} role={role} />
+          </summary>
+          <div className="stack-2 re-model-body">
+            <RoleModelPicker project={project} role={role} />
+            <details className="re-fold" data-testid="role-staffing-fold">
+              <summary>Staffing details</summary>
+              <div className="re-fold-body">
+                <RoleStaffingControls project={project} role={role} />
+              </div>
+            </details>
+          </div>
+        </details>
       </div>
     </>
   )
