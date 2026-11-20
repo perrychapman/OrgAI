@@ -720,6 +720,35 @@ describe('Claude hostConfigChanged: a change the user saves never starts a turn 
     expect(paused.pausedUntil).toBeGreaterThan(Date.now())
   }, 20_000)
 
+  it('L2/L3: the deferred-turn prediction uses the driver\'s own plan-less count and last ready signature', async () => {
+    const { session } = await running([], { autoContinue: true })
+    const s = session as unknown as {
+      deferredTurnWouldNudge(): boolean
+      liveReportCount(): number
+      continuation: { setPlanNudgeSent: boolean; directAnswerSettled: boolean; turnsWithoutPlan: number; lastReadySignature?: string }
+    }
+    // L3: a direct answer settled turn 1 (the driver reset its count to 0), so the next plan-less turn is its first again:
+    // the set-plan nudge is due. The old estimate said "second" (no nudge).
+    s.continuation.directAnswerSettled = true
+    s.continuation.turnsWithoutPlan = 0
+    expect(s.deferredTurnWouldNudge()).toBe(true)
+    // After a set-plan nudge was sent and one plan-less turn counted, the next is the second: no nudge.
+    s.continuation.directAnswerSettled = false
+    s.continuation.setPlanNudgeSent = true
+    s.continuation.turnsWithoutPlan = 1
+    expect(s.deferredTurnWouldNudge()).toBe(false)
+  })
+
+  it('L2: a ready set the driver already nudged for is not predicted as a nudge again', async () => {
+    const plan = { goal: 'g', steps: [{ id: 'p1', title: 'Step', status: 'pending' as const, staff: { role: 'engineer' } }], status: 'active' as const, autoContinues: 0, updatedAt: 0 }
+    const { session } = await running([], { autoContinue: true, maxAutoContinues: 5, getPlan: () => plan })
+    const s = session as unknown as { deferredTurnWouldNudge(): boolean; liveReportCount(): number; continuation: { lastReadySignature?: string } }
+    vi.spyOn(s, 'liveReportCount').mockReturnValue(1)
+    expect(s.deferredTurnWouldNudge()).toBe(true)
+    s.continuation.lastReadySignature = 'p1'
+    expect(s.deferredTurnWouldNudge()).toBe(false)
+  })
+
   it('M2: the trailing init and empty result of a query closed for a restart are no turn', async () => {
     sdk.lingerAfterInput = true
     const turnEnds = vi.fn()

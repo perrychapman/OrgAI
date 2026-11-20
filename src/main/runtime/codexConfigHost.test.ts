@@ -350,6 +350,64 @@ describe('Codex hostConfigChanged', () => {
     expect(text.match(/The user changed this project/g)).toHaveLength(1)
   })
 
+  it('M1: a removal that lands after the restart read the server list keeps its "still reachable" notice (true for that app-server) and one more restart follows', async () => {
+    const gh = mcpSpec({ name: 'github', roles: ['lead'], secretEnv: [] })
+    let mcpRef: McpServerSpec[] = [gh]
+    let calls = 0
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const { servers, mcp } = await start(
+      {
+        resolvedMcpServers: async () => {
+          const snapshot = mcpRef.map((spec) => ({ spec, env: {}, headers: {} }))
+          calls += 1
+          if (calls === 2) {
+            // The restart has read [github, notes]; the user removes github before the resume.
+            mcpRef.splice(0, mcpRef.length, ...mcpRef.filter((s) => s.name !== 'github'))
+            await host({ mcp: { upserted: [], removed: ['github'] } })
+          }
+          if (calls === 3) await gate
+          return snapshot
+        }
+      },
+      [gh]
+    )
+    mcpRef = mcp
+    servers[0]!.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await sleep(20)
+    mcp.push(mcpSpec({ name: 'notes', roles: ['lead'], secretEnv: [] }))
+    await host({ mcp: { upserted: ['notes'], removed: [] } })
+    await vi.waitFor(() => expect(servers).toHaveLength(2))
+    // The second app-server still has github: the notice stays, and the restart's own notice does not claim it is gone.
+    expect((servers[1]!.options.config ?? []).some((l) => l.startsWith('mcp_servers.github.'))).toBe(true)
+    await vi.waitFor(() => expect(calls).toBe(3))
+    const pending = JSON.stringify((session as any).hostNotes)
+    expect(pending).toContain('stay reachable until Codex restarts')
+    expect(pending).not.toContain('are gone')
+    release()
+    // The further restart drops it.
+    await vi.waitFor(() => expect(servers).toHaveLength(3))
+    expect((servers[2]!.options.config ?? []).some((l) => l.startsWith('mcp_servers.github.'))).toBe(false)
+  })
+
+  it('L1: two removals naming different servers before one restart: neither unsent notice survives it', async () => {
+    const a = mcpSpec({ name: 'alpha', roles: ['lead'], secretEnv: [] })
+    const b = mcpSpec({ name: 'beta', roles: ['lead'], secretEnv: [] })
+    const { servers, mcp } = await start({}, [a, b])
+    faults.steer = true // both notices wait in the queue
+    mcp.splice(0, 1)
+    await host({ mcp: { upserted: [], removed: ['alpha'] } })
+    mcp.splice(0, 1)
+    await host({ mcp: { upserted: [], removed: ['beta'] } })
+    servers[0]!.push('turn/completed', turnDone('th-1', 'tu-1'))
+    await vi.waitFor(() => expect(servers).toHaveLength(2))
+    await sleep(30)
+    const notes = JSON.stringify((session as any).hostNotes)
+    // Regression: the first removal's notice (alpha) survived and told the orchestrator it "stays reachable" after the restart.
+    expect(notes).not.toContain('stay reachable until Codex restarts')
+    expect((session as any).reachableNotes).toEqual([])
+  })
+
   it('item 4: the run\'s own approved removal is logged as still reachable, with no extra notice', async () => {
     const gh = mcpSpec({ name: 'github', roles: ['lead'], secretEnv: [] })
     const { ctx, servers, mcp } = await start({}, [gh])
