@@ -3,7 +3,7 @@ import { useEffect, useId, useState } from 'react'
 import type { OrgTemplateInfo, Project } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
-import { groupTemplatesByKind, kindNote, roleNamesLine, templateKindLabel } from '../../lib/templates'
+import { groupTemplatesByKind, kindNote, roleCountText, roleNamesLine, templateKindLabel } from '../../lib/templates'
 import { Button } from '../ui/Button'
 import { Dialog } from '../ui/Dialog'
 
@@ -85,7 +85,7 @@ export default function ApplyTemplateDialog({
       size="md"
       testId="template-apply-dialog"
       title="Replace the team with a template"
-      description="The current roles are replaced. You can undo until you edit the chart."
+      description="Pick a saved team to replace the current one."
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
@@ -95,17 +95,37 @@ export default function ApplyTemplateDialog({
         </>
       }
     >
-      <div className="template-form">
+      <div className="template-form template-apply-cols">
         <fieldset className="template-options">
           <legend>Templates</legend>
           {groups.same.map(option)}
           {groups.other.length > 0 && groups.same.length > 0 && <p className="template-divider muted">Other kinds</p>}
           {groups.other.map(option)}
         </fieldset>
-        {note && (
-          <p id={noteId} className="hint" data-testid="template-kind-note">
-            {note}
-          </p>
+        {selected && (
+          <section className="template-preview stack-2" aria-label="Template preview" data-testid="template-preview">
+            <h3 className="template-preview-name">{selected.name}</h3>
+            {selected.description && <p className="template-preview-desc">{selected.description}</p>}
+            <p className="template-preview-meta muted">
+              {roleCountText(Math.max(selected.roleCount, selected.roleNames.length))} · {templateKindLabel(selected.kind)}
+            </p>
+            <ol className="template-preview-roles">
+              {selected.roleNames.map((name, i) => (
+                <li key={`${i}-${name}`}>
+                  <span>{name}</span>
+                  {i === 0 && <span className="template-preview-top muted">top</span>}
+                </li>
+              ))}
+            </ol>
+            <p className="hint" data-testid="template-preview-replaces">
+              Replaces your {project.roles.length} current {project.roles.length === 1 ? 'role' : 'roles'}. You can undo until you change a role.
+            </p>
+            {note && (
+              <p id={noteId} className="hint" data-testid="template-kind-note">
+                {note}
+              </p>
+            )}
+          </section>
         )}
         {error && (
           <p className="field-msg error" role="alert" data-testid="template-apply-error">

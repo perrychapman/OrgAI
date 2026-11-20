@@ -333,7 +333,7 @@ export default function ImportAgentsDialog({
 
   return (
     <>
-      <Dialog open onClose={onClose} title="Import agents" description="Review the roles found in this folder before they join the org chart." size="lg" footer={footer} testId="import-dialog">
+      <Dialog open onClose={onClose} title="Import agent files" description="Review the roles found in this folder before they join the team." size="lg" footer={footer} testId="import-dialog">
         {!scan ? (
           <p className="muted" role="status">
             Looking for agent files…
