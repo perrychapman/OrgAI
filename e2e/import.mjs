@@ -115,7 +115,10 @@ try {
   // N2: the newer "Added ..." edit holds the row; the quiet "Undo ended" note waits behind it (+1) and expires on its own.
   check(/^Added /.test(await page.locator('[data-testid=team-notice-row] .team-notice-text').innerText()), 'the newer edit notice outranks "Undo ended"')
   await page.locator('[data-testid=team-notice-more]').click()
-  check(/Undo ended/.test(await page.locator('[data-testid=team-notice-waiting]').innerText()), 'the expired-undo note waits behind the edit', await page.locator('[data-testid=team-notice-waiting]').innerText())
+  // Wait for the popover to render its content (a single read raced the open on the slower macOS runner).
+  const waiting = page.locator('[data-testid=team-notice-waiting]')
+  const waitingHasUndoEnded = await waiting.filter({ hasText: /Undo ended/ }).waitFor({ state: 'visible', timeout: 5_000 }).then(() => true, () => false)
+  check(waitingHasUndoEnded, 'the expired-undo note waits behind the edit', await waiting.innerText().catch(() => '(popover absent)'))
   await page.keyboard.press('Escape')
   await shot('undo-expired')
 
