@@ -77,10 +77,12 @@ export const POSES: Readonly<Record<Pose, PoseSpec>> = {
     anchor: 'robot',
     yaw: 0,
     fallback: { dx: 0, dz: 0, yaw: 0 },
-    // The east arm swings up and out past the shoulder with the elbow straightened (the rest arm bends forward at the
+    // The WEST arm swings up and out past the shoulder with the elbow straightened (the rest arm bends forward at the
     // elbow, which would waste its reach), leaning a little north: the 55 degree camera then sees it about 35 percent
-    // longer than a vertical arm (measured: hand 0.57 m east, 1.56 m up, 0.17 m north of the body centre).
-    joints: { lean: 0, head: -0.12, armL: HANG, armR: { forward: -0.4, out: 2.65, bend: -0.7 }, farTilt: 0 }
+    // longer than a vertical arm (hand about 0.57 m west, 1.56 m up, 0.17 m north of the body centre). West, not east:
+    // the robot stands west of its machine, and on the slice 3 screenshots an east arm vanished against the machine
+    // behind it; the west arm reads against the plate edge and the floor.
+    joints: { lean: 0, head: -0.12, armL: { forward: -0.4, out: 2.65, bend: -0.7 }, armR: HANG, farTilt: 0 }
   },
   rest: {
     anchor: 'robot.rest',

@@ -56,8 +56,9 @@ describe('robot poses', () => {
 
   it('signal raises one hand clearly above the head and keeps the other arm down', () => {
     // The head part's top includes the antenna (about 6 cm above the head block).
-    expect(handTop('signal', 'r')).toBeGreaterThan(headTop('signal') + 0.08)
-    expect(handTop('signal', 'l')).toBeLessThan(headTop('signal') - 0.4)
+    // The west ('l') arm: away from the machine, so it reads against the plate edge and the floor (slice 3 screenshots).
+    expect(handTop('signal', 'l')).toBeGreaterThan(headTop('signal') + 0.08)
+    expect(handTop('signal', 'r')).toBeLessThan(headTop('signal') - 0.4)
     expect(poseBody('signal', STATION_ANCHORS).yaw).toBe(0)
   })
 

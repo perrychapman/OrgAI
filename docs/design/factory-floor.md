@@ -1275,3 +1275,146 @@ fixes: all checks passed (147, 147, 142).
 far and mid zoom; the hover emissive lift decision; variant 0 never seen in the app; dark robot contrast at 1024 x 640
 fit (2.8:1, far LOD); the bundle budgets; Reviewer M2, L1, L4, L5; no mock UX walkthrough was run on this integration
 (the slice 6 plan runs one on the whole interactive change).
+
+### Slice 3 (2026-11-20): live state, static end states
+
+Built in parallel against a contract the UI Lead committed first (`EngineFloor = { model: FloorModel; selectedId }`, a
+`model.ts` signature stub, the new test-state fields and the optional state-prop kit methods and anchors in
+`builders/types.ts`): a Scene Engineer for the model side (`lib/factory/{model,agentView}.ts` with tests,
+`FactoryScene`, `FactoryMirror`, `FactoryLabels`, `styles/factory.css`, `views/LiveRunView.tsx`), a second Scene Engineer
+for rendering (`engine/{poses,floorInstances}.ts` new, `FactoryEngine.ts`, `instancing.ts`, tests), the Technical
+Artist (`builders/*`, new `builders/stateProps.ts`, `lib/factory/palette.ts`, tests) and a UI Engineer standing in for
+QA (`e2e/factory-floor.mjs`; the QA role was not available to the UI Lead). Integrated, fixed, measured and looked at by
+the UI Lead. Nothing moves: `ambient` stays 'none'; cues, loops, the floor log and Pause motion are slice 4. Live only,
+as decided in slice 1. Machine: Windows 11, NVIDIA GeForce RTX 3060, Electron 45.2.3.
+
+**What landed.**
+
+- Model (`buildFloorModel`), every rule of section 1.4's end-state column: lamp precedence failed, needs you (state
+  `waiting` or an id in `needsYouIds`), running; the root also takes Needs you when `plan.status` is blocked. Pose by
+  lamp first (failed `down`, needs you `signal`), then by state (starting and thinking `console`, tool `machine`,
+  delegating `dispatch` for a lead or the booth and `console` for a bench, idle `rest`, done `docked`). Shutter iff done,
+  barrier iff error. Worktree: active, merging, conflict, review, held and waiting-children fenced; crate on the pad
+  (merging, waiting-children, review with a Needs-you crate lamp), striped hold (conflict), plain hold (held), dock or
+  parent pad (merged, by `mergeTarget`); empty and removed neither. `dockCrates` counts every current-session merge into
+  main. Board: counts, the first 12 step lamps, overflow. Step chip: an in-progress step whose owner matches exactly one
+  current agent's handle, else exactly one roleSlug. Hall: paused, ended (finished or error), else on. `model.test.ts`
+  covers every `AgentState` x every `WorktreeStatus` x both merge targets (144 cases) plus the rest.
+- Mirror: `data-pose`, `data-status`, `data-fenced`, `data-crate`, `data-steps`; descriptions of section 7.1 (activity,
+  line and station or "Runs line {m}", "Reports to", the worktree phrase, "Plan step {id}: {title}", at most 200
+  characters, React text only); the plan board button (`factory-plan-board`, after the booth in reading order, Up from
+  the booth, `onOpenPlan`, name "Plan, {done} of {total} steps done, {b} blocked"). Nameplates: second line icon and
+  word, activity cut at 40, "Merge conflict" for a conflict, the step chip. Board label "Plan · {done} of {total} done ·
+  {b} blocked"; dock label "Main checkout · {k} merged" from the model. `data-hall` on the scene; the booth plate reads
+  "Paused" while paused. The floor plan shows the same states (tile word and icon, worktree mark, chip where the tile
+  allows, plan board tile, dock count).
+- Engine: seven pose tables about the robot kit's pivots (far LOD: position, yaw and a small tilt); shutter, barrier and
+  fence at their station anchors; crates on the pad, on plain or striped hold pads, in a lead's or the booth's inbox
+  (2 x 2 at `CRATE_PITCH`, at most 4) and `min(dockCrates, 9)` on the dock slots; crate lamps; 12 board lamp instances
+  coloured per step; hall dim through `lighting.applyTheme(theme, hall)` with no rebuild. Shadow map refreshed only when
+  placement changes (a recolour alone no longer refreshes it).
+- Art: shutter (144 triangles), striped barrier (92), fence (288), crate with a lamp part (60), hold pads (20), board
+  lamp (40); board "done" is the success token mixed 62 percent to white (lighter than "active", not a different
+  shape); the conveyor is now side frames, one continuous belt and two end drums (no ladder of rollers); a lead has a
+  yellow plate rim, a yellow header board with chevrons over the desk and a larger chevron plate in the aisle; the far
+  robot capsule is unlit near-white (dark) / deep navy (light) with a 0.36 m radius.
+- Host: `factoryAgent` moved into `agentView.ts`; `LiveRunView` already passed `plan`, `runStatus`, `needsYouIds` and
+  `onOpenPlan`. No host fix was needed.
+
+**Fixes made during integration (UI Lead).**
+
+- Focus pan (`camera.ts` `panIntoView`, a slice 2 defect): at near zoom, focusing a station many rows away from the
+  view (the booth to row 3, or row 6 to row 2) panned to the hall clamp and showed an empty stage, because the
+  station's footprint projected behind the camera or straddled its plane. A footprint far off the stage, behind the
+  camera or larger than twice the stage is now centred first, then converged as before. Unit test with the measured
+  views (fails on the old code, passes on the new).
+- Signal pose raises the WEST arm: on the first screenshots the raised east arm disappeared against the machine behind
+  the robot (joint colours are close to the machine body in both themes). The west arm reads against the plate edge
+  and the floor.
+- Empty board slots (no step) take the pending colour, not the stack-light off colour, so in light they match real
+  pending steps (the engine report's open item).
+- e2e: the READY snapshot is keyed on the plan update and the pending card (ff-w123 failing comes earlier, before the
+  plan and the tool hold); lead poses are checked against the state the mirror reports (by READY `ff-l1` is
+  `thinking`, not `delegating`); `[mock:exec-blocked]` is keyed on the root lamp (it blocks the plan, not a step); the
+  ended hall is checked by End session on the tour run (a paused run has no End session button); the board button is
+  activated by keyboard (it is off-stage at the 40-agent fit); labels are read by `textContent`.
+
+**Deviations.**
+
+- Worktree phrases beyond 7.1: merging and waiting-children say "Working in its own branch", held "Branch held", empty
+  "No changes", removed nothing.
+- A blocked plan makes the booth's word "Needs you" as well as its lamp (same rule as any Needs-you lamp).
+- Paused booth: the nameplate and floor-plan tile say "Paused"; the mirror button keeps the model word (the mock's root
+  reads "Finished" after the usage limit) and its description adds "Run paused".
+- Poses: console faces north (the console is north of the 'robot' spot); signal and down stay at the 'robot' spot facing
+  south. Booth has no shutter, barrier or machine pose anchors.
+- `factory-board-label` exists only in 3D; `factory-dock` (with `data-count`) in both renderers.
+- Board "done" lamps differ from "active" by lightness only (a ring or cap would need a second instanced part with its
+  own visibility); the board label and the Plan tab carry the counts in words.
+
+**Measured** (built app on the GPU, quality `high`, 40-agent `[mock:factory-floor]` tour, 1600 x 1000, stage 985 x 450
+with the decision card open; test state `perf`).
+
+| Measure | Value | Budget |
+| --- | --- | --- |
+| Near zoom, mid rows (ppm 52) | 42 draw calls, 52,624 triangles (busiest view seen) | 120 / 250,000 |
+| Near zoom, ff-w211 row (ppm 41.7) | 28 draw calls, 19 shadow calls, 25,972 triangles; earlier run 40 / 20 / 52,116 | 120 / 40 / 250,000 |
+| Fit (ppm 7, Scene Engineer) | 49 draw calls, 19 shadow calls, 26,476 triangles | same |
+| Idle frames over 3 s at near zoom | 0 (loop `idle`); also 0 at fit and in the paused hall (Scene Engineer) | 0 |
+| Frame CPU p95 / interval p95 | 0.4 ms / 7.3 ms | 6 ms / 20 ms |
+| 21 mounts and unmounts (Scene Engineer) | 1 engine, 1 canvas, 63 geometries and 5 textures every time | stable |
+| Lazy chunk `FactoryCanvas-*.js` | 1,410,652 B raw, **291,031 B gzip** (slice 2: 283,665) | 230 kB (over, report only) |
+| Main renderer chunk | 1,480,353 B gzip as built (slice 2 reported 1,453,369 B on an older dev base; slice 3's own share not isolated) | report only |
+| Far robot vs floor (Technical Artist, offscreen pixels at ppm 11, 1024 wide) | dark 13.2:1, light 7.5:1 (slice 2: dark 2.8:1) | 3:1 |
+
+**Screenshots** (`docs/design/factory-floor-shots/slice-3/`, GPU path, looked at by the UI Lead):
+
+- `tour-{dark,light}-{1600x1000,1024x640}-webgl.png`: the 40-agent floor at fit (ppm 7) with the permission card open:
+  the stage is 450 px (1600 x 1000) or 242 px (1024 x 640) tall, so fit shows the gantry and the top rows. Lamps read
+  as coloured dots on the stack lights; nameplates of Needs you, Failed and conflict workers stay (ff-w211 "Needs you ·
+  Needs approval: $ npm test", ff-w123 "Failed", ff-w212 "Merge conflict").
+- `near-tool-machine-*`: a worker held in `tool` (a generic mock script) turned towards its machine with its arms
+  reaching, beside a console-pose worker facing north; bottom lamp lit on both.
+- `near-running-console-*`, `near-idle-rest-*`, `near-failed-down-barrier-*` (also at 1024 x 640): ff-w121 at its
+  console with the bottom lamp lit; ff-w122 standing at the south edge of its plate beside the belt, no lamp; ff-w123
+  slumped with its head down, the top lamp lit red and the black-and-yellow barrier across the front.
+- `near-delegating-dispatch-*`: sub-leads at their desks facing north, bottom lamp lit; the lead's yellow rim, header
+  board with chevrons and the chevron plate in the aisle make a lead obvious next to a bench.
+- `near-needs-you-signal-*` and `-ppm60-*`: ff-w211 faces the camera (visor visible) with the middle lamp amber and,
+  after the fix, the west arm raised beside the head; at ppm 40 the arm is a few pixels and the facing and lamp carry it.
+- `near-finished-docked-shutter-*`: shutters down over the machines (dark slats), robots docked east of the stack light
+  with heads lowered.
+- `near-worktree-fence-*`, `-crate-pad-*`, `-conflict-striped-hold-*`, `-held-*`, `-review-crate-*`, `-parent-pad-*`:
+  three-sided cages around ff-w111 and ff-w112; a crate at the belt end of ff-w112; ff-w212's crate on a striped pad in
+  the gap east of its station; ff-w133's crate on a plain pad; ff-w132's crate with an amber lamp on top; ff-s13's own
+  crate on its pad and ff-w131's crate in its inbox in the aisle.
+- `near-booth-dock-board-*`: the board with one green (active), one amber (blocked) and ten dark lamps, "Plan · 0 of 3
+  done · 1 blocked"; one crate on the dock, "Main checkout · 1 merged".
+- `hall-paused-*`, `near-booth-paused-*`: the booth plate reads "Paused"; the hall is dimmer in dark, only slightly in
+  light. `hall-ended-*`: booth "Finished · Stopped"; failed and conflict plates keep their words and lamps.
+- `floorplan-*`: the same paused tour as a floor plan: booth tile "Paused", the Plan tile "0 of 3 done · 1 bloc…" (cut at
+  fit, full text in its name), "Main checkout 1 merged", tiles with name and status icon (the word shows on large tiles
+  only, as in slice 2), worktree marks (Review, Held, Merged) on the near view.
+- State without colour: lamp position (bottom, middle, top), pose (facing, slump, raised arm, docked), shutter, barrier,
+  fence, crate position and the nameplate word all read on the near shots in both themes.
+
+**Checks (UI Lead, integrated worktree).** `npm run typecheck` clean. `npx vitest run`: 14,512 passed, 17 failed, 207
+skipped; the failures are the six known symlink EPERM tests and the worktree-only CLI tests that need `node_modules`
+(npmPackage, inkVersion 2, TUI Brand, Composer 2, OrgTreePane, PlanPane, StatusBar, TranscriptPane 2, WorktreesPane).
+Renderer suite after the last fixes: 2,803 of 2,803; factory tests 408 of 408. `npm run test:scripts` 206 passed, 3
+skipped. `npm run build` passes. `e2e/factory-floor.mjs`: all checks passed three ways after the last fixes, 296/296 on
+SwiftShader, 296/296 on the RTX 3060 (`E2E_FACTORY_SWGL=0`) and 286/286 with `E2E_FACTORY_PLAN=1` (one SwiftShader run in
+a chained batch stopped after 58 checks with no failure line; it passed 296/296 when re-run alone). `e2e/canvas.mjs` and
+`e2e/office.mjs`: all checks passed. No Reviewer pass: nothing security-relevant changed (agent text stays React text).
+
+**Section 15 items.** Settled: `needsYouIds` for non-root agents (LiveRunView derives it from the agent ids of
+permissions, questions, rule requests, merge reviews and MCP installs, plus the root for proposals; a permission card
+for the non-root ff-w211 puts it in, answering removes it; checked in the app and by the e2e). The mock's `tool` state,
+`toolCalls` and worktree statuses drive every end state above. Still open: screen-reader speech, the packed asar app,
+GitHub runners, macOS and Linux.
+
+**Open after slice 3.** The raised arm is small below ppm 50 and robot joint colours are close to the machine body in
+both themes (Technical Artist); the light-theme hall dim (x 0.7) is subtle; the fence is barely visible at ppm 7; board
+"done" differs from "active" by lightness only; a paused run cannot be ended from the Live view (End session is absent
+while paused: product question, not the scene); the bundle budgets; slice 2's open Reviewer items (M2, L1, L4, L5) and
+hover lift; 1, 5 and 15-agent live floors were not re-shot for slice 3; no mock UX walkthrough (slice 6).

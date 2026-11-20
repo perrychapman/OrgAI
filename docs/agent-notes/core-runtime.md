@@ -934,15 +934,19 @@ script (set `ORGAI_MOCK_SCRIPT` to `{"delayMs": 50}` only; a custom `work` array
 `runtime/mockFactoryFloor.test.ts` (fake context); the live app path is unverified.
 
 - Markers: `[mock:factory-floor]` plays `factoryFloorSteps`; `[mock:factory-floor-pause]` is the same and ends with a usage
-  limit (turn 1 hour; set autoResume off so the run stays `paused`). Run status `finished` comes from End session.
+  limit (turn 1 hour; set autoResume off so the run stays `paused`). Run status `finished` comes from End session. A
+  paused run offers Resume now and Cancel auto-resume but no End session button, so the e2e checks the ended hall on the
+  `[mock:factory-floor]` run instead. `[mock:exec-blocked]` sets the plan status to blocked without blocking a step.
 - 39 spawns: root -> `ff-l1..3` -> `ff-s11..33` -> `ff-w111..333` (depth 3). Ids equal handles. The mock never enforces
   subagent limits, spawnable lists or a plan guard (`maxConcurrentSubagents` / depth only reach the Claude SDK settings);
   scripted spawns are not checked against the parent's spawnable list, and the default project has no required reports. Roles
   used are the first spawnable role of the root and of that role (`implementer` on the default chart). `ff-w333` is then
   removed (`agent.remove`), so 39 agents stand (38 plus the root).
 - Standing at `MOCK_FACTORY_FLOOR_READY` (a root text): `ff-w121` starting, `ff-w122` idle, `ff-w123` error, `ff-w131/2/3` and
-  `ff-s13` done, `ff-w211` waiting (a background Bash card the e2e answers; it then goes thinking), leads and sub-leads
-  delegating, the root thinking. `ff-w111` is in state `tool` for `FACTORY_FLOOR_TOOL_HOLD_MS` (5 s) after READY, then
+  `ff-s13` done, `ff-w211` waiting (a background Bash card the e2e answers; it then goes thinking), most leads and
+  sub-leads delegating (not all: `ff-l1` reads `thinking` by READY, seen in the slice 3 e2e; a parent is set to
+  `delegating` per spawn and moves on), the root thinking. READY also follows the plan update, so key a READY snapshot on
+  the plan (`board.blocked` 1) and the pending card, not on `ff-w123` failing (which comes earlier). `ff-w111` is in state `tool` for `FACTORY_FLOOR_TOOL_HOLD_MS` (5 s) after READY, then
   `MOCK_FACTORY_FLOOR_DONE`; the run goes idle. `usage.toolCalls` of `ff-w111` goes 1, 2, 3, 4 (counted when a tool step
   starts, in the same upsert that sets `tool`).
 - Worktree records are synthetic (no git, `agent.upsert` only): `ff-w111` active, `ff-w112` merging, `ff-w113` merged
