@@ -101,6 +101,12 @@ export default function TeamNoticeRow({ current, waiting, onAction, onDismiss, o
                 {waiting.map((n) => (
                   <li key={n.key} data-kind={n.kind}>
                     <span>{n.text}</span>
+                    {/* A waiting message keeps its actions (an add's Undo behind a newer "Saved" confirmation). */}
+                    {n.actions?.map((a) => (
+                      <Button key={a.id} size="sm" variant="ghost" loading={a.busy} onClick={() => onAction(n, a.id)}>
+                        {a.label}
+                      </Button>
+                    ))}
                     {n.dismissible && (
                       <Button size="sm" variant="ghost" onClick={() => onDismiss(n)}>
                         Dismiss
