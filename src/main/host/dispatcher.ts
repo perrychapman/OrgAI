@@ -923,7 +923,7 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
   )
 
   registerConnectionIpc(handle, projects, connections)
-  registerMcpIpc(handle, runs, mcp, projectOrHarness, (id) => projects.get(id), { quick, settings, effectiveSettings: () => connections.effectiveSettings(), mock })
+  registerMcpIpc(handle, runs, mcp, projectOrHarness, (id) => projects.get(id), { quick, settings, effectiveSettings: () => connections.effectiveSettings(), mock }, projects)
   registerSkillIpc(handle, skills, skillEvaluation, runs, (id) => projects.get(id))
   registerCapabilityIpc(handle, capabilities)
   if (teamFiles) registerTeamFilesIpc(handle, teamFiles)
@@ -1278,7 +1278,9 @@ function registerMcpIpc(
   mcp: McpService,
   projectOrHarness: (id: string) => Project | null,
   getProject: (id: string) => Project | null,
-  assist: { quick: QuickRunService; settings: SettingsStore; effectiveSettings: () => AppSettings; mock: boolean }
+  assist: { quick: QuickRunService; settings: SettingsStore; effectiveSettings: () => AppSettings; mock: boolean },
+  /** ProjectStore's rename bookkeeping (renamedSlugGrants); optional so fakes without it keep working. */
+  projects?: Partial<Pick<ProjectStore, 'renamedAwaySlugs' | 'forgetRenamedServer'>>
 ): void {
   handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
   /** Attach liveRuns (desktop only, non-empty only) to an MCP mutation result. */
@@ -1289,6 +1291,14 @@ function registerMcpIpc(
   const serverName = (p: Project | null | undefined, id: string): string | undefined => p?.mcpServers?.find((s) => s.id === id)?.name
   handle(IPC.mcpUpsert, (ctx, input: McpUpsertInput): McpMutationResult | Promise<McpMutationResult> => {
     const before = beforeSave(ctx, getProject, input?.projectId)
+    // Third review: a renamed role's old slug that main moved to an id grant (ProjectStore renamedSlugGrants) and no role
+    // holds now is not written back by a stale whole-spec copy; any other slug is kept as sent. The user acted on this
+    // server, so main stops carrying its id grant into later renderer saves.
+    if (typeof input?.projectId === 'string' && input.spec && typeof input.spec.id === 'string') {
+      const away = projects?.renamedAwaySlugs?.(input.projectId)
+      if (away?.size && Array.isArray(input.spec.roles) && input.spec.roles.some((s) => away.has(s))) input = { ...input, spec: { ...input.spec, roles: input.spec.roles.filter((s) => !away.has(s)) } }
+      projects?.forgetRenamedServer?.(input.projectId, input.spec.id)
+    }
     const result = mcp.upsert(input)
     if (!before) return result
     // The spec replaces the stored one: the fields it sets and the ones it leaves out (cleared). Grants are not named:
@@ -1302,6 +1312,7 @@ function registerMcpIpc(
   })
   handle(IPC.mcpRemove, (ctx, input: { projectId: string; serverId: string }): McpMutationResult | Promise<McpMutationResult> => {
     const before = beforeSave(ctx, getProject, input?.projectId)
+    if (typeof input?.projectId === 'string' && typeof input.serverId === 'string') projects?.forgetRenamedServer?.(input.projectId, input.serverId)
     const result = mcp.remove(input)
     if (!before) return result
     return withLive(ctx, result, input.projectId, mcpChange(before, [input.serverId], [serverName(before, input.serverId) ?? input.serverId], { fields: [] }))

@@ -531,9 +531,18 @@ Application menu, run end and decision cards, settings, run titles, projects, us
           listing the role's SAVED slug) leaves the run's copy: as an id grant when the saved role holds the server by id
           (the role inspector's renamePatch shape, and every desktop save now: below), else the role loses it and the
           answer reports it (`granted: false`). Never widens, so it applies whatever the session can take and is never
-          undone by a rejection. Decision: a rename whose saved project drops the role's access (an org chart card's rename:
-          orgMerge keeps server roles on the old slug) takes it away in the run too, like the next run; before, the run
-          kept it by the old text.
+          undone by a rejection. Decision: a rename whose saved project drops the role's access (a save through
+          `store.save` or data stored before `renamedSlugGrants` that leaves the old slug and grants no id; orgMerge never
+          changes a stored slug, so an org chart card cannot rename) takes it away in the run too, like the next run;
+          before, the run kept it by the old text. Two running roles sharing the dropped text (duplicates stored before the
+          run) are each converted or reported lost, never silently (review Low 1).
+        - Review M-2: a rename patch's copied id grants (renamePatch copies every server that listed the old stored slug)
+          for a server the run does not give that role are not applied in the run ("A rename carried over a connection
+          this run had not taken; it applies from the next run."): the run never took that slug grant (a pull, a change
+          answered next-run, an in-between slug typed through another role's slug).
+        - Review M-1: roles the USER set on an install card (`settleInstall`, `raw.spec.roles` through mergeInstallEdit)
+          are stored slugs: saved as given for project / library scope, and for run scope mapped by id into the run's list
+          (`mcpRolesForRun`); only roles the agent's request carried are run slugs mapped with `slugsForStore`.
         - A role JOINING the run (setLive 'orgChart', both host and card routes) keeps a slug text of the run's list only
           where the saved server lists its slug (`staleSlugTexts`, the drop only: a joining role's grants come only through
           pendingGrants).
@@ -559,21 +568,34 @@ Application menu, run end and decision cards, settings, run titles, projects, us
           `renamedSlugGrants`: for each role id whose slug the save changes, when no OTHER stored role held the old slug,
           every stored server listing the old slug drops it and the role gets the server by id (Role.mcpServers), also when
           another incoming role takes the old slug (a swap or a new role: nobody inherits); when another stored role held
-          it (a duplicate, e.g. a slug typed key by key through another role's slug) nothing changes. projects:save returns
-          that saved project (the dispatcher passes saveFromRenderer's result through). Checked by
+          it (a duplicate, e.g. a slug typed key by key through another role's slug) nothing changes. Only the renamed
+          role's own old slug is removed; other slugs no role holds stay (a role removed with Undo still available, team
+          files awaiting approval), so a role removed in the same save keeps its slug in server lists (store-level, open:
+          review Low 4). Carry (memory only, `RENAME_CARRY_MS` 120 s from the role's latest rename save): ids main moved
+          are put back into later renderer saves of that role that omit them (typed and debounced, back to the starting
+          slug whose patch carries the starting grants) until the user acts on that server (mcp:upsert / mcp:remove call
+          `forgetRenamedServer`; revokePlan always upserts first, so a real revoke still removes the id grant). The old
+          slugs moved are kept as `renamedAwaySlugs` until a role holds them again; mcp:upsert (dispatcher.ts) drops
+          exactly those from an incoming `roles` list (a stale renderer copy writing the old slug back), nothing else.
+          projects:save returns that saved project (the dispatcher passes saveFromRenderer's result through). Checked by
           `src/main/store/projects.test.ts` "renames move slug-keyed server grants to id grants" (rename, per-keystroke
-          saves through another role's slug, swap, a new role on the old slug, save() / saveInternal() untouched) and
-          `host/dispatcherLiveChanges.test.ts` "third review: projects:save returns the saved project ...".
+          saves through another role's slug, the renderer's start-snapshot patch typed through a duplicate and back to the
+          start slug, a real revoke and the carry window, renamedAwaySlugs, swap, a new role on the old slug, save() /
+          saveInternal() untouched) and `host/dispatcherLiveChanges.test.ts` "third review: projects:save returns the saved
+          project ..." and "... a stale whole-spec mcp:upsert drops exactly the renamed role's old slug ...". Open: the
+          desktop lets a role take another role's slug (the CLI refuses, teamRoleEdit.ts); no refusal was added to
+          saveFromRenderer this round because typed in-between saves from older renderers may carry duplicates.
         Answers: projects:save does NOT refuse duplicate slugs (no check in `saveFromRenderer` or `save`; not added because
         per-keystroke saves pass through other roles' slugs); readers handle duplicates instead (mcpRolesForRun, roleNames,
         cardSlugsStillMean, renamedSlugGrants). MCP and skill proposals refuse unknown role slugs in the TOOLS
         (`harnessTools.ts` propose_mcp_servers "there is no role ... in this project" against the run's view; skills through
         `skills/assist.ts` with `roleSlugs` from the run's view), not in RunManager; card creation now drops them for direct
-        `ctx.requestProposal` callers. Store-level limits (not fixed): an mcp:upsert whose `roles` carries a slug no stored
-        role holds (e.g. a stale renderer copy writing the old slug back) is stored as given and grants nobody now, but a
-        role created later under that slug gains it in the store (a run refuses it unless the saved list lists the joining
-        role's slug, which it then does); dropping unknown slugs at mcp:upsert was not done because a grant to a role whose
-        projects:save has not landed yet (debounced) would be lost. The renderer's debounced projects:save discards the
+        `ctx.requestProposal` callers. Store-level: an mcp:upsert whose `roles` carries a renamed role's old slug that main
+        moved (renamedAwaySlugs) drops exactly that slug; any other slug no stored role holds is stored as given and grants
+        nobody now (a role created later under it gains it in the store, and a run then gives it to that joining role only
+        because the saved list names its slug). Dropping unheld slugs in general was not done: a grant to a role whose
+        debounced projects:save has not landed yet, a role removed with Undo available, or team files awaiting approval
+        would lose it. The renderer's debounced projects:save discards the
         returned project (useAppStore `debouncedSave`), so its copy of the servers stays stale until the next refresh: the
         Team tab run's to fix. Tests: `runManagerHostChange.test.ts` "third review: slug texts, renames and cards" (N1
         revoke in both stored shapes, the Team tab shape in both orders, a stale whole-spec write, another session's card

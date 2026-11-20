@@ -139,6 +139,33 @@ describe('desktop saves reach live runs (applyProjectChange)', () => {
     }
   })
 
+  it("third review: a stale whole-spec mcp:upsert drops exactly the renamed role's old slug, keeps other unheld slugs, and ends the carry", async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { ProjectStore } = await import('../store/projects')
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-stale-upsert-'))
+    try {
+      const real = new ProjectStore(join(dir, 'data'))
+      real.save(makeProject({ id: P, mcpServers: [server('m-docs', 'docs', { roles: ['engineer', 'ghost'] })] }))
+      const stale = structuredClone(real.get(P)!.mcpServers![0])
+      const r = rig()
+      const mcp = { ...r.services.mcp, upsert: (i: { spec: McpServerSpec }) => ({ project: real.save({ ...real.get(P)!, mcpServers: real.get(P)!.mcpServers!.map((s) => (s.id === i.spec.id ? i.spec : s)) }), servers: [] }) }
+      const d = new HostDispatcher({ ...r.services, projects: real as never, mcp: mcp as never })
+      const renamed = { ...real.get(P)!, roles: real.get(P)!.roles.map((x) => (x.id === 'r-eng' ? { ...x, name: 'Builder', slug: 'builder' } : x)) }
+      await d.invoke(IPC.projectsSave, [renamed], DESKTOP)
+      expect(real.get(P)!.mcpServers![0].roles).toEqual(['ghost'])
+      // The renderer's copy from before the rename revokes Builder (revokePlan: roles minus "builder", then the id grant).
+      await d.invoke(IPC.mcpUpsert, [{ projectId: P, spec: { ...stale, roles: ['engineer', 'ghost'] } }], DESKTOP)
+      expect(real.get(P)!.mcpServers![0].roles).toEqual(['ghost'])
+      const cur = real.get(P)!
+      await d.invoke(IPC.projectsSave, [{ ...cur, roles: cur.roles.map((x) => (x.id === 'r-eng' ? { ...x, mcpServers: [] } : x)) }], DESKTOP)
+      expect(real.get(P)!.roles.find((x) => x.id === 'r-eng')!.mcpServers).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('projects:save does not fail when applyProjectChange rejects', async () => {
     const r = rig(async () => {
       throw new Error('boom')

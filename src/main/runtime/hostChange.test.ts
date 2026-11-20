@@ -153,6 +153,15 @@ describe('staleSlugTexts (N1, third review)', () => {
     expect(r.convert).toEqual([{ roleId: 'r-eng', field: 'mcpServers', id: 'docs', granted: true }])
     expect(r.lost).toEqual([{ roleId: 'r-eng', field: 'mcpServers', id: 'wiki', granted: false }])
   })
+  it('review Low 1: two running roles sharing the dropped text are both accounted for, never silently', () => {
+    const dupRun = orgChart().map((r) => (r.id === 'r-rev' ? { ...r, slug: 'engineer' } : r))
+    const saved = { roles: dupRun.map((r) => (r.id === 'r-eng' ? { ...r, slug: 'builder' } : r.id === 'r-rev' ? { ...r, mcpServers: ['docs'] } : r)), mcpServers: [srv('docs', ['engineer'])] }
+    // r-eng was renamed; the saved list still names "engineer", which the reviewer holds too, but not "builder".
+    const r = staleSlugTexts([srv('docs', ['engineer'])], [{ roleId: 'r-eng', itemId: 'docs' }], dupRun, saved)
+    expect(r.items).toEqual([srv('docs', [])])
+    expect(r.lost).toEqual([{ roleId: 'r-eng', field: 'mcpServers', id: 'docs', granted: false }])
+    expect(r.convert).toEqual([{ roleId: 'r-rev', field: 'mcpServers', id: 'docs', granted: true }])
+  })
   it('keeps text the saved project still backs (its new slug, or every role) and returns the same list', () => {
     const items = [srv('docs', ['engineer']), srv('all', ['engineer'])]
     const saved = { roles: renamed, mcpServers: [srv('docs', ['builder']), srv('all')] }

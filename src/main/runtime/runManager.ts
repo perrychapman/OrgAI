@@ -3040,7 +3040,7 @@ export class RunManager {
             // own propose_org_change keeps deferring a slug change (runRoster.ts slugChange).
             const { edit, kept } = keepRunSlugs(fullEdit, ctx.roles)
             // An org chart card never grants (its grants travel on their own cards); only the user's save names grants.
-            const grants = change.kind === 'projectSave' ? grantEditsOf(change.before.roles, after, saved.roles) : []
+            let grants = change.kind === 'projectSave' ? grantEditsOf(change.before.roles, after, saved.roles) : []
             const parts = [...(roleEditEmpty(fullEdit) ? [] : ['the org chart']), ...(grants.length ? ['role grants'] : [])]
             if (!parts.length) return undefined
             label = parts.join(' and ')
@@ -3055,6 +3055,22 @@ export class RunManager {
             // server's roles leaves the run's copy, as an id grant when the saved role holds it by id (the role inspector's
             // rename), else as a loss (the store no longer grants it either). Whatever the session can take (never widens).
             reconcileSlugTexts(kept.flatMap((k) => (live.mcpServers ?? []).filter((s) => Array.isArray(s.roles) && s.roles.includes(k.runSlug)).map((s) => ({ roleId: k.id, itemId: s.id }))))
+            // Review M-2 (third round): the role inspector's rename copies every server that listed the role's old stored
+            // slug into Role.mcpServers. Where the run never took that slug grant (a pull, a change answered next-run, an
+            // in-between slug typed through another role's slug), the copy is not a grant the user made: it waits.
+            const oldSlugOf = new Map(kept.map((k) => [k.id, change.before.roles.find((r) => r.id === k.id)?.slug]))
+            const runUses = (e: GrantEdit): boolean => {
+              const r = ctx.roles.find((x) => x.id === e.roleId)
+              return !!r && mcpServersForRole({ mcpServers: live.mcpServers }, r).some((s) => s.id === e.id)
+            }
+            const copied = grants.filter((e) => {
+              const old = oldSlugOf.get(e.roleId)
+              return e.granted && e.field === 'mcpServers' && old !== undefined && (change.before.mcpServers ?? []).some((s) => s.id === e.id && Array.isArray(s.roles) && s.roles.includes(old)) && !runUses(e)
+            })
+            if (copied.length) {
+              grants = grants.filter((e) => !copied.includes(e))
+              partly.push('A rename carried over a connection this run had not taken; it applies from the next run.')
+            }
             const ungrants = grants.filter((e) => !e.granted)
             grantShown.push(...applyGrantEdits(live.roles, grants.filter((e) => e.granted), has).applied)
             if (!bare && ungrants.length) {
@@ -5495,10 +5511,18 @@ export class RunManager {
       const v = raw.secrets?.[n]
       if (typeof v === 'string' && v) secrets[n] = v
     }
+    // Third review M-1: roles the USER set in the decision (raw.spec, mergeInstallEdit) name roles as the stored project
+    // does (the user picked from the project's roles); roles the agent's request carried use the run's slugs.
+    const userRoles = !quickRun && raw.spec !== undefined && Array.isArray(raw.spec.roles)
+    const storedForRoles = active.ctx && active.summary.kind === 'work' && Array.isArray(spec.roles) ? this.storedProjectFor(project.id) : undefined
+    if (scope === 'run' && userRoles && storedForRoles && active.ctx) {
+      // Into the run's own list: by id to the run's slugs, never by slug text (mcpRolesForRun, the slug invariant).
+      spec.roles = mcpRolesForRun([spec], storedForRoles.roles, active.ctx.roles)![0].roles
+    }
     if (scope !== 'run' && this.options.mcp) {
       try {
         // Rename follow-up a: the agent's role slugs as the stored project names those roles (the run may keep an old slug).
-        const stored = active.ctx && active.summary.kind === 'work' && Array.isArray(spec.roles) ? this.storedProjectFor(project.id) : undefined
+        const stored = userRoles ? undefined : storedForRoles
         const toSave = stored && active.ctx ? { ...spec, roles: slugsForStore(spec.roles!, active.ctx.roles, stored.roles) } : spec
         const saved = this.options.mcp.persistInstall(project.id, toSave, secrets, scope)
         setProject(saved)

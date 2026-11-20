@@ -205,9 +205,13 @@ export function staleSlugTexts<T extends { id: string; roles?: string[] }>(
     if (sr && (stored.roles === undefined || stored.roles.includes(sr.slug))) continue
     if (drop.get(itemId)?.has(run.slug)) continue
     drop.set(itemId, new Set([...(drop.get(itemId) ?? []), run.slug]))
-    const edit: GrantEdit = { roleId, field: 'mcpServers', id: itemId, granted: true }
-    if ((sr?.mcpServers ?? []).includes(itemId)) convert.push(edit)
-    else lost.push({ ...edit, granted: false })
+    // Every running role holding that text loses it (two can share a slug stored before the run started): each keeps
+    // the server by id where its saved role holds it, else is reported as losing it (review Low 1, never silent).
+    for (const holder of running.filter((r) => r.slug === run.slug)) {
+      const edit: GrantEdit = { roleId: holder.id, field: 'mcpServers', id: itemId, granted: true }
+      if ((savedRole.get(holder.id)?.mcpServers ?? []).includes(itemId)) convert.push(edit)
+      else lost.push({ ...edit, granted: false })
+    }
   }
   if (!drop.size) return { items: items as T[], convert, lost }
   return {

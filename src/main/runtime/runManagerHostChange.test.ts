@@ -861,8 +861,8 @@ describe('follow-up item 2: a rename reaches the live run (the run keeps its slu
     const usable = (id: string): string[] => mcpServersForRole({ mcpServers: ctx.mcpServers!() }, roleOf(ctx, id)).map((s) => s.name)
     const denial = (id: string): string | undefined => mcpCallDenial('mcp__docs__search', { role: roleOf(ctx, id), isRoot: false }, ctx.mcpServers!())
     expect(usable('r-eng')).toEqual(['docs'])
-    // A rename that leaves the server on the old slug and grants no id (an org chart card's shape: orgMerge keeps server
-    // roles; a desktop projects:save moves them to an id grant, ProjectStore.renamedSlugGrants): the stored project no
+    // A rename that leaves the server on the old slug and grants no id (a store.save caller or data stored before
+    // ProjectStore.renamedSlugGrants; a desktop projects:save moves them to an id grant now): the stored project no
     // longer grants the renamed role, so the run takes it away too and says so (third review N1: no stale slug text).
     const s1 = userSave(p, (c) => rename(c, 'r-eng', 'Builder', 'builder'))
     const [r1] = await m.applyProjectChange(p.id, s1.saved, { kind: 'projectSave', before: s1.before, request: s1.request })
@@ -1190,8 +1190,15 @@ describe('third review: slug texts, renames and cards', () => {
     const [res] = await m.applyProjectChange(pid, saved, { kind: 'projectSave', before, request })
     return res
   }
-  /** mcp:upsert of a whole spec as the renderer sends it (fields: the input's keys plus the stored item's, as dispatcher.ts). */
-  async function mcpUpsert(m: RunManager, pid: string, spec: Spec) {
+  /**
+   * mcp:upsert of a whole spec as the renderer sends it, as dispatcher.ts runs it: a renamed role's old slug main moved
+   * (renamedAwaySlugs) is dropped, the store stops carrying the server's rename id grant, fields are the input's keys plus
+   * the stored item's.
+   */
+  async function mcpUpsert(m: RunManager, pid: string, sent: Spec) {
+    const away = store.renamedAwaySlugs(pid)
+    const spec = Array.isArray(sent.roles) ? { ...sent, roles: sent.roles.filter((s) => !away.has(s)) } : sent
+    store.forgetRenamedServer(pid, spec.id)
     const before = structuredClone(store.get(pid)!)
     const stored = before.mcpServers!.find((s) => s.id === spec.id)
     const saved = store.save({ ...before, mcpServers: before.mcpServers!.map((s) => (s.id === spec.id ? structuredClone(spec) : s)) })
@@ -1301,10 +1308,13 @@ describe('third review: slug texts, renames and cards', () => {
     const ctx = ctxs[0]
     const staleSpec = structuredClone(store.get(p.id)!.mcpServers![0])
     await projectsSave(m, p.id, (c) => renamePatchOf(c, 'r-eng', 'Builder', 'builder'))
-    // Revoke from the stale copy: the upsert writes "engineer" back, then the id grant goes.
+    // Revoke from the stale copy: the upsert would write "engineer" back (the dispatcher drops exactly that renamed-away
+    // slug), then the id grant goes.
     await revoke(m, p.id, 'm-docs', 'r-eng', { spec: staleSpec })
-    expect(store.get(p.id)!.mcpServers![0].roles).toEqual(['engineer'])
+    expect(store.get(p.id)!.mcpServers![0].roles).toEqual([])
     expect(refused(ctx, 'r-eng')).toBe(true)
+    // Even when the old slug does reach the stored list (a store.save that bypasses the dispatcher), the run ignores it.
+    itemSave(p, (c) => ({ ...c, mcpServers: c.mcpServers!.map((x) => ({ ...x, roles: ['engineer'] })) }))
     // Another stale write (a toggle) carrying the old slug: still nothing for the renamed role.
     await mcpUpsert(m, p.id, { ...staleSpec, description: 'touched' })
     expect(refused(ctx, 'r-eng')).toBe(true)
@@ -1405,6 +1415,47 @@ describe('third review: slug texts, renames and cards', () => {
     expect(refused(ctx, 'r-test')).toBe(true)
     expect(mcpOf(ctx, 'm-docs')!.roles).toEqual([])
     await m.stopAll()
+  })
+
+  it('review M-2: a rename patch copying a slug grant the run never took does not widen the run; it waits for the next run', async () => {
+    const p0 = newProject()
+    const p = store.save({ ...p0, mcpServers: [{ ...server('m-docs', 'docs'), roles: ['lead'] }] })
+    const { m, ctxs } = rig()
+    await m.start({ project: p, prompt: 'go' })
+    const ctx = ctxs[0]
+    // A save the run never takes (a team-file pull) adds the engineer to the server.
+    store.save({ ...store.get(p.id)!, mcpServers: [{ ...server('m-docs', 'docs'), roles: ['lead', 'engineer'] }] })
+    expect(refused(ctx, 'r-eng')).toBe(true)
+    // The role inspector's rename copies that server into Role.mcpServers.
+    const res = await projectsSave(m, p.id, (c) => renamePatchOf(c, 'r-eng', 'Builder', 'builder'))
+    expect(store.get(p.id)!.roles.find((r) => r.id === 'r-eng')!.mcpServers).toEqual(['m-docs'])
+    expect(refused(ctx, 'r-eng')).toBe(true)
+    expect(res.reason ?? '').toContain('A rename carried over a connection this run had not taken')
+    expect(res.grants ?? []).toEqual([])
+    await m.stopAll()
+  })
+
+  it('review M-1: install roles the user set on the card name stored roles: never the renamed running role that kept that slug', async () => {
+    for (const scope of ['run', 'project'] as const) {
+      events = []
+      const p = newProject()
+      const { m, ctxs } = rig({ mcp: true })
+      const run = await m.start({ project: p, prompt: 'go' })
+      const ctx = ctxs[0]
+      await projectsSave(m, p.id, (c) => renamePatchOf(c, 'r-eng', 'Builder', 'builder'))
+      await projectsSave(m, p.id, (c) => ({ ...c, roles: [...c.roles, role({ id: 'r-new', slug: 'engineer', name: 'New Engineer', reportsTo: 'r-lead' })] }))
+      const before = events.length
+      const spec = server(`m-wiki-${scope}`, `wiki${scope}`)
+      const pending = ctx.requestMcpInstall!({ agentId: 'root', reason: 'r', spec, requiredSecrets: [] })
+      await new Promise((r) => setTimeout(r, 5))
+      const req = events.slice(before).find((e): e is Extract<RunEvent, { type: 'mcpInstall.request' }> => e.type === 'mcpInstall.request')!
+      // The user picks the stored "engineer" (New Engineer) on the card.
+      m.answerMcpInstall(run.id, req.request.id, { approved: true, scope, spec: { ...req.request.spec, roles: ['engineer'] } })
+      expect((await pending).approved).toBe(true)
+      expect(refused(ctx, 'r-eng', `wiki${scope}`), scope).toBe(true)
+      if (scope === 'project') expect(store.get(p.id)!.mcpServers!.find((x) => x.id === spec.id)!.roles).toEqual(['engineer'])
+      await m.stopAll()
+    }
   })
 
   it("N2: the Reviewer's example: the card names the role the save grants (Builder), never the stored role now holding the old slug", async () => {

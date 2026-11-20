@@ -138,35 +138,59 @@ export function reconcileNearLimitProject(stored: Project, incoming: Project): P
  * stale slug is left for another role to inherit. That holds even when another incoming role takes the old slug in the same
  * save (a swap, a new role): nobody gains a grant by picking up another role's old slug. When another stored role already
  * held the old slug (a duplicate, e.g. a slug typed through another role's slug key by key), nothing changes, so the
- * renamed role never gains that other role's servers. `roles` undefined (every role) is untouched. Only saveFromRenderer
- * calls this; save() (team-file ingest, the service's own saves) never does. Pure: returns `roles` itself and no
- * `mcpServers` when nothing changes.
+ * renamed role never gains that other role's servers. `roles` undefined (every role) is untouched. Only the renamed role's
+ * own old slug is ever removed; any other slug no role holds (a role removed with Undo still available, team files
+ * awaiting approval) stays. Only saveFromRenderer calls this; save() (team-file ingest, the service's own saves) never
+ * does.
+ *
+ * `carried` (per role id, server ids main moved to an id grant on an earlier save, kept by ProjectStore until the user acts
+ * on that server through mcp:upsert / remove, or a short time passes): a renderer save that omits such an id the stored
+ * role still holds gets it back, so a renderer copy that does not know main added it (typed key by key and debounced,
+ * possibly back to the starting slug, whose patch carries the starting grants) cannot drop the role's access mid-edit. A
+ * real revoke is not affected: the role inspector's revokePlan always sends mcp:upsert of that server first, which ends
+ * the carry. Returns the ids added per role (`added`), the ids to keep carrying per role (`carry`) and the old slugs moved
+ * (`moved`). Pure: returns `roles` itself when no role changes and no `mcpServers` when the servers do not change.
  */
-export function renamedSlugGrants(stored: Pick<Project, 'roles' | 'mcpServers'>, roles: Role[]): { roles: Role[]; mcpServers?: Project['mcpServers'] } {
+export function renamedSlugGrants(
+  stored: Pick<Project, 'roles' | 'mcpServers'>,
+  roles: Role[],
+  carried?: ReadonlyMap<string, ReadonlySet<string>>
+): { roles: Role[]; mcpServers?: Project['mcpServers']; added: Map<string, string[]>; carry: Map<string, string[]>; moved: string[] } {
+  const added = new Map<string, string[]>()
+  const carry = new Map<string, string[]>()
   const servers = stored.mcpServers
-  if (!servers?.length || !Array.isArray(stored.roles)) return { roles }
-  const was = new Map(stored.roles.map((r) => [r?.id, r]))
+  if (!servers?.length || !Array.isArray(stored.roles) || !Array.isArray(roles)) return { roles, added, carry, moved: [] }
+  const was = new Map(stored.roles.filter(Boolean).map((r) => [r.id, r]))
+  const serverIds = new Set(servers.map((s) => s.id))
   const moves = new Map<string, string>()
+  const renamed = new Set<string>()
   for (const r of roles) {
     const before = r && was.get(r.id)
     if (!before || typeof r.slug !== 'string' || r.slug === before.slug) continue
+    renamed.add(r.id)
     if (stored.roles.some((o) => o !== before && o?.slug === before.slug)) continue
     moves.set(r.id, before.slug)
   }
-  if (!moves.size) return { roles }
+  if (!renamed.size && !carried?.size) return { roles, added, carry, moved: [] }
   const oldSlugs = new Set(moves.values())
-  const touched = servers.some((s) => Array.isArray(s.roles) && s.roles.some((x) => oldSlugs.has(x)))
-  if (!touched) return { roles }
   const nextRoles = roles.map((r) => {
+    if (!r || (!renamed.has(r.id) && !carried?.has(r.id))) return r
+    const before = was.get(r.id)
+    if (!before) return r
     const old = moves.get(r.id)
-    if (old === undefined) return r
-    const add = servers.filter((s) => Array.isArray(s.roles) && s.roles.includes(old)).map((s) => s.id)
     const have = Array.isArray(r.mcpServers) ? r.mcpServers : []
-    const merged = [...have, ...add.filter((id) => !have.includes(id))]
-    return merged.length === have.length ? r : { ...r, mcpServers: merged }
+    const keep = [...(carried?.get(r.id) ?? [])].filter((id) => serverIds.has(id) && (before.mcpServers ?? []).includes(id))
+    const moved = old === undefined ? [] : servers.filter((s) => Array.isArray(s.roles) && s.roles.includes(old)).map((s) => s.id)
+    const all = [...new Set([...keep, ...moved])]
+    if (all.length) carry.set(r.id, all)
+    const add = all.filter((id) => !have.includes(id))
+    if (!add.length) return r
+    added.set(r.id, add)
+    return { ...r, mcpServers: [...have, ...add] }
   })
-  const mcpServers = servers.map((s) => (Array.isArray(s.roles) && s.roles.some((x) => oldSlugs.has(x)) ? { ...s, roles: s.roles.filter((x) => !oldSlugs.has(x)) } : s))
-  return { roles: nextRoles, mcpServers }
+  const touched = servers.some((s) => Array.isArray(s.roles) && s.roles.some((x) => oldSlugs.has(x)))
+  const mcpServers = touched ? servers.map((s) => (Array.isArray(s.roles) && s.roles.some((x) => oldSlugs.has(x)) ? { ...s, roles: s.roles.filter((x) => !oldSlugs.has(x)) } : s)) : undefined
+  return { roles: added.size ? nextRoles : roles, ...(mcpServers ? { mcpServers } : {}), added, carry, moved: touched ? [...oldSlugs] : [] }
 }
 
 /** The file-system calls checkProjectPath makes; node:fs by default, a fake in tests. */
@@ -474,6 +498,9 @@ export function parseProjectsFile(parsed: unknown): { projects: Project[]; versi
   }
 }
 
+/** How long after a role's latest rename save main keeps carrying the id grants it added for that rename (renamedSlugGrants). */
+export const RENAME_CARRY_MS = 120_000
+
 /** Simple JSON-file store. Projects are small and few, so a database is overkill for now. */
 export class ProjectStore {
   private saveHook?: ProjectSaveHook
@@ -484,6 +511,14 @@ export class ProjectStore {
   private tierContext?: TierContextFor
   private dataDir: string
   private home: string
+  /**
+   * renamedSlugGrants bookkeeping (memory only, per project): server ids main moved to a renamed role's id grant, carried
+   * into later renderer saves of that role until mcp:upsert / remove names the server (forgetRenamedServer) or
+   * RENAME_CARRY_MS passes; and the old slugs main removed, which a stale whole-spec mcp:upsert must not write back while no
+   * role holds them (renamedAwaySlugs).
+   */
+  private renameCarry = new Map<string, Map<string, { ids: Set<string>; at: number }>>()
+  private renamedAway = new Map<string, Set<string>>()
 
   /**
    * `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels).
@@ -635,7 +670,33 @@ export class ProjectStore {
     return this.commitSave(withCleanAllowedDirectories(sanitizeRoleModels(project, this.tierContext).project, this.dataDir, this.home).project)
   }
 
+  /**
+   * Old slugs a renderer save moved off this project's servers (renamedSlugGrants) that no role holds now: mcp:upsert drops
+   * exactly these from an incoming `roles` list (a stale renderer copy writing a renamed role's old slug back). Any other
+   * slug no role holds is left alone (a removed role with Undo available, team files awaiting approval).
+   */
+  renamedAwaySlugs(projectId: string): ReadonlySet<string> {
+    return this.renamedAway.get(projectId) ?? new Set()
+  }
+
+  /** The user acted on server `serverId` (mcp:upsert / remove): main stops carrying it into later renderer saves. */
+  forgetRenamedServer(projectId: string, serverId: string): void {
+    const book = this.renameCarry.get(projectId)
+    if (!book) return
+    for (const [roleId, c] of book) {
+      c.ids.delete(serverId)
+      if (!c.ids.size) book.delete(roleId)
+    }
+    if (!book.size) this.renameCarry.delete(projectId)
+  }
+
   private commitSave(cleaned: Project): Project {
+    // A slug a role holds again is that role's: no longer a renamed-away slug.
+    const away = this.renamedAway.get(cleaned.id)
+    if (away) {
+      for (const r of cleaned.roles ?? []) if (r) away.delete(r.slug)
+      if (!away.size) this.renamedAway.delete(cleaned.id)
+    }
     const updated = { ...cleaned, updatedAt: new Date().toISOString() }
     const idx = this.projects.findIndex((p) => p.id === cleaned.id)
     if (idx === -1) this.projects.push(updated)
@@ -669,9 +730,26 @@ export class ProjectStore {
     else delete next.mcpServers
     // A rename moves the role's slug-keyed server grants to its id (renamedSlugGrants): no stale old slug stays behind.
     if (Array.isArray(next.roles)) {
-      const moved = renamedSlugGrants(stored, next.roles)
+      const now = Date.now()
+      const carried = new Map<string, Set<string>>()
+      const book = this.renameCarry.get(project.id) ?? new Map<string, { ids: Set<string>; at: number }>()
+      for (const [roleId, c] of book) if (now - c.at <= RENAME_CARRY_MS) carried.set(roleId, c.ids)
+      const moved = renamedSlugGrants(stored, next.roles, carried)
       next.roles = moved.roles
       if (moved.mcpServers) next.mcpServers = moved.mcpServers
+      const kept = new Map<string, { ids: Set<string>; at: number }>()
+      const present = new Set(next.roles.filter(Boolean).map((r) => r.id))
+      for (const [roleId, c] of book) if (present.has(roleId) && now - c.at <= RENAME_CARRY_MS) kept.set(roleId, c)
+      // The window runs from the role's latest rename save.
+      const storedSlug = new Map(stored.roles.filter(Boolean).map((r) => [r.id, r.slug]))
+      for (const [roleId, ids] of moved.carry) {
+        const prev = kept.get(roleId)
+        const renamedNow = next.roles.find((r) => r?.id === roleId)?.slug !== storedSlug.get(roleId)
+        kept.set(roleId, { ids: new Set([...(prev?.ids ?? []), ...ids]), at: renamedNow || !prev ? now : prev.at })
+      }
+      if (kept.size) this.renameCarry.set(project.id, kept)
+      else this.renameCarry.delete(project.id)
+      if (moved.moved.length) this.renamedAway.set(project.id, new Set([...(this.renamedAway.get(project.id) ?? []), ...moved.moved]))
     }
     if (stored.plugins !== undefined) next.plugins = stored.plugins
     else delete next.plugins

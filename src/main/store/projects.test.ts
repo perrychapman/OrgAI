@@ -6,7 +6,7 @@ import type { McpServerSpec, PluginSpec, Project, Role, SkillSpec } from '@share
 import { PROJECT_CLIENT_MAX_CHARS, PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS, PROJECT_REFERENCE_DIRECTORIES_MAX, PROJECT_REFERENCE_DIRECTORY_MAX_CHARS } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
 import { project, role } from '../runtime/testHelpers'
-import { ProjectStore, cleanClient, cleanAllowedDirectories, cleanReferenceDirectories,acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
+import { ProjectStore, RENAME_CARRY_MS, cleanClient, cleanAllowedDirectories, cleanReferenceDirectories,acceptableRoleModel, sanitizeRoleModels, checkProjectPath, cleanProjectPath, createPathError, reconcileNearLimitProject, suggestedProjectName, type PathFs } from './projects'
 import { mkdirSync } from 'node:fs'
 
 describe('reconcileNearLimitProject', () => {
@@ -105,6 +105,71 @@ describe('ProjectStore.saveFromRenderer', () => {
       expect(s2.mcpServers![0].roles).toEqual([])
       expect(slugOf(s2, 'r-new').mcpServers ?? []).toEqual([])
       expect(slugOf(s2, 'r-eng').mcpServers).toEqual(['docs'])
+    })
+
+    /** The renderer's rename patch from a start snapshot (roleOps.ts slugPatch at 2e0739e7), against its copy of the servers. */
+    const startPatch = (copy: Project, start: { slug: string; mcpServers?: string[] }, id: string, slug: string): Project => {
+      const have = start.mcpServers ?? []
+      const add = (copy.mcpServers ?? []).filter((s) => s.roles !== undefined && s.roles.includes(start.slug) && !have.includes(s.id)).map((s) => s.id)
+      const mcpServers = add.length === 0 ? undefined : slug === start.slug ? (start.mcpServers ? [...start.mcpServers] : []) : [...have, ...add]
+      return { ...copy, roles: copy.roles.map((r) => (r.id === id ? { ...r, slug, ...(mcpServers ? { mcpServers } : {}) } : r)) }
+    }
+
+    it('typed through in-between slugs (one is another role\'s: a duplicate in the incoming save) and back to the start: exactly the start access, by id', () => {
+      const store = new ProjectStore(dataDir())
+      store.save(project({ mcpServers: [srv('docs', ['engineer']), srv('wiki', ['reviewer'])] }))
+      // The renderer's copy is taken at edit start and never refreshed (its debounced save drops the returned project).
+      const copy = store.get('p1')!
+      const start = { slug: 'engineer', mcpServers: undefined }
+      for (const slug of ['r', 'reviewer', 'reviewers', 'e', 'engineer']) {
+        store.saveFromRenderer({ ...startPatch(copy, start, 'r-eng', slug), updatedAt: '' })
+        const p = store.get('p1')!
+        // At every step: the engineer never holds the reviewer's server, the reviewer keeps it by its slug.
+        expect(slugOf(p, 'r-eng').mcpServers ?? []).not.toContain('wiki')
+        expect(p.mcpServers!.find((s) => s.id === 'wiki')!.roles).toEqual(['reviewer'])
+        expect(slugOf(p, 'r-eng').mcpServers, slug).toEqual(['docs'])
+      }
+      // Back at the start slug the patch carries the starting grants (none by id): main still keeps docs by id.
+      const p = store.get('p1')!
+      expect(slugOf(p, 'r-eng')).toMatchObject({ slug: 'engineer', mcpServers: ['docs'] })
+      expect(p.mcpServers!.find((s) => s.id === 'docs')!.roles).toEqual([])
+    })
+
+    it('a real revoke still removes the id grant (mcp:upsert of the server ends the carry); the carry also ends after RENAME_CARRY_MS', () => {
+      const store = new ProjectStore(dataDir())
+      store.save(project({ mcpServers: [srv('docs', ['engineer'])] }))
+      const copy = store.get('p1')!
+      store.saveFromRenderer(startPatch(copy, { slug: 'engineer' }, 'r-eng', 'builder'))
+      expect(slugOf(store.get('p1')!, 'r-eng').mcpServers).toEqual(['docs'])
+      // revokePlan: mcp:upsert of the server first (the dispatcher tells the store), then the save without the id grant.
+      store.forgetRenamedServer('p1', 'docs')
+      const cur = store.get('p1')!
+      store.saveFromRenderer({ ...cur, roles: cur.roles.map((r) => (r.id === 'r-eng' ? { ...r, mcpServers: [] } : r)) })
+      expect(slugOf(store.get('p1')!, 'r-eng').mcpServers).toEqual([])
+      // Without the upsert, after the window the save is taken as sent too.
+      vi.useFakeTimers()
+      try {
+        const s2 = new ProjectStore(dataDir())
+        s2.save(project({ mcpServers: [srv('docs', ['engineer'])] }))
+        s2.saveFromRenderer(startPatch(s2.get('p1')!, { slug: 'engineer' }, 'r-eng', 'builder'))
+        const omit = (): Project => ({ ...s2.get('p1')!, roles: s2.get('p1')!.roles.map((r) => (r.id === 'r-eng' ? { ...r, mcpServers: [] } : r)) })
+        expect(slugOf(s2.saveFromRenderer(omit()), 'r-eng').mcpServers).toEqual(['docs'])
+        vi.advanceTimersByTime(RENAME_CARRY_MS + 1)
+        expect(slugOf(s2.saveFromRenderer(omit()), 'r-eng').mcpServers).toEqual([])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('renamedAwaySlugs: the moved old slug until a role holds it again; other unheld slugs are never listed', () => {
+      const store = new ProjectStore(dataDir())
+      store.save(project({ mcpServers: [srv('docs', ['engineer', 'ghost'])] }))
+      store.saveFromRenderer(renamed(store.get('p1')!, 'r-eng', 'builder'))
+      expect([...store.renamedAwaySlugs('p1')]).toEqual(['engineer'])
+      expect(store.get('p1')!.mcpServers![0].roles).toEqual(['ghost'])
+      const q = store.get('p1')!
+      store.saveFromRenderer({ ...q, roles: [...q.roles, role({ id: 'r-new', slug: 'engineer' })] })
+      expect([...store.renamedAwaySlugs('p1')]).toEqual([])
     })
 
     it('only a renderer save applies it: save() (team-file ingest, the services\' own saves) keeps server roles as given', () => {
