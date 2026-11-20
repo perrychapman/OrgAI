@@ -73,7 +73,8 @@ export interface CommitActivityDeps {
 }
 
 interface CacheEntry {
-  at: number
+  /** When the value settled (the 60 s starts then, not when it was queued); null while it is still pending. */
+  at: number | null
   value: Promise<ProjectCommitActivity>
 }
 
@@ -102,17 +103,31 @@ export class CommitActivityService {
         return this.cached(key, now, () => this.compute(p, now))
       })
     )
-    for (const k of [...this.cache.keys()]) if (!live.has(k) && Date.now() - (this.cache.get(k)?.at ?? 0) > COMMIT_ACTIVITY_CACHE_MS) this.cache.delete(k)
+    // Drop settled entries that are no longer listed and older than the cache time; a pending one is never dropped.
+    for (const k of [...this.cache.keys()]) {
+      const e = this.cache.get(k)
+      if (e && e.at !== null && !live.has(k) && Date.now() - e.at > COMMIT_ACTIVITY_CACHE_MS) this.cache.delete(k)
+    }
     return out
   }
 
+  /**
+   * One promise per key: while it is pending every caller gets the same one (a second call during a slow batch never
+   * queues a second git run, so the waiting list is bounded by the number of distinct keys); once settled it is reused
+   * for 60 s counted from settling.
+   */
   private cached(key: string, now: Date, make: () => Promise<ProjectCommitActivity>): Promise<ProjectCommitActivity> {
     const hit = this.cache.get(key)
-    const t = Date.now()
-    if (hit && t - hit.at < COMMIT_ACTIVITY_CACHE_MS) return hit.value
-    const value = make().catch(() => unavailable(key.split('\0')[0], now))
-    this.cache.set(key, { at: t, value })
-    return value
+    if (hit && (hit.at === null || Date.now() - hit.at < COMMIT_ACTIVITY_CACHE_MS)) return hit.value
+    const entry: CacheEntry = { at: null, value: undefined as unknown as Promise<ProjectCommitActivity> }
+    entry.value = make()
+      .catch(() => unavailable(key.split('\0')[0], now))
+      .then((v) => {
+        entry.at = Date.now()
+        return v
+      })
+    this.cache.set(key, entry)
+    return entry.value
   }
 
   private async compute(p: Project, now: Date): Promise<ProjectCommitActivity> {
