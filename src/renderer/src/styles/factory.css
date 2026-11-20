@@ -200,19 +200,91 @@ button.factory-worker:focus-visible {
   flex: none;
 }
 
+/* Floor plan worktree / crate mark and the plan step chip (slice 3); the description carries the full phrase. */
+.factory-worker-marks {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+
+.factory-worker-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.factory-worker-mark svg {
+  flex: none;
+}
+
+/* Conflict: the hazard icon in the warning colour, the word stays in the text colour (never colour alone). */
+.factory-worker-mark[data-mark='hold-striped'] svg {
+  color: var(--warning-text);
+}
+
+.factory-step-chip {
+  flex: none;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Small tiles (zoomed out): the word goes, the icon and the name stay; the word is in the button's name. */
+@container (max-height: 66px) {
+  .factory-worker-mark-text {
+    display: none;
+  }
+}
 @container (max-height: 52px) {
   .factory-worker-kind {
     display: none;
   }
 }
 @container (max-height: 40px) or (max-width: 96px) {
-  .factory-worker-word {
+  .factory-worker-word,
+  .factory-worker-marks {
     display: none;
   }
 }
 @container (max-height: 30px) {
   .factory-worker-status {
+    display: none;
+  }
+}
+
+/* The plan board tile in the floor plan (in the 3D view it is a transparent button over the board). */
+.factory-mirror[data-renderer='floor-plan'] .factory-plan-board {
+  justify-content: center;
+  background: var(--surface-1);
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+
+.factory-plan-board-count {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+
+@container (max-height: 30px) {
+  .factory-plan-board-count {
     display: none;
   }
 }
@@ -270,6 +342,17 @@ button.factory-worker:focus-visible {
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   white-space: nowrap;
+}
+
+.factory-plan-zone {
+  grid-auto-flow: row;
+  align-content: center;
+  gap: 0;
+}
+
+.factory-plan-zone-count {
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
 }
 
 .factory-plan-route {
@@ -370,6 +453,16 @@ button.factory-worker:focus-visible {
 .factory-nameplate-activity {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.factory-nameplate-word,
+.factory-nameplate-conflict,
+.factory-nameplate-status .factory-step-chip {
+  flex: none;
+}
+
+.factory-nameplate-conflict {
+  color: var(--text-primary);
 }
 
 .factory-line-sign,
