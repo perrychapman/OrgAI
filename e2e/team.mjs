@@ -46,11 +46,67 @@ async function sectionBlock(page) {
   const block = page.locator('[data-testid=role-capabilities]')
   check((await block.locator('h3', { hasText: 'What it can use' }).count()) === 1, 'the block is titled "What it can use"')
   for (const id of ['role-tools', 'role-services', 'role-skills']) check((await block.locator(`[data-testid=${id}]`).count()) === 1, `the block has ${id}`)
-  check(/Read/.test(await block.locator('[data-testid=role-tools]').innerText()), 'Tools shows a summary line')
-  check((await block.locator('[data-testid=role-add-connection]').count()) === 1, 'an empty Connections group offers a primary "Add a connection"')
-  check((await block.locator('[data-testid=role-add-skill]').count()) === 1, 'an empty Skills group offers a primary "Add a skill"')
-  check((await block.locator('[data-testid=role-ask-assistant]').count()) === 2, 'empty groups offer "Ask the Team assistant"')
+  check(/^Can read files/.test((await block.locator('[data-testid=role-tools-summary]').innerText()).trim()), 'Tools shows a plain-language summary sentence', await block.locator('[data-testid=role-tools-summary]').innerText())
+  check((await block.locator('[data-testid=role-add-connection]').count()) === 1, 'an empty Connections group offers "Add"')
+  check((await block.locator('[data-testid=role-add-skill]').count()) === 1, 'an empty Skills group offers "Add"')
+  check((await block.locator('[data-testid=role-ask-assistant]').count()) === 0, 'no "Ask the Team assistant" links in phase 2')
+  // Spec 1.10: a new role's empty Connections and Skills each take one line.
+  for (const id of ['role-add-connection', 'role-add-skill']) {
+    const add = block.locator(`[data-testid=${id}]`)
+    const lineH = await add.evaluate((el) => (el.closest('[data-testid=role-services], [data-testid=role-skills]') ?? el.parentElement).getBoundingClientRect().height)
+    check(lineH <= 64, `the empty group of ${id} is about one line high`, String(lineH))
+    check(/None yet/.test(await add.evaluate((el) => (el.closest('[data-testid=role-services], [data-testid=role-skills]') ?? el.parentElement).textContent ?? '')), `the empty group of ${id} says "None yet"`)
+  }
   check(!/Manage in Tools|MCP/.test(await block.innerText()), 'the block never says "Manage in Tools" or "MCP"')
+}
+
+/** Spec 1.6 / 1.10: the role editor's order, Reports to, the placeholder Preview button, delegation and model wording. */
+async function sectionEditor(page) {
+  await selectReviewer(page)
+  const pane = page.locator('.team-panel-pane')
+  const order = await pane.evaluate((root) =>
+    ['role-section-who', 'role-section-does', 'role-capabilities', 'role-section-delegate', 'role-section-model'].map((id) => {
+      const el = root.querySelector(`[data-testid=${id}]`)
+      return el ? el.getBoundingClientRect().top : null
+    })
+  )
+  check(order.every((t) => t !== null) && order.every((t, i) => i === 0 || t > order[i - 1]), 'role editor order: Who it is, What it does, What it can use, Who it can delegate to, Model and effort', JSON.stringify(order))
+  const reports = page.locator('[data-testid=role-reports-to]')
+  check((await reports.locator('option', { hasText: /Nobody/ }).count()) === 0, 'a non-root Reports to has no Nobody option')
+  check(await reports.evaluate((el) => !!el.closest('[data-testid=role-section-who]')), 'Reports to is in Who it is')
+  check(/What is this role for\?/.test(await page.locator('[data-testid=role-section-who]').innerText()), 'the description is labelled "What is this role for?"')
+  const preview = page.locator('[data-testid=role-preview-prompt]')
+  check((await preview.getAttribute('aria-disabled')) === 'true' || (await preview.isDisabled()), '"Preview final prompt" is disabled')
+  check(/Not available yet\./.test(await page.locator('[data-testid=role-section-does]').innerText({ timeout: 2000 }).catch(() => '')) || (await page.locator('#' + ((await preview.getAttribute('aria-describedby')) ?? 'x')).count()) === 1, '"Preview final prompt" explains "Not available yet."')
+  // Model and effort: one sentence, one select; Staffing details closed with the renamed labels.
+  check((await page.locator('[data-testid=role-model-sentence]').innerText()).trim().length > 0, 'Model and effort shows its sentence')
+  await page.evaluate(() => { const d = document.querySelector('[data-testid=role-section-model]'); if (d && !d.open) d.open = true })
+  const staffing = page.locator('[data-testid=role-staffing-fold]')
+  check(!(await staffing.evaluate((d) => d.open)), 'Staffing details is closed by default')
+  await staffing.evaluate((d) => { d.open = true })
+  const tabText = await page.locator('.editor').innerText()
+  check(!/Tier and effort|Follow the project|Lowest tier|Always as configured|May create subagents/.test(tabText), 'no retired wording remains on the tab')
+  check(/How the model is chosen/.test(await staffing.innerText()), 'Staffing details uses the renamed labels')
+  await staffing.evaluate((d) => { d.open = false })
+  // Delegation on the root: direct reports with "Can delegate to it" and "Always involve"; other branches closed.
+  const project = await findProject(page, NAME)
+  const root = project.roles.find((r) => r.reportsTo === null)
+  await page.locator(`.react-flow__node[data-id="${root.id}"]`).click()
+  await teamPanelTab(page, 'Role').waitFor()
+  check((await page.locator('[data-testid=role-reports-to-root]').count()) === 1, 'the root shows "Top of the team" instead of a select')
+  const del = page.locator('[data-testid=role-section-delegate]')
+  const dtext = await del.innerText()
+  check(/Can delegate to it/.test(dtext) && /Always involve/.test(dtext), 'direct reports show "Can delegate to it" and "Always involve"', dtext)
+  const other = page.locator('[data-testid=role-delegate-other]')
+  if ((await other.count()) > 0) {
+    check(!(await other.evaluate((d) => d.open)), '"Roles on other branches" is closed by default')
+    await other.locator('summary').focus()
+    await page.keyboard.press('Space')
+    await sleep(150)
+    check(await other.evaluate((d) => d.open), 'Space opens "Roles on other branches"')
+    check(/Delegating across branches skips the roles in between/.test(await other.innerText()), 'the other-branches warning is shown when opened')
+    await page.keyboard.press('Space')
+  }
 }
 
 /** Delegation enforcement 4.1, 6: a "Required" checkbox per spawnable report, persisted as Role.requiredReports. */
@@ -97,7 +153,7 @@ async function sectionRequiredReports(page) {
 async function openAdvancedModel(page) {
   await page.waitForFunction(
     () => {
-      const fold = document.querySelector('[data-testid=role-model-fold]')
+      const fold = document.querySelector('[data-testid=role-section-model]')
       if (fold && !fold.open) fold.open = true
       const adv = document.querySelector('[data-testid=role-model-advanced]')
       if (adv && !adv.open) adv.open = true
@@ -176,7 +232,7 @@ async function sectionProxyExactModel(page, app, shot) {
     await openTeam(page)
     await selectReviewer(page)
     await page.evaluate(() => {
-      const fold = document.querySelector('[data-testid=role-model-fold]')
+      const fold = document.querySelector('[data-testid=role-section-model]')
       if (fold) fold.open = true
     })
     const exactSel = page.locator('[data-testid=role-exact-model]')
@@ -228,13 +284,34 @@ async function sectionTools(page) {
   const block = page.locator('[data-testid=role-capabilities]')
   const before = (await reviewer(page)).role.tools
   await block.locator('[data-testid=role-edit-tools]').click()
-  const bash = block.locator('[data-testid=role-tool-Bash]')
+  // Spec 1.6: five plain-language groups, raw names beside each; the per-tool grid under "Choose individual tools".
+  for (const g of ['read', 'change', 'run', 'web', 'plan']) check((await block.locator(`[data-testid=role-tool-group-${g}]`).count()) === 1, `the tools editor has the ${g} group`)
+  const individual = block.locator('[data-testid=role-tools-individual]')
+  check(!(await individual.evaluate((d) => d.open)), '"Choose individual tools" is closed by default')
+  // Space toggles a native disclosure inside the Team page (React Flow's pan key no longer swallows it).
+  await individual.locator('summary').focus()
+  await page.keyboard.press('Space')
+  await sleep(150)
+  check(await individual.evaluate((d) => d.open), 'Space on a <summary> in the role editor opens the disclosure')
+  check((await individual.locator('[data-testid^=role-tool-]:not([data-testid^=role-tool-group-])').count()) === 12, '"Choose individual tools" lists all 12 tools', String(await individual.locator('[data-testid^=role-tool-]:not([data-testid^=role-tool-group-])').count()))
+  await page.keyboard.press('Space')
+  await sleep(150)
+  check(!(await individual.evaluate((d) => d.open)), 'Space on the <summary> closes it again')
+  const run = block.locator('[data-testid=role-tool-group-run]')
   const want = !before.includes('Bash')
-  await bash.setChecked(want)
+  await run.setChecked(want)
   await sleep(1200)
   const after = (await reviewer(page)).role.tools
-  check(after.includes('Bash') === want, 'toggling a tool saves it on the role', after.join(','))
-  await bash.setChecked(!want)
+  check(after.includes('Bash') === want, 'ticking "Run commands" saves Bash on the role', after.join(','))
+  if (want) {
+    await block.locator('[data-testid=role-edit-tools]').click()
+    const summary = block.locator('[data-testid=role-tools-summary]')
+    const text = (await summary.innerText()).replace(/\s+/g, ' ').trim()
+    check(/run commands/.test(text), 'the collapsed summary names "run commands"', text)
+    check((await summary.locator('svg').count()) >= 1, 'the elevated phrase has an icon beside its words')
+    await block.locator('[data-testid=role-edit-tools]').click()
+  }
+  await run.setChecked(!want)
   await block.locator('[data-testid=role-edit-tools]').click()
   await sleep(1200)
 }
@@ -250,7 +327,8 @@ async function sectionSkills(page) {
   check(await dlg.getByRole('tab', { name: 'Found in this repo' }).isVisible(), 'the skill chooser has Found in this repo')
   await page.keyboard.press('Escape')
   await dlg.waitFor({ state: 'detached', timeout: 5000 })
-  check(await addBtn.evaluate((el) => el === document.activeElement), 'Escape from the chooser returns focus to "+ Add"')
+  await sleep(100)
+  check(await addBtn.evaluate((el) => el === document.activeElement), 'Escape from the chooser returns focus to "+ Add"', await page.evaluate(() => `${document.activeElement?.tagName} ${document.activeElement?.getAttribute('data-testid') ?? ''} ${document.activeElement?.className ?? ''}`))
 
   await addBtn.click()
   await dlg.waitFor({ timeout: 5000 })
@@ -393,10 +471,13 @@ async function sectionAssistant(page, shot) {
 }
 
 async function startOrgChange(page) {
-  const tray = page.locator('[data-testid=team-assistant]')
-  await tray.locator('[data-testid=architect-open]').click()
-  await tray.locator('textarea').first().fill('Add a database specialist.')
-  await tray.locator('[data-testid=org-change-start]').click()
+  // Spec 1.3: the Architect is reached from Start from > Redesign with the Architect.
+  await page.locator('[data-testid=team-start-from]').click()
+  await page.locator('[data-testid=start-from-architect]').click()
+  const dlg = page.locator('[data-testid=architect-dialog]')
+  await dlg.waitFor({ timeout: 5000 })
+  await dlg.locator('textarea').first().fill('Add a database specialist.')
+  await dlg.locator('[data-testid=org-change-start]').click()
   await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
 }
 
@@ -567,13 +648,13 @@ async function sectionRiskAndKeyboard(page) {
   const block = page.locator('[data-testid=role-capabilities]')
   const setBash = async (on) => {
     await block.locator('[data-testid=role-edit-tools]').click()
-    await block.locator('[data-testid=role-tool-Bash]').setChecked(on)
+    await block.locator('[data-testid=role-tool-group-run]').setChecked(on)
     await block.locator('[data-testid=role-edit-tools]').click()
     await sleep(1200)
   }
   const had = (await reviewer(page)).role.tools.includes('Bash')
   if (!had) await setBash(true)
-  check(/\+\s.*Bash/.test(await block.locator('[data-testid=role-tools-summary]').innerText()), 'the Tools summary names Bash')
+  check(/run commands/.test(await block.locator('[data-testid=role-tools-summary]').innerText()), 'the Tools summary says it can run commands')
   const node = page.locator('.react-flow__node', { hasText: 'Reviewer' }).first()
   check((await node.locator('[data-testid=role-node-elevated]').count()) === 1, 'the node shows the elevated-tools marker')
   if (!had) await setBash(false)
@@ -668,9 +749,15 @@ async function sectionNodeMenu(page) {
   await node.click({ button: 'right' })
   await menu.waitFor({ timeout: 5000 })
   await page.locator('[data-testid=role-menu-add-report]').click()
+  // Spec 1.2: "Add a report" opens the Add role popover with that role as the parent.
+  const pop = page.locator('[data-testid=add-role-popover]')
+  await pop.waitFor({ timeout: 5000 })
+  const reviewerId = before.find((r) => r.name === 'Reviewer')?.id
+  check((await pop.locator('[data-testid=add-role-parent]').inputValue()) === reviewerId, 'Add a report pre-fills Reports to with that role')
+  await pop.locator('[data-testid=add-role-name]').press('Enter')
+  await pop.waitFor({ state: 'hidden', timeout: 5000 })
   await sleep(500)
   const after = (await findProject(page, NAME)).roles
-  const reviewerId = before.find((r) => r.name === 'Reviewer')?.id
   const added = after.filter((r) => !before.some((b) => b.id === r.id))
   check(added.length === 1 && added[0].reportsTo === reviewerId, 'Add a report adds a role reporting to that role', JSON.stringify(added.map((r) => r.reportsTo)))
 
@@ -731,25 +818,85 @@ async function sectionAddAndDrag(page, app, shot) {
   await sleep(600)
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
   const toolbar = page.locator('.editor .frame-toolbar')
-  const add = toolbar.getByRole('button', { name: 'Add role', exact: true })
+  const addBtn = page.locator('[data-testid=team-add-role]')
+  const pop = page.locator('[data-testid=add-role-popover]')
   const rolesNow = async () => (await findProject(page, NAME)).roles
   const root = (await rolesNow()).find((r) => r.reportsTo === null)
+  /** Header Add role: open the popover, optionally choose the parent, submit with Enter in the name field. */
+  const add = {
+    click: async (parentId) => {
+      await addBtn.click()
+      await pop.waitFor({ timeout: 5000 })
+      if (parentId) await pop.locator('[data-testid=add-role-parent]').selectOption(parentId)
+      await pop.locator('[data-testid=add-role-name]').press('Enter')
+      await pop.waitFor({ state: 'hidden', timeout: 5000 })
+    }
+  }
+  // The stage top and the notice row's box. (The stage bottom also follows the Team assistant tray, whose content changes
+  // with the selection; that tray becomes a closed drawer in phase 3.)
+  const stageEdges = () => page.evaluate(() => {
+    const b = document.querySelector('.editor .frame-stage').getBoundingClientRect()
+    const n = document.querySelector('[data-testid=team-notice-row]').getBoundingClientRect()
+    return { top: Math.round(b.top), rowTop: Math.round(n.top), rowHeight: Math.round(n.height) }
+  })
 
-  // (1) D3: with a non-root role selected, the toolbar button adds under the root and no note names a parent.
-  await page.locator('.react-flow__node', { hasText: 'Reviewer' }).first().click()
+  // (1) Spec 1.2: one primary on the header, the popover's Name selected, Reports to the root with nothing selected and
+  // the selected role otherwise; Enter adds under the chosen parent, selects it and focuses "What is this role for?".
+  check((await toolbar.locator('.btn.primary').count()) === 1 && /Add role/.test(await toolbar.locator('.btn.primary').innerText()), 'Add role is the only primary button in the header')
+  check((await toolbar.locator('.toolbar-note').count()) === 0 && !/New roles report to/.test(await toolbar.innerText()), 'the header has no "New roles report to" note')
+  check(!/Canvas style|Templates|Import from other tools|Auto-layout/.test(await toolbar.innerText()), 'no Canvas style, Templates, Import or Auto-layout button in the header')
+  await page.locator('.editor .react-flow__pane').click({ position: { x: 5, y: 5 } })
+  await addBtn.click()
+  await pop.waitFor({ timeout: 5000 })
+  check(await pop.locator('[data-testid=add-role-name]').evaluate((el) => el === document.activeElement && el.selectionStart === 0 && el.selectionEnd === el.value.length && el.value.length > 0), 'the Name is selected when the popover opens')
+  check((await pop.locator('[data-testid=add-role-parent]').inputValue()) === root.id, 'with nothing selected Reports to is the root')
+  check((await pop.locator('[data-testid=add-role-parent] option', { hasText: /^Nobody/ }).count()) === 0, 'Reports to has no Nobody option')
+  await page.keyboard.press('Escape')
+  await pop.waitFor({ state: 'hidden', timeout: 5000 })
+  check(await addBtn.evaluate((el) => el === document.activeElement), 'Escape returns focus to Add role')
+  const implRole = (await rolesNow()).find((r) => r.name === 'Implementer')
+  const revRole = (await rolesNow()).find((r) => r.name === 'Reviewer')
+  await page.locator(`.react-flow__node[data-id="${implRole.id}"]`).click()
   await teamPanelTab(page, 'Role').waitFor()
-  check((await toolbar.locator('.toolbar-note').count()) === 0 && !/New roles report to/.test(await toolbar.innerText()), 'the toolbar has no "New roles report to" note')
+  await addBtn.click()
+  await pop.waitFor({ timeout: 5000 })
+  check((await pop.locator('[data-testid=add-role-parent]').inputValue()) === implRole.id, 'with Implementer selected Reports to is Implementer')
+  await pop.locator('[data-testid=add-role-parent]').selectOption(revRole.id)
+  check(/^Reviewer will be able to/.test(await pop.locator('[data-testid=add-role-helper]').innerText()), 'the helper line follows the chosen parent', await pop.locator('[data-testid=add-role-helper]').innerText())
+  const edgesBefore = await stageEdges()
   let before = await rolesNow()
-  await add.click()
+  await pop.locator('[data-testid=add-role-name]').press('Enter')
+  await pop.waitFor({ state: 'hidden', timeout: 5000 })
   await sleep(700)
   let after = await rolesNow()
   let added = after.filter((r) => !before.some((b) => b.id === r.id))
-  check(added.length === 1 && added[0].reportsTo === root.id, 'toolbar Add role adds under the root even with another role selected', JSON.stringify(added.map((r) => r.reportsTo)))
+  check(added.length === 1 && added[0].reportsTo === revRole.id, 'Enter adds the role under the chosen parent', JSON.stringify(added.map((r) => r.reportsTo)))
+  check((await page.locator(`.react-flow__node[data-id="${added[0]?.id}"].selected`).count()) === 1, 'the new role is selected')
+  check(await page.evaluate(() => document.activeElement?.id === 'role-description'), 'focus goes to "What is this role for?"', await page.evaluate(() => document.activeElement?.id ?? ''))
+  const noticeRow = page.locator('[data-testid=team-notice-row]')
+  const msg = noticeRow.locator('.team-notice-text')
+  check(/^Added .+ under Reviewer\.$/.test((await msg.innerText()).trim()), 'the notice row says "Added ... under Reviewer."', await msg.innerText())
+  check((await page.locator('body').innerText()).search(/can now create subagents/) < 0, 'no "can now create subagents" sentence anywhere')
+  const edgesMid = await stageEdges()
+  await noticeRow.locator('[data-testid=team-notice-undo]').click()
+  await sleep(600)
+  check(!(await rolesNow()).some((r) => r.id === added[0]?.id), 'Undo removes the added role')
+  const edgesAfter = await stageEdges()
+  check(JSON.stringify(edgesBefore) === JSON.stringify(edgesMid) && JSON.stringify(edgesMid) === JSON.stringify(edgesAfter), 'the stage top and the notice row do not move or change height during add and Undo', JSON.stringify([edgesBefore, edgesMid, edgesAfter]))
+  await sleep(300)
+
+  // D3 (kept for spec 1.2): choosing the root adds under the root, even with another role selected.
+  before = await rolesNow()
+  await add.click(root.id)
+  await sleep(700)
+  after = await rolesNow()
+  added = after.filter((r) => !before.some((b) => b.id === r.id))
+  check(added.length === 1 && added[0].reportsTo === root.id, 'Add role with Reports to the root adds under the root', JSON.stringify(added.map((r) => r.reportsTo)))
   const first = added[0]
 
   // (2) D2: a second and third add under the same manager sit beside the first, overlap nothing and come into view.
   for (let i = 0; i < 2; i++) {
-    await add.click()
+    await add.click(root.id)
     await sleep(800)
     const r = await chartRects(page)
     const newestNow = (await rolesNow()).at(-1)
@@ -772,7 +919,7 @@ async function sectionAddAndDrag(page, app, shot) {
   // A smaller window: one more add still comes into view.
   await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [1024, 640])
   await sleep(900)
-  await add.click()
+  await add.click(root.id)
   await sleep(900)
   const small = await chartRects(page)
   const newest = (await rolesNow()).at(-1)
@@ -852,35 +999,48 @@ async function sectionAddAndDrag(page, app, shot) {
   check((await chip(first.id).count()) === 0, 'a role with no reports shows no leads chip')
   for (const id of [rev.id, root.id]) {
     const n = delegable(id)
-    check(n > 0 && (await chip(id).count()) === 1 && (await chip(id).innerText()).trim() === `leads ${n}`, `a manager's chip counts its delegable direct reports (${final.find((r) => r.id === id).name} leads ${n})`, await chip(id).innerText().catch(() => ''))
+    check(n > 0 && (await chip(id).count()) === 1 && (await chip(id).innerText()).trim() === `Delegates to ${n}`, `a manager's chip counts its delegable direct reports (${final.find((r) => r.id === id).name}: Delegates to ${n})`, await chip(id).innerText().catch(() => ''))
   }
   // Every node without a delegable report shows no chip.
   const wrong = []
   for (const r of final) if (delegable(r.id) === 0 && (await chip(r.id).count()) !== 0) wrong.push(r.name)
-  check(wrong.length === 0, 'no role without a delegable report shows "leads"', wrong.join(', '))
+  check(wrong.length === 0, 'no role without a delegable report shows "Delegates to"', wrong.join(', '))
 
-  // (5) D1: a report added to a leaf gives it spawn rights (inspector banner); removing that report takes them back and
-  // the undo row says so.
+  // (5) D1: a report added to a leaf gives it the right to delegate (said before the action, in the popover); removing
+  // that report (no reports of its own: no confirm) takes it back, and Undo restores it.
   const menu = page.locator('[data-testid=role-node-menu]')
   await page.locator(`.react-flow__node[data-id="${first.id}"]`).click({ button: 'right' })
   await menu.waitFor({ timeout: 5000 })
   await page.locator('[data-testid=role-menu-add-report]').click()
+  await pop.waitFor({ timeout: 5000 })
+  check(/will be able to hand work to other roles/.test(await pop.locator('[data-testid=add-role-helper]').innerText()), 'the popover says the leaf will be able to hand work to other roles', await pop.locator('[data-testid=add-role-helper]').innerText())
+  await pop.locator('[data-testid=add-role-name]').press('Enter')
+  await pop.waitFor({ state: 'hidden', timeout: 5000 })
   await sleep(700)
   const leafNow = (await rolesNow()).find((r) => r.id === first.id)
   const child = (await rolesNow()).find((r) => r.reportsTo === first.id)
-  check(!!child && leafNow.canSpawn && leafNow.spawnable.includes(child.id), 'Add a report gives the manager spawn rights over it')
-  check(/can now create subagents, because .* reports to it/.test(await page.locator('.team-panel-pane .banner, .team-panel-pane [role=status], .team-panel-pane [role=alert]').first().innerText().catch(() => '')), 'the inspector says the manager gained spawn rights')
+  check(!!child && leafNow.canSpawn && leafNow.spawnable.includes(child.id), 'Add a report lets the manager delegate to it')
+  check(!/subagent/i.test(await page.locator('.editor').innerText()), 'no "subagent" wording on the Team tab after Add a report')
   await page.locator('.team-panel-pane').getByRole('button', { name: 'Remove', exact: true }).click()
-  await page.getByRole('button', { name: 'Remove role', exact: true }).click()
-  const row = page.locator('[data-testid=team-undo-row]')
-  await row.waitFor({ timeout: 5000 })
-  check(/can no longer create subagents: nobody it may delegate to is left\./.test(await row.innerText()), 'the undo row says the manager lost spawn rights', await row.innerText())
+  await sleep(300)
+  check((await page.getByRole('button', { name: 'Remove role', exact: true }).count()) === 0, 'removing a role without reports asks nothing')
+  const msg2 = page.locator('[data-testid=team-notice-row] .team-notice-text')
+  check(/^Removed /.test((await msg2.innerText()).trim()), 'the notice row says "Removed ..."', await msg2.innerText())
   await sleep(600)
-  check((await rolesNow()).find((r) => r.id === first.id)?.canSpawn === false, 'removing the only delegable report clears the manager\'s spawn rights')
-  await row.getByRole('button', { name: 'Undo' }).click()
+  check((await rolesNow()).find((r) => r.id === first.id)?.canSpawn === false, 'removing the only delegable report clears the manager\'s right to delegate')
+  await page.locator('[data-testid=team-notice-row] [data-testid=team-notice-undo]').click()
   await sleep(500)
   const back = (await rolesNow()).find((r) => r.id === first.id)
-  check(back.canSpawn && back.spawnable.includes(child.id), 'Undo gives the spawn rights back')
+  check(back.canSpawn && back.spawnable.includes(child.id), 'Undo gives the right to delegate back')
+
+  // Removing a role WITH reports asks first, with the new body (spec 1.7).
+  await page.locator(`.react-flow__node[data-id="${first.id}"]`).click()
+  await teamPanelTab(page, 'Role').waitFor()
+  await page.locator('.team-panel-pane').getByRole('button', { name: 'Remove', exact: true }).click()
+  const dlgBody = page.locator('dialog[open]', { hasText: 'Remove role' }).last()
+  await dlgBody.waitFor({ timeout: 5000 })
+  check(/Its 1 report moves up to /.test(await dlgBody.innerText()), 'the confirm says where its report moves', await dlgBody.innerText())
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
 }
 
 /**
@@ -965,6 +1125,8 @@ try {
   await sectionFirstConnection(page, shot)
   await seed(page)
   await sectionBlock(page)
+  await sectionEditor(page)
+  await selectReviewer(page)
   await sectionTools(page)
   await sectionSkills(page)
   await sectionConnections(page, shot)

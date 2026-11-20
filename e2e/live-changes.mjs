@@ -448,8 +448,17 @@ try {
       await nm.fill(`${(await nm.inputValue()).replace(/ Prime\d*$/, '')} Prime${w}`)
       const note3 = page.locator('[data-testid=live-change-note][data-surface=orgChart] [data-testid=live-change-line]').first()
       await note3.waitFor({ timeout: 20_000 })
-      const footerShown = await page.locator('.frame-footer').first().isVisible()
-      check(h >= 720 || !footerShown, `the footer is hidden under the card at ${w}x${h}`, String(footerShown))
+      // Team tab phase 2: the footer is the always-rendered notice row (errors, Undo), so it stays under the card; the card
+      // must still fit: Approve and Reject fully inside the window and not covered by the notice row.
+      const row = page.locator('[data-testid=team-notice-row]').first()
+      const rowBox = await row.boundingBox()
+      check(await row.isVisible() && !!rowBox && rowBox.height >= 28 && rowBox.height <= 34, `the notice row stays visible under the approval card at ${w}x${h}`, JSON.stringify(rowBox))
+      for (const id of ['team-files-approve', 'team-files-reject']) {
+        const b = await page.locator(`[data-testid=${id}]`).first().boundingBox()
+        const inside = !!b && b.x >= 0 && b.y >= 0 && b.x + b.width <= w && b.y + b.height <= h
+        const clear = !!b && !!rowBox && (b.y + b.height <= rowBox.y + 0.5 || b.y >= rowBox.y + rowBox.height - 0.5)
+        check(inside && clear, `${id} is fully inside the window and clear of the notice row at ${w}x${h}`, JSON.stringify({ b, rowBox }))
+      }
       for (const theme of ['dark', 'light']) {
         await setTheme(theme)
         await sleep(150)

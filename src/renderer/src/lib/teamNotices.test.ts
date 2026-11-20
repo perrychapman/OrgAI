@@ -25,7 +25,15 @@ describe('notice priority', () => {
     const list = [note('hint', 'hint', 1), note('saved', 'saved', 2), note('edit', 'edit', 3), note('session', 'session', 4), note('err', 'error', 5)]
     const { current, waiting } = rankNotices(list, 10)
     expect(current?.key).toBe('err')
-    expect(waiting.map((n) => n.key)).toEqual(['edit', 'session', 'saved', 'hint'])
+    // The first-visit hint is never counted as waiting.
+    expect(waiting.map((n) => n.key)).toEqual(['edit', 'session', 'saved'])
+  })
+
+  it('shows the hint only when nothing else is in the row, and never as "+1"', () => {
+    const { current, waiting } = rankNotices([note('hint', 'hint', 9), note('edit', 'edit', 1)], 10)
+    expect(current?.key).toBe('edit')
+    expect(waiting).toEqual([])
+    expect(rankNotices([note('hint', 'hint', 9)], 10)).toEqual({ current: expect.objectContaining({ key: 'hint' }), waiting: [] })
   })
 
   it('the newest wins between equal priorities', () => {

@@ -142,7 +142,10 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
   )
 
   const onKeyDown = (e: KeyboardEvent<HTMLElement>): void => {
-    if (e.key === 'Escape' && !e.defaultPrevented && onEscape) {
+    // An Escape that closes a dialog or popover opened from the editor (the capability chooser) belongs to it: its own
+    // focus return wins. (TeamView's focusNode now runs a frame later, so it used to steal that focus back.)
+    const inLayer = (e.target as HTMLElement | null)?.closest?.('dialog, [popover]')
+    if (e.key === 'Escape' && !e.defaultPrevented && !inLayer && onEscape) {
       e.stopPropagation()
       onEscape()
     }

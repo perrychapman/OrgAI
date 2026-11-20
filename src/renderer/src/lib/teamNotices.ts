@@ -73,10 +73,16 @@ export function compareNotices(a: TeamNotice, b: TeamNotice): number {
   return NOTICE_PRIORITY[a.kind] - NOTICE_PRIORITY[b.kind] || b.at - a.at
 }
 
-/** What the row shows now and what waits behind it, in the order they would come up. Expired notices are ignored. */
+/**
+ * What the row shows now and what waits behind it, in the order they would come up. Expired notices are ignored. The
+ * first-visit hint is shown only when nothing else is in the row and is never counted in `waiting` (a "+1" beside every
+ * edit until the hint is dismissed was noise for a first-time user).
+ */
 export function rankNotices(list: readonly TeamNotice[], now: number): { current: TeamNotice | null; waiting: TeamNotice[] } {
   const live = list.filter((n) => n.expiresAt === undefined || n.expiresAt > now).sort(compareNotices)
-  return { current: live[0] ?? null, waiting: live.slice(1) }
+  const real = live.filter((n) => n.kind !== 'hint')
+  if (real.length === 0) return { current: live[0] ?? null, waiting: [] }
+  return { current: real[0], waiting: real.slice(1) }
 }
 
 // ---------- Words (vocabulary of spec 0.1: delegate, hand work to, reports to) ----------
