@@ -615,6 +615,29 @@ try {
     return p?.roles.find((r) => r.reportsTo === null)?.id
   }
   const rid = await teamRoot()
+  // Team tab phase 1 (D5): a line dragged from the root's handle lands on the middle of a report's body in every node style
+  // and layout: the node is highlighted while hovered and no connection line is left after the drop.
+  for (const [style, layout] of [['card', 'top-down'], ['compact', 'left-right'], ['station', 'left-right'], ['hex', 'radial']]) {
+    await setCanvas({ nodeStyle: style, layout })
+    await sleep(700)
+    await page.locator(`${TEAM} .react-flow__controls-fitview`).click()
+    await sleep(700)
+    const kidId = await page.locator(`${TEAM} .react-flow__node`).evaluateAll((els, root) => els.map((e) => e.dataset.id).filter((id) => id !== root).pop(), rid)
+    const handle = await page.locator(`${TEAM} .react-flow__node[data-id="${rid}"] .react-flow__handle.source`).boundingBox()
+    const body = await page.locator(`${TEAM} .react-flow__node[data-id="${kidId}"]`).boundingBox()
+    const sx = handle.x + handle.width / 2
+    const sy = handle.y + handle.height / 2
+    await page.mouse.move(sx, sy)
+    await page.mouse.down()
+    for (let i = 1; i <= 14; i++) await page.mouse.move(sx + ((body.x + body.width / 2 - sx) * i) / 14, sy + ((body.y + body.height / 2 - sy) * i) / 14)
+    await sleep(150)
+    check((await page.locator(`${TEAM} .react-flow__node[data-id="${kidId}"] .role-node[data-drop=valid]`).count()) === 1, `${style} / ${layout}: the node under a dragged line is highlighted`)
+    await page.mouse.up()
+    await sleep(300)
+    check((await page.locator(`${TEAM} .react-flow__connection`).count()) === 0, `${style} / ${layout}: no connection line is left after the drop`)
+    check((await page.locator(`${TEAM} .role-node[data-drop]`).count()) === 0, `${style} / ${layout}: no highlight is left after the drop`)
+  }
+  await setCanvas({ nodeStyle: 'compact', layout: 'top-down' })
   await setCanvas({ layout: 'left-right' })
   await autoLayout.click()
   await sleep(800)

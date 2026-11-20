@@ -217,6 +217,42 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   `savedToProject`, the permission card's "Always allow for project") read by `PermissionRulesPanel`, which refreshes under a
   sequence guard; the MCP list already reloaded on `project.mcpServers`. Checked by unit tests of the helper and of
   RunManager.decide only; no e2e, not seen in the app.
+- Team tab phase 1 defect fixes (2026-11-19; walk `docs/design/ux-review-team-tab-5.md`, overhaul spec
+  `docs/design/team-tab-overhaul.md` is phase 2). D1 spawn rights follow delegation: `lib/roleOps.ts` `setReportsTo` and
+  `removeRole` clear `canSpawn` on a role whose `spawnable` list the change empties (a role with no delegates before the
+  change keeps a hand-ticked right; no new persisted field); `addRoleUnder` grants it; `RemovedRole.delegation` snapshots
+  `canSpawn` / `spawnable` / `requiredReports` so `restoreRole` puts them back exactly (later edits to that manager are kept
+  instead); `spawnNotice(before, after, cause)` is the one banner text for gained and lost rights, used by addRole, drag,
+  Delete-on-edge (reparentToRoot) and the inspector's Reports to (a change with no spawn effect clears the banner); a removal
+  appends the lost sentence to the toolbar undo row (`team-undo-row`). D2 `lib/rolePlacement.ts` `placeNewRole` (pure):
+  first report below the manager, later ones right of the rightmost sibling (left-right layout: right of the manager, stacked
+  down), stepping past any node box plus a 40 px gap, measured sizes when known; TeamView then pans (never zooms) so the new
+  node sits inside `.frame-stage` clear of the bottom controls. D3 toolbar Add role always adds under the root; the
+  "New roles report to X." note is gone; the inspector header has "Add a report" (`role-add-report`) beside Remove, as does
+  the node menu. D4 delegation list (`lib/delegation.ts` `delegationChoices`): direct reports first, the rest under a native
+  "Other roles (n)" `<details>` (`role-delegate-other`, open when one inside is ticked); a role's manager and ancestors are
+  never offered unless already ticked; one grid row per role (`.delegate-row`, `minmax(0,1fr) auto`, name ellipsis with the
+  full name as `title`); Required's accessible name is "Required: <role>"; one hint sentence explains Required; testIds
+  `role-delegate-<slug>` and `role-required-report-<slug>`. D5 drop anywhere on a node: a second transparent target `Handle`
+  (`id="drop"`, `.role-drop`, `isConnectableStart={false}`) covers the node (React Flow 12.12 takes handle pointer events
+  only while a connection is in progress, so clicks and selection are unchanged); `useConnection` sets `data-drop`
+  valid / invalid for the outline; `isValidConnection` refuses self and cycles and `onConnectEnd` puts the reason in the
+  toolbar (`team-drop-note`, 8 s). The "stray line" of the walk was not reproducible (React Flow cancels the line on
+  release); a guess is a mid-drag screenshot. D6 "leads N" (`role-node-leads`) counts direct reports the role may delegate
+  to (`delegateCount`) and is hidden at 0. D7 team files line: "Team files: not committed yet" instead of "changed"
+  (`TeamFilesStatus` carries paths only, so new and edited files cannot be told apart: a contract field such as an
+  untracked flag would be needed to say "new"); Commit opens a confirm listing `uncommittedFiles` (12 named, then
+  "and N more", "at least" at `TEAM_FILES_LIST_MAX`; `commitConfirmText`), Cancel commits nothing; the line's parts are
+  separated by an `aria-hidden` dot. Main re-reads git at commit time, so a file that changed between the confirm and the
+  click is committed too (it is still only team files). D8 rename: grants `McpServerSpec.roles` are role slugs and
+  `projects:save` keeps the stored `mcpServers` (store/projects.ts `saveFromRenderer`), so a rename dropped slug grants;
+  `renamePatch` / `slugPatch` now add the server ids to `Role.mcpServers` in the same role patch. Skills (`Role.skills`),
+  `spawnable` and `requiredReports` are ids and were unaffected. Residual: the old slug stays in `McpServerSpec.roles`, so a
+  later role that takes that slug inherits the grant (cleaning it needs `mcp.upsert`, not done). Checked by unit tests
+  (roleOps, rolePlacement, delegation, teamFiles) and e2e team.mjs (add target, no overlap and in-stage at both sizes,
+  body drop, cycle reason, leads chip, banners, undo), canvas.mjs (body drop per node style), team-files.mjs (confirm,
+  Cancel, keyboard commit, separators); layout.mjs unchanged. Not checked: the delegation list by eye at every size and
+  theme, touch drags, screen-reader speech, radial / left-right placement by eye.
 - Proposal cards (`docs/design/proposal-cards.md`): an org chart card shows a changed role's new prompt ("Show new prompt") and an added role's prompt ("Show prompt") in an `org-diff-prompt` disclosure through `ClampText`/`showHidden` with the hidden-characters badge (review M3; e2e/proposals.mjs); card read errors speak through the frame's one `tray-announce` (`useFrameAnnounce` in `CanvasFrame`). Long proposals (fix 2026-11-07, proposal-cards.md section 12): a proposal body is always its own scroller (`overflow: auto` beside its cap in cards.css; the Team tab's Architect tray set `overflow: visible`, so a capped body ran on under the footer and never scrolled), and while it overflows `DecisionCard` gives it one Tab stop (`data-scrolls`, `role=group`, inset focus ring). e2e/proposals.mjs scenario 4 drives a 29-change org chart in the Live tray of a work run and of an org change session (the Team tab's Architect tray is gone, see Org change sessions) at both sizes and themes.
 - Proposal cards (spec `docs/design/proposal-cards.md`, merged at e655838): `components/proposals/*` (`McpProposalBody`,
   `SkillsProposalBody`, `ClampText`, `useCurrent`), `lib/skillProposal.ts`, `lib/proposalSummary.ts`,

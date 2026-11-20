@@ -869,3 +869,61 @@
 .template-skeleton {
   height: var(--space-8);
 }
+
+/* Role inspector: header actions and the Delegation list (one row per role, never a sideways scroll). */
+.side-header:has(.role-header-actions) {
+  flex-wrap: wrap;
+}
+.role-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.delegate-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.delegate-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.delegate-row .checkbox,
+.delegate-row .checkbox-text,
+.delegate-row .checkbox-label {
+  min-width: 0;
+}
+.delegate-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.delegate-name .avatar {
+  flex: none;
+}
+.delegate-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.delegate-other {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.delegate-other > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  padding: var(--space-1) 0;
+}
+.delegate-other[open] > summary {
+  margin-bottom: var(--space-2);
+}

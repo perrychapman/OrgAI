@@ -92,7 +92,9 @@ export function teamFilesLine(s: TeamFilesStatus): TeamLine | null {
       if (s.uncommitted) {
         return {
           tone: 'attention',
-          text: 'Team files changed, not committed',
+          // Not "changed": a fresh project's files were written by OrgAI, and the status cannot tell new files from
+          // edited ones (uncommittedFiles carries paths only), so the words fit both (Team tab phase 1, D7b).
+          text: 'Team files: not committed yet',
           // The file list is the tooltip, so the line stays one row.
           title: s.uncommittedFiles.length > 0 ? `Not in git yet: ${listFiles(s.uncommittedFiles, 8)}.` : undefined,
           ...(s.isGitRepo ? { action: 'commit' as const, actionLabel: 'Commit team files' } : {})
@@ -124,6 +126,29 @@ export function listFiles(files: readonly string[], max = 3): string {
   if (files.length <= max) return files.join(', ')
   return `${files.slice(0, max).join(', ')} and ${files.length - max} more`
 }
+
+/** Most files the commit confirmation names one per line; the rest are counted. */
+export const COMMIT_CONFIRM_LIST_MAX = 12
+
+/**
+ * What the "Commit team files" confirmation says (D7a): the files main reports as not committed, at most
+ * COMMIT_CONFIRM_LIST_MAX named. `capped` is true when main's own list may be cut (TEAM_FILES_LIST_MAX), so the
+ * count is a lower bound. With no list, only the location is named.
+ */
+export function commitConfirmText(s: Pick<TeamFilesStatus, 'uncommittedFiles'>, listMax: number): { lead: string; files: string[]; more: number } {
+  const all = s.uncommittedFiles
+  const n = all.length
+  const capped = n >= listMax
+  const lead =
+    n === 0
+      ? 'OrgAI commits the team files in .orgai/ to the git repository in this folder.'
+      : `OrgAI commits ${capped ? 'at least ' : ''}${n === 1 ? '1 file' : `${n} files`} in .orgai/ to the git repository in this folder:`
+  const files = all.slice(0, COMMIT_CONFIRM_LIST_MAX)
+  return { lead, files, more: n - files.length }
+}
+
+/** The fixed footnote of the commit confirmation. */
+export const COMMIT_CONFIRM_NOTE = 'Only these files go into the commit; anything else you staged stays staged. Nothing is pushed.'
 
 export const TEAM_FILES_STALE_TEXT = 'The files changed. Review them again.'
 

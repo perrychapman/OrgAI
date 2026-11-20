@@ -143,9 +143,21 @@ try {
   await page.locator('[data-testid=team-files-undone]').waitFor({ timeout: 10_000 })
   check(read('agents/dev.md').includes('Keep changes small') && !read('agents/dev.md').includes('Write tests first'), 'Undo rewrote the file on disk')
   check((await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').prompt === DEV_PROMPT, 'Undo put the prompt back in the chart')
-  check(await waitLine(/changed, not committed/i), 'after Undo the line shows uncommitted', await lineText())
-  // Commit from the line brings it back to in sync.
+  check(await waitLine(/not committed yet/i), 'after Undo the line shows uncommitted', await lineText())
+  check(!/changed/i.test(await lineText()), 'the uncommitted line does not say "changed"', await lineText())
+  // Commit asks first and names the files; Cancel commits nothing.
+  const headPre = git(repo, ['rev-parse', 'HEAD'])
   await page.locator('[data-testid=team-files-commit]').click()
+  const confirmBody = page.locator('[data-testid=team-files-commit-confirm]')
+  await confirmBody.waitFor({ timeout: 5_000 }).catch(() => {})
+  const confirmText = (await confirmBody.innerText().catch(() => '')).replace(/\s+/g, ' ')
+  check(/agents\/dev\.md/.test(confirmText) && /Nothing is pushed/.test(confirmText), 'Commit opens a confirmation that lists the files', confirmText)
+  await page.keyboard.press('Escape')
+  await confirmBody.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+  check(git(repo, ['rev-parse', 'HEAD']) === headPre, 'cancelling the confirmation commits nothing')
+  // Commit from the line, confirmed, brings it back to in sync.
+  await page.locator('[data-testid=team-files-commit]').click()
+  await page.locator('[data-testid=team-files-commit-confirm-button]').click()
   check(await waitLine(/in sync/i), 'in sync once the undone files are committed from the line', (await lineText()) + ' | ' + gitSafe(repo, ['status', '--porcelain']))
 
   // ---- 3. A power change pends, shows in Needs you, is approved ----
@@ -306,11 +318,16 @@ try {
   // ---- 4. Commit ----
   fs.writeFileSync(path.join(repo, 'notes.txt'), 'not part of the team\n')
   await refresh()
-  check(await waitLine(/changed, not committed/i), 'line says changed, not committed', await lineText())
+  check(await waitLine(/not committed yet/i), 'line says not committed yet', await lineText())
   const headBefore = git(repo, ['rev-parse', 'HEAD'])
   await page.locator('[data-testid=team-files-commit]').focus()
   await page.keyboard.press('Enter')
+  // Keyboard path: the confirmation opens with focus on Cancel; Tab to Commit and press Enter.
+  await page.locator('[data-testid=team-files-commit-confirm-button]').waitFor({ timeout: 5_000 })
+  await page.locator('[data-testid=team-files-commit-confirm-button]').focus()
+  await page.keyboard.press('Enter')
   check(await waitLine(/in sync/i), 'after Commit the line reads in sync', await lineText())
+  check(/in sync\s*·\s*\.orgai\//.test(await lineText()), 'the in-sync line separates its parts', await lineText())
   const headAfter = git(repo, ['rev-parse', 'HEAD'])
   check(headAfter !== headBefore, 'Commit made a commit')
   const files = git(repo, ['show', '--name-only', '--pretty=format:', 'HEAD']).split(/\r?\n/).filter(Boolean)

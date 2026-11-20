@@ -88,6 +88,20 @@
 .team-files-line-message {
   color: var(--text-primary);
 }
+/* The parts of the line ("in sync", where, the last result) read as separate statements (Team tab phase 1, D7c). */
+.team-files-line-sep {
+  color: var(--text-tertiary);
+}
+/* The commit confirmation's file list: one path per line, long paths wrap rather than widen the dialog. */
+.team-files-commit-list {
+  margin: 0;
+  padding-left: var(--space-4);
+  max-height: 14em;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
 .team-files-warnings {
   flex: 1 1 100%;
   list-style: none;
