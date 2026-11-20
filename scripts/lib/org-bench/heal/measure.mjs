@@ -259,7 +259,7 @@ export function reportMarkdown(results) {
   const cx = results.complexities
   L.push(`# Org chart self-healing bench`)
   L.push('')
-  L.push(`Seed ${results.seed}, commit ${results.sha}, horizon ${results.horizon} runs per case, ${results.cases.length} cases. Strategy deterministic, unattended post-run pass (createEvolveService afterRun, evolve on), token-free.`)
+  L.push(`Seed ${results.seed}, commit ${results.sha}, horizon ${results.horizon} runs per case, ${results.cases.length} cases. Strategy deterministic, unattended post-run pass (createEvolveService afterRun, evolve on), token-free. Skill findings: ${results.skillEval === false ? 'none (--no-skill-eval)' : 'a fresh skill evaluation over the newest 20 runs at every pass'}.`)
   L.push('')
   L.push('Cell: status, run of first detection (det), run from which the defect\'s fields held the reference values to the end (heal), generations applied, fields changed at the end that the defect did not touch (collateral), simulated excess cost over the frozen reference across the horizon.')
   L.push('')

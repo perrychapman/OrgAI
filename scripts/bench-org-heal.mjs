@@ -10,6 +10,8 @@
 //   node scripts/bench-org-heal.mjs --case small:serial one case (or a defect id for all its charts, or 'control')
 //   node scripts/bench-org-heal.mjs --out <dir>         write results.json and report.md there
 //   node scripts/bench-org-heal.mjs --json              print results.json to stdout instead of the summary
+//   node scripts/bench-org-heal.mjs --no-skill-eval     no skill findings reach the engine (the host's skill evaluation
+//                                                       runs only on request; by default the bench assumes a fresh one)
 //
 // Method, simulator rules and limits: docs/design/org-chart-self-healing-bench.md.
 import { execFileSync } from 'node:child_process'
@@ -71,7 +73,7 @@ function baselineOf(complexity, seed) {
   return rows
 }
 
-async function runCase(spec, seed, base) {
+async function runCase(spec, seed, base, skillEval = true) {
   const { createEvolveService, evaluateSkills, deterministicPlan, patchFingerprint } = await loadEngine()
   const ref = referenceCharts()[spec.complexity]
   const chart = referenceCharts()[spec.complexity]
@@ -99,6 +101,7 @@ async function runCase(spec, seed, base) {
     // As if the skill evaluation had just run over the newest SKILL_EVALUATION_RUNS (20) work runs; no project skill
     // bodies are given, so only the gap findings (repeated tool sequences) can appear.
     skillFindings: () => {
+      if (!skillEval) return []
       const ev = evaluateSkills({ roles: store.project.roles, skills: [], runs: store.runs.slice(0, 20).map((r) => ({ summary: r.summary, transcript: r.transcript })), pathExists: () => true })
       return [...ev.quality, ...ev.gaps]
     },
@@ -241,12 +244,12 @@ async function runCase(spec, seed, base) {
 }
 
 /** Run the bench. Deterministic for a given seed and case filter (apart from `generatedAt`). */
-export async function runBench({ seed = 1, caseFilter } = {}) {
+export async function runBench({ seed = 1, caseFilter, skillEval = true } = {}) {
   const specs = selectCases(caseFilter)
   const bases = {}
   for (const cx of new Set(specs.map((s) => s.complexity))) bases[cx] = baselineOf(cx, seed)
   const cases = []
-  for (const s of specs) cases.push(await runCase(s, seed, bases[s.complexity]))
+  for (const s of specs) cases.push(await runCase(s, seed, bases[s.complexity], skillEval))
   let sha = 'unknown'
   try {
     sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
@@ -259,6 +262,7 @@ export async function runBench({ seed = 1, caseFilter } = {}) {
     bench: 'org-heal',
     version: 1,
     seed,
+    skillEval,
     sha,
     generatedAt: new Date().toISOString(),
     horizon: HORIZON,
@@ -278,6 +282,7 @@ function parseArgs(argv) {
     else if (a === '--case') out.caseFilter = argv[++i]
     else if (a === '--out') out.out = argv[++i]
     else if (a === '--json') out.json = true
+    else if (a === '--no-skill-eval') out.skillEval = false
     else throw new Error(`Unknown argument ${a}`)
   }
   if (!Number.isInteger(out.seed)) throw new Error('--seed takes an integer')
@@ -286,7 +291,7 @@ function parseArgs(argv) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
-  const results = await runBench({ seed: args.seed, caseFilter: args.caseFilter })
+  const results = await runBench({ seed: args.seed, caseFilter: args.caseFilter, skillEval: args.skillEval !== false })
   const stamp = results.generatedAt.replace(/[:.]/g, '-')
   const dir = resolve(args.out ?? join(root, 'bench-results', 'org-heal', stamp))
   mkdirSync(dir, { recursive: true })

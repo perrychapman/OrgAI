@@ -76,7 +76,7 @@ export const DEFECTS = [
     },
     heal: {
       mechanism: 'interactive `orgai org evolve --apply` with a person approving the raise (two generations), the hybrid strategy with approval, propose_org_change in a work run, or the Architect retrospective',
-      blocker: 'service.ts applyCore: the post-run pass never sets allowSpendRaise, so spend.ts holdSpendRaises strips every raise (rule spend_held). Even approved, synthesizer.ts fromFindings first proposes `staffing.minTier = current tier` (a floor equal to the ceiling, which changes nothing under goal balanced: runtime/staffing.ts resolveStaffing already runs at the ceiling); only the next generation raises the tier.'
+      blocker: 'service.ts applyCore: the post-run pass never sets allowSpendRaise, so spend.ts holdSpendRaises strips every raise (rule spend_held). Even approved, synthesizer.ts fromFindings first proposes `staffing.minTier = current tier` (a floor equal to the ceiling, which changes nothing under goal balanced with no orchestrator request: runtime/staffing.ts resolveStaffing already runs at the ceiling); only the next generation raises the tier. The same hold means a tier CUT the engine promoted itself can never be undone unattended once it proves harmful (medium: checker.tier held).'
     }
   },
   {
@@ -131,7 +131,10 @@ export const DEFECTS = [
       r.tools = r.tools.filter((t) => t !== 'Grep')
       return { touched: [{ slug, field: 'tools' }], expect: { kind: 'tool_friction', roleSlug: slug } }
     },
-    heal: { mechanism: 'deterministic evolve (adds Read, Glob or Grep)', blocker: '' }
+    heal: {
+      mechanism: 'deterministic evolve (adds Read, Glob or Grep)',
+      blocker: 'ratchet.ts evaluateActiveTrial / compareMetrics judge a trial on whole-team medians of the next 3 runs whatever tasks they were, so a correct patch can be rolled back when those runs never used the role (small chart, seed 1); service.ts rollbackCore then records it with addRejected, which never expires, and deterministicPlan drops the same patch on every later pass.'
+    }
   },
   {
     id: 'prompt-bloat',
@@ -171,7 +174,7 @@ export const DEFECTS = [
     },
     heal: {
       mechanism: 'the hybrid strategy drafts a skill (created disabled; a person turns it on), or the skills suggestion flow',
-      blocker: 'synthesizer.ts fromFindings: skill_crystallization is a note on the deterministic strategy; service.ts planFor drops new skills without the skills.setEnabled port (the host wires none: bootstrap.ts), and grants to the new skill are never added by a plan.'
+      blocker: 'synthesizer.ts fromFindings: skill_crystallization is a note on the deterministic strategy; service.ts planFor drops new skills without the skills.setEnabled port, which host/bootstrap.ts does not wire (create, remove, readDraft only), so even a hybrid plan only reports them. Separately, skills/evaluate.ts toolSequenceFindings fires on any 4-call window seen in 3 of the last 20 runs, so ordinary routines raise the same finding on healthy charts (the controls).'
     }
   },
   // ---------- structural ----------
