@@ -66,16 +66,36 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
   min-width: 0;
-  padding: var(--space-3) var(--space-4);
-  /* No fill, no shadow: the page is the surface. Amber lives only on the Needs you row (designer, walk 3). */
+  /* The identity band is 5 px (--tile-band) of the project's hue above the content. */
+  --tile-band: 5px;
+  padding: calc(var(--space-3) + var(--tile-band)) var(--space-4) var(--space-3);
+  /* No fill, no shadow: the section card is the surface. Amber lives only on the Needs you row (designer, walk 3). */
   background: transparent;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   transition:
     border-color var(--dur-fast),
     background-color var(--dur-fast);
+}
+/* The project's hue as a band along the top edge (same hue as its badge and its marks in the other sections). */
+.project-tile::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--tile-band);
+  border-radius: calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0 0;
+  background: var(--dash-hue, var(--text-tertiary));
+  pointer-events: none;
+}
+@media (forced-colors: active) {
+  .project-tile::before {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
 }
 .project-tile:hover,
 .project-tile:has(.project-tile-main:focus-visible) {
@@ -87,17 +107,25 @@
   box-shadow: inset 2px 0 0 var(--state-working);
 }
 
-.project-tile-head {
-  display: flex;
+/* Badge on the left, then the name over the one meta line. */
+.project-tile-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  /* Room for More, which sits top right (it is last in the DOM, after the chips). */
-  min-height: var(--control-sm);
+  column-gap: var(--space-3);
+  min-width: 0;
+}
+.project-tile-id {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 0;
 }
 .project-tile-title {
   margin: 0;
   min-width: 0;
-  flex: 1 1 auto;
-  padding-right: var(--control-sm);
+  /* Room for More, which sits top right (it is last in the DOM, after the chips). */
+  padding-right: calc(var(--control-sm) - var(--space-1));
   font-size: var(--text-title-sm);
   line-height: var(--text-title-sm-lh);
   font-weight: var(--weight-semibold);
@@ -123,6 +151,10 @@
 .project-tile[data-customising] .project-tile-title {
   padding-right: calc(var(--control-sm) * 2 + var(--space-1));
 }
+.project-tile-badge {
+  /* The badge never takes a click of its own: the cover under More and the chips is the whole tile. */
+  pointer-events: none;
+}
 .project-tile-name {
   display: block;
   min-width: 0;
@@ -147,8 +179,8 @@
 }
 .project-tile-more {
   position: absolute;
-  top: var(--space-3);
-  right: var(--space-3);
+  top: calc(var(--space-2) + var(--tile-band));
+  right: var(--space-2);
   z-index: 1;
   display: flex;
   align-items: center;
@@ -161,7 +193,6 @@
   align-items: center;
   gap: var(--space-2);
   height: 14px;
-  margin-top: var(--space-1);
   min-width: 0;
 }
 .tile-team-marks {
@@ -209,48 +240,107 @@
   color: var(--text-tertiary);
 }
 
-/* Dot and text on one grid row: a wrapped text sits beside the dot, never under it (walk-2 L2). */
+/* The one meta line: a mark, its words, then (for an engagement) the client. Never wraps; the client gives way first. */
 .project-tile-status {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  column-gap: var(--space-2);
-  row-gap: var(--space-1);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
   margin: 0;
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
   color: var(--text-secondary);
 }
+.project-tile-status-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .project-tile-status > .badge {
-  grid-column: 2;
-  justify-self: start;
-}
-.project-tile-dot {
   flex: none;
-  margin-top: 6px;
-  width: 8px;
-  height: 8px;
+}
+
+/* The status mark: one shape per state (12 px box), so colour is never the only cue. */
+.tile-mark {
+  position: relative;
+  flex: none;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+}
+.tile-mark::before,
+.tile-mark::after {
+  content: '';
+  position: absolute;
+  box-sizing: border-box;
+}
+/* Working: a solid dot with a still halo. */
+.tile-mark[data-kind='working']::before {
+  inset: 2px;
   border-radius: var(--radius-full);
-  background: var(--state-idle);
-}
-.project-tile-dot.decisions {
-  background: var(--state-waiting);
-}
-.project-tile-dot.live {
   background: var(--state-working);
   box-shadow: var(--halo-dot-live);
 }
-@media (prefers-reduced-motion: reduce) {
-  .project-tile-dot.live {
-    box-shadow: none;
+/* Decisions waiting: a ring with a bar inside, in the warning text colour. */
+.tile-mark[data-kind='decisions']::before {
+  inset: 0;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--warning-text);
+}
+.tile-mark[data-kind='decisions']::after {
+  left: 5px;
+  top: 3px;
+  width: 2px;
+  height: 4px;
+  background: var(--warning-text);
+}
+/* Runs open but none working: a ring with a dot. */
+.tile-mark[data-kind='open']::before {
+  inset: 0;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--text-secondary);
+}
+.tile-mark[data-kind='open']::after {
+  inset: 4px;
+  border-radius: var(--radius-full);
+  background: var(--text-secondary);
+}
+/* Past runs only: a small solid square. */
+.tile-mark[data-kind='idle']::before {
+  inset: 3px;
+  border-radius: 2px;
+  background: var(--text-tertiary);
+}
+/* No runs yet: a dashed hollow ring. */
+.tile-mark[data-kind='none']::before {
+  inset: 1px;
+  border-radius: var(--radius-full);
+  border: 1.5px dashed var(--text-tertiary);
+}
+@media (forced-colors: active) {
+  .tile-mark::before,
+  .tile-mark::after {
+    forced-color-adjust: none;
+  }
+  .tile-mark[data-kind='working']::before,
+  .tile-mark[data-kind='open']::after,
+  .tile-mark[data-kind='idle']::before,
+  .tile-mark[data-kind='decisions']::after {
+    background: CanvasText;
+  }
+  .tile-mark[data-kind='decisions']::before,
+  .tile-mark[data-kind='open']::before,
+  .tile-mark[data-kind='none']::before {
+    border-color: CanvasText;
   }
 }
-html[data-reduce-motion='on'] .project-tile-dot.live {
-  box-shadow: none;
-}
 
+/* The client of an engagement, after the status; it shrinks to nothing before the status does. */
 .project-tile-client {
-  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -258,12 +348,88 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   line-height: var(--text-caption-lh);
   color: var(--text-tertiary);
 }
-/* Chips sit above the stretched Open cover, like More. */
+.project-tile-client::before {
+  content: '';
+  display: inline-block;
+  width: 1px;
+  height: 0.9em;
+  margin-right: var(--space-2);
+  vertical-align: -0.1em;
+  background: var(--border-strong);
+}
+
+/* ---------- 7-day sparkline and the week's run count ---------- */
+
+.project-tile-spark {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.tile-spark {
+  display: block;
+  flex: none;
+  overflow: visible;
+}
+/* Bars take the project's hue; the baseline is the zero line and the only mark of a day without runs. */
+.tile-spark-bar {
+  fill: var(--dash-hue, var(--dash-strip-bar));
+}
+.tile-spark-base {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+.tile-spark-today {
+  fill: var(--dash-strip-today);
+}
+@media (forced-colors: active) {
+  .tile-spark-bar,
+  .tile-spark-today {
+    forced-color-adjust: none;
+    fill: CanvasText;
+  }
+  .tile-spark-base {
+    forced-color-adjust: none;
+    stroke: GrayText;
+  }
+}
+/* "5 runs": the figure is mono, the unit a caption; the sparkline's own label says the rest. */
+.project-tile-runs {
+  flex: none;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.project-tile-runs-n {
+  font-family: var(--font-mono);
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.project-tile-runs[data-empty] .project-tile-runs-n {
+  color: var(--text-tertiary);
+  font-weight: var(--weight-regular);
+}
+
+/* ---------- Foot: team marks on the left, signal marks on the right ---------- */
+
+.project-tile-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+/* Signal marks sit above the stretched Open cover, like More: an icon, a count, a 24 px target, the words in the name. */
 .tile-chips {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
-  margin-top: var(--space-1);
+  margin-left: auto;
 }
 .tile-chip {
   all: unset;
@@ -272,52 +438,34 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   z-index: 1;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-1);
-  min-height: 22px;
+  min-width: 24px;
+  min-height: 24px;
   padding: 0 var(--space-2);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-full);
   background: var(--surface-2);
   color: var(--text-secondary);
+  font-family: var(--font-mono);
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
+}
+.tile-chip[data-kind='suggestions'] {
+  color: var(--accent-text);
+}
+.tile-chip[data-kind='folder-trust'] {
+  color: var(--warning-text);
 }
 .tile-chip:hover {
   border-color: var(--border-strong);
-  color: var(--text-primary);
+  background: var(--surface-3);
 }
 .tile-chip:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
-}
-.project-tile-foot {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: var(--space-2);
-  margin: var(--space-1) 0 0;
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-tertiary);
-}
-/* The folder name is a caption in the sans face; the full path is its title. */
-.project-tile-folder {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.project-tile-cost {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-mono);
-  color: var(--text-secondary);
-}
-.project-tile-cost-unit {
-  font-family: var(--font-sans, inherit);
-  font-size: var(--text-caption);
-  color: var(--text-tertiary);
 }
 .project-tile-error {
   margin: 0;

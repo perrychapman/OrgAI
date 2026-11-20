@@ -131,6 +131,8 @@ export interface TileChip {
   text: string
   /** Accessible name: the text and the project. */
   name: string
+  /** The figure the tile's icon mark shows beside the icon; null when the chip is only a mark (folder settings). */
+  count: number | null
 }
 
 /** The chips of a tile, only non-zero ones, in the order branches, suggestions, folder trust. Branches only for code projects. */
@@ -138,15 +140,15 @@ export function tileChips(input: { projectName: string; code: boolean; branches:
   const chips: TileChip[] = []
   if (input.code && input.branches > 0) {
     const text = `${plural(input.branches, 'branch', 'branches')} waiting`
-    chips.push({ kind: 'branches', text, name: `${text} in ${input.projectName}` })
+    chips.push({ kind: 'branches', text, name: `${text} in ${input.projectName}`, count: input.branches })
   }
   if (input.suggestions > 0) {
     const text = plural(input.suggestions, 'team suggestion', 'team suggestions')
-    chips.push({ kind: 'suggestions', text, name: `${text} in ${input.projectName}` })
+    chips.push({ kind: 'suggestions', text, name: `${text} in ${input.projectName}`, count: input.suggestions })
   }
   if (input.untrusted) {
     const text = 'Folder settings to review'
-    chips.push({ kind: 'folder-trust', text, name: `${text} in ${input.projectName}` })
+    chips.push({ kind: 'folder-trust', text, name: `${text} in ${input.projectName}`, count: null })
   }
   return chips
 }
@@ -191,6 +193,20 @@ export function tileStatusLine(input: { open: number; decisions: number; working
   if (input.open > 0) return `${plural(input.open, 'run', 'runs')} open`
   if (input.newestStartedAt !== undefined) return `Last run ${agoWords(input.newestStartedAt, input.now)}`
   return 'No runs yet'
+}
+
+/** The shape of the tile's status mark: each state has its own shape, so colour is never the only cue. */
+export type TileStatusKind = 'decisions' | 'working' | 'open' | 'idle' | 'none'
+
+/**
+ * Which mark the status line gets, in the same order as `tileStatusLine`: decisions waiting (a ring with a bar), working
+ * (a solid dot), runs open but not working (a ring with a dot), past runs only (a small square), no runs ever (a dashed ring).
+ */
+export function tileStatusKind(input: { open: number; decisions: number; working: boolean; newestStartedAt?: number }): TileStatusKind {
+  if (input.decisions > 0) return 'decisions'
+  if (input.working) return 'working'
+  if (input.open > 0) return 'open'
+  return input.newestStartedAt !== undefined ? 'idle' : 'none'
 }
 
 /** Pinned projects first in pin order (ids matching no project are ignored), then the rest in attention order. */
