@@ -1784,8 +1784,8 @@ Section 15, final status:
 | three r187 size and tree shaking | Settled: 302 kB gzip unminified in this build | built chunk, zlib |
 | No `eval` / `new Function` in r187 core | Confirmed | grep of the built chunk, Reviewer in slices 1 and 6 |
 | GLTFLoader blob URLs, Vite `?inline` for `.glb` | Not applicable (no GLB phase) | slice 5 not built |
-| Lazy chunk in the packed asar app | Still unverified | `npm run pack` cannot run in a worktree (above) |
-| WebGL2 on GitHub runners; software switches in Electron 45 | Switches confirmed locally (SwiftShader, now started at minimal); runners still unverified here | slice 1; e2e passes on either renderer |
+| Lazy chunk in the packed asar app | Confirmed on Windows (2026-11-20, orchestrator, main checkout) | `npm run pack` at 234e6b0a, `release/win-unpacked/OrgAI.exe` on the mock adapter with a throwaway data dir, attached over `--remote-debugging-port` (the packed app refuses Playwright's Electron launch): page `file:///.../resources/app.asar/out/renderer/index.html`, `[mock:factory-floor]` live run, test state renderer `webgl2`, quality high, one canvas, zero `securitypolicyviolation` events from scene mount on, first frame 328.8 ms. macOS and Linux packed apps unverified. |
+| WebGL2 on GitHub runners; software switches in Electron 45 | Confirmed from CI logs: windows-latest gets WebGL2 through the SwiftShader switches ("ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)...") and runs the 3D path; macos-15 gets no WebGL2 even with the switches and runs the floor plan path | CI runs 44705491481, 44750784607, 44784791797 (`live renderer:` lines of e2e/factory-floor.mjs) |
 | WebGPU in Electron 45 | Not used, unverified | |
 | Chromium's live-context limit | Still unverified; the leak case keeps one live context through 21 mounts | e2e |
 | Performance targets (section 9) | Confirmed on the RTX 3060 except the bundle rows (disproved) | table above |
