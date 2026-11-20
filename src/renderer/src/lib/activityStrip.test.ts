@@ -243,8 +243,8 @@ describe('bars', () => {
   })
 
   it('declares 40 px narrow and 56 px wide', () => {
-    expect(trackHeight(false)).toBe(40)
-    expect(trackHeight(true)).toBe(56)
+    expect(trackHeight(false)).toBe(72)
+    expect(trackHeight(true)).toBe(96)
   })
 })
 

@@ -109,6 +109,27 @@ export interface BandDoneRow {
 }
 export type BandRow = BandAgentRow | BandMoreRow | BandDoneRow
 
+/** One agent as a mark in a run card's glance row (the visual pass: shapes first, text second). */
+export interface BandMark {
+  id: string
+  state: BandAgentState
+  color: string
+  /** Breathing stagger index across the whole band, set only on working marks; the component breathes the first BAND_BREATHING_MAX. */
+  breath?: number
+}
+
+/** Marks a run card draws before "+N". */
+export const BAND_MARKS_MAX = 8
+/** At most this many marks breathe on the whole band (motion-design: 12 at once). */
+export const BAND_BREATHING_MAX = 12
+
+/** A run's plan progress: steps done of steps counted (skipped steps are not counted). */
+export interface PlanProgress {
+  done: number
+  total: number
+  blocked: boolean
+}
+
 export interface BandRun {
   id: string
   projectId: string
@@ -121,6 +142,12 @@ export interface BandRun {
   name: string
   chip?: string
   planStep: string | null
+  /** Steps done of total for the plan bar; null without a plan or counted steps. */
+  plan: PlanProgress | null
+  /** The agents as marks (at most BAND_MARKS_MAX, waiting first), the agents past that, and one sentence about all of them. */
+  marks: BandMark[]
+  marksMore: number
+  marksSummary: string
   /** Line 2 without the "Waiting on you" suffix. */
   line2: string
   decisions: number
@@ -163,6 +190,8 @@ export const BAND_STATE_WORD: Record<BandAgentState, string> = {
 }
 
 const PRIORITY: Record<BandAgentState, number> = { waiting: 0, working: 1, idle: 2, done: 3, failed: 3 }
+/** Mark order in a card's glance row: what needs the person, what failed, what is working, then idle and done. */
+const MARK_RANK: Record<BandAgentState, number> = { waiting: 0, failed: 1, working: 2, idle: 3, done: 4 }
 /** A run waiting on the person sorts first, then the working ones, then idle ones (docs/design/dashboard-overhaul.md 7.6). */
 const GROUP_RANK: Record<BandGroup, number> = { waiting: 0, working: 1, idle: 2 }
 
@@ -306,6 +335,45 @@ export function groupOf(status: RunStatusView, decisions: number): BandGroup {
   return status.word === 'Running' ? 'working' : 'idle'
 }
 
+/**
+ * Steps done of steps counted, for the card's progress bar. A finished plan reads full; skipped steps are left out of both
+ * numbers (as `planStepLabel` leaves them out); null without a plan or without a counted step.
+ */
+export function planProgress(plan: Pick<RunPlan, 'status' | 'steps'> | null | undefined): PlanProgress | null {
+  if (!plan) return null
+  const steps = plan.steps.filter((s) => s.status !== 'skipped')
+  if (steps.length === 0) return null
+  const done = plan.status === 'done' ? steps.length : steps.filter((s) => s.status === 'done').length
+  return { done, total: steps.length, blocked: plan.status === 'blocked' }
+}
+
+/** "3 of 7 steps" ("1 of 1 step"), with ", blocked" when the plan is blocked. */
+export function planProgressText(p: PlanProgress): string {
+  return `${p.done} of ${p.total} ${p.total === 1 ? 'step' : 'steps'}${p.blocked ? ', blocked' : ''}`
+}
+
+/**
+ * The agents of a run as marks (never the root): the ones that need the person first, then working, idle, done and failed,
+ * tree order inside a group, at most `max`. `more` counts the rest; `summary` says all of them in one sentence
+ * ("4 agents: 2 working, 1 waiting on you, 1 done"), the text alternative of the drawn row.
+ */
+export function runMarks(
+  allAgents: readonly AgentInstance[],
+  project?: { roles: readonly RunRoleView[] },
+  max = BAND_MARKS_MAX
+): { marks: BandMark[]; more: number; summary: string } {
+  const ordered = treeOrder(normalizeParents([...allAgents])).map((t, i) => ({ id: t.agent.id, state: bandAgentState(t.agent.state), color: roleColorFor(project, t.agent.roleId, t.agent.roleSlug), i }))
+  if (ordered.length === 0) return { marks: [], more: 0, summary: '' }
+  const ranked = [...ordered].sort((a, b) => MARK_RANK[a.state] - MARK_RANK[b.state] || a.i - b.i)
+  const marks = ranked.slice(0, Math.max(0, max)).map(({ id, state, color }) => ({ id, state, color }))
+  const count = (s: BandAgentState): number => ordered.filter((m) => m.state === s).length
+  const parts = (['waiting', 'working', 'idle', 'done', 'failed'] as const)
+    .filter((s) => count(s) > 0)
+    .map((s) => `${count(s)} ${s === 'waiting' ? 'waiting on you' : s === 'done' ? 'done' : s}`)
+  const n = ordered.length
+  return { marks, more: n - marks.length, summary: `${n} ${n === 1 ? 'agent' : 'agents'}: ${parts.join(', ')}` }
+}
+
 /** The plan's current step: the first in progress, else the first pending. */
 export function currentStep(plan: RunPlan | undefined): string | undefined {
   const steps = plan?.steps ?? []
@@ -398,6 +466,7 @@ export function bandModel(
     if (res.more > 0) rows.push({ kind: 'more', count: res.more, depth: 1, through: [], last: true })
     if (res.done > 0) rows.push({ kind: 'done', count: res.done, failed: res.failed, depth: 1, through: [], last: true })
     const step = group === 'working' ? currentStep(r.plan) : undefined
+    const glance = runMarks(list, roleSource)
     return {
       id: r.summary.id,
       projectId: r.summary.projectId,
@@ -410,6 +479,10 @@ export function bandModel(
       name: displayRunName(r.summary),
       ...(isVirtualProjectId(r.summary.projectId) || r.summary.quick || r.summary.kind !== 'work' || r.summary.team === 'single' ? { chip: runKindWord(r.summary) } : {}),
       planStep: planStepLabel(r.plan),
+      plan: planProgress(r.plan),
+      marks: glance.marks,
+      marksMore: glance.more,
+      marksSummary: glance.summary,
       // A run with an open decision prints the decision's label, never the root's activity (it can carry the raw command).
       line2: r.decisions > 0 ? (decisionLine(r.firstDecision) ?? '') : (step ?? (root ? nodeActivity(root, { isRoot: true }) : '')),
       decisions: r.decisions,
@@ -431,6 +504,9 @@ export function bandModel(
     }
     p.runs.push(run)
   }
+  // Working marks breathe in a stagger that runs across the whole band in DOM order, so the 12-at-once cap holds for the page.
+  let breath = 0
+  for (const p of byProject.values()) for (const run of p.runs) for (const m of run.marks) if (m.state === 'working') m.breath = breath++
   return { counts, total: runs.length, projects: [...byProject.values()], shownRuns: out.length, hiddenRuns: runs.length - out.length }
 }
 

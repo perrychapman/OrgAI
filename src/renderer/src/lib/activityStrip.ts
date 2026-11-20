@@ -15,8 +15,8 @@ export type CostKind = 'none' | 'known' | 'partial' | 'unknown'
 /** Days in the ledger: the last 7 local days including today. */
 export const LEDGER_DAYS = 7
 /** Track heights in px (the bar area above the baseline), declared so e2e can measure them. */
-export const TRACK_NARROW_PX = 40
-export const TRACK_WIDE_PX = 56
+export const TRACK_NARROW_PX = 72
+export const TRACK_WIDE_PX = 96
 /** A day with runs never draws a bar shorter than this. */
 export const MIN_BAR_PX = 2
 /** Weekday initials need columns at least this wide; the container query in dashboard-strip.css applies it. */
