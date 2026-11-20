@@ -32,6 +32,19 @@ export interface PartSpec {
   lods: readonly LodBand[]
   /** Per-instance colour: the engine sets instanceColor (lamps lit with a status token colour). */
   instanceColor?: boolean
+  /**
+   * Slice 4: this part is the moving sub-part of a machine's ambient stroke (section 5.1). The engine applies
+   * `amount * wave` (wave 0 to 1 from motion.ts ambientWave) about `pivot` (kit frame; origin when absent):
+   * 'translateY' metres (press head: -0.3), 'translateX' metres (frame carriage: 0.6), 'rotateY' / 'rotateZ' radians
+   * (arm swing 40 degrees: 0.698; spindle one turn: 2 * PI). At wave 0 the part is in its built (static) position.
+   */
+  stroke?: { kind: 'translateY' | 'translateX' | 'rotateY' | 'rotateZ'; amount: number; pivot?: { x: number; y: number; z: number } }
+  /**
+   * Slice 4: this part is a console screen whose glow the engine modulates through instanceColor (a grey level
+   * SCREEN_GLOW_MIN..MAX multiplying the material colour; static level MAX). Requires `instanceColor: true` and an
+   * unlit or emissive-looking material role so the level reads.
+   */
+  screen?: boolean
 }
 
 /** A point in an object's local frame where the engine attaches something else (a robot, a stack light, a label). */
@@ -125,7 +138,22 @@ export interface FactoryKitSource {
   boardLamp?(): ObjectKit
   /** Lens colour for a plan step lamp per step state (lit pending is off; blocked uses the warning token). */
   boardLampColour?(theme: FactoryTheme, state: 'pending' | 'active' | 'done' | 'blocked' | 'skipped', tokens: FactoryTokenColours): string
+
+  // ---- Slice 4: carriers (section 4.6 budgets, 4.3 palette "Crate, tote, capsule, part"). Optional until the Technical
+  // Artist lands them; the engine skips a missing kit. Origin at the object's bottom centre, front +z, metres. All are
+  // moving things: castShadow false (they get a blob shadow from props() 'blob'), drawn in every LOD band unless the
+  // spec says otherwise (parts are not shown in the far band, section 4.5). The engine scales a coalesced capsule by
+  // CAPSULE_COALESCED_SCALE.
+  /** Work-order tote (delegation), at most 80 triangles, about 0.7 x 0.35 x 0.5 m. */
+  tote?(): ObjectKit
+  /** Message capsule, at most 120 triangles, about 0.5 m long, lying east-west (the engine yaws it along its path). */
+  capsule?(): ObjectKit
+  /** Tool part riding the belt, at most 12 triangles, about 0.25 m. */
+  part?(): ObjectKit
 }
+
+/** A capsule that carries several coalesced messages is drawn this much larger (section 5.2 "slightly larger"). */
+export const CAPSULE_COALESCED_SCALE = 1.25
 
 /** Spacing between crates on an 'inbox' pad, metres. */
 export const CRATE_PITCH = 0.8
