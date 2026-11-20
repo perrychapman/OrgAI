@@ -3,7 +3,7 @@
 export const ROLE_FIELDS = ['tier', 'model', 'effort', 'staffing', 'prompt', 'tools', 'skills']
 /** The engine's own threshold (plan.ts MIN_WASTE_DEFAULT), used only to report "waste under threshold". */
 export const WASTE_THRESHOLD = 15
-export const LAST_WINDOW = 5
+export const LAST_WINDOW = 10
 
 const json = (v) => JSON.stringify(v ?? null)
 const r4 = (n) => Math.round(n * 1e4) / 1e4
@@ -121,6 +121,7 @@ export function windowStats(rows) {
     costUsd: r4(cost),
     baseCostUsd: r4(base),
     excessRel: base > 0 ? r4((cost - base) / base) : 0,
+    wallMs: wall,
     wallRel: baseWall > 0 ? r4((wall - baseWall) / baseWall) : 0,
     failures: rows.reduce((n, r) => n + r.failures, 0),
     baseFailures: rows.reduce((n, r) => n + r.baseFailures, 0)
@@ -133,11 +134,23 @@ export const WALL_TOL = 0.05
 const costly = (w) => w.excessRel > COST_TOL || w.wallRel > WALL_TOL || w.failures > w.baseFailures
 
 /**
- * Whether the defect cost anything measurable before the first change (`costlyBefore`) and whether the last window is
- * back within the tolerances of the frozen reference (`healed`).
+ * Whether the defect, left alone, costs anything measurable over the horizon (`costlyBefore`: the frozen defective
+ * chart against the frozen reference on the same runs) and whether the last window is back within the tolerances of the
+ * reference (`healed`). `windows`: { unhealed, last, lastUnhealed } from windowStats.
  */
-export function symptomOf(windows) {
-  return { costlyBefore: costly(windows.first), healed: !costly(windows.last) }
+export function symptomOf(windows, changed = true) {
+  return { costlyBefore: costly(windows.unhealed), healed: changed && !costly(windows.last) }
+}
+
+/**
+ * Whether the evolved chart is worse than leaving the defect alone, on the same last runs: cost 3 points or wall 5 points
+ * above the frozen defective chart, or more than one extra failed step.
+ */
+export function worseThanUnhealed(windows) {
+  const a = windows.last
+  const b = windows.lastUnhealed
+  const rel = (x, y) => (y > 0 ? (x - y) / y : 0)
+  return rel(a.costUsd, b.costUsd) > 0.03 || rel(a.wallMs, b.wallMs) > 0.05 || a.failures > b.failures + 1
 }
 
 /** Sum of (case cost - baseline cost) over rows, in USD. */
@@ -156,12 +169,11 @@ export const excessUsd = (rows) => r4(rows.reduce((n, r) => n + (r.costUsd - r.b
 export function classify(c) {
   const applied = c.generations.applied > 0
   const last = c.windows.last
-  const first = c.windows.first
-  const worse = applied && (last.excessRel > first.excessRel + 0.03 || last.wallRel > first.wallRel + 0.05 || last.failures > first.failures + Math.max(1, Math.round(first.failures * 0.5)))
+  const worse = applied && worseThanUnhealed(c.windows)
   if (c.group === 'control') return !applied ? 'clean' : costly(last) ? 'fp-worse' : 'fp'
   if (c.healed.field) return 'healed'
   if (worse) return 'worse'
-  if (!c.healed.costlyBefore && c.healed.symptom) return 'negligible'
+  if (!c.healed.costlyBefore) return 'negligible'
   if (c.healed.symptom) return 'symptom'
   return c.detectedAtRun !== null ? 'detected' : 'missed'
 }
@@ -175,7 +187,7 @@ export function matrixOf(cases, defects, complexities) {
     const row = { defect: d.id, label: d.label, group: d.group, cells: {} }
     for (const cx of complexities) {
       const c = cases.find((x) => x.defect === d.id && x.complexity === cx)
-      row.cells[cx] = c ? { status: c.status, detectedAtRun: c.detectedAtRun, healRun: c.healRun, gens: c.generations.applied, excessUsd: c.excessUsd } : null
+      row.cells[cx] = c ? { status: c.status, detectedAtRun: c.detectedAtRun, healRun: c.healRun, gens: c.generations.applied, collateral: c.collateral.length, excessUsd: c.excessUsd } : null
     }
     rows.push(row)
   }
@@ -203,13 +215,41 @@ export function gapsOf(cases, defects) {
   return out.sort((a, b) => b.unhealedExcessUsd - a.unhealedExcessUsd || (a.defect < b.defect ? -1 : 1))
 }
 
+/** Ratchet-wide counts over all cases. */
+export function ratchetSummary(cases) {
+  const sum = (f) => cases.reduce((n, c) => n + f(c), 0)
+  const wastes = cases.map((c) => c.finalWaste).sort((a, b) => a - b)
+  const mid = wastes.length ? (wastes.length % 2 ? wastes[wastes.length >> 1] : (wastes[wastes.length / 2 - 1] + wastes[wastes.length / 2]) / 2) : 0
+  const ctlKinds = new Set(cases.filter((c) => c.group === 'control').flatMap((c) => c.finalFindings.map((f) => f.split('@')[0])))
+  return {
+    applied: sum((c) => c.generations.applied),
+    promoted: sum((c) => c.generations.promoted),
+    rolledBack: sum((c) => c.generations.rolledBack),
+    trial: sum((c) => c.generations.trial),
+    blind: sum((c) => c.blindTrials.length),
+    blindPromoted: sum((c) => c.blindTrials.filter((t) => t.status === 'promoted').length),
+    blindRolledBack: sum((c) => c.blindTrials.filter((t) => t.status === 'rolled_back').length),
+    reproposed: sum((c) => c.rejectedReproposed),
+    casesReproposing: cases.filter((c) => c.rejectedReproposed > 0).length,
+    heldPasses: sum((c) => c.spendHeld.passes),
+    casesHeld: cases.filter((c) => c.spendHeld.passes > 0).length,
+    wasteUnder: cases.filter((c) => c.healed.wasteUnder).length,
+    medianWaste: mid,
+    controlFindings: [...ctlKinds].sort().join(', ')
+  }
+}
+
+/** Signed dollars, two decimals: +$1.20, -$0.03. */
+export const money = (x) => `${x < 0 ? '-' : '+'}$${Math.abs(r2(x)).toFixed(2)}`
+
 const cellText = (cell) => {
   if (!cell) return 'n/a'
   const bits = [CELL[cell.status] ?? cell.status]
   if (cell.detectedAtRun !== null && cell.detectedAtRun !== undefined) bits.push(`det r${cell.detectedAtRun}`)
   if (cell.healRun) bits.push(`heal r${cell.healRun}`)
   if (cell.gens) bits.push(`${cell.gens} gen`)
-  bits.push(`+$${r2(cell.excessUsd)}`)
+  if (cell.collateral) bits.push(`${cell.collateral} collateral`)
+  bits.push(money(cell.excessUsd))
   return bits.join(', ')
 }
 
@@ -221,7 +261,9 @@ export function reportMarkdown(results) {
   L.push('')
   L.push(`Seed ${results.seed}, commit ${results.sha}, horizon ${results.horizon} runs per case, ${results.cases.length} cases. Strategy deterministic, unattended post-run pass (createEvolveService afterRun, evolve on), token-free.`)
   L.push('')
-  L.push('Cell: status, run of first detection (det), run from which the defect\'s fields held the reference values to the end (heal), generations applied, simulated excess cost over the frozen reference across the horizon.')
+  L.push('Cell: status, run of first detection (det), run from which the defect\'s fields held the reference values to the end (heal), generations applied, fields changed at the end that the defect did not touch (collateral), simulated excess cost over the frozen reference across the horizon.')
+  L.push('')
+  L.push(`Status: healed = the defect's fields hold the reference values at the end; symptom healed = fields not restored, the chart was changed, and the last ${LAST_WINDOW} runs are within 2% cost, 5% wall time and no more failed steps than the reference; negligible here = the defect, left alone, never left those tolerances over the horizon in this simulator; detected only = a matching finding, still costly; missed = no matching finding; made worse = the evolved chart is worse than leaving the defect alone on the same last ${LAST_WINDOW} runs.`)
   L.push('')
   L.push(`| Defect | ${cx.join(' | ')} |`)
   L.push(`| --- | ${cx.map(() => '---').join(' | ')} |`)
@@ -231,6 +273,15 @@ export function reportMarkdown(results) {
   for (const c of results.cases.filter((x) => x.group !== 'control')) counts[c.status] = (counts[c.status] ?? 0) + 1
   L.push(`Totals over ${results.cases.filter((x) => x.group !== 'control').length} defect cases: ${Object.entries(counts).sort().map(([k, v]) => `${CELL[k] ?? k} ${v}`).join(', ')}.`)
   L.push('')
+  const r = ratchetSummary(results.cases)
+  L.push('## The ratchet across all cases')
+  L.push('')
+  L.push(`- Generations applied ${r.applied}: promoted ${r.promoted}, rolled back ${r.rolledBack}, still on trial at the end ${r.trial}.`)
+  L.push(`- Trials decided on runs in which no patched role ran (the change was never exercised): ${r.blind} (promoted ${r.blindPromoted}, rolled back ${r.blindRolledBack}).`)
+  L.push(`- Passes on which a rolled-back patch was rebuilt and silently dropped (rejected hypothesis re-proposed): ${r.reproposed} over ${r.casesReproposing} cases.`)
+  L.push(`- Passes that held a spend raise: ${r.heldPasses} over ${r.casesHeld} cases.`)
+  L.push(`- Cases where the final waste score is under the engine threshold (${WASTE_THRESHOLD}): ${r.wasteUnder} of ${results.cases.length}; median final waste ${r.medianWaste}. Final findings on the healthy controls: ${r.controlFindings || 'none'}.`)
+  L.push('')
   L.push('## Controls')
   L.push('')
   const ctl = results.cases.filter((c) => c.group === 'control')
@@ -238,19 +289,19 @@ export function reportMarkdown(results) {
   L.push('')
   L.push('| Chart | Status | Generations (applied / promoted / rolled back) | Changes applied | Final waste | Excess cost |')
   L.push('| --- | --- | --- | --- | --- | --- |')
-  for (const c of ctl) L.push(`| ${c.complexity} | ${CELL[c.status]} | ${c.generations.applied} / ${c.generations.promoted} / ${c.generations.rolledBack} | ${c.appliedSummaries.join('; ') || 'none'} | ${c.finalWaste} | +$${r2(c.excessUsd)} |`)
+  for (const c of ctl) L.push(`| ${c.complexity} | ${CELL[c.status]} | ${c.generations.applied} / ${c.generations.promoted} / ${c.generations.rolledBack} | ${c.generationLog.map((g) => `${g.id} ${g.summary} (${g.status}: ${g.outcome})`).join('; ') || 'none'} | ${c.finalWaste} | ${money(c.excessUsd)} |`)
   L.push('')
   L.push('## Per case')
   L.push('')
-  L.push('Cost / wall / failed steps: the first window (runs before the first change) and the last five runs, against the frozen reference on the same tasks.')
+  L.push(`Cost, wall and failed steps against the frozen reference on the same runs: "left alone" is the defective chart with evolution off over the whole horizon; "last ${LAST_WINDOW}" is the evolved chart over the last ${LAST_WINDOW} runs. Excess $: evolved run costs minus the reference over the horizon; left alone $: the same for the frozen defective chart. Blind trials: generations decided on runs where no patched role ran.`)
   L.push('')
-  L.push('| Case | Status | Detected | Plan for the defect | Gate rules seen (passes) | Spend held | Healed field / waste < 15 / symptom | Gens (a/p/r) | Runs | First window cost, wall, fails | Last window cost, wall, fails | Changes applied | Collateral at end | Oscillation | Rejected re-proposed | Excess $ |')
-  L.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+  L.push(`| Case | Status | Detected | Plan for the defect | Gate rules seen (passes) | Spend held | Healed field / waste < 15 / symptom | Gens (a/p/r) | Last change | Left alone: cost, wall, fails | Last ${LAST_WINDOW}: cost, wall, fails | Changes applied | Collateral at end | Oscillation | Rejected re-proposed (passes) | Blind trials | Excess $ / left alone $ |`)
+  L.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   const pct = (x) => `${x >= 0 ? '+' : ''}${Math.round(x * 1000) / 10}%`
   const win = (w) => `${pct(w.excessRel)}, ${pct(w.wallRel)}, ${w.failures} (ref ${w.baseFailures})`
   for (const c of results.cases) {
     const rules = Object.entries(c.gateRules).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'
-    L.push(`| ${c.id} | ${CELL[c.status] ?? c.status} | ${c.detectedAtRun ? `run ${c.detectedAtRun}` : c.expect ? 'no' : 'no finding kind'} | ${c.proposedForDefect ? 'yes' : 'no'} | ${rules} | ${c.spendHeld.fields.join(', ') || 'none'} | ${c.healed.field ? 'yes' : 'no'} / ${c.healed.wasteUnder ? 'yes' : 'no'} (${c.finalWaste}) / ${c.healed.symptom ? 'yes' : 'no'} | ${c.generations.applied}/${c.generations.promoted}/${c.generations.rolledBack} | ${c.runs} | ${win(c.windows.first)} | ${win(c.windows.last)} | ${c.appliedSummaries.join('; ') || 'none'} | ${c.collateral.join('; ') || 'none'} | ${c.oscillation.count}${c.oscillation.fields.length ? ` (${c.oscillation.fields.join(', ')})` : ''} | ${c.rejectedReproposed} | ${r2(c.excessUsd)} |`)
+    L.push(`| ${c.id} | ${CELL[c.status] ?? c.status} | ${c.detectedAtRun ? `run ${c.detectedAtRun}` : c.expect ? 'no' : 'no finding kind'} | ${c.proposedForDefect ? 'yes' : 'no'} | ${rules} | ${c.spendHeld.fields.join(', ') || 'none'} | ${c.healed.field ? 'yes' : 'no'} / ${c.healed.wasteUnder ? 'yes' : 'no'} (${c.finalWaste}) / ${c.healed.symptom ? 'yes' : 'no'} | ${c.generations.applied}/${c.generations.promoted}/${c.generations.rolledBack} | ${c.lastChangeRun ? `run ${c.lastChangeRun}` : 'none'} | ${win(c.windows.unhealed)} | ${win(c.windows.last)} | ${c.appliedSummaries.join('; ') || 'none'} | ${c.collateral.join('; ') || 'none'} | ${c.oscillation.count}${c.oscillation.fields.length ? ` (${c.oscillation.fields.join(', ')})` : ''} | ${c.rejectedReproposed} | ${c.blindTrials.map((t) => `${t.id} ${t.status}`).join(', ') || 'none'} | ${r2(c.excessUsd)} / ${r2(c.unhealedExcessUsd)} |`)
   }
   L.push('')
   L.push('## Ranked gaps')
@@ -258,7 +309,7 @@ export function reportMarkdown(results) {
   L.push('Ranked by the simulated excess cost of the unhealed cases (the price of not healing over the horizon).')
   L.push('')
   results.gaps.forEach((g, i) => {
-    L.push(`${i + 1}. **${g.label}** (${cx.map((c) => `${c} ${CELL[g.statuses[c]] ?? 'n/a'}`).join(', ')}; +$${r2(g.unhealedExcessUsd)}). Could heal it today: ${g.mechanism || 'n/a'}. What stops the unattended path: ${g.blocker || 'see the per-case rows'}${g.gateRules.length ? ` Gate rules seen: ${g.gateRules.join(', ')}.` : ''}${g.held.length ? ` Held raises: ${g.held.join(', ')}.` : ''}`)
+    L.push(`${i + 1}. **${g.label}** (${cx.map((c) => `${c} ${CELL[g.statuses[c]] ?? 'n/a'}`).join(', ')}; ${money(g.unhealedExcessUsd)}). Could heal it today: ${g.mechanism || 'n/a'}. What stops the unattended path: ${g.blocker || 'see the per-case rows'}${g.gateRules.length ? ` Gate rules seen: ${g.gateRules.join(', ')}.` : ''}${g.held.length ? ` Held raises: ${g.held.join(', ')}.` : ''}`)
   })
   L.push('')
   return L.join('\n')

@@ -24,11 +24,10 @@ import { simulateRun } from './lib/org-bench/heal/simulate.mjs'
 import { LAST_WINDOW, WASTE_THRESHOLD, chartDiff, classify, collateral, detectedAt, diffText, excessUsd, fieldHealed, gapsOf, matrixOf, matchFinding, oscillations, reportMarkdown, symptomOf, windowStats } from './lib/org-bench/heal/measure.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+/** Runs simulated per case (fixed, so excess costs compare across cases). */
 export const HORIZON = 60
+/** Generations the loop allows per case; once this many are applied and decided, later runs get no post-run pass. */
 export const MAX_GENERATIONS = 6
-/** Stop a case once nothing was applied or open for this many runs (after at least QUIET_MIN runs). */
-const QUIET_RUNS = 15
-const QUIET_MIN = 20
 
 let engine
 async function loadEngine() {
@@ -38,7 +37,9 @@ async function loadEngine() {
   const load = (rel) => jiti.import(join(root, rel))
   const service = await load('src/main/evolve/service.ts')
   const skills = await load('src/main/skills/evaluate.ts')
-  engine = { createEvolveService: service.createEvolveService, evaluateSkills: skills.evaluateSkills }
+  const synth = await load('src/main/evolve/synthesizer.ts')
+  const plan = await load('src/main/evolve/plan.ts')
+  engine = { createEvolveService: service.createEvolveService, evaluateSkills: skills.evaluateSkills, deterministicPlan: synth.deterministicPlan, patchFingerprint: plan.patchFingerprint }
   return engine
 }
 
@@ -71,12 +72,16 @@ function baselineOf(complexity, seed) {
 }
 
 async function runCase(spec, seed, base) {
-  const { createEvolveService, evaluateSkills } = await loadEngine()
+  const { createEvolveService, evaluateSkills, deterministicPlan, patchFingerprint } = await loadEngine()
   const ref = referenceCharts()[spec.complexity]
   const chart = referenceCharts()[spec.complexity]
   const target = spec.defect.target(spec.complexity)
   const inj = spec.defect.inject(chart, target)
   const start = clone(chart.project)
+  const simChart = { id: spec.complexity, truth: chart.truth, tasks: chart.tasks }
+  // The counterfactual: the same runs on the defective chart with evolution off.
+  const frozen = []
+  for (let i = 1; i <= HORIZON; i++) frozen.push(simulateRun({ chart: simChart, project: start, runIndex: i, seed }).sim)
   const store = { project: clone(chart.project), runs: [] }
   let clock = 0
   const dataDir = mkdtempSync(join(tmpdir(), 'orgai-heal-'))
@@ -107,9 +112,11 @@ async function runCase(spec, seed, base) {
   let heldPasses = 0
   let rejectedReproposed = 0
   let proposedForDefect = false
-  let lastActivity = 0
+  let lastChangeRun = 0
+  let passes = 0
   let finalWaste = 0
   const appliedSummaries = []
+  const applies = []
   let gens = []
   const touchesDefect = (plan) =>
     plan.rolePatches.some((p) => inj.touched.some((t) => t.slug === p.slug)) ||
@@ -117,59 +124,84 @@ async function runCase(spec, seed, base) {
     (spec.defect.id === 'conflict' && plan.rolePatches.some((p) => p.prompt !== undefined))
   try {
     for (let i = 1; i <= HORIZON; i++) {
-      const { record, sim } = simulateRun({ chart: { id: spec.complexity, truth: chart.truth, tasks: chart.tasks }, project: store.project, runIndex: i, seed })
+      const { record, sim } = simulateRun({ chart: simChart, project: store.project, runIndex: i, seed })
       store.runs.unshift(record)
       clock = record.summary.endedAt + 1000
+      const histBefore = svc.history(store.project.id)
+      const capped = histBefore.generations.length >= MAX_GENERATIONS && !histBefore.trialId
       const an = await svc.analyze({ projectId: store.project.id, strategy: 'deterministic' })
       finalWaste = an.diagnosis.wasteScore
-      const planRules = [...new Set(an.plan.gate.violations.map((v) => v.rule))]
-      for (const r of planRules) gateRules[r] = (gateRules[r] ?? 0) + 1
-      if (planRules.includes('rejected_hypothesis')) rejectedReproposed++
-      if (!an.plan.empty && touchesDefect(an.plan)) proposedForDefect = true
-      const before = clone(store.project)
-      const pr = await svc.afterRun({ projectId: store.project.id, evolve: true, strategy: 'deterministic' })
-      clock += 1000
-      if (pr.heldSpendRaises?.length) {
-        heldPasses++
-        gateRules.spend_held = (gateRules.spend_held ?? 0) + 1
-        for (const h of pr.heldSpendRaises) held.add(`${h.roleSlug ?? 'project'}.${h.field}`)
+      let pass = 'no pass (generation cap reached)'
+      if (!capped) {
+        passes++
+        const planRules = [...new Set(an.plan.gate.violations.map((v) => v.rule))]
+        for (const r of planRules) gateRules[r] = (gateRules[r] ?? 0) + 1
+        if (!an.plan.empty && touchesDefect(an.plan)) proposedForDefect = true
+        // A rejected hypothesis proposed again: the plan the synthesizer builds with no memory holds a patch whose
+        // fingerprint is on the ledger's rejected list (deterministicPlan drops it silently, so the gate never sees it).
+        const rejected = new Set(histBefore.rejectedHypotheses.map((h) => h.fingerprint))
+        if (rejected.size) {
+          const fresh = deterministicPlan(store.project, an.diagnosis, [])
+          if (fresh.rolePatches.some((p) => rejected.has(patchFingerprint(p)))) rejectedReproposed++
+        }
+        const before = clone(store.project)
+        const pr = await svc.afterRun({ projectId: store.project.id, evolve: true, strategy: 'deterministic' })
+        if (pr.heldSpendRaises?.length) {
+          heldPasses++
+          gateRules.spend_held = (gateRules.spend_held ?? 0) + 1
+          for (const h of pr.heldSpendRaises) held.add(`${h.roleSlug ?? 'project'}.${h.field}`)
+        }
+        if (pr.applied) {
+          appliedSummaries.push(`r${i} ${pr.applied.summary}`)
+          applies.push({ run: i, id: pr.applied.id, window: pr.applied.evalWindowRuns, slugs: pr.applied.plan.rolePatches.map((p) => p.slug), limit: pr.applied.plan.maxConcurrentSubagents !== undefined })
+        }
+        if (chartDiff(before, store.project).length) {
+          lastChangeRun = i
+          events.push({ run: i, cause: pr.applied ? 'apply' : pr.ratchet === 'rolled_back' ? 'rollback' : 'other', before, after: clone(store.project) })
+        }
+        pass = pr.applied ? `applied ${pr.applied.id}: ${pr.applied.summary}` : pr.ratchet !== 'none' ? `${pr.ratchet}: ${pr.ratchetReason ?? ''}` : (pr.ratchetReason ?? '')
       }
-      if (pr.applied) appliedSummaries.push(`r${i} ${pr.applied.summary}`)
-      if (chartDiff(before, store.project).length) events.push({ run: i, cause: pr.applied ? 'apply' : pr.ratchet === 'rolled_back' ? 'rollback' : 'other', before, after: clone(store.project) })
-      const hist = svc.history(store.project.id)
-      if (pr.applied || pr.ratchet !== 'none' || hist.trialId) lastActivity = i
+      clock += 1000
       rows.push({
         run: i,
         task: sim.task,
         costUsd: sim.costUsd,
         baseCostUsd: base[i - 1].costUsd,
+        frozenCostUsd: frozen[i - 1].costUsd,
         failures: sim.stepFailures,
         baseFailures: base[i - 1].stepFailures,
+        frozenFailures: frozen[i - 1].stepFailures,
         wallMs: sim.wallMs,
         baseWallMs: base[i - 1].wallMs,
+        frozenWallMs: frozen[i - 1].wallMs,
+        roles: [...new Set(Object.values(record.agents).map((a) => a.roleSlug))].sort(),
         waste: an.diagnosis.wasteScore,
         findings: an.diagnosis.findings.map((f) => `${f.kind}${f.roleSlug ? `@${f.roleSlug}` : ''}`),
         findingsFull: an.diagnosis.findings.map((f) => ({ kind: f.kind, roleSlug: f.roleSlug, data: f.data })),
-        pass: pr.applied ? `applied ${pr.applied.id}: ${pr.applied.summary}` : pr.ratchet !== 'none' ? `${pr.ratchet}: ${pr.ratchetReason ?? ''}` : (pr.ratchetReason ?? ''),
+        pass,
         fieldHealed: fieldHealed(inj.touched, store.project, ref.project)
       })
-      const gens = hist.generations
-      const decided = gens.filter((g) => g.status !== 'trial').length
-      if (gens.length >= MAX_GENERATIONS && decided === gens.length) break
-      if (i >= QUIET_MIN && !hist.trialId && i - lastActivity >= QUIET_RUNS) break
     }
     gens = svc.history(store.project.id).generations
   } finally {
     rmSync(dataDir, { recursive: true, force: true })
   }
-  const firstApply = gens.length ? rows.findIndex((r) => r.pass.startsWith('applied')) + 1 : rows.length
-  const firstWin = rows.slice(0, Math.max(3, Math.min(firstApply, rows.length)))
+  // A trial decided on runs in which no patched role ran (a limit change always counts as exercised).
+  const blindTrials = applies
+    .map((a) => {
+      const g = gens.find((x) => x.id === a.id)
+      const win = rows.filter((r) => r.run > a.run).slice(0, a.window)
+      const exercised = a.limit || win.some((r) => a.slugs.some((s) => r.roles.includes(s)))
+      return { id: a.id, status: g?.status ?? 'unknown', exercised }
+    })
+    .filter((t) => t.status !== 'trial' && !t.exercised)
   const lastWin = rows.slice(-LAST_WINDOW)
-  const windows = { first: windowStats(firstWin), last: windowStats(lastWin) }
+  const asFrozen = (r) => ({ ...r, costUsd: r.frozenCostUsd, wallMs: r.frozenWallMs, failures: r.frozenFailures })
+  const windows = { unhealed: windowStats(rows.map(asFrozen)), last: windowStats(lastWin), lastUnhealed: windowStats(lastWin.map(asFrozen)) }
   let healRun = null
   for (let k = rows.length - 1; k >= 0 && rows[k].fieldHealed; k--) healRun = rows[k].run
   const field = rows.length ? rows[rows.length - 1].fieldHealed : false
-  const symptom = symptomOf(windows)
+  const symptom = symptomOf(windows, chartDiff(start, store.project).length > 0)
   const c = {
     id: spec.id,
     complexity: spec.complexity,
@@ -190,12 +222,16 @@ async function runCase(spec, seed, base) {
     generationLog: gens.map((g) => ({ id: g.id, status: g.status, summary: g.summary, outcome: g.outcomeReason ?? '' })),
     appliedSummaries,
     runs: rows.length,
+    passes,
+    lastChangeRun,
     collateral: collateral(start, store.project, inj.touched).map(diffText),
     changedEver: [...new Set(events.flatMap((e) => chartDiff(e.before, e.after).map(diffText)))],
     oscillation: oscillations(events),
     rejectedReproposed,
+    blindTrials,
     windows,
     excessUsd: excessUsd(rows),
+    unhealedExcessUsd: excessUsd(rows.map(asFrozen)),
     excessUntilHealUsd: excessUsd(healRun ? rows.filter((r) => r.run < healRun) : rows),
     finalFindings: rows.length ? rows[rows.length - 1].findings : [],
     rows: rows.map(({ findingsFull: _f, ...r }) => r)
