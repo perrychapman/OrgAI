@@ -4,6 +4,8 @@ import { ROLE_COLORS, cleanRequiredReports, modelForTier, nearestTiers, newId, s
 import type { RuntimeAdapter } from '../runtime/types'
 
 export interface DraftRole {
+  /** Optional: an existing role's slug (propose_org_chart). References may name a draft by it. */
+  slug?: string
   name: string
   description: string
   responsibilities: string[]
@@ -174,6 +176,12 @@ export function revisedRoleModel(raw: unknown, current: Pick<Role, 'model' | 'ti
   return hit
 }
 
+/** A role reference (name or slug, case-insensitive) in a map keyed by lowercased names and slugs: exact, then its slug form. */
+export function refLookup<T>(map: ReadonlyMap<string, T>, ref: unknown): T | undefined {
+  if (typeof ref !== 'string' || !ref.trim()) return undefined
+  return map.get(ref.trim().toLowerCase()) ?? map.get(slugify(ref))
+}
+
 /**
  * `others` maps a connection id to its DraftModelContext: a draft naming one of them maps its tier / model through it
  * and the Role carries `connection` (omitted when it equals the run's connection, `models.connection`).
@@ -214,13 +222,22 @@ export function toRoles(payload: DraftPayload, models?: DraftModelContext, other
     if (n > 0) r.slug = `${r.slug}-${n + 1}`
   }
 
-  const byName = new Map(drafts.map((d, i) => [d.name?.trim().toLowerCase(), roles[i]]))
+  // References resolve by name first, then by the draft's given slug or the slug of its name (refLookup).
+  const byName = new Map<string, Role>()
+  drafts.forEach((d, i) => {
+    const k = d.name?.trim().toLowerCase()
+    if (k && !byName.has(k)) byName.set(k, roles[i])
+  })
+  drafts.forEach((d, i) => {
+    for (const k of [typeof d.slug === 'string' ? d.slug.trim().toLowerCase() : '', slugify(d.name ?? '')]) if (k && !byName.has(k)) byName.set(k, roles[i])
+  })
+  const find = (n: unknown): Role | undefined => refLookup(byName, n)
   drafts.forEach((d, i) => {
     const role = roles[i]
-    const manager = d.reportsTo ? byName.get(d.reportsTo.trim().toLowerCase()) : undefined
+    const manager = d.reportsTo ? find(d.reportsTo) : undefined
     role.reportsTo = manager && manager.id !== role.id ? manager.id : null
     role.spawnable = (Array.isArray(d.spawnable) ? d.spawnable : [])
-      .map((n) => byName.get(String(n).trim().toLowerCase()))
+      .map((n) => find(n))
       .filter((r): r is Role => !!r && r.id !== role.id)
       .map((r) => r.id)
     if (role.spawnable.length && !role.canSpawn) role.canSpawn = true
@@ -246,7 +263,7 @@ export function toRoles(payload: DraftPayload, models?: DraftModelContext, other
   drafts.forEach((d, i) => {
     if (!Array.isArray(d.requiredReports)) return
     const role = roles[i]
-    const ids = d.requiredReports.map((n) => byName.get(String(n).trim().toLowerCase())).filter((r): r is Role => !!r).map((r) => r.id)
+    const ids = d.requiredReports.map((n) => find(n)).filter((r): r is Role => !!r).map((r) => r.id)
     const required = cleanRequiredReports({ ...role, requiredReports: ids })
     if (required) role.requiredReports = required
   })
