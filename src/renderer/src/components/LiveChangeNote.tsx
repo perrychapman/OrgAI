@@ -26,7 +26,8 @@ export function LiveChangeNote({ projectId, surface }: { projectId: string; surf
   const note = useLiveChangeStore((s) => s.notes[projectId])
   const live = useAppStore(liveRunCount(projectId))
   const lines = note && note.surface === surface ? note.lines : []
-  const rows = Math.max(live, lines.length)
+  // The org chart line lives in the footer hint row and reserves nothing; the others keep the room of their rows.
+  const rows = surface === 'orgChart' ? 0 : Math.max(live, lines.length)
   return (
     <div
       className="live-change-note"
@@ -39,11 +40,18 @@ export function LiveChangeNote({ projectId, surface }: { projectId: string; surf
       {lines.length > 0 && (
         <ul className="live-change-list">
           {lines.map((l) => (
-            <li key={l.runId} className="live-change-line" title={l.full} data-testid="live-change-line" data-run-id={l.runId}>
+            <li key={l.runId} className="live-change-line" title={l.full} data-testid="live-change-line" data-run-id={l.runId} data-availability={l.availability}>
               <span className="live-change-icon">
                 <Icon icon={CircleCheck} size="sm" />
               </span>
               <span className="live-change-text">{l.text}</span>
+              {l.details.length > 0 && (
+                <ul className="live-change-details" aria-label="Details" data-testid="live-change-details">
+                  {l.details.map((d, i) => (
+                    <li key={i}>{d}</li>
+                  ))}
+                </ul>
+              )}
             </li>
           ))}
         </ul>
