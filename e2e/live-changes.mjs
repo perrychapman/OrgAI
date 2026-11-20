@@ -41,7 +41,17 @@ const layoutRects = () =>
     const r = document.querySelector(s)?.getBoundingClientRect()
     return [s, r ? [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)] : null]
   })), LAYOUT_SELECTORS)
-const sameRects = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+// The rename itself legitimately changes the inspector's own content above the capabilities block (the slug follows the
+// name, hint rows settle, differently on macOS), so that block's y is not compared; its x, width and height are, and
+// every region the note could push (stage, tray, footer, tabs, toolbar) is compared exactly.
+const SETTLING_Y = '[data-testid=role-capabilities]'
+const sameRects = (a, b) =>
+  LAYOUT_SELECTORS.every((s) => {
+    const x = a[s]
+    const y = b[s]
+    if (s === SETTLING_Y && x && y) return x[0] === y[0] && x[2] === y[2] && x[3] === y[3]
+    return JSON.stringify(x) === JSON.stringify(y)
+  })
 
 try {
   await createProject(page, { path: repo, name: NAME })
