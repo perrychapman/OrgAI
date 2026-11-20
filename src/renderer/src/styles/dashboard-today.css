@@ -1,1 +1,42 @@
-/* Dashboard today (docs/design/dashboard-overhaul.md). Tokens only. */
+/* Dashboard today (docs/design/dashboard-overhaul.md 7.5). Tokens only. */
+.dash-today-date {
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.dash-today-group + .dash-today-group {
+  margin-top: var(--space-4);
+}
+.dash-today-h3 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.dash-today-time {
+  flex: none;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+/* The to-do title is text, not an action: the Start session button is the row's one control. */
+.dash-today-todo-main {
+  cursor: default;
+}
+.dash-today-paused {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 44px;
+}
+.dash-today-paused-text {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.dash-today-more {
+  margin-top: var(--space-2);
+}
