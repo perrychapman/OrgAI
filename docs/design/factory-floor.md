@@ -1261,7 +1261,17 @@ produces 39 spawns, tool states and worktree records (`[mock:factory-floor]`, ex
 cannot show Chromium's module cache behaviour. Still open: screen-reader speech, the packed asar app, GitHub runners,
 macOS and Linux.
 
+**Reviewer (integration pass, read-only).** No Critical or High. M1 (label anchors stayed at the default heights until
+the next camera move after the kits reported theirs): fixed, the reapply effect depends on `heightsVersion`. M2 (a new
+decision card's auto-focus pulls a keyboard user out of the floor, pre-existing in `DecisionCard`): open, outside the
+factory files; the e2e waits for the card. L1 (`findButtonRef` unused; section 6.8's "Load earlier sessions focuses Find"
+is still done by `LiveRunView` querying `factory-find`): open. L2 (long lead names on line signs): fixed, cut at 18
+characters plus ellipsis and `overflow: hidden`. L3 ("Earlier sessions" heading not tied to its list): fixed with
+`aria-labelledby`. L4 (the Find popover is a DOM child of the toolbar; screen-reader presentation unverified): open. L5
+(a failed engine setup does not dispose the hall pool, pre-existing): open. The three e2e modes were re-run after these
+fixes: all checks passed (147, 147, 142).
+
 **Open after slice 2.** The conveyor's ladder look (geometry, Technical Artist); a stronger lead-versus-bench cue at
 far and mid zoom; the hover emissive lift decision; variant 0 never seen in the app; dark robot contrast at 1024 x 640
-fit (2.8:1, far LOD); the bundle budgets; no UX walkthrough or Reviewer pass was run on this integration (the slice 6
-plan runs both on the whole interactive change).
+fit (2.8:1, far LOD); the bundle budgets; Reviewer M2, L1, L4, L5; no mock UX walkthrough was run on this integration
+(the slice 6 plan runs one on the whole interactive change).

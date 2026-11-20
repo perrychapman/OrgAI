@@ -1,7 +1,7 @@
 // Factory Floor "Find a worker" (docs/design/factory-floor.md section 6.4): a Popover with a labelled search field and a
 // list of native buttons, current session first, then "Earlier sessions". Choosing a row calls onChoose and closes the
 // panel without returning focus to the trigger (the host focuses the worker); Escape closes and returns it.
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type Ref } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type Ref } from 'react'
 import { Search } from 'lucide-react'
 import { Icon } from '../../ui/Icon'
 import { Input } from '../../ui/Input'
@@ -25,9 +25,9 @@ export interface FactoryFindProps {
   buttonRef?: Ref<HTMLButtonElement>
 }
 
-function Rows({ rows, onPick }: { rows: readonly FactoryFindEntry[]; onPick: (e: FactoryFindEntry) => void }): ReactElement {
+function Rows({ rows, onPick, labelledBy }: { rows: readonly FactoryFindEntry[]; onPick: (e: FactoryFindEntry) => void; labelledBy?: string }): ReactElement {
   return (
-    <ul className="factory-find-list">
+    <ul className="factory-find-list" aria-labelledby={labelledBy}>
       {rows.map((e) => (
         <li key={`${e.session}:${e.id}`}>
           <button type="button" className="factory-find-row" data-testid="factory-find-result" data-factory-worker-id={e.id} onClick={() => onPick(e)}>
@@ -45,6 +45,7 @@ function Rows({ rows, onPick }: { rows: readonly FactoryFindEntry[]; onPick: (e:
 
 function FindPanel({ entries, onChoose, close }: { entries: readonly FactoryFindEntry[]; onChoose: FactoryFindProps['onChoose']; close: () => void }): ReactElement {
   const [query, setQuery] = useState('')
+  const earlierId = useId()
   const groups = useMemo(() => groupFind(filterFind(entries, query)), [entries, query])
   const total = groups.current.length + groups.earlier.length
   const pick = (e: FactoryFindEntry): void => {
@@ -80,8 +81,10 @@ function FindPanel({ entries, onChoose, close }: { entries: readonly FactoryFind
           {groups.current.length > 0 && <Rows rows={groups.current} onPick={pick} />}
           {groups.earlier.length > 0 && (
             <>
-              <p className="factory-find-group">Earlier sessions</p>
-              <Rows rows={groups.earlier} onPick={pick} />
+              <p className="factory-find-group" id={earlierId}>
+                Earlier sessions
+              </p>
+              <Rows rows={groups.earlier} onPick={pick} labelledBy={earlierId} />
             </>
           )}
         </>

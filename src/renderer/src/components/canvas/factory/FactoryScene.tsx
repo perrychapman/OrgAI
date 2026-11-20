@@ -311,6 +311,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
 
   // ---- camera (section 2): one controller for both renderers ----
   const heights = useRef<KitHeights>(DEFAULT_HEIGHTS)
+  // Bumped when the kits report their heights, so the label anchors (which read them) are recomputed and re-placed.
+  const [heightsVersion, setHeightsVersion] = useState(0)
   const layoutRef = useRef(layout)
   layoutRef.current = layout
   const boardOn = mode === 'live' && !!plan
@@ -411,10 +413,9 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   // New elements after a model change get their positions at once (the camera itself never moves for new stations).
   useLayoutEffect(() => {
     controller.reapply()
-  }, [controller, entries, layout, renderer, boardOn, chunk.Canvas])
+    // heightsVersion: the kits' real heights move the label anchors (Reviewer M1).
+  }, [controller, entries, layout, renderer, boardOn, chunk.Canvas, heightsVersion])
 
-  // Bumped when the kits report their heights, so the label anchors (which read them) are recomputed.
-  const [heightsVersion, setHeightsVersion] = useState(0)
   const onHeights = useCallback((h: KitHeights) => {
     heights.current = h
     setHeightsVersion((v) => v + 1)
@@ -498,7 +499,14 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   }, [agents, layout])
   const signs = useMemo<SignData[]>(() => {
     if (projection === 'plan') return []
-    return planSigns.map((s) => ({ key: s.key, line: s.line, text: `Line ${s.line} · ${s.lead}`, anchor: { x: layout.hall.minX + HEAD_W - 0.3, y: 0, z: s.z } }))
+    // Lead names are untrusted and unbounded: cut at 18 characters like nameplates (Reviewer L2).
+    const CONT = ', continued'
+    const cut = (t: string): string => {
+      const more = t.endsWith(CONT)
+      const name = more ? t.slice(0, -CONT.length) : t
+      return `${name.length > 18 ? `${name.slice(0, 17)}…` : name}${more ? CONT : ''}`
+    }
+    return planSigns.map((s) => ({ key: s.key, line: s.line, text: `Line ${s.line} · ${cut(s.lead)}`, anchor: { x: layout.hall.minX + HEAD_W - 0.3, y: 0, z: s.z } }))
   }, [planSigns, projection, layout])
   const dockLabel = useMemo(() => {
     if (mode !== 'live' || projection === 'plan') return null
