@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
 import { SettingsStore, normalizeAppearance, normalizeSettings, reconcileAnthropicAuth, reconcileNearLimit } from './settings'
 
@@ -30,6 +30,26 @@ describe('displayName', () => {
   it('refuses non-strings and clears when absent', () => {
     for (const v of [5, null, {}, ['a'], '', '   ']) expect('displayName' in normalizeSettings({ displayName: v } as never)).toBe(false)
     expect('displayName' in normalizeSettings({} as never)).toBe(false)
+  })
+})
+
+describe('unreadable settings.json logging', () => {
+  it('never logs file content or the parse error message', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-settings-log-'))
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      writeFileSync(join(dir, 'settings.json'), '{"settings":{"displayName":"Zebediah Quux" oops}}', 'utf8')
+      const store = new SettingsStore(dir)
+      expect(store.get().displayName).toBeUndefined()
+      expect(spy).toHaveBeenCalled()
+      const text = spy.mock.calls.map((c) => c.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')).join('\n')
+      expect(text).not.toContain('Zebediah')
+      expect(text).not.toContain('Quux')
+      expect(text).toContain('SyntaxError')
+    } finally {
+      spy.mockRestore()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
