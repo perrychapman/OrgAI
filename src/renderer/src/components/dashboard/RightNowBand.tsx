@@ -3,10 +3,10 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState, useEffect } fr
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { BandRun } from './BandRun'
+import { DashSection } from './DashboardContext'
 import type { DashCaps } from './dashCaps'
-import { useAllSummaries, useBandSnapshot, useNow } from './useDashboardData'
-import { bandHeightEstimate, bandModel, countParts, fitBandModel, emptyLine, moreRunsLabel } from '../../lib/dashboardBand'
-import { pausedRuns } from '../../lib/dashboard'
+import { useBandSnapshot, useNow } from './useDashboardData'
+import { bandModel, countParts, moreRunsLabel } from '../../lib/dashboardBand'
 import { useArrival } from '../../lib/useArrival'
 import { nextSettleAt, settleTimerDelay } from '../../lib/foldFinished'
 
@@ -41,11 +41,14 @@ function openRun(projectId: string, runId: string, agentId: string | null, rootI
     })
 }
 
-/** The Right now band (docs/design/dashboard-2.md section 6): runs as small subway lines, never announced. */
-export function RightNowBand({ caps, budget }: { caps: DashCaps; budget?: number; onAnnounce: (text: string) => void }): ReactElement {
+/**
+ * Working now (docs/design/dashboard-overhaul.md 7.6, dashboard-2.md section 6): runs as small subway lines, never
+ * announced. No height budget: the caps come from the page width alone. Rendered through `DashSection`, so with nothing
+ * open it draws nothing (the greeting says so) outside customise mode.
+ */
+export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: string) => void }): ReactElement {
   const snap = useBandSnapshot()
   const elapsedNow = useNow()
-  const summaries = useAllSummaries()
   const [showAll, setShowAll] = useState(false)
   const [tick, setTick] = useState(0)
   const rootRef = useRef<HTMLElement>(null)
@@ -68,11 +71,11 @@ export function RightNowBand({ caps, budget }: { caps: DashCaps; budget?: number
   }, [settleDue])
 
   const model = useMemo(
-    () => fitBandModel(caps, budget, (c) => bandModel(snap.runs, snap.projects, snap.virtualProjects, Date.now(), c, { showAllRuns: showAll })),
+    () => bandModel(snap.runs, snap.projects, snap.virtualProjects, Date.now(), caps, { showAllRuns: showAll }),
+    // `tick` re-evaluates the agents' grace periods (bandModel reads the clock).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [snap, caps, budget, showAll, tick]
+    [snap, caps, showAll, tick]
   )
-  const paused = useMemo(() => pausedRuns(summaries).length, [summaries])
 
   // Motion (spec 3.14): arrivals after first paint rise in; first paint, relaunch and a hidden band never animate.
   const flatRuns = model.projects.flatMap((p) => p.runs.map((r) => r.id))
@@ -140,68 +143,57 @@ export function RightNowBand({ caps, budget }: { caps: DashCaps; budget?: number
   }, [runKeySig, model])
 
   const parts = countParts(model.counts)
+  const countsLine =
+    parts.length > 0 ? (
+      <p className="dash-now-counts" data-testid="dash-now-counts">
+        {parts.map((p, i) => (
+          <span key={p.group}>
+            {i > 0 && (
+              <span className="dash-sep" aria-hidden="true">
+                {' · '}
+              </span>
+            )}
+            <span className="dash-num" data-group={p.group}>
+              {p.text}
+            </span>
+          </span>
+        ))}
+      </p>
+    ) : null
   return (
-    <section
-      ref={rootRef}
-      className={bandArrived ? 'dash-section dash-now motion-enter' : 'dash-section dash-now'}
-      data-testid="dash-now"
-      data-working={model.counts.working}
-      data-waiting={model.counts.waiting}
-      data-idle={model.counts.idle}
-      data-budget={budget}
-      data-estimate={bandHeightEstimate(model)}
-      aria-labelledby="dash-now-heading"
-      // No open run: the status sentence already says "Nothing is running", so the band is not drawn twice (walk-3).
-      hidden={model.total === 0 ? true : undefined}
+    <DashSection
+      id="working"
+      testId="dash-now"
+      empty={model.total === 0}
+      headExtra={countsLine}
+      className={bandArrived ? 'dash-now motion-enter' : 'dash-now'}
+      sectionRef={rootRef}
+      headingRef={headingRef}
+      sectionData={{ 'data-working': model.counts.working, 'data-waiting': model.counts.waiting, 'data-idle': model.counts.idle }}
       onFocus={onFocus}
       onBlur={onBlur}
     >
-      <div className="dash-section-head">
-        <h2 id="dash-now-heading" ref={headingRef} tabIndex={-1} data-section-heading="">
-          Right now
-        </h2>
-        {parts.length > 0 && (
-          <p className="dash-now-counts" data-testid="dash-now-counts">
-            {parts.map((p, i) => (
-              <span key={p.group}>
-                {i > 0 && <span className="dash-sep" aria-hidden="true"> · </span>}
-                <span className="dash-num" data-group={p.group}>
-                  {p.text}
-                </span>
-              </span>
-            ))}
-          </p>
-        )}
-      </div>
-      {model.total === 0 ? (
-        <p className="dash-empty" data-testid="dash-now-empty">
-          {emptyLine(paused)}
-        </p>
-      ) : (
-        <>
-          {model.projects.map((p) => (
-            <section key={p.id} className="dash-now-project" data-testid="dash-now-project" data-project={p.id} aria-labelledby={`dash-now-p-${p.id}`}>
-              <h3 id={`dash-now-p-${p.id}`}>
-                {p.label}
-                {p.client && <span className="dash-now-client"> · {p.client}</span>}
-              </h3>
-              <ul className="dash-runs">
-                {p.runs.map((r) => {
-                  const at = flatRuns.indexOf(r.id)
-                  const revealed = reveal !== null && at >= reveal.from
-                  const enter = revealed ? Math.min(at - reveal.from, 5) : runArrived(r.id) ? 0 : undefined
-                  return <BandRun key={r.id} run={r} now={elapsedNow} onOpen={openRun} enter={enter} />
-                })}
-              </ul>
-            </section>
-          ))}
-          {(model.hiddenRuns > 0 || showAll) && model.total > caps.bandRuns && (
-            <Button variant="ghost" size="sm" testId="dash-now-more" onClick={toggleAll}>
-              {showAll ? 'Show fewer' : moreRunsLabel(model.hiddenRuns)}
-            </Button>
-          )}
-        </>
+      {model.projects.map((p) => (
+        <section key={p.id} className="dash-now-project" data-testid="dash-now-project" data-project={p.id} aria-labelledby={`dash-now-p-${p.id}`}>
+          <h3 id={`dash-now-p-${p.id}`}>
+            {p.label}
+            {p.client && <span className="dash-now-client"> · {p.client}</span>}
+          </h3>
+          <ul className="dash-runs">
+            {p.runs.map((r) => {
+              const at = flatRuns.indexOf(r.id)
+              const revealed = reveal !== null && at >= reveal.from
+              const enter = revealed ? Math.min(at - reveal.from, 5) : runArrived(r.id) ? 0 : undefined
+              return <BandRun key={r.id} run={r} now={elapsedNow} onOpen={openRun} enter={enter} />
+            })}
+          </ul>
+        </section>
+      ))}
+      {(model.hiddenRuns > 0 || showAll) && model.total > caps.bandRuns && (
+        <Button variant="ghost" size="sm" testId="dash-now-more" onClick={toggleAll}>
+          {showAll ? 'Show fewer' : moreRunsLabel(model.hiddenRuns)}
+        </Button>
       )}
-    </section>
+    </DashSection>
   )
 }
