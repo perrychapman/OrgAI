@@ -93,6 +93,38 @@ describe('KitPool', () => {
     expect(vis()).toEqual([true, false, true])
   })
 
+  it('multiplies a part by its per-instance local matrix (poses) and only that part', () => {
+    const pool = new KitPool(new Group(), kit, materials())
+    const lift = new Matrix4().makeTranslation(0, 2, 0)
+    pool.set([{ key: 'a', matrix: at(1), parts: { body: lift } }])
+    const [body, far] = pool.meshes()
+    expect(Array.from(body.instanceMatrix.array.slice(12, 15))).toEqual([1, 2, 0])
+    expect(Array.from(far.instanceMatrix.array.slice(12, 15))).toEqual([1, 0, 0])
+    expect(pool.set([{ key: 'a', matrix: at(1), parts: { body: lift } }])).toBe(false)
+    expect(pool.set([{ key: 'a', matrix: at(1) }])).toBe(true)
+    expect(Array.from(body.instanceMatrix.array.slice(12, 15))).toEqual([1, 0, 0])
+  })
+
+  it('placementChanged tells a move or a removal from a recolour', () => {
+    const pool = new KitPool(new Group(), kit, materials())
+    pool.set([{ key: 'a', matrix: at(1), colours: { lamp: new Color(1, 0, 0) } }])
+    expect(pool.placementChanged).toBe(true)
+    expect(pool.set([{ key: 'a', matrix: at(1), colours: { lamp: new Color(0, 1, 0) } }])).toBe(true)
+    expect(pool.placementChanged).toBe(false)
+    pool.set([{ key: 'a', matrix: at(2), colours: { lamp: new Color(0, 1, 0) } }])
+    expect(pool.placementChanged).toBe(true)
+    pool.set([])
+    expect(pool.placementChanged).toBe(true)
+  })
+
+  it('a kit with no parts (a state prop the kit source does not build yet) holds keys and draws nothing', () => {
+    const parent = new Group()
+    const pool = new KitPool(parent, { name: 'missing', parts: [] }, materials())
+    pool.set([{ key: 'a', matrix: at(1) }])
+    expect(parent.children).toHaveLength(0)
+    expect(pool.castsShadow).toBe(false)
+  })
+
   it('dispose removes its meshes; subKit picks one part', () => {
     const parent = new Group()
     const pool = new KitPool(parent, kit, materials())

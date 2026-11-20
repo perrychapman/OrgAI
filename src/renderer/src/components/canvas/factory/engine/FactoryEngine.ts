@@ -2,18 +2,22 @@
 // graph and the render-on-demand loop. It draws the floor the pure layout describes (hall, booth, dock, board, stations,
 // machines, stack lights, robots, routes, vacant outlines, selection ring) from a FactoryKitSource, with one
 // InstancedMesh per kit part (engine/instancing.ts). It never decides where things are (lib/factory/layout.ts), how the
-// camera looks (lib/factory/camera.ts) or what things look like (builders/). Slice 2: static lamps, no poses, no cues.
+// camera looks (lib/factory/camera.ts) or what things look like (builders/). Slice 3: every live state in its static
+// end state (engine/floorInstances.ts: poses, lamps, shutter, barrier, fence, crates, board lamps; hall dim here). Each
+// change renders one frame; nothing moves until slice 4's cues.
 import { Box3, Color, Matrix4, type BufferGeometry, type DirectionalLight, PCFShadowMap, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from 'three'
 import type { FloorModel, Lamp } from '../../../../lib/factory/types'
 import { factorySession } from '../../../../lib/factory/capability'
 import { p95, type FactoryLoop, type FactoryPerf, type FactoryQuality } from '../../../../lib/factory/snapshot'
 import { cameraPose, FOV_DEG, lodBand, type CameraView, type LodBand } from '../../../../lib/factory/camera'
-import { BOARD_CENTER, DOCK_CENTER, GANTRY_TOP } from '../../../../lib/factory/layout'
-import { routeSegments, ROUTE_STRIPE_W } from '../../../../lib/factory/routes'
-import type { Anchor, FactoryKitSource, FactoryLighting, FactoryMaterials, FactoryTheme, FactoryTokenColours, FloorRect, ObjectKit } from '../builders/types'
+import { GANTRY_TOP } from '../../../../lib/factory/layout'
+import type { FactoryKitSource, FactoryLighting, FactoryMaterials, FactoryTheme, FactoryTokenColours, FloorRect, ObjectKit } from '../builders/types'
 import { KitPool, subKit, type InstanceSpec } from './instancing'
+import { floorInstances, KIT_NAMES, type BoardLampState, type EngineFloor, type KitName } from './floorInstances'
+import { PoseLibrary } from './poses'
 
 export type { FactoryTheme } from '../builders/types'
+export type { EngineFloor } from './floorInstances'
 
 /**
  * Key light direction: from the north-west, pointing down and south-east (section 4.2's words; the spec's vector has its
@@ -23,10 +27,7 @@ const KEY_DIRECTION = new Vector3(0.45, -1, 0.35).normalize()
 const FRAME_RING = 120
 /** LOD swaps wait until the zoom has been still this long (section 4.5: "only when a zoom settles"). */
 const LOD_SETTLE_MS = 180
-/** The selection ring around the booth is scaled to its 6 x 4 m footprint. */
-const BOOTH_RING_SCALE = 1.9
-/** Stack lights are drawn this much larger in the far band (Technical Artist's advice: lamps 2 to 4 px at ppm 7 to 12). */
-const FAR_STACK_SCALE = 1.8
+const BOARD_STATES: readonly BoardLampState[] = ['pending', 'active', 'done', 'blocked', 'skipped']
 
 export interface FactoryEngineOptions {
   quality: FactoryQuality
@@ -48,16 +49,6 @@ export interface FactoryEngineStats {
   lod: LodBand
 }
 
-/**
- * What the engine draws (slice 3 contract): the pure floor model (lib/factory/model.ts: layout, per-worker lamp, pose,
- * shutter, barrier, fence, crate; board; dock count; hall level) and the selection. The plan board is drawn when
- * `model.board` is present (live with a plan).
- */
-export interface EngineFloor {
-  model: FloorModel
-  selectedId: string | null
-}
-
 /** World heights of the drawn objects' tops and label anchors (camera fit, mirror boxes, nameplates). */
 export interface KitHeights {
   boothTop: number
@@ -71,17 +62,7 @@ export interface KitHeights {
   stationExtent: { minX: number; maxX: number; minZ: number; maxZ: number }
 }
 
-type KitName = 'booth' | 'dock' | 'board' | 'lead' | 'bench' | 'machine0' | 'machine1' | 'machine2' | 'machine3' | 'stack' | 'robot' | 'paint' | 'vacant' | 'ring' | 'blob'
-
 const IDENTITY = new Matrix4()
-
-function anchorMatrix(a: Anchor | undefined): Matrix4 {
-  const m = new Matrix4()
-  if (!a) return m
-  m.makeRotationY(a.rotY)
-  m.setPosition(a.x, a.y, a.z)
-  return m
-}
 
 function kitBox(kit: ObjectKit): Box3 {
   const box = new Box3()
@@ -114,7 +95,11 @@ export class FactoryEngine {
   private hallPool: KitPool | null = null
   private hallKey = ''
   private floor: EngineFloor | null = null
-  private readonly lampColours: Record<Lamp | 'off', Color> = { off: new Color(), running: new Color(), 'needs-you': new Color(), failed: new Color() }
+  private readonly lampColours: Record<Lamp, Color> = { off: new Color(), running: new Color(), 'needs-you': new Color(), failed: new Color() }
+  private readonly boardColours = new Map<BoardLampState, Color>(BOARD_STATES.map((s) => [s, new Color()]))
+  /** Hall light level applied to the lighting (section 4.3: paused and ended dim). */
+  private hall: FloorModel['hall'] = 'on'
+  private poses: PoseLibrary | null = null
 
   private width = 1
   private height = 1
@@ -376,6 +361,14 @@ export class FactoryEngine {
       case 'machine3': kit = k.machine(3); break
       case 'stack': kit = k.stackLight(); break
       case 'robot': kit = k.robot(); break
+      // Slice 3 state props: optional in the kit contract; a missing kit is an empty one (nothing drawn).
+      case 'shutter': kit = k.shutter?.() ?? null; break
+      case 'barrier': kit = k.barrier?.() ?? null; break
+      case 'fence': kit = k.fence?.() ?? null; break
+      case 'crate': kit = k.crate?.() ?? null; break
+      case 'holdPad': kit = k.holdPad?.(false) ?? null; break
+      case 'holdPadStriped': kit = k.holdPad?.(true) ?? null; break
+      case 'boardLamp': kit = k.boardLamp?.() ?? null; break
       default: {
         // Props: one kit per part so each gets its own instances. Built once; the parts share one props() call.
         const props = this.register(k.props())
@@ -384,6 +377,7 @@ export class FactoryEngine {
         return this.kitCache.get(name)!
       }
     }
+    if (!kit) kit = { name, parts: [] }
     this.register(kit)
     this.kitCache.set(name, kit)
     return kit
@@ -395,12 +389,13 @@ export class FactoryEngine {
       this.callsAtMainPass = renderer.info.render.calls
       this.trianglesAtMainPass = renderer.info.render.triangles
     }
-    const names: KitName[] = ['booth', 'dock', 'board', 'lead', 'bench', 'machine0', 'machine1', 'machine2', 'machine3', 'stack', 'robot', 'paint', 'vacant', 'ring', 'blob']
-    for (const name of names) {
+    for (const name of KIT_NAMES) {
       const pool = new KitPool(this.scene, this.kit(name), this.materials, hook)
       pool.setLod(this.band)
       this.pools.set(name, pool)
     }
+    const robot = this.kit('robot')
+    this.poses = new PoseLibrary(robot.anchors, robot.parts.map((p) => p.key))
     this.drawHook = hook
   }
 
@@ -429,73 +424,30 @@ export class FactoryEngine {
   private syncFloor(): boolean {
     const floor = this.floor
     if (!floor) return false
-    const { layout, mode } = floor.model
-    const lampOf = (id: string): Lamp => floor.model.workers[id]?.lamp ?? 'off'
+    const { layout } = floor.model
     let changed = this.ensureHall(layout.hall)
     let shadow = changed
-    const live = mode === 'live'
-    const lists: Record<KitName, InstanceSpec[]> = {
-      booth: [], dock: [], board: [], lead: [], bench: [], machine0: [], machine1: [], machine2: [], machine3: [], stack: [], robot: [], paint: [], vacant: [], ring: [], blob: []
+    // Hall dim (section 4.3): lights only, one frame, no rebuild.
+    if (floor.model.hall !== this.hall) {
+      this.hall = floor.model.hall
+      this.lighting.applyTheme(this.theme, this.hall)
+      changed = true
     }
-    const lampColours = (lamp: Lamp): Record<string, Color> => ({
-      'lamp.top': lamp === 'failed' ? this.lampColours.failed : this.lampColours.off,
-      'lamp.middle': lamp === 'needs-you' ? this.lampColours['needs-you'] : this.lampColours.off,
-      'lamp.bottom': lamp === 'running' ? this.lampColours.running : this.lampColours.off
-    })
-    const place = (x: number, y: number, z: number): Matrix4 => new Matrix4().makeTranslation(x, y, z)
-    // Far band: stack lights grow so the 0.36 m lamps stay a few pixels wide (lamps stay readable, section 4.5).
-    const s = this.band === 'far' ? FAR_STACK_SCALE : 1
-    const stackScale = new Matrix4().makeScale(s, s, s)
-    const stackAt = (base: Matrix4, a: Anchor | undefined): Matrix4 => base.clone().multiply(anchorMatrix(a)).multiply(stackScale)
-    const blob = (key: string, m: Matrix4, size: number): void => {
-      lists.blob.push({ key, matrix: m.clone().multiply(new Matrix4().makeScale(size, 1, size)) })
-    }
-    if (layout.booth) {
-      const id = layout.order.find((i) => layout.stations[i]?.kind === 'booth')
-      const kit = this.kit('booth')
-      const base = place(layout.booth.x, GANTRY_TOP, layout.booth.z)
-      lists.booth.push({ key: 'booth', matrix: base })
-      if (kit.anchors?.robot) {
-        const m = base.clone().multiply(anchorMatrix(kit.anchors.robot))
-        lists.robot.push({ key: id ?? 'booth', matrix: m })
-        blob(`booth:${id}`, m, 1.1)
-      }
-      if (live && kit.anchors?.stackLight) lists.stack.push({ key: id ?? 'booth', matrix: stackAt(base, kit.anchors.stackLight), colours: lampColours(lampOf(id ?? '')) })
-      if (id && floor.selectedId === id) lists.ring.push({ key: 'ring', matrix: base.clone().multiply(new Matrix4().makeScale(BOOTH_RING_SCALE, 1, BOOTH_RING_SCALE * 0.7)) })
-    }
-    if (live) {
-      lists.dock.push({ key: 'dock', matrix: place(DOCK_CENTER.x, GANTRY_TOP, DOCK_CENTER.z) })
-      // Step lamps stay off until slice 3 maps plan steps to them (without a colour the unlit lamps drew white, which
-      // read as twelve lit lamps; slice 2 screenshots).
-      if (floor.model.board) lists.board.push({ key: 'board', matrix: place(BOARD_CENTER.x, GANTRY_TOP, BOARD_CENTER.z), colours: { 'board.lamps': this.lampColours.off } })
-    }
-    for (const id of layout.order) {
-      const st = layout.stations[id]
-      if (!st || st.kind === 'booth') continue
-      const kitName: KitName = st.kind === 'lead' ? 'lead' : 'bench'
-      const kit = this.kit(kitName)
-      const base = place(st.center.x, 0, st.center.z)
-      lists[kitName].push({ key: id, matrix: base })
-      if (st.kind === 'bench') lists[`machine${st.variant}` as KitName].push({ key: id, matrix: base.clone().multiply(anchorMatrix(kit.anchors?.machine)) })
-      if (live) lists.stack.push({ key: id, matrix: stackAt(base, kit.anchors?.stackLight), colours: lampColours(lampOf(id)) })
-      const robot = base.clone().multiply(anchorMatrix(kit.anchors?.robot))
-      lists.robot.push({ key: id, matrix: robot })
-      blob(id, robot, 1.1)
-      if (floor.selectedId === id) lists.ring.push({ key: 'ring', matrix: base })
-    }
-    for (const v of layout.vacant) lists.vacant.push({ key: v.id, matrix: place(v.center.x, 0, v.center.z) })
-    routeSegments(layout.routes).forEach((s, i) => {
-      const m = new Matrix4().makeRotationY(s.rotY)
-      m.setPosition(s.center.x, 0, s.center.z)
-      m.multiply(new Matrix4().makeScale(s.length, 1, ROUTE_STRIPE_W))
-      lists.paint.push({ key: `${s.line}:${i}`, matrix: m })
+    const lists = floorInstances(floor, {
+      kit: (name) => this.kit(name),
+      top: (name) => kitTop(this.kit(name)),
+      band: this.band,
+      lamps: this.lampColours,
+      boardLamp: (state) => this.boardColours.get(state) ?? this.lampColours.off,
+      poses: this.poses!
     })
     for (const [name, list] of Object.entries(lists) as [KitName, InstanceSpec[]][]) {
       const pool = this.pools.get(name)
       if (!pool) continue
       if (pool.set(list)) {
         changed = true
-        if (pool.castsShadow) shadow = true
+        // A colour change (lamps) never moves a shadow; a placed, moved or removed caster does.
+        if (pool.castsShadow && pool.placementChanged) shadow = true
       }
     }
     if (shadow) this.renderer.shadowMap.needsUpdate = this.renderer.shadowMap.enabled
@@ -547,11 +499,19 @@ export class FactoryEngine {
   private applyTheme(tokens: FactoryTokenColours): void {
     this.renderer.setClearColor(this.kits.clearColour(this.theme), 1)
     this.materials.applyTheme(this.theme, tokens)
-    this.lighting.applyTheme(this.theme, 'on')
+    this.lighting.applyTheme(this.theme, this.hall)
     this.lampColours.off.set(this.kits.lampOffColour(this.theme))
     this.lampColours.running.set(tokens.success)
     this.lampColours['needs-you'].set(tokens.warning)
     this.lampColours.failed.set(tokens.danger)
+    // Plan step lamps: the kit's colour per state, else pending and skipped off, active and done success, blocked warning.
+    for (const state of BOARD_STATES) {
+      const fromKit = this.kits.boardLampColour?.(this.theme, state, tokens)
+      const fallback = state === 'blocked' ? this.lampColours['needs-you'] : state === 'active' || state === 'done' ? this.lampColours.running : this.lampColours.off
+      const c = this.boardColours.get(state)!
+      if (fromKit) c.set(fromKit)
+      else c.copy(fallback)
+    }
     // Lamp instance colours follow the token values of the new theme.
     this.syncFloor()
   }
