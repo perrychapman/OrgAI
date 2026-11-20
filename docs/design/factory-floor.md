@@ -1569,7 +1569,7 @@ worktree-only CLI tests (npmPackage load, inkVersion 2, TUI Brand, Composer 2, O
 TranscriptPane 2, WorktreesPane). Factory tests 540 of 540. `npm run test:scripts` 206 passed, 3 skipped. `npm run build`
 passes. `e2e/factory-floor.mjs`: all checks passed, each mode run on its own: 409/409 on SwiftShader, 409/409 on the RTX
 3060 (`E2E_FACTORY_SWGL=0`), 393/393 with `E2E_FACTORY_PLAN=1`; burst peaks in every mode carriers 6, per sender 2, parts
-12, crates 4, arrivals 12 per second, ambient 12, 179 cues started, log 50. CANVAS_OFFICE_RESULT `e2e/motion.mjs` does
+12, crates 4, arrivals 12 per second, ambient 12, 179 cues started, log 50. `e2e/canvas.mjs` and `e2e/office.mjs`: all checks passed (364 and 163 PASS lines, 0 FAIL). `e2e/motion.mjs` does
 not inspect canvas scenes (no factory or scene selectors) and was not run. No Reviewer pass: nothing security-relevant
 changed (message text stays React text, is cut to 80 characters in the log and never reaches the test state, which the
 e2e samples on every poll); no mock UX walkthrough (slice 6 runs one on the whole interactive change).
