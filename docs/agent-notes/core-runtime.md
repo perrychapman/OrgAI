@@ -725,8 +725,8 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     conversion. In a revision (propose_org_chart on a completed setup, and propose_org_change) a draft whose slug (else
     name) matches a current role is a PATCH: omitted fields keep the current value (spawnable / reportsTo as current
     slugs; a removed manager becomes the current root). A new role, and every role in first-time setup, needs name,
-    description, responsibilities, prompt, tools, canSpawn, spawnable and reportsTo, else REVISE naming the missing
-    fields. reportsTo / spawnable / requiredReports resolve by name or slug (case-insensitive, then the slug form; also
+    description, responsibilities, prompt, tools and reportsTo, else REVISE naming the missing fields; an omitted
+    canSpawn / spawnable on a new role defaults to false / [] (managers still gain their reports). reportsTo / spawnable / requiredReports resolve by name or slug (case-insensitive, then the slug form; also
     in `toRoles`, so the quick drafter `draftOrgChart` gains slug lookup; the agent importer does not use toRoles); one that matches nothing (in a revision: no draft and no
     current role that is not removed) is a REVISE naming each, instead of the old silent re-parent to the root or drop.
     An unknown slug is a new role in first-time setup, and in a revision only when it is the slug of the draft's own
