@@ -97,7 +97,7 @@ export function summaryParts(groups: readonly ToolGroup[], tools: readonly strin
 
 /** "Can read files, change files and run commands." or the no-tools sentence. */
 export function summarySentence(groups: readonly ToolGroup[], tools: readonly string[]): string {
-  const parts = summaryParts(groups, tools).map((p) => p.text)
+  const parts = summaryParts(groups, tools).map((p) => p.text.replace(/\s+/g, ' ').trim()).filter(Boolean)
   if (parts.length === 0) return 'No tools. It can only answer from what it is told.'
   const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
   return `Can ${list}.`

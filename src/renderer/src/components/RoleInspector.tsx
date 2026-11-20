@@ -161,7 +161,7 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
         <div className="avatar sm" style={{ ['--role' as string]: role.color }} aria-hidden="true">
           {initials(role.name)}
         </div>
-        <h2>{role.name || 'Role'}</h2>
+        <h2 title={role.name || 'Role'}>{role.name || 'Role'}</h2>
         <div className="grow" />
         {!isRoot && (
           <div className="role-header-actions">

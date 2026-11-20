@@ -33,7 +33,7 @@ function ToolsSummary({ tools }: { tools: readonly string[] }): ReactElement {
           {i === 0 ? '' : i === parts.length - 1 ? ' and ' : ', '}
           {p.elevated ? (
             <span className="role-tool-elevated-text">
-              <Icon icon={TriangleAlert} size="xs" /> {p.text}
+              <Icon icon={TriangleAlert} size="xs" />{p.text}
             </span>
           ) : (
             p.text

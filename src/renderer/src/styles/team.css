@@ -143,6 +143,7 @@
 .role-tool-elevated-text .icon,
 .role-tool-elevated-text svg {
   vertical-align: -2px;
+  margin-inline-end: var(--space-1);
 }
 .role-tool-group-list {
   list-style: none;
@@ -938,12 +939,15 @@
 }
 
 /* Role inspector: header actions and the Delegation list (one row per role, never a sideways scroll). */
+/* QA P4: one row whatever the name's length: the name truncates, the actions never wrap or shrink. */
 .side-header:has(.role-header-actions) {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .role-header-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex: none;
+  flex-wrap: nowrap;
+  white-space: nowrap;
   gap: var(--space-2);
   margin-left: auto;
 }
