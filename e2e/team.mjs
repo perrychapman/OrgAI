@@ -783,6 +783,10 @@ async function sectionAddAndDrag(page, app, shot) {
   const hl = await page.locator(`.react-flow__node[data-id="${impl.id}"] .role-node`).evaluate((el) => getComputedStyle(el).outlineStyle)
   check(hl === 'solid', 'the highlight is a visible outline', hl)
   await shot('drop-highlight-dark')
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'))
+  await sleep(200)
+  await shot('drop-highlight-light')
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
   await page.mouse.up()
   await sleep(400)
   check((await page.locator('.react-flow__connection').count()) === 0, 'no connection line remains after a drop on a node body')
@@ -812,11 +816,19 @@ async function sectionAddAndDrag(page, app, shot) {
   // (4) D6: "leads N" counts reports the role may delegate to; none, no chip.
   const final = await rolesNow()
   const chip = (id) => page.locator(`.react-flow__node[data-id="${id}"] [data-testid=role-node-leads]`)
+  const delegable = (id) => {
+    const m = final.find((r) => r.id === id)
+    return m.canSpawn ? final.filter((r) => r.reportsTo === id && m.spawnable.includes(r.id)).length : 0
+  }
   check((await chip(first.id).count()) === 0, 'a role with no reports shows no leads chip')
-  check((await chip(rev.id).count()) === 1 && /leads 1/.test(await chip(rev.id).innerText()), 'a manager with one delegable report reads "leads 1"', await chip(rev.id).innerText().catch(() => ''))
-  const orch = final.find((r) => r.id === root.id)
-  const orchChip = chip(root.id)
-  check((await orchChip.count()) === 1 && new RegExp(`leads ${orch.spawnable.filter((id) => final.find((r) => r.id === id)?.reportsTo === root.id).length}$`).test((await orchChip.innerText()).trim()), 'the root\'s chip counts its delegable direct reports', await orchChip.innerText().catch(() => ''))
+  for (const id of [rev.id, root.id]) {
+    const n = delegable(id)
+    check(n > 0 && (await chip(id).count()) === 1 && (await chip(id).innerText()).trim() === `leads ${n}`, `a manager's chip counts its delegable direct reports (${final.find((r) => r.id === id).name} leads ${n})`, await chip(id).innerText().catch(() => ''))
+  }
+  // Every node without a delegable report shows no chip.
+  const wrong = []
+  for (const r of final) if (delegable(r.id) === 0 && (await chip(r.id).count()) !== 0) wrong.push(r.name)
+  check(wrong.length === 0, 'no role without a delegable report shows "leads"', wrong.join(', '))
 }
 
 /**
