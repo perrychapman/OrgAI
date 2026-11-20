@@ -92,15 +92,21 @@ export interface RosterApplyResult {
   pending: Role[]
 }
 
+/**
+ * Why a role waits for the next run. Users read these on screen (LiveRunChange.deferred, the run log, the card's
+ * outcome): plain language about what the user did, accurate to the rule that deferred it.
+ */
 export const ROSTER_REASONS = {
-  root: 'The approved chart has a different root role; it applies from the next run.',
-  delegation: 'A required delegation this run already enforces depends on this role; the change applies from the next run.',
-  rootCanSpawn: 'The root keeps whether it may delegate for this run; that part applies from the next run. The rest of its change is in effect.',
-  slug: 'A role removed earlier in this run used this slug; it applies from the next run.',
-  stale: 'This role changed in this run after the card was shown; the change applies from the next run.',
-  unmatched: 'The saved chart holds this role under another identity than the card showed; it applies from the next run.',
-  identity: 'The saved chart gave this new role the identity of another role, or its slug is already used in this run; it applies from the next run.',
-  reporting: 'Applying this change alone would leave a role without a path to the root in this run; it applies from the next run.'
+  root: 'The new chart has a different top role than this run; the change applies from the next run.',
+  delegation: 'This run must keep handing work to this role the way it did when it started; the change applies from the next run.',
+  rootCanSpawn: 'The top role keeps whether it can hand out work until the next run. The rest of its change is in effect.',
+  slug: 'A role removed earlier in this run had the same slug; this role joins from the next run.',
+  stale: 'This role changed in this run after the change was proposed; the change applies from the next run.',
+  unmatched: 'OrgAI could not match this role to the one that was shown; the change applies from the next run.',
+  identity: 'The saved chart holds this new role under a different identity than the one shown; it joins from the next run.',
+  slugTaken: 'A role in this run already uses this slug; this role joins from the next run.',
+  slugChange: 'This run keeps the role under its current slug, and the change would give it another one; the change applies from the next run.',
+  reporting: 'Applying this alone would leave a role with no manager to report to in this run; the change applies from the next run.'
 } as const
 
 type Loose = Record<string, unknown>
@@ -300,8 +306,10 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
         continue
       }
       // Review L4: a running role's slug is its identity (spawn name, MCP grants by slug): a card never changes it.
+      // The host route (a desktop rename, hostChange.ts keepRunSlugs) takes the slug out first; the run's own card keeps
+      // this rule.
       if (card.slug !== before.slug) {
-        defer(before.id, before.name, ROSTER_REASONS.identity)
+        defer(before.id, before.name, ROSTER_REASONS.slugChange)
         continue
       }
       const next = underInvariant(before, card, stored)
@@ -333,7 +341,7 @@ export function applyRosterChange(input: RosterApplyInput): RosterApplyResult {
       continue
     }
     if (stored.id !== card.id || stored.slug !== card.slug || (clash !== undefined && clash !== card.id)) {
-      defer(card.id, card.name, ROSTER_REASONS.identity)
+      defer(card.id, card.name, clash !== undefined && clash !== card.id ? ROSTER_REASONS.slugTaken : ROSTER_REASONS.identity)
       pending.push(waiting(card, undefined))
       continue
     }

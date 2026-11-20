@@ -88,7 +88,29 @@ import type {
   LiveRunChange
 } from '@shared/types'
 import { LIVE_RUN_CHANGE_WAIT_MS } from '@shared/types'
-import { applyGrantEdits, grantEditsOf, itemEditOf, itemGrantEditsOf, proposedFromEdit, roleEditEmpty, roleEditOf, ungrantsOf, type GrantEdit, type HostProjectChange } from './hostChange'
+import type { LiveChangeWhat } from '@shared/types'
+import {
+  applyGrantEdits,
+  grantEditsOf,
+  itemEditOf,
+  itemGrantEditsOf,
+  keepRunSlugs,
+  mcpRolesForRun,
+  MCP_LINK_OWN,
+  proposedFromEdit,
+  roleEditEmpty,
+  roleEditOf,
+  SKILL_LINK_OWN,
+  ungrantsOf,
+  type GrantEdit,
+  type HostProjectChange
+} from './hostChange'
+
+/** Longest list a run.liveChange event carries (deferred roles, notes, grants). */
+const LIVE_CHANGE_LIST_MAX = 50
+/** run.liveChange `what` when the run's applier never looked at the change (still starting, or it threw). */
+const coarseWhat = (change: HostProjectChange): LiveChangeWhat[] =>
+  change.kind === 'mcp' ? ['mcpServers'] : change.kind === 'skills' ? ['skills'] : change.kind === 'orgChart' ? ['orgChart'] : ['orgChart', 'grants']
 import { BridgedSessions, bridgeKey } from './bridge'
 import { applyRosterChange, liveRosterApplies, rosterChanged, rosterOf, runBaselineOf } from './runRoster'
 import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
@@ -1927,7 +1949,7 @@ export class RunManager {
 
     const emit = (raw: RunEvent, from?: { bridged: true }): void => {
       // Usage is computed by the host; an adapter's run.usage is dropped.
-      if (raw.type === 'run.usage' || raw.type === 'run.model' || raw.type === 'run.permissionMode' || raw.type === 'run.roster') return
+      if (raw.type === 'run.usage' || raw.type === 'run.model' || raw.type === 'run.permissionMode' || raw.type === 'run.roster' || raw.type === 'run.liveChange') return
       if (raw.type === 'skill.used' && !this.noteSkillUsed(active, raw)) return
       // A compaction of an agent's conversation: counted here (AgentInstance.compactions belongs to RunManager), recorded
       // and broadcast, then the agent goes out again with its new count.
@@ -2243,7 +2265,30 @@ export class RunManager {
         }
         return undefined
       }
+      /**
+       * Review L-c: which change put each grant pair ("roleId|field|itemId") into the run's view. Every setLive claims the
+       * pairs it adds (with `grantClaim`, a host change's own token, else a fresh one) and forgets the pairs it removes;
+       * a host change's undo puts back only the pairs it still owns, so a later change's grant of the same pair survives.
+       */
+      const grantOwners = new Map<string, symbol>()
+      let grantClaim: symbol | undefined
+      const grantPairs = (roles: readonly Role[]): Set<string> => {
+        const out = new Set<string>()
+        for (const r of roles) for (const f of ['mcpServers', 'skills'] as const) for (const id of r[f] ?? []) out.add(`${r.id}|${f}|${id}`)
+        return out
+      }
       const setLive = (saved: Project, settle: LiveSettle = 'mcpServers', own?: LiveOwnItems, card?: readonly Role[], baseline?: readonly Role[], grantEdits?: readonly GrantEdit[], hostItems?: HostItems): RunRosterChange | undefined => {
+        const pairsBefore = grantPairs(live.roles)
+        const claim = grantClaim ?? Symbol('setLive')
+        try {
+          return setLiveInner(saved, settle, own, card, baseline, grantEdits, hostItems)
+        } finally {
+          const pairsAfter = grantPairs(live.roles)
+          for (const k of pairsAfter) if (!pairsBefore.has(k)) grantOwners.set(k, claim)
+          for (const k of pairsBefore) if (!pairsAfter.has(k)) grantOwners.delete(k)
+        }
+      }
+      const setLiveInner = (saved: Project, settle: LiveSettle, own?: LiveOwnItems, card?: readonly Role[], baseline?: readonly Role[], grantEdits?: readonly GrantEdit[], hostItems?: HostItems): RunRosterChange | undefined => {
         let roster: RunRosterChange | undefined
         // Never the roles list as saved for an org chart with named roles: only the proposal's own roles move.
         const next: Project = { ...live }
@@ -2807,32 +2852,62 @@ export class RunManager {
         const takes = !!session?.hostConfigChanged && !bare
         const config: ConfigChange = {}
         const deferred: { name: string; reason: string }[] = []
+        const notes: { name: string; note: string }[] = []
         const partly: string[] = []
+        /** What this change touched, for the run.liveChange event. */
+        const touched = new Set<LiveChangeWhat>()
+        /** The grant pairs this change named for this run, for LiveRunChange.grants. */
+        const grantShown: { roleId: string; field: GrantEdit['field']; id: string; granted: boolean }[] = []
         // Review M2 / L5: what the change takes away (a removal, a turn-off, an ungrant) moves onto the run's state whatever
         // the session can do, so the gates refuse it at once; what it adds moves only when the session is told
         // (hostConfigChanged), and a rejection puts that part back (`undo`). Org chart edits keep their own route.
         let narrowed = false
         let widens = false
         let undo: (() => void) | undefined
+        /** Review L-c: this change's own claim on the grant pairs it adds (setLive grantOwners). */
+        const token = Symbol('hostChange')
+        /** setLive for a widening step: the pairs it adds are this change's. */
+        const claimed = <T,>(fn: () => T): T => {
+          grantClaim = token
+          try {
+            return fn()
+          } finally {
+            grantClaim = undefined
+          }
+        }
+        /** Only the pairs this change still owns go back (a later change's grant of the same pair stays). */
+        const stillOwned = (edits: readonly GrantEdit[]): GrantEdit[] => edits.filter((e) => grantOwners.get(`${e.roleId}|${e.field}|${e.id}`) === token)
+        // Review L-a (2026-11-19 follow-up 3a): once the change has widened the run, any synchronous throw before the
+        // session's answer starts puts the widening part back before it propagates (applyProjectChange answers 'next-run').
+        let answering = false
+        try {
         const mcpNames = new Set<string>()
         let label: string
         if (change.kind === 'mcp' || change.kind === 'skills') {
           label = change.label
           const field = change.kind === 'mcp' ? 'mcpServers' : 'skills'
-          type Item = { id: string; name: string; libraryId?: string }
+          type Item = { id: string; name: string; libraryId?: string; roles?: string[] }
           const runItems = (): Item[] | undefined => live[field] as Item[] | undefined
           const hostItems = (items: Item[] | undefined): HostItems => ({ field, items }) as HostItems
+          // McpServerSpec.roles names roles by slug: read both sides as this run names its roles (a renamed role keeps its
+          // old slug in the run), so a save keyed by the new slug maps to the run's role by id, never by slug text.
+          const runRoles = [...ctx.roles, ...live.roles.filter((r) => !ctx.roles.some((x) => x.id === r.id))]
+          const side = (p: Project): Item[] | undefined => (field === 'mcpServers' ? mcpRolesForRun(p.mcpServers, p.roles, runRoles) : (p.skills as Item[] | undefined))
           // Review M1: only what the action changed (stored before vs saved, limited to the fields and grants its input
-          // set) moves; a stored change of the same item the run never took stays out.
-          const edit = itemEditOf<Item>(runItems(), change.before[field] as Item[] | undefined, saved[field] as Item[] | undefined, { ids: change.ids, names: change.names }, change.fields)
+          // set) moves; a stored change of the same item the run never took stays out. Review L-f: a linked item's
+          // library-sourced fields are not compared unless the input named them.
+          const edit = itemEditOf<Item>(runItems(), side(change.before), side(saved), { ids: change.ids, names: change.names }, change.fields, field === 'mcpServers' ? MCP_LINK_OWN : SKILL_LINK_OWN)
           const grantEdits = itemGrantEditsOf<Item>(change.before.roles, saved.roles, field, [...((saved[field] as Item[] | undefined) ?? []), ...((change.before[field] as Item[] | undefined) ?? [])], change.grants)
+          if (edit.removed.length || edit.narrowedIds.length || edit.widenedIds.length || edit.added.length) touched.add(field)
           const removedIds = new Set(edit.removed.map((x) => x.id))
           const narrowGrants = [...ungrantsOf(live.roles, field, removedIds), ...grantEdits.filter((e) => !e.granted && !removedIds.has(e.id))]
           const wideGrants = grantEdits.filter((e) => e.granted)
           const nameOf = (id: string): string | undefined => [...(runItems() ?? []), ...(edit.widened ?? [])].find((x) => x.id === id)?.name
           if (!bare && (edit.removed.length || edit.narrowedIds.length || narrowGrants.length)) {
+            const applied = applyGrantEdits(live.roles, narrowGrants, () => true).applied
             setLive(saved, 'hostItems', undefined, undefined, undefined, narrowGrants, hostItems(edit.narrowed))
             narrowed = true
+            for (const e of applied) if (!removedIds.has(e.id)) grantShown.push(e)
             for (const id of edit.narrowedIds) {
               const n = nameOf(id)
               if (n) mcpNames.add(n)
@@ -2842,16 +2917,13 @@ export class RunManager {
           // Re-review L-b: only grants that can apply (to items the run will have) count as widening.
           const granted = applyGrantEdits(live.roles, wideGrants, (f, id) => f === field && widened.some((x) => x.id === id)).applied
           if (granted.length < wideGrants.length) partly.push('Some grants name a server or skill this run does not have; they apply from the next run.')
+          grantShown.push(...granted)
+          if (grantShown.length) touched.add('grants')
           widens = edit.widenedIds.length + edit.added.length + granted.length > 0
           if (takes && widens) {
             const prior = new Map((runItems() ?? []).map((x) => [x.id, x]))
-            setLive(saved, 'hostItems', undefined, undefined, undefined, granted, hostItems(edit.widened))
             const putIn = widened.filter((x) => edit.added.includes(x) || edit.widenedIds.includes(x.id))
-            for (const x of putIn) mcpNames.add(x.name)
-            for (const e of granted) {
-              const n = nameOf(e.id)
-              if (n) mcpNames.add(n)
-            }
+            // Defined before the move so a throw inside it can still be put back (3a).
             undo = () => {
               // Re-review L-a: field by field. An item this change added leaves by id; a field it redefined goes back only
               // while it still holds the value put in, so a later change of the same item (another field or value) stays.
@@ -2871,7 +2943,13 @@ export class RunManager {
                 }
                 return [out as unknown as Item]
               })
-              setLive(saved, 'hostItems', undefined, undefined, undefined, granted.map((e) => ({ ...e, granted: false })), hostItems(items))
+              setLive(saved, 'hostItems', undefined, undefined, undefined, stillOwned(granted).map((e) => ({ ...e, granted: false })), hostItems(items))
+            }
+            claimed(() => setLive(saved, 'hostItems', undefined, undefined, undefined, granted, hostItems(edit.widened)))
+            for (const x of putIn) mcpNames.add(x.name)
+            for (const e of granted) {
+              const n = nameOf(e.id)
+              if (n) mcpNames.add(n)
             }
           }
           if (change.kind === 'mcp') {
@@ -2883,17 +2961,25 @@ export class RunManager {
           } else if (narrowed || undo) config.skills = true
         } else {
           const after = change.kind === 'projectSave' ? change.request.roles : change.roles
-          const edit = roleEditOf(change.before.roles, after, saved.roles)
+          const fullEdit = roleEditOf(change.before.roles, after, saved.roles)
+          // Rename (follow-up item 2): a running role keeps its slug in this run (agents, definitions and spawn names are
+          // keyed by it); its name and every other changed field still apply. Only this host route does this; the run's
+          // own propose_org_change keeps deferring a slug change (runRoster.ts slugChange).
+          const { edit, kept } = keepRunSlugs(fullEdit, ctx.roles)
           // An org chart card never grants (its grants travel on their own cards); only the user's save names grants.
           const grants = change.kind === 'projectSave' ? grantEditsOf(change.before.roles, after, saved.roles) : []
-          const parts = [...(roleEditEmpty(edit) ? [] : ['the org chart']), ...(grants.length ? ['role grants'] : [])]
+          const parts = [...(roleEditEmpty(fullEdit) ? [] : ['the org chart']), ...(grants.length ? ['role grants'] : [])]
           if (!parts.length) return undefined
           label = parts.join(' and ')
+          if (!roleEditEmpty(fullEdit)) touched.add('orgChart')
+          if (grants.length) touched.add('grants')
           const has = (f: GrantEdit['field'], id: string): boolean => (live[f] ?? []).some((x) => x.id === id)
           const ungrants = grants.filter((e) => !e.granted)
+          grantShown.push(...applyGrantEdits(live.roles, grants.filter((e) => e.granted), has).applied)
           if (!bare && ungrants.length) {
             const g = applyGrantEdits(live.roles, ungrants, has)
             if (g.applied.length) {
+              grantShown.push(...g.applied)
               setLive(saved, 'grants', undefined, undefined, undefined, g.applied)
               narrowed = true
               if (g.applied.some((e) => e.field === 'mcpServers')) config.mcp = { upserted: [], removed: [] }
@@ -2901,7 +2987,7 @@ export class RunManager {
             }
           }
           if (!roleEditEmpty(edit)) widens = true
-          if (takes && !roleEditEmpty(edit)) {
+          if (takes && (!roleEditEmpty(edit) || kept.length)) {
             if (liveRosterApplies(summary, session, this.options)) {
               const baseline = runBaselineOf(ctx, active.retiredRoles ?? [])
               const inRun = new Set(baseline.map((r) => r.id))
@@ -2911,10 +2997,19 @@ export class RunManager {
               }
               // Own ids only for roles the run has or the edit adds: a saved-only role (a pull) never enters the run's view.
               const ids = [...[...edit.changed.keys(), ...edit.removed].filter((id) => inRun.has(id)), ...edit.added.map((r) => r.id)]
-              const roster = setLive(saved, 'orgChart', { ids, names: [] }, proposedFromEdit(baseline, edit), baseline)
+              const roster = roleEditEmpty(edit) ? undefined : setLive(saved, 'orgChart', { ids, names: [] }, proposedFromEdit(baseline, edit), baseline)
+              const deferredIds = new Set<string>()
               if (roster) {
+                for (const d of roster.deferred) deferredIds.add(d.id)
                 deferred.push(...roster.deferred.map((d) => ({ name: d.name, reason: d.reason })))
                 if (rosterChanged(roster)) config.roles = { added: [...roster.added], changed: [...roster.changed], removed: [...roster.removed] }
+              }
+              // The kept slug is said, not deferred: the name and the rest applied (or nothing else changed).
+              for (const k of kept) {
+                if (deferredIds.has(k.id)) continue
+                const name = ctx.roles.find((r) => r.id === k.id)?.name ?? k.newName ?? k.runSlug
+                const keeps = `This run keeps calling it ${logText(k.runSlug)} until the next run.`
+                notes.push({ name: logText(name), note: k.newName ? `Renamed to ${logText(k.newName)}. ${keeps}` : keeps })
               }
             } else partly.push('This run takes org chart changes from the next run.')
           }
@@ -2923,13 +3018,14 @@ export class RunManager {
           if (takes && wideGrants.length) {
             const g = applyGrantEdits(live.roles, wideGrants, has)
             if (g.applied.length) {
-              setLive(saved, 'grants', undefined, undefined, undefined, g.applied)
+              // Defined before the move so a throw inside it can still be put back (3a); only pairs it still owns (L-c).
+              const back = g.applied.map((e) => ({ ...e, granted: false }))
+              undo = () => void setLive(saved, 'grants', undefined, undefined, undefined, stillOwned(back))
+              claimed(() => setLive(saved, 'grants', undefined, undefined, undefined, g.applied))
               // L3: only granted servers are named; an ungrant (above) sends an empty list (the session re-reads ctx.roles).
               const servers = [...new Set(g.applied.filter((e) => e.field === 'mcpServers').map((e) => (live.mcpServers ?? []).find((s) => s.id === e.id)?.name).filter((n): n is string => !!n))]
               if (servers.length) config.mcp = { upserted: servers, removed: [] }
               if (g.applied.some((e) => e.field === 'skills')) config.skills = true
-              const back = g.applied.map((e) => ({ ...e, granted: false }))
-              undo = () => void setLive(saved, 'grants', undefined, undefined, undefined, back)
             }
             if (g.skipped.length) partly.push('Some grants name a server, skill or role this run does not have; they apply from the next run.')
           }
@@ -2939,11 +3035,38 @@ export class RunManager {
         const lead = source === 'user' ? `You changed ${what}` : `You approved ${what} in another session`
         const title = logText(summary.title || excerpt(summary.prompt, 80) || summary.id)
         const waiting = deferred.length ? ` Waiting for the next run: ${deferred.map((d) => logText(d.name)).join(', ')}.` : ''
+        const noted = notes.length ? ` ${notes.map((n) => n.note).join(' ')}` : ''
         const part = partly.length ? ` ${partly.join(' ')}` : ''
-        const base = { runId: summary.id, title, ...(deferred.length ? { deferred } : {}) }
+        // Display names for the grants this change named (bounded like every name the renderer shows).
+        const roleName = (id: string): string => logText(ctx.roles.find((r) => r.id === id)?.name ?? live.roles.find((r) => r.id === id)?.name ?? saved.roles.find((r) => r.id === id)?.name ?? id)
+        const itemName = (f: GrantEdit['field'], id: string): string =>
+          logText(((live[f] ?? []) as { id: string; name: string }[]).find((x) => x.id === id)?.name ?? ((saved[f] ?? []) as { id: string; name: string }[]).find((x) => x.id === id)?.name ?? id)
+        const shownKeys = new Set<string>()
+        const grantList = grantShown
+          .filter((e) => {
+            const k = `${e.roleId}|${e.field}|${e.id}|${e.granted}`
+            if (shownKeys.has(k)) return false
+            shownKeys.add(k)
+            return true
+          })
+          .slice(0, LIVE_CHANGE_LIST_MAX)
+          .map((e) => ({ role: roleName(e.roleId), item: itemName(e.field, e.id), kind: e.field === 'mcpServers' ? ('mcpServer' as const) : ('skill' as const), granted: e.granted }))
+        const base = {
+          runId: summary.id,
+          title,
+          ...(deferred.length ? { deferred: deferred.slice(0, LIVE_CHANGE_LIST_MAX).map((d) => ({ name: logText(d.name), reason: d.reason })) } : {}),
+          ...(notes.length ? { notes: notes.slice(0, LIVE_CHANGE_LIST_MAX) } : {})
+        }
+        const whatList: LiveChangeWhat[] = touched.size ? [...touched] : [change.kind === 'mcp' ? 'mcpServers' : change.kind === 'skills' ? 'skills' : 'orgChart']
+        /** Follow-up item 1: the host-only run.liveChange event, once per answer (a 'pending' one is followed by the final). */
+        const publish = (c: LiveRunChange): LiveRunChange => {
+          const out: LiveRunChange = grantList.length ? { ...c, grants: grantList } : c
+          this.broadcast({ type: 'run.liveChange', runId: summary.id, projectId: summary.projectId, source, what: whatList, change: structuredClone(out) })
+          return out
+        }
         const nextRun = (reason: string): LiveRunChange => {
           emit({ type: 'log', runId: summary.id, level: 'info', message: `${lead}; this run uses it from the next run: ${reason}${waiting}` })
-          return { ...base, availability: 'next-run', reason }
+          return publish({ ...base, availability: 'next-run', reason })
         }
         // Re-review L-e: the run's configuration and its gates hold it now; a session without a live gate for it (Codex MCP)
         // may keep an attached server until it restarts, so the copy says what is true of the run, not of the provider.
@@ -2954,22 +3077,26 @@ export class RunManager {
           if (!widens) {
             if (!narrowed) return partly.length ? nextRun(partly[0]) : undefined
             emit({ type: 'log', runId: summary.id, level: 'info', message: `${lead}; this run uses it now.${waiting}` })
-            return { ...base, availability: 'now' }
+            return publish({ ...base, availability: 'now' })
           }
           const why = session ? "This run's session cannot take changes while it is live." : 'The run is still starting.'
           return nextRun(`${why}${tookAway}${narrowed ? ' The rest applies from the next run.' : ''}`)
         }
         if (!config.mcp && !config.skills && !config.roles) {
-          if (deferred.length || partly.length) return nextRun(partly[0] ?? deferred[0].reason)
+          if (deferred.length || partly.length || notes.length) return nextRun(partly[0] ?? deferred[0]?.reason ?? notes[0].note)
           return undefined
         }
         // A held or usage-limited run is never woken: the session keeps its notice for the user's next message.
         const held = active.held || active.limitHold ? ' The orchestrator hears about it with your next message.' : ''
         let settled = false
+        // Called here, synchronously (3a): a throw before the session's answer starts is caught below and the widening
+        // part is put back before it propagates.
+        const call = session!.hostConfigChanged!(config)
+        answering = true
         const answer = (async (): Promise<LiveRunChange> => {
           let r: ConfigChangeResult
           try {
-            r = await session!.hostConfigChanged!(config)
+            r = await call
           } catch (e) {
             // M2: the widening part goes back (the gates must not allow what the session never took); what was taken away
             // stays taken away. Org chart roles already moved (rosterApplied marked them) and stay.
@@ -2983,13 +3110,13 @@ export class RunManager {
             const rest = undo ? (narrowed ? `${tookAway} What you added or granted applies from the next run.` : ' What you added or granted applies from the next run.') : tookAway
             const reason = `The session could not take it (${logText((e as Error)?.message ?? String(e))}).${rest}${roles}`
             emit({ type: 'log', runId: summary.id, level: 'warn', message: `${lead}; ${undo ? 'part of it applies from the next run' : 'it is only partly in effect'}: ${reason}${waiting}` })
-            return { ...base, availability: undo ? 'next-run' : 'now', reason }
+            return publish({ ...base, availability: undo ? 'next-run' : 'now', reason })
           } finally {
             settled = true
           }
           const when = r.availability === 'now' ? 'this run uses it now' : 'this run uses it once the agents are idle'
-          emit({ type: 'log', runId: summary.id, level: 'info', message: `${lead}; ${when}.${part}${waiting}${held}` })
-          return { ...base, availability: r.availability === 'now' ? 'now' : 'after-idle', ...(partly.length ? { reason: partly.join(' ') } : {}) }
+          emit({ type: 'log', runId: summary.id, level: 'info', message: `${lead}; ${when}.${noted}${part}${waiting}${held}` })
+          return publish({ ...base, availability: r.availability === 'now' ? 'now' : 'after-idle', ...(partly.length ? { reason: partly.join(' ') } : {}) })
         })()
         let timer: ReturnType<typeof setTimeout> | undefined
         const late = new Promise<LiveRunChange>((resolve) => {
@@ -2997,7 +3124,7 @@ export class RunManager {
             if (settled) return
             // L7: no answer yet. Nothing is put back: the change is still being applied, and the log says when it is in place.
             emit({ type: 'log', runId: summary.id, level: 'info', message: `${lead}; OrgAI is still applying it to this run. This log says when it is in place.` })
-            resolve({ ...base, availability: 'pending' })
+            resolve(publish({ ...base, availability: 'pending' }))
           }, this.options.liveHostChangeWaitMs ?? LIVE_RUN_CHANGE_WAIT_MS)
           timer.unref?.()
         })
@@ -3005,6 +3132,16 @@ export class RunManager {
           return await Promise.race([answer, late])
         } finally {
           if (timer) clearTimeout(timer)
+        }
+        } catch (e) {
+          if (!answering && undo) {
+            try {
+              undo()
+            } catch (u) {
+              log.warn(`Run ${summary.id}: could not put back a host change after an error: ${logText((u as Error)?.message ?? String(u))}`)
+            }
+          }
+          throw e
         }
       }
       if (gate && active.ledger) {
@@ -4855,18 +4992,26 @@ export class RunManager {
         const reason = 'The run was still starting when the change was saved.'
         const title = logText(s.title || excerpt(s.prompt, 80) || s.id)
         a.emit({ type: 'log', runId: s.id, level: 'info', message: `A project change was saved while this run was starting; it applies from the next run.` })
-        out.push(Promise.resolve({ runId: s.id, title, availability: 'next-run', reason }))
+        out.push(Promise.resolve(this.publishLiveChange(s, opts.source ?? 'user', coarseWhat(change), { runId: s.id, title, availability: 'next-run', reason })))
         continue
       }
       out.push(
         a.hostApply(saved, change, opts.source ?? 'user').catch((e: unknown) => {
           log.warn(`Run ${s.id}: a host change could not be applied: ${logText((e as Error)?.message ?? String(e))}`)
-          return { runId: s.id, title: logText(s.title || s.id), availability: 'next-run' as const, reason: 'OrgAI could not apply it to this run.' }
+          a.emit({ type: 'log', runId: s.id, level: 'warn', message: 'OrgAI could not apply a project change to this run; it applies from the next run.' })
+          const res: LiveRunChange = { runId: s.id, title: logText(s.title || s.id), availability: 'next-run', reason: 'OrgAI could not apply it to this run.' }
+          return this.publishLiveChange(s, opts.source ?? 'user', coarseWhat(change), res)
         })
       )
     }
     const results = await Promise.all(out)
     return results.filter((r): r is LiveRunChange => !!r)
+  }
+
+  /** The host-only run.liveChange event for an answer applyProjectChange made itself (no applier, or it threw). */
+  private publishLiveChange(s: RunSummary, source: 'user' | 'card', what: LiveChangeWhat[], change: LiveRunChange): LiveRunChange {
+    this.broadcast({ type: 'run.liveChange', runId: s.id, projectId: s.projectId, source, what, change: structuredClone(change) })
+    return change
   }
 
   /**
