@@ -2,10 +2,11 @@
 // docs/design/factory-floor.md sections 4.6 and 9.1, the material roles, the anchors the engine reads and the shapes.
 import { Box3, Color, MeshBasicMaterial, MeshStandardMaterial, type BufferGeometry } from 'three'
 import { describe, expect, it } from 'vitest'
-import { FACTORY_PALETTE } from '../../../../lib/factory/palette'
+import { FACTORY_PALETTE, contrastRatio, relativeLuminance } from '../../../../lib/factory/palette'
 import { triangles } from './geo'
 import { factoryKits, KEY_DIRECTION, MATERIAL_ROLES } from './index'
 import { boardLampPosition } from './board'
+import { CRATE_PITCH } from './types'
 import type { FactoryTokenColours, FloorRect, LodBand, ObjectKit } from './types'
 
 const TOKENS: FactoryTokenColours = { success: '#22c58b', warning: '#f5a524', danger: '#ff6b6b', accentText: '#a592ff' }
@@ -89,7 +90,7 @@ describe('material roles', () => {
 
   it('creates one shared material per role, flat or smooth, with metalness 0 to 0.2', () => {
     const m = factoryKits.createMaterials('dark', TOKENS)
-    expect(MATERIAL_ROLES.length).toBeLessThanOrEqual(32)
+    expect(MATERIAL_ROLES.length).toBeLessThanOrEqual(36)
     for (const role of MATERIAL_ROLES) {
       const mat = m.get(role)
       expect(m.get(role)).toBe(mat)
@@ -112,7 +113,7 @@ describe('material roles', () => {
     const lamp = m.get('lamp')
     expect(lamp).toBeInstanceOf(MeshBasicMaterial)
     expect((lamp as MeshBasicMaterial).color.getHexString()).toBe('ffffff')
-    for (const kit of [stack, board]) {
+    for (const kit of [stack, factoryKits.boardLamp!(), factoryKits.crate!()]) {
       for (const p of kit.parts.filter((x) => x.role === 'lamp')) expect(p.instanceColor, p.key).toBe(true)
     }
     for (const kit of all) for (const p of kit.parts) if (p.instanceColor) expect(p.role).toBe('lamp')
@@ -261,7 +262,7 @@ describe('frame budget at 40 agents, near zoom (section 9.1)', () => {
     // Printed so the report can quote them; not an assertion.
     const row = (k: ObjectKit): string => `${k.name}: near ${tris(k, 'near')}, mid ${tris(k, 'mid')}, far ${tris(k, 'far')}, parts ${k.parts.length}`
     // eslint-disable-next-line no-console
-    console.log([...all.map(row), `frame at 40 agents near: ${frameTris} triangles`].join('\n'))
+    console.log([...all.map(row), ...stateKits.map(row), `frame at 40 agents near: ${frameTris} triangles`].join('\n'))
   })
 })
 
@@ -346,14 +347,16 @@ describe('shapes', () => {
     expect(new Set(sig).size).toBe(4)
   })
 
-  it('a station stays inside its 3 m plate plus the belt strip to the south', () => {
+  it('a station stays inside its 3 m plate plus the belt strip to the south (the lead plaque reaches into the aisle)', () => {
     for (const kit of [bench, lead]) {
       const b = kitBounds(kit, 'near')
       expect(b.min.x).toBeGreaterThanOrEqual(-1.5 - 1e-6)
       expect(b.max.x).toBeLessThanOrEqual(1.5 + 1e-6)
       expect(b.min.z).toBeGreaterThanOrEqual(-1.5 - 1e-6)
-      expect(b.max.z).toBeLessThanOrEqual(2.5 + 1e-6)
     }
+    expect(kitBounds(bench, 'near').max.z).toBeLessThanOrEqual(2.5 + 1e-6)
+    // The lead's line plate stays out of the route paint (local z 4.0 +- 0.125) and the inbox.
+    expect(kitBounds(lead, 'near').max.z).toBeLessThan(3.75)
   })
 
   it('the booth fills 6 x 4 m from the deck top, the dock 6 x 4 m', () => {
@@ -397,5 +400,359 @@ describe('shapes', () => {
       expect(uv.getX(i)).toBeCloseTo(pos.getX(i) / 4)
       expect(uv.getY(i)).toBeCloseTo(-pos.getZ(i) / 4)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Slice 3: state props, station anchors, the conveyor, the lead's silhouette, the far robot.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const shutter = factoryKits.shutter!()
+const barrier = factoryKits.barrier!()
+const fence = factoryKits.fence!()
+const crate = factoryKits.crate!()
+const holdPlain = factoryKits.holdPad!(false)
+const holdStriped = factoryKits.holdPad!(true)
+const boardLamp = factoryKits.boardLamp!()
+const stateKits: ObjectKit[] = [shutter, barrier, fence, crate, holdPlain, holdStriped, boardLamp]
+
+/** Axis-aligned XZ rectangle. */
+interface Rect {
+  x0: number
+  x1: number
+  z0: number
+  z1: number
+}
+const rectAt = (cx: number, cz: number, w: number, d: number): Rect => ({ x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2 })
+const overlaps = (a: Rect, b: Rect): boolean => a.x0 < b.x1 - 1e-6 && b.x0 < a.x1 - 1e-6 && a.z0 < b.z1 - 1e-6 && b.z0 < a.z1 - 1e-6
+const within = (a: Rect, o: Rect): boolean => a.x0 >= o.x0 - 1e-6 && a.x1 <= o.x1 + 1e-6 && a.z0 >= o.z0 - 1e-6 && a.z1 <= o.z1 + 1e-6
+/** Rect of a kit part's geometry placed at an anchor (no rotation). */
+function partRect(kit: ObjectKit, key: string, at = { x: 0, z: 0 }): Rect {
+  const b = bounds(kit.parts.find((p) => p.key === key)!.geometry)
+  return { x0: b.min.x + at.x, x1: b.max.x + at.x, z0: b.min.z + at.z, z1: b.max.z + at.z }
+}
+// Chassis of the robot (0.76 x 0.66 m) is the footprint rule; arms in a pose are the engine's business.
+const ROBOT_FOOT = { w: 0.76, d: 0.66 }
+const CRATE_FOOT = { w: 0.7, d: 0.56 }
+const GAP: Rect = { x0: 1.5, x1: 2.5, z0: -1.5, z1: 2.5 }
+const PLATE_RECT: Rect = { x0: -1.5, x1: 1.5, z0: -1.5, z1: 1.5 }
+/** The conveyor: frames to x 0.1 +- 0.455, belt z 0.4 to 2.1, the bin to 2.5. */
+const BELT_RECT: Rect = { x0: -0.36, x1: 0.56, z0: 0.4, z1: 2.5 }
+const anchorsOf = (k: ObjectKit): Record<string, { x: number; y: number; z: number; rotY: number }> => k.anchors!
+const foot = (k: ObjectKit, name: string, f: { w: number; d: number }): Rect => rectAt(anchorsOf(k)[name].x, anchorsOf(k)[name].z, f.w, f.d)
+
+describe('slice 3 state kits', () => {
+  it('every optional kit builds and is exported on factoryKits', () => {
+    for (const k of ['shutter', 'barrier', 'fence', 'crate', 'holdPad', 'boardLamp', 'boardLampColour'] as const) expect(factoryKits[k], k).toBeTypeOf('function')
+  })
+
+  it('has unique kit names and part keys, finite geometry, and roles that resolve', () => {
+    expect(new Set([...all, ...stateKits].map((k) => k.name)).size).toBe(all.length + stateKits.length)
+    for (const theme of ['dark', 'light'] as const) {
+      const m = factoryKits.createMaterials(theme, TOKENS)
+      for (const kit of stateKits) {
+        const keys = kit.parts.map((p) => p.key)
+        expect(new Set(keys).size, kit.name).toBe(keys.length)
+        for (const p of kit.parts) {
+          expect(() => m.get(p.role), `${kit.name}/${p.key}`).not.toThrow()
+          const pos = p.geometry.getAttribute('position')
+          expect(pos.count % 3, `${kit.name}/${p.key}`).toBe(0)
+          expect(p.geometry.getAttribute('normal')).toBeDefined()
+          expect(p.geometry.getAttribute('uv')).toBeDefined()
+          for (let i = 0; i < pos.array.length; i++) if (!Number.isFinite(pos.array[i])) throw new Error(`${kit.name}/${p.key}: non-finite position`)
+        }
+      }
+      m.dispose()
+    }
+  })
+
+  it('triangle budgets: shutter 150, barrier 120, fence 300, crate 60, boardLamp 60, hold pads 40', () => {
+    expect(tris(shutter, 'near')).toBeLessThanOrEqual(150)
+    expect(tris(barrier, 'near')).toBeLessThanOrEqual(120)
+    expect(tris(fence, 'near')).toBeLessThanOrEqual(300)
+    expect(tris(crate, 'near')).toBeLessThanOrEqual(60)
+    expect(tris(boardLamp, 'near')).toBeLessThanOrEqual(60)
+    expect(tris(holdPlain, 'near')).toBeLessThanOrEqual(40)
+    expect(tris(holdStriped, 'near')).toBeLessThanOrEqual(40)
+    for (const k of stateKits) for (const band of BANDS) expect(tris(k, band), `${k.name} ${band}`).toBeGreaterThan(0)
+  })
+
+  it('shutter, barrier and fence cast shadows; the crate and pads use blob or none', () => {
+    for (const k of [shutter, barrier, fence]) expect(k.parts.some((p) => p.castShadow), k.name).toBe(true)
+    for (const k of [crate, holdPlain, holdStriped, boardLamp]) for (const p of k.parts) expect(p.castShadow, `${k.name}/${p.key}`).toBe(false)
+  })
+
+  it('crate: origin at the bottom centre, a lamp part with instanceColor, off-lamp readable', () => {
+    const b = kitBounds(crate, 'near')
+    expect(b.min.y).toBeCloseTo(0, 5)
+    expect(b.min.x).toBeCloseTo(-b.max.x, 2)
+    expect(b.min.z).toBeCloseTo(-b.max.z, 2)
+    expect(b.max.x - b.min.x).toBeLessThanOrEqual(0.8 - 0.02)
+    const lamp = crate.parts.find((p) => p.key === 'crate.lamp')!
+    expect(lamp.instanceColor).toBe(true)
+    expect(lamp.role).toBe('lamp')
+    expect(bounds(lamp.geometry).min.y).toBeGreaterThanOrEqual(0.4)
+    expect(crate.parts.filter((p) => p.instanceColor).length).toBe(1)
+  })
+
+  it('boardLamp is one lens part with instanceColor, lying on the panel normal at its anchor', () => {
+    expect(boardLamp.parts.length).toBe(1)
+    expect(boardLamp.parts[0]).toMatchObject({ key: 'boardLamp.lens', role: 'lamp', instanceColor: true })
+    const b = bounds(boardLamp.parts[0].geometry)
+    // Centred on the anchor, within 0.25 m of it in every direction.
+    expect(Math.abs(b.min.x + b.max.x)).toBeLessThan(1e-3)
+    expect(b.max.x).toBeLessThan(0.25)
+    // The lens axis is the panel normal (0, 0.52, 0.85): its depth runs mostly along z and y, not x.
+    expect(b.max.y).toBeLessThan(0.25)
+    expect(b.max.z).toBeLessThan(0.25)
+  })
+
+  it('board() no longer carries a merged lamp part and keeps lamp.0 to lamp.11 with rotY 0', () => {
+    expect(board.parts.map((p) => p.key).sort()).toEqual(['board.frame', 'board.panel'])
+    for (let i = 0; i < 12; i++) {
+      const a = board.anchors![`lamp.${i}`]
+      expect(a, `lamp.${i}`).toBeDefined()
+      expect(a.rotY).toBe(0)
+      const p = boardLampPosition(i)
+      expect(a).toMatchObject({ x: p.x, y: p.y, z: p.z })
+    }
+  })
+
+  it('hold pads: plain has a paint outline, striped has hazard stripes as geometry', () => {
+    expect(holdPlain.parts.map((p) => p.key).sort()).toEqual(['hold.edge', 'hold.pad'])
+    expect(holdStriped.parts.map((p) => p.key).sort()).toEqual(['hold.pad', 'hold.stripes'])
+    expect(holdStriped.parts.find((p) => p.key === 'hold.stripes')!.role).toBe('hazard')
+    for (const k of [holdPlain, holdStriped]) {
+      const b = kitBounds(k, 'near')
+      expect(b.max.x - b.min.x).toBeLessThanOrEqual(1.0 - 0.05)
+      expect(b.max.z - b.min.z).toBeLessThanOrEqual(1.0 - 0.05)
+      expect(b.min.y).toBeGreaterThanOrEqual(-1e-6)
+    }
+  })
+
+  it('barrier: stripes are hazard geometry, the arm spans the plate front over the belt', () => {
+    expect(barrier.parts.find((p) => p.key === 'barrier.stripes')!.role).toBe('hazard')
+    const b = kitBounds(barrier, 'near')
+    expect(b.min.x).toBeGreaterThanOrEqual(-1.6)
+    expect(b.max.x).toBeLessThanOrEqual(1.6)
+    // The arm clears the belt frames (top 0.34 m) and the posts do not block the gap east of the plate.
+    expect(bounds(barrier.parts[0].geometry).max.y).toBeGreaterThan(0.6)
+    const stripes = bounds(barrier.parts.find((p) => p.key === 'barrier.stripes')!.geometry)
+    expect(stripes.min.y).toBeGreaterThanOrEqual(0.5)
+  })
+
+  it('shutter covers a bench machine of every variant and the lead desk with its header, and clears the console and stack light', () => {
+    const s = kitBounds(shutter, 'near')
+    const a = anchorsOf(bench).shutter
+    const world = { x0: s.min.x + a.x, x1: s.max.x + a.x, z0: s.min.z + a.z, z1: s.max.z + a.z }
+    const m = anchorsOf(bench).machine
+    for (const mk of machines) {
+      const mb = kitBounds(mk, 'near')
+      expect(within({ x0: mb.min.x + m.x, x1: mb.max.x + m.x, z0: mb.min.z + m.z, z1: mb.max.z + m.z }, world), mk.name).toBe(true)
+      expect(mb.max.y + m.y).toBeLessThanOrEqual(a.y + s.max.y + 1e-6)
+    }
+    // The lead desk and the header board (the 'station.rim' part carries the header, the plate rim included).
+    const header = bounds(lead.parts.find((p) => p.key === 'station.rim')!.geometry)
+    expect(header.max.y).toBeLessThanOrEqual(a.y + s.max.y)
+    // Not over the console (x -1.45..-0.75) nor the stack light (base reaches x 0.96).
+    expect(world.x0).toBeGreaterThanOrEqual(-0.75 - 1e-6)
+    expect(world.x1).toBeLessThanOrEqual(anchorsOf(bench).stackLight.x - 0.24 + 1e-6)
+    expect(world.z1).toBeLessThan(BELT_RECT.z0)
+    expect(s.min.y).toBeGreaterThanOrEqual(-1e-6)
+  })
+
+  it('fence: west, north and east on the plate edge, front open, clear of the stack light', () => {
+    const b = kitBounds(fence, 'near')
+    expect(b.min.x).toBeGreaterThanOrEqual(-1.6)
+    expect(b.max.x).toBeLessThanOrEqual(1.6)
+    expect(b.min.z).toBeGreaterThanOrEqual(-1.6)
+    expect(b.max.z).toBeLessThanOrEqual(1.5 + 1e-6)
+    expect(b.min.y).toBeGreaterThanOrEqual(0.1 - 1e-6)
+    const pos = fence.parts[0].geometry.getAttribute('position')
+    // Every north-edge vertex is on the plate's north side; none sits on the front (z > 1.5) or in the stack light's footprint.
+    let north = 0
+    for (let i = 0; i < pos.count; i++) {
+      if (pos.getZ(i) < -1.4) north++
+      if (Math.abs(pos.getZ(i)) < 0.25 && pos.getX(i) > 0) expect(pos.getX(i), 'stack light clearance').toBeGreaterThanOrEqual(1.2 + 0.19)
+    }
+    expect(north).toBeGreaterThan(20)
+  })
+})
+
+describe('slice 3 station anchors', () => {
+  const NAMES = ['shutter', 'barrier', 'pad', 'hold', 'inbox', 'robot.machine', 'robot.rest', 'robot.dock']
+
+  it('lead and bench name every slice 3 anchor, finite, with robot.dispatch on the lead only', () => {
+    for (const kit of [bench, lead]) {
+      for (const n of NAMES) {
+        const a = anchorsOf(kit)[n]
+        expect(a, `${kit.name} ${n}`).toBeDefined()
+        for (const v of [a.x, a.y, a.z, a.rotY]) expect(Number.isFinite(v)).toBe(true)
+      }
+    }
+    expect(anchorsOf(lead)['robot.dispatch']).toBeDefined()
+    expect(anchorsOf(bench)['robot.dispatch']).toBeUndefined()
+  })
+
+  it('the booth names inbox, pad, hold and its two robot spots; the old ones stay', () => {
+    for (const n of ['inbox', 'pad', 'hold', 'robot.rest', 'robot.dock', 'robot', 'stackLight', 'nameplate']) expect(anchorsOf(booth)[n], n).toBeDefined()
+  })
+
+  it('robots face the camera at rest and dock, and face their work at the machine and the desk', () => {
+    expect(anchorsOf(bench)['robot.rest'].rotY).toBe(0)
+    expect(anchorsOf(bench)['robot.dock'].rotY).toBe(0)
+    // North (rotY pi) or north-east: the forward vector (sin, cos) has a negative z.
+    expect(Math.cos(anchorsOf(bench)['robot.machine'].rotY)).toBeLessThan(0)
+    expect(Math.cos(anchorsOf(lead)['robot.dispatch'].rotY)).toBeLessThan(0)
+  })
+
+  for (const kit of [bench, lead]) {
+    it(`${kit.name}: nothing overlaps the station's own parts, the neighbouring slot or the route paint`, () => {
+      const rest = foot(kit, 'robot.rest', ROBOT_FOOT)
+      const dock = foot(kit, 'robot.dock', ROBOT_FOOT)
+      const pad = foot(kit, 'pad', CRATE_FOOT)
+      const hold = rectAt(anchorsOf(kit).hold.x, anchorsOf(kit).hold.z, 0.9, 0.9)
+      const machineSpot = foot(kit, 'robot.machine', { w: 0.7, d: 0.7 })
+      // Inside the 1 m gap (dock, hold) or the station's own belt strip (rest, pad), never on the belt or in the next slot.
+      expect(within(dock, GAP), 'dock in the gap').toBe(true)
+      expect(within(hold, GAP), 'hold in the gap').toBe(true)
+      expect(overlaps(dock, hold), 'dock and hold apart').toBe(false)
+      for (const r of [rest, pad]) {
+        expect(r.z0, 'belt strip').toBeGreaterThanOrEqual(1.5 - 1e-6)
+        expect(r.z1).toBeLessThanOrEqual(2.5 + 1e-6)
+        expect(overlaps(r, BELT_RECT)).toBe(false)
+      }
+      expect(overlaps(rest, pad)).toBe(false)
+      expect(overlaps(machineSpot, BELT_RECT), 'machine spot off the belt').toBe(false)
+      // Floor-level stand-ins stay off the plate edge (plate is x, z -1.5..1.5) except through the gap.
+      expect(overlaps(rest, PLATE_RECT)).toBe(false)
+      expect(overlaps(pad, PLATE_RECT)).toBe(false)
+      // The barrier arm (z 1.57..1.67) and its feet (to x 1.55) stay out of the idle robot, the pad and the dock robot.
+      const arm: Rect = { x0: -1.55, x1: 1.55, z0: 1.55, z1: 1.69 }
+      for (const r of [rest, pad]) expect(overlaps(r, arm)).toBe(false)
+      expect(overlaps(dock, { x0: 1.35, x1: 1.55, z0: 1.48, z1: 1.76 })).toBe(false)
+      // Inbox crates: 2 x 2 at CRATE_PITCH east then south, below the belt strip, clear of the paint (z 3.75 to 4.25, x up to 0.125).
+      const ia = anchorsOf(kit).inbox
+      for (let i = 0; i < 4; i++) {
+        const c = rectAt(ia.x + (i % 2) * CRATE_PITCH, ia.z + Math.floor(i / 2) * CRATE_PITCH, CRATE_FOOT.w, CRATE_FOOT.d)
+        expect(c.z0, `inbox ${i} below the belt strip`).toBeGreaterThanOrEqual(2.5)
+        expect(c.x0, `inbox ${i} east of the route paint`).toBeGreaterThan(0.25)
+        expect(c.x1, `inbox ${i} inside the gap east`).toBeLessThanOrEqual(2.5)
+        expect(overlaps(c, rest)).toBe(false)
+        expect(overlaps(c, pad)).toBe(false)
+      }
+    })
+  }
+
+  it('the lead plaque does not overlap the inbox crates or the route paint; the rim sits on the plate', () => {
+    const plaque = partRect(lead, 'station.plaque')
+    const ia = anchorsOf(lead).inbox
+    for (let i = 0; i < 4; i++) expect(overlaps(plaque, rectAt(ia.x + (i % 2) * CRATE_PITCH, ia.z + Math.floor(i / 2) * CRATE_PITCH, 0.7, 0.56))).toBe(false)
+    expect(plaque.z0).toBeGreaterThanOrEqual(2.5)
+    expect(plaque.z1).toBeLessThan(3.75)
+    expect(plaque.x0).toBeGreaterThanOrEqual(-1.5)
+    expect(overlaps(plaque, foot(lead, 'robot.rest', ROBOT_FOOT))).toBe(false)
+    const rim = bounds(lead.parts.find((p) => p.key === 'station.rim')!.geometry)
+    expect(rim.min.x).toBeGreaterThanOrEqual(-1.5)
+    expect(rim.max.x).toBeLessThanOrEqual(1.5)
+  })
+
+  it('booth crates and pads stay on the deck between the booth and the dock, off the stack light', () => {
+    const stackRect = rectAt(anchorsOf(booth).stackLight.x, anchorsOf(booth).stackLight.z, 0.5, 0.5)
+    const ia = anchorsOf(booth).inbox
+    const rects: Rect[] = [
+      foot(booth, 'pad', CRATE_FOOT),
+      rectAt(anchorsOf(booth).hold.x, anchorsOf(booth).hold.z, 0.9, 0.9)
+    ]
+    for (let i = 0; i < 4; i++) rects.push(rectAt(ia.x + (i % 2) * CRATE_PITCH, ia.z + Math.floor(i / 2) * CRATE_PITCH, 0.7, 0.56))
+    for (const [i, r] of rects.entries()) {
+      expect(r.x0, `rect ${i} east of the booth`).toBeGreaterThanOrEqual(3.0)
+      expect(r.x1, `rect ${i} west of the dock (x 10 in the booth frame)`).toBeLessThanOrEqual(6.9)
+      expect(r.z0, `rect ${i} on the deck`).toBeGreaterThanOrEqual(-2)
+      expect(r.z1).toBeLessThanOrEqual(2.9)
+      expect(overlaps(r, stackRect), `rect ${i} stack light`).toBe(false)
+      for (let j = i + 1; j < rects.length; j++) expect(overlaps(r, rects[j]), `rect ${i} vs ${j}`).toBe(false)
+    }
+    // Rest and dock are inside the booth (x -3..3, z -2..2).
+    for (const n of ['robot.rest', 'robot.dock']) {
+      const r = foot(booth, n, ROBOT_FOOT)
+      expect(within(r, { x0: -2.8, x1: 2.8, z0: -2, z1: 1.8 }), n).toBe(true)
+    }
+  })
+})
+
+describe('slice 3 conveyor and lead silhouette', () => {
+  it('the conveyor has side frames in the console role and no evenly spaced rollers: only two end drums', () => {
+    const drums = bench.parts.find((p) => p.key === 'belt.rollers')!
+    // Two ten-sided drums: 80 triangles; the slice 2 rollers were a dozen cylinders.
+    expect(triangles(drums.geometry)).toBeLessThanOrEqual(100)
+    const d = bounds(drums.geometry)
+    // Both drums lie across the belt (long in x, short in y and z) and sit at its two ends.
+    expect(d.max.x - d.min.x).toBeGreaterThan(0.7)
+    expect(d.max.y - d.min.y).toBeLessThan(0.2)
+    expect(d.max.z - d.min.z).toBeGreaterThan(1.5)
+    const belt = bounds(bench.parts.find((p) => p.key === 'belt.body')!.geometry)
+    // One continuous belt slab: wide and long, thin.
+    expect(belt.max.x - belt.min.x).toBeGreaterThan(0.7)
+    expect(belt.max.z - belt.min.z).toBeGreaterThan(1.4)
+  })
+
+  it('the lead has a yellow rim, a header board and a line plate the bench does not', () => {
+    const keys = (k: ObjectKit): string[] => k.parts.map((p) => p.key)
+    for (const key of ['station.rim', 'station.plaque', 'station.plaque.mark']) {
+      expect(keys(lead), key).toContain(key)
+      expect(keys(bench), key).not.toContain(key)
+    }
+    expect(lead.parts.find((p) => p.key === 'station.rim')!.role).toBe('hazard')
+    // Visible in every LOD: far still shows the rim and the plate.
+    for (const key of ['station.rim', 'station.plaque']) expect(lead.parts.find((p) => p.key === key)!.lods).toContain('far')
+  })
+
+  it('the lead is taller than a bench body line at its back (header board) and wider in yellow', () => {
+    const rim = bounds(lead.parts.find((p) => p.key === 'station.rim')!.geometry)
+    expect(rim.max.y).toBeGreaterThan(1.7)
+    expect(tris(lead, 'near')).toBeGreaterThan(tris(bench, 'near'))
+  })
+})
+
+describe('boardLampColour', () => {
+  const LIGHT_TOKENS: FactoryTokenColours = { success: '#0f8a56', warning: '#b45f06', danger: '#c62828', accentText: '#4f33d6' }
+  const lum = (h: string): number => relativeLuminance(h)
+  for (const [theme, tokens] of [['dark', TOKENS], ['light', LIGHT_TOKENS]] as const) {
+    it(`${theme}: pending and skipped are the off colour, active is success, blocked is warning`, () => {
+      const c = (s: 'pending' | 'active' | 'done' | 'blocked' | 'skipped'): string => factoryKits.boardLampColour!(theme, s, tokens)
+      // Dark: the stack light's off colour; light: that colour sunk towards the dark panel (see board.ts).
+      if (theme === 'dark') expect(c('pending')).toBe(factoryKits.lampOffColour(theme))
+      expect(c('skipped')).toBe(c('pending'))
+      expect(c('active')).toBe(tokens.success)
+      expect(c('blocked')).toBe(tokens.warning)
+      for (const s of ['pending', 'active', 'done', 'blocked', 'skipped'] as const) expect(c(s)).toMatch(/^#[0-9a-f]{6}$/i)
+    })
+
+    it(`${theme}: done differs from active by lightness (at least 1.6:1), and every lit state reads against the panel`, () => {
+      const c = (s: 'pending' | 'active' | 'done' | 'blocked' | 'skipped'): string => factoryKits.boardLampColour!(theme, s, tokens)
+      expect(contrastRatio(c('done'), c('active'))).toBeGreaterThanOrEqual(1.6)
+      expect(new Set([c('pending'), c('active'), c('done'), c('blocked')]).size).toBe(4)
+      const panel = FACTORY_PALETTE[theme].roles.boardPanel
+      for (const s of ['active', 'done', 'blocked'] as const) expect(contrastRatio(c(s), panel), s).toBeGreaterThanOrEqual(2.8)
+      // Off lamps stay readable as lamps against the panel but lower than any lit state.
+      expect(contrastRatio(c('pending'), panel)).toBeGreaterThanOrEqual(1.5)
+      expect(lum(c('pending'))).toBeLessThan(lum(c('active')))
+    })
+  }
+})
+
+describe('slice 3 far robot', () => {
+  it('the far capsule is unlit with its own role and wider than the old 0.6 m capsule', () => {
+    const far = robot.parts.find((p) => p.key === 'robot.far.body')!
+    expect(far.role).toBe('robot.far')
+    expect(far.lods).toEqual(['far'])
+    const m = factoryKits.createMaterials('dark', TOKENS)
+    expect(m.get('robot.far')).toBeInstanceOf(MeshBasicMaterial)
+    const b = bounds(far.geometry)
+    expect(b.max.x - b.min.x).toBeGreaterThanOrEqual(0.7)
+    m.applyTheme('light', TOKENS)
+    expect((m.get('robot.far') as MeshBasicMaterial).color.getHexString()).toBe(new Color(FACTORY_PALETTE.light.roles.robotFar).getHexString())
+    m.dispose()
   })
 })

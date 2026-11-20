@@ -50,11 +50,13 @@ export function robot(): ObjectKit {
   const left = arm(-1)
   const right = arm(1)
 
+  // Far capsule (slice 3): wider than the near body (0.36 m radius, 8 px at ppm 11 instead of 6) and drawn unlit with its
+  // own near-white (dark) or deep navy (light) colour, so it keeps 3:1 against the lit floor at 1024 x 640 fit.
   const farBody = merge([
-    cyl(0.3, 0.3, 0.9, 8, 0, 0.15, 0),
-    place(new SphereGeometry(0.3, 8, 3, 0, Math.PI * 2, 0, Math.PI / 2), 0, 1.05, 0)
+    cyl(0.36, 0.36, 0.84, 8, 0, 0.15, 0),
+    place(new SphereGeometry(0.36, 8, 3, 0, Math.PI * 2, 0, Math.PI / 2), 0, 0.99, 0)
   ])
-  const farVisor = box(0.4, 0.16, 0.06, 0, 1.0, 0.27)
+  const farVisor = box(0.4, 0.14, 0.06, 0, 1.0, 0.33)
 
   const near = { lods: NEAR_MID, cast: false }
   return {
@@ -69,7 +71,7 @@ export function robot(): ObjectKit {
       part('robot.arm.l.lower', left.lower, 'robot.joint', near),
       part('robot.arm.r.upper', right.upper, 'robot.joint', near),
       part('robot.arm.r.lower', right.lower, 'robot.joint', near),
-      part('robot.far.body', farBody, 'robot.body', { lods: FAR_ONLY, cast: false }),
+      part('robot.far.body', farBody, 'robot.far', { lods: FAR_ONLY, cast: false }),
       part('robot.far.visor', farVisor, 'robot.visor', { lods: FAR_ONLY, cast: false })
     ],
     anchors: {
