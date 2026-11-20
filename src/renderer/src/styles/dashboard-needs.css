@@ -166,7 +166,153 @@
   }
 }
 
-/* Rows the user answers leave by fading and folding shut; the list gap folds away with them (cards.css .leave-collapse). */
-.dash-section[data-testid='dash-needs-you'] > .dash-rows {
+/* ---------- Attention tiles (board pass) ----------
+   Waiting on you is a grid of tiles, one per run that needs the person (components/dashboard/AttentionTile.tsx): a header
+   (project badge, run title, how long it waited), a body (the run's NeedsRow rows, or a two-line summary of its last
+   message) and a quick link. A 3 px band in the project's hue sits on the left; decision tiles carry a soft warning tint
+   (the attention colour stays theirs), reply tiles a calmer accent tint. Tokens only. Run text is clipped by CSS and
+   rendered as text; the full text is the title. Motion: a tile that arrives after the page settled gets `.motion-enter`,
+   one the user answered leaves with `.leave-collapse` (both from the component); nothing here loops. */
+.dash-section[data-testid='dash-needs-you'] > .dash-attn-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: var(--space-3);
+  /* A leaving tile folds in a grid cell: there is no list gap to fold away with it. */
+  --leave-gap: 0px;
+}
+@container dash (max-width: 520px) {
+  .dash-section[data-testid='dash-needs-you'] > .dash-attn-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.dash-attn-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: clip;
+  padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 3px);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.dash-attn-tile[data-kind='decision'],
+.dash-attn-tile[data-kind='team'] {
+  background: color-mix(in oklab, var(--warning) 7%, var(--surface-2));
+  border-color: var(--warning-border);
+}
+.dash-attn-tile[data-kind='reply'] {
+  background: color-mix(in oklab, var(--accent) 5%, var(--surface-2));
+}
+/* The identity band: the project's hue, neutral for the assistants. Decoration; the project's name is in text. */
+.dash-attn-tile::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 3px;
+  background: var(--dash-hue, var(--border-strong));
+}
+.dash-attn-tile[data-hue='0']::before {
+  background: var(--border-strong);
+}
+.dash-attn-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.dash-attn-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.dash-attn-waited {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.dash-attn-place {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+/* The run's last message, plain text, two lines at most; the full text is the title. */
+.dash-attn-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-primary);
+}
+.dash-attn-summary[data-empty] {
+  color: var(--text-secondary);
+}
+.dash-attn-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
   --leave-gap: var(--space-2);
+}
+/* A row inside a tile sits on the surface, framed in the warning border: the tile carries the tint. */
+.dash-attn-tile .dash-needs-row {
+  background: var(--surface-1);
+}
+.dash-attn-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  margin-top: auto;
+}
+.dash-attn-reply-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* All clear: a composed card in the lead column, never a blank. */
+.dash-needs-clear {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-1);
+}
+.dash-needs-clear > p {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  color: var(--text-secondary);
+}
+.dash-section-icon[data-tone='success'] {
+  background: var(--success-soft);
+  color: var(--success-text);
 }
