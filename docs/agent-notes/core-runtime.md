@@ -443,26 +443,79 @@ Application menu, run end and decision cards, settings, run titles, projects, us
         availability. Not recorded in the run record (the renderer needs it live only), never sent to adapters (an
         adapter's is dropped in `emit`), CLI host emits nothing (applyProjectChange returns first). Lists capped at 50,
         names cut by logText. `LiveRunChange.notes` (rename notes) and `LiveRunChange.grants` (role and item display names,
-        `granted` false = "no longer uses") are new optional fields; a role-inspector ungrant through projects:save is
-        `what` ['grants']. Tests "follow-up item 1".
+        `granted` false = "no longer uses") are new optional fields. `what` per route (the renderer reads exactly
+        `what.includes('orgChart')` as the org chart surface): projects:save always ['orgChart'] plus 'grants' when it named
+        grants (a role-inspector ungrant is ['orgChart', 'grants']; the could-not-apply / still-starting answers use
+        ['orgChart', 'grants']); another session's org chart card ['orgChart']; mcp:* and MCP cards 'mcpServers' and / or
+        'grants', skills:* and skill cards 'skills' and / or 'grants', never 'orgChart'. Tests "follow-up item 1".
       - Rename: `hostChange.ts` `keepRunSlugs` takes every slug change of a role in `ctx.roles` out of a host edit (the
         save still stores the new slug; save path unchanged). Name and the other fields apply; the answer has a note
         "Renamed to <new>. This run keeps calling it <old slug> until the next run." (slug-only: 'next-run' with "This run
         keeps calling it <old slug> until the next run."). Later saves diff against `before` (the stored new slug on both
         sides) and the run's baseline (old slug), so no phantom slug edit; a new role with the kept slug is deferred
         `slugTaken`. The run's own propose_org_change still defers a running role's slug change (`slugChange`). Slug-keyed
-        MCP grants (`McpServerSpec.roles`) are read through `mcpRolesForRun` on the mcp:* route, mapping by role id, so a
-        remap to the new slug changes nothing for the run. ROSTER_REASONS were rewritten for users (they are on screen).
+        MCP grants (`McpServerSpec.roles`) are read through `mcpRolesForRun` against the run's RUNNING roles (`ctx.roles`)
+        on the mcp:* / MCP card route and on the run's own MCP card and install (see the review fixes below), mapping by
+        role id, so a remap to the new slug changes nothing for the run. ROSTER_REASONS were rewritten for users (they are on screen).
         Tests "follow-up item 2" (incl. the team-file pull INVARIANT and the MCP slug case with mcpServersForRole /
         mcpCallDenial) and hostChange.test.ts.
       - 3a: hostApply calls `hostConfigChanged` synchronously inside a try that puts the widening part back on any throw
         before the answer starts, then rethrows (applyProjectChange: 'next-run', "OrgAI could not apply it to this run.",
         and now a run log line). 3b (L-f): `itemEditOf` `linkOwn` skips library-sourced fields of an item linked to the
-        same entry before and after unless the input named them. 3c: setLive records which call added each grant pair
-        (`grantOwners`); a rejected host change's undo puts back only pairs it still owns. Tests "follow-up item 3".
-      - Open: agents of a run that kept an old slug propose MCP / skill grants by that slug, which the stored project no
-        longer knows (fails closed); a run's own approved org chart card saves the kept slug back over the user's rename
-        (SetupService applies payload.roles; pre-existing for any deferred field). Unverified: the renderer side.
+        same entry before and after unless the input named them. 3c: setLive records which calls hold each grant pair
+        (`grantOwners`, a set per pair since review L2 below); a rejected host change's undo puts back only pairs no other
+        change holds. Tests "follow-up item 3".
+      - Review fixes (2026-11-19, reviewer on the rename / run.liveChange follow-up), tests in `runManagerHostChange.test.ts`
+        describe "rename follow-up review" unless named; each failed on the code before the fix (checked by running the new
+        test file against the parent commit 101edf22):
+        - H1: `mcpRolesForRun(items, stored, running)` takes the run's running roles only (hostApply passed the view's
+          waiting roles too, so a waiting role under a slug a running role kept mapped to that slug text and the running
+          role gained its grant). Rule: a slug naming a stored role that is running maps to that role's run slug (by id); a
+          slug naming a stored role that is not running is dropped when a running role holds that slug text, else kept; a
+          slug no stored role has is kept (it means what it meant at run start, e.g. an old slug left in the list by a
+          rename). A waiting role's slug grant therefore reaches no running role; it is remembered under its slug only when
+          no running role holds that slug, and applies if the role joins under it (a role whose slug a running role holds
+          cannot join this run: slugTaken, retired slugs). Tests "H1: mcp:upsert ..." and "H1: ... (fan-out)", plus
+          hostChange.test.ts "H1: a waiting role's slug grant ...".
+        - M1: the run's own approved MCP card and request_mcp_install (setLive 'mcpServers' with own items) read
+          `saved.mcpServers` through `mcpRolesForRun(saved.mcpServers, saved.roles, ctx.roles)` before `overlayOwnItems`
+          (work runs of a stored project only; setup-like and assistant runs' roles are not the project's). Slug-keyed
+          roles are read from the saved project into a live run only there and on the host route; skills grants are
+          Role.skills by id, org chart cards never move grants. Tests "M1 / a: ..." (both directions, and the install).
+        - a: `RunManager.proposalForStore` maps role slugs the run's agents wrote, at apply time, through the run's role
+          id to the stored role (`hostChange.ts` `slugsForStore`): MCP card `upsert[].roles` (project scope), skill card
+          `items[].roles` (project scope), and an install's `spec.roles` when saved to the project (`settleInstall`; a
+          run-scope install keeps the run's slugs). The card shows and the run takes the proposal as the agent wrote it; the
+          save gets the mapped one, and the skill fan-out to other runs reads its grants from it. A slug both a running and
+          a waiting role hold means the running role. Tests "M1 / a: ...", "a: the run's own skill card ...".
+        - b: the run's own org chart card goes to SetupService through `cardRolesForStore`: a card role that is a running
+          role still under the slug the run has (matched by id when the card kept ids, else by slug) takes the stored slug,
+          and the stored name when the card left the name as its runBaseline (else the run's roles) had it. Without it
+          orgMerge (match by slug, then name) matched the card's role to the stored role now holding the old slug (r-new),
+          or, on a host without live changes, added it as a new role and removed the renamed one. A slug or name the card
+          itself changed is kept; only slug and name are merged this way (other fields the run deferred are still the
+          card's). The run applies the card as shown; the fan-out to other runs uses the card as shown (it is diffed
+          against its runBaseline). Tests "b: ..." (live host and CLI host) and hostChange.test.ts cardRolesForStore.
+        - L1: hostApply's `publish` broadcasts nothing once the run ended or is ending (`this.runs.get(id) !== active`,
+          outcome, finalizing, userStopped); the answer is still returned and logged. Test "L1: ...".
+        - L2: `grantOwners` holds a set of claims per pair; a change claims every granted pair it names, also one already
+          held (`claimHeld`; a pair held with no claim on record counts as held from the run's start), and its undo
+          releases its claim and puts back only pairs nobody else holds. Test "L2: ...", and "3c" still passes.
+        - L3: a rejection's `LiveRunChange.reason` (broadcast) is the fixed "The session could not take it." plus the fixed
+          rest; the adapter's error text is only in the run log line. Tests "M2: a rejection ..." and "a rejection reports
+          next run ...".
+        - L4: mcp:upsert `fields` (`hostChange.ts` `upsertFieldsOf`, dispatcher.ts): for a server linked to a library entry
+          before and after, library-sourced keys (not MCP_LINK_OWN) the input left out or set to the entry's value are not
+          in `fields`, so itemEditOf does not compare them. Tests dispatcherLiveChanges.test.ts "review L4: ..." and
+          hostChange.test.ts upsertFieldsOf.
+        - Role inspector rename (renderer `lib/roleOps.ts` `renamePatch`, Team tab phase 1): one patch sets name and slug
+          and grants by id (Role.mcpServers) every server the role held by its old slug; McpServerSpec.roles keeps the old
+          slug. On the host route that is a rename (slug kept, note) plus a widening id grant of a server the role already
+          uses; mcpRolesForRun keeps the stale old slug (no stored role has it) and, once a new role takes that slug in the
+          store, drops it on both sides of a later diff, so the run sees no change. Test "the role inspector's rename
+          shape ...". Not ours to fix but worth knowing: in the STORED project a role later added under that old slug gains
+          those servers by slug.
+        Unverified: the renderer side, live providers.
     - End to end: "a desktop save of a grant and of an org chart role reaches an idle mock run" drives the real
       RunManager and MockAdapter: `MockSession.configChanges` gets one `host: true` entry, `hostNotices` one
       'next-message' notice, RunManager sends nothing, one "You changed ..." log line.

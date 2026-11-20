@@ -145,8 +145,9 @@ export function keepRunSlugs(edit: RoleEdit, running: readonly Role[]): { edit: 
  * (ctx.roles) only, never the waiting roles of its view (review H1: a waiting role can hold a slug a running role kept).
  * A slug naming a role of `stored` (the project the list was saved with) that is running becomes that role's slug in the
  * run (by id), so a run that kept a renamed role's old slug (keepRunSlugs) neither loses nor gains a grant by slug text.
- * Any other slug (a stored role that is not running, or a slug no stored role has) is dropped when a running role holds
- * that slug text (it would reach a role it does not name: fails closed) and otherwise stays as it is: a waiting role's
+ * A slug naming a stored role that is not running is dropped when a running role holds that slug text (it would reach a
+ * role it does not name: fails closed) and otherwise stays as it is; a slug no stored role has stays (it means what it
+ * meant when the run started, e.g. an old slug saved before a rename). So a waiting role's
  * slug-keyed grant is remembered under its slug and applies if that role joins under it (it cannot join while a running
  * role holds the slug: runRoster.ts slugTaken / retired slugs). Copies only items with a `roles` list. Pure.
  */
@@ -157,7 +158,9 @@ export function mcpRolesForRun<T extends { roles?: string[] }>(items: readonly T
   const runOwner = new Map(running.map((r) => [r.slug, r.id]))
   const map = (slug: string): string | undefined => {
     const id = storedBySlug.get(slug)
-    if (id !== undefined && runSlugOf.has(id)) return runSlugOf.get(id)
+    // A slug no stored role has (e.g. saved before a rename) means what it meant when the run started.
+    if (id === undefined) return slug
+    if (runSlugOf.has(id)) return runSlugOf.get(id)
     return runOwner.has(slug) ? undefined : slug
   }
   return items.map((x) => {

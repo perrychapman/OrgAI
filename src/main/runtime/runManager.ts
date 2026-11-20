@@ -2902,6 +2902,20 @@ export class RunManager {
             if (!owners?.delete(token)) return false
             return owners.size === 0
           })
+        /**
+         * Review L2: a grant this change names that the run already holds (another change, possibly still pending, put it
+         * there) is claimed too, so that other change's late rejection does not take away a pair this change also granted.
+         */
+        const claimHeld = (edits: readonly GrantEdit[]): void => {
+          const held = grantPairs(live.roles)
+          for (const e of edits) {
+            const k = pairKey(e)
+            if (!e.granted || !held.has(k)) continue
+            const owners = grantOwners.get(k)
+            if (owners) owners.add(token)
+            else grantOwners.set(k, new Set([GRANT_HELD, token]))
+          }
+        }
         // Review L-a (2026-11-19 follow-up 3a): once the change has widened the run, any synchronous throw before the
         // session's answer starts puts the widening part back before it propagates (applyProjectChange answers 'next-run').
         let answering = false
@@ -2927,6 +2941,7 @@ export class RunManager {
             const removedIds = new Set(edit.removed.map((x) => x.id))
             const narrowGrants = [...ungrantsOf(live.roles, field, removedIds), ...grantEdits.filter((e) => !e.granted && !removedIds.has(e.id))]
             const wideGrants = grantEdits.filter((e) => e.granted)
+            claimHeld(wideGrants)
             const nameOf = (id: string): string | undefined => [...(runItems() ?? []), ...(edit.widened ?? [])].find((x) => x.id === id)?.name
             if (!bare && (edit.removed.length || edit.narrowedIds.length || narrowGrants.length)) {
               const applied = applyGrantEdits(live.roles, narrowGrants, () => true).applied
@@ -3042,6 +3057,7 @@ export class RunManager {
               } else partly.push('This run takes org chart changes from the next run.')
             }
             const wideGrants = grants.filter((e) => e.granted)
+            claimHeld(wideGrants)
             if (wideGrants.length) widens = true
             if (takes && wideGrants.length) {
               const g = applyGrantEdits(live.roles, wideGrants, has)
