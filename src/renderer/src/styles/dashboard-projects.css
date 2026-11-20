@@ -23,17 +23,6 @@
   gap: var(--space-3);
   min-width: 0;
 }
-.dash-projects-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-.dash-projects-head h2 {
-  margin: 0;
-  font-size: var(--text-title);
-  line-height: var(--text-title-lh);
-  font-weight: var(--weight-semibold);
-}
 .dash-projects-count {
   color: var(--text-secondary);
 }
@@ -44,17 +33,30 @@
   margin: 0;
   color: var(--text-secondary);
 }
+/* Columns by the width of this wrapper, not the window: 3, then 2 under 760 px, then 1 under 440 px. */
+.dash-projects-fit {
+  container: dash-projects / inline-size;
+  min-width: 0;
+}
 .dash-projects-grid {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-4);
 }
-@container dash (min-width: 1280px) {
+@container dash-projects (max-width: 759px) {
   .dash-projects-grid {
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container dash-projects (max-width: 439px) {
+  .dash-projects-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tile-team {
+    display: none;
   }
 }
 
@@ -104,13 +106,27 @@
   all: unset;
   box-sizing: border-box;
   display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   /* A block button still sizes to its content; pin it to the title so a long name ellipsises before More. */
   width: 100%;
   min-width: 0;
   cursor: pointer;
 }
+.project-tile-pinned {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-secondary);
+}
+/* Customise mode: the pin toggle sits left of More, so the title keeps clear of both. */
+.project-tile[data-customising] .project-tile-title {
+  padding-right: calc(var(--control-sm) * 2 + var(--space-1));
+}
 .project-tile-name {
   display: block;
+  min-width: 0;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -134,6 +150,9 @@
   top: var(--space-3);
   right: var(--space-3);
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 /* The team row: a tiny subway line, the root as an interchange, then up to seven roles in chart order. */
@@ -202,14 +221,6 @@
   line-height: var(--text-small-lh);
   color: var(--text-secondary);
 }
-/* Only the decision part of the line takes the amber; the dot stays --state-waiting. */
-.project-tile-decisions {
-  color: var(--warning-text);
-}
-.project-tile-run-lead {
-  color: var(--warning-text);
-  font-weight: var(--weight-semibold);
-}
 .project-tile-status > .badge {
   grid-column: 2;
   justify-self: start;
@@ -246,30 +257,6 @@ html[data-reduce-motion='on'] .project-tile-dot.live {
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   color: var(--text-tertiary);
-}
-/* The newest run: its name, then its status and activity or end time. */
-.project-tile-run {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  margin-top: var(--space-1);
-}
-.project-tile-run-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-body);
-  line-height: var(--text-body-lh);
-  color: var(--text-primary);
-}
-.project-tile-run-cap {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
 }
 /* Chips sit above the stretched Open cover, like More. */
 .tile-chips {

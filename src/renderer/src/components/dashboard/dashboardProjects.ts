@@ -1,9 +1,8 @@
 import { isVirtualProjectId, type ConnectionId, type ConnectionInfo, type PendingWorktree, type Project, type Role, type RunSummary } from '@shared/types'
 import { NEUTRAL_ROLE_COLOR } from '../../lib/dashboardBand'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { relativeTime } from '../../lib/runChains'
 import { runCostInput, sumCosts, type CostInput } from '../../lib/cost'
-import { WEEK_MS } from '../../lib/dashboard'
+import { WEEK_MS, projectAttentionOrder, type ProjectAttention } from '../../lib/dashboard'
 import { folderName } from '../../lib/paths'
 import { connectionLabel } from '../../lib/connectionLabel'
 
@@ -172,43 +171,40 @@ export function continueLabel(name: string): string {
   return `Continue ${chars.length > 32 ? `${chars.slice(0, 31).join('')}…` : name}`
 }
 
-/** The tile caption of the newest run: `lead` is "Needs you" (drawn in the warning colour), `text` the rest. */
-export interface TileCaption {
-  lead?: string
-  text: string
+/** "just now", "5 min ago", "2 hours ago", "9 days ago". */
+export function agoWords(at: number, now: number): string {
+  const min = Math.max(0, Math.round((now - at) / 60_000))
+  if (min < 1) return 'just now'
+  if (min < 60) return `${min} min ago`
+  const h = Math.round(min / 60)
+  if (h < 24) return `${plural(h, 'hour', 'hours')} ago`
+  return `${plural(Math.round(h / 24), 'day', 'days')} ago`
 }
 
 /**
- * The caption of a tile's newest run (walk-3 M5, L3). A live run with an open decision reads "Needs you · <decision
- * line>", never the raw command or activity. Another live run reads "<status word> · <plan step>", else the word alone.
- * An ended run reads only its outcome; the age lives in the status line, so nothing is said twice.
+ * The tile's one status fact, plain text (dashboard-overhaul.md 7.8), most urgent first: "2 decisions waiting", "Working",
+ * "3 runs open", "Last run 9 days ago", "No runs yet". Never a command or an activity line.
  */
-export function tileRunCaption(input: { live: boolean; statusWord: string; decisionLine?: string; step?: string }): TileCaption {
-  if (!input.live) return { text: input.statusWord }
-  if (input.decisionLine) return { lead: 'Needs you', text: input.decisionLine }
-  return { text: input.step ? `${input.statusWord} · ${input.step}` : input.statusWord }
+export function tileStatusLine(input: { open: number; decisions: number; working: boolean; newestStartedAt?: number; now: number }): string {
+  if (input.decisions > 0) return `${plural(input.decisions, 'decision', 'decisions')} waiting`
+  if (input.working) return 'Working'
+  if (input.open > 0) return `${plural(input.open, 'run', 'runs')} open`
+  if (input.newestStartedAt !== undefined) return `Last run ${agoWords(input.newestStartedAt, input.now)}`
+  return 'No runs yet'
 }
 
-/** The caption as one string (the plain-text form of `tileRunCaption`). */
-export function captionText(c: TileCaption): string {
-  return c.lead ? `${c.lead} · ${c.text}` : c.text
-}
-
-/**
- * The tile's status line. A project with nothing open or waiting says only how long ago its newest run started
- * ("Last run 9 d ago"); the run's outcome is the caption's job (walk-3 L3). Otherwise the shared subtitle.
- */
-export function tileStatusLine(input: { subtitle: string; open: number; decisions: number; newestStartedAt?: number; now: number }): string {
-  if (input.decisions === 0 && input.open === 0 && input.newestStartedAt !== undefined) return `Last run ${relativeTime(input.newestStartedAt, input.now)}`
-  return input.subtitle || 'No runs yet'
-}
-
-/** "1 decision · 1 run" split into the decision part and the rest, so only the decision part takes the warning colour. */
-export function statusParts(statusLine: string, decisions: number): { decision?: string; rest: string } {
-  if (decisions <= 0) return { rest: statusLine }
-  const at = statusLine.indexOf(' · ')
-  if (at < 0) return { decision: statusLine, rest: '' }
-  return { decision: statusLine.slice(0, at), rest: statusLine.slice(at) }
+/** Pinned projects first in pin order (ids matching no project are ignored), then the rest in attention order. */
+export function pinnedFirst<T extends { id: string; name: string }>(projects: readonly T[], pinned: readonly string[], ctx: Readonly<Record<string, ProjectAttention | undefined>>): T[] {
+  const byId = new Map(projects.map((p) => [p.id, p]))
+  const seen = new Set<string>()
+  const head: T[] = []
+  for (const id of pinned) {
+    const p = byId.get(id)
+    if (!p || seen.has(id)) continue
+    seen.add(id)
+    head.push(p)
+  }
+  return [...head, ...projectAttentionOrder(projects.filter((p) => !seen.has(p.id)), ctx)]
 }
 
 // ---------- The tile's team row ----------
@@ -271,15 +267,15 @@ function bfsRoles<T extends Pick<Role, 'id' | 'reportsTo'>>(list: readonly T[]):
   return out
 }
 
-/** The "Open" button's accessible name: status, newest run and, when there is a chart, "team of 9: A, B, C and 6 more". */
-export function openLabel(input: { name: string; statusLine: string; team: Pick<TileTeam, 'total' | 'names'>; newestName?: string; setupPending?: boolean }): string {
+/** The "Open" button's accessible name: status, "pinned" and, when there is a chart, "team of 9: A, B, C and 6 more". */
+export function openLabel(input: { name: string; statusLine: string; team: Pick<TileTeam, 'total' | 'names'>; pinned?: boolean; setupPending?: boolean }): string {
   const parts = [`Open ${input.name}`, input.statusLine]
+  if (input.pinned) parts.push('pinned')
   if (input.team.total > 0) {
     const shown = input.team.names.slice(0, 3)
     const rest = input.team.total - shown.length
     parts.push(`team of ${input.team.total}: ${shown.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`)
   }
-  if (input.newestName) parts.push(input.newestName)
   if (input.setupPending) parts.push('setup pending')
   return parts.join(', ')
 }

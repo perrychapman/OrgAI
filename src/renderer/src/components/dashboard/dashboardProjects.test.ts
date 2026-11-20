@@ -7,10 +7,8 @@ import {
   continueLabel,
   newestSummary,
   tileChips,
-  tileRunCaption,
-  captionText,
+  pinnedFirst,
   tileStatusLine,
-  statusParts,
   tileTeam,
   openLabel,
   worktreeTargets,
@@ -176,23 +174,27 @@ describe('tile signals', () => {
     expect(continueLabel('Short')).toBe('Continue Short')
     expect(continueLabel('x'.repeat(40))).toBe(`Continue ${'x'.repeat(31)}…`)
   })
-  it('words the newest run caption', () => {
-    expect(tileRunCaption({ live: true, statusWord: 'Running', step: 'Write the tests' })).toEqual({ text: 'Running · Write the tests' })
-    expect(tileRunCaption({ live: true, statusWord: 'Running' })).toEqual({ text: 'Running' })
-    expect(tileRunCaption({ live: true, statusWord: 'Needs you', decisionLine: 'Allow: Run npm test', step: 'x' })).toEqual({ lead: 'Needs you', text: 'Allow: Run npm test' })
-    expect(captionText({ lead: 'Needs you', text: 'Allow: Run npm test' })).toBe('Needs you · Allow: Run npm test')
-  })
-  it('says an ended run once: the age in the status line, the outcome in the caption', () => {
-    expect(tileRunCaption({ live: false, statusWord: 'Ended when OrgAI closed', decisionLine: 'Allow: x', step: 'y' })).toEqual({ text: 'Ended when OrgAI closed' })
+  it('words the status line as one plain fact, most urgent first', () => {
     const now = 10 * 86_400_000
-    const line = tileStatusLine({ subtitle: 'Last run 9 d ago · Ended when OrgAI closed', open: 0, decisions: 0, newestStartedAt: now - 9 * 86_400_000, now })
-    expect(line).toBe('Last run 9 d ago')
-    expect(tileStatusLine({ subtitle: '1 decision · 1 run', open: 1, decisions: 1, newestStartedAt: 0, now })).toBe('1 decision · 1 run')
-    expect(tileStatusLine({ subtitle: '', open: 0, decisions: 0, now })).toBe('No runs yet')
+    const base = { open: 0, decisions: 0, working: false, now }
+    expect(tileStatusLine({ ...base, decisions: 2, open: 1, working: true })).toBe('2 decisions waiting')
+    expect(tileStatusLine({ ...base, decisions: 1 })).toBe('1 decision waiting')
+    expect(tileStatusLine({ ...base, open: 2, working: true })).toBe('Working')
+    expect(tileStatusLine({ ...base, open: 3 })).toBe('3 runs open')
+    expect(tileStatusLine({ ...base, open: 1 })).toBe('1 run open')
+    expect(tileStatusLine({ ...base, newestStartedAt: now - 9 * 86_400_000 })).toBe('Last run 9 days ago')
+    expect(tileStatusLine({ ...base, newestStartedAt: now - 86_400_000 })).toBe('Last run 1 day ago')
+    expect(tileStatusLine({ ...base, newestStartedAt: now - 2 * 3_600_000 })).toBe('Last run 2 hours ago')
+    expect(tileStatusLine(base)).toBe('No runs yet')
   })
-  it('splits the decision part of the status line', () => {
-    expect(statusParts('2 decisions · 1 run', 2)).toEqual({ decision: '2 decisions', rest: ' · 1 run' })
-    expect(statusParts('1 open', 0)).toEqual({ rest: '1 open' })
+  it('puts pinned projects first in pin order, then the attention order', () => {
+    const p = (id: string, name: string) => ({ id, name })
+    const list = [p('a', 'Alpha'), p('b', 'Beta'), p('c', 'Gamma'), p('d', 'Delta')]
+    const ctx = { c: { decisions: 2, liveRuns: 0 }, d: { decisions: 0, liveRuns: 1 } }
+    expect(pinnedFirst(list, [], ctx).map((x) => x.id)).toEqual(['c', 'd', 'a', 'b'])
+    expect(pinnedFirst(list, ['b', 'a'], ctx).map((x) => x.id)).toEqual(['b', 'a', 'c', 'd'])
+    // Ids of deleted projects and repeats are ignored.
+    expect(pinnedFirst(list, ['gone', 'd', 'd'], ctx).map((x) => x.id)).toEqual(['d', 'c', 'a', 'b'])
   })
   it('orders the team row breadth first, root first, capped at 8', () => {
     const r = (id: string, reportsTo: string | null, color = '#fff') => ({ id, name: id.toUpperCase(), color, reportsTo })
@@ -214,7 +216,7 @@ describe('tile signals', () => {
   })
   it('names the team in the Open button', () => {
     const team = { total: 9, names: ['Orchestrator', 'Implementer', 'Reviewer', 'Tester'] }
-    expect(openLabel({ name: 'Billing API', statusLine: '1 decision · 1 run', team, newestName: 'Fix login' })).toBe('Open Billing API, 1 decision · 1 run, team of 9: Orchestrator, Implementer, Reviewer and 6 more, Fix login')
+    expect(openLabel({ name: 'Billing API', statusLine: '1 decision waiting', team, pinned: true })).toBe('Open Billing API, 1 decision waiting, pinned, team of 9: Orchestrator, Implementer, Reviewer and 6 more')
     expect(openLabel({ name: 'P', statusLine: 'No runs yet', team: { total: 0, names: [] }, setupPending: true })).toBe('Open P, No runs yet, setup pending')
     expect(openLabel({ name: 'P', statusLine: 's', team: { total: 1, names: ['Boss'] } })).toBe('Open P, s, team of 1: Boss')
   })
