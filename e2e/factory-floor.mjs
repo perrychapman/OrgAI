@@ -1105,7 +1105,9 @@ try {
   chk4(pk.arrivalsPerSecond <= 12, 'burst: at most 12 arrivals animate per second', pk)
   chk4(pk.ambient <= 12 && bcol.maxLooping <= 12, 'burst: at most 12 stations loop at once', { pk: pk.ambient, polled: bcol.maxLooping })
   chk4(pk.carriers >= 1 && pk.parts >= 1 && pk.crates >= 1 && pk.arrivalsPerSecond >= 1, 'burst: the counters saw carriers, parts, crates and arrivals', pk)
-  chk4(pk.ambient > 0 && bcol.maxLooping > 0, 'burst: stations that run do loop (ambient peak above 0)', { pk: pk.ambient, polled: bcol.maxLooping })
+  // The scheduler's own peak is the evidence. The polled maximum can be 0 on a slow runner (Windows CI, SwiftShader):
+  // the test state is written twice a second and the burst's running window can fall between two polls.
+  chk4(pk.ambient > 0, 'burst: stations that run do loop (ambient peak above 0)', { pk: pk.ambient, polled: bcol.maxLooping })
   // 18 assignments, 27 messages, 18 finished words and 8 merge lines are far more than 50: the cap is what holds.
   chk4(bst.logEntries === 50, 'burst: the floor log is capped at 50 (the burst has more than 50 events)', bst.logEntries)
   const burstOpen = await page.locator('[data-testid=factory-log]').first().evaluate((d) => d.open)
