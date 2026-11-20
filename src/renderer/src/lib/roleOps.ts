@@ -179,6 +179,42 @@ export function moveNotice(before: readonly Role[], after: readonly Role[], move
   return parts.length > 0 ? parts.join(' ') : null
 }
 
+/** One option of a "Reports to" select: chart order (depth first from the root), label indented two spaces per level. */
+export interface ParentOption {
+  id: string
+  name: string
+  depth: number
+  /** `name` with two non-breaking spaces per depth level (a <select> collapses ordinary leading spaces). */
+  label: string
+  /** True when choosing it would loop (the role itself or one of its reports), only when `forRoleId` is given. */
+  disabled: boolean
+}
+
+/**
+ * Every role in chart order for a "Reports to" select (Add role popover, role editor). Roots first in list order, then
+ * each role's reports in list order under it; roles unreachable from a root (a broken chain) follow at depth 0, so no
+ * role is ever left out. With `forRoleId`, that role and its own subtree are `disabled` (wouldCycle).
+ */
+export function parentOptions(roles: readonly Role[], forRoleId?: string): ParentOption[] {
+  const out: ParentOption[] = []
+  const seen = new Set<string>()
+  const visit = (r: Role, depth: number): void => {
+    if (seen.has(r.id)) return
+    seen.add(r.id)
+    out.push({
+      id: r.id,
+      name: r.name,
+      depth,
+      label: `${'  '.repeat(depth)}${r.name}`,
+      disabled: forRoleId !== undefined && wouldCycle(roles as Role[], forRoleId, r.id)
+    })
+    for (const c of roles) if (c.reportsTo === r.id) visit(c, depth + 1)
+  }
+  for (const r of roles) if (r.reportsTo === null || !roles.some((x) => x.id === r.reportsTo)) visit(r, 0)
+  for (const r of roles) visit(r, 0)
+  return out
+}
+
 /** Would making `parentId` the manager of `childId` loop (parent is the child or one of its descendants)? */
 export function wouldCycle(roles: Role[], childId: string, parentId: string | null): boolean {
   const seen = new Set<string>()

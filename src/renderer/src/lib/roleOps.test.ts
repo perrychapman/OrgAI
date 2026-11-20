@@ -5,6 +5,7 @@ import {
   addRoleUnder,
   moveNotice,
   nextRoleName,
+  parentOptions,
   removeRole,
   restoreRole,
   setReportsTo,
@@ -135,6 +136,23 @@ describe('requiredReports', () => {
     const roles = [role('root', null, ['mgr']), mgr(), role('p', 'mgr'), role('e', 'mgr')]
     expect(removeRole(roles, 'p').roles.find((r) => r.id === 'mgr')?.requiredReports).toBeUndefined()
     expect(setReportsTo(roles, 'p', 'root').find((r) => r.id === 'mgr')?.requiredReports).toBeUndefined()
+  })
+})
+
+describe('parentOptions', () => {
+  const roles = [role('root', null), role('rev', 'root'), role('docs', 'rev'), role('impl', 'root'), role('orphan', 'gone')]
+  it('lists roles in chart order with two spaces per level, orphans at depth 0', () => {
+    const opts = parentOptions(roles)
+    expect(opts.map((o) => o.id)).toEqual(['root', 'rev', 'docs', 'impl', 'orphan'])
+    expect(opts.map((o) => o.depth)).toEqual([0, 1, 2, 1, 0])
+    expect(opts[2].label).toBe('    ' + roles[2].name)
+    expect(opts.every((o) => !o.disabled)).toBe(true)
+  })
+  it('disables the role itself and its subtree for a role editor', () => {
+    expect(parentOptions(roles, 'rev').filter((o) => o.disabled).map((o) => o.id)).toEqual(['rev', 'docs'])
+  })
+  it('never loops on a cycle in the data', () => {
+    expect(parentOptions([role('a', 'b'), role('b', 'a')]).map((o) => o.id)).toEqual(['a', 'b'])
   })
 })
 
