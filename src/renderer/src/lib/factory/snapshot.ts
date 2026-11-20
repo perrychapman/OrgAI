@@ -1,6 +1,6 @@
 // The Factory Floor test hook (docs/design/factory-floor.md section 10.3): ids, numbers and words only, never message
 // text. Serialised into <output hidden data-testid="factory-state">. Pure.
-import type { ActiveCue, FactoryTestState, FloorModel } from './types'
+import type { ActiveCue, FactoryTestState, FloorLayout, FloorModel, Lamp } from './types'
 
 export type FactoryRendererKind = FactoryTestState['renderer']
 export type FactoryReason = NonNullable<FactoryTestState['reason']>
@@ -10,7 +10,13 @@ export type FactoryLoop = FactoryTestState['loop']
 export type FactoryPerf = NonNullable<FactoryTestState['perf']>
 export type FactoryView = FactoryTestState['view']
 
-/** What the scene knows at one moment. Slice 1 has no model, cues or cursor yet; later slices fill them. */
+/** A worker's static state while there is no FloorModel yet (slice 2: lamp and word; pose, props and ambient come with slice 3). */
+export interface WorkerSummary {
+  lamp: Lamp
+  statusWord: string
+}
+
+/** What the scene knows at one moment. Slice 2 has the layout and static lamps; the model, cues and cursor come later. */
 export interface FactorySnapshotInput {
   renderer: FactoryRendererKind
   reason?: FactoryReason
@@ -18,6 +24,9 @@ export interface FactorySnapshotInput {
   mode: 'live' | 'team'
   motion: FactoryMotion
   model?: FloorModel | null
+  /** Used when `model` is absent: the layout and each worker's lamp and word (pose 'rest', ambient 'none', not fenced). */
+  layout?: FloorLayout | null
+  summaries?: Readonly<Record<string, WorkerSummary>>
   cues?: readonly ActiveCue[]
   cuesStarted?: number
   messageCursor?: string | null
@@ -66,7 +75,15 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
         ambient: w.ambient
       })
     }
+  } else if (input.layout) {
+    for (const id of input.layout.order) {
+      const st = input.layout.stations[id]
+      const w = input.summaries?.[id]
+      if (!st || !w) continue
+      workers.push({ id, line: st.line, row: st.row, slot: st.slot, x: round(st.center.x), z: round(st.center.z), lamp: w.lamp, pose: 'rest', statusWord: w.statusWord, fenced: false, ambient: 'none' })
+    }
   }
+  const layout = model?.layout ?? input.layout ?? null
   const view = input.view ?? EMPTY_VIEW
   const perf = input.perf ?? null
   const state: FactoryTestState = {
@@ -75,8 +92,8 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
     mode: input.mode,
     motion: input.motion,
     workers,
-    lines: model ? model.layout.lines.map((l) => ({ number: l.number, leadId: l.leadId, rows: [...l.rows] })) : [],
-    vacant: model ? model.layout.vacant.length : 0,
+    lines: layout ? layout.lines.map((l) => ({ number: l.number, leadId: l.leadId, rows: [...l.rows] })) : [],
+    vacant: layout ? layout.vacant.length : 0,
     cues: (input.cues ?? []).map((c) => ({
       kind: c.kind,
       ...(c.from !== undefined ? { from: c.from } : {}),

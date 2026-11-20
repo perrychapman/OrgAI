@@ -92,6 +92,20 @@ describe('factoryTestState', () => {
     expect(s.reason).toBeUndefined()
   })
 
+  it('without a model, lists the layout with summaries (slice 2: pose rest, ambient none)', () => {
+    const s = factoryTestState({
+      renderer: 'floor-plan', quality: 'high', mode: 'live', motion: 'full', loop: 'stopped', frames: 0, engines: 0,
+      layout: model.layout,
+      summaries: { root: { lamp: 'running', statusWord: 'Running' }, a: { lamp: 'needs-you', statusWord: 'Needs you' } }
+    })
+    expect(s.workers).toEqual([
+      { id: 'root', line: 0, row: -1, slot: 0, x: 7, z: -6, lamp: 'running', pose: 'rest', statusWord: 'Running', fenced: false, ambient: 'none' },
+      { id: 'a', line: 1, row: 0, slot: 0, x: 6, z: 1.5, lamp: 'needs-you', pose: 'rest', statusWord: 'Needs you', fenced: false, ambient: 'none' }
+    ])
+    expect(s.lines).toEqual([{ number: 1, leadId: 'root', rows: [0] }])
+    expect(s.vacant).toBe(1)
+  })
+
   it('rounds view and perf numbers and keeps the GPU string when known', () => {
     const s = factoryTestState({
       renderer: 'webgl2',

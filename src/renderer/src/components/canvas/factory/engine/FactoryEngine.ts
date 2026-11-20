@@ -1,102 +1,39 @@
-// Factory Floor engine (docs/design/factory-floor.md sections 2, 4.2, 4.3, 9.2). Non-React: owns the WebGLRenderer, the
-// scene graph and the render-on-demand loop. Slice 1: the empty hall (floor slab, walls, gantry deck, booth
-// placeholder), lights, theme switch, a fixed camera fit, visibility stop, context-loss stop and restore, disposal and
-// the numbers for the test state. Layout constants and camera maths move to lib/factory in slice 2.
-import {
-  AmbientLight,
-  BoxGeometry,
-  DataTexture,
-  DirectionalLight,
-  HemisphereLight,
-  LinearFilter,
-  LinearMipmapLinearFilter,
-  MathUtils,
-  Mesh,
-  MeshStandardMaterial,
-  PCFShadowMap,
-  PerspectiveCamera,
-  PlaneGeometry,
-  RepeatWrapping,
-  RGBAFormat,
-  SRGBColorSpace,
-  Scene,
-  Vector3,
-  WebGLRenderer,
-  type BufferGeometry,
-  type Material,
-  type Texture
-} from 'three'
-import type { Bounds, Vec2 } from '../../../../lib/factory/types'
+// Factory Floor engine (docs/design/factory-floor.md sections 2, 4, 9.2). Non-React: owns the WebGLRenderer, the scene
+// graph and the render-on-demand loop. It draws the floor the pure layout describes (hall, booth, dock, board, stations,
+// machines, stack lights, robots, routes, vacant outlines, selection ring) from a FactoryKitSource, with one
+// InstancedMesh per kit part (engine/instancing.ts). It never decides where things are (lib/factory/layout.ts), how the
+// camera looks (lib/factory/camera.ts) or what things look like (builders/). Slice 2: static lamps, no poses, no cues.
+import { Box3, Color, Matrix4, type BufferGeometry, type DirectionalLight, PCFShadowMap, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from 'three'
+import type { FloorLayout, Lamp } from '../../../../lib/factory/types'
 import { factorySession } from '../../../../lib/factory/capability'
-import { p95, type FactoryLoop, type FactoryPerf, type FactoryQuality, type FactoryView } from '../../../../lib/factory/snapshot'
+import { p95, type FactoryLoop, type FactoryPerf, type FactoryQuality } from '../../../../lib/factory/snapshot'
+import { cameraPose, FOV_DEG, lodBand, type CameraView, type LodBand } from '../../../../lib/factory/camera'
+import { BOARD_CENTER, DOCK_CENTER, GANTRY_TOP } from '../../../../lib/factory/layout'
+import { routeSegments, ROUTE_STRIPE_W } from '../../../../lib/factory/routes'
+import type { Anchor, FactoryKitSource, FactoryLighting, FactoryMaterials, FactoryTheme, FactoryTokenColours, FloorRect, ObjectKit } from '../builders/types'
+import { KitPool, subKit, type InstanceSpec } from './instancing'
 
-export type FactoryTheme = 'dark' | 'light'
-
-/** Section 3.3, one agent or none: the hall is 30 x 12 m (x 0 to 30, z -10 to 2). Slice 2's layout replaces it. */
-export const EMPTY_HALL: Bounds = { minX: 0, maxX: 30, minZ: -10, maxZ: 2 }
-/** Section 3.1: the booth is fixed at (7, -6), 6 x 4 m; the gantry deck spans z -10 to -2. */
-export const BOOTH_CENTER: Vec2 = { x: 7, z: -6 }
-const BOOTH_W = 6
-const BOOTH_D = 4
-const BOOTH_H = 2.6
-const GANTRY_MIN_Z = -10
-const GANTRY_MAX_Z = -2
-const GANTRY_H = 1.5
-const WALL_H = 1.2
-const WALL_T = 0.3
-
-/** Section 2. */
-const FOV_DEG = 28
-const PITCH_DEG = 55
-export const PPM_MIN = 7
-export const PPM_MAX = 60
-const FIT_PPM_MAX = 32
-const FIT_PADDING = 0.08
+export type { FactoryTheme } from '../builders/types'
 
 /**
- * Section 4.3 values for the roles slice 1 draws. The Technical Artist's palette module (slice 2) replaces this table.
- * Ambient is not in the table ("a low level"): 0.15 dark, 0.25 light, to be tuned on screenshots.
- */
-const PALETTE: Record<FactoryTheme, {
-  clear: string
-  floor: string
-  gridFaint: string
-  gridStrong: string
-  wall: string
-  deck: string
-  booth: string
-  sky: string
-  ground: string
-  hemi: number
-  key: string
-  keyIntensity: number
-  ambient: number
-}> = {
-  dark: {
-    clear: '#0e1118', floor: '#2a2f3a', gridFaint: '#323845', gridStrong: '#3b4250', wall: '#1f2430', deck: '#3a4252',
-    booth: '#5a657b', sky: '#9fb3d1', ground: '#1a1d24', hemi: 0.55, key: '#ffffff', keyIntensity: 1.4, ambient: 0.15
-  },
-  light: {
-    clear: '#eef0f4', floor: '#d6d9df', gridFaint: '#cbcfd6', gridStrong: '#bfc4cc', wall: '#e2e5ea', deck: '#b4bbc7',
-    booth: '#8d97a8', sky: '#ffffff', ground: '#b9bec8', hemi: 0.9, key: '#fff7ea', keyIntensity: 1.8, ambient: 0.25
-  }
-}
-
-/**
- * Key light direction: from the north-west, pointing down and south-east (section 4.2's words). The spec's vector
- * (-0.45, -1, 0.35) points south-west; its x sign is taken as a typo and flipped (recorded in the report).
+ * Key light direction: from the north-west, pointing down and south-east (section 4.2's words; the spec's vector has its
+ * x sign flipped, recorded in slice 1).
  */
 const KEY_DIRECTION = new Vector3(0.45, -1, 0.35).normalize()
-
-/** Grid texture: 64 px covers 4 x 4 m, a faint line each metre and a strong one each 4 m. */
-const GRID_PX = 64
-const GRID_METRES = 4
-
 const FRAME_RING = 120
+/** LOD swaps wait until the zoom has been still this long (section 4.5: "only when a zoom settles"). */
+const LOD_SETTLE_MS = 180
+/** The selection ring around the booth is scaled to its 6 x 4 m footprint. */
+const BOOTH_RING_SCALE = 1.9
+/** Stack lights are drawn this much larger in the far band (Technical Artist's advice: lamps 2 to 4 px at ppm 7 to 12). */
+const FAR_STACK_SCALE = 1.8
 
 export interface FactoryEngineOptions {
   quality: FactoryQuality
   theme: FactoryTheme
+  kits: FactoryKitSource
+  /** Status token colours (lamps, selection ring); read again on every theme change. */
+  tokens(): FactoryTokenColours
   /** performance.now() when the scene mounted, for firstFrameMs. */
   mountedAt: number
   /** Called after every rendered frame and on loop state changes. */
@@ -106,43 +43,80 @@ export interface FactoryEngineOptions {
 export interface FactoryEngineStats {
   loop: FactoryLoop
   frames: number
-  view: FactoryView
   perf: FactoryPerf | null
+  /** LOD band in use. */
+  lod: LodBand
 }
 
-function hexToRgb(hex: string): [number, number, number] {
-  const n = parseInt(hex.slice(1), 16)
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+/** What the engine draws: the layout plus per-worker lamps and the selection (slice 2). */
+export interface EngineFloor {
+  mode: 'live' | 'team'
+  layout: FloorLayout
+  lamps: Readonly<Record<string, Lamp>>
+  selectedId: string | null
+  /** The run has a plan: draw the plan board (live only). */
+  board: boolean
+}
+
+/** World heights of the drawn objects' tops and label anchors (camera fit, mirror boxes, nameplates). */
+export interface KitHeights {
+  boothTop: number
+  stationTop: number
+  dockTop: number
+  boardTop: number
+  /** Nameplate anchor heights (world y). */
+  boothPlate: number
+  stationPlate: number
+}
+
+type KitName = 'booth' | 'dock' | 'board' | 'lead' | 'bench' | 'machine0' | 'machine1' | 'machine2' | 'machine3' | 'stack' | 'robot' | 'paint' | 'vacant' | 'ring' | 'blob'
+
+const IDENTITY = new Matrix4()
+
+function anchorMatrix(a: Anchor | undefined): Matrix4 {
+  const m = new Matrix4()
+  if (!a) return m
+  m.makeRotationY(a.rotY)
+  m.setPosition(a.x, a.y, a.z)
+  return m
+}
+
+function kitTop(kit: ObjectKit): number {
+  let top = 0
+  const box = new Box3()
+  for (const p of kit.parts) {
+    if (!p.geometry.boundingBox) p.geometry.computeBoundingBox()
+    box.copy(p.geometry.boundingBox!)
+    top = Math.max(top, box.max.y)
+  }
+  return top
 }
 
 export class FactoryEngine {
   private readonly renderer: WebGLRenderer
   private readonly scene = new Scene()
   private readonly camera = new PerspectiveCamera(FOV_DEG, 1, 0.5, 600)
-  private readonly geometries = new Set<BufferGeometry>()
-  private readonly materials = new Set<Material>()
-  private readonly textures = new Set<Texture>()
   private readonly options: FactoryEngineOptions
+  private readonly kits: FactoryKitSource
   private theme: FactoryTheme
   private readonly quality: FactoryQuality
-
-  private readonly hemi = new HemisphereLight()
-  private readonly key = new DirectionalLight()
-  private readonly ambient = new AmbientLight('#ffffff')
-  private readonly gridData = new Uint8Array(GRID_PX * GRID_PX * 4)
-  private readonly gridTexture: DataTexture
-  private readonly floorMat: MeshStandardMaterial
-  private readonly wallMat: MeshStandardMaterial
-  private readonly deckMat: MeshStandardMaterial
-  private readonly boothMat: MeshStandardMaterial
-  private booth: Mesh | null = null
-  private hall: Bounds = EMPTY_HALL
-  private hallMeshes: Mesh[] = []
+  private readonly materials: FactoryMaterials
+  private readonly lighting: FactoryLighting
+  private readonly key: DirectionalLight
+  /** Every geometry the kits built for this engine (disposed with it). */
+  private readonly geometries = new Set<BufferGeometry>()
+  private readonly kitCache = new Map<KitName, ObjectKit>()
+  private readonly pools = new Map<KitName, KitPool>()
+  private hallPool: KitPool | null = null
+  private hallKey = ''
+  private floor: EngineFloor | null = null
+  private readonly lampColours: Record<Lamp | 'off', Color> = { off: new Color(), running: new Color(), 'needs-you': new Color(), failed: new Color() }
 
   private width = 1
   private height = 1
-  private view: FactoryView = { ppm: 20, targetX: 15, targetZ: -4 }
-  private userMoved = false
+  private view: CameraView = { ppm: 20, targetX: 15, targetZ: -4 }
+  private band: LodBand
+  private lodTimer: ReturnType<typeof setTimeout> | null = null
 
   private raf = 0
   private visible = true
@@ -156,7 +130,6 @@ export class FactoryEngine {
   private drawCalls = 0
   private shadowCalls = 0
   private triangles = 0
-  private shadowFrame = false
   private callsAtMainPass = -1
   private trianglesAtMainPass = 0
   /** The next frame recompiles programs (after a context restore). */
@@ -165,8 +138,11 @@ export class FactoryEngine {
 
   constructor(canvas: HTMLCanvasElement, options: FactoryEngineOptions) {
     this.options = options
+    this.kits = options.kits
     this.theme = options.theme
     this.quality = options.quality
+    // Minimal quality (software WebGL) draws the far LOD at every zoom (section 9.2).
+    this.band = options.quality === 'minimal' ? 'far' : 'near'
     // Throws when no context can be made; the caller shows the no-WebGL2 floor plan.
     this.renderer = new WebGLRenderer({
       canvas,
@@ -176,48 +152,44 @@ export class FactoryEngine {
       powerPreference: 'default',
       preserveDrawingBuffer: false
     })
+    let materials: FactoryMaterials | null = null
+    let lighting: FactoryLighting | null = null
     try {
-    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
-    this.renderer.setPixelRatio(options.quality === 'high' ? Math.min(dpr, 1.5) : 1)
-    const shadows = options.quality !== 'minimal'
-    this.renderer.shadowMap.enabled = shadows
-    this.renderer.shadowMap.type = PCFShadowMap
-    this.renderer.shadowMap.autoUpdate = false
-    this.renderer.shadowMap.needsUpdate = shadows
+      const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+      this.renderer.setPixelRatio(options.quality === 'high' ? Math.min(dpr, 1.5) : 1)
+      const shadows = options.quality !== 'minimal'
+      this.renderer.shadowMap.enabled = shadows
+      this.renderer.shadowMap.type = PCFShadowMap
+      this.renderer.shadowMap.autoUpdate = false
+      this.renderer.shadowMap.needsUpdate = shadows
+      this.gpu = this.readGpu()
 
-    this.gpu = this.readGpu()
-
-    this.gridTexture = new DataTexture(this.gridData, GRID_PX, GRID_PX, RGBAFormat)
-    this.gridTexture.colorSpace = SRGBColorSpace
-    this.gridTexture.wrapS = RepeatWrapping
-    this.gridTexture.wrapT = RepeatWrapping
-    this.gridTexture.magFilter = LinearFilter
-    this.gridTexture.minFilter = LinearMipmapLinearFilter
-    this.gridTexture.generateMipmaps = true
-    this.gridTexture.anisotropy = Math.min(4, this.renderer.capabilities.getMaxAnisotropy())
-    this.textures.add(this.gridTexture)
-
-    this.floorMat = this.material({ color: '#ffffff', map: this.gridTexture, roughness: 0.95, metalness: 0 })
-    this.wallMat = this.material({ roughness: 0.9, metalness: 0.05 })
-    this.deckMat = this.material({ roughness: 0.8, metalness: 0.15, flatShading: true })
-    this.boothMat = this.material({ roughness: 0.7, metalness: 0.2, flatShading: true })
-
-    this.key.castShadow = shadows
-    if (shadows) {
-      const size = options.quality === 'high' ? 2048 : 1024
-      this.key.shadow.mapSize.set(size, size)
-      this.key.shadow.bias = -0.0005
-      this.key.shadow.normalBias = 0.02
-    }
-    this.scene.add(this.hemi, this.key, this.key.target, this.ambient)
-
-    this.applyTheme()
-    this.buildHall()
+      const tokens = options.tokens()
+      materials = this.kits.createMaterials(this.theme, tokens)
+      lighting = this.kits.createLighting(this.theme)
+      this.materials = materials
+      this.lighting = lighting
+      this.key = lighting.key as DirectionalLight
+      this.key.castShadow = shadows
+      if (shadows) {
+        const size = options.quality === 'high' ? 2048 : 1024
+        this.key.shadow.mapSize.set(size, size)
+        this.key.shadow.bias = -0.0005
+        this.key.shadow.normalBias = 0.02
+      }
+      for (const l of lighting.lights) this.scene.add(l)
+      if (!this.scene.children.includes(this.key)) this.scene.add(this.key)
+      this.scene.add(this.key.target)
+      this.buildPools()
+      // Hall shell for the empty floor until the first setFloor.
+      this.ensureHall({ minX: 0, maxX: 30, minZ: -10, maxZ: 2 })
+      this.applyTheme(tokens)
     } catch (error) {
       // Setup failed part-way: release everything at once so a failed engine never holds a GPU context.
+      for (const pool of this.pools.values()) pool.dispose()
       for (const g of this.geometries) g.dispose()
-      for (const m of this.materials) m.dispose()
-      for (const t of this.textures) t.dispose()
+      materials?.dispose()
+      lighting?.dispose()
       this.renderer.dispose()
       this.renderer.forceContextLoss()
       throw error
@@ -228,19 +200,32 @@ export class FactoryEngine {
 
   // ---- public API ----
 
+  /** World heights of the kits' tops and label anchors (built once). */
+  heights(): KitHeights {
+    const booth = this.kit('booth')
+    const stationTop = Math.max(kitTop(this.kit('bench')), kitTop(this.kit('lead')), ...[0, 1, 2, 3].map((v) => kitTop(this.kit(`machine${v}` as KitName)) + (this.kit('bench').anchors?.machine?.y ?? 0)), kitTop(this.kit('stack')) + (this.kit('bench').anchors?.stackLight?.y ?? 0), kitTop(this.kit('robot')))
+    return {
+      boothTop: GANTRY_TOP + Math.max(kitTop(booth), kitTop(this.kit('stack')) + (booth.anchors?.stackLight?.y ?? 0)),
+      stationTop,
+      dockTop: GANTRY_TOP + kitTop(this.kit('dock')),
+      boardTop: GANTRY_TOP + kitTop(this.kit('board')),
+      boothPlate: GANTRY_TOP + (booth.anchors?.nameplate?.y ?? kitTop(booth)),
+      stationPlate: this.kit('bench').anchors?.nameplate?.y ?? stationTop
+    }
+  }
+
   setTheme(theme: FactoryTheme): void {
     if (theme === this.theme || this.disposed) return
     this.theme = theme
-    this.applyTheme()
+    this.applyTheme(this.options.tokens())
     this.requestFrame()
   }
 
-  /** The booth placeholder shows once the run has a root (section 8: no root, empty hall with the gantry). */
-  setBooth(on: boolean): void {
-    if (!this.booth || this.booth.visible === on) return
-    this.booth.visible = on
-    this.renderer.shadowMap.needsUpdate = this.renderer.shadowMap.enabled
-    this.requestFrame()
+  /** The floor to draw. Only pools whose instances changed are written; static changes refresh the shadow map. */
+  setFloor(floor: EngineFloor): void {
+    if (this.disposed) return
+    this.floor = floor
+    if (this.syncFloor()) this.requestFrame()
   }
 
   setSize(width: number, height: number): void {
@@ -250,10 +235,25 @@ export class FactoryEngine {
     this.width = w
     this.height = h
     this.renderer.setSize(w, h, false)
-    this.camera.aspect = w / h
-    if (!this.userMoved) this.view = this.fitView()
     this.applyCamera()
     this.requestFrame()
+  }
+
+  /** The camera view (owned by the scene's camera controller). LOD follows once the zoom settles. */
+  setView(view: CameraView): void {
+    if (this.disposed) return
+    this.view = { ...view }
+    this.applyCamera()
+    this.scheduleLod()
+    this.requestFrame()
+  }
+
+  /** Renders a pending frame now (same frame as the DOM mirror's camera update). */
+  flush(): void {
+    if (!this.raf) return
+    cancelAnimationFrame(this.raf)
+    this.raf = 0
+    this.frame(performance.now())
   }
 
   /** Document visible and stage on screen. Hidden stops the loop; becoming visible renders one frame. */
@@ -273,41 +273,23 @@ export class FactoryEngine {
   }
 
   /**
-   * After webglcontextrestored: three has re-created its GL state; mark every uploaded resource dirty so geometry,
-   * textures, programs and the shadow map are rebuilt from the current scene, then render one frame.
+   * After webglcontextrestored: three has re-created its GL state; mark every material and the shadow map dirty so
+   * programs, buffers and textures are rebuilt from the current scene, re-apply the theme, then render one frame.
    */
   rebuild(): void {
     if (this.disposed) return
     this.lost = false
     this.compileFrame = true
-    for (const t of this.textures) t.needsUpdate = true
-    for (const m of this.materials) m.needsUpdate = true
+    this.scene.traverse((o) => {
+      const m = (o as { material?: { needsUpdate: boolean } | { needsUpdate: boolean }[] }).material
+      if (Array.isArray(m)) for (const x of m) x.needsUpdate = true
+      else if (m) m.needsUpdate = true
+      const im = o as { instanceMatrix?: { needsUpdate: boolean }; instanceColor?: { needsUpdate: boolean } | null }
+      if (im.instanceMatrix) im.instanceMatrix.needsUpdate = true
+      if (im.instanceColor) im.instanceColor.needsUpdate = true
+    })
     this.renderer.shadowMap.needsUpdate = this.renderer.shadowMap.enabled
-    // Re-apply the clear colour, grid and lights: the slice 1 screenshot after a restore showed a black clear colour.
-    this.applyTheme()
-    this.requestFrame()
-  }
-
-  getView(): FactoryView {
-    return { ...this.view }
-  }
-
-  /** Sets the camera (zoom buttons); marks the view as moved by the user so a resize does not refit. */
-  setView(view: FactoryView): void {
-    this.view = { ppm: MathUtils.clamp(view.ppm, PPM_MIN, PPM_MAX), targetX: view.targetX, targetZ: view.targetZ }
-    this.userMoved = true
-    this.applyCamera()
-    this.requestFrame()
-  }
-
-  zoomBy(factor: number): void {
-    this.setView({ ...this.view, ppm: this.view.ppm * factor })
-  }
-
-  fit(): void {
-    this.userMoved = false
-    this.view = this.fitView()
-    this.applyCamera()
+    this.applyTheme(this.options.tokens())
     this.requestFrame()
   }
 
@@ -335,24 +317,25 @@ export class FactoryEngine {
         ...(this.gpu ? { gpu: this.gpu } : {})
       }
     }
-    return { loop, frames: this.frames, view: { ...this.view }, perf }
+    return { loop, frames: this.frames, perf, lod: this.band }
   }
 
-  /** Cancels the loop, frees every geometry, material and texture, then the renderer and its context. */
+  /** Cancels the loop and the LOD timer, frees every pool, geometry, material and texture, then the renderer and its context. */
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     this.cancel()
+    if (this.lodTimer) clearTimeout(this.lodTimer)
+    this.lodTimer = null
+    for (const pool of this.pools.values()) pool.dispose()
+    this.pools.clear()
+    this.hallPool?.dispose()
+    this.hallPool = null
     for (const g of this.geometries) g.dispose()
-    for (const m of this.materials) m.dispose()
-    for (const t of this.textures) t.dispose()
-    this.key.shadow.map?.dispose()
-    this.key.dispose()
-    this.hemi.dispose()
-    this.ambient.dispose()
     this.geometries.clear()
-    this.materials.clear()
-    this.textures.clear()
+    this.materials.dispose()
+    this.key.shadow.map?.dispose()
+    this.lighting.dispose()
     this.scene.clear()
     this.renderer.dispose()
     // Frees the context at once (Chromium caps live contexts per page); a lost context has nothing left to free.
@@ -362,15 +345,149 @@ export class FactoryEngine {
 
   // ---- internals ----
 
-  private material(params: ConstructorParameters<typeof MeshStandardMaterial>[0]): MeshStandardMaterial {
-    const m = new MeshStandardMaterial(params)
-    this.materials.add(m)
-    return m
+  private register(kit: ObjectKit): ObjectKit {
+    for (const p of kit.parts) this.geometries.add(p.geometry)
+    return kit
   }
 
-  private geometry<T extends BufferGeometry>(g: T): T {
-    this.geometries.add(g)
-    return g
+  private kit(name: KitName): ObjectKit {
+    const cached = this.kitCache.get(name)
+    if (cached) return cached
+    let kit: ObjectKit | null
+    const k = this.kits
+    switch (name) {
+      case 'booth': kit = k.booth(); break
+      case 'dock': kit = k.dock(); break
+      case 'board': kit = k.board(); break
+      case 'lead': kit = k.station('lead'); break
+      case 'bench': kit = k.station('bench'); break
+      case 'machine0': kit = k.machine(0); break
+      case 'machine1': kit = k.machine(1); break
+      case 'machine2': kit = k.machine(2); break
+      case 'machine3': kit = k.machine(3); break
+      case 'stack': kit = k.stackLight(); break
+      case 'robot': kit = k.robot(); break
+      default: {
+        // Props: one kit per part so each gets its own instances. Built once; the parts share one props() call.
+        const props = this.register(k.props())
+        for (const key of ['paint', 'vacant', 'ring', 'blob'] as const) this.kitCache.set(key, subKit(props, key) ?? { name: `props.${key}`, parts: [] })
+        for (const p of props.parts) if (!['paint', 'vacant', 'ring', 'blob'].includes(p.key)) p.geometry.dispose()
+        return this.kitCache.get(name)!
+      }
+    }
+    this.register(kit)
+    this.kitCache.set(name, kit)
+    return kit
+  }
+
+  private buildPools(): void {
+    const hook = (renderer: WebGLRenderer): void => {
+      if (this.callsAtMainPass >= 0) return
+      this.callsAtMainPass = renderer.info.render.calls
+      this.trianglesAtMainPass = renderer.info.render.triangles
+    }
+    const names: KitName[] = ['booth', 'dock', 'board', 'lead', 'bench', 'machine0', 'machine1', 'machine2', 'machine3', 'stack', 'robot', 'paint', 'vacant', 'ring', 'blob']
+    for (const name of names) {
+      const pool = new KitPool(this.scene, this.kit(name), this.materials, hook)
+      pool.setLod(this.band)
+      this.pools.set(name, pool)
+    }
+    this.drawHook = hook
+  }
+
+  private drawHook: ((renderer: WebGLRenderer) => void) | null = null
+
+  private ensureHall(hall: FloorRect): boolean {
+    const key = `${hall.minX},${hall.maxX},${hall.minZ},${hall.maxZ}`
+    if (key === this.hallKey && this.hallPool) return false
+    this.hallKey = key
+    if (this.hallPool) {
+      for (const p of this.hallPool.kit.parts) {
+        p.geometry.dispose()
+        this.geometries.delete(p.geometry)
+      }
+      this.hallPool.dispose()
+    }
+    const kit = this.register(this.kits.hall(hall))
+    this.hallPool = new KitPool(this.scene, kit, this.materials, this.drawHook ?? undefined, 1)
+    this.hallPool.setLod(this.band)
+    this.hallPool.set([{ key: 'hall', matrix: IDENTITY }])
+    this.fitShadow(hall)
+    return true
+  }
+
+  /** Writes every pool from the current floor; returns true when anything changed. */
+  private syncFloor(): boolean {
+    const floor = this.floor
+    if (!floor) return false
+    const { layout, mode } = floor
+    let changed = this.ensureHall(layout.hall)
+    let shadow = changed
+    const live = mode === 'live'
+    const lists: Record<KitName, InstanceSpec[]> = {
+      booth: [], dock: [], board: [], lead: [], bench: [], machine0: [], machine1: [], machine2: [], machine3: [], stack: [], robot: [], paint: [], vacant: [], ring: [], blob: []
+    }
+    const lampColours = (lamp: Lamp): Record<string, Color> => ({
+      'lamp.top': lamp === 'failed' ? this.lampColours.failed : this.lampColours.off,
+      'lamp.middle': lamp === 'needs-you' ? this.lampColours['needs-you'] : this.lampColours.off,
+      'lamp.bottom': lamp === 'running' ? this.lampColours.running : this.lampColours.off
+    })
+    const place = (x: number, y: number, z: number): Matrix4 => new Matrix4().makeTranslation(x, y, z)
+    // Far band: stack lights grow so the 0.36 m lamps stay a few pixels wide (lamps stay readable, section 4.5).
+    const s = this.band === 'far' ? FAR_STACK_SCALE : 1
+    const stackScale = new Matrix4().makeScale(s, s, s)
+    const stackAt = (base: Matrix4, a: Anchor | undefined): Matrix4 => base.clone().multiply(anchorMatrix(a)).multiply(stackScale)
+    const blob = (key: string, m: Matrix4, size: number): void => {
+      lists.blob.push({ key, matrix: m.clone().multiply(new Matrix4().makeScale(size, 1, size)) })
+    }
+    if (layout.booth) {
+      const id = layout.order.find((i) => layout.stations[i]?.kind === 'booth')
+      const kit = this.kit('booth')
+      const base = place(layout.booth.x, GANTRY_TOP, layout.booth.z)
+      lists.booth.push({ key: 'booth', matrix: base })
+      if (kit.anchors?.robot) {
+        const m = base.clone().multiply(anchorMatrix(kit.anchors.robot))
+        lists.robot.push({ key: id ?? 'booth', matrix: m })
+        blob(`booth:${id}`, m, 1.1)
+      }
+      if (live && kit.anchors?.stackLight) lists.stack.push({ key: id ?? 'booth', matrix: stackAt(base, kit.anchors.stackLight), colours: lampColours(floor.lamps[id ?? ''] ?? 'off') })
+      if (id && floor.selectedId === id) lists.ring.push({ key: 'ring', matrix: base.clone().multiply(new Matrix4().makeScale(BOOTH_RING_SCALE, 1, BOOTH_RING_SCALE * 0.7)) })
+    }
+    if (live) {
+      lists.dock.push({ key: 'dock', matrix: place(DOCK_CENTER.x, GANTRY_TOP, DOCK_CENTER.z) })
+      if (floor.board) lists.board.push({ key: 'board', matrix: place(BOARD_CENTER.x, GANTRY_TOP, BOARD_CENTER.z) })
+    }
+    for (const id of layout.order) {
+      const st = layout.stations[id]
+      if (!st || st.kind === 'booth') continue
+      const kitName: KitName = st.kind === 'lead' ? 'lead' : 'bench'
+      const kit = this.kit(kitName)
+      const base = place(st.center.x, 0, st.center.z)
+      lists[kitName].push({ key: id, matrix: base })
+      if (st.kind === 'bench') lists[`machine${st.variant}` as KitName].push({ key: id, matrix: base.clone().multiply(anchorMatrix(kit.anchors?.machine)) })
+      if (live) lists.stack.push({ key: id, matrix: stackAt(base, kit.anchors?.stackLight), colours: lampColours(floor.lamps[id] ?? 'off') })
+      const robot = base.clone().multiply(anchorMatrix(kit.anchors?.robot))
+      lists.robot.push({ key: id, matrix: robot })
+      blob(id, robot, 1.1)
+      if (floor.selectedId === id) lists.ring.push({ key: 'ring', matrix: base })
+    }
+    for (const v of layout.vacant) lists.vacant.push({ key: v.id, matrix: place(v.center.x, 0, v.center.z) })
+    routeSegments(layout.routes).forEach((s, i) => {
+      const m = new Matrix4().makeRotationY(s.rotY)
+      m.setPosition(s.center.x, 0, s.center.z)
+      m.multiply(new Matrix4().makeScale(s.length, 1, ROUTE_STRIPE_W))
+      lists.paint.push({ key: `${s.line}:${i}`, matrix: m })
+    })
+    for (const [name, list] of Object.entries(lists) as [KitName, InstanceSpec[]][]) {
+      const pool = this.pools.get(name)
+      if (!pool) continue
+      if (pool.set(list)) {
+        changed = true
+        if (pool.castsShadow) shadow = true
+      }
+    }
+    if (shadow) this.renderer.shadowMap.needsUpdate = this.renderer.shadowMap.enabled
+    return changed
   }
 
   private readGpu(): string | undefined {
@@ -393,17 +510,17 @@ export class FactoryEngine {
     this.raf = 0
     if (this.disposed || this.lost || !this.visible) return
     const t0 = performance.now()
-    this.shadowFrame = this.renderer.shadowMap.enabled && this.renderer.shadowMap.needsUpdate
+    const shadowFrame = this.renderer.shadowMap.enabled && this.renderer.shadowMap.needsUpdate
     this.callsAtMainPass = -1
     this.trianglesAtMainPass = 0
     this.renderer.render(this.scene, this.camera)
     const t1 = performance.now()
     const info = this.renderer.info.render
-    // Main pass only: what was counted before the floor (drawn first) belongs to the shadow pass.
-    const shadowPart = this.shadowFrame && this.callsAtMainPass >= 0
-    if (shadowPart) this.shadowCalls = this.callsAtMainPass
-    this.drawCalls = info.calls - (shadowPart ? this.callsAtMainPass : 0)
-    this.triangles = info.triangles - (shadowPart ? this.trianglesAtMainPass : 0)
+    // Main pass only: what was counted before the first pool mesh's onBeforeRender belongs to the shadow pass.
+    const before = this.callsAtMainPass >= 0 ? this.callsAtMainPass : 0
+    if (shadowFrame) this.shadowCalls = before
+    this.drawCalls = info.calls - before
+    this.triangles = info.triangles - (this.callsAtMainPass >= 0 ? this.trianglesAtMainPass : 0)
     this.frames++
     // The first frame after a build compiles every program; it is reported as firstFrameMs, not as a frame time.
     if (this.firstFrameMs < 0) this.firstFrameMs = t1 - this.options.mountedAt
@@ -415,93 +532,50 @@ export class FactoryEngine {
     this.options.onChange?.()
   }
 
-  private applyTheme(): void {
-    const p = PALETTE[this.theme]
-    this.renderer.setClearColor(p.clear, 1)
-    this.paintGrid(p.floor, p.gridFaint, p.gridStrong)
-    this.wallMat.color.set(p.wall)
-    this.deckMat.color.set(p.deck)
-    this.boothMat.color.set(p.booth)
-    this.hemi.color.set(p.sky)
-    this.hemi.groundColor.set(p.ground)
-    this.hemi.intensity = p.hemi
-    this.key.color.set(p.key)
-    this.key.intensity = p.keyIntensity
-    this.ambient.intensity = p.ambient
+  private applyTheme(tokens: FactoryTokenColours): void {
+    this.renderer.setClearColor(this.kits.clearColour(this.theme), 1)
+    this.materials.applyTheme(this.theme, tokens)
+    this.lighting.applyTheme(this.theme, 'on')
+    this.lampColours.off.set(this.kits.lampOffColour(this.theme))
+    this.lampColours.running.set(tokens.success)
+    this.lampColours['needs-you'].set(tokens.warning)
+    this.lampColours.failed.set(tokens.danger)
+    // Lamp instance colours follow the token values of the new theme.
+    this.syncFloor()
   }
 
-  private paintGrid(floor: string, faint: string, strong: string): void {
-    const [fr, fg, fb] = hexToRgb(floor)
-    const [ar, ag, ab] = hexToRgb(faint)
-    const [sr, sg, sb] = hexToRgb(strong)
-    const perMetre = GRID_PX / GRID_METRES
-    for (let y = 0; y < GRID_PX; y++) {
-      for (let x = 0; x < GRID_PX; x++) {
-        const i = (y * GRID_PX + x) * 4
-        const isStrong = x === 0 || y === 0
-        const isFaint = x % perMetre === 0 || y % perMetre === 0
-        const [r, g, b] = isStrong ? [sr, sg, sb] : isFaint ? [ar, ag, ab] : [fr, fg, fb]
-        this.gridData[i] = r
-        this.gridData[i + 1] = g
-        this.gridData[i + 2] = b
-        this.gridData[i + 3] = 255
-      }
+  private scheduleLod(): void {
+    if (this.quality === 'minimal') return
+    const band = lodBand(this.view.ppm)
+    if (band === this.band) {
+      if (this.lodTimer) clearTimeout(this.lodTimer)
+      this.lodTimer = null
+      return
     }
-    this.gridTexture.needsUpdate = true
+    // First view: apply at once (nothing on screen to swap yet).
+    if (this.frames === 0) {
+      this.applyLod(band)
+      return
+    }
+    if (this.lodTimer) clearTimeout(this.lodTimer)
+    this.lodTimer = setTimeout(() => {
+      this.lodTimer = null
+      if (this.disposed) return
+      this.applyLod(lodBand(this.view.ppm))
+      this.requestFrame()
+    }, LOD_SETTLE_MS)
   }
 
-  private buildHall(): void {
-    const h = this.hall
-    const w = h.maxX - h.minX
-    const d = h.maxZ - h.minZ
-    const cx = (h.minX + h.maxX) / 2
-    const cz = (h.minZ + h.maxZ) / 2
-
-    const floorGeo = this.geometry(new PlaneGeometry(w, d))
-    const floor = new Mesh(floorGeo, this.floorMat)
-    floor.rotation.x = -Math.PI / 2
-    floor.position.set(cx, 0, cz)
-    floor.receiveShadow = true
-    // Drawn first in the main pass: the calls counted before it are the shadow pass's.
-    floor.renderOrder = -1
-    floor.onBeforeRender = (renderer) => {
-      if (this.callsAtMainPass >= 0) return
-      this.callsAtMainPass = renderer.info.render.calls
-      this.trianglesAtMainPass = renderer.info.render.triangles
-    }
-    this.gridTexture.repeat.set(w / GRID_METRES, d / GRID_METRES)
-    // Grid lines on world multiples of 4 m (u grows east from minX; v grows north from maxZ).
-    this.gridTexture.offset.set(frac(h.minX / GRID_METRES), frac(-h.maxZ / GRID_METRES))
-
-    const box = (sx: number, sy: number, sz: number, x: number, y: number, z: number, mat: Material): Mesh => {
-      const m = new Mesh(this.geometry(new BoxGeometry(sx, sy, sz)), mat)
-      m.position.set(x, y, z)
-      m.castShadow = true
-      m.receiveShadow = true
-      return m
-    }
-    const walls = [
-      box(w + 2 * WALL_T, WALL_H, WALL_T, cx, WALL_H / 2, h.minZ - WALL_T / 2, this.wallMat),
-      box(w + 2 * WALL_T, WALL_H, WALL_T, cx, WALL_H / 2, h.maxZ + WALL_T / 2, this.wallMat),
-      box(WALL_T, WALL_H, d, h.minX - WALL_T / 2, WALL_H / 2, cz, this.wallMat),
-      box(WALL_T, WALL_H, d, h.maxX + WALL_T / 2, WALL_H / 2, cz, this.wallMat)
-    ]
-    const gantryD = GANTRY_MAX_Z - GANTRY_MIN_Z
-    const deck = box(w, GANTRY_H, gantryD, cx, GANTRY_H / 2, (GANTRY_MIN_Z + GANTRY_MAX_Z) / 2, this.deckMat)
-    const booth = box(BOOTH_W, BOOTH_H, BOOTH_D, BOOTH_CENTER.x, GANTRY_H + BOOTH_H / 2, BOOTH_CENTER.z, this.boothMat)
-    booth.visible = false
-    this.booth = booth
-
-    this.hallMeshes = [floor, ...walls, deck, booth]
-    this.scene.add(...this.hallMeshes)
-    this.fitShadow()
-    this.view = this.fitView()
-    this.applyCamera()
+  private applyLod(band: LodBand): void {
+    this.band = band
+    for (const pool of this.pools.values()) pool.setLod(band)
+    this.hallPool?.setLod(band)
+    // Stack-light scale depends on the band.
+    this.syncFloor()
   }
 
-  /** Orthographic shadow box around the hall plus 2 m, along the key light. */
-  private fitShadow(): void {
-    const h = this.hall
+  /** Orthographic shadow box around the hall plus 2 m, along the key light (section 4.2). */
+  private fitShadow(h: FloorRect): void {
     const cx = (h.minX + h.maxX) / 2
     const cz = (h.minZ + h.maxZ) / 2
     const radius = Math.hypot(h.maxX - h.minX, h.maxZ - h.minZ) / 2 + 2
@@ -520,34 +594,16 @@ export class FactoryEngine {
     this.renderer.shadowMap.needsUpdate = this.renderer.shadowMap.enabled
   }
 
-  /**
-   * Minimal fit (slice 1): the hall with 8 percent padding on each side, ppm clamped to 7..32, target at its centre.
-   * At the target, one metre east spans H / (2 d tan(fov / 2)) px; one metre north is foreshortened by sin(pitch).
-   */
-  private fitView(): FactoryView {
-    const b = this.hall
-    const usableW = this.width * (1 - 2 * FIT_PADDING)
-    const usableH = this.height * (1 - 2 * FIT_PADDING)
-    const ppmX = usableW / (b.maxX - b.minX)
-    const ppmZ = usableH / ((b.maxZ - b.minZ) * Math.sin(MathUtils.degToRad(PITCH_DEG)))
-    const ppm = MathUtils.clamp(Math.min(ppmX, ppmZ), PPM_MIN, FIT_PPM_MAX)
-    return { ppm, targetX: (b.minX + b.maxX) / 2, targetZ: (b.minZ + b.maxZ) / 2 }
-  }
-
   private applyCamera(): void {
-    const { ppm, targetX, targetZ } = this.view
-    const distance = this.height / (2 * ppm * Math.tan(MathUtils.degToRad(FOV_DEG / 2)))
-    const pitch = MathUtils.degToRad(PITCH_DEG)
-    this.camera.position.set(targetX, distance * Math.sin(pitch), targetZ + distance * Math.cos(pitch))
-    this.camera.lookAt(targetX, 0, targetZ)
-    this.camera.near = Math.max(0.5, distance * 0.1)
-    this.camera.far = distance * 4 + 200
+    const stage = { width: this.width, height: this.height, projection: 'perspective' as const }
+    const pose = cameraPose(this.view, stage)
+    this.camera.aspect = this.width / this.height
+    this.camera.position.set(pose.position.x, pose.position.y, pose.position.z)
+    this.camera.lookAt(pose.target.x, pose.target.y, pose.target.z)
+    this.camera.near = Math.max(0.5, pose.distance * 0.1)
+    this.camera.far = pose.distance * 4 + 200
     this.camera.updateProjectionMatrix()
   }
-}
-
-function frac(n: number): number {
-  return n - Math.floor(n)
 }
 
 function push(ring: number[], value: number): void {
