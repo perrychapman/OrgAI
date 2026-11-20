@@ -102,7 +102,7 @@ describe('propose_org_chart in a revision (setup complete)', () => {
     ['the root, with no new root', { roles: [draft('Engineer', 'QA', { slug: 'engineer' })], remove: ['lead'] }, /exactly one root/],
     ['a reference to a removed role', { roles: [draft('Engineer', 'Lead', { slug: 'engineer' })], remove: ['lead'] }, /removed roles do not count\): Engineer reportsTo "Lead"/],
     ['a manager that matches no role', { roles: [draft('Security', 'Ghost Team')] }, /Security reportsTo "Ghost Team"/],
-    ['a new role missing fields', { roles: [{ name: 'Security', tools: ['Read'], reportsTo: 'Lead' }] }, /role "Security" is missing description, responsibilities, prompt, canSpawn, spawnable/],
+    ['a new role missing fields', { roles: [{ name: 'Security', tools: ['Read'], reportsTo: 'Lead' }] }, /role "Security" is missing description, responsibilities, prompt\./],
     ['an unknown slug that is not the slug of its name', { roles: [draft('Security', 'Lead', { slug: 'sec-old' })] }, /no existing role with slug "sec-old"/]
   ])('REVISE for %s, and the user is not asked', async (_l, args, re) => {
     const { text, ctx } = await propose(revisionProject(), args, proxyConn)
@@ -318,8 +318,42 @@ describe('first-time setup drafts', () => {
 
   it('a role missing a required field is a REVISE, even with an existing slug', async () => {
     const { text, ctx } = await propose(first(), { roles: [draft('Lead', null, { slug: 'lead' }), { slug: 'engineer', tools: ['Read'] }] }, proxyConn)
-    expect(text).toMatch(/^REVISE\. The org chart was not shown to the user: role "engineer" is missing name, description, responsibilities, prompt, canSpawn, spawnable, reportsTo\. In first-time setup every role needs every field\./)
+    expect(text).toMatch(/^REVISE\. The org chart was not shown to the user: role "engineer" is missing name, description, responsibilities, prompt, reportsTo\. In first-time setup every role needs every field except canSpawn and spawnable/)
     expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('leaves omit canSpawn and spawnable: accepted as false / [], a manager still gains its reports', async () => {
+    const strip = (d: Record<string, unknown>) => {
+      const { canSpawn: _c, spawnable: _s, ...rest } = d
+      return rest
+    }
+    const { roles, text } = await propose(
+      first(),
+      { roles: [strip(draft('Lead', null)), strip(draft('Backend Engineer', 'Lead')), strip(draft('QA', 'Lead'))] },
+      proxyConn
+    )
+    expect(text).toMatch(/^APPROVED/)
+    const by = (n: string) => roles!.find((r) => r.name === n)!
+    expect(by('Backend Engineer')).toMatchObject({ canSpawn: false, spawnable: [] })
+    expect(by('QA')).toMatchObject({ canSpawn: false, spawnable: [] })
+    expect(by('Lead').canSpawn).toBe(true)
+    expect(by('Lead').spawnable.sort()).toEqual([by('Backend Engineer').id, by('QA').id].sort())
+  })
+
+  it('a new role still needs prompt and tools', async () => {
+    const { prompt: _p, ...noPrompt } = draft('Dev', 'Lead')
+    const { tools: _t, ...noTools } = draft('Ops', 'Lead')
+    for (const bad of [noPrompt, noTools]) {
+      const { text, ctx } = await propose(first(), { roles: [draft('Lead', null), bad] }, proxyConn)
+      expect(text).toMatch(/^REVISE\. The org chart was not shown to the user: role "(Dev|Ops)" is missing (prompt|tools)\./)
+      expect(ctx.requestProposal).not.toHaveBeenCalled()
+    }
+  })
+
+  it('an existing-role patch is unaffected (omitted spawnable keeps the current one)', async () => {
+    const { roles, text } = await propose(revisionProject(), { roles: [{ slug: 'reviewer', prompt: 'New prompt.' }] }, proxyConn)
+    expect(text).toMatch(/^APPROVED/)
+    expect(roles!.find((r) => r.slug === 'reviewer')).toMatchObject({ canSpawn: true, spawnable: ['r-qa'], prompt: 'New prompt.' })
   })
 
   it('references resolve by slug as well as name, and an unknown slug is a new role', async () => {

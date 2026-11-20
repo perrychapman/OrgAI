@@ -385,7 +385,7 @@ export const draftRoleSchema = z.object({
   model: z.string().optional().describe('Tier top, deep, everyday or fast, inherit, or a listed model id; omit to keep'),
   connection: z.string().optional().describe("Only for another provider: a connection id; omit for the project's"),
   canSpawn: z.boolean().optional(),
-  spawnable: z.array(z.string()).optional().describe('Role names or slugs it may delegate to'),
+  spawnable: z.array(z.string()).optional().describe('Role names or slugs it may delegate to; new role: omit with canSpawn'),
   requiredReports: z.array(z.string()).optional().describe('Names from spawnable it must always delegate to; omit to keep, [] to clear'),
   reportsTo: z.string().nullable().optional().describe("Manager's role name or slug; null for the root")
 })
@@ -448,10 +448,13 @@ export function completeDrafts(existing: readonly Role[], drafts: readonly Draft
         d.reportsTo = cur.reportsTo === null ? null : managerRemoved ? slugOfId(root!.id) : slugOfId(cur.reportsTo)
       }
     } else {
+      // A leaf role that cannot spawn is unambiguous: omitted canSpawn is false, omitted spawnable is [].
+      d.canSpawn ??= false
+      d.spawnable ??= []
       const missing = DRAFT_REQUIRED.filter((k) => d[k] === undefined)
       if (missing.length) {
         return {
-          error: `${NOT_SHOWN} role "${label}" is missing ${missing.join(', ')}. ${revision ? 'A new role needs every field; to change only some fields of an existing role, give its slug.' : 'In first-time setup every role needs every field.'}`
+          error: `${NOT_SHOWN} role "${label}" is missing ${missing.join(', ')}. ${revision ? 'A new role needs every field except canSpawn and spawnable (omit them for a role that cannot spawn); to change only some fields of an existing role, give its slug.' : 'In first-time setup every role needs every field except canSpawn and spawnable (omit them for a role that cannot spawn).'}`
         }
       }
     }
