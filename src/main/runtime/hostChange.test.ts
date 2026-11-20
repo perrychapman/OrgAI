@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyGrantEdits,
+  cardRolesForStore,
   grantEditsOf,
+  slugsForStore,
+  upsertFieldsOf,
   itemEditOf,
   itemGrantEditsOf,
   keepRunSlugs,
@@ -156,6 +159,67 @@ describe('mcpRolesForRun (slug-keyed MCP grants as the run names its roles)', ()
     const items = [spec(['engineer'])]
     expect(mcpRolesForRun(items, orgChart(), orgChart())).toEqual(items)
     expect(mcpRolesForRun(undefined, orgChart(), orgChart())).toBeUndefined()
+  })
+  it("H1: a waiting role's slug grant reaches no running role that kept the same slug; a free waiting slug is remembered", () => {
+    const running = orgChart()
+    const stored = [...orgChart().map((r) => (r.id === 'r-eng' ? { ...r, slug: 'builder' } : r)), role({ id: 'r-new', slug: 'engineer' }), role({ id: 'r-qa', slug: 'qa' })]
+    expect(mcpRolesForRun([spec(['engineer']), spec(['qa']), spec(['builder'])], stored, running)).toEqual([spec([]), spec(['qa']), spec(['engineer'])])
+  })
+})
+
+describe('slugsForStore (rename follow-up a: agent slugs to the stored roles)', () => {
+  const running = orgChart()
+  it("maps a running role's kept slug to its stored slug by id; other slugs stay", () => {
+    const stored = orgChart().map((r) => (r.id === 'r-eng' ? { ...r, slug: 'builder' } : r))
+    expect(slugsForStore(['engineer', 'reviewer', 'ghost'], running, stored)).toEqual(['builder', 'reviewer', 'ghost'])
+  })
+  it('never lands on another stored role holding the kept slug; identity when nothing differs', () => {
+    const stored = [...orgChart().map((r) => (r.id === 'r-eng' ? { ...r, slug: 'builder' } : r)), role({ id: 'r-new', slug: 'engineer' })]
+    expect(slugsForStore(['engineer'], running, stored)).toEqual(['builder'])
+    expect(slugsForStore(['engineer', 'lead'], running, orgChart())).toEqual(['engineer', 'lead'])
+    // A running role the store no longer has: its slug is dropped only when another stored role holds it.
+    const gone = [...orgChart().filter((r) => r.id !== 'r-eng'), role({ id: 'r-other', slug: 'engineer' })]
+    expect(slugsForStore(['engineer'], running, gone)).toEqual([])
+    expect(slugsForStore(['engineer'], running, orgChart().filter((r) => r.id !== 'r-eng'))).toEqual(['engineer'])
+  })
+})
+
+describe('cardRolesForStore (rename follow-up b: a run card never reverts a rename)', () => {
+  const running = orgChart()
+  it('gives a running role its stored slug, and its stored name when the card left the name as the run had it', () => {
+    const stored = orgChart().map((r) => (r.id === 'r-eng' ? { ...r, slug: 'builder', name: 'Builder' } : r))
+    const card = orgChart().map((r) => (r.id === 'r-rev' ? { ...r, prompt: 'P' } : r))
+    const out = cardRolesForStore(card, running, running, stored)
+    expect(out.find((r) => r.id === 'r-eng')).toMatchObject({ slug: 'builder', name: 'Builder' })
+    expect(out.find((r) => r.id === 'r-rev')).toBe(card.find((r) => r.id === 'r-rev'))
+  })
+  it("keeps the card's own rename, matches fresh ids by slug and never touches a waiting role sharing the kept slug", () => {
+    const stored = [...orgChart().map((r) => (r.id === 'r-eng' ? { ...r, slug: 'builder', name: 'Builder' } : r)), role({ id: 'r-new', slug: 'engineer', name: 'New' })]
+    const card = [
+      ...orgChart().map((r) => (r.id === 'r-eng' ? { ...r, id: 'fresh-1', name: 'Card Name' } : r)),
+      role({ id: 'r-new', slug: 'engineer', name: 'New' })
+    ]
+    const out = cardRolesForStore(card, running, running, stored)
+    expect(out.find((r) => r.id === 'fresh-1')).toMatchObject({ slug: 'builder', name: 'Card Name' })
+    expect(out.find((r) => r.id === 'r-new')).toMatchObject({ slug: 'engineer', name: 'New' })
+  })
+  it('returns the same array when nothing differs', () => {
+    const card = orgChart()
+    expect(cardRolesForStore(card, running, running, orgChart())).toBe(card)
+  })
+})
+
+describe('upsertFieldsOf (review L4: mcp:upsert fields of a linked server)', () => {
+  const entry = { id: 'lib1', name: 'docs', transport: 'stdio', command: 'npx', args: ['-y', 'docs@2'] }
+  const stored = { id: 'm1', name: 'docs', transport: 'stdio', command: 'npx', args: ['-y', 'docs@1'], libraryId: 'lib1', source: 'library', enabled: true }
+  it('drops library-sourced keys the input left out or set to the library value; keeps own keys and real edits', () => {
+    expect(upsertFieldsOf({ id: 'm1', name: 'docs', libraryId: 'lib1', enabled: false, args: ['-y', 'docs@2'] }, stored, entry).sort()).toEqual(['enabled', 'id', 'libraryId', 'source'])
+    expect(upsertFieldsOf({ id: 'm1', libraryId: 'lib1', command: 'node' }, stored, entry)).toContain('command')
+  })
+  it('keeps every key for an unlinked server, an unknown entry or a server relinked elsewhere', () => {
+    const plain = { id: 'm1', name: 'docs', command: 'npx' }
+    expect(upsertFieldsOf(plain, { ...plain, args: [] }, undefined).sort()).toEqual(['args', 'command', 'id', 'name'])
+    expect(upsertFieldsOf({ ...stored, libraryId: 'lib2' }, stored, entry).sort()).toEqual(Object.keys(stored).sort())
   })
 })
 

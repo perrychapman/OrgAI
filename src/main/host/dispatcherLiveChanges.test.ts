@@ -61,7 +61,8 @@ function rig(answer: () => Promise<LiveRunChange[]> = async () => CANNED) {
     upsert: vi.fn((i: { spec: McpServerSpec }) => ({ project: set({ mcpServers: [...store[0].mcpServers!.filter((s) => s.id !== i.spec.id), i.spec] }), servers: [] })),
     remove: vi.fn((i: { serverId: string }) => ({ project: set({ mcpServers: store[0].mcpServers!.filter((s) => s.id !== i.serverId) }), servers: [] })),
     linkLibrary: vi.fn((i: { libraryId: string }) => ({ project: set({ mcpServers: [...store[0].mcpServers!, server('mcp_new', 'linked-srv', { libraryId: i.libraryId })] }), servers: [] })),
-    setProjectOverrides: vi.fn(() => ({ project: store[0], servers: [] }))
+    setProjectOverrides: vi.fn(() => ({ project: store[0], servers: [] })),
+    libraryEntries: vi.fn((): unknown[] => [])
   }
   const skillsSvc = {
     list: vi.fn(() => []),
@@ -157,6 +158,18 @@ describe('desktop saves reach live runs (applyProjectChange)', () => {
     r.store[0] = { ...r.store[0], mcpServers: [server('mcp_old', 'old-srv', { args: ['a'] })] }
     await r.call(IPC.mcpUpsert, { projectId: P, spec: server('mcp_old', 'old-srv', { env: { A: 'b' } }) })
     expect((r.calls[0].change as { fields: string[] }).fields.sort()).toEqual(['args', 'command', 'env', 'id', 'name', 'transport'])
+  })
+
+  it('review L4: mcp:upsert of a library-linked server leaves out library fields the input did not change against the entry', async () => {
+    const r = rig()
+    r.store[0] = { ...r.store[0], mcpServers: [server('mcp_old', 'old-srv', { args: ['v1'], libraryId: 'lib1', source: 'library', enabled: true })] }
+    r.mcp.libraryEntries.mockReturnValue([{ id: 'lib1', name: 'old-srv', transport: 'stdio', command: 'x', args: ['v2'] }])
+    // The Settings form sends the linked server back with the library's values and a new enabled flag.
+    await r.call(IPC.mcpUpsert, { projectId: P, spec: server('mcp_old', 'old-srv', { args: ['v2'], libraryId: 'lib1', source: 'library', enabled: false }) })
+    expect((r.calls[0].change as { fields: string[] }).fields.sort()).toEqual(['enabled', 'id', 'libraryId', 'source'])
+    // A library field the input really changed still counts.
+    await r.call(IPC.mcpUpsert, { projectId: P, spec: server('mcp_old', 'old-srv', { args: ['mine'], libraryId: 'lib1', source: 'library', enabled: false }) })
+    expect((r.calls[1].change as { fields: string[] }).fields).toContain('args')
   })
 
   it('mcp:remove takes the name from the project as it was before', async () => {
