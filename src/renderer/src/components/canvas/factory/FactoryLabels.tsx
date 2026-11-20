@@ -27,8 +27,6 @@ export interface NameplateData {
   anchor: Vec3
   /** The worker's branch has a merge conflict (section 4.4: "Merge conflict" on the second line). */
   conflict: boolean
-  /** Replaces the status word on the plate only (the booth reads "Paused" while the run is paused). */
-  shownWord?: 'Paused'
 }
 
 export interface SignData {
@@ -135,10 +133,10 @@ export function FactoryLabels({ mode, plates, signs, dock, board, handleRef }: F
   return (
     <div className="factory-labels" aria-hidden="true">
       {plates.map((p) => {
-        const word = p.shownWord ?? p.entry.word
+        const word = p.entry.shownWord ?? p.entry.word
         const glyph = mode === 'live' ? wordIcon(word) : undefined
         // A paused booth shows only "Paused" (its activity is from before the pause).
-        const activity = p.shownWord ? '' : clip(p.activity, 40)
+        const activity = p.entry.shownWord ? '' : clip(p.activity, 40)
         const steps = p.entry.stepIds
         return (
           <div

@@ -267,9 +267,26 @@ button.factory-worker:focus-visible {
 
 /* The plan board tile in the floor plan (in the 3D view it is a transparent button over the board). */
 .factory-mirror[data-renderer='floor-plan'] .factory-plan-board {
+  justify-content: center;
   background: var(--surface-1);
   border-style: dashed;
   border-color: var(--border-strong);
+}
+
+.factory-plan-board-count {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+
+@container (max-height: 30px) {
+  .factory-plan-board-count {
+    display: none;
+  }
 }
 
 /* The status icon carries the lamp colour; the word stays in the text colour for contrast. */

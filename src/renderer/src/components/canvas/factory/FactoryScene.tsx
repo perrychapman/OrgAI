@@ -177,7 +177,8 @@ function describe(
   if (wt) parts.push(wt)
   if (mode === 'live' && extra.paused && st?.kind === 'booth') parts.push('Run paused')
   for (const id of extra.stepIds) parts.push(`Plan step ${id}: ${extra.stepTitles.get(id) ?? ''}`.trimEnd())
-  const text = parts.join('. ')
+  // A part that already ends a sentence ("Thinking…") is not given a second full stop.
+  const text = parts.reduce((acc, p) => (acc ? `${acc}${/[.…!?]$/.test(acc) ? ' ' : '. '}${p}` : p), '')
   return text.length > DESCRIPTION_MAX ? `${text.slice(0, DESCRIPTION_MAX - 1)}…` : text
 }
 
@@ -254,15 +255,16 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         pose: w.pose,
         fenced: w.fenced,
         ...(w.crate ? { crate: w.crate.at, crateLamp: w.crate.lamp } : {}),
-        stepIds: w.stepIds
+        stepIds: w.stepIds,
+        // Section 1.4: the booth's plate (and floor plan tile) says "Paused" while the run is paused.
+        ...(mode === 'live' && hall === 'paused' && st.kind === 'booth' ? { shownWord: 'Paused' as const } : {})
       }
       list.push(e)
       plateList.push({
         entry: e,
         activity: w.activity,
         anchor: { x: st.center.x, y: 0, z: st.center.z },
-        conflict: a.worktree?.status === 'conflict',
-        ...(mode === 'live' && hall === 'paused' && st.kind === 'booth' ? { shownWord: 'Paused' as const } : {})
+        conflict: a.worktree?.status === 'conflict'
       })
     }
     return { entries: list, plates: plateList }
@@ -375,7 +377,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         minY: plan ? 0 : GANTRY_TOP,
         maxY: plan ? 0 : h.boardTop,
         minZ: c.z - BOARD_SIZE.d / 2,
-        maxZ: c.z + BOARD_SIZE.d / 2 + (plan ? 0.6 : 0)
+        // The plan tile is deeper than the board so its count line fits (it stays clear of the dock zone).
+        maxZ: c.z + BOARD_SIZE.d / 2 + (plan ? 1.2 : 0)
       }
     }
     const st = layoutRef.current.stations[id]

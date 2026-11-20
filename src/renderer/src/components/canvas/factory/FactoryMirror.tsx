@@ -30,6 +30,8 @@ export interface MirrorEntry {
   crateLamp?: Lamp
   /** In-progress plan steps this worker owns (the chip). */
   stepIds: readonly string[]
+  /** Replaces the word on the visible tile and nameplate only (the booth reads "Paused" while the run is paused). */
+  shownWord?: 'Paused'
 }
 
 /** The plan board's counts (live, with a plan). */
@@ -175,7 +177,7 @@ export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
   )
 
   const tile = (e: MirrorEntry, i: number): ReactElement => {
-    const glyph = mode === 'live' ? WORD_ICON[e.word] : undefined
+    const glyph = mode === 'live' ? WORD_ICON[e.shownWord ?? e.word] : undefined
     const mark = mode === 'live' && plan ? crateMark(e) : null
     const descId = `${idBase}-d${i}`
     const ref = place(`worker:${e.id}`, boxFor(e.id), MIN_TARGET_PX)
@@ -231,7 +233,7 @@ export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
             {mode === 'live' && (
               <span className="factory-worker-status">
                 {glyph && <Icon icon={glyph} size="xs" />}
-                <span className="factory-worker-word">{e.word}</span>
+                <span className="factory-worker-word">{e.shownWord ?? e.word}</span>
               </span>
             )}
             {mode === 'live' && (mark || e.stepIds.length > 0) && (
@@ -284,10 +286,8 @@ export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
       {plan && (
         <span className="factory-worker-face" aria-hidden="true">
           <span className="factory-worker-name">Plan</span>
-          <span className="factory-worker-status">
-            <span className="factory-worker-word">
-              {board.done} of {board.total} done{board.blocked ? ` · ${board.blocked} blocked` : ''}
-            </span>
+          <span className="factory-plan-board-count">
+            {board.done} of {board.total} done{board.blocked ? ` · ${board.blocked} blocked` : ''}
           </span>
         </span>
       )}
