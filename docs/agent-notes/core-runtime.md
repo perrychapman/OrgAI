@@ -719,6 +719,8 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     mention are kept (removal only through propose_org_chart `remove`), and an edited role keeps its model and tier
     unless the draft names a different resolving tier or listed id; a new role's unmapped tier never silently becomes
     'inherit' while a listed model or the root's model exists. Unit-tested only; no live Architect run.
+    Revision guidance (2026-11-19): the design principles apply only to added roles and changed fields; a role changes
+    only when the run record or user shows a problem with it, and a clean run proposes nothing. Wording only; unverified by a benchmark rerun.
   - Patches and references (2026-11-19, benchmark tuning): `completeDrafts` (harnessTools.ts) runs before any
     conversion. In a revision (propose_org_chart on a completed setup, and propose_org_change) a draft whose slug (else
     name) matches a current role is a PATCH: omitted fields keep the current value (spawnable / reportsTo as current
