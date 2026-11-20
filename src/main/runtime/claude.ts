@@ -33,7 +33,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentInstance, Effort, ImageAttachment, McpServerSpec, ModelTier, PluginSpec, Project, RunSummary, Role, RunEvent, StaffingAssignment, TranscriptBlock, UsageStatus, WorktreeInfo } from '@shared/types'
 import type { PermissionDecision, PermissionMode, PermissionSuggestion, ProviderAuth } from '@shared/types'
-import { BRIDGE_HARNESS_TOOLS, KNOWLEDGE_RECALL_TOOL, READ_DOCUMENT_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
+import { BRIDGE_HARNESS_TOOLS, DEFAULT_MAX_AUTO_CONTINUES, KNOWLEDGE_RECALL_TOOL, READ_DOCUMENT_TOOL, SPAWN_TOOL, isBuiltinConnectionId, isEffort, isModelTier } from '@shared/types'
 import { ANTHROPIC_BUILTIN_MODELS, compareEffort, connectionName, effectiveRoleStaffing, effortOptionsFor, projectConnection, roleConnection, effectiveSubagentLimits, isolateWritersOn, mcpServersForRole, newId, planGuardEngaged, planGuardOf, projectKindOf, settingTier, staffingGoalOf, staffingModeOf, tierForModel } from '@shared/defaults'
 import { CLAUDE_TIER_ALIAS, recordStaffing, roleModelTier } from './staffing'
 import { StaffingBook } from './staffingBook'
@@ -65,7 +65,7 @@ import {
   referenceTouchOf
 } from './referenceDirectories'
 import { SHELL_TOOLS, isUnsafeSegment, matchOptionsFor, matchingRule, programRunsProgram, ruleCoversButRefused, splitCommand, unwrapShellCommand, type MatchOptions } from './ruleMatch'
-import { ContinuationDriver, agentSlots, compactionStateText, rootRoleNames, stepActivity } from './continuation'
+import { ContinuationDriver, agentSlots, compactionStateText, nextNudge, rootRoleNames, stepActivity } from './continuation'
 import { LIST_AGENTS_TOOL, MESSAGE_TOOL, buildRolePrompt, peerMessageText, canWrite, composeFirstMessage, isArchitectureFile } from './prompts'
 import { staffingProfileDep, withRootStaffingBrief } from '../store/staffingProfile'
 import { firstMessageHiddenContext, spawnKnowledge, userMessageKnowledge, withSpawnKnowledge, withUserMessageKnowledge } from './knowledgeDelivery'
@@ -1593,6 +1593,12 @@ export class ClaudeSession implements RuntimeSession {
   private restartHostOnly = false
   /** Restarted queries that failed before their init since the last one that started (reset at init). */
   private restartFailures = 0
+  /**
+   * Restarted queries that died before their init. Marked before recoverRestart awaits the next build, while `this.q`
+   * still points at the dead one: an attach notice for it that resolves late (announceAttached waits on its
+   * mcpServerStatus) must not land after dropFailedRestartNotes ran, or the retry / fallback adds a second notice.
+   */
+  private deadQueries = new WeakSet<Query>()
   /** Servers left out of every later query after a restart with them could not start. */
   private droppedMcp = new Set<string>()
   /** The latest successful turn end was held back from the continuation driver because an MCP restart was due. */
@@ -1791,7 +1797,7 @@ export class ClaudeSession implements RuntimeSession {
       notify: (text) => this.notifyOrchestrator(text)
     })
     // Background bridged reports (delegate_agent background: true) are not subagents of this session but still count.
-    const live = (): number => [...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size
+    const live = (): number => this.liveReportCount()
     // The plan tools count free agent slots from ctx.liveReports; only this adapter knows its live threads.
     // A child or fake context without it reads as zero live reports.
     ctx.liveReports = live
@@ -1811,9 +1817,7 @@ export class ClaudeSession implements RuntimeSession {
       liveReports: live,
       // Interactive work runs only: a headless exec run has nobody to read a turn-1 text-only reply ("I'll look at the
       // tests"), so it keeps the set-plan nudge rather than settling as completed-unplanned.
-      directAnswerTurn: () =>
-        ctx.run.kind === 'work' && !ctx.run.overrides?.execMode && !this.isSetup && this.continuation.turnGen === 1 && this.rootToolCalls === 0 && live() === 0 && ctx.pendingInteractions() === 0 &&
-        (this.startObligations[this.rootId]?.length ?? 0) === 0,
+      directAnswerTurn: () => this.directAnswerTurn(this.continuation.turnGen),
       slots: () => agentSlots(ctx, live()),
       ownRoles: () => rootRoleNames(ctx.roles),
       lastReportEndedAt: () => {
@@ -4809,6 +4813,8 @@ export class ClaudeSession implements RuntimeSession {
       // Never left unhandled (review N4): a failure still sends a notice with the known tool names and releases a
       // deferred turn end, so an unattended run does not stall.
       void this.announceAttached(next.servers, next.tools, q, config).catch((e) => {
+        // A query that died before its init: its retry or fallback announces (and releases the turn end) instead.
+        if (this.deadQueries.has(q)) return
         this.log('warn', `Could not read the attached MCP servers' grants: ${redactSecrets((e as Error)?.message ?? String(e), this.secrets)}`)
         try {
           const names = [...new Set([...next.servers, ...(config?.regranted ?? [])])]
@@ -4886,7 +4892,7 @@ export class ClaudeSession implements RuntimeSession {
     servers: string[],
     extra?: { removed: string[]; skills?: SkillNoticeEntry[] | null; roster?: RosterNotice; host?: 'only' | 'also' }
   ): void {
-    if (this.abort.signal.aborted || this.q !== q) return
+    if (this.abort.signal.aborted || this.q !== q || this.deadQueries.has(q)) return
     let text: string
     let summary: string
     if (extra) {
@@ -5245,7 +5251,9 @@ export class ClaudeSession implements RuntimeSession {
             // The old query was closed for an MCP restart; the next one takes over below.
           } else if (this.restarts > 0 && !this.queryInitSeen && this.sessionId) {
             // A restarted query failed before it started: never fail the run for it (review M4). The notices its restart
-            // left waiting go; a retry sends its own, a fallback says what could not be applied.
+            // left waiting go; a retry sends its own, a fallback says what could not be applied. The dead query is marked
+            // first: its attach notice may still be on its way (announceAttached) while this.q points at it.
+            if (this.q) this.deadQueries.add(this.q)
             this.dropFailedRestartNotes()
             const { next, why } = await this.recoverRestart(redactSecrets((e as Error).message ?? String(e), this.secrets))
             if (!next) {
@@ -5303,14 +5311,17 @@ export class ClaudeSession implements RuntimeSession {
    * the pause reason asks the user to send it again, so it cannot arrive twice and RESUME_TEXT never replaces it.
    */
   private endPausedAfterRestart(why: string): void {
+    // A restart for the user's own change in OrgAI alone, with no message waiting for the orchestrator and no turn end
+    // held back for it that the continuation driver would have nudged for: nothing was going to start a turn, so an
+    // automatic resume (RESUME_TEXT) would be a turn nobody asked for (review H1; a deferred turn end of a run with no
+    // plan left, auto-continue off or the limit reached counts as nothing). It waits for the user like a held run.
+    // Asked before `ending` is set: the driver's inputs would read it as stopping.
+    const wouldNudge = this.turnEndDeferred && this.deferredTurnWouldNudge()
     this.pausedEnd = true
     this.ending = true
     const undelivered = this.undeliveredUserMessages()
-    // A restart for the user's own change in OrgAI alone, with no turn end held back for it and no message waiting for
-    // the orchestrator: nothing was going to start a turn, so an automatic resume (RESUME_TEXT) would be a turn nobody
-    // asked for (review H1). It waits for the user like a held run.
     const unreadHarness = [...new Set([...this.preInit, ...this.input.peek()])].filter((m) => this.harnessMessages.has(m)).length
-    const hostOnly = this.restartHostOnly && !this.turnEndDeferred && unreadHarness === 0 && undelivered === 0
+    const hostOnly = this.restartHostOnly && !wouldNudge && unreadHarness === 0 && undelivered === 0
     // A run the user interrupted (or the window cap stopped) waits for the user, never auto-resumes (review N1).
     const autoResume = !(this.held || this.capTripped || undelivered > 0 || hostOnly)
     const pausedUntil = autoResume ? Date.now() + MCP_RESTART_PAUSE_MS : undefined
@@ -5330,6 +5341,51 @@ export class ClaudeSession implements RuntimeSession {
     this.transcript(ROOT_ID, { kind: 'system', text: `${base} The run is paused.${resend}`, detail: why }, { source: 'harness' })
     this.setState(ROOT_ID, 'idle', 'Paused')
     this.emit({ type: 'run.status', runId: this.ctx.run.id, status: 'paused', ...(pausedUntil ? { pausedUntil } : {}), pauseReason: reason, autoResume })
+  }
+
+  /** Reports still working: subagents of this session plus background bridged reports (the driver's liveReports). */
+  private liveReportCount(): number {
+    return [...this.agents.values()].filter((a) => a.id !== ROOT_ID && a.state !== 'done' && a.state !== 'error').length + this.bridgedLive.size
+  }
+
+  /**
+   * The root turn `gen` was a pure direct answer (the driver's directAnswerTurn). Interactive work runs only: a headless
+   * exec run has nobody to read a turn-1 text-only reply ("I'll look at the tests"), so it keeps the set-plan nudge.
+   */
+  private directAnswerTurn(gen: number): boolean {
+    return (
+      this.ctx.run.kind === 'work' && !this.ctx.run.overrides?.execMode && !this.isSetup && gen === 1 && this.rootToolCalls === 0 && this.liveReportCount() === 0 &&
+      this.ctx.pendingInteractions() === 0 && (this.startObligations[this.rootId]?.length ?? 0) === 0
+    )
+  }
+
+  /**
+   * Would the continuation driver have nudged for the turn end held back for a restart (turnEndDeferred)? Asked purely
+   * through nextNudge with the driver's inputs as they are now: nothing is consumed, counted or sent. Plan-less turns
+   * count as the first only while the driver has not sent its set-plan nudge (it counts them the same way). Call before
+   * the session is marked ending (stopping would read true).
+   */
+  private deferredTurnWouldNudge(): boolean {
+    const ctx = this.ctx
+    const liveReports = this.liveReportCount()
+    const decision = nextNudge({
+      plan: ctx.getPlan(),
+      kind: ctx.run.kind,
+      autoContinue: ctx.autoContinue !== false,
+      maxAutoContinues: ctx.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
+      liveReports,
+      pendingInteractions: ctx.pendingInteractions(),
+      rateLimited: this.limited,
+      stopping: this.continuation.isHeld() || this.ending || this.capTripped || this.abort.signal.aborted,
+      turnsWithoutPlan: this.continuation.nudgeTurn1Sent ? 2 : 1,
+      orchestratorBusy: false,
+      projectKind: projectKindOf(ctx.project),
+      slots: agentSlots(ctx, liveReports),
+      ownRoles: rootRoleNames(ctx.roles),
+      ...(this.directAnswerTurn(this.deferredTurnGen) ? { directAnswerOnly: true } : {}),
+      ...(this.continuation.compactionStopped ? { compactionThrash: true } : {})
+    })
+    return decision.kind !== 'none'
   }
 
   /** The run's closing status: 'error' with the readable message after an auth failure, else 'finished'. */
