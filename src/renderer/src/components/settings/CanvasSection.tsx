@@ -3,8 +3,8 @@ import { useId, useRef, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { CanvasEdgeStyle, CanvasLayout, CanvasNodeStyle, CanvasPattern } from '@shared/types'
 import { CANVAS_PATTERNS } from '@shared/types'
-import { AVAILABLE_NODE_STYLES, applyCanvasStyle, effectiveNodeStyle, shownStyle, styleLabel, type CanvasStyleId } from '../../lib/canvas'
-import { canvasAnnouncement, SCENE_PALETTE_OPTIONS, type CanvasSettings } from '../../lib/canvasSettings'
+import { AVAILABLE_NODE_STYLES, applyCanvasStyle, effectiveNodeStyle, isScenePresentation, shownStyle, styleLabel, type CanvasStyleId } from '../../lib/canvas'
+import { canvasAnnouncement, presentationLabel, SCENE_PALETTE_OPTIONS, type CanvasSettings } from '../../lib/canvasSettings'
 import { CanvasPresetGroup } from '../canvas/CanvasPresetGroup'
 import { CanvasPreview } from '../canvas/CanvasPreview'
 import { CanvasPresentationChoices } from '../canvas/CanvasPresentationChoices'
@@ -96,13 +96,13 @@ export function CanvasSection({ canvas, onChange }: { canvas: CanvasSettings; on
     >
       <div className="canvas-section">
         <SettingsCard>
-          <CanvasPresentationChoices canvas={canvas} onPresentation={(presentation) => { change({ presentation }); setSaid(`Canvas presentation: ${presentation === 'graph' ? 'Graph' : 'Pocket Office'}.`) }} onPalette={(scenePalette) => { change({ scenePalette }); setSaid(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`) }} />
+          <CanvasPresentationChoices canvas={canvas} onPresentation={(presentation) => { change({ presentation }); setSaid(`Canvas presentation: ${presentationLabel(presentation)}.`) }} onPalette={(scenePalette) => { change({ scenePalette }); setSaid(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`) }} />
         </SettingsCard>
         <div className="canvas-section-body" data-presentation={canvas.presentation}>
           <div className="canvas-section-preview">
             <CanvasPreview />
           </div>
-          {canvas.presentation !== 'pocket-office' && <div className="canvas-section-main">
+          {!isScenePresentation(canvas.presentation) && <div className="canvas-section-main">
             <h3>Graph styles</h3>
             <CanvasPresetGroup canvas={canvas} onPick={pick} variant="gallery" groupRef={groupRef} label="Graph style" />
             <div className="canvas-customise">

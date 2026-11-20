@@ -327,6 +327,15 @@ describe('appearance', () => {
     }
   })
 
+  it('keeps the factory-floor presentation and the saved scene palette', () => {
+    expect(normalizeAppearance({ canvas: { presentation: 'factory-floor', scenePalette: 'green' } }).canvas)
+      .toMatchObject({ presentation: 'factory-floor', scenePalette: 'green' })
+    expect(normalizeAppearance({ canvas: { presentation: 'factory-floor', scenePalette: 'invalid' } }).canvas)
+      .toMatchObject({ presentation: 'factory-floor', scenePalette: 'color' })
+    const saved = normalizeAppearance({ canvas: { presentation: 'factory-floor' } })
+    expect(normalizeAppearance(JSON.parse(JSON.stringify(saved)))).toEqual(saved)
+  })
+
   it('round-trips scene selection without losing any graph preference or palette', () => {
     const graph = normalizeAppearance({ canvas: { pattern: 'circuit', tint: false, edges: 'straight', layout: 'left-right', nodeStyle: 'station', minimap: true, scenePalette: 'green' } })
     const scene = normalizeAppearance({ ...graph, canvas: { ...graph.canvas, presentation: 'pocket-office' } })

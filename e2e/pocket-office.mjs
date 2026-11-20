@@ -146,7 +146,7 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   check(await scene().locator('[data-testid=office-pause], [data-testid=office-bubble], [data-testid=office-mark], [data-testid=office-stage], button, a, input').count() === 0, 'the settings sample is inert: no Pause motion, bubbles, marks, stage or controls')
   check(await scene().locator('.office-sample-frame[aria-hidden="true"] i').count() >= 1, 'the settings sample is one framed, hidden-from-assistive-tech picture')
   check(await section.locator('[data-testid=canvas-preset]').count() === 0 && await section.locator('[data-testid=canvas-customise]').count() === 0, 'Office settings show no unrelated Graph gallery or controls')
-  check(await section.locator('[data-testid=canvas-presentation-choice]').count() === 2, 'presentation offers two visual choices')
+  check(await section.locator('[data-testid=canvas-presentation-choice]').count() === 3, 'presentation offers three visual choices (Graph, Pocket Office, Factory Floor)')
   check(await section.locator('[data-testid=canvas-palette-choice]').count() === 3, 'Office offers three visual palette previews')
   check(/across the app/i.test(await section.innerText()), 'settings explains the app-wide scope')
   check(await section.locator('[data-testid=canvas-scene-palette] input[value="color"]').isChecked(), 'Color is exposed and selected as the default office palette')

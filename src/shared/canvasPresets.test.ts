@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CANVAS_PRESETS, DEFAULT_APPEARANCE, activeCanvasPreset, applyCanvasPreset } from './defaults'
-import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS } from './types'
+import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, CANVAS_PRESENTATIONS } from './types'
 
 describe('canvas presets', () => {
   it('lists the patterns in contract order', () => {
@@ -20,13 +20,17 @@ describe('canvas presets', () => {
     }
   })
 
+  it('lists the presentations in contract order, Factory Floor last', () => {
+    expect(CANVAS_PRESENTATIONS).toEqual(['graph', 'pocket-office', 'factory-floor'])
+  })
+
   it('defaults to the graph presentation and full color scene palette', () => {
     expect(DEFAULT_APPEARANCE.canvas).toMatchObject({ presentation: 'graph', scenePalette: 'color' })
   })
 
   it('preserves scene preferences and minimap for every graph preset', () => {
     for (const p of CANVAS_PRESETS) {
-      for (const presentation of ['graph', 'pocket-office'] as const) {
+      for (const presentation of ['graph', 'pocket-office', 'factory-floor'] as const) {
         for (const scenePalette of ['color', 'neutral', 'green'] as const) {
           for (const minimap of [true, false]) {
             const canvas = { ...DEFAULT_APPEARANCE.canvas, presentation, scenePalette, minimap }

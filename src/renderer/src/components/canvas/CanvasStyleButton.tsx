@@ -1,8 +1,8 @@
 import type { ReactElement } from 'react'
 import { useRef } from 'react'
 import { Palette } from 'lucide-react'
-import { applyCanvasStyle, styleLabel, useCanvasOptions, type CanvasStyleId } from '../../lib/canvas'
-import { canvasAnnouncement, saveCanvas, SCENE_PALETTE_OPTIONS } from '../../lib/canvasSettings'
+import { applyCanvasStyle, isScenePresentation, styleLabel, useCanvasOptions, type CanvasStyleId } from '../../lib/canvas'
+import { canvasAnnouncement, presentationLabel, saveCanvas, SCENE_PALETTE_OPTIONS } from '../../lib/canvasSettings'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { useAppStore } from '../../store/useAppStore'
 import { useFrameAnnounce } from '../layout/CanvasFrame'
@@ -32,12 +32,12 @@ function StylePanel({ close }: { close: () => void }): ReactElement {
     }}>
       <h3 className="canvas-style-popover-heading">Canvas style</h3>
       <CanvasPresentationChoices canvas={canvas} onPresentation={(presentation) => {
-        void saveCanvas((c) => ({ ...c, presentation })).then(() => announce?.(`Canvas presentation: ${presentation === 'graph' ? 'Graph' : 'Pocket Office'}.`), () => announce?.('Could not save canvas presentation.'))
+        void saveCanvas((c) => ({ ...c, presentation })).then(() => announce?.(`Canvas presentation: ${presentationLabel(presentation)}.`), () => announce?.('Could not save canvas presentation.'))
       }} onPalette={(scenePalette) => {
         void saveCanvas((c) => ({ ...c, scenePalette })).then(() => announce?.(`Office palette: ${SCENE_PALETTE_OPTIONS.find(option => option.value === scenePalette)?.label}.`), () => announce?.('Could not save office palette.'))
       }} />
       <p>Applies across the app, including Live and Team.</p>
-      {canvas.presentation !== 'pocket-office' && <><h4>Graph styles</h4><CanvasPresetGroup canvas={canvas} onPick={pick} variant="compact" label="Graph style" /></>}
+      {!isScenePresentation(canvas.presentation) && <><h4>Graph styles</h4><CanvasPresetGroup canvas={canvas} onPick={pick} variant="compact" label="Graph style" /></>}
       <div className="canvas-style-popover-foot">
         <Button
           variant="ghost"
