@@ -319,7 +319,9 @@ export function panIntoView(view: CameraView, footprint: Box3, stage: Stage, edg
   // screen position and sent the pan the wrong way, found on the slice 3 screenshots): first put the stage centre on the
   // footprint's centre, then converge from there.
   const far = (r: typeof first): boolean =>
-    ![r.left, r.right, r.top, r.bottom].every(Number.isFinite) || r.right < -W || r.left > 2 * W || r.bottom < -H || r.top > 2 * H || r.right < r.left || r.bottom < r.top
+    ![r.left, r.right, r.top, r.bottom].every(Number.isFinite) || r.right < -W || r.left > 2 * W || r.bottom < -H || r.top > 2 * H || r.right < r.left || r.bottom < r.top ||
+    // Straddling the camera plane: the corners scatter to both sides, far larger than any station at the 60 ppm limit.
+    r.right - r.left > 2 * W || r.bottom - r.top > 2 * H
   if (far(first)) {
     next = { ...view, targetX: (footprint.minX + footprint.maxX) / 2, targetZ: (footprint.minZ + footprint.maxZ) / 2 }
     first = projectFootprint(next, stage, footprint)
