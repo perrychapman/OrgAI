@@ -58,7 +58,11 @@ export function renderReport(results, summary) {
   else {
     out.push(table(['check', 'dimension', 'failed', 'of', 'mean credit %', 'scenarios', 'example'], summary.weakestChecks.slice(0, 20).map((c) => [`${c.family}/${c.id}`, c.dimension, c.fails, c.total, pct(c.meanCredit), c.scenarios.join(' '), c.sample]), [0, 1, 5, 6]), '')
   }
-  out.push('## Sessions', '', ...(results.sessions ?? []).map(sessionLine), '')
+  out.push('## Sessions', '', ...(results.sessions ?? []).flatMap((s) => [
+    sessionLine(s),
+    ...(Array.isArray(s.rejections) ? s.rejections : []).map((r) => `  - rejected: ${cell(r)}`),
+    ...(s.cleanupNote ? [`  - note: ${cell(s.cleanupNote)}`] : [])
+  ]), '')
   out.push('Model output is data: role names and rationales above are shown as the model wrote them.', '')
   return out.join('\n')
 }

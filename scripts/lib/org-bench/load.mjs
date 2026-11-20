@@ -17,7 +17,8 @@
 //  - the run record the retro scenarios expand into (RunRecord) is built here from a compact spec; the condenser that reads
 //    it (SetupService.retroContext) is the real one.
 import { createRequire } from 'node:module'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -55,6 +56,42 @@ export function writeFixture(dir, files = {}) {
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, text)
   }
+}
+
+/**
+ * Removes a session folder without ever throwing (Windows: a child process can still hold it, EBUSY). Retries a few times
+ * with a short delay, then leaves the folder. Returns null on success or a note for the session record.
+ * `remove` and `sleep` are injectable for tests.
+ */
+export function cleanupDir(dir, { remove = (d) => rmSync(d, { recursive: true, force: true }), tries = 5, delayMs = 400, sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) } = {}) {
+  let last
+  for (let i = 0; i < tries; i++) {
+    try {
+      remove(dir)
+      return null
+    } catch (e) {
+      last = e
+      if (i < tries - 1) sleep(delayMs)
+    }
+  }
+  return `could not remove ${dir} after ${tries} tries (${String(last?.message ?? last).slice(0, 120)}); folder left in place`
+}
+
+/**
+ * Makes dir a git repository with one commit of everything in it (fixed author, committer and dates so runs are reproducible).
+ * Returns { ok, note }; when git is unavailable or a step fails, ok is false and the note says why (the session still runs).
+ */
+export function initGitRepo(dir) {
+  const stamp = '2024-01-01T00:00:00Z'
+  const env = {
+    ...process.env, GIT_AUTHOR_NAME: 'Bench', GIT_AUTHOR_EMAIL: 'bench@example.invalid', GIT_COMMITTER_NAME: 'Bench',
+    GIT_COMMITTER_EMAIL: 'bench@example.invalid', GIT_AUTHOR_DATE: stamp, GIT_COMMITTER_DATE: stamp, GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null'
+  }
+  for (const args of [['init', '-q', '-b', 'main'], ['add', '-A'], ['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'Initial commit']]) {
+    const r = spawnSync('git', args, { cwd: dir, env, encoding: 'utf8' })
+    if (r.error || r.status !== 0) return { ok: false, note: `git ${args[0]} failed: ${r.error?.message ?? (r.stderr || '').trim()}` }
+  }
+  return { ok: true, note: 'git repository with one commit' }
 }
 
 /** The compact `run` spec of a retro scenario as a RunRecord (only the fields SetupService.retroContext reads). */
@@ -97,6 +134,7 @@ export const RETRO_NUDGE = 'Go ahead: propose the changes the run record calls f
 export async function buildCase(src, scenario, dir) {
   const { setup: S, defaults: D, prompts: P, harness: H, service: SV, profile: PR, draft: DR } = src
   writeFixture(dir, scenario.files)
+  const git = scenario.git ? initGitRepo(dir) : null
   const kind = scenario.kind
   const retro = scenario.family === 'retro'
   // A neutral project name: the scenario title would name the planted defect.
@@ -143,5 +181,5 @@ export async function buildCase(src, scenario, dir) {
     emit: () => {}
   }
   const tools = H.harnessToolsFor(ctx, { onDecided: () => {} })
-  return { project, architect, system, firstMessage, tools, ctx, probe, prompt, hidden, instructions: H.SETUP_TOOLS_INSTRUCTIONS, decisionText: H.decisionText }
+  return { git, project, architect, system, firstMessage, tools, ctx, probe, prompt, hidden, instructions: H.SETUP_TOOLS_INSTRUCTIONS, decisionText: H.decisionText }
 }

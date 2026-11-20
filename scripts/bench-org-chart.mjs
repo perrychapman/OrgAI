@@ -17,14 +17,14 @@
 // scripts/measure-prompt-size.mjs it loads the REAL TypeScript source through jiti with the '@shared' alias (no Electron).
 // What is imported and what is mirrored: scripts/lib/org-bench/load.mjs.
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { SCENARIOS, scenarioById, scenariosOf } from './lib/org-bench/scenarios.mjs'
 import { SCORER_VERSION, compareSummaries, rescore, scoreSession, summarize } from './lib/org-bench/score.mjs'
 import { renderCompare, renderReport } from './lib/org-bench/report.mjs'
-import { REPO_ROOT, buildCase, loadSource } from './lib/org-bench/load.mjs'
+import { REPO_ROOT, buildCase, cleanupDir, loadSource } from './lib/org-bench/load.mjs'
 import { runSession } from './lib/org-bench/session.mjs'
 
 export const DEFAULTS = { repeat: 1, maxUsd: 5, family: 'all', timeoutSec: 300, maxTurns: 30 }
@@ -126,7 +126,7 @@ async function describeSource(scenarios) {
       const toolChars = built.tools.reduce((n, t) => n + JSON.stringify({ name: t.name, description: t.description, schema: z.toJSONSchema(t.inputSchema) }).length, 0)
       console.log(`  ${s.id.padEnd(3)} system prompt ${String(built.system.length).padStart(6)} chars (${built.system.trim().split(/\s+/).length} words), first message ${String(built.firstMessage.length).padStart(6)} chars, ${built.tools.length} tools ${toolChars} chars${s.family === 'retro' ? `, chart ${built.project.roles.length} roles` : ''}`)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      cleanupDir(dir, { tries: 2, delayMs: 200 })
     }
   }
   const names = rows[0]?.built.tools.map((t) => `mcp__orgai__${t.name}`)
@@ -160,10 +160,18 @@ async function liveRun(o, scenarios) {
       } catch (e) {
         results.sessions.push({ family: scenario.family, scenarioId: scenario.id, repeat, model: o.model, kind: scenario.kind, complexity: scenario.complexity, status: 'error', errors: [String(e?.message ?? e).slice(0, 300)], costUsd: 0 })
         console.log(`  ${scenario.id} #${repeat}: error: ${String(e?.message ?? e).slice(0, 200)}`)
-      } finally {
-        rmSync(dir, { recursive: true, force: true })
       }
-      writeResults(outDir, results) // after every session, so an interrupted run keeps what it has
+      // Cleanup never throws (a Windows child can still hold the folder): retry, then leave it and note it on the session.
+      const note = cleanupDir(dir)
+      if (note) {
+        results.sessions.at(-1).cleanupNote = note
+        console.log(`  ${scenario.id} #${repeat}: ${note}`)
+      }
+      try {
+        writeResults(outDir, results) // after every session, so an interrupted run keeps what it has
+      } catch (e) {
+        console.log(`  could not write results after ${scenario.id} #${repeat}: ${String(e?.message ?? e).slice(0, 160)}`)
+      }
     }
   }
   const { summary } = writeResults(outDir, results)

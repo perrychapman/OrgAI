@@ -194,6 +194,20 @@ Mirrored (restated; marked `MIRRORS` in the code):
 
 ## Limits and what is unverified
 
+- **Retro fixtures (changed 2026-11-19).** The Architect has Read, Glob and Grep, so it checks the working folder against the
+  run record. Before this change the retro folders were empty or held only the pre-run files, so a record claiming written
+  files, passing tests and merged branches contradicted the folder, and a deep-tier r5 session "fixed" the healthy chart for
+  work it found missing (no `/stock/low` route, not a git repository). Now every retro scenario carries the post-run files its
+  record names, `.orgai/ARCHITECTURE.md` matching the approved summary, and `git: true` makes the folder a repository with one
+  commit (fixed author and dates; skipped with a note in the session's `fixtureGit` when git is missing). Contradictions fixed:
+  r1 (migrations 004-006, reorder column in db, client and tests absent), r2 (filter subcommand and `tests/test_filter.py`
+  absent), r3 (`/vehicles/status` and the dashboard absent), r4 (fastify not upgraded; the record's "14 call sites" softened
+  because the fixture has few), r5 (route, query, table and tests absent; "all 12 tests" softened), r6 (pagination and tests
+  absent). The files show the post-merge state, so r3's conflict is visible only in the record. `--self-check` and
+  `runner.test.mjs` require every path a record names to exist. **Retro results recorded before this change are affected, r5
+  most (its healthy-chart control measured the fixture); re-baseline before comparing.** Not verified: that live Architect
+  sessions now leave r5 alone.
+
 - **No live session was run when this was written.** Verified without a model: the real source loads through jiti; the real
   `propose_org_chart` validation accepts the canned valid charts and refuses the canned invalid ones, in both families; the
   scorer on hand-written good and bad charts and revisions (`score.test.mjs`); the stub tools, the follow-up logic, the
