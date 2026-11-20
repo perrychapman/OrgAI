@@ -62,7 +62,9 @@
   background: var(--xy-handle-background-color);
   border: 2px solid var(--xy-handle-border-color);
 }
-.react-flow__node {
+/* React Flow 13 ships its stylesheet in `@layer xyflow`, so any unlayered rule of ours beats its `.draggable { cursor: grab }`
+   and `.dragging { cursor: grabbing }` whatever the specificity. Leave draggable nodes (the Team editor) to the library. */
+.react-flow__node:not(.draggable) {
   cursor: pointer;
 }
 

@@ -1,5 +1,5 @@
 import { useId, type ReactElement } from 'react'
-import { useStore } from '@xyflow/react'
+import { useViewportStore } from '@xyflow/react'
 import type { CanvasPattern } from '../../../../shared/types'
 import { useCanvasOptions } from '../../lib/canvas'
 import type { RingGuides } from '../../lib/layout'
@@ -147,7 +147,7 @@ export function BackdropTile({
 
 export function CanvasBackdrop({ rings }: { rings?: RingGuides }): ReactElement {
   const { pattern } = useCanvasOptions()
-  const transform = useStore((s) => s.transform)
+  const transform = useViewportStore((s) => s.transform)
   const id = `bd${useId().replace(/:/g, '')}`
   const [x, y, zoom] = transform
   const view = `translate(${x} ${y}) scale(${zoom})`

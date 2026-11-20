@@ -1,16 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { fitOptions } from './canvasFit'
+import { fitOptions, legacyFitPadding } from './canvasFit'
+
+describe('legacyFitPadding', () => {
+  it('turns a React Flow 12 padding into the per-side percentage v13 expects', () => {
+    expect(legacyFitPadding(0.1)).toBe('4.55%')
+    expect(legacyFitPadding(0.25)).toBe('10%')
+    expect(legacyFitPadding(0.3)).toBe('11.54%')
+    expect(legacyFitPadding(1)).toBe('25%')
+  })
+})
 
 describe('fitOptions', () => {
   it('top-down and left-right keep the plain fit', () => {
-    expect(fitOptions({ stageHeight: 600, radial: false, nodeStyle: 'card', duration: 0 })).toEqual({ padding: 0.25, maxZoom: 1, duration: 0 })
+    expect(fitOptions({ stageHeight: 600, radial: false, nodeStyle: 'card', duration: 0 })).toEqual({ padding: '10%', maxZoom: 1, duration: 0 })
   })
   it('a short stage keeps zoom at 0.8 or more', () => {
     expect(fitOptions({ stageHeight: 280, radial: false, nodeStyle: 'card', duration: 150 }).minZoom).toBe(0.8)
   })
   it('radial cards never fit below the zoom that keeps names about 9 px', () => {
     const o = fitOptions({ stageHeight: 500, radial: true, nodeStyle: 'card', duration: 0 })
-    expect(o.padding).toBe(0.12)
+    expect(o.padding).toBe('5.36%')
     expect(o.minZoom).toBe(0.7)
     expect(13 * (o.minZoom ?? 0)).toBeGreaterThanOrEqual(9)
     expect(fitOptions({ stageHeight: 500, radial: true, duration: 0 }).minZoom).toBe(0.7)
