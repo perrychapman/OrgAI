@@ -5,7 +5,7 @@ import path from 'node:path'
 import type { McpRegistryEntry, McpServerSpec, McpServersProposalPayload, Proposal, RunPeer } from '@shared/types'
 import { ROOT_AGENT_ID, type RunMessageOutcome, type RunSkill } from './types'
 import { PROPOSAL_TOOLS } from '@shared/setup'
-import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS } from '@shared/types'
+import { HARNESS_PROJECT_ID, MCP_HARNESS_TOOLS, PERMISSION_HARNESS_TOOLS, SKILL_ASSIST_HARNESS_TOOLS } from '@shared/types'
 import { DECLINED_PER_KIND_MAX, INTEGRATE_TOOL, SKILL_MD_RETURN_MAX_BYTES, answerText, harnessToolsFor, isBlockingHarnessTool, isInsideDir, safeMcpToolNames, setupTools, workTools, type HarnessTool } from './harnessTools'
 import { PLAN_TOOLS } from './continuation'
 import { fakeCtx, mcpSpec, project, runSummary } from './testHelpers'
@@ -56,7 +56,11 @@ describe('setupTools', () => {
       ...Object.values(PROPOSAL_TOOLS).filter((n) => n !== PROPOSAL_TOOLS.orgChange),
       PERMISSION_HARNESS_TOOLS.request,
       MCP_HARNESS_TOOLS.listServers,
-      MCP_HARNESS_TOOLS.proposeServers
+      MCP_HARNESS_TOOLS.proposeServers,
+      // Skills reach roles only through the approval card (never the orgai command, which the self-control gate refuses).
+      SKILL_ASSIST_HARNESS_TOOLS.list,
+      SKILL_ASSIST_HARNESS_TOOLS.read,
+      SKILL_ASSIST_HARNESS_TOOLS.propose
     ]
     expect(names.sort()).toEqual(setupNames.sort())
     expect(names).not.toContain(INTEGRATE_TOOL)
@@ -1385,6 +1389,82 @@ describe('work run: propose_skills', () => {
     const tools = harnessToolsFor(ctx)
     expect(await byName(tools, 'list_skill_library').call({})).toContain('name=triage | libraryId=lib1')
     expect(await byName(tools, 'read_library_skill').call({ libraryId: 'lib1' })).toContain('Triage text')
+  })
+})
+
+describe('setup run (the Architect): propose_skills', () => {
+  const entry = (id: string, name: string) => ({ id, name, description: `Use ${name}`, source: 'user' as const, digest: 'd', files: [{ path: 'SKILL.md', bytes: 1 }], addedAt: '', updatedAt: '' })
+  const pskill = (id: string, name: string, grantedTo: string[]) => ({ spec: { id, name, description: `Desc ${name}`, enabled: true, source: 'user' as const, digest: 'd', files: [], addedAt: '', updatedAt: '' }, grantedTo })
+  const catalog = () => ({
+    library: [{ entry: entry('lib1', 'triage'), usedBy: [{ projectId: 'other', projectName: 'Secret Other', skillId: 'x', roleNames: [] }] }],
+    project: [pskill('s1', 'review-code', ['r-eng'])]
+  })
+  const sCtx = (over = {}) => fakeCtx({ run: runSummary({ kind: 'setup' }), skillCatalog: catalog, ...over })
+  const call = (ctx: ReturnType<typeof fakeCtx>, items: unknown[], hooks = {}) => byName(harnessToolsFor(ctx, hooks), 'propose_skills').call({ title: 't', rationale: 'Because.', items })
+  const payloadOf = (ctx: ReturnType<typeof fakeCtx>) => vi.mocked(ctx.requestProposal).mock.calls[0][0].payload as { items: Array<Record<string, unknown>>; rationale: string }
+
+  it('setup runs bind the three skill tools next to the MCP tools; the proposal is root only', () => {
+    const names = harnessToolsFor(sCtx()).map((t) => t.name)
+    expect(names).toEqual(expect.arrayContaining(['list_skill_library', 'read_library_skill', 'propose_skills', 'list_mcp_servers', 'propose_mcp_servers']))
+    expect(byName(harnessToolsFor(sCtx()), 'propose_skills').audience).toBe('root')
+    expect(byName(harnessToolsFor(sCtx()), 'propose_skills').description).toContain('scope library: Skill assistant only')
+  })
+
+  it('refuses library scope before any card, like a work run', async () => {
+    const ctx = sCtx()
+    for (const action of ['create', 'update']) {
+      const text = await call(ctx, [{ action, scope: 'library', libraryId: 'lib1', draft: { name: 'triage', description: 'd', body: 'b' } }])
+      expect(text).toMatch(/^REVISE\..*scope "library" is not available/)
+    }
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('refuses an unknown role slug before any card', async () => {
+    const ctx = sCtx()
+    expect(await call(ctx, [{ action: 'link', scope: 'project', libraryId: 'lib1', roles: ['ghost'] }])).toMatch(/^REVISE\..*no role "ghost"/)
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('first-time setup before the org chart is approved: a clear REVISE, never a card', async () => {
+    const ctx = sCtx({ project: project({ roles: [] }) })
+    for (const items of [[{ action: 'link', scope: 'project', libraryId: 'lib1', roles: ['lead'] }], [{ action: 'create', scope: 'project', draft: { name: 'x-skill', description: 'd', body: 'b' } }]]) {
+      const text = await call(ctx, items)
+      expect(text).toMatch(/^REVISE\. The proposal was not shown to the user: this project has no roles yet\. Get the org chart approved with propose_org_chart first/)
+    }
+    expect(ctx.requestProposal).not.toHaveBeenCalled()
+  })
+
+  it('reads the roles at call time: a role added by an approved org chart is grantable in the same session', async () => {
+    const ctx = sCtx({ project: project({ roles: [] }) })
+    expect(await call(ctx, [{ action: 'link', scope: 'project', libraryId: 'lib1', roles: ['lead'] }])).toMatch(/no roles yet/)
+    // RunManager's setLive replaces ctx.project after an approved propose_org_chart.
+    ctx.project = project()
+    const text = await call(ctx, [{ action: 'link', scope: 'project', libraryId: 'lib1', roles: ['lead'] }])
+    expect(text).toMatch(/^APPROVED\. Linked triage from the skill library to this project \(loaded by lead\)\./)
+    expect(payloadOf(ctx).items[0]).toEqual({ action: 'link', scope: 'project', libraryId: 'lib1', draft: { name: 'triage', description: 'Use triage', body: '' }, roles: ['lead'] })
+  })
+
+  it('grants and creates project skills; never tells the session to reload (setup-like runs take no config changes)', async () => {
+    const configChanged = vi.fn(async (_c: ConfigChange): Promise<ConfigChangeResult> => ({ availability: 'now' }))
+    const ctx = sCtx()
+    const text = await call(ctx, [
+      { action: 'grant', scope: 'project', name: 'review-code', roles: ['engineer'] },
+      { action: 'create', scope: 'project', draft: { name: 'new-skill', description: 'When X.', body: 'Do it.' }, roles: ['lead'] }
+    ], { configChanged })
+    expect(text).toMatch(/^APPROVED\./)
+    expect(text).not.toContain('in effect now')
+    expect(configChanged).not.toHaveBeenCalled()
+  })
+
+  it('list_skill_library hides which other projects use a library entry, as in a work run', async () => {
+    const text = await byName(harnessToolsFor(sCtx()), 'list_skill_library').call({})
+    expect(text).toContain('name=triage | libraryId=lib1')
+    expect(text).toContain('<project-skills>')
+    expect(text).not.toContain('Secret Other')
+  })
+
+  it('says so when RunManager bound no catalog', async () => {
+    expect(await call(sCtx({ skillCatalog: undefined }), [{ action: 'link', scope: 'project', libraryId: 'lib1' }])).toMatch(/not available in this run/)
   })
 })
 

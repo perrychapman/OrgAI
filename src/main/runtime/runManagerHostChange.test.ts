@@ -978,6 +978,38 @@ async function approveCard(m: RunManager, ctx: RuntimeContext, req: Omit<Proposa
 const mcpCard = (spec: McpServerSpec) => ({ kind: 'mcpServers', agentId: 'root', title: 't', payload: { upsert: [spec], rationale: 'r' } }) as Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>
 const storedRole = (p: Project, id: string) => store.get(p.id)!.roles.find((r) => r.id === id)
 
+describe("the Architect's skill card (setup run)", () => {
+  it('is applied project-only and reaches a live work run of the project as source card, through the same fan-out', async () => {
+    const p0 = newProject()
+    const p = store.save({ ...p0, skills: [skill('s-notes', 'notes')] })
+    const opts: Array<{ projectOnly?: boolean }> = []
+    setup = new SetupService(store, {
+      skills: {
+        applyProposal: (pid, payload, o) => {
+          opts.push({ ...o })
+          const cur = store.get(pid!)!
+          const slugs = payload.items[0].roles ?? []
+          return store.save({ ...cur, roles: cur.roles.map((r) => ({ ...r, skills: slugs.includes(r.slug) ? ['s-notes'] : (r.skills ?? []).filter((x) => x !== 's-notes') })) })
+        }
+      }
+    })
+    const { m, ctxs, calls } = rig()
+    const work = await m.start({ project: p, prompt: 'work' })
+    const arch = await m.start({ project: store.get(p.id)!, prompt: 'review the team', kind: 'setup' })
+    expect(arch.kind).toBe('setup')
+    const out = await approveCard(m, ctxs[1], { kind: 'skills', agentId: 'root', title: 't', payload: { items: [{ action: 'grant', draft: { name: 'notes', description: 'd', body: '' }, roles: ['engineer'], scope: 'project' }], rationale: 'r' } } as Omit<Proposal, 'id' | 'runId' | 'createdAt' | 'effect'>)
+    expect(out).toEqual({ behavior: 'approve' })
+    expect(opts).toEqual([{ projectOnly: true }])
+    expect(storedRole(p, 'r-eng')!.skills).toEqual(['s-notes'])
+    // The live work run took it through applyProjectChange (hostConfigChanged and run.liveChange), as for a Skill assistant card.
+    await vi.waitFor(() => expect(roleOf(ctxs[0], 'r-eng').skills).toEqual(['s-notes']))
+    expect(calls.some((c) => c.skills !== undefined)).toBe(true)
+    expect(logs(work.id).some((l) => l.startsWith('You approved') && l.includes('in another session'))).toBe(true)
+    expect(events.some((e) => e.type === 'run.liveChange' && e.runId === work.id && (e as { source?: string }).source === 'card')).toBe(true)
+    await m.stopAll()
+  })
+})
+
 describe('rename follow-up review: slug-keyed grants and kept slugs', () => {
   /** Rename r-eng (Builder / builder) in the editor, then add r-new under the slug the run kept (deferred slugTaken). */
   async function renamedWithNewEngineer(m: RunManager, p: Project) {

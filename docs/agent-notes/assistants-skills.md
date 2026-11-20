@@ -83,6 +83,32 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
   skill library first, then propose a skill.", calls `list_skill_library`, then `propose_skills` (title "Mock skill",
   one create of `mock-skill`, scope 'library' on 'skills', 'project' with the first role's slug on a project), and
   after APPROVED says "The skill is set up." and goes idle. Quick-run markers `[mock:self-config]` (says "Let me look that up in OrgAI's reference.", app_reference locate "theme", open_in_app `app-settings-general-appearance`, propose_app_settings appearance.theme light; "Done: the theme is now light." on APPROVED, "The theme is already light." on "Nothing to change", else "Understood; I left the settings alone.") and `[mock:self-config-project]` (list_projects, propose_project_settings maxBudgetUsd 5 for the first id; "Done: that project now has a $5 cap from its next run." on APPROVED, else "Understood; I left the project alone.", "You have no OrgAI projects yet." without one) call the real bound tools, never retry on REVISE, and are ignored on work runs (mockSelfConfig.test.ts). Verified by unit tests and the mock only; no live run.
+  - Architect skill grants (2026-11-20; ARCHITECTURE.md "Architect skill grants"). Root cause of the owner's report
+    "the org chart editor cannot attach skills to roles": the self-control gate (`selfControlGate.ts`, unchanged)
+    refuses every `orgai` call by agents, and setup runs had no skill tool (SETUP_TOOL_DEFS had only the MCP tools;
+    RunManager bound `skillCatalog` / `readSkill` for work, quick and skill-assist runs only), so the CLI was the
+    Architect's only route. Now a 'setup' run (also the Team tab's org change session) on a stored project gets
+    `list_skill_library`, `read_library_skill` and `propose_skills`, project scope only: harnessTools.ts
+    `skillsProjectOnly` (work and setup) refuses scope 'library' before a card and hides other projects' names in the
+    catalog; RunManager applies a setup run's skills card with `projectOnly` (its MCP cards unchanged, still
+    library-capable); SkillService.applyProposal refuses library items under projectOnly. The Skill assistant keeps
+    library scope. With no roles yet (first-time setup before propose_org_chart is approved) propose_skills answers
+    "REVISE ... this project has no roles yet. Get the org chart approved with propose_org_chart first ..."; slugs are
+    read from `ctx.project.roles` at call time, which `setLive` updates after an approved org chart card. An approved
+    card reaches live work runs of the project through the existing card fan-out (`applyProjectChange`, source 'card',
+    `run.liveChange`); the Architect's own session gets no configChanged (setup-like runs take no config changes). The
+    Architect's role prompt gains `architectSkillsText` (prompts.ts, shares SKILLS_GRANT_RULES with skillsConfigText;
+    keyed on ARCHITECT_SLUG so the MCP and Skill assistants do not get it). propose_skills' description now says
+    "scope library: Skill assistant only" (same length, tool-definition budget unchanged). Checked by unit tests:
+    harnessTools.test.ts "setup run (the Architect): propose_skills" (tool list, library refusal, unknown slug, no-roles
+    REVISE, roles read at call time, no configChanged, hidden usedBy), runManagerAssistants.test.ts "setup runs: the
+    Architect attaches skills" (catalog scoped to the project, skills card projectOnly true, MCP card false, the
+    first-time flow through a real org chart approval on the fake adapter), runManagerHostChange.test.ts "the
+    Architect's skill card" (fan-out to a live work run: hostConfigChanged, the "You approved ... in another session"
+    log and `run.liveChange` source 'card'), runManager.test.ts (setup ctx wiring), prompts.test.ts and
+    toolDefinitionSize.test.ts. Unverified: a live Claude or Codex Architect choosing and calling the tools; a role
+    renamed in the editor while a setup run's skill card is open (setup cards are not slug-mapped at creation like
+    work-run cards; SkillService resolves slugs against the stored roles at approval and refuses unknown ones).
   - Chat asks (2026-11-06; ARCHITECTURE.md Assistants "Chat asks instead of being unable"): quick roles always keep
     Edit / Write / Bash / NotebookEdit (team 'single') or each default role's own tools; `allowEdits` is the user's
     declaration only (false "read-only start: an edit or command asks", true "edits allowed: each still asks" plus

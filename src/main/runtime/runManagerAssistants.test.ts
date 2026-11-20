@@ -12,6 +12,13 @@ import { skillAssistContext } from '../skills/assist'
 import type { SetupService } from '../setup/service'
 import type { RuntimeAdapter, RuntimeContext, SkillAssistCatalog } from './types'
 import { project as makeProject } from './testHelpers'
+import { harnessToolsFor, type HarnessTool } from './harnessTools'
+
+const byTool = (tools: HarnessTool[], name: string): HarnessTool => {
+  const t = tools.find((x) => x.name === name)
+  if (!t) throw new Error(`no tool ${name}`)
+  return t
+}
 
 // The real logger writes under Electron's userData; tests have no Electron.
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
@@ -308,6 +315,61 @@ describe('skill assistant runs', () => {
     const req2 = events.filter((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request').at(-1)!
     m.decideProposal(lib.id, req2.proposal.id, { behavior: 'approve' })
     expect(await other).toMatchObject({ behavior: 'revise' })
+  })
+})
+
+describe('setup runs: the Architect attaches skills through propose_skills', () => {
+  const lastRequest = (runId: string) => events.filter((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request' && e.runId === runId).at(-1)!
+
+  it('binds the catalog and reads scoped to the stored project; work runs and Chat unchanged', async () => {
+    const cat = vi.fn(() => ({ library: [], project: [] }) as SkillAssistCatalog)
+    const read = vi.fn(() => null)
+    const { m, ctxs } = rig({ skillAssist: { catalog: cat, read } })
+    await m.start({ project: makeProject({ id: 'real', path: folder() }), prompt: 'x', kind: 'setup' })
+    expect(ctxs[0].skillCatalog?.()).toEqual({ library: [], project: [] })
+    expect(cat).toHaveBeenLastCalledWith('real')
+    ctxs[0].readSkill?.({ skillId: 's1' })
+    expect(read).toHaveBeenLastCalledWith('real', { skillId: 's1' })
+    // Without the option nothing is bound (the tools say the library is not available).
+    const bare = rig()
+    await bare.m.start({ project: makeProject({ id: 'real', path: folder() }), prompt: 'x', kind: 'setup' })
+    expect(bare.ctxs[0].skillCatalog).toBeUndefined()
+    expect(bare.ctxs[0].readSkill).toBeUndefined()
+  })
+
+  it('a skills card is applied projectOnly; an MCP card of the same session keeps its library behaviour', async () => {
+    const { m, ctxs, setup } = rig({}, { live: true })
+    const run = await m.start({ project: makeProject({ id: 'real', path: folder() }), prompt: 'x', kind: 'setup' })
+    const skills = ctxs[0].requestProposal({ agentId: 'root', title: 's', kind: 'skills', payload: { items: [], rationale: 'r' } } as never)
+    m.decideProposal(run.id, lastRequest(run.id).proposal.id, { behavior: 'approve' })
+    expect(await skills).toEqual({ behavior: 'approve' })
+    expect(setup.raw.applyProposal).toHaveBeenLastCalledWith('real', expect.objectContaining({ kind: 'skills' }), { projectOnly: true })
+    const mcp = ctxs[0].requestProposal({ agentId: 'root', title: 'm', kind: 'mcpServers', payload: { upsert: [], rationale: 'r' } } as never)
+    m.decideProposal(run.id, lastRequest(run.id).proposal.id, { behavior: 'approve' })
+    expect(await mcp).toEqual({ behavior: 'approve' })
+    expect(setup.raw.applyProposal).toHaveBeenLastCalledWith('real', expect.objectContaining({ kind: 'mcpServers' }), { projectOnly: false })
+  })
+
+  it('first-time setup: propose_skills says to get the org chart approved first, then sees the approved roles in the same session', async () => {
+    const lead = makeProject().roles[0]
+    const cat = (): SkillAssistCatalog => ({ library: [{ entry: { id: 'lib1', name: 'triage', description: 'Use triage', source: 'user', digest: 'd', files: [], addedAt: '', updatedAt: '' }, usedBy: [] }], project: [] }) as never
+    const { m, ctxs, setup } = rig({ skillAssist: { catalog: cat, read: () => null } }, { live: true })
+    setup.raw.applyProposal.mockImplementation(() => makeProject({ id: 'real', roles: [lead] }))
+    const run = await m.start({ project: makeProject({ id: 'real', path: folder(), roles: [] }), prompt: 'x', kind: 'setup' })
+    const ctx = ctxs[0]
+    const propose = () => byTool(harnessToolsFor(ctx), 'propose_skills').call({ title: 't', rationale: 'r', items: [{ action: 'link', scope: 'project', libraryId: 'lib1', roles: [lead.slug] }] })
+    expect(await propose()).toMatch(/^REVISE\. The proposal was not shown to the user: this project has no roles yet\. Get the org chart approved with propose_org_chart first/)
+    expect(events.some((e) => e.type === 'proposal.request')).toBe(false)
+    // The org chart card is approved: RunManager's setLive puts the saved roles on ctx.project.
+    const chart = ctx.requestProposal({ agentId: 'root', title: 'c', kind: 'orgChart', payload: { roles: [lead], rationale: 'r' } } as never)
+    m.decideProposal(run.id, lastRequest(run.id).proposal.id, { behavior: 'approve' })
+    expect(await chart).toMatchObject({ behavior: 'approve' })
+    expect(ctx.project.roles.map((r) => r.slug)).toEqual([lead.slug])
+    const pending = propose()
+    await vi.waitFor(() => expect(lastRequest(run.id).proposal.kind).toBe('skills'))
+    m.decideProposal(run.id, lastRequest(run.id).proposal.id, { behavior: 'approve' })
+    expect(await pending).toMatch(/^APPROVED\. Linked triage from the skill library to this project/)
+    expect(setup.raw.applyProposal).toHaveBeenLastCalledWith('real', expect.objectContaining({ kind: 'skills' }), { projectOnly: true })
   })
 })
 

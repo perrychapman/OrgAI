@@ -2815,7 +2815,8 @@ export class RunManager {
         ...(this.options.schedules && kind === 'work' && (isQuick || !bare) ? { schedules: this.options.schedules.access() } : {}),
         // To-dos: the run's own list (Chat or its stored project); never setup-like, build-session or virtual-project runs.
         ...this.bindTodos(active, kind, isQuick, bare, project.id),
-        ...(!bare && !isQuick && kind === 'work' && this.options.skillAssist
+        // The Architect of a setup run on a stored project gets the same project-scope view (propose_skills applies projectOnly).
+        ...(((!bare && kind === 'work') || (kind === 'setup' && !isVirtualProjectId(project.id))) && !isQuick && this.options.skillAssist
           ? {
               skillCatalog: () => this.options.skillAssist!.catalog(project.id),
               readSkill: (ref: { libraryId?: string; skillId?: string }) => this.options.skillAssist!.read(project.id, ref)
@@ -5060,7 +5061,9 @@ export class RunManager {
               // Role slugs the run's agents wrote, as the stored project names those roles (a run may keep a renamed role's
               // old slug): what is saved; the run and its card keep the proposal as shown.
               const toSave = this.proposalForStore(active, proposal)
-              const updated = this.setup.applyProposal(active.summary.projectId, toSave, { projectOnly: active.summary.kind === 'work', ...secrets })
+              // projectOnly: a work run never writes either library; a setup run's skill card never changes the skill library.
+              const projectOnly = active.summary.kind === 'work' || (active.summary.kind === 'setup' && proposal.kind === 'skills')
+              const updated = this.setup.applyProposal(active.summary.projectId, toSave, { projectOnly, ...secrets })
               waitingForSecrets = this.proposalWaitingForSecrets(active.summary.projectId, proposal)
               roster = onApplied?.(updated, proposal)?.roster
               this.broadcast({ type: 'project.updated', runId: active.summary.id, project: updated })
