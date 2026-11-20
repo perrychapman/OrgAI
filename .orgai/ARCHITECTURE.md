@@ -12,7 +12,7 @@ The UI overhaul's shell pass and its parallel restyles have landed (docs/design/
 
 - TypeScript (tsc 7, separate node and web tsconfigs, no baseUrl)
 - Electron 45 + electron-vite 6 + Vite 8
-- React 19, @xyflow/react 12 (React Flow), @dagrejs/dagre, zustand 5, react-markdown + remark-gfm
+- React 19, @xyflow/react 13 (React Flow), @dagrejs/dagre, zustand 5, react-markdown + remark-gfm
 - ink 8.0.0 (terminal UI, `src/cli/tui/`, its own `out/cli/tui.mjs` chunk) and ink-testing-library 4.0.0 (its tests), exact pins
 - lucide-react 1.64 (SVG icons that take their color from currentColor)
 - Plain CSS with custom-property design tokens (no CSS framework)

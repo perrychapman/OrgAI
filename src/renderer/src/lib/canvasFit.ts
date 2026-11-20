@@ -7,6 +7,16 @@ const NAME_PX = 13
 export const SHORT_STAGE_PX = 300
 export const SHORT_STAGE_MIN_ZOOM = 0.8
 
+/**
+ * React Flow 12 read a fit padding of `p` as "bounds times (1 + p)", so each side kept p / (1 + p) / 2 of the stage.
+ * React Flow 13 reads a bare number as pixels (0.3 would be 0.3 px) and wants a percentage of the stage per side. This
+ * turns a v12 value into the same fit as a v13 percentage string, so the canvases frame exactly as before. Pure.
+ */
+export function legacyFitPadding(p: number): `${number}%` {
+  const side = Math.round((p / (1 + p) / 2) * 10000) / 100
+  return `${side}%`
+}
+
 export interface FitInput {
   /** Height of the canvas stage in px. */
   stageHeight: number
@@ -17,7 +27,7 @@ export interface FitInput {
 }
 
 export interface FitOptions {
-  padding: number
+  padding: `${number}%`
   maxZoom: number
   duration: number
   minZoom?: number
@@ -33,5 +43,5 @@ export function fitOptions(i: FitInput): FitOptions {
   const floors: number[] = []
   if (i.stageHeight < SHORT_STAGE_PX) floors.push(SHORT_STAGE_MIN_ZOOM)
   if (i.radial && (i.nodeStyle === undefined || i.nodeStyle === 'card')) floors.push(Math.ceil((MIN_NAME_PX / NAME_PX) * 100) / 100)
-  return { padding: i.radial ? 0.12 : 0.25, maxZoom: 1, duration: i.duration, ...(floors.length ? { minZoom: Math.max(...floors) } : {}) }
+  return { padding: legacyFitPadding(i.radial ? 0.12 : 0.25), maxZoom: 1, duration: i.duration, ...(floors.length ? { minZoom: Math.max(...floors) } : {}) }
 }

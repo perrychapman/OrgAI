@@ -8,7 +8,8 @@ import {
   type Edge,
   type FitViewOptions,
   type NodeChange,
-  type NodeMouseHandler
+  type NodeMouseHandler,
+  type OnNodesChange
 } from '@xyflow/react'
 import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
@@ -587,8 +588,10 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
 
   // Controlled nodes: keep React Flow's measured sizes so the minimap draws every node (H1).
   // Enter or Space on a focused node arrives as a 'select' change (React Flow's own key handler); it selects like a click.
-  const onNodesChange = useCallback(
-    (changes: NodeChange<CanvasNode>[]) => {
+  const onNodesChange = useCallback<OnNodesChange<CanvasNode>>(
+    (changeset) => {
+      // React Flow 13 hands over a NodeChangeset (iterable, `toArray()`), not a plain array.
+      const changes = changeset.toArray()
       nodeDims.apply(changes as NodeChange[])
       const picked = changes.find((c) => c.type === 'select' && c.selected)
       if (picked && picked.type === 'select' && useAppStore.getState().selectedAgentId !== picked.id) selectAgent(picked.id)
@@ -1259,6 +1262,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               elementsSelectable
               fitView
               fitViewOptions={{ padding: radial ? 0.12 : 0.25, maxZoom: 1 }}
+              elevateEdgesOnSelect={false}
               proOptions={{ hideAttribution: true }}
               deleteKeyCode={null}
               edgesFocusable={false}

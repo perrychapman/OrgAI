@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
-import { MiniMap, useStore, type Node } from '@xyflow/react'
+import { MiniMap, useOptionsStore, type Node } from '@xyflow/react'
 import { minimapSize, useCanvasOptions } from '../../lib/canvas'
 import { useCssVar } from '../../lib/useCssVar'
 
@@ -11,7 +11,7 @@ import { useCssVar } from '../../lib/useCssVar'
  */
 export function CanvasMinimap({ ariaLabel }: { ariaLabel: string }): ReactElement | null {
   const { minimap } = useCanvasOptions()
-  const domNode = useStore((s) => s.domNode)
+  const domNode = useOptionsStore((s) => s.domNode)
   const [stage, setStage] = useState<{ w: number; h: number } | null>(null)
   const nodeColor = useCssVar('--canvas-minimap-node')
   const focusColor = useCssVar('--canvas-focus-ring')

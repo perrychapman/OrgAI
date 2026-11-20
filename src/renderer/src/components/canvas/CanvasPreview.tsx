@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { useEffect, useMemo, useRef } from 'react'
 import { ReactFlow, ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { isScenePresentation, useCanvasOptions } from '../../lib/canvas'
+import { legacyFitPadding } from '../../lib/canvasFit'
 import { buildSample, type SampleInks } from '../../lib/canvasSample'
 import { useCssVar } from '../../lib/useCssVar'
 import { AgentNode } from '../AgentNode'
@@ -32,7 +33,7 @@ function PreviewFlow(): ReactElement {
   const box = useRef<HTMLDivElement>(null)
 
   // Refit at once (no animation) whenever the sample changes shape or the preview changes size.
-  const padding = layout === 'radial' ? 0.12 : 0.2
+  const padding = legacyFitPadding(layout === 'radial' ? 0.12 : 0.2)
   useEffect(() => {
     const t = setTimeout(() => void fitView({ padding, maxZoom: 1, duration: 0 }), 30)
     return () => clearTimeout(t)

@@ -8,9 +8,10 @@ import {
   type Connection,
   type OnConnectEnd,
   type Edge,
-  type EdgeChange,
   type NodeChange,
-  type NodeMouseHandler
+  type NodeMouseHandler,
+  type OnEdgesChange,
+  type OnNodesChange
 } from '@xyflow/react'
 import type { AgentImportScan, Project, Role } from '@shared/types'
 import { ROLE_COLORS, modelForTier, newId, projectConnection, slugify } from '@shared/defaults'
@@ -32,6 +33,7 @@ import { ContextMenu, useContextMenu, type MenuEntry } from '../components/ui/Co
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
 import RoleInspector from '../components/RoleInspector'
 import { layoutCanvas } from '../lib/layout'
+import { legacyFitPadding } from '../lib/canvasFit'
 import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
@@ -132,11 +134,14 @@ function storeNotice(n: ImportNotice, at: number): TeamNotice {
   }
 }
 
+/** The Team editor's fit padding: 0.3 in React Flow 12 terms (the nodes fill about 77% of the stage), as a v13 percentage. */
+const TEAM_FIT_PADDING = legacyFitPadding(0.3)
+
 export default function TeamView({ project }: { project: Project }): ReactElement {
   // Re-fit when the frame changes size (window, sidebar or side panel resize), as the live view does.
   const frameRef = useRef<HTMLDivElement>(null)
   const flowRef = useRef<{
-    fitView: (o?: { padding?: number; maxZoom?: number; duration?: number }) => unknown
+    fitView: (o?: { padding?: `${number}%`; maxZoom?: number; duration?: number }) => unknown
     getViewport: () => { x: number; y: number; zoom: number }
     setViewport: (v: { x: number; y: number; zoom: number }, o?: { duration?: number }) => unknown
   } | null>(null)
@@ -158,13 +163,13 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           pending = true
           return
         }
-        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
+        void flowRef.current?.fitView({ padding: TEAM_FIT_PADDING, maxZoom: 1, duration: refitMs() })
       }, 100)
     })
     const unsettled = onLayoutSettled(() => {
       if (!pending) return
       pending = false
-      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
+      void flowRef.current?.fitView({ padding: TEAM_FIT_PADDING, maxZoom: 1, duration: refitMs() })
     })
     ro.observe(el)
     return () => {
@@ -198,11 +203,11 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           pendingOff = onLayoutSettled(() => {
             pendingOff?.()
             pendingOff = undefined
-            void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
+            void flowRef.current?.fitView({ padding: TEAM_FIT_PADDING, maxZoom: 1, duration: refitMs() })
           })
           return
         }
-        void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
+        void flowRef.current?.fitView({ padding: TEAM_FIT_PADDING, maxZoom: 1, duration: refitMs() })
       }, 150)
     })
     ro.observe(stage)
@@ -391,7 +396,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   useEffect(() => {
     if (importState !== 'available' && importState !== 'reverted') return undefined
     const t = window.setTimeout(() => {
-      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
+      void flowRef.current?.fitView({ padding: TEAM_FIT_PADDING, maxZoom: 1, duration: refitMs() })
     }, 120)
     if (importState === 'reverted') startFromTrigger()?.focus()
     return () => window.clearTimeout(t)
@@ -570,8 +575,10 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     [project.id, project.roles, confirm, updateRoles, selectRole, post, focusNode]
   )
 
-  const onNodesChange = useCallback(
-    (changes: NodeChange<RoleFlowNode>[]) => {
+  const onNodesChange = useCallback<OnNodesChange<RoleFlowNode>>(
+    (changeset) => {
+      // React Flow 13 hands over a NodeChangeset (iterable, `toArray()`), not a plain array.
+      const changes = changeset.toArray()
       nodeDims.apply(changes as NodeChange[])
       const moves = changes.filter((c) => c.type === 'position' && c.position)
       if (moves.length) {
@@ -592,8 +599,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     [project.id, updateRoles, selectRole, nodeDims.apply]
   )
 
-  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
-    for (const c of changes) {
+  const onEdgesChange = useCallback<OnEdgesChange>((changeset) => {
+    for (const c of changeset.toArray()) {
       if (c.type === 'select') setSelectedEdgeId((cur) => (c.selected ? c.id : cur === c.id ? null : cur))
     }
   }, [])
@@ -827,7 +834,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     const glide = beginCanvasGlide(frameRef.current, project.roles.length)
     updateRoles(project.id, (roles) => roles.map((r) => ({ ...r, position: pos[r.id] ?? r.position })))
     window.setTimeout(() => {
-      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: fitMs(reducedMotion) })
+      void flowRef.current?.fitView({ padding: TEAM_FIT_PADDING, maxZoom: 1, duration: fitMs(reducedMotion) })
     }, glide > 0 ? glide + 10 : 80)
   }
   /** A direction change re-lays out everything for the new direction, then fits. */
@@ -985,7 +992,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             aria-label="Org chart"
             aria-describedby="team-chart-desc"
             fitView
-            fitViewOptions={{ padding: 0.3, maxZoom: 1 }}
+            fitViewOptions={{ padding: TEAM_FIT_PADDING, maxZoom: 1 }}
+            elevateEdgesOnSelect={false}
             proOptions={{ hideAttribution: true }}
             deleteKeyCode={['Delete', 'Backspace']}
             // React Flow's default pan key (Space) is swallowed on every button and <summary> inside the flow area;
