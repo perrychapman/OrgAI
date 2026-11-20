@@ -43,12 +43,15 @@ export class KitPool {
   private readonly scratch = new Color()
   private readonly posed = new Matrix4()
   private placed = false
+  /** Slice 4: a pool of moving things (carriers, crates in flight): no part casts, whatever the kit says. */
+  readonly moving: boolean
 
-  constructor(parent: Object3D, kit: ObjectKit, materials: FactoryMaterials, hook?: RenderHook, capacity = MIN_CAPACITY) {
+  constructor(parent: Object3D, kit: ObjectKit, materials: FactoryMaterials, hook?: RenderHook, capacity = MIN_CAPACITY, moving = false) {
     this.parent = parent
     this.kit = kit
     this.materials = materials
     this.hook = hook
+    this.moving = moving
     this.allocate(Math.max(MIN_CAPACITY, capacity))
   }
 
@@ -58,7 +61,7 @@ export class KitPool {
 
   /** True when any part casts a shadow (a change then needs a shadow-map update). */
   get castsShadow(): boolean {
-    return this.kit.parts.some((p) => p.castShadow)
+    return !this.moving && this.kit.parts.some((p) => p.castShadow)
   }
 
   /** Every mesh of the pool (tests and the engine's material refresh). */
@@ -125,7 +128,7 @@ export class KitPool {
     this.parts = this.kit.parts.map((part, i) => {
       const mesh = new InstancedMesh(part.geometry, this.materials.get(part.role), capacity)
       mesh.name = `${this.kit.name}:${part.key}`
-      mesh.castShadow = part.castShadow
+      mesh.castShadow = part.castShadow && !this.moving
       mesh.receiveShadow = part.receiveShadow
       if (part.instanceColor) mesh.instanceColor = new InstancedBufferAttribute(new Float32Array(capacity * 3).fill(1), 3)
       const prev = old[i]?.mesh

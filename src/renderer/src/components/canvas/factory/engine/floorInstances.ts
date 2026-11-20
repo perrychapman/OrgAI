@@ -2,7 +2,8 @@
 // 4.4 and 4.6): the instance list of every kit pool, computed from the pure FloorModel and the kits' anchors. No
 // renderer, no scene: the engine hands each list to its KitPool (engine/instancing.ts), which writes only what changed.
 // Slice 3: robots in their pose, stack lights per lamp, shutter, barrier, fence, crates (own pad, hold pad, the parent's
-// inbox, the dock's slots) and the twelve plan-board step lamps. Nothing here moves; cues are slice 4.
+// inbox, the dock's slots) and the twelve plan-board step lamps. Nothing here moves: these are the end states, and
+// slice 4's engine/cueRender.ts draws cues and loops over them (taking out an end state a cue still covers).
 import { Color, Matrix4 } from 'three'
 import type { FloorModel, Lamp, Pose } from '../../../../lib/factory/types'
 import { BOARD_CENTER, DOCK_CENTER, GANTRY_TOP } from '../../../../lib/factory/layout'
@@ -25,12 +26,20 @@ export type KitName =
   | 'booth' | 'dock' | 'board' | 'lead' | 'bench' | 'machine0' | 'machine1' | 'machine2' | 'machine3' | 'stack' | 'robot'
   | 'paint' | 'vacant' | 'ring' | 'blob'
   | 'shutter' | 'barrier' | 'fence' | 'crate' | 'holdPad' | 'holdPadStriped' | 'boardLamp'
+  | 'tote' | 'capsule' | 'part' | 'crateFlight'
 
 export const KIT_NAMES: readonly KitName[] = [
   'booth', 'dock', 'board', 'lead', 'bench', 'machine0', 'machine1', 'machine2', 'machine3', 'stack', 'robot',
   'paint', 'vacant', 'ring', 'blob',
-  'shutter', 'barrier', 'fence', 'crate', 'holdPad', 'holdPadStriped', 'boardLamp'
+  'shutter', 'barrier', 'fence', 'crate', 'holdPad', 'holdPadStriped', 'boardLamp',
+  'tote', 'capsule', 'part', 'crateFlight'
 ]
+
+/**
+ * Slice 4: pools of moving things only (engine/cueRender.ts fills them; floorInstances leaves them empty). They never
+ * cast shadows (a blob each instead) and never trigger a shadow-map refresh. 'crateFlight' draws the crate kit in flight.
+ */
+export const MOVING_KITS: ReadonlySet<KitName> = new Set<KitName>(['tote', 'capsule', 'part', 'crateFlight'])
 
 export type BoardLampState = 'pending' | 'active' | 'done' | 'blocked' | 'skipped'
 
@@ -43,8 +52,11 @@ export const INBOX_CRATES = 4
 /** Crates drawn on the dock (its 3 x 3 slots); the tenth and later are counted on its label. */
 export const DOCK_CRATES = 9
 export const BOARD_LAMP_COUNT = 12
-const ROBOT_BLOB = 1.1
-const CRATE_BLOB = 0.9
+/** Slice 4: the boardLamp() part coloured with boardLampMarkColour (builders/types.ts). */
+export const BOARD_MARK_PART = 'lamp.mark'
+/** Blob shadow sizes (metres across) under a robot and a crate; cueRender.ts keeps them for moving robots and crates. */
+export const ROBOT_BLOB = 1.1
+export const CRATE_BLOB = 0.9
 
 export interface FloorContext {
   /** The kit for a pool (an empty kit when the kit source does not build it yet). */
@@ -56,6 +68,8 @@ export interface FloorContext {
   lamps: Readonly<Record<Lamp, Color>>
   /** Plan step lamp colour per step state (the theme's boardLampColour, or the fallback). */
   boardLamp(state: BoardLampState): Color
+  /** Slice 4: colour of a step lamp's 'lamp.mark' part (the "done" shape cue); absent: the lens colour. */
+  boardMark?(state: BoardLampState): Color
   poses: PoseLibrary
 }
 
@@ -74,6 +88,21 @@ export function anchorMatrix(a: Anchor | undefined): Matrix4 {
 }
 
 const place = (x: number, y: number, z: number): Matrix4 => new Matrix4().makeTranslation(x, y, z)
+
+/**
+ * Slice 4: a placed station's frame (world matrix of its kit origin), its kit and whether it is the booth; null when
+ * `id` is not on the floor. The same frames floorInstances draws with (cueRender.ts uses them for cues).
+ */
+export function stationFrame(layout: FloorModel['layout'], id: string, kit: (name: KitName) => ObjectKit): { base: Matrix4; kit: ObjectKit; booth: boolean; kitName: KitName } | null {
+  const st = layout.stations[id]
+  if (!st) return null
+  if (st.kind === 'booth') {
+    const c = layout.booth ?? st.center
+    return { base: place(c.x, GANTRY_TOP, c.z), kit: kit('booth'), booth: true, kitName: 'booth' }
+  }
+  const kitName: KitName = st.kind === 'lead' ? 'lead' : 'bench'
+  return { base: place(st.center.x, 0, st.center.z), kit: kit(kitName), booth: false, kitName }
+}
 
 /** Instance lists of every pool for `floor`. Pure apart from three's math classes. */
 export function floorInstances(floor: EngineFloor, ctx: FloorContext): Record<KitName, InstanceSpec[]> {
@@ -137,10 +166,11 @@ export function floorInstances(floor: EngineFloor, ctx: FloorContext): Record<Ki
         const state = board.lamps[i]
         // Slots without a step take the pending (unlit) treatment, so they match real pending steps in the light theme.
         const colour = ctx.boardLamp(state ?? 'pending')
+        const mark = ctx.boardMark?.(state ?? 'pending') ?? colour
         // The lens geometry is already tilted onto the panel normal: translation only.
         const m = boardBase.clone().multiply(place(a.x, a.y, a.z))
         const lens: Record<string, Color> = {}
-        for (const p of ctx.kit('boardLamp').parts) if (p.instanceColor) lens[p.key] = colour
+        for (const p of ctx.kit('boardLamp').parts) if (p.instanceColor) lens[p.key] = p.key === BOARD_MARK_PART ? mark : colour
         lists.boardLamp.push({ key: `lamp:${i}`, matrix: m, colours: lens })
       }
     }

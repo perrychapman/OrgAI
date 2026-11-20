@@ -2,10 +2,15 @@
 // the floor plan, lazy-loads the three chunk (FactoryCanvas), shows the section 8 notices, lays the floor out
 // (lib/factory/layout.ts, append-only memory per run), owns the camera controller, the DOM mirror, the labels and the
 // test state, and exposes the zoom / fit / focus handle. Slice 2: layout, stations, static lamps, camera, keyboard,
-// labels; the model, cues and log arrive in later slices.
+// labels; slice 3 the floor model. Slice 4: one CueScheduler per mount and run id fed by diffCues on every model change
+// (never at mount), the floor log, announcements, the ambient set, Pause motion and the CueFeed the engine draws from.
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type Ref } from 'react'
 import type { AgentMessage, RunPlan, RunStatus, WorktreeStatus } from '@shared/types'
-import type { FactoryAgentInput, FloorLayout, LayoutMemory } from '../../../lib/factory/types'
+import type { ActiveCue, Ambient, CueFeed, FactoryAgentInput, FactoryTestState, FloorEvent, FloorFrame, FloorLayout, FloorLogEntry, LayoutMemory } from '../../../lib/factory/types'
+import { CueScheduler, diffCues } from '../../../lib/factory/cues'
+import { ambientSet, motionSession } from '../../../lib/factory/motion'
+import { AnnounceGate, appendLog } from '../../../lib/factory/floorLog'
+import { projectFootprint } from '../../../lib/factory/camera'
 import {
   CONTEXT_RESTORE_TIMEOUT_MS,
   cachedWebGL2Probe,
@@ -44,6 +49,7 @@ import { FactoryLabels, type FactoryLabelsHandle, type NameplateData, type SignD
 import { FactoryNotice, type FactoryNoticeKind } from './FactoryNotice'
 import { FactoryControls } from './FactoryControls'
 import { FactoryFind } from './FactoryFind'
+import { FactoryLog } from './FactoryLog'
 import { CameraController } from './cameraController'
 import type { FactoryCanvasHandle, FactoryCanvasProps } from './FactoryCanvas'
 import type { EngineFloor, FactoryEngineStats, KitHeights } from './engine/FactoryEngine'
@@ -136,6 +142,36 @@ function readSwitch(): ReturnType<typeof readForcedRenderer> {
 
 type LostState = 'none' | 'restoring' | 'gave-up' | 'third'
 
+type AmbientMap = ReadonlyMap<string, { kind: Exclude<Ambient, 'none'>; phase: number }>
+const NO_AMBIENT: AmbientMap = new Map()
+const NO_ACTIVE: readonly ActiveCue[] = []
+/** Cue pump: when no active cue has an end time yet (queued, fading), look again after this long. */
+const PUMP_IDLE_MS = 100
+
+/** Per mount and per run id: the scheduler and the baselines of section 5.4. */
+interface CueHolder {
+  run: string | null
+  scheduler: CueScheduler
+  /** The frame the last diff saw (null until the baseline is taken). */
+  prev: FloorFrame | null
+  cursor: string | null
+  gate: AnnounceGate
+  logId: number
+  /** Most stations looping at once since mount (test state cuePeaks.ambient). */
+  ambientPeak: number
+}
+function newCueHolder(run: string | null): CueHolder {
+  return { run, scheduler: new CueScheduler(), prev: null, cursor: null, gate: new AnnounceGate(), logId: 0, ambientPeak: 0 }
+}
+function sameAmbient(a: AmbientMap, b: AmbientMap): boolean {
+  if (a.size !== b.size) return false
+  for (const [id, v] of a) {
+    const w = b.get(id)
+    if (!w || w.kind !== v.kind || w.phase !== v.phase) return false
+  }
+  return true
+}
+
 /**
  * Section 7.1 worktree phrases. "Branch held" (held) and "No changes" (empty) are additions to the spec's list; removed
  * says nothing (the branch is gone).
@@ -202,6 +238,14 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const [noWebGL2Dismissed, setNoWebGL2Dismissed] = useState(factorySession.noWebGL2Dismissed)
   const reduced = useReducedMotion()
   const announce = useFrameAnnounce()
+  // Pause motion (section 5.5): remembered for the app session (module-level), read on mount so a remount keeps it.
+  const [paused, setPaused] = useState(() => motionSession.paused)
+  const togglePause = useCallback(() => {
+    setPaused((p) => {
+      motionSession.paused = !p
+      return !p
+    })
+  }, [])
   /** False once unmounted: late callbacks (the canvas's last stats on unmount) must not schedule timers (Reviewer L4). */
   const alive = useRef(true)
   useEffect(() => {
@@ -279,7 +323,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const renderer = reason ? 'floor-plan' : 'webgl2'
   const wants3D = renderer === 'webgl2'
   const quality = probe.ok ? probe.quality : 'minimal'
-  const motion = motionState(reduced, false)
+  // Pause motion is hidden in team mode, where nothing moves.
+  const motion = motionState(reduced, mode === 'live' && paused)
   const projection = renderer === 'webgl2' ? 'perspective' : 'plan'
 
   let notice: FactoryNoticeKind | null = null
@@ -360,8 +405,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const boardOn = mode === 'live' && !!plan
   const boardRef = useRef(boardOn)
   boardRef.current = boardOn
-  const reducedRef = useRef(reduced)
-  reducedRef.current = reduced
+  const motionRef = useRef(motion)
+  motionRef.current = motion
   const projectionRef = useRef(projection)
   projectionRef.current = projection
 
@@ -426,6 +471,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const viewRef = useRef<CameraView | null>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const scheduleWriteRef = useRef<() => void>(() => {})
+  /** Re-picks the looping stations (section 5.1: on-screen ones first) after a camera move. */
+  const ambientUpdateRef = useRef<() => void>(() => {})
 
   const refreshLabels = useCallback(() => {
     const c = controllerRef.current
@@ -439,7 +486,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
       projection,
       fitBoxes: () => fitBoxes(),
       hall: () => layoutRef.current.hall,
-      tweenMs: () => (reducedRef.current ? 0 : tokenMs('--dur-slow')),
+      // Reduced motion and Pause motion: camera moves are instant (section 5.5).
+      tweenMs: () => (motionRef.current !== 'full' ? 0 : tokenMs('--dur-slow')),
       isControl: (target) => {
         const el = target as Element | null
         if (!el || typeof el.closest !== 'function') return false
@@ -451,6 +499,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         canvasRef.current?.setView(view)
         placeAll(registry, view, stage)
         labelsRef.current?.update(view, stage, { selectedId: selectedRef.current, ...focus.current })
+        ambientUpdateRef.current()
         scheduleWriteRef.current()
       }
     })
@@ -524,6 +573,32 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   // ---- engine input (3D) ----
   // The engine draws the pure floor model (lib/factory/model.ts, built above).
   const engineFloor = useMemo<EngineFloor>(() => ({ model: floorModel, selectedId: selectedId ?? null }), [floorModel, selectedId])
+
+  // ---- cues, ambient loops, floor log (section 5, 6.5, 7.5; slice 4) ----
+  // One CueScheduler per mount and per run id; the previous frame and the message cursor are the baselines diffCues
+  // compares against, so a remount or a run change never replays anything.
+  const cueRef = useRef<CueHolder | null>(null)
+  if (!cueRef.current) cueRef.current = newCueHolder(null)
+  const [log, setLog] = useState<FloorLogEntry[]>([])
+  const ambientRef = useRef<AmbientMap>(NO_AMBIENT)
+  const modelRef = useRef(floorModel)
+  modelRef.current = floorModel
+  const rendererRef = useRef(renderer)
+  rendererRef.current = renderer
+  const pumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** The engine's view of the cues (it never owns cue timing). Stable for the mount: it reads refs. */
+  const feed = useRef<CueFeed | null>(null)
+  if (!feed.current) {
+    feed.current = {
+      get motion() {
+        return motionRef.current
+      },
+      active: (now: number) => (motionRef.current === 'full' ? cueRef.current!.scheduler.advance(now) : NO_ACTIVE),
+      busy: (now: number) => motionRef.current === 'full' && cueRef.current!.scheduler.busy(now),
+      ambient: () => (motionRef.current === 'full' ? ambientRef.current : NO_AMBIENT)
+    }
+  }
 
   // ---- labels ----
   const plateAnchors = useMemo<NameplateData[]>(() => {
@@ -602,7 +677,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   // ---- test state (section 10.3): on every change of what it shows, and at most twice a second for frames ----
   const outRef = useRef<HTMLOutputElement>(null)
   const statsRef = useRef<FactoryEngineStats | null>(null)
-  const shown = { renderer, reason, quality, mode, motion, layout, model: floorModel } as const
+  const shown = { renderer, reason, quality, mode, motion, layout, model: floorModel, logEntries: log.length } as const
   const shownRef = useRef(shown)
   shownRef.current = shown
   const lastWrite = useRef(0)
@@ -615,6 +690,10 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     if (!out) return
     const s = shownRef.current
     const stats = s.renderer === 'webgl2' ? statsRef.current : null
+    // Slice 4: the cues active (or waiting) now, advanced at write time; ids, numbers and words only (never message text).
+    const cues = cueRef.current!
+    const active = s.motion === 'full' ? cues.scheduler.advance(performance.now()) : NO_ACTIVE
+    const peaks: FactoryTestState['cuePeaks'] = { ...cues.scheduler.peaks(), ambient: cues.ambientPeak }
     out.textContent = JSON.stringify(
       factoryTestState({
         renderer: s.renderer,
@@ -624,6 +703,13 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         motion: s.motion,
         model: s.model,
         layout: s.layout,
+        cues: active,
+        cuesStarted: cues.scheduler.started,
+        recentCues: cues.scheduler.recent(),
+        cuePeaks: peaks,
+        logEntries: s.logEntries,
+        ambient: ambientRef.current,
+        messageCursor: cues.cursor,
         view: viewRef.current,
         loop: stats?.loop ?? 'stopped',
         frames: stats?.frames ?? 0,
@@ -645,10 +731,172 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   useEffect(() => {
     if (renderer !== 'webgl2') statsRef.current = null
     writeState()
-  }, [renderer, reason, quality, mode, motion, entries, layout, floorModel, writeState])
+  }, [renderer, reason, quality, mode, motion, entries, layout, floorModel, log, writeState])
   useEffect(() => () => {
     if (writeTimer.current) clearTimeout(writeTimer.current)
     writeTimer.current = null
+  }, [])
+
+  // ---- cues: the pump, the ambient set, the model diff, finishAll triggers ----
+  /**
+   * Keeps the test state (and the floor plan, which has no engine) moving through the cues with timers, not a rAF loop:
+   * writes the state at the next cue end until the scheduler is idle. The 3D engine advances the same scheduler per frame.
+   */
+  const pump = useCallback(() => {
+    if (pumpTimer.current) clearTimeout(pumpTimer.current)
+    pumpTimer.current = null
+    if (!alive.current) return
+    // Throttled to TEST_STATE_INTERVAL_MS; the write after the last cue's end shows `cues` empty.
+    scheduleWriteRef.current()
+    const now = performance.now()
+    const s = cueRef.current!.scheduler
+    if (motionRef.current !== 'full' || !s.busy(now)) return
+    let next = Infinity
+    for (const c of s.advance(now)) {
+      const end = c.start + c.duration - now
+      if (end > 0) next = Math.min(next, end)
+    }
+    // A cancelled cue (fading) or a queued one has no end here yet: look again shortly.
+    const wait = Number.isFinite(next) ? Math.ceil(next) + 1 : PUMP_IDLE_MS
+    pumpTimer.current = setTimeout(pump, Math.min(Math.max(16, wait), TEST_STATE_INTERVAL_MS))
+  }, [])
+
+  const finishCues = useCallback(() => {
+    cueRef.current!.scheduler.finishAll()
+    canvasRef.current?.invalidate()
+    scheduleWriteRef.current()
+  }, [])
+
+  const updateAmbient = useCallback(() => {
+    const model = modelRef.current
+    let next: AmbientMap = NO_AMBIENT
+    // Loops only run in the 3D view (the floor plan draws end states), live, motion 'full', hall on (ambientSet checks).
+    if (motionRef.current === 'full' && rendererRef.current === 'webgl2') {
+      const view = viewRef.current
+      const stage = controller.stageInfo
+      const onScreen = (id: string): boolean => {
+        if (!view || stage.width <= 0 || stage.height <= 0) return false
+        const r = projectFootprint(view, stage, boxFor(id))
+        return r.right > 0 && r.left < stage.width && r.bottom > 0 && r.top < stage.height
+      }
+      next = ambientSet(model, onScreen, selectedRef.current)
+    }
+    if (sameAmbient(ambientRef.current, next)) return
+    ambientRef.current = next.size ? next : NO_AMBIENT
+    const holder = cueRef.current!
+    holder.ambientPeak = Math.max(holder.ambientPeak, next.size)
+    canvasRef.current?.invalidate()
+    scheduleWriteRef.current()
+  }, [controller, boxFor])
+  ambientUpdateRef.current = updateAmbient
+  useEffect(() => {
+    updateAmbient()
+  }, [updateAmbient, floorModel, motion, renderer, selectedId])
+
+  // The diff (section 1.4, 5.4): baseline at mount and on a run id change; every later model change cues what changed.
+  const messages = props.messages
+  useEffect(() => {
+    const frame: FloorFrame = { model: floorModel, agents, messages }
+    let holder = cueRef.current!
+    if (holder.run !== runKey) {
+      // A new run: a new scheduler (it never replays) and a new baseline; the old run's log goes.
+      holder.scheduler.finishAll()
+      holder = cueRef.current = newCueHolder(runKey)
+      ambientRef.current = NO_AMBIENT
+      if (log.length) setLog([])
+    }
+    if (!holder.prev) {
+      holder.prev = frame
+      holder.cursor = diffCues(null, frame, null).cursor
+      writeState()
+      return
+    }
+    if (mode !== 'live') {
+      // Team mode never schedules cues (section 5.3) and has no log.
+      holder.prev = frame
+      return
+    }
+    const prevHall = holder.prev.model.hall
+    const d = diffCues(holder.prev, frame, holder.cursor, Date.now())
+    holder.prev = frame
+    holder.cursor = d.cursor
+    const now = performance.now()
+    if (d.events.length) {
+      setLog((l) => appendLog(l, d.events, () => `fl${++holder.logId}`))
+      for (const e of d.events) if (e.kind === 'left') holder.scheduler.cancelFor(e.id, now)
+      sayEvents(d.events)
+    }
+    // A run paused or ended: every cue jumps to its end state first, then this diff's cues (the hall tween) go in.
+    const hallOn = floorModel.hall === 'on'
+    if (prevHall === 'on' && !hallOn) holder.scheduler.finishAll()
+    if (motionRef.current === 'full' && d.cues.length) {
+      // While the hall is not on, only the hall's own tween runs (section 1.4: every cue stops at its end state).
+      const cues = hallOn ? d.cues : d.cues.filter((c) => c.kind === 'hall')
+      if (cues.length) {
+        holder.scheduler.push(cues, now)
+        canvasRef.current?.invalidate()
+      }
+    }
+    // Written now, not only on the 500 ms timer, so short cues reach the test state; then pumped to their ends.
+    writeState()
+    pump()
+    // `log` is read only to clear it on a run change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [floorModel, agents, messages, mode, runKey])
+
+  // Announcements (section 7.5): through the frame only, never at mount, at most one per window; held text on a timer.
+  const announceRef = useRef(announce)
+  announceRef.current = announce
+  const sayHeld = useCallback(() => {
+    if (announceTimer.current) clearTimeout(announceTimer.current)
+    announceTimer.current = null
+    if (!alive.current) return
+    const gate = cueRef.current!.gate
+    const text = gate.due(Date.now())
+    if (text) announceRef.current?.(text)
+    const wait = gate.pendingIn(Date.now())
+    if (wait !== null) announceTimer.current = setTimeout(sayHeld, Math.max(16, wait))
+  }, [])
+  const sayEvents = (events: readonly FloorEvent[]): void => {
+    const gate = cueRef.current!.gate
+    const text = gate.offer(events, Date.now())
+    if (text) announceRef.current?.(text)
+    const wait = gate.pendingIn(Date.now())
+    if (wait !== null && !announceTimer.current) announceTimer.current = setTimeout(sayHeld, Math.max(16, wait))
+  }
+
+  // finishAll: motion leaves 'full' (Pause motion, reduced motion), and the hall leaves 'on' (in the diff above).
+  useEffect(() => {
+    if (motion !== 'full') finishCues()
+    else canvasRef.current?.invalidate()
+  }, [motion, finishCues])
+  // ... and the document hidden or the stage off screen (both renderers; the canvas stops its own loop as well).
+  useEffect(() => {
+    const el = stageRef.current
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'hidden') finishCues()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    let io: IntersectionObserver | null = null
+    if (el && typeof IntersectionObserver !== 'undefined') {
+      io = new IntersectionObserver((list) => {
+        const last = list[list.length - 1]
+        if (last && !last.isIntersecting) finishCues()
+      })
+      io.observe(el)
+    }
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      io?.disconnect()
+    }
+  }, [finishCues])
+  // ... and on unmount (with every cue timer).
+  useEffect(() => () => {
+    cueRef.current?.scheduler.finishAll()
+    if (pumpTimer.current) clearTimeout(pumpTimer.current)
+    if (announceTimer.current) clearTimeout(announceTimer.current)
+    pumpTimer.current = null
+    announceTimer.current = null
   }, [])
 
   // ---- handle ----
@@ -666,6 +914,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const zoomIn = useCallback(() => controller.zoomIn(), [controller])
   const zoomOut = useCallback(() => controller.zoomOut(), [controller])
   const fit = useCallback(() => controller.fit(), [controller])
+  const pauseMotion = useMemo(() => ({ pressed: paused, onToggle: togglePause }), [paused, togglePause])
 
   return (
     <div
@@ -693,6 +942,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
             key={attempt}
             quality={quality}
             floor={engineFloor}
+            feed={feed.current}
             initialView={initialView}
             mountedAt={mountedAt.current}
             onStats={onStats}
@@ -736,13 +986,20 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
           </div>
         )}
       </div>
-      {/* Scene controls (section 6.7), over the stage's bottom left; Pause motion arrives with the cues (slice 4). */}
+      {/* Scene controls (section 6.7), over the stage's bottom left; Pause motion in live mode only. */}
       <FactoryControls
         find={<FactoryFind entries={findEntries} onChoose={onFindChoose} buttonRef={findButtonRef} />}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
         onFit={fit}
+        pauseMotion={mode === 'live' ? pauseMotion : undefined}
       />
+      {/* Floor log (section 6.5), live only, over the stage's bottom right. Not a live region. */}
+      {mode === 'live' && (
+        <div className="factory-log-slot">
+          <FactoryLog entries={log} />
+        </div>
+      )}
       <output hidden data-testid="factory-state" ref={outRef} />
     </div>
   )

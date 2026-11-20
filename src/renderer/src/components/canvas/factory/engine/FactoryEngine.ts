@@ -4,17 +4,20 @@
 // InstancedMesh per kit part (engine/instancing.ts). It never decides where things are (lib/factory/layout.ts), how the
 // camera looks (lib/factory/camera.ts) or what things look like (builders/). Slice 3: every live state in its static
 // end state (engine/floorInstances.ts: poses, lamps, shutter, barrier, fence, crates, board lamps; hall dim here). Each
-// change renders one frame; nothing moves until slice 4's cues.
+// change renders one frame. Slice 4: cues and ambient loops from the scene's CueFeed, drawn by engine/cueRender.ts over
+// the end states; the loop runs while a camera tween, a cue or an ambient loop needs it (ambient-only frames at most
+// every 30 ms) and stops when nothing does (section 9.2).
 import { Box3, Color, Matrix4, type BufferGeometry, type DirectionalLight, PCFShadowMap, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from 'three'
-import type { FloorModel, Lamp } from '../../../../lib/factory/types'
+import type { ActiveCue, CueFeed, FloorModel, Lamp } from '../../../../lib/factory/types'
 import { factorySession } from '../../../../lib/factory/capability'
 import { p95, type FactoryLoop, type FactoryPerf, type FactoryQuality } from '../../../../lib/factory/snapshot'
 import { cameraPose, FOV_DEG, lodBand, type CameraView, type LodBand } from '../../../../lib/factory/camera'
 import { GANTRY_TOP } from '../../../../lib/factory/layout'
 import type { FactoryKitSource, FactoryLighting, FactoryMaterials, FactoryTheme, FactoryTokenColours, FloorRect, ObjectKit } from '../builders/types'
 import { KitPool, subKit, type InstanceSpec } from './instancing'
-import { floorInstances, KIT_NAMES, type BoardLampState, type EngineFloor, type KitName } from './floorInstances'
+import { floorInstances, KIT_NAMES, MOVING_KITS, type BoardLampState, type EngineFloor, type KitName } from './floorInstances'
 import { PoseLibrary } from './poses'
+import { CueRenderer, type AmbientMap } from './cueRender'
 
 export type { FactoryTheme } from '../builders/types'
 export type { EngineFloor } from './floorInstances'
@@ -28,6 +31,10 @@ const FRAME_RING = 120
 /** LOD swaps wait until the zoom has been still this long (section 4.5: "only when a zoom settles"). */
 const LOD_SETTLE_MS = 180
 const BOARD_STATES: readonly BoardLampState[] = ['pending', 'active', 'done', 'blocked', 'skipped']
+/** Ambient-only frames render at most this often (section 9.1: at most 31 fps, every other 60 Hz display frame). */
+export const AMBIENT_FRAME_MS = 30
+const NO_CUES: readonly ActiveCue[] = []
+const NO_AMBIENT: AmbientMap = new Map()
 
 export interface FactoryEngineOptions {
   quality: FactoryQuality
@@ -97,6 +104,19 @@ export class FactoryEngine {
   private floor: EngineFloor | null = null
   private readonly lampColours: Record<Lamp, Color> = { off: new Color(), running: new Color(), 'needs-you': new Color(), failed: new Color() }
   private readonly boardColours = new Map<BoardLampState, Color>(BOARD_STATES.map((s) => [s, new Color()]))
+  private readonly boardMarks = new Map<BoardLampState, Color>(BOARD_STATES.map((s) => [s, new Color()]))
+  // ---- slice 4: cues ----
+  private feed: CueFeed | null = null
+  private readonly cueRenderer = new CueRenderer()
+  /** End-state lists of the current floor (floorInstances), the base every cue frame starts from. */
+  private base: Record<KitName, InstanceSpec[]> | null = null
+  /** Pools drawing a cue overlay now (their base list is written back when the overlay ends). */
+  private overlaid = new Set<KitName>()
+  private hallBlending = false
+  /** A one-off frame is owed (model, theme, resize, LOD, camera): never skipped by the ambient frame cap. */
+  private invalid = false
+  private lastRenderAt = 0
+  private lastFullRate = false
   /** Hall light level applied to the lighting (section 4.3: paused and ended dim). */
   private hall: FloorModel['hall'] = 'on'
   private poses: PoseLibrary | null = null
@@ -222,6 +242,16 @@ export class FactoryEngine {
     if (this.syncFloor()) this.requestFrame()
   }
 
+  /**
+   * Slice 4: what the engine reads each frame for cues and ambient loops (the scene owns the CueScheduler). Call
+   * requestFrame() after pushing cues or changing the motion state; the loop keeps itself going while the feed is busy.
+   */
+  setFeed(feed: CueFeed | null): void {
+    if (this.disposed) return
+    this.feed = feed
+    this.requestFrame()
+  }
+
   setSize(width: number, height: number): void {
     const w = Math.max(1, Math.floor(width))
     const h = Math.max(1, Math.floor(height))
@@ -289,7 +319,9 @@ export class FactoryEngine {
 
   /** Schedules one frame unless one is pending; does nothing while hidden, lost or disposed. */
   requestFrame(): void {
-    if (this.disposed || this.lost || !this.visible || this.raf) return
+    if (this.disposed || this.lost || !this.visible) return
+    this.invalid = true
+    if (this.raf) return
     this.raf = requestAnimationFrame((t) => this.frame(t))
     this.options.onChange?.()
   }
@@ -325,6 +357,9 @@ export class FactoryEngine {
     this.pools.clear()
     this.hallPool?.dispose()
     this.hallPool = null
+    this.cueRenderer.clear()
+    this.base = null
+    this.feed = null
     for (const g of this.geometries) g.dispose()
     this.geometries.clear()
     this.materials.dispose()
@@ -369,6 +404,15 @@ export class FactoryEngine {
       case 'holdPad': kit = k.holdPad?.(false) ?? null; break
       case 'holdPadStriped': kit = k.holdPad?.(true) ?? null; break
       case 'boardLamp': kit = k.boardLamp?.() ?? null; break
+      // Slice 4 carriers: optional too; a missing kit draws nothing. In-flight crates share the crate kit's geometry.
+      case 'tote': kit = k.tote?.() ?? null; break
+      case 'capsule': kit = k.capsule?.() ?? null; break
+      case 'part': kit = k.part?.() ?? null; break
+      case 'crateFlight': {
+        const crate = this.kit('crate')
+        kit = { name: 'crateFlight', parts: crate.parts, anchors: crate.anchors }
+        break
+      }
       default: {
         // Props: one kit per part so each gets its own instances. Built once; the parts share one props() call.
         const props = this.register(k.props())
@@ -390,7 +434,7 @@ export class FactoryEngine {
       this.trianglesAtMainPass = renderer.info.render.triangles
     }
     for (const name of KIT_NAMES) {
-      const pool = new KitPool(this.scene, this.kit(name), this.materials, hook)
+      const pool = new KitPool(this.scene, this.kit(name), this.materials, hook, undefined, MOVING_KITS.has(name))
       pool.setLod(this.band)
       this.pools.set(name, pool)
     }
@@ -439,11 +483,24 @@ export class FactoryEngine {
       band: this.band,
       lamps: this.lampColours,
       boardLamp: (state) => this.boardColours.get(state) ?? this.lampColours.off,
+      boardMark: this.kits.boardLampMarkColour ? (state) => this.boardMarks.get(state) ?? this.lampColours.off : undefined,
       poses: this.poses!
     })
+    const prevBase = this.base
+    this.base = lists
+    this.cueRenderer.observe(lists, floor.model)
     for (const [name, list] of Object.entries(lists) as [KitName, InstanceSpec[]][]) {
       const pool = this.pools.get(name)
       if (!pool) continue
+      if (this.overlaid.has(name)) {
+        // A cue or loop draws this pool now; the next frame writes base plus overlay. A changed caster still owes the
+        // shadow map a refresh (a new machine under a looping one), taken in that frame.
+        if (!sameList(prevBase?.[name], list)) {
+          changed = true
+          if (pool.castsShadow) shadow = true
+        }
+        continue
+      }
       if (pool.set(list)) {
         changed = true
         // A colour change (lamps) never moves a shadow; a placed, moved or removed caster does.
@@ -474,6 +531,21 @@ export class FactoryEngine {
     this.raf = 0
     if (this.disposed || this.lost || !this.visible) return
     const t0 = performance.now()
+    // Reasons to keep drawing (section 9.2): cues (active or waiting for their delay) and ambient loops, motion 'full'
+    // only; camera tweens and one-off invalidations come through requestFrame / flush.
+    const feed = this.feed
+    const full = feed?.motion === 'full'
+    const cuesBusy = full && feed.busy(t0)
+    const ambient = full ? feed.ambient() : NO_AMBIENT
+    const ambientOn = ambient.size > 0
+    const fullRate = this.invalid || cuesBusy
+    if (!fullRate && ambientOn && this.lastRenderAt && now - this.lastRenderAt < AMBIENT_FRAME_MS) {
+      // Ambient only: skip this display frame (at most 31 fps).
+      this.raf = requestAnimationFrame((t) => this.frame(t))
+      return
+    }
+    this.invalid = false
+    this.applyOverlay(full ? feed.active(t0) : NO_CUES, ambient, t0)
     const shadowFrame = this.renderer.shadowMap.enabled && this.renderer.shadowMap.needsUpdate
     this.callsAtMainPass = -1
     this.trianglesAtMainPass = 0
@@ -490,10 +562,52 @@ export class FactoryEngine {
     if (this.firstFrameMs < 0) this.firstFrameMs = t1 - this.options.mountedAt
     else if (!this.compileFrame) push(this.frameMs, t1 - t0)
     this.compileFrame = false
-    // An interval counts only between frames of one continuous run (an on-demand pause is not a long frame).
-    if (this.lastFrameAt && now - this.lastFrameAt < 100) push(this.intervalMs, now - this.lastFrameAt)
+    // An interval counts only between frames of one continuous full-rate run (an on-demand pause is not a long frame,
+    // and the ambient-only cap of 30 ms is by design, not a dropped frame).
+    if (fullRate && this.lastFullRate && this.lastFrameAt && now - this.lastFrameAt < 100) push(this.intervalMs, now - this.lastFrameAt)
     this.lastFrameAt = now
+    this.lastRenderAt = now
+    this.lastFullRate = fullRate
+    // Keep going while a cue or a loop needs frames; stop (0 frames) when nothing does.
+    if ((cuesBusy || ambientOn) && !this.raf) this.raf = requestAnimationFrame((t) => this.frame(t))
     this.options.onChange?.()
+  }
+
+  /**
+   * Draws this frame's cues and loops over the end states (engine/cueRender.ts): pools a cue touches take the overlay,
+   * pools it stopped touching get their base list back. Moving things never refresh the shadow map per frame; a caster
+   * returning to its end state (a station that has risen, a machine whose loop stopped) refreshes it once.
+   */
+  private applyOverlay(cues: readonly ActiveCue[], ambient: AmbientMap, now: number): void {
+    const base = this.base
+    const floor = this.floor
+    if (!base || !floor || !this.poses) return
+    const overlay = this.cueRenderer.overlay(base, floor, cues, ambient, now, {
+      kit: (name) => this.kit(name),
+      poses: this.poses,
+      band: this.band,
+      offLamp: this.lampColours.off
+    })
+    const next = new Set<KitName>()
+    for (const [name, list] of Object.entries(overlay.lists) as [KitName, InstanceSpec[]][]) {
+      const pool = this.pools.get(name)
+      if (!pool) continue
+      pool.set(list)
+      next.add(name)
+    }
+    for (const name of this.overlaid) {
+      if (next.has(name)) continue
+      const pool = this.pools.get(name)
+      if (pool?.set(base[name]) && pool.castsShadow) this.renderer.shadowMap.needsUpdate = this.renderer.shadowMap.enabled
+    }
+    this.overlaid = next
+    if (overlay.hall && this.lighting.applyBlend) {
+      this.lighting.applyBlend(this.theme, overlay.hall.from, overlay.hall.to, overlay.hall.t)
+      this.hallBlending = true
+    } else if (this.hallBlending) {
+      this.lighting.applyTheme(this.theme, this.hall)
+      this.hallBlending = false
+    }
   }
 
   private applyTheme(tokens: FactoryTokenColours): void {
@@ -511,6 +625,11 @@ export class FactoryEngine {
       const c = this.boardColours.get(state)!
       if (fromKit) c.set(fromKit)
       else c.copy(fallback)
+      // Slice 4: the 'lamp.mark' part's colour (the "done" shape cue); the lens colour when the kit gives none.
+      const mark = this.kits.boardLampMarkColour?.(this.theme, state, tokens)
+      const mc = this.boardMarks.get(state)!
+      if (mark) mc.set(mark)
+      else mc.copy(c)
     }
     // Lamp instance colours follow the token values of the new theme.
     this.syncFloor()
@@ -576,6 +695,25 @@ export class FactoryEngine {
     this.camera.far = pose.distance * 4 + 200
     this.camera.updateProjectionMatrix()
   }
+}
+
+/** Same instances (keys, matrices, colours, part matrices) in the same order. */
+export function sameList(a: readonly InstanceSpec[] | undefined, b: readonly InstanceSpec[]): boolean {
+  if (!a || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]
+    const y = b[i]
+    if (x.key !== y.key || !x.matrix.equals(y.matrix)) return false
+    const xc = x.colours ?? {}
+    const yc = y.colours ?? {}
+    const ck = Object.keys(yc)
+    if (Object.keys(xc).length !== ck.length || ck.some((k) => !xc[k] || !xc[k].equals(yc[k]))) return false
+    const xp = x.parts ?? {}
+    const yp = y.parts ?? {}
+    const pk = Object.keys(yp)
+    if (Object.keys(xp).length !== pk.length || pk.some((k) => !xp[k] || !xp[k].equals(yp[k]))) return false
+  }
+  return true
 }
 
 function push(ring: number[], value: number): void {
