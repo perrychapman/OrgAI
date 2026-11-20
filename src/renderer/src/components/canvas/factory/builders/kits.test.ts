@@ -814,51 +814,61 @@ describe('slice 4 carriers', () => {
     expect(tris(toolPart, 'far')).toBe(0)
   })
 
-  it('tote: origin at the bottom centre, about 0.7 x 0.35 x 0.5 m, with a dark liner part', () => {
+  // Slice 6 made the travellers about 20 percent larger than slice 4's (0.7 x 0.35 x 0.5 tote, 0.5 m capsule, 0.25 m part).
+  it('tote: origin at the bottom centre, about 0.84 x 0.4 x 0.6 m, with a contrasting liner part', () => {
     const b = kitBounds(tote, 'near')
     expect(b.min.y).toBeCloseTo(0, 5)
     expect(b.min.x).toBeCloseTo(-b.max.x, 3)
     expect(b.min.z).toBeCloseTo(-b.max.z, 3)
-    expect(b.max.x - b.min.x).toBeCloseTo(0.7, 2)
-    expect(b.max.z - b.min.z).toBeCloseTo(0.5, 2)
-    expect(b.max.y).toBeGreaterThan(0.3)
-    expect(b.max.y).toBeLessThanOrEqual(0.36)
+    expect(b.max.x - b.min.x).toBeCloseTo(0.84, 2)
+    expect(b.max.z - b.min.z).toBeCloseTo(0.6, 2)
+    expect(b.max.y).toBeGreaterThan(0.35)
+    expect(b.max.y).toBeLessThanOrEqual(0.42)
     expect(tote.parts.find((p) => p.key === 'tote.body')!.role).toBe('tote')
-    expect(tote.parts.find((p) => p.key === 'tote.liner')!.role).toBe('boothTrim')
+    expect(tote.parts.find((p) => p.key === 'tote.liner')!.role).toBe('carrierBand')
   })
 
-  it('capsule: lies east-west, 0.5 m long, resting on its origin (bottom centre), a dark band at the middle', () => {
+  it('capsule: lies east-west, 0.64 m long, resting on its origin (bottom centre), a contrasting band at the middle', () => {
     const b = kitBounds(capsule, 'near')
-    expect(b.max.x - b.min.x).toBeCloseTo(0.5, 2)
-    expect(b.max.z - b.min.z).toBeLessThan(0.3)
-    expect(b.max.y - b.min.y).toBeLessThan(0.3)
+    expect(b.max.x - b.min.x).toBeCloseTo(0.64, 2)
+    expect(b.max.z - b.min.z).toBeLessThan(0.35)
+    expect(b.max.y - b.min.y).toBeLessThan(0.35)
     expect(b.min.y).toBeCloseTo(0, 5)
     expect(b.min.x).toBeCloseTo(-b.max.x, 3)
     const band = bounds(capsule.parts.find((p) => p.key === 'capsule.band')!.geometry)
     expect(Math.abs(band.min.x + band.max.x)).toBeLessThan(1e-3)
     expect(band.max.x - band.min.x).toBeLessThan(0.15)
     expect(capsule.parts.find((p) => p.key === 'capsule.body')!.role).toBe('capsule')
+    expect(capsule.parts.find((p) => p.key === 'capsule.band')!.role).toBe('carrierBand')
   })
 
-  it('part: about 0.25 m across, origin at the bottom centre', () => {
+  it('part: about 0.3 m across (the belt is 0.9 m wide), origin at the bottom centre', () => {
     const b = kitBounds(toolPart, 'near')
-    expect(b.max.x - b.min.x).toBeCloseTo(0.25, 2)
+    expect(b.max.x - b.min.x).toBeCloseTo(0.3, 2)
     expect(b.min.y).toBeCloseTo(0, 5)
     expect(b.max.y).toBeLessThan(0.25)
     expect(toolPart.parts[0].role).toBe('part')
+  })
+
+  it('carriers add no draw calls: the same parts per kit as slice 4 (tote 2, capsule 2, part 1) and the band is one shared role', () => {
+    expect(tote.parts).toHaveLength(2)
+    expect(capsule.parts).toHaveLength(2)
+    expect(toolPart.parts).toHaveLength(1)
+    expect(MATERIAL_ROLES.filter((r) => r === 'carrierBand')).toHaveLength(1)
   })
 
   it('carrier materials take the section 4.3 colours in both themes', () => {
     for (const theme of ['dark', 'light'] as const) {
       const m = factoryKits.createMaterials(theme, TOKENS)
       const r = FACTORY_PALETTE[theme].roles
-      for (const [role, hex] of [['tote', r.tote], ['capsule', r.capsule], ['part', r.part]] as const) {
+      for (const [role, hex] of [['tote', r.tote], ['capsule', r.capsule], ['part', r.part], ['carrierBand', r.carrierBand]] as const) {
         expect((m.get(role) as MeshStandardMaterial).color.getHexString(), `${theme} ${role}`).toBe(new Color(hex).getHexString())
       }
       m.dispose()
     }
-    expect(FACTORY_PALETTE.dark.roles).toMatchObject({ tote: '#5b6b8c', capsule: '#d8dde8', part: '#9aa2b1' })
-    expect(FACTORY_PALETTE.light.roles).toMatchObject({ tote: '#6c7c9c', capsule: '#ffffff', part: '#7d8696' })
+    // Slice 6 values (slice 4: dark #5b6b8c / #d8dde8 / #9aa2b1, light #6c7c9c / #ffffff / #7d8696).
+    expect(FACTORY_PALETTE.dark.roles).toMatchObject({ tote: '#c9a6ff', capsule: '#4fd6f6', part: '#f1f4fb', carrierBand: '#0b0e14' })
+    expect(FACTORY_PALETTE.light.roles).toMatchObject({ tote: '#5a2bb5', capsule: '#046b8c', part: '#f1f4fb', carrierBand: '#ffffff' })
   })
 
   it('the blob shadow is stronger on the dark floor than on the light one and follows applyTheme', () => {

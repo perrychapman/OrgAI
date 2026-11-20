@@ -68,13 +68,37 @@ describe('FACTORY_PALETTE', () => {
       expect(contrastRatio(r.robotJoint, r.robotBody)).toBeGreaterThanOrEqual(1.25)
     })
 
-    it(`${theme}: carriers (tote, capsule, part) read against the floor, and the part against the belt it rides`, () => {
-      expect(contrastRatio(r.tote, r.floor)).toBeGreaterThanOrEqual(1.5)
-      expect(contrastRatio(r.capsule, r.floor)).toBeGreaterThanOrEqual(1.4)
-      expect(contrastRatio(r.part, r.belt)).toBeGreaterThanOrEqual(3)
-      // Told apart from each other and from the wood crate by hue or lightness.
+    // Slice 6: slice 4's tote (#5b6b8c) and capsule (#d8dde8; white on the light floor, 1.49:1 measured) sat 1.2 to 2.7:1 from
+    // the floor and plate on screen. The travellers now read 3:1 or more on the floor and the plate they cross and carry a
+    // second tone (carrierBand) at 4.5:1 or more against their own body, so a stripe or a hollow shows at any zoom.
+    it(`${theme}: carriers (tote, capsule) read 3:1 against the floor and 2:1 against the plate, with a 4.5:1 second tone`, () => {
+      for (const c of [r.tote, r.capsule]) {
+        expect(contrastRatio(c, r.floor), c).toBeGreaterThanOrEqual(3)
+        expect(contrastRatio(c, r.plate), c).toBeGreaterThanOrEqual(2)
+        expect(contrastRatio(c, r.carrierBand), c).toBeGreaterThanOrEqual(4.5)
+      }
+    })
+
+    it(`${theme}: the tool part reads 8:1 against the belt it rides and the carriers are told apart from each other and the crate`, () => {
+      expect(contrastRatio(r.part, r.belt)).toBeGreaterThanOrEqual(8)
       expect(new Set([r.tote, r.capsule, r.part, r.crate]).size).toBe(4)
-      expect(contrastRatio(r.tote, r.crate)).toBeGreaterThanOrEqual(1.1)
+      // By hue: tote, capsule and crate sit at least 40 degrees apart on the colour wheel, and the travellers are 30 or more
+      // degrees from the lamp hues (green about 160, amber about 40, red about 0) so a carrier is never read as a state.
+      const hue = (hex: string): number => {
+        const n = parseInt(hex.slice(1), 16)
+        const [rr, gg, bb] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255)
+        const max = Math.max(rr, gg, bb)
+        const d = max - Math.min(rr, gg, bb)
+        const h = d === 0 ? 0 : max === rr ? ((gg - bb) / d) % 6 : max === gg ? (bb - rr) / d + 2 : (rr - gg) / d + 4
+        return (h * 60 + 360) % 360
+      }
+      const apart = (a: string, b: string): number => Math.min(Math.abs(hue(a) - hue(b)), 360 - Math.abs(hue(a) - hue(b)))
+      expect(apart(r.tote, r.capsule)).toBeGreaterThanOrEqual(40)
+      expect(apart(r.tote, r.crate)).toBeGreaterThanOrEqual(40)
+      expect(apart(r.capsule, r.crate)).toBeGreaterThanOrEqual(40)
+      for (const c of [r.tote, r.capsule]) {
+        for (const status of [0, 40, 160]) expect(Math.min(Math.abs(hue(c) - status), 360 - Math.abs(hue(c) - status)), `${c} vs hue ${status}`).toBeGreaterThanOrEqual(30)
+      }
     })
 
     it(`${theme}: the paused and ended hall dims by at least 25 percent of the light`, () => {
@@ -107,6 +131,12 @@ describe('FACTORY_PALETTE', () => {
       expect(contrastRatio(p.gridStrong, r.floor)).toBeLessThan(1.5)
       expect(contrastRatio(p.gridStrong, r.floor)).toBeGreaterThan(1.04)
       expect(contrastRatio(p.lampOff, r.pole)).toBeGreaterThanOrEqual(1.5)
+    })
+
+    it(`${theme}: an unlit lens outlines the stack light against the plate (1.8:1) and the floor (2.5:1)`, () => {
+      // Slice 6: the dark off lamp was 1.3:1 from the plate, so "middle or bottom" was hard to judge from the lit one alone.
+      expect(contrastRatio(p.lampOff, r.plate)).toBeGreaterThanOrEqual(1.8)
+      expect(contrastRatio(p.lampOff, r.floor)).toBeGreaterThanOrEqual(2.5)
     })
 
     it(`${theme}: floor paint is yellow and not any status token hue`, () => {

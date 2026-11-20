@@ -57,6 +57,8 @@ const ROLES: Record<string, RoleDef> = {
   tote: { colour: 'tote', kind: 'flat', roughness: 0.75, metalness: 0.05 },
   capsule: { colour: 'capsule', kind: 'smooth', roughness: 0.4, metalness: 0.1 },
   part: { colour: 'part', kind: 'flat', roughness: 0.6, metalness: 0.2 },
+  /** Slice 6: the carriers' contrasting second tone (tote liner, capsule band). */
+  carrierBand: { colour: 'carrierBand', kind: 'flat', roughness: 0.6, metalness: 0.05 },
   paint: { colour: 'paint', kind: 'flat', roughness: 0.9, metalness: 0 },
   /** Dark marks printed on a paint decal (the lead's line plate): offset further than the paint. */
   paintMark: { colour: 'belt', kind: 'flat', roughness: 0.9, metalness: 0 },

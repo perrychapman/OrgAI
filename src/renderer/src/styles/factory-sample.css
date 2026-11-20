@@ -1,0 +1,33 @@
+/*
+ * Factory Floor settings sample (docs/design/factory-floor.md section 6.6): a static picture, 480 x 260 CSS px at 2x.
+ * Used by the presentation thumbnail (CanvasPresentationChoices) and the preview (CanvasPreview). The picture's clear colour
+ * is the app's --surface-0 in the theme it was rendered for, so a letterbox (the picture contained in a taller or wider
+ * frame) does not show an edge.
+ */
+
+.factory-sample {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--surface-0);
+}
+
+.factory-sample-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The whole floor stays visible in the preview; never stretched. */
+  object-fit: contain;
+  object-position: center;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+/* The 72 x 48 thumbnail fills its frame (the picture is 1.85:1, the frame 1.5:1; the empty sides of the hall are cropped). */
+.canvas-factory-thumb .factory-sample-image {
+  object-fit: cover;
+}
