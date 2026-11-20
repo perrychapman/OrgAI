@@ -31,6 +31,27 @@ const xs = (pool: KitPool): number[] => {
 }
 
 describe('KitPool', () => {
+  it('a moving pool (slice 4 carriers) never casts, whatever the kit says', () => {
+    const still = new KitPool(new Group(), kit, materials())
+    const moving = new KitPool(new Group(), kit, materials(), undefined, 4, true)
+    expect(still.castsShadow).toBe(true)
+    expect(moving.castsShadow).toBe(false)
+    expect(moving.meshes().every((m) => !m.castShadow)).toBe(true)
+    // Growing the pool re-creates the meshes: still no casters.
+    moving.set(Array.from({ length: 9 }, (_, i) => ({ key: `k${i}`, matrix: at(i) })))
+    expect(moving.meshes().every((m) => !m.castShadow && m.count === 9)).toBe(true)
+  })
+
+  it('an unchanged colour that float32 cannot hold exactly is not a change (no frame per model change)', () => {
+    const pool = new KitPool(new Group(), kit, materials())
+    // A status token after sRGB to linear conversion: not representable in float32.
+    const c = new Color('#22c58b')
+    expect(Math.fround(c.g)).not.toBe(c.g)
+    expect(pool.set([{ key: 'a', matrix: at(1), colours: { lamp: c } }])).toBe(true)
+    expect(pool.set([{ key: 'a', matrix: at(1), colours: { lamp: c.clone() } }])).toBe(false)
+    expect(pool.set([{ key: 'a', matrix: at(1), colours: { lamp: new Color('#f5a524') } }])).toBe(true)
+  })
+
   it('one InstancedMesh per part, sharing the per-instance matrix', () => {
     const parent = new Group()
     const pool = new KitPool(parent, kit, materials())

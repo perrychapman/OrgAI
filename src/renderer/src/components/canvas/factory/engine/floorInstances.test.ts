@@ -5,7 +5,7 @@ import { CRATE_PITCH, type Anchor, type ObjectKit } from '../builders/types'
 import { EMPTY_LAYOUT_MEMORY, layoutFloor } from '../../../../lib/factory/layout'
 import type { FactoryAgentInput, FloorModel, WorkerModel } from '../../../../lib/factory/types'
 import { subKit } from './instancing'
-import { BOARD_LAMP_COUNT, DOCK_CRATES, floorInstances, INBOX_CRATES, type BoardLampState, type FloorContext, type KitName } from './floorInstances'
+import { BOARD_LAMP_COUNT, DOCK_CRATES, floorInstances, INBOX_CRATES, MOVING_KITS, stationFrame, type BoardLampState, type FloorContext, type KitName } from './floorInstances'
 import { PoseLibrary, POSES } from './poses'
 
 const agent = (id: string, parentId: string | null, startedAt: number): FactoryAgentInput => ({
@@ -188,6 +188,35 @@ describe('floorInstances', () => {
     const few = floorInstances({ model: model({ dockCrates: 3 }), selectedId: null }, ctx)
     expect(few.crate).toHaveLength(3)
     expect(few.boardLamp).toHaveLength(0)
+  })
+
+  it('slice 4: colours a lamp\'s lamp.mark part with the mark colour and the lens with the lens colour', () => {
+    const base = context()
+    const markKit: ObjectKit = { name: 'boardLamp', parts: [box('boardLamp.lens', 0.05, true), box('lamp.mark', 0.06, true)] }
+    const marks: Record<BoardLampState, Color> = {
+      pending: new Color('#010101'), skipped: new Color('#020202'), active: new Color('#030303'), done: new Color('#ffffff'), blocked: new Color('#040404')
+    }
+    const ctx: FloorContext = { ...base, kit: (n) => (n === 'boardLamp' ? markKit : base.kit(n)), boardMark: (s) => marks[s] }
+    const out = floorInstances({ model: model({ board: { total: 2, done: 1, blocked: 0, lamps: ['done', 'active'], overflow: 0 } }), selectedId: null }, ctx)
+    expect(out.boardLamp[0].colours!['lamp.mark']).toBe(marks.done)
+    expect(out.boardLamp[0].colours!['boardLamp.lens']).toBe(base.boardLamp('done'))
+    expect(out.boardLamp[1].colours!['lamp.mark']).toBe(marks.active)
+    // Without a mark colour the mark takes the lens colour.
+    const plain = floorInstances({ model: model({ board: { total: 1, done: 1, blocked: 0, lamps: ['done'], overflow: 0 } }), selectedId: null }, { ...ctx, boardMark: undefined })
+    expect(plain.boardLamp[0].colours!['lamp.mark']).toBe(base.boardLamp('done'))
+  })
+
+  it('slice 4: the moving pools stay empty (cueRender fills them) and stationFrame matches the drawn frames', () => {
+    const ctx = context({ slice3Anchors: true })
+    const out = floorInstances({ model: model(), selectedId: null }, ctx)
+    for (const n of MOVING_KITS) expect(out[n]).toEqual([])
+    const f = stationFrame(LAYOUT, 'A1', ctx.kit)!
+    expect(f.booth).toBe(false)
+    expect(f.base.equals(out[f.kitName].find((s) => s.key === 'A1')!.matrix)).toBe(true)
+    const booth = stationFrame(LAYOUT, 'R', ctx.kit)!
+    expect(booth.booth).toBe(true)
+    expect(booth.base.equals(out.booth[0].matrix)).toBe(true)
+    expect(stationFrame(LAYOUT, 'nobody', ctx.kit)).toBeNull()
   })
 
   it('team mode draws no lamps, dock, board or crates', () => {

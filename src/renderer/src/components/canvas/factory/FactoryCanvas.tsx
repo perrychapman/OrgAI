@@ -9,15 +9,20 @@ import { factoryKits as kits } from './builders'
 import type { FactoryTokenColours } from './builders/types'
 import type { FactoryQuality } from '../../../lib/factory/snapshot'
 import type { CameraView } from '../../../lib/factory/camera'
+import type { CueFeed } from '../../../lib/factory/types'
 
 export interface FactoryCanvasHandle {
   /** Applies a camera view and renders it at once (the mirror moves in the same frame). */
   setView(view: CameraView): void
+  /** Slice 4: cues were pushed or the motion state changed: render (the loop runs on while the feed is busy). */
+  invalidate(): void
 }
 
 export interface FactoryCanvasProps {
   quality: FactoryQuality
   floor: EngineFloor
+  /** Slice 4: cues and ambient loops (the scene's CueScheduler behind it). Read once at mount; it reads refs itself. */
+  feed: CueFeed
   /** The view to start with (the controller's current one). */
   initialView: CameraView
   /** performance.now() when the scene mounted. */
@@ -58,7 +63,8 @@ export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {
       if (!engine) return
       engine.setView(view)
       engine.flush()
-    }
+    },
+    invalidate: () => engineRef.current?.requestFrame()
   }), [])
 
   useEffect(() => {
@@ -91,6 +97,7 @@ export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {
     const rect = host.getBoundingClientRect()
     engine.setSize(rect.width, rect.height)
     engine.setFloor(latest.current.floor)
+    engine.setFeed(latest.current.feed)
     engine.setView(latest.current.initialView)
     latest.current.onHeights(engine.heights())
 
