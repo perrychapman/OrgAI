@@ -23,6 +23,8 @@ import {
   secretsLine,
   teamAttentionItems,
   teamFilesLine,
+  teamFilesChip,
+  teamFilesPopoverSentence,
   commitConfirmText,
   COMMIT_CONFIRM_LIST_MAX,
   COMMIT_CONFIRM_NOTE,
@@ -70,44 +72,64 @@ describe('teamFilesLine', () => {
   it('the commit confirmation names the files, caps the list and says when the count is a lower bound', () => {
     const one = commitConfirmText({ uncommittedFiles: ['.orgai/team.json'] }, 200)
     expect(one).toEqual({
-      lead: 'Git reports 1 changed team file in .orgai/ right now:',
+      title: 'Commit 1 team file?',
+      lead: 'This makes one commit in your repository with these files:',
       files: ['.orgai/team.json'],
       more: 0,
       warnings: [],
       moreWarnings: 0,
-      confirmLabel: 'Commit'
+      confirmLabel: 'Commit 1 file'
     })
     const many = Array.from({ length: 15 }, (_, i) => `.orgai/agents/r${i}.md`)
     const m = commitConfirmText({ uncommittedFiles: many }, 200)
-    expect(m.lead).toBe('Git reports 15 changed team files in .orgai/ right now:')
+    expect(m).toMatchObject({ title: 'Commit 15 team files?', confirmLabel: 'Commit 15 files' })
     expect(m.files).toHaveLength(COMMIT_CONFIRM_LIST_MAX)
+    expect(COMMIT_CONFIRM_LIST_MAX).toBe(8)
     expect(m.more).toBe(15 - COMMIT_CONFIRM_LIST_MAX)
-    expect(commitConfirmText({ uncommittedFiles: many }, 15).lead).toBe('Git reports at least 15 changed team files in .orgai/ right now:')
-    expect(commitConfirmText({ uncommittedFiles: [] }, 200)).toMatchObject({ lead: 'OrgAI commits the team files in .orgai/ to the git repository in this folder.', files: [], more: 0 })
+    expect(commitConfirmText({ uncommittedFiles: many }, 15)).toMatchObject({ title: 'Commit at least 15 team files?', confirmLabel: 'Commit team files' })
+    expect(commitConfirmText({ uncommittedFiles: [] }, 200)).toMatchObject({ title: 'Commit team files?', files: [], more: 0 })
     // Review M2: the footnote promises what main does (re-reads git at commit time), not "only these files".
     expect(COMMIT_CONFIRM_NOTE).toBe(
       'OrgAI commits the team files git reports as changed when you confirm, and only team files. Anything else you staged stays staged. Nothing is pushed.'
     )
     expect(COMMIT_CONFIRM_NOTE).not.toMatch(/Only these files/)
   })
-  it('QA S2: the confirmation repeats the warnings, says so in the lead and asks "Commit anyway"; without warnings it does not', () => {
+  it('QA S2: the confirmation repeats the warnings; without warnings it lists none', () => {
     const files = ['.orgai/team.json', '.orgai/agents/dev.md']
     const plain = commitConfirmText({ uncommittedFiles: files, warnings: [] }, 200)
     expect(plain.warnings).toEqual([])
-    expect(plain.confirmLabel).toBe('Commit')
-    expect(plain.lead).not.toMatch(/warning/i)
+    expect(plain.confirmLabel).toBe('Commit 2 files')
     const warned = commitConfirmText(
       { uncommittedFiles: files, warnings: [{ file: '.orgai/agents/dev.md', message: 'It has text that looks like a key. Keys must not be committed.' }] },
       200
     )
-    expect(warned.lead).toBe('Git reports 2 changed team files in .orgai/ right now, and some team files have warnings (listed below the files):')
     expect(warned.warnings).toEqual([{ file: '.orgai/agents/dev.md', message: 'It has text that looks like a key. Keys must not be committed.' }])
-    expect(warned.confirmLabel).toBe('Commit anyway')
+    expect(warned.confirmLabel).toBe('Commit 2 files')
     const many = Array.from({ length: 15 }, (_, i) => ({ file: `.orgai/agents/r${i}.md`, message: 'm' }))
     const capped = commitConfirmText({ uncommittedFiles: [], warnings: many }, 200)
     expect(capped.warnings).toHaveLength(COMMIT_CONFIRM_LIST_MAX)
     expect(capped.moreWarnings).toBe(15 - COMMIT_CONFIRM_LIST_MAX)
-    expect(capped.lead).toMatch(/Some team files have warnings, listed below\.$/)
+  })
+  it('the chip never shouts on an untouched project and follows the 1.4 table', () => {
+    expect(teamFilesChip(undefined)).toBeNull()
+    expect(teamFilesChip(status())).toEqual({ text: 'Team files: saved', tone: 'quiet', icon: 'file-check' })
+    expect(teamFilesChip(status({ uncommitted: true, uncommittedFiles: ['a'] }))).toEqual({ text: 'Team files: not committed', tone: 'neutral', icon: 'file-text' })
+    expect(teamFilesChip(status({ uncommitted: true, isGitRepo: false }))).toMatchObject({ text: 'Team files: saved', tone: 'quiet' })
+    expect(teamFilesChip(status({ state: 'pending', changes: [change(), change({ id: 'b' })] }))).toEqual({ text: 'Team files: 2 to approve', tone: 'accent', icon: 'file-warning' })
+    expect(teamFilesChip(status({ state: 'problem' }))).toMatchObject({ text: 'Team files: problem', tone: 'danger', icon: 'alert' })
+    expect(teamFilesChip(status({ state: 'rejected' }))).toMatchObject({ text: 'Team files: differ', tone: 'quiet' })
+    expect(teamFilesChip(status({ state: 'off', offReason: 'removed' }))).toMatchObject({ text: 'Team files: off', tone: 'attention', icon: 'file-x' })
+    expect(teamFilesChip(status({ state: 'off', offReason: 'shared-folder' }))).toMatchObject({ tone: 'quiet' })
+    expect(teamFilesChip(status({ state: 'off', offReason: 'engagement' }))).toBeNull()
+    expect(teamFilesChip(status({ state: 'off', offReason: 'virtual' }))).toBeNull()
+  })
+  it('the popover sentence per state', () => {
+    expect(teamFilesPopoverSentence(status({ uncommitted: true, uncommittedFiles: ['a', 'b', 'c'] }))).toBe('3 files are not in git yet.')
+    expect(teamFilesPopoverSentence(status({ uncommitted: true, uncommittedFiles: ['a'] }))).toBe('1 file is not in git yet.')
+    expect(teamFilesPopoverSentence(status())).toBe('Everything is saved and committed.')
+    expect(teamFilesPopoverSentence(status({ isGitRepo: false }))).toBe('Saved in .orgai/ in this folder.')
+    expect(teamFilesPopoverSentence(status({ state: 'pending', changes: [change()] }))).toBe('1 change needs your approval.')
+    expect(teamFilesPopoverSentence(status({ state: 'problem' }))).toBeNull()
   })
   it('pending counts approvals plus the omitted ones', () => {
     const s = status({ state: 'pending', changes: [change(), change({ id: 'b' }), change({ id: 'c', needsApproval: false })], omittedChanges: 2 })

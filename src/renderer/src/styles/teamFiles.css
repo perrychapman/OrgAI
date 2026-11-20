@@ -7,27 +7,79 @@
   display: none;
 }
 
-/* One quiet row in the frame footer; a long detail wraps under the state. */
-/* In the toolbar's second row, beside the "New roles report to" note; a line with a detail or message takes its own row. */
-.team-files-line {
-  flex: 0 1 auto;
-  margin-left: auto;
+/* The Team files chip (header) and its popover (spec team-tab-overhaul 1.4). The wrapper carries data-state / data-tone. */
+.team-files-chip-wrap {
+  display: inline-flex;
   min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 var(--space-2);
+}
+.team-files-chip-wrap .popover-wrap {
+  min-width: 0;
+}
+.team-files-chip {
+  max-width: 100%;
+  gap: var(--space-1);
   color: var(--text-secondary);
-  /* Same size as the toolbar note it sits beside, so it adds no height to that row. */
+}
+.team-files-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Quiet and neutral read as ordinary header text; only a decision (accent), a problem (danger) or a removed folder
+   (attention) takes colour, so an untouched project never shouts. */
+.team-files-chip-wrap[data-tone='neutral'] .team-files-chip {
+  color: var(--text-primary);
+}
+.team-files-chip-wrap[data-tone='accent'] .team-files-chip {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+}
+.team-files-chip-wrap[data-tone='attention'] .team-files-chip {
+  color: var(--warning-text);
+}
+.team-files-chip-wrap[data-tone='danger'] .team-files-chip {
+  color: var(--danger-text);
+}
+/* 360 px, never wider than the window minus the popover margin (the panel is in the top layer, so the window is the frame's limit). */
+.popover-panel.team-files-popover {
+  width: 360px;
+  max-width: calc(100vw - 16px);
+  padding: var(--space-3);
+}
+.team-files-pop {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.team-files-pop > * {
+  margin: 0;
+}
+.team-files-pop-title {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+.team-files-pop-explainer {
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
 }
-.team-files-line[data-wrap='true'],
-.team-files-line:has(.team-files-notice) {
-  flex: 1 1 100%;
-  margin-left: 0;
+.team-files-pop-status p {
+  margin: 0;
 }
-/* The applied / undone notice shares the line's row: words, then Undo and Dismiss. */
+.team-files-pop-status[data-tone='danger'] .team-files-pop-sentence {
+  color: var(--danger-text);
+}
+.team-files-pop > .btn {
+  align-self: flex-start;
+}
+.team-files-pop-message {
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.team-files-pop .team-files-commit-list {
+  max-height: none;
+}
+/* The applied / undone notice, inside the popover: words, then Undo and Dismiss. */
 .team-files-notice {
   flex: 1 1 100%;
   min-width: 0;
@@ -44,53 +96,6 @@
 }
 .team-files-notice[data-tone='success'] .team-files-notice-text {
   color: var(--text-secondary);
-}
-/* No detail or message: one row, the text clips (its full words stay in the page for assistive tech). */
-.team-files-line[data-wrap='false'] .team-files-line-main {
-  flex: 0 1 auto;
-  flex-wrap: nowrap;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: block;
-}
-.team-files-line .btn.sm {
-  flex: none;
-}
-/* One-row line (beside the note): the 28 px button must not set the row's height; the tray gives up that room. A wrapped
-   line has other text above the button, so there it takes its own height instead of overlapping that text. */
-.team-files-line[data-wrap='false']:not(:has(.team-files-notice)) > .btn.sm {
-  margin-block: -7px;
-}
-.team-files-line:focus-visible {
-  outline: 2px solid var(--focus-ring, var(--accent));
-  outline-offset: 1px;
-}
-.team-files-line-main {
-  min-width: 0;
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 var(--space-1);
-  overflow-wrap: anywhere;
-}
-.team-files-line-text {
-  font-weight: var(--weight-semibold);
-  color: var(--text-primary);
-}
-.team-files-line[data-tone='quiet'] .team-files-line-text {
-  font-weight: var(--weight-regular, 400);
-  color: var(--text-secondary);
-}
-.team-files-line[data-tone='danger'] .team-files-line-text {
-  color: var(--danger-text, var(--text-primary));
-}
-.team-files-line-message {
-  color: var(--text-primary);
-}
-/* The parts of the line ("in sync", where, the last result) read as separate statements (Team tab phase 1, D7c). */
-.team-files-line-sep {
-  color: var(--text-tertiary);
 }
 /* The commit confirmation's file list: one path per line, long paths wrap rather than widen the dialog. */
 .team-files-commit-list {
@@ -132,10 +137,8 @@
     min-height: 72px;
     max-height: none;
   }
-  /* The drag hint under the chart is not needed while a decision is open; its two lines go to the change list. */
-  .frame-grid:has(> .frame-tray .team-files-card) > .frame-footer {
-    display: none;
-  }
+  /* The footer (the 32 px notice row) stays visible while the card is open: a notice such as "Committed 3 team files."
+     must not vanish, and the change list still gets its room from the stage's 30% floor. */
   /* The lead sentence repeats the title; it stays for assistive tech. */
   .team-files-card .decision-summary {
     position: absolute;
