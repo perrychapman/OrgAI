@@ -106,9 +106,13 @@ Skills (#11), Team assistant, Chat / MCP / Skill assistants, Chat asks, self-kno
     first-time flow through a real org chart approval on the fake adapter), runManagerHostChange.test.ts "the
     Architect's skill card" (fan-out to a live work run: hostConfigChanged, the "You approved ... in another session"
     log and `run.liveChange` source 'card'), runManager.test.ts (setup ctx wiring), prompts.test.ts and
-    toolDefinitionSize.test.ts. Unverified: a live Claude or Codex Architect choosing and calling the tools; a role
-    renamed in the editor while a setup run's skill card is open (setup cards are not slug-mapped at creation like
-    work-run cards; SkillService resolves slugs against the stored roles at approval and refuses unknown ones).
+    toolDefinitionSize.test.ts. The three skill tools are bound for every role of a setup run while only the
+    `architect` slug gets the prompt paragraph (intended). A setup skills card on a stored project records, at
+    creation, which stored role ids each slug on it meant (`cardRolesForStoreAtCreation`, no `slugsForStore` mapping:
+    a setup run's roles are the stored roles); approval is refused with the same REVISE text as a work run, nothing
+    saved, when a slug now belongs to another role or to none (runManagerAssistants.test.ts "the slug record of a setup
+    skills card": slug moved, slug removed, unchanged chart approves). Unverified: a live Claude or Codex Architect
+    choosing and calling the tools.
   - Chat asks (2026-11-06; ARCHITECTURE.md Assistants "Chat asks instead of being unable"): quick roles always keep
     Edit / Write / Bash / NotebookEdit (team 'single') or each default role's own tools; `allowEdits` is the user's
     declaration only (false "read-only start: an edit or command asks", true "edits allowed: each still asks" plus
