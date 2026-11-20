@@ -1,0 +1,136 @@
+/*
+ * Factory Floor chrome: the scene controls row and Find a worker (docs/design/factory-floor.md sections 6.4 and 6.7).
+ * Tokens only. The row is 40 px tall (32 px controls and 4 px padding) and sits 8 px above the stage's bottom edge, so
+ * it never covers more than 48 px of height. No transitions are added here; the rules at the end keep it so.
+ */
+
+.factory-scene {
+  container-type: inline-size;
+  container-name: factory-scene;
+}
+
+.factory-controls {
+  position: absolute;
+  left: var(--space-2);
+  bottom: var(--space-2);
+  z-index: var(--z-canvas-overlay);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  box-shadow: var(--elev-1);
+}
+
+.factory-controls .btn.sm {
+  height: var(--control-md);
+  padding-block: 0;
+}
+
+.factory-controls .btn[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+}
+
+.factory-find-wrap {
+  display: inline-flex;
+}
+
+/* Below a stage width of 560 px Find and Pause motion show only their icon; the accessible name stays. */
+@container factory-scene (max-width: 559.98px) {
+  .factory-chrome-label {
+    display: none;
+  }
+  .factory-controls .btn.sm {
+    width: var(--control-md);
+    justify-content: center;
+    padding-inline: 0;
+  }
+}
+
+/* Find panel */
+.popover-panel.factory-find-panel {
+  width: min(22rem, calc(100vw - 16px));
+}
+
+.factory-find {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.factory-find-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.factory-find-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.factory-find-row:hover {
+  background: var(--surface-3);
+}
+.factory-find-row:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.factory-find-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factory-find-meta {
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+
+.factory-find-group {
+  margin: var(--space-1) 0 0;
+  padding: 0 var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: 600;
+}
+
+.factory-find-empty {
+  margin: 0;
+  padding: var(--space-2);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .factory-controls *,
+  .factory-find-panel * {
+    transition: none;
+    animation: none;
+  }
+}
+
+:root[data-reduce-motion='on'] .factory-controls *,
+:root[data-reduce-motion='on'] .factory-find-panel * {
+  transition: none;
+  animation: none;
+}
