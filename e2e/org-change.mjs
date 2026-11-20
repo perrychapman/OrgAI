@@ -110,7 +110,8 @@ async function fullFlow(w, h, theme) {
   // Team tray pointer: shown in Recommend too (never hidden behind Design), and Design offers to send into the open session.
   await openTeam(page)
   const tray = page.locator('[data-testid=team-assistant]')
-  await tray.locator('[data-testid=team-mode-recommend]').click()
+  // Phase 2: the tray has no Design tab any more; the Architect is reached only from Start from.
+  check((await page.locator('[data-testid=architect-open]').count()) === 0, `the tray has no Design tab at ${tag}`)
   const pointer = tray.locator('[data-testid=org-change-pointer]')
   await pointer.waitFor({ timeout: 10_000 }).catch(() => {})
   check((await tray.getAttribute('data-mode')) === 'recommend' && (await pointer.isVisible()), `the pointer shows while the tray is on Recommend at ${tag}`)

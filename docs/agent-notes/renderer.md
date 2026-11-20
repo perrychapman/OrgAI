@@ -705,9 +705,9 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
   mount points and state wiring; the UI lives in `components/team/TeamHeader.tsx` (in `FrameToolbar`: h1, role count, static
   `team-problems-chip`, empty `team-view-switch`, Layout menu `team-layout`, `StartFromMenu`, `TeamFilesChip`, `AddRolePopover`
   trigger `team-add-role`, the only primary), `TeamNoticeRow.tsx` (always in `FrameFooter`, fixed 32 px, `team-notice-row`),
-  `AddRolePopover.tsx`, `StartFromMenu.tsx`, `ArchitectDialog.tsx` (`useArchitectForm` / `ArchitectFields` shared with the tray's
-  Design pane `DraftPanel`, whose quick draft is gone; the store's `draftOrgChart` / `applyDraft` / `discardDraft` are now dead code
-  for phase 3), `TeamFilesChip.tsx` (replaces the deleted `TeamFilesLine.tsx`; `team-files-line` stays on its wrapper with
+  `AddRolePopover.tsx`, `StartFromMenu.tsx`, `ArchitectDialog.tsx` (the only Architect form: the tray's Design tab and `DraftPanel`
+  with its quick draft are deleted, so `org-change-start` exists once; the tray keeps `OrgChangePointer` and its "Open the Architect"
+  opens this dialog through `onOpenArchitect`; the store's `draftOrgChart` / `applyDraft` / `discardDraft` are dead code for phase 3), `TeamFilesChip.tsx` (replaces the deleted `TeamFilesLine.tsx`; `team-files-line` stays on its wrapper with
   `data-state` / `data-tone`; the commit confirm is owned by the chip and keeps review M2's note plus "Nothing is pushed."),
   `RoleDelegation.tsx`, `RoleModelSentence.tsx`, `RoleToolGroups.tsx`. Pure, unit-tested libs: `teamNotices.ts` (priority queue;
   the first-visit hint shows only when nothing else is in the row and is never counted in `+N`), `teamEdits.ts` (field-by-field

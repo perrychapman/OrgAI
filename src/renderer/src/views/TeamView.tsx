@@ -22,7 +22,7 @@ import SaveTemplateDialog from '../components/templates/SaveTemplateDialog'
 import ApplyTemplateDialog from '../components/templates/ApplyTemplateDialog'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
 import { Tabs, panelDomId, tabDomId } from '../components/ui/Tabs'
-import TeamAssistantTray, { type TeamAssistantMode } from '../components/team/TeamAssistantTray'
+import TeamAssistantTray from '../components/team/TeamAssistantTray'
 import TeamCatalog from '../components/team/TeamCatalog'
 import { capabilityCounts, capabilityLabel } from '../lib/teamView'
 import ImportAgentsDialog from '../components/import/ImportAgentsDialog'
@@ -259,7 +259,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const [panelOpen, setPanelOpen] = useState(true)
   // Role | Catalog. A role gets selected -> Role; the user's explicit choice sticks until the selection goes from nothing to something.
   const [panelTab, setPanelTab] = useState<PanelTab>(() => (useAppStore.getState().selectedRoleId ? 'role' : 'catalog'))
-  const [assistant, setAssistant] = useState<TeamAssistantMode>('recommend')
   const hadSelection = useRef(!!selectedRoleId)
   useEffect(() => {
     if (selectedRoleId && !hadSelection.current) setPanelTab('role')
@@ -804,7 +803,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
   // assistant" from a role opens Recommend (scoped to that role) and focuses its primary button.
   const openAssistant = (): void => {
-    setAssistant('recommend')
     window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-recommend]')?.focus())
   }
 
@@ -1000,8 +998,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             <TeamAssistantTray
               project={project}
               scope={selectedRole ? { kind: 'role', roleId: selectedRole.id } : { kind: 'team' }}
-              mode={assistant}
-              onModeChange={setAssistant}
+              onOpenArchitect={() => setArchitectOpen(true)}
             />
           </div>
         </FrameTray>

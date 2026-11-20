@@ -13,7 +13,7 @@ import { useConfirm } from '../ui/ConfirmDialog'
 /**
  * "Redesign with the Architect" dialog (spec docs/design/team-tab-overhaul.md 1.3). TeamView mounts it while open;
  * `onClose` returns focus to the Start from button (TeamView does that). The form logic lives in `useArchitectForm`
- * and `ArchitectFields`, which the tray's Design pane (DraftPanel) reuses, so there is one implementation.
+ * and `ArchitectFields` (the tray's Design pane that reused them was removed in phase 2: this dialog is the one form).
  */
 export interface ArchitectDialogProps {
   project: Project
