@@ -1,10 +1,10 @@
 import { execFile, spawn } from 'node:child_process'
 import { scrubControlEnv } from './childEnv'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { devNull } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { gitPath, gitPathSync, pathKey, repoLockRecovery, withRepoLock as repoLock } from './repoLock'
-import { gitExecutable } from '../host/systemBinaries'
+import { gitExecutable, neutralCwd, system32Path } from '../host/systemBinaries'
 import { trackChildProcess } from '../host/shutdown'
 import type { MergeDecision, PendingWorktree, WorktreeDiff, WorktreeInfo } from '@shared/types'
 
@@ -69,7 +69,14 @@ function git(root: string, args: string[]): Promise<{ ok: boolean; out: string; 
   })
 }
 
-/** `-c` overrides every read-only history query passes: nothing in a hostile repository's own config may start a program. */
+/**
+ * `-c` overrides every read-only history query passes. These cover the config keys that name a program for the commands
+ * `git log` runs itself (pager, fsmonitor, hooks, ssh, askpass, signature check, auto gc). They are defence in depth:
+ * `git log` with a piped stdout reaches none of fsmonitor, pager or ssh, so no test shows them being stopped. What
+ * actually stops a program that a repository's config names for a lazy fetch (remote.<n>.uploadpack, core.gitProxy,
+ * a credential helper) is the environment of readOnlyGitEnv (GIT_NO_LAZY_FETCH, GIT_ALLOW_PROTOCOL), which a `-c`
+ * override cannot replace: a remote's own uploadpack key has no global switch.
+ */
 const HOSTILE_CONFIG_OVERRIDES = [
   '-c', 'core.fsmonitor=false',
   '-c', `core.hooksPath=${devNull}`,
@@ -81,17 +88,87 @@ const HOSTILE_CONFIG_OVERRIDES = [
   '-c', 'maintenance.auto=false'
 ]
 
-/** The environment of a read-only history query: control variables scrubbed and every inherited GIT_* dropped (GIT_DIR, GIT_CONFIG_*, GIT_SSH...). */
-function readOnlyGitEnv(): NodeJS.ProcessEnv {
+/**
+ * The environment of a read-only history query: control variables scrubbed and every inherited GIT_* dropped (GIT_DIR,
+ * GIT_CONFIG_*, GIT_SSH...), then:
+ * - GIT_DIR / GIT_WORK_TREE pinned to `root`, so git never searches upward (an empty or invalid `.git` directory would
+ *   otherwise make it count a parent repository) and never follows `.git` anywhere else. Explicit GIT_DIR skips git's
+ *   safe.directory ownership check, so the defence is this environment plus the strict `.git` check (hasPlainGitDir).
+ * - GIT_NO_LAZY_FETCH=1 (git 2.44+): a missing object in a partial clone is not fetched.
+ * - GIT_ALLOW_PROTOCOL=orgai-none: a name no transport has, so no protocol is allowed at all, whatever the repository's
+ *   own protocol.*.allow says (the environment variable wins). This is what stops a promisor fetch on git older than
+ *   2.44 and any other transport use (remote.<n>.uploadpack, core.gitProxy, https and its credential helper).
+ * - no prompts, no optional locks, no pager, replace objects ignored.
+ * The system git config is deliberately left on: an administrator's hardening there only helps.
+ */
+export function readOnlyGitEnv(root: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(scrubControlEnv(process.env))) if (!k.toUpperCase().startsWith('GIT_')) env[k] = v
   return {
     ...env,
+    GIT_DIR: join(root, '.git'),
+    GIT_WORK_TREE: root,
+    GIT_NO_LAZY_FETCH: '1',
+    GIT_ALLOW_PROTOCOL: 'orgai-none',
     GIT_TERMINAL_PROMPT: '0',
     GIT_OPTIONAL_LOCKS: '0',
     GIT_PAGER: 'cat',
-    GIT_NO_REPLACE_OBJECTS: '1',
-    GIT_CONFIG_NOSYSTEM: '1'
+    GIT_NO_REPLACE_OBJECTS: '1'
+  }
+}
+
+/** True when `<root>/.git` is a real directory: not a file (`gitdir:` redirect), not a symlink or junction. */
+export function hasPlainGitDir(root: string): boolean {
+  try {
+    const st = lstatSync(join(root, '.git'))
+    return st.isDirectory() && !st.isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+interface KillableChild {
+  readonly pid?: number
+  kill(signal?: NodeJS.Signals | number): boolean
+}
+
+export interface TreeKillDeps {
+  platform?: NodeJS.Platform
+  spawn?: typeof spawn
+  /** POSIX: signal a whole process group (default process.kill(-pid, signal)). */
+  killGroup?: (pid: number, signal: NodeJS.Signals | number) => void
+}
+
+/**
+ * Kill `child` and everything it started. win32: `%SystemRoot%\System32\taskkill.exe /PID <pid> /T /F` (absolute path, an
+ * argument array, no shell). POSIX: the process group, which needs the child to have been spawned `detached` so it leads
+ * its own group. Falls back to killing only the direct child when the tree kill cannot be started. Never throws.
+ */
+export function killProcessTree(child: KillableChild, signal: NodeJS.Signals | number = 'SIGKILL', deps: TreeKillDeps = {}): boolean {
+  const pid = child.pid
+  const direct = (): boolean => {
+    try {
+      return child.kill(signal)
+    } catch {
+      return false
+    }
+  }
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return direct()
+  if ((deps.platform ?? process.platform) === 'win32') {
+    try {
+      const killer = (deps.spawn ?? spawn)(system32Path('taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { cwd: neutralCwd(), windowsHide: true, shell: false, stdio: 'ignore' })
+      killer.on('error', () => void direct())
+      killer.unref?.()
+      return true
+    } catch {
+      return direct()
+    }
+  }
+  try {
+    ;(deps.killGroup ?? ((p, s) => process.kill(-p, s)))(pid, signal)
+    return true
+  } catch {
+    return direct()
   }
 }
 
@@ -102,23 +179,31 @@ export interface CommitTimesOptions {
   maxCommits?: number
 }
 
+/** The argument list of the commit-time query (exported for tests). */
+export function commitTimesArgs(sinceMs: number, maxCommits: number): string[] {
+  return [
+    '--no-pager',
+    ...HOSTILE_CONFIG_OVERRIDES,
+    'log', '--no-merges', '--no-show-signature', `--since=${new Date(sinceMs).toISOString()}`, `--max-count=${maxCommits}`, '--format=%ct',
+    // `--` ends the options and the revision list, so a working-tree file named HEAD is not ambiguous.
+    'HEAD', '--'
+  ]
+}
+
 /**
  * Committer timestamps (unix seconds) of the commits reachable from HEAD at or after `sinceMs`, merge commits left out.
  * Asks git for `%ct` and nothing else, so no message, author, file name or path is ever read. Spawns git directly (no
- * shell, argument array, no pager, no prompts, hostile-config overrides, GIT_* environment dropped, a timeout), reads at
- * most `maxCommits` lines and then kills it. `root` must itself contain `.git` (a project folder inside another
- * repository does not count that repository's commits). Never throws: any failure is `{ ok: false }`.
+ * shell, argument array, no pager, no prompts, hostile-config overrides, a pinned GIT_DIR and an environment that allows
+ * no transport and no lazy fetch, a timeout), reads at most `maxCommits` lines and then kills git and its process tree.
+ * `root` must itself hold a real `.git` directory (hasPlainGitDir: a `.git` file, a symlink, a linked worktree or a
+ * folder inside another repository is `{ ok: false }`). Never throws: any failure is `{ ok: false }`.
  */
 export function gitCommitTimes(root: string, sinceMs: number, opts: CommitTimesOptions = {}): Promise<{ ok: boolean; times: number[] }> {
   const bin = gitExecutable()
   const failed = { ok: false, times: [] as number[] }
-  if (!bin || !isGitRepo(root)) return Promise.resolve(failed)
+  if (!bin || !hasPlainGitDir(root)) return Promise.resolve(failed)
   const maxCommits = opts.maxCommits ?? 5000
-  const args = [
-    '--no-pager',
-    ...HOSTILE_CONFIG_OVERRIDES,
-    'log', 'HEAD', '--no-merges', '--no-show-signature', `--since=${new Date(sinceMs).toISOString()}`, `--max-count=${maxCommits}`, '--format=%ct'
-  ]
+  const args = commitTimesArgs(sinceMs, maxCommits)
   return new Promise((resolve) => {
     let settled = false
     let buf = ''
@@ -131,14 +216,27 @@ export function gitCommitTimes(root: string, sinceMs: number, opts: CommitTimesO
     }
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(bin, args, { cwd: root, env: readOnlyGitEnv(), windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'ignore'] })
+      // POSIX: detached makes git lead its own process group so killProcessTree can end the whole group. win32 uses
+      // taskkill /T instead (detached there would open a console window).
+      child = spawn(bin, args, { cwd: root, env: readOnlyGitEnv(root), windowsHide: true, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'ignore'] })
     } catch {
       resolve(failed)
       return
     }
-    trackChildProcess(child, 'git')
+    const spawned = child
+    // The shutdown registry kills the whole tree too (its kill signal goes through killProcessTree).
+    trackChildProcess(
+      { get pid() { return spawned.pid }, kill: (signal) => killProcessTree(spawned, signal), once: (event, listener) => spawned.once(event, listener) },
+      'git'
+    )
+    let killed = false
+    const stop = (): void => {
+      if (killed) return
+      killed = true
+      killProcessTree(child)
+    }
     const timer = setTimeout(() => {
-      child.kill()
+      stop()
       finish(failed)
     }, opts.timeoutMs ?? 5000)
     const take = (line: string): void => {
@@ -151,7 +249,7 @@ export function gitCommitTimes(root: string, sinceMs: number, opts: CommitTimesO
       const parts = buf.split('\n')
       buf = parts.pop() ?? ''
       for (const p of parts) take(p)
-      if (times.length >= maxCommits || buf.length > 1024) child.kill()
+      if (times.length >= maxCommits || buf.length > 1024) stop()
     })
     child.on('error', () => finish(failed))
     child.on('close', (code) => {
