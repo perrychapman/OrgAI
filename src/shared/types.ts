@@ -1943,6 +1943,8 @@ export interface NormalizedAppearanceSettings extends AppearanceSettings {
 export interface AppSettings {
   /** Global pause of Schedules (kill switch): while true nothing fires and due slots are recorded as skipped. */
   schedulesPaused?: boolean
+  /** The person's own name, for the Dashboard greeting only. Absent = none. Normalised by cleanDisplayName. Never sent to a model. */
+  displayName?: string
   defaultPermissionMode: PermissionMode
   /** undefined = no cap. */
   defaultMaxBudgetUsd?: number

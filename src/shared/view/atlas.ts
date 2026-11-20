@@ -1400,7 +1400,9 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
     control: 'user'
   },
   // PLACEHOLDER (Schedules contract): the renderer engineer points this at the Schedules surface. Never proposable.
-  schedulesPaused: { summary: 'Pause every schedule at once. Nothing fires while it is on.', surface: 'schedules', control: 'user' }
+  schedulesPaused: { summary: 'Pause every schedule at once. Nothing fires while it is on.', surface: 'schedules', control: 'user' },
+  // The person's own name for the Dashboard greeting. Never proposable and never sent to a model.
+  displayName: { summary: 'Your own name, shown only in the Dashboard greeting. Optional, up to 40 characters, kept on this computer and never sent to a model.', surface: 'dashboard', control: 'user' }
 }
 
 export const PROJECT_SETTING_DOCS: Readonly<Record<keyof Project, AtlasSettingDoc>> = {
