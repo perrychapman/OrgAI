@@ -144,9 +144,9 @@ describe('camera: fit', () => {
         // Tight on at least one axis.
         expect(Math.min(left - padX, stage.width - padX - right, top - padY, stage.height - padY - bottom)).toBeLessThan(2)
       } else {
-        // Too big at fitMin: top-aligned, centred across.
+        // Too big at fitMin: top-aligned, centred across on the content's middle x.
         expect(top).toBeCloseTo(stage.height * 0.08, 0)
-        expect((left + right) / 2).toBeCloseTo(stage.width / 2, 0)
+        expect(view.targetX).toBeCloseTo((4 + 35.5) / 2, 6)
       }
     })
   }
@@ -161,6 +161,9 @@ describe('camera: fit', () => {
     expect(view.ppm).toBe(7)
     const boothTop = project(view, stage, { x: 7, y: 4.1, z: -8 })
     expect(boothTop.y).toBeGreaterThan(0)
+    const boardTop = project(view, stage, { x: 25, y: 5, z: -10 })
+    expect(boardTop.y).toBeCloseTo(240 * 0.08, 0)
+    expect(view.targetX).toBeCloseTo(19.75, 6)
   })
 })
 

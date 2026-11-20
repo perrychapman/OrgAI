@@ -222,15 +222,16 @@ export function fitView(boxes: readonly Box3[], stage: Stage, padding = FIT_PADD
   if (fits(atMax.rect)) return atMax.view
   let lo = centred(points, stage, limits.fitMin, start)
   if (!fits(lo.rect)) {
-    // Top-aligned at fitMin: shift until the content's top sits at the padding, keeping it centred across.
-    let view = lo.view
-    let rect = lo.rect
+    // Top-aligned at fitMin: shift until the content's top sits at the padding. Across, the target sits on the content's
+    // middle x (the projected rectangle is skewed by rows far below the stage, so it is not used to centre).
+    const midX = start.targetX
+    let view: CameraView = { ...lo.view, targetX: midX }
+    let rect = projectPoints(view, stage, points)
     for (let i = 0; i < 40; i++) {
-      const dx = stage.width / 2 - (rect.left + rect.right) / 2
       const dy = stage.height * padding - rect.top
-      if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) break
+      if (Math.abs(dy) < 0.01) break
       const from = { x: stage.width / 2, y: stage.height / 2 }
-      view = shiftScreen(view, stage, from, { x: from.x + dx, y: from.y + dy })
+      view = { ...shiftScreen(view, stage, from, { x: from.x, y: from.y + dy }), targetX: midX }
       rect = projectPoints(view, stage, points)
     }
     return view

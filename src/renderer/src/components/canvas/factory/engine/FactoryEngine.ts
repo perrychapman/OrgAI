@@ -67,6 +67,8 @@ export interface KitHeights {
   /** Nameplate anchor heights (world y). */
   boothPlate: number
   stationPlate: number
+  /** Floor extent of a station kit (plate, belt, props) about its centre, union of lead and bench. */
+  stationExtent: { minX: number; maxX: number; minZ: number; maxZ: number }
 }
 
 type KitName = 'booth' | 'dock' | 'board' | 'lead' | 'bench' | 'machine0' | 'machine1' | 'machine2' | 'machine3' | 'stack' | 'robot' | 'paint' | 'vacant' | 'ring' | 'blob'
@@ -81,15 +83,17 @@ function anchorMatrix(a: Anchor | undefined): Matrix4 {
   return m
 }
 
-function kitTop(kit: ObjectKit): number {
-  let top = 0
+function kitBox(kit: ObjectKit): Box3 {
   const box = new Box3()
   for (const p of kit.parts) {
     if (!p.geometry.boundingBox) p.geometry.computeBoundingBox()
-    box.copy(p.geometry.boundingBox!)
-    top = Math.max(top, box.max.y)
+    box.union(p.geometry.boundingBox!)
   }
-  return top
+  return box
+}
+function kitTop(kit: ObjectKit): number {
+  const box = kitBox(kit)
+  return box.isEmpty() ? 0 : Math.max(0, box.max.y)
 }
 
 export class FactoryEngine {
@@ -203,6 +207,10 @@ export class FactoryEngine {
   /** World heights of the kits' tops and label anchors (built once). */
   heights(): KitHeights {
     const booth = this.kit('booth')
+    const sb = kitBox(this.kit('bench')).union(kitBox(this.kit('lead')))
+    const extent = sb.isEmpty()
+      ? { minX: -1.5, maxX: 1.5, minZ: -1.5, maxZ: 2.5 }
+      : { minX: Math.min(-1.5, sb.min.x), maxX: Math.max(1.5, sb.max.x), minZ: Math.min(-1.5, sb.min.z), maxZ: Math.max(1.5, sb.max.z) }
     const stationTop = Math.max(kitTop(this.kit('bench')), kitTop(this.kit('lead')), ...[0, 1, 2, 3].map((v) => kitTop(this.kit(`machine${v}` as KitName)) + (this.kit('bench').anchors?.machine?.y ?? 0)), kitTop(this.kit('stack')) + (this.kit('bench').anchors?.stackLight?.y ?? 0), kitTop(this.kit('robot')))
     return {
       boothTop: GANTRY_TOP + Math.max(kitTop(booth), kitTop(this.kit('stack')) + (booth.anchors?.stackLight?.y ?? 0)),
@@ -210,7 +218,8 @@ export class FactoryEngine {
       dockTop: GANTRY_TOP + kitTop(this.kit('dock')),
       boardTop: GANTRY_TOP + kitTop(this.kit('board')),
       boothPlate: GANTRY_TOP + (booth.anchors?.nameplate?.y ?? kitTop(booth)),
-      stationPlate: this.kit('bench').anchors?.nameplate?.y ?? stationTop
+      stationPlate: this.kit('bench').anchors?.nameplate?.y ?? stationTop,
+      stationExtent: extent
     }
   }
 

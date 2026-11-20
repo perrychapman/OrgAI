@@ -91,7 +91,16 @@ export const FACTORY_3D_MAX_AGENTS = 120
  * Heights used before the 3D kits report theirs (and always in the floor plan, which ignores height): booth and
  * stations as built by the slice 2 placeholder kits, rounded up.
  */
-const DEFAULT_HEIGHTS: KitHeights = { boothTop: GANTRY_TOP + 3, stationTop: 2.4, dockTop: GANTRY_TOP + 0.5, boardTop: GANTRY_TOP + 3.2, boothPlate: GANTRY_TOP + 3.2, stationPlate: 2.6 }
+const DEFAULT_HEIGHTS: KitHeights = {
+  boothTop: GANTRY_TOP + 3,
+  stationTop: 2.4,
+  dockTop: GANTRY_TOP + 0.5,
+  boardTop: GANTRY_TOP + 3.2,
+  boothPlate: GANTRY_TOP + 3.2,
+  stationPlate: 2.6,
+  // Plate 3 x 3 m plus the outfeed belt (z 3 to 4 of the row).
+  stationExtent: { minX: -1.5, maxX: 1.5, minZ: -1.5, maxZ: 2.5 }
+}
 /** Worker buttons cover the station footprint up to this height (robot and console; the stack light rises above). */
 const BUTTON_TOP = 1.8
 const NO_SIGNS: readonly PlanSign[] = []
@@ -332,11 +341,13 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     const boxes: Box3[] = [zone(BOOTH_CENTER, BOOTH_SIZE.w, BOOTH_SIZE.d, h.boothTop)]
     if (mode === 'live') boxes.push(zone(DOCK_CENTER, DOCK_SIZE.w, DOCK_SIZE.d, h.dockTop))
     if (boardRef.current) boxes.push(zone(BOARD_CENTER, BOARD_SIZE.w, BOARD_SIZE.d, h.boardTop))
+    // The 3D view frames each station's whole kit (plate and belt); the plan frames the 3 x 3 m tiles.
     const half = STATION_SIZE / 2
+    const ext = projectionRef.current === 'plan' ? { minX: -half, maxX: half, minZ: -half, maxZ: half } : h.stationExtent
     for (const id of l.order) {
       const st = l.stations[id]
       if (!st || st.kind === 'booth') continue
-      boxes.push({ minX: st.center.x - half, maxX: st.center.x + half, minY: 0, maxY: h.stationTop, minZ: st.center.z - half, maxZ: st.center.z + half })
+      boxes.push({ minX: st.center.x + ext.minX, maxX: st.center.x + ext.maxX, minY: 0, maxY: h.stationTop, minZ: st.center.z + ext.minZ, maxZ: st.center.z + ext.maxZ })
     }
     return boxes
   }, [mode])

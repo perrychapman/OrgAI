@@ -53,6 +53,7 @@ export function clip(text: string, max: number): string {
 }
 
 const GAP = 4
+const EDGE = 4
 
 function baseReason(p: NameplateData): LabelReason {
   if (p.entry.lamp === 'needs-you') return 'needs-you'
@@ -92,8 +93,13 @@ export function FactoryLabels({ mode, plates, signs, dock, board, handleRef }: F
         if (!s) return
         const p = project(view, stage, anchor)
         if (p.depth <= 0) return
-        const left = align === 'above' ? p.x - s.w / 2 : p.x
-        const top = align === 'above' ? p.y - s.h - GAP : p.y - s.h / 2
+        let left = align === 'above' ? p.x - s.w / 2 : p.x
+        let top = align === 'above' ? p.y - s.h - GAP : p.y - s.h / 2
+        // A plate whose anchor is on the stage stays wholly on it (the booth's plate at fit sits near the top edge).
+        if (p.x >= 0 && p.x <= stage.width && p.y >= 0 && p.y <= stage.height) {
+          left = Math.min(Math.max(left, EDGE), Math.max(EDGE, stage.width - s.w - EDGE))
+          top = Math.min(Math.max(top, EDGE), Math.max(EDGE, stage.height - s.h - EDGE))
+        }
         where.set(key, { left, top })
         candidates.push({ id, kind, reason, order, rect: { left, top, right: left + s.w, bottom: top + s.h } })
       }
