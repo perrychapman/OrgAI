@@ -846,6 +846,8 @@ async function sectionAddAndDrag(page, app, shot) {
   await page.locator('.editor .react-flow__pane').click({ position: { x: 5, y: 5 } })
   await addBtn.click()
   await pop.waitFor({ timeout: 5000 })
+  // The popover focuses and selects the Name in an effect after it mounts: wait for the focus, then read the selection once.
+  await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'add-role-name', null, { timeout: 3000 }).catch(() => {})
   check(await pop.locator('[data-testid=add-role-name]').evaluate((el) => el === document.activeElement && el.selectionStart === 0 && el.selectionEnd === el.value.length && el.value.length > 0), 'the Name is selected when the popover opens')
   check((await pop.locator('[data-testid=add-role-parent]').inputValue()) === root.id, 'with nothing selected Reports to is the root')
   check((await pop.locator('[data-testid=add-role-parent] option', { hasText: /^Nobody/ }).count()) === 0, 'Reports to has no Nobody option')
