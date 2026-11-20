@@ -468,7 +468,7 @@ class CodexSession implements RuntimeSession {
    * The waiting notice that told the orchestrator removed servers stay reachable until the restart (stillReachable); the
    * restart's own notice replaces it, so it is taken back if still unsent then.
    */
-  private reachableNote?: string
+  private reachableNotes: { names: string[]; text: string }[] = []
   /**
    * An approved org chart (configChanged roles) left the root thread's developer instructions behind the live roster:
    * the next restart at idle resumes the root with instructions rebuilt from ctx.roles, then messages the orchestrator.
@@ -2455,7 +2455,7 @@ class CodexSession implements RuntimeSession {
         (e) => {
           if (!started) reject(e)
           else {
-            this.log('warn', `Bridged report ${started.handle} ended without a result: ${(e as Error)?.message ?? String(e)}`)
+            this.log('warn', `Bridged report ${started.handle} ended without a result: ${this.redact((e as Error)?.message ?? String(e))}`)
             this.bridgedFinished({ ...started, ok: false, text: this.redact((e as Error)?.message ?? 'It ended without a result.') }, req.role.name)
           }
         }
@@ -2477,7 +2477,8 @@ class CodexSession implements RuntimeSession {
     this.noteActivity('report')
     if (this.ending) return
     const parentId = live?.parentId ?? ROOT_AGENT_ID
-    const text = `Harness: ${bridgedResultText(r, roleName)}`
+    // The bridge's text (a failed report's error, or a result) came from another run: redact it before any event or log.
+    const text = this.redact(`Harness: ${bridgedResultText(r, roleName)}`)
     if (r.stopped || this.continuation.isHeld()) {
       const summary = r.stopped ? `${r.handle} was stopped.` : r.ok ? `${r.handle} reported back.` : `${r.handle} failed.`
       this.heldBridged.push({ parentId, text })
@@ -2802,7 +2803,7 @@ class CodexSession implements RuntimeSession {
     )
     if (origin !== 'host') return
     const text = hostChangeNotice({ prefix: 'Harness:', reachableUntilRestart: names })
-    this.reachableNote = text
+    this.reachableNotes.push({ names: [...names], text })
     this.deliverHostNotice(text, `MCP server${names.length === 1 ? '' : 's'} ${list} removed; reachable until Codex restarts`)
   }
 
@@ -2994,11 +2995,31 @@ class CodexSession implements RuntimeSession {
       this.activeTurn.clear()
       // The removed servers are gone now: a "still reachable until the restart" notice nobody read yet is out of date, and
       // this restart's notice says what is in place.
-      if (this.reachableNote !== undefined) {
-        const stale = this.reachableNote
-        this.reachableNote = undefined
-        this.hostNotes = this.hostNotes.filter((t) => t !== stale)
-        this.heldBridged = this.heldBridged.filter((m) => m.text !== stale)
+      // A note whose server this app-server was launched with is still true (the removal landed after the server list was
+      // read): the unsent ones are merged into one fresh notice naming only those servers, and one more restart is due.
+      let stillLaunched = false
+      if (this.reachableNotes.length) {
+        const notes = this.reachableNotes.splice(0)
+        const kept = new Set<string>()
+        for (const note of notes) {
+          const live = note.names.filter((n) => this.launchedMcp.has(n))
+          if (live.length) stillLaunched = true
+          const unsent = this.hostNotes.includes(note.text) || this.heldBridged.some((m) => m.text === note.text)
+          this.hostNotes = this.hostNotes.filter((t) => t !== note.text)
+          this.heldBridged = this.heldBridged.filter((m) => m.text !== note.text)
+          if (unsent) for (const n of live) kept.add(n)
+        }
+        if (kept.size) {
+          const names = [...kept]
+          const text = hostChangeNotice({ prefix: 'Harness:', reachableUntilRestart: names })
+          this.reachableNotes.push({ names, text })
+          const list = names.slice(0, HOST_NOTICE_LIST_CAP).join(', ') + (names.length > HOST_NOTICE_LIST_CAP ? `, and ${names.length - HOST_NOTICE_LIST_CAP} more` : '')
+          this.deliverHostNotice(text, `MCP server${names.length === 1 ? '' : 's'} ${list} removed; reachable until Codex restarts`)
+        }
+        if (stillLaunched) {
+          this.mcpRestartPending = true
+          this.restartOrigin.host = true
+        }
       }
       this.log('info', `Codex restarted with ${servers.filter((s) => s.spec.enabled).length} MCP server(s).`)
       // One harness message for everything this restart brought in (MCP and / or the roster).
@@ -3009,7 +3030,9 @@ class CodexSession implements RuntimeSession {
         parts.push(
           prefixes.length
             ? `Harness: the MCP server${prefixes.length === 1 ? '' : 's'}${whose} ${prefixes.length === 1 ? 'is' : 'are'} connected now. Tool names start with ${prefixes.join(' and ')}. Calls may still ask the user for permission.`
-            : 'Harness: the MCP configuration change is in place now. Tools of servers that were disabled or removed are gone.'
+            : stillLaunched
+              ? 'Harness: the MCP configuration change is in place now.'
+              : 'Harness: the MCP configuration change is in place now. Tools of servers that were disabled or removed are gone.'
         )
       }
       // The root was resumed with instructions built from the live roster just now. A roster change that landed during
@@ -3042,7 +3065,7 @@ class CodexSession implements RuntimeSession {
     this.noteActivity('restart')
     // A change that arrived while this restart ran is not lost: the root turn the message starts ends in
     // maybeRestartForMcp (turnCompleted); with no message there is no turn, so check now.
-    if (!notified && (this.mcpRestartPending || this.rosterRestartPending)) void this.maybeRestartForMcp()
+    if ((!notified || this.reachableNotes.length > 0) && (this.mcpRestartPending || this.rosterRestartPending)) void this.maybeRestartForMcp()
   }
 }
 

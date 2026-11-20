@@ -479,6 +479,16 @@ export class ContinuationDriver {
     return this.setPlanNudgeSent || this.directAnswerSettled
   }
 
+  /** Read-only: the `turnsWithoutPlan` its decide() would use for a plan-less turn end evaluated next (the count plus that turn). */
+  get nextTurnsWithoutPlan(): number {
+    return this.turnsWithoutPlan + 1
+  }
+
+  /** Read-only: the signature of the last ready set a `ready` nudge was sent for (decide() passes it as lastReadySignature). */
+  get readySignatureSent(): string | undefined {
+    return this.lastReadySignature
+  }
+
   /** The generation of the newest root turn end the driver heard of. */
   get turnGen(): number {
     return this.currentTurnGen

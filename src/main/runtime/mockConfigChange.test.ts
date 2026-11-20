@@ -164,6 +164,18 @@ describe('mock hostConfigChanged answer markers', () => {
     await done(session)
   })
 
+  it('L4: a bridged child ignores the host markers its brief (the parent orchestrator\'s text) carries', async () => {
+    const ctx = fakeCtx({
+      prompt: `Brief ${MODEL_SWITCH_TOKEN} ${HOST_REJECT_TOKEN} ${HOST_AFTER_IDLE_TOKEN}`,
+      autoContinue: false,
+      bridgedChild: { agentId: 'a-child', parentAgentId: ROOT_AGENT_ID, roleId: 'r-eng' }
+    })
+    const session = (await new MockAdapter({ script: { delayMs: 0 } }).start(ctx)) as MockSession
+    await vi.waitFor(() => expect(idle(ctx)).toBe(true))
+    await expect(session.hostConfigChanged({ skills: true })).resolves.toEqual({ availability: 'now' })
+    await done(session)
+  })
+
   it('without a marker the answer stays now', async () => {
     const { session } = await started(`Hi ${MODEL_SWITCH_TOKEN}`)
     await expect(session.hostConfigChanged({ skills: true })).resolves.toEqual({ availability: 'now' })

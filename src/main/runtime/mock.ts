@@ -1769,12 +1769,14 @@ export class MockSession implements RuntimeSession {
     if (this.isSetup) throw new Error('Setup-like runs do not take project config changes.')
     if (this.stopped || this.ended) throw new Error('The session is ending; the change applies from the next run.')
     // Answer markers (HOST_*_TOKEN): reject before anything is applied; a slow answer applies when it answers.
-    if (this.ctx.prompt.includes(HOST_REJECT_TOKEN)) throw new Error(MOCK_HOST_REJECT_REASON)
-    if (this.ctx.prompt.includes(HOST_SLOW_TOKEN)) {
+    // A bridged child's prompt is the parent orchestrator's brief (model-written text): the markers are the user's, not its.
+    const markers = this.ctx.bridgedChild ? '' : this.ctx.prompt
+    if (markers.includes(HOST_REJECT_TOKEN)) throw new Error(MOCK_HOST_REJECT_REASON)
+    if (markers.includes(HOST_SLOW_TOKEN)) {
       await new Promise((r) => setTimeout(r, MOCK_HOST_SLOW_MS))
       if (this.stopped || this.ended) throw new Error('The session is ending; the change applies from the next run.')
     }
-    const afterIdle = this.ctx.prompt.includes(HOST_AFTER_IDLE_TOKEN)
+    const afterIdle = markers.includes(HOST_AFTER_IDLE_TOKEN)
     this.configChanges.push({ ...structuredClone(change), host: true })
     this.rebindForConfig(change)
     const live = this.liveMcpServers()
