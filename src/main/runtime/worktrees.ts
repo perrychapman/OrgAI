@@ -121,7 +121,15 @@ export function readOnlyGitEnv(root: string): NodeJS.ProcessEnv {
 export function hasPlainGitDir(root: string): boolean {
   try {
     const st = lstatSync(join(root, '.git'))
-    return st.isDirectory() && !st.isSymbolicLink()
+    if (!st.isDirectory() || st.isSymbolicLink()) return false
+    // `commondir` points git at another repository's object store and refs; any alternate (not only a UNC one) does the same.
+    if (existsSync(join(root, '.git', 'commondir'))) return false
+    const alt = join(root, '.git', 'objects', 'info', 'alternates')
+    if (existsSync(alt)) {
+      if (statSync(alt).size > 64 * 1024) return false
+      if (readFileSync(alt, 'utf8').split(/\r?\n/).some((l) => l.trim() !== '')) return false
+    }
+    return true
   } catch {
     return false
   }
@@ -129,6 +137,8 @@ export function hasPlainGitDir(root: string): boolean {
 
 interface KillableChild {
   readonly pid?: number
+  readonly exitCode?: number | null
+  readonly signalCode?: NodeJS.Signals | null
   kill(signal?: NodeJS.Signals | number): boolean
 }
 
@@ -154,10 +164,15 @@ export function killProcessTree(child: KillableChild, signal: NodeJS.Signals | n
     }
   }
   if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return direct()
+  // Already exited: its pid may have been reused, so never aim a tree kill at it.
+  if ((child.exitCode !== undefined && child.exitCode !== null) || (child.signalCode !== undefined && child.signalCode !== null)) return false
   if ((deps.platform ?? process.platform) === 'win32') {
     try {
       const killer = (deps.spawn ?? spawn)(system32Path('taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { cwd: neutralCwd(), windowsHide: true, shell: false, stdio: 'ignore' })
       killer.on('error', () => void direct())
+      killer.on('exit', (code: number | null) => {
+        if (code !== 0) void direct()
+      })
       killer.unref?.()
       return true
     } catch {
