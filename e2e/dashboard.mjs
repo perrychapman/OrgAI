@@ -111,6 +111,11 @@ async function until(fn, ms = 20_000, every = 250) {
     await sleep(every)
   }
 }
+/** The name popover's input is visible a frame or more before the popover hands it focus; typing earlier loses characters. */
+const nameInputFocused = async () => {
+  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'dash-name-input', 5000, 50)
+}
 const activeInfo = () =>
   page.evaluate(() => {
     const a = document.activeElement
@@ -255,12 +260,12 @@ try {
   })
   check(addBox.border >= 1 && addBox.bg !== 'rgba(0, 0, 0, 0)', 'M2 "Add your name" has a border and a fill (it reads as a control)', JSON.stringify(addBox))
   await T('dash-name-add').click()
-  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await nameInputFocused()
   await page.keyboard.type('Sam')
   await page.keyboard.press('Enter')
   check(!!(await until(async () => (await salutationText()) === 'Welcome to OrgAI, Sam.', 8000)), 'M2 first launch: saving a name puts it in the greeting at once', await salutationText())
   await T('dash-name-edit').click()
-  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await nameInputFocused()
   await page.keyboard.press('Control+A')
   await page.keyboard.press('Backspace')
   await page.keyboard.press('Enter')
@@ -300,30 +305,32 @@ try {
   check(noName === `${hourWord}.`, 'A3 without a name the salutation is the time-of-day word and a full stop', `${noName} / ${hourWord}`)
   check((await T('dash-name-edit').count()) === 0, 'A7 no edit button while no name is set')
   await T('dash-name-add').click()
-  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await nameInputFocused()
+  await until(async () => (await activeInfo()).testid === 'dash-name-input', 5000, 50)
   check((await activeInfo()).testid === 'dash-name-input', 'A7 Add your name opens the popover with focus in dash-name-input')
   check((await T('dash-name-input').getAttribute('maxlength')) === '40', 'A7 the name field stops at 40 characters (maxLength)')
   await page.keyboard.type('Sam')
   await page.keyboard.press('Enter')
   check(!!(await until(async () => (await salutationText()).endsWith(', Sam.'), 8000)), 'A7 Enter saves and the salutation shows the name at once', await salutationText())
   check((await live()).includes('Name saved.'), 'A7 saving the name is announced "Name saved."', await live())
-  await sleep(250)
+  await until(async () => (await activeInfo()).testid === 'dash-name-edit', 5000, 50)
   check((await activeInfo()).testid === 'dash-name-edit', 'A7 focus lands on the Change your name button after saving', JSON.stringify(await activeInfo()))
   check(!!(await page.evaluate(async () => (await window.orgai.settings.get()).displayName === 'Sam')), 'A7 the name is in the saved settings')
   // Esc cancels, focus returns.
   await T('dash-name-edit').click()
-  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await nameInputFocused()
   await page.keyboard.press('Control+A')
   await page.keyboard.type('Zed')
   await page.keyboard.press('Escape')
-  await sleep(300)
+  await until(async () => !(await visible('[data-testid=dash-name-input]')) && (await activeInfo()).testid === 'dash-name-edit', 5000, 50)
   check(!(await visible('[data-testid=dash-name-input]')), 'A7 Esc closes the name popover')
   check((await activeInfo()).testid === 'dash-name-edit' && (await salutationText()).endsWith(', Sam.'), 'A7 Esc keeps the name and returns focus to the control', `${await salutationText()} ${JSON.stringify(await activeInfo())}`)
   // 41 characters pasted stop at 40; a zero-width character is refused with the stated sentence.
   await T('dash-name-edit').click()
-  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await nameInputFocused()
   await page.keyboard.press('Control+A')
   await page.keyboard.insertText('x'.repeat(41))
+  await until(async () => (await T('dash-name-input').inputValue()).length >= 40, 5000, 50)
   check((await T('dash-name-input').inputValue()).length === 40, 'A7 a 41-character paste is stopped at 40 by maxLength', String((await T('dash-name-input').inputValue()).length))
   await page.keyboard.press('Control+A')
   await page.keyboard.insertText('Sam​')
@@ -352,7 +359,7 @@ try {
   check(!!(await until(async () => (await salutationText()).endsWith(', Sam.'), 5000)), 'A7 typing the name in Settings shows it in the greeting', await salutationText())
   // Clear from the popover ("Remove name").
   await T('dash-name-edit').click()
-  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await nameInputFocused()
   await page.keyboard.press('Control+A')
   await page.keyboard.press('Backspace')
   check(clean(await T('dash-name-save').innerText()) === 'Remove name', 'A7 emptying a saved name offers "Remove name"')
@@ -360,7 +367,7 @@ try {
   check(!!(await until(async () => (await salutationText()) === `${hourWord}.`, 5000)), 'A7 Remove name clears the name', await salutationText())
   check((await live()).includes('Name removed.'), 'A7 removing the name is announced', await live())
   await T('dash-name-add').click()
-  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await nameInputFocused()
   await page.keyboard.type('Sam')
   await page.keyboard.press('Enter')
   await until(async () => (await salutationText()).endsWith(', Sam.'), 5000)
@@ -402,7 +409,7 @@ try {
   check((await page.locator('[data-testid=project-tile]').first().getAttribute('data-name')) === PINNED, 'A20 pinning from More moves the tile first')
   check((await live()).includes(`Pinned ${PINNED}.`), 'A20 pinning from More announces "Pinned ..."', await live())
   check((await layoutOf())?.pinned?.includes(pinId), 'A20 the pin is stored in orgai.dashboardLayout')
-  await sleep(300)
+  await until(async () => (await activeInfo()).testid === 'project-tile-more', 5000, 50)
   check(((await activeInfo()).testid === 'project-tile-more'), 'A20 focus returns to the same tile control after pinning', JSON.stringify(await activeInfo()))
   check((await page.locator('[data-testid=tile-pinned-glyph]').count()) === 1 && /pinned/.test((await tileOf(PINNED).locator('[data-testid=project-tile-main]').getAttribute('aria-label')) ?? ''), 'A20 a pinned tile shows the Pin glyph and "pinned" in its name')
   check(!!(await T('dash-resume').count()) && (await T('dash-resume-row').filter({ has: page.locator('[data-action=new-run]') }).count()) === 1, 'A13 a pinned project with no runs shows one Pick up row with New run')
@@ -429,6 +436,7 @@ try {
   await sleep(300)
   check((await live()).includes(`Pinned ${WAIT}.`) && (await pinBtn.getAttribute('aria-pressed')) === 'true', 'A20 the pin toggle pins and announces', await live())
   check((await layoutOf())?.pinned?.join() === `${pinId},${waitId}`, 'A20 pins are stored in the order they were pinned', JSON.stringify((await layoutOf())?.pinned))
+  await until(async () => (await activeInfo()).testid === 'project-tile-pin', 5000, 50)
   check(((await activeInfo()).testid === 'project-tile-pin'), 'A20 focus stays on the pin toggle after pinning', JSON.stringify(await activeInfo()))
 
   // Keyboard-only path: Tab from the Customise button to Reset, then the first section's controls.
@@ -483,6 +491,7 @@ try {
   await page.keyboard.press('Escape')
   await sleep(300)
   check((await customise.getAttribute('aria-expanded')) === 'false' && (await T('dash-customise-bar').count()) === 0, 'A21 Esc leaves customise mode', String(await customise.getAttribute('aria-expanded')))
+  await until(async () => (await activeInfo()).testid === 'dash-customise', 5000, 50)
   check((await activeInfo()).testid === 'dash-customise', 'A21 Esc returns focus to dash-customise', JSON.stringify(await activeInfo()))
   check((await T('dash-section-controls').count()) === 0, 'A21 the control rows go with customise mode')
   // Reset restores order and hidden and keeps pins; focus stays on Reset.
@@ -496,7 +505,8 @@ try {
   await sleep(300)
   const reset = await layoutOf()
   check(reset?.order?.join() === DEFAULT_ORDER.join() && reset?.hidden?.length === 0 && reset?.pinned?.join() === `${pinId},${waitId}`, 'A21 Reset restores order and hidden and keeps pins', JSON.stringify(reset))
-  check((await activeInfo()).testid === 'dash-customise-reset' && (await live()).includes('Layout reset to the default.'), 'A21 Reset keeps focus on itself and announces', `${JSON.stringify(await activeInfo())} ${await live()}`)
+  await until(async () => (await activeInfo()).testid === 'dash-customise-reset', 5000, 50)
+  check((await activeInfo()).testid === 'dash-customise-reset' &&(await live()).includes('Layout reset to the default.'), 'A21 Reset keeps focus on itself and announces', `${JSON.stringify(await activeInfo())} ${await live()}`)
   // Reload keeps the layout.
   await ctl('projects', 'dash-section-up').click()
   await ctl('today', 'dash-section-hide').click()
@@ -509,7 +519,24 @@ try {
   check((await slotOrder()).join() === 'resume,today,working,projects,week' && (await page.locator('[data-testid=dash-section][data-section=today]').getAttribute('data-state')) === 'hidden', 'A21 a reload keeps the order and the hidden section', (await slotOrder()).join())
   await T('dash-customise-reset').click()
   await T('dash-customise').click()
-  check((await T('dash-customise-bar').count()) === 0, 'A21 Done leaves customise mode')
+  check(!!(await until(async () => (await T('dash-customise-bar').count()) === 0, 5000, 50)), 'A21 Done leaves customise mode')
+  // All five hidden, customise closed: one quiet line and a button that opens customise.
+  await T('dash-customise').click()
+  await T('dash-customise-bar').waitFor({ timeout: 5000 })
+  for (const id of DEFAULT_ORDER) {
+    const hide = ctl(id, 'dash-section-hide')
+    if ((await hide.count()) > 0) await hide.click()
+  }
+  check(!!(await until(async () => ((await layoutOf())?.hidden ?? []).length === 5, 5000, 50)), 'A21 all five sections can be hidden', JSON.stringify((await layoutOf())?.hidden))
+  await T('dash-customise').click()
+  check(!!(await until(async () => (await T('dash-customise-bar').count()) === 0 && (await visible('[data-testid=dash-all-hidden]')), 5000, 50)), 'A21 with all five hidden and customise closed "All sections are hidden." shows')
+  check(/^All sections are hidden\./.test(await text('dash-all-hidden')) && (await visible('[data-testid=dash-all-hidden-show]')), 'A21 the line has a Show sections button', await text('dash-all-hidden'))
+  await T('dash-all-hidden-show').click()
+  check(!!(await until(async () => (await T('dash-customise-bar').count()) === 1 && (await T('dash-all-hidden').count()) === 0, 5000, 50)), 'A21 Show sections opens customise mode and the line goes')
+  check(!!(await until(async () => (await activeInfo()).testid === 'dash-customise', 5000, 50)), 'A21 Show sections moves focus to the Customise (Done) button', JSON.stringify(await activeInfo()))
+  await T('dash-customise-reset').click()
+  await T('dash-customise').click()
+  await until(async () => (await T('dash-customise-bar').count()) === 0, 5000, 50)
   // Corrupt storage loads a valid layout and raises no error.
   const errorsBefore = pageErrors.length
   const corrupt = [

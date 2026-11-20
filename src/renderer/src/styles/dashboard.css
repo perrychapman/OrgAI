@@ -123,6 +123,15 @@
 }
 
 /* The footer line: version and the Dev and Mock badges. */
+.dash-all-hidden {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
 .dash-footer {
   display: flex;
   align-items: center;

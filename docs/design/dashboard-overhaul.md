@@ -826,6 +826,9 @@ Where the build differs from the text above, and why:
   first paint (projectQueue has no to-do kind); no arrival animation on Today rows.
 - Your week counts only `kind === 'work'` runs (Chat included); Most active counts stored projects only.
 - Working now sorts waiting runs first (was working first). The worktree label `.dash-wt` keeps `--warning-text`.
+- With all five arrangeable sections hidden and customise closed, one quiet line "All sections are hidden." with a
+  "Show sections" button (`dash-all-hidden`, `dash-all-hidden-show`) stands where they would be; the button opens customise
+  mode and focuses the Customise (Done) button, and nothing new is announced.
 - Empty Waiting on you stays mounted with `hidden` (the shared section's focus hand-off needs it); it is not displayed.
 
 Verification (token-free, mock adapter): typecheck clean; whole unit suite with only failures in untouched `src/cli`
