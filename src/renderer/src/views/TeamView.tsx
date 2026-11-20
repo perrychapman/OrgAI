@@ -6,6 +6,7 @@ import {
   Controls,
   MarkerType,
   type Connection,
+  type OnConnectEnd,
   type Edge,
   type EdgeChange,
   type NodeChange,
@@ -57,7 +58,8 @@ function roleNodeSize(style: CanvasNodeStyle, layout: CanvasLayout): { width: nu
   if (style === 'hex') return { width: HEX_TILE.width, height: HEX_TILE.height }
   return ROLE_NODE_SIZE[style === 'compact' ? 'compact' : 'card']
 }
-import { nextRoleName, removeRole, restoreRole, setReportsTo, wouldCycle, type RemovedRole } from '../lib/roleOps'
+import { addRoleUnder, nextRoleName, removeRole, restoreRole, setReportsTo, spawnNotice, wouldCycle, type RemovedRole } from '../lib/roleOps'
+import { placeNewRole } from '../lib/rolePlacement'
 import TeamFilesLine from '../components/team/TeamFilesLine'
 import TeamFilesCard from '../components/team/TeamFilesCard'
 import TeamFilesAppliedNotice from '../components/team/TeamFilesAppliedNotice'
@@ -75,6 +77,22 @@ const PANEL_TABS = [
 
 /** How long the "Role removed. Undo" row stays in the toolbar. */
 const UNDO_MS = 12_000
+/** How long the reason for a refused reporting line stays in the toolbar. */
+const DROP_NOTE_MS = 8_000
+/** Room kept between a new role and the stage edges when the chart pans to it (the bottom corners hold the zoom controls and minimap). */
+const REVEAL_MARGIN = { top: 24, right: 24, bottom: 64, left: 24 }
+
+/** The current roles of a project from the store (the render's `project` can lag a just-made change). */
+function storedRoles(projectId: string, fallback: Role[]): Role[] {
+  return useAppStore.getState().projects.find((p) => p.id === projectId)?.roles ?? fallback
+}
+
+/** The node under a pointer event's end position, for naming the role a refused drop landed on. */
+function nodeIdAt(event: globalThis.MouseEvent | TouchEvent): string | undefined {
+  const point = 'changedTouches' in event ? event.changedTouches[0] : event
+  if (!point) return undefined
+  return document.elementFromPoint(point.clientX, point.clientY)?.closest<HTMLElement>('.react-flow__node')?.dataset.id
+}
 
 /** Arrow keys, Home and End move between the Templates menu's items (a disabled item stays reachable to read its reason). */
 function onTemplateMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
@@ -90,7 +108,11 @@ function onTemplateMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
 export default function TeamView({ project }: { project: Project }): ReactElement {
   // Re-fit when the frame changes size (window, sidebar or side panel resize), as the live view does.
   const frameRef = useRef<HTMLDivElement>(null)
-  const flowRef = useRef<{ fitView: (o?: { padding?: number; maxZoom?: number; duration?: number }) => unknown } | null>(null)
+  const flowRef = useRef<{
+    fitView: (o?: { padding?: number; maxZoom?: number; duration?: number }) => unknown
+    getViewport: () => { x: number; y: number; zoom: number }
+    setViewport: (v: { x: number; y: number; zoom: number }, o?: { duration?: number }) => unknown
+  } | null>(null)
   useEffect(() => {
     const el = frameRef.current
     if (!el || typeof ResizeObserver === 'undefined') return undefined
@@ -188,7 +210,14 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
 
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [notice, setNotice] = useState<{ roleId: string; text: string } | null>(null)
-  const [undo, setUndo] = useState<{ removed: RemovedRole; name: string } | null>(null)
+  const [undo, setUndo] = useState<{ removed: RemovedRole; name: string; note: string | null } | null>(null)
+  // Why a dragged reporting line was refused (a cycle, the root): a polite status in the toolbar for a few seconds.
+  const [dropNote, setDropNote] = useState<string | null>(null)
+  useEffect(() => {
+    if (!dropNote) return undefined
+    const t = window.setTimeout(() => setDropNote(null), DROP_NOTE_MS)
+    return () => window.clearTimeout(t)
+  }, [dropNote])
   const [focusTick, setFocusTick] = useState(0)
   const [panelOpen, setPanelOpen] = useState(true)
   // Role | Catalog. A role gets selected -> Role; the user's explicit choice sticks until the selection goes from nothing to something.
@@ -278,7 +307,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
 
   const root = project.roles.find((r) => r.reportsTo === null)
   const selectedRole = project.roles.find((r) => r.id === selectedRoleId)
-  const addParent = selectedRole ?? root
 
   // Agent files in the folder that the chart has not taken in: re-read when the project or its import state changes.
   useEffect(() => {
@@ -359,7 +387,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           initialHeight: roleSize.height,
           ...(nodeDims.dims[role.id] ? { measured: nodeDims.dims[role.id] } : {}),
           ariaLabel: `${role.name}, ${role.reportsTo === null ? 'root role' : 'role'}. ${capabilityLabel(capabilities)}. Press Enter to edit${role.reportsTo === null ? '' : ', Delete to remove'}.`,
-          data: { role, reportCount: project.roles.filter((r) => r.reportsTo === role.id).length, capabilities, ...(arrival.isNew(role.id) ? { arrived: true } : {}) }
+          // "leads N" counts the direct reports this role may actually delegate to, not every report.
+          data: { role, delegateCount: role.canSpawn ? project.roles.filter((r) => r.reportsTo === role.id && role.spawnable.includes(r.id)).length : 0, capabilities, ...(arrival.isNew(role.id) ? { arrived: true } : {}) }
         }
       }),
     [project, selectedRoleId, roleSize, nodeDims.dims, arrival.arrivedKey]
@@ -406,10 +435,12 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       if (!root) return
       const child = project.roles.find((r) => r.id === childId)
       if (!child || child.reportsTo === root.id) return
+      const before = storedRoles(project.id, project.roles)
+      const spawn = spawnNotice(before, setReportsTo(before, childId, root.id), child.name)
       updateRoles(project.id, (roles) => setReportsTo(roles, childId, root.id))
       setSelectedEdgeId(null)
       selectRole(childId)
-      setNotice({ roleId: childId, text: `Now reports to ${root.name}.` })
+      setNotice({ roleId: childId, text: spawn ? `Now reports to ${root.name}. ${spawn}` : `Now reports to ${root.name}.` })
     },
     [project.id, project.roles, root, updateRoles, selectRole]
   )
@@ -428,13 +459,15 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         danger: true
       })
       if (!ok) return
-      const current = useAppStore.getState().projects.find((p) => p.id === project.id)?.roles ?? project.roles
-      const { removed } = removeRole(current, roleId)
+      const current = storedRoles(project.id, project.roles)
+      const { removed, roles: after } = removeRole(current, roleId)
       if (!removed) return
+      // A manager left with nobody to delegate to loses its spawn right: say so beside Undo.
+      const lost = spawnNotice(current, after, role.name)
       updateRoles(project.id, (roles) => removeRole(roles, roleId).roles)
       selectRole(null)
       setNotice(null)
-      setUndo({ removed, name: role.name })
+      setUndo({ removed, name: role.name, note: lost })
       window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('.react-flow__node')?.focus())
     },
     [project.id, project.roles, confirm, updateRoles, selectRole]
@@ -481,9 +514,40 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       if (!c.source || !c.target || c.source === c.target) return
       const source = c.source
       const target = c.target
+      const before = storedRoles(project.id, project.roles)
+      if (wouldCycle(before, target, source)) return
+      const after = setReportsTo(before, target, source)
       updateRoles(project.id, (roles) => (wouldCycle(roles, target, source) ? roles : setReportsTo(roles, target, source)))
+      setDropNote(null)
+      // The banner for the moved role: a manager that gained or lost spawn rights. A drag with no such change clears a stale one.
+      const text = spawnNotice(before, after, before.find((r) => r.id === target)?.name ?? 'The role')
+      setNotice(text ? { roleId: target, text } : null)
     },
-    [project.id, updateRoles]
+    [project.id, project.roles, updateRoles]
+  )
+
+  // A line may not close a loop or end on its own role (cycles are refused while dragging: the node under the pointer
+  // shows the refusal, and onConnectEnd says why).
+  const isValidConnection = useCallback(
+    (c: { source: string; target: string }): boolean => c.source !== c.target && !wouldCycle(storedRoles(project.id, project.roles), c.target, c.source),
+    [project.id, project.roles]
+  )
+
+  // A drag that ended on a role it cannot report to says why; the line itself is already gone (React Flow cancels it on release).
+  const onConnectEnd: OnConnectEnd = useCallback(
+    (event, state) => {
+      if (state.isValid) return
+      const roles = storedRoles(project.id, project.roles)
+      const from = state.fromNode?.id
+      const to = state.toNode?.id ?? nodeIdAt(event)
+      if (!from || !to || from === to) return
+      const manager = roles.find((r) => r.id === from)
+      const report = roles.find((r) => r.id === to)
+      if (!manager || !report) return
+      if (report.reportsTo === null) setDropNote(`${report.name} is the root and cannot report to anyone.`)
+      else if (wouldCycle(roles, to, from)) setDropNote(`${report.name} cannot report to ${manager.name}: ${manager.name} already reports to ${report.name}.`)
+    },
+    [project.id, project.roles]
   )
 
   // Deletion is handled here (confirm, re-parenting, undo); React Flow never removes elements itself.
@@ -574,15 +638,40 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     directoryTarget?.focus()
   }, [])
 
+  /** Pan (never zoom) so a role at `pos` is fully inside the stage, clear of the zoom controls and minimap. */
+  const revealRole = (pos: { x: number; y: number }, size: { width: number; height: number }): void => {
+    window.setTimeout(() => {
+      const flow = flowRef.current
+      const stage = frameRef.current?.querySelector<HTMLElement>('.frame-stage')
+      if (!flow || !stage) return
+      const vp = flow.getViewport()
+      const view = stage.getBoundingClientRect()
+      const left = pos.x * vp.zoom + vp.x
+      const top = pos.y * vp.zoom + vp.y
+      const right = left + size.width * vp.zoom
+      const bottom = top + size.height * vp.zoom
+      let dx = 0
+      let dy = 0
+      if (right > view.width - REVEAL_MARGIN.right) dx = view.width - REVEAL_MARGIN.right - right
+      if (left + dx < REVEAL_MARGIN.left) dx = REVEAL_MARGIN.left - left
+      if (bottom > view.height - REVEAL_MARGIN.bottom) dy = view.height - REVEAL_MARGIN.bottom - bottom
+      if (top + dy < REVEAL_MARGIN.top) dy = REVEAL_MARGIN.top - top
+      if (dx !== 0 || dy !== 0) void flow.setViewport({ x: vp.x + dx, y: vp.y + dy, zoom: vp.zoom }, { duration: fitMs(reducedMotion) })
+    }, 60)
+  }
+
+  /** Add a role under `managerOverride` (the context menu and the inspector) or, with none, under the root: never under the selection. */
   const addRole = (managerOverride?: Role): void => {
-    const manager = managerOverride ?? addParent
-    const name = nextRoleName(project.roles)
+    const current = storedRoles(project.id, project.roles)
+    const manager = managerOverride ? (current.find((r) => r.id === managerOverride.id) ?? root) : current.find((r) => r.reportsTo === null)
+    const name = nextRoleName(current)
     const conn = projectConnection(project)
     const everyday = modelForTier('everyday', {
       connection: conn,
       tierModels: connectionInfos?.find((c) => c.connection.id === conn)?.connection.tierModels ?? {},
       catalog: modelCatalogs[conn]
     })
+    const position = placeNewRole(current, manager?.id ?? null, roleSize, { layout: options.layout, sizeOf: (id) => nodeDims.dims[id] })
     const role: Role = {
       id: newId('role'),
       slug: slugify(name),
@@ -596,14 +685,13 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       canSpawn: false,
       spawnable: [],
       reportsTo: manager?.id ?? null,
-      position: { x: (manager?.position.x ?? 0) + 120, y: (manager?.position.y ?? 0) + 210 },
-      color: ROLE_COLORS[project.roles.length % ROLE_COLORS.length]
+      position,
+      color: ROLE_COLORS[current.length % ROLE_COLORS.length]
     }
-    updateRoles(project.id, (roles) => [
-      ...roles.map((r) => (r.id === manager?.id ? { ...r, canSpawn: true, spawnable: [...r.spawnable, role.id] } : r)),
-      role
-    ])
-    setNotice(manager && !manager.canSpawn ? { roleId: role.id, text: `${manager.name} can now create subagents, because ${name} reports to it.` } : null)
+    const text = spawnNotice(current, addRoleUnder(current, role), name)
+    updateRoles(project.id, (roles) => addRoleUnder(roles, role))
+    setNotice(text ? { roleId: role.id, text } : null)
+    setDropNote(null)
     setUndo(null)
     setSelectedEdgeId(null)
     focusWanted.current = true
@@ -611,6 +699,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     setPanelTab('role')
     setFocusTick((t) => t + 1)
     selectRole(role.id)
+    if (options.presentation !== 'pocket-office') revealRole(position, roleSize)
   }
 
   // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
@@ -730,7 +819,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             {/* Beside Auto-layout, in the button row: on the wrapped row with the note a 28 px button grew the toolbar
                 at 1024x640 and took that height from the Team assistant tray. */}
             <CanvasStyleButton testId="canvas-style-button" />
-            <span className="toolbar-note">{addParent ? `New roles report to ${addParent.name}.` : 'The first role becomes the root.'}</span>
             <TeamFilesLine
               status={filesStatus}
               busy={filesActions.busy}
@@ -742,9 +830,14 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             >
               {filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />}
             </TeamFilesLine>
+            {dropNote && (
+              <span className="toolbar-status" role="status" data-testid="team-drop-note">
+                {dropNote}
+              </span>
+            )}
             {undo && (
-              <span className="toolbar-undo" role="status">
-                Role removed.
+              <span className="toolbar-undo" role="status" data-testid="team-undo-row">
+                Role removed.{undo.note ? ` ${undo.note}` : ''}
                 <Button size="sm" variant="ghost" icon={Undo2} onClick={undoRemove}>
                   Undo
                 </Button>
@@ -874,6 +967,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onConnectEnd={onConnectEnd}
+            isValidConnection={isValidConnection}
             onNodeClick={onNodeClick}
             onNodeContextMenu={onNodeContextMenu}
             onPaneClick={() => {
@@ -962,6 +1057,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 notice={notice && notice.roleId === selectedRole.id ? notice.text : null}
                 onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
                 onRemove={() => void requestRemove(selectedRole.id)}
+                onAddReport={() => addRole(selectedRole)}
                 onEscape={() => { const id = selectedRole.id; if (options.presentation === 'pocket-office') { selectRole(null); setPanelTab('catalog') } returnToNode(id) }}
                 onAskAssistant={() => openAssistant()}
               />

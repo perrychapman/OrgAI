@@ -681,6 +681,179 @@ async function sectionNodeMenu(page) {
   await page.keyboard.press('Escape')
 }
 
+/** Every node's rect and the stage rect, in viewport pixels. */
+async function chartRects(page) {
+  return page.evaluate(() => {
+    const r = (el) => {
+      const b = el.getBoundingClientRect()
+      return { x: b.x, y: b.y, w: b.width, h: b.height }
+    }
+    return {
+      stage: r(document.querySelector('.editor .frame-stage')),
+      nodes: [...document.querySelectorAll('.editor .react-flow__node')].map((el) => ({ id: el.dataset.id, ...r(el) }))
+    }
+  })
+}
+
+const rectsOverlap = (a, b) => a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5
+
+/** Press on a node's source handle, drag over `toId`'s body in steps; leaves the button down unless `release`. */
+async function dragReport(page, fromId, toId, { release = true } = {}) {
+  const handle = await page.locator(`.react-flow__node[data-id="${fromId}"] .react-flow__handle.source`).boundingBox()
+  const to = await page.locator(`.react-flow__node[data-id="${toId}"]`).boundingBox()
+  const sx = handle.x + handle.width / 2
+  const sy = handle.y + handle.height / 2
+  const tx = to.x + to.width / 2
+  const ty = to.y + to.height / 2
+  await page.mouse.move(sx, sy)
+  await page.mouse.down()
+  for (let i = 1; i <= 14; i++) await page.mouse.move(sx + ((tx - sx) * i) / 14, sy + ((ty - sy) * i) / 14)
+  await sleep(150)
+  if (release) await page.mouse.up()
+}
+
+/**
+ * Team tab phase 1 (ux-review-team-tab-5 flows 2, 3, 9): the toolbar Add role always adds under the root and the note is
+ * gone, new roles take free slots beside their siblings and come into view, a role dropped anywhere on another node
+ * re-parents it (with a drop highlight) and a refused drop leaves no line and says why, and "leads N" counts delegable reports.
+ */
+async function sectionAddAndDrag(page, app, shot) {
+  await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [1440, 900])
+  await sleep(600)
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  const toolbar = page.locator('.editor .frame-toolbar')
+  const add = toolbar.getByRole('button', { name: 'Add role', exact: true })
+  const rolesNow = async () => (await findProject(page, NAME)).roles
+  const root = (await rolesNow()).find((r) => r.reportsTo === null)
+
+  // (1) D3: with a non-root role selected, the toolbar button adds under the root and no note names a parent.
+  await page.locator('.react-flow__node', { hasText: 'Reviewer' }).first().click()
+  await teamPanelTab(page, 'Role').waitFor()
+  check((await toolbar.locator('.toolbar-note').count()) === 0 && !/New roles report to/.test(await toolbar.innerText()), 'the toolbar has no "New roles report to" note')
+  let before = await rolesNow()
+  await add.click()
+  await sleep(700)
+  let after = await rolesNow()
+  let added = after.filter((r) => !before.some((b) => b.id === r.id))
+  check(added.length === 1 && added[0].reportsTo === root.id, 'toolbar Add role adds under the root even with another role selected', JSON.stringify(added.map((r) => r.reportsTo)))
+  const first = added[0]
+
+  // (2) D2: a second and third add under the same manager sit beside the first, overlap nothing and come into view.
+  for (let i = 0; i < 2; i++) {
+    await add.click()
+    await sleep(800)
+  }
+  after = await rolesNow()
+  const siblings = after.filter((r) => r.reportsTo === root.id)
+  const rects = await chartRects(page)
+  let overlapping = []
+  for (let i = 0; i < rects.nodes.length; i++) for (let j = i + 1; j < rects.nodes.length; j++) if (rectsOverlap(rects.nodes[i], rects.nodes[j])) overlapping.push(`${rects.nodes[i].id}/${rects.nodes[j].id}`)
+  check(overlapping.length === 0, 'new roles overlap no other node', overlapping.join(', '))
+  const rowY = after.find((r) => r.id === first.id).position.y
+  check(siblings.filter((r) => r.position.y === rowY).length >= 4, 'new reports stand in their siblings\' row', JSON.stringify(siblings.map((r) => r.position)))
+  const latest = after[after.length - 1]
+  const latestRect = rects.nodes.find((n) => n.id === latest.id)
+  const inStage = (n, s) => n.x >= s.x - 1 && n.y >= s.y - 1 && n.x + n.w <= s.x + s.w + 1 && n.y + n.h <= s.y + s.h + 1
+  check(!!latestRect && inStage(latestRect, rects.stage), 'the newest role is inside the chart stage', JSON.stringify({ latestRect, stage: rects.stage }))
+  await shot('add-roles-1440x900-dark')
+  // A smaller window: one more add still comes into view.
+  await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [1024, 640])
+  await sleep(900)
+  await add.click()
+  await sleep(900)
+  const small = await chartRects(page)
+  const newest = (await rolesNow()).at(-1)
+  const smallRect = small.nodes.find((n) => n.id === newest.id)
+  check(!!smallRect && inStage(smallRect, small.stage), 'the newest role is inside the chart stage at 1024x640', JSON.stringify({ smallRect, stage: small.stage }))
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'))
+  await sleep(300)
+  await shot('add-roles-1024x640-light')
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [1440, 900])
+  await sleep(800)
+  await page.locator('.editor .react-flow__controls-fitview').click()
+  await sleep(700)
+
+  // (3) D5: drop on the middle of another node's body re-parents it, with a highlight while hovering.
+  const roles = await rolesNow()
+  const impl = roles.find((r) => r.name === 'Implementer')
+  const rev = roles.find((r) => r.name === 'Reviewer')
+  await dragReport(page, rev.id, impl.id, { release: false })
+  check((await page.locator(`.react-flow__node[data-id="${impl.id}"] .role-node[data-drop=valid]`).count()) === 1, 'the node under a dragged line is highlighted')
+  const hl = await page.locator(`.react-flow__node[data-id="${impl.id}"] .role-node`).evaluate((el) => getComputedStyle(el).outlineStyle)
+  check(hl === 'solid', 'the highlight is a visible outline', hl)
+  await shot('drop-highlight-dark')
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'))
+  await sleep(200)
+  await shot('drop-highlight-light')
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  await page.mouse.up()
+  await sleep(400)
+  check((await page.locator('.react-flow__connection').count()) === 0, 'no connection line remains after a drop on a node body')
+  const moved = (await rolesNow()).find((r) => r.id === impl.id)
+  check(moved.reportsTo === rev.id, 'dropping on the middle of a node makes it a report', String(moved.reportsTo))
+
+  // A cycle drop: Implementer now reports to Reviewer, so Reviewer cannot report to Implementer.
+  await dragReport(page, impl.id, rev.id, { release: false })
+  check((await page.locator(`.react-flow__node[data-id="${rev.id}"] .role-node[data-drop=invalid]`).count()) === 1, 'a node that cannot be a report shows the refusal while hovered')
+  await page.mouse.up()
+  await sleep(400)
+  check((await page.locator('.react-flow__connection').count()) === 0, 'a refused drop leaves no connection line')
+  const note = page.locator('[data-testid=team-drop-note]')
+  await note.waitFor({ timeout: 3000 })
+  check(/Reviewer cannot report to Implementer: Implementer already reports to Reviewer\./.test(await note.innerText()), 'a cycle drop says why', await note.innerText())
+  check((await rolesNow()).find((r) => r.id === rev.id)?.reportsTo === root.id, 'a refused drop changes nothing')
+  await shot('drop-refused-dark')
+  // The root takes no drops.
+  await dragReport(page, impl.id, root.id)
+  await sleep(300)
+  check((await rolesNow()).find((r) => r.id === root.id)?.reportsTo === null, 'the root accepts no drop')
+  check((await page.locator('.react-flow__connection').count()) === 0, 'a drop on the root leaves no connection line')
+  // Clicking a node body still selects it (the drop target takes no pointer events outside a drag).
+  await page.locator(`.react-flow__node[data-id="${impl.id}"]`).click()
+  check((await page.locator(`.react-flow__node[data-id="${impl.id}"] .role-node.selected`).count()) === 1, 'a click on a node body still selects it')
+
+  // (4) D6: "leads N" counts reports the role may delegate to; none, no chip.
+  const final = await rolesNow()
+  const chip = (id) => page.locator(`.react-flow__node[data-id="${id}"] [data-testid=role-node-leads]`)
+  const delegable = (id) => {
+    const m = final.find((r) => r.id === id)
+    return m.canSpawn ? final.filter((r) => r.reportsTo === id && m.spawnable.includes(r.id)).length : 0
+  }
+  check((await chip(first.id).count()) === 0, 'a role with no reports shows no leads chip')
+  for (const id of [rev.id, root.id]) {
+    const n = delegable(id)
+    check(n > 0 && (await chip(id).count()) === 1 && (await chip(id).innerText()).trim() === `leads ${n}`, `a manager's chip counts its delegable direct reports (${final.find((r) => r.id === id).name} leads ${n})`, await chip(id).innerText().catch(() => ''))
+  }
+  // Every node without a delegable report shows no chip.
+  const wrong = []
+  for (const r of final) if (delegable(r.id) === 0 && (await chip(r.id).count()) !== 0) wrong.push(r.name)
+  check(wrong.length === 0, 'no role without a delegable report shows "leads"', wrong.join(', '))
+
+  // (5) D1: a report added to a leaf gives it spawn rights (inspector banner); removing that report takes them back and
+  // the undo row says so.
+  const menu = page.locator('[data-testid=role-node-menu]')
+  await page.locator(`.react-flow__node[data-id="${first.id}"]`).click({ button: 'right' })
+  await menu.waitFor({ timeout: 5000 })
+  await page.locator('[data-testid=role-menu-add-report]').click()
+  await sleep(700)
+  const leafNow = (await rolesNow()).find((r) => r.id === first.id)
+  const child = (await rolesNow()).find((r) => r.reportsTo === first.id)
+  check(!!child && leafNow.canSpawn && leafNow.spawnable.includes(child.id), 'Add a report gives the manager spawn rights over it')
+  check(/can now create subagents, because .* reports to it/.test(await page.locator('.team-panel-pane .banner, .team-panel-pane [role=status], .team-panel-pane [role=alert]').first().innerText().catch(() => '')), 'the inspector says the manager gained spawn rights')
+  await page.locator('.team-panel-pane').getByRole('button', { name: 'Remove', exact: true }).click()
+  await page.getByRole('button', { name: 'Remove role', exact: true }).click()
+  const row = page.locator('[data-testid=team-undo-row]')
+  await row.waitFor({ timeout: 5000 })
+  check(/can no longer create subagents: nobody it may delegate to is left\./.test(await row.innerText()), 'the undo row says the manager lost spawn rights', await row.innerText())
+  await sleep(600)
+  check((await rolesNow()).find((r) => r.id === first.id)?.canSpawn === false, 'removing the only delegable report clears the manager\'s spawn rights')
+  await row.getByRole('button', { name: 'Undo' }).click()
+  await sleep(500)
+  const back = (await rolesNow()).find((r) => r.id === first.id)
+  check(back.canSpawn && back.spawnable.includes(child.id), 'Undo gives the spawn rights back')
+}
+
 /**
  * Walk 4 M2: two mock work runs end, the proactive review lands, and opening Team shows "N suggestions since your last
  * run" once; leaving and coming back without a new run does not show it again.
@@ -813,6 +986,7 @@ try {
   }
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
   await sectionNodeMenu(page)
+  await sectionAddAndDrag(page, app, shot)
 } catch (e) {
   check(false, 'team flow ran without throwing', e.stack ?? String(e))
   await shot('error').catch(() => {})
