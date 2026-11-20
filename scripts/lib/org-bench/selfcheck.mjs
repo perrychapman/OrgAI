@@ -2,13 +2,14 @@
 // through jiti, that the real propose_org_chart validation accepts a canned valid chart and refuses a canned invalid one (both
 // families), that the scorer works on what the stub captures, and that the session driver (stub tools, follow-up answers,
 // end on capture) works against a scripted fake `query`. A broken import or a renamed export fails here, before a paid run.
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { goodC1 } from './canned.mjs'
-import { buildCase, loadSource } from './load.mjs'
+import { buildCase, cleanupDir, loadSource } from './load.mjs'
 import { ALL_TOOLS, scoreChart, scoreRevision } from './score.mjs'
-import { scenarioById } from './scenarios.mjs'
+import { RETRO_SCENARIOS, recordPaths, scenarioById } from './scenarios.mjs'
 import { makeHandlers, newState, runSession } from './session.mjs'
 
 const ARCH_ARGS = { title: 'Architecture', summary: 'A small script.', stack: ['Python 3'], modules: [{ name: 'script', purpose: 'renames photos', paths: ['rename.py'] }], conventions: ['PEP 8'], commands: [{ name: 'run', command: 'python rename.py DIR' }], risks: [] }
@@ -128,6 +129,18 @@ export async function runSelfCheck(log = console.log) {
     const done = await h.get('complete_setup')({ summary: 'The run was healthy; nothing to change.' })
     ok(/^Setup is marked complete/.test(done) && state.done === 'noChange' && state.revision.ending === 'noChange', 'retro: complete_setup is a valid ending (real handler)')
 
+    // Retro fixtures agree with their run records: every path the record names exists; `git: true` gives a repository with a commit.
+    for (const s of RETRO_SCENARIOS) {
+      const d = mk()
+      const b = await buildCase(src, s, d)
+      const missing = recordPaths(s).filter((p) => !existsSync(join(d, ...p.split('/'))))
+      ok(missing.length === 0 && existsSync(join(d, '.orgai', 'ARCHITECTURE.md')), `${s.id}: fixture holds every path its record names${missing.length ? ` (missing ${missing.join(', ')})` : ''}`)
+      if (s.git) {
+        const head = b.git?.ok ? spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: d, encoding: 'utf8' }) : null
+        ok(head?.status === 0 && head.stdout.trim() === '1', `${s.id}: git fixture is a repository with one commit${b.git?.ok ? '' : ` (${b.git?.note})`}`)
+      }
+    }
+
     // Session driver against a scripted fake query (the real SDK is used only to build the in-process MCP server).
     const dir = mk()
     const sc = await buildCase(src, c1, dir)
@@ -153,7 +166,7 @@ export async function runSelfCheck(log = console.log) {
     ok(retroRec.status === 'ok' && retroRec.revision?.ending === 'noChange', 'driver: retro session ends on complete_setup')
     ok(scoreRevision(retroRec, scenarioById('r5')).total === 100, 'driver: a healthy chart left alone scores 100 on r5')
   } finally {
-    for (const d of dirs) rmSync(d, { recursive: true, force: true })
+    for (const d of dirs) cleanupDir(d, { tries: 3, delayMs: 200 })
   }
   log(failures.length ? `\nself-check FAILED (${failures.length}): ${failures.join('; ')}` : `\nself-check OK (${Date.now() - t0} ms): no model call, no network.`)
   return failures.length ? 1 : 0

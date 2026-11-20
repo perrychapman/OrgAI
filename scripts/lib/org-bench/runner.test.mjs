@@ -8,6 +8,9 @@ import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { DEFAULTS, parseArgs, selectScenarios } from '../../bench-org-chart.mjs'
+import { cleanupDir, initGitRepo, writeFixture } from './load.mjs'
+import { renderReport } from './report.mjs'
+import { RETRO_SCENARIOS, recordPaths } from './scenarios.mjs'
 import { makeHandlers, makeInput, newState } from './session.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -67,6 +70,52 @@ test('an unknown flag exits 2 with a message and a live run needs --model (no fl
   const bad = spawnSync(process.execPath, [runner, '--bogus'], { encoding: 'utf8' })
   assert.equal(bad.status, 2)
   assert.match(bad.stderr, /unknown argument/)
+})
+
+test('retro fixtures hold every path their record names, plus the architecture document; git scenarios become a one-commit repository', () => {
+  for (const s of RETRO_SCENARIOS) {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-bench-fixture-'))
+    try {
+      writeFixture(dir, s.files)
+      const missing = recordPaths(s).filter((p) => !existsSync(join(dir, ...p.split('/'))))
+      assert.deepEqual(missing, [], `${s.id} record names paths the folder lacks`)
+      assert.ok(recordPaths(s).length > 0, `${s.id} names at least one path`)
+      assert.ok(existsSync(join(dir, '.orgai', 'ARCHITECTURE.md')), `${s.id} architecture document`)
+      assert.equal(s.git, true, `${s.id} mentions merges, so it is a git repository`)
+      const g = initGitRepo(dir)
+      if (!g.ok) continue // git unavailable: recorded as a note, the session still runs
+      const n = spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: dir, encoding: 'utf8' })
+      assert.equal(n.stdout.trim(), '1', `${s.id} one commit`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+test('cleanupDir never throws: it retries, then returns a note; a later success returns null', () => {
+  let calls = 0
+  const sleeps = []
+  const note = cleanupDir('/x/y', { remove: () => { calls += 1; throw new Error('EBUSY: resource busy or locked') }, tries: 3, delayMs: 5, sleep: (ms) => sleeps.push(ms) })
+  assert.equal(calls, 3)
+  assert.deepEqual(sleeps, [5, 5])
+  assert.match(note, /EBUSY/)
+  assert.match(note, /left in place/)
+  let n = 0
+  assert.equal(cleanupDir('/x/y', { remove: () => { if (++n < 2) throw new Error('EBUSY') }, tries: 3, sleep: () => {} }), null)
+})
+
+test('a rejected proposal is recorded per session and listed in report.md', () => {
+  const state = newState()
+  const built = { project: { roles: [] }, probe: { proposals: [] }, tools: [{ name: 'propose_org_chart', call: async () => 'REVISE. Role x has an unknown manager.' }] }
+  const h = makeHandlers(built, { family: 'recommend' }, state)
+  return h.get('propose_org_chart')({}).then(() => {
+    assert.equal(state.rejections.length, 1)
+    assert.match(state.rejections[0], /^propose_org_chart: REVISE/)
+    const md = renderReport({ sessions: [{ family: 'recommend', scenarioId: 'c1', repeat: 1, status: 'noChart', rejections: state.rejections, cleanupNote: 'left in place' }] },
+      { scorerVersion: 1, sessions: 1, scored: 0, skipped: 1, costUsd: 0, families: {}, weakestChecks: [] })
+    assert.match(md, /rejected: propose_org_chart: REVISE/)
+    assert.match(md, /note: left in place/)
+  })
 })
 
 test('the streaming input yields the first message, then pushed ones, and ends when closed', async () => {

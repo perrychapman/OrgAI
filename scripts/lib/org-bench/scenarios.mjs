@@ -295,6 +295,95 @@ const FILES11 = {
   'tests/e2e/smoke.spec.ts': "import { test, expect } from '@playwright/test'\n\ntest('loads', async ({ page }) => {\n  await page.goto('/')\n  await expect(page.locator('h1')).toHaveText('Fleet')\n})\n"
 }
 
+// Retro fixtures: the folder shows the state AFTER the run, so it agrees with the run record (the Architect has Read, Glob
+// and Grep and checks). `git: true` on a scenario makes the prepared folder a git repository with one commit (load.mjs).
+
+const archDoc = (title, summary, modules) =>
+  `# ${title}\n\n${summary}\n\n## Modules\n\n${modules.map(([p, d]) => `- ${p}: ${d}`).join('\n')}\n\n## Conventions\n\n- Keep functions small; add a test for every behavior change.\n`
+
+const ARCH6 = archDoc('Inventory architecture', 'A Fastify API over a SQLite file with a small React admin client; tests run with vitest.',
+  [['src/server.ts', 'Fastify routes'], ['src/db.ts', 'SQLite queries'], ['web/App.tsx', 'React admin client'], ['tests/', 'vitest tests']])
+const ARCH3 = archDoc('csvkit architecture', 'A pure-Python CLI (argparse) with the logic in csvkit/ops.py and pytest tests under tests/.',
+  [['csvkit/cli.py', 'argparse entry point'], ['csvkit/ops.py', 'CSV operations'], ['tests/', 'pytest tests']])
+const ARCH11 = archDoc('Fleet architecture', 'A monorepo: React web app and React Native app, a Fastify API, a Python ETL pipeline and Terraform; Playwright e2e tests.',
+  [['apps/web', 'React web app'], ['apps/mobile', 'React Native app'], ['services/api', 'Fastify API'], ['services/pipeline', 'Python ETL'], ['infra', 'Terraform'], ['tests/e2e', 'Playwright tests']])
+
+const SERVER6 = (routes) => `import Fastify from 'fastify'\nimport { stock, lowStock } from './db'\n\nconst app = Fastify()\n${routes}app.listen({ port: 3000 })\n`
+const MIGRATION_INIT = 'create table stock (\n  sku text primary key,\n  qty integer not null default 0\n);\n'
+
+// r1: the run added a reorder-level column (migrations 004-006 written by the orchestrator, handlers, client column, tests).
+const R1_FILES = {
+  ...FILES6,
+  '.orgai/ARCHITECTURE.md': ARCH6,
+  'migrations/001_init.sql': MIGRATION_INIT,
+  'migrations/002_index_qty.sql': 'create index stock_qty on stock (qty);\n',
+  'migrations/003_seed.sql': "insert into stock (sku, qty) values ('A-1', 10), ('B-2', 4);\n",
+  'migrations/004_reorder_level.sql': 'alter table stock add column reorder_level integer not null default 0;\n',
+  'migrations/005_backfill.sql': 'update stock set reorder_level = 5 where reorder_level = 0;\n',
+  'migrations/006_index.sql': 'create index stock_reorder on stock (reorder_level);\n',
+  'src/db.ts': "import Database from 'better-sqlite3'\n\nconst db = new Database('inventory.db')\n\nexport function stock(sku: string) {\n  return db.prepare('select sku, qty, reorder_level as reorderLevel from stock where sku = ?').get(sku)\n}\n",
+  'src/server.ts': "import Fastify from 'fastify'\nimport { stock } from './db'\n\nconst app = Fastify()\n// returns { sku, qty, reorderLevel }\napp.get('/stock/:sku', async (req) => stock((req.params as { sku: string }).sku))\napp.listen({ port: 3000 })\n",
+  'web/App.tsx': "import { useState } from 'react'\n\nexport function App() {\n  const [sku, setSku] = useState('')\n  const [row, setRow] = useState<{ qty: number; reorderLevel: number } | null>(null)\n  return (\n    <div>\n      <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder=\"SKU\" />\n      {row && <table><tbody><tr><td>{row.qty}</td><td>Reorder level: {row.reorderLevel}</td></tr></tbody></table>}\n    </div>\n  )\n}\n",
+  'tests/api.test.ts': "import { describe, it, expect } from 'vitest'\n\ndescribe('api', () => {\n  it('has tests', () => expect(1).toBe(1))\n  it('returns reorderLevel with the stock row', () => expect({ sku: 'A-1', qty: 10, reorderLevel: 5 }).toHaveProperty('reorderLevel', 5))\n})\n"
+}
+
+// r2: the run added the filter subcommand and tests/test_filter.py (the tester could not run it).
+const R2_FILES = {
+  ...FILES3,
+  '.orgai/ARCHITECTURE.md': ARCH3,
+  'pyproject.toml': '[project]\nname = "csvkit"\nversion = "0.1.0"\n\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+  'csvkit/cli.py': "import argparse\nfrom csvkit import ops\n\n\ndef main():\n    p = argparse.ArgumentParser(prog='csvkit')\n    sub = p.add_subparsers(dest='cmd', required=True)\n    s = sub.add_parser('sort')\n    s.add_argument('file')\n    s.add_argument('--by', required=True)\n    f = sub.add_parser('filter')\n    f.add_argument('file')\n    f.add_argument('--where', required=True, help='COLUMN=VALUE')\n    args = p.parse_args()\n    if args.cmd == 'sort':\n        ops.sort_file(args.file, args.by)\n    elif args.cmd == 'filter':\n        column, _, value = args.where.partition('=')\n        ops.filter_file(args.file, column, value)\n",
+  'csvkit/ops.py': "import csv\nimport sys\n\n\ndef sort_file(path, column):\n    with open(path, newline='') as f:\n        rows = list(csv.DictReader(f))\n    rows.sort(key=lambda r: r[column])\n    w = csv.DictWriter(sys.stdout, fieldnames=rows[0].keys())\n    w.writeheader()\n    w.writerows(rows)\n\n\ndef filter_file(path, column, value):\n    with open(path, newline='') as f:\n        rows = [r for r in csv.DictReader(f) if r[column] == value]\n    w = csv.DictWriter(sys.stdout, fieldnames=rows[0].keys() if rows else [column])\n    w.writeheader()\n    w.writerows(rows)\n",
+  'tests/test_filter.py': "from csvkit import ops\n\n\ndef test_filter_file_exists():\n    assert callable(ops.filter_file)\n\n\ndef test_filter_keeps_matching_rows(tmp_path, capsys):\n    f = tmp_path / 'a.csv'\n    f.write_text('name,city\\nann,oslo\\nbob,rome\\n')\n    ops.filter_file(str(f), 'city', 'oslo')\n    assert 'ann' in capsys.readouterr().out\n"
+}
+
+// r3: the run added /vehicles/status to the API (the API implementer's version was kept after the merge conflict) and the
+// web dashboard that shows it. The web implementer's out-of-brief edit of services/api/src/server.ts is in the record and logs.
+const R3_FILES = {
+  ...FILES11,
+  '.orgai/ARCHITECTURE.md': ARCH11,
+  'apps/web/src/App.tsx': "import { Dashboard } from './Dashboard'\n\nexport function App() {\n  return <Dashboard />\n}\n",
+  'apps/web/src/Dashboard.tsx': "import { useEffect, useState } from 'react'\n\nexport function Dashboard() {\n  const [status, setStatus] = useState<{ vehicleId: string; state: string }[]>([])\n  useEffect(() => { fetch('/vehicles/status').then((r) => r.json()).then(setStatus) }, [])\n  return <ul>{status.map((v) => <li key={v.vehicleId}>{v.vehicleId}: {v.state}</li>)}</ul>\n}\n",
+  'services/api/src/server.ts': "import Fastify from 'fastify'\n\nconst app = Fastify()\napp.get('/vehicles', async () => [])\n// Resolved merge: the API implementer's version of this endpoint was kept.\napp.get('/vehicles/status', async () => [{ vehicleId: 'v1', state: 'idle' }])\napp.listen({ port: 3000 })\n"
+}
+
+// r4: fastify was upgraded to a 5.x release and src/server.ts adapted.
+const R4_FILES = {
+  ...FILES6,
+  '.orgai/ARCHITECTURE.md': ARCH6,
+  'package.json': '{\n  "name": "inventory",\n  "scripts": { "test": "vitest run", "dev": "tsx src/server.ts" },\n  "dependencies": { "fastify": "5.2.1", "better-sqlite3": "11.3.0" }\n}\n',
+  'src/server.ts': "import Fastify from 'fastify'\nimport { stock } from './db'\n\nconst app = Fastify()\napp.get('/stock/:sku', async (req) => stock((req.params as { sku: string }).sku))\n// fastify 5: listen takes an options object\napp.listen({ port: 3000, host: '127.0.0.1' })\n"
+}
+
+// r5: /stock/low in src/server.ts, its query in src/db.ts, the table in web/App.tsx and tests for both.
+const R5_FILES = {
+  ...FILES6,
+  '.orgai/ARCHITECTURE.md': ARCH6,
+  'migrations/001_init.sql': 'create table stock (\n  sku text primary key,\n  qty integer not null default 0,\n  reorder_level integer not null default 0\n);\n',
+  'src/db.ts': "import Database from 'better-sqlite3'\n\nconst db = new Database('inventory.db')\n\nexport function stock(sku: string) {\n  return db.prepare('select sku, qty from stock where sku = ?').get(sku)\n}\n\nexport function lowStock() {\n  return db.prepare('select sku, qty, reorder_level as reorderLevel from stock where qty < reorder_level').all()\n}\n",
+  'src/server.ts': SERVER6("app.get('/stock/low', async () => lowStock())\napp.get('/stock/:sku', async (req) => stock((req.params as { sku: string }).sku))\n"),
+  'web/App.tsx': "import { useEffect, useState } from 'react'\n\nexport function App() {\n  const [low, setLow] = useState<{ sku: string; qty: number; reorderLevel: number }[]>([])\n  useEffect(() => { fetch('/stock/low').then((r) => r.json()).then(setLow) }, [])\n  return (\n    <table>\n      <thead><tr><th>SKU</th><th>Qty</th><th>Reorder level</th></tr></thead>\n      <tbody>{low.map((r) => <tr key={r.sku}><td>{r.sku}</td><td>{r.qty}</td><td>{r.reorderLevel}</td></tr>)}</tbody>\n    </table>\n  )\n}\n",
+  'tests/api.test.ts': "import { describe, it, expect } from 'vitest'\n\ndescribe('api', () => {\n  it('has tests', () => expect(1).toBe(1))\n  it('lists SKUs under their reorder level', () => expect([{ sku: 'A-1', qty: 2, reorderLevel: 5 }].filter((r) => r.qty < r.reorderLevel)).toHaveLength(1))\n  it('renders the low-stock table rows', () => expect(['A-1']).toContain('A-1'))\n})\n"
+}
+
+// r6: GET /vehicles paginates (limit and cursor) with tests next to the server.
+const R6_FILES = {
+  ...FILES11,
+  '.orgai/ARCHITECTURE.md': ARCH11,
+  'services/api/src/server.ts': "import Fastify from 'fastify'\n\nconst app = Fastify()\nconst vehicles = Array.from({ length: 50 }, (_, i) => ({ id: 'v' + i }))\napp.get('/vehicles', async (req) => {\n  const { limit = '20', cursor = '0' } = req.query as { limit?: string; cursor?: string }\n  const start = Number(cursor)\n  const items = vehicles.slice(start, start + Number(limit))\n  return { items, nextCursor: start + items.length < vehicles.length ? String(start + items.length) : null }\n})\napp.listen({ port: 3000 })\n",
+  'services/api/src/server.test.ts': "import { describe, it, expect } from 'vitest'\n\ndescribe('GET /vehicles pagination', () => {\n  it('pages by limit and cursor', () => {\n    const all = ['v0', 'v1', 'v2']\n    expect(all.slice(1, 3)).toEqual(['v1', 'v2'])\n  })\n})\n"
+}
+
+/**
+ * Paths a retro record names as written or changed (tokens with a known extension in the agents' results, logs and final
+ * report). The self-check and the runner tests require each to exist in the prepared folder.
+ */
+export function recordPaths(scenario) {
+  const text = [...(scenario.run?.agents ?? []).map((a) => a.result ?? ''), ...(scenario.run?.logs ?? []).map((l) => l.message), scenario.run?.finalReport ?? ''].join('\n')
+  const found = text.match(/[A-Za-z0-9_./-]+\.(?:tsx|ts|py|sql|md|json|tf|yml)\b/g) ?? []
+  return [...new Set(found)]
+}
+
 // ---------------------------------------------------------------- retro: scenarios
 
 const agent = (slug, o = {}) => ({ slug, state: 'done', inputTokens: 40000, outputTokens: 6000, costUsd: 0.4, ...o })
@@ -304,7 +393,7 @@ const r1 = {
   title: 'Missing specialty: the root did database work nobody owns (6 roles)',
   brief: 'Inventory service: a stock API in src/ and a small React admin client in web/.',
   architectureSummary: 'A Fastify API over a SQLite file with a small React admin client; tests run with vitest.',
-  chart: chart6(), files: FILES6,
+  chart: chart6(), files: R1_FILES, git: true,
   run: {
     task: 'Add a reorder-level column to stock and expose it in the API and the admin client.', status: 'done', minutes: 22, costUsd: 4.7,
     agents: [
@@ -330,7 +419,7 @@ const r2 = {
   title: 'A role lacked a tool it needed (3 roles)',
   brief: 'csvkit: a small Python command-line tool for sorting, filtering and joining CSV files.',
   architectureSummary: 'A pure-Python CLI (argparse) with the logic in csvkit/ops.py and pytest tests under tests/.',
-  chart: chart3(), files: FILES3,
+  chart: chart3(), files: R2_FILES, git: true,
   run: {
     task: 'Add a filter subcommand with a --where COLUMN=VALUE option and test it.', status: 'done', minutes: 12, costUsd: 1.9,
     agents: [
@@ -357,7 +446,7 @@ const r3 = {
   chart: chart11({
     webPrompt: 'You are the web implementer. Follow the architecture document. Make the web app work end to end: if you find a bug or a missing endpoint anywhere in the repository while you work, fix it yourself right away in whatever file it lives, so nobody has to wait. Report back when the feature works.'
   }),
-  files: FILES11,
+  files: R3_FILES, git: true,
   run: {
     task: 'Show the vehicle status on the web dashboard.', status: 'done', minutes: 31, costUsd: 9.8,
     agents: [
@@ -391,12 +480,12 @@ const r4 = {
   title: 'An over-provisioned role: deep tier doing mechanical lookups (6 roles)',
   brief: 'Inventory service: a stock API in src/ and a small React admin client in web/.',
   architectureSummary: 'A Fastify API over a SQLite file with a small React admin client; tests run with vitest.',
-  chart: chart6({ researcherTier: 'deep' }), files: FILES6,
+  chart: chart6({ researcherTier: 'deep' }), files: R4_FILES, git: true,
   run: {
     task: 'Upgrade fastify to the latest 5.x and fix what breaks.', status: 'done', minutes: 18, costUsd: 8.9,
     agents: [
       agent('orchestrator', { costUsd: 1.5, result: 'Asked the researcher for the changelog and every call site, then had the backend implementer apply the upgrade.' }),
-      agent('researcher', { costUsd: 4.8, inputTokens: 310000, outputTokens: 22000, result: 'Listed the 14 call sites of app.get/app.listen with file and line, and summarized the 5.x changelog entries about the listen signature. (Mechanical grep and changelog lookup; 41 tool calls.)' }),
+      agent('researcher', { costUsd: 4.8, inputTokens: 310000, outputTokens: 22000, result: 'Listed every call site of app.get and app.listen with file and line, and summarized the 5.x changelog entries about the listen signature. (Mechanical grep and changelog lookup; 41 tool calls.)' }),
       agent('backend-implementer', { costUsd: 1.2, result: 'Applied the upgrade in src/server.ts; tests pass.', worktree: { status: 'merged', files: 2 } }),
       agent('tester', { costUsd: 0.7, result: 'Suite passes.' }),
       agent('reviewer', { costUsd: 0.7, result: 'Fine.' })
@@ -416,14 +505,14 @@ const r5 = {
   title: 'A healthy run: nothing should change (6 roles)',
   brief: 'Inventory service: a stock API in src/ and a small React admin client in web/.',
   architectureSummary: 'A Fastify API over a SQLite file with a small React admin client; tests run with vitest.',
-  chart: chart6(), files: FILES6,
+  chart: chart6(), files: R5_FILES, git: true,
   run: {
     task: 'Add a /stock/low endpoint listing SKUs under their reorder level, with a table in the admin client.', status: 'done', minutes: 20, costUsd: 3.6,
     agents: [
       agent('orchestrator', { costUsd: 1.1, result: 'Split API and client work, had the tester and reviewer check both, merged cleanly.' }),
       agent('backend-implementer', { costUsd: 0.8, result: 'Added /stock/low in src/server.ts and the query in src/db.ts.', worktree: { status: 'merged', files: 2 } }),
       agent('frontend-implementer', { costUsd: 0.6, result: 'Added the low-stock table in web/App.tsx.', worktree: { status: 'merged', files: 1 } }),
-      agent('tester', { costUsd: 0.5, result: 'Added tests for the endpoint and the table; all 12 tests pass.' }),
+      agent('tester', { costUsd: 0.5, result: 'Added tests for the endpoint and the table in tests/api.test.ts; all tests pass.' }),
       agent('reviewer', { costUsd: 0.4, result: 'No problems found; conventions followed.' }),
       agent('researcher', { costUsd: 0.2, result: 'Confirmed better-sqlite3 supports the query form used (docs link in the report).' })
     ],
@@ -438,7 +527,7 @@ const r6 = {
   title: 'Roles unused in this run must not be removed (11 roles)',
   brief: 'Fleet: web and mobile apps, an API, an ETL pipeline and Terraform.',
   architectureSummary: 'A monorepo: React web app and React Native app, a Fastify API, a Python ETL pipeline and Terraform; Playwright e2e tests.',
-  chart: chart11(), files: FILES11,
+  chart: chart11(), files: R6_FILES, git: true,
   run: {
     task: 'Add pagination to GET /vehicles in the API.', status: 'done', minutes: 11, costUsd: 3.1,
     agents: [

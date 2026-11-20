@@ -23,7 +23,7 @@ export function newState() {
     done: null, // 'chart' | 'propose' | 'noChange' once the answer is captured
     chart: null, revision: null,
     reviseRounds: 0, toolErrors: 0, askUserCalls: 0, architectureCalls: 0, otherToolCalls: 0, otherTools: {}, builtinCalls: {},
-    questionTurns: 0, followUps: 0, turns: 0, afterDone: 0, questions: [], errors: [], lastText: '', finalText: '',
+    questionTurns: 0, followUps: 0, turns: 0, afterDone: 0, questions: [], errors: [], rejections: [], lastText: '', finalText: '',
     costUsd: 0, costExact: false, usage: null, sessionModel: null, results: 0
   }
 }
@@ -39,11 +39,15 @@ export function makeHandlers(built, scenario, state, onDone = () => {}) {
   const real = new Map(built.tools.map((t) => [t.name, t]))
   const before = viewsOf(built.project.roles)
   const callReal = async (name, args) => {
+    const reject = (text) => {
+      if (/^REVISE/.test(text) && state.rejections.length < 20) state.rejections.push(`${name}: ${clip(text, 300)}`)
+      return text
+    }
     try {
-      return await real.get(name).call(args)
+      return reject(await real.get(name).call(args))
     } catch (e) {
       state.toolErrors += 1
-      return `REVISE. The call was not valid: ${clip(e?.message ?? e, 400)}`
+      return reject(`REVISE. The call was not valid: ${clip(e?.message ?? e, 400)}`)
     }
   }
   const handlers = new Map()
@@ -233,6 +237,8 @@ export async function runSession(deps) {
     questionTurns: state.questionTurns, followUps: state.followUps, questions: state.questions, turns: state.turns,
     durationMs, costUsd: state.costUsd, costExact: state.costExact, usage: state.usage,
     systemPromptWords: built.system.trim().split(/\s+/).length, firstMessageWords: built.firstMessage.trim().split(/\s+/).length,
+    rejections: state.rejections,
+    ...(built.git ? { fixtureGit: built.git.note } : {}),
     sessionModel: state.sessionModel, finalText: clip(state.finalText, 1200), errors: state.errors
   }
 }
