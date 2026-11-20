@@ -795,7 +795,9 @@ Each with tests in `selfControlGate.test.ts`; all are text checks (cli-spec Wave
 - `security` with `find-generic-password`, `find-internet-password`, `add-generic-password`,
   `delete-generic-password`, `dump-keychain`, `export`, `-i`, reading from stdin, or any word `OrgAI Vault`; any
   `secret-tool` call; `busctl`, `gdbus`, `dbus-send` naming `org.freedesktop.secrets`; PowerShell or `pwsh` text naming
-  `ProtectedData` or `Unprotect`.
+  `ProtectedData`, `CryptUnprotect`, a `DataProtector` class or `Unprotect` as a word of its own (`::Unprotect(`,
+  `Unprotect-CmsMessage`; since 2026-11-19 not an instance call such as an Excel sheet's `.Unprotect()`, nor
+  `Unprotected`).
 
 ---
 

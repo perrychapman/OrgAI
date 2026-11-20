@@ -2262,7 +2262,12 @@ describe('Wave 7 scan cost', () => {
       ['star path', (n) => `cat ${data}/${'*'.repeat(n)}x/daemon.secret`, 2_000],
       ['nested substitutions in quotes', (n) => `echo "${'$(echo "'.repeat(n)}`, 2_500],
       ['zsh qualifiers', (n) => `ls ${'*(e:x:) '.repeat(n)}`, 2_500],
-      ['shell flags', (n) => `bash ${'-c '.repeat(n)}x`, 2_500]
+      ['shell flags', (n) => `bash ${'-c '.repeat(n)}x`, 2_500],
+      // Owner report 2026-11-19: `security` literals and markdown rows in code (codeRunsBareSecurity).
+      ['security literals', (n) => `python3 -c "${"x = ['a', 'security']; ".repeat(n)}"`, 2_500],
+      ['table rows', (n) => `python3 - <<'EOF'\n${'r = ["| a |", "| Security | b |"]\n'.repeat(n)}EOF`, 2_500],
+      ['long security literal', (n) => `python3 -c "print('${'a; '.repeat(n)}security')"`, 2_500],
+      ['open bracket words', (n) => `echo ${'[a, '.repeat(n)}`, 5_000]
     ]
     const best = (command: string): number => {
       let min = Infinity
@@ -2363,5 +2368,185 @@ describe('the team-evolution ledger is a control entry', () => {
     const ctx: SelfControlContext = { protectedPaths: controlProtectedPaths(data), cwd: base, home: base }
     expect(checkSelfControlDenial('Write', { file_path: join(data, 'evolution', 'p1.json'), content: '{}' }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
     expect(checkSelfControlDenial('Bash', { command: `echo x > ${data}/evolution/p.json` }, ctx)).toBe(SELF_CONTROL_DENIAL_MESSAGE)
+  })
+})
+
+describe('ordinary commands the gate refused (owner report 2026-11-19)', () => {
+  // As reported: win32, a plain documents folder, the real protected paths; and a POSIX context for the same texts.
+  const winData = 'C:\\Users\\u\\AppData\\Roaming\\OrgAI'
+  const contexts: [string, SelfControlContext][] = [
+    ['win32', { protectedPaths: controlProtectedPaths(winData), cwd: 'C:\\Users\\u\\Documents\\engagement', home: 'C:\\Users\\u', platform: 'win32' }],
+    ['posix', { protectedPaths: controlProtectedPaths('/home/u/.config/OrgAI'), cwd: '/home/u/Documents/engagement', home: '/home/u', platform: 'linux' }]
+  ]
+  const run = (tool: 'Bash' | 'PowerShell', commands: readonly string[], want: string | null): void => {
+    for (const [name, ctx] of contexts) {
+      for (const command of commands) {
+        expect(checkSelfControlDenial(tool, { command }, ctx), `${name} ${tool} ${JSON.stringify(command)}`).toBe(want)
+      }
+    }
+  }
+  const encode = (text: string): string => Buffer.from(text, 'utf16le').toString('base64')
+
+  describe('case 1: `security` as data in inline code', () => {
+    it('lets the reported data uses through', () => {
+      run('Bash', [
+        `python -c "import pandas as pd; df = pd.read_excel('holdings.xlsx'); print(df['Security'])"`,
+        `python -c "print('Topics: privacy, security')"`,
+        `python -c "areas = ['privacy', 'security']; print(areas)"`,
+        `node -e "const s = ['governance','security']; console.log(s)"`,
+        `node -e "console.log('security')"`,
+        `python - <<'EOF'\nrows = ["| Area | Owner |", "| Security | Dana |"]\nprint("\\n".join(rows))\nEOF`,
+        `python - <<'EOF'\ntext = open("notes.md").read()\nprint(text.count("information security"))\nEOF`,
+        `python3 - <<'EOF'\nsections = ["Scope", "Security"]\nprint(sections)\nEOF`
+      ], null)
+      run('PowerShell', [`python -c "print('security')"`], null)
+    })
+
+    it('lets nearby data spellings through', () => {
+      run('Bash', [
+        `python3 -c "print(\\"security\\")"`,
+        `python3 -c "print(open('notes.md').read().count('information security'))"`,
+        `python3 -c "x = rows[0]['Security']; print(x)"`,
+        `python3 -c "print(df[['Name','Security']])"`,
+        `node -e "console.error('cyber-security')"`,
+        `python3 -c "print('the security team')"`,
+        `python3 -c "t = 'Areas: privacy, security'; print(t)"`,
+        `python3 -c "cols = ['Scope', 'Information Security']; print(cols)"`
+      ], null)
+    })
+
+    it('still denies code that runs security, however the word is placed', () => {
+      run('Bash', [
+        // Existing intent (review rounds 1 and 2).
+        `python3 -c "import subprocess; subprocess.run(['security', 'dump-keychain'])"`,
+        `python3 -c "import os; os.system('security')"`,
+        `python3 -c "import subprocess; subprocess.run(['security'], input=b'dump-keychain')"`,
+        `python3 -c "import subprocess; subprocess.run(['/usr/bin/security'], input=b'x')"`,
+        `node -e "require('child_process').execSync('printf x | security')"`,
+        `python3 -c "import os; os.system('security -i')"`,
+        `python3 -c "import os; os.system('security find-generic-password -w')"`,
+        `perl -e 'system("secret-tool", "lookup", "a", "b")'`,
+        `python3 -c "import secretstorage; x = 'org.freedesktop.secrets'"`,
+        `python3 -c "import keyring; keyring.get_password('OrgAI Vault', 'k')"`,
+        `python3 -c "import win32crypt; win32crypt.CryptUnprotectData(b)"`,
+        `python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['security', 'dump-keychain'])\nEOF`,
+        'echo dump-keychain | security',
+        'printf x | /usr/bin/security -q',
+        // A whole command string, wherever it is handed.
+        `python3 -c "import os; os.system(\\"security\\")"`,
+        `python3 -c "import os; os.system('sudo security')"`,
+        `python3 -c "import os; os.system('ls; security')"`,
+        `python3 -c "import os; os.system('bash -c security')"`,
+        `python3 -c "import os; os.system('ls' + 'security')"`,
+        `python3 -c "import os; os.system('ls;' 'security')"`,
+        `python3 -c "cmd = 'security'; import os; os.system(cmd)"`,
+        `python3 -c "import subprocess; subprocess.getoutput('security')"`,
+        `python3 -c "import subprocess; p = subprocess.Popen('x'); p.communicate('security')"`,
+        // First list elements and lists that run their later elements.
+        `python3 -c "def c(): return ['security']"`,
+        `python3 -c "cmd = ['security']"`,
+        `python3 -c "print(['security'])"`,
+        `python3 -c "import subprocess; subprocess.run(['sudo', 'security'], input=b'x')"`,
+        `python3 -c "import subprocess; subprocess.run(['env', 'security'], input=b'x')"`,
+        `python3 -c "import subprocess; subprocess.run(['caffeinate', 'security'], input=b'x')"`,
+        `python3 -c "import subprocess; subprocess.run(['timeout', '5', 'security'], input=b'x')"`,
+        `python3 -c "import subprocess; subprocess.run(['bash', '-c', 'security'], input=b'x')"`,
+        `python3 -c "import subprocess; subprocess.run(['sh', 'security'], input=b'x')"`,
+        `python3 -c "import subprocess; subprocess.run(['sandbox-exec', 'security'], input=b'x')"`,
+        `python3 -c "import subprocess; subprocess.run([x, 'security'], input=b'x')"`,
+        // Output that is piped on, and pipe opens.
+        `awk 'BEGIN { print("security") | "sh" }'`,
+        `perl -e 'open(F, "| security |"); print F "dump-keychain"'`,
+        `perl -e 'open(F, "|security"); print F "dump-keychain"'`,
+        `python3 -c "import os; os.system('x' '| security |' ' cat')"`,
+        `python3 -c "import os; os.system('x' + '| security |' + ' cat')"`,
+        // Reviewer findings on this change (M1-M3, L1): methods that return or split their argument, data calls handed
+        // to another call, prose tails holding operators or escapes, indexed lists, lists handed to a call, more
+        // wrappers, Perl / Ruby quoting operators.
+        `echo dump-keychain | python3 -c "import os; os.system(os.environ.get('X', 'security'))"`,
+        `python3 -c "import subprocess,shlex; subprocess.run(shlex.split('security'), input=b'x')"`,
+        `python3 -c "import os; os.system('x'.replace('x', 'security'))"`,
+        `python3 -c "import os; os.system(print('security'))"`,
+        `echo x | python3 -c "import os; os.system('eval security; Note: security')"`,
+        `python3 -c "import os; os.system('sh -c security; a: security')"`,
+        `python3 -c "import os; os.system('a: \\x3b security')"`,
+        `python3 -c "import subprocess; subprocess.run(['x', 'security'][1:], input=b'x')"`,
+        `python3 -c "import os; os.system(['x', 'security'][1])"`,
+        `python3 -c "import subprocess; subprocess.run(['x', 'security'], input=b'x')"`,
+        `perl -e 'open(F, ["| security |"]->[0]); print F "dump-keychain"'`,
+        `python3 -c "import os; os.system(['| a |', '| security |'][1])"`,
+        `python3 -c "import subprocess; subprocess.run(['taskpolicy', 'security'], input=b'x')"`,
+        `python3 -c "import subprocess; subprocess.run(['ifne', 'security'], input=b'x')"`,
+        `perl -e 'print qx["security"]'`,
+        `ruby -e 'print %x["security"]'`,
+        // A shell command after the data use is still read.
+        `python3 -c "print('security')" ; security`,
+        `python3 -c "print('security')" && echo dump-keychain | security`
+      ], SELF_CONTROL_DENIAL_MESSAGE)
+      run('PowerShell', [`python -c "import os; os.system('security')"`], SELF_CONTROL_DENIAL_MESSAGE)
+    })
+  })
+
+  describe('case 2: PowerShell Unprotect', () => {
+    it('lets an instance Unprotect() and longer words through', () => {
+      run('PowerShell', [
+        `$xl = New-Object -ComObject Excel.Application; $wb = $xl.Workbooks.Open("m.xlsx"); $wb.Sheets(1).Unprotect(); $wb.Save()`,
+        `Get-Content report.md | Select-String "Unprotected"`,
+        `$ws.Unprotect('pw'); $ws.Protect('pw')`,
+        `Select-String -Path notes.md -Pattern 'Unprotection'`
+      ], null)
+      run('Bash', [`pwsh -c '$wb.Sheets(1).Unprotect()'`], null)
+    })
+
+    it('still denies DPAPI in every form', () => {
+      run('PowerShell', [
+        `[System.Security.Cryptography.ProtectedData]::Unprotect($b, $null, 'CurrentUser')`,
+        'Add-Type -AssemblyName System.Security; [Security.Cryptography.ProtectedData]::Unprotect($b, $null, 0)',
+        'using namespace System.Security.Cryptography; [ProtectedData]::Unprotect($b, $null, 0)',
+        `$t = [type]'x'; $t::Unprotect($b)`,
+        `$t.GetMethod('Unprotect').Invoke($null, @($b))`,
+        'Unprotect-CmsMessage -Path secret.txt',
+        `$p = New-Object System.Security.Cryptography.DpapiDataProtector('a', 'b'); $p.Unprotect($x)`,
+        `Add-Type -MemberDefinition '[DllImport("crypt32.dll")] public static extern bool CryptUnprotectData(...);' -Name C -Namespace W`,
+        `powershell -EncodedCommand ${encode('[Security.Cryptography.ProtectedData]::Unprotect(1)')}`,
+        `pwsh -enc ${encode('$x.Unprotect(1); [Security.Cryptography.ProtectedData]')}`
+      ], SELF_CONTROL_DENIAL_MESSAGE)
+      run('Bash', [
+        "pwsh -c '[Security.Cryptography.ProtectedData]::Unprotect(1)'",
+        "echo '[Security.Cryptography.ProtectedData]::Unprotect(1)' | pwsh -",
+        "pwsh <<< '[Security.Cryptography.ProtectedData]::Unprotect(1)'",
+        "pwsh -c 'Unprotect-CmsMessage -Path x'",
+        `pwsh -enc ${encode('[Security.Cryptography.ProtectedData]::Unprotect(1)')}`
+      ], SELF_CONTROL_DENIAL_MESSAGE)
+    })
+  })
+
+  describe('case 3: a leading test bracket', () => {
+    it('lets [ and [[ tests through', () => {
+      run('Bash', [
+        '[ -f package.json ] && echo yes',
+        '[ $n -ge 36 ]',
+        '[ -d drafts ] || mkdir drafts',
+        '[[ -f package.json ]] && echo yes',
+        'if [ -d out ]; then echo built; fi',
+        'test -f x'
+      ], null)
+    })
+
+    it('still denies bracket and glob spellings of real names, and what follows a test', () => {
+      run('Bash', [
+        '[o]rgai status',
+        '[s][e][c][u][r][i][t][y] dump-keychain',
+        '/usr/bin/secur*y dump-keychain',
+        '/usr/local/bin/[o][r][g][a][i] status',
+        '[ -f x ] && orgai status',
+        '[ -f x ] && [o]rgai status',
+        '[ -f x ] || security dump-keychain',
+        '[[ $(orgai status) ]]',
+        // An expansion may supply the closing bracket: still read as maybe anything.
+        '[o$x status',
+        '~/.local/bin/[o$x status'
+      ], SELF_CONTROL_DENIAL_MESSAGE)
+    })
   })
 })

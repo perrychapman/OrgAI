@@ -94,13 +94,39 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     `@orgai/cli` (with `--package=`, `-p`, `npm:`, `@version`, and globs keeping 3 of the letters of "orgaicli" in order); reads of
     `<data>/vault.json*` / `secrets.json*`, the key file and any `ORGAI_VAULT_*` / `ORGAI_CLI_VAULT_*` word; `security` read as getopt does
     (`--`, `-pX`, `-p X`) and unwrapped through `launchctl asuser|bsexec` and `script`; `secret-tool`, D-Bus tools naming
-    `org.freedesktop.secrets`, PowerShell `ProtectedData` / `Unprotect`; the names "OrgAI Vault" and "OrgAI CLI Vault" only after `security`, `keyring`,
+    `org.freedesktop.secrets`, PowerShell `ProtectedData` / `CryptUnprotect` / `DataProtector` / a standalone `Unprotect`; the names "OrgAI Vault" and "OrgAI CLI Vault" only after `security`, `keyring`,
     `kwallet-query`, `kwalletcli`, `kwallet5-query`, `kwallet6-query` (a plain `grep -rn 'OrgAI Vault' src` passes; code runners
-    still deny it anywhere, and `print('security')` is denied as a side effect); bracket globs that can match only one letter
+    still deny it anywhere); bracket globs that can match only one letter
     count as that letter (`globKeptLetters`); `localDrivePathOf` maps `\\?\C:\`, `\\.\C:\`, `//?/C:/`, `\\localhost\c$` to the
     drive path in definite (self-control) mode on win32 only (reference mode still treats every UNC word as touching). They are text
     checks, a speed bump, not a boundary. The scan-cost test checks linearity (best of 3, 2n under 3x n plus 100 ms), not a wall clock.
     Unit tests and pure-function probes only; never run in a real shell against the real tools or on Windows.
+  - Ordinary-command false positives (owner report 2026-11-19, engagement projects): (1) `security` as data in inline
+    code no longer denies. The two loose patterns (a `security` literal closing an array / call / statement, and
+    `| security`) moved from `CUSTODIAN_CODE` into `codeRunsBareSecurity`, which reads a subscript key (`df['Security']`),
+    the only argument of an output call or a non-returning string method (`print('security')`, `console.log(...)`,
+    `.count(...)`; never `get` / `replace` / `split`, and the call must not be handed to another call) not piped on, a
+    one-command sentence tail of letters and `,:.'-` whose program word ends in `,` / `:`, a later element of a list of
+    letter-only literals whose argv runs no `security` (not `['sudo', 'security']`, `['timeout', '5', 'security']` or a
+    list headed by a shell / wrapper / `ARGV_RUNNERS`), not indexed or sliced and not handed to a call, and a markdown
+    table row in such a list as data. The literals the old trigger matched (a string ending in `security` before `]`, `)`,
+    `;` or a line end) otherwise still deny when they are a command string handed to a call, a first array element,
+    an assignment or a concatenation, and so does `| security` in a command string; past 256 triggers or a literal longer
+    than 4,096 characters it denies. Gaps the old trigger already had (a literal followed by `,`: `run('security',
+    input=...)`, `['security', '-q']`; awk `print "x" | "security"`) are unchanged. (2) `PS_DPAPI` is
+    `ProtectedData|CryptUnprotect|DataProtector|(?<![\w.])Unprotect(?!\w)`: an Excel sheet's `$ws.Unprotect()` and
+    `Unprotected` pass; `::Unprotect`, `Unprotect-CmsMessage`, reflection on `'Unprotect'`, `DpapiDataProtector` deny.
+    C# compiled through `Add-Type` calls `ProtectedData.Unprotect` with a dot, so a class name spelled with an escape
+    (`ProtectedData`) and `.Unprotect` now passes; the class name escape already defeated the gate before.
+    (3) Root cause of `[ -f x ]` being refused: `expandShellGlobAlternatives` answers an unclosed `[` with 'unreadable',
+    and `wordMayBe` / `hasShellGlobGroup` / `programIsCli` read that as "may be any name"; the same route refused the
+    markdown-row here-document (its body word `["| Area |",` made the segment look like `npx`, whose "command text"
+    `| Security | Dana |]` then piped into `security`). A word whose only glob character is an unclosed `[` (no `]`,
+    `*`, `?`, `(`, `$`, backtick or backslash) is now literal (`literalOpenBracket`); `[o$x` still fails closed. New
+    honest limits: printed output piped into a shell (`python3 -c "print('security')" | sh`, as `echo security | sh`
+    already passed) and data lists a later run-time step hands to a process. Checked by unit tests
+    (`selfControlGate.test.ts` "ordinary commands the gate refused", win32 and POSIX contexts, plus scan-cost entries)
+    and a direct `checkSelfControlDenial` probe of every reported sample; not run in a real shell or by an agent.
   - PR 47 (self-control boundaries, outside contributor; fixes from its review, 2026-11-12): the gate also protects each
     project's team-files approval state (`<data>/projects/<id>/team-files/`, both spellings, project ids re-read on every
     check; the sibling product's existing project folders are enumerated, a linked or unreadable `projects` folder fails
