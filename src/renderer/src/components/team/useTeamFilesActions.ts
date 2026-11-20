@@ -6,6 +6,12 @@ import { TEAM_FILES_STALE_TEXT, cardVisible, isStaleDecision, statusKey } from '
 
 export type TeamFilesBusy = 'commit' | 'enable' | 'approve' | 'reject' | 'undo' | null
 
+/** What a commit did: `count` is the number of files main committed (0 when it refused or failed). */
+export interface TeamFilesCommitOutcome {
+  ok: boolean
+  count: number
+}
+
 interface Keyed {
   text: string
   /** `statusKey` of the status the action left behind: the text is shown only while the status still has this key. */
@@ -22,7 +28,7 @@ export function useTeamFilesActions(projectId: string): {
   busy: TeamFilesBusy
   message: string | null
   error: string | null
-  commit: () => Promise<void>
+  commit: () => Promise<TeamFilesCommitOutcome>
   enable: () => Promise<void>
   approve: (digest: string) => Promise<boolean>
   reject: (digest: string) => Promise<boolean>
@@ -57,16 +63,19 @@ export function useTeamFilesActions(projectId: string): {
     }
   }, [])
 
-  const commit = useCallback(async (): Promise<void> => {
+  const commit = useCallback(async (): Promise<TeamFilesCommitOutcome> => {
+    let out: TeamFilesCommitOutcome = { ok: false, count: 0 }
     await run('commit', async () => {
       try {
         const r = await window.orgai.teamFiles.commit({ projectId })
         useAppStore.getState().setTeamFilesStatus(r.status)
+        out = { ok: r.ok, count: r.committed.length }
         say(r.ok ? r.message || 'Committed the team files.' : r.message || 'The team files could not be committed.')
       } catch (e) {
         say(cleanIpcError(e, 'The team files could not be committed.'))
       }
     })
+    return out
   }, [projectId, run, say])
 
   const enable = useCallback(async (): Promise<void> => {

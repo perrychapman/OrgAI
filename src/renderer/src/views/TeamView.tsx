@@ -1077,8 +1077,10 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               <RoleInspector
                 project={project}
                 role={selectedRole}
-                notice={notice && notice.roleId === selectedRole.id ? notice.text : null}
-                onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
+                onReportsToChanged={(id, before) => {
+                  const text = moveNotice(before, setReportsTo(before, id, before.find((r) => r.id === id)?.reportsTo ?? null), id)
+                  setNotice(text ? { roleId: id, text } : null)
+                }}
                 onSettleError={setRenameNote}
                 onRemove={() => void requestRemove(selectedRole.id)}
                 onAddReport={() => addRole(selectedRole)}

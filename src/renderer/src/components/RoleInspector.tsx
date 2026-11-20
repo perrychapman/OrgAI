@@ -34,10 +34,12 @@ import { modelFoldSummary } from '../lib/roleConnection'
 interface Props {
   project: Project
   role: Role
-  /** Inline explanation of a side effect of the last change ("Implementer can now create subagents"). */
-  notice?: string | null
-  onNotice?: (text: string | null) => void
-  /** A rename cleanup that failed after this inspector moved to another role or closed: the view shows it. */
+  /**
+   * Reports to changed in this editor (phase 2: no inline banner). `before` is the team just before the change; the view
+   * shows "{Role} now reports to {Manager}." with Undo in the notice row.
+   */
+  onReportsToChanged?: (roleId: string, before: Role[]) => void
+  /** A rename cleanup that failed (whether or not this inspector still shows that role): the view's notice row shows it. */
   onSettleError?: (text: string) => void
   /** Remove goes through the view's confirm dialog and undo row. */
   onRemove: () => void
@@ -55,7 +57,7 @@ const sameIds = (a: readonly string[] | undefined, b: readonly string[] | undefi
   return x.length === y.length && x.every((v, i) => v === y[i])
 }
 
-export default function RoleInspector({ project, role, notice, onNotice, onSettleError, onRemove, onEscape, onAskAssistant, onAddReport }: Props): ReactElement {
+export default function RoleInspector({ project, role, onReportsToChanged, onSettleError, onRemove, onEscape, onAskAssistant, onAddReport }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
   const replaceProject = useAppStore((s) => s.replaceProject)
   const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === roleConnection(role, project))?.connection.tierModels)
@@ -75,7 +77,7 @@ export default function RoleInspector({ project, role, notice, onNotice, onSettl
     const before = useAppStore.getState().projects.find((p) => p.id === project.id)?.roles ?? project.roles
     if (before.find((r) => r.id === role.id)?.reportsTo === reportsTo) return
     updateRoles(project.id, (roles) => setReportsTo(roles, role.id, reportsTo))
-    onNotice?.(moveNotice(before, setReportsTo(before, role.id, reportsTo), role.id))
+    onReportsToChanged?.(role.id, before)
   }
 
   // Review H1 / M3: a Name or Slug edit is computed against the role as it was when the edit began, and settled once
@@ -84,11 +86,9 @@ export default function RoleInspector({ project, role, notice, onNotice, onSettl
   const renameStart = useRef<(RenameStart & { projectId: string; wrote: string[] | undefined }) | null>(null)
   // `project/role` the inspector shows now; null once it closed.
   const shownKey = useRef<string | null>(`${project.id}/${role.id}`)
-  const noticeRef = useRef(onNotice)
   const settleErrorRef = useRef(onSettleError)
   useEffect(() => {
     shownKey.current = `${project.id}/${role.id}`
-    noticeRef.current = onNotice
     settleErrorRef.current = onSettleError
   })
   /**
@@ -143,9 +143,8 @@ export default function RoleInspector({ project, role, notice, onNotice, onSettl
         res.error === 'save'
           ? `The project could not be saved, so connections still name the old slug "${s.slug}". ${who} keeps its connections.`
           : `${res.left === 1 ? '1 connection still names' : `${res.left} connections still name`} the old slug "${s.slug}": a role given that slug later would get ${res.left === 1 ? 'it' : 'them'}. Removing ${res.left === 1 ? 'it' : 'them'} from ${shown ? 'this role' : who} and granting again cleans that up.`
-      // A failure after the user switched role (or project) must not vanish with the selection (review L).
-      if (shown) noticeRef.current?.(text)
-      else settleErrorRef.current?.(text)
+      // One place for the failure, whether or not the user switched role (or project): the view's notice row (review L).
+      settleErrorRef.current?.(text)
     })
   }
   // Switching role or project, or closing the inspector, ends an edit that had no blur.
@@ -217,7 +216,6 @@ export default function RoleInspector({ project, role, notice, onNotice, onSettl
         </div>
       </div>
       <div className="side-body stack-3" onKeyDown={onKeyDown}>
-        {notice && <Banner tone="info" onDismiss={() => onNotice?.(null)}>{notice}</Banner>}
 
         <div className="field">
           <label htmlFor="role-name-input">Name</label>
