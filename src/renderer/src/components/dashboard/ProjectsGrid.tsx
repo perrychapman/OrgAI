@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import { useEffect, useMemo, useState } from 'react'
+import { FolderKanban } from 'lucide-react'
 import type { Project, RunSummary } from '@shared/types'
 import { isRunLive, useAppStore, type RunState } from '../../store/useAppStore'
 import { cleanIpcError } from '../../lib/ipcError'
@@ -23,7 +24,8 @@ import { Input } from '../ui/Input'
 import { useConfirm } from '../ui/ConfirmDialog'
 import { DashSection, sectionHeadingId, useDashboard } from './DashboardContext'
 import { ProjectTile, type PinSource, type TileModel } from './ProjectTile'
-import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, newestSummary, pinnedFirst, SEARCH_AFTER, tileChips, tileStatusLine, tileTeam, type TileChipKind } from './dashboardProjects'
+import { costInWindow, filterProjects, idAfterRemoval, mergeSummaries, newestSummary, pinnedFirst, SEARCH_AFTER, tileChips, tileStatusKind, tileStatusLine, tileTeam, type TileChipKind } from './dashboardProjects'
+import { projectSpark } from '../../lib/projectSparkline'
 
 /** The tile model of one project from its live runs and saved history. */
 function tileModel(project: Project, runs: readonly RunState[], history: readonly RunSummary[], now: number, teamItems: readonly TeamAttentionItem[], signal: ProjectSignal | undefined, pinned: boolean): TileModel {
@@ -46,6 +48,8 @@ function tileModel(project: Project, runs: readonly RunState[], history: readonl
     live: live.length,
     working,
     statusLine: tileStatusLine({ open: live.length, decisions, working, newestStartedAt: newest?.startedAt, now }),
+    statusKind: tileStatusKind({ open: live.length, decisions, working, newestStartedAt: newest?.startedAt }),
+    spark: projectSpark(summaries, now),
     team,
     pinned,
     continuable,
@@ -240,6 +244,7 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       id="projects"
       testId="dash-projects"
       className="dash-projects-region"
+      icon={FolderKanban}
       empty={projects.length === 0}
       count={filtering ? undefined : projects.length}
       headExtra={filtering ? <span className="dash-projects-count mono">{`${shown.length} of ${projects.length}`}</span> : undefined}

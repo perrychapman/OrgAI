@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactElement } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { ArrowRight, FolderOpen, GitBranch, Pin, PinOff, Play, RotateCcw, ShieldAlert, Sparkles, Trash2, type LucideIcon } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { setupPending } from '@shared/setup'
@@ -14,7 +14,10 @@ import { Badge } from '../ui/Badge'
 import { Cost } from '../ui/Cost'
 import { Icon } from '../ui/Icon'
 import { ContextMenu, MenuButton, useContextMenu, type MenuEntry } from '../ui/ContextMenu'
-import { continueLabel, openLabel, type TileChip, type TileChipKind, type TileTeam } from './dashboardProjects'
+import { projectHue } from '../../lib/projectIdentity'
+import { SPARK_BAR_PX, SPARK_TRACK_PX, type Spark } from '../../lib/projectSparkline'
+import { ProjectBadge } from './ProjectBadge'
+import { continueLabel, openLabel, type TileChip, type TileChipKind, type TileStatusKind, type TileTeam } from './dashboardProjects'
 
 /** Which control of a tile asked for the pin change, so focus can be put back on it. */
 export type PinSource = 'button' | 'menu'
@@ -30,6 +33,10 @@ export interface TileModel {
   working: boolean
   /** `tileStatusLine`: one fact, plain text. */
   statusLine: string
+  /** Which mark shape the status gets (`tileStatusKind`). */
+  statusKind: TileStatusKind
+  /** The 7-day runs sparkline of this project (`projectSpark`). */
+  spark: Spark
   /** The org chart as the team row draws it. */
   team: TileTeam
   /** The person pinned this project. */
@@ -78,7 +85,8 @@ export function ProjectTile({
   onChip: (kind: TileChipKind) => void
   onAnnounce?: (text: string) => void
 }): ReactElement {
-  const { project, decisions, working, statusLine, team, pinned, continuable, chips, weekCost } = model
+  const { project, decisions, working, statusLine, statusKind, spark, team, pinned, continuable, chips, weekCost } = model
+  const descId = useId()
   const rootRef = useRef<HTMLLIElement>(null)
   // One ring per pin, restarted on a second pin; the class goes away when it ends. Reduced motion never mounts it.
   useEffect(() => {
@@ -144,78 +152,112 @@ export function ProjectTile({
       data-name={project.name}
       data-id={project.id}
       data-state={state}
+      data-hue={projectHue(project.id)}
       data-pinned={pinned ? '' : undefined}
       data-customising={customising ? '' : undefined}
       ref={rootRef}
       onContextMenu={(e) => menu.onContextMenu(e, project.id, { invoker: mainRef.current ?? undefined })}
     >
-      {client && (
-        <p className="project-tile-client" data-testid="tile-client" title={client}>
-          {client}
-        </p>
-      )}
-      <div className="project-tile-head">
-        <h3 className="project-tile-title">
-          <button
-            type="button"
-            className="project-tile-main"
-            data-testid="project-tile-main"
-            aria-label={openLabel({ name: project.name, statusLine, team, pinned, setupPending: pending })}
-            title={project.path}
-            ref={mainRef}
-            onClick={onOpen}
-            onKeyDown={(e) => void menu.onKeyDown(e, project.id)}
-          >
-            {pinned && (
-              <span className="project-tile-pinned" data-testid="tile-pinned-glyph">
-                <Icon icon={Pin} size="sm" />
+      <div className="project-tile-top">
+        <ProjectBadge projectId={project.id} name={project.name} size="md" className="project-tile-badge" />
+        <div className="project-tile-id">
+          <h3 className="project-tile-title">
+            <button
+              type="button"
+              className="project-tile-main"
+              data-testid="project-tile-main"
+              aria-label={openLabel({ name: project.name, statusLine, team, pinned, setupPending: pending })}
+              aria-describedby={descId}
+              title={`${project.name}\n${project.path}`}
+              ref={mainRef}
+              onClick={onOpen}
+              onKeyDown={(e) => void menu.onKeyDown(e, project.id)}
+            >
+              {pinned && (
+                <span className="project-tile-pinned" data-testid="tile-pinned-glyph">
+                  <Icon icon={Pin} size="sm" />
+                </span>
+              )}
+              <span className="project-tile-name">{project.name}</span>
+            </button>
+          </h3>
+          {/* The one meta line: a mark whose shape follows the state, its words, and the client of an engagement. */}
+          <p className="project-tile-status" data-kind={statusKind}>
+            <span className="tile-mark" data-kind={statusKind} aria-hidden="true" />
+            <span className="project-tile-status-text">{statusLine}</span>
+            {pending && <Badge>Setup pending</Badge>}
+            {client && (
+              <span className="project-tile-client" data-testid="tile-client" title={client}>
+                {client}
               </span>
             )}
-            <span className="project-tile-name">{project.name}</span>
-          </button>
-        </h3>
+          </p>
+        </div>
       </div>
-      {team.marks.length > 0 && (
-        <div className="tile-team" data-testid="tile-team" aria-hidden="true" data-count={team.total}>
-          <span className="tile-team-marks" data-line={team.marks.length > 1 ? '' : undefined} style={{ '--tile-team-line': team.marks[0].color } as CSSProperties}>
-            {team.marks.map((m, i) => (
-              <span key={m.id} className={i === 0 ? 'tile-team-root' : 'tile-team-mark'} style={{ '--role': m.color } as CSSProperties} />
-            ))}
-          </span>
-          {team.more > 0 && (
-            <span className="tile-team-more" data-testid="tile-team-more">
-              +{team.more}
-            </span>
+      <div className="project-tile-spark">
+        <svg
+          className="tile-spark"
+          data-testid="tile-spark"
+          data-total={spark.total}
+          role="img"
+          aria-label={spark.label}
+          width={spark.width}
+          height={spark.height}
+          viewBox={`0 0 ${spark.width} ${spark.height}`}
+          focusable="false"
+        >
+          <line className="tile-spark-base" x1={0} x2={spark.width} y1={SPARK_TRACK_PX + 0.5} y2={SPARK_TRACK_PX + 0.5} />
+          {spark.days.map((d) => (
+            <g key={d.key} data-day={d.key} data-runs={d.runs} data-today={d.today ? '' : undefined}>
+              {d.height > 0 && <rect className="tile-spark-bar" x={d.x} y={SPARK_TRACK_PX - d.height} width={SPARK_BAR_PX} height={d.height} rx={1} />}
+              {d.today && <rect className="tile-spark-today" x={d.x} y={SPARK_TRACK_PX + 3} width={SPARK_BAR_PX} height={2} rx={1} />}
+            </g>
+          ))}
+        </svg>
+        <span className="project-tile-runs" aria-hidden="true" data-empty={spark.total === 0 ? '' : undefined}>
+          <span className="project-tile-runs-n">{spark.total}</span> {spark.total === 1 ? 'run' : 'runs'}
+        </span>
+      </div>
+      {(team.marks.length > 0 || chips.length > 0) && (
+        <div className="project-tile-foot">
+          {team.marks.length > 0 && (
+            <div className="tile-team" data-testid="tile-team" aria-hidden="true" data-count={team.total}>
+              <span className="tile-team-marks" data-line={team.marks.length > 1 ? '' : undefined} style={{ '--tile-team-line': team.marks[0].color } as CSSProperties}>
+                {team.marks.map((m, i) => (
+                  <span key={m.id} className={i === 0 ? 'tile-team-root' : 'tile-team-mark'} style={{ '--role': m.color } as CSSProperties} />
+                ))}
+              </span>
+              {team.more > 0 && (
+                <span className="tile-team-more" data-testid="tile-team-more">
+                  +{team.more}
+                </span>
+              )}
+            </div>
+          )}
+          {chips.length > 0 && (
+            <div className="tile-chips" data-testid="tile-chips">
+              {chips.map((c) => (
+                <button key={c.kind} type="button" className="tile-chip" data-testid="tile-chip" data-kind={c.kind} aria-label={c.name} title={c.text} onClick={() => onChip(c.kind)}>
+                  <Icon icon={CHIP_ICON[c.kind]} size="sm" />
+                  {c.count !== null && <span className="tile-chip-n">{c.count}</span>}
+                </button>
+              ))}
+            </div>
           )}
         </div>
       )}
-      <p className="project-tile-status">
-        <span className={`project-tile-dot ${state}`} aria-hidden="true" />
-        <span className="project-tile-status-text">
-          {statusLine}
-        </span>
-        {pending && <Badge>Setup pending</Badge>}
-      </p>
-      {chips.length > 0 && (
-        <div className="tile-chips" data-testid="tile-chips">
-          {chips.map((c) => (
-            <button key={c.kind} type="button" className="tile-chip" data-testid="tile-chip" data-kind={c.kind} aria-label={c.name} onClick={() => onChip(c.kind)}>
-              <Icon icon={CHIP_ICON[c.kind]} size="sm" />
-              {c.text}
-            </button>
-          ))}
-        </div>
-      )}
-      <p className="project-tile-foot">
-        <span className="project-tile-folder" data-testid="tile-folder" title={project.path}>
+      {/* The folder and the week's cost are not drawn: they are the Open button's description, read after its name. */}
+      <span id={descId} className="sr-only">
+        Folder{' '}
+        <span data-testid="tile-folder" title={project.path}>
           {folder}
         </span>
         {costShown && (
-          <span className="project-tile-cost" data-testid="tile-cost">
-            <Cost value={weekCost} compact labelled /> <span className="project-tile-cost-unit">last 7 days</span>
+          <span data-testid="tile-cost">
+            . Cost <Cost value={weekCost} compact labelled /> in the last 7 days
           </span>
         )}
-      </p>
+      </span>
       {error && (
         <p className="project-tile-error" data-testid="project-tile-error">
           {error}
