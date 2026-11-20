@@ -218,6 +218,22 @@ describe('camera: zoom, pan, clamp, focus', () => {
     expect(up.left).toBeGreaterThan(48)
   })
 
+  it('panIntoView brings a station many rows south into view at near zoom (behind-the-camera projection, slice 3)', () => {
+    // The slice 3 screenshots: at ppm 42 to 60 with the target on the gantry (after focusing the booth), focusing a
+    // station 25 to 60 m south panned to the north clamp instead (its corners projected behind the camera).
+    for (const [ppm, z, tz] of [[60, 15.5, -18], [41.72, 43.5, -18], [52, 22.5, -12], [60, 15.5, -12], [41.72, 15.5, -18]] as const) {
+      const view = { ppm, targetX: 23.46, targetZ: tz }
+      const st = box(4.5, 7.5, z - 1.5, z + 1.5, 0, 1.6)
+      const next = panIntoView(view, st, STAGE)!
+      expect(next.ppm).toBe(ppm)
+      const r = projectFootprint(next, STAGE, st)
+      expect(r.left).toBeGreaterThanOrEqual(47)
+      expect(r.right).toBeLessThanOrEqual(STAGE.width - 47)
+      expect(r.top).toBeGreaterThanOrEqual(47)
+      expect(r.bottom).toBeLessThanOrEqual(STAGE.height - 47)
+    }
+  })
+
   it('LOD bands follow section 4.5', () => {
     expect(lodBand(60)).toBe('near')
     expect(lodBand(24)).toBe('near')

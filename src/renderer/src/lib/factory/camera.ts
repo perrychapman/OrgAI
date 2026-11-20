@@ -309,12 +309,24 @@ export function panIntoView(view: CameraView, footprint: Box3, stage: Stage, edg
     if (s === 'high') return Math.max(ins - lo, size - ins - hi)
     return 0
   }
-  const first = projectFootprint(view, stage, footprint)
-  const sx = side(first.left, first.right, W)
-  const sy = side(first.top, first.bottom, H)
-  if (!sx && !sy) return null
+  let first = projectFootprint(view, stage, footprint)
+  const firstSx = side(first.left, first.right, W)
+  const firstSy = side(first.top, first.bottom, H)
+  if (!firstSx && !firstSy) return null
   // Perspective: the ground under the footprint's screen centre is not its centre, so converge in a few steps.
   let next = view
+  // A footprint far off the stage (at near zoom a station many rows south can project behind the camera, which flips its
+  // screen position and sent the pan the wrong way, found on the slice 3 screenshots): first put the stage centre on the
+  // footprint's centre, then converge from there.
+  const far = (r: typeof first): boolean =>
+    ![r.left, r.right, r.top, r.bottom].every(Number.isFinite) || r.right < -W || r.left > 2 * W || r.bottom < -H || r.top > 2 * H || r.right < r.left || r.bottom < r.top
+  if (far(first)) {
+    next = { ...view, targetX: (footprint.minX + footprint.maxX) / 2, targetZ: (footprint.minZ + footprint.maxZ) / 2 }
+    first = projectFootprint(next, stage, footprint)
+  }
+  const sx = side(first.left, first.right, W)
+  const sy = side(first.top, first.bottom, H)
+  if (!sx && !sy) return next === view ? null : next
   let rect = first
   for (let i = 0; i < 8; i++) {
     const dx = delta(sx, rect.left, rect.right, W)
