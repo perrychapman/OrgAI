@@ -44,7 +44,7 @@ export function roleStaffingLine(role: StaffingRole, project: Pick<Project, 'sta
   const from = eff.minTier ? `from ${TIER_LABEL[eff.minTier]} ` : ''
   return {
     text: `Automatic, ${from}up to ${top} / ${effort}`,
-    ...(eff.maxEffort ? {} : { note: `No effort is set, so automatic picks may go up to ${AUTO_EFFORT_CEILING}.` })
+    ...(eff.maxEffort ? {} : { note: `No effort is set, so OrgAI may use up to ${AUTO_EFFORT_CEILING} effort.` })
   }
 }
 
@@ -74,7 +74,7 @@ export interface StaffingControls {
   maxEffortOptions: { value: Effort | ''; label: string }[]
 }
 
-const MODE_LABEL: Record<StaffingMode, string> = { auto: 'Automatic', fixed: 'Always as configured' }
+const MODE_LABEL: Record<StaffingMode, string> = { auto: 'Chosen per task', fixed: 'Always this model' }
 
 /** Tiers a role may name as its floor: only tiers at or below its own tier (all of them when it has none). */
 export function minTierChoices(role: Pick<Role, 'model' | 'tier'>): ModelTier[] {
@@ -87,6 +87,8 @@ export function maxEffortChoices(adapter: ProviderId | null | undefined): Effort
   return effortOptionsFor(adapter)
 }
 
+const lowerFirst = (s: string): string => s.charAt(0).toLowerCase() + s.slice(1)
+
 /** What the role editor offers for `role`: which controls, their options and current values. */
 export function roleStaffingControls(role: Role, project: Project, adapter: ProviderId | null | undefined, adapterName?: string): StaffingControls {
   const isRoot = role.reportsTo === null
@@ -97,20 +99,20 @@ export function roleStaffingControls(role: Role, project: Project, adapter: Prov
   const kind: StaffingControlsKind = isRoot ? 'root' : isFixedByNature(role) ? 'exact' : 'editable'
 
   let explanation: string | undefined
-  if (kind === 'root') explanation = 'The top of the chart always runs as configured.'
+  if (kind === 'root') explanation = 'The top of the chart always runs on the configured model.'
   else if (kind === 'exact') explanation = 'You picked an exact model, so this role always runs on it. Choose a tier above to let it be picked automatically.'
-  else if (projectMode === 'fixed') explanation = 'This project is set to Always as configured, so this role does not change per assignment.'
+  else if (projectMode === 'fixed') explanation = 'This project always uses the configured model, so this role does not change per task.'
   else if (inherits) explanation = 'This role follows the agent that started it, so its tier is never above that agent.'
 
   const mode: StaffingModeChoice = own?.mode ?? 'default'
   const modeOptions: StaffingControls['modeOptions'] = [
-    { value: 'default', label: `Follow the project (${MODE_LABEL[projectMode]})` },
+    { value: 'default', label: `Same as the project (${lowerFirst(MODE_LABEL[projectMode])})` },
     { value: 'auto', label: MODE_LABEL.auto },
     { value: 'fixed', label: MODE_LABEL.fixed }
   ]
 
   const minTierOptions: StaffingControls['minTierOptions'] = [
-    { value: '', label: 'No lowest tier' },
+    { value: '', label: 'Any model' },
     ...minTierChoices(role).map((t) => ({ value: t, label: TIER_LABEL[t] }))
   ]
   // A stored floor that is no longer offered (the role's tier went down) stays selected, so nothing changes silently.
@@ -118,7 +120,7 @@ export function roleStaffingControls(role: Role, project: Project, adapter: Prov
 
   const supported = maxEffortChoices(adapter)
   const maxEffortOptions: StaffingControls['maxEffortOptions'] = [
-    { value: '', label: role.effort ? `The role's effort (${role.effort})` : `Up to ${AUTO_EFFORT_CEILING} (no effort set)` },
+    { value: '', label: role.effort ? `This role's effort (${role.effort})` : `Up to ${AUTO_EFFORT_CEILING} (default)` },
     ...supported.map((e) => ({ value: e, label: e as string }))
   ]
   if (own?.maxEffort && !supported.includes(own.maxEffort)) maxEffortOptions.push({ value: own.maxEffort, label: `${own.maxEffort} (not used on ${adapterName ?? 'this provider'})` })

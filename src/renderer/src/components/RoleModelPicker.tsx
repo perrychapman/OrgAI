@@ -26,7 +26,7 @@ function resolveTier(project: Project, role: Role): { tier?: ModelTier; model?: 
 }
 
 /**
- * The role's model controls (the fold title in RoleInspector names them, so the select's own label is visually hidden):
+ * The role's model controls (the select's own label "Model" is visible now that the section shows a sentence, not a bare title):
  * one Model select (Inherit or a tier, labelled "Everyday (sonnet)") and, behind
  * "Advanced", the exact model and the effort. Nothing at rest shows a concrete id without a tier word.
  */
@@ -174,9 +174,7 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
         {runsOnSelect}
         {rootLine}
         <div className="field">
-        <label htmlFor={`role-model-disabled-${role.id}`} className="sr-only">
-          Model
-        </label>
+        <label htmlFor={`role-model-disabled-${role.id}`}>Model</label>
         <select id={`role-model-disabled-${role.id}`} className="select" disabled value={role.model} data-testid="role-model">
           <option value={role.model}>{role.model === 'inherit' ? 'Inherit' : 'Custom'}</option>
         </select>
@@ -234,7 +232,7 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
       ) : !catalog ? (
         <div className="skeleton" aria-busy="true" />
       ) : (
-        <ModelSelect label="Model" hideLabel value={choice} groups={groups} description={description} onChange={pick} testId="role-model" />
+        <ModelSelect label="Model" value={choice} groups={groups} description={description} onChange={pick} testId="role-model" />
       )}
 
       {proxy && exactSelect}

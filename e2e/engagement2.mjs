@@ -91,8 +91,8 @@ const openSettingsPane = async (pane) => {
   await sleep(300)
 }
 const openTemplatesMenu = async () => {
-  await page.locator('[data-testid=team-templates]').click()
-  await page.locator('[data-testid=team-template-save]').waitFor({ state: 'visible' })
+  await page.locator('[data-testid=team-start-from]').click()
+  await page.locator('[data-testid=start-from-save]').waitFor({ state: 'visible' })
 }
 
 try {
@@ -108,17 +108,19 @@ try {
   await openProject(page, A)
   await openTeam(page)
   const before = (await roleNames(A)).length
-  await page.getByRole('button', { name: 'Add role', exact: true }).click()
+  // Phase 2: Add role opens the Add role popover; Enter in the name adds the role.
+  await page.locator('[data-testid=team-add-role]').click()
+  await page.locator('[data-testid=add-role-name]').press('Enter')
   check(await until(async () => (await roleNames(A)).length === before + 1), 'Add role saved one more role on A', `${before} -> ${(await roleNames(A)).length}`)
   const aRoles = await roleNames(A)
   const bRoles0 = await roleNames(B)
 
   // With no templates the apply item is disabled with a reason.
   await openTemplatesMenu()
-  check((await page.locator('[data-testid=team-template-apply]').getAttribute('aria-disabled')) === 'true', 'Templates menu: Replace the team is disabled with no templates')
-  check(/No templates yet/.test(await page.locator('[data-testid=team-template-apply]').innerText()), 'Templates menu: the reason says "No templates yet"')
+  check((await page.locator('[data-testid=start-from-template]').getAttribute('aria-disabled')) === 'true', 'Templates menu: Replace the team is disabled with no templates')
+  check(/No templates yet/.test(await page.locator('[data-testid=start-from-template]').innerText()), 'Templates menu: the reason says "No templates yet"')
   await shot('templates-menu')
-  await page.locator('[data-testid=team-template-save]').click()
+  await page.locator('[data-testid=start-from-save]').click()
   const saveDialog = page.locator('[data-testid=template-save-dialog]')
   await saveDialog.waitFor({ state: 'visible' })
   await saveDialog.locator('[data-testid=template-name]').fill(TEMPLATE)
@@ -132,7 +134,8 @@ try {
   check(listed.length === 1 && listed[0].name === TEMPLATE && listed[0].roleCount === aRoles.length, 'templates.list has the saved template with A\'s role count', JSON.stringify(listed.map((t) => [t.name, t.roleCount])))
 
   // Manage templates -> App settings pane.
-  await savedNotice.getByRole('button', { name: 'Manage templates' }).click()
+  // Phase 2: the notice is a message of the notice row; its actions sit beside the message element.
+  await page.locator('[data-testid=team-notice-row]').getByRole('button', { name: 'Manage templates' }).click()
   await page.locator('[data-testid=templates-section]').waitFor({ state: 'visible' })
   check((await page.locator('[data-testid=template-row]').count()) === 1 && clean(await page.locator('[data-testid=template-row]').innerText()).includes(TEMPLATE), 'App settings > Templates and kit lists the row')
   const s1 = await windowShift(page)
@@ -143,7 +146,7 @@ try {
   await openProject(page, A)
   await openTeam(page)
   await openTemplatesMenu()
-  await page.locator('[data-testid=team-template-save]').click()
+  await page.locator('[data-testid=start-from-save]').click()
   await saveDialog.waitFor({ state: 'visible' })
   await saveDialog.locator('[data-testid=template-name]').fill(TEMPLATE)
   await saveDialog.locator('[data-testid=template-save-confirm]').click()
@@ -167,8 +170,8 @@ try {
   await openProject(page, B)
   await openTeam(page)
   await openTemplatesMenu()
-  check((await page.locator('[data-testid=team-template-apply]').getAttribute('aria-disabled')) !== 'true', 'Templates menu: Replace the team is enabled once a template exists')
-  await page.locator('[data-testid=team-template-apply]').click()
+  check((await page.locator('[data-testid=start-from-template]').getAttribute('aria-disabled')) !== 'true', 'Templates menu: Replace the team is enabled once a template exists')
+  await page.locator('[data-testid=start-from-template]').click()
   const applyDialog = page.locator('[data-testid=template-apply-dialog]')
   await applyDialog.waitFor({ state: 'visible' })
   check((await applyDialog.locator('[data-testid=template-option]').count()) === 1, 'the apply dialog lists the template')
@@ -399,7 +402,7 @@ try {
       await fitsWindow(`${tag} Knowledge`)
       await openTeam(page)
       await openTemplatesMenu()
-      check((await inView('[data-testid=team-template-save]')) === true && (await inView('[data-testid=team-template-apply]')) === true, `${tag}: the Templates menu items are inside the window`)
+      check((await inView('[data-testid=start-from-save]')) === true && (await inView('[data-testid=start-from-template]')) === true, `${tag}: the Templates menu items are inside the window`)
       await page.keyboard.press('Escape')
       await projectTab(page, 'History').click()
       await page.locator('[data-testid=usage-trends], .seg label').first().waitFor()

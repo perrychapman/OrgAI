@@ -152,14 +152,15 @@ const names = (roles: readonly Role[]): string =>
   roles.length <= 1 ? (roles[0]?.name ?? '') : `${roles.slice(0, -1).map((r) => r.name).join(', ')} and ${roles[roles.length - 1].name}`
 
 /**
- * The inspector banner after a change of reporting lines, or null when no role gained or lost spawn rights.
+ * The sentence about a change of reporting lines that gave a role the right to hand work on, or took it away; null when
+ * no role gained or lost it (vocabulary of docs/design/team-tab-overhaul.md 0.1: delegate, hand work to).
  * `cause` is the name of the role that was added, moved or removed.
  */
 export function spawnNotice(before: readonly Role[], after: readonly Role[], cause: string): string | null {
   const { gained, lost } = spawnRightsChange(before, after)
   const parts: string[] = []
-  if (gained.length > 0) parts.push(`${names(gained)} can now create subagents, because ${cause} reports to ${gained.length === 1 ? 'it' : 'them'}.`)
-  if (lost.length > 0) parts.push(`${names(lost)} can no longer create subagents: nobody ${lost.length === 1 ? 'it' : 'they'} may delegate to is left.`)
+  if (gained.length > 0) parts.push(`${names(gained)} can now hand work to other roles, because ${cause} reports to ${gained.length === 1 ? 'it' : 'them'}.`)
+  if (lost.length > 0) parts.push(`${names(lost)} can no longer hand work to other roles: no role is left to delegate to.`)
   return parts.length > 0 ? parts.join(' ') : null
 }
 
@@ -177,6 +178,42 @@ export function moveNotice(before: readonly Role[], after: readonly Role[], move
   const spawn = spawnNotice(before, after, moved.name)
   if (spawn) parts.push(spawn)
   return parts.length > 0 ? parts.join(' ') : null
+}
+
+/** One option of a "Reports to" select: chart order (depth first from the root), label indented two spaces per level. */
+export interface ParentOption {
+  id: string
+  name: string
+  depth: number
+  /** `name` with two non-breaking spaces per depth level (a <select> collapses ordinary leading spaces). */
+  label: string
+  /** True when choosing it would loop (the role itself or one of its reports), only when `forRoleId` is given. */
+  disabled: boolean
+}
+
+/**
+ * Every role in chart order for a "Reports to" select (Add role popover, role editor). Roots first in list order, then
+ * each role's reports in list order under it; roles unreachable from a root (a broken chain) follow at depth 0, so no
+ * role is ever left out. With `forRoleId`, that role and its own subtree are `disabled` (wouldCycle).
+ */
+export function parentOptions(roles: readonly Role[], forRoleId?: string): ParentOption[] {
+  const out: ParentOption[] = []
+  const seen = new Set<string>()
+  const visit = (r: Role, depth: number): void => {
+    if (seen.has(r.id)) return
+    seen.add(r.id)
+    out.push({
+      id: r.id,
+      name: r.name,
+      depth,
+      label: `${'  '.repeat(depth)}${r.name}`,
+      disabled: forRoleId !== undefined && wouldCycle(roles as Role[], forRoleId, r.id)
+    })
+    for (const c of roles) if (c.reportsTo === r.id) visit(c, depth + 1)
+  }
+  for (const r of roles) if (r.reportsTo === null || !roles.some((x) => x.id === r.reportsTo)) visit(r, 0)
+  for (const r of roles) visit(r, 0)
+  return out
 }
 
 /** Would making `parentId` the manager of `childId` loop (parent is the child or one of its descendants)? */
@@ -198,18 +235,56 @@ export function wouldCycle(roles: Role[], childId: string, parentId: string | nu
  */
 export type RenameStart = Pick<Role, 'id' | 'slug' | 'mcpServers'>
 
+/**
+ * The start snapshot for a Name or Slug edit. `previous` is the snapshot open before (settled by the caller first, or
+ * null). Security recheck (Medium): a re-snapshot of the same role and project keeps the slug the edit started from, so
+ * an in-between slug of the same edit never becomes the "own" slug that `reservedSlugs` exempts. The grants are re-read.
+ */
+export function renameSnapshot(
+  previous: (RenameStart & { projectId: string }) | null,
+  role: Pick<Role, 'id' | 'slug' | 'mcpServers'>,
+  projectId: string
+): RenameStart & { projectId: string } {
+  const same = previous !== null && previous.id === role.id && previous.projectId === projectId
+  return { id: role.id, projectId, slug: same ? previous.slug : role.slug, mcpServers: role.mcpServers ? [...role.mcpServers] : undefined }
+}
+
 /** The project fields a rename reads: its servers, and its roles so the slug stays unique. */
 export type RenameProject = Pick<Project, 'mcpServers'> & { roles?: readonly Pick<Role, 'id' | 'slug'>[] }
 
-/** Does a role other than `roleId` hold `slug`? (The CLI refuses the same thing: teamRoleEdit `--name`.) */
-export function slugTaken(roles: readonly Pick<Role, 'id' | 'slug'>[] | undefined, roleId: string, slug: string): boolean {
-  return !!slug && (roles ?? []).some((r) => r.id !== roleId && r.slug === slug)
+/**
+ * Does a role other than `roleId` hold `slug`, or is it `reserved`? (The CLI refuses the same thing: teamRoleEdit
+ * `--name`.) `reserved` is `reservedSlugs`: slugs a server's explicit `roles` still names.
+ */
+export function slugTaken(
+  roles: readonly Pick<Role, 'id' | 'slug'>[] | undefined,
+  roleId: string,
+  slug: string,
+  reserved?: ReadonlySet<string>
+): boolean {
+  return !!slug && ((reserved?.has(slug) ?? false) || (roles ?? []).some((r) => r.id !== roleId && r.slug === slug))
 }
 
-/** `base`, or `base-2`, `base-3`... the first one no other role holds (as nextRoleName picks a free name). */
-export function uniqueSlug(roles: readonly Pick<Role, 'id' | 'slug'>[] | undefined, roleId: string, base: string): string {
-  if (!slugTaken(roles, roleId, base)) return base
-  for (let n = 2; ; n++) if (!slugTaken(roles, roleId, `${base}-${n}`)) return `${base}-${n}`
+/**
+ * Security recheck (Medium): slugs that some server's explicit `roles` names, except the slug the edited role held when
+ * the edit began. Such a slug may belong to no role right now (a role removed with Undo on screen, team files awaiting
+ * approval); taking it would grant that server to the renamed role by slug, and a save at that moment could keep it.
+ */
+export function reservedSlugs(project: Pick<Project, 'mcpServers'>, startSlug: string): Set<string> {
+  const out = new Set<string>()
+  for (const s of project.mcpServers ?? []) for (const slug of s.roles ?? []) if (slug !== startSlug) out.add(slug)
+  return out
+}
+
+/** `base`, or `base-2`, `base-3`... the first one no other role holds and no server reserves (as nextRoleName picks a free name). */
+export function uniqueSlug(
+  roles: readonly Pick<Role, 'id' | 'slug'>[] | undefined,
+  roleId: string,
+  base: string,
+  reserved?: ReadonlySet<string>
+): string {
+  if (!slugTaken(roles, roleId, base, reserved)) return base
+  for (let n = 2; ; n++) if (!slugTaken(roles, roleId, `${base}-${n}`, reserved)) return `${base}-${n}`
 }
 
 /**
@@ -225,7 +300,7 @@ export function uniqueSlug(roles: readonly Pick<Role, 'id' | 'slug'>[] | undefin
  * value plus something. An in-between slug while typing therefore adds nothing.
  */
 export function renamePatch(project: RenameProject, start: RenameStart, name: string): Partial<Role> {
-  return slugPatch(project, start, uniqueSlug(project.roles, start.id, slugify(name)), name)
+  return slugPatch(project, start, uniqueSlug(project.roles, start.id, slugify(name), reservedSlugs(project, start.slug)), name)
 }
 
 /**
@@ -247,11 +322,16 @@ export function slugPatch(project: RenameProject, start: RenameStart, slug: stri
 }
 
 export const SLUG_TAKEN_TEXT = 'Another role already uses this ID.'
+export const SLUG_EMPTY_TEXT = 'An ID needs at least one letter or number.'
 
-/** The Slug field: a slug another role holds is refused with a field error and not applied. */
+/**
+ * The Slug field: a slug another role holds (or a server reserves, `reservedSlugs`) is refused with a field error and not
+ * applied; so is a value with no letter or number, which slugify would turn into the placeholder `role`.
+ */
 export function slugFieldEdit(project: RenameProject, start: RenameStart, value: string): { patch: Partial<Role> } | { error: string } {
+  if (!/[a-z0-9]/i.test(value)) return { error: SLUG_EMPTY_TEXT }
   const slug = slugify(value)
-  if (slugTaken(project.roles, start.id, slug)) return { error: SLUG_TAKEN_TEXT }
+  if (slugTaken(project.roles, start.id, slug, reservedSlugs(project, start.slug))) return { error: SLUG_TAKEN_TEXT }
   return { patch: slugPatch(project, start, slug) }
 }
 

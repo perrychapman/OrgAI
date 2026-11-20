@@ -104,6 +104,52 @@ export function teamFilesLine(s: TeamFilesStatus): TeamLine | null {
   }
 }
 
+export type TeamFilesChipIcon = 'file-check' | 'file-text' | 'file-warning' | 'file-x' | 'alert'
+
+/** The header chip (spec 1.4): short text, tone and icon. `neutral` is the ordinary look, `accent` marks a decision. */
+export interface TeamFilesChipModel {
+  text: string
+  tone: 'quiet' | 'neutral' | 'accent' | 'attention' | 'danger'
+  icon: TeamFilesChipIcon
+}
+
+/**
+ * The chip's words. null when nothing is shown: no status yet, or a project with no team files (engagement, virtual).
+ * An untouched project never shouts: uncommitted files are neutral, not attention.
+ */
+export function teamFilesChip(s: TeamFilesStatus | undefined): TeamFilesChipModel | null {
+  if (!s) return null
+  switch (s.state) {
+    case 'off':
+      if (s.offReason === 'engagement' || s.offReason === 'virtual') return null
+      return { text: 'Team files: off', tone: s.offReason === 'removed' ? 'attention' : 'quiet', icon: 'file-x' }
+    case 'pending':
+      return { text: `Team files: ${Math.max(1, approvalCount(s))} to approve`, tone: 'accent', icon: 'file-warning' }
+    case 'problem':
+      return { text: 'Team files: problem', tone: 'danger', icon: 'alert' }
+    case 'rejected':
+      return { text: 'Team files: differ', tone: 'quiet', icon: 'file-text' }
+    case 'in-sync':
+    default:
+      if (s.uncommitted && s.isGitRepo) return { text: 'Team files: not committed', tone: 'neutral', icon: 'file-text' }
+      return { text: 'Team files: saved', tone: 'quiet', icon: 'file-check' }
+  }
+}
+
+/** The popover's status sentence for the states that have one of their own, or null (the line's text and detail are used). */
+export function teamFilesPopoverSentence(s: TeamFilesStatus): string | null {
+  if (s.state === 'pending') {
+    const n = Math.max(1, approvalCount(s))
+    return `${n} ${n === 1 ? 'change needs' : 'changes need'} your approval.`
+  }
+  if (s.state !== 'in-sync') return null
+  if (s.uncommitted && s.isGitRepo) {
+    const n = s.uncommittedFiles.length
+    return n === 0 ? 'Some team files are not in git yet.' : `${n} ${n === 1 ? 'file is' : 'files are'} not in git yet.`
+  }
+  return s.isGitRepo ? 'Everything is saved and committed.' : 'Saved in .orgai/ in this folder.'
+}
+
 /** What to do about a file OrgAI cannot read. Main's own problem text comes first; this is the next step. */
 export const PROBLEM_NEXT = 'Fix or remove the problem in that file, then come back to OrgAI: it checks again.'
 
@@ -128,12 +174,12 @@ export function listFiles(files: readonly string[], max = 3): string {
 }
 
 /** Most files the commit confirmation names one per line; the rest are counted. */
-export const COMMIT_CONFIRM_LIST_MAX = 12
+export const COMMIT_CONFIRM_LIST_MAX = 8
 
 /**
- * What the "Commit team files" confirmation says (D7a): the files main reports as not committed, at most
+ * What the "Commit team files" confirmation says (D7a, spec 1.4): the files main reports as not committed, at most
  * COMMIT_CONFIRM_LIST_MAX named. `capped` is true when main's own list may be cut (TEAM_FILES_LIST_MAX), so the
- * count is a lower bound. With no list, only the location is named.
+ * count is a lower bound: the title says "at least" and the button names no number. With no list, the location is named.
  */
 export function commitConfirmText(
   s: Pick<TeamFilesStatus, 'uncommittedFiles'> & { warnings?: TeamFilesStatus['warnings'] },
@@ -143,40 +189,36 @@ export function commitConfirmText(
   const n = all.length
   const capped = n >= listMax
   const warned = s.warnings ?? []
-  // QA S2: the status line's warnings (text that looks like a key...) are repeated here; they do not block the commit.
-  const warnNote = warned.length > 0 ? ' Some team files have warnings, listed below.' : ''
-  const lead =
-    n === 0
-      ? `OrgAI commits the team files in .orgai/ to the git repository in this folder.${warnNote}`
-      : warned.length > 0
-        ? `Git reports ${capped ? 'at least ' : ''}${n === 1 ? '1 changed team file' : `${n} changed team files`} in .orgai/ right now, and some team files have warnings (listed below the files):`
-        : `Git reports ${capped ? 'at least ' : ''}${n === 1 ? '1 changed team file' : `${n} changed team files`} in .orgai/ right now:`
+  const noun = n === 1 ? 'file' : 'files'
+  // QA S2: the warnings (text that looks like a key...) are repeated in the dialog; they do not block the commit.
   const files = all.slice(0, COMMIT_CONFIRM_LIST_MAX)
   const warnings = warned.slice(0, COMMIT_CONFIRM_LIST_MAX).map((w) => ({ file: w.file, message: w.message }))
   return {
-    lead,
+    title: n === 0 ? 'Commit team files?' : `Commit ${capped ? 'at least ' : ''}${n} team ${noun}?`,
+    lead: n === 0 ? 'This makes one commit in your repository with the team files in .orgai/.' : 'This makes one commit in your repository with these files:',
     files,
     more: n - files.length,
     warnings,
     moreWarnings: warned.length - warnings.length,
-    confirmLabel: warned.length > 0 ? 'Commit anyway' : 'Commit'
+    confirmLabel: n === 0 || capped ? 'Commit team files' : `Commit ${n} ${noun}`
   }
 }
 
 export interface CommitConfirmText {
+  title: string
   lead: string
   files: string[]
   more: number
   /** The status's warnings, at most COMMIT_CONFIRM_LIST_MAX (raw text: the dialog shows it through showHidden). */
   warnings: { file: string; message: string }[]
   moreWarnings: number
-  /** "Commit anyway" when there are warnings. */
   confirmLabel: string
 }
 
 /**
- * The fixed footnote of the commit confirmation. Main re-reads git when the user confirms (Commit or Commit anyway) and commits the team
- * files it finds then (never anything else), so the list above is what git reported, not a promise.
+ * The fixed footnote of the commit confirmation. Main re-reads git when the user confirms and commits the team
+ * files it finds then (never anything else), so the list above is what git reported, not a promise (review M2).
+ * Nothing is pushed (security review).
  */
 export const COMMIT_CONFIRM_NOTE =
   'OrgAI commits the team files git reports as changed when you confirm, and only team files. Anything else you staged stays staged. Nothing is pushed.'

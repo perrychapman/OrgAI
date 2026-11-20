@@ -4,7 +4,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import { memo } from 'react'
 import { Handle, useConnection, type Position, type Node, type NodeProps } from '@xyflow/react'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
-import { TOOL_CATALOG, type Role } from '@shared/types'
+import { TOOL_CATALOG, type CanvasLayout, type CanvasNodeStyle, type Role } from '@shared/types'
 import { projectConnection, roleConnection } from '@shared/defaults'
 import { selectedProject, useAppStore } from '../store/useAppStore'
 import { connectionTagTitle } from '../lib/roleConnection'
@@ -14,7 +14,21 @@ import { elevatedTools, toolsAriaLabel } from '../lib/roleCapabilities'
 import { capabilityLabel, capabilityParts, type CapabilityCounts } from '../lib/teamView'
 
 /** `delegateCount`: direct reports the role may actually delegate to (canSpawn and listed in spawnable), not every report. */
-export type RoleFlowNode = Node<{ role: Role; delegateCount: number; capabilities: CapabilityCounts; arrived?: boolean }, 'role'>
+export type RoleFlowNode = Node<
+  {
+    role: Role
+    delegateCount: number
+    capabilities: CapabilityCounts
+    arrived?: boolean
+    /**
+     * The Team editor draws its own fixed look (team-tab overhaul 4.4): the card style and `layout`, whatever the app-wide
+     * canvas settings say. Absent: the node follows the canvas settings as before.
+     */
+    team?: boolean
+    layout?: CanvasLayout
+  },
+  'role'
+>
 
 const CAP_ICONS = { tools: Wrench, connections: Plug, skills: BookOpen } as const
 
@@ -22,13 +36,15 @@ const CAP_ICONS = { tools: Wrench, connections: Plug, skills: BookOpen } as cons
 type DropState = 'self' | 'valid' | 'invalid' | null
 
 function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactElement {
-  const { role, delegateCount, capabilities, arrived } = data
+  const { role, delegateCount, capabilities, arrived, team } = data
   // The reporting line being dragged (from a source handle). A whole-node drop target takes pointer events only while
   // one is in progress (React Flow's own CSS), so clicks, drags and selection on the node are unaffected the rest of the time.
   const drop = useConnection((c): DropState => (!c.inProgress ? null : c.fromNode.id === id ? 'self' : c.toNode?.id === id ? (c.isValid ? 'valid' : 'invalid') : null))
   const parts = capabilityParts(capabilities)
   const elevated = elevatedTools(role.tools, TOOL_CATALOG)
-  const { layout, nodeStyle } = useCanvasOptions()
+  const options = useCanvasOptions()
+  const layout: CanvasLayout = team ? (data.layout ?? 'top-down') : options.layout
+  const nodeStyle: CanvasNodeStyle = team ? 'card' : options.nodeStyle
   useHandleRefresh(id, layout, nodeStyle)
   const sides = handlesFor(layout)
   const station = nodeStyle === 'station'
@@ -51,9 +67,9 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
   const chip = roleChipLabel(role, pinnedOn, base)
   const pinnedTitle = pinnedOn && base ? connectionTagTitle(pinnedOn, base) : undefined
   // Screen readers get the provider too (every node style), not only the tooltip (review M4).
-  const capsLabel = `${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}${pinnedTitle ? `. ${pinnedTitle}` : ''}`
+  const capsLabel = `${role.name}. ${delegateCount > 0 ? `Delegates to ${delegateCount}. ` : ''}${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}${pinnedTitle ? `. ${pinnedTitle}` : ''}`
   const tip = compact
-    ? [role.name, role.slug, chip, pinnedTitle ?? '', delegateCount > 0 ? `leads ${delegateCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
+    ? [role.name, role.slug, chip, pinnedTitle ?? '', delegateCount > 0 ? `Delegates to ${delegateCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
         .filter(Boolean)
         .join('\n')
     : undefined
@@ -106,7 +122,7 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
         >
           {chip}
         </span>
-        {delegateCount > 0 && <span className="chip" data-testid="role-node-leads">leads {delegateCount}</span>}
+        {delegateCount > 0 && <span className="chip" data-testid="role-node-leads">Delegates to {delegateCount}</span>}
       </div>}
       {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={capsLabel}>
         {parts.length === 0 ? 'No tools' : parts.map((p, i) => (

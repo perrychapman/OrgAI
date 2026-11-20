@@ -30,6 +30,9 @@
 @import './skill-library.css';
 @import './team.css';
 @import './teamFiles.css';
+@import './teamHeader.css';
+@import './teamStartFrom.css';
+@import './roleEditor.css';
 @import './permissions.css';
 
 * {

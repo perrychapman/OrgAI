@@ -1,43 +1,47 @@
 import type { ReactElement } from 'react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Pencil, TriangleAlert } from 'lucide-react'
-import type { McpMutationResult, McpServerInfo, Project, Role, ToolName } from '@shared/types'
-import { TOOL_CATALOG, TOOL_HINTS } from '@shared/types'
+import type { McpMutationResult, McpServerInfo, Project, Role } from '@shared/types'
+import { TOOL_CATALOG } from '@shared/types'
 import RoleServices from '../connectors/RoleServices'
 import RoleSkills from '../skills/RoleSkills'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
-import { Checkbox } from '../ui/Checkbox'
 import { Icon } from '../ui/Icon'
 import { useAppStore } from '../../store/useAppStore'
 import { expectInspectorSave, reportLiveRuns } from '../../store/liveChangeStore'
 import { LiveChangeNote } from '../LiveChangeNote'
 import { cleanIpcError } from '../../lib/ipcError'
 import { inferAction, serverReach } from '../../lib/liveRunChange'
-import { grantServerRoles, grantedServers, revokePlan, toolsSummaryParts } from '../../lib/roleCapabilities'
+import { grantServerRoles, grantedServers, revokePlan } from '../../lib/roleCapabilities'
+import { resolveGroups, summaryParts, summarySentence } from '../../lib/toolGroups'
 import { perProjectState } from '../mcp/mcpHelpers'
 import { CapabilityGroup, type CapabilityKind } from './CapabilityBlock'
 import { CapabilityChooser, type ChooserActions } from './CapabilityChooser'
+import RoleToolGroups from './RoleToolGroups'
 
-/** Tools that change files or run commands keep a warning style in the editor. */
-const ELEVATED_TOOLS: readonly ToolName[] = ['Edit', 'Write', 'Bash', 'NotebookEdit']
+const GROUPS = resolveGroups(TOOL_CATALOG)
 
-/** "Read, Glob, Grep + Bash, Edit": elevated tools are named and set in the warning colour. */
+/** "Can read files, change files and run commands.": elevated phrases carry the warning colour and an icon plus the words. */
 function ToolsSummary({ tools }: { tools: readonly string[] }): ReactElement {
-  if (tools.length === 0) return <>No tools</>
-  const { base, elevated, more } = toolsSummaryParts(tools, TOOL_CATALOG)
-  const tail = elevated.length + (more > 0 ? 1 : 0)
+  const parts = summaryParts(GROUPS, tools)
+  if (parts.length === 0) return <>{summarySentence(GROUPS, tools)}</>
   return (
     <>
-      {base.join(', ')}
-      {tail > 0 && (base.length > 0 ? ' + ' : '')}
-      {elevated.map((t, i) => (
-        <span key={t} className="role-tool-elevated-text">
-          {i > 0 ? ', ' : ''}
-          {t}
+      Can{' '}
+      {parts.map((p, i) => (
+        <span key={p.text}>
+          {i === 0 ? '' : i === parts.length - 1 ? ' and ' : ', '}
+          {p.elevated ? (
+            <span className="role-tool-elevated-text">
+              <Icon icon={TriangleAlert} size="xs" /> {p.text}
+            </span>
+          ) : (
+            p.text
+          )}
         </span>
       ))}
-      {more > 0 && `${elevated.length > 0 ? ', ' : ''}${more} more`}
+      .
     </>
   )
 }
@@ -125,9 +129,6 @@ export default function RoleCapabilities({
     [replaceProject, surface]
   )
 
-  const toggleTool = (t: ToolName): void => {
-    onChange({ tools: role.tools.includes(t) ? role.tools.filter((x) => x !== t) : [...role.tools, t] })
-  }
 
   const revoke = (info: McpServerInfo): void => {
     setConnError(null)
@@ -170,14 +171,8 @@ export default function RoleCapabilities({
 
   const waitingForValues = grantedServers(servers ?? [], role).filter((s) => s.spec.libraryId && perProjectState(s).missingCount > 0)
 
-  const ask = onAskAssistant
-  const askFor = (scope: CapabilityKind): (() => void) | undefined =>
-    ask
-      ? () => {
-          setChooser(null)
-          ask(scope)
-        }
-      : undefined
+  // onAskAssistant stays in the props (RoleInspector passes it) but the phase 2 panel has no "Ask the Team assistant" links.
+  void onAskAssistant
 
   return (
     <section ref={root} className="stack-3 role-capabilities" aria-labelledby="role-capabilities-title" data-testid="role-capabilities">
@@ -189,40 +184,17 @@ export default function RoleCapabilities({
         id="role-tools"
         testId="role-tools"
         title="Tools"
-        summary={<ToolsSummary tools={role.tools} />}
-        helper="What this role may do on your files and shell."
+        summary={editingTools ? undefined : <ToolsSummary tools={role.tools} />}
         actions={
           <Button size="sm" icon={editingTools ? Check : Pencil} ariaLabel={editingTools ? 'Done editing tools' : `Edit tools for ${role.name}`} testId="role-edit-tools" onClick={() => setEditingTools((v) => !v)}>
             {editingTools ? 'Done' : 'Edit'}
           </Button>
         }
       >
-        {editingTools && (
-          <div className="check-grid" data-testid="role-tools-grid">
-            {TOOL_CATALOG.map((t) => (
-              <Checkbox
-                key={t}
-                checked={role.tools.includes(t)}
-                onChange={() => toggleTool(t)}
-                label={
-                  ELEVATED_TOOLS.includes(t) ? (
-                    <span className="role-tool-elevated">
-                      {t}
-                      <Icon icon={TriangleAlert} size="xs" />
-                    </span>
-                  ) : (
-                    t
-                  )
-                }
-                title={TOOL_HINTS[t] ?? (ELEVATED_TOOLS.includes(t) ? 'Can change files or run commands.' : undefined)}
-                testId={`role-tool-${t}`}
-              />
-            ))}
-          </div>
-        )}
+        {editingTools && <RoleToolGroups tools={role.tools} onChange={(tools) => onChange({ tools: tools as Role['tools'] })} />}
       </CapabilityGroup>
 
-      <RoleServices role={role} servers={servers} error={connError} onRevoke={revoke} onAdd={() => setChooser('connections')} onAsk={askFor('connections')} />
+      <RoleServices role={role} servers={servers} error={connError} onRevoke={revoke} onAdd={() => setChooser('connections')} />
       <LiveChangeNote projectId={project.id} surface={surface} part="connections" />
 
       {servers && waitingForValues.length > 0 && (
@@ -260,7 +232,6 @@ export default function RoleCapabilities({
           setFocusId('group:role-add-skill')
         }}
         onAdd={() => setChooser('skills')}
-        onAsk={askFor('skills')}
       />
       <LiveChangeNote projectId={project.id} surface={surface} part="skills" />
 
@@ -276,7 +247,6 @@ export default function RoleCapabilities({
             setChooser(null)
             setFocusId(id ?? `group:${chooser === 'connections' ? 'role-add-connection' : 'role-add-skill'}`)
           }}
-          onAskAssistant={askFor(chooser)}
         />
       )}
     </section>

@@ -1,0 +1,253 @@
+/* Team tab phase 2: header, Layout menu, Add role popover, notice row (docs/design/team-tab-overhaul.md 1.1, 1.2, 1.5). */
+
+/* ---------- Header: one row inside the frame's toolbar slot, never wraps ---------- */
+.editor .frame-toolbar {
+  flex-wrap: nowrap;
+  /* The row height is fixed so the stage never moves: a small button plus the toolbar padding. */
+  min-height: calc(var(--control-sm) + var(--space-2) * 2);
+  overflow: hidden;
+}
+.team-header {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  container-type: inline-size;
+  container-name: teamhdr;
+}
+.team-header-left {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.team-header-right {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.team-header-title {
+  margin: 0;
+  flex: 0 0 auto;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.team-header-count {
+  flex: 0 0 auto;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.team-problems-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-0h) var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.team-view-switch:empty {
+  display: none;
+}
+/* Header buttons keep one height whatever they hold. */
+.team-header .btn.team-header-btn,
+.team-header .team-header-btn {
+  height: var(--control-sm);
+  flex: 0 0 auto;
+}
+/* Icon-only (compact): a square target with the label in title and aria-label. */
+.team-header[data-compact='true'] .btn.team-header-btn:not(.primary) {
+  padding-inline: var(--space-2);
+}
+/* A narrow header: the chip keeps its icon and gives its words to assistive technology and the tooltip, so it is never
+   clipped mid-word; under 560 px the count goes too (it is in the title's tooltip). */
+@container teamhdr (max-width: 640px) {
+  .team-problems-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .team-problems-chip {
+    position: relative;
+    padding: var(--space-0h);
+  }
+}
+@container teamhdr (max-width: 560px) {
+  .team-header-count {
+    display: none;
+  }
+}
+
+/* Menu items of the Layout menu: radio rows with a check column. */
+.team-header-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  min-width: 13rem;
+}
+.team-header-menu-item {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-md);
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.team-header-menu-item:hover {
+  background: var(--surface-3);
+}
+.team-header-menu-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.team-header-menu-check {
+  display: inline-flex;
+  width: var(--space-4);
+  justify-content: center;
+  color: var(--accent-text);
+}
+.team-header-menu-sep {
+  height: 1px;
+  margin: var(--space-1) var(--space-2);
+  background: var(--border-subtle);
+}
+
+/* ---------- Add role popover ---------- */
+.add-role-popover {
+  width: min(320px, calc(100vw - 16px));
+  padding: var(--space-3);
+}
+.add-role-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.add-role-form .field {
+  margin-bottom: 0;
+}
+.add-role-title {
+  margin: 0;
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.add-role-first {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.add-role-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* ---------- Notice row: fixed 32 px under the stage ---------- */
+.editor .frame-footer {
+  flex-wrap: nowrap;
+  align-items: center;
+  height: var(--control-md);
+  min-height: var(--control-md);
+  padding-block: 0;
+  overflow: hidden;
+}
+/* The notice row is a status region, not the old drag hint: it stays while the team files approval card is open
+   (teamFiles.css hid the footer then, which would drop errors and Undo). */
+.editor .frame-grid:has(> .frame-tray .team-files-card) > .frame-footer {
+  display: flex;
+}
+.team-notice-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 100%;
+}
+.team-notice-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.team-notice-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--text-secondary);
+}
+.team-notice-icon.kind-error {
+  color: var(--danger-text);
+}
+.team-notice-icon.kind-edit,
+.team-notice-icon.kind-saved {
+  color: var(--success-text);
+}
+.team-notice-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.team-notice-text[data-kind='error'] {
+  color: var(--danger-text);
+}
+.team-notice-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.team-notice-actions .btn.sm {
+  height: var(--control-sm);
+}
+.team-notice-more {
+  padding: var(--space-0h) var(--space-1);
+  font-size: var(--text-caption);
+}
+.team-notice-end {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+.team-notice-waiting {
+  width: min(360px, calc(100vw - 16px));
+}
+.team-notice-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+}
+.team-notice-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}

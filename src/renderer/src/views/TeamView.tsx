@@ -1,6 +1,6 @@
 import type { KeyboardEvent, MouseEvent, ReactElement } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Download, LayoutGrid, LayoutTemplate, MousePointerClick, Pencil, Plus, Trash2, Undo2, UserPlus } from 'lucide-react'
+import { MousePointerClick, Pencil, Trash2, UserPlus } from 'lucide-react'
 import {
   ReactFlow,
   Controls,
@@ -12,16 +12,12 @@ import {
   type NodeChange,
   type NodeMouseHandler
 } from '@xyflow/react'
-import type { AgentImportScan, CanvasLayout, CanvasNodeStyle, Project, Role } from '@shared/types'
+import type { AgentImportScan, Project, Role } from '@shared/types'
 import { ROLE_COLORS, modelForTier, newId, projectConnection, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { CanvasFrame, FrameFooter, FrameStage, FrameToolbar, FrameTray } from '../components/layout/CanvasFrame'
 import { SidePanel } from '../components/layout/SidePanel'
-import { Banner } from '../components/ui/Banner'
-import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
-import { Icon } from '../components/ui/Icon'
-import { Popover } from '../components/ui/Popover'
 import SaveTemplateDialog from '../components/templates/SaveTemplateDialog'
 import ApplyTemplateDialog from '../components/templates/ApplyTemplateDialog'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
@@ -30,7 +26,7 @@ import TeamAssistantTray, { type TeamAssistantMode } from '../components/team/Te
 import TeamCatalog from '../components/team/TeamCatalog'
 import { capabilityCounts, capabilityLabel } from '../lib/teamView'
 import ImportAgentsDialog from '../components/import/ImportAgentsDialog'
-import { importBannerVisible, notImportedLine, readBannerMemory, writeBannerMemory, type BannerMemory } from '../lib/agentImport'
+import { importBannerVisible, readBannerMemory, writeBannerMemory, type BannerMemory } from '../lib/agentImport'
 import { useConfirm } from '../components/ui/ConfirmDialog'
 import { ContextMenu, useContextMenu, type MenuEntry } from '../components/ui/ContextMenu'
 import { RoleNode, type RoleFlowNode } from '../components/RoleNode'
@@ -38,35 +34,45 @@ import RoleInspector from '../components/RoleInspector'
 import { layoutCanvas } from '../lib/layout'
 import { CanvasBackdrop } from '../components/canvas/CanvasBackdrop'
 import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
-import { OfficeScene } from '../components/canvas/office/OfficeScene'
-import { withOfficeDepartments } from '../lib/office/departments'
-import { CanvasStyleButton } from '../components/canvas/CanvasStyleButton'
 import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
-import { EDGE_TYPE, HEX_GAP, HEX_TILE, beginCanvasGlide, edgeStroke, fitMs, refitMs, reportingLineRole, ringStepFor, stationGeometry, useCanvasOptions, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
+import { DEFAULT_STYLE, EDGE_TYPE, beginCanvasGlide, edgeStroke, fitMs, refitMs, reportingLineRole, useNodeArrival, useNodeDims, useReducedMotion } from '../lib/canvas'
 import { isLayoutMoving, onLayoutSettled } from '../lib/layoutMotion'
-import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
-
-/** Role node box per node style for layout and fit (section 4): cards 220 wide, name tags 160 x 40. */
-const ROLE_NODE_SIZE = { card: { width: 220, height: 96 }, compact: { width: 160, height: 40 } } as const
-
-/** Role node box per node style: stations follow the layout (stationGeometry), hex is the tile. */
-function roleNodeSize(style: CanvasNodeStyle, layout: CanvasLayout): { width: number; height: number } {
-  if (style === 'station') {
-    const g = stationGeometry(layout)
-    return { width: g.width, height: g.height }
-  }
-  if (style === 'hex') return { width: HEX_TILE.width, height: HEX_TILE.height }
-  return ROLE_NODE_SIZE[style === 'compact' ? 'compact' : 'card']
-}
-import { addRoleUnder, moveNotice, nextRoleName, removeRole, restoreRole, setReportsTo, spawnNotice, wouldCycle, type RemovedRole } from '../lib/roleOps'
+import { addRoleUnder, moveNotice, nextRoleName, removeRole, restoreRole, setReportsTo, wouldCycle, type RemovedRole } from '../lib/roleOps'
 import { placeNewRole, revealShift, type StageRect } from '../lib/rolePlacement'
-import TeamFilesLine from '../components/team/TeamFilesLine'
+import TeamFilesChip from '../components/team/TeamFilesChip'
+import ArchitectDialog from '../components/team/ArchitectDialog'
+import TeamHeader from '../components/team/TeamHeader'
+import AddRolePopover, { type AddRoleRequest } from '../components/team/AddRolePopover'
+import TeamNoticeRow from '../components/team/TeamNoticeRow'
 import TeamFilesCard from '../components/team/TeamFilesCard'
 import TeamFilesAppliedNotice from '../components/team/TeamFilesAppliedNotice'
 import { useTeamFilesActions } from '../components/team/useTeamFilesActions'
+import { useOrgChange } from '../components/team/useOrgChange'
 import { approveBlockedReason, cardVisible, importSourcesFor } from '../lib/teamFiles'
 import { useCssVar } from '../lib/useCssVar'
 import { LiveChangeNote } from '../components/LiveChangeNote'
+import { displayRunName } from '../lib/orgChange'
+import { statusOfRun, statusText } from '../lib/runStatus'
+import { needsYou } from '../lib/runChains'
+import { readTeamHintSeen, readTeamLayout, writeTeamHintSeen, writeTeamLayout, type TeamLayoutDirection } from '../lib/teamPrefs'
+import { snapshotAdd, snapshotReparent, undoAdd, undoReparent } from '../lib/teamEdits'
+import {
+  EDIT_NOTICE_MS,
+  HINT_TEXT,
+  SHORT_NOTICE_MS,
+  UNDO_UNTIL_CHANGE,
+  addedText,
+  clearNotice,
+  nextExpiry,
+  postNotice,
+  pruneNotices,
+  rankNotices,
+  removeConfirmText,
+  removedText,
+  reparentedText,
+  type TeamNotice
+} from '../lib/teamNotices'
+import type { ImportNotice } from '../store/useAppStore'
 
 const nodeTypes = { role: RoleNode }
 
@@ -76,10 +82,15 @@ const PANEL_TABS = [
   { id: 'catalog', label: 'Catalog', testId: 'team-panel-tab-catalog' }
 ]
 
-/** How long the "Role removed. Undo" row stays in the toolbar. */
-const UNDO_MS = 12_000
-/** How long the reason for a refused reporting line stays in the toolbar. */
-const DROP_NOTE_MS = 8_000
+/**
+ * The Team chart is one fixed look (team-tab overhaul 1.1 and 4.4): card nodes, the Default style's reporting lines and
+ * the graph presentation, whatever the canvas settings say. Only the layout direction is the Team's own control.
+ * Phase 2 keeps the card box at 220 x 96; the extra row of the redesigned card is phase 5.
+ */
+const ROLE_SIZE = { width: 220, height: 96 } as const
+const TEAM_EDGE_TYPE = EDGE_TYPE[DEFAULT_STYLE.canvas.edges]
+const NOTICE_ROLE_EDIT = 'edit'
+
 /** Room kept between a new role and the stage edges when the chart pans to it (the controls and minimap are cleared separately, revealShift). */
 const REVEAL_MARGIN = { top: 24, right: 24, bottom: 24, left: 24 }
 
@@ -95,15 +106,30 @@ function nodeIdAt(event: globalThis.MouseEvent | TouchEvent): string | undefined
   return document.elementFromPoint(point.clientX, point.clientY)?.closest<HTMLElement>('.react-flow__node')?.dataset.id
 }
 
-/** Arrow keys, Home and End move between the Templates menu's items (a disabled item stays reachable to read its reason). */
-function onTemplateMenuKey(e: KeyboardEvent<HTMLDivElement>): void {
-  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return
-  const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role=menuitem]'))
-  if (items.length === 0) return
-  e.preventDefault()
-  const at = items.indexOf(document.activeElement as HTMLButtonElement)
-  const next = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : e.key === 'ArrowDown' ? (at + 1) % items.length : (at - 1 + items.length) % items.length
-  items[next]?.focus()
+/** The one message the store's import or template notice says in the notice row (their testids stay for e2e). */
+function storeNotice(n: ImportNotice, at: number): TeamNotice {
+  const t = n.source === 'template' ? 'template' : 'import'
+  const base = { key: `store:${t}`, at, dismissible: true }
+  if (n.state === 'reverted') {
+    return {
+      ...base,
+      kind: 'edit',
+      text: t === 'template' ? 'Undo done. The previous team is back.' : 'Import undone. The previous chart is back.',
+      testId: `${t}-undone`,
+      actions: t === 'import' ? [{ id: 'review-import', label: 'Review import' }] : undefined
+    }
+  }
+  if (n.state === 'error') {
+    return { ...base, kind: 'error', text: n.error ?? 'Undo did not work.', testId: `${t}-notice`, actions: [{ id: 'undo', label: 'Retry undo', testId: `${t}-undo` }] }
+  }
+  if (n.state === 'expired') return { ...base, kind: 'edit', text: 'Undo ended because you changed a role.', testId: `${t}-notice` }
+  return {
+    ...base,
+    kind: 'edit',
+    text: `${n.summary} ${UNDO_UNTIL_CHANGE}`,
+    testId: `${t}-notice`,
+    actions: [{ id: 'undo', label: 'Undo', testId: `${t}-undo`, busy: n.state === 'busy' }]
+  }
 }
 
 export default function TeamView({ project }: { project: Project }): ReactElement {
@@ -192,35 +218,43 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const connectionInfos = useAppStore((s) => s.connections)
   const modelCatalogs = useAppStore((s) => s.models)
   const { confirm, dialog } = useConfirm()
-  const faintColor = useCssVar('--text-tertiary')
+  const faintColor = useCssVar('--text-secondary')
   const labelBg = useCssVar('--surface-1')
   const groupEdgeColor = useCssVar('--canvas-edge-group')
   const edgeMix = useCssVar('--canvas-edge-role-mix')
   const edgeInk = useCssVar('--canvas-edge-ink')
-  const options = useCanvasOptions()
-  useEffect(() => {
-    if (options.presentation === 'pocket-office') flowRef.current = null
-  }, [options.presentation])
+  // The Team's own layout direction (localStorage orgai.teamLayout), independent of Live and App settings.
+  const [layoutDir, setLayoutDir] = useState<TeamLayoutDirection>(() => readTeamLayout(window.localStorage))
   const reducedMotion = useReducedMotion()
   const nodeDims = useNodeDims()
-  const radial = options.layout === 'radial'
-  const edgeType = radial ? 'radial' : EDGE_TYPE[options.edges]
-  const roleSize = useMemo(() => roleNodeSize(options.nodeStyle, options.layout), [options.nodeStyle, options.layout])
-  const station = options.nodeStyle === 'station'
-  const roundedCorners = useMemo(() => (station && options.edges === 'orthogonal' && !radial ? { pathOptions: { borderRadius: STATION_CORNER_RADIUS } } : {}), [station, options.edges, radial])
 
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
-  const [notice, setNotice] = useState<{ roleId: string; text: string } | null>(null)
-  const [undo, setUndo] = useState<{ removed: RemovedRole; name: string; note: string | null } | null>(null)
-  // Why a dragged reporting line was refused (a cycle, the root): a polite status in the toolbar for a few seconds.
-  const [dropNote, setDropNote] = useState<string | null>(null)
-  // A role rename's cleanup that failed after the user switched role: shown here, whatever is selected (review L).
-  const [renameNote, setRenameNote] = useState<string | null>(null)
+
+  // ---------- The notice row (docs/design/team-tab-overhaul.md 1.5) ----------
+  // Messages the view posts (an edit with Undo, an error, a saved line); the store-driven import and template notices,
+  // the open Architect session and the first-visit hint are derived below and ranked with them.
+  const [queue, setQueue] = useState<TeamNotice[]>([])
+  const [hintSeen, setHintSeen] = useState(() => readTeamHintSeen(window.localStorage))
+  /** What Undo does for the current edit notice (one slot: a new edit supersedes the last). */
+  const editUndo = useRef<(() => void) | null>(null)
+  const post = useCallback((notice: Omit<TeamNotice, 'at' | 'expiresAt'>, ttl?: number): void => {
+    const now = Date.now()
+    setQueue((q) => postNotice(q, { ...notice, at: now, ...(ttl ? { expiresAt: now + ttl } : {}) }))
+  }, [])
+  const clear = useCallback((key: string): void => setQueue((q) => clearNotice(q, key)), [])
+  // One timer for the soonest expiry.
+  const expiry = nextExpiry(queue, Date.now())
   useEffect(() => {
-    if (!dropNote) return undefined
-    const t = window.setTimeout(() => setDropNote(null), DROP_NOTE_MS)
+    if (expiry === null) return undefined
+    const t = window.setTimeout(() => setQueue((q) => pruneNotices(q, Date.now())), Math.max(0, expiry - Date.now()) + 20)
     return () => window.clearTimeout(t)
-  }, [dropNote])
+  }, [expiry])
+  // A reason or an edit belongs to the project it was made in.
+  useEffect(() => {
+    setQueue([])
+    editUndo.current = null
+  }, [project.id])
+
   const [focusTick, setFocusTick] = useState(0)
   const [panelOpen, setPanelOpen] = useState(true)
   // Role | Catalog. A role gets selected -> Role; the user's explicit choice sticks until the selection goes from nothing to something.
@@ -241,36 +275,37 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const [importDialog, setImportDialog] = useState<{ fresh: boolean } | null>(null)
   const [scan, setScan] = useState<AgentImportScan | null>(null)
   const [memory, setMemory] = useState<BannerMemory | null>(() => readBannerMemory(window.localStorage, project.id))
-  // Team files (spec docs/design/team-files.md): the status line, the approval card and the applied-at-once notice.
+  // Team files (spec docs/design/team-files.md): the header chip, the approval card and the applied-at-once notice.
   const filesStatus = useAppStore((s) => s.teamFilesByProject[project.id])
   const filesActions = useTeamFilesActions(project.id)
   const filesFocus = useAppStore((s) => s.teamFilesFocus)
   const [cardFocusN, setCardFocusN] = useState(0)
   const [assistantShown, setAssistantShown] = useState(false)
-  const lineRef = useRef<HTMLDivElement>(null)
+  const chipRef = useRef<HTMLButtonElement>(null)
+  const [architectOpen, setArchitectOpen] = useState(false)
   const filesOn = !!filesStatus && filesStatus.state !== 'off'
   const showCard = cardVisible(filesStatus)
   const importRequest = useAppStore((s) => s.importRequest)
   const importNotice = useAppStore((s) => s.importNotices[project.id])
   const dismissImportNotice = useAppStore((s) => s.dismissImportNotice)
   const undoImport = useAppStore((s) => s.undoImport)
-  const focusWanted = useRef(false)
+  /** The Add role popover asked to open with a manager (node menu, editor). */
+  const [addRequest, setAddRequest] = useState<AddRoleRequest | null>(null)
+  /** Which inspector field takes focus once the new selection's editor is mounted. */
+  const focusTarget = useRef<'role-name-input' | 'role-description' | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const templates = useAppStore((s) => s.templates)
   const [templateDialog, setTemplateDialog] = useState<'save' | 'apply' | null>(null)
-  const [savedTemplate, setSavedTemplate] = useState<string | null>(null)
   useEffect(() => {
     void useAppStore.getState().loadTemplates()
   }, [])
-  // The chart notice is shared: an agent import (default) or a team template, whichever is newer.
-  const templateNotice = importNotice?.source === 'template' ? importNotice : undefined
-  const importOnly = importNotice?.source === 'template' ? undefined : importNotice
-  const focusTemplatesButton = (): void => {
-    window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-templates]')?.focus())
+  const startFromTrigger = (): HTMLElement | null => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-start-from]') ?? null
+  const focusStartFrom = (): void => {
+    window.requestAnimationFrame(() => startFromTrigger()?.focus())
   }
   const closeTemplateDialog = (): void => {
     setTemplateDialog(null)
-    focusTemplatesButton()
+    focusStartFrom()
   }
 
   // The files may have changed since the last push (a checkout, an edit): ask when the tab opens for this project.
@@ -281,7 +316,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   useEffect(() => {
     if (!filesFocus || filesFocus.projectId !== project.id || !filesStatus) return
     if (showCard) setCardFocusN(filesFocus.n)
-    else window.requestAnimationFrame(() => lineRef.current?.focus())
+    else window.requestAnimationFrame(() => chipRef.current?.focus())
     useAppStore.getState().clearTeamFilesFocus()
   }, [filesFocus, filesStatus, project.id, showCard])
   useEffect(() => {
@@ -289,22 +324,32 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   }, [showCard])
   // The agent files the chart has not taken in. `.orgai` agents are the team files' own while those are on.
   const foundSources = useMemo(() => importSourcesFor(scan?.sources ?? [], filesOn), [scan, filesOn])
+  // The Start from menu's import count: null while the scan runs, 'error' when it failed.
+  const [scanFailed, setScanFailed] = useState(false)
+  const scanFound: number | null | 'error' = scanFailed ? 'error' : scan ? foundSources.reduce((n, x) => n + x.agentCount, 0) : null
 
+  /** Focus to the Team files chip when the element that had it was removed (focus fell to the body). */
+  const settleFocus = (): void => {
+    window.requestAnimationFrame(() => {
+      const a = document.activeElement
+      if (!a || a === document.body) chipRef.current?.focus()
+    })
+  }
   const decide = async (kind: 'approve' | 'reject'): Promise<void> => {
     const digest = filesStatus?.digest
     if (!digest) return
     if (kind === 'approve' && filesStatus && approveBlockedReason(filesStatus)) return
     const ok = await (kind === 'approve' ? filesActions.approve(digest) : filesActions.reject(digest))
-    // The card is gone after a decision, so focus goes to the status line; a refusal keeps focus on the card's own
+    // The card is gone after a decision, so focus goes to the chip; a refusal keeps focus on the card's own
     // buttons unless the re-fetch removed the card too (a stale digest).
-    if (ok) window.requestAnimationFrame(() => lineRef.current?.focus())
+    if (ok) window.requestAnimationFrame(() => chipRef.current?.focus())
     else settleFocus()
   }
-  /** Focus to the status line when the element that had it was removed (focus fell to the body). */
-  const settleFocus = (): void => {
-    window.requestAnimationFrame(() => {
-      const a = document.activeElement
-      if (!a || a === document.body) lineRef.current?.focus()
+  const commitFiles = (): void => {
+    void filesActions.commit().then(({ ok, count }) => {
+      if (ok && count > 0) post({ key: 'saved:files', kind: 'saved', text: `Committed ${count} team ${count === 1 ? 'file' : 'files'}.` }, SHORT_NOTICE_MS)
+      // The popover that held the button is closed: focus returns to the chip that opened it.
+      window.requestAnimationFrame(() => chipRef.current?.focus())
     })
   }
 
@@ -315,10 +360,11 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   useEffect(() => {
     let live = true
     setMemory(readBannerMemory(window.localStorage, project.id))
+    setScanFailed(false)
     window.orgai.projects
       .scanAgents(project.path)
       .then((r) => live && setScan(r))
-      .catch(() => {})
+      .catch(() => live && setScanFailed(true))
     return () => {
       live = false
     }
@@ -329,7 +375,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     setImportDialog(null)
     window.requestAnimationFrame(() => {
       const a = document.activeElement
-      if (!a || a === document.body) rootRef.current?.querySelector<HTMLElement>('[data-testid=import-agents]')?.focus()
+      if (!a || a === document.body) startFromTrigger()?.focus()
     })
   }
 
@@ -340,11 +386,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     const t = window.setTimeout(() => {
       void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: refitMs() })
     }, 120)
-    if (importState === 'reverted') {
-      const button = importNotice?.source === 'template' ? 'team-templates' : 'import-agents'
-      rootRef.current?.querySelector<HTMLElement>(`[data-testid=${button}]`)?.focus()
-    }
+    if (importState === 'reverted') startFromTrigger()?.focus()
     return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [importState])
 
   // The New project form asks for the review on a fresh chart.
@@ -355,22 +399,27 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     }
   }, [importRequest, project.id])
 
+  // Move focus into the inspector once it is mounted, after a keyboard open or an add: the name field after an open, the
+  // Description after an add (the name is known; what the role is for is what a new role needs). A field that is not
+  // there yet (the panel is still mounting it) is waited for a few frames, then the name field takes it.
   useEffect(() => {
-    if (!undo) return
-    const t = window.setTimeout(() => setUndo(null), UNDO_MS)
-    return () => window.clearTimeout(t)
-  }, [undo])
-
-  // Move focus into the inspector's name field once it is mounted, after a keyboard open or an add.
-  useEffect(() => {
-    if (!focusWanted.current || !selectedRole) return
-    focusWanted.current = false
-    const id = window.requestAnimationFrame(() => {
-      const field = document.getElementById('role-name-input') as HTMLInputElement | null
-      field?.focus()
-      field?.select()
-    })
-    return () => window.cancelAnimationFrame(id)
+    const want = focusTarget.current
+    if (!want || !selectedRole) return undefined
+    focusTarget.current = null
+    let frame = 0
+    let tries = 0
+    const land = (): void => {
+      const field = document.getElementById(want) as HTMLInputElement | HTMLTextAreaElement | null
+      if (field) {
+        field.focus()
+        if (want === 'role-name-input') field.select()
+        return
+      }
+      if (tries++ < 12) frame = window.requestAnimationFrame(land)
+      else (document.getElementById('role-name-input') as HTMLInputElement | null)?.focus()
+    }
+    frame = window.requestAnimationFrame(land)
+    return () => window.cancelAnimationFrame(frame)
   }, [focusTick, selectedRole])
 
   // New roles pop in once (motion.md 3.12); the roles present when the editor opens never do.
@@ -386,15 +435,22 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           position: role.position,
           selected: role.id === selectedRoleId,
           deletable: role.reportsTo !== null,
-          initialWidth: roleSize.width,
-          initialHeight: roleSize.height,
+          initialWidth: ROLE_SIZE.width,
+          initialHeight: ROLE_SIZE.height,
           ...(nodeDims.dims[role.id] ? { measured: nodeDims.dims[role.id] } : {}),
           ariaLabel: `${role.name}, ${role.reportsTo === null ? 'root role' : 'role'}. ${capabilityLabel(capabilities)}. Press Enter to edit${role.reportsTo === null ? '' : ', Delete to remove'}.`,
-          // "leads N" counts the direct reports this role may actually delegate to, not every report.
-          data: { role, delegateCount: role.canSpawn ? project.roles.filter((r) => r.reportsTo === role.id && role.spawnable.includes(r.id)).length : 0, capabilities, ...(arrival.isNew(role.id) ? { arrived: true } : {}) }
+          // The chip counts the direct reports this role may actually delegate to, not every report.
+          data: {
+            role,
+            delegateCount: role.canSpawn ? project.roles.filter((r) => r.reportsTo === role.id && role.spawnable.includes(r.id)).length : 0,
+            capabilities,
+            team: true,
+            layout: layoutDir,
+            ...(arrival.isNew(role.id) ? { arrived: true } : {})
+          }
         }
       }),
-    [project, selectedRoleId, roleSize, nodeDims.dims, arrival.arrivedKey]
+    [project, selectedRoleId, nodeDims.dims, arrival.arrivedKey, layoutDir]
   )
 
   const edges: Edge[] = useMemo(
@@ -405,32 +461,58 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           const parent = project.roles.find((x) => x.id === r.reportsTo)!
           const allowed = parent.canSpawn && parent.spawnable.includes(r.id)
           const id = `e-${parent.id}-${r.id}`
-          const color = edgeStroke(reportingLineRole(options.nodeStyle, parent.color, r.color), edgeMix, edgeInk)
-          const subway = station && allowed
+          const color = edgeStroke(reportingLineRole('card', parent.color, r.color), edgeMix, edgeInk)
           return {
             id,
             source: parent.id,
             target: r.id,
-            type: edgeType,
-            ...(subway ? roundedCorners : {}),
+            type: TEAM_EDGE_TYPE,
             selected: id === selectedEdgeId,
-            ariaLabel:
-              parent.id === root?.id
-                ? `${parent.name} manages ${r.name}.`
-                : `${parent.name} manages ${r.name}. Press Delete to make ${r.name} report to ${root?.name ?? 'the root'} instead.`,
-            style: subway
-              ? { stroke: color, strokeWidth: STATION_LINE_WIDTH, strokeLinecap: 'round', strokeLinejoin: 'round' }
-              : allowed
-                ? { stroke: color, strokeWidth: 1.6 }
-                : { stroke: groupEdgeColor, strokeWidth: 1.4, strokeDasharray: '4 4' },
-            // The "cannot delegate" line has no arrow (section 5); subway lines have none either.
-            markerEnd: allowed && !station ? { type: MarkerType.ArrowClosed, color } : undefined,
-            label: allowed ? undefined : 'not delegable',
+            // The Delete-key sentence lives in the chart's description (below), not in every line's name.
+            ariaLabel: allowed ? `${r.name} reports to ${parent.name}.` : `${r.name} reports to ${parent.name}, which cannot delegate to it.`,
+            style: allowed ? { stroke: color, strokeWidth: 1.6 } : { stroke: groupEdgeColor, strokeWidth: 1.4, strokeDasharray: '4 4' },
+            // The line of a role its manager cannot delegate to has no arrow.
+            markerEnd: allowed ? { type: MarkerType.ArrowClosed, color } : undefined,
+            label: allowed ? undefined : 'Cannot delegate',
             labelStyle: { fill: faintColor, fontSize: 11 },
             labelBgStyle: { fill: labelBg }
           }
         }),
-    [project.roles, selectedEdgeId, root, faintColor, labelBg, edgeType, edgeMix, edgeInk, groupEdgeColor, station, roundedCorners, options.nodeStyle]
+    [project.roles, selectedEdgeId, faintColor, labelBg, edgeMix, edgeInk, groupEdgeColor]
+  )
+
+  /** Focus a chart node (keyboard focus never rests on a control that went away). */
+  const focusNode = useCallback((roleId?: string | null): void => {
+    window.requestAnimationFrame(() => {
+      const el = rootRef.current
+      const target = (roleId ? el?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(roleId)}"]`) : null) ?? el?.querySelector<HTMLElement>('.react-flow__node')
+      target?.focus()
+    })
+  }, [])
+
+  /** Posts the undoable "{Role} now reports to {Manager}." for a change of reporting line that already happened. */
+  const postReparented = useCallback(
+    (before: Role[], after: Role[], roleId: string): void => {
+      const moved = after.find((r) => r.id === roleId)
+      const manager = moved?.reportsTo ? after.find((r) => r.id === moved.reportsTo) : undefined
+      if (!moved || !manager) return
+      const edit = snapshotReparent(before, after, roleId)
+      editUndo.current = () => {
+        updateRoles(project.id, (roles) => undoReparent(roles, edit))
+        selectRole(roleId)
+        focusNode(roleId)
+      }
+      post(
+        {
+          key: NOTICE_ROLE_EDIT,
+          kind: 'edit',
+          text: reparentedText(moved.name, manager.name, moveNotice(before, after, roleId)),
+          actions: [{ id: 'undo', label: 'Undo', testId: 'team-notice-undo' }]
+        },
+        EDIT_NOTICE_MS
+      )
+    },
+    [post, project.id, updateRoles, selectRole, focusNode]
   )
 
   const reparentToRoot = useCallback(
@@ -439,13 +521,13 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       const child = project.roles.find((r) => r.id === childId)
       if (!child || child.reportsTo === root.id) return
       const before = storedRoles(project.id, project.roles)
-      const spawn = moveNotice(before, setReportsTo(before, childId, root.id), childId)
+      const after = setReportsTo(before, childId, root.id)
       updateRoles(project.id, (roles) => setReportsTo(roles, childId, root.id))
       setSelectedEdgeId(null)
       selectRole(childId)
-      setNotice({ roleId: childId, text: spawn ? `Now reports to ${root.name}. ${spawn}` : `Now reports to ${root.name}.` })
+      postReparented(before, after, childId)
     },
-    [project.id, project.roles, root, updateRoles, selectRole]
+    [project.id, project.roles, root, updateRoles, selectRole, postReparented]
   )
 
   const requestRemove = useCallback(
@@ -453,36 +535,32 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       const role = project.roles.find((r) => r.id === roleId)
       if (!role || role.reportsTo === null) return
       const reports = project.roles.filter((r) => r.reportsTo === roleId).length
-      const ok = await confirm({
-        title: `Remove ${role.name}?`,
-        body: reports
-          ? `Its ${reports === 1 ? 'report moves' : `${reports} reports move`} up to its manager. You can undo this for a few seconds.`
-          : 'You can undo this for a few seconds.',
-        confirmLabel: 'Remove role',
-        danger: true
-      })
-      if (!ok) return
+      const parent = project.roles.find((r) => r.id === role.reportsTo)
+      // A role with no reports goes at once (Undo is the safety net); with reports the effect is not obvious, so ask.
+      if (reports > 0 && parent) {
+        const ok = await confirm({ ...removeConfirmText(role.name, reports, parent.name), danger: true })
+        if (!ok) return
+      }
       const current = storedRoles(project.id, project.roles)
-      const { removed, roles: after } = removeRole(current, roleId)
+      const { removed } = removeRole(current, roleId)
       if (!removed) return
-      // A manager left with nobody to delegate to loses its spawn right: say so beside Undo.
-      const lost = spawnNotice(current, after, role.name)
       updateRoles(project.id, (roles) => removeRole(roles, roleId).roles)
       selectRole(null)
-      setNotice(null)
-      setUndo({ removed, name: role.name, note: lost })
-      window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('.react-flow__node')?.focus())
+      setSelectedEdgeId(null)
+      editUndo.current = () => {
+        updateRoles(project.id, (roles) => restoreRole(roles, removed as RemovedRole))
+        selectRole(removed.role.id)
+        focusNode(removed.role.id)
+      }
+      post(
+        { key: NOTICE_ROLE_EDIT, kind: 'edit', text: removedText(role.name, reports, parent?.name ?? null), actions: [{ id: 'undo', label: 'Undo', testId: 'team-notice-undo' }] },
+        EDIT_NOTICE_MS
+      )
+      // The node is gone: focus goes to the nearest one, the role it reported to.
+      focusNode(role.reportsTo)
     },
-    [project.id, project.roles, confirm, updateRoles, selectRole]
+    [project.id, project.roles, confirm, updateRoles, selectRole, post, focusNode]
   )
-
-  const undoRemove = (): void => {
-    if (!undo) return
-    const { removed } = undo
-    updateRoles(project.id, (roles) => restoreRole(roles, removed))
-    selectRole(removed.role.id)
-    setUndo(null)
-  }
 
   const onNodesChange = useCallback(
     (changes: NodeChange<RoleFlowNode>[]) => {
@@ -512,6 +590,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     }
   }, [])
 
+  /** Why a dragged reporting line was refused: an error message for a few seconds (replaced by the next one). */
+  const postDropNote = useCallback((text: string): void => post({ key: 'error:drop', kind: 'error', text, testId: 'team-drop-note' }, SHORT_NOTICE_MS), [post])
+
   const onConnect = useCallback(
     (c: Connection) => {
       if (!c.source || !c.target || c.source === c.target) return
@@ -522,18 +603,15 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       // Review L1: a drop on the manager it already reports to changes nothing (setReportsTo would still strip the
       // role from every other role's delegation list).
       if (before.find((r) => r.id === target)?.reportsTo === source) {
-        setDropNote(null)
+        clear('error:drop')
         return
       }
       const after = setReportsTo(before, target, source)
       updateRoles(project.id, (roles) => (wouldCycle(roles, target, source) ? roles : setReportsTo(roles, target, source)))
-      setDropNote(null)
-      // The banner for the moved role: who no longer delegates to it, and a manager that gained or lost spawn rights.
-      // A drag with no such change clears a stale one.
-      const text = moveNotice(before, after, target)
-      setNotice(text ? { roleId: target, text } : null)
+      clear('error:drop')
+      postReparented(before, after, target)
     },
-    [project.id, project.roles, updateRoles]
+    [project.id, project.roles, updateRoles, clear, postReparented]
   )
 
   // A line may not close a loop or end on its own role (cycles are refused while dragging: the node under the pointer
@@ -554,10 +632,10 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       const manager = roles.find((r) => r.id === from)
       const report = roles.find((r) => r.id === to)
       if (!manager || !report) return
-      if (report.reportsTo === null) setDropNote(`${report.name} is the root and cannot report to anyone.`)
-      else if (wouldCycle(roles, to, from)) setDropNote(`${report.name} cannot report to ${manager.name}: ${manager.name} already reports to ${report.name}.`)
+      if (report.reportsTo === null) postDropNote(`${report.name} is the root and cannot report to anyone.`)
+      else if (wouldCycle(roles, to, from)) postDropNote(`${report.name} cannot report to ${manager.name}: ${manager.name} already reports to ${report.name}.`)
     },
-    [project.id, project.roles]
+    [project.id, project.roles, postDropNote]
   )
 
   // Deletion is handled here (confirm, re-parenting, undo); React Flow never removes elements itself.
@@ -583,6 +661,14 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     [selectRole]
   )
 
+  /** Opens the Add role popover on the header button, with `parentId` as "Reports to" when given. */
+  const openAddRole = (parentId?: string): void => {
+    const trigger = rootRef.current?.querySelector<HTMLButtonElement>('[data-testid=team-add-role]')
+    if (!trigger) return
+    if (parentId) setAddRequest((r) => ({ parentId, n: (r?.n ?? 0) + 1 }))
+    if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click()
+  }
+
   const roleMenu = useContextMenu<string>()
   const roleMenuOpts = (roleId: string): { fallbackFocus: () => HTMLElement | null } => ({
     // After Remove the node is gone (and the Delete path moves focus to the first node): do the same.
@@ -604,14 +690,14 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         testId: 'role-menu-edit',
         onSelect: () => {
           setSelectedEdgeId(null)
-          focusWanted.current = true
+          focusTarget.current = 'role-name-input'
           setPanelOpen(true)
           setPanelTab('role')
           setFocusTick((t) => t + 1)
           selectRole(roleId)
         }
       },
-      { id: 'add-report', label: 'Add a report', icon: UserPlus, testId: 'role-menu-add-report', onSelect: () => addRole(role) },
+      { id: 'add-report', label: 'Add a report', icon: UserPlus, testId: 'role-menu-add-report', onSelect: () => openAddRole(role.id) },
       'separator',
       {
         id: 'remove',
@@ -631,22 +717,13 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     if (el.classList.contains('react-flow__node') && el.dataset.id) {
       if (roleMenu.onKeyDown(e, el.dataset.id, { anchor: el, invoker: el, ...roleMenuOpts(el.dataset.id) })) return
     }
-    if ((e.key === 'Enter' || e.key === ' ') && (el.classList.contains('react-flow__node') || el.hasAttribute('data-office-agent-id') || el.hasAttribute('data-office-worker-id'))) {
-      focusWanted.current = true
+    if ((e.key === 'Enter' || e.key === ' ') && el.classList.contains('react-flow__node')) {
+      focusTarget.current = 'role-name-input'
       setPanelOpen(true)
       setPanelTab('role')
       setFocusTick((t) => t + 1)
     }
   }
-
-  const returnToNode = useCallback((roleId: string) => {
-    const target = rootRef.current?.querySelector<HTMLElement>(`[data-office-worker-id="${CSS.escape(roleId)}"], .react-flow__node[data-id="${CSS.escape(roleId)}"]`)
-    if (target) { target.focus(); return }
-    const directoryTarget = rootRef.current?.querySelector<HTMLElement>(`[data-office-agent-id="${CSS.escape(roleId)}"]`)
-    const directory = directoryTarget?.closest('details')
-    if (directory) directory.open = true
-    directoryTarget?.focus()
-  }, [])
 
   /** Pan (never zoom) so a role at `pos` is fully inside the stage, clear of the zoom controls and minimap. */
   const revealRole = (roleId: string, pos: { x: number; y: number }, size: { width: number; height: number }): void => {
@@ -661,7 +738,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         const b = el.getBoundingClientRect()
         return b.width > 0 && b.height > 0 ? { x: b.left - view.left, y: b.top - view.top, w: b.width, h: b.height } : null
       }
-      // The rendered box when the node is already drawn (graph styles differ in size), else the computed one.
+      // The rendered box when the node is already drawn, else the computed one.
       const node =
         inStage(stage.querySelector(`.react-flow__node[data-id="${CSS.escape(roleId)}"]`)) ??
         { x: pos.x * vp.zoom + vp.x, y: pos.y * vp.zoom + vp.y, w: size.width * vp.zoom, h: size.height * vp.zoom }
@@ -674,18 +751,21 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     }, 60)
   }
 
-  /** Add a role under `managerOverride` (the context menu and the inspector) or, with none, under the root: never under the selection. */
-  const addRole = (managerOverride?: Role): void => {
+  /**
+   * Adds a role named `name` under `parentId` (null: the first role of an empty team) with the phase 1 defaults, selects
+   * it, pans to it and sends focus to its Description. Posts "Added {name} under {Parent}." with Undo.
+   */
+  const addRole = (name: string, parentId: string | null): void => {
     const current = storedRoles(project.id, project.roles)
-    const manager = managerOverride ? (current.find((r) => r.id === managerOverride.id) ?? root) : current.find((r) => r.reportsTo === null)
-    const name = nextRoleName(current)
+    const manager = parentId ? current.find((r) => r.id === parentId) : undefined
+    if (parentId && !manager) throw new Error('That role is gone. Pick another to report to.')
     const conn = projectConnection(project)
     const everyday = modelForTier('everyday', {
       connection: conn,
       tierModels: connectionInfos?.find((c) => c.connection.id === conn)?.connection.tierModels ?? {},
       catalog: modelCatalogs[conn]
     })
-    const position = placeNewRole(current, manager?.id ?? null, roleSize, { layout: options.layout, sizeOf: (id) => nodeDims.dims[id] })
+    const position = placeNewRole(current, manager?.id ?? null, ROLE_SIZE, { layout: layoutDir, sizeOf: (id) => nodeDims.dims[id] })
     const role: Role = {
       id: newId('role'),
       slug: slugify(name),
@@ -702,18 +782,23 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       position,
       color: ROLE_COLORS[current.length % ROLE_COLORS.length]
     }
-    const text = spawnNotice(current, addRoleUnder(current, role), name)
+    const after = addRoleUnder(current, role)
+    const edit = snapshotAdd(current, after, role.id)
     updateRoles(project.id, (roles) => addRoleUnder(roles, role))
-    setNotice(text ? { roleId: role.id, text } : null)
-    setDropNote(null)
-    setUndo(null)
+    editUndo.current = () => {
+      updateRoles(project.id, (roles) => undoAdd(roles, edit))
+      if (useAppStore.getState().selectedRoleId === role.id) selectRole(null)
+      focusNode(edit.managerId)
+    }
+    post({ key: NOTICE_ROLE_EDIT, kind: 'edit', text: addedText(name, manager?.name ?? null), actions: [{ id: 'undo', label: 'Undo', testId: 'team-notice-undo' }] }, EDIT_NOTICE_MS)
+    clear('error:drop')
     setSelectedEdgeId(null)
-    focusWanted.current = true
+    focusTarget.current = 'role-description'
     setPanelOpen(true)
     setPanelTab('role')
     setFocusTick((t) => t + 1)
     selectRole(role.id)
-    if (options.presentation !== 'pocket-office') revealRole(role.id, position, roleSize)
+    revealRole(role.id, position, ROLE_SIZE)
   }
 
   // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
@@ -723,18 +808,70 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     window.requestAnimationFrame(() => rootRef.current?.querySelector<HTMLElement>('[data-testid=team-recommend]')?.focus())
   }
 
-  const autoLayout = (): void => {
+  /** Lay every role out in `dir`: the nodes glide to their places (up to 60 of them), then one fit. */
+  const arrange = (dir: TeamLayoutDirection): void => {
     const { positions: pos } = layoutCanvas(
-      options.layout,
-      project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: roleSize.width, height: roleSize.height })),
-      { nodesep: 60, ranksep: 110, ringStep: ringStepFor(options.nodeStyle), ...(options.nodeStyle === 'hex' ? { honeycomb: { width: HEX_TILE.width, height: HEX_TILE.height, gap: HEX_GAP } } : {}) }
+      dir,
+      project.roles.map((r) => ({ id: r.id, parentId: r.reportsTo, width: ROLE_SIZE.width, height: ROLE_SIZE.height })),
+      { nodesep: 60, ranksep: 110 }
     )
-    // The nodes glide to their new places (up to 60 of them), then one fit.
     const glide = beginCanvasGlide(frameRef.current, project.roles.length)
     updateRoles(project.id, (roles) => roles.map((r) => ({ ...r, position: pos[r.id] ?? r.position })))
     window.setTimeout(() => {
-      void flowRef.current?.fitView({ padding: radial ? 0.12 : 0.3, maxZoom: 1, duration: fitMs(reducedMotion) })
+      void flowRef.current?.fitView({ padding: 0.3, maxZoom: 1, duration: fitMs(reducedMotion) })
     }, glide > 0 ? glide + 10 : 80)
+  }
+  /** A direction change re-lays out everything for the new direction, then fits. */
+  const changeLayout = (dir: TeamLayoutDirection): void => {
+    setLayoutDir(dir)
+    writeTeamLayout(window.localStorage, dir)
+    arrange(dir)
+  }
+
+  // ---------- Derived messages: the store's import and template notices, the open Architect session, the hint ----------
+  const seen = useRef(new Map<string, number>())
+  const stamp = (key: string): number => {
+    if (!seen.current.has(key)) seen.current.set(key, Date.now())
+    return seen.current.get(key) as number
+  }
+  const { liveRunId, open: openSession } = useOrgChange(project)
+  const sessionRun = useAppStore((s) => (liveRunId ? s.runs[liveRunId] : undefined))
+  const derived: TeamNotice[] = []
+  if (importNotice) derived.push(storeNotice(importNotice, stamp(`store:${importNotice.source ?? 'import'}:${importNotice.state}:${importNotice.summary}`)))
+  if (sessionRun) {
+    const word = statusText(statusOfRun(sessionRun, project, needsYou(sessionRun)))
+    derived.push({
+      key: 'session',
+      kind: 'session',
+      text: `${displayRunName(sessionRun.summary)} is open. ${word}.`,
+      at: stamp(`session:${sessionRun.summary.id}`),
+      testId: 'team-notice-session',
+      actions: [{ id: 'open-session', label: 'Open session', testId: 'team-notice-session-open' }]
+    })
+  }
+  if (!hintSeen) derived.push({ key: 'hint', kind: 'hint', text: HINT_TEXT, at: 0, testId: 'team-hint', actions: [{ id: 'got-it', label: 'Got it', testId: 'team-hint-dismiss' }] })
+  const ranked = rankNotices([...queue, ...derived], Date.now())
+
+  const onNoticeAction = (n: TeamNotice, action: string): void => {
+    if (action === 'undo' && n.key === NOTICE_ROLE_EDIT) {
+      const run = editUndo.current
+      editUndo.current = null
+      clear(NOTICE_ROLE_EDIT)
+      run?.()
+    } else if (action === 'undo') void undoImport(project.id)
+    else if (action === 'review-import') setImportDialog({ fresh: false })
+    else if (action === 'open-session') void openSession()
+    else if (action === 'manage-templates') {
+      requestAppSettingsSection(APP_SETTINGS_SECTIONS.templates)
+      useAppStore.getState().setView('appSettings')
+    } else if (action === 'got-it') {
+      writeTeamHintSeen(window.localStorage)
+      setHintSeen(true)
+    }
+  }
+  const onNoticeDismiss = (n: TeamNotice): void => {
+    if (n.key.startsWith('store:')) dismissImportNotice(project.id)
+    else clear(n.key)
   }
 
   return (
@@ -763,230 +900,56 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         Skip to role panel
       </a>
       <CanvasFrame frameRef={frameRef}>
-        <div className="frame-top">
-          <FrameToolbar label="Team actions">
-            <Button size="sm" icon={Plus} onClick={() => addRole()}>
-              Add role
-            </Button>
-            <Button size="sm" icon={Download} onClick={() => setImportDialog({ fresh: false })} testId="import-agents">
-              Import from other tools
-            </Button>
-            <Popover
-              label="Templates"
-              role="menu"
-              placement="bottom-start"
-              triggerClassName="btn sm"
-              triggerTestId="team-templates"
-              testId="team-templates-menu"
-              trigger={
-                <>
-                  <span className="team-templates-icon" aria-hidden="true">
-                    <Icon icon={LayoutTemplate} size="sm" />
-                  </span>
-                  Templates
-                  <span className="team-templates-icon" aria-hidden="true">
-                    <Icon icon={ChevronDown} size="sm" />
-                  </span>
-                </>
-              }
-            >
-              {({ close }) => (
-                <div className="team-menu" role="presentation" onKeyDown={onTemplateMenuKey}>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="team-menu-item"
-                    data-testid="team-template-save"
-                    onClick={() => {
-                      close()
-                      setTemplateDialog('save')
-                    }}
-                  >
-                    Save this team as a template...
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="team-menu-item"
-                    data-testid="team-template-apply"
-                    aria-disabled={!templates || templates.length === 0 ? 'true' : undefined}
-                    aria-describedby={!templates || templates.length === 0 ? 'team-template-apply-reason' : undefined}
-                    onClick={() => {
-                      if (!templates || templates.length === 0) return
-                      close()
-                      setTemplateDialog('apply')
-                    }}
-                  >
-                    Replace the team with a template...
-                    {(!templates || templates.length === 0) && (
-                      <span id="team-template-apply-reason" className="team-menu-reason">
-                        No templates yet
-                      </span>
-                    )}
-                  </button>
-                </div>
-              )}
-            </Popover>
-            {options.presentation !== 'pocket-office' && <Button size="sm" icon={LayoutGrid} onClick={autoLayout}>
-              Auto-layout
-            </Button>}
-            {/* Beside Auto-layout, in the button row: on the wrapped row with the note a 28 px button grew the toolbar
-                at 1024x640 and took that height from the Team assistant tray. */}
-            <CanvasStyleButton testId="canvas-style-button" />
-            <TeamFilesLine
-              status={filesStatus}
-              busy={filesActions.busy}
-              message={filesActions.message}
-              lineRef={lineRef}
-              onCommit={() => void filesActions.commit().then(settleFocus)}
-              onEnable={() => void filesActions.enable().then(settleFocus)}
-              onReview={() => setCardFocusN((n) => n + 1)}
-            >
-              {filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />}
-            </TeamFilesLine>
-            {dropNote && (
-              <span className="toolbar-status" role="status" data-testid="team-drop-note">
-                {dropNote}
-              </span>
-            )}
-            {undo && (
-              <span className="toolbar-undo" role="status" data-testid="team-undo-row">
-                Role removed.{undo.note ? ` ${undo.note}` : ''}
-                <Button size="sm" variant="ghost" icon={Undo2} onClick={undoRemove}>
-                  Undo
-                </Button>
-              </span>
-            )}
-          </FrameToolbar>
-        <div className="import-notices">
-          {renameNote && (
-            <Banner tone="warning" testId="team-rename-note" onDismiss={() => setRenameNote(null)}>
-              {renameNote}
-            </Banner>
-          )}
-          {savedTemplate && (
-            <Banner
-              tone="success"
-              title={`Saved the template ${savedTemplate}.`}
-              testId="template-saved-notice"
-              onDismiss={() => {
-                setSavedTemplate(null)
-                focusTemplatesButton()
-              }}
-              actions={
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    requestAppSettingsSection(APP_SETTINGS_SECTIONS.templates)
-                    useAppStore.getState().setView('appSettings')
-                  }}
-                >
-                  Manage templates
-                </Button>
-              }
-            />
-          )}
-          {templateNotice && templateNotice.state !== 'reverted' && (
-            <Banner
-              tone={templateNotice.state === 'error' ? 'danger' : templateNotice.state === 'expired' ? 'info' : 'success'}
-              title={templateNotice.summary}
-              label={templateNotice.state === 'error' ? undefined : 'Team template'}
-              testId="template-notice"
-              onDismiss={() => dismissImportNotice(project.id)}
-              actions={
-                templateNotice.state === 'expired' ? undefined : (
-                  <Button size="sm" loading={templateNotice.state === 'busy'} onClick={() => void undoImport(project.id)} testId="template-undo">
-                    {templateNotice.state === 'error' ? 'Retry undo' : 'Undo'}
-                  </Button>
-                )
-              }
-            >
-              {templateNotice.state === 'error'
-                ? templateNotice.error
-                : templateNotice.state === 'expired'
-                  ? 'Undo ended because you edited the chart.'
-                  : 'You can undo until you edit the chart.'}
-            </Banner>
-          )}
-          {templateNotice?.state === 'reverted' && (
-            <Banner
-              tone="info"
-              title="Undo done. The previous team is back."
-              label="Team template"
-              testId="template-undone"
-              onDismiss={() => dismissImportNotice(project.id)}
-            />
-          )}
-          {importOnly && importOnly.state !== 'reverted' && (
-            <Banner
-              tone={importOnly.state === 'error' ? 'danger' : importOnly.state === 'expired' ? 'info' : 'success'}
-              title={importOnly.summary}
-              // A labelled region would replace the alert role an error needs.
-              label={importOnly.state === 'error' ? undefined : 'Agent import'}
-              testId="import-notice"
-              onDismiss={() => dismissImportNotice(project.id)}
-              actions={
-                importOnly.state === 'expired' ? undefined : (
-                  <Button size="sm" loading={importOnly.state === 'busy'} onClick={() => void undoImport(project.id)} testId="import-undo">
-                    {importOnly.state === 'error' ? 'Retry undo' : 'Undo'}
-                  </Button>
-                )
-              }
-            >
-              {importOnly.state === 'error'
-                ? importOnly.error
-                : importOnly.state === 'expired'
-                  ? 'Undo ended because you edited the chart.'
-                  : 'You can undo until you edit the chart.'}
-            </Banner>
-          )}
-          {importOnly?.state === 'reverted' && (
-            <Banner
-              tone="info"
-              title="Import undone. The previous chart is back."
-              label="Agent import"
-              testId="import-undone"
-              onDismiss={() => dismissImportNotice(project.id)}
-              actions={
-                <Button size="sm" onClick={() => setImportDialog({ fresh: false })}>
-                  Review import
-                </Button>
-              }
-            />
-          )}
-          {!importNotice && scan && importBannerVisible(foundSources.reduce((n, x) => n + x.agentCount, 0), memory) && (
-            <Banner
-              tone="info"
-              label="Agents found"
-              testId="import-found"
-              title={notImportedLine(foundSources.reduce((n, x) => n + x.agentCount, 0), foundSources)}
-              onDismiss={() => {
+        <FrameToolbar label="Team actions">
+          <TeamHeader
+            roleCount={project.roles.length}
+            layout={layoutDir}
+            onLayoutChange={changeLayout}
+            onArrange={() => arrange(layoutDir)}
+            startFrom={{
+              project,
+              found: scanFound,
+              dot: typeof scanFound === 'number' && importBannerVisible(scanFound, memory),
+              onOpened: () => {
+                if (typeof scanFound !== 'number' || scanFound === 0) return
                 writeBannerMemory(window.localStorage, project.id, 'dismissed')
                 setMemory('dismissed')
-              }}
-              actions={
-                <Button size="sm" variant="primary" onClick={() => setImportDialog({ fresh: false })}>
-                  Review import
-                </Button>
-              }
-            />
-          )}
-        </div>
-        </div>
+              },
+              templateCount: templates?.length,
+              roleCount: project.roles.length,
+              onTemplate: () => setTemplateDialog('apply'),
+              onImport: () => setImportDialog({ fresh: false }),
+              onArchitect: () => setArchitectOpen(true),
+              onSave: () => setTemplateDialog('save')
+            }}
+            files={{
+              status: filesStatus,
+              busy: filesActions.busy,
+              message: filesActions.message,
+              chipRef,
+              onCommit: commitFiles,
+              onEnable: () => void filesActions.enable().then(settleFocus),
+              onReview: () => setCardFocusN((n) => n + 1),
+              applied: filesStatus && <TeamFilesAppliedNotice status={filesStatus} busy={filesActions.busy} onUndo={() => void filesActions.undo().then(settleFocus)} />
+            }}
+            addRole={<AddRolePopover roles={project.roles} selectedRoleId={selectedRoleId} request={addRequest} onSubmit={addRole} />}
+          />
+        </FrameToolbar>
         <FrameStage>
-          {options.presentation === 'pocket-office' ? (
-            <OfficeScene mode="team" palette={options.scenePalette} agents={withOfficeDepartments(project.roles.map((role) => ({ id: role.id, name: role.name, parentId: role.reportsTo, status: 'Role' })))} messages={[]} selectedId={selectedRoleId ?? undefined} onSelect={(id) => { setSelectedEdgeId(null); selectRole(id); setPanelOpen(true); setPanelTab('role') }} onRemove={(id) => void requestRemove(id)} />
-          ) : (
+          {/* The chart's description: how to draw a reporting line and the keys (the footer hint sentence moved here). */}
+          <p id="team-chart-desc" className="sr-only">
+            {`Drag from a role's ${layoutDir === 'left-right' ? 'right' : 'bottom'} handle onto another role to change who it reports to. With a role focused, Enter edits it, Delete removes it and Shift+F10 opens its menu. With a reporting line selected, Delete makes its role report to ${root?.name ?? 'the root'} instead.`}
+          </p>
           <ReactFlow
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
             edgeTypes={CANVAS_EDGE_TYPES}
-            data-layout={options.layout}
+            data-layout={layoutDir}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
-            onConnectStart={() => setDropNote(null)}
+            onConnectStart={() => clear('error:drop')}
             onConnectEnd={onConnectEnd}
             isValidConnection={isValidConnection}
             onNodeClick={onNodeClick}
@@ -995,17 +958,21 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
               selectRole(null)
               setSelectedEdgeId(null)
               // QA P6: the reason for a refused drop goes with the next drag or a click on the chart.
-              setDropNote(null)
+              clear('error:drop')
             }}
             onBeforeDelete={onBeforeDelete}
             onInit={(inst) => {
               flowRef.current = inst
             }}
             aria-label="Org chart"
+            aria-describedby="team-chart-desc"
             fitView
             fitViewOptions={{ padding: 0.3, maxZoom: 1 }}
             proOptions={{ hideAttribution: true }}
             deleteKeyCode={['Delete', 'Backspace']}
+            // React Flow's default pan key (Space) is swallowed on every button and <summary> inside the flow area;
+            // dragging the pane still pans.
+            panActivationKeyCode={null}
             elementsSelectable
             edgesFocusable={false}
           >
@@ -1013,7 +980,6 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             <Controls showInteractive={false} position="bottom-right" />
             <CanvasMinimap ariaLabel="Org chart minimap" />
           </ReactFlow>
-          )}
           <LiveChangeNote surface="orgChart" projectId={project.id} />
         </FrameStage>
         <FrameTray label={showCard ? 'Team files approval' : 'Team assistant'}>
@@ -1040,9 +1006,13 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           </div>
         </FrameTray>
         <FrameFooter>
-          <span>
-            {options.presentation === 'pocket-office' ? 'Select a role to edit it. With a role focused, Enter edits it and Delete removes it.' : <>{options.layout === 'left-right' ? "Drag from a node's right handle" : options.layout === 'radial' ? "Point at a node and drag from its handle" : "Drag from a node's bottom handle"} to another node to make it a report. With a node focused, Enter edits it, Delete removes it and Shift+F10 or a right click shows more.</>}
-          </span>
+          <TeamNoticeRow
+            current={ranked.current}
+            waiting={ranked.waiting}
+            onAction={onNoticeAction}
+            onDismiss={onNoticeDismiss}
+            onFocusLost={() => focusNode(useAppStore.getState().selectedRoleId)}
+          />
         </FrameFooter>
       </CanvasFrame>
       <SidePanel label="team panel" open={panelOpen} onOpenChange={setPanelOpen}>
@@ -1072,20 +1042,16 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 }}
               />
             ) : selectedRole ? (
-              <div className={options.presentation === 'pocket-office' ? 'office-inspector' : undefined} data-office-palette={options.scenePalette}>
-              {options.presentation === 'pocket-office' && <div className="office-inspector-action"><Button size="sm" testId="office-role-back" onClick={() => { const id = selectedRole.id; selectRole(null); setPanelTab('catalog'); returnToNode(id) }}>Back to office</Button></div>}
               <RoleInspector
                 project={project}
                 role={selectedRole}
-                notice={notice && notice.roleId === selectedRole.id ? notice.text : null}
-                onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
-                onSettleError={setRenameNote}
+                onReportsToChanged={(id, before) => postReparented(before, storedRoles(project.id, project.roles), id)}
+                onSettleError={(text) => post({ key: 'error:rename', kind: 'error', text, testId: 'team-rename-note', dismissible: true })}
                 onRemove={() => void requestRemove(selectedRole.id)}
-                onAddReport={() => addRole(selectedRole)}
-                onEscape={() => { const id = selectedRole.id; if (options.presentation === 'pocket-office') { selectRole(null); setPanelTab('catalog') } returnToNode(id) }}
+                onAddReport={() => openAddRole(selectedRole.id)}
+                onEscape={() => focusNode(selectedRole.id)}
                 onAskAssistant={() => openAssistant()}
               />
-              </div>
             ) : (
               <EmptyState compact icon={MousePointerClick} title="No role selected" description="Select a role on the chart to edit what it can use." testId="team-no-role" />
             )}
@@ -1098,12 +1064,24 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
           project={project}
           onClose={closeTemplateDialog}
           onSaved={(name) => {
-            setSavedTemplate(name)
+            post(
+              { key: 'saved:template', kind: 'saved', text: `Saved the template ${name}.`, testId: 'template-saved-notice', dismissible: true, actions: [{ id: 'manage-templates', label: 'Manage templates', testId: 'template-manage' }] },
+              SHORT_NOTICE_MS
+            )
             closeTemplateDialog()
           }}
         />
       )}
       {templateDialog === 'apply' && <ApplyTemplateDialog project={project} onClose={closeTemplateDialog} onApplied={closeTemplateDialog} />}
+      {architectOpen && (
+        <ArchitectDialog
+          project={project}
+          onClose={() => {
+            setArchitectOpen(false)
+            focusStartFrom()
+          }}
+        />
+      )}
       {importDialog && (
         <ImportAgentsDialog project={project} defaultMode={importDialog.fresh ? 'replace' : 'merge'} fresh={importDialog.fresh} onClose={closeImport} />
       )}

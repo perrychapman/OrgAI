@@ -67,9 +67,22 @@ const refresh = async () => {
   return s
 }
 const line = () => page.locator('[data-testid=team-files-line]')
-const lineText = async () => ((await line().innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim()
+const chip = () => page.locator('[data-testid=team-files-chip]')
+const lineText = async () => ((await chip().innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim()
+/** The chip's popover (spec 1.4): open it by the chip, close it with Escape. */
+const popover = () => page.locator('[data-testid=team-files-popover]')
+const openPop = async () => {
+  if (!(await popover().isVisible().catch(() => false))) await chip().click()
+  await popover().waitFor({ state: 'visible', timeout: 5_000 })
+  await sleep(250)
+}
+const closePop = async () => {
+  if (await popover().isVisible().catch(() => false)) await page.keyboard.press('Escape')
+  await popover().waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
+}
+const popText = async () => ((await popover().innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim()
 const waitLine = (re, timeout = 10_000) =>
-  page.waitForFunction(([src]) => new RegExp(src).test((document.querySelector('[data-testid=team-files-line]')?.textContent ?? '').replace(/\s+/g, ' ')), [re.source], { timeout }).then(() => true, () => false)
+  page.waitForFunction(([src]) => new RegExp(src).test((document.querySelector('[data-testid=team-files-chip]')?.textContent ?? '').replace(/\s+/g, ' ')), [re.source], { timeout }).then(() => true, () => false)
 const noPageScroll = () => page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight && document.body.scrollHeight <= window.innerHeight && document.documentElement.scrollWidth <= window.innerWidth)
 const onReal = () =>
   page.evaluate(() => {
@@ -91,7 +104,7 @@ const readToEnd = async () => {
 const approveInert = () => page.locator('[data-testid=team-files-approve]').getAttribute('aria-disabled').then((v) => v === 'true')
 const gotoTeam = async () => {
   await page.locator('[data-testid=tab-team]').click()
-  await line().waitFor({ timeout: 10_000 })
+  await chip().waitFor({ timeout: 10_000 })
 }
 
 try {
@@ -122,7 +135,19 @@ try {
   let project = await findProject(page, NAME)
   check(!!project && ['lead', 'dev'].every((s) => project.roles.some((r) => r.slug === s)) && project.roles.length === 2, 'project opens with the team roles and no default chart', JSON.stringify(project?.roles.map((r) => r.slug)))
   await gotoTeam()
-  check(await waitLine(/in sync/i), 'Team tab line says in sync', await lineText())
+  check(await waitLine(/Team files: saved/), 'Team tab chip says saved', await lineText())
+  check((await line().getAttribute('data-state')) === 'in-sync' && (await line().getAttribute('data-tone')) === 'quiet', 'the chip wrapper keeps team-files-line with state and tone', `${await line().getAttribute('data-state')} ${await line().getAttribute('data-tone')}`)
+  await openPop()
+  {
+    const t = await popText()
+    check(/^Team files OrgAI keeps this team as plain files in \.orgai\/ in your repository, so it can be reviewed and shared\./.test(t), 'the popover has its heading and explainer', t)
+    check(/Everything is saved and committed\./.test(t), 'the popover says everything is saved and committed', t)
+    const w = await popover().evaluate((el) => el.getBoundingClientRect().width)
+    check(w <= 360.5 && w > 200, 'the popover is at most 360 px wide', String(w))
+    check((await popover().getAttribute('role')) === 'dialog', 'the popover is a dialog')
+  }
+  await closePop()
+  check(await onReal() === 'button[team-files-chip]', 'closing the popover returns focus to the chip', await onReal())
   check((await page.locator('[data-testid=export-org]').count()) === 0, 'no export button')
   check(read('agents/lead.md') === leadFile(), 'creating from the folder did not rewrite the files')
   await shot('in-sync')
@@ -131,10 +156,11 @@ try {
   fs.writeFileSync(orgai('agents/dev.md'), devFile(['Read', 'Grep'], 'You build features. Write tests first.'))
   await refresh()
   const applied = page.locator('[data-testid=team-files-applied]')
+  await openPop()
   await applied.waitFor({ timeout: 10_000 }).catch(() => {})
   const appliedText = (await applied.innerText().catch(() => '')).replace(/\s+/g, ' ')
   check(/1 change applied/i.test(appliedText), 'applied notice appears', appliedText)
-  check((await line().locator('[data-testid=team-files-applied]').count()) === 1, 'the applied notice shares the status line (no stacked banner)')
+  check((await popover().locator('[data-testid=team-files-applied]').count()) === 1, 'the applied notice is inside the chip popover (no stacked banner)')
   check((await page.locator('.import-notices').evaluate((el) => el.getBoundingClientRect().height).catch(() => 0)) < 4, 'no banner is stacked above the chart for it')
   check(/Undo rewrites .*agents\/dev\.md.*uncommitted/i.test(await page.locator('[data-testid=team-files-undo-files]').innerText().catch(() => '')), 'Undo says which file it rewrites and that it shows as uncommitted')
   check((await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').prompt.includes('Write tests first'), 'the new prompt is in the chart without a card')
@@ -143,8 +169,12 @@ try {
   await page.locator('[data-testid=team-files-undone]').waitFor({ timeout: 10_000 })
   check(read('agents/dev.md').includes('Keep changes small') && !read('agents/dev.md').includes('Write tests first'), 'Undo rewrote the file on disk')
   check((await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').prompt === DEV_PROMPT, 'Undo put the prompt back in the chart')
-  check(await waitLine(/not committed yet/i), 'after Undo the line shows uncommitted', await lineText())
-  check(!/changed/i.test(await lineText()), 'the uncommitted line does not say "changed"', await lineText())
+  await closePop()
+  check(await waitLine(/Team files: not committed/), 'after Undo the chip shows not committed', await lineText())
+  check((await line().getAttribute('data-tone')) === 'neutral', 'uncommitted files are neutral, not attention', await line().getAttribute('data-tone'))
+  await openPop()
+  check(/\d+ files? (is|are) not in git yet\./.test(await popText()) && /agents\/dev\.md/.test(await popText()), 'the popover says how many files are not in git and lists them', await popText())
+  check(!/changed/i.test(await popText()), 'the uncommitted popover does not say "changed"', await popText())
   // Commit asks first and names the files; Cancel commits nothing.
   const headPre = git(repo, ['rev-parse', 'HEAD'])
   await page.locator('[data-testid=team-files-commit]').click()
@@ -153,27 +183,34 @@ try {
   const confirmText = (await confirmBody.innerText().catch(() => '')).replace(/\s+/g, ' ')
   check(/agents\/dev\.md/.test(confirmText) && /Nothing is pushed/.test(confirmText), 'Commit opens a confirmation that lists the files', confirmText)
   check(
-    /Git reports \d+ changed team files? in \.orgai\/ right now/.test(confirmText) &&
+    /This makes one commit in your repository with these files:/.test(confirmText) &&
       /commits the team files git reports as changed when you confirm, and only team files/.test(confirmText) &&
       !/Only these files/.test(confirmText),
     'the confirmation says main commits what git reports at commit time (review M2)',
     confirmText
   )
+  check(await page.getByText(/^Commit \d+ team files?\?$/).first().isVisible().catch(() => false), 'the confirmation title counts the files')
+  check(/^Commit \d+ files?$/.test(((await page.locator('[data-testid=team-files-commit-confirm-button]').innerText().catch(() => '')) || '').trim()), 'the confirm button names the count')
   await page.keyboard.press('Escape')
   await confirmBody.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
   check(git(repo, ['rev-parse', 'HEAD']) === headPre, 'cancelling the confirmation commits nothing')
-  // Commit from the line, confirmed, brings it back to in sync.
+  // Commit from the popover, confirmed, brings it back to saved.
+  await openPop()
   await page.locator('[data-testid=team-files-commit]').click()
   await page.locator('[data-testid=team-files-commit-confirm-button]').click()
-  check(await waitLine(/in sync/i), 'in sync once the undone files are committed from the line', (await lineText()) + ' | ' + gitSafe(repo, ['status', '--porcelain']))
+  check(await waitLine(/Team files: saved/), 'saved once the undone files are committed from the popover', (await lineText()) + ' | ' + gitSafe(repo, ['status', '--porcelain']))
 
   // ---- 3. A power change pends, shows in Needs you, is approved ----
   const before = (await refresh()).digest
   fs.writeFileSync(orgai('agents/dev.md'), devFile(['Read', 'Grep', 'Bash']))
   const s3 = await refresh()
   check(s3.state === 'pending', 'adding Bash pends', s3.state)
-  check(await waitLine(/1 change needs your approval/i), 'line says 1 change needs your approval', await lineText())
-  check((await page.locator('[data-testid=team-files-review]').count()) === 1, 'Review changes button is offered')
+  check(await waitLine(/Team files: 1 to approve/), 'chip says 1 to approve', await lineText())
+  check((await line().getAttribute('data-tone')) === 'accent', 'a pending decision is accent', await line().getAttribute('data-tone'))
+  await openPop()
+  check(/1 change needs your approval\./.test(await popText()), 'popover says 1 change needs your approval', await popText())
+  check((await page.locator('[data-testid=team-files-review]').count()) === 1, 'Review changes button is offered in the popover')
+  await closePop()
   check((await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').tools.every((t) => t !== 'Bash'), 'the chart does not have Bash yet')
   // Needs you: the bell, then the Dashboard.
   const bell = page.locator('[data-testid=needs-you-row]').first()
@@ -211,7 +248,7 @@ try {
   check(await readToEnd(), 'the change list can be scrolled to its end')
   check(!(await approveInert()), 'Approve unlocks once the list has been read to its end')
   await page.locator('[data-testid=team-files-approve]').click()
-  check(await waitLine(/Approved(\. The team in use| \d+ changes?)/), 'line leaves the pending state after Approve', await lineText())
+  check(await waitLine(/Team files: (saved|not committed)/), 'chip leaves the pending state after Approve', await lineText())
   check((await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').tools.includes('Bash'), 'Approve put Bash on the chart')
   check((await page.locator('[data-testid=team-files-card]').count()) === 0, 'the card is gone')
   check(await focusLands(), 'focus is on a real element after Approve', await onReal())
@@ -222,32 +259,36 @@ try {
   // Reject path: another power change.
   fs.writeFileSync(orgai('agents/dev.md'), devFile(['Read', 'Grep', 'Bash', 'Write'], DEV_PROMPT + ' Be brief.'))
   await refresh()
-  await waitLine(/need.* your approval/i)
+  await waitLine(/to approve/)
   // A message belongs to the state it came from: "Approved." from the earlier decision is gone beside a new change.
-  check(!/Approved\.|Committed/.test(await lineText()), 'no stale Approved / Committed message beside a new pending change', await lineText())
+  await openPop()
+  check(!/Approved\.|Committed/.test(await popText()) && (await page.locator('[data-testid=team-files-message]').count()) === 0, 'no stale Approved / Committed message beside a new pending change', await popText())
+  await closePop()
   // Live shows a quiet pointer to the Team card while changes wait.
   await page.locator('[data-testid=tab-live]').click()
   check(await page.locator('[data-testid=team-files-pointer]').first().waitFor({ timeout: 8000 }).then(() => true, () => false), 'Live shows a pointer while team changes wait')
   await page.locator('[data-testid=team-files-pointer] button').first().click()
   check(await page.locator('[data-testid=team-files-card]').waitFor({ timeout: 8000 }).then(() => true, () => false), 'the Live pointer opens the Team card')
   await page.locator('[data-testid=team-files-reject]').click()
-  check(await waitLine(/differ from the team in use/i), 'Reject leaves the files differing from the team in use', await lineText())
-  {
-    const t = await lineText()
-    const said = (t.match(/You rejected them/g) ?? []).length
-    check(said === 1, 'the rejected state says its sentence once', t)
-  }
-  check(!(await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').tools.includes('Write'), 'Reject keeps the chart as it was')
+  check(await waitLine(/Team files: differ/), 'Reject leaves the files differing from the team in use', await lineText())
   check(await focusLands(), 'focus is on a real element after Reject', await onReal())
+  await openPop()
+  {
+    const t = await popText()
+    const said = (t.match(/You rejected them/g) ?? []).length
+    check(said === 1 && /differ from the team in use/.test(t), 'the rejected popover says its sentence once', t)
+  }
+  await closePop()
+  check(!(await findProject(page, NAME)).roles.find((r) => r.slug === 'dev').tools.includes('Write'), 'Reject keeps the chart as it was')
   git(repo, ['checkout', '--', '.orgai'])
   await refresh()
-  check(await waitLine(/in sync/i), 'restoring the files clears the rejected state', await lineText())
-  check(!/Reject|rejected/i.test(await lineText()), 'no rejected wording is left in the line once the state is in sync', await lineText())
+  check(await waitLine(/Team files: saved/), 'restoring the files clears the rejected state', await lineText())
+  check(!/differ|Reject|rejected/i.test(await lineText()), 'no rejected wording is left in the chip once the state is saved', await lineText())
 
   // A new MCP server in mcp.json: the target is shown in full.
   writeFile(repo, '.orgai/mcp.json', `${JSON.stringify({ format: 'orgai.team/1', servers: [{ name: 'docs', transport: 'http', url: SERVER_URL, enabled: true }] }, null, 2)}\n`)
   await refresh()
-  await waitLine(/need.* your approval/i)
+  await waitLine(/to approve/)
 
   // ---- 5. Keyboard, focus and no page scroll, both sizes and themes ----
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
@@ -258,16 +299,23 @@ try {
       // Leave and come back so the card mounts unread each time.
       await page.locator('[data-testid=tab-live]').click()
       await gotoTeam()
-      await page.locator('[data-testid=team-files-review]').waitFor({ timeout: 10_000 })
-      check(await noPageScroll(), `no page scroll with the Review line (${tag})`)
-      // Tab to Review changes.
+      await waitLine(/to approve/)
+      check(await noPageScroll(), `no page scroll with the chip (${tag})`)
+      // Tab to the chip, open its popover by keyboard: focus moves to Review changes.
       await page.locator('[data-testid=tab-team]').focus()
-      let reached = ''
-      for (let i = 0; i < 60 && reached !== 'button[team-files-review]'; i++) {
+      let atChip = ''
+      for (let i = 0; i < 60 && atChip !== 'button[team-files-chip]'; i++) {
         await page.keyboard.press('Tab')
-        reached = await onReal()
+        atChip = await onReal()
       }
-      check(reached === 'button[team-files-review]', `Tab reaches Review changes (${tag})`, reached)
+      check(atChip === 'button[team-files-chip]', `Tab reaches the Team files chip (${tag})`, atChip)
+      await page.keyboard.press('Enter')
+      await popover().waitFor({ state: 'visible', timeout: 5_000 })
+      await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'team-files-review', null, { timeout: 4000 }).catch(() => {})
+      const reached = await onReal()
+      check(reached === 'button[team-files-review]', `opening the popover focuses Review changes (${tag})`, reached)
+      const pw = await popover().evaluate((el) => el.getBoundingClientRect().width)
+      check(pw <= 360.5 && pw <= w - 16, `the popover is within 360 px and the window (${tag})`, String(pw))
       const ring = await page.evaluate(() => {
         const cs = getComputedStyle(document.activeElement)
         return cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0 ? 'outline' : cs.boxShadow !== 'none' ? 'shadow' : ''
@@ -317,7 +365,7 @@ try {
   await readToEnd()
   await approve.focus()
   await page.keyboard.press('Enter')
-  check(await waitLine(/Approved(\. The team in use| \d+ changes?)/), 'keyboard Approve leaves the pending state', await lineText())
+  check(await waitLine(/Team files: (saved|not committed)/), 'keyboard Approve leaves the pending state', await lineText())
   check((await findProject(page, NAME)).mcpServers?.some((m) => m.name === 'docs' && m.url === SERVER_URL), 'the approved server is on the project')
   check(await focusLands(), 'focus is on a real element after keyboard Approve', await onReal())
   check(await noPageScroll(), 'no page scroll after Approve')
@@ -325,16 +373,20 @@ try {
   // ---- 4. Commit ----
   fs.writeFileSync(path.join(repo, 'notes.txt'), 'not part of the team\n')
   await refresh()
-  check(await waitLine(/not committed yet/i), 'line says not committed yet', await lineText())
+  check(await waitLine(/Team files: not committed/), 'chip says not committed', await lineText())
   const headBefore = git(repo, ['rev-parse', 'HEAD'])
+  await chip().focus()
+  await page.keyboard.press('Enter')
+  await page.locator('[data-testid=team-files-commit]').waitFor({ timeout: 5_000 })
   await page.locator('[data-testid=team-files-commit]').focus()
   await page.keyboard.press('Enter')
   // Keyboard path: the confirmation opens with focus on Cancel; Tab to Commit and press Enter.
   await page.locator('[data-testid=team-files-commit-confirm-button]').waitFor({ timeout: 5_000 })
   await page.locator('[data-testid=team-files-commit-confirm-button]').focus()
   await page.keyboard.press('Enter')
-  check(await waitLine(/in sync/i), 'after Commit the line reads in sync', await lineText())
-  check(/in sync\s*·\s*\.orgai\//.test(await lineText()), 'the in-sync line separates its parts', await lineText())
+  check(await waitLine(/Team files: saved/), 'after Commit the chip reads saved', await lineText())
+  await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'team-files-chip', null, { timeout: 4000 }).catch(() => {})
+  check((await onReal()) === 'button[team-files-chip]', 'focus returns to the chip after Commit', await onReal())
   const headAfter = git(repo, ['rev-parse', 'HEAD'])
   check(headAfter !== headBefore, 'Commit made a commit')
   const files = git(repo, ['show', '--name-only', '--pretty=format:', 'HEAD']).split(/\r?\n/).filter(Boolean)

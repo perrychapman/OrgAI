@@ -560,10 +560,12 @@ try {
   // Org change session (setup run) started from Team > Design: its card shows in the Live tray like any run's.
   await setSize(1024, 640)
   await projectTab(page, 'Team').click()
-  const teamTray = page.locator('[data-testid=team-assistant]')
-  await teamTray.locator('[data-testid=architect-open]').click()
-  await teamTray.getByLabel('What should change').fill('Grow the team')
-  await teamTray.locator('[data-testid=org-change-start]').click()
+  await page.locator('[data-testid=team-start-from]').click()
+  await page.locator('[data-testid=start-from-architect]').click()
+  const archDlg = page.locator('[data-testid=architect-dialog]')
+  await archDlg.waitFor({ timeout: 10_000 })
+  await archDlg.getByLabel('What should change').fill('Grow the team')
+  await archDlg.locator('[data-testid=org-change-start]').click()
   const setupCard = 'section.frame-tray .decision-card.kind-proposal'
   await page.locator(setupCard).first().waitFor({ timeout: 30_000 })
   await sleep(600)

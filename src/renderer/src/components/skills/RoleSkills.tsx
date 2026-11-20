@@ -15,14 +15,12 @@ export default function RoleSkills({
   project,
   role,
   onChange,
-  onAdd,
-  onAsk
+  onAdd
 }: {
   project: Project
   role: Role
   onChange: (skills: string[]) => void
   onAdd: () => void
-  onAsk?: () => void
 }): ReactElement {
   const { granted } = roleSkillSplit(project.skills ?? [], role)
   return (
@@ -32,17 +30,8 @@ export default function RoleSkills({
       title="Skills"
       summary={granted.length === 0 ? undefined : `${granted.length} ${granted.length === 1 ? 'skill' : 'skills'}`}
       actions={<AddButton label={`Add a skill to ${role.name}`} testId="role-add-skill" onClick={onAdd} />}
-      empty={
-        granted.length === 0
-          ? {
-              text: 'No skills yet. A skill is a how-to this role can load when a task needs it.',
-              primaryLabel: 'Add a skill',
-              primaryTestId: 'role-add-skill',
-              onPrimary: onAdd,
-              onAsk
-            }
-          : undefined
-      }
+      description="A skill is a how-to this role can load when a task needs it."
+      empty={granted.length === 0 ? { addLabel: `Add a skill to ${role.name}`, addTestId: 'role-add-skill', onAdd } : undefined}
     >
       <ul className="role-cap-list" aria-label={`Skills for ${role.name}`}>
         {granted.map((s) => {

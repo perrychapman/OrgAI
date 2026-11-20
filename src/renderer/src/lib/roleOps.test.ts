@@ -5,11 +5,15 @@ import {
   addRoleUnder,
   moveNotice,
   nextRoleName,
+  parentOptions,
   removeRole,
   restoreRole,
   setReportsTo,
   renamePatch,
+  renameSnapshot,
+  reservedSlugs,
   settleRename,
+  SLUG_EMPTY_TEXT,
   SLUG_TAKEN_TEXT,
   slugFieldEdit,
   slugPatch,
@@ -63,7 +67,7 @@ describe('spawn rights follow delegation (D1)', () => {
     const after = addRoleUnder(before, fresh)
     expect(get(after, 'a')).toMatchObject({ canSpawn: true, spawnable: ['n'] })
     expect(after.map((r) => r.id)).toEqual(['root', 'a', 'b', 'n'])
-    expect(spawnNotice(before, after, 'n')).toBe('a can now create subagents, because n reports to it.')
+    expect(spawnNotice(before, after, 'n')).toBe('a can now hand work to other roles, because n reports to it.')
   })
 
   it('moving the only report away takes the right back, and moving it back grants it again', () => {
@@ -71,7 +75,7 @@ describe('spawn rights follow delegation (D1)', () => {
     const moved = setReportsTo(added, 'n', 'b')
     expect(get(moved, 'a')).toMatchObject({ canSpawn: false, spawnable: [] })
     expect(get(moved, 'b')).toMatchObject({ canSpawn: true, spawnable: ['n'] })
-    expect(spawnNotice(added, moved, 'n')).toBe('b can now create subagents, because n reports to it. a can no longer create subagents: nobody it may delegate to is left.')
+    expect(spawnNotice(added, moved, 'n')).toBe('b can now hand work to other roles, because n reports to it. a can no longer hand work to other roles: no role is left to delegate to.')
     const back = setReportsTo(moved, 'n', 'a')
     expect(get(back, 'a')).toMatchObject({ canSpawn: true, spawnable: ['n'] })
     expect(get(back, 'b')).toMatchObject({ canSpawn: false, spawnable: [] })
@@ -94,7 +98,7 @@ describe('spawn rights follow delegation (D1)', () => {
     const { roles: after, removed } = removeRole(roles, 'n')
     expect(get(after, 'a')).toMatchObject({ canSpawn: false, spawnable: [] })
     expect(get(after, 'a').requiredReports).toBeUndefined()
-    expect(spawnNotice(roles, after, 'n')).toBe('a can no longer create subagents: nobody it may delegate to is left.')
+    expect(spawnNotice(roles, after, 'n')).toBe('a can no longer hand work to other roles: no role is left to delegate to.')
     const back = restoreRole(after, removed!)
     expect(back).toEqual(roles)
   })
@@ -132,6 +136,23 @@ describe('requiredReports', () => {
     const roles = [role('root', null, ['mgr']), mgr(), role('p', 'mgr'), role('e', 'mgr')]
     expect(removeRole(roles, 'p').roles.find((r) => r.id === 'mgr')?.requiredReports).toBeUndefined()
     expect(setReportsTo(roles, 'p', 'root').find((r) => r.id === 'mgr')?.requiredReports).toBeUndefined()
+  })
+})
+
+describe('parentOptions', () => {
+  const roles = [role('root', null), role('rev', 'root'), role('docs', 'rev'), role('impl', 'root'), role('orphan', 'gone')]
+  it('lists roles in chart order with two spaces per level, orphans at depth 0', () => {
+    const opts = parentOptions(roles)
+    expect(opts.map((o) => o.id)).toEqual(['root', 'rev', 'docs', 'impl', 'orphan'])
+    expect(opts.map((o) => o.depth)).toEqual([0, 1, 2, 1, 0])
+    expect(opts[2].label).toBe('    ' + roles[2].name)
+    expect(opts.every((o) => !o.disabled)).toBe(true)
+  })
+  it('disables the role itself and its subtree for a role editor', () => {
+    expect(parentOptions(roles, 'rev').filter((o) => o.disabled).map((o) => o.id)).toEqual(['rev', 'docs'])
+  })
+  it('never loops on a cycle in the data', () => {
+    expect(parentOptions([role('a', 'b'), role('b', 'a')]).map((o) => o.id)).toEqual(['a', 'b'])
   })
 })
 
@@ -249,6 +270,46 @@ describe('renamePatch', () => {
       // Its own slug is never "taken".
       expect(slugFieldEdit(project, start, 'builder')).toEqual({ patch: { slug: 'builder', mcpServers: ['mine'] } })
     })
+  })
+
+  describe('slugs a server still names (security recheck Medium)', () => {
+    // `gone` was removed (Undo on screen) or named by team files awaiting approval: no role holds it, a server still does.
+    const project = { mcpServers: [srv('gone-db', ['gone']), srv('mine', ['builder'])], roles: [builder] }
+    const start = { id: builder.id, slug: builder.slug, mcpServers: builder.mcpServers }
+
+    it('reservedSlugs lists explicit server slugs except the starting one', () => {
+      expect([...reservedSlugs(project, 'builder')]).toEqual(['gone'])
+      expect(reservedSlugs({ mcpServers: [srv('all')] }, 'x').size).toBe(0)
+    })
+
+    it('a rename onto a reserved slug is suffixed and gains no server', () => {
+      const after = typeLetters(project, builder, 'Gone')
+      expect(after.slug).toBe('gone-2')
+      expect(after.mcpServers).toEqual(['mine'])
+      expect(serverGranted(project.mcpServers[0], after)).toBe(false)
+    })
+
+    it('a Slug field edit onto a reserved slug is refused', () => {
+      expect(slugFieldEdit(project, start, 'gone')).toEqual({ error: SLUG_TAKEN_TEXT })
+      // Its own starting slug stays free even though a server names it.
+      expect('patch' in slugFieldEdit(project, start, 'builder')).toBe(true)
+    })
+
+    it('a re-snapshot of the same role keeps the starting slug; another role or project takes its own', () => {
+      const open = { ...start, projectId: 'p1' }
+      const mid = { ...builder, slug: 'gon', mcpServers: ['mine'] }
+      expect(renameSnapshot(open, mid, 'p1')).toEqual({ id: builder.id, projectId: 'p1', slug: 'builder', mcpServers: ['mine'] })
+      expect(renameSnapshot(open, mid, 'p2').slug).toBe('gon')
+      expect(renameSnapshot(null, mid, 'p1').slug).toBe('gon')
+      expect(renameSnapshot(open, { ...mid, id: 'other' }, 'p1').slug).toBe('gon')
+    })
+  })
+
+  it('a Slug field edit with no letter or number is refused (Low)', () => {
+    const start = { id: builder.id, slug: builder.slug, mcpServers: builder.mcpServers }
+    for (const v of ['', '   ', '---', '!!@#']) expect(slugFieldEdit({ roles: [builder] }, start, v)).toEqual({ error: SLUG_EMPTY_TEXT })
+    expect(SLUG_EMPTY_TEXT).toBe('An ID needs at least one letter or number.')
+    expect(slugFieldEdit({ roles: [builder] }, start, '-a-')).toEqual({ patch: { slug: 'a' } })
   })
 
   it('a double rename (two edits) does not duplicate grants', () => {
@@ -380,7 +441,7 @@ describe('moveNotice (L1)', () => {
     const orch = { ...role('o', null, ['m', 'x']), name: 'Orchestrator', requiredReports: ['x'] }
     const before = [orch, { ...role('m', 'o'), name: 'Manager' }, { ...role('x', 'o'), name: 'X' }]
     const after = setReportsTo(before, 'x', 'm')
-    expect(moveNotice(before, after, 'x')).toBe('Orchestrator no longer delegates to X. Manager can now create subagents, because X reports to it.')
+    expect(moveNotice(before, after, 'x')).toBe('Orchestrator no longer delegates to X. Manager can now hand work to other roles, because X reports to it.')
   })
 
   it('says nothing when only the reporting line changed', () => {

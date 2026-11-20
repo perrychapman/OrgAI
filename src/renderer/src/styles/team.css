@@ -132,6 +132,73 @@
   gap: var(--space-1);
   color: var(--warning-text);
 }
+.role-cap-none {
+  flex: 1 1 auto;
+  font-size: var(--text-small);
+  color: var(--text-tertiary);
+}
+.role-cap-group[data-empty='true'] .role-cap-head {
+  flex-wrap: nowrap;
+}
+.role-tool-elevated-text .icon,
+.role-tool-elevated-text svg {
+  vertical-align: -2px;
+}
+.role-tool-group-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.role-tool-group-row .checkbox {
+  display: flex;
+  width: 100%;
+}
+.role-tool-group-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.role-tool-group-desc {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.role-tool-group-names {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.role-tool-group-row .checkbox input:indeterminate + .checkbox-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.role-tool-group-row .checkbox input:indeterminate + .checkbox-box::after {
+  content: '';
+  width: 8px;
+  height: 2px;
+  border-radius: var(--radius-xs);
+  background: var(--text-on-accent);
+}
+.role-tool-group-row .checkbox input:indeterminate + .checkbox-box svg {
+  display: none;
+}
+.role-tool-individual > summary {
+  cursor: pointer;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.role-tool-individual > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.role-tool-individual[open] > summary {
+  margin-bottom: var(--space-2);
+}
 .role-fold > summary {
   display: flex;
   flex-wrap: wrap;
