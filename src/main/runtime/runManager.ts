@@ -97,6 +97,7 @@ import {
   keepRunSlugs,
   mcpRolesForRun,
   slugsForStore,
+  staleSlugTexts,
   cardRolesForStore,
   MCP_LINK_OWN,
   proposedFromEdit,
@@ -115,7 +116,7 @@ const coarseWhat = (change: HostProjectChange): LiveChangeWhat[] =>
   change.kind === 'mcp' ? ['mcpServers'] : change.kind === 'skills' ? ['skills'] : change.kind === 'orgChart' ? ['orgChart'] : ['orgChart', 'grants']
 import { BridgedSessions, bridgeKey } from './bridge'
 import { applyRosterChange, liveRosterApplies, rosterChanged, rosterOf, runBaselineOf } from './runRoster'
-import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
+import { QUICK_ASSISTANT_SLUG, adapterForProject, cleanRunStaffing, effortOptionsFor, effectiveSubagentLimits, connectionName, connectionRecord, roleConnection, roleConnectionProblems, isKnownConnection, agentProducedNothing, isolateWritersOn, mcpSecretNames, mcpServersForRole, mixedFamilyRefusal, modelFamily, newId, projectConnection, projectKindOf, projectRulesLocation, resolveModelSetting, runMessagingOn, settingTier, singleRunProject, staffingGoalOf, writesToProjectFolder } from '@shared/defaults'
 import { referenceFolderOf } from './referenceDirectories'
 import { aliasesFor, priceAgentUsage, resolvePrice, type PricingContext } from './pricing'
 import {
@@ -2432,6 +2433,18 @@ export class RunManager {
             for (const r of ctx.roles) show(r)
             for (const r of applied.pending) show(r)
             next.roles = viewRoles
+            // Third review (slug invariant): a role that joins takes a slug text in the run's server list only where the saved
+            // project lists that role's slug too. A text the store no longer backs (a waiting role renamed away from it, an old
+            // slug) is dropped, never turned into a grant: a joining role's grants come only through pendingGrants above.
+            if (roster.added.length && kind === 'work') {
+              const items = next.mcpServers
+              const pairs = roster.added.flatMap((id) => {
+                const r = ctx.roles.find((x) => x.id === id)
+                return r ? (items ?? []).filter((s) => Array.isArray(s.roles) && s.roles.includes(r.slug)).map((s) => ({ roleId: id, itemId: s.id })) : []
+              })
+              const st = staleSlugTexts(items, pairs, ctx.roles, saved)
+              if (st.items !== items) next.mcpServers = st.items
+            }
           }
         }
         else if (settle === 'folders') overlay('allowedDirectories')
@@ -2881,6 +2894,24 @@ export class RunManager {
         let narrowed = false
         let widens = false
         let undo: (() => void) | undefined
+        /**
+         * N1 (third review, hostChange.ts staleSlugTexts): for these (running role, server) pairs, a slug text in the run's
+         * server list that the saved project no longer backs for that role leaves the run's copy now (an id grant when the
+         * saved role holds the server by id, else a loss reported as an ungrant). Never widens, so it applies whatever the
+         * session can take; never undone by a rejection (it is not the widening part).
+         */
+        const reconcileSlugTexts = (pairs: readonly { roleId: string; itemId: string }[]): void => {
+          if (bare || !pairs.length || kind !== 'work') return
+          const r = staleSlugTexts(live.mcpServers, pairs, ctx.roles, saved)
+          if (r.items === live.mcpServers) return
+          setLive(saved, 'hostItems', undefined, undefined, undefined, r.convert, { field: 'mcpServers', items: r.items } as HostItems)
+          if (r.lost.length) {
+            narrowed = true
+            grantShown.push(...r.lost)
+            touched.add('grants')
+            if (!config.mcp) config.mcp = { upserted: [], removed: [] }
+          }
+        }
         /** Review L-c: this change's own claim on the grant pairs it adds (setLive grantOwners). */
         const token = Symbol('hostChange')
         /** setLive for a widening step: the pairs it adds are this change's. */
@@ -2947,6 +2978,8 @@ export class RunManager {
               const applied = applyGrantEdits(live.roles, narrowGrants, () => true).applied
               setLive(saved, 'hostItems', undefined, undefined, undefined, narrowGrants, hostItems(edit.narrowed))
               narrowed = true
+              // N1: an ungrant must leave the role refused, so a slug text the saved project no longer backs goes too.
+              if (field === 'mcpServers') reconcileSlugTexts(applied.filter((e) => !removedIds.has(e.id)).map((e) => ({ roleId: e.roleId, itemId: e.id })))
               for (const e of applied) if (!removedIds.has(e.id)) grantShown.push(e)
               for (const id of edit.narrowedIds) {
                 const n = nameOf(id)
@@ -3007,7 +3040,7 @@ export class RunManager {
             // own propose_org_change keeps deferring a slug change (runRoster.ts slugChange).
             const { edit, kept } = keepRunSlugs(fullEdit, ctx.roles)
             // An org chart card never grants (its grants travel on their own cards); only the user's save names grants.
-            const grants = change.kind === 'projectSave' ? grantEditsOf(change.before.roles, after, saved.roles) : []
+            let grants = change.kind === 'projectSave' ? grantEditsOf(change.before.roles, after, saved.roles) : []
             const parts = [...(roleEditEmpty(fullEdit) ? [] : ['the org chart']), ...(grants.length ? ['role grants'] : [])]
             if (!parts.length) return undefined
             label = parts.join(' and ')
@@ -3017,6 +3050,27 @@ export class RunManager {
             touched.add('orgChart')
             if (grants.length) touched.add('grants')
             const has = (f: GrantEdit['field'], id: string): boolean => (live[f] ?? []).some((x) => x.id === id)
+            // N1 (third review): a running role this save renamed keeps its run slug, but a slug text in the run's server
+            // list must stay backed by the saved project (hostChange.ts staleSlugTexts): an old slug the save left in a
+            // server's roles leaves the run's copy, as an id grant when the saved role holds it by id (the role inspector's
+            // rename), else as a loss (the store no longer grants it either). Whatever the session can take (never widens).
+            reconcileSlugTexts(kept.flatMap((k) => (live.mcpServers ?? []).filter((s) => Array.isArray(s.roles) && s.roles.includes(k.runSlug)).map((s) => ({ roleId: k.id, itemId: s.id }))))
+            // Review M-2 (third round): the role inspector's rename copies every server that listed the role's old stored
+            // slug into Role.mcpServers. Where the run never took that slug grant (a pull, a change answered next-run, an
+            // in-between slug typed through another role's slug), the copy is not a grant the user made: it waits.
+            const oldSlugOf = new Map(kept.map((k) => [k.id, change.before.roles.find((r) => r.id === k.id)?.slug]))
+            const runUses = (e: GrantEdit): boolean => {
+              const r = ctx.roles.find((x) => x.id === e.roleId)
+              return !!r && mcpServersForRole({ mcpServers: live.mcpServers }, r).some((s) => s.id === e.id)
+            }
+            const copied = grants.filter((e) => {
+              const old = oldSlugOf.get(e.roleId)
+              return e.granted && e.field === 'mcpServers' && old !== undefined && (change.before.mcpServers ?? []).some((s) => s.id === e.id && Array.isArray(s.roles) && s.roles.includes(old)) && !runUses(e)
+            })
+            if (copied.length) {
+              grants = grants.filter((e) => !copied.includes(e))
+              partly.push('A rename carried over a connection this run had not taken; it applies from the next run.')
+            }
             const ungrants = grants.filter((e) => !e.granted)
             grantShown.push(...applyGrantEdits(live.roles, grants.filter((e) => e.granted), has).applied)
             if (!bare && ungrants.length) {
@@ -3025,6 +3079,8 @@ export class RunManager {
                 grantShown.push(...g.applied)
                 setLive(saved, 'grants', undefined, undefined, undefined, g.applied)
                 narrowed = true
+                // N1: an ungrant must leave the role refused, so a slug text the saved project no longer backs goes too.
+                reconcileSlugTexts(g.applied.filter((e) => e.field === 'mcpServers').map((e) => ({ roleId: e.roleId, itemId: e.id })))
                 if (g.applied.some((e) => e.field === 'mcpServers')) config.mcp = { upserted: [], removed: [] }
                 if (g.applied.some((e) => e.field === 'skills')) config.skills = true
               }
@@ -3058,7 +3114,9 @@ export class RunManager {
             }
             const wideGrants = grants.filter((e) => e.granted)
             claimHeld(wideGrants)
-            if (wideGrants.length) widens = true
+            // A grant the run already holds (e.g. kept by the rename's id conversion above) adds nothing.
+            const heldNow = grantPairs(live.roles)
+            if (wideGrants.some((e) => !heldNow.has(pairKey(e)))) widens = true
             if (takes && wideGrants.length) {
               const g = applyGrantEdits(live.roles, wideGrants, has)
               if (g.applied.length) {
@@ -3086,8 +3144,19 @@ export class RunManager {
           const itemName = (f: GrantEdit['field'], id: string): string =>
             logText(((live[f] ?? []) as { id: string; name: string }[]).find((x) => x.id === id)?.name ?? ((saved[f] ?? []) as { id: string; name: string }[]).find((x) => x.id === id)?.name ?? id)
           const shownKeys = new Set<string>()
+          /**
+           * N1: "no longer uses" is said only when it is true: the run's gates (mcpServersForRole, which mcpCallDenial reads)
+           * now refuse that role that server. A role still holding it another way (a slug the saved project still lists for
+           * it) is not reported as having lost it.
+           */
+          const stillUses = (e: { roleId: string; field: GrantEdit['field']; id: string }): boolean => {
+            if (e.field !== 'mcpServers') return (ctx.roles.find((r) => r.id === e.roleId) ?? live.roles.find((r) => r.id === e.roleId))?.skills?.includes(e.id) ?? false
+            const r = ctx.roles.find((x) => x.id === e.roleId) ?? live.roles.find((x) => x.id === e.roleId)
+            return !!r && mcpServersForRole({ mcpServers: live.mcpServers }, r).some((s) => s.id === e.id)
+          }
           const grantList = grantShown
             .filter((e) => {
+              if (!e.granted && stillUses(e)) return false
               const k = `${e.roleId}|${e.field}|${e.id}|${e.granted}`
               if (shownKeys.has(k)) return false
               shownKeys.add(k)
@@ -4916,6 +4985,11 @@ export class RunManager {
       if (baseline) payload.runBaseline = baseline
       ;(proposal as Extract<Proposal, { kind: 'orgChart' }>).payload = payload
     }
+    // N2 (third review): an MCP / skill card names roles to the user by resolving its slugs against the STORED project, so
+    // the agent's slugs (the run's names, which may be a renamed role's kept slug) become the stored slugs of the roles they
+    // mean here, at creation: the card shows what the save grants and the save is the identity. `cardSlugIds` remembers
+    // which stored roles each slug named, checked again at approval.
+    const cardSlugIds = this.cardRolesForStoreAtCreation(active, proposal)
     return new Promise((resolve) => {
       active.pendingProposals.set(proposal.id, { proposal, resolve: (raw) => {
         // Secrets stop here: the tool and the proposal.resolved event only ever get the outcome.
@@ -4924,6 +4998,16 @@ export class RunManager {
           const outcome = proposalOutcome(decision)
           resolve(outcome)
           return outcome
+        }
+        // N2: a slug of this card that no longer names the same stored roles (a rename or a new role since the card was
+        // shown) would grant someone the user did not see: nothing is saved.
+        if (cardSlugIds && !this.cardSlugsStillMean(active, cardSlugIds)) {
+          const message = 'Roles were renamed while this card was open, so nothing was saved. Ask the agent to propose it again.'
+          logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'warn', message })
+          this.broadcast({ type: 'log', runId: active.summary.id, level: 'warn', message })
+          const failed: ProposalOutcome = { behavior: 'revise', feedback: 'Roles were renamed while this card was open, so nothing was saved. Read the current roles and propose it again.' }
+          resolve(failed)
+          return failed
         }
         let waitingForSecrets: string[] | undefined
         let roster: RunRosterChange | undefined
@@ -5015,26 +5099,75 @@ export class RunManager {
   private proposalForStore(active: ActiveRun, proposal: Proposal): Proposal {
     const ctx = active.ctx
     if (!ctx || active.summary.kind !== 'work' || active.summary.quick || isVirtualProjectId(active.summary.projectId)) return proposal
-    if (proposal.kind !== 'mcpServers' && proposal.kind !== 'skills' && proposal.kind !== 'orgChart') return proposal
+    // MCP and skill cards already carry stored slugs (mapped at creation, cardRolesForStoreAtCreation): saved as shown.
+    if (proposal.kind !== 'orgChart') return proposal
     const stored = this.storedProjectFor(active.summary.projectId)
     if (!stored) return proposal
     const running = ctx.roles
-    if (proposal.kind === 'mcpServers') {
-      const p = proposal.payload as McpServersProposalPayload
-      if (p.scope === 'library' || !Array.isArray(p.upsert)) return proposal
-      const upsert = p.upsert.map((s) => (s && Array.isArray(s.roles) ? { ...s, roles: slugsForStore(s.roles, running, stored.roles) } : s))
-      return { ...proposal, payload: { ...p, upsert } } as Proposal
-    }
-    if (proposal.kind === 'skills') {
-      const p = proposal.payload as SkillsProposalPayload
-      if (!Array.isArray(p.items)) return proposal
-      const items = p.items.map((i) => (i && i.scope !== 'library' && Array.isArray(i.roles) ? { ...i, roles: slugsForStore(i.roles, running, stored.roles) } : i))
-      return { ...proposal, payload: { ...p, items } } as Proposal
-    }
     const p = proposal.payload as OrgChartProposalPayload
     if (!Array.isArray(p.roles)) return proposal
     const roles = cardRolesForStore(p.roles, running, p.runBaseline ?? running, stored.roles)
     return roles === p.roles ? proposal : ({ ...proposal, payload: { ...p, roles } } as Proposal)
+  }
+
+  /**
+   * N2 (third review): a work run's MCP (project scope) or skill card gets the role slugs its agent wrote as the STORED
+   * project names those roles, IN PLACE on the card before it is shown: a slug a running role holds becomes that role's
+   * stored slug by id (`slugsForStore`; a renamed role's kept slug becomes its new slug, never the stored role that now
+   * holds the old text), and a slug no stored role holds is dropped (it would grant nobody now and whoever takes that slug
+   * later; the tools already refuse unknown slugs, ctx.requestProposal callers may not). Every change is logged on the run.
+   * Returns, per slug left on the card, the stored role ids it named (checked again at approval by cardSlugsStillMean), or
+   * undefined when the card names no roles or is not such a card. The run itself still reads the saved list by id
+   * (mcpRolesForRun / the saved Role.skills). Never throws.
+   */
+  private cardRolesForStoreAtCreation(active: ActiveRun, proposal: Proposal): Map<string, string[]> | undefined {
+    const ctx = active.ctx
+    if (!ctx || active.summary.kind !== 'work' || active.summary.quick || isVirtualProjectId(active.summary.projectId)) return undefined
+    if (proposal.kind !== 'mcpServers' && proposal.kind !== 'skills') return undefined
+    const stored = this.storedProjectFor(active.summary.projectId)
+    if (!stored) return undefined
+    const idsOf = (slug: string): string[] => stored.roles.filter((r) => r.slug === slug).map((r) => r.id)
+    const record = new Map<string, string[]>()
+    const notes: string[] = []
+    const map = (label: string, slugs: readonly string[]): string[] => {
+      const out = slugsForStore(slugs.filter((s) => typeof s === 'string'), ctx.roles, stored.roles).filter((s) => idsOf(s).length > 0)
+      for (const s of out) record.set(s, idsOf(s))
+      if (JSON.stringify(out) !== JSON.stringify(slugs)) notes.push(`${logText(label)}: ${slugs.map((s) => logText(String(s))).join(', ') || 'none'} -> ${out.map((s) => logText(s)).join(', ') || 'none'}`)
+      return out
+    }
+    try {
+      if (proposal.kind === 'mcpServers') {
+        const p = proposal.payload as McpServersProposalPayload
+        if (p.scope === 'library' || !Array.isArray(p.upsert)) return undefined
+        const upsert = p.upsert.map((s) => (s && Array.isArray(s.roles) ? { ...s, roles: map(String(s.name ?? s.libraryId ?? s.id), s.roles) } : s))
+        ;(proposal as Extract<Proposal, { kind: 'mcpServers' }>).payload = { ...p, upsert }
+      } else {
+        const p = proposal.payload as SkillsProposalPayload
+        if (!Array.isArray(p.items)) return undefined
+        const items = p.items.map((i) => (i && i.scope !== 'library' && Array.isArray(i.roles) ? { ...i, roles: map(String(i.draft?.name ?? ''), i.roles) } : i))
+        ;(proposal as Extract<Proposal, { kind: 'skills' }>).payload = { ...p, items }
+      }
+    } catch (e) {
+      log.warn(`Run ${active.summary.id}: could not map the card's roles to the stored project: ${logText((e as Error)?.message ?? String(e))}`)
+      return undefined
+    }
+    if (notes.length) {
+      const message = `The card's roles were matched to the project's current role names (renamed or unknown roles): ${notes.join('; ')}.`
+      logRunEvent(active.summary, { type: 'log', runId: active.summary.id, level: 'info', message })
+      this.broadcast({ type: 'log', runId: active.summary.id, level: 'info', message })
+    }
+    return record.size ? record : undefined
+  }
+
+  /** N2: every slug of the card still names exactly the stored roles it named when the card was created. */
+  private cardSlugsStillMean(active: ActiveRun, record: ReadonlyMap<string, readonly string[]>): boolean {
+    const stored = this.storedProjectFor(active.summary.projectId)
+    if (!stored) return false
+    for (const [slug, ids] of record) {
+      const now = stored.roles.filter((r) => r.slug === slug).map((r) => r.id)
+      if (now.length !== ids.length || now.some((id) => !ids.includes(id))) return false
+    }
+    return true
   }
 
   /**
@@ -5378,10 +5511,18 @@ export class RunManager {
       const v = raw.secrets?.[n]
       if (typeof v === 'string' && v) secrets[n] = v
     }
+    // Third review M-1: roles the USER set in the decision (raw.spec, mergeInstallEdit) name roles as the stored project
+    // does (the user picked from the project's roles); roles the agent's request carried use the run's slugs.
+    const userRoles = !quickRun && raw.spec !== undefined && Array.isArray(raw.spec.roles)
+    const storedForRoles = active.ctx && active.summary.kind === 'work' && Array.isArray(spec.roles) ? this.storedProjectFor(project.id) : undefined
+    if (scope === 'run' && userRoles && storedForRoles && active.ctx) {
+      // Into the run's own list: by id to the run's slugs, never by slug text (mcpRolesForRun, the slug invariant).
+      spec.roles = mcpRolesForRun([spec], storedForRoles.roles, active.ctx.roles)![0].roles
+    }
     if (scope !== 'run' && this.options.mcp) {
       try {
         // Rename follow-up a: the agent's role slugs as the stored project names those roles (the run may keep an old slug).
-        const stored = active.ctx && active.summary.kind === 'work' && Array.isArray(spec.roles) ? this.storedProjectFor(project.id) : undefined
+        const stored = userRoles ? undefined : storedForRoles
         const toSave = stored && active.ctx ? { ...spec, roles: slugsForStore(spec.roles!, active.ctx.roles, stored.roles) } : spec
         const saved = this.options.mcp.persistInstall(project.id, toSave, secrets, scope)
         setProject(saved)

@@ -9,6 +9,7 @@ import {
   itemGrantEditsOf,
   keepRunSlugs,
   mcpRolesForRun,
+  staleSlugTexts,
   MCP_LINK_OWN,
   proposedFromEdit,
   roleEditEmpty,
@@ -141,14 +142,55 @@ describe('keepRunSlugs (rename of a running role)', () => {
   })
 })
 
+describe('staleSlugTexts (N1, third review)', () => {
+  const srv = (id: string, roles?: string[]) => ({ id, name: id, ...(roles ? { roles } : {}) })
+  const run = orgChart()
+  const renamed = orgChart().map((r) => (r.id === 'r-eng' ? { ...r, slug: 'builder' } : r))
+  it('a kept old slug the saved server no longer lists leaves the run: by id when the saved role holds it, else lost', () => {
+    const saved = { roles: renamed.map((r) => (r.id === 'r-eng' ? { ...r, mcpServers: ['docs'] } : r)), mcpServers: [srv('docs', ['engineer']), srv('wiki', ['engineer', 'reviewer'])] }
+    const r = staleSlugTexts([srv('docs', ['engineer']), srv('wiki', ['engineer', 'reviewer'])], [{ roleId: 'r-eng', itemId: 'docs' }, { roleId: 'r-eng', itemId: 'wiki' }], run, saved)
+    expect(r.items).toEqual([srv('docs', []), srv('wiki', ['reviewer'])])
+    expect(r.convert).toEqual([{ roleId: 'r-eng', field: 'mcpServers', id: 'docs', granted: true }])
+    expect(r.lost).toEqual([{ roleId: 'r-eng', field: 'mcpServers', id: 'wiki', granted: false }])
+  })
+  it('review Low 1: two running roles sharing the dropped text are both accounted for, never silently', () => {
+    const dupRun = orgChart().map((r) => (r.id === 'r-rev' ? { ...r, slug: 'engineer' } : r))
+    const saved = { roles: dupRun.map((r) => (r.id === 'r-eng' ? { ...r, slug: 'builder' } : r.id === 'r-rev' ? { ...r, mcpServers: ['docs'] } : r)), mcpServers: [srv('docs', ['engineer'])] }
+    // r-eng was renamed; the saved list still names "engineer", which the reviewer holds too, but not "builder".
+    const r = staleSlugTexts([srv('docs', ['engineer'])], [{ roleId: 'r-eng', itemId: 'docs' }], dupRun, saved)
+    expect(r.items).toEqual([srv('docs', [])])
+    expect(r.lost).toEqual([{ roleId: 'r-eng', field: 'mcpServers', id: 'docs', granted: false }])
+    expect(r.convert).toEqual([{ roleId: 'r-rev', field: 'mcpServers', id: 'docs', granted: true }])
+  })
+  it('keeps text the saved project still backs (its new slug, or every role) and returns the same list', () => {
+    const items = [srv('docs', ['engineer']), srv('all', ['engineer'])]
+    const saved = { roles: renamed, mcpServers: [srv('docs', ['builder']), srv('all')] }
+    const r = staleSlugTexts(items, [{ roleId: 'r-eng', itemId: 'docs' }, { roleId: 'r-eng', itemId: 'all' }], run, saved)
+    expect(r.items).toBe(items)
+    expect(r.convert).toEqual([])
+    expect(r.lost).toEqual([])
+  })
+})
+
 describe('mcpRolesForRun (slug-keyed MCP grants as the run names its roles)', () => {
   const spec = (roles?: string[]) => ({ id: 'm', name: 'docs', ...(roles ? { roles } : {}) })
   it("maps a renamed role's new slug to the slug the run kept, by id; no list and unknown slugs stay", () => {
     const run = orgChart()
     const stored = orgChart().map((r) => (r.id === 'r-eng' ? { ...r, slug: 'engineer-prime' } : r))
     expect(mcpRolesForRun([spec(['engineer-prime', 'reviewer']), spec(), spec(['ghost'])], stored, run)).toEqual([spec(['engineer', 'reviewer']), spec(), spec(['ghost'])])
-    // The old slug, which names no stored role now, still means the run's role (no grant lost).
-    expect(mcpRolesForRun([spec(['engineer'])], stored, run)).toEqual([spec(['engineer'])])
+    // N1 (third review): the old slug names no stored role now; the running role holding that text is not the role it
+    // names by id, so it is not carried (the role keeps access through its new slug or an id grant, never stale text).
+    expect(mcpRolesForRun([spec(['engineer'])], stored, run)).toEqual([spec([])])
+  })
+  it('N1: a slug no stored role has is carried only while no running role holds that text; duplicates map to every running holder', () => {
+    const run = orgChart()
+    // "ghost" names nobody anywhere: kept (a role joining under it later is the role the store also grants).
+    expect(mcpRolesForRun([spec(['ghost'])], orgChart(), run)).toEqual([spec(['ghost'])])
+    // A running role removed from the store still holds "reviewer" in the run: the stored text grants it nothing.
+    expect(mcpRolesForRun([spec(['reviewer'])], orgChart().filter((r) => r.id !== 'r-rev'), run)).toEqual([spec([])])
+    // Two stored roles share "engineer" (projects:save does not refuse duplicates): both running holders get it by id.
+    const dup = orgChart().map((r) => (r.id === 'r-rev' ? { ...r, slug: 'engineer' } : r))
+    expect(mcpRolesForRun([spec(['engineer'])], dup, run)).toEqual([spec(['engineer', 'reviewer'])])
   })
   it('a stored role the run does not have, holding the slug the run kept for another role, never grants that role', () => {
     const run = orgChart()

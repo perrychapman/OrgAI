@@ -24,6 +24,19 @@ describe('diffOrgChart', () => {
     expect(d.unchanged).toHaveLength(2)
   })
 
+  it('third review L-1: two roles sharing a slug (a kept slug and a waiting role) pair by id with their own rows', () => {
+    const cur = [role('lead'), role('engineer', { id: 'r-eng', name: 'Builder', reportsTo: 'id-lead' }), role('engineer', { id: 'r-new', name: 'New Engineer', reportsTo: 'id-lead' })]
+    const prop = [role('lead'), role('engineer', { id: 'r-eng', name: 'Builder', reportsTo: 'id-lead' }), role('engineer', { id: 'r-new', name: 'New Engineer', reportsTo: 'id-lead', prompt: 'changed' })]
+    const d = diffOrgChart(cur, prop)
+    expect(d.changed.map((c) => [c.role.id, c.before.id])).toEqual([['r-new', 'r-new']])
+    expect(d.unchanged.map((r) => r.id)).toEqual(['id-lead', 'r-eng'])
+    expect(d.removed).toEqual([])
+    // A role renamed away from a slug that a new role takes is not paired with the new role by slug.
+    const swap = diffOrgChart([role('lead'), role('engineer', { id: 'r-eng', name: 'Engineer' })], [role('lead'), role('builder', { id: 'r-eng', name: 'Engineer' }), role('engineer', { id: 'r-x', name: 'Tester' })])
+    expect(swap.added.map((r) => r.id)).toEqual(['r-x'])
+    expect(swap.changed.map((c) => [c.role.id, c.before.id, c.renamed])).toEqual([['r-eng', 'r-eng', true]])
+  })
+
   it('treats everything as added against an empty chart', () => {
     const d = diffOrgChart([], [role('lead'), role('dev')])
     expect(d.added).toHaveLength(2)
