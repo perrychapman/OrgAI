@@ -14,6 +14,7 @@ import type {
   ProxyConnection
 } from '@shared/types'
 import { CANVAS_EDGE_STYLES, CANVAS_LAYOUTS, CANVAS_NODE_STYLES, CANVAS_PATTERNS, CANVAS_PRESENTATIONS, CANVAS_SCENE_PALETTES, PROXIES_MAX, PROXY_KINDS, THEME_MODES, isModelTier, isPermissionMode, isProxyConnectionId } from '@shared/types'
+import { cleanDisplayName } from '@shared/displayName'
 import { DEFAULT_APPEARANCE, DEFAULT_APP_SETTINGS, MAX_AUTO_CONTINUES_LIMIT, MODEL_PRICE_ID_MAX_CHARS, MODEL_PRICE_OVERRIDES_MAX, defaultConnections, isConnectionId, isKnownConnection } from '@shared/defaults'
 import { normalizeProxyUrl, readableProxyName } from '../connections/proxy'
 import { normalizeModelId, sanitizeModelPrice } from '../runtime/pricing'
@@ -301,6 +302,7 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     !defaultConnectionChosen && isKnownConnection(view, r.defaultConnectionReplaced) && r.defaultConnectionReplaced !== defaultConnection
       ? r.defaultConnectionReplaced
       : undefined
+  const displayName = cleanDisplayName(r.displayName)
   return {
     defaultPermissionMode: isPermissionMode(r.defaultPermissionMode) ? r.defaultPermissionMode : d.defaultPermissionMode,
     defaultMaxBudgetUsd: typeof budget === 'number' && Number.isFinite(budget) && budget > 0 ? budget : d.defaultMaxBudgetUsd,
@@ -324,6 +326,8 @@ export function normalizeSettings(raw: Partial<AppSettings> | null | undefined):
     autoUpdateCheck: typeof r.autoUpdateCheck === 'boolean' ? r.autoUpdateCheck : d.autoUpdateCheck !== false,
     // Schedules' global pause: exactly true, or absent (off).
     ...(r.schedulesPaused === true ? { schedulesPaused: true } : {}),
+    // Dashboard greeting name: kept only when cleanDisplayName accepts it; absent or invalid clears it.
+    ...(displayName !== undefined ? { displayName } : {}),
     appearance: normalizeAppearance(r.appearance),
     modelPrices: normalizeModelPrices(r.modelPrices),
     opusGuardThreshold:

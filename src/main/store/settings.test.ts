@@ -12,6 +12,27 @@ describe('schedulesPaused (Schedules global pause)', () => {
   })
 })
 
+describe('displayName', () => {
+  const name = (v: unknown): string | undefined => normalizeSettings({ displayName: v } as never).displayName
+  it('round trips and collapses whitespace', () => {
+    expect(name('Ada')).toBe('Ada')
+    expect(name('  Ada \n  Lovelace ')).toBe('Ada Lovelace')
+    const once = normalizeSettings({ displayName: 'Ada' } as never)
+    expect(normalizeSettings(once).displayName).toBe('Ada')
+  })
+  it('refuses hidden characters', () => {
+    for (const v of ['A‮da', 'A​da', 'A\u0000da']) expect('displayName' in normalizeSettings({ displayName: v } as never)).toBe(false)
+  })
+  it('accepts 40 characters and refuses 41', () => {
+    expect(name('a'.repeat(40))).toBe('a'.repeat(40))
+    expect('displayName' in normalizeSettings({ displayName: 'a'.repeat(41) } as never)).toBe(false)
+  })
+  it('refuses non-strings and clears when absent', () => {
+    for (const v of [5, null, {}, ['a'], '', '   ']) expect('displayName' in normalizeSettings({ displayName: v } as never)).toBe(false)
+    expect('displayName' in normalizeSettings({} as never)).toBe(false)
+  })
+})
+
 describe('tier model validation', () => {
   it('drops renderer or file tier models that are not valid model ids', () => {
     const tierModels = { top: '--help', deep: ' opus ', everyday: 'has space', fast: 'bell\u0007' }

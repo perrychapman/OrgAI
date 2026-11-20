@@ -120,6 +120,8 @@ const SETTINGS_CLEARABLE: readonly FieldPath[] = [
   'quickRunModel',
   'notifications',
   'communityPrices',
+  // The Dashboard greeting name: an own undefined clears it (cleanDisplayName).
+  'displayName',
   // SettingsStore.set: an undefined modelPrices keeps the stored overrides (same as the renderer's undefined).
   'modelPrices'
 ]
