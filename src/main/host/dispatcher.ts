@@ -153,6 +153,7 @@ import { folderConfigReview } from '../runtime/folderConfigTrust'
 import { addRules, listIgnoredRules, listRules, removeRule } from '../runtime/permissionRules'
 import type { RunManager, StartUserChoice } from '../runtime/runManager'
 import type { HostItemChange, HostProjectChange } from '../runtime/hostChange'
+import { upsertFieldsOf } from '../runtime/hostChange'
 import type { EvolveService } from '../evolve/service'
 import { EVOLVE_AFTER_RUN_CHANNEL } from './jsonCodec'
 import { overridesWidening } from '../runtime/runOverrides'
@@ -1293,7 +1294,10 @@ function registerMcpIpc(
     // The spec replaces the stored one: the fields it sets and the ones it leaves out (cleared). Grants are not named:
     // the run's grants to the server stay (review M1).
     const stored = before.mcpServers?.find((s) => s.id === input.spec.id)
-    const fields = uniq([...Object.keys(input.spec ?? {}), ...Object.keys(stored ?? {})])
+    // Review L4: for a server linked to a library entry, library-sourced keys the input did not change against the
+    // entry are not the user's edit (the saved copy is refreshed from the library; the raw `before` is not).
+    const entry = stored?.libraryId ? mcp.libraryEntries().find((e) => e.id === stored.libraryId) : undefined
+    const fields = upsertFieldsOf((input.spec ?? {}) as unknown as Record<string, unknown>, stored as unknown as Record<string, unknown> | undefined, entry as unknown as Record<string, unknown> | undefined)
     return withLive(ctx, result, input.projectId, mcpChange(before, [input.spec.id], [input.spec.name], { fields }))
   })
   handle(IPC.mcpRemove, (ctx, input: { projectId: string; serverId: string }): McpMutationResult | Promise<McpMutationResult> => {

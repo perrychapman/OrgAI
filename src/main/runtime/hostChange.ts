@@ -141,28 +141,98 @@ export function keepRunSlugs(edit: RoleEdit, running: readonly Role[]): { edit: 
 }
 
 /**
- * McpServerSpec.roles (role slugs) of `items` as THIS RUN names those roles: a slug naming a role of `stored` (the
- * project the list was saved with) becomes that role's slug in the run (by id), so a run that kept a renamed role's old
- * slug (keepRunSlugs) neither loses nor gains a grant by slug text; a stored role the run does not have, whose slug the
- * run uses for another role, is dropped (never granted to that other role); any other slug stays. Copies only items
- * with a `roles` list. Pure.
+ * McpServerSpec.roles (role slugs) of `items` as THIS RUN names those roles. `running` must be the run's RUNNING roles
+ * (ctx.roles) only, never the waiting roles of its view (review H1: a waiting role can hold a slug a running role kept).
+ * A slug naming a role of `stored` (the project the list was saved with) that is running becomes that role's slug in the
+ * run (by id), so a run that kept a renamed role's old slug (keepRunSlugs) neither loses nor gains a grant by slug text.
+ * Any other slug (a stored role that is not running, or a slug no stored role has) is dropped when a running role holds
+ * that slug text (it would reach a role it does not name: fails closed) and otherwise stays as it is: a waiting role's
+ * slug-keyed grant is remembered under its slug and applies if that role joins under it (it cannot join while a running
+ * role holds the slug: runRoster.ts slugTaken / retired slugs). Copies only items with a `roles` list. Pure.
  */
-export function mcpRolesForRun<T extends { roles?: string[] }>(items: readonly T[] | undefined, stored: readonly Role[], run: readonly Role[]): T[] | undefined {
+export function mcpRolesForRun<T extends { roles?: string[] }>(items: readonly T[] | undefined, stored: readonly Role[], running: readonly Role[]): T[] | undefined {
   if (!items) return undefined
   const storedBySlug = new Map(stored.map((r) => [r.slug, r.id]))
-  const runById = new Map(run.map((r) => [r.id, r.slug]))
-  const runSlugs = new Set(run.map((r) => r.slug))
-  if (stored.every((r) => !runById.has(r.id) || runById.get(r.id) === r.slug) && stored.every((r) => runById.has(r.id) || !runSlugs.has(r.slug))) return [...items]
+  const runSlugOf = new Map(running.map((r) => [r.id, r.slug]))
+  const runOwner = new Map(running.map((r) => [r.slug, r.id]))
+  const map = (slug: string): string | undefined => {
+    const id = storedBySlug.get(slug)
+    if (id !== undefined && runSlugOf.has(id)) return runSlugOf.get(id)
+    return runOwner.has(slug) ? undefined : slug
+  }
   return items.map((x) => {
     if (!Array.isArray(x.roles)) return x
     const roles: string[] = []
     for (const slug of x.roles) {
-      const id = storedBySlug.get(slug)
-      const mapped = id === undefined ? slug : runById.get(id) ?? (runSlugs.has(slug) ? undefined : slug)
+      const mapped = map(slug)
       if (mapped !== undefined && !roles.includes(mapped)) roles.push(mapped)
     }
     return { ...x, roles }
   })
+}
+
+/**
+ * Role slugs an agent of a live run wrote (a proposal's or install's `roles`) as the STORED project names those roles:
+ * a slug a running role holds becomes the stored slug of that role (by id), so a run that kept a renamed role's old slug
+ * proposes grants the save understands and that land on the role the agent meant. A slug no running role holds stays
+ * (a waiting role of the view, or a stored role). A running role the stored project no longer has keeps its slug only
+ * when no stored role holds that slug text; otherwise it is dropped (never granted to the other stored role). Pure.
+ */
+export function slugsForStore(slugs: readonly string[], running: readonly Role[], stored: readonly Role[]): string[] {
+  const runOwner = new Map(running.map((r) => [r.slug, r.id]))
+  const storedById = new Map(stored.map((r) => [r.id, r.slug]))
+  const storedSlugs = new Set(stored.map((r) => r.slug))
+  const out: string[] = []
+  for (const slug of slugs) {
+    const id = runOwner.get(slug)
+    const mapped = id === undefined ? slug : storedById.get(id) ?? (storedSlugs.has(slug) ? undefined : slug)
+    if (mapped !== undefined && !out.includes(mapped)) out.push(mapped)
+  }
+  return out
+}
+
+/**
+ * The roles of a run's own org chart card as the save should get them (follow-up b): a card role that is a running role
+ * under the slug the run kept (keepRunSlugs) takes the stored slug of that role (by id), so SetupService's merge
+ * (orgMerge.ts matches by slug, then name) finds the right stored role and never reverts the user's rename or matches
+ * another stored role that now holds the old slug; its name likewise takes the stored name when the card left the name
+ * as the run had it (`baseline`: the card's runBaseline, else the run's roles). A role the card itself renamed (another
+ * slug or name than the run had) keeps the card's value. Returns `roles` itself when nothing changes. Pure.
+ */
+export function cardRolesForStore(roles: readonly Role[], running: readonly Role[], baseline: readonly Role[], stored: readonly Role[]): Role[] {
+  const runById = new Map(running.map((r) => [r.id, r]))
+  const runBySlug = new Map(running.map((r) => [r.slug, r]))
+  const baseById = new Map(baseline.map((r) => [r.id, r]))
+  const storedById = new Map(stored.map((r) => [r.id, r]))
+  let changed = false
+  const out = roles.map((card) => {
+    // By id when the card kept the role's id (a waiting role sharing a kept slug is not the running role); by slug when
+    // the tool gave it a fresh id. Either way the card must still use the slug the run has.
+    const known = runById.has(card.id) || baseById.has(card.id) || storedById.has(card.id)
+    const run = known ? runById.get(card.id) : runBySlug.get(card.slug)
+    const s = run && run.slug === card.slug ? storedById.get(run.id) : undefined
+    if (!run || !s) return card
+    const was = baseById.get(run.id) ?? run
+    const next = { ...card }
+    if (s.slug !== run.slug) next.slug = s.slug
+    if (card.name === was.name && s.name !== card.name) next.name = s.name
+    if (next.slug === card.slug && next.name === card.name) return card
+    changed = true
+    return next
+  })
+  return changed ? out : (roles as Role[])
+}
+
+/**
+ * mcp:upsert's `HostItemChange.fields` (review L4): the keys the input spec set plus the stored item's keys, except, for
+ * a server linked to library entry `entry` before and after, the library-sourced keys (not MCP_LINK_OWN) the input left
+ * out or set to the entry's value: those are the library's, not the user's edit. Without an entry every key is kept. Pure.
+ */
+export function upsertFieldsOf(input: Record<string, unknown>, stored: Record<string, unknown> | undefined, entry: Record<string, unknown> | undefined): string[] {
+  const keys = [...new Set([...Object.keys(input), ...Object.keys(stored ?? {})])]
+  const linked = !!entry && typeof stored?.libraryId === 'string' && stored.libraryId === entry.id && (input.libraryId === undefined || input.libraryId === entry.id)
+  if (!linked) return keys
+  return keys.filter((k) => MCP_LINK_OWN.has(k) || (k in input && !same(input[k], entry![k])))
 }
 
 /** Fields of a linked MCP server the project owns (defaults.ts linkedSpec); every other field comes from the library. */
