@@ -1,7 +1,8 @@
 // Canvas themes, phase A (docs/design/canvas-themes.md section 8). Token-free: mock adapter, temp data dir.
 // Checks App settings > General > Canvas (gallery, Customise, preview, announce), the toolbar "Canvas style" popover,
 // every backdrop on the Live and Team canvases, the three layouts on a [mock:deep-tree] run, compact nodes, the
-// minimap (one shape per node, size at 1024x640, never under a popover), and the Team editor following the settings.
+// minimap (one shape per node, size at 1024x640, never under a popover), and the Team editor: backdrop and minimap follow
+// the settings, but its look is fixed (cards, curved lines) and its Layout menu is its own (Team tab overhaul phase 2).
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { checkPocketOffice } from './pocket-office.mjs'
@@ -582,32 +583,32 @@ try {
   const teamMini = await page.locator('.editor .react-flow__minimap').boundingBox()
   const teamStage = await page.locator(TEAM).boundingBox()
   check(!!teamMini && !!teamStage && teamMini.height <= 0.34 * teamStage.height + 1, 'at 1024x640 the Team minimap is at most about a third of the stage height', JSON.stringify({ teamMini, teamStage }))
-  await page.locator('.editor [data-testid=canvas-style-button]').click()
-  await page.locator('[data-testid=canvas-style-popover]').waitFor({ timeout: 5000 })
-  await sleep(250)
-  check(!intersects(teamMini, await page.locator('[data-testid=canvas-style-popover]').boundingBox()), 'the Team style popover does not land on the minimap')
-  await shot('team-style-popover')
-  await page.keyboard.press('Escape')
-  await sleep(200)
+  // Team tab overhaul (docs/design/team-tab-overhaul.md 0.1, 1.1, 4.4): the Team editor no longer follows the app-wide
+  // Canvas style (Canvas style button, edge style, node style, presentation) and has no Canvas style button. Its look is
+  // fixed: card nodes, the Default style's curved reporting lines, and the Team's own layout direction.
+  check((await page.locator('.editor [data-testid=canvas-style-button]').count()) === 0, 'the Team tab has no Canvas style button')
   const pathKinds = async () => page.locator(`${TEAM} .react-flow__edge path.react-flow__edge-path`).evaluateAll((ps) => ps.map((p) => (/[CQ]/.test(p.getAttribute('d') ?? '') ? 'curve' : 'line')))
-  await setCanvas({ edges: 'curved' })
-  const curved = await pathKinds()
-  await setCanvas({ edges: 'straight' })
-  const straight = await pathKinds()
-  check(curved.length > 0 && curved.every((k) => k === 'curve') && straight.every((k) => k === 'line'), 'the Team editor follows Lines (curved then straight)', JSON.stringify({ curved, straight }))
-  await setCanvas({ nodeStyle: 'compact' })
-  await sleep(500)
-  const roles = await page.locator(`${TEAM} .role-node`).evaluateAll((els) => els.map((e) => ({ s: e.getAttribute('data-style'), w: e.offsetWidth, h: e.offsetHeight })))
-  check(roles.length > 1 && roles.every((r) => r.s === 'compact' && Math.abs(r.w - 160) <= 1 && Math.abs(r.h - 40) <= 1), 'Team role nodes are 160 x 40 name tags', JSON.stringify(roles))
-  for (const style of ['station', 'hex']) {
-    await setCanvas({ nodeStyle: style, layout: 'top-down' })
+  const teamHandles = async (kind) => page.locator(`${TEAM} .react-flow__node .react-flow__handle.${kind}`).evaluateAll((hs) => hs.map((h) => (h.className.match(/react-flow__handle-(top|bottom|left|right)/) ?? [])[1]))
+  const teamLook = async () => page.locator(`${TEAM} .role-node`).evaluateAll((els) => els.map((e) => ({ s: e.getAttribute('data-style'), w: e.offsetWidth, h: e.offsetHeight })))
+  // Whatever the app-wide look is (straight lines, every other node style, the Hive and Subway layouts), the Team stays the same.
+  for (const [label, canvas] of [
+    ['straight lines', { edges: 'straight', nodeStyle: 'card', layout: 'top-down' }],
+    ['compact tags', { edges: 'orthogonal', nodeStyle: 'compact', layout: 'top-down' }],
+    ['Subway (station, left to right)', { edges: 'orthogonal', nodeStyle: 'station', layout: 'left-right' }],
+    ['Hive (hex, radial)', { edges: 'curved', nodeStyle: 'hex', layout: 'radial' }]
+  ]) {
+    await setCanvas(canvas)
     await sleep(600)
-    const rs = await styleOf(`${TEAM} .role-node`)
-    check(rs.length > 1 && rs.every((s) => s === style), `Team role nodes are data-style=${style}`, JSON.stringify(rs))
-    await shot(`team-${style}`)
+    const look = await teamLook()
+    check(look.length > 1 && look.every((r) => r.s === 'card' && Math.abs(r.w - 220) <= 1), `Team role nodes stay cards when the app look is ${label}`, JSON.stringify(look))
+    const kinds = await pathKinds()
+    check(kinds.length > 0 && kinds.every((k) => k === 'curve'), `Team reporting lines stay the Default style's curves when the app look is ${label}`, JSON.stringify(kinds))
+    const sources = await teamHandles('source')
+    check(sources.length > 1 && sources.every((s) => s === 'bottom'), `Team handles stay on the top-down sides when the app look is ${label}`, JSON.stringify(sources))
+    check((await page.locator(`${TEAM} .react-flow[data-layout=top-down]`).count()) === 1, `the Team canvas carries its own data-layout when the app look is ${label}`)
   }
-  await setCanvas({ nodeStyle: 'compact' })
-  const autoLayout = page.locator('.editor').getByRole('button', { name: 'Auto-layout', exact: true })
+  await shot('team-fixed-look')
+  await setCanvas({ pattern: 'dots', edges: 'curved', layout: 'top-down', nodeStyle: 'card' })
   const teamRoot = async () => {
     const name = NAME
     const list = await page.evaluate(() => window.orgai.projects.list())
@@ -615,11 +616,17 @@ try {
     return p?.roles.find((r) => r.reportsTo === null)?.id
   }
   const rid = await teamRoot()
-  // Team tab phase 1 (D5): a line dragged from the root's handle lands on the middle of a report's body in every node style
-  // and layout: the node is highlighted while hovered and no connection line is left after the drop.
-  for (const [style, layout] of [['card', 'top-down'], ['compact', 'left-right'], ['station', 'left-right'], ['hex', 'radial']]) {
-    await setCanvas({ nodeStyle: style, layout })
-    await sleep(700)
+  // The Layout menu is the Team's only canvas control: two direction radios and "Arrange automatically".
+  const chooseLayout = async (item) => {
+    await page.locator('[data-testid=team-layout]').click()
+    await page.locator('[data-testid=team-layout-menu]').waitFor({ state: 'visible', timeout: 5000 })
+    await page.locator(`[data-testid=${item}]`).click()
+    await sleep(900)
+  }
+  // Team tab phase 1 (D5): a line dragged from the root's handle lands on the middle of a report's body in both Team layout
+  // directions: the node is highlighted while hovered and no connection line is left after the drop.
+  for (const [style, layout] of [['card', 'top-down'], ['card', 'left-right']]) {
+    await chooseLayout(layout === 'top-down' ? 'team-layout-top-down' : 'team-layout-left-right')
     await page.locator(`${TEAM} .react-flow__controls-fitview`).click()
     await sleep(700)
     const kidId = await page.locator(`${TEAM} .react-flow__node`).evaluateAll((els, root) => els.map((e) => e.dataset.id).filter((id) => id !== root).pop(), rid)
@@ -637,26 +644,35 @@ try {
     check((await page.locator(`${TEAM} .react-flow__connection`).count()) === 0, `${style} / ${layout}: no connection line is left after the drop`)
     check((await page.locator(`${TEAM} .role-node[data-drop]`).count()) === 0, `${style} / ${layout}: no highlight is left after the drop`)
   }
-  await setCanvas({ nodeStyle: 'compact', layout: 'top-down' })
-  await setCanvas({ layout: 'left-right' })
-  await autoLayout.click()
-  await sleep(800)
+  // The direction is the Team's own (localStorage orgai.teamLayout), never the app-wide canvas layout, and it re-lays out everything.
+  await chooseLayout('team-layout-left-right')
   b = await flowBoxes(TEAM)
   const kids = Object.keys(b).filter((k) => k !== rid)
-  check(!!b[rid] && kids.every((k) => b[k].x >= b[rid].x + b[rid].w - 1), 'Team auto-layout left to right puts reports right of the root', JSON.stringify(b))
-  await shot('team-left-right-compact')
-  await setCanvas({ layout: 'radial' })
-  await autoLayout.click()
-  await sleep(800)
+  check(!!b[rid] && kids.every((k) => b[k].x >= b[rid].x + b[rid].w - 1), 'Team Left to right puts reports right of the root', JSON.stringify(b))
+  check((await teamHandles('source')).every((s) => s === 'right'), 'Team handles follow Left to right')
+  check((await page.locator(`${TEAM} .react-flow[data-layout=left-right]`).count()) === 1, 'the Team canvas carries data-layout=left-right')
+  check((await page.evaluate(() => localStorage.getItem('orgai.teamLayout'))) === 'left-right', 'the Team layout is stored under orgai.teamLayout')
+  check((await html('data-canvas-layout')) === 'top-down', 'the Team layout does not change the app-wide canvas layout')
+  check((await page.locator('[data-testid=team-layout-left-right]').count()) === 0, 'the Layout menu closed after a pick')
+  await shot('team-left-right')
+  await chooseLayout('team-layout-top-down')
   b = await flowBoxes(TEAM)
-  check((await page.locator(`${TEAM} .react-flow[data-layout=radial]`).count()) === 1, 'the Team canvas carries data-layout=radial')
-  const ds = kids.map((k) => dist(b[k], b[rid]))
-  check(ds.length > 0 && ds.every((d) => d > 100), 'Team auto-layout radial places every role around the root', JSON.stringify(ds))
-  await shot('team-radial')
+  check(!!b[rid] && kids.every((k) => b[k].y >= b[rid].y + b[rid].h - 1), 'Team Top to bottom puts reports under the root', JSON.stringify(b))
+  // Arrange automatically: a role dragged out of place goes back to its slot.
+  const kid0 = kids[0]
+  const moved = await page.locator(`${TEAM} .react-flow__node[data-id="${kid0}"]`).boundingBox()
+  await page.mouse.move(moved.x + 40, moved.y + 10)
+  await page.mouse.down()
+  await page.mouse.move(moved.x + 60, moved.y + 70, { steps: 6 })
+  await page.mouse.up()
+  await sleep(300)
+  await chooseLayout('team-layout-arrange')
+  b = await flowBoxes(TEAM)
+  check(kids.every((k) => b[k].y >= b[rid].y + b[rid].h - 1), 'Arrange automatically puts every report under the root again', JSON.stringify(b))
   for (const theme of ['dark', 'light']) {
     await setAppearance({ theme }, { pattern: 'blueprint', layout: 'top-down', nodeStyle: 'card', edges: 'orthogonal' })
-    await autoLayout.click()
-    await sleep(600)
+    await chooseLayout('team-layout-arrange')
+    await sleep(300)
     check(await noPageScroll(), `Team editor has no page scroll at 1024x640 ${theme}`)
     await shot(`team-blueprint-${theme}`)
   }

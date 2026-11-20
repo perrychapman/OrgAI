@@ -152,14 +152,15 @@ const names = (roles: readonly Role[]): string =>
   roles.length <= 1 ? (roles[0]?.name ?? '') : `${roles.slice(0, -1).map((r) => r.name).join(', ')} and ${roles[roles.length - 1].name}`
 
 /**
- * The inspector banner after a change of reporting lines, or null when no role gained or lost spawn rights.
+ * The sentence about a change of reporting lines that gave a role the right to hand work on, or took it away; null when
+ * no role gained or lost it (vocabulary of docs/design/team-tab-overhaul.md 0.1: delegate, hand work to).
  * `cause` is the name of the role that was added, moved or removed.
  */
 export function spawnNotice(before: readonly Role[], after: readonly Role[], cause: string): string | null {
   const { gained, lost } = spawnRightsChange(before, after)
   const parts: string[] = []
-  if (gained.length > 0) parts.push(`${names(gained)} can now create subagents, because ${cause} reports to ${gained.length === 1 ? 'it' : 'them'}.`)
-  if (lost.length > 0) parts.push(`${names(lost)} can no longer create subagents: nobody ${lost.length === 1 ? 'it' : 'they'} may delegate to is left.`)
+  if (gained.length > 0) parts.push(`${names(gained)} can now hand work to other roles, because ${cause} reports to ${gained.length === 1 ? 'it' : 'them'}.`)
+  if (lost.length > 0) parts.push(`${names(lost)} can no longer hand work to other roles: no role is left to delegate to.`)
   return parts.length > 0 ? parts.join(' ') : null
 }
 

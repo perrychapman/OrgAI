@@ -1,6 +1,9 @@
 // Pocket Office checks (docs/design/pocket-office.md "Living office rework", sections 8 and 9 S6).
 // Called by office.mjs (focused runner) and canvas.mjs (CI) so Pocket Office stays on the token-free path: mock adapter only.
 // One building per team, no floors: people are looked up by id and building coordinates, never by floor.
+// The Team tab no longer shows the office (Team tab overhaul phase 2, docs/design/team-tab-overhaul.md 0.1): the old Team
+// checks (static building, 33-role zoom/Fit/Find/keyboard, Back to office) were dropped with it and the Canvas style
+// popover check moved to Live. Settings and Live keep every other step.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SHOTS_DIR, check, endSession, log, openAppSettings, openProject, openTeam, projectTab, sleep } from './lib.mjs'
@@ -162,309 +165,6 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   await page.keyboard.press('ArrowRight')
   await page.waitForFunction(() => document.documentElement.dataset.canvasPresentation === 'pocket-office')
   await openProject(page, name)
-  await openTeam(page)
-  const styleTrigger = page.getByRole('button', { name: 'Canvas style', exact: true })
-  await styleTrigger.click()
-  const stylePanel = page.locator('[data-testid=canvas-style-popover]')
-  await stylePanel.waitFor()
-  await page.waitForFunction(() => document.activeElement?.matches('[data-testid="canvas-presentation"] input[value="pocket-office"]'))
-  check(await stylePanel.locator('[data-testid=canvas-preset]').count() === 0, 'Office toolbar does not offer accidental Graph preset switches')
-  check(await stylePanel.locator('[data-testid=canvas-palette-choice]').count() === 3, 'toolbar offers the same visual Office palette choices')
-  await page.keyboard.press('Escape')
-  await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Canvas style' || document.activeElement?.textContent?.trim() === 'Canvas style')
-  check(await styleTrigger.evaluate(el => el === document.activeElement), 'Office style Escape returns focus to Canvas style')
-
-  // ---------- Team: one static building at both window sizes, both themes, three palettes ----------
-  const placed = new Set()
-  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
-    await resizeTo(w, h)
-    for (const theme of ['dark', 'light']) {
-      for (const palette of ['color', 'neutral', 'green']) {
-        const tag = `at ${w}x${h} ${theme}/${palette}`
-        await setAppearance({ theme }, { presentation: 'pocket-office', scenePalette: palette })
-        await scene().waitFor()
-        check(await scene().getAttribute('data-mode') === 'team', `Team is static ${tag}`)
-        check(await scene().getAttribute('data-palette') === palette, `office follows palette ${tag}`)
-        check(await noPageScroll(), `office fits the window ${tag}`)
-        check(await scene().locator('[data-office-agent-id]').count() > 1, `Team exposes named agent buttons ${tag}`)
-        const targets = await targetsOk()
-        check(targets.count > 0 && targets.size && targets.aligned && targets.named && !targets.overlap, `native person targets cover their visible sprites with accessible names ${tag}`, JSON.stringify(targets))
-        const directory = scene().locator('details.office-directory')
-        check(await directory.count() === 1 && await directory.getAttribute('open') === null, `agent directory stays optional ${tag}`)
-        const identityFrames = await scene().locator('[data-office-sprite-id]').evaluateAll(sprites => sprites.map(sprite => sprite.style.backgroundPosition))
-        check(identityFrames.length <= 12 && new Set(identityFrames).size === identityFrames.length, `small team people have distinct silhouettes ${tag}`)
-        const fills = await scene().evaluate(el => {
-          const s = el.querySelector('.office-stage')
-          const map = el.querySelector('[data-testid=office-floor]')?.getBoundingClientRect()
-          return !!s && !!map && map.width >= s.clientWidth - 1 && map.height >= s.clientHeight - 1
-        })
-        check(fills, `office map fills the resized stage ${tag}`)
-        check(await scene().locator('[data-office-department-id]').count() > 0, `real reporting branches label departments ${tag}`)
-        const team = await scene().evaluate(el => ({
-          clock: el.dataset.officeClock, animated: el.dataset.officeAnimated, pause: !!el.querySelector('[data-testid=office-pause]'),
-          bubbles: el.querySelectorAll('[data-testid=office-bubble]').length, marks: el.querySelectorAll('[data-testid=office-mark]').length,
-          cues: [...el.querySelectorAll('[data-office-sprite-id]')].map(s => s.dataset.officeCue), states: [...el.querySelectorAll('[data-office-sprite-id]')].map(s => s.dataset.officeState),
-          floorText: /\bfloors?\b/i.test(el.textContent), floorAttr: el.hasAttribute('data-floor') || !!el.querySelector('[data-floor], [data-office-floor]'),
-          floorButtons: [...el.querySelectorAll('button')].some(b => /floor/i.test(`${b.textContent} ${b.getAttribute('aria-label')}`)),
-          stageLabel: el.querySelector('[data-testid=office-stage]').getAttribute('aria-label'), stageRole: el.querySelector('[data-testid=office-stage]').getAttribute('role'),
-          people: [...el.querySelectorAll('button[data-office-worker-id]')].map(b => ({ name: b.querySelector('.office-person-name')?.textContent, line: b.querySelector('.office-person-line')?.textContent, label: b.getAttribute('aria-label') }))
-        }))
-        check(team.clock === 'stopped' && team.animated === '0' && team.cues.every(cue => cue === 'none') && team.states.every(state => state === 'idle'), `Team has no clock, no cues and every person idle ${tag}`, JSON.stringify(team))
-        check(!team.pause && team.bubbles === 0 && team.marks === 0, `Team has no Pause motion, bubbles or marks ${tag}`)
-        check(!team.floorText && !team.floorAttr && !team.floorButtons, `Team has no floor text, attribute or button ${tag}`)
-        check(/^Office scene\. Arrow keys pan, plus and minus zoom, 0 fits the building/.test(team.stageLabel ?? ''), `the stage names its keys ${tag}`, team.stageLabel)
-        check(team.stageRole === 'group' && /arrow keys/i.test(team.stageLabel ?? '') && /plus and minus/i.test(team.stageLabel ?? '') && /\b0 fits\b/.test(team.stageLabel ?? '') && /home/i.test(team.stageLabel ?? ''), `the stage is a role=group whose label mentions the keys ${tag}`, `${team.stageRole} ${team.stageLabel}`)
-        check(team.people.length > 1 && team.people.every(p => p.line && p.label === `${p.name}, ${p.line}`) && team.people[0].line === 'Orchestrators', `Team plate line 2 is the department name (Orchestrators in the lobby) ${tag}`, JSON.stringify(team.people))
-        placed.add(JSON.stringify(await positionsOf()))
-        await shot(`office-team-${w}x${h}-${theme}-${palette}`)
-      }
-    }
-  }
-  check(placed.size === 1, 'data-office-x/y are identical at 1600x1000 and 1024x640 in every theme and palette', [...placed].join(' / '))
-  await keyShot('team-1600-light-green')
-
-  // Zoom set 0.5, 1, 2, 3, 4: coordinates never move, targets stay usable, plates follow the zoom, instant steps.
-  await stage().focus()
-  await page.keyboard.press('Home')
-  await settle()
-  const home = await positionsOf()
-  for (const target of [0.5, 1, 2, 3, 4, 2]) {
-    const reached = await zoomTo(target)
-    const info = await stageInfo()
-    check(reached && info.zoom === target && (info.readout.includes(target === 0.5 ? '½×' : `${target}×`) || info.readout.includes(`Zoom ${target * 100}%`)), `zoom reads ${target === 0.5 ? '½×' : `${target}×`} with data-zoom ${target}`, JSON.stringify(info))
-    check(info.aria === `Zoom ${target * 100}%`, `the zoom readout is labelled "Zoom ${target * 100}%" at zoom ${target}`, String(info.aria))
-    check(JSON.stringify(await positionsOf()) === JSON.stringify(home), `data-office-x/y do not change at zoom ${target}`)
-    const t = await targetsOk()
-    check(t.size && t.aligned && t.named && !t.overlap, `person targets are at least 24 px, aligned and apart at zoom ${target}`, JSON.stringify(t))
-    const plates = await scene().locator('.office-person-label').evaluateAll(labels => labels.map(label => getComputedStyle(label).display))
-    check(info.plates === (target >= 2 ? 'always' : 'hover') && plates.every(display => (target >= 2) === (display !== 'none')), `nameplates are ${target >= 2 ? 'always shown' : 'hover-only'} at zoom ${target}`, `${info.plates} ${plates.join(',')}`)
-  }
-  await stage().focus()
-  await page.keyboard.press('Home')
-  await settle()
-  await keyShot('team-default-view')
-
-  // ---------- A real 33-role team: Fit, 1x overview, Tab order, keys, drag, Find ----------
-  // The first twelve roles keep distinct atlas identities (checked on a 12-role team), then the 33-role tree is saved.
-  const original = await page.evaluate(async projectName => (await window.orgai.projects.list()).find(project => project.name === projectName), name)
-  const largeProject = await page.evaluate(async project => {
-    const root = project.roles.find(role => role.reportsTo === null)
-    const template = project.roles.find(role => role.reportsTo !== null) ?? root
-    const roles = [root]
-    for (let branch = 0; branch < 4; branch++) {
-      const leadId = `office-lead-${branch}`
-      roles.push({ ...template, id: leadId, slug: `office-lead-${branch}`, name: `Department lead ${branch + 1}`, reportsTo: root.id })
-      for (let worker = 0; worker < 7; worker++) roles.push({ ...template, id: `office-worker-${branch}-${worker}`, slug: `office-worker-${branch}-${worker}`, name: `Worker ${branch + 1}.${worker + 1}`, reportsTo: leadId })
-    }
-    await window.orgai.projects.save({ ...project, roles: roles.slice(0, 12) })
-    return { ...project, roles }
-  }, original)
-  const reopenTeam = async () => {
-    await page.reload()
-    await page.locator('.sidebar').waitFor()
-    await openProject(page, name)
-    await openTeam(page)
-    await scene().waitFor()
-    await sleep(300)
-  }
-  await reopenTeam()
-  const firstTwelve = await scene().locator('[data-office-sprite-id]').evaluateAll(sprites => sprites.slice(0, 12).map(sprite => sprite.style.backgroundPosition))
-  check(firstTwelve.length === 12 && new Set(firstTwelve).size === 12, 'first twelve people retain visibly distinct atlas identities')
-  await page.evaluate(async project => { await window.orgai.projects.save(project) }, largeProject)
-  await resizeTo(1600, 1000)
-  await reopenTeam()
-  check(await scene().locator('button[data-office-agent-id]').count() === 33, 'large team keeps all 33 real roles in the optional directory')
-  check(await scene().locator('button[data-office-worker-id]').count() === 33, 'the 33-role building shows every person as a native button')
-  check(await scene().getAttribute('data-palette') === 'green', 'saved office presentation and palette survive a renderer reload')
-  const big = await stageInfo()
-  check(big.w === 58 && big.h === 33, 'the 33-role building is 58 x 33 tiles (4 departments of 8 plus the lobby)', JSON.stringify(big))
-  check(big.zoom === 2, 'the 33-role default view is 2x on the lobby', JSON.stringify(big))
-  await zoomButton('Fit').click()
-  await settle()
-  const fit = await stageInfo()
-  check(fit.zoom === 0.5 && fit.sw <= fit.cw && fit.sh <= fit.ch && fit.sl === 0 && fit.st === 0, 'Fit shows the whole 33-role building with no scrollbars', JSON.stringify(fit))
-  check(await scene().locator('[data-office-sprite-id]').evaluateAll(sprites => sprites.length === 33), 'the fitted building still draws all 33 people')
-  const fitPositions = await positionsOf()
-  await keyShot('team-33-fit')
-  await shot('office-team-33-fit')
-  // Overview at 1x: room labels, no nameplates, people targets stay usable.
-  check(await zoomTo(1), 'Zoom in from Fit reaches the 1x overview')
-  const overview = await scene().evaluate(el => {
-    const s = el.querySelector('[data-testid=office-stage]').getBoundingClientRect()
-    const labels = [...el.querySelectorAll('.office-room-label')]
-    return {
-      plates: el.dataset.plates, labels: labels.map(l => l.textContent), visible: labels.map(l => { const r = l.getBoundingClientRect(); return r.width > 0 && r.height > 0 }),
-      shown: labels.filter(l => { const r = l.getBoundingClientRect(); return r.right > s.left && r.left < s.right && r.bottom > s.top && r.top < s.bottom }).length,
-      platesShown: [...el.querySelectorAll('.office-person-label')].filter(p => getComputedStyle(p).display !== 'none').length
-    }
-  })
-  check(overview.plates === 'hover' && overview.platesShown === 0, 'the 1x overview shows no nameplates by default', JSON.stringify(overview))
-  check(overview.labels.length === 5 && overview.labels.every(text => /^.+ · \d+$/.test(text)) && overview.visible.every(Boolean) && overview.shown >= 3, 'the 1x overview shows room labels `{Department} · {n}`', JSON.stringify(overview))
-  check(overview.labels.includes('Orchestrators · 1') && overview.labels.filter(text => text.endsWith('· 8')).length === 4, 'the room labels count the lobby and four full departments', overview.labels.join(' | '))
-  check(JSON.stringify(await positionsOf()) === JSON.stringify(fitPositions), 'the 33-role coordinates do not move between Fit and 1x')
-  await keyShot('team-33-overview-1x')
-  // The room roster: every person has a room label, the lobby first.
-  await openDirectory()
-  const roster = await scene().locator('button[data-office-agent-id]').evaluateAll(buttons => buttons.map(b => ({ id: b.dataset.officeAgentId, room: b.dataset.officeRoom })))
-  check(roster.length === 33 && roster.every(entry => !!entry.room) && new Set(roster.map(entry => entry.room)).size === 5, 'every roster button names its room (data-office-room), five rooms for 33 people', JSON.stringify([...new Set(roster.map(entry => entry.room))]))
-  check(!(await scene().locator('[data-office-floor]').count()), 'roster rows carry no data-office-floor')
-  await scene().locator('details.office-directory summary').click()
-
-  // Keyboard on the stage: arrows pan 48 px (Shift 192), +/- step the zoom, 0 fits, Home is the default view.
-  await stage().focus()
-  await page.keyboard.press('Home')
-  await settle()
-  let before = await stageInfo()
-  check(before.zoom === 2 && before.sw > before.cw, 'Home returns to the 2x default view of the 33-role building', JSON.stringify(before))
-  const pan = async (key, axis, expected, what) => {
-    const start = (await stageInfo())[axis]
-    await page.keyboard.press(key)
-    try { await page.waitForFunction(([a, value]) => { const s = document.querySelector('[data-testid=office-stage]'); return (a === 'sl' ? s.scrollLeft : s.scrollTop) === value }, [axis, start + expected], { timeout: 2000 }) } catch { /* reported below */ }
-    const end = (await stageInfo())[axis]
-    check(end - start === expected, what, `${start} -> ${end}`)
-  }
-  await pan('ArrowRight', 'sl', 48, 'ArrowRight pans the stage 48 px right')
-  await pan('ArrowLeft', 'sl', -48, 'ArrowLeft pans the stage 48 px left')
-  await pan('ArrowDown', 'st', 48, 'ArrowDown pans the stage 48 px down')
-  await pan('ArrowUp', 'st', -48, 'ArrowUp pans the stage 48 px up')
-  await pan('Shift+ArrowRight', 'sl', 192, 'Shift+ArrowRight pans the stage 192 px')
-  await stage().focus()
-  await page.keyboard.press('+')
-  await settle()
-  check((await stageInfo()).zoom === 3, 'plus zooms in one step (data-zoom 3)')
-  await page.keyboard.press('-')
-  await page.keyboard.press('-')
-  await settle()
-  check((await stageInfo()).zoom === 1, 'minus zooms out one step per press (data-zoom 1)')
-  await page.keyboard.press('0')
-  await settle()
-  const keyFit = await stageInfo()
-  check(keyFit.zoom === 0.5 && keyFit.sw <= keyFit.cw && keyFit.sh <= keyFit.ch, 'zero fits the whole building', JSON.stringify(keyFit))
-  await page.keyboard.press('Home')
-  await settle()
-  check((await stageInfo()).zoom === 2, 'Home restores the default view')
-  // Drag on an empty part of the stage pans it (grab cursor, pointer capture; people buttons are excluded).
-  const spot = await stage().evaluate(el => {
-    const r = el.getBoundingClientRect()
-    for (let y = r.top + 30; y < r.bottom - 30; y += 17) for (let x = r.left + 30; x < r.right - 30; x += 19) {
-      const hit = document.elementFromPoint(x, y)
-      if (hit && !hit.closest('button, summary, a') && el.contains(hit)) return { x, y }
-    }
-    return null
-  })
-  if (spot) {
-    const start = await stageInfo()
-    await page.mouse.move(spot.x, spot.y)
-    await page.mouse.down()
-    await page.mouse.move(spot.x - 90, spot.y - 50, { steps: 6 })
-    const dragging = await stage().getAttribute('data-dragging')
-    await page.mouse.up()
-    const end = await stageInfo()
-    check(dragging === 'true' && end.sl - start.sl >= 60 && end.st - start.st >= 30, 'dragging an empty part of the stage pans it', `${start.sl},${start.st} -> ${end.sl},${end.st} dragging=${dragging}`)
-    check(await stage().getAttribute('data-dragging') === null, 'the drag ends cleanly on pointer up')
-  } else check(false, 'found an empty spot on the stage to drag')
-  await stage().focus()
-  await page.keyboard.press('Home')
-  await settle()
-
-  // Tab order: lobby first, then rooms in sequence; every focused person is scrolled into view.
-  const order = await scene().locator('button[data-office-worker-id]').evaluateAll(buttons => buttons.map(b => ({ id: b.dataset.officeWorkerId, label: b.getAttribute('aria-label') })))
-  const rooms = new Map(roster.map(entry => [entry.id, entry.room]))
-  check(/^Orchestrators/.test(rooms.get(order[0].id) ?? ''), 'the first person in building order is in the lobby', `${order[0].id} ${rooms.get(order[0].id)}`)
-  const seq = order.map(person => rooms.get(person.id))
-  const firstSeen = [...new Set(seq)]
-  check(seq.every((room, i) => i === 0 || room === seq[i - 1] || !seq.slice(0, i).includes(room)) && firstSeen[0].startsWith('Orchestrators') && firstSeen.length === 5, 'building order keeps each room together, lobby first', firstSeen.join(' | '))
-  await stage().focus()
-  const tabbed = []
-  let visible = true
-  for (let i = 0; i < order.length; i++) {
-    await page.keyboard.press('Tab')
-    await settle()
-    const id = await page.evaluate(() => document.activeElement?.dataset?.officeWorkerId ?? null)
-    tabbed.push(id)
-    if (id && !(await inStage(id))) { visible = false; log('not in view after Tab:', id) }
-  }
-  check(JSON.stringify(tabbed) === JSON.stringify(order.map(person => person.id)), 'Tab walks all 33 people in building order, lobby first', tabbed.slice(0, 6).join(','))
-  check(visible, 'Tab scrolls every focused person into view')
-  await page.keyboard.press('Tab')
-  check(await page.evaluate(() => !document.activeElement?.dataset?.officeWorkerId), 'Tab leaves the people after the last one')
-  await stage().focus()
-  await page.keyboard.press('Home')
-  await settle()
-
-  // Keyboard zoom with a person focused: they stay inside the stage, each change is announced once, the readout is labelled.
-  await page.keyboard.press('Tab')
-  const zoomWho = await page.evaluate(() => document.activeElement?.dataset?.officeWorkerId ?? null)
-  check(!!zoomWho, 'Tab from the stage focuses a person for the keyboard zoom pass', String(zoomWho))
-  await sleep(1100)
-  await page.evaluate(() => {
-    window.__said?.stop()
-    const region = document.querySelector('[data-testid=tray-announce]')
-    const list = []
-    let last = ''
-    const observer = new MutationObserver(() => { const text = region.textContent ?? ''; if (text && text !== last) list.push(text); last = text })
-    observer.observe(region, { childList: true, characterData: true, subtree: true })
-    window.__said = { list, stop: () => observer.disconnect() }
-  })
-  await page.keyboard.press('+')
-  await waits('plus announces `Zoom 300%`', () => window.__said.list.includes('Zoom 300%'), undefined, 4000)
-  await settle()
-  check((await stageInfo()).zoom === 3 && await inStage(zoomWho) && await page.evaluate(id => document.activeElement?.dataset?.officeWorkerId === id, zoomWho), 'plus keeps the focused person inside the stage and focused', JSON.stringify(await stageInfo()))
-  check((await stageInfo()).aria === 'Zoom 300%', 'the zoom readout is labelled `Zoom 300%` after plus')
-  await sleep(1100) // the frame announcer joins lines said within one second of each other (JOIN_WINDOW_MS)
-  await page.keyboard.press('-')
-  await waits('minus announces `Zoom 200%`', () => window.__said.list.includes('Zoom 200%'), undefined, 4000)
-  await settle()
-  check((await stageInfo()).zoom === 2 && await inStage(zoomWho), 'minus keeps the focused person inside the stage')
-  await settle()
-  const said = await page.evaluate(() => window.__said.list.slice())
-  check(JSON.stringify(said) === JSON.stringify(['Zoom 300%', 'Zoom 200%']), 'each keyboard zoom change is announced exactly once through the frame live region', JSON.stringify(said))
-  await page.evaluate(() => window.__said.stop())
-  await sleep(1100) // later announcement checks read the whole region text, so let this one age out of the join window
-  await stage().focus()
-  await page.keyboard.press('Home')
-  await settle()
-
-  // Find a person (roster): selects, pans so the person is inside, rings them, then the ring goes away.
-  await openDirectory()
-  await scene().locator('button[data-office-agent-id="office-worker-3-6"]').click()
-  await waits('Find a person rings the person (data-office-found)', () => document.querySelector('button[data-office-worker-id="office-worker-3-6"]')?.getAttribute('data-office-found') === 'true')
-  await waits('Find a person brings the person inside the stage', () => {
-    const el = document.querySelector('button[data-office-worker-id="office-worker-3-6"]')
-    const s = document.querySelector('[data-testid=office-stage]')?.getBoundingClientRect()
-    if (!el || !s) return false
-    const r = el.getBoundingClientRect()
-    return r.left >= s.left && r.right <= s.right && r.top >= s.top && r.bottom <= s.bottom
-  }, undefined, 8000)
-  check(await scene().locator('button[data-office-worker-id="office-worker-3-6"]').getAttribute('aria-pressed') === 'true', 'Find a person selects the person')
-  check(await scene().locator('[data-office-found]').count() === 1, 'only one person is ringed at a time')
-  // The frame announcer joins lines said within a second of each other (JOIN_WINDOW_MS), so earlier keyboard-zoom lines may precede it:
-  // the Showing line must be the latest and appear exactly once.
-  const findSaid = (await page.locator('[data-testid=tray-announce]').first().textContent()) ?? ''
-  check(/(^|\. )Showing Worker 4\.7, Department lead 4$/.test(findSaid) && findSaid.split('Showing ').length === 2, 'Find a person announces `Showing {name}, {room}` once, as the latest line', findSaid)
-  await keyShot('team-33-find')
-  await waits('the Find ring goes away after three seconds', () => !document.querySelector('[data-office-found]'), undefined, 6000)
-  await page.locator('[data-testid=office-role-back]').click()
-  await waits('Back to office returns focus to the found person', () => document.activeElement?.dataset?.officeWorkerId === 'office-worker-3-6', undefined, 3000)
-  await settle()
-  check(await page.evaluate(() => document.activeElement?.dataset?.officeWorkerId === 'office-worker-3-6'), 'focus on the found person holds after the stage settles')
-
-  // Back to the small team for the person keyboard path.
-  await page.evaluate(async project => { await window.orgai.projects.save(project) }, original)
-  await resizeTo(1024, 640)
-  await reopenTeam()
-  const worker = scene().locator('button[data-office-worker-id]').first()
-  await worker.focus()
-  await page.keyboard.press('Enter')
-  await page.locator('[data-testid=role-capabilities]').waitFor()
-  check(await page.locator('[data-testid=role-capabilities]').count() === 1, 'office keyboard selection opens the existing editable role inspector')
-  await page.locator('[data-testid=office-role-back]').click()
-  check(await page.evaluate(() => !!document.activeElement?.hasAttribute('data-office-worker-id') || !!document.activeElement?.hasAttribute('data-office-agent-id')), 'Back to office returns Team focus to its person')
-  await worker.focus()
-  await page.keyboard.press('Enter')
-  await page.locator('[data-testid=role-capabilities]').waitFor()
-  await page.keyboard.press('Escape')
-  check(await page.evaluate(() => !!document.activeElement?.hasAttribute('data-office-worker-id') || !!document.activeElement?.hasAttribute('data-office-agent-id')), 'Escape returns Team focus to an office agent')
 
   // ---------- Live: the deep-tree run (finished agents stay in the office) ----------
   const startRun = async text => {
@@ -493,6 +193,23 @@ export async function checkPocketOffice({ page, name, resizeTo, setAppearance, s
   const liveRooms = await scene().locator('button[data-office-agent-id]').evaluateAll(buttons => buttons.map(b => b.dataset.officeRoom))
   check(liveRooms.length >= 4 && liveRooms.every(Boolean), 'Live roster rows carry data-office-room', JSON.stringify(liveRooms))
   check(!(await scene().evaluate(el => /\bfloors?\b/i.test(el.textContent) || el.hasAttribute('data-floor') || !!el.querySelector('[data-floor], [data-office-floor]'))), 'Live has no floor text or attribute')
+  // The Canvas style popover (moved here from the Team tab, which no longer has one): Office offers palettes, never Graph presets.
+  const styleTrigger = page.locator('.run-body').getByRole('button', { name: 'Canvas style', exact: true })
+  await styleTrigger.click()
+  const stylePanel = page.locator('[data-testid=canvas-style-popover]')
+  await stylePanel.waitFor()
+  await page.waitForFunction(() => document.activeElement?.matches('[data-testid="canvas-presentation"] input[value="pocket-office"]'))
+  check(await stylePanel.locator('[data-testid=canvas-preset]').count() === 0, 'Office toolbar does not offer accidental Graph preset switches')
+  check(await stylePanel.locator('[data-testid=canvas-palette-choice]').count() === 3, 'toolbar offers the same visual Office palette choices')
+  await page.keyboard.press('Escape')
+  await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Canvas style' || document.activeElement?.textContent?.trim() === 'Canvas style')
+  check(await styleTrigger.evaluate(el => el === document.activeElement), 'Office style Escape returns focus to Canvas style')
+  // Pocket Office is a Live and App settings presentation only: with it on app-wide the Team tab still draws its chart.
+  await openTeam(page)
+  check((await page.locator('.editor [data-testid=office-scene], .editor [data-testid=canvas-style-button], .editor [data-testid=office-role-back]').count()) === 0, 'with Pocket Office on, the Team tab has no office scene, Canvas style button or Back to office')
+  check((await page.locator('.editor .frame-stage .react-flow .react-flow__node').count()) > 0, 'with Pocket Office on, the Team tab still draws its role chart')
+  await projectTab(page, 'Live').click()
+  await scene().waitFor()
   // Reduced motion: the app setting stops the clock and every cue.
   await setAppearance({ reduceMotion: 'on' })
   await settle()

@@ -36,13 +36,84 @@ try {
   await sleep(300)
   check((await teamPanelTab(page, 'Role').getAttribute('aria-selected')) === 'true', 'selecting a role switches the panel to Role')
   check((await page.locator('[data-testid=role-capabilities]').count()) === 1, 'the Role pane has the What it can use block')
-  await page.locator('[data-testid=architect-open]').click()
-  await page.locator('[data-testid=team-assistant]').waitFor({ state: 'visible', timeout: 5000 })
-  check((await page.locator('[data-testid=role-capabilities]').count()) === 1, 'the Architect in the tray does not replace the role inspector')
-  await shot('team-architect')
-  await page.locator('[data-testid=team-mode-recommend]').click()
+  // The Architect is reached from Start from (docs/design/team-tab-overhaul.md 1.3), not from the tray. The menu and its
+  // dialog are another engineer's component: the step runs when the menu is mounted.
+  const startFrom = page.locator('[data-testid=team-start-from]')
+  if ((await startFrom.count()) === 1) {
+    await startFrom.click()
+    await page.locator('[data-testid=start-from-architect]').click()
+    await page.locator('[data-testid=org-change-start]').waitFor({ state: 'visible', timeout: 5000 })
+    check((await page.locator('[data-testid=role-capabilities]').count()) === 1, 'the Architect dialog does not replace the role inspector')
+    await shot('team-architect')
+    await page.keyboard.press('Escape')
+    await sleep(300)
+    check(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') === 'team-start-from'), 'closing the Architect dialog returns focus to Start from')
+  } else log('Start from is not mounted yet: the Architect step was skipped')
   await page.locator('.react-flow__pane').click({ position: { x: 5, y: 5 } })
   await shot('editor')
+
+  // The Team header: one row, no overlap, no hint sentence, the notice row reserves its 32 px and the stage never moves
+  // (docs/design/team-tab-overhaul.md 1.1, 1.5 and 1.10). Both window sizes, both themes.
+  const frameSlots = ['.frame-toolbar', '.frame-stage', '.frame-tray', '.frame-footer']
+  for (const [w, h] of [[1024, 640], [1600, 1000]]) {
+    await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+    await sleep(500)
+    for (const theme of ['dark', 'light']) {
+      await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme)
+      await sleep(300)
+      const tag = `${w}x${h} ${theme}`
+      const m = await page.evaluate((slots) => {
+        const box = (el) => { const b = el.getBoundingClientRect(); return { l: b.left, r: b.right, t: b.top, b: b.bottom } }
+        const header = document.querySelector('.editor [data-testid=team-header]')
+        const parts = header ? [...header.querySelectorAll('[data-testid=team-title], [data-testid=team-role-count], [data-testid=team-problems-chip], [data-testid=team-layout], [data-testid=team-start-from], [data-testid=team-files-chip], [data-testid=team-add-role]')].filter((el) => el.getClientRects().length > 0).map((el) => ({ id: el.getAttribute('data-testid'), ...box(el) })) : []
+        const primary = [...document.querySelectorAll('.editor .frame-toolbar .btn.primary')].filter((el) => el.getClientRects().length > 0 && !el.closest('[popover], dialog')).length
+        return {
+          header: header && box(header),
+          parts,
+          primary,
+          slots: Object.fromEntries(slots.map((s) => [s, document.querySelectorAll(s).length])),
+          stage: box(document.querySelector('.frame-stage')),
+          footer: box(document.querySelector('.frame-footer')),
+          footerText: document.querySelector('.frame-footer')?.textContent ?? '',
+          iw: window.innerWidth,
+          sw: document.documentElement.scrollWidth
+        }
+      }, frameSlots)
+      check(!!m.header && m.parts.length >= 4, `the Team header shows its controls at ${tag}`, JSON.stringify(m.parts.map((p) => p.id)))
+      const row = m.parts.length > 0 && Math.max(...m.parts.map((p) => (p.t + p.b) / 2)) - Math.min(...m.parts.map((p) => (p.t + p.b) / 2)) <= 4
+      check(row, `the Team header is one row at ${tag}`, JSON.stringify(m.parts))
+      const overlap = m.parts.some((p, i) => m.parts.some((q, j) => j > i && p.l < q.r - 0.5 && q.l < p.r - 0.5 && p.t < q.b - 0.5 && q.t < p.b - 0.5))
+      check(!overlap, `no two Team header controls overlap at ${tag}`, JSON.stringify(m.parts))
+      check(m.parts.every((p) => p.l >= m.header.l - 0.5 && p.r <= m.header.r + 0.5), `the Team header controls stay inside the header at ${tag}`, JSON.stringify([m.header, m.parts]))
+      check(m.primary === 1, `the header has exactly one primary button (Add role) at ${tag}`, String(m.primary))
+      check(Object.values(m.slots).every((n) => n === 1), `the frame slots toolbar, stage, tray and footer exist at ${tag}`, JSON.stringify(m.slots))
+      check(Math.abs(m.footer.b - m.footer.t - 32) <= 1.5, `the notice row is 32 px high at ${tag}`, JSON.stringify(m.footer))
+      check(!/Drag from a node|Shift\+F10/.test(m.footerText), `the footer hint sentence is gone at ${tag}`, m.footerText)
+      check((await page.locator('[data-testid=team-title]').innerText()) === 'Team' && /^\d+ roles?$/.test(await page.locator('[data-testid=team-role-count]').innerText()), `the Team title and role count show at ${tag}`)
+      check(m.sw <= m.iw, `the Team tab has no horizontal page scroll at ${tag}`)
+      await shot(`team-header-${w}x${h}-${theme}`)
+    }
+  }
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
+  {
+    // Adding a role posts a notice with Undo: the stage's top and bottom edges are the same before, during and after.
+    const stageEdges = () => page.evaluate(() => { const b = document.querySelector('.frame-stage').getBoundingClientRect(); return [Math.round(b.top), Math.round(b.bottom)] })
+    await page.locator('[data-testid=team-hint-dismiss]').click().catch(() => {})
+    await sleep(300)
+    const still = await stageEdges()
+    await page.locator('[data-testid=team-add-role]').click()
+    await page.locator('[data-testid=add-role-popover]').waitFor({ state: 'visible', timeout: 5000 })
+    await page.locator('[data-testid=add-role-submit]').click()
+    await page.locator('[data-testid=team-notice-undo]').waitFor({ timeout: 5000 })
+    check(/^Added New role under /.test(await page.locator('[data-testid=team-notice-row]').innerText()), 'adding a role says "Added {name} under {Parent}." in the notice row')
+    check(JSON.stringify(await stageEdges()) === JSON.stringify(still), 'the stage top and bottom do not move when a notice appears', JSON.stringify([still, await stageEdges()]))
+    await page.locator('[data-testid=team-notice-undo]').click()
+    await sleep(500)
+    check((await page.locator('.react-flow__node').count()) === 4, 'Undo takes the added role out again')
+    check(JSON.stringify(await stageEdges()) === JSON.stringify(still), 'the stage top and bottom do not move when the notice clears', JSON.stringify([still, await stageEdges()]))
+  }
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 900))
+  await sleep(400)
 
   await projectTab(page, 'Live').click()
   await sleep(800)

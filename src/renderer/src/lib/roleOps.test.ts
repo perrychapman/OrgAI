@@ -67,7 +67,7 @@ describe('spawn rights follow delegation (D1)', () => {
     const after = addRoleUnder(before, fresh)
     expect(get(after, 'a')).toMatchObject({ canSpawn: true, spawnable: ['n'] })
     expect(after.map((r) => r.id)).toEqual(['root', 'a', 'b', 'n'])
-    expect(spawnNotice(before, after, 'n')).toBe('a can now create subagents, because n reports to it.')
+    expect(spawnNotice(before, after, 'n')).toBe('a can now hand work to other roles, because n reports to it.')
   })
 
   it('moving the only report away takes the right back, and moving it back grants it again', () => {
@@ -75,7 +75,7 @@ describe('spawn rights follow delegation (D1)', () => {
     const moved = setReportsTo(added, 'n', 'b')
     expect(get(moved, 'a')).toMatchObject({ canSpawn: false, spawnable: [] })
     expect(get(moved, 'b')).toMatchObject({ canSpawn: true, spawnable: ['n'] })
-    expect(spawnNotice(added, moved, 'n')).toBe('b can now create subagents, because n reports to it. a can no longer create subagents: nobody it may delegate to is left.')
+    expect(spawnNotice(added, moved, 'n')).toBe('b can now hand work to other roles, because n reports to it. a can no longer hand work to other roles: no role is left to delegate to.')
     const back = setReportsTo(moved, 'n', 'a')
     expect(get(back, 'a')).toMatchObject({ canSpawn: true, spawnable: ['n'] })
     expect(get(back, 'b')).toMatchObject({ canSpawn: false, spawnable: [] })
@@ -98,7 +98,7 @@ describe('spawn rights follow delegation (D1)', () => {
     const { roles: after, removed } = removeRole(roles, 'n')
     expect(get(after, 'a')).toMatchObject({ canSpawn: false, spawnable: [] })
     expect(get(after, 'a').requiredReports).toBeUndefined()
-    expect(spawnNotice(roles, after, 'n')).toBe('a can no longer create subagents: nobody it may delegate to is left.')
+    expect(spawnNotice(roles, after, 'n')).toBe('a can no longer hand work to other roles: no role is left to delegate to.')
     const back = restoreRole(after, removed!)
     expect(back).toEqual(roles)
   })
@@ -441,7 +441,7 @@ describe('moveNotice (L1)', () => {
     const orch = { ...role('o', null, ['m', 'x']), name: 'Orchestrator', requiredReports: ['x'] }
     const before = [orch, { ...role('m', 'o'), name: 'Manager' }, { ...role('x', 'o'), name: 'X' }]
     const after = setReportsTo(before, 'x', 'm')
-    expect(moveNotice(before, after, 'x')).toBe('Orchestrator no longer delegates to X. Manager can now create subagents, because X reports to it.')
+    expect(moveNotice(before, after, 'x')).toBe('Orchestrator no longer delegates to X. Manager can now hand work to other roles, because X reports to it.')
   })
 
   it('says nothing when only the reporting line changed', () => {
