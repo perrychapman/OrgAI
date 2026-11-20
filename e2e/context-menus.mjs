@@ -273,7 +273,15 @@ try {
   check(await until(async () => (await menuOpen('project-tile-menu').count()) === 0, 2000), 'tile: a second click on More closes its menu')
   await more.click()
   await menuOpen('project-tile-menu').waitFor({ timeout: 5000 })
-  await page.mouse.move(Math.round((tb?.x ?? 300) + 10), Math.round((tb?.y ?? 300) + 10))
+  // Wheel over the tile's own top-left corner, measured now: tb above was taken before the page scrolled the tile into
+  // view (on the tall Dashboard the tile starts at the window's bottom edge, so tb.y + 10 was below the viewport and a
+  // wheel there reaches nothing). The corner is left of the menu (it opens at the pointer, x + 24 and right) and over the page.
+  const tNow = await tile.boundingBox()
+  const wheelAt = { x: Math.round((tNow?.x ?? 300) + 10), y: Math.round((tNow?.y ?? 300) + 10) }
+  const winNow = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
+  const menuNow = await menuOpen('project-tile-menu').boundingBox()
+  check(wheelAt.y < winNow.h && wheelAt.x < winNow.w && !!menuNow && (wheelAt.x < menuNow.x || wheelAt.x > menuNow.x + menuNow.width || wheelAt.y < menuNow.y || wheelAt.y > menuNow.y + menuNow.height), 'tile: the wheel point is inside the window and outside the menu', JSON.stringify({ wheelAt, winNow, menuNow }))
+  await page.mouse.move(wheelAt.x, wheelAt.y)
   await page.mouse.wheel(0, 200)
   check(await until(async () => (await menuOpen('project-tile-menu').count()) === 0, 2000), 'tile: a wheel scroll outside the menu closes it')
   check(await until(() => page.evaluate(moreIsActive), 2000), 'tile: focus returns to More after the wheel dismissal', JSON.stringify(await active()))
