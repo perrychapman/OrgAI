@@ -138,6 +138,13 @@ export interface FactoryKitSource {
   boardLamp?(): ObjectKit
   /** Lens colour for a plan step lamp per step state (lit pending is off; blocked uses the warning token). */
   boardLampColour?(theme: FactoryTheme, state: 'pending' | 'active' | 'done' | 'blocked' | 'skipped', tokens: FactoryTokenColours): string
+  /**
+   * Slice 4 (a shape cue for "done" beside lightness): colour of the boardLamp() part keyed 'lamp.mark' (also
+   * instanceColor) per step state. The kit makes the mark read only for 'done' (e.g. a check or ring in a contrasting
+   * colour; the panel colour for every other state). The engine colours 'lamp.mark' with this and every other
+   * instanceColor part with boardLampColour.
+   */
+  boardLampMarkColour?(theme: FactoryTheme, state: 'pending' | 'active' | 'done' | 'blocked' | 'skipped', tokens: FactoryTokenColours): string
 
   // ---- Slice 4: carriers (section 4.6 budgets, 4.3 palette "Crate, tote, capsule, part"). Optional until the Technical
   // Artist lands them; the engine skips a missing kit. Origin at the object's bottom centre, front +z, metres. All are
@@ -179,5 +186,10 @@ export interface FactoryLighting {
   /** The key DirectionalLight that casts shadows. */
   key: Light
   applyTheme(theme: FactoryTheme, dim: 'on' | 'paused' | 'ended'): void
+  /**
+   * Slice 4: the hall dim tween (section 5.2, 260 ms): light levels between `from` (t 0) and `to` (t 1). At t 1 equals
+   * applyTheme(theme, to). Optional; without it the engine applies `to` at once.
+   */
+  applyBlend?(theme: FactoryTheme, from: 'on' | 'paused' | 'ended', to: 'on' | 'paused' | 'ended', t: number): void
   dispose(): void
 }
