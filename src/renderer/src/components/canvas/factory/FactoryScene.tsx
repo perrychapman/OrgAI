@@ -41,6 +41,8 @@ import { useFrameAnnounce } from '../../layout/CanvasFrame'
 import { FactoryMirror, placeAll, type MirrorEntry, type PlacementRegistry, type PlanSign } from './FactoryMirror'
 import { FactoryLabels, type FactoryLabelsHandle, type NameplateData, type SignData } from './FactoryLabels'
 import { FactoryNotice, type FactoryNoticeKind } from './FactoryNotice'
+import { FactoryControls } from './FactoryControls'
+import { FactoryFind } from './FactoryFind'
 import { CameraController } from './cameraController'
 import type { FactoryCanvasHandle, FactoryCanvasProps } from './FactoryCanvas'
 import type { EngineFloor, FactoryEngineStats, KitHeights } from './engine/FactoryEngine'
@@ -580,10 +582,9 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const tabStopId = tabStop(layout, selectedId)
   const initialView = viewRef.current ?? controller.view
 
-  // Kept for the chrome mount below (Find a worker): read so the values stay wired until the UI Lead drops it in.
-  void findEntries
-  void onFindChoose
-  void findButtonRef
+  const zoomIn = useCallback(() => controller.zoomIn(), [controller])
+  const zoomOut = useCallback(() => controller.zoomOut(), [controller])
+  const fit = useCallback(() => controller.fit(), [controller])
 
   return (
     <div
@@ -650,17 +651,13 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
           </div>
         )}
       </div>
-      {/*
-        slice 2 chrome mount: the UI Lead drops the scene controls here, for example
-        <FactoryControls
-          find={<FactoryFind entries={findEntries} onChoose={onFindChoose} buttonRef={findButtonRef} />}
-          onZoomIn={() => controller.zoomIn()}
-          onZoomOut={() => controller.zoomOut()}
-          onFit={() => controller.fit()}
-        />
-        (no pauseMotion until slice 4). The toolbar sits over the stage's bottom left (section 6.7); give it
-        data-factory-control or role="toolbar" so a press on it never starts a pan.
-      */}
+      {/* Scene controls (section 6.7), over the stage's bottom left; Pause motion arrives with the cues (slice 4). */}
+      <FactoryControls
+        find={<FactoryFind entries={findEntries} onChoose={onFindChoose} buttonRef={findButtonRef} />}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
+        onFit={fit}
+      />
       <output hidden data-testid="factory-state" ref={outRef} />
     </div>
   )
