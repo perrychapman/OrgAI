@@ -90,7 +90,8 @@ describe('material roles', () => {
 
   it('creates one shared material per role, flat or smooth, with metalness 0 to 0.2', () => {
     const m = factoryKits.createMaterials('dark', TOKENS)
-    expect(MATERIAL_ROLES.length).toBeLessThanOrEqual(36)
+    // 34 in slice 3, plus the tote, capsule and part roles of slice 4.
+    expect(MATERIAL_ROLES.length).toBeLessThanOrEqual(40)
     for (const role of MATERIAL_ROLES) {
       const mat = m.get(role)
       expect(m.get(role)).toBe(mat)
@@ -116,7 +117,8 @@ describe('material roles', () => {
     for (const kit of [stack, factoryKits.boardLamp!(), factoryKits.crate!()]) {
       for (const p of kit.parts.filter((x) => x.role === 'lamp')) expect(p.instanceColor, p.key).toBe(true)
     }
-    for (const kit of all) for (const p of kit.parts) if (p.instanceColor) expect(p.role).toBe('lamp')
+    // Slice 4: the console screen is the one other instanceColor part (the engine multiplies its colour by a grey level).
+    for (const kit of all) for (const p of kit.parts) if (p.instanceColor) expect(p.role, `${kit.name}/${p.key}`).toBe(p.screen ? 'screen' : 'lamp')
     m.dispose()
   })
 
@@ -495,9 +497,10 @@ describe('slice 3 state kits', () => {
     expect(crate.parts.filter((p) => p.instanceColor).length).toBe(1)
   })
 
-  it('boardLamp is one lens part with instanceColor, lying on the panel normal at its anchor', () => {
-    expect(boardLamp.parts.length).toBe(1)
+  it('boardLamp is a lens part and a check-mark part, both with instanceColor, lying on the panel normal at its anchor', () => {
+    expect(boardLamp.parts.map((p) => p.key)).toEqual(['boardLamp.lens', 'lamp.mark'])
     expect(boardLamp.parts[0]).toMatchObject({ key: 'boardLamp.lens', role: 'lamp', instanceColor: true })
+    expect(boardLamp.parts[1]).toMatchObject({ key: 'lamp.mark', role: 'lamp', instanceColor: true })
     const b = bounds(boardLamp.parts[0].geometry)
     // Centred on the anchor, within 0.25 m of it in every direction.
     expect(Math.abs(b.min.x + b.max.x)).toBeLessThan(1e-3)
@@ -754,5 +757,317 @@ describe('slice 3 far robot', () => {
     m.applyTheme('light', TOKENS)
     expect((m.get('robot.far') as MeshBasicMaterial).color.getHexString()).toBe(new Color(FACTORY_PALETTE.light.roles.robotFar).getHexString())
     m.dispose()
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Slice 4: carriers, machine strokes, the console screen, the board check mark, the hall dim blend, joints.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const tote = factoryKits.tote!()
+const capsule = factoryKits.capsule!()
+const toolPart = factoryKits.part!()
+const carriers: ObjectKit[] = [tote, capsule, toolPart]
+const STROKES: Record<number, { key: string; kind: string; amount: number }[]> = {
+  0: [{ key: 'machine.0.head', kind: 'translateY', amount: -0.3 }],
+  1: [
+    { key: 'machine.1.arm', kind: 'rotateY', amount: (40 * Math.PI) / 180 },
+    { key: 'machine.1.arm.panel', kind: 'rotateY', amount: (40 * Math.PI) / 180 }
+  ],
+  2: [{ key: 'machine.2.spindle', kind: 'rotateY', amount: 2 * Math.PI }],
+  3: [{ key: 'machine.3.carriage', kind: 'translateX', amount: 0.6 }]
+}
+
+describe('slice 4 carriers', () => {
+  it('are exported on factoryKits with unique kit names and part keys, finite geometry and roles that resolve', () => {
+    for (const k of ['tote', 'capsule', 'part', 'boardLampMarkColour'] as const) expect(factoryKits[k], k).toBeTypeOf('function')
+    expect(new Set([...all, ...stateKits, ...carriers].map((k) => k.name)).size).toBe(all.length + stateKits.length + carriers.length)
+    for (const theme of ['dark', 'light'] as const) {
+      const m = factoryKits.createMaterials(theme, TOKENS)
+      for (const kit of carriers) {
+        const keys = kit.parts.map((p) => p.key)
+        expect(new Set(keys).size, kit.name).toBe(keys.length)
+        for (const p of kit.parts) {
+          expect(() => m.get(p.role), `${kit.name}/${p.key}`).not.toThrow()
+          const pos = p.geometry.getAttribute('position')
+          expect(pos.count % 3, `${kit.name}/${p.key}`).toBe(0)
+          expect(p.geometry.getAttribute('normal')).toBeDefined()
+          expect(p.geometry.getAttribute('uv')).toBeDefined()
+          for (let i = 0; i < pos.array.length; i++) if (!Number.isFinite(pos.array[i])) throw new Error(`${kit.name}/${p.key}: non-finite position`)
+        }
+      }
+      m.dispose()
+    }
+  })
+
+  it('triangle budgets: tote 80, capsule 120, part 12', () => {
+    expect(tris(tote, 'near')).toBeLessThanOrEqual(80)
+    expect(tris(capsule, 'near')).toBeLessThanOrEqual(120)
+    expect(tris(toolPart, 'near')).toBeLessThanOrEqual(12)
+  })
+
+  it('cast no shadow (the engine gives them a blob), are drawn in every band, except the part, which is never drawn far', () => {
+    for (const k of carriers) for (const p of k.parts) expect(p.castShadow, `${k.name}/${p.key}`).toBe(false)
+    for (const k of [tote, capsule]) for (const band of BANDS) expect(tris(k, band), `${k.name} ${band}`).toBeGreaterThan(0)
+    expect(tris(toolPart, 'near')).toBeGreaterThan(0)
+    expect(tris(toolPart, 'mid')).toBeGreaterThan(0)
+    expect(tris(toolPart, 'far')).toBe(0)
+  })
+
+  it('tote: origin at the bottom centre, about 0.7 x 0.35 x 0.5 m, with a dark liner part', () => {
+    const b = kitBounds(tote, 'near')
+    expect(b.min.y).toBeCloseTo(0, 5)
+    expect(b.min.x).toBeCloseTo(-b.max.x, 3)
+    expect(b.min.z).toBeCloseTo(-b.max.z, 3)
+    expect(b.max.x - b.min.x).toBeCloseTo(0.7, 2)
+    expect(b.max.z - b.min.z).toBeCloseTo(0.5, 2)
+    expect(b.max.y).toBeGreaterThan(0.3)
+    expect(b.max.y).toBeLessThanOrEqual(0.36)
+    expect(tote.parts.find((p) => p.key === 'tote.body')!.role).toBe('tote')
+    expect(tote.parts.find((p) => p.key === 'tote.liner')!.role).toBe('boothTrim')
+  })
+
+  it('capsule: lies east-west, 0.5 m long, resting on its origin (bottom centre), a dark band at the middle', () => {
+    const b = kitBounds(capsule, 'near')
+    expect(b.max.x - b.min.x).toBeCloseTo(0.5, 2)
+    expect(b.max.z - b.min.z).toBeLessThan(0.3)
+    expect(b.max.y - b.min.y).toBeLessThan(0.3)
+    expect(b.min.y).toBeCloseTo(0, 5)
+    expect(b.min.x).toBeCloseTo(-b.max.x, 3)
+    const band = bounds(capsule.parts.find((p) => p.key === 'capsule.band')!.geometry)
+    expect(Math.abs(band.min.x + band.max.x)).toBeLessThan(1e-3)
+    expect(band.max.x - band.min.x).toBeLessThan(0.15)
+    expect(capsule.parts.find((p) => p.key === 'capsule.body')!.role).toBe('capsule')
+  })
+
+  it('part: about 0.25 m across, origin at the bottom centre', () => {
+    const b = kitBounds(toolPart, 'near')
+    expect(b.max.x - b.min.x).toBeCloseTo(0.25, 2)
+    expect(b.min.y).toBeCloseTo(0, 5)
+    expect(b.max.y).toBeLessThan(0.25)
+    expect(toolPart.parts[0].role).toBe('part')
+  })
+
+  it('carrier materials take the section 4.3 colours in both themes', () => {
+    for (const theme of ['dark', 'light'] as const) {
+      const m = factoryKits.createMaterials(theme, TOKENS)
+      const r = FACTORY_PALETTE[theme].roles
+      for (const [role, hex] of [['tote', r.tote], ['capsule', r.capsule], ['part', r.part]] as const) {
+        expect((m.get(role) as MeshStandardMaterial).color.getHexString(), `${theme} ${role}`).toBe(new Color(hex).getHexString())
+      }
+      m.dispose()
+    }
+    expect(FACTORY_PALETTE.dark.roles).toMatchObject({ tote: '#5b6b8c', capsule: '#d8dde8', part: '#9aa2b1' })
+    expect(FACTORY_PALETTE.light.roles).toMatchObject({ tote: '#6c7c9c', capsule: '#ffffff', part: '#7d8696' })
+  })
+
+  it('the blob shadow is stronger on the dark floor than on the light one and follows applyTheme', () => {
+    const dark = factoryKits.createMaterials('dark', TOKENS)
+    const light = factoryKits.createMaterials('light', TOKENS)
+    expect(dark.get('blob').opacity).toBeGreaterThan(light.get('blob').opacity)
+    expect(dark.get('blob').opacity).toBeGreaterThanOrEqual(0.5)
+    expect(light.get('blob').opacity).toBeLessThanOrEqual(0.45)
+    dark.applyTheme('light', TOKENS)
+    expect(dark.get('blob').opacity).toBe(light.get('blob').opacity)
+    dark.dispose()
+    light.dispose()
+  })
+})
+
+describe('slice 4 machine strokes', () => {
+  for (const v of VARIANTS) {
+    it(`variant ${v}: the moving sub-part carries its stroke, casts no shadow and is drawn near and mid only`, () => {
+      const m = machines[v]
+      const moving = m.parts.filter((p) => p.stroke)
+      expect(moving.map((p) => p.key).sort()).toEqual(STROKES[v].map((s) => s.key).sort())
+      for (const s of STROKES[v]) {
+        const p = m.parts.find((x) => x.key === s.key)!
+        expect(p.stroke!.kind, s.key).toBe(s.kind)
+        expect(p.stroke!.amount, s.key).toBeCloseTo(s.amount, 5)
+        expect(p.castShadow, s.key).toBe(false)
+        expect(p.lods, s.key).toEqual(['near', 'mid'])
+      }
+      // The static body still casts, and the far block is one part with no stroke.
+      expect(m.parts.find((p) => p.key === `${m.name}.body`)!.castShadow).toBe(true)
+      expect(m.parts.find((p) => p.key === `${m.name}.far`)!.stroke).toBeUndefined()
+      expect(m.parts.find((p) => p.key === `${m.name}.far`)!.lods).toEqual(['far'])
+    })
+  }
+
+  it('keeps each machine within 900 triangles near and 60 far, and the far block unchanged', () => {
+    for (const m of machines) {
+      expect(tris(m, 'near'), m.name).toBeLessThanOrEqual(900)
+      expect(tris(m, 'far'), m.name).toBeLessThanOrEqual(60)
+    }
+    // Slice 3 far blocks: three boxes, four boxes, three boxes, three boxes (12 triangles each).
+    expect(machines.map((m) => tris(m, 'far'))).toEqual([36, 48, 36, 36])
+  })
+
+  it('a stroke at its full amount stays inside the footprint (1.5 x 1.2 m) and the portal posts', () => {
+    const arm = machines[1].parts.find((p) => p.key === 'machine.1.arm')!
+    expect(arm.stroke!.pivot).toEqual({ x: -0.2, y: 0, z: 0 })
+    expect(machines[2].parts.find((p) => p.key === 'machine.2.spindle')!.stroke!.pivot).toBeUndefined()
+    // The head sinks into the tower (still above the plate) and the carriage ends between the portal posts (x +-0.58).
+    const head = bounds(machines[0].parts.find((p) => p.key === 'machine.0.head')!.geometry)
+    expect(head.min.y - 0.3).toBeGreaterThan(0.5)
+    const carriage = bounds(machines[3].parts.find((p) => p.key === 'machine.3.carriage')!.geometry)
+    expect(carriage.min.x).toBeGreaterThanOrEqual(-0.58)
+    expect(carriage.max.x + 0.6).toBeLessThanOrEqual(0.58)
+    // The arm swung 40 degrees about its pivot (towards -z, away from the belt): the tip's far side, plus the machine's
+    // own offset (z -0.45 in the station frame), stays on the plate (z >= -1.45).
+    const ab = bounds(arm.geometry)
+    const swung = Math.sin((40 * Math.PI) / 180) * (ab.max.x - -0.2) + 0.15
+    expect(swung + 0.45).toBeLessThanOrEqual(1.45)
+    expect(ab.max.x - -0.2).toBeLessThanOrEqual(1.0)
+    // The spindle's key lugs sweep a circle within the footprint.
+    const sb = bounds(machines[2].parts.find((p) => p.key === 'machine.2.spindle')!.geometry)
+    expect(Math.max(sb.max.x, -sb.min.x, sb.max.z, -sb.min.z)).toBeLessThanOrEqual(0.63)
+  })
+
+  it('the spindle collars carry lugs off the axis (a turn is visible only with one)', () => {
+    const sb = bounds(machines[2].parts.find((p) => p.key === 'machine.2.spindle')!.geometry)
+    // Collar radius 0.52; the lug reaches past it on x at the lower collar and on z at the upper one.
+    expect(sb.max.x).toBeGreaterThan(0.55)
+    expect(sb.max.z).toBeGreaterThan(0.55)
+  })
+})
+
+describe('slice 4 console screen', () => {
+  it('the screen part is flagged, takes instanceColor and sits in an unlit screen material, near and mid only', () => {
+    for (const kit of [bench, lead]) {
+      const s = kit.parts.find((p) => p.key === 'station.screen')!
+      expect(s.screen).toBe(true)
+      expect(s.instanceColor).toBe(true)
+      expect(s.role).toBe('screen')
+      expect(s.lods).toEqual(['near', 'mid'])
+      expect(s.castShadow).toBe(false)
+      // No other part is a screen.
+      expect(kit.parts.filter((p) => p.screen).length).toBe(1)
+    }
+    const m = factoryKits.createMaterials('dark', TOKENS)
+    expect(m.get('screen')).toBeInstanceOf(MeshBasicMaterial)
+    m.dispose()
+  })
+
+  for (const theme of ['dark', 'light'] as const) {
+    it(`${theme}: the screen colour still reads lit against the console casing at the dimmest glow (0.7, linear)`, () => {
+      const r = FACTORY_PALETTE[theme].roles
+      const c = new Color(r.screen).multiplyScalar(0.7)
+      const lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+      const casing = relativeLuminance(r.console)
+      expect((lum + 0.05) / (casing + 0.05)).toBeGreaterThanOrEqual(1.8)
+      // And the bright end is the palette colour itself.
+      expect(contrastRatio(r.screen, r.console)).toBeGreaterThanOrEqual(2.5)
+    })
+  }
+})
+
+describe('slice 4 board check mark', () => {
+  const LIGHT_TOKENS: FactoryTokenColours = { success: '#0f8a56', warning: '#b45f06', danger: '#c62828', accentText: '#4f33d6' }
+  const mark = boardLamp.parts.find((p) => p.key === 'lamp.mark')!
+  const lens = boardLamp.parts.find((p) => p.key === 'boardLamp.lens')!
+
+  it('boardLamp stays within 60 triangles with the mark, and the mark lies on the lens face', () => {
+    expect(tris(boardLamp, 'near')).toBeLessThanOrEqual(60)
+    expect(triangles(mark.geometry)).toBeGreaterThan(0)
+    const l = bounds(lens.geometry)
+    const b = bounds(mark.geometry)
+    // Inside the lens footprint in x, centred on it, and not further than 1 cm off the lens in any direction.
+    expect(b.min.x).toBeGreaterThan(l.min.x)
+    expect(b.max.x).toBeLessThan(l.max.x)
+    expect(Math.abs((b.min.x + b.max.x) / 2)).toBeLessThan(0.05)
+    expect(b.max.y).toBeLessThanOrEqual(l.max.y + 0.01)
+    expect(b.max.z).toBeLessThanOrEqual(l.max.z + 0.01)
+    expect(mark.castShadow).toBe(false)
+  })
+
+  for (const [theme, tokens] of [['dark', TOKENS], ['light', LIGHT_TOKENS]] as const) {
+    it(`${theme}: the mark reads only on done: dark on the lens when done, the lens colour itself otherwise`, () => {
+      const lensC = (s: 'pending' | 'active' | 'done' | 'blocked' | 'skipped'): string => factoryKits.boardLampColour!(theme, s, tokens)
+      const markC = (s: 'pending' | 'active' | 'done' | 'blocked' | 'skipped'): string => factoryKits.boardLampMarkColour!(theme, s, tokens)
+      expect(contrastRatio(markC('done'), lensC('done'))).toBeGreaterThanOrEqual(7)
+      for (const s of ['pending', 'active', 'blocked', 'skipped'] as const) expect(markC(s), s).toBe(lensC(s))
+      for (const s of ['pending', 'active', 'done', 'blocked', 'skipped'] as const) expect(markC(s)).toMatch(/^#[0-9a-f]{6}$/i)
+    })
+  }
+})
+
+describe('slice 4 hall dim blend', () => {
+  const levels = (l: ReturnType<typeof factoryKits.createLighting>): number[] => [l.key.intensity, ...l.lights.map((x) => x.intensity)]
+  const states = ['on', 'paused', 'ended'] as const
+
+  for (const theme of ['dark', 'light'] as const) {
+    it(`${theme}: t 0 equals the from state and t 1 equals applyTheme(to) for every pair`, () => {
+      const a = factoryKits.createLighting(theme)
+      const b = factoryKits.createLighting(theme)
+      expect(a.applyBlend).toBeTypeOf('function')
+      for (const from of states) {
+        for (const to of states) {
+          a.applyBlend!(theme, from, to, 1)
+          b.applyTheme(theme, to)
+          expect(levels(a), `${from}->${to} t1`).toEqual(levels(b))
+          a.applyBlend!(theme, from, to, 0)
+          b.applyTheme(theme, from)
+          expect(levels(a), `${from}->${to} t0`).toEqual(levels(b))
+        }
+      }
+      a.dispose()
+      b.dispose()
+    })
+
+    it(`${theme}: the midpoint is between the endpoints, t is clamped and a NaN counts as done`, () => {
+      const l = factoryKits.createLighting(theme)
+      l.applyTheme(theme, 'on')
+      const on = l.key.intensity
+      l.applyTheme(theme, 'paused')
+      const paused = l.key.intensity
+      l.applyBlend!(theme, 'on', 'paused', 0.5)
+      expect(l.key.intensity).toBeLessThan(on)
+      expect(l.key.intensity).toBeGreaterThan(paused)
+      expect(l.key.intensity).toBeCloseTo((on + paused) / 2, 6)
+      l.applyBlend!(theme, 'on', 'paused', 7)
+      expect(l.key.intensity).toBeCloseTo(paused, 9)
+      l.applyBlend!(theme, 'on', 'paused', -3)
+      expect(l.key.intensity).toBeCloseTo(on, 9)
+      l.applyBlend!(theme, 'on', 'paused', Number.NaN)
+      expect(l.key.intensity).toBeCloseTo(paused, 9)
+      l.dispose()
+    })
+  }
+
+  it('the light hall dims as much as the dark one in relative terms (at least 25 percent in sRGB at paused)', () => {
+    // sRGB of the lit floor scales with the light multiplier in linear light; the light theme's floor is lit to about
+    // 0.56 linear (measured on screenshots: 197 of 255), the dark one to about 0.02 (39 of 255).
+    const srgb = (lin: number): number => (lin <= 0.0031308 ? lin * 12.92 : 1.055 * Math.pow(lin, 1 / 2.4) - 0.055)
+    const drop = (lin: number, k: number): number => 1 - srgb(lin * k) / srgb(lin)
+    const dark = FACTORY_PALETTE.dark.light
+    const light = FACTORY_PALETTE.light.light
+    expect(drop(0.56, light.dimPaused)).toBeGreaterThanOrEqual(0.25)
+    expect(drop(0.02, dark.dimPaused)).toBeGreaterThanOrEqual(0.25)
+    // And neither is crushed: ended keeps a third of the light at least.
+    expect(dark.dimEnded).toBeGreaterThanOrEqual(0.5)
+    expect(light.dimEnded).toBeGreaterThanOrEqual(0.3)
+  })
+})
+
+describe('slice 4 robot joints and hands', () => {
+  it('the hand is a larger mitten than slice 3 (at least 0.18 m across) and the arms still fit the 1.2 m rest width', () => {
+    const lower = bounds(robot.parts.find((p) => p.key === 'robot.arm.l.lower')!.geometry)
+    // The hand box sits at the end of the forearm: its lowest 0.18 m of height, x extent 0.2.
+    const sizes = new Set<number>()
+    const pos = robot.parts.find((p) => p.key === 'robot.arm.l.lower')!.geometry.getAttribute('position')
+    for (let i = 0; i < pos.count; i++) if (pos.getY(i) < 0.26 + 1e-6) sizes.add(Math.round(pos.getX(i) * 1000))
+    const xs = [...sizes]
+    expect((Math.max(...xs) - Math.min(...xs)) / 1000).toBeGreaterThanOrEqual(0.18)
+    expect(lower.min.y).toBeGreaterThanOrEqual(0.2)
+    const b = kitBounds(robot, 'near')
+    expect(b.max.x - b.min.x).toBeLessThan(1.2)
+  })
+
+  it('both arms mirror each other', () => {
+    const l = bounds(robot.parts.find((p) => p.key === 'robot.arm.l.lower')!.geometry)
+    const r = bounds(robot.parts.find((p) => p.key === 'robot.arm.r.lower')!.geometry)
+    expect(l.min.x).toBeCloseTo(-r.max.x, 4)
+    expect(l.max.x).toBeCloseTo(-r.min.x, 4)
   })
 })

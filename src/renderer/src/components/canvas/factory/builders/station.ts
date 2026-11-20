@@ -201,7 +201,8 @@ export function station(kind: 'lead' | 'bench'): ObjectKit {
   const parts: PartSpec[] = [
     part('station.plate', merge([chamfer(PLATE, PLATE_H, PLATE, 0.14, 0, 0, 0), outfeedPad()]), 'plate'),
     part('station.console', merge(casing), 'console'),
-    part('station.screen', merge(screen), 'screen', { lods: NEAR_MID, cast: false }),
+    // Slice 4: the engine multiplies the screen colour by a grey level (0.7 to 1.0) through instanceColor.
+    part('station.screen', merge(screen), 'screen', { lods: NEAR_MID, cast: false, instanceColor: true, screen: true }),
     part('belt.body', b.body, 'belt', { cast: false }),
     part('belt.rollers', b.drums, 'rollers', { lods: NEAR_MID, cast: false })
   ]
