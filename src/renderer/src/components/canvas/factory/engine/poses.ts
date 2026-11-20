@@ -163,7 +163,35 @@ function shoulderRotation(arm: ArmPose, side: -1 | 1): Matrix4 {
  * upper arm; everything but the wheels leans about the axle; far parts tilt about their base.
  */
 export function posePartMatrices(pose: Pose, pivots: Readonly<Record<string, Anchor>> | undefined, partKeys: readonly string[]): Record<string, Matrix4> {
-  const j = POSES[pose].joints
+  return jointPartMatrices(POSES[pose].joints, pivots, partKeys)
+}
+
+const lerp = (a: number, b: number, t: number): number => a + (b - a) * t
+const lerpArm = (a: ArmPose, b: ArmPose, t: number): ArmPose => ({ forward: lerp(a.forward, b.forward, t), out: lerp(a.out, b.out, t), bend: lerp(a.bend, b.bend, t) })
+
+/** Slice 4 pose blend (section 5.2, POSE_MS): every joint value linearly between `a` (t 0) and `b` (t 1); t is clamped. */
+export function lerpJoints(a: JointPose, b: JointPose, t: number): JointPose {
+  const s = Math.min(1, Math.max(0, t))
+  return {
+    lean: lerp(a.lean, b.lean, s),
+    head: lerp(a.head, b.head, s),
+    armL: lerpArm(a.armL, b.armL, s),
+    armR: lerpArm(a.armR, b.armR, s),
+    farTilt: lerp(a.farTilt, b.farTilt, s)
+  }
+}
+
+/** Body placement between two poses: position linear, yaw along the shorter way round. t is clamped. */
+export function lerpBody(a: PoseBody, b: PoseBody, t: number): PoseBody {
+  const s = Math.min(1, Math.max(0, t))
+  let dy = (b.yaw - a.yaw) % (2 * Math.PI)
+  if (dy > Math.PI) dy -= 2 * Math.PI
+  else if (dy < -Math.PI) dy += 2 * Math.PI
+  return { x: lerp(a.x, b.x, s), y: lerp(a.y, b.y, s), z: lerp(a.z, b.z, s), yaw: a.yaw + dy * s }
+}
+
+/** Per-part local matrices for any joint values (the seven poses and the blends between them). */
+export function jointPartMatrices(j: JointPose, pivots: Readonly<Record<string, Anchor>> | undefined, partKeys: readonly string[]): Record<string, Matrix4> {
   const lean = about(new Vector3(0, LEAN_PIVOT_Y, 0), rotX(j.lean))
   const head = lean.clone().multiply(about(pivot(pivots, 'pivot.head', [0, 0.98, 0]), rotX(j.head)))
   const arm = (side: -1 | 1, a: ArmPose): { upper: Matrix4; lower: Matrix4 } => {
@@ -206,5 +234,14 @@ export class PoseLibrary {
     let m = this.cache.get(pose)
     if (!m) this.cache.set(pose, (m = posePartMatrices(pose, this.pivots, this.partKeys)))
     return m
+  }
+
+  /**
+   * Slice 4: the robot between `from` (t 0) and `to` (t 1) against a station kit's anchors: blended body placement and
+   * part matrices. At t 0 and t 1 it equals the static poses (no cache: a blend lasts POSE_MS).
+   */
+  blend(from: Pose, to: Pose, t: number, stationAnchors: Readonly<Record<string, Anchor>> | undefined): { body: PoseBody; parts: Record<string, Matrix4> } {
+    const body = lerpBody(poseBody(from, stationAnchors), poseBody(to, stationAnchors), t)
+    return { body, parts: jointPartMatrices(lerpJoints(POSES[from].joints, POSES[to].joints, t), this.pivots, this.partKeys) }
   }
 }

@@ -53,6 +53,10 @@ const ROLES: Record<string, RoleDef> = {
   /** Far-LOD capsule: unlit (a few pixels wide, so lighting must not decide its contrast against the floor). */
   'robot.far': { colour: 'robotFar', kind: 'basic' },
   crate: { colour: 'crate', kind: 'flat', roughness: 0.8, metalness: 0 },
+  /** Slice 4 carriers: the work-order tote and the tool part are faceted, the message capsule is round. */
+  tote: { colour: 'tote', kind: 'flat', roughness: 0.75, metalness: 0.05 },
+  capsule: { colour: 'capsule', kind: 'smooth', roughness: 0.4, metalness: 0.1 },
+  part: { colour: 'part', kind: 'flat', roughness: 0.6, metalness: 0.2 },
   paint: { colour: 'paint', kind: 'flat', roughness: 0.9, metalness: 0 },
   /** Dark marks printed on a paint decal (the lead's line plate): offset further than the paint. */
   paintMark: { colour: 'belt', kind: 'flat', roughness: 0.9, metalness: 0 },
@@ -67,8 +71,11 @@ const ROLES: Record<string, RoleDef> = {
 
 export const MATERIAL_ROLES: readonly MaterialRole[] = Object.keys(ROLES)
 
-/** Blob shadow strength (material opacity). */
-const BLOB_OPACITY = 0.38
+/**
+ * Blob shadow strength (material opacity) per theme. Slice 4: black on the dark floor (#272c37) at 0.38 was nearly
+ * invisible under a capsule or tote in flight, so dark takes a stronger value; on the pale light floor 0.38 reads as is.
+ */
+const BLOB_OPACITY: Record<FactoryTheme, number> = { dark: 0.62, light: 0.4 }
 
 export function createMaterials(theme: FactoryTheme, tokens: FactoryTokenColours): FactoryMaterials {
   const palette0 = FACTORY_PALETTE[theme]
@@ -115,7 +122,6 @@ export function createMaterials(theme: FactoryTheme, tokens: FactoryTokenColours
   const blob = basic('blob')
   blob.map = blobTexture
   blob.transparent = true
-  blob.opacity = BLOB_OPACITY
   blob.depthWrite = false
   basic('ring').depthWrite = false
   const mark = materials.get('paintMark')!
@@ -131,6 +137,7 @@ export function createMaterials(theme: FactoryTheme, tokens: FactoryTokenColours
     ;(materials.get('floor') as MeshStandardMaterial).color.set('#ffffff')
     repaintGridTexture(grid, p.roles.floor, p.gridFaint, p.gridStrong)
     basic('ring').color.set(nextTokens.accentText)
+    basic('blob').opacity = BLOB_OPACITY[next]
   }
   applyTheme(theme, tokens)
 

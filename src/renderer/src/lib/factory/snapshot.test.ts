@@ -76,6 +76,9 @@ describe('factoryTestState', () => {
       vacant: 0,
       cues: [],
       cuesStarted: 0,
+      recentCues: [],
+      cuePeaks: { carriers: 0, perSender: 0, parts: 0, crates: 0, arrivalsPerSecond: 0, ambient: 0 },
+      logEntries: 0,
       messageCursor: null,
       view: { ppm: 0, targetX: 0, targetZ: 0 },
       loop: 'stopped',
@@ -121,7 +124,7 @@ describe('factoryTestState', () => {
       frames: 1,
       engines: 1,
       perf: { drawCalls: 5, shadowCalls: 4, triangles: 120, geometries: 4, textures: 1, frameP95Ms: 1.23456, intervalP95Ms: 0, firstFrameMs: 88.888, gpu: 'ANGLE (Test GPU)' },
-      cues: [{ id: 'c1', kind: 'capsule', from: 'a', to: null, start: 0, duration: 500, progress: 0.5 }],
+      cues: [{ id: 'c1', kind: 'capsule', from: 'a', to: null, start: 0, duration: 500, progress: 0.5, opacity: 1 }],
       cuesStarted: 2,
       messageCursor: '1|a|b|hi'
     })

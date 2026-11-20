@@ -21,13 +21,15 @@ const HEAD_PIVOT_Y = 0.98
 function arm(side: -1 | 1): { upper: BufferGeometry; lower: BufferGeometry } {
   const sx = side * SHOULDER_X
   const ex = side * 0.47
-  const hx = side * 0.5
+  const hx = side * 0.48
   const upper = merge([
     ball(0.1, 6, 4, sx, SHOULDER_Y, 0),
     strut([sx, SHOULDER_Y, 0], [ex, 0.62, 0.1], 0.11),
     ball(0.085, 6, 4, ex, 0.62, 0.1)
   ])
-  const lower = merge([strut([ex, 0.62, 0.1], [hx, 0.4, 0.3], 0.09), box(0.13, 0.1, 0.13, hx, 0.3, 0.32)])
+  // Slice 4: a larger mitten (0.2 x 0.18 x 0.2 m, was 0.13 x 0.1 x 0.13) and a thicker forearm, so a raised hand is still a
+  // few pixels at ppm 30 to 50. The tip reaches 0.58 m from the centre (the rest-pose width stays under 1.2 m).
+  const lower = merge([strut([ex, 0.62, 0.1], [hx, 0.4, 0.3], 0.11), box(0.2, 0.18, 0.2, hx, 0.26, 0.32)])
   return { upper, lower }
 }
 

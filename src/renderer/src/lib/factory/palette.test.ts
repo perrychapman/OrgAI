@@ -56,6 +56,33 @@ describe('FACTORY_PALETTE', () => {
       expect(Math.sign(relativeLuminance(r.robotFar) - relativeLuminance(r.floor))).toBe(Math.sign(relativeLuminance(r.robotBody) - relativeLuminance(r.floor)))
     })
 
+    it(`${theme}: robot joints and hands separate from the machine body (2:1), the floor and the plate (slice 4)`, () => {
+      // Slice 3 numbers: dark 1.6:1 and light 1.1:1 against the machine. A raised hand is a few pixels at ppm 30 to 50, so it
+      // needs the contrast to be the thing that reads.
+      expect(contrastRatio(r.robotJoint, r.machine)).toBeGreaterThanOrEqual(2)
+      expect(contrastRatio(r.robotJoint, r.floor)).toBeGreaterThanOrEqual(3)
+      expect(contrastRatio(r.robotJoint, r.plate)).toBeGreaterThanOrEqual(2)
+      expect(contrastRatio(r.robotJoint, r.machinePanel)).toBeGreaterThanOrEqual(1.2)
+      // The limb stays distinct from the torso it hangs beside: by hue in dark (sky blue on a pale torso, 1.3:1 in
+      // luminance, as the slice 3 grey was 2:1 but sat on the machine), by lightness in light (1.9:1).
+      expect(contrastRatio(r.robotJoint, r.robotBody)).toBeGreaterThanOrEqual(1.25)
+    })
+
+    it(`${theme}: carriers (tote, capsule, part) read against the floor, and the part against the belt it rides`, () => {
+      expect(contrastRatio(r.tote, r.floor)).toBeGreaterThanOrEqual(1.5)
+      expect(contrastRatio(r.capsule, r.floor)).toBeGreaterThanOrEqual(1.4)
+      expect(contrastRatio(r.part, r.belt)).toBeGreaterThanOrEqual(3)
+      // Told apart from each other and from the wood crate by hue or lightness.
+      expect(new Set([r.tote, r.capsule, r.part, r.crate]).size).toBe(4)
+      expect(contrastRatio(r.tote, r.crate)).toBeGreaterThanOrEqual(1.1)
+    })
+
+    it(`${theme}: the paused and ended hall dims by at least 25 percent of the light`, () => {
+      expect(p.light.dimPaused).toBeLessThanOrEqual(0.55)
+      expect(p.light.dimEnded).toBeLessThanOrEqual(p.light.dimPaused)
+      expect(p.light.dimEnded).toBeGreaterThanOrEqual(0.3)
+    })
+
     it(`${theme}: the crate is separable from the floor and the plate`, () => {
       expect(contrastRatio(r.crate, r.floor)).toBeGreaterThanOrEqual(1.5)
       expect(contrastRatio(r.crate, r.plate)).toBeGreaterThanOrEqual(1.3)

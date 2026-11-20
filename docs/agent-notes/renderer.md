@@ -66,6 +66,33 @@ Live state in static end states (spec "Implementation notes, Slice 3"). Facts fo
 - Checked: factory unit tests, `e2e/factory-floor.mjs` in all three modes, `e2e/canvas.mjs`, `e2e/office.mjs` (counts in
   the spec notes).
 
+## Factory Floor, slice 4 (2026-11-20)
+
+Cues and motion (spec "Implementation notes, Slice 4"). Facts for later slices:
+
+- Timing lives only in `lib/factory/motion.ts` (every section 5 number, `ambientSet`, `ambientWave`, `cueEase`,
+  `motionSession` for Pause motion: module-level, never saved). `lib/factory/cues.ts` owns what moves: `diffCues(prev,
+  next, cursor, now)` (prev null = mount or run id change: baseline only, nothing cues or logs) and `CueScheduler` (caps,
+  coalescing, `cancelFor`, `finishAll`, `recent`, `peaks`; pure, fixed-clock tests). `lib/factory/floorLog.ts` has the
+  log templates (cap 50) and `AnnounceGate` (one per 2 s). None of it imports three or anything from Pocket Office.
+- `FactoryScene` holds one scheduler per mount and run id, pushes cues only in live mode with motion 'full', and calls
+  `finishAll()` on Pause motion, reduced motion, a paused or ended hall (then pushes only the hall cue), hidden document,
+  off-screen stage and unmount. The engine reads a `CueFeed` (types.ts); `engine/cueRender.ts` overlays the active cues
+  and ambient loops on the `floorInstances` end-state lists each frame (hides the child station while its tote flies, a
+  dock crate until it lands). Fades are by scale (shared materials have no per-instance opacity).
+- Render loop: 0 frames with nothing active; ambient-only frames at most one per 30 ms (about 29 fps measured); reduced
+  or paused motion renders on demand only. `KitPool` compares float32 colours with a 1e-6 tolerance and `setView` skips
+  an unchanged view (both used to render a frame on every model change).
+- Test state adds `recentCues` (last 40 pushed), `cuePeaks` (carriers, perSender, parts, crates, arrivalsPerSecond,
+  ambient), `logEntries`; `workers[].ambient` is the loop running now. Read short cues from `recentCues`: the state is
+  written at most twice a second (and on every push).
+- e2e: gated scripts (a root Bash `ask: true` tool step holds the run while the scene mounts; Allow releases the events);
+  windows that expect no frames or no cues wait for a quiet model first (the mock keeps changing lamps for 1 to 2 s after
+  its last marker). The floor log's "assigned" line names the child by its label at first upsert, which in the mock is
+  the role name ("Implementer"), not the handle.
+- Screenshot and measurement driver (not in the repo; `e2e/shots/` is gitignored): stage a team before the gate, press
+  Fit, Allow, then shoot when the test state lists a cue kind (wait 250 to 900 ms into its flight).
+
 ## Context menus (2026-11-18)
 
 Contract and evaluation table: `docs/design/context-menus.md`. One primitive, `components/ui/ContextMenu.tsx`

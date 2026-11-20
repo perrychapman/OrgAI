@@ -1,6 +1,14 @@
 // The Factory Floor test hook (docs/design/factory-floor.md section 10.3): ids, numbers and words only, never message
 // text. Serialised into <output hidden data-testid="factory-state">. Pure.
-import type { ActiveCue, FactoryTestState, FloorLayout, FloorModel, Lamp } from './types'
+import type { ActiveCue, Ambient, Cue, FactoryTestState, FloorLayout, FloorModel, Lamp } from './types'
+
+export const NO_PEAKS: FactoryTestState['cuePeaks'] = { carriers: 0, perSender: 0, parts: 0, crates: 0, arrivalsPerSecond: 0, ambient: 0 }
+const cueRef = (c: Pick<Cue, 'kind' | 'from' | 'to' | 'count'>): FactoryTestState['cues'][number] => ({
+  kind: c.kind,
+  ...(c.from !== undefined ? { from: c.from } : {}),
+  ...(c.to !== undefined ? { to: c.to } : {}),
+  ...(c.count !== undefined && c.count > 1 ? { count: c.count } : {})
+})
 
 export type FactoryRendererKind = FactoryTestState['renderer']
 export type FactoryReason = NonNullable<FactoryTestState['reason']>
@@ -29,6 +37,12 @@ export interface FactorySnapshotInput {
   summaries?: Readonly<Record<string, WorkerSummary>>
   cues?: readonly ActiveCue[]
   cuesStarted?: number
+  /** Slice 4: last pushed cues (kept at most 40, oldest first). */
+  recentCues?: readonly Pick<Cue, 'kind' | 'from' | 'to' | 'count'>[]
+  cuePeaks?: FactoryTestState['cuePeaks']
+  logEntries?: number
+  /** Slice 4: stations looping now; when given, a worker's `ambient` is its entry here or 'none'. */
+  ambient?: ReadonlyMap<string, { kind: Exclude<Ambient, 'none'>; phase: number }>
   messageCursor?: string | null
   view?: FactoryView | null
   loop: FactoryLoop
@@ -72,7 +86,7 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
         statusWord: w.statusWord,
         fenced: w.fenced,
         ...(w.crate ? { crate: w.crate.at, crateLamp: w.crate.lamp } : {}),
-        ambient: w.ambient,
+        ambient: input.ambient ? (input.ambient.get(id)?.kind ?? 'none') : w.ambient,
         shutter: w.shutter,
         barrier: w.barrier,
         stepIds: [...w.stepIds]
@@ -101,12 +115,11 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
     earlier: model?.earlier.length ?? 0,
     lines: layout ? layout.lines.map((l) => ({ number: l.number, leadId: l.leadId, rows: [...l.rows] })) : [],
     vacant: layout ? layout.vacant.length : 0,
-    cues: (input.cues ?? []).map((c) => ({
-      kind: c.kind,
-      ...(c.from !== undefined ? { from: c.from } : {}),
-      ...(c.to !== undefined ? { to: c.to } : {})
-    })),
+    cues: (input.cues ?? []).map(cueRef),
     cuesStarted: input.cuesStarted ?? 0,
+    recentCues: (input.recentCues ?? []).slice(-40).map(cueRef),
+    cuePeaks: { ...(input.cuePeaks ?? NO_PEAKS) },
+    logEntries: input.logEntries ?? 0,
     messageCursor: input.messageCursor ?? null,
     view: { ppm: round(view.ppm), targetX: round(view.targetX), targetZ: round(view.targetZ) },
     loop: input.loop,

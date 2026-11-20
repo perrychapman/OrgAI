@@ -134,9 +134,9 @@ export function cyl(rTop: number, rBot: number, h: number, segments: number, x =
   return place(flat(new CylinderGeometry(rTop, rBot, h, segments, 1, open)), x, y + h / 2, z)
 }
 
-/** Cylinder lying along x (rollers, wheels), centred on (x, y, z). */
-export function cylX(r: number, length: number, segments: number, x = 0, y = 0, z = 0): BufferGeometry {
-  const g = flat(new CylinderGeometry(r, r, length, segments, 1, false))
+/** Cylinder lying along x (rollers, wheels), centred on (x, y, z). `open` leaves out both caps. */
+export function cylX(r: number, length: number, segments: number, x = 0, y = 0, z = 0, open = false): BufferGeometry {
+  const g = flat(new CylinderGeometry(r, r, length, segments, 1, open))
   g.rotateZ(Math.PI / 2)
   return place(g, x, y, z)
 }

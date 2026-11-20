@@ -40,15 +40,17 @@ export class KitPool {
   private readonly slots = new Map<string, number>()
   private keys: string[] = []
   private band: LodBand = 'near'
-  private readonly scratch = new Color()
   private readonly posed = new Matrix4()
   private placed = false
+  /** Slice 4: a pool of moving things (carriers, crates in flight): no part casts, whatever the kit says. */
+  readonly moving: boolean
 
-  constructor(parent: Object3D, kit: ObjectKit, materials: FactoryMaterials, hook?: RenderHook, capacity = MIN_CAPACITY) {
+  constructor(parent: Object3D, kit: ObjectKit, materials: FactoryMaterials, hook?: RenderHook, capacity = MIN_CAPACITY, moving = false) {
     this.parent = parent
     this.kit = kit
     this.materials = materials
     this.hook = hook
+    this.moving = moving
     this.allocate(Math.max(MIN_CAPACITY, capacity))
   }
 
@@ -58,7 +60,7 @@ export class KitPool {
 
   /** True when any part casts a shadow (a change then needs a shadow-map update). */
   get castsShadow(): boolean {
-    return this.kit.parts.some((p) => p.castShadow)
+    return !this.moving && this.kit.parts.some((p) => p.castShadow)
   }
 
   /** Every mesh of the pool (tests and the engine's material refresh). */
@@ -125,7 +127,7 @@ export class KitPool {
     this.parts = this.kit.parts.map((part, i) => {
       const mesh = new InstancedMesh(part.geometry, this.materials.get(part.role), capacity)
       mesh.name = `${this.kit.name}:${part.key}`
-      mesh.castShadow = part.castShadow
+      mesh.castShadow = part.castShadow && !this.moving
       mesh.receiveShadow = part.receiveShadow
       if (part.instanceColor) mesh.instanceColor = new InstancedBufferAttribute(new Float32Array(capacity * 3).fill(1), 3)
       const prev = old[i]?.mesh
@@ -172,8 +174,9 @@ export class KitPool {
         const c = inst.colours?.[part.key] ?? WHITE
         const ca = mesh.instanceColor.array as Float32Array
         const co = index * 3
-        this.scratch.setRGB(ca[co], ca[co + 1], ca[co + 2])
-        if (force || !this.scratch.equals(c)) {
+        // The buffer holds float32 values: an exact compare against the Color's doubles would always differ (and every
+        // model change would rewrite every colour and render a frame). Same tolerance as the matrices.
+        if (force || Math.abs(ca[co] - c.r) > 1e-6 || Math.abs(ca[co + 1] - c.g) > 1e-6 || Math.abs(ca[co + 2] - c.b) > 1e-6) {
           ca[co] = c.r
           ca[co + 1] = c.g
           ca[co + 2] = c.b

@@ -45,6 +45,10 @@ export interface FactoryRoleColours {
   /** Far-LOD robot capsule: unlit, so a few pixels of it keep their contrast against the lit floor (slice 3). */
   robotFar: string
   crate: string
+  /** Slice 4 carriers (section 4.3 "Crate, tote, capsule, part"): work-order tote, message capsule, tool part. */
+  tote: string
+  capsule: string
+  part: string
   paint: string
   vacant: string
   blob: string
@@ -66,7 +70,11 @@ export interface FactoryPalette {
     key: string
     keyIntensity: number
     ambient: number
-    /** Multiplier on every light for the dimmed hall (section 1.4). */
+    /**
+     * Multiplier on every light for the dimmed hall (section 1.4). Slice 4: the light theme's floor is lit to about 0.56
+     * linear, so 0.7 (spec) took it from sRGB 197 to 168 (-15 percent) where dark's 0.55 takes 39 to 27 (-31 percent);
+     * 0.45 and 0.38 give the light floor the same relative drop as the dark one (about -30 and -36 percent).
+     */
     dimPaused: number
     dimEnded: number
   }
@@ -87,7 +95,9 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       booth: '#7b87a3',
       boothTrim: '#2a3141',
       glass: '#7fb0d6',
-      screen: '#a9c4f0',
+      // Slice 4: the engine multiplies it by a 0.7 to 1.0 grey for the glow loop, so it starts brighter (was #a9c4f0) to
+      // still read as a lit screen against the console casing at 0.7 (2.1:1 in linear light, was 1.8:1).
+      screen: '#c0d6fb',
       plate: '#454d61',
       console: '#6e7a94',
       machine: '#707d9b',
@@ -102,13 +112,17 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       boardPanel: '#161a22',
       pole: '#1a1e27',
       robotBody: '#dce3f1',
-      robotJoint: '#97a3bf',
+      // Slice 4: a light sky blue, away from the machine's steel (2.5:1 against it, was 1.6:1) and well above the floor.
+      robotJoint: '#86d4ee',
       robotBase: '#2a3040',
       robotVisor: '#0d1016',
       robotWheel: '#14171d',
       // Unlit and near white: at fit the far capsule is a few pixels wide and must beat the lit floor by 3:1 by itself.
       robotFar: '#f7f9ff',
       crate: '#a07a4a',
+      tote: '#5b6b8c',
+      capsule: '#d8dde8',
+      part: '#9aa2b1',
       paint: '#b8932a',
       vacant: '#8995ad',
       blob: '#000000'
@@ -144,17 +158,22 @@ export const FACTORY_PALETTE: Record<FactoryPaletteTheme, FactoryPalette> = {
       boardPanel: '#2a303e',
       pole: '#2a2f3a',
       robotBody: '#34447f',
-      robotJoint: '#8c9bc4',
+      // Slice 4: a near-black navy limb (5.7:1 against the machine, was 1.1:1; 11:1 against the pale floor). The light robot
+      // is a navy body with dark limbs; the raised hand reads as a dark mitten on the pale floor.
+      robotJoint: '#161b2c',
       robotBase: '#1c2236',
       robotVisor: '#0d1016',
       robotWheel: '#1d2129',
       robotFar: '#232d63',
       crate: '#94693a',
+      tote: '#6c7c9c',
+      capsule: '#ffffff',
+      part: '#7d8696',
       paint: '#c99a1a',
       vacant: '#5b667c',
       blob: '#000000'
     },
-    light: { sky: '#ffffff', ground: '#b9bec8', hemisphere: 0.95, key: '#fff7ea', keyIntensity: 1.9, ambient: 0.25, dimPaused: 0.7, dimEnded: 0.62 }
+    light: { sky: '#ffffff', ground: '#b9bec8', hemisphere: 0.95, key: '#fff7ea', keyIntensity: 1.9, ambient: 0.25, dimPaused: 0.45, dimEnded: 0.38 }
   }
 }
 
