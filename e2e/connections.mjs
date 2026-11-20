@@ -299,9 +299,9 @@ try {
       // Role inspector model picker
       await projectTab(page, 'Team').click()
       await page.locator('.react-flow__node').first().click()
-      // The Model fold is closed when the inspector is not roomy; open it first.
-      await page.waitForSelector('[data-testid=role-model-fold]', { timeout: 5000 })
-      await page.evaluate(() => { const d = document.querySelector('[data-testid=role-model-fold]'); if (d) d.open = true })
+      // The Model and effort section is folded behind its sentence when the inspector is not roomy; open it first.
+      await page.waitForSelector('[data-testid=role-section-model]', { timeout: 5000 })
+      await page.evaluate(() => { const d = document.querySelector('[data-testid=role-section-model]'); if (d) d.open = true })
       await page.waitForSelector('[data-testid=role-model]', { timeout: 5000 })
       const roleLabel = ((await page.locator('[data-testid=role-model]').evaluate((el) => (el.matches('select') ? el : el.querySelector('select'))?.selectedOptions[0]?.textContent ?? '')) || '').trim()
       // Spec 5: tier options read "Everyday (sonnet)" (tier word first); Inherit / the connection default otherwise.
@@ -312,19 +312,23 @@ try {
         [...((el.matches('select') ? el : el.querySelector('select'))?.options ?? [])].map((o) => (o.textContent ?? '').trim()).filter((t) => !/^(top|deep|everyday|fast)\b|inherit|connection default|custom/i.test(t))
       )
       check(bareIds.length === 0, `role Model select lists only tiers and Inherit at ${w}x${h} ${theme}`, bareIds.join(', '))
-      // N4: the fold says "Model" once (the select's own label is visually hidden; role Advanced closed).
-      // Visible words only: text in .sr-only, select options and hidden elements does not count.
-      const foldText = await page.locator('[data-testid=role-model-fold]').evaluate((root) => {
-        const out = []
+      // N4 (phase 2): the section is "Model and effort", one sentence says what the role runs on, and the select's own label
+      // "Model" is visible exactly once. Visible words only: text in .sr-only, select options and hidden elements does not count.
+      const sectionText = await page.locator('[data-testid=role-section-model]').evaluate((root) => {
+        const labels = []
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
         for (let n = walker.nextNode(); n; n = walker.nextNode()) {
           const el = n.parentElement
           if (!el || el.closest('.sr-only, select') || !el.checkVisibility()) continue
-          out.push(n.textContent ?? '')
+          if (el.tagName === 'LABEL' && (n.textContent ?? '').trim() === 'Model') labels.push('Model')
         }
-        return out.join(' ')
+        return { labels: labels.length, sentence: root.querySelector('[data-testid=role-model-sentence]')?.textContent ?? '', title: root.querySelector('h3')?.textContent ?? '' }
       })
-      check((foldText.match(/\bModel\b/g) ?? []).length === 1, `the role Model fold shows the word "Model" once at ${w}x${h} ${theme}`, foldText.replace(/\s+/g, ' ').slice(0, 120))
+      check(sectionText.labels === 1, `the select's label "Model" is visible once in Model and effort at ${w}x${h} ${theme}`, String(sectionText.labels))
+      check(sectionText.title === 'Model and effort', `the section is titled Model and effort at ${w}x${h} ${theme}`, sectionText.title)
+      check(/^(Runs on|Always runs on|Uses the same model as|Uses the connection)/.test(sectionText.sentence), `the section opens with a sentence at ${w}x${h} ${theme}`, sectionText.sentence)
+      const staffing = await page.locator('[data-testid=role-section-model]').evaluate((root) => root.textContent ?? '')
+      check(!/Tier and effort|Follow the project|Lowest tier|Always as configured/.test(staffing), `no retired staffing wording in Model and effort at ${w}x${h} ${theme}`)
       const advancedCount = await page.locator('[data-testid=role-model-advanced] > summary').count()
       if (w === 1024 && theme === 'dark' && (advancedCount === 0 || !connected)) console.log('SKIP role-model-advanced absent: no connected connection')
       else if (w === 1024 && theme === 'dark') {

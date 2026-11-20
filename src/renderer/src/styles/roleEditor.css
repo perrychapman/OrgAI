@@ -1,1 +1,202 @@
-/* Team tab phase 2: role editor sections, delegation, model sentence (docs/design/team-tab-overhaul.md 1.6). */
+/* Team tab phase 2: role editor sections, delegation, model sentence (docs/design/team-tab-overhaul.md 1.6). Tokens only. */
+
+/* Sections are direct children of the side body: the model section is a <details>, so it gets the divider the sections get. */
+.role-editor > .re-model {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-default);
+}
+
+/* Helper text under a field and the static "Reports to" sentence of the root. */
+.re-hint {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.re-static {
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+
+/* The seeded description is a placeholder, so it reads as a hint. */
+.role-editor .textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* Small closed folds inside a section (Details, Staffing details). */
+.re-fold > summary,
+.rd-other > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  padding: var(--space-1) 0;
+  border-radius: var(--radius-sm);
+}
+.re-fold > summary:hover,
+.rd-other > summary:hover {
+  color: var(--text-primary);
+}
+.re-fold > summary:focus-visible,
+.rd-other > summary:focus-visible,
+.re-model > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.re-fold[open] > summary,
+.rd-other[open] > summary {
+  margin-bottom: var(--space-2);
+}
+.re-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Preview final prompt: disabled for now. The reason is read aloud always and drawn on hover and focus. */
+.re-preview {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.re-preview-note {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.re-preview:not(:hover):not(:focus-within) > .re-preview-note {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Model and effort: the summary holds the title and the sentence, so a closed section still says what the role runs on. */
+.re-model > summary {
+  display: block;
+  position: relative;
+  list-style: none;
+  cursor: pointer;
+  padding-left: var(--space-4);
+  border-radius: var(--radius-sm);
+}
+.re-model > summary::-webkit-details-marker {
+  display: none;
+}
+.re-model > summary::before {
+  content: '';
+  position: absolute;
+  left: var(--space-1);
+  top: var(--space-1h);
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--text-tertiary);
+  border-bottom: 2px solid var(--text-tertiary);
+  transform: rotate(-45deg);
+}
+.re-model[open] > summary::before {
+  transform: rotate(45deg);
+}
+.re-model > summary:hover::before {
+  border-color: var(--text-primary);
+}
+.re-model > summary > .side-section-title {
+  margin: 0 0 var(--space-1);
+}
+.re-model-body {
+  padding-top: var(--space-3);
+}
+.role-model-sentence {
+  display: block;
+  font-size: var(--text-small);
+  line-height: var(--text-body-lh);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* Who it can delegate to. One list per group; a row is the role, then its choices, so a 320 px panel never scrolls sideways. */
+.rd-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.rd-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.rd-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  color: var(--text-primary);
+}
+.rd-name .avatar {
+  flex: none;
+}
+.rd-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rd-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  padding-left: var(--space-5);
+  min-width: 0;
+}
+.rd-checks .checkbox {
+  font-size: var(--text-small);
+}
+.rd-empty,
+.rd-note {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-body-lh);
+  color: var(--text-secondary);
+}
+.rd-up {
+  gap: var(--space-1);
+}
+.rd-up-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}
+.rd-up-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.rd-up-text strong {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+/* The summary stays a list item so its disclosure marker shows; the flex row is inside it. */
+.rd-other-head {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.rd-other-body {
+  min-width: 0;
+}

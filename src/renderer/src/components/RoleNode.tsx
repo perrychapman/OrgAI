@@ -51,9 +51,9 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
   const chip = roleChipLabel(role, pinnedOn, base)
   const pinnedTitle = pinnedOn && base ? connectionTagTitle(pinnedOn, base) : undefined
   // Screen readers get the provider too (every node style), not only the tooltip (review M4).
-  const capsLabel = `${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}${pinnedTitle ? `. ${pinnedTitle}` : ''}`
+  const capsLabel = `${role.name}. ${delegateCount > 0 ? `Delegates to ${delegateCount}. ` : ''}${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}${pinnedTitle ? `. ${pinnedTitle}` : ''}`
   const tip = compact
-    ? [role.name, role.slug, chip, pinnedTitle ?? '', delegateCount > 0 ? `leads ${delegateCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
+    ? [role.name, role.slug, chip, pinnedTitle ?? '', delegateCount > 0 ? `Delegates to ${delegateCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
         .filter(Boolean)
         .join('\n')
     : undefined
@@ -106,7 +106,7 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
         >
           {chip}
         </span>
-        {delegateCount > 0 && <span className="chip" data-testid="role-node-leads">leads {delegateCount}</span>}
+        {delegateCount > 0 && <span className="chip" data-testid="role-node-leads">Delegates to {delegateCount}</span>}
       </div>}
       {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={capsLabel}>
         {parts.length === 0 ? 'No tools' : parts.map((p, i) => (
