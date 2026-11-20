@@ -1,5 +1,5 @@
-import type { Role } from '@shared/types'
-import { cleanRequiredReports } from '@shared/defaults'
+import type { Project, Role } from '@shared/types'
+import { cleanRequiredReports, slugify } from '@shared/defaults'
 
 /** "New role", then "New role 2", "New role 3"... only when the plain name is taken. */
 export function nextRoleName(roles: Role[], base = 'New role'): string {
@@ -151,6 +151,27 @@ export function wouldCycle(roles: Role[], childId: string, parentId: string | nu
     cur = roles.find((r) => r.id === cur)?.reportsTo ?? null
   }
   return false
+}
+
+/**
+ * A rename as ONE patch (D8). The slug follows the name, and connection grants are keyed by slug (McpServerSpec.roles),
+ * which projects:save cannot remap: so every server the role holds by its current slug is also granted by id
+ * (Role.mcpServers), which survives the slug change. Servers for every role (roles undefined) need nothing.
+ */
+export function renamePatch(project: Pick<Project, 'mcpServers'>, role: Role, name: string): Partial<Role> {
+  return slugPatch(project, role, slugify(name), name)
+}
+
+/** The same for an edit of the slug field alone (name left as it is). */
+export function slugPatch(project: Pick<Project, 'mcpServers'>, role: Role, slug: string, name?: string): Partial<Role> {
+  const patch: Partial<Role> = name === undefined ? { slug } : { name, slug }
+  if (slug === role.slug) return patch
+  const have = role.mcpServers ?? []
+  const add = (project.mcpServers ?? [])
+    .filter((s) => s.roles !== undefined && s.roles.includes(role.slug) && !s.roles.includes(slug) && !have.includes(s.id))
+    .map((s) => s.id)
+  if (add.length > 0) patch.mcpServers = [...have, ...add]
+  return patch
 }
 
 /** Toggle a spawnable report. Removing it also drops it from requiredReports; the result is sanitized. */

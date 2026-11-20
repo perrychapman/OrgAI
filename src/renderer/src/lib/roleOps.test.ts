@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { Role } from '@shared/types'
-import { addRoleUnder, nextRoleName, removeRole, restoreRole, setReportsTo, spawnNotice, withRequiredReport, withSpawnableToggled, wouldCycle } from './roleOps'
+import type { McpServerSpec, Role } from '@shared/types'
+import { serverGranted } from './roleCapabilities'
+import { addRoleUnder, nextRoleName, removeRole, restoreRole, setReportsTo, renamePatch, slugPatch, spawnNotice, withRequiredReport, withSpawnableToggled, wouldCycle } from './roleOps'
 
 const role = (id: string, reportsTo: string | null, spawnable: string[] = []): Role =>
   ({ id, name: id, slug: id, reportsTo, spawnable, canSpawn: spawnable.length > 0, tools: [], responsibilities: [] }) as unknown as Role
@@ -111,5 +112,34 @@ describe('requiredReports', () => {
     const roles = [role('root', null, ['mgr']), mgr(), role('p', 'mgr'), role('e', 'mgr')]
     expect(removeRole(roles, 'p').roles.find((r) => r.id === 'mgr')?.requiredReports).toBeUndefined()
     expect(setReportsTo(roles, 'p', 'root').find((r) => r.id === 'mgr')?.requiredReports).toBeUndefined()
+  })
+})
+
+describe('renamePatch', () => {
+  const srv = (id: string, roles?: string[]) => ({ id, roles }) as unknown as McpServerSpec
+  const proj = { mcpServers: [srv('s1', ['dev']), srv('s2'), srv('s3', ['other'])] }
+  const dev = { ...role('d', 'root'), name: 'Dev', slug: 'dev' } as Role
+
+  it('keeps a slug-granted server granted after the rename', () => {
+    const patch = renamePatch(proj, dev, 'Developer')
+    expect(patch).toMatchObject({ name: 'Developer', slug: 'developer', mcpServers: ['s1'] })
+    const after = { ...dev, ...patch }
+    expect(serverGranted(proj.mcpServers[0], after)).toBe(true)
+    expect(serverGranted(proj.mcpServers[2], after)).toBe(false)
+  })
+
+  it('adds nothing for an every-role server and keeps id grants', () => {
+    expect(renamePatch({ mcpServers: [srv('s2')] }, dev, 'Developer').mcpServers).toBeUndefined()
+    const held = { ...dev, mcpServers: ['s9'] } as Role
+    expect(renamePatch({ mcpServers: [srv('s9', ['dev'])] }, held, 'Developer').mcpServers).toBeUndefined()
+    expect(renamePatch(proj, held, 'Developer').mcpServers).toEqual(['s9', 's1'])
+  })
+
+  it('does not duplicate when renaming twice, and a slug-only edit goes through the same path', () => {
+    const once = { ...dev, ...renamePatch(proj, dev, 'Dev A') } as Role
+    const twice = { ...once, ...renamePatch(proj, once, 'Dev AB') } as Role
+    expect(twice.mcpServers).toEqual(['s1'])
+    expect(slugPatch(proj, dev, 'dv')).toEqual({ slug: 'dv', mcpServers: ['s1'] })
+    expect(renamePatch(proj, dev, 'DEV')).toEqual({ name: 'DEV', slug: 'dev' })
   })
 })
