@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { AgentState, PlanStep, RunPlan, RunStatus, WorktreeStatus } from '@shared/types'
 import { FACTORY_STATUS_WORD } from './agentView'
 import { EMPTY_LAYOUT_MEMORY, layoutFloor, layoutTeam } from './layout'
-import { BOARD_LAMPS, buildFloorModel, factoryBoard, factoryHall, factoryPose, factoryWorktree, stepOwners } from './model'
-import type { CrateAt, FactoryAgentInput, Lamp, Pose } from './types'
+import { BOARD_LAMPS, buildFloorModel, factoryAmbient, factoryBoard, factoryHall, factoryPose, factoryWorktree, stepOwners } from './model'
+import type { Ambient, CrateAt, FactoryAgentInput, Lamp, Pose } from './types'
 
 function agent(id: string, parentId: string | null, startedAt: number, extra: Partial<FactoryAgentInput> = {}): FactoryAgentInput {
   const state = (extra.state ?? 'thinking') as AgentState
@@ -67,7 +67,18 @@ const EXPECT_POSE_BENCH: Record<AgentState, Pose> = {
   done: 'docked',
   error: 'down'
 }
-const EXPECT_WT: Record<WorktreeStatus, { fenced: boolean; main?: CrateAt; parent?: CrateAt; crateLamp?: Lamp }> = {
+/** Section 5.1: only a running station loops; tool strokes the machine, the other running states glow the screen. */
+const EXPECT_AMBIENT: Record<AgentState, Ambient> = {
+  starting: 'screen',
+  thinking: 'screen',
+  tool: 'machine',
+  delegating: 'screen',
+  waiting: 'none',
+  idle: 'none',
+  done: 'none',
+  error: 'none'
+}
+const EXPECT_WT:Record<WorktreeStatus, { fenced: boolean; main?: CrateAt; parent?: CrateAt; crateLamp?: Lamp }> = {
   active: { fenced: true },
   merging: { fenced: true, main: 'pad', parent: 'pad' },
   merged: { fenced: false, main: 'dock', parent: 'parent-pad' },
@@ -92,7 +103,7 @@ describe('buildFloorModel: every agent state x every worktree status (section 1.
           expect(w.statusWord).toBe(FACTORY_STATUS_WORD[state])
           expect(w.shutter).toBe(state === 'done')
           expect(w.barrier).toBe(state === 'error')
-          expect(w.ambient).toBe('none')
+          expect(w.ambient).toBe(EXPECT_AMBIENT[state])
           const e = EXPECT_WT[wt]
           expect(w.fenced).toBe(e.fenced)
           const at = target === 'main' ? e.main : e.parent
@@ -133,6 +144,23 @@ describe('lamps and poses', () => {
     expect(m.workers.l.kind).toBe('lead')
     expect(m.workers.l.pose).toBe('dispatch')
     expect(m.workers.w.pose).toBe('console')
+  })
+
+  it('ambient: Needs you never loops; a blocked plan stops the booth loop; a paused or ended hall stops every loop', () => {
+    for (const state of STATES) {
+      expect(model(floor({ state, statusWord: FACTORY_STATUS_WORD[state] }), { needs: ['w'] }).workers.w.ambient).toBe('none')
+    }
+    const blocked = model(floor({ state: 'tool' }, { state: 'thinking' }), { plan: plan([{ status: 'blocked' }], 'blocked') })
+    expect(blocked.workers.root.ambient).toBe('none')
+    expect(blocked.workers.w.ambient).toBe('machine')
+    expect(model(floor({ state: 'tool' }, { state: 'delegating' })).workers.root.ambient).toBe('screen')
+    expect(model(floor({ state: 'tool' }, { state: 'delegating' })).workers.l.ambient).toBe('screen')
+    for (const status of ['paused', 'finished', 'error'] as RunStatus[]) {
+      const m = model(floor({ state: 'tool' }), { status })
+      for (const w of Object.values(m.workers)) expect(w.ambient).toBe('none')
+    }
+    expect(factoryAmbient('role', 'running')).toBe('none')
+    expect(factoryAmbient('tool', 'off')).toBe('none')
   })
 
   it('factoryPose: roles rest', () => {
