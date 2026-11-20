@@ -266,8 +266,8 @@ try {
   check(!!(await until(async () => (await salutationText()) === 'Welcome to OrgAI, Sam.', 8000)), 'M2 first launch: saving a name puts it in the greeting at once', await salutationText())
   await T('dash-name-edit').click()
   await nameInputFocused()
-  // Select all is Cmd+A on macOS (Ctrl+A there moves the caret to the line start and Backspace deletes nothing).
-  await page.keyboard.press('ControlOrMeta+A')
+  // Select the field with the locator: a synthetic Cmd+A does not reach a field on macOS (CI run 44674564818).
+  await T('dash-name-input').selectText()
   await page.keyboard.press('Backspace')
   await page.keyboard.press('Enter')
   check(!!(await until(async () => (await salutationText()) === 'Welcome to OrgAI.', 5000)), 'M2 first launch: removing the name restores the plain welcome', await salutationText())
@@ -321,7 +321,7 @@ try {
   // Esc cancels, focus returns.
   await T('dash-name-edit').click()
   await nameInputFocused()
-  await page.keyboard.press('ControlOrMeta+A')
+  await T('dash-name-input').selectText()
   await page.keyboard.type('Zed')
   await page.keyboard.press('Escape')
   await until(async () => !(await visible('[data-testid=dash-name-input]')) && (await activeInfo()).testid === 'dash-name-edit', 5000, 50)
@@ -330,11 +330,11 @@ try {
   // 41 characters pasted stop at 40; a zero-width character is refused with the stated sentence.
   await T('dash-name-edit').click()
   await nameInputFocused()
-  await page.keyboard.press('ControlOrMeta+A')
+  await T('dash-name-input').selectText()
   await page.keyboard.insertText('x'.repeat(41))
   await until(async () => (await T('dash-name-input').inputValue()).length >= 40, 5000, 50)
   check((await T('dash-name-input').inputValue()).length === 40, 'A7 a 41-character paste is stopped at 40 by maxLength', String((await T('dash-name-input').inputValue()).length))
-  await page.keyboard.press('ControlOrMeta+A')
+  await T('dash-name-input').selectText()
   await page.keyboard.insertText('Sam​')
   await page.keyboard.press('Enter')
   await T('dash-name-error').waitFor({ timeout: 5000 }).catch(() => {})
@@ -362,7 +362,7 @@ try {
   // Clear from the popover ("Remove name").
   await T('dash-name-edit').click()
   await nameInputFocused()
-  await page.keyboard.press('ControlOrMeta+A')
+  await T('dash-name-input').selectText()
   await page.keyboard.press('Backspace')
   check(clean(await T('dash-name-save').innerText()) === 'Remove name', 'A7 emptying a saved name offers "Remove name"')
   await page.keyboard.press('Enter')
