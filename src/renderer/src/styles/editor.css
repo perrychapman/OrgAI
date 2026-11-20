@@ -360,16 +360,16 @@
   stroke-width: 3px;
 }
 
-/* Toolbar notes: what Add role will do, and the short-lived undo row. */
+/* Toolbar notes: the short-lived undo row and the reason a dragged reporting line was refused. */
 /* The Canvas style icon button (28 px) sits in the row of small buttons (about 27 px): a small negative block margin
    keeps it from setting the row height, so the wrapped toolbar takes no extra room from the Team assistant tray. */
 .editor .frame-toolbar > .popover-wrap {
   margin-block: -2px;
 }
-.toolbar-note {
+.toolbar-status {
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
-  color: var(--text-tertiary);
+  color: var(--warning-text);
   min-width: 0;
 }
 .toolbar-undo {
@@ -379,6 +379,32 @@
   margin-left: auto;
   font-size: var(--text-small);
   color: var(--text-secondary);
+}
+
+/* Dragging a reporting line: the whole node is a drop target (a transparent second target handle that React Flow gives
+   pointer events only while a connection is in progress) and the node under the pointer is outlined. */
+.react-flow__node .role-node > .react-flow__handle.role-drop {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  transform: none;
+  border: none;
+  border-radius: inherit;
+  background: transparent;
+}
+.role-node[data-drop='valid'] {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 3px;
+}
+.role-node[data-drop='invalid'] {
+  outline: 2px dashed var(--danger-text);
+  outline-offset: 3px;
+}
+/* The line being dragged turns the refusal colour over a node it cannot report to. */
+.react-flow__connection.invalid .react-flow__connection-path {
+  stroke: var(--danger-text);
 }
 
 /* ---------- AI draft panel ---------- */

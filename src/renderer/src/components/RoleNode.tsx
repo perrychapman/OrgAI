@@ -2,7 +2,7 @@ import { BookOpen, Plug, TriangleAlert, Wrench } from 'lucide-react'
 import { Icon } from './ui/Icon'
 import type { CSSProperties, ReactElement } from 'react'
 import { memo } from 'react'
-import { Handle, type Position, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, useConnection, type Position, type Node, type NodeProps } from '@xyflow/react'
 import { handlesFor, stationGeometry, stationHandleStyle, useCanvasOptions, useHandleRefresh } from '../lib/canvas'
 import { TOOL_CATALOG, type Role } from '@shared/types'
 import { projectConnection, roleConnection } from '@shared/defaults'
@@ -13,12 +13,19 @@ import { roleChipLabel } from '../lib/roleModels'
 import { elevatedTools, toolsAriaLabel } from '../lib/roleCapabilities'
 import { capabilityLabel, capabilityParts, type CapabilityCounts } from '../lib/teamView'
 
-export type RoleFlowNode = Node<{ role: Role; reportCount: number; capabilities: CapabilityCounts; arrived?: boolean }, 'role'>
+/** `delegateCount`: direct reports the role may actually delegate to (canSpawn and listed in spawnable), not every report. */
+export type RoleFlowNode = Node<{ role: Role; delegateCount: number; capabilities: CapabilityCounts; arrived?: boolean }, 'role'>
 
 const CAP_ICONS = { tools: Wrench, connections: Plug, skills: BookOpen } as const
 
+/** What a connection being dragged is doing to this node: 'self' it started here, 'valid' / 'invalid' it hovers here. */
+type DropState = 'self' | 'valid' | 'invalid' | null
+
 function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactElement {
-  const { role, reportCount, capabilities, arrived } = data
+  const { role, delegateCount, capabilities, arrived } = data
+  // The reporting line being dragged (from a source handle). A whole-node drop target takes pointer events only while
+  // one is in progress (React Flow's own CSS), so clicks, drags and selection on the node are unaffected the rest of the time.
+  const drop = useConnection((c): DropState => (!c.inProgress ? null : c.fromNode.id === id ? 'self' : c.toNode?.id === id ? (c.isValid ? 'valid' : 'invalid') : null))
   const parts = capabilityParts(capabilities)
   const elevated = elevatedTools(role.tools, TOOL_CATALOG)
   const { layout, nodeStyle } = useCanvasOptions()
@@ -46,7 +53,7 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
   // Screen readers get the provider too (every node style), not only the tooltip (review M4).
   const capsLabel = `${role.name}. ${capabilityLabel(capabilities)}${elevated.length > 0 ? `. ${toolsAriaLabel(role.tools, TOOL_CATALOG)}` : ''}${pinnedTitle ? `. ${pinnedTitle}` : ''}`
   const tip = compact
-    ? [role.name, role.slug, chip, pinnedTitle ?? '', role.canSpawn ? `leads ${reportCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
+    ? [role.name, role.slug, chip, pinnedTitle ?? '', delegateCount > 0 ? `leads ${delegateCount}` : '', parts.length === 0 ? 'No tools' : capabilityLabel(capabilities)]
         .filter(Boolean)
         .join('\n')
     : undefined
@@ -57,8 +64,12 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
       data-label={station ? geo.label : undefined}
       style={{ ['--role' as string]: role.color, ...(station ? { width: geo.width, height: geo.height } : {}) }}
       title={tip}
+      data-drop={drop && drop !== 'self' ? drop : undefined}
     >
       {!isRoot && <Handle type="target" position={sides.target as Position} {...hs(sides.target)} />}
+      {/* Drop anywhere on the node: a second, transparent target handle covering the whole box (React Flow's "easy
+          connect" pattern). It follows the layout's target side, so a snapped line still ends where the edge does. */}
+      {!isRoot && <Handle type="target" id="drop" className="role-drop" position={sides.target as Position} isConnectableStart={false} isConnectableEnd={drop !== 'self'} />}
       {station && (
         <>
           <div className="station" style={{ left: geo.cx - geo.r, top: geo.cy - geo.r }} />
@@ -95,7 +106,7 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
         >
           {chip}
         </span>
-        {role.canSpawn && <span className="chip">leads {reportCount}</span>}
+        {delegateCount > 0 && <span className="chip" data-testid="role-node-leads">leads {delegateCount}</span>}
       </div>}
       {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={capsLabel}>
         {parts.length === 0 ? 'No tools' : parts.map((p, i) => (
