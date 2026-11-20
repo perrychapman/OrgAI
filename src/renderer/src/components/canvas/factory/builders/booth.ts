@@ -72,7 +72,16 @@ export function booth(): ObjectKit {
     anchors: {
       robot: { x: 0, y: BASE_H, z: -0.45, rotY: 0 },
       stackLight: { x: hw + 0.5, y: 0, z: hd - 0.4, rotY: 0 },
-      nameplate: { x: 0, y: WALL_H + 0.4, z: 0, rotY: 0 }
+      nameplate: { x: 0, y: WALL_H + 0.4, z: 0, rotY: 0 },
+      // Slice 3. Inside, left of the desk's open front: idle and finished spots for the root's robot (facing south).
+      'robot.rest': { x: -1.6, y: BASE_H, z: 0.6, rotY: 0 },
+      'robot.dock': { x: -0.2, y: BASE_H, z: 0.7, rotY: 0 },
+      // Outside, on the deck between the booth and the dock (booth frame; deck top is y 0): own crate, hold pad, and the
+      // 2 x 2 grid of crates merged into the root's branch (first crate at 'inbox', 0.8 m pitch east then south). The
+      // stack light stands at x 3.5, z 1.6; the dock starts 4 m east of the booth's east wall (world x 14).
+      pad: { x: 4.4, y: 0, z: -1.0, rotY: 0 },
+      hold: { x: 5.6, y: 0, z: -1.0, rotY: 0 },
+      inbox: { x: 4.6, y: 0, z: 1.0, rotY: 0 }
     }
   }
 }

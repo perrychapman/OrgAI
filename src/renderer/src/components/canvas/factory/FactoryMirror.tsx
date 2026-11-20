@@ -4,12 +4,13 @@
 // under a straight top-down projection. Positions are written by the scene's camera callback (placeAll) through the
 // placement registry, never through React state.
 import { useCallback, useId, useRef, type KeyboardEvent, type ReactElement, type Ref } from 'react'
-import { Activity, Check, CircleAlert, OctagonX, Pause, Square, type LucideIcon } from 'lucide-react'
+import { Activity, Check, CircleAlert, GitBranch, OctagonX, Package, Pause, Square, TriangleAlert, type LucideIcon } from 'lucide-react'
 import { Icon } from '../../ui/Icon'
-import type { FactoryAgentInput, FloorLayout, Lamp, StationKind } from '../../../lib/factory/types'
+import type { CrateAt, FactoryAgentInput, FloorLayout, Lamp, Pose, StationKind } from '../../../lib/factory/types'
 import { projectFootprint, type Box3, type CameraView, type Stage } from '../../../lib/factory/camera'
 import { routeSegments } from '../../../lib/factory/routes'
-import { BOARD_SIZE, DOCK_SIZE, GANTRY_MAX_Z, GANTRY_MIN_Z, STATION_SIZE } from '../../../lib/factory/layout'
+import { DOCK_SIZE, GANTRY_MAX_Z, GANTRY_MIN_Z, STATION_SIZE } from '../../../lib/factory/layout'
+import { PLAN_BOARD_ID } from '../../../lib/factory/navigation'
 
 export interface MirrorEntry {
   id: string
@@ -22,6 +23,44 @@ export interface MirrorEntry {
   slot: number
   /** The hidden description (section 7.1), at most 200 characters. */
   description: string
+  /** Slice 3: the model's static end state (sections 1.4 and 4.4). */
+  pose: Pose
+  fenced: boolean
+  crate?: CrateAt
+  crateLamp?: Lamp
+  /** In-progress plan steps this worker owns (the chip). */
+  stepIds: readonly string[]
+  /** Replaces the word on the visible tile and nameplate only (the booth reads "Paused" while the run is paused). */
+  shownWord?: 'Paused'
+}
+
+/** The plan board's counts (live, with a plan). */
+export interface MirrorBoard {
+  total: number
+  done: number
+  blocked: number
+}
+
+/** Section 7.1 / 6.6: "Plan, {done} of {total} steps done" plus ", {b} blocked". */
+export function boardName(b: MirrorBoard): string {
+  return `Plan, ${b.done} of ${b.total} ${b.total === 1 ? 'step' : 'steps'} done${b.blocked ? `, ${b.blocked} blocked` : ''}`
+}
+
+/** Floor plan tile mark for a worktree end state (the description carries the full phrase). */
+function crateMark(e: MirrorEntry): { icon: LucideIcon; text: string } | null {
+  switch (e.crate) {
+    case 'hold-striped':
+      return { icon: TriangleAlert, text: 'Conflict' }
+    case 'hold':
+      return { icon: Package, text: 'Held' }
+    case 'dock':
+    case 'parent-pad':
+      return { icon: Package, text: 'Merged' }
+    case 'pad':
+      return { icon: Package, text: e.crateLamp === 'needs-you' ? 'Review' : 'Crate' }
+    default:
+      return e.fenced ? { icon: GitBranch, text: 'Branch' } : null
+  }
 }
 
 /** An element the camera callback positions over a world box (its screen bounding rectangle, at least `min` px, centred). */
@@ -102,8 +141,12 @@ export interface FactoryMirrorProps {
   registry: PlacementRegistry
   /** Worker buttons by id (focus, focusWorker). */
   buttons: Map<string, HTMLButtonElement>
-  /** Live, with a plan: the board is on the floor (backdrop label in the plan). */
-  board: boolean
+  /** Live, with a plan: the plan board button (after the booth in reading order), positioned over `boardBox`. */
+  board: MirrorBoard | null
+  boardBox: Box3
+  onOpenPlan?(): void
+  /** Live: branches merged into the main checkout (the floor plan's dock zone shows the count). */
+  dockCount: number | null
   /** Floor plan: line signs drawn in the head zone (the 3D view's signs are labels). */
   planSigns: readonly PlanSign[]
   onSelect(id: string): void
@@ -117,7 +160,7 @@ export interface FactoryMirrorProps {
 }
 
 export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
-  const { mode, entries, renderer, layout, selectedId, tabStopId, boxFor, registry, buttons, board, planSigns, onSelect, onKey, onFocusWorker, onBlurWorker, onHover, mirrorRef } = props
+  const { mode, entries, renderer, layout, selectedId, tabStopId, boxFor, registry, buttons, board, boardBox, onOpenPlan, dockCount, planSigns, onSelect, onKey, onFocusWorker, onBlurWorker, onHover, mirrorRef } = props
   const n = entries.length
   const label = mode === 'team' ? `Factory floor, ${n} ${n === 1 ? 'role' : 'roles'}` : `Factory floor, ${n} ${n === 1 ? 'worker' : 'workers'}`
   const plan = renderer === 'floor-plan'
@@ -134,7 +177,8 @@ export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
   )
 
   const tile = (e: MirrorEntry, i: number): ReactElement => {
-    const glyph = mode === 'live' ? WORD_ICON[e.word] : undefined
+    const glyph = mode === 'live' ? WORD_ICON[e.shownWord ?? e.word] : undefined
+    const mark = mode === 'live' && plan ? crateMark(e) : null
     const descId = `${idBase}-d${i}`
     const ref = place(`worker:${e.id}`, boxFor(e.id), MIN_TARGET_PX)
     return (
@@ -154,6 +198,11 @@ export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
         data-kind={e.kind}
         data-line={e.line}
         data-slot={e.slot}
+        data-pose={e.pose}
+        data-status={e.word}
+        data-fenced={e.fenced ? 'true' : 'false'}
+        data-crate={e.crate}
+        data-steps={e.stepIds.length ? e.stepIds.join(' ') : undefined}
         tabIndex={e.id === tabStopId ? 0 : -1}
         aria-label={accessibleName(e, mode)}
         aria-describedby={e.description ? descId : undefined}
@@ -184,7 +233,18 @@ export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
             {mode === 'live' && (
               <span className="factory-worker-status">
                 {glyph && <Icon icon={glyph} size="xs" />}
-                <span className="factory-worker-word">{e.word}</span>
+                <span className="factory-worker-word">{e.shownWord ?? e.word}</span>
+              </span>
+            )}
+            {mode === 'live' && (mark || e.stepIds.length > 0) && (
+              <span className="factory-worker-marks">
+                {mark && (
+                  <span className="factory-worker-mark" data-mark={e.crate ?? 'fence'}>
+                    <Icon icon={mark.icon} size="xs" />
+                    <span className="factory-worker-mark-text">{mark.text}</span>
+                  </span>
+                )}
+                {e.stepIds.length > 0 && <span className="factory-step-chip">{e.stepIds.join(' ')}</span>}
               </span>
             )}
           </span>
@@ -192,6 +252,47 @@ export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
       </button>
     )
   }
+
+  const boardRef = place(`board:${PLAN_BOARD_ID}`, boardBox, MIN_TARGET_PX)
+  const boardButton = board ? (
+    <button
+      key={PLAN_BOARD_ID}
+      ref={(el) => {
+        boardRef(el)
+        if (el) buttons.set(PLAN_BOARD_ID, el)
+        else buttons.delete(PLAN_BOARD_ID)
+      }}
+      type="button"
+      className="factory-worker factory-plan-board"
+      data-testid="factory-plan-board"
+      data-kind="board"
+      data-total={board.total}
+      data-done={board.done}
+      data-blocked={board.blocked}
+      tabIndex={-1}
+      aria-label={boardName(board)}
+      onPointerDown={() => {
+        pressed.current = PLAN_BOARD_ID
+      }}
+      onFocus={() => {
+        const pointer = pressed.current === PLAN_BOARD_ID
+        pressed.current = null
+        onFocusWorker(PLAN_BOARD_ID, pointer)
+      }}
+      onBlur={() => onBlurWorker(PLAN_BOARD_ID)}
+      onClick={() => onOpenPlan?.()}
+      onKeyDown={(ev) => onKey(PLAN_BOARD_ID, ev)}
+    >
+      {plan && (
+        <span className="factory-worker-face" aria-hidden="true">
+          <span className="factory-worker-name">Plan</span>
+          <span className="factory-plan-board-count">
+            {board.done} of {board.total} done{board.blocked ? ` · ${board.blocked} blocked` : ''}
+          </span>
+        </span>
+      )}
+    </button>
+  ) : null
 
   const hall = layout.hall
   const flat = (minX: number, maxX: number, minZ: number, maxZ: number): Box3 => ({ minX, maxX, minY: 0, maxY: 0, minZ, maxZ })
@@ -206,14 +307,10 @@ export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
         <div className="factory-plan" aria-hidden="true">
           <div className="factory-plan-hall" ref={place('plan:hall', flat(hall.minX, hall.maxX, hall.minZ, hall.maxZ))} />
           <div className="factory-plan-gantry" ref={place('plan:gantry', flat(hall.minX, hall.maxX, GANTRY_MIN_Z, GANTRY_MAX_Z))} />
-          {mode === 'live' && (
-            <div className="factory-plan-zone" ref={place('plan:dock', rectBox(layout.dock, DOCK_SIZE.w, DOCK_SIZE.d))}>
+          {mode === 'live' && dockCount !== null && (
+            <div className="factory-plan-zone" data-testid="factory-dock" data-count={dockCount} ref={place('plan:dock', rectBox(layout.dock, DOCK_SIZE.w, DOCK_SIZE.d))}>
               <span>Main checkout</span>
-            </div>
-          )}
-          {mode === 'live' && board && (
-            <div className="factory-plan-zone" ref={place('plan:board', rectBox(layout.board, BOARD_SIZE.w, BOARD_SIZE.d + 0.6))}>
-              <span>Plan</span>
+              <span className="factory-plan-zone-count">{dockCount} merged</span>
             </div>
           )}
           {routeSegments(layout.routes).map((s, i) => {
@@ -234,7 +331,9 @@ export function FactoryMirror(props: FactoryMirrorProps): ReactElement {
           ))}
         </div>
       )}
-      {entries.map(tile)}
+      {/* Reading order (section 7.1): booth, plan board, then the stations. */}
+      {entries.flatMap((e, i) => (e.kind === 'booth' && boardButton ? [tile(e, i), boardButton] : [tile(e, i)]))}
+      {boardButton && !entries.some((e) => e.kind === 'booth') && boardButton}
     </div>
   )
 }

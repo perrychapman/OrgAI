@@ -91,7 +91,44 @@ export interface FactoryKitSource {
   robot(): ObjectKit
   /** Flat props: 'paint' (1 x 1 m unit quad the engine scales along route segments), 'vacant' outline, 'ring' selection ring. */
   props(): ObjectKit
+
+  // ---- Slice 3: state props (section 1.4 static end states, 4.4, 4.6). Optional until the Technical Artist lands them;
+  // the engine skips a missing kit. Each is placed by the engine at a station kit anchor (below), or at the origin of
+  // the station frame where none is named; geometry is in that anchor's frame (origin on the surface it stands on,
+  // front +z). All are static (cast shadows where section 4.2 allows: shutter, fence, barrier; crates use a blob).
+  //
+  // Station kit anchors added in slice 3 (both 'lead' and 'bench'; the booth names those it supports):
+  //   'shutter'        where shutter() goes: over the machine (bench) or the dispatch desk (lead)
+  //   'barrier'        where barrier() goes: across the station front (south edge of the plate)
+  //   'pad'            the outfeed pad: where the agent's own crate sits (merging, review, waiting-children)
+  //   'hold'           the hold pad beside the station (conflict striped, held plain); holdPad() goes here
+  //   'inbox'          where crates merged INTO this station from its reports sit ('parent-pad'); the engine offsets
+  //                    further crates by `CRATE_PITCH` east then south (up to 4 drawn, a count is DOM only)
+  //   'robot'          (exists) console pose; 'robot.machine', 'robot.dispatch' (lead only), 'robot.rest' (beside the
+  //                    station, idle), 'robot.dock' (docked spot, finished). rotY gives the facing for that pose.
+  // Dock: 'slot.0'..'slot.8' (exist) for crates. Board: 'lamp.0'..'lamp.11' (exist) for boardLamp() instances.
+
+  /** Roll-down shutter, lowered (end state), sized to cover the machine or desk. */
+  shutter?(): ObjectKit
+  /** Striped barrier, down (end state), spanning the station front. Stripes are geometry, not texture. */
+  barrier?(): ObjectKit
+  /** Low mesh fence enclosing the station plate on its west, north and east sides (an isolated work cell). */
+  fence?(): ObjectKit
+  /** One crate, origin at its bottom centre. */
+  crate?(): ObjectKit
+  /** Hold pad on the floor beside the station; `striped` adds hazard stripes (merge conflict). */
+  holdPad?(striped: boolean): ObjectKit
+  /**
+   * One plan-board step lamp in the board frame, origin at a `lamp.i` anchor, facing the panel normal. One part with
+   * `instanceColor` (the lens); slice 3's board() no longer carries the merged 'board.lamps' part.
+   */
+  boardLamp?(): ObjectKit
+  /** Lens colour for a plan step lamp per step state (lit pending is off; blocked uses the warning token). */
+  boardLampColour?(theme: FactoryTheme, state: 'pending' | 'active' | 'done' | 'blocked' | 'skipped', tokens: FactoryTokenColours): string
 }
+
+/** Spacing between crates on an 'inbox' pad, metres. */
+export const CRATE_PITCH = 0.8
 
 /** Shared materials for one engine. `applyTheme` updates colours in place (no rebuild, section 4.3). */
 export interface FactoryMaterials {

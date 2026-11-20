@@ -25,7 +25,7 @@ export interface NameplateData {
   activity: string
   /** World anchor of the plate's bottom centre. */
   anchor: Vec3
-  /** The worker's branch has a merge conflict. */
+  /** The worker's branch has a merge conflict (section 4.4: "Merge conflict" on the second line). */
   conflict: boolean
 }
 
@@ -42,7 +42,7 @@ export interface FactoryLabelsProps {
   /** Nameplates show in the 3D view only (the floor plan's tiles carry the same text). */
   plates: readonly NameplateData[]
   signs: readonly SignData[]
-  dock?: { text: string; anchor: Vec3 } | null
+  dock?: { text: string; count: number; anchor: Vec3 } | null
   board?: { text: string; anchor: Vec3 } | null
   handleRef?: Ref<FactoryLabelsHandle>
 }
@@ -133,16 +133,31 @@ export function FactoryLabels({ mode, plates, signs, dock, board, handleRef }: F
   return (
     <div className="factory-labels" aria-hidden="true">
       {plates.map((p) => {
-        const glyph = mode === 'live' ? wordIcon(p.entry.word) : undefined
-        const activity = clip(p.activity, 40)
+        const word = p.entry.shownWord ?? p.entry.word
+        const glyph = mode === 'live' ? wordIcon(word) : undefined
+        // A paused booth shows only "Paused" (its activity is from before the pause).
+        const activity = p.entry.shownWord ? '' : clip(p.activity, 40)
+        const steps = p.entry.stepIds
         return (
-          <div key={p.entry.id} ref={reg(labelKey({ kind: 'nameplate', id: p.entry.id }))} className="factory-nameplate" data-testid="factory-nameplate" data-factory-worker-id={p.entry.id} data-lamp={p.entry.lamp} data-shown="false">
+          <div
+            key={p.entry.id}
+            ref={reg(labelKey({ kind: 'nameplate', id: p.entry.id }))}
+            className="factory-nameplate"
+            data-testid="factory-nameplate"
+            data-factory-worker-id={p.entry.id}
+            data-lamp={p.entry.lamp}
+            data-status={mode === 'live' ? word : undefined}
+            data-steps={mode === 'live' && steps.length ? steps.join(' ') : undefined}
+            data-shown="false"
+          >
             <span className="factory-nameplate-name">{clip(p.entry.name, 18)}</span>
             {mode === 'live' && (
               <span className="factory-nameplate-status">
                 {glyph && <Icon icon={glyph} size="xs" />}
-                <span>{p.entry.word}</span>
+                <span className="factory-nameplate-word">{word}</span>
+                {p.conflict && <span className="factory-nameplate-conflict">· Merge conflict</span>}
                 {activity && <span className="factory-nameplate-activity">· {activity}</span>}
+                {steps.length > 0 && <span className="factory-step-chip">{steps.join(' ')}</span>}
               </span>
             )}
           </div>
@@ -154,7 +169,7 @@ export function FactoryLabels({ mode, plates, signs, dock, board, handleRef }: F
         </div>
       ))}
       {dock && (
-        <div ref={reg(labelKey({ kind: 'dock', id: 'dock' }))} className="factory-zone-label" data-testid="factory-dock" data-shown="false">
+        <div ref={reg(labelKey({ kind: 'dock', id: 'dock' }))} className="factory-zone-label" data-testid="factory-dock" data-count={dock.count} data-shown="false">
           {dock.text}
         </div>
       )}

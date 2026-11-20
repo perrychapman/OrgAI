@@ -144,8 +144,23 @@ export interface FactoryTestState {
     statusWord: string
     fenced: boolean
     crate?: CrateAt
+    /** Slice 3: the crate's own lamp ('needs-you' for a merge review), present with `crate`. */
+    crateLamp?: Lamp
     ambient: Ambient
+    /** Slice 3: shutter down (finished) and striped barrier down (failed). */
+    shutter: boolean
+    barrier: boolean
+    /** Slice 3: ids of the in-progress plan steps this worker owns (the nameplate chip). */
+    stepIds: string[]
   }[]
+  /** Slice 3: hall light level (section 1.4: paused dims, finished or error ends). */
+  hall: 'on' | 'paused' | 'ended'
+  /** Slice 3: the plan board (null without a plan or in team mode). */
+  board: { total: number; done: number; blocked: number; lamps: ('pending' | 'active' | 'done' | 'blocked' | 'skipped')[]; overflow: number } | null
+  /** Slice 3: crates merged into the main checkout (the dock's count, also beyond the nine drawn). */
+  dockCrates: number
+  /** Slice 3: agents of earlier sessions (listed in Find a worker only). */
+  earlier: number
   lines: { number: number; leadId: string; rows: number[] }[]
   vacant: number
   cues: { kind: CueKind; from?: string; to?: string | null }[]

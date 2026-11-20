@@ -42,6 +42,30 @@ Layout, procedural kits, camera input, mirror keyboard, labels, Find a worker an
 - Checked: `e2e/factory-floor.mjs` 147/147 on SwiftShader and on the RTX 3060, 142/142 with `E2E_FACTORY_PLAN=1`;
   `e2e/canvas.mjs` and `e2e/office.mjs` pass; screenshots in `docs/design/factory-floor-shots/slice-2/`.
 
+## Factory Floor, slice 3 (2026-11-20)
+
+Live state in static end states (spec "Implementation notes, Slice 3"). Facts for slice 4:
+
+- `lib/factory/model.ts` `buildFloorModel(input, layout, needsYouIds, plan, runStatus, mode)` is the only place state is
+  decided (lamp, pose, shutter, barrier, fence, crate, step chips, board, dock count, hall, earlier sessions). The engine
+  (`EngineFloor = { model, selectedId }`), the mirror, the labels and the test state all read it. `factoryAgent` in
+  `agentView.ts` maps an `AgentInstance` (moved out of `LiveRunView`).
+- Engine: `engine/poses.ts` (seven poses, per-part matrices about the robot kit's pivots) and `engine/floorInstances.ts`
+  (every pool's instances from the model; pure apart from three maths, unit tested with hand-built models). Optional kit
+  methods (`shutter`, `barrier`, `fence`, `crate`, `holdPad`, `boardLamp`, `boardLampColour`) and station anchors
+  ('pad', 'hold', 'inbox', 'robot.machine', 'robot.dispatch', 'robot.rest', 'robot.dock') are the builder contract in
+  `builders/types.ts`; a missing kit is skipped.
+- Mirror hooks added: `data-pose`, `data-status`, `data-fenced`, `data-crate`, `data-steps`; `factory-plan-board` button
+  (`data-total`, `data-done`, `data-blocked`); `factory-dock` `data-count` (both renderers); `factory-scene` `data-hall`.
+  Nameplate `data-status` is the shown word ("Paused" on the booth while paused); the mirror's is the model word.
+- Focus pan (`lib/factory/camera.ts` `panIntoView`): a footprint far off the stage, behind the camera or straddling its
+  plane is first centred, then converged. Before this, focusing a station many rows away at near zoom panned to the
+  hall clamp and showed an empty view (found on the slice 3 screenshots; unit tested).
+- Screenshot driver used for `docs/design/factory-floor-shots/slice-3/` was a temporary script (not in the repo): near
+  views come from focusing a worker button after zooming with `+`.
+- Checked: factory unit tests, `e2e/factory-floor.mjs` in all three modes, `e2e/canvas.mjs`, `e2e/office.mjs` (counts in
+  the spec notes).
+
 ## Context menus (2026-11-18)
 
 Contract and evaluation table: `docs/design/context-menus.md`. One primitive, `components/ui/ContextMenu.tsx`

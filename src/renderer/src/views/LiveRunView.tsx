@@ -16,7 +16,7 @@ import { CanvasMinimap } from '../components/canvas/CanvasMinimap'
 import { OfficeScene, type OfficeSceneHandle } from '../components/canvas/office/OfficeScene'
 import { FactoryScene, type FactorySceneHandle } from '../components/canvas/factory/FactoryScene'
 import type { FactoryAgentInput } from '../lib/factory/types'
-import type { StatusWord } from '../lib/runStatus'
+import { factoryAgent } from '../lib/factory/agentView'
 import { officeAgentView } from '../lib/office/agentView'
 import { runRoleColor } from '../lib/runRoster'
 import { withOfficeDepartments } from '../lib/office/departments'
@@ -26,8 +26,8 @@ import { CANVAS_EDGE_TYPES } from '../components/canvas/RadialEdge'
 import { STATION_CORNER_RADIUS, STATION_LINE_WIDTH } from '../lib/canvasShapes'
 import { EDGE_TYPE, HEX_GAP, HEX_TILE, agentNodeSize, beginCanvasGlide, breatheIndex, edgeStroke, fitMs, groupNodeSize, handlesFor, isScenePresentation, reportingLineRole, ringStepFor, useCanvasOptions, useNodeArrival, useNodeDims, usesScenePalette, useReducedMotion } from '../lib/canvas'
 import { isLayoutMoving, onLayoutSettled } from '../lib/layoutMotion'
-import { isWorkingAgent, nodeActivity } from '../lib/agentActivity'
-import type { AgentInstance, AgentState, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind, RunSummary } from '@shared/types'
+import { isWorkingAgent } from '../lib/agentActivity'
+import type { AgentInstance, CanvasNodeStyle, McpInstallOutcome, McpInstallRequest, Project, Proposal, ProposalDecision, ProposalKind, RunSummary } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import type { VirtualProjectId } from '@shared/types'
 import { ASSISTANT_REPLY_LABEL, assistantModeLabel, hasRunSidePanel, newSessionLabel, runLayoutFor, speaksAsAssistant } from '../lib/assistants'
@@ -121,29 +121,6 @@ function fitCanvas(rf: { fitView: (o?: FitViewOptions) => unknown }, reduced: bo
 const MESSAGE_FRESH_MS = 1500
 
 type CanvasNode = AgentFlowNode | DoneGroupFlowNode
-
-const FACTORY_STATUS_WORD: Record<AgentState, StatusWord> = {
-  starting: 'Running', thinking: 'Running', tool: 'Running', delegating: 'Running',
-  waiting: 'Needs you', idle: 'Idle', done: 'Finished', error: 'Failed'
-}
-
-/** One agent as the Factory Floor scene takes it (the same words and activity line the graph nodes show). */
-function factoryAgentInput(agent: AgentInstance, session: 'current' | 'earlier'): FactoryAgentInput {
-  return {
-    id: agent.id,
-    name: agentLabel(agent),
-    parentId: agent.parentId,
-    roleKey: agent.roleSlug,
-    handle: agent.handle,
-    state: agent.state,
-    statusWord: FACTORY_STATUS_WORD[agent.state],
-    activity: nodeActivity(agent, { isRoot: agent.parentId === null }),
-    toolCalls: agent.usage?.toolCalls ?? 0,
-    ...(agent.worktree ? { worktree: { status: agent.worktree.status, mergeTarget: agent.worktree.mergeTarget ?? 'main' } } : {}),
-    startedAt: agent.startedAt,
-    session
-  }
-}
 
 /** The fold's name for an agent (handle first, as its node shows it), or undefined when it is not known. */
 function lookupLabel(a: AgentInstance | undefined): string | undefined {
@@ -971,7 +948,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   }
   const factoryOn = options.presentation === 'factory-floor'
   const factoryAgents = useMemo<FactoryAgentInput[]>(
-    () => (factoryOn ? [...agentLookup.values()].map((agent) => factoryAgentInput(agent, chain.origin.has(agent.id) ? 'earlier' : 'current')) : []),
+    () => (factoryOn ? [...agentLookup.values()].map((agent) => factoryAgent(agent, { session: chain.origin.has(agent.id) ? 'earlier' : 'current' })) : []),
     [factoryOn, agentLookup, chain.origin]
   )
   // The root's transcript is the whole conversation: every session's root entries with a divider where each

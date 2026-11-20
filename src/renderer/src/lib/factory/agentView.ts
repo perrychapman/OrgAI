@@ -1,8 +1,9 @@
 // What the Factory Floor shows of an agent or a role (docs/design/factory-floor.md sections 1.3, 1.4 and 4.4). Pure.
-// Slice 2 has the team half (`factoryRole`) and the static lamp rule; the live mapping (`factoryAgentInput`) still lives
-// in views/LiveRunView.tsx and moves here with slice 3's `factoryAgent` and `model.ts`.
-import type { AgentState } from '@shared/types'
+// The live half (`factoryAgent`, slice 3) and the team half (`factoryRole`), the status word map and the static lamp rule.
+import type { AgentInstance, AgentState } from '@shared/types'
 import type { StatusWord } from '../runStatus'
+import { nodeActivity } from '../agentActivity'
+import { agentLabel } from '../agentTree'
 import type { FactoryAgentInput, Lamp } from './types'
 
 /** Section 1.3: the status word per agent state, the mapping the other per-agent views use. */
@@ -15,6 +16,32 @@ export const FACTORY_STATUS_WORD: Record<AgentState, StatusWord> = {
   idle: 'Idle',
   done: 'Finished',
   error: 'Failed'
+}
+
+export interface FactoryAgentOptions {
+  /** 'earlier' for agents of an earlier session of a chain (listed in Find a worker, never on the floor). */
+  session: 'current' | 'earlier'
+}
+
+/**
+ * Live mode (sections 1.3 and 10.1): one run agent as the floor takes it, with the same name, word and activity line the
+ * graph nodes show. A worktree without a merge target merges into the main checkout.
+ */
+export function factoryAgent(agent: AgentInstance, opts: FactoryAgentOptions): FactoryAgentInput {
+  return {
+    id: agent.id,
+    name: agentLabel(agent),
+    parentId: agent.parentId,
+    roleKey: agent.roleSlug,
+    ...(agent.handle ? { handle: agent.handle } : {}),
+    state: agent.state,
+    statusWord: FACTORY_STATUS_WORD[agent.state] ?? 'Idle',
+    activity: nodeActivity(agent, { isRoot: agent.parentId === null }),
+    toolCalls: agent.usage?.toolCalls ?? 0,
+    ...(agent.worktree ? { worktree: { status: agent.worktree.status, mergeTarget: agent.worktree.mergeTarget ?? 'main' } } : {}),
+    startedAt: agent.startedAt,
+    session: opts.session
+  }
 }
 
 /** The fields of an org-chart role the floor needs. */

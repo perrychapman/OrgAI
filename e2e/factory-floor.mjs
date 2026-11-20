@@ -401,6 +401,36 @@ async function controlsWalk(label) {
   check(!!(await untilState((s) => Math.abs(s.view.ppm - fit.ppm) < 0.05, 5000)), `${label}: Fit returns view.ppm to ${fit.ppm}`, String((await state()).view.ppm))
 }
 
+// ---------- Slice 3: live state (sections 1.4, 4.4, 6.2, 7.1, 10.3 to 10.5) ----------
+// NEW-HOOK assertions go through `chk3`: the same check(), but the failure detail always carries what the hook returned.
+const chk3 = (ok, name, got) => check(ok, `[slice3] ${name}`, `got: ${typeof got === 'string' ? got : JSON.stringify(got)}`)
+const wOf = (st, id) => st?.workers?.find((w) => w.id === id)
+/** The mirror button's data hooks and its accessible description text. */
+const mirrorOf = (id) =>
+  page.evaluate((wid) => {
+    const b = document.querySelector(`[data-testid=factory-worker][data-factory-worker-id="${wid}"]`)
+    if (!b) return null
+    const desc = (b.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean).map((i) => document.getElementById(i)?.textContent ?? '').join(' ')
+    const d = b.dataset
+    return { state: d.state, lamp: d.lamp, pose: d.pose, status: d.status, fenced: d.fenced, crate: d.crate ?? null, steps: d.steps ?? '', name: b.getAttribute('aria-label') ?? b.textContent ?? '', desc }
+  }, id)
+/** lamp / pose / status word / fenced / crate of one worker, in the state and on the mirror. `want`: { lamp, pose, fenced, crate, shutter, barrier }. */
+async function checkWorker(label, st, id, want) {
+  const w = wOf(st, id)
+  if (!w) return chk3(false, `${label}: ${id} is on the floor`, (st?.workers ?? []).map((x) => x.id).join(','))
+  const have = { lamp: w.lamp, pose: w.pose, statusWord: w.statusWord, fenced: w.fenced, crate: w.crate ?? null, shutter: w.shutter, barrier: w.barrier }
+  for (const k of Object.keys(want)) {
+    const exp = want[k]
+    const ok = Array.isArray(exp) ? exp.includes(have[k]) : have[k] === exp
+    chk3(ok, `${label}: ${id} ${k} is ${Array.isArray(exp) ? exp.join(' or ') : exp}`, have)
+  }
+  chk3(typeof w.statusWord === 'string' && w.statusWord.length > 0, `${label}: ${id} has a status word`, have)
+  const m = await mirrorOf(id)
+  chk3(!!m && m.lamp === w.lamp && m.pose === w.pose && m.status === w.statusWord && m.fenced === String(!!w.fenced) && (m.crate ?? null) === (w.crate ?? null), `${label}: ${id} mirror hooks agree with the state`, { mirror: m && { ...m, desc: undefined }, state: have })
+  chk3(!!m && m.name.includes(`, ${w.statusWord}`), `${label}: ${id} accessible name ends ", {status word}"`, m?.name)
+}
+const WORKTREE_PHRASE = { active: 'Working in its own branch', merging: 'Working in its own branch', merged: 'Branch merged', conflict: 'Merge conflict', review: 'Waiting for your review' }
+
 let projectOpen = false
 try {
   await resizeTo(1024, 640)
@@ -509,6 +539,78 @@ try {
   check(!!s40, '40 agents: 39 stations stand and the removed ff-w333 is one vacant slot', JSON.stringify(s40 && { n: s40.workers.length, vacant: s40.vacant }))
   if (s40) {
     const booth = await boothOf()
+    // Slice 3, per-state cues. ff-w111 is in `tool` for 5 s after MOCK_FACTORY_FLOOR_READY: catch it first and read promptly.
+    // READY follows the plan update (p2 blocked), ff-w111's tool steps and ff-w211's background card, so key the snapshot on
+    // all three: ff-w123 failing alone comes before the plan update and before the tool hold (first slice 3 run).
+    const ready = (s) => s.mode === 'live' && wOf(s, 'ff-w123')?.lamp === 'failed' && s.board?.blocked === 1 && wOf(s, 'ff-w211')?.lamp === 'needs-you'
+    const snap = await untilState((s) => ready(s) && wOf(s, 'ff-w111')?.pose === 'machine', 25_000)
+    chk3(!!snap, 'MOCK_FACTORY_FLOOR_READY is reached (plan blocked, ff-w211 card pending, ff-w111 at its machine)', wOf(await state(), 'ff-w111'))
+    if (snap) {
+      await checkWorker('tool', snap, 'ff-w111', { lamp: 'running', pose: 'machine', fenced: true, shutter: false, barrier: false })
+      const bootS = snap
+      await checkWorker('starting', bootS, 'ff-w121', { lamp: 'running', pose: 'console', shutter: false, barrier: false })
+      await checkWorker('idle', bootS, 'ff-w122', { lamp: 'off', pose: 'rest', shutter: false, barrier: false })
+      await checkWorker('error', bootS, 'ff-w123', { lamp: 'failed', pose: 'down', barrier: true, shutter: false })
+      await checkWorker('done', bootS, 'ff-w131', { pose: 'docked', shutter: true, barrier: false })
+      // Leads are 'delegating' only while a spawn is in flight; by READY the mock has moved some of them on (ff-l1 reads
+      // 'thinking'). So the pose is checked against the state the mirror reports: delegating -> dispatch, thinking -> console.
+      for (const [label, id] of [['lead', 'ff-l1'], ['sub-lead', 'ff-s11'], ['lead', 'ff-l2'], ['sub-lead', 'ff-s21']]) {
+        const st = (await mirrorOf(id))?.state
+        const pose = st === 'delegating' ? 'dispatch' : st === 'thinking' || st === 'starting' ? 'console' : null
+        if (pose) await checkWorker(`${st} ${label}`, bootS, id, { pose })
+        else log(`skip ${id} pose check: state ${st}`)
+      }
+      await checkWorker('root', bootS, booth, { pose: ['console', 'dispatch', 'rest'] })
+      // Fenced and crate placement per worktree status (sections 1.4 and 4.4).
+      await checkWorker('worktree active', bootS, 'ff-w111', { fenced: true })
+      await checkWorker('worktree merging', bootS, 'ff-w112', { fenced: true, crate: 'pad' })
+      await checkWorker('worktree merged (main)', bootS, 'ff-w113', { fenced: false, crate: 'dock' })
+      await checkWorker('worktree merged (parent)', bootS, 'ff-w131', { fenced: false, crate: 'parent-pad' })
+      await checkWorker('worktree conflict', bootS, 'ff-w212', { fenced: true, crate: 'hold-striped' })
+      await checkWorker('worktree review', bootS, 'ff-w132', { fenced: true, crate: 'pad' })
+      chk3(wOf(bootS, 'ff-w132')?.crateLamp === 'needs-you', 'review crate lamp is needs-you', wOf(bootS, 'ff-w132'))
+      await checkWorker('worktree held', bootS, 'ff-w133', { fenced: true, crate: 'hold' })
+      await checkWorker('worktree waiting-children', bootS, 'ff-s13', { fenced: true, crate: 'pad' })
+      await checkWorker('worktree empty', bootS, 'ff-w211', { fenced: false, crate: null })
+      if (wOf(bootS, 'ff-w213')) await checkWorker('worktree removed', bootS, 'ff-w213', { fenced: false, crate: null })
+      for (const [id, status] of [['ff-w111', 'active'], ['ff-w113', 'merged'], ['ff-w212', 'conflict'], ['ff-w132', 'review']]) {
+        const m = await mirrorOf(id)
+        chk3(!!m && m.desc.includes(WORKTREE_PHRASE[status]), `${id} description says "${WORKTREE_PHRASE[status]}"`, m?.desc)
+      }
+      chk3(snap.workers.every((w) => (w.ambient ?? 'none') === 'none'), 'ambient stays none in slice 3', snap.workers.filter((w) => w.ambient && w.ambient !== 'none').map((w) => `${w.id}:${w.ambient}`))
+      chk3(snap.dockCrates === 1, 'dockCrates is 1', snap.dockCrates)
+      chk3(snap.hall === 'on', 'hall is on while the run is live', snap.hall)
+      chk3((await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall')) === 'on', 'factory-scene data-hall is on', await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall'))
+      // Plan board (p1 in_progress owned by ff-l1, p2 blocked on ff-w111, p3 pending) and the step chip.
+      const b = snap.board
+      chk3(!!b && b.total === 3 && b.done === 0 && b.blocked === 1 && !b.overflow, 'board is 0 of 3 done, 1 blocked, no overflow', b)
+      const lamps = (b?.lamps ?? []).map((l) => (typeof l === 'string' ? l : l.lamp ?? l.state ?? l.status))
+      chk3(JSON.stringify(lamps) === JSON.stringify(['active', 'blocked', 'pending']), 'board lamps are [active, blocked, pending]', b?.lamps)
+      const chipped = snap.workers.filter((w) => (w.stepIds ?? []).includes('p1')).map((w) => w.id)
+      chk3(chipped.length === 1 && chipped[0] === 'ff-l1', 'only ff-l1 carries the p1 step chip', chipped)
+      const ml1 = await mirrorOf('ff-l1')
+      chk3(!!ml1 && ml1.steps.split(/\s+/).includes('p1') && /Plan step p1:/.test(ml1.desc), 'ff-l1 mirror: data-steps has p1 and the description says "Plan step p1: {title}"', ml1)
+      const mw = await mirrorOf('ff-w111')
+      chk3(!!mw && !mw.steps.split(/\s+/).includes('p2') && !/Plan step p2/.test(mw.desc), 'a blocked step puts no chip on its owner ff-w111', mw)
+      const pb = page.locator('[data-testid=factory-plan-board]')
+      const pbName = (await pb.count()) ? ((await pb.first().getAttribute('aria-label')) ?? (await pb.first().innerText())) : null
+      chk3(pbName === 'Plan, 0 of 3 steps done, 1 blocked', 'plan board button name', pbName)
+      chk3((await pb.count()) === 1 && (await pb.first().getAttribute('data-total')) === '3' && (await pb.first().getAttribute('data-done')) === '0' && (await pb.first().getAttribute('data-blocked')) === '1', 'plan board data-total/done/blocked', pbName)
+      // 3D-only labels (DOM overlay over the canvas).
+      if (snap.renderer === 'webgl2') {
+        // textContent: a label off-stage or skipped by the label budget is hidden, and innerText of a hidden node is ''.
+        const bl = ((await page.locator('[data-testid=factory-board-label]').first().textContent({ timeout: 5000 }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
+        chk3(bl === 'Plan · 0 of 3 done · 1 blocked', 'board label text', bl)
+        const dk = page.locator('[data-testid=factory-dock]').first()
+        const dkText = ((await dk.textContent({ timeout: 5000 }).catch(() => '')) ?? '').replace(/\s+/g, ' ').trim()
+        chk3(dkText === 'Main checkout · 1 merged' && (await dk.getAttribute('data-count').catch(() => null)) === '1', 'dock label text and data-count', dkText)
+        const plates = page.locator('[data-testid=factory-nameplate][data-shown="true"]')
+        const nShown = await plates.count()
+        chk3(nShown > 0 && nShown <= 24, '40-agent floor: at most 24 nameplates are shown (label cap)', nShown)
+        const pl = await page.evaluate(() => [...document.querySelectorAll('[data-testid=factory-nameplate][data-shown="true"]')].slice(0, 40).map((n) => ({ s: n.getAttribute('data-status'), t: n.getAttribute('data-steps') })))
+        chk3(pl.every((p) => p.s), 'every shown nameplate carries data-status', pl.slice(0, 3))
+      } else log('skip 3D-only label checks (board label, dock label, nameplates): the floor plan has no label overlay')
+    }
     const ids = s40.workers.map((w) => w.id)
     check(!ids.includes('ff-w333'), '40 agents: the removed ff-w333 is not on the floor')
     check(s40.workers.filter((w) => w.id !== booth).every((w) => w.x === 6 + 4 * (w.slot % 8) && w.z === 1.5 + 7 * w.row), '40 agents: every station x = 6 + 4 * (slot % 8) and z = 1.5 + 7 * row')
@@ -541,7 +643,41 @@ try {
     const card = await page.locator('.decision-card').first().waitFor({ timeout: 20_000 }).then(() => true).catch(() => false)
     check(card, '40 agents: the tour\'s permission card is in the tray before the keyboard walk')
     await sleep(400)
+    // A pending card on a NON-root agent (ff-w211) is a needs-you cue on that worker.
+    const needs = await untilState((s) => wOf(s, 'ff-w211')?.lamp === 'needs-you', 8000)
+    chk3(!!needs, 'ff-w211 lamp is needs-you while its Bash card is pending', wOf(await state(), 'ff-w211'))
+    if (needs) {
+      await checkWorker('needs-you', needs, 'ff-w211', { lamp: 'needs-you', pose: 'signal', statusWord: 'Needs you' })
+      chk3(wOf(needs, booth)?.lamp !== 'needs-you', 'the root is not needs-you for a card on ff-w211', wOf(needs, booth))
+    }
     await keyboardWalk('40 agents', booth)
+    // Answer the card: the cue clears.
+    const allow = page.locator('.decision-card .decision-footer .btn.primary').first()
+    if (await allow.count()) {
+      await allow.click()
+      const cleared = await untilState((s) => wOf(s, 'ff-w211')?.lamp !== 'needs-you' && wOf(s, 'ff-w211')?.pose !== 'signal', 10_000)
+      chk3(!!cleared, 'answering the card clears ff-w211 needs-you', wOf(await state(), 'ff-w211'))
+    } else chk3(false, 'the permission card still has an Allow button after the keyboard walk', await page.locator('.decision-card').count())
+    // Idle: once the tour is over nothing changes and the render loop stays still (3D path only).
+    const calm = await untilState((s) => s.hall === 'on' && wOf(s, 'ff-w111')?.pose !== 'machine', 15_000)
+    if (calm?.renderer === 'webgl2') {
+      await sleep(1500)
+      const f0 = (await state()).frames
+      await sleep(3000)
+      const f1 = (await state()).frames
+      chk3(typeof f0 === 'number' && f0 === f1, 'idle: frames unchanged over 3 s once nothing changes', { f0, f1 })
+    } else log('skip idle frames check: no 3D render loop on the floor plan')
+    // The plan board button opens the Plan side tab.
+    const pbtn = page.locator('[data-testid=factory-plan-board]').first()
+    if (await pbtn.count()) {
+      // Keyboard path (section 7.3): the board button can sit off-stage at the 40-agent fit, where a pointer cannot reach it.
+      await pbtn.focus()
+      await page.keyboard.press('Enter')
+      await sleep(400)
+      const tab = page.locator('[data-testid=side-tab-plan]').first()
+      const sel = (await tab.getAttribute('aria-selected').catch(() => null)) ?? (await tab.getAttribute('aria-current').catch(() => null)) ?? (await tab.getAttribute('data-active').catch(() => null))
+      chk3(sel === 'true', 'the plan board button opens the Plan tab', sel)
+    } else chk3(false, 'the plan board button exists', 0)
     for (const [w, h] of [[1024, 640], [1600, 1000]]) {
       await resizeTo(w, h)
       check(await noPageScroll(), `40 agents: no page scroll at ${w}x${h}`)
@@ -549,6 +685,39 @@ try {
     await resizeTo(1024, 640)
   }
   await shot('floor-40')
+  // Ended hall (section 1.4): End session on the tour run; agents keep their end lamps.
+  if (s40) {
+    const before = await state()
+    await endSession(page)
+    const ended = await untilState((s) => s.hall === 'ended', 15_000)
+    chk3(!!ended, 'End session: the hall is ended', await state().then((s) => s.hall).catch(() => null))
+    if (ended) {
+      chk3((await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall')) === 'ended', 'factory-scene data-hall is ended', await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall'))
+      const lampOf = (st, id) => wOf(st, id)?.lamp
+      for (const [id, lamp] of [['ff-w123', 'failed'], ['ff-w131', 'off']]) chk3(lampOf(ended, id) === lampOf(before, id) && lampOf(ended, id) === lamp, `ended hall: ${id} keeps its end lamp (${lamp})`, { before: lampOf(before, id), after: lampOf(ended, id) })
+    }
+  }
+  writeScript(null)
+
+  // ---------- Slice 3: blocked plan, paused hall, ended hall ----------
+  await startLiveRun('Factory floor blocked plan [mock:exec-blocked]')
+  // mark_blocked sets the plan's status to blocked without blocking a step, so board.blocked may stay 0: key on the root.
+  const blocked = await untilState((s) => s.mode === 'live' && !!s.board && s.workers[0]?.lamp === 'needs-you', 30_000)
+  chk3(!!blocked, '[mock:exec-blocked]: a blocked plan makes the root lamp needs-you', await state().then((s) => ({ board: s.board, root: s.workers[0] })).catch(() => null))
+  if (blocked) {
+    const rootId = await boothOf()
+    await checkWorker('blocked plan', blocked, rootId, { lamp: 'needs-you', pose: 'signal', statusWord: 'Needs you' })
+  }
+
+  await startLiveRun('Factory floor paused [mock:factory-floor-pause]')
+  const paused = await untilState((s) => s.hall === 'paused', 60_000)
+  chk3(!!paused, '[mock:factory-floor-pause]: the hall is paused', await state().then((s) => s.hall).catch(() => null))
+  chk3((await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall')) === 'paused', 'factory-scene data-hall is paused', await page.locator('[data-testid=factory-scene]').first().getAttribute('data-hall'))
+  // A paused run offers Resume now and Cancel auto-resume, not End session: the ended hall is checked on the tour run above.
+  // A plain run keeps a scene mounted for the forced-renderer checks below.
+  writeScript([{ type: 'text', text: 'Only the root is on the floor.' }])
+  await startLiveRun('Factory floor after live state')
+  await waitForFloor(1)
   writeScript(null)
 
   // ---------- Forced floor plan, notices, Use Graph (Live scene, reads the key at mount) ----------

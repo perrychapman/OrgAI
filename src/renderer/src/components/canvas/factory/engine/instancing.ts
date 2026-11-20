@@ -1,5 +1,6 @@
 // Instance pools of the Factory Floor engine (docs/design/factory-floor.md sections 4.6 and 9.2): one InstancedMesh per
-// (kit, part key), all parts of a kit sharing the per-instance object matrix, shared materials from FactoryMaterials,
+// (kit, part key), all parts of a kit sharing the per-instance object matrix (times a per-part local matrix where the
+// instance gives one: a robot's pose), shared materials from FactoryMaterials,
 // per-instance colours for parts that ask for them. Only instances whose matrix or colour changed are written. The
 // LOD band shows the parts listed for it; the engine swaps bands only when a zoom settles.
 import { Color, InstancedBufferAttribute, InstancedMesh, Matrix4, type Object3D, type WebGLRenderer } from 'three'
@@ -11,6 +12,11 @@ export interface InstanceSpec {
   matrix: Matrix4
   /** Per-part colours for parts with instanceColor (missing: white). */
   colours?: Readonly<Record<string, Color>>
+  /**
+   * Per-part local matrices (a robot's pose, engine/poses.ts): that part's instance matrix is `matrix * parts[key]`.
+   * Parts not listed take `matrix` alone.
+   */
+  parts?: Readonly<Record<string, Matrix4>>
 }
 
 const WHITE = new Color(1, 1, 1)
@@ -35,6 +41,8 @@ export class KitPool {
   private keys: string[] = []
   private band: LodBand = 'near'
   private readonly scratch = new Color()
+  private readonly posed = new Matrix4()
+  private placed = false
 
   constructor(parent: Object3D, kit: ObjectKit, materials: FactoryMaterials, hook?: RenderHook, capacity = MIN_CAPACITY) {
     this.parent = parent
@@ -64,11 +72,13 @@ export class KitPool {
    */
   set(instances: readonly InstanceSpec[]): boolean {
     let changed = false
+    this.placed = false
     const wanted = new Set(instances.map((i) => i.key))
     for (const key of [...this.keys]) {
       if (!wanted.has(key)) {
         this.remove(key)
         changed = true
+        this.placed = true
       }
     }
     if (instances.length > this.capacity) this.allocate(Math.max(instances.length, this.capacity * 2))
@@ -79,11 +89,17 @@ export class KitPool {
         this.keys.push(inst.key)
         this.slots.set(inst.key, index)
         changed = true
+        this.placed = true
         this.write(index, inst, true)
       } else if (this.write(index, inst, false)) changed = true
     }
     if (changed) this.finish()
     return changed
+  }
+
+  /** True when the last set() added, removed or moved an instance (not only recoloured one): shadows need an update. */
+  get placementChanged(): boolean {
+    return this.placed
   }
 
   /** Shows the parts listed for `band`. Returns true when visibility changed. */
@@ -133,8 +149,9 @@ export class KitPool {
   /** Writes one instance; returns whether anything differed. */
   private write(index: number, inst: InstanceSpec, force: boolean): boolean {
     let changed = false
-    const src = inst.matrix.elements
     for (const { part, mesh } of this.parts) {
+      const local = inst.parts?.[part.key]
+      const src = local ? this.posed.multiplyMatrices(inst.matrix, local).elements : inst.matrix.elements
       const arr = mesh.instanceMatrix.array as Float32Array
       const o = index * 16
       let differs = force
@@ -149,6 +166,7 @@ export class KitPool {
       if (differs) {
         arr.set(src, o)
         changed = true
+        this.placed = true
       }
       if (part.instanceColor && mesh.instanceColor) {
         const c = inst.colours?.[part.key] ?? WHITE

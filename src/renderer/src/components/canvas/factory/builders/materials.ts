@@ -50,6 +50,9 @@ const ROLES: Record<string, RoleDef> = {
   'robot.joint': { colour: 'robotJoint', kind: 'smooth', roughness: 0.6, metalness: 0.2 },
   'robot.visor': { colour: 'robotVisor', kind: 'smooth', roughness: 0.2, metalness: 0.2 },
   'robot.wheel': { colour: 'robotWheel', kind: 'smooth', roughness: 0.9, metalness: 0 },
+  /** Far-LOD capsule: unlit (a few pixels wide, so lighting must not decide its contrast against the floor). */
+  'robot.far': { colour: 'robotFar', kind: 'basic' },
+  crate: { colour: 'crate', kind: 'flat', roughness: 0.8, metalness: 0 },
   paint: { colour: 'paint', kind: 'flat', roughness: 0.9, metalness: 0 },
   /** Dark marks printed on a paint decal (the lead's line plate): offset further than the paint. */
   paintMark: { colour: 'belt', kind: 'flat', roughness: 0.9, metalness: 0 },
