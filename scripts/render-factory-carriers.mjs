@@ -36,9 +36,9 @@ const work = fs.mkdtempSync(path.join(os.tmpdir(), 'orgai-factory-carriers-'))
 
 const entry = `
 import { ACESFilmicToneMapping, Color, Group, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from 'three'
-import { factoryKits, KEY_DIRECTION } from '${SRC}/components/canvas/factory/builders/index'
-import { cameraPose, project, FOV_DEG } from '${SRC}/lib/factory/camera'
-import { FACTORY_PALETTE } from '${SRC}/lib/factory/palette'
+import { factoryKits, KEY_DIRECTION } from ${JSON.stringify(SRC + '/components/canvas/factory/builders/index')}
+import { cameraPose, project, FOV_DEG } from ${JSON.stringify(SRC + '/lib/factory/camera')}
+import { FACTORY_PALETTE } from ${JSON.stringify(SRC + '/lib/factory/palette')}
 
 const TOKENS = { success: '#22c58b', warning: '#f5a524', danger: '#ff6b6b', accentText: '#a592ff' }
 const W = 960

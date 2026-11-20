@@ -523,6 +523,18 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     return true
   }, [buttons, controller, boxFor])
 
+  // A focused worker that leaves the floor takes its button with it: keep keyboard focus on the floor (Reviewer, slice 6)
+  // by moving it to the tab stop instead of letting it fall to the page body.
+  useEffect(() => {
+    const gone = focus.current.focusedId
+    if (!gone || gone === PLAN_BOARD_ID || layout.stations[gone]) return
+    focus.current.focusedId = null
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    const next = tabStop(layout, selectedId)
+    if (next) focusWorker(next)
+  }, [layout, selectedId, focusWorker])
+
   const onKey = useCallback((id: string, e: KeyboardEvent<HTMLButtonElement>) => {
     const action = floorKeyAction(e, mode)
     if (!action) return

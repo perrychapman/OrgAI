@@ -115,6 +115,8 @@ export class FactoryEngine {
   private readonly governor: QualityGovernor
   /** Display-frame time of the last animating frame (0: the previous frame did not animate). */
   private animTickAt = 0
+  /** setFloor ran since the last governor tick (that interval is host work, not animation). */
+  private floorChanged = false
   /** The frame being rendered through flush() belongs to a camera tween (an animating frame). */
   private tweenFrame = false
   /** Bytes of the engine's own DataTextures (fixed per engine; counted once after the first frame). */
@@ -270,6 +272,7 @@ export class FactoryEngine {
   setFloor(floor: EngineFloor): void {
     if (this.disposed) return
     this.floor = floor
+    this.floorChanged = true
     if (this.syncFloor()) this.requestFrame()
   }
 
@@ -653,7 +656,12 @@ export class FactoryEngine {
       return
     }
     const prev = this.animTickAt
-    if (prev && at > prev) {
+    // An interval in which the floor changed carries the host's React commit and the pool writes for that model change
+    // (a one-off invalidation, section 9.2), which a lower quality cannot shorten: it is not counted. Measured in slice 6:
+    // the 40-agent arrival burst stepped an RTX 3060 down to low on those frames alone (page rAF p95 13.9 ms).
+    const hostWork = this.floorChanged
+    this.floorChanged = false
+    if (prev && at > prev && !hostWork) {
       const step = this.governor.push(at - prev)
       if (step) this.applyQuality(step)
     }

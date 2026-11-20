@@ -93,6 +93,42 @@ Cues and motion (spec "Implementation notes, Slice 4"). Facts for later slices:
 - Screenshot and measurement driver (not in the repo; `e2e/shots/` is gitignored): stage a team before the gate, press
   Fit, Allow, then shoot when the test state lists a cue kind (wait 250 to 900 ms into its flight).
 
+## Factory Floor, slice 6 (2026-11-20): hardening and sample
+
+Spec "Implementation notes, Slice 6" and "Final summary". Facts for whoever touches the scene next:
+
+- Developer key (not user-facing): `localStorage['orgai.factory.renderer']`, read at mount; `floor-plan` forces the floor
+  plan (reason `forced`), `no-webgl2` and `chunk-failed` force those notices. Any other value or a storage error is
+  ignored (`capability.ts`). The Reviewer judged it harmless.
+- Fallback decision is pure: `lib/factory/fallback.ts` `factoryReason` (forced > no-webgl2 > too-many > context-lost >
+  chunk-failed; too-many is more than 120 current-session agents, earlier sessions do not count), `noticeCopy`, and
+  `ContextLossWatch` (5 s restore timeout, third loss in 10 minutes). Context loss can be driven from a test through the
+  canvas's own `WEBGL_lose_context` extension; no app hook exists.
+- Quality steps: `lib/factory/quality.ts` (`createQualityGovernor`, `qualitySettings`). The engine feeds it display-frame
+  intervals while animating (cues, ambient, camera tween) and skips the interval in which `setFloor` ran (a model change
+  carries the host's React commit, which a lower quality cannot shorten; without that skip the 40-agent arrival burst
+  stepped an RTX 3060 to low once). Steps are applied in place (pixel ratio, shadow map size or off, far LOD); MSAA stays
+  as created. Test state: `quality` is current, `qualityStart` the probe's choice; `perf.memoryBytes` (own DataTextures plus
+  the shadow map, width x height x 4) and `perf.pixelRatio`.
+- Test state carries no agent text: the message cursor is `at|from|to|#<fnv hash>` (it used to hold 32 characters of the
+  message); a unit guard in `snapshot.test.ts` walks every string.
+- `FactorySceneHandle.focusFind()` backs "Load earlier sessions" (LiveRunView calls it, then falls back to a query).
+- Nameplates hide for stations the cue layer hides (`lib/factory/cueVisibility.ts`, full motion only), so a child's plate
+  appears when its tote lands.
+- A focused worker that leaves the floor moves focus to the tab stop instead of the page body; a paused booth's accessible
+  name uses the shown word "Paused".
+- Settings sample: `FactorySample.tsx` is one `<img data-testid="factory-sample-image" data-sample-theme>` per the html
+  `data-theme`, inside `role="img"` "Static sample factory floor". The PNGs are rendered from the real scene by
+  `node scripts/render-factory-sample.mjs` after `npm run build` (needs a GPU, run by hand); carriers art is checked in an
+  offscreen harness, `node scripts/render-factory-carriers.mjs --tag after`.
+- e2e switches of `e2e/factory-floor.mjs`: default SwiftShader launch switches (that script only); `E2E_FACTORY_SWGL=0`
+  machine GPU; `E2E_FACTORY_PLAN=1` floor plan throughout; `E2E_FACTORY_PERF=1` asserts the section 9.1 timing targets
+  and prints `PERF` lines (use with `E2E_FACTORY_SWGL=0`; the interval is the page's rAF p95 over the burst's first 5 s);
+  `E2E_FACTORY_WAIT_MS`, `E2E_FACTORY_DEBUG`. The script drives 122 agents through 121 scripted mock spawns for the Large
+  team notice (3D path only).
+- Verified on Windows 11 with an RTX 3060 and SwiftShader only. `npm run pack` cannot run inside a worktree (no
+  `node_modules` there and installs are not allowed), so the packed asar app stays unverified.
+
 ## Context menus (2026-11-18)
 
 Contract and evaluation table: `docs/design/context-menus.md`. One primitive, `components/ui/ContextMenu.tsx`

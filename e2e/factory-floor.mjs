@@ -547,6 +547,12 @@ try {
       rec.qualityStartFirstMount = first.qualityStart
       rec.firstMountGeometries = first.perf.geometries
       rec.firstMountTextures = first.perf.textures
+      // Section 9.2: software WebGL starts at minimal (SwiftShader passes failIfMajorPerformanceCaveat, so the probe
+      // reads the renderer string); a hardware GPU starts at high.
+      if (first.perf.gpu) {
+        const sw = SOFTWARE_GPU.test(first.perf.gpu)
+        check(first.qualityStart === (sw ? 'minimal' : 'high'), `[slice6] the first mount starts at ${sw ? 'minimal (software WebGL)' : 'high (hardware GPU)'}`, { gpu: first.perf.gpu, start: first.qualityStart })
+      }
     }
   }
 
@@ -1163,6 +1169,18 @@ try {
   }
   burstFrom = Date.now()
   await allowGate()
+  // Section 9.1's method for the frame interval: rAF timestamps over 5 s from the start of the burst (once the gate is
+  // released, so no pre-burst idle frames dilute it), in the page.
+  await page.evaluate(() => {
+    const ts = []
+    window.__ffRaf = ts
+    const end = performance.now() + 5000
+    const step = (t) => {
+      ts.push(t)
+      if (t < end) requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  })
   const stressRun = await watch((s) => s.mode === 'live' && s.workers.length === 40 && sWorkers.slice(0, 6).every((w) => wOf(s, w)?.crate === 'dock') && s.cues.length === 0, 120_000, sampleStress)
   chk6(!!stressRun, '40-agent stress: all 40 agents are on the floor and the six merged crates reached the dock', await state().then((s) => ({ n: s.workers.length, cues: s.cues.length })).catch(() => null))
   const sst = stressRun ?? (await state())
@@ -1184,7 +1202,18 @@ try {
     rec['stress burst budgets (draw/shadow/triangles/plates)'] = `${mx.calls}/${mx.shadow}/${mx.tris}/${mx.plates}`
     rec['stress animated reads'] = mx.animated
     perfCheck(mx.animated >= 3 && mx.frameP95 <= 6, 'frame CPU time p95 at most 6 ms during the burst (40 agents, 1600x1000, caps full)', { frameP95Ms: mx.frameP95, reads: mx.animated })
-    perfCheck(mx.animated >= 3 && mx.intervalP95 <= 20, 'frame interval p95 at most 20 ms during the burst', { intervalP95Ms: mx.intervalP95, reads: mx.animated })
+    // The engine's ring (last 120 full-rate intervals) is recorded as a worst rolling read; the asserted figure is the
+    // spec's: the p95 of page rAF intervals over the burst's first 5 s.
+    const raf = await page.evaluate(() => {
+      const ts = window.__ffRaf ?? []
+      const d = ts.slice(1).map((t, i) => t - ts[i]).sort((a, b) => a - b)
+      // The display period is the median interval; "dropped" are intervals over 1.5 periods (the 20 ms target is for 60 Hz).
+      const period = d.length ? d[Math.floor(d.length / 2)] : 0
+      const dropped = d.filter((x) => x > 1.5 * period).length
+      return { n: d.length, p95: d.length ? d[Math.min(d.length - 1, Math.ceil(d.length * 0.95) - 1)] : 0, max: d.length ? d[d.length - 1] : 0, period, droppedShare: d.length ? dropped / d.length : 0 }
+    })
+    rec['stress burst rAF interval p95 over 5 s (page)'] = `${raf.p95.toFixed(1)} ms over ${raf.n} intervals, max ${raf.max.toFixed(1)} ms, display period ${raf.period.toFixed(1)} ms, ${(raf.droppedShare * 100).toFixed(1)} % over 1.5 periods`
+    perfCheck(raf.n >= 100 && raf.p95 <= 20, 'frame interval p95 at most 20 ms during the burst (page rAF over 5 s)', raf)
     checkQualityState('40-agent stress after the burst', sst)
     rec.qualityStart = sst.qualityStart
     rec.qualityAfterBurst = sst.quality

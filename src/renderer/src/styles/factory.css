@@ -474,69 +474,17 @@ button.factory-worker:focus-visible {
   color: var(--text-secondary);
 }
 
-/* ---- settings sample (inert floor plan of the five-agent sample, until slice 6's images) ---- */
+/* The settings sample is a static picture (slice 6): its rules live in factory-sample.css. */
 
-.factory-sample {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  border-radius: inherit;
-  background: var(--surface-0);
-}
-
-.factory-sample .factory-mirror {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  height: 100%;
-  overflow: hidden;
-  padding: var(--space-3);
-}
-
-.factory-sample .factory-gantry {
-  display: flex;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
-}
-
-.factory-sample .factory-tiles {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
-.factory-sample .factory-mirror .factory-worker {
-  position: static;
-  container-type: normal;
-  overflow: visible;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border-default);
-  background: var(--surface-2);
-  cursor: default;
-}
-
-.factory-sample .factory-gantry > .factory-worker {
-  min-width: 160px;
-  max-width: 100%;
-}
-
-/* Slice 2 has no motion; the rule keeps any later chrome transition honest under both reduced-motion selectors. */
+/* No chrome transition here; the rule keeps any later one honest under both reduced-motion selectors. */
 @media (prefers-reduced-motion: reduce) {
-  .factory-scene *,
-  .factory-sample * {
+  .factory-scene * {
     transition: none;
     animation: none;
   }
 }
 
-:root[data-reduce-motion='on'] .factory-scene *,
-:root[data-reduce-motion='on'] .factory-sample * {
+:root[data-reduce-motion='on'] .factory-scene * {
   transition: none;
   animation: none;
 }

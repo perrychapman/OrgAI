@@ -89,7 +89,10 @@ export function FactoryCanvas(props: FactoryCanvasProps): ReactElement {
         kits,
         tokens: readTokens,
         mountedAt: latest.current.mountedAt,
-        onChange: () => latest.current.onStats(engine.stats())
+        onChange: () => {
+          const e = engineRef.current
+          if (e) latest.current.onStats(e.stats())
+        }
       })
     } catch {
       canvas.remove()

@@ -405,7 +405,8 @@ constants live in one pure module, `lib/factory/motion.ts`; chrome around the sc
 
 - On mount (and on a run id change) the scene records a **message cursor**: the key
   `{at}|{from}|{to}|{text first 32 chars}` of the newest message. Only messages after it animate. The store keeps the
-  last 100, so the cursor compares `at` first and the key second.
+  last 100, so the cursor compares `at` first and the key second. (As built, slice 6: the test state's
+  `messageCursor` shows the text part only as a hash, `{at}|{from}|{to}|#{fnv hash}`, so no message text reaches it.)
 - Tool-call counts, worktree statuses and states present at mount are baselines; only later changes cue.
 - Remounting (switching to the conversation and back, changing presentation) never replays.
 
@@ -425,6 +426,8 @@ constants live in one pure module, `lib/factory/motion.ts`; chrome around the sc
 ### 6.1 Pointer
 
 - **Hover** a worker button: its nameplate shows and its station gets a 0.15 emissive lift, instant (no tween).
+  (As built: the nameplate shows; the emissive lift is **not built**, see the slice 2 deviations and the final summary.
+  For the Product Designer to drop or keep as one highlight-overlay instance.)
 - **Click** a worker: `onSelect(id)`. Live opens the existing agent inspector in the live panel; team opens the
   existing role panel. The selected station gets the selection ring. Clicking empty floor does nothing (pan only);
   selection clears through the inspector as today.
@@ -674,6 +677,10 @@ The modules never import three; a test file may (the camera agreement test impor
 | `palette.ts` | `FACTORY_PALETTE.dark` / `.light`, `lampFor(state)` |
 | `snapshot.ts` | `factoryTestState(...)` → `FactoryTestState` |
 | `capability.ts` | `probeWebGL2(createCanvas)` (canvas factory injected so it is testable), forced-fallback key |
+| `quality.ts` | Slice 6: `createQualityGovernor`, `lowerQuality`, `qualitySettings`, memory sums (`shadowMapBytes`, `textureBytes`) |
+| `fallback.ts` | Slice 6: `factoryReason` (section 8 precedence), `currentAgentCount`, `noticeCopy`, `ContextLossWatch` |
+| `cueVisibility.ts` | Slice 6: stations the cue layer hides (a child while its tote flies), shared by the engine and the nameplates |
+| `find.ts` | Slice 2: Find a worker rows and filtering |
 | `boundary.test.ts` | The import boundary check |
 
 ### 10.2 Components: `src/renderer/src/components/canvas/factory/`
