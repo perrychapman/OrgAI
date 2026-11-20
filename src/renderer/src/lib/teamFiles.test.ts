@@ -23,6 +23,9 @@ import {
   secretsLine,
   teamAttentionItems,
   teamFilesLine,
+  commitConfirmText,
+  COMMIT_CONFIRM_LIST_MAX,
+  COMMIT_CONFIRM_NOTE,
   toolsAddedLine,
   undoRewritesLine,
   undoneLine
@@ -57,10 +60,24 @@ describe('teamFilesLine', () => {
   })
   it('uncommitted offers Commit only inside git, and never says push', () => {
     const l = teamFilesLine(status({ uncommitted: true, uncommittedFiles: ['.orgai/team.json'] }))
-    expect(l).toMatchObject({ tone: 'attention', text: 'Team files changed, not committed', action: 'commit' })
+    expect(l).toMatchObject({ tone: 'attention', text: 'Team files: not committed yet', action: 'commit' })
+    // A fresh project's files are new, not edited: the line never says "changed".
+    expect(l?.text).not.toMatch(/changed/i)
     expect(l?.title).toContain('.orgai/team.json')
     expect(JSON.stringify(l)).not.toMatch(/push/i)
     expect(teamFilesLine(status({ uncommitted: true, isGitRepo: false }))?.action).toBeUndefined()
+  })
+  it('the commit confirmation names the files, caps the list and says when the count is a lower bound', () => {
+    const one = commitConfirmText({ uncommittedFiles: ['.orgai/team.json'] }, 200)
+    expect(one).toEqual({ lead: 'OrgAI commits 1 file in .orgai/ to the git repository in this folder:', files: ['.orgai/team.json'], more: 0 })
+    const many = Array.from({ length: 15 }, (_, i) => `.orgai/agents/r${i}.md`)
+    const m = commitConfirmText({ uncommittedFiles: many }, 200)
+    expect(m.lead).toContain('15 files')
+    expect(m.files).toHaveLength(COMMIT_CONFIRM_LIST_MAX)
+    expect(m.more).toBe(15 - COMMIT_CONFIRM_LIST_MAX)
+    expect(commitConfirmText({ uncommittedFiles: many }, 15).lead).toContain('at least 15 files')
+    expect(commitConfirmText({ uncommittedFiles: [] }, 200)).toEqual({ lead: 'OrgAI commits the team files in .orgai/ to the git repository in this folder.', files: [], more: 0 })
+    expect(COMMIT_CONFIRM_NOTE).toMatch(/Nothing is pushed/)
   })
   it('pending counts approvals plus the omitted ones', () => {
     const s = status({ state: 'pending', changes: [change(), change({ id: 'b' }), change({ id: 'c', needsApproval: false })], omittedChanges: 2 })
