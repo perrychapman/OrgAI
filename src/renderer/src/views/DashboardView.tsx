@@ -188,7 +188,7 @@ export default function DashboardView(): ReactElement {
   )
 
   const sections: Record<DashSectionId, ReactElement> = {
-    resume: <ResumeSection key="resume" />,
+    resume: <ResumeSection key="resume" lastSeen={lastSeen} />,
     today: <TodaySection key="today" />,
     working: <RightNowBand key="working" caps={caps} onAnnounce={say} />,
     week: <WeekSection key="week" />,

@@ -362,11 +362,6 @@
   box-shadow: var(--halo-dot-live);
 }
 
-/* The one left rule a list keeps: a failed run. */
-.dash-row.dash-row-since[data-status='Failed'] {
-  border-left: 2px solid var(--state-error);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .dash-dot[data-live='true'] {
     box-shadow: none;

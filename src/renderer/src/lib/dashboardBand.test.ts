@@ -24,11 +24,8 @@ import {
   type BandRow,
   type BandRunIn
 } from './dashboardBand'
-import { statusSentence } from './dashboard'
 
-describe('bandWorkFacts (walk-3 M1: one source for the status sentence and the band)', () => {
-  const sentence = (f: ReturnType<typeof bandWorkFacts>): string =>
-    statusSentence({ workingAgents: f.workingAgents, agentRuns: f.counts.working, workingRuns: f.counts.working, openRuns: f.total, pausedRuns: 0, closedWaiting: 0 })
+describe('bandWorkFacts (walk-3 M1: one source for the greeting brief and the band)', () => {
   it('counts no working agents in a run that waits on a decision', () => {
     const runs = [
       // The root still says "Delegating" while its report waits on a card: the run waits, nobody counts as working.
@@ -38,7 +35,6 @@ describe('bandWorkFacts (walk-3 M1: one source for the status sentence and the b
     const f = bandWorkFacts(runs, [project()], {})
     expect(f.workingAgents).toBe(0)
     expect(f.counts).toEqual({ working: 0, waiting: 1, idle: 1 })
-    expect(sentence(f)).toBe('2 runs open, none working.')
   })
   it('agrees with bandModel counts', () => {
     const runs = [
@@ -51,7 +47,6 @@ describe('bandWorkFacts (walk-3 M1: one source for the status sentence and the b
     const m = bandModel(runs, [project()], {}, NOW, { ...caps, bandRuns: 10 })
     expect(f.counts).toEqual(m.counts)
     expect(f.workingAgents).toBe(4)
-    expect(sentence(f)).toBe('4 agents working in 2 runs.')
   })
 })
 
