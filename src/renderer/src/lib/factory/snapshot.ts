@@ -71,8 +71,11 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
         pose: w.pose,
         statusWord: w.statusWord,
         fenced: w.fenced,
-        ...(w.crate ? { crate: w.crate.at } : {}),
-        ambient: w.ambient
+        ...(w.crate ? { crate: w.crate.at, crateLamp: w.crate.lamp } : {}),
+        ambient: w.ambient,
+        shutter: w.shutter,
+        barrier: w.barrier,
+        stepIds: [...w.stepIds]
       })
     }
   } else if (input.layout) {
@@ -80,7 +83,7 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
       const st = input.layout.stations[id]
       const w = input.summaries?.[id]
       if (!st || !w) continue
-      workers.push({ id, line: st.line, row: st.row, slot: st.slot, x: round(st.center.x), z: round(st.center.z), lamp: w.lamp, pose: 'rest', statusWord: w.statusWord, fenced: false, ambient: 'none' })
+      workers.push({ id, line: st.line, row: st.row, slot: st.slot, x: round(st.center.x), z: round(st.center.z), lamp: w.lamp, pose: 'rest', statusWord: w.statusWord, fenced: false, ambient: 'none', shutter: false, barrier: false, stepIds: [] })
     }
   }
   const layout = model?.layout ?? input.layout ?? null
@@ -92,6 +95,10 @@ export function factoryTestState(input: FactorySnapshotInput): FactoryTestState 
     mode: input.mode,
     motion: input.motion,
     workers,
+    hall: model?.hall ?? 'on',
+    board: model?.board ? { ...model.board, lamps: [...model.board.lamps] } : null,
+    dockCrates: model?.dockCrates ?? 0,
+    earlier: model?.earlier.length ?? 0,
     lines: layout ? layout.lines.map((l) => ({ number: l.number, leadId: l.leadId, rows: [...l.rows] })) : [],
     vacant: layout ? layout.vacant.length : 0,
     cues: (input.cues ?? []).map((c) => ({

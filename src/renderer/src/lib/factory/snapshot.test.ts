@@ -68,6 +68,10 @@ describe('factoryTestState', () => {
       mode: 'team',
       motion: 'reduced',
       workers: [],
+      hall: 'on',
+      board: null,
+      dockCrates: 0,
+      earlier: 0,
       lines: [],
       vacant: 0,
       cues: [],
@@ -84,7 +88,7 @@ describe('factoryTestState', () => {
   it('lists workers in reading order with rounded coordinates and no text', () => {
     const s = factoryTestState({ renderer: 'webgl2', quality: 'high', mode: 'live', motion: 'full', model, loop: 'idle', frames: 3, engines: 1 })
     expect(s.workers.map((w) => w.id)).toEqual(['root', 'a', 'b'])
-    expect(s.workers[2]).toEqual({ id: 'b', line: 1, row: 0, slot: 1, x: 10, z: 1.5, lamp: 'failed', pose: 'down', statusWord: 'Failed', fenced: false, ambient: 'none' })
+    expect(s.workers[2]).toEqual({ id: 'b', line: 1, row: 0, slot: 1, x: 10, z: 1.5, lamp: 'failed', pose: 'down', statusWord: 'Failed', fenced: false, ambient: 'none', shutter: false, barrier: false, stepIds: [] })
     expect(s.workers[1].crate).toBe('pad')
     expect(s.lines).toEqual([{ number: 1, leadId: 'root', rows: [0] }])
     expect(s.vacant).toBe(1)
@@ -99,8 +103,8 @@ describe('factoryTestState', () => {
       summaries: { root: { lamp: 'running', statusWord: 'Running' }, a: { lamp: 'needs-you', statusWord: 'Needs you' } }
     })
     expect(s.workers).toEqual([
-      { id: 'root', line: 0, row: -1, slot: 0, x: 7, z: -6, lamp: 'running', pose: 'rest', statusWord: 'Running', fenced: false, ambient: 'none' },
-      { id: 'a', line: 1, row: 0, slot: 0, x: 6, z: 1.5, lamp: 'needs-you', pose: 'rest', statusWord: 'Needs you', fenced: false, ambient: 'none' }
+      { id: 'root', line: 0, row: -1, slot: 0, x: 7, z: -6, lamp: 'running', pose: 'rest', statusWord: 'Running', fenced: false, ambient: 'none', shutter: false, barrier: false, stepIds: [] },
+      { id: 'a', line: 1, row: 0, slot: 0, x: 6, z: 1.5, lamp: 'needs-you', pose: 'rest', statusWord: 'Needs you', fenced: false, ambient: 'none', shutter: false, barrier: false, stepIds: [] }
     ])
     expect(s.lines).toEqual([{ number: 1, leadId: 'root', rows: [0] }])
     expect(s.vacant).toBe(1)

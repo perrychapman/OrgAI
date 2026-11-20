@@ -36,6 +36,7 @@ import {
 import { nextFocus, tabStop, floorKeyAction } from '../../../lib/factory/navigation'
 import type { Box3, CameraView, Stage } from '../../../lib/factory/camera'
 import { factoryLamp, factoryWord } from '../../../lib/factory/agentView'
+import { buildFloorModel } from '../../../lib/factory/model'
 import { useReducedMotion } from '../../../lib/canvas'
 import { tokenMs } from '../../../lib/useExitPresence'
 import { useFrameAnnounce } from '../../layout/CanvasFrame'
@@ -160,7 +161,7 @@ function describe(a: FactoryAgentInput, layout: FloorLayout, names: ReadonlyMap<
 }
 
 export function FactoryScene(props: FactorySceneProps): ReactElement {
-  const { mode, agents, plan, needsYouIds, selectedId, onSelect, onRemove, onUseGraph, controlRef, runId, projectId } = props
+  const { mode, agents, plan, runStatus, needsYouIds, selectedId, onSelect, onRemove, onUseGraph, controlRef, runId, projectId } = props
   const mountedAt = useRef(performance.now())
   const [forced] = useState(readSwitch)
   const [attempt, setAttempt] = useState(0)
@@ -466,11 +467,12 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   }, [selectedId, refreshLabels])
 
   // ---- engine input (3D) ----
-  const engineFloor = useMemo<EngineFloor>(() => {
-    const lamps: Record<string, Lamp> = {}
-    for (const e of entries) lamps[e.id] = e.lamp
-    return { mode, layout, lamps, selectedId: selectedId ?? null, board: boardOn }
-  }, [mode, layout, entries, selectedId, boardOn])
+  // Slice 3 contract: the engine draws the pure floor model (lib/factory/model.ts).
+  const floorModel = useMemo(
+    () => buildFloorModel(agents, layout, needsYouKey ? needsYouKey.split('\n') : [], plan, runStatus, mode),
+    [agents, layout, needsYouKey, plan, runStatus, mode]
+  )
+  const engineFloor = useMemo<EngineFloor>(() => ({ model: floorModel, selectedId: selectedId ?? null }), [floorModel, selectedId])
 
   // ---- labels ----
   const plateAnchors = useMemo<NameplateData[]>(() => {
@@ -545,7 +547,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   // ---- test state (section 10.3): on every change of what it shows, and at most twice a second for frames ----
   const outRef = useRef<HTMLOutputElement>(null)
   const statsRef = useRef<FactoryEngineStats | null>(null)
-  const shown = { renderer, reason, quality, mode, motion, layout, summaries } as const
+  const shown = { renderer, reason, quality, mode, motion, layout, summaries, model: floorModel } as const
   const shownRef = useRef(shown)
   shownRef.current = shown
   const lastWrite = useRef(0)
@@ -565,6 +567,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         quality: s.quality,
         mode: s.mode,
         motion: s.motion,
+        model: s.model,
         layout: s.layout,
         summaries: s.summaries,
         view: viewRef.current,
@@ -588,7 +591,7 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   useEffect(() => {
     if (renderer !== 'webgl2') statsRef.current = null
     writeState()
-  }, [renderer, reason, quality, mode, motion, entries, layout, writeState])
+  }, [renderer, reason, quality, mode, motion, entries, layout, floorModel, writeState])
   useEffect(() => () => {
     if (writeTimer.current) clearTimeout(writeTimer.current)
     writeTimer.current = null

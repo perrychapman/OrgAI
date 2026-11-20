@@ -4,7 +4,7 @@
 // InstancedMesh per kit part (engine/instancing.ts). It never decides where things are (lib/factory/layout.ts), how the
 // camera looks (lib/factory/camera.ts) or what things look like (builders/). Slice 2: static lamps, no poses, no cues.
 import { Box3, Color, Matrix4, type BufferGeometry, type DirectionalLight, PCFShadowMap, PerspectiveCamera, Scene, Vector3, WebGLRenderer } from 'three'
-import type { FloorLayout, Lamp } from '../../../../lib/factory/types'
+import type { FloorModel, Lamp } from '../../../../lib/factory/types'
 import { factorySession } from '../../../../lib/factory/capability'
 import { p95, type FactoryLoop, type FactoryPerf, type FactoryQuality } from '../../../../lib/factory/snapshot'
 import { cameraPose, FOV_DEG, lodBand, type CameraView, type LodBand } from '../../../../lib/factory/camera'
@@ -48,14 +48,14 @@ export interface FactoryEngineStats {
   lod: LodBand
 }
 
-/** What the engine draws: the layout plus per-worker lamps and the selection (slice 2). */
+/**
+ * What the engine draws (slice 3 contract): the pure floor model (lib/factory/model.ts: layout, per-worker lamp, pose,
+ * shutter, barrier, fence, crate; board; dock count; hall level) and the selection. The plan board is drawn when
+ * `model.board` is present (live with a plan).
+ */
 export interface EngineFloor {
-  mode: 'live' | 'team'
-  layout: FloorLayout
-  lamps: Readonly<Record<string, Lamp>>
+  model: FloorModel
   selectedId: string | null
-  /** The run has a plan: draw the plan board (live only). */
-  board: boolean
 }
 
 /** World heights of the drawn objects' tops and label anchors (camera fit, mirror boxes, nameplates). */
@@ -429,7 +429,8 @@ export class FactoryEngine {
   private syncFloor(): boolean {
     const floor = this.floor
     if (!floor) return false
-    const { layout, mode } = floor
+    const { layout, mode } = floor.model
+    const lampOf = (id: string): Lamp => floor.model.workers[id]?.lamp ?? 'off'
     let changed = this.ensureHall(layout.hall)
     let shadow = changed
     const live = mode === 'live'
@@ -459,14 +460,14 @@ export class FactoryEngine {
         lists.robot.push({ key: id ?? 'booth', matrix: m })
         blob(`booth:${id}`, m, 1.1)
       }
-      if (live && kit.anchors?.stackLight) lists.stack.push({ key: id ?? 'booth', matrix: stackAt(base, kit.anchors.stackLight), colours: lampColours(floor.lamps[id ?? ''] ?? 'off') })
+      if (live && kit.anchors?.stackLight) lists.stack.push({ key: id ?? 'booth', matrix: stackAt(base, kit.anchors.stackLight), colours: lampColours(lampOf(id ?? '')) })
       if (id && floor.selectedId === id) lists.ring.push({ key: 'ring', matrix: base.clone().multiply(new Matrix4().makeScale(BOOTH_RING_SCALE, 1, BOOTH_RING_SCALE * 0.7)) })
     }
     if (live) {
       lists.dock.push({ key: 'dock', matrix: place(DOCK_CENTER.x, GANTRY_TOP, DOCK_CENTER.z) })
       // Step lamps stay off until slice 3 maps plan steps to them (without a colour the unlit lamps drew white, which
       // read as twelve lit lamps; slice 2 screenshots).
-      if (floor.board) lists.board.push({ key: 'board', matrix: place(BOARD_CENTER.x, GANTRY_TOP, BOARD_CENTER.z), colours: { 'board.lamps': this.lampColours.off } })
+      if (floor.model.board) lists.board.push({ key: 'board', matrix: place(BOARD_CENTER.x, GANTRY_TOP, BOARD_CENTER.z), colours: { 'board.lamps': this.lampColours.off } })
     }
     for (const id of layout.order) {
       const st = layout.stations[id]
@@ -476,7 +477,7 @@ export class FactoryEngine {
       const base = place(st.center.x, 0, st.center.z)
       lists[kitName].push({ key: id, matrix: base })
       if (st.kind === 'bench') lists[`machine${st.variant}` as KitName].push({ key: id, matrix: base.clone().multiply(anchorMatrix(kit.anchors?.machine)) })
-      if (live) lists.stack.push({ key: id, matrix: stackAt(base, kit.anchors?.stackLight), colours: lampColours(floor.lamps[id] ?? 'off') })
+      if (live) lists.stack.push({ key: id, matrix: stackAt(base, kit.anchors?.stackLight), colours: lampColours(lampOf(id)) })
       const robot = base.clone().multiply(anchorMatrix(kit.anchors?.robot))
       lists.robot.push({ key: id, matrix: robot })
       blob(id, robot, 1.1)
