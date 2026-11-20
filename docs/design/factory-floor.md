@@ -1,6 +1,6 @@
 # Factory Floor: a 3D overhead scene of a working team
 
-Status: slice 1 built 2026-11-19 (see "Implementation notes"); slices 2, 3, 4 and 6 to follow. Live only by owner
+Status: slices 1 to 4 built 2026-11-19 to 2026-11-20 (see "Implementation notes"); slice 6 to follow (slice 5 only if Q2 says yes). Live only by owner
 decision 2026-11-19 (Team keeps the Graph). Written 2026-11-19 for the next run, which builds it in the slices of section 11.
 Owner's words, which carry the authority: "a 3rd person overhead factory theme", "in 3D", "decent fidelity", and
 "this should feel separate from the other themes entirely".
@@ -1418,3 +1418,157 @@ both themes (Technical Artist); the light-theme hall dim (x 0.7) is subtle; the 
 "done" differs from "active" by lightness only; a paused run cannot be ended from the Live view (End session is absent
 while paused: product question, not the scene); the bundle budgets; slice 2's open Reviewer items (M2, L1, L4, L5) and
 hover lift; 1, 5 and 15-agent live floors were not re-shot for slice 3; no mock UX walkthrough (slice 6).
+
+### Slice 4 (2026-11-20): cues and motion
+
+Built in parallel against a contract the UI Lead committed first (`CueRequest`, `Cue`, `ActiveCue` with `opacity`,
+`FloorEvent`, `FloorLogEntry`, `FloorFrame` and `CueFeed` in `lib/factory/types.ts`; every section 5 constant in
+`lib/factory/motion.ts`; signatures of `cues.ts` and `floorLog.ts`; the carrier, stroke, screen, board-mark and hall-blend
+kit contract in `builders/types.ts`; `FactoryLog` props; the new test-state fields). Pieces: a Scene Engineer for the pure
+layer (4a: `lib/factory/{cues,motion,floorLog,model}.ts` with tests), a second Scene Engineer for the engine and scene
+wiring (4b: `engine/cueRender.ts` new, `FactoryEngine`, `floorInstances`, `instancing`, `poses`, `FactoryCanvas`,
+`FactoryScene`), the Technical Artist (`builders/*`, new `builders/carriers.ts`, `palette.ts`), a UI Engineer for the log
+(4c: `FactoryLog.tsx`, `factory-chrome.css`) and a second UI Engineer standing in for QA (4d: `e2e/factory-floor.mjs`;
+the QA role was not available to the UI Lead). Integrated, fixed, measured and looked at by the UI Lead. Live only;
+Team never mounts the scene and team mode never schedules cues. Machine: Windows 11, NVIDIA GeForce RTX 3060.
+
+**What landed.**
+
+- Pure layer. `diffCues(prev, next, cursor, now)`: mount and a run id change (prev null) are baseline only (no cue, no
+  event, the newest message is the cursor); later changes give a tote then a delayed arrive for a new station with a
+  parent on the floor (the root's booth gets a 'started' line and no cue), a leave for a removed one, a part per
+  tool-call increase, capsules for messages after the cursor (to null rises into the roof), pose, shutter and barrier
+  cues on changes, crates for merged (dock slot or parent pad) and conflict / held (slide to the hold pad), a hall cue
+  and run line on paused / resumed / ended, and the log events of section 6.5. Paths are resolved into the cue so a cue
+  keeps its path after its station leaves. `CueScheduler`: carriers 6 in flight and 2 per sender, capsules from one sender
+  to one recipient coalesce while queued or within 800 ms of a flying one's push, capsule queue 12 (oldest dropped from
+  the animation, never from the log), parts 1 in flight plus 1 queued per station and 12 global, crates 4, arrivals 12
+  per sliding 1 s; `cancelFor` stops a leaving worker's cues where they are with a 120 ms fade; `finishAll`; `recent`
+  (last 40) and `peaks` for the test state. `WorkerModel.ambient` is set (tool 'machine', starting / thinking /
+  delegating 'screen', only with a Running lamp and the hall on). `ambientSet` caps 12 (selected, then on screen in
+  layout order, then the rest; phase = index). `floorLog.ts`: every template, cap 50, `AnnounceGate` (one per 2 s,
+  coalesced). 395 pure tests.
+- Engine and scene. One scheduler per mount and run id in `FactoryScene`; cues pushed only in live mode with motion
+  'full'; `finishAll` on Pause motion, reduced motion, a paused or ended hall (then only the hall cue is pushed), hidden
+  document, off-screen stage and unmount; `cancelFor` on every 'left' event; announcements only through
+  `useFrameAnnounce()`. Pause motion (`factory-pause-motion`, `aria-pressed`) in the control row, live only, read from
+  `motionSession` on mount; camera tweens are 0 ms under Pause motion as under reduced motion. `engine/cueRender.ts`
+  overlays the active cues and ambient loops on the end-state lists each frame: carriers on the arc with blob shadows in
+  their own non-casting pools, the child station hidden while its tote flies and rising (scale y 0.2 to 1) when it
+  lands, a dock crate hidden until its flying crate lands, shutter unrolling, barrier dropping 0.6 m, pose blend of
+  joint angles and body placement, hall dim through `lighting.applyBlend`, machine strokes (the spindle turns one way:
+  a sawtooth over the cycle) and screen glow 0.7 to 1.0. Render loop: reasons per 9.2, ambient-only frames at most one
+  per 30 ms. Floor plan: the scheduler runs (driven by a timeout, no rAF) so the test state is the same; nothing is drawn
+  in motion there (end states only).
+- Art. Tote 72, capsule 100 and part 12 triangles (budgets 80 / 120 / 12); stroke parts per machine variant (press head
+  -0.3 m, arm 40 degrees about its base, spindle one turn with key lugs so it reads, frame carriage 0.6 m on a new
+  cross beam); console screen part with `screen: true`; board lamp 'lamp.mark' check shown on done steps only; light
+  hall dim 0.45 paused and 0.38 ended (was 0.7), dark unchanged; robot joints sky blue in dark (2.49:1 against the
+  machine body, was 1.63) and near-black navy in light (5.74:1, was 1.08) with a larger hand; blob shadow 0.62 in dark.
+- Log strip: native `<details>` bottom right, summary "Floor log ({n})", closed by default, 160 px scrolling `<ol>`,
+  newest first, `<time>` with `toLocaleTimeString()` (the run log's formatter in `RunDetailTabs.tsx`; no named shared
+  helper exists, which settles that section 15 item), React text only, not a live region, "Nothing has moved yet." when
+  empty, 32 px tall closed.
+
+**Fixes made during integration (UI Lead).** In `e2e/factory-floor.mjs`: windows that expect no frames or no cues now
+wait for a quiet model first (no cue and the workers' lamp, pose, props, crate and word unchanged for 2 s), because the
+mock keeps changing lamps for 1 to 2 s after its last marker and each of those is a real frame or cue; the slice 3 rule
+"ambient stays none" became "only Running stations loop, at most 12"; the Pause motion peak check compares the ambient
+peak with the gate's (peaks count since mount, and the root looped before Pause was pressed); the "assigned" log line
+accepts the child's label at its first upsert. Fixed by 4b while chasing idle frames (both pre-existing): `KitPool`
+compared float32 colours exactly, so every model change rewrote every lamp and rendered a frame; `setView` rendered a
+frame for an unchanged view.
+
+**Deviations.**
+
+- Fades are by scale (shared materials have no per-instance opacity): a capsule into the roof shrinks over its second
+  half, parts shrink into the bin, a cancelled cue shrinks, a leaving station shrinks about its centre; the arrive is
+  scale y only, no opacity.
+- Parts over the global cap of 12 are dropped, not queued (a late part would no longer stand for its tool call); totes
+  over the carrier cap are dropped and their arrive starts at once; crates over 4 land at once.
+- The "assigned" line names the child by its label when it first appears. With the mock that is the role name
+  ("cq-a assigned work to Implementer"), because the spawn upsert has no handle yet; whether a real provider's first
+  upsert carries the handle is unverified.
+- A lead or the booth in a tool state glows its screens (it has no machine).
+- During a tote's flight the child's DOM nameplate already shows over its empty slot (labels follow the model, not the
+  cues).
+- A part on a lead's belt: a lead's own tool calls pop a part on its belt (the lead kit keeps the belt).
+- The floor plan reports the same ambient set as 3D in the test state although nothing loops there.
+
+**Measured** (built app, GPU path, quality high, 1600 x 1000, dark; 40 agents: root, 3 leads, 36 workers; a gated burst
+that filled every cap: peaks carriers 6, per sender 2, parts 12, crates 4, arrivals 12 per second, ambient 12; at most
+26 cues active at one write; view ppm 25.8 after three zoom steps, near band).
+
+| Measure | Value | Budget |
+| --- | --- | --- |
+| Frame CPU p95 (scene update and render) during the burst | 0.7 ms | 6 ms |
+| Frame interval p95 during the burst | 8.8 ms at the busiest write, 12.7 ms over the last 120 frames | 20 ms |
+| Ambient only (14 stations running, 12 looping, the run held at a card) | 87 frames in 3 s, 29 fps | at most 31 fps |
+| Draw calls / shadow calls / triangles | 40 / 14 / 51,698 at the busiest write; 39 / 16 / 53,378 after; 53 / 16 / 54,514 on an earlier run at ppm 18 | 120 / 40 / 250,000 (slice 3: 42 / 20 / 52,624) |
+| Idle frames over 3 s, nothing running, no cue | 0: asserted by `e2e/factory-floor.mjs` ("frames stay constant over 3 s and the loop is idle") after the pre-mount, full motion and burst runs and under reduced motion and Pause motion, in the SwiftShader and GPU modes. The measuring script's own idle window still had 22 stations Running (29 fps of ambient frames, the cap holding), so it is not an idle figure | 0 |
+| Geometries / textures | 61 / 5, the same before and after the burst | stable |
+| Lazy chunk `FactoryCanvas-*.js` | 1,439,939 B raw, **299,795 B gzip** (slice 3: 291,031) | 230 kB (over, report only) |
+| Main renderer chunk `index-*.js` | 1,492,037 B gzip as built (slice 3 reported 1,480,353 B on an older dev base; this slice's share not isolated) | report only |
+
+**Screenshots** (`docs/design/factory-floor-shots/slice-4/`, GPU path, a lead `sl` with five workers staffed before a
+gate card, Fit, then the events; the inspector shows the Orchestrator at 1600 x 1000; looked at by the UI Lead):
+
+- `mid-crate-{dark,light}-1600x1000.png`: a crate in mid-air between the worker row and the gantry heading for the dock
+  with a soft blob under it; two more crates waiting on the outfeed pads of the fenced sw2 and sw3; the dock label
+  already says "3 merged" while its slots are still empty (the end state waits for the landing). The clearest carrier
+  frame. `mid-crate-dark-1024x640.png`: the same at fit (ppm about 11), the crate a few pixels wide with its blob.
+- `mid-part-dark-1600x1000.png`: a tote (pale tray) leaving the lead's station towards the late worker sw6 and a small
+  grey part on the lead's belt. At 1024 x 640 (`mid-part-*-1024x640`) the floor is in the far band, so parts are not
+  drawn (section 4.5) and the tote is a small pale mark.
+- `mid-capsule-dark-1600x1000.png`: a white capsule leaving the lead westward towards sw1 and the tote landing at sw6's
+  empty slot with its blob. Capsules are about 10 to 12 px long at this zoom: readable but small.
+- `mid-tote-dark-1600x1000.png`: caught sw5's arrive (the station rising, machine and robot squashed in y) just after its
+  tote landed; the tote itself is not in this frame.
+- Light theme mid-cue frames show the same; the tote and capsule are paler than the light floor and carried by their
+  dark band and blob (light capsule against the floor is 1.49:1, Technical Artist).
+- `log-open-*`: the strip opens upwards at the bottom right, "Floor log (29)", times and lines newest first ("Orchestrator:
+  Idle", "sw4: Finished", "sw4 to sl: “Done sw4”"); at 1024 x 640 the open list covers about half of the stage height
+  (it is user-opened; closed it is one 32 px row).
+- `pause-on-*`: the Pause motion button tinted as pressed in the control row, the floor in its end states.
+- `reduced-mid-burst-*` and `reduced-end-*`: the same events under `data-reduce-motion="on"`: no carriers anywhere, a
+  merged crate already on its dock slot in the same frame, fences and pad crates, then shutters down, three crates on
+  the dock, sw4's crate on the striped hold pad and sw5 slumped behind its barrier with the red top lamp; the test state
+  at each shot had no cue, `cuesStarted` 0, motion 'reduced', loop idle.
+- `perf-burst-near-dark-1600x1000.png`: the 40-agent floor mid-burst at near zoom, nameplates Running, a capsule in flight.
+- `art/` (Technical Artist, an offscreen harness with the real kits and poses, not the app): carriers, the signal arm at
+  ppm 30 to 50, the hall dim, the board check and the machine strokes.
+
+**Motion review** (`review-animations` on the slice diff, UI Lead; feel judged from the frame captures above and the
+probe sequences, not from video):
+
+| Before / finding | After | Why |
+| --- | --- | --- |
+| `cueRender.ts` part pop scales from 0 (line 383) | Kept: section 5.2 specifies "scale 0 to 1, 120 ms" for a 0.25 m part (about 10 px); from 0.2 would show a stuck dot on the belt at 60 fps | Spec value; tiny object, no visible pop-in artefact in the probe frames |
+| Capsule to the roof shrinks to 0 instead of fading | Kept as a deviation (no per-instance opacity) | Reads as leaving; a material per capsule would cost draw calls |
+| Child nameplate appears over the empty slot during the tote | Open (low) | The label layer follows the model; hiding plates for hidden stations needs the cue set in `FactoryLabels` |
+| Cues continue while the user drags the camera | Kept | Motion is inside the scene and tied to events; the camera itself is never tweened during direct manipulation |
+| Ambient loops at 29 fps, one rate, 12 cap, 150 ms phase | Kept | Section 5.1; measured |
+| Reduced motion and Pause motion | No cue, no loop, end state in the same frame, camera instant, on-demand frames | Checked by the e2e in three modes and on the reduced-motion screenshots |
+| Frequent keyboard interactions (arrow keys, focus pan) | Unchanged from slice 2; no new motion on keyboard paths | Focus ring and selection stay instant |
+| Chrome (`factory-chrome.css` log strip) | No transition added | Nothing to animate |
+
+Verdict: no blocking finding. Unverified: feel at full frame rate by eye in video (frames were sampled at 100 to 200 ms),
+other GPUs, a 60 Hz display (this one renders the burst at about 8 to 13 ms intervals), and screen-reader behaviour of
+the announcements. No Product Designer motion pass was run (optional in section 11); the values are the spec's.
+
+**Checks (UI Lead, integrated worktree).** `npm run typecheck` clean. `npx vitest run`: 14,645 passed, 17 failed, 207
+skipped; the failures are the six known symlink EPERM tests (exec 1, images 1, claudeSplit 2, contextPack 2) and the
+worktree-only CLI tests (npmPackage load, inkVersion 2, TUI Brand, Composer 2, OrgTreePane, PlanPane, StatusBar,
+TranscriptPane 2, WorktreesPane). Factory tests 540 of 540. `npm run test:scripts` 206 passed, 3 skipped. `npm run build`
+passes. `e2e/factory-floor.mjs`: all checks passed, each mode run on its own: 409/409 on SwiftShader, 409/409 on the RTX
+3060 (`E2E_FACTORY_SWGL=0`), 393/393 with `E2E_FACTORY_PLAN=1`; burst peaks in every mode carriers 6, per sender 2, parts
+12, crates 4, arrivals 12 per second, ambient 12, 179 cues started, log 50. CANVAS_OFFICE_RESULT `e2e/motion.mjs` does
+not inspect canvas scenes (no factory or scene selectors) and was not run. No Reviewer pass: nothing security-relevant
+changed (message text stays React text, is cut to 80 characters in the log and never reaches the test state, which the
+e2e samples on every poll); no mock UX walkthrough (slice 6 runs one on the whole interactive change).
+
+**Open after slice 4.** Capsules and parts are small at fit (10 to 12 px at ppm 22; parts hidden in the far band, so a
+1024 x 640 fit of a small team shows no parts); light-theme carriers against the floor rely on band and blob; the
+"assigned" line's child name with providers whose first upsert lacks a handle; nameplates over hidden arriving stations;
+quality steps, perf mode and sample PNGs (slice 6); the bundle budgets; slice 2 and 3 open items not touched here
+(Reviewer M2, L1, L4, L5, hover lift, the paused run's End session).
