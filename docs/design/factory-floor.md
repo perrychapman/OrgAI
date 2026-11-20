@@ -1141,3 +1141,137 @@ implementer waiting on a permission card; looked at by the UI Lead):
 **Open after slice 1.** Reviewer M2, L4, L5; the 1024 x 640 crop and mirror clipping (slice 2); the Technical Artist's
 palette pass (the empty hall reads as a platform; deck and floor are close in light); the settings thumbnail (slice 6);
 the lazy chunk and main chunk budgets (minification is an owner decision); the packed asar app.
+
+### Slice 2 (2026-11-20): layout, stations, workers, mirror, camera, labels, Find, controls
+
+Built in parallel by the Scene Engineer (2a: `lib/factory/{layout,routes,camera,navigation,labels,agentView,snapshot,
+types}.ts` with tests, `FactoryScene`, `FactoryCanvas`, `FactoryMirror`, `FactoryLabels`, `cameraController.ts`,
+`engine/{FactoryEngine,instancing}.ts`, `styles/factory.css`), the Technical Artist (2b: `builders/*.ts`,
+`lib/factory/palette.ts`, `assets/factory/manifest.json`, tests) and a UI Engineer (2c: `FactoryControls.tsx`,
+`FactoryFind.tsx`, `lib/factory/find.ts`, `styles/factory-chrome.css`), plus the e2e extension; integrated, measured and
+looked at by the UI Lead. Live only, as decided in slice 1: Team mode exists in props, pure modules and tests but is
+never mounted, so section 11's team-mode QA items (roles written through the projects API, Delete confirms) are not
+built; the e2e drives live floors of 1, 5, 15 and 40 agents instead. Machine: Windows 11, NVIDIA GeForce RTX 3060,
+Electron 45.2.3.
+
+**What the integration changed.** `FactoryCanvas.tsx` passes the procedural `factoryKits` (the Scene Engineer's
+placeholder box kits, `engine/placeholderKits.ts`, are deleted); `FactoryScene.tsx` mounts `FactoryControls` with
+`FactoryFind` (no Pause motion until slice 4); `factory-chrome.css` (loaded by the controls) makes `.factory-scene` the
+`factory-scene` inline-size container. Fixes from the screenshots: nameplate anchors (below), line signs that ended
+over the first station (they now end at the head zone's east edge and grow west, over the wall), plan board lamps that
+drew white because the board instance had no colour (they now take the off-lamp colour until slice 3 maps plan steps),
+the light-theme machine body (`#6a7792` to `#8a96ad`) and the dark one (`#7482a0` to `#707d9b`) so robot against
+machine is at least 3:1 in both themes (the palette test now asserts 3:1, it asserted 2:1), and darker belt rollers
+(dark `#3a4150`, light `#555d6b`) against the ladder look. `e2e/factory-floor.mjs`: the 40-agent keyboard walk waits for
+the tour's permission card, because a new decision card takes focus on mount (existing `DecisionCard` behaviour) and
+had pulled focus out of the floor mid-walk; a failed Up check now prints what it got.
+
+**Deviations.**
+
+- `components/canvas/factory/cameraController.ts` (approved during 2a): one class owns pointer drag, wheel, keyboard
+  pan and zoom, and the tweens for both the 3D view and the floor plan; section 10.2 put camera input in
+  `FactoryCanvas.tsx`, which would have left the floor plan without it. The maths stays pure in `lib/factory/camera.ts`.
+- Floor plan zoom limits (`PLAN_LIMITS` in `camera.ts`): zoom 12 to 60 px per metre, fit 22 to 40, because plan tiles
+  carry text; section 2 defines only the 3D range (7 to 60, fit 7 to 32). So a 40-agent floor plan at fit shows the
+  booth band and the first rows and the user pans.
+- Nameplate anchor: the plate's bottom centre sits 0.75 m north of the station centre (the booth's 1 m) at the kit's
+  plate height. At the centre, the 55 degree pitch put the plate over the machine at the back of the station (seen on
+  the first slice 2 shots); at the station's north edge the plate floated nearer the row above. 0.75 m projects to
+  about the machine's back top edge.
+- Line signs: the right end at `x = hall.minX + 3.7` instead of the left end at x 2 (section 3.2 step 8), so the sign
+  never covers slot 0. The painted route under the sign is hidden where the sign sits.
+- Hover emissive lift (section 6.1) is not built. Materials are shared per palette role across instanced meshes, so
+  lifting one station needs a per-instance colour on every station part or a highlight overlay, and every hover would
+  cost a render; the hover nameplate (section 6.2) already answers "which one is this". For the Product Designer to
+  confirm or drop from the spec.
+- Lead stations: the dispatch desk plus a yellow plaque with two chevrons on the floor in front; the plaque carries no
+  "Runs line 3" text (text is DOM only, and the line sign and the mirror description already say it). At fit a lead
+  differs from a bench by its low desk with two monitors instead of a tall machine; at 1024 x 640 (ppm 11) the
+  difference is small. Left as is; a stronger cue is for the Technical Artist in a later slice.
+- Machine variants follow `stableHash(roleSlug) % 4` as section 1.2 says. The default team's roles map to variants 1, 2
+  and 3 only, so variant 0 (press) was never on screen in the app; the Technical Artist's offscreen render is its only
+  view.
+
+**Measured** (built app on the GPU, quality `high`, test state `perf`; `renderer.info` after a frame).
+
+| Measure | Value | Budget |
+| --- | --- | --- |
+| 40 agents, 1600 x 1000, near (ppm 38.9) | 43 draw calls, 18 shadow calls, 43,734 triangles | 120 / 40 / 250,000 |
+| 40 agents, 1600 x 1000, fit (ppm 7, far LOD) | 36 draw calls, 17 shadow calls, 20,150 triangles | same |
+| 15 agents, 1600 x 1000, fit (ppm 21) | 43 draw calls, 16 shadow calls, 17,176 triangles | same |
+| Frame CPU p95 (scene update and render), 40 agents near, after keyboard pans | 0.5 ms | 6 ms |
+| Frame interval p95 during those pans | 7.2 ms | 20 ms |
+| First frame | 290 to 309 ms on the first mount of a launch (chunk not cached), 54 to 73 ms on later mounts | 700 ms cold, 250 ms cached |
+| Idle frames over 3 s, 40 agents, no camera move | 0 (frame counter 2,081 before and after, loop `idle`) | 0 |
+| 21 mounts (graph, factory, 20 times) | `engines` 1, 35 geometries, 5 textures and one canvas on every mount | stable |
+| Lazy chunk `FactoryCanvas-*.js` | 1,386,534 B raw, **283,665 B gzip** (257,155 B at the base 314bfd07 with placeholder kits: the builders add 26.5 kB) | 230 kB |
+| Main renderer chunk | 1,453,369 B gzip; +2,079 B against the base 314bfd07 (controls and Find mounted); main CSS +407 B | 4 kB growth over the whole feature: slice 1 alone was +4,498 B; slice 2a's share was not isolated (other dev merges sit between) |
+| Robot to floor luminance contrast on screenshots (robot 97th percentile in a station crop, light theme 3rd, against a 7 x 7 floor patch) | dark 5.4:1 and light 9.2:1 at fit 1600 x 1000; dark 2.8:1 and light 9.0:1 at fit 1024 x 640 (ppm 11, far LOD capsule a few pixels wide); dark 8.3:1 and light 11.4:1 at ppm 60 | 3:1 |
+| Size variation across the view at fit (projected station width, 15 agents) | 61.4 to 78.3 px at 1600 x 1000 and 33.5 to 42.7 px at 1024 x 640: plus or minus 12 percent | about plus or minus 15 percent |
+| `eval(` / `new Function` in the lazy chunk | 0 | 0 |
+
+The bundle numbers are over budget as built (unminified renderer build, unchanged config; reported, not changed).
+
+**Screenshots** (`docs/design/factory-floor-shots/slice-2/`, the GPU path, mock runs, looked at by the UI Lead):
+
+- `live-{5,15,40}-{dark,light}-{1600x1000,1024x640}-webgl.png`: at fit the whole floor is framed at 5 and 15 agents in
+  both sizes (slice 1's top crop is gone; the booth plate sits just under the stage top). The dark scene is no longer
+  low contrast: white robots, mid-grey machines on darker plates, yellow routes, green running lamps, a lit gantry and
+  glass booth. Light: navy robots on pale floor, machines lighter than the robots after the palette change. At 15
+  agents only every other station gets a plate at fit (ppm 21): each plate is about 170 px wide on an 84 px slot pitch,
+  so the greedy collision rule of section 6.2 skips the neighbour; by the spec. At 40 agents the hall is 92 m deep, fit
+  stops at ppm 7 and shows the gantry and the top rows (section 2), stations are small dark blocks with far LOD robots,
+  Needs you and Failed plates stay; with the decision card open the stage is 450 px (1600 x 1000) or 242 px
+  (1024 x 640) tall.
+- `zoom-far-ppm9-*`, `zoom-mid-ppm18-*`, `zoom-near-ppm40-subleads-*`, `zoom-near-ppm44-benches-*`,
+  `zoom-near-ppm60-robot-*`: robots, plates, machines, stack lights and belts are separately readable at every band in
+  both themes. Near: the robot (head, visor, arms, wheels), the console screen, the arm and spindle machines and the
+  three-lamp stack (lit bottom lamp) read clearly. Defects left: the outfeed belt still reads as a ladder or a short
+  stair (rails and evenly spaced rollers) even with darker rollers; south faces in dark are dim but readable.
+- `machine-variants-{near,fit}-*`: variants 1 (jointed boom), 2 (post with collars) and 3 (open portal frame) side by
+  side; distinct silhouettes at near and at fit.
+- `zoom-near-booth-dock-board-*`: glass booth with desk, three screens and its robot; the selection ring under it in
+  `--accent-text`; the dock with its crate grid, bollards and hazard stripe; the plan board with twelve off lamps and
+  "Plan · 0 of 3 done · 1 blocked".
+- `floorplan-40-*`: tiles at the 3.3 layout positions with the booth band, Main checkout and Plan zones, routes and line
+  signs; selected tile outlined in accent. Small tiles show name and status icon; the status word shows on the booth
+  tile only (container query on tile height).
+- `find-open-*`: the popover above the control row with the search field and rows "name / status · Line n", current
+  session in layout order.
+- `keyboard-focus-*`: the focus ring (2 px `--focus-ring` with the inner surface ring) around the focused station and
+  its nameplate. `selected-ring-*`: after Enter, the accent selection ring on the floor and the inspector open.
+- Control row below 560 px stage width: measured, not shot (Playwright's screenshot does not follow Electron's zoom
+  factor). At a 175 percent zoom factor the scene is 489 px wide, the toolbar 149 x 41 px with every text label hidden
+  (Find shows its icon only, accessible names kept); at 1024 x 640 and 1600 x 1000 the toolbar is 42 px tall.
+
+**Checks (UI Lead, integrated worktree).** `npm run typecheck` clean. `npx vitest run`: 14,182 passed, 17 failed, 207
+skipped; the failures are the six known symlink EPERM tests (exec 1, images 1, claudeSplit 2, contextPack 2) and
+worktree-only CLI failures that need `node_modules` inside the worktree (`npmPackage.test.ts` fails to load with ENOENT
+on the Agent SDK's package.json; `inkVersion` 2 with ENOENT on ink's package.json; TUI colour tests in Brand, Composer
+2, OrgTreePane, PlanPane, StatusBar, TranscriptPane 2 and WorktreesPane). An earlier full run also failed
+`commitActivity.test.ts` once (passes alone, 26/26). Factory unit tests 194/194. `npm run test:scripts` 206 passed, 3
+skipped. `npm run build` passes. `e2e/factory-floor.mjs`: all checks passed three ways, 147/147 on SwiftShader, 147/147
+on the RTX 3060 (`E2E_FACTORY_SWGL=0`) and 142/142 with `E2E_FACTORY_PLAN=1`. `e2e/canvas.mjs` and `e2e/office.mjs`: all
+checks passed.
+
+**Section 15 items.** Settled: the perspective size variation (plus or minus 12 percent, measured), the readability
+of the 55 degree pitch and the palette values (on the screenshots above, with the changes listed); the mock adapter
+produces 39 spawns, tool states and worktree records (`[mock:factory-floor]`, exercised by the e2e). Reviewer L5 ("Try
+3D again" after a genuine chunk failure): not reproduced; the e2e forces the failure with the developer key, which
+cannot show Chromium's module cache behaviour. Still open: screen-reader speech, the packed asar app, GitHub runners,
+macOS and Linux.
+
+**Reviewer (integration pass, read-only).** No Critical or High. M1 (label anchors stayed at the default heights until
+the next camera move after the kits reported theirs): fixed, the reapply effect depends on `heightsVersion`. M2 (a new
+decision card's auto-focus pulls a keyboard user out of the floor, pre-existing in `DecisionCard`): open, outside the
+factory files; the e2e waits for the card. L1 (`findButtonRef` unused; section 6.8's "Load earlier sessions focuses Find"
+is still done by `LiveRunView` querying `factory-find`): open. L2 (long lead names on line signs): fixed, cut at 18
+characters plus ellipsis and `overflow: hidden`. L3 ("Earlier sessions" heading not tied to its list): fixed with
+`aria-labelledby`. L4 (the Find popover is a DOM child of the toolbar; screen-reader presentation unverified): open. L5
+(a failed engine setup does not dispose the hall pool, pre-existing): open. The three e2e modes were re-run after these
+fixes: all checks passed (147, 147, 142).
+
+**Open after slice 2.** The conveyor's ladder look (geometry, Technical Artist); a stronger lead-versus-bench cue at
+far and mid zoom; the hover emissive lift decision; variant 0 never seen in the app; dark robot contrast at 1024 x 640
+fit (2.8:1, far LOD); the bundle budgets; Reviewer M2, L1, L4, L5; no mock UX walkthrough was run on this integration
+(the slice 6 plan runs one on the whole interactive change).

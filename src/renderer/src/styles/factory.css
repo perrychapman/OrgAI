@@ -333,6 +333,11 @@ button.factory-worker:focus-visible {
   white-space: nowrap;
 }
 
+.factory-line-sign {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .factory-nameplate[data-shown='false'],
 .factory-line-sign[data-shown='false'],
 .factory-zone-label[data-shown='false'] {

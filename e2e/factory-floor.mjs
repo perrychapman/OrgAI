@@ -116,7 +116,15 @@ const checkMounted = async (mode, label) => {
 
 // ---------- Slice 2 helpers: live floors of 1, 5, 15 and 40 agents ----------
 const workerBtn = (id) => page.locator(`[data-testid=factory-worker][data-factory-worker-id="${id}"]`)
-const activeWorkerId = () => page.evaluate(() => document.activeElement?.getAttribute?.('data-factory-worker-id') ?? null)
+const activeWorkerId = async () => {
+  const r = await page.evaluate(() => {
+    const a = document.activeElement
+    const id = a?.getAttribute?.('data-factory-worker-id') ?? null
+    return { id, what: id ? '' : `${a?.tagName}.${a?.className}[${a?.getAttribute?.('data-testid') ?? ''}] scenes=${document.querySelectorAll('[data-testid=factory-scene]').length}` }
+  })
+  if (!r.id && process.env.E2E_FACTORY_DEBUG) log('focus is not on a worker:', r.what)
+  return r.id
+}
 /** Poll the test state until `pred(state)` holds (the state is written at most twice a second). Returns the state, or null on timeout. */
 const untilState = async (pred, timeout = 8000) => {
   const end = Date.now() + timeout
@@ -271,7 +279,8 @@ async function keyboardWalk(label, booth) {
     const target = stations.find((o) => o.row === below.row + 1 && Math.abs(o.x - below.x) < 0.01)
     await workerBtn(below.id).focus()
     check((await press('ArrowDown')) === target.id, `${label}: Down goes to the station below at the same x`, `${below.id} -> ${await activeWorkerId()}, want ${target.id}`)
-    check((await press('ArrowUp')) === below.id, `${label}: Up returns to the station above`)
+    const up = await press('ArrowUp')
+    check(up === below.id, `${label}: Up returns to the station above`, `${target.id} (row ${target.row}, x ${target.x}) -> ${up}, want ${below.id} (row ${below.row}, x ${below.x}); row above: ${stations.filter((o) => o.row === target.row - 1).map((o) => `${o.id}@${o.x}`).join(' ')}`)
   }
   // Reading order across a row end: last of one row, first of the next.
   const wrapFrom = stations.find((w, i) => stations[i + 1] && stations[i + 1].row > w.row)
@@ -527,6 +536,11 @@ try {
     check(leadsWithReports.every((id) => lineLeads.has(id)) && lineLeads.has(booth), '40 agents: the root and each lead with reports own a line', [...lineLeads].join(','))
     check(s40.lines.length === 13 && s40.lines.some((l) => l.number === 1), '40 agents: 13 lines (root, 3 leads, 9 sub-leads)', JSON.stringify(s40.lines.map((l) => l.number)))
     await checkMirrorHooks('40 agents', s40, booth)
+    // The tour's background permission ask (ff-w211) arrives after the removal; a new decision card takes focus on mount
+    // (DecisionCard's existing auto-focus), so the keyboard walk starts only once the card is there.
+    const card = await page.locator('.decision-card').first().waitFor({ timeout: 20_000 }).then(() => true).catch(() => false)
+    check(card, '40 agents: the tour\'s permission card is in the tray before the keyboard walk')
+    await sleep(400)
     await keyboardWalk('40 agents', booth)
     for (const [w, h] of [[1024, 640], [1600, 1000]]) {
       await resizeTo(w, h)

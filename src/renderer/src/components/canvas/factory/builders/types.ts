@@ -64,8 +64,8 @@ export interface FloorRect {
 
 /**
  * Everything the engine needs from the builders. The Technical Artist exports one instance as `factoryKits` from
- * builders/index.ts; the engine receives it through its options so it can be swapped (the Scene Engineer's own
- * placeholder kits until the two branches are integrated). Geometry is built once per engine call and disposed by the
+ * builders/index.ts; the engine receives it through its options so it can be swapped (FactoryCanvas passes
+ * `factoryKits`; tests may pass their own). Geometry is built once per engine call and disposed by the
  * engine's registry; kits never hold global state.
  */
 export interface FactoryKitSource {

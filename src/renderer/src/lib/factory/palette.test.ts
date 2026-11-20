@@ -39,7 +39,7 @@ describe('FACTORY_PALETTE', () => {
       expect(contrastRatio(r.robotBody, r.floor)).toBeGreaterThanOrEqual(ROBOT)
       // And against the plate it stands beside, and the machine behind it.
       expect(contrastRatio(r.robotBody, r.plate)).toBeGreaterThanOrEqual(ROBOT)
-      expect(contrastRatio(r.robotBody, r.machine)).toBeGreaterThanOrEqual(2)
+      expect(contrastRatio(r.robotBody, r.machine)).toBeGreaterThanOrEqual(ROBOT)
       // The visor reads against the head it sits in.
       expect(contrastRatio(r.robotVisor, r.robotBody)).toBeGreaterThanOrEqual(2)
     })

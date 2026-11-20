@@ -26,6 +26,7 @@ import {
   DOCK_SIZE,
   EMPTY_LAYOUT_MEMORY,
   GANTRY_TOP,
+  HEAD_W,
   STATION_SIZE,
   layoutFloor,
   layoutTeam,
@@ -41,6 +42,8 @@ import { useFrameAnnounce } from '../../layout/CanvasFrame'
 import { FactoryMirror, placeAll, type MirrorEntry, type PlacementRegistry, type PlanSign } from './FactoryMirror'
 import { FactoryLabels, type FactoryLabelsHandle, type NameplateData, type SignData } from './FactoryLabels'
 import { FactoryNotice, type FactoryNoticeKind } from './FactoryNotice'
+import { FactoryControls } from './FactoryControls'
+import { FactoryFind } from './FactoryFind'
 import { CameraController } from './cameraController'
 import type { FactoryCanvasHandle, FactoryCanvasProps } from './FactoryCanvas'
 import type { EngineFloor, FactoryEngineStats, KitHeights } from './engine/FactoryEngine'
@@ -89,7 +92,7 @@ export const FACTORY_3D_MAX_AGENTS = 120
 
 /**
  * Heights used before the 3D kits report theirs (and always in the floor plan, which ignores height): booth and
- * stations as built by the slice 2 placeholder kits, rounded up.
+ * stations of about the procedural kits' size, rounded up. The engine replaces them with the kits' real heights.
  */
 const DEFAULT_HEIGHTS: KitHeights = {
   boothTop: GANTRY_TOP + 3,
@@ -104,6 +107,9 @@ const DEFAULT_HEIGHTS: KitHeights = {
 /** Worker buttons cover the station footprint up to this height (robot and console; the stack light rises above). */
 const BUTTON_TOP = 1.8
 const NO_SIGNS: readonly PlanSign[] = []
+/** Nameplate anchors sit this far north of the station / booth centre (metres; see plateAnchors). */
+const PLATE_BACK_Z = -0.75
+const BOOTH_PLATE_BACK_Z = -1
 
 type CanvasComponent = (props: FactoryCanvasProps) => ReactElement
 let loadedCanvas: CanvasComponent | null = null
@@ -305,6 +311,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
 
   // ---- camera (section 2): one controller for both renderers ----
   const heights = useRef<KitHeights>(DEFAULT_HEIGHTS)
+  // Bumped when the kits report their heights, so the label anchors (which read them) are recomputed and re-placed.
+  const [heightsVersion, setHeightsVersion] = useState(0)
   const layoutRef = useRef(layout)
   layoutRef.current = layout
   const boardOn = mode === 'live' && !!plan
@@ -405,10 +413,12 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   // New elements after a model change get their positions at once (the camera itself never moves for new stations).
   useLayoutEffect(() => {
     controller.reapply()
-  }, [controller, entries, layout, renderer, boardOn, chunk.Canvas])
+    // heightsVersion: the kits' real heights move the label anchors (Reviewer M1).
+  }, [controller, entries, layout, renderer, boardOn, chunk.Canvas, heightsVersion])
 
   const onHeights = useCallback((h: KitHeights) => {
     heights.current = h
+    setHeightsVersion((v) => v + 1)
     controller.refitIfUntouched()
     controller.reapply()
   }, [controller])
@@ -465,13 +475,21 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   // ---- labels ----
   const plateAnchors = useMemo<NameplateData[]>(() => {
     if (projection === 'plan') return []
+    // Section 6.2 "above each station". Anchored at the station centre, the 55 degree pitch put the plate's bottom below
+    // the projected top of the machine at the back of the plate, so plates hid machine tops; anchored at the plate's
+    // north edge they floated nearer the row above (slice 2 screenshots). PLATE_BACK_Z moves the anchor north so its
+    // projection matches the machine's back top edge (machine anchor z -0.45, depth 1.2, height 1.9 on the plate).
+    const h = heights.current
     return plates.map((p) => ({
       ...p,
-      anchor: { x: p.anchor.x, y: p.entry.kind === 'booth' ? heights.current.boothPlate : heights.current.stationPlate, z: p.entry.kind === 'booth' ? BOOTH_CENTER.z : p.anchor.z }
+      anchor:
+        p.entry.kind === 'booth'
+          ? { x: p.anchor.x, y: h.boothPlate, z: BOOTH_CENTER.z + BOOTH_PLATE_BACK_Z }
+          : { x: p.anchor.x, y: h.stationPlate, z: p.anchor.z + PLATE_BACK_Z }
     }))
     // heights.current changes only with the canvas; chunk.Canvas covers it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plates, projection, chunk.Canvas])
+  }, [plates, projection, chunk.Canvas, heightsVersion])
   const planSigns = useMemo<PlanSign[]>(() => {
     const names = new Map(agents.map((a) => [a.id, a.name]))
     return lineSigns(layout).map((s) => {
@@ -481,7 +499,14 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   }, [agents, layout])
   const signs = useMemo<SignData[]>(() => {
     if (projection === 'plan') return []
-    return planSigns.map((s) => ({ key: s.key, line: s.line, text: `Line ${s.line} · ${s.lead}`, anchor: { x: layout.hall.minX + 0.3, y: 0, z: s.z } }))
+    // Lead names are untrusted and unbounded: cut at 18 characters like nameplates (Reviewer L2).
+    const CONT = ', continued'
+    const cut = (t: string): string => {
+      const more = t.endsWith(CONT)
+      const name = more ? t.slice(0, -CONT.length) : t
+      return `${name.length > 18 ? `${name.slice(0, 17)}…` : name}${more ? CONT : ''}`
+    }
+    return planSigns.map((s) => ({ key: s.key, line: s.line, text: `Line ${s.line} · ${cut(s.lead)}`, anchor: { x: layout.hall.minX + HEAD_W - 0.3, y: 0, z: s.z } }))
   }, [planSigns, projection, layout])
   const dockLabel = useMemo(() => {
     if (mode !== 'live' || projection === 'plan') return null
@@ -494,7 +519,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
     const done = plan.steps.filter((s) => s.status === 'done').length
     const blocked = plan.steps.filter((s) => s.status === 'blocked').length
     return { text: `Plan · ${done} of ${total} done${blocked ? ` · ${blocked} blocked` : ''}`, anchor: { x: BOARD_CENTER.x, y: heights.current.boardTop + 0.2, z: BOARD_CENTER.z } }
-  }, [boardOn, plan, projection])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardOn, plan, projection, heightsVersion])
 
   // ---- Find a worker (chrome, slice 2c): entries and the choose handler ----
   const findEntries = useMemo<FindEntry[]>(() => {
@@ -580,10 +606,9 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const tabStopId = tabStop(layout, selectedId)
   const initialView = viewRef.current ?? controller.view
 
-  // Kept for the chrome mount below (Find a worker): read so the values stay wired until the UI Lead drops it in.
-  void findEntries
-  void onFindChoose
-  void findButtonRef
+  const zoomIn = useCallback(() => controller.zoomIn(), [controller])
+  const zoomOut = useCallback(() => controller.zoomOut(), [controller])
+  const fit = useCallback(() => controller.fit(), [controller])
 
   return (
     <div
@@ -650,17 +675,13 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
           </div>
         )}
       </div>
-      {/*
-        slice 2 chrome mount: the UI Lead drops the scene controls here, for example
-        <FactoryControls
-          find={<FactoryFind entries={findEntries} onChoose={onFindChoose} buttonRef={findButtonRef} />}
-          onZoomIn={() => controller.zoomIn()}
-          onZoomOut={() => controller.zoomOut()}
-          onFit={() => controller.fit()}
-        />
-        (no pauseMotion until slice 4). The toolbar sits over the stage's bottom left (section 6.7); give it
-        data-factory-control or role="toolbar" so a press on it never starts a pan.
-      */}
+      {/* Scene controls (section 6.7), over the stage's bottom left; Pause motion arrives with the cues (slice 4). */}
+      <FactoryControls
+        find={<FactoryFind entries={findEntries} onChoose={onFindChoose} buttonRef={findButtonRef} />}
+        onZoomIn={zoomIn}
+        onZoomOut={zoomOut}
+        onFit={fit}
+      />
       <output hidden data-testid="factory-state" ref={outRef} />
     </div>
   )

@@ -33,6 +33,7 @@ export interface SignData {
   key: string
   line: number
   text: string
+  /** World point of the sign's right (east) end, vertically centred. */
   anchor: Vec3
 }
 
@@ -87,13 +88,15 @@ export function FactoryLabels({ mode, plates, signs, dock, board, handleRef }: F
       }
       const candidates: LabelCandidate[] = []
       const where = new Map<string, { left: number; top: number }>()
-      const add = (kind: LabelKind, id: string, anchor: Vec3, order: number, align: 'above' | 'left', reason?: LabelReason): void => {
+      // 'end': the label's right edge sits at the anchor (line signs end at the head zone's east edge and grow west, over
+      // the wall, so they never cover a station; slice 2 screenshots).
+      const add = (kind: LabelKind, id: string, anchor: Vec3, order: number, align: 'above' | 'end', reason?: LabelReason): void => {
         const key = labelKey({ kind, id })
         const s = size(key)
         if (!s) return
         const p = project(view, stage, anchor)
         if (p.depth <= 0) return
-        let left = align === 'above' ? p.x - s.w / 2 : p.x
+        let left = align === 'above' ? p.x - s.w / 2 : p.x - s.w
         let top = align === 'above' ? p.y - s.h - GAP : p.y - s.h / 2
         // A plate whose anchor is on the stage stays wholly on it (the booth's plate at fit sits near the top edge).
         if (p.x >= 0 && p.x <= stage.width && p.y >= 0 && p.y <= stage.height) {
@@ -109,7 +112,7 @@ export function FactoryLabels({ mode, plates, signs, dock, board, handleRef }: F
           id === focus.selectedId ? 'selected' : id === focus.focusedId ? 'focused' : id === focus.hoveredId ? 'hovered' : baseReason(p)
         add('nameplate', id, p.anchor, i, 'above', reason)
       })
-      ss.forEach((s, i) => add('sign', s.key, s.anchor, i, 'left'))
+      ss.forEach((s, i) => add('sign', s.key, s.anchor, i, 'end'))
       if (d) add('dock', 'dock', d.anchor, 0, 'above')
       if (b) add('board', 'board', b.anchor, 0, 'above')
       const shown = new Set(placeLabels(candidates, { ppm: view.ppm, stage }))

@@ -4,8 +4,8 @@
 // comes from the scene's camera controller (cameraController.ts) through the handle; this component never owns it.
 import { useEffect, useImperativeHandle, useRef, type ReactElement, type Ref } from 'react'
 import { FactoryEngine, type EngineFloor, type FactoryEngineStats, type FactoryTheme, type KitHeights } from './engine/FactoryEngine'
-// Kit source: the integration swaps this one line for `import { factoryKits as kits } from './builders'`.
-import { placeholderKits as kits } from './engine/placeholderKits'
+// Kit source: the procedural builders (docs/design/factory-floor.md section 4.6).
+import { factoryKits as kits } from './builders'
 import type { FactoryTokenColours } from './builders/types'
 import type { FactoryQuality } from '../../../lib/factory/snapshot'
 import type { CameraView } from '../../../lib/factory/camera'
