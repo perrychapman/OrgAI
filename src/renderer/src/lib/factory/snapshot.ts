@@ -1,0 +1,118 @@
+// The Factory Floor test hook (docs/design/factory-floor.md section 10.3): ids, numbers and words only, never message
+// text. Serialised into <output hidden data-testid="factory-state">. Pure.
+import type { ActiveCue, FactoryTestState, FloorModel } from './types'
+
+export type FactoryRendererKind = FactoryTestState['renderer']
+export type FactoryReason = NonNullable<FactoryTestState['reason']>
+export type FactoryQuality = FactoryTestState['quality']
+export type FactoryMotion = FactoryTestState['motion']
+export type FactoryLoop = FactoryTestState['loop']
+export type FactoryPerf = NonNullable<FactoryTestState['perf']>
+export type FactoryView = FactoryTestState['view']
+
+/** What the scene knows at one moment. Slice 1 has no model, cues or cursor yet; later slices fill them. */
+export interface FactorySnapshotInput {
+  renderer: FactoryRendererKind
+  reason?: FactoryReason
+  quality: FactoryQuality
+  mode: 'live' | 'team'
+  motion: FactoryMotion
+  model?: FloorModel | null
+  cues?: readonly ActiveCue[]
+  cuesStarted?: number
+  messageCursor?: string | null
+  view?: FactoryView | null
+  loop: FactoryLoop
+  frames: number
+  engines: number
+  perf?: FactoryPerf | null
+}
+
+/** Motion word: Pause motion wins over reduced motion, which wins over full. */
+export function motionState(reduced: boolean, paused: boolean): FactoryMotion {
+  if (paused) return 'paused'
+  return reduced ? 'reduced' : 'full'
+}
+
+const round = (n: number, places = 2): number => {
+  if (!Number.isFinite(n)) return 0
+  const f = 10 ** places
+  return Math.round(n * f) / f
+}
+
+const EMPTY_VIEW: FactoryView = { ppm: 0, targetX: 0, targetZ: 0 }
+
+/** Builds the test state. Workers follow the layout's reading order; numbers are rounded to 2 places. */
+export function factoryTestState(input: FactorySnapshotInput): FactoryTestState {
+  const model = input.model ?? null
+  const workers: FactoryTestState['workers'] = []
+  if (model) {
+    for (const id of model.layout.order) {
+      const st = model.layout.stations[id]
+      const w = model.workers[id]
+      if (!st || !w) continue
+      workers.push({
+        id,
+        line: st.line,
+        row: st.row,
+        slot: st.slot,
+        x: round(st.center.x),
+        z: round(st.center.z),
+        lamp: w.lamp,
+        pose: w.pose,
+        statusWord: w.statusWord,
+        fenced: w.fenced,
+        ...(w.crate ? { crate: w.crate.at } : {}),
+        ambient: w.ambient
+      })
+    }
+  }
+  const view = input.view ?? EMPTY_VIEW
+  const perf = input.perf ?? null
+  const state: FactoryTestState = {
+    renderer: input.renderer,
+    quality: input.quality,
+    mode: input.mode,
+    motion: input.motion,
+    workers,
+    lines: model ? model.layout.lines.map((l) => ({ number: l.number, leadId: l.leadId, rows: [...l.rows] })) : [],
+    vacant: model ? model.layout.vacant.length : 0,
+    cues: (input.cues ?? []).map((c) => ({
+      kind: c.kind,
+      ...(c.from !== undefined ? { from: c.from } : {}),
+      ...(c.to !== undefined ? { to: c.to } : {})
+    })),
+    cuesStarted: input.cuesStarted ?? 0,
+    messageCursor: input.messageCursor ?? null,
+    view: { ppm: round(view.ppm), targetX: round(view.targetX), targetZ: round(view.targetZ) },
+    loop: input.loop,
+    frames: input.frames,
+    engines: input.engines
+  }
+  if (input.reason) state.reason = input.reason
+  if (perf) {
+    state.perf = {
+      drawCalls: perf.drawCalls,
+      shadowCalls: perf.shadowCalls,
+      triangles: perf.triangles,
+      geometries: perf.geometries,
+      textures: perf.textures,
+      frameP95Ms: round(perf.frameP95Ms),
+      intervalP95Ms: round(perf.intervalP95Ms),
+      firstFrameMs: round(perf.firstFrameMs),
+      ...(perf.gpu ? { gpu: perf.gpu } : {})
+    }
+  }
+  return state
+}
+
+/** 95th percentile (nearest rank) of a sample; 0 for an empty one. */
+export function p95(samples: readonly number[]): number {
+  if (samples.length === 0) return 0
+  const sorted = [...samples].sort((a, b) => a - b)
+  const rank = Math.ceil(0.95 * sorted.length) - 1
+  return sorted[Math.min(sorted.length - 1, Math.max(0, rank))]
+}
+
+/** Minimum time between two writes of the test state outside model changes (section 10.3: at most twice a second). */
+export const TEST_STATE_INTERVAL_MS = 500

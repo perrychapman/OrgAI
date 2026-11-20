@@ -1,0 +1,257 @@
+/*
+ * Factory Floor: scene, stage, mirror, floor plan and notices (docs/design/factory-floor.md sections 6, 7 and 8).
+ * Tokens only. Shares nothing with the Pocket Office styles. Controls, find and log live in factory-chrome.css.
+ */
+
+.factory-scene {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface-0);
+  container-type: inline-size;
+  container-name: factory-scene;
+}
+
+.factory-notice {
+  flex: none;
+  padding: var(--space-2) var(--space-2) 0;
+}
+
+.factory-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- 3D canvas ---- */
+
+.factory-canvas-host {
+  position: absolute;
+  inset: 0;
+}
+
+.factory-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  outline: none;
+}
+
+/*
+ * Context lost: Chromium drops the drawing buffer and paints a grey placeholder with a broken-image glyph, so there is
+ * no last frame to dim. The canvas hides and the stage surface shows under the centred note.
+ */
+.factory-canvas-host[data-lost='true'] .factory-canvas {
+  visibility: hidden;
+}
+
+/* ---- stage notes (run not started, context lost) ---- */
+
+.factory-stage-note {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: var(--space-4);
+  pointer-events: none;
+  z-index: var(--z-canvas-overlay);
+}
+
+.factory-stage-note > span {
+  max-width: 36ch;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  box-shadow: var(--elev-1);
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  text-align: center;
+}
+
+/* ---- mirror and floor plan ---- */
+
+.factory-mirror {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Floor plan: the mirror made visible, filling the stage and scrolling inside it. */
+.factory-mirror[data-renderer='floor-plan'] {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: var(--space-4);
+  background: var(--surface-0);
+}
+
+/*
+ * 3D view, slice 1: no projected positions yet (slice 2), so the buttons sit as plates along the bottom of the stage.
+ * The stage stays visible above them.
+ */
+.factory-mirror[data-renderer='webgl2'] {
+  position: absolute;
+  left: var(--space-2);
+  right: var(--space-2);
+  bottom: var(--space-2);
+  max-height: 45%;
+  overflow: auto;
+  /* Room for the 2 px focus ring at 2 px offset inside the scroll box. */
+  padding: var(--space-1);
+  z-index: var(--z-canvas-overlay);
+}
+
+.factory-gantry {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.factory-mirror[data-renderer='webgl2'] .factory-gantry {
+  border: 0;
+  padding: 0;
+  background: none;
+}
+
+.factory-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(144px, 1fr));
+  gap: var(--space-2);
+}
+
+.factory-worker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+}
+
+button.factory-worker {
+  cursor: pointer;
+}
+
+.factory-gantry > .factory-worker {
+  min-width: 160px;
+  max-width: 100%;
+}
+
+.factory-mirror[data-renderer='webgl2'] .factory-worker {
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  box-shadow: var(--elev-1);
+}
+
+button.factory-worker:hover {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+
+/* Section 7.2: 2 px focus ring at 2 px offset plus a 1 px inner surface ring, instant. */
+button.factory-worker:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--surface-0);
+}
+
+.factory-worker[aria-current='true'] {
+  border-color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px var(--accent-text);
+}
+
+.factory-worker-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+}
+
+.factory-worker-kind {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+
+.factory-worker-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+
+/* The status icon carries the lamp colour; the word stays in the text colour for contrast. */
+.factory-worker[data-lamp='running'] .factory-worker-status svg {
+  color: var(--success-text);
+}
+.factory-worker[data-lamp='needs-you'] .factory-worker-status svg {
+  color: var(--warning-text);
+}
+.factory-worker[data-lamp='failed'] .factory-worker-status svg {
+  color: var(--danger-text);
+}
+
+/* ---- settings sample (inert floor plan of the five-agent sample) ---- */
+
+.factory-sample {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--surface-0);
+}
+
+.factory-sample .factory-mirror[data-renderer='floor-plan'] {
+  overflow: hidden;
+  padding: var(--space-3);
+  gap: var(--space-2);
+}
+
+.factory-sample .factory-tiles {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.factory-sample .factory-worker {
+  min-height: 0;
+  padding: var(--space-1) var(--space-2);
+}
+
+/* Slice 1 has no motion; the rule keeps any later chrome transition honest under both reduced-motion selectors. */
+@media (prefers-reduced-motion: reduce) {
+  .factory-scene *,
+  .factory-sample * {
+    transition: none;
+    animation: none;
+  }
+}
+
+:root[data-reduce-motion='on'] .factory-scene *,
+:root[data-reduce-motion='on'] .factory-sample * {
+  transition: none;
+  animation: none;
+}
