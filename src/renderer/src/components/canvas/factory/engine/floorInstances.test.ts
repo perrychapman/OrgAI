@@ -57,10 +57,15 @@ function context(options: { slice3Anchors?: boolean; boothInbox?: boolean } = {}
     holdPadStriped: { name: 'hold', parts: [box('hold.pad', 0.04), box('hold.stripes', 0.05)] },
     boardLamp: { name: 'boardLamp', parts: [box('boardLamp.lens', 0.05, true)] }
   }
-  if (options.slice3Anchors) {
-    for (const k of ['lead', 'bench'] as const) kits[k] = { ...kits[k]!, anchors: { ...kits[k]!.anchors, ...SLICE3_ANCHORS } }
+  // The tests fix the anchors themselves: the kits' own slice 2 anchors only, plus SLICE3_ANCHORS when asked (so they
+  // hold before and after the Technical Artist's slice 3 anchors land).
+  const slice2 = (kit: ObjectKit, names: string[]): ObjectKit => ({ ...kit, anchors: Object.fromEntries(Object.entries(kit.anchors ?? {}).filter(([n]) => names.includes(n))) })
+  for (const k of ['lead', 'bench'] as const) {
+    const base = slice2(kits[k]!, ['robot', 'machine', 'stackLight', 'nameplate'])
+    kits[k] = options.slice3Anchors ? { ...base, anchors: { ...base.anchors, ...SLICE3_ANCHORS } } : base
   }
-  if (options.boothInbox) kits.booth = { ...kits.booth!, anchors: { ...kits.booth!.anchors, inbox: { x: 2, y: 0.15, z: 1, rotY: 0 }, pad: { x: 1, y: 0.15, z: 1, rotY: 0 } } }
+  kits.booth = slice2(kits.booth!, ['robot', 'stackLight', 'nameplate'])
+  if (options.boothInbox) kits.booth = { ...kits.booth, anchors: { ...kits.booth.anchors, inbox: { x: 2, y: 0.15, z: 1, rotY: 0 }, pad: { x: 1, y: 0.15, z: 1, rotY: 0 } } }
   const robot = kits.robot!
   const boardColours: Record<BoardLampState, Color> = {
     pending: new Color('#111111'), skipped: new Color('#111111'), active: new Color('#00ff00'), done: new Color('#aaffaa'), blocked: new Color('#ffaa00')

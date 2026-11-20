@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { Matrix4, Vector3, type BufferGeometry } from 'three'
 import { robot } from '../builders/robot'
-import { STATION_ANCHORS } from '../builders/station'
+import type { Anchor } from '../builders/types'
 import { bodyMatrix, POSE_NAMES, PoseLibrary, poseBody, posePartMatrices, POSES } from './poses'
 import type { Pose } from '../../../../lib/factory/types'
 
+/** A station kit's anchors before slice 3 (only the console spot 'robot'): every other pose falls back to it. */
+const STATION_ANCHORS: Record<string, Anchor> = {
+  robot: { x: -0.95, y: 0.1, z: 0.65, rotY: 0 },
+  machine: { x: 0.1, y: 0.1, z: -0.45, rotY: 0 }
+}
 const kit = robot()
 const keys = kit.parts.map((p) => p.key)
 const geometry = (key: string): BufferGeometry => kit.parts.find((p) => p.key === key)!.geometry
