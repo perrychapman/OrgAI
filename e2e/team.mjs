@@ -688,12 +688,21 @@ async function chartRects(page) {
       const b = el.getBoundingClientRect()
       return { x: b.x, y: b.y, w: b.width, h: b.height }
     }
+    const opt = (sel) => {
+      const el = document.querySelector(sel)
+      return el ? r(el) : null
+    }
     return {
       stage: r(document.querySelector('.editor .frame-stage')),
-      nodes: [...document.querySelectorAll('.editor .react-flow__node')].map((el) => ({ id: el.dataset.id, ...r(el) }))
+      nodes: [...document.querySelectorAll('.editor .react-flow__node')].map((el) => ({ id: el.dataset.id, ...r(el) })),
+      // QA S1: what floats over the stage's bottom corners.
+      overlays: [opt('.editor .react-flow__controls'), opt('.editor .react-flow__minimap')].filter(Boolean)
     }
   })
 }
+
+/** QA S1: the node is clear of the zoom controls and the minimap. */
+const clearOfOverlays = (node, rects) => !!node && rects.overlays.every((o) => !rectsOverlap(node, o))
 
 const rectsOverlap = (a, b) => a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5
 
@@ -742,6 +751,10 @@ async function sectionAddAndDrag(page, app, shot) {
   for (let i = 0; i < 2; i++) {
     await add.click()
     await sleep(800)
+    const r = await chartRects(page)
+    const newestNow = (await rolesNow()).at(-1)
+    const box = r.nodes.find((n) => n.id === newestNow.id)
+    check(clearOfOverlays(box, r), `add ${i + 2} at 1440x900 is clear of the zoom controls and the minimap (QA S1)`, JSON.stringify({ box, overlays: r.overlays }))
   }
   after = await rolesNow()
   const siblings = after.filter((r) => r.reportsTo === root.id)
@@ -765,6 +778,7 @@ async function sectionAddAndDrag(page, app, shot) {
   const newest = (await rolesNow()).at(-1)
   const smallRect = small.nodes.find((n) => n.id === newest.id)
   check(!!smallRect && inStage(smallRect, small.stage), 'the newest role is inside the chart stage at 1024x640', JSON.stringify({ smallRect, stage: small.stage }))
+  check(clearOfOverlays(smallRect, small), 'the newest role is clear of the zoom controls and the minimap at 1024x640 (QA S1)', JSON.stringify({ smallRect, overlays: small.overlays }))
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'))
   await sleep(300)
   await shot('add-roles-1024x640-light')
@@ -792,6 +806,21 @@ async function sectionAddAndDrag(page, app, shot) {
   check((await page.locator('.react-flow__connection').count()) === 0, 'no connection line remains after a drop on a node body')
   const moved = (await rolesNow()).find((r) => r.id === impl.id)
   check(moved.reportsTo === rev.id, 'dropping on the middle of a node makes it a report', String(moved.reportsTo))
+
+  // Review L1: let the root delegate to Implementer as well, then drop Implementer on the manager it already reports to.
+  // That drop must change nothing (it used to strip the root's delegation through setReportsTo).
+  await page.locator(`.react-flow__node[data-id="${root.id}"]`).click()
+  await teamPanelTab(page, 'Role').waitFor()
+  await page.evaluate(() => document.querySelectorAll('[data-testid=role-delegate-other]').forEach((d) => d.setAttribute('open', '')))
+  await page.locator(`[data-testid="role-delegate-${impl.slug}"]`).check()
+  await sleep(500)
+  const beforeSame = JSON.stringify((await rolesNow()).map((r) => [r.id, r.reportsTo, r.canSpawn, r.spawnable, r.requiredReports ?? null]))
+  check(JSON.parse(beforeSame).find((x) => x[0] === root.id)[3].includes(impl.id), 'the root may delegate to Implementer before the same-parent drop')
+  await dragReport(page, rev.id, impl.id)
+  await sleep(600)
+  const afterSame = JSON.stringify((await rolesNow()).map((r) => [r.id, r.reportsTo, r.canSpawn, r.spawnable, r.requiredReports ?? null]))
+  check(afterSame === beforeSame, 'a drop on the manager a role already reports to changes nothing (review L1)', afterSame)
+  check((await page.locator('.react-flow__connection').count()) === 0, 'a same-parent drop leaves no connection line')
 
   // A cycle drop: Implementer now reports to Reviewer, so Reviewer cannot report to Implementer.
   await dragReport(page, impl.id, rev.id, { release: false })

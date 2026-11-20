@@ -152,6 +152,13 @@ try {
   await confirmBody.waitFor({ timeout: 5_000 }).catch(() => {})
   const confirmText = (await confirmBody.innerText().catch(() => '')).replace(/\s+/g, ' ')
   check(/agents\/dev\.md/.test(confirmText) && /Nothing is pushed/.test(confirmText), 'Commit opens a confirmation that lists the files', confirmText)
+  check(
+    /Git reports \d+ changed team files? in \.orgai\/ right now/.test(confirmText) &&
+      /commits the team files git reports as changed when you press Commit, and only team files/.test(confirmText) &&
+      !/Only these files/.test(confirmText),
+    'the confirmation says main commits what git reports at commit time (review M2)',
+    confirmText
+  )
   await page.keyboard.press('Escape')
   await confirmBody.waitFor({ state: 'hidden', timeout: 5_000 }).catch(() => {})
   check(git(repo, ['rev-parse', 'HEAD']) === headPre, 'cancelling the confirmation commits nothing')

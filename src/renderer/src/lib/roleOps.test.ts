@@ -1,7 +1,23 @@
-import { describe, expect, it } from 'vitest'
-import type { McpServerSpec, Role } from '@shared/types'
+import { describe, expect, it, vi } from 'vitest'
+import type { McpMutationResult, McpServerSpec, Project, Role } from '@shared/types'
 import { serverGranted } from './roleCapabilities'
-import { addRoleUnder, nextRoleName, removeRole, restoreRole, setReportsTo, renamePatch, slugPatch, spawnNotice, withRequiredReport, withSpawnableToggled, wouldCycle } from './roleOps'
+import {
+  addRoleUnder,
+  moveNotice,
+  nextRoleName,
+  removeRole,
+  restoreRole,
+  setReportsTo,
+  renamePatch,
+  settleRename,
+  slugPatch,
+  spawnNotice,
+  staleSlugServers,
+  withRequiredReport,
+  withSpawnableToggled,
+  wouldCycle,
+  type SettleRenameDeps
+} from './roleOps'
 
 const role = (id: string, reportsTo: string | null, spawnable: string[] = []): Role =>
   ({ id, name: id, slug: id, reportsTo, spawnable, canSpawn: spawnable.length > 0, tools: [], responsibilities: [] }) as unknown as Role
@@ -141,5 +157,174 @@ describe('renamePatch', () => {
     expect(twice.mcpServers).toEqual(['s1'])
     expect(slugPatch(proj, dev, 'dv')).toEqual({ slug: 'dv', mcpServers: ['s1'] })
     expect(renamePatch(proj, dev, 'DEV')).toEqual({ name: 'DEV', slug: 'dev' })
+  })
+
+  // Review H1: every keystroke is computed against the slug and grants the edit started with.
+  const typeLetters = (project: { mcpServers: McpServerSpec[] }, r: Role, text: string): Role => {
+    const start = { slug: r.slug, mcpServers: r.mcpServers }
+    let cur = r
+    for (let i = 1; i <= text.length; i++) cur = { ...cur, ...renamePatch(project, start, text.slice(0, i)) }
+    return cur
+  }
+  const builder = { ...role('b', 'root'), name: 'Builder', slug: 'builder' } as Role
+
+  it('typing a name whose in-between slug matches another role adds no connection (H1)', () => {
+    // `qa` belongs to another role; "QA Lead" passes through the slug `qa` while typing.
+    const project = { mcpServers: [srv('qa-db', ['qa']), srv('mine', ['builder'])] }
+    const after = typeLetters(project, builder, 'QA Lead')
+    expect(after.slug).toBe('qa-lead')
+    expect(after.mcpServers).toEqual(['mine'])
+    expect(after.mcpServers).not.toContain('qa-db')
+    expect(serverGranted(project.mcpServers[0], after)).toBe(false)
+  })
+
+  it('backspacing through another role slug adds nothing either (H1)', () => {
+    const project = { mcpServers: [srv('dev-db', ['dev'])] }
+    const developer = { ...role('x', 'root'), name: 'developer', slug: 'developer' } as Role
+    const start = { slug: developer.slug, mcpServers: developer.mcpServers }
+    let cur = developer
+    for (const text of ['develope', 'develop', 'develo', 'devel', 'deve', 'dev', 'de']) cur = { ...cur, ...renamePatch(project, start, text) }
+    expect(cur.slug).toBe('de')
+    expect(cur.mcpServers ?? []).toEqual([])
+    // Stopping on `dev` itself still adds nothing: that server is another role's by slug.
+    const atDev = { ...developer, ...renamePatch(project, start, 'dev') }
+    expect(atDev.mcpServers ?? []).toEqual([])
+  })
+
+  it('a grant held by the starting slug survives typing, and typing back to the start gives the starting grants', () => {
+    const typed = typeLetters(proj, dev, 'Developer')
+    expect(typed.mcpServers).toEqual(['s1'])
+    const start = { slug: dev.slug, mcpServers: dev.mcpServers }
+    expect({ ...typed, ...renamePatch(proj, start, 'Dev') }.mcpServers).toBeUndefined()
+  })
+
+  it('a double rename (two edits) does not duplicate grants', () => {
+    const first = typeLetters(proj, dev, 'Dev A')
+    const second = typeLetters(proj, first, 'Dev AB')
+    expect(second.mcpServers).toEqual(['s1'])
+  })
+})
+
+describe('stale slug after a rename (M3 a)', () => {
+  const srv = (id: string, roles?: string[]) => ({ id, name: id, transport: 'stdio', command: 'x', enabled: true, roles }) as unknown as McpServerSpec
+  const renamed = { ...role('d', 'root'), name: 'Developer', slug: 'developer', mcpServers: ['s1'] } as Role
+  const lead = { ...role('l', null), name: 'Lead', slug: 'lead' } as Role
+  const project = (roles: Role[], servers: McpServerSpec[]): Project =>
+    ({ id: 'p', name: 'P', roles, mcpServers: servers }) as unknown as Project
+
+  it('plans to drop the old slug only from explicit lists the renamed role now holds by id, and never re-adds a stale slug', () => {
+    const servers = [srv('s1', ['dev', 'lead', 'ghost']), srv('s2'), srv('s3', ['dev'])]
+    const plan = staleSlugServers(project([lead, renamed], servers), servers, 'd', 'dev')
+    // s3 is not held by id, so dropping the slug there would cut access: left alone. s2 is every role: left alone.
+    expect(plan.map((p) => [p.spec.id, p.roles])).toEqual([['s1', ['lead']]])
+  })
+
+  it('plans nothing while another role holds the old slug', () => {
+    const servers = [srv('s1', ['dev'])]
+    const other = { ...role('o', 'root'), slug: 'dev' } as Role
+    expect(staleSlugServers(project([lead, renamed, other], servers), servers, 'd', 'dev')).toEqual([])
+  })
+
+  const deps = (over: Partial<SettleRenameDeps> & { store: Project }): SettleRenameDeps & { upsert: ReturnType<typeof vi.fn> } => {
+    const upsert = vi.fn(async (spec: McpServerSpec) => ({ project: { ...over.store, mcpServers: [spec] }, servers: [] }) as unknown as McpMutationResult)
+    return {
+      current: () => over.store,
+      save: async (p) => p,
+      servers: async () => over.store.mcpServers ?? [],
+      applied: () => undefined,
+      ...over,
+      upsert: (over.upsert as ReturnType<typeof vi.fn>) ?? upsert
+    } as SettleRenameDeps & { upsert: ReturnType<typeof vi.fn> }
+  }
+
+  it('saves first, then upserts once per stale server; returns the count', async () => {
+    const order: string[] = []
+    const store = project([lead, renamed], [srv('s1', ['dev', 'lead'])])
+    const d = deps({ store, save: async (p) => (order.push('save'), p) })
+    const upsert = d.upsert
+    upsert.mockImplementation(async (spec: McpServerSpec) => (order.push(`upsert:${spec.id}`), { project: store, servers: [] }))
+    const res = await settleRename('d', 'dev', d)
+    expect(res).toEqual({ upserts: 1, left: 0 })
+    expect(order).toEqual(['save', 'upsert:s1'])
+    expect(upsert.mock.calls[0][0]).toMatchObject({ id: 's1', roles: ['lead'] })
+  })
+
+  it('save fails: no upsert is sent and the role keeps access (by id and by the old slug)', async () => {
+    const store = project([lead, renamed], [srv('s1', ['dev'])])
+    const d = deps({ store, save: async () => Promise.reject(new Error('disk full')) })
+    const res = await settleRename('d', 'dev', d)
+    expect(res).toEqual({ upserts: 0, error: 'save', left: 1 })
+    expect(d.upsert).not.toHaveBeenCalled()
+    expect(serverGranted(store.mcpServers![0], store.roles[1])).toBe(true)
+  })
+
+  it('sends nothing when main already dropped the old slug on save, or when the slug did not change', async () => {
+    const store = project([lead, renamed], [srv('s1', ['dev'])])
+    const d = deps({ store, servers: async () => [srv('s1', [])] })
+    expect(await settleRename('d', 'dev', d)).toEqual({ upserts: 0, left: 0 })
+    expect(d.upsert).not.toHaveBeenCalled()
+    const same = deps({ store, save: vi.fn() })
+    expect(await settleRename('d', 'developer', same)).toEqual({ upserts: 0, left: 0 })
+    expect(same.save).not.toHaveBeenCalled()
+  })
+
+  it('an upsert failure stops and reports what is left', async () => {
+    const store = project([lead, { ...renamed, mcpServers: ['s1', 's2'] }], [srv('s1', ['dev']), srv('s2', ['dev'])])
+    const d = deps({ store })
+    d.upsert.mockRejectedValueOnce(new Error('nope'))
+    expect(await settleRename('d', 'dev', d)).toEqual({ upserts: 1, error: 'upsert', left: 2 })
+  })
+})
+
+describe('Undo of a removal keeps later edits (M1)', () => {
+  const get = (rs: Role[], id: string): Role => rs.find((r) => r.id === id)!
+  const team = (): Role[] => [
+    { ...role('root', null, ['a', 'x']), requiredReports: ['a', 'x'] },
+    role('a', 'root'),
+    role('x', 'root')
+  ]
+
+  it('an untouched manager is restored exactly', () => {
+    const roles = team()
+    const { roles: after, removed } = removeRole(roles, 'a')
+    expect(restoreRole(after, removed!)).toEqual(roles)
+  })
+
+  it('"May create subagents" unticked after the removal stays off after Undo', () => {
+    const { roles: after, removed } = removeRole(team(), 'a')
+    const edited = after.map((r) => (r.id === 'root' ? { ...r, canSpawn: false } : r))
+    const back = restoreRole(edited, removed!)
+    expect(get(back, 'root').canSpawn).toBe(false)
+    expect(get(back, 'root').spawnable).toEqual(['a', 'x'])
+  })
+
+  it('a Required box unticked after the removal stays off after Undo', () => {
+    const { roles: after, removed } = removeRole(team(), 'a')
+    expect(get(after, 'root').requiredReports).toEqual(['x'])
+    const edited = after.map((r) => (r.id === 'root' ? { ...r, requiredReports: undefined } : r))
+    const back = restoreRole(edited, removed!)
+    expect(get(back, 'root').requiredReports).toBeUndefined()
+    expect(get(back, 'root').canSpawn).toBe(true)
+  })
+
+  it('a manager the removal emptied gets its right back only while it is still off as the removal left it', () => {
+    const roles = [role('root', null, ['a']), role('a', 'root')]
+    const { roles: after, removed } = removeRole(roles, 'a')
+    expect(get(after, 'root').canSpawn).toBe(false)
+    expect(get(restoreRole(after, removed!), 'root').canSpawn).toBe(true)
+  })
+})
+
+describe('moveNotice (L1)', () => {
+  it('names every other role that no longer delegates to the moved role', () => {
+    const orch = { ...role('o', null, ['m', 'x']), name: 'Orchestrator', requiredReports: ['x'] }
+    const before = [orch, { ...role('m', 'o'), name: 'Manager' }, { ...role('x', 'o'), name: 'X' }]
+    const after = setReportsTo(before, 'x', 'm')
+    expect(moveNotice(before, after, 'x')).toBe('Orchestrator no longer delegates to X. Manager can now create subagents, because X reports to it.')
+  })
+
+  it('says nothing when only the reporting line changed', () => {
+    const before = [role('o', null), role('m', 'o', ['y']), role('y', 'm'), role('x', 'o')]
+    expect(moveNotice(before, setReportsTo(before, 'x', 'm'), 'x')).toBeNull()
   })
 })

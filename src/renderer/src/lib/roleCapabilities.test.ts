@@ -124,6 +124,14 @@ describe('role editor helpers', () => {
     expect(revokePlan({ id: 'a', roles: undefined }, all, role)).toEqual({ roles: ['lead'] })
     expect(revokePlan({ id: 'a', roles: ['reviewer'] }, all, { ...role, mcpServers: ['a', 'z'] })).toEqual({ roles: [], roleMcpServers: ['z'] })
   })
+  it('review M3 (b): the list a revoke writes drops slugs no role holds (left over from a rename)', () => {
+    // `old-dev` was the renamed role's slug; nobody holds it now, so a later role named that way must not inherit the server.
+    const roles = [{ slug: 'lead' }, { slug: 'reviewer' }, { slug: 'developer' }]
+    const plan = revokePlan({ id: 'a', roles: ['lead', 'old-dev', 'reviewer', 'developer'] }, roles, { slug: 'developer', mcpServers: ['a'] })
+    expect(plan).toEqual({ roles: ['lead', 'reviewer'], roleMcpServers: [] })
+    // Slugs still held stay, in order.
+    expect(revokePlan({ id: 'a', roles: ['reviewer', 'lead', 'ghost'] }, roles, role).roles).toEqual(['lead'])
+  })
   it('splits skills', () => {
     expect(roleSkillSplit([{ id: 's1' }, { id: 's2' }], role)).toEqual({ granted: [{ id: 's1' }], available: [{ id: 's2' }] })
   })

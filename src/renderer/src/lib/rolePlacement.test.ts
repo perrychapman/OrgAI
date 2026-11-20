@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { placeNewRole, type PlacementNode } from './rolePlacement'
+import { placeNewRole, revealShift, type PlacementNode } from './rolePlacement'
 
 const SIZE = { width: 220, height: 96 }
 const node = (id: string, x: number, y: number, reportsTo: string | null): PlacementNode => ({ id, position: { x, y }, reportsTo })
@@ -82,5 +82,42 @@ describe('placeNewRole', () => {
     const roles = [node('a', 0, 0, null)]
     const p = placeNewRole(roles, 'gone', SIZE)
     expect(hit(box(p), box({ x: 0, y: 0 }))).toBe(false)
+  })
+})
+
+describe('revealShift (QA S1)', () => {
+  const M = { top: 24, right: 24, bottom: 24, left: 24 }
+  const stage = { w: 1000, h: 600 }
+  const controls = { x: 950, y: 480, w: 34, h: 100 }
+  const minimap = { x: 15, y: 470, w: 200, h: 115 }
+  const clear = (n: { x: number; y: number; w: number; h: number }, s: { dx: number; dy: number }, o: { x: number; y: number; w: number; h: number }): boolean => {
+    const a = { ...n, x: n.x + s.dx, y: n.y + s.dy }
+    return a.x + a.w + 8 <= o.x || o.x + o.w + 8 <= a.x || a.y + a.h + 8 <= o.y || o.y + o.h + 8 <= a.y
+  }
+
+  it('leaves a box that is in the stage and clear of the controls alone', () => {
+    expect(revealShift({ x: 400, y: 200, w: 200, h: 80 }, stage, M, [controls, minimap])).toEqual({ dx: 0, dy: 0 })
+  })
+
+  it('moves a box out from under the zoom controls, by the shorter way that stays in the stage', () => {
+    const n = { x: 760, y: 480, w: 200, h: 80 }
+    const s = revealShift(n, stage, M, [controls, minimap])
+    expect(clear(n, s, controls)).toBe(true)
+    expect(clear(n, s, minimap)).toBe(true)
+    expect(n.x + s.dx + n.w).toBeLessThanOrEqual(stage.w - M.right)
+  })
+
+  it('moves a box off the minimap and keeps it inside the stage', () => {
+    const n = { x: 40, y: 500, w: 200, h: 80 }
+    const s = revealShift(n, stage, M, [controls, minimap])
+    expect(clear(n, s, minimap)).toBe(true)
+    expect(n.y + s.dy).toBeGreaterThanOrEqual(M.top)
+  })
+
+  it('first brings a box that is off the stage back in, then clears the controls', () => {
+    const n = { x: 1100, y: 650, w: 200, h: 80 }
+    const s = revealShift(n, stage, M, [controls])
+    expect(n.x + s.dx + n.w).toBeLessThanOrEqual(stage.w - M.right)
+    expect(clear(n, s, controls)).toBe(true)
   })
 })

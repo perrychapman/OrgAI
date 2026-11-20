@@ -91,3 +91,53 @@ export function placeNewRole(roles: readonly PlacementNode[], managerId: string 
   const far = boxes.reduce((m, b) => Math.max(m, b.y + b.h), 0)
   return { x: start.x, y: far + gap }
 }
+
+/** A box in stage pixels (x, y from the stage's top-left corner). */
+export interface StageRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+const overlapsBy = (a: StageRect, b: StageRect, gap: number): boolean =>
+  a.x < b.x + b.w + gap && b.x - gap < a.x + a.w && a.y < b.y + b.h + gap && b.y - gap < a.y + a.h
+
+/**
+ * How far to pan (never zoom) so a new role's box is inside the stage, `margin` from its edges, and clear of every
+ * obstacle by `gap` (the zoom controls and the minimap sit over the stage's bottom corners; QA S1). Moves the box up,
+ * left or right out of an obstacle, whichever is shortest and keeps it inside the stage and clear of the others; up
+ * when none does.
+ */
+export function revealShift(
+  node: StageRect,
+  stage: { w: number; h: number },
+  margin: { top: number; right: number; bottom: number; left: number },
+  obstacles: readonly StageRect[] = [],
+  gap = 8
+): { dx: number; dy: number } {
+  let dx = 0
+  let dy = 0
+  if (node.x + node.w > stage.w - margin.right) dx = stage.w - margin.right - (node.x + node.w)
+  if (node.x + dx < margin.left) dx = margin.left - node.x
+  if (node.y + node.h > stage.h - margin.bottom) dy = stage.h - margin.bottom - (node.y + node.h)
+  if (node.y + dy < margin.top) dy = margin.top - node.y
+  const fits = (n: StageRect): boolean =>
+    n.x >= margin.left - 0.5 && n.y >= margin.top - 0.5 && n.x + n.w <= stage.w - margin.right + 0.5 && n.y + n.h <= stage.h - margin.bottom + 0.5
+  for (let round = 0; round <= obstacles.length; round++) {
+    const n = { ...node, x: node.x + dx, y: node.y + dy }
+    const hit = obstacles.find((o) => overlapsBy(n, o, gap))
+    if (!hit) break
+    const moves = [
+      { dx: 0, dy: hit.y - gap - (n.y + n.h) },
+      { dx: hit.x - gap - (n.x + n.w), dy: 0 },
+      { dx: hit.x + hit.w + gap - n.x, dy: 0 }
+    ]
+    const moved = (m: { dx: number; dy: number }): StageRect => ({ ...n, x: n.x + m.dx, y: n.y + m.dy })
+    const ok = moves.filter((m) => fits(moved(m)) && !obstacles.some((o) => overlapsBy(moved(m), o, gap)))
+    const pick = (ok.length > 0 ? ok : moves.slice(0, 1)).reduce((a, b) => (Math.abs(a.dx) + Math.abs(a.dy) <= Math.abs(b.dx) + Math.abs(b.dy) ? a : b))
+    dx += pick.dx
+    dy += pick.dy
+  }
+  return { dx, dy }
+}

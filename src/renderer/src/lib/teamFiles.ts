@@ -135,20 +135,51 @@ export const COMMIT_CONFIRM_LIST_MAX = 12
  * COMMIT_CONFIRM_LIST_MAX named. `capped` is true when main's own list may be cut (TEAM_FILES_LIST_MAX), so the
  * count is a lower bound. With no list, only the location is named.
  */
-export function commitConfirmText(s: Pick<TeamFilesStatus, 'uncommittedFiles'>, listMax: number): { lead: string; files: string[]; more: number } {
+export function commitConfirmText(
+  s: Pick<TeamFilesStatus, 'uncommittedFiles'> & { warnings?: TeamFilesStatus['warnings'] },
+  listMax: number
+): CommitConfirmText {
   const all = s.uncommittedFiles
   const n = all.length
   const capped = n >= listMax
+  const warned = s.warnings ?? []
+  // QA S2: the status line's warnings (text that looks like a key...) are repeated here; they do not block the commit.
+  const warnNote = warned.length > 0 ? ' Some team files have warnings, listed below.' : ''
   const lead =
     n === 0
-      ? 'OrgAI commits the team files in .orgai/ to the git repository in this folder.'
-      : `OrgAI commits ${capped ? 'at least ' : ''}${n === 1 ? '1 file' : `${n} files`} in .orgai/ to the git repository in this folder:`
+      ? `OrgAI commits the team files in .orgai/ to the git repository in this folder.${warnNote}`
+      : warned.length > 0
+        ? `Git reports ${capped ? 'at least ' : ''}${n === 1 ? '1 changed team file' : `${n} changed team files`} in .orgai/ right now, and some team files have warnings (listed below the files):`
+        : `Git reports ${capped ? 'at least ' : ''}${n === 1 ? '1 changed team file' : `${n} changed team files`} in .orgai/ right now:`
   const files = all.slice(0, COMMIT_CONFIRM_LIST_MAX)
-  return { lead, files, more: n - files.length }
+  const warnings = warned.slice(0, COMMIT_CONFIRM_LIST_MAX).map((w) => ({ file: w.file, message: w.message }))
+  return {
+    lead,
+    files,
+    more: n - files.length,
+    warnings,
+    moreWarnings: warned.length - warnings.length,
+    confirmLabel: warned.length > 0 ? 'Commit anyway' : 'Commit'
+  }
 }
 
-/** The fixed footnote of the commit confirmation. */
-export const COMMIT_CONFIRM_NOTE = 'Only these files go into the commit; anything else you staged stays staged. Nothing is pushed.'
+export interface CommitConfirmText {
+  lead: string
+  files: string[]
+  more: number
+  /** The status's warnings, at most COMMIT_CONFIRM_LIST_MAX (raw text: the dialog shows it through showHidden). */
+  warnings: { file: string; message: string }[]
+  moreWarnings: number
+  /** "Commit anyway" when there are warnings. */
+  confirmLabel: string
+}
+
+/**
+ * The fixed footnote of the commit confirmation. Main re-reads git when the user presses Commit and commits the team
+ * files it finds then (never anything else), so the list above is what git reported, not a promise.
+ */
+export const COMMIT_CONFIRM_NOTE =
+  'OrgAI commits the team files git reports as changed when you press Commit, and only team files. Anything else you staged stays staged. Nothing is pushed.'
 
 export const TEAM_FILES_STALE_TEXT = 'The files changed. Review them again.'
 
