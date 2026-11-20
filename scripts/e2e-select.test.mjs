@@ -123,6 +123,25 @@ test('e2e helper parts map to the script that calls them', () => {
   assert.deepEqual(sel('e2e/pocket-office.mjs').scripts.filter((s) => !SMOKE.includes(s)), ['canvas'])
 })
 
+test('Factory Floor paths select factory-floor and canvas, ahead of the broad canvas rule', () => {
+  // The chain is read from package.json; give it the new script even before e2e:free lists it.
+  const chain = all.includes('factory-floor') ? all : [...all, 'factory-floor']
+  const pick = (...changedFiles) => selectE2e({ changedFiles, allScripts: chain })
+  for (const p of [
+    'src/renderer/src/components/canvas/factory/FactoryScene.tsx',
+    'src/renderer/src/lib/factory/layout.ts',
+    'src/renderer/src/styles/factory.css',
+    'src/renderer/src/assets/factory/sample-dark.png',
+    'e2e/factory-floor.mjs',
+  ]) {
+    const r = pick(p)
+    assert.equal(r.mode, 'selected', p)
+    assert.deepEqual(r.scripts.filter((s) => !SMOKE.includes(s)), ['canvas', 'factory-floor'], p)
+  }
+  // The broad canvas rule alone still selects only canvas.
+  assert.deepEqual(pick('src/renderer/src/components/canvas/CanvasPreview.tsx').scripts.filter((s) => !SMOKE.includes(s)), ['canvas'])
+})
+
 test('docs and unit tests alone select nothing (not even the smoke set)', () => {
   for (const files of [
     ['CLAUDE.md'],
