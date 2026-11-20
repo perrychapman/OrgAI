@@ -8,6 +8,7 @@ import {
   newestSummary,
   tileChips,
   pinnedFirst,
+  tileStatusKind,
   tileStatusLine,
   tileTeam,
   openLabel,
@@ -160,9 +161,11 @@ describe('tile signals', () => {
     expect(tileChips({ projectName: 'P', code: true, branches: 0, suggestions: 0, untrusted: false })).toEqual([])
     const all = tileChips({ projectName: 'Billing API', code: true, branches: 3, suggestions: 1, untrusted: true })
     expect(all.map((c) => c.kind)).toEqual(['branches', 'suggestions', 'folder-trust'])
-    expect(all[0]).toEqual({ kind: 'branches', text: '3 branches waiting', name: '3 branches waiting in Billing API' })
+    expect(all[0]).toEqual({ kind: 'branches', text: '3 branches waiting', name: '3 branches waiting in Billing API', count: 3 })
     expect(all[1].text).toBe('1 team suggestion')
+    expect(all[1].count).toBe(1)
     expect(all[2].text).toBe('Folder settings to review')
+    expect(all[2].count).toBeNull()
     expect(tileChips({ projectName: 'E', code: false, branches: 4, suggestions: 0, untrusted: false })).toEqual([])
     expect(tileChips({ projectName: 'P', code: true, branches: 1, suggestions: 0, untrusted: false })[0].text).toBe('1 branch waiting')
   })
@@ -186,6 +189,14 @@ describe('tile signals', () => {
     expect(tileStatusLine({ ...base, newestStartedAt: now - 86_400_000 })).toBe('Last run 1 day ago')
     expect(tileStatusLine({ ...base, newestStartedAt: now - 2 * 3_600_000 })).toBe('Last run 2 hours ago')
     expect(tileStatusLine(base)).toBe('No runs yet')
+  })
+  it('gives each status its own mark shape, in the order of the status line', () => {
+    const base = { open: 0, decisions: 0, working: false }
+    expect(tileStatusKind({ ...base, decisions: 2, open: 1, working: true })).toBe('decisions')
+    expect(tileStatusKind({ ...base, open: 2, working: true })).toBe('working')
+    expect(tileStatusKind({ ...base, open: 1 })).toBe('open')
+    expect(tileStatusKind({ ...base, newestStartedAt: 5 })).toBe('idle')
+    expect(tileStatusKind(base)).toBe('none')
   })
   it('puts pinned projects first in pin order, then the attention order', () => {
     const p = (id: string, name: string) => ({ id, name })

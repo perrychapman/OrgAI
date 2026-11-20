@@ -1,6 +1,7 @@
 import type { Project } from '@shared/types'
 import { isVirtualProjectId } from '@shared/types'
 import { costView, formatDuration, type CostInput } from './cost'
+import { projectShare, type ProjectShare } from './projectShare'
 import { dayKey, dayLedger, ledgerTotals, LEDGER_DAYS, type CostKind, type DayBucket, type LedgerRun } from './activityStrip'
 
 /**
@@ -41,6 +42,8 @@ export interface WeekRecap {
   costShown: boolean
   /** The stored project with the most runs; only when two or more stored projects had runs. */
   top: TopProject | null
+  /** How the week's runs divide over projects (the share bar); `show` is false below two entries. */
+  share: ProjectShare
 }
 
 /** Only work runs: setup, MCP-assistant and Skill-assistant runs are not part of the person's week. */
@@ -94,7 +97,8 @@ export function weekRecap(summaries: readonly RecapRun[], projects: readonly Pic
     cost: totals.cost,
     costKind: totals.costKind,
     costShown,
-    top
+    top,
+    share: projectShare(work, keys, projects)
   }
 }
 

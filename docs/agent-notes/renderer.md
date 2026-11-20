@@ -360,6 +360,38 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   dashboardBand, dashCaps, dashboardProjects, dashboard), `e2e/dashboard.mjs` (rewritten against spec 12 and 13) plus
   proposals / usage-app selector updates, and a Reviewer pass (no Critical or High). Open items and what was not
   verified: spec section 17 "Implementation notes".
+- Dashboard visual pass and board (2026-11-20; spec `docs/design/dashboard-overhaul.md` section 18 "Visual pass", which
+  overrides section 3 and parts of 7 and 9 for drawing only; data and behaviour as above). Sections are cards
+  (`.dash-section`: `--surface-1`, `--radius-lg`, `--border-subtle`, `--elev-1`, a `.dash-section-icon` chip from the
+  `icon` prop of `DashSection` / `AttentionSection`). Project identity: tokens `--project-1..8` and `--project-ink` in
+  every theme block (measured: ink on hue 10.5-14.9 dark, 5.0-7.3 light; hue on `--surface-1` >= 4.8); pure
+  `lib/projectIdentity.ts` (`hashedHue` FNV-1a of the id, `assignProjectHues` collision-free in stored project order,
+  `registerProjectHues` called by DashboardView every render, `projectHue`, `projectMonogram`); `ProjectBadge.tsx`
+  (`dash-project-badge[data-project][data-hue]`, aria-hidden, sizes xs/sm/md/lg); any element with `data-hue` gets
+  `--dash-hue`. Page: greeting with stat tiles (`dash-hero-stat[data-stat=waiting|working|finished|today|spend]`, pure
+  `lib/heroStats.ts`; a button to its section's h2 when that section exists, else a static figure; the brief stays as
+  the sr-only accessible summary `dash-greeting-brief`), then the lead band `.dash-lead` (left `.dash-lead-main`:
+  Waiting on you as attention tiles `dash-attn-tile[data-kind=decision|reply|team]` from pure `lib/attentionTiles.ts`,
+  `AttentionTile.tsx`, the all-clear card `dash-needs-clear`, and To finish setting up; right `.dash-lead-side`: Commits
+  this week `dash-commits`, `CommitsSection.tsx`, pure `lib/commitChart.ts`), then six arrangeable sections (the layout
+  model gained `engagements`, inserted at its default place before Projects by `normalizeLayout`): Pick up tiles, Today
+  time rail (pure `lib/scheduleRail.ts`) and to-do cards, Working now run cards with agent marks and a plan bar
+  (`dash-now-plan`), Your week stat blocks, a 72 / 96 px ledger and the share bar `dash-week-share` (pure
+  `lib/projectShare.ts`, `WeekShare.tsx`), Engagements `dash-engagements` (`EngagementsSection.tsx`, pure
+  `lib/engagementTiles.ts`), Projects tiles with a hue band and a 7-day sparkline `tile-spark` (pure
+  `lib/projectSparkline.ts`). Reply tiles summarise the root's newest non-harness text block from the store's
+  transcript through `plainSummary` (text only, each line capped at 400 characters before any pattern, linear separator
+  test: Reviewer High fixed). Commit data: `window.orgai.projects.commitActivity` through a feature-detecting accessor
+  (desktop, read-only, once after first paint and on a work run's end, at most every 10 minutes); Engagements reads
+  `engagement.listNotes` and `knowledge.get` for at most the shown engagements through its own project queue, retired
+  items not counted. Motion: the board rises in (`.dash-page[data-entering]`, `motion-rise-lg`, `--dur-slow`, 30 ms
+  stagger capped at 5) on the first Dashboard of an app session only, never under reduced motion or Pause motion; new
+  attention tiles use `.motion-enter` after the arrival settle; nothing new loops. Checked by unit tests (projectIdentity,
+  heroStats, attentionTiles, scheduleRail, projectShare, commitChart, engagementTiles, projectSparkline,
+  dashboardLayout) and `e2e/dashboard.mjs` (VP checks: two text lines per tile, one hue per project across sections, text
+  alternatives, cards, Commits right of Waiting on you at 1600x1000, stat tiles focus their section). Not verified: the
+  Commits chart with real data in e2e (the contract was not in the build worktree; the empty card was), Engagements in
+  e2e, screen-reader speech, macOS, real data volumes.
 - Cost and usage (#10): every cost goes through `lib/cost.ts` `costView` and `components/ui/Cost.tsx` (unknown is
   never $0, "$0.42+" is a lower bound). The run side panel has a Usage tab (`components/UsagePanel.tsx`, `SideTab`
   'usage'); History switches Runs | Trends (`components/UsageTrends.tsx`, `runs:usageStats`). App settings >

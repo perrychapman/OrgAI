@@ -1,35 +1,161 @@
-/* Dashboard resume (docs/design/dashboard-overhaul.md). Tokens only. */
+/* Dashboard resume (docs/design/dashboard-overhaul.md 7.4, "Visual pass"). Tokens only; nothing here moves.
 
-/* Pick up where you left off: plain rows (no fill, hairline between rows, 44 px minimum, from dashboard.css). */
+   Pick up where you left off draws one tile per conversation, in a grid that wraps (auto-fill, 220 px minimum, one
+   column in a narrow page). A tile reads from shapes first: the project's monogram badge and a 3 px band in its hue on the
+   left, a status pill (a dot shape plus the status word from lib/runStatus), then the title and ONE meta line, then the
+   one action. What stopped a run, the pause reason and the closed note are the main button's tooltip and description,
+   not drawn. Selectors are written so they win over the list rules in dashboard.css (.dash-rows, li + li hairlines). */
 
-/* The action slot keeps the width of the widest label ("Open outputs"), so a late "Open output" never shifts a row. */
-.dash-row-resume .dash-resume-side {
-  justify-content: flex-end;
-  min-width: 112px;
-  padding-left: var(--space-2);
+.dash-section[data-testid='dash-resume'] > .dash-rows.dash-resume-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+@container dash (max-width: 520px) {
+  .dash-section[data-testid='dash-resume'] > .dash-rows.dash-resume-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
-/* A paused reason or a closed note may use two lines (walk 3 L7); the error line of a failed run clips to one. */
-.dash-row-resume .dash-row-clamp {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+.dash-section[data-testid='dash-resume'] > .dash-resume-grid > .dash-resume-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: clip;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.dash-resume-tile:hover {
+  border-color: var(--border-strong);
+}
+/* The identity band: the project's hue, neutral for Chat. It is decoration; the project's name is in the meta line. */
+.dash-resume-tile::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 3px;
+  background: var(--dash-hue, var(--border-strong));
+}
+.dash-resume-tile[data-hue='0']::before {
+  background: var(--border-strong);
+}
+
+/* The tile's main button: badge and status, title, meta. Full tile except the action row. */
+.dash-tile-main {
+  all: unset;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: var(--space-3);
+  row-gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 3px);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.dash-tile-main:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.dash-tile-badge {
+  grid-row: 1 / 3;
+}
+.dash-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.dash-tile-head .dash-tile-title {
+  flex: 1 1 auto;
+}
+.dash-tile-head .dash-tile-status {
+  flex: none;
+}
+
+/* Status pill: a dot shape and the word. Paused, idle and stopped are rings, failed a square, so shape says it too. */
+.dash-tile-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+.dash-tile-status[data-tone='danger'] {
+  background: var(--danger-soft);
+  color: var(--danger-text);
+}
+.dash-tile-status[data-tone='warn'],
+.dash-tile-status[data-tone='paused'] {
+  background: var(--warning-soft);
+  color: var(--warning-text);
+}
+.dash-tile-status[data-tone='ok'] {
+  background: var(--success-soft);
+  color: var(--success-text);
+}
+.dash-tile-status[data-tone='is-running'] {
+  background: var(--info-soft);
+  color: var(--info-text);
+}
+.dash-tile-status .dash-dot[data-tone='paused'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--state-waiting);
+}
+.dash-tile-status .dash-dot[data-tone='idle'],
+.dash-tile-status .dash-dot[data-tone='stopped'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--state-idle);
+}
+.dash-tile-status .dash-dot[data-tone='danger'] {
+  border-radius: 2px;
+}
+
+.dash-tile-title {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: normal;
-  /* Break between words; a single long token wraps rather than running out of the column. */
-  word-break: normal;
-  overflow-wrap: break-word;
+  white-space: nowrap;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
 }
-
-/* The one left rule a list keeps: a failed run (the status word says it too). */
-.dash-row.dash-row-resume[data-status='Failed'] {
-  border-left: 2px solid var(--state-error);
+.dash-tile-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
-
-/* The cost sits muted after the caption. */
-.dash-row-resume .dash-row-cap .cost {
+/* The cost sits muted after the meta. */
+.dash-tile-meta .cost {
   flex: none;
   color: var(--text-tertiary);
+}
+
+/* The action row keeps its height while the project's outputs are still on the way, so a late "Open output" shifts nothing. */
+.dash-tile-foot {
+  display: flex;
+  align-items: center;
+  min-height: calc(28px + var(--space-3));
+  padding: 0 var(--space-3) var(--space-3) calc(var(--space-3) + 3px);
 }

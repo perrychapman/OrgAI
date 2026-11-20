@@ -1,0 +1,209 @@
+/* ---------- Dashboard: Commits this week (components/dashboard/CommitsSection.tsx, lib/commitChart.ts) ----------
+   The right column of the lead band. One stacked bar per local day, oldest left, today right: a segment per project in its
+   identity hue (data-hue sets --dash-hue), a 2 px surface gap between stacked segments so neighbours differ by more than
+   hue, a linear scale from zero, a segment never under 2 px, an empty day only the baseline hairline. Other is neutral.
+   Declared track height: 96 px from 360 px of chart width, 72 px under it (container `dash-commits`); the weekday initials
+   drop under 168 px of chart width (a column under 24 px). Nothing here animates. Tokens only. */
+
+.dash-commits-body {
+  container: dash-commits / inline-size;
+  min-width: 0;
+}
+.dash-commits-inner {
+  --commit-track: 72px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+@container dash-commits (min-width: 360px) {
+  .dash-commits-inner {
+    --commit-track: 96px;
+  }
+}
+
+.dash-commits-days {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  min-width: 0;
+}
+.dash-commits-day {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--space-1) 0 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.dash-commits-day:hover,
+.dash-commits-day:focus-visible {
+  background: var(--surface-2);
+}
+.dash-commits-day[aria-pressed='true'] {
+  background: var(--surface-3);
+}
+.dash-commits-day:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* The track: the bar grows up from its baseline; its height is the declared 72 / 96 px. */
+.dash-commits-track {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: var(--commit-track);
+}
+.dash-commits-track::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--border-default);
+}
+/* Height is a percent of the track (set inline: the day's share of the busiest day); the floor keeps every stacked
+   segment at its 2 px minimum plus the 2 px gaps. The first segment is the bottom one. */
+.dash-commits-bar {
+  position: absolute;
+  z-index: 1;
+  bottom: 0;
+  left: 50%;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 2px;
+  width: min(60%, 44px);
+  min-height: calc(var(--commit-n, 1) * 2px + (var(--commit-n, 1) - 1) * 2px);
+  transform: translateX(-50%);
+}
+.dash-commits-seg {
+  flex: 1 1 0;
+  min-height: 2px;
+  background: var(--dash-hue, var(--text-tertiary));
+}
+.dash-commits-seg:last-child {
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+/* Other is the neutral grey (the hue 0 of the identity set), strong enough to read as a segment against the card in both themes. */
+.dash-commits-seg[data-kind='other'] {
+  background: var(--text-tertiary);
+}
+@media (forced-colors: active) {
+  .dash-commits-seg {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+  .dash-commits-track::after {
+    forced-color-adjust: none;
+    background: GrayText;
+  }
+}
+
+.dash-commits-labels {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-1);
+  font-size: var(--text-caption);
+  line-height: 16px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.dash-commits-initial,
+.dash-commits-end {
+  display: block;
+  height: 16px;
+}
+.dash-commits-initial {
+  text-align: center;
+}
+.dash-commits-end {
+  align-self: flex-end;
+}
+.dash-commits-day[data-today='true'] .dash-commits-initial,
+.dash-commits-end {
+  color: var(--dash-strip-today);
+  font-weight: var(--weight-semibold);
+}
+@container dash-commits (max-width: 167px) {
+  .dash-commits-initial {
+    display: none;
+  }
+}
+
+/* The readout: one plain paragraph (not live), two lines of room so a long day does not move the legend. */
+.dash-commits-readout {
+  margin: 0;
+  min-height: calc(var(--text-small-lh) * 2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.dash-commits-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.dash-commits-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.dash-commits-name {
+  min-width: 0;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.dash-commits-figure {
+  flex: none;
+  color: var(--text-secondary);
+}
+.dash-commits-other-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+@media (forced-colors: active) {
+  .dash-commits-other-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+}
+
+/* Loading: the chart's frame without bars (no spinner, no jump): track, label rows, the readout's two lines, a legend line. */
+.dash-commits-placeholder {
+  box-sizing: border-box;
+  height: calc(var(--space-1) + var(--commit-track) + var(--space-1) + 32px + var(--text-small-lh) * 2 + var(--text-caption-lh) + var(--space-4));
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+/* Composed empty state: an icon and one line. */
+.dash-commits-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0 var(--space-1);
+}
+.dash-commits-empty svg {
+  color: var(--text-tertiary);
+}

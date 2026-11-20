@@ -1,10 +1,11 @@
 /* ---------- Dashboard: the 7-day ledger in Your week (docs/design/dashboard-overhaul.md 7.7.1) ----------
    Owned by components/dashboard/WeekLedger.tsx. One fact, runs per day: seven equal columns, oldest left, today right.
    Bars use --dash-strip-bar (today: --dash-strip-today), a failed day carries a hollow ring above its bar, a day with no
-   runs is only the baseline hairline. The track is 40 px narrow and 56 px wide (declared in lib/activityStrip.ts and in
-   the track's data-track attribute, so e2e measures them). Nothing here animates. Labels drop with the section width:
-   weekday initials under 560 px, the end dates under 360 px (container `week`, dashboard-week.css), and the initials
-   also when a column would be under 24 px (container `dash-ledger`). Tokens only. */
+   runs is only the baseline hairline. The track is 72 px narrow and 96 px wide (declared in lib/activityStrip.ts and in
+   the track's data-track attribute, so e2e measures them). Nothing here animates. The ledger spans the section's full
+   width (the stat blocks sit above it), so labels drop late: the end dates under 360 px of section width (container
+   `week`, dashboard-week.css) and the weekday initials when a column would be under 24 px (container `dash-ledger`).
+   Tokens only. */
 
 .dash-ledger {
   container: dash-ledger / inline-size;
@@ -41,7 +42,7 @@
   outline-offset: -2px;
 }
 
-/* The track: bars grow up from its baseline; its height is set inline from the declared 40 / 56 px. */
+/* The track: bars grow up from its baseline; its height is set inline from the declared 72 / 96 px. */
 .dash-strip-track {
   position: relative;
   display: block;
@@ -61,8 +62,10 @@
   z-index: 1;
   bottom: 0;
   left: 50%;
-  width: min(60%, 20px);
+  /* Wide, soft-topped bars: about 60 percent of the column, never wider than 44 px. */
+  width: min(60%, 44px);
   transform: translateX(-50%);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   background: var(--dash-strip-bar);
 }
 .dash-strip-day[data-today='true'] .dash-strip-bar {
@@ -130,11 +133,6 @@
   font-weight: var(--weight-semibold);
 }
 @container dash-ledger (max-width: 167px) {
-  .dash-strip-initial {
-    display: none;
-  }
-}
-@container week (max-width: 559px) {
   .dash-strip-initial {
     display: none;
   }

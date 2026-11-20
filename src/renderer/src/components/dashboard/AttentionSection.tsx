@@ -2,7 +2,9 @@ import type { CSSProperties, FocusEvent, ReactElement, ReactNode, RefObject } fr
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useArrival } from '../../lib/useArrival'
 import { exitProps, tokenMs } from '../../lib/useExitPresence'
+import type { LucideIcon } from 'lucide-react'
 import { Button } from '../ui/Button'
+import { Icon } from '../ui/Icon'
 
 /** How long a user-removal mark waits for its row to leave (an answer's `*.resolved` event) before it is forgotten. */
 const EXIT_MARK_TTL_MS = 10_000
@@ -58,6 +60,8 @@ export function rowMotionProps(motion: RowMotion, className: string): { classNam
 export interface AttentionSectionProps<T> {
   testId: string
   title: string
+  /** Decorative glyph before the h2 (the section card's header icon). */
+  icon?: LucideIcon
   /** Shown in mono beside the title when above zero. */
   count: number
   items: readonly T[]
@@ -293,7 +297,7 @@ export function AttentionRows<T>({ model, renderItem, moreTestId, className }: {
  * One section of the attention column (spec 4): h2 with a count and the list of `useAttentionList`. Used by Waiting on
  * you and To finish setting up; Pick up uses the hook inside `DashSection`.
  */
-export function AttentionSection<T>({ testId, title, count, items, cap, itemKey, renderItem, empty, quiet, action, moreTestId, arrive, exits }: AttentionSectionProps<T>): ReactElement | null {
+export function AttentionSection<T>({ testId, title, icon, count, items, cap, itemKey, renderItem, empty, quiet, action, moreTestId, arrive, exits }: AttentionSectionProps<T>): ReactElement | null {
   const headingId = useId()
   const headingRef = useRef<HTMLHeadingElement>(null)
   const sectionRef = useRef<HTMLElement>(null)
@@ -304,6 +308,11 @@ export function AttentionSection<T>({ testId, title, count, items, cap, itemKey,
   return (
     <section ref={sectionRef} className="dash-section" data-testid={testId} aria-labelledby={headingId} hidden={rows.length === 0 && quiet ? true : undefined}>
       <div className="dash-section-head">
+        {icon && (
+          <span className="dash-section-icon" aria-hidden="true">
+            <Icon icon={icon} size="sm" />
+          </span>
+        )}
         <h2 id={headingId} ref={headingRef} tabIndex={-1} data-section-heading="">
           {title}
         </h2>

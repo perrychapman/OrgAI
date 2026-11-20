@@ -850,3 +850,93 @@ name save racing the Settings page's debounced save) are outside this renderer b
 "Schedules: Schedules:" (pre-existing NeedsRow copy, not changed here).
 
 Walk 4 follow-ups, fixed: M3 the brief gains "1 run is idle and waiting on your reply." (plural "2 runs are idle and waiting on your reply."), second after decisions and counted by `bandWorkFacts.awaitingReply`, so it never says nothing is waiting beside an idle run that waits for the reply; M4 the band count, the band agent state word and the brief all say "Waiting on you" or "waiting on you" (no "Needs you" or "waiting for you" left in Dashboard strings; the bell, sidebar and run status badge are unchanged); M2 on first launch a saved name reads "Welcome to OrgAI, Sam." (section 5.2's "no name on first launch" is dropped) and "Add your name" is a bordered secondary button with a plus icon; M5 the paused reason is clamped to two lines with a clean ellipsis and carries the full text as its `title`; M1 the paused row caption comes from `pausedResumeCaption` in `lib/resumeRows.ts` ("resumes tomorrow at 10:40 PM if OrgAI stays open", a weekday within a week, else the date; `needsInline.ts` untouched), while the greeting brief still prints only the clock time of the earliest resume; L6 the schedules "Show more" button has `aria-expanded` (the page's other "Show more" controls carry no `aria-controls`). Checked by unit tests with a fixed clock and the new first-launch checks in `e2e/dashboard.mjs`; the light-theme look of the new button and the real-resize clamp were not looked at.
+
+## 18. Visual pass (2026-11-20, UI Lead)
+
+### 18.1 Why
+
+The owner looked at the built page and said "it looks like a giant wall of text". He was right: every section was
+hairline-separated rows of same-size text on the page background, the only graphic was one small bar chart, projects had no
+identity and the greeting's brief was two sentences. He had also asked for the page to "feel more personal" and disliked the
+earlier console-style dashboard. A later direction from him: "think of it as sort of the one-stop shop with motion animation
+tiles coming in with chats that need my attention from other runs with a summary and quick link. maybe to the right
+something like a chart of commits this week by project. another tile for engagements and some info there about those."
+
+This pass changes how the page is drawn, not what it knows: the person reads it from shapes, figures and colour first and
+text second. Data and behaviour of sections 4 to 11 stand except where this section says otherwise. It overrides section 3
+(visual treatment), the row styling in 7.4 to 7.8, the ledger heights in 7.7.1 and the "first paint never animates" line of
+section 9 for the board entrance only.
+
+### 18.2 What changed, per region
+
+| Region | Before | After |
+| --- | --- | --- |
+| Every section | Unboxed: top hairline, h2, rows | A card: `--surface-1`, `--radius-lg`, `--border-subtle`, `--elev-1`, `--space-4`/`--space-5` padding, a 28 px icon chip (accent soft; warning soft for Waiting on you) before the h2 |
+| Greeting | Salutation plus a two-sentence brief | Display salutation, then 2 to 5 stat tiles (`dash-hero-stat[data-stat]`: waiting, working, finished, today, spend; icon chip, big mono figure, 1-3 word label, tone tint). A tile is a native button that focuses its section's h2 when that section is on the page, else a static figure. A zero tile is hidden; the waiting tile becomes "All clear" when nothing waits. The brief stays, word for word, as the sr-only accessible summary (`dash-greeting-brief`) and shows only as the one short sentence for first launch, no runs yet, or all quiet |
+| Lead band (new) | Waiting on you full width | `.dash-lead`: left and widest (2fr) Waiting on you and To finish setting up, right (1fr) Commits this week; one column, attention first, below the two-track width |
+| Waiting on you | Tinted rows per decision | One tile per run that needs the person (`dash-attn-tile[data-kind=decision|reply|team]`): project badge, run title, how long it waited, then its `NeedsRow`s unchanged (at most 2, "+N more") or, for a run idle and awaiting a reply, a two-line plain-text summary of the root's newest message and a Reply button. Count stays the decision total; "· N awaiting reply" beside it. Nothing waiting: the composed card `dash-needs-clear` ("Nothing is waiting on you.") |
+| Commits this week (new) | - | Stacked bar per local day for 7 days by project in identity hues, legend with names and totals, roving keyboard readout, sr-only text; empty card "No commits this week."; nothing when there is no code project |
+| Pick up | Hairline rows | Tiles in a wrapping grid: large project badge spanning two lines, title with a status pill, one meta line, the one action below. Detail lines moved to the button's title and description |
+| Today | Rows for schedules and to-dos | A time rail (dots at their times, the next one large in accent, ran ones as outcome rings with shape cues, dots are 24 px buttons with full names) and compact to-do cards with the project's badge; list and "Added by an assistant" in sr-only text; no checkbox |
+| Working now | Rows per run | A card per run: badge, name, status and one clipped caption, a row of agent marks (at most 8, then "+N"; only these breathe, 12 at most), a plan bar `dash-now-plan` ("3 of 7 steps") when the run has a plan |
+| Your week | Three small figures and a 40/56 px ledger | Three stat blocks (big mono figure, caption), the ledger full width at 72 px (one track) / 96 px (two tracks), a per-project share bar `dash-week-share` with legend and sr-only text (hidden under two projects) |
+| Engagements (new, arrangeable) | - | Up to 4 engagements as compact tiles (badge, name, client and last activity, fact marks for runs this week, reference folders, notes, knowledge items), "Show N more" |
+| Projects | Tiles with several text lines | A hue band on top, a badge, two text lines (name; a shaped status mark and its words), a 7-day runs sparkline `tile-spark` with a figure, signal chips as icon plus count; folder and cost in sr-only text |
+
+### 18.3 Project identity
+
+Eight hues of even lightness, `--project-1` to `--project-8`, plus `--project-ink` for text on a hue, in every theme block of
+`tokens.css` (the chart series alternate light and dark and did not fit). Measured: ink on each hue 10.5 to 14.9 (dark) and 5.0
+to 7.3 (light); each hue on `--surface-1` 9.8 or more (dark) and 4.8 or more (light). A project's hue is the FNV-1a hash of its
+id (never the name, so renaming keeps the colour), resolved against collisions in stored project order (`assignProjectHues`:
+up to eight projects never share a hue, a new project never recolours an older one). DashboardView registers the current
+list before any section renders. The monogram is the first letters of the first two words, a trailing parenthetical ignored.
+Colour is never the only signal: the name or monogram sits beside every mark.
+
+### 18.4 Motion
+
+| What | Why | Recipe | Guard |
+| --- | --- | --- | --- |
+| The board rises in (stat tiles, lead column, side column, arranged sections, in reading order) | A welcome on the first look of the session | `motion-rise-lg` 8 px, `--dur-slow`, 30 ms stagger capped at 5 steps (150 ms), transform and opacity only, `.dash-page[data-entering]` for 700 ms | Once per app session (a later visit, a refresh or a tile on screen never re-animates); not set when `--dur-slow` is collapsed (reduced motion, Pause motion) |
+| A new attention tile | Something new needs the person | `.motion-enter` through `useArrival`, after the arrival settle, as rows did | Tokens collapse |
+| A tile whose last decision was answered | Confirm the act | `useRowExits` fold, as rows did | Inert while leaving |
+
+Nothing new loops; the breathing marks are the only loop, as before.
+
+### 18.5 Text budget and measured lines
+
+No tile carries more than two text lines (attention tiles: header plus at most two summary lines; the unchanged `NeedsRow`
+text is exempt). e2e measures it: line boxes per tile at both sizes and themes. Visible text lines per region on the e2e
+busy page at 1600x1000, counted by eye from the before and after screenshots (approximate): greeting 2 sentences (2 lines) to 0 lines of prose
+(stat tiles: one figure and one label each); Pick up 4 lines for 2 rows to 2 tiles of 2 lines; Today 9 lines to a rail with
+one emphasised label plus 3 one-line to-do cards; Working now 4 lines per run to 2 lines per run card; Your week 6 label and
+figure lines to 3 stat blocks.
+
+### 18.6 Test ids
+
+Added: `dash-hero-stats`, `dash-hero-stat`, `dash-project-badge`, `dash-attn-tile`, `dash-attn-open`, `dash-attn-summary`,
+`dash-attn-waited`, `dash-attn-more`, `dash-attn-reply-count`, `dash-needs-clear`, `dash-commits`, `dash-commits-empty`,
+`dash-commits-day`, `dash-commits-seg`, `dash-commits-legend-item`, `dash-commits-readout`, `dash-commits-text`,
+`dash-commits-chart`, `dash-commits-track`, `dash-commits-total`, `dash-commits-loading`, `dash-now-plan`, `dash-now-marks`,
+`dash-week-share`, `dash-week-share-seg`, `dash-week-share-item`, `dash-week-share-text`, `dash-engagements`,
+`dash-engagement`, `dash-engagement-open`, `dash-engagement-fact`, `dash-engagements-more`, `tile-spark`. Moved: `dash-today-schedule` is now the rail dot
+button (its time, name and target are its accessible name); `tile-folder` and `tile-cost` are in the tile's sr-only
+description; `tile-client` is on the meta line. `dash-needs-more` now shows more tiles. Removed: none. The layout model's
+arrangeable ids are six (`engagements` before `projects`); a stored five-section layout gains it at its default place.
+
+### 18.7 Verification and open items
+
+Unit tests for every new pure model (projectIdentity, heroStats, attentionTiles with timing tests on shaped input,
+scheduleRail, projectShare, commitChart, engagementTiles, projectSparkline, dashboardLayout). `e2e/dashboard.mjs` gained the
+VP checks (two lines per tile, one hue per project across sections, sparkline, share and commits text alternatives, cards,
+Commits to the right of Waiting on you at 1600x1000, stat tiles focus their section without scrolling the window) and its
+selectors for six sections, the rail and the 72 / 96 px ledger. Reviewer: one High (a backtracking pattern over agent text in
+the reply summary could freeze the renderer) fixed by capping lines at 400 characters and a linear separator test, approved on
+recheck; Lows fixed (escaped run titles on tiles, retired notes not counted, 24 px dot spacing, ran-dot shapes, the reply
+stat's target, the loading stat row hidden, a weight token).
+
+Not verified: the Commits chart with real data end to end (the `projects.commitActivity` contract landed on dev in parallel;
+this build feature-detects it and e2e saw the empty card), Engagements in e2e (unit tests and a mock walk only), screen-reader
+speech, macOS, forced colours, real data volumes (many projects collide in hue past eight), a real 200% zoom (checked by
+overflow measurement and a container-width stand-in). The e2e projects all read "ED" as their monogram because their names
+share the "E2E dash" prefix. A decision tile repeats the run name above its `NeedsRow`, whose text cannot change here.

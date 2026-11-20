@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, useEffect } from 'react'
+import { Activity } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { BandRun } from './BandRun'
@@ -42,8 +43,8 @@ function openRun(projectId: string, runId: string, agentId: string | null, rootI
 }
 
 /**
- * Working now (docs/design/dashboard-overhaul.md 7.6, dashboard-2.md section 6): runs as small subway lines, never
- * announced. No height budget: the caps come from the page width alone. Rendered through `DashSection`, so with nothing
+ * Working now (docs/design/dashboard-overhaul.md 7.6, dashboard-2.md section 6): each run a card (project badge, a row of
+ * agent marks, a plan bar) with its agents hanging from it as subway lines, never announced. No height budget: the caps come from the page width alone. Rendered through `DashSection`, so with nothing
  * open it draws nothing (the greeting says so) outside customise mode.
  */
 export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: string) => void }): ReactElement {
@@ -165,6 +166,7 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
       id="working"
       testId="dash-now"
       empty={model.total === 0}
+      icon={Activity}
       headExtra={countsLine}
       className={bandArrived ? 'dash-now motion-enter' : 'dash-now'}
       sectionRef={rootRef}
@@ -173,22 +175,24 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
       onFocus={onFocus}
       onBlur={onBlur}
     >
-      {model.projects.map((p) => (
-        <section key={p.id} className="dash-now-project" data-testid="dash-now-project" data-project={p.id} aria-labelledby={`dash-now-p-${p.id}`}>
-          <h3 id={`dash-now-p-${p.id}`}>
-            {p.label}
-            {p.client && <span className="dash-now-client"> · {p.client}</span>}
-          </h3>
-          <ul className="dash-runs">
-            {p.runs.map((r) => {
-              const at = flatRuns.indexOf(r.id)
-              const revealed = reveal !== null && at >= reveal.from
-              const enter = revealed ? Math.min(at - reveal.from, 5) : runArrived(r.id) ? 0 : undefined
-              return <BandRun key={r.id} run={r} now={elapsedNow} onOpen={openRun} enter={enter} />
-            })}
-          </ul>
-        </section>
-      ))}
+      <div className="dash-now-groups">
+        {model.projects.map((p) => (
+          <section key={p.id} className="dash-now-project" data-testid="dash-now-project" data-project={p.id} aria-labelledby={`dash-now-p-${p.id}`}>
+            <h3 id={`dash-now-p-${p.id}`}>
+              {p.label}
+              {p.client && <span className="dash-now-client"> · {p.client}</span>}
+            </h3>
+            <ul className="dash-runs">
+              {p.runs.map((r) => {
+                const at = flatRuns.indexOf(r.id)
+                const revealed = reveal !== null && at >= reveal.from
+                const enter = revealed ? Math.min(at - reveal.from, 5) : runArrived(r.id) ? 0 : undefined
+                return <BandRun key={r.id} run={r} now={elapsedNow} onOpen={openRun} enter={enter} />
+              })}
+            </ul>
+          </section>
+        ))}
+      </div>
       {(model.hiddenRuns > 0 || showAll) && model.total > caps.bandRuns && (
         <Button variant="ghost" size="sm" testId="dash-now-more" onClick={toggleAll}>
           {showAll ? 'Show fewer' : moreRunsLabel(model.hiddenRuns)}

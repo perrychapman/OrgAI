@@ -1,0 +1,111 @@
+/* ---------- Dashboard: Engagements (components/dashboard/EngagementsSection.tsx, lib/engagementTiles.ts) ----------
+   Compact tiles in an auto-fill grid (min 220 px): identity badge, the name (one line, ellipsis), one meta line (client, last
+   activity) and up to three icon + figure facts. The name button's ::after covers the tile, so the tile is one click target.
+   Hue from [data-hue] -> --dash-hue. Nothing animates. Tokens only. */
+
+.dash-eng-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  gap: var(--space-3);
+  min-width: 0;
+}
+.dash-eng {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  box-shadow: inset 3px 0 0 var(--dash-hue, var(--text-tertiary));
+  border-radius: var(--radius-md);
+  transition:
+    border-color var(--dur-fast),
+    background-color var(--dur-fast);
+}
+.dash-eng:hover {
+  background: var(--surface-2);
+}
+.dash-eng-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1 1 0;
+}
+.dash-eng-open {
+  all: unset;
+  box-sizing: border-box;
+  display: block;
+  min-width: 0;
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  line-height: var(--text-body-lh);
+}
+.dash-eng-open::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-md);
+}
+.dash-eng-open:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.dash-eng-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-eng-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.dash-eng-client {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-eng-client::after {
+  content: '\00b7';
+  margin-left: var(--space-2);
+}
+.dash-eng-when {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+/* The facts end the meta line and sit above the name button's tile cover so their tooltips show. */
+.dash-eng-facts {
+  list-style: none;
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+  margin: 0 0 0 auto;
+  position: relative;
+  z-index: 1;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.dash-eng-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-variant-numeric: tabular-nums;
+}

@@ -1,10 +1,11 @@
 /* ---------- Dashboard: Working now (docs/design/dashboard-overhaul.md 7.6; dashboard-2.md sections 3, 6) ----------
-   Owned by components/dashboard/RightNowBand.tsx and BandRun.tsx. Unboxed like every section (the shared .dash-section
-   frame draws the hairline and the h2); nothing sizes itself to a neighbouring column. Tokens only. */
+   Owned by components/dashboard/RightNowBand.tsx and BandRun.tsx. A run is a card inside the section card (project
+   badge, a glance row of agent marks and the plan bar, then the agents as reporting lines); nothing sizes itself to a
+   neighbouring column. Tokens only. */
 
 .dash-now {
   container: band / inline-size;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 .dash-now-counts {
   margin: 0 0 0 auto;
@@ -19,9 +20,9 @@
   min-width: 0;
 }
 .dash-now-project > h3 {
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-title-sm);
-  line-height: var(--text-title-sm-lh);
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-secondary);
   overflow: hidden;
@@ -41,11 +42,31 @@
   display: flex;
   flex-direction: column;
 }
-.dash-runs {
-  gap: var(--space-2);
+/* Project groups are the grid: one column, two when the section is wide enough (a half track stacks, a one-track window
+   pairs). Runs of one project stack inside their group. */
+.dash-now-groups {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4) var(--space-3);
+  align-items: start;
 }
+@container band (min-width: 720px) {
+  .dash-now-groups {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.dash-runs {
+  gap: var(--space-3);
+}
+/* The card: a soft tint of the project's hue over --surface-2 and a hue edge, so a run reads by colour before its words.
+   data-hue on the li sets --dash-hue (dashboard.css). The card is its own container for the agent rows' caption rule. */
 .dash-run {
+  container: runcard / inline-size;
   min-width: 0;
+  padding-bottom: var(--space-1);
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--dash-hue, var(--text-tertiary)) 8%, var(--surface-2));
+  box-shadow: inset 3px 0 0 var(--dash-hue, var(--text-tertiary));
 }
 
 /* ---- Marks (3.1) ---- */
@@ -89,19 +110,6 @@
   border: 1px dashed var(--canvas-edge-group);
   background: transparent;
 }
-/* The interchange: a ring in the root's role colour around a 6 px dot. */
-.dash-mark[data-root] {
-  width: 14px;
-  height: 14px;
-  border-color: var(--role);
-  background: radial-gradient(circle, var(--role) 0 3px, transparent 3.5px);
-}
-.dash-mark[data-root][data-group='waiting'] {
-  border-color: var(--state-waiting);
-}
-.dash-mark[data-root][data-group='idle'] {
-  border-color: var(--state-idle);
-}
 
 /* Working marks breathe (3.4): transform and opacity only, staggered by --i. */
 .dash-mark[data-state='working'][data-breathe]::after {
@@ -123,16 +131,16 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
+  gap: var(--space-2);
   width: 100%;
   min-height: 44px;
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-3) var(--space-3) var(--space-2);
   border-radius: var(--radius-md);
   cursor: pointer;
   color: var(--text-primary);
 }
 .dash-run-head:hover {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--surface-3) 70%, transparent);
 }
 .dash-run-head:focus-visible,
 .dash-agent-row:focus-visible {
@@ -140,6 +148,19 @@
   outline-offset: -2px;
 }
 .dash-run-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.dash-run-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dash-run-title {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -155,7 +176,8 @@
   color: var(--text-primary);
 }
 .dash-run-head .dash-status {
-  font-size: var(--text-small);
+  font-size: var(--text-caption);
+  color: var(--text-primary);
 }
 .dash-chip {
   flex: none;
@@ -174,27 +196,91 @@
   margin-left: auto;
   color: var(--text-tertiary);
 }
+/* The caption: state dot, the status word, then one clipped line (the whole sentence is the title). */
 .dash-run-cap {
-  display: block;
-  /* Align under the status word: interchange 14 + dot 8 + two gaps. */
-  padding-left: calc(14px + var(--space-2));
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.dash-run-cap-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* A run with a decision says "Waiting on you" in plain text; the warning dot beside it keeps the colour from standing alone. */
+
+/* The glance row under the header: the agents as marks, then the plan bar. Shapes first, text second. */
+.dash-run-glance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding-left: calc(28px + var(--space-3));
+}
+.dash-marks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.dash-marks .dash-mark {
+  width: 16px;
+  height: 16px;
+}
+.dash-marks-more {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.dash-plan-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 140px;
+  min-width: 0;
+  max-width: 260px;
+}
+.dash-plan-track {
+  flex: 1 1 auto;
+  min-width: 48px;
+  height: 6px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.dash-plan-track > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.dash-plan-meter[data-blocked='true'] .dash-plan-track > i {
+  background: var(--state-waiting);
+}
+.dash-plan-text {
+  flex: none;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
-  color: var(--text-tertiary);
-}
-/* The one tinted block on the page is Waiting on you (section 3): a waiting run here says "Waiting on you" in plain
-   text, no tint on the word or the line; its dot and mark keep their state colour beside the word. */
-.dash-run-cap[data-warn='true'] {
   color: var(--text-secondary);
+  white-space: nowrap;
+}
+@media (forced-colors: active) {
+  .dash-plan-track > i {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
 }
 
 /* ---- Agent rows (6.4), reporting lines (3.2) ---- */
 .dash-agents {
-  /* The interchange's centre (header padding + 7 px) minus the line's 6 px. */
-  margin-left: calc(var(--space-2) + 1px);
+  /* The badge's centre (header padding + 14 px) minus the line's 6 px. */
+  margin: 0 var(--space-3) var(--space-1) calc(var(--space-3) + 8px);
 }
 .dash-agent-row {
   all: unset;
@@ -211,7 +297,7 @@
   font-size: var(--text-body);
 }
 .dash-agent-row:hover {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--surface-3) 70%, transparent);
 }
 .dash-agent-row > * {
   min-width: 0;
@@ -264,7 +350,7 @@
   padding: 0 var(--space-2);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-full);
-  background: var(--surface-2);
+  background: var(--surface-1);
   font-size: var(--text-small);
   font-weight: var(--weight-semibold);
   white-space: nowrap;
@@ -317,8 +403,8 @@
 
 /* Arriving rows get .motion-enter from the component (useArrival); rows never animate out. */
 
-/* The role caption goes first when the band is narrow; it stays in the accessible name. */
-@container band (max-width: 559px) {
+/* The role caption goes first when the card is narrow; it stays in the accessible name. */
+@container runcard (max-width: 519px) {
   .dash-role {
     display: none;
   }

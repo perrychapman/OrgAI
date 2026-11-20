@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/Badge'
 import { Icon } from '../components/ui/Icon'
 import { forgetNoticeText } from '../lib/dashboard'
 import { isDevBuild } from '../lib/buildChannel'
+import { registerProjectHues } from '../lib/projectIdentity'
 import { tokenMs } from '../lib/useExitPresence'
 import {
   SECTION_TITLES,
@@ -34,6 +35,8 @@ import { ResumeSection } from '../components/dashboard/ResumeSection'
 import { TodaySection } from '../components/dashboard/TodaySection'
 import { WeekSection } from '../components/dashboard/WeekSection'
 import { SetupGaps } from '../components/dashboard/SetupGaps'
+import { CommitsSection } from '../components/dashboard/CommitsSection'
+import { EngagementsSection } from '../components/dashboard/EngagementsSection'
 import { useDashCaps } from '../components/dashboard/dashCaps'
 import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
 import { FirstLaunch } from '../components/dashboard/FirstLaunch'
@@ -42,6 +45,14 @@ import AppNavigateBanner from '../components/AppNavigateBanner'
 
 /** The last openNewProject() request this view acted on, so a request is consumed once. */
 let consumedNewProjectRequest = 0
+
+/**
+ * The board's entrance (Visual pass, motion): the tiles rise in, staggered, the first time the Dashboard shows in an app
+ * session only; a later visit, a data refresh or a tile already on screen never animates. The window is short so a tile
+ * filled by a slow load does not rise late.
+ */
+let boardEntered = false
+const BOARD_ENTRANCE_MS = 700
 
 const CONTROL = (id: DashSectionId, testId: string): string => `[data-testid=dash-section-controls][data-section="${id}"] [data-testid="${testId}"]`
 
@@ -97,6 +108,17 @@ export default function DashboardView(): ReactElement {
 
   const mockAvailable = !!appInfo?.mockAdapter
   const empty = projects.length === 0
+  // Project identity hues for this list, before any section renders (idempotent for the same ids; projectIdentity.ts).
+  registerProjectHues(projects.map((p) => p.id))
+
+  // Entrance: once per app session, never under reduced motion or Pause motion (the duration token collapses then).
+  const [entering, setEntering] = useState(() => !boardEntered && tokenMs('--dur-slow') >= 1)
+  useEffect(() => {
+    boardEntered = true
+    if (!entering) return
+    const t = window.setTimeout(() => setEntering(false), BOARD_ENTRANCE_MS)
+    return () => window.clearTimeout(t)
+  }, [entering])
 
   // ---- Layout and customise (sections 4.2, 6) ----
   const [layout, updateLayout] = useDashboardLayout()
@@ -198,6 +220,7 @@ export default function DashboardView(): ReactElement {
     today: <TodaySection key="today" />,
     working: <RightNowBand key="working" caps={caps} onAnnounce={say} />,
     week: <WeekSection key="week" />,
+    engagements: <EngagementsSection key="engagements" />,
     projects: <ProjectsGrid key="projects" onAnnounce={say} />
   }
 
@@ -236,7 +259,7 @@ export default function DashboardView(): ReactElement {
       <AppNavigateBanner />
       <div className="dashboard" data-testid="dashboard" data-customising={customising ? '' : undefined} onKeyDown={onKeyDown}>
         <DashboardContext.Provider value={ctx}>
-          <div className="dash-page" ref={setPageEl} data-tracks={caps.wide && !customising ? '2' : '1'}>
+          <div className="dash-page" ref={setPageEl} data-tracks={caps.wide && !customising ? '2' : '1'} data-entering={entering ? '' : undefined}>
             <SecretNotices />
             {forgetNotice && (
               <div className="dash-forget-notice">
@@ -258,9 +281,18 @@ export default function DashboardView(): ReactElement {
               <FirstLaunch mockAvailable={mockAvailable} />
             ) : (
               <>
-                {/* Fixed: first and second, never hidden or moved (a decision or a blocker must not be hideable). */}
-                <NeedsYouRegion caps={caps} onAnnounce={say} />
-                <SetupGaps caps={caps} />
+                {/* The lead band (Visual pass): fixed, never hidden or moved (a decision or a blocker must not be hideable).
+                    Left and widest: Waiting on you and To finish setting up; right: Commits this week. One column below the
+                    two-track width, attention first. */}
+                <div className="dash-lead" data-tracks={caps.wide && !customising ? '2' : '1'}>
+                  <div className="dash-lead-main">
+                    <NeedsYouRegion caps={caps} onAnnounce={say} />
+                    <SetupGaps caps={caps} />
+                  </div>
+                  <div className="dash-lead-side">
+                    <CommitsSection />
+                  </div>
+                </div>
                 <div className="dash-arranged">{layout.order.map((id) => sections[id])}</div>
                 {!customising && layout.order.every((id) => layout.hidden.includes(id)) && (
                   <p className="dash-all-hidden" data-testid="dash-all-hidden">

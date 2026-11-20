@@ -1,4 +1,12 @@
-/* Dashboard today (docs/design/dashboard-overhaul.md 7.5). Tokens only. */
+/* Dashboard today (docs/design/dashboard-overhaul.md 7.5, "Visual pass"). Tokens only; nothing here animates.
+
+   Scheduled is a time rail (components/dashboard/TodaySection.tsx, lib/scheduleRail.ts): a line from the whole hour of
+   now (or of the earliest schedule shown, at least six hours wide) to midnight, a "Now" tick, one dot per schedule at its
+   time with its mono time under it. The next upcoming schedule is the big accent dot and is named in the heading line;
+   other upcoming ones are small filled dots; ones that already ran are rings in their outcome's colour. Every dot is a
+   native button named "{time} {name}, {target}. Open schedule"; hover and keyboard focus show the same words in a tip.
+   To-dos are compact cards: the project's badge, the title on one line, Start session. Nothing here draws a checkbox. */
+
 .dash-today-date {
   font-size: var(--text-caption);
   color: var(--text-tertiary);
@@ -10,32 +18,286 @@
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
+  min-width: 0;
   margin: 0 0 var(--space-2);
   font-size: var(--text-small);
+  line-height: var(--text-small-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-secondary);
 }
-.dash-today-time {
-  flex: none;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
+/* "Next 02:30 PM Weekly digest": the one line that names the emphasised dot. */
+.dash-today-next {
+  margin-inline-start: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-regular);
   color: var(--text-secondary);
 }
-/* The to-do title is text, not an action: the Start session button is the row's one control. */
-.dash-today-todo-main {
-  cursor: default;
+.dash-today-next-time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-semibold);
+  color: var(--accent-text);
 }
+
+/* ---------- The rail ---------- */
+.dash-rail {
+  position: relative;
+  height: 72px;
+  min-width: 0;
+}
+.dash-rail[data-lanes='2'] {
+  height: 90px;
+}
+.dash-rail-line,
+.dash-rail-elapsed {
+  position: absolute;
+  top: 30px;
+  inset-inline-start: 36px;
+  height: 2px;
+  border-radius: var(--radius-full);
+}
+.dash-rail-line {
+  inset-inline-end: 36px;
+  background: var(--border-default);
+}
+/* The part of the day that has passed. */
+.dash-rail-elapsed {
+  background: var(--border-strong);
+}
+.dash-rail-tick {
+  position: absolute;
+  top: 27px;
+  width: 1px;
+  height: 8px;
+  background: var(--border-default);
+}
+.dash-rail-now {
+  position: absolute;
+  top: 20px;
+  width: 2px;
+  height: 22px;
+  margin-inline-start: -1px;
+  border-radius: var(--radius-full);
+  background: var(--accent-text);
+}
+.dash-rail-now-label {
+  position: absolute;
+  bottom: 100%;
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+
+/* A dot: a 24 px native button (the target), its mark centred on the line. */
+.dash-rail-dot {
+  all: unset;
+  box-sizing: border-box;
+  position: absolute;
+  top: 19px;
+  width: 24px;
+  height: 24px;
+  margin-inline-start: -12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  z-index: 1;
+}
+.dash-rail-dot:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.dash-rail-mark {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--text-secondary);
+}
+.dash-rail-dot:hover .dash-rail-mark {
+  box-shadow: 0 0 0 3px var(--surface-3);
+}
+.dash-rail-dot[data-next='true'] .dash-rail-mark {
+  width: 16px;
+  height: 16px;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+.dash-rail-dot[data-state='ran'] .dash-rail-mark {
+  width: 12px;
+  height: 12px;
+  background: var(--surface-1);
+  box-shadow: inset 0 0 0 2px var(--text-tertiary);
+}
+.dash-rail-dot[data-tone='ok'] .dash-rail-mark {
+  box-shadow: inset 0 0 0 2px var(--state-done);
+}
+/* Shape as well as colour: failed is a square ring, needs-you a double ring, finished a ring with a centre dot; other outcomes a plain ring. */
+.dash-rail-dot[data-tone='ok'] .dash-rail-mark {
+  background: radial-gradient(circle, var(--state-done) 0 2px, var(--surface-1) 2.5px);
+}
+.dash-rail-dot[data-tone='danger'] .dash-rail-mark {
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 2px var(--state-error);
+}
+.dash-rail-dot[data-tone='warn'] .dash-rail-mark {
+  box-shadow: inset 0 0 0 2px var(--state-waiting), inset 0 0 0 4px var(--surface-1), inset 0 0 0 6px var(--state-waiting);
+}
+
+/* Time labels under the dots: mono, two lanes, decorative (each dot's name carries the time). */
+.dash-rail-time {
+  position: absolute;
+  top: 48px;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.dash-rail-time[data-lane='1'] {
+  top: 66px;
+}
+.dash-rail-time[data-next='true'] {
+  font-weight: var(--weight-semibold);
+  color: var(--accent-text);
+}
+
+/* The tip: the dot's words on hover and keyboard focus, anchored to its own edge near the ends of the rail. */
+.dash-rail-tip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(260px, 60vw);
+  overflow-wrap: anywhere;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  box-shadow: var(--elev-2);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-primary);
+  z-index: 3;
+  pointer-events: none;
+}
+.dash-rail-dot[data-align='start'] .dash-rail-tip {
+  inset-inline-start: 0;
+  transform: none;
+}
+.dash-rail-dot[data-align='end'] .dash-rail-tip {
+  inset-inline-start: auto;
+  inset-inline-end: 0;
+  transform: none;
+}
+.dash-rail-dot:hover .dash-rail-tip,
+.dash-rail-dot:focus-visible .dash-rail-tip {
+  display: block;
+}
+.dash-rail-tip-time {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-semibold);
+}
+
+@media (forced-colors: active) {
+  .dash-rail-mark {
+    forced-color-adjust: none;
+    background: ButtonText;
+  }
+  .dash-rail-dot[data-state='ran'] .dash-rail-mark {
+    background: Canvas;
+    border: 2px solid ButtonText;
+  }
+  .dash-rail-line,
+  .dash-rail-elapsed,
+  .dash-rail-now {
+    forced-color-adjust: none;
+    background: ButtonText;
+  }
+}
+
+/* ---------- Paused ---------- */
 .dash-today-paused {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-3);
   min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.dash-today-paused-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-secondary);
 }
 .dash-today-paused-text {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
   font-size: var(--text-small);
   color: var(--text-secondary);
+}
+
+/* ---------- To-dos: compact cards ---------- */
+.dash-today-todos {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dash-todo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 44px;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.dash-todo:hover {
+  border-color: var(--border-strong);
+}
+/* Positioned so the screen-reader-only list name stays inside the card. */
+.dash-todo-text {
+  position: relative;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.dash-todo-title {
+  display: block;
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.dash-todo-agent {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-tertiary);
+}
+.dash-todo > .btn {
+  flex: none;
 }
 .dash-today-more {
   margin-top: var(--space-2);
