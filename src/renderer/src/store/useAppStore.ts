@@ -2,6 +2,7 @@ import { normalizeView } from '../lib/teamView'
 import { applyRunDelegation } from '@shared/delegationView'
 import { droppedExtrasMessage } from '../lib/folderLists'
 import { rulesChangedProject } from '../lib/rulesChange'
+import { reportLiveEvent } from './liveChangeStore'
 import { applyPermissionModePatch, permissionModeEventPatch } from '../lib/runSettings'
 import { clearKnowledgePrefs } from '../lib/knowledgePrefs'
 import { create } from 'zustand'
@@ -2127,6 +2128,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (rulesProject) set((s) => ({ rulesChangedByProject: { ...s.rulesChangedByProject, [rulesProject]: (s.rulesChangedByProject[rulesProject] ?? 0) + 1 } }))
     if (e.type === 'project.updated') {
       set((s) => ({ projects: s.projects.map((p) => (p.id === e.project.id ? e.project : p)) }))
+      return
+    }
+    // What a saved change did in one live run: the status line (store/liveChangeStore.ts). Not part of any run's state.
+    if (e.type === 'run.liveChange') {
+      reportLiveEvent(e)
       return
     }
     // A new or updated output (docs/design/outputs.md section 2): merged into a loaded list, else the list is fetched.

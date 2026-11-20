@@ -92,7 +92,7 @@ export const RULES = [
 
   { match: [`${C}team/TeamFiles*`, `${C}team/useTeamFilesActions.ts`, `${L}teamFiles.ts`, `${L}teamFound.ts`, `${S}teamFiles.css`, `${S}teamFound.css`, `${C}dashboard/TeamFoundPanel.tsx`], scripts: ['team-files'], why: 'team files UI' },
   { match: [`${C}team/OrgChangePointer.tsx`, `${C}team/useOrgChange.ts`, `${L}orgChange.ts`], scripts: ['org-change'], why: 'org change sessions' },
-  { match: [`${C}team/**`, `${R}views/TeamView.tsx`, `${S}team.css`, `${L}roleCapabilities.ts`, `${L}roleModels.ts`, `${L}roleOps.ts`, `${L}roleStaffing.ts`, `${L}teamView.ts`, `${L}orgDiff.ts`], scripts: ['team', 'org-change', 'multi-provider'], why: 'Team tab' },
+  { match: [`${C}team/**`, `${R}views/TeamView.tsx`, `${S}team.css`, `${L}roleCapabilities.ts`, `${L}roleModels.ts`, `${L}roleOps.ts`, `${L}roleStaffing.ts`, `${L}teamView.ts`, `${L}orgDiff.ts`], scripts: ['team', 'org-change', 'multi-provider', 'live-changes'], why: 'Team tab (its capability chooser, role capabilities and org chart footer carry the live change line)' },
   { match: [`${C}templates/**`, `${L}templates.ts`], scripts: ['engagement2'], why: 'team templates' },
   { match: [`${C}import/**`, `${S}import.css`, `${L}agentImport.ts`], scripts: ['import'], why: 'agent import' },
 

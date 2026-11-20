@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { LiveRunChange } from '@shared/types'
-import { effectOf, inferAction, liveChangeLines, serverReach, skillReach, type LiveChangeAction } from './liveRunChange'
+import { effectOf, inferAction, isOrgChartChange, liveChangeLines, serverReach, skillReach, type LiveChangeAction } from './liveRunChange'
 
 const AVAIL: LiveRunChange['availability'][] = ['now', 'after-idle', 'pending', 'next-run']
 
@@ -21,6 +21,7 @@ describe('effectOf', () => {
       { kind: 'updated', name: 'api-design' },
       ['Updated api-design is in use now', 'Updated api-design is in use once its agents are idle', 'Updated api-design is being applied', 'Updated api-design is in use from the next run']
     ],
+    [{ kind: 'orgchart' }, ['Org chart changes are in use now', 'Org chart changes are in use once its agents are idle', 'Org chart changes are being applied', 'Org chart changes are in use from the next run']],
     [{ kind: 'changed' }, ['Change is in use now', 'Change is in use once its agents are idle', 'Change is being applied', 'Change is in use from the next run']]
   ]
   for (const [action, expected] of table) {
@@ -101,5 +102,42 @@ describe('liveChangeLines', () => {
     const [l] = liveChangeLines([{ runId: 'a', title: '  ', availability: 'next-run' }])
     expect(l.text).toBe('Change is in use from the next run · run “Untitled run”')
     expect(l.full).toBe(l.text)
+  })
+
+  it('words several items from the grants the run reports', () => {
+    const g = (item: string, granted: boolean) => ({ role: 'Implementer', item, kind: 'skill' as const, granted })
+    const lines = (grants: ReturnType<typeof g>[]) => liveChangeLines([{ runId: 'a', title: 'T', availability: 'now', grants }])[0].effect
+    expect(lines([g('api-design', false)])).toBe('No longer uses api-design')
+    expect(lines([g('api-design', false), g('Context7', false)])).toBe('No longer uses api-design and Context7')
+    expect(lines([g('a', true), g('b', true), g('c', true), g('d', true)])).toBe('Can use a, b and 2 more now')
+    expect(lines([g('a', true), g('b', false)])).toBe('Change is in use now')
+  })
+
+  it('words an org chart edit and keeps notes and deferred roles as plain details', () => {
+    const [l] = liveChangeLines(
+      [
+        {
+          runId: 'a',
+          title: 'T',
+          availability: 'now',
+          notes: [{ name: 'Implementer Prime', note: 'Renamed to Implementer Prime. This run keeps calling it implementer until the next run.' }],
+          deferred: [{ name: 'Tester', reason: 'It is working on a task now.' }]
+        }
+      ],
+      { kind: 'orgchart' }
+    )
+    expect(l.effect).toBe('Org chart changes are in use now')
+    expect(l.details).toEqual([
+      'Renamed to Implementer Prime. This run keeps calling it implementer until the next run.',
+      'Tester waits for the next run: It is working on a task now.'
+    ])
+  })
+
+  it('tells the org chart editor save from an item save', () => {
+    expect(isOrgChartChange(['orgChart'])).toBe(true)
+    expect(isOrgChartChange(['orgChart', 'grants'])).toBe(true)
+    expect(isOrgChartChange(['grants'])).toBe(false)
+    expect(isOrgChartChange(['skills', 'grants'])).toBe(false)
+    expect(isOrgChartChange(['mcpServers'])).toBe(false)
   })
 })

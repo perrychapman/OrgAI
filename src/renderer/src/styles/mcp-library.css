@@ -143,8 +143,21 @@
 .live-change-note {
   min-height: calc(var(--live-rows, 0) * var(--text-small-lh) + max(var(--live-rows, 0) - 1, 0) * var(--space-1));
 }
-.live-change-note:empty:not([style]) {
+.live-change-note:empty:not([style]):not([data-surface='orgChart']) {
   display: none;
+}
+/* The org chart line sits in the canvas footer, on its own row. Empty, its region stays in the tree (so a line is announced
+   when it arrives) but takes no room. */
+.live-change-note[data-surface='orgChart'] {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.live-change-note[data-surface='orgChart']:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 .live-change-list {
   list-style: none;
@@ -159,6 +172,7 @@
 }
 .live-change-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
@@ -168,7 +182,20 @@
   display: inline-flex;
   flex: none;
 }
+/* A rename's caveat, roles that wait and why: plain text under the line, wrapped (never only in a tooltip). */
+.live-change-details {
+  flex: 1 1 100%;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 calc(var(--space-2) + var(--icon-sm));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
 .live-change-text {
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

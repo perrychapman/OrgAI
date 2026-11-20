@@ -619,8 +619,22 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
   elsewhere (Team-only editors) do not report.
 - `ProposalCard` passes `{ otherLiveRuns }` to `proposalEffectCopy`: true for mcpServers / skills / orgChart cards when another open
   `work` run of the same stored project is in the store (no IPC).
-- Checked: typecheck, build, `liveRunChange.test.ts`, `e2e/live-changes.mjs` (idle mock run: skill create + grant, role rename,
+- Org chart saves and events (2026-11-19, follow-up): main broadcasts `run.liveChange` (runId, projectId, `what`, `change`) once per live
+  run per applied change, and again when a 'pending' answer resolves. `useAppStore.handleEvent` hands it to
+  `liveChangeStore.reportLiveEvent` and returns (no run state). Exactly `what.includes('orgChart')` (every projects:save, also a
+  grants-only one such as a skill removed in the role inspector; never the mcp:* / skills:* routes) is the 'orgChart' surface: one note
+  per save (events of one save for several runs within 5 s share it, a pending line is replaced by its final one), drawn by
+  `<LiveChangeNote surface="orgChart">` mounted in the canvas footer of `TeamView` (own row, no reserved height; an empty region is
+  visually hidden but mounted). Any other event never adds a line (the result path already shows it); it only replaces that
+  save's 'pending' line with the final answer, worded from the stored `action`. That is the dedupe: one save, one line, one polite
+  region with text.
+- Wording: `LiveChangeAction` has `orgchart` ("Org chart changes are in use now"). For `changed` / `orgchart`, the run's own
+  `grants` word the line (`actionFromGrants`: "No longer uses api-design and Context7", "Can use a, b and 2 more now"; mixed
+  directions keep the generic wording). `LiveChangeLine.details` are plain text rows under the line (rename `notes`, deferred
+  roles "Name waits for the next run: reason", and a next-run `reason`), always on screen, never tooltip-only.
+- Checked: typecheck, build, `liveRunChange.test.ts`, `liveChangeStore.test.ts`, `e2e/live-changes.mjs` (idle mock run: skill create + grant, role rename,
   status line wording, one visible line and one text-bearing status region per save, no layout move when it clears, run log lines,
   only harness notices added to the transcript, line inside the section at 1600x1000 and 1024x640 in both themes, screenshots
-  looked at). Org chart saves still show no line (needs a main contract). Not looked at: a skill revoked in the role inspector
-  (still the org chart path), the role-inspector and Connections placements in the browser, screen-reader speech, a run with a long title beyond the mock's, 'after-idle' / 'pending' on a live provider.
+  looked at). The script now also covers the org chart line (rename note, prompt edit), the role inspector's "No longer uses", and
+  four live runs answering one grant (now, `[mock:host-after-idle]`, `[mock:host-slow]` pending then final, `[mock:host-reject]` reason).
+  Not looked at: the role-inspector and Connections placements in the browser, screen-reader speech, a run with a long title beyond the mock's, 'after-idle' / 'pending' on a live provider.

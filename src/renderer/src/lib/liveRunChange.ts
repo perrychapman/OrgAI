@@ -13,6 +13,8 @@ export type LiveChangeAction =
   | { kind: 'saved-ungranted'; name: string }
   /** The content of something already granted was edited. */
   | { kind: 'updated'; name: string }
+  /** An org chart edit with no grants (a prompt, a name, the reporting lines). */
+  | { kind: 'orgchart' }
   /** Anything else (import, suggestion, several items at once): no single name to give. */
   | { kind: 'changed' }
 
@@ -25,6 +27,10 @@ export interface LiveChangeLine {
   /** The full line without truncation (the tooltip). */
   full: string
   text: string
+  /** The run's answer, so a 'pending' line can be told apart and replaced by its final one. */
+  availability: LiveRunChange['availability']
+  /** Plain-text lines under the line, readable without a hover: a rename's caveat, roles that wait and why, a reason. */
+  details: string[]
 }
 
 /** How many roles can use one item (Infinity = every role); 0 when it is switched off. */
@@ -63,6 +69,36 @@ export function inferAction(before: ItemReach[] | null, after: ItemReach[]): Liv
   return moves.length === 1 ? moves[0] : { kind: 'changed' }
 }
 
+/** "a", "a and b", "a, b and c", "a, b and 2 more". */
+export function joinNames(names: string[]): string {
+  const list = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
+  if (list.length <= 1) return list[0] ?? ''
+  if (list.length <= 3) return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`
+  return `${list.slice(0, 2).join(', ')} and ${list.length - 2} more`
+}
+
+/**
+ * What the grants a change named say it did (LiveRunChange.grants): every grant given = a grant, every grant taken =
+ * a revoke, one or several items named. Null when there are none or they point both ways.
+ */
+export function actionFromGrants(grants: LiveRunChange['grants']): LiveChangeAction | null {
+  if (!grants?.length) return null
+  const given = grants.filter((g) => g.granted)
+  const taken = grants.filter((g) => !g.granted)
+  if (given.length && taken.length) return null
+  const name = joinNames(grants.map((g) => g.item))
+  return given.length ? { kind: 'grant', name } : { kind: 'revoke', name }
+}
+
+/**
+ * Whether a run.liveChange event came from an org chart save (projects:save). Those saves return nothing, so they own the
+ * 'orgChart' surface; mcp / skills saves answer with their own result and keep theirs. Main puts 'orgChart' in `what` for
+ * every projects:save change, including one that only names grants (the role inspector's skill removal).
+ */
+export function isOrgChartChange(what: readonly string[]): boolean {
+  return what.includes('orgChart')
+}
+
 const MAX_TITLE = 40
 
 function squash(text: string): string {
@@ -93,6 +129,13 @@ export function effectOf(action: LiveChangeAction, availability: LiveRunChange['
         pending: `Updated ${n} is being applied`,
         'next-run': `Updated ${n} is in use from the next run`
       }[availability]
+    case 'orgchart':
+      return {
+        now: 'Org chart changes are in use now',
+        'after-idle': 'Org chart changes are in use once its agents are idle',
+        pending: 'Org chart changes are being applied',
+        'next-run': 'Org chart changes are in use from the next run'
+      }[availability]
     case 'changed':
       return { now: 'Change is in use now', 'after-idle': 'Change is in use once its agents are idle', pending: 'Change is being applied', 'next-run': 'Change is in use from the next run' }[availability]
   }
@@ -106,14 +149,23 @@ export function liveChangeLines(liveRuns: LiveRunChange[] | undefined, action: L
   if (!liveRuns?.length) return []
   return liveRuns.map((c) => {
     const title = squash(c.title) || 'Untitled run'
-    const effect = effectOf(action, c.availability)
+    // Several items in one save, or an org chart save with grants: the grants the run reports say what changed.
+    const resolved = action.kind === 'changed' || action.kind === 'orgchart' ? (actionFromGrants(c.grants) ?? action) : action
+    const effect = effectOf(resolved, c.availability)
     const reason = c.availability === 'next-run' ? squash(c.reason ?? '').replace(/\.$/, '') : ''
+    const details = [
+      ...(c.notes ?? []).map((n) => squash(n.note)),
+      ...(c.deferred ?? []).map((d) => `${squash(d.name)} waits for the next run: ${squash(d.reason)}`),
+      ...(reason ? [`${reason}.`] : [])
+    ].filter(Boolean)
     return {
       runId: c.runId,
       title,
       effect,
       full: `${effect} · run “${title}”${reason ? `. ${reason}.` : ''}`,
-      text: `${effect} · run “${clamp(title, MAX_TITLE)}”`
+      text: `${effect} · run “${clamp(title, MAX_TITLE)}”`,
+      availability: c.availability,
+      details
     }
   })
 }
