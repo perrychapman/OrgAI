@@ -11,6 +11,8 @@ import type { CliCommandResult, CliCommandStatus, FocusRunTarget, KitApplyResult
 import { registerOutputsIpc } from './outputsIpc'
 import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, OUTPUTS_IPC, REPO_DESTINATION_MAX_CHARS, REPO_SOURCE_MAX_CHARS, TEAM_FILES_IPC } from '@shared/types'
 import type { FolderConfigTrustResult, TeamFilesActionResult, TeamFilesCommitResult } from '@shared/types'
+import type { ProjectCommitActivity } from '@shared/types'
+import { CommitActivityService } from './projects/commitActivity'
 import { applyFolderConfigTrust, folderConfigReview } from './runtime/folderConfigTrust'
 import { projectRulesFile } from './store/projectData'
 import type { RepoCloneInput, RepoCloneProgress, RepoCloneResult, RepoSourceParse, RepoTools } from '@shared/types'
@@ -119,6 +121,7 @@ export const DESKTOP_ONLY_CHANNELS: readonly string[] = [
   IPC.projectsCloneRepo,
   IPC.projectsCancelClone,
   IPC.projectsSetFolderConfigTrust,
+  IPC.projectsCommitActivity,
   TEAM_FILES_IPC.teamFilesApprove,
   TEAM_FILES_IPC.teamFilesReject,
   TEAM_FILES_IPC.teamFilesUndo,
@@ -164,6 +167,8 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
   [IPC.projectsCloneRepo]: true,
   [IPC.projectsCancelClone]: false,
   [IPC.projectsSetFolderConfigTrust]: true,
+  // Reads commit timestamps with git in each stored code project's folder; changes nothing.
+  [IPC.projectsCommitActivity]: false,
   [TEAM_FILES_IPC.teamFilesApprove]: true,
   [TEAM_FILES_IPC.teamFilesReject]: true,
   [TEAM_FILES_IPC.teamFilesUndo]: true,
@@ -256,6 +261,12 @@ export function registerIpc(services: IpcServices): void {
     // A gated project keeps its saved rules in the data folder (projectRulesFile), never in the folder being judged.
     const saved = projects.update(input.projectId, (p) => applyFolderConfigTrust(p, input, { rulesFile: projectRulesFile(p, settings.dataDir) }))
     return { project: saved, review: folderConfigReview(saved) }
+  })
+  // Dashboard commit chart: no argument, the service reads the stored projects (desktop only; never a path from a window).
+  const commitActivity = new CommitActivityService({ listProjects: () => projects.list() })
+  handleReadOnly(IPC.projectsCommitActivity, (e): Promise<ProjectCommitActivity[]> => {
+    requireAppWindow(e)
+    return commitActivity.activity()
   })
   // Team files review decisions (approve / reject / undo / enable / commit): the approval card is the window's.
   const teamFiles = services.teamFiles

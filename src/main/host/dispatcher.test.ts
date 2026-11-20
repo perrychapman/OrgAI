@@ -45,6 +45,7 @@ const DESKTOP_ONLY = [
   'projects:cloneRepo',
   'projects:cancelClone',
   'projects:setFolderConfigTrust',
+  'projects:commitActivity',
   'teamFiles:approve',
   'teamFiles:reject',
   'teamFiles:undo',

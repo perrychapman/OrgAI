@@ -177,7 +177,7 @@ const SCOPE_TABLE: Readonly<Record<ChannelScope, readonly string[]>> = {
     'projects:pickDirectory', 'skillLibrary:addFromFolder', 'kit:pickExportPath', 'kit:pickImportPath', 'kit:export',
     'kit:previewImport', 'kit:applyImport', 'menu:setState', 'app:openPath', 'app:openLogs', 'app:setNotifications',
     'app:cliCommandStatus', 'app:installCliCommand', 'app:cancelCliInstall', 'app:removeOldCliShim', 'projects:parseRepoSource', 'projects:repoTools',
-    'projects:cloneRepo', 'projects:cancelClone', 'projects:setFolderConfigTrust', 'teamFiles:approve', 'teamFiles:reject',
+    'projects:cloneRepo', 'projects:cancelClone', 'projects:setFolderConfigTrust', 'projects:commitActivity', 'teamFiles:approve', 'teamFiles:reject',
     'teamFiles:undo', 'teamFiles:enable', 'teamFiles:commit',
     'outputs:open', 'outputs:reveal', 'outputs:saveAs', 'outputs:saveImage',
     'updates:get', 'updates:check', 'updates:download', 'updates:install', 'updates:openReleasePage'
@@ -259,6 +259,7 @@ const SOURCE_TABLE: Readonly<Record<string, readonly string[]>> = {
     OUTPUTS_IPC.outputsRevise, OUTPUTS_IPC.outputsWatch, OUTPUTS_IPC.outputsUnwatch
   ],
   'outputsIpc.ts registerOutputsIpc (desktop-only; shell and save dialog)': [OUTPUTS_IPC.outputsOpen, OUTPUTS_IPC.outputsReveal, OUTPUTS_IPC.outputsSaveAs, OUTPUTS_IPC.outputsSaveImage],
+  'ipc.ts registerIpc (desktop-only; projects/commitActivity.ts)': [IPC.projectsCommitActivity],
   'ipc.ts registerUpdatesIpc (desktop-only; updater.ts)': [
     UPDATES_IPC.updatesGet, UPDATES_IPC.updatesCheck, UPDATES_IPC.updatesDownload, UPDATES_IPC.updatesInstall, UPDATES_IPC.updatesOpenReleasePage
   ],

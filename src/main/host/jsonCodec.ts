@@ -288,6 +288,7 @@ export const CHANNEL_JSON_FIELDS: Readonly<Record<string, ChannelJsonFields>> = 
   'permissions:ignored': {}, // projectRulesFile + listIgnoredRules
   'projects:folderConfig': {}, // folderConfigProjectArg + folderConfigReview
   'projects:setFolderConfigTrust': {}, // folderConfigTrustArgs + applyFolderConfigTrust (desktop only)
+  'projects:commitActivity': { note: 'Desktop only.' }, // -> ProjectCommitActivity[]
   // ---- team files (TEAM_FILES_IPC; teamFilesArgs) ----
   'teamFiles:status': {}, // may write the files on the first call of a code project
   'teamFiles:listAttention': {},

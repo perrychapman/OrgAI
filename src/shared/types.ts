@@ -5052,6 +5052,16 @@ export const TEAM_REVIEW_OPEN_THROTTLE_MS = 10 * 60_000
 /** Dismissals kept per project (oldest dropped). */
 export const TEAM_REVIEW_MAX_DISMISSED = 500
 
+/** Commits per local day for one stored code project, for the Dashboard chart. Read-only; structured-clone safe. */
+export interface ProjectCommitActivity {
+  projectId: string
+  /** false: no git repository, folder missing or not trusted, or git failed. `days` is then seven zeroes. */
+  available: boolean
+  /** Exactly 7 entries, oldest first, today last. `date` is the local day, YYYY-MM-DD. */
+  days: { date: string; commits: number }[]
+  total: number
+}
+
 export interface OrgAIApi {
   projects: {
     list(): Promise<Project[]>
@@ -5083,6 +5093,8 @@ export interface OrgAIApi {
     applyImport(input: AgentImportApplyInput): Promise<AgentImportApplyResult>
     /** Write the project's org chart to `<project>/.orgai/org.json` (no ids, positions, secrets or MCP specs). */
     exportOrg(projectId: string): Promise<OrgExportResult>
+    /** Commits per local day over the last 7 days, one entry per stored code project. Read-only, never rejects for git trouble (`available: false`). */
+    commitActivity(): Promise<ProjectCommitActivity[]>
   }
   connections: {
     /** Every connection record (CONNECTION_IDS order) with its live status. */
@@ -6339,6 +6351,8 @@ export const IPC = {
   projectsPreviewImport: 'projects:previewImport',
   projectsApplyImport: 'projects:applyImport',
   projectsExportOrg: 'projects:exportOrg',
+  /** No arguments -> ProjectCommitActivity[] (desktop only, read-only). */
+  projectsCommitActivity: 'projects:commitActivity',
   draftOrgChart: 'draft:orgChart',
   runsStart: 'runs:start',
   runsSend: 'runs:send',
