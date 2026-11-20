@@ -72,8 +72,10 @@
   margin: var(--space-2) 0 0;
   padding: 0;
   width: 100%;
+  /* The tiles share the row (each at most 320 px), so three or four tiles fill the width and one never stretches. */
+  max-width: calc(var(--n, 5) * 320px + (var(--n, 5) - 1) * var(--space-3));
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 240px));
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
   gap: var(--space-3);
   align-items: stretch;
 }

@@ -67,6 +67,22 @@
   column-gap: var(--space-8);
 }
 
+/* The board's entrance (Visual pass): on the first Dashboard of an app session only (`data-entering`, DashboardView), the
+   tiles rise 8 px and fade in, in reading order: the stat tiles, the lead column, the side column, then the arranged
+   sections, 30 ms apart and capped at 5 steps (150 ms), each --dur-slow. Transform and opacity only. Under reduced motion
+   and Pause motion the duration and stagger tokens collapse and DashboardView never sets the attribute. */
+.dash-page[data-entering] :is(.dash-hero-stats > li, .dash-lead-main > *, .dash-lead-side > *, .dash-arranged > .dash-slot) {
+  animation: motion-rise-lg var(--dur-slow) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--i, 0), 5) * var(--motion-stagger));
+}
+.dash-page[data-entering] .dash-hero-stats > li:nth-child(2) { --i: 1; }
+.dash-page[data-entering] .dash-hero-stats > li:nth-child(n + 3) { --i: 2; }
+.dash-page[data-entering] .dash-lead-main > * { --i: 2; }
+.dash-page[data-entering] .dash-lead-side > * { --i: 3; }
+.dash-page[data-entering] .dash-arranged > .dash-slot:nth-child(1) { --i: 3; }
+.dash-page[data-entering] .dash-arranged > .dash-slot:nth-child(2) { --i: 4; }
+.dash-page[data-entering] .dash-arranged > .dash-slot:nth-child(n + 3) { --i: 5; }
+
 /* The arranged sections. Pairing is computed in JS (placeSections): a slot is half or full; visual order is DOM order. */
 .dash-arranged {
   display: grid;

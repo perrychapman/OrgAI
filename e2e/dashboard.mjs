@@ -53,9 +53,9 @@ const repoC = makeFixtureRepo('dash-c')
 const repoD = makeFixtureRepo('dash-d')
 
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
-const DEFAULT_ORDER = ['resume', 'today', 'working', 'week', 'projects']
+const DEFAULT_ORDER = ['resume', 'today', 'working', 'week', 'engagements', 'projects']
 const TITLES = { resume: 'Pick up where you left off', today: 'Today', working: 'Working now', week: 'Your week', projects: 'Projects' }
-const SECTION_IDS = { 'dash-needs-you': 'Waiting on you', 'dash-setup': 'To finish setting up', 'dash-resume': TITLES.resume, 'dash-today': TITLES.today, 'dash-now': TITLES.working, 'dash-week': TITLES.week, 'dash-projects': TITLES.projects }
+const SECTION_IDS = { 'dash-needs-you': 'Waiting on you', 'dash-setup': 'To finish setting up', 'dash-resume': TITLES.resume, 'dash-today': TITLES.today, 'dash-now': TITLES.working, 'dash-week': TITLES.week, 'dash-engagements': 'Engagements', 'dash-commits': 'Commits this week', 'dash-projects': TITLES.projects }
 const KIND_WEIGHT = { plan: 0, question: 1, permission: 2, merge: 3, proposal: 4, install: 5, rules: 6, team: 7 }
 const SALUTE = /^(Good morning|Good afternoon|Good evening|Hello)(, .+)?\.$/
 const REMOVED_IDS = ['dash-status-line', 'dash-paused', 'dash-since', 'dash-since-clear', 'dash-now-empty', 'dash-strip-waiting', 'tile-run', 'dash-strip-usage-link', 'dash-cost', 'dash-strip-runs']
@@ -218,6 +218,89 @@ const overflowFacts = () =>
       dTop: d.getBoundingClientRect().top
     }
   })
+
+/**
+ * Visual pass checks (dashboard-overhaul.md "Visual pass"), run at each size and theme: the text budget (no tile over two
+ * text lines), one identity hue per project across sections, text alternatives on the instruments, the lead band and the
+ * board tiles present.
+ */
+async function visualPassChecks(tag) {
+  const v = await page.evaluate(() => {
+    /** Distinct visible text lines in an element: line boxes of its text nodes grouped by top (6 px), skipping sr-only
+     *  text, aria-hidden decoration and the action buttons. */
+    const linesOf = (root) => {
+      const tops = []
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (!n.textContent.trim()) continue
+        const el = n.parentElement
+        if (!el || el.closest('.sr-only, [aria-hidden=true], .btn, svg')) continue
+        const r = document.createRange()
+        r.selectNodeContents(n)
+        for (const rect of r.getClientRects()) {
+          if (rect.width < 1 || rect.height < 1) continue
+          if (!tops.some((t) => Math.abs(t - rect.top) <= 6)) tops.push(rect.top)
+        }
+      }
+      return tops.length
+    }
+    const over = []
+    const sel = ['[data-testid=dash-hero-stat]', '[data-testid=dash-resume-row]', '[data-testid=dash-today-todo]', '[data-testid=project-tile]', '[data-testid=dash-engagement]', '[data-testid=dash-attn-summary]']
+    for (const s of sel) for (const el of document.querySelectorAll(s)) {
+      const n = linesOf(el)
+      if (n > 2) over.push(`${s}:${n}:${(el.textContent ?? '').slice(0, 40)}`)
+    }
+    const hues = {}
+    for (const b of document.querySelectorAll('[data-testid=dash-project-badge]')) {
+      const p = b.getAttribute('data-project')
+      if (!p) continue
+      ;(hues[p] ??= new Set()).add(`${b.getAttribute('data-hue')}|${getComputedStyle(b).backgroundColor}`)
+    }
+    const mixed = Object.entries(hues).filter(([, s]) => s.size > 1).map(([p, s]) => `${p}:${[...s].join('/')}`)
+    const sparks = [...document.querySelectorAll('[data-testid=tile-spark]')].map((e) => e.getAttribute('aria-label') ?? '')
+    const share = document.querySelector('[data-testid=dash-week-share]')
+    const shareText = document.querySelector('[data-testid=dash-week-share-text]')?.textContent?.trim() ?? ''
+    const commits = document.querySelector('[data-testid=dash-commits]')
+    const commitsEmpty = !!document.querySelector('[data-testid=dash-commits-empty]')
+    const commitDays = document.querySelectorAll('[data-testid=dash-commits-day]').length
+    const commitsText = document.querySelector('[data-testid=dash-commits-text]')?.textContent?.trim() ?? ''
+    const needs = document.querySelector('[data-testid=dash-needs-you]')
+    const side = document.querySelector('.dash-lead-side > *')
+    const stats = [...document.querySelectorAll('[data-testid=dash-hero-stat]')].map((e) => ({ stat: e.getAttribute('data-stat'), tag: e.tagName, name: e.getAttribute('aria-label') ?? '' }))
+    const sections = [...document.querySelectorAll('.dash-section')]
+    const cards = sections.filter((s) => {
+      const cs = getComputedStyle(s)
+      return cs.borderTopLeftRadius !== '0px' && cs.backgroundColor !== 'rgba(0, 0, 0, 0)'
+    }).length
+    return {
+      over,
+      mixed,
+      badges: Object.keys(hues).length,
+      sparks,
+      share: !!share,
+      shareText,
+      commits: !!commits,
+      commitsEmpty,
+      commitDays,
+      commitsText,
+      sideBeside: !!(needs && side && side.getBoundingClientRect().left > needs.getBoundingClientRect().right - 1),
+      needsLeft: needs ? Math.round(needs.getBoundingClientRect().left) : -1,
+      stats,
+      sections: sections.length,
+      cards,
+      tiles: document.querySelectorAll('[data-testid=dash-attn-tile]').length
+    }
+  })
+  check(v.over.length === 0, `VP no tile or summary has more than two text lines ${tag}`, v.over.join(' | '))
+  check(v.badges >= 2 && v.mixed.length === 0, `VP a project has one identity hue in every section ${tag}`, `${v.badges} projects ${v.mixed.join(' ')}`)
+  check(v.sparks.length >= 1 && v.sparks.every((s) => /^(Runs in the last 7 days|No runs this week)/.test(s)), `VP every project sparkline has a text alternative ${tag}`, JSON.stringify(v.sparks).slice(0, 200))
+  check(!v.share || /\d/.test(v.shareText), `VP the week share bar has a text alternative ${tag}`, v.shareText)
+  check(v.commits && (v.commitsEmpty || (v.commitDays === 7 && v.commitsText.length > 0)), `VP Commits this week shows its chart with a text alternative, or its empty card ${tag}`, JSON.stringify({ c: v.commits, e: v.commitsEmpty, d: v.commitDays, t: v.commitsText.slice(0, 80) }))
+  check(v.sections === v.cards, `VP every section is drawn as a card ${tag}`, `${v.cards} of ${v.sections}`)
+  check(v.tiles >= 1, `VP Waiting on you holds attention tiles ${tag}`, String(v.tiles))
+  check(v.stats.length >= 2 && v.stats.length <= 5 && v.stats.every((s) => s.name.length > 0 || s.tag !== 'BUTTON'), `VP the greeting shows 2 to 5 named stat tiles ${tag}`, JSON.stringify(v.stats))
+  if (tag.includes('1600')) check(v.sideBeside, `VP Commits this week sits to the right of Waiting on you ${tag}`, JSON.stringify(v))
+}
 
 const NOW_OFFSET_DAY = (h, m) => `new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - 1, ${h}, ${m}).getTime()`
 
@@ -425,9 +508,9 @@ try {
   await customise.click()
   await T('dash-customise-bar').waitFor({ timeout: 5000 })
   check((await customise.getAttribute('aria-expanded')) === 'true' && clean(await customise.innerText()) === 'Done', 'A21 Customise becomes Done with aria-expanded=true')
-  check((await slotOrder()).join() === DEFAULT_ORDER.join(), 'A21 customise lists all five sections in the default order', (await slotOrder()).join())
+  check((await slotOrder()).join() === DEFAULT_ORDER.join(), 'A21 customise lists all six sections in the default order', (await slotOrder()).join())
   const states = await page.locator('[data-testid=dash-section]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-section')}:${e.getAttribute('data-state')}`))
-  check(states.join() === 'resume:shown,today:empty,working:empty,week:empty,projects:shown', 'A15 empty sections show as empty rows only while customising', states.join())
+  check(states.join() === 'resume:shown,today:empty,working:empty,week:empty,engagements:empty,projects:shown', 'A15 empty sections show as empty rows only while customising', states.join())
   check(/Today: nothing to show right now\./.test(clean(await page.locator('[data-testid=dash-section][data-section=today]').innerText())), 'A15 an empty section reads "Today: nothing to show right now." in customise mode')
   const widths = await page.locator('[data-testid=dash-section]').evaluateAll((els) => els.map((e) => [Math.round(e.getBoundingClientRect().left), Math.round(e.getBoundingClientRect().width), e.getAttribute('data-span')]))
   check(widths.every((w) => w[0] === widths[0][0] && w[1] === widths[0][1] && w[2] === 'full'), 'A22 in customise mode every section is one full-width track at 1600x1000', JSON.stringify(widths))
@@ -466,15 +549,15 @@ try {
   await page.keyboard.press('Enter')
   await sleep(400)
   let ai = await activeInfo()
-  check((await slotOrder()).join() === 'today,resume,working,week,projects', 'A21 Move down moves the section one place', (await slotOrder()).join())
+  check((await slotOrder()).join() === 'today,resume,working,week,engagements,projects', 'A21 Move down moves the section one place', (await slotOrder()).join())
   check(ai.testid === 'dash-section-down' && ai.section === 'resume', 'A21 after Move down focus stays on the pressed button', JSON.stringify(ai))
-  check((await live()).includes('Pick up where you left off moved down. Position 2 of 5.'), 'A21 Move down announces "moved down. Position 2 of 5."', await live())
+  check((await live()).includes('Pick up where you left off moved down. Position 2 of 6.'), 'A21 Move down announces "moved down. Position 2 of 6."', await live())
   await ctl('resume', 'dash-section-up').focus()
   await page.keyboard.press('Enter')
   await sleep(400)
   ai = await activeInfo()
   check((await slotOrder()).join() === DEFAULT_ORDER.join() && ai.testid === 'dash-section-up' && ai.section === 'resume', 'A21 Move up restores the order and keeps focus on the pressed button', `${(await slotOrder()).join()} ${JSON.stringify(ai)}`)
-  check((await live()).includes('moved up. Position 1 of 5.'), 'A21 Move up announces "moved up. Position 1 of 5."', await live())
+  check((await live()).includes('moved up. Position 1 of 6.'), 'A21 Move up announces "moved up. Position 1 of 6."', await live())
   check((await page.locator('[data-testid=dash-section][data-section=resume].motion-ring').count()) <= 1, 'a moved section carries at most one ring')
   // Hide and Show move focus to each other.
   await ctl('today', 'dash-section-hide').focus()
@@ -502,7 +585,7 @@ try {
   await ctl('week', 'dash-section-hide').click()
   await sleep(300)
   const messy = await layoutOf()
-  check(messy?.order?.join() === 'resume,today,working,projects,week' && messy?.hidden?.join() === 'week', 'A21 a move and a hide are stored', JSON.stringify(messy))
+  check(messy?.order?.join() === 'resume,today,working,week,projects,engagements' && messy?.hidden?.join() === 'week', 'A21 a move and a hide are stored', JSON.stringify(messy))
   await T('dash-customise-reset').click()
   await sleep(300)
   const reset = await layoutOf()
@@ -518,20 +601,20 @@ try {
   await gotoProjects(page)
   await T('dash-customise').click()
   await T('dash-customise-bar').waitFor({ timeout: 5000 })
-  check((await slotOrder()).join() === 'resume,today,working,projects,week' && (await page.locator('[data-testid=dash-section][data-section=today]').getAttribute('data-state')) === 'hidden', 'A21 a reload keeps the order and the hidden section', (await slotOrder()).join())
+  check((await slotOrder()).join() === 'resume,today,working,week,projects,engagements' && (await page.locator('[data-testid=dash-section][data-section=today]').getAttribute('data-state')) === 'hidden', 'A21 a reload keeps the order and the hidden section', (await slotOrder()).join())
   await T('dash-customise-reset').click()
   await T('dash-customise').click()
   check(!!(await until(async () => (await T('dash-customise-bar').count()) === 0, 5000, 50)), 'A21 Done leaves customise mode')
-  // All five hidden, customise closed: one quiet line and a button that opens customise.
+  // All six hidden, customise closed: one quiet line and a button that opens customise.
   await T('dash-customise').click()
   await T('dash-customise-bar').waitFor({ timeout: 5000 })
   for (const id of DEFAULT_ORDER) {
     const hide = ctl(id, 'dash-section-hide')
     if ((await hide.count()) > 0) await hide.click()
   }
-  check(!!(await until(async () => ((await layoutOf())?.hidden ?? []).length === 5, 5000, 50)), 'A21 all five sections can be hidden', JSON.stringify((await layoutOf())?.hidden))
+  check(!!(await until(async () => ((await layoutOf())?.hidden ?? []).length === DEFAULT_ORDER.length, 5000, 50)), 'A21 all six sections can be hidden', JSON.stringify((await layoutOf())?.hidden))
   await T('dash-customise').click()
-  check(!!(await until(async () => (await T('dash-customise-bar').count()) === 0 && (await visible('[data-testid=dash-all-hidden]')), 5000, 50)), 'A21 with all five hidden and customise closed "All sections are hidden." shows')
+  check(!!(await until(async () => (await T('dash-customise-bar').count()) === 0 && (await visible('[data-testid=dash-all-hidden]')), 5000, 50)), 'A21 with all six hidden and customise closed "All sections are hidden." shows')
   check(/^All sections are hidden\./.test(await text('dash-all-hidden')) && (await visible('[data-testid=dash-all-hidden-show]')), 'A21 the line has a Show sections button', await text('dash-all-hidden'))
   await T('dash-all-hidden-show').click()
   check(!!(await until(async () => (await T('dash-customise-bar').count()) === 1 && (await T('dash-all-hidden').count()) === 0, 5000, 50)), 'A21 Show sections opens customise mode and the line goes')
@@ -555,7 +638,7 @@ try {
     await T('dash-customise').click()
     await T('dash-customise-bar').waitFor({ timeout: 5000 })
     const order = await slotOrder()
-    const valid = order.length === 5 && new Set(order).size === 5 && order.every((o) => DEFAULT_ORDER.includes(o))
+    const valid = order.length === DEFAULT_ORDER.length && new Set(order).size === DEFAULT_ORDER.length && order.every((o) => DEFAULT_ORDER.includes(o))
     check(valid && (want === null || order.join() === want), `A21 corrupt storage (${label}) loads a valid layout`, order.join())
     await T('dash-customise').click()
   }
@@ -722,10 +805,11 @@ try {
   })
   check(longFacts.clipped && longFacts.title && longFacts.btnInside, 'A6 a long to-do title clips with an ellipsis and a title and the button stays in its row', JSON.stringify(longFacts))
   if (scheduleId) {
-    const sRow = page.locator('[data-testid=dash-today-schedule][data-state=upcoming]', { hasText: 'E2E dash check' })
-    const sText = clean(await sRow.innerText().catch(() => ''))
+    // Visual pass: a schedule is a dot on the time rail; its time, name and target are the dot button's accessible name.
+    const sRow = page.locator(`[data-testid=dash-today-schedule][data-state=upcoming][data-id="${scheduleId}"]`)
+    const sText = clean((await sRow.getAttribute('aria-label').catch(() => '')) ?? '')
     const timeWords = clean(await page.evaluate((t) => { const [h, m] = t.split(':').map(Number); return new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) }, later.time))
-    check((await sRow.count()) === 1 && sText.includes(timeWords) && sText.includes(PINNED) && /Starts at/.test(sText), 'A14 a schedule due later today shows its time and target', `${sText} (wanted ${timeWords})`)
+    check((await sRow.count()) === 1 && sText.includes(timeWords) && sText.includes('E2E dash check') && sText.includes(PINNED), 'A14 a schedule due later today shows its time and target', `${sText} (wanted ${timeWords})`)
     await setSettings({ schedulesPaused: true })
     check(!!(await until(async () => (await T('dash-today-paused').count()) === 1, 5000)) && (await T('dash-today-schedule').count()) === 0, 'A14 paused schedules show the pause line and no rows', await text('dash-today'))
     check(/Schedules are paused\. Nothing will start today\./.test(await text('dash-today-paused')), 'A14 the pause line reads "Schedules are paused. Nothing will start today."')
@@ -775,7 +859,7 @@ try {
   check(unpressed === 'false', 'A17 Esc unpins it', String(unpressed))
   check(!(await visible('[data-testid=dash-customise-bar]')), 'Esc on the ledger does not turn customise on or off')
   const track = await page.locator('.dash-strip-track').first().evaluate((el) => ({ h: Math.round(el.getBoundingClientRect().height), data: el.getAttribute('data-track') }))
-  check(track.h === 56 && track.data === '56', 'A18 the ledger track is 56 px at 1600x1000', JSON.stringify(track))
+  check(track.h === 96 && track.data === '96', 'A18 the ledger track is 96 px at 1600x1000', JSON.stringify(track))
   const bars = await page.locator('[data-testid=dash-strip-bar]').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))
   check(bars.length >= 1 && bars.every((h) => h >= 2), 'A18 a day with runs has a bar of at least 2 px', JSON.stringify(bars))
   await shot('week-1600x1000')
@@ -788,7 +872,7 @@ try {
   for (const s of slots) byRow.set(s.y, [...(byRow.get(s.y) ?? []), s])
   const rowsOf = [...byRow.values()]
   const pairedOk = rowsOf.every((r) => (r.length === 1 && r[0].span === 'full') || (r.length === 2 && r.every((s) => s.span === 'half') && r[0].x < r[1].x && Math.abs(r[0].w - r[1].w) <= 2))
-  check(pairedOk && rowsOf.some((r) => r.length === 2) && slots.map((s) => s.id).join() === DEFAULT_ORDER.join(), 'A22 outside customise mode the half-width sections sit side by side and Projects takes the row', JSON.stringify(slots))
+  check(pairedOk && rowsOf.some((r) => r.length === 2) && slots.length >= 5 && slots.map((s) => s.id).join() === DEFAULT_ORDER.filter((id) => slots.some((s) => s.id === id)).join(), 'A22 outside customise mode the half-width sections sit side by side and Projects takes the row', JSON.stringify(slots))
   check(slots.find((s) => s.id === 'projects')?.span === 'full', 'A22 Projects is always full width')
 
   // ---------------------------------------------------------------- A25 reduced motion
@@ -904,7 +988,8 @@ try {
       check(o.over <= 1 && o.docOver <= 1, `A23 the dashboard has no horizontal overflow ${tag}`, JSON.stringify({ ...m, ...o }))
       check(o.winTop === 0, `A23 the window does not scroll ${tag}`, JSON.stringify(o))
       check(m.salInside, `A6 a 40-character name stays inside the greeting ${tag}`, JSON.stringify(m))
-      check(m.track === (h === 640 ? 40 : 56), `A18 the ledger track is ${h === 640 ? 40 : 56} px ${tag}`, JSON.stringify(m))
+      check(m.track === (h === 640 ? 72 : 96), `A18 the ledger track is ${h === 640 ? 72 : 96} px ${tag}`, JSON.stringify(m))
+      await visualPassChecks(tag)
       check(m.tracks === (w >= 1500 ? '2' : '1'), `the page uses ${w >= 1500 ? 'two tracks' : 'one track'} ${tag}`, JSON.stringify(m))
       await checkHeadings(tag)
       if (h === 640) {
@@ -927,6 +1012,21 @@ try {
   await setTheme('dark')
   await setSize(1600, 1000)
   await setName('Sam')
+
+  // Visual pass: a stat tile is a button that scrolls to its section and focuses its h2; the window never scrolls.
+  for (const [stat, heading] of [['waiting', '[data-testid=dash-needs-you] [data-section-heading]'], ['today', '#dash-h-week']]) {
+    const tileBtn = page.locator(`button[data-testid=dash-hero-stat][data-stat=${stat}]`)
+    if ((await tileBtn.count()) === 0) {
+      check(false, `VP the ${stat} stat tile is a button`)
+      continue
+    }
+    await page.evaluate(() => (document.querySelector('[data-testid=dashboard]').scrollTop = 0))
+    await tileBtn.click()
+    const landed = await until(() => page.evaluate((sel) => document.activeElement === document.querySelector(sel), heading), 3000, 50)
+    const win = await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0)
+    check(!!landed && win === 0, `VP the ${stat} stat tile moves focus to its section heading`, JSON.stringify(await activeInfo()))
+  }
+  await page.evaluate(() => (document.querySelector('[data-testid=dashboard]').scrollTop = 0))
 
   // ---------------------------------------------------------------- Inline Allow once (its own project; WAIT keeps waiting for the relaunch)
   const inline = await createProject(page, { path: repoC, name: INLINE })
@@ -1031,7 +1131,7 @@ try {
   const storedLayout = await layoutOf()
   await page.evaluate(([k, cur]) => window.dispatchEvent(new StorageEvent('storage', { key: k, newValue: JSON.stringify({ ...cur, v: 1, order: ['week', 'resume', 'today', 'working', 'projects'], hidden: [] }) })), [LAYOUT_KEY, storedLayout])
   await sleep(300)
-  check((await slotOrder()).join() === 'week,resume,today,working,projects', 'A21 a storage event from another window changes the order here', (await slotOrder()).join())
+  check((await slotOrder()).join() === 'week,resume,today,working,engagements,projects', 'A21 a storage event from another window changes the order here (an older five-section layout gains Engagements before Projects)', (await slotOrder()).join())
   await T('dash-customise-reset').click()
   await T('dash-customise').click()
 

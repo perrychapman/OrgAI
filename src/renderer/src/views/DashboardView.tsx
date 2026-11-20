@@ -46,6 +46,14 @@ import AppNavigateBanner from '../components/AppNavigateBanner'
 /** The last openNewProject() request this view acted on, so a request is consumed once. */
 let consumedNewProjectRequest = 0
 
+/**
+ * The board's entrance (Visual pass, motion): the tiles rise in, staggered, the first time the Dashboard shows in an app
+ * session only; a later visit, a data refresh or a tile already on screen never animates. The window is short so a tile
+ * filled by a slow load does not rise late.
+ */
+let boardEntered = false
+const BOARD_ENTRANCE_MS = 700
+
 const CONTROL = (id: DashSectionId, testId: string): string => `[data-testid=dash-section-controls][data-section="${id}"] [data-testid="${testId}"]`
 
 /** Focus an element found after React has rendered (a moved section's DOM node may have been re-inserted). */
@@ -102,6 +110,15 @@ export default function DashboardView(): ReactElement {
   const empty = projects.length === 0
   // Project identity hues for this list, before any section renders (idempotent for the same ids; projectIdentity.ts).
   registerProjectHues(projects.map((p) => p.id))
+
+  // Entrance: once per app session, never under reduced motion or Pause motion (the duration token collapses then).
+  const [entering, setEntering] = useState(() => !boardEntered && tokenMs('--dur-slow') >= 1)
+  useEffect(() => {
+    boardEntered = true
+    if (!entering) return
+    const t = window.setTimeout(() => setEntering(false), BOARD_ENTRANCE_MS)
+    return () => window.clearTimeout(t)
+  }, [entering])
 
   // ---- Layout and customise (sections 4.2, 6) ----
   const [layout, updateLayout] = useDashboardLayout()
@@ -242,7 +259,7 @@ export default function DashboardView(): ReactElement {
       <AppNavigateBanner />
       <div className="dashboard" data-testid="dashboard" data-customising={customising ? '' : undefined} onKeyDown={onKeyDown}>
         <DashboardContext.Provider value={ctx}>
-          <div className="dash-page" ref={setPageEl} data-tracks={caps.wide && !customising ? '2' : '1'}>
+          <div className="dash-page" ref={setPageEl} data-tracks={caps.wide && !customising ? '2' : '1'} data-entering={entering ? '' : undefined}>
             <SecretNotices />
             {forgetNotice && (
               <div className="dash-forget-notice">

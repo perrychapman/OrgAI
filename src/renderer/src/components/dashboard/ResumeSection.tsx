@@ -219,17 +219,18 @@ export function ResumeSection({ lastSeen }: { lastSeen?: number }): ReactElement
           aria-describedby={detail ? detailId : undefined}
           onClick={() => (run ? open(run.projectId, run.id) : (void openProject(row.projectId), setView('run'), settleFocusIfIdle()))}
         >
+          {/* Two text lines: the title with the status pill beside it, then the meta line; the badge spans both. */}
+          <ProjectBadge projectId={badgeProject} name={projectName} size="lg" className="dash-tile-badge" />
           <span className="dash-tile-head">
-            <ProjectBadge projectId={badgeProject} name={projectName} size="md" />
+            <span className="dash-tile-title" title={name}>
+              {name}
+            </span>
             {word && (
               <span className="dash-tile-status" data-tone={view?.tone ?? 'idle'}>
                 <Dot tone={view?.tone ?? 'idle'} />
                 {word}
               </span>
             )}
-          </span>
-          <span className="dash-tile-title" title={name}>
-            {name}
           </span>
           <span className="dash-tile-meta">
             <span className="dash-clip" title={line2}>

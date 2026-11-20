@@ -1,4 +1,4 @@
-import type { FormEvent, ReactElement, ReactNode } from 'react'
+import type { CSSProperties, FormEvent, ReactElement, ReactNode } from 'react'
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Activity, CalendarCheck, CheckCheck, CircleAlert, CircleCheck, CircleDollarSign, CircleX, MessageCircle, Pencil, Plus, type LucideIcon } from 'lucide-react'
 import { cleanDisplayName, DISPLAY_NAME_MAX_CHARS } from '@shared/displayName'
@@ -362,7 +362,13 @@ export function Greeting({ firstLaunch, announce, onAnnounce, customise, lastSee
         </div>
       )}
       {(hero.tiles.length > 0 || hero.pending) && (
-        <ul className="dash-hero-stats" data-testid="dash-hero-stats" data-pending={hero.pending ? '' : undefined} aria-label={hero.pending ? undefined : 'At a glance'}>
+        <ul
+          className="dash-hero-stats"
+          data-testid="dash-hero-stats"
+          data-pending={hero.pending ? '' : undefined}
+          aria-label={hero.pending ? undefined : 'At a glance'}
+          style={{ '--n': Math.max(hero.tiles.length, 1) } as CSSProperties}
+        >
           {hero.tiles.map((tile) => (
             <li key={tile.stat}>
               <HeroStatTile tile={tile} interactive={present[tile.target]} onGo={goTo} />
