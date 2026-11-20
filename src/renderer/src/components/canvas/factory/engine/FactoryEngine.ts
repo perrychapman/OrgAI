@@ -11,7 +11,7 @@ import { Box3, Color, Matrix4, type BufferGeometry, type DirectionalLight, PCFSh
 import type { ActiveCue, CueFeed, FloorModel, Lamp } from '../../../../lib/factory/types'
 import { factorySession } from '../../../../lib/factory/capability'
 import { p95, type FactoryLoop, type FactoryPerf, type FactoryQuality } from '../../../../lib/factory/snapshot'
-import { cameraPose, FOV_DEG, lodBand, type CameraView, type LodBand } from '../../../../lib/factory/camera'
+import { cameraPose, FOV_DEG, lodBand, sameView, type CameraView, type LodBand } from '../../../../lib/factory/camera'
 import { GANTRY_TOP } from '../../../../lib/factory/layout'
 import type { FactoryKitSource, FactoryLighting, FactoryMaterials, FactoryTheme, FactoryTokenColours, FloorRect, ObjectKit } from '../builders/types'
 import { KitPool, subKit, type InstanceSpec } from './instancing'
@@ -266,6 +266,8 @@ export class FactoryEngine {
   /** The camera view (owned by the scene's camera controller). LOD follows once the zoom settles. */
   setView(view: CameraView): void {
     if (this.disposed) return
+    // The scene re-places its mirror on model changes with the same view: nothing moved, no frame (section 9.2).
+    if (this.frames > 0 && sameView(this.view, view)) return
     this.view = { ...view }
     this.applyCamera()
     this.scheduleLod()

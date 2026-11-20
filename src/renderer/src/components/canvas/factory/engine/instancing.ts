@@ -40,7 +40,6 @@ export class KitPool {
   private readonly slots = new Map<string, number>()
   private keys: string[] = []
   private band: LodBand = 'near'
-  private readonly scratch = new Color()
   private readonly posed = new Matrix4()
   private placed = false
   /** Slice 4: a pool of moving things (carriers, crates in flight): no part casts, whatever the kit says. */
@@ -175,8 +174,9 @@ export class KitPool {
         const c = inst.colours?.[part.key] ?? WHITE
         const ca = mesh.instanceColor.array as Float32Array
         const co = index * 3
-        this.scratch.setRGB(ca[co], ca[co + 1], ca[co + 2])
-        if (force || !this.scratch.equals(c)) {
+        // The buffer holds float32 values: an exact compare against the Color's doubles would always differ (and every
+        // model change would rewrite every colour and render a frame). Same tolerance as the matrices.
+        if (force || Math.abs(ca[co] - c.r) > 1e-6 || Math.abs(ca[co + 1] - c.g) > 1e-6 || Math.abs(ca[co + 2] - c.b) > 1e-6) {
           ca[co] = c.r
           ca[co + 1] = c.g
           ca[co + 2] = c.b

@@ -42,6 +42,16 @@ describe('KitPool', () => {
     expect(moving.meshes().every((m) => !m.castShadow && m.count === 9)).toBe(true)
   })
 
+  it('an unchanged colour that float32 cannot hold exactly is not a change (no frame per model change)', () => {
+    const pool = new KitPool(new Group(), kit, materials())
+    // A status token after sRGB to linear conversion: not representable in float32.
+    const c = new Color('#22c58b')
+    expect(Math.fround(c.g)).not.toBe(c.g)
+    expect(pool.set([{ key: 'a', matrix: at(1), colours: { lamp: c } }])).toBe(true)
+    expect(pool.set([{ key: 'a', matrix: at(1), colours: { lamp: c.clone() } }])).toBe(false)
+    expect(pool.set([{ key: 'a', matrix: at(1), colours: { lamp: new Color('#f5a524') } }])).toBe(true)
+  })
+
   it('one InstancedMesh per part, sharing the per-instance matrix', () => {
     const parent = new Group()
     const pool = new KitPool(parent, kit, materials())

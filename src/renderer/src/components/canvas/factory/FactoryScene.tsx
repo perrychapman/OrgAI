@@ -583,8 +583,6 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const ambientRef = useRef<AmbientMap>(NO_AMBIENT)
   const modelRef = useRef(floorModel)
   modelRef.current = floorModel
-  const rendererRef = useRef(renderer)
-  rendererRef.current = renderer
   const pumpTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** The engine's view of the cues (it never owns cue timing). Stable for the mount: it reads refs. */
@@ -770,8 +768,9 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
   const updateAmbient = useCallback(() => {
     const model = modelRef.current
     let next: AmbientMap = NO_AMBIENT
-    // Loops only run in the 3D view (the floor plan draws end states), live, motion 'full', hall on (ambientSet checks).
-    if (motionRef.current === 'full' && rendererRef.current === 'webgl2') {
+    // Live, motion 'full', hall on (ambientSet checks those two). The floor plan draws end states only, but its test state
+    // reports the same set (what loops in 3D), so both renderers answer "which stations run" alike.
+    if (motionRef.current === 'full') {
       const view = viewRef.current
       const stage = controller.stageInfo
       const onScreen = (id: string): boolean => {
