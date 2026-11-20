@@ -434,10 +434,35 @@ Application menu, run end and decision cards, settings, run titles, projects, us
       leaves by id; a redefined field goes back only while it still holds the value put in), test "re-review L-a"; L-b
       only grants that can apply count as widening, skipped ones say "from the next run", test "re-review L-b"; L-d a
       rejection answers 'next-run' only when something was put back; L-e the copy says "already out of this run's
-      configuration" (Codex has no live MCP gate; an attached server may run until its restart). Not fixed: L-f
-      (`before` is the raw stored project while `saved` is the library-refreshed result, so a linked item's library
-      fields can look like the user's edit and trigger a needless restart; gates unaffected, they refresh from the
-      library at read time); grant undo can still drop a pair a later change granted during a pending wait (fails closed).
+      configuration" (Codex has no live MCP gate; an attached server may run until its restart). L-f and the grant
+      undo Low were fixed in the follow-up below.
+    - Follow-up (2026-11-19, UX review H3 / M1 and the open Lows):
+      - `run.liveChange` (src/shared/types.ts RunEvent, `LiveChangeWhat`): RunManager broadcasts `{ runId, projectId,
+        source, what, change }` once per run per answer, with the log line (`publish` in hostApply; `publishLiveChange`
+        for the still-starting and could-not-apply answers); 'pending' is followed by a second event with the final
+        availability. Not recorded in the run record (the renderer needs it live only), never sent to adapters (an
+        adapter's is dropped in `emit`), CLI host emits nothing (applyProjectChange returns first). Lists capped at 50,
+        names cut by logText. `LiveRunChange.notes` (rename notes) and `LiveRunChange.grants` (role and item display names,
+        `granted` false = "no longer uses") are new optional fields; a role-inspector ungrant through projects:save is
+        `what` ['grants']. Tests "follow-up item 1".
+      - Rename: `hostChange.ts` `keepRunSlugs` takes every slug change of a role in `ctx.roles` out of a host edit (the
+        save still stores the new slug; save path unchanged). Name and the other fields apply; the answer has a note
+        "Renamed to <new>. This run keeps calling it <old slug> until the next run." (slug-only: 'next-run' with "This run
+        keeps calling it <old slug> until the next run."). Later saves diff against `before` (the stored new slug on both
+        sides) and the run's baseline (old slug), so no phantom slug edit; a new role with the kept slug is deferred
+        `slugTaken`. The run's own propose_org_change still defers a running role's slug change (`slugChange`). Slug-keyed
+        MCP grants (`McpServerSpec.roles`) are read through `mcpRolesForRun` on the mcp:* route, mapping by role id, so a
+        remap to the new slug changes nothing for the run. ROSTER_REASONS were rewritten for users (they are on screen).
+        Tests "follow-up item 2" (incl. the team-file pull INVARIANT and the MCP slug case with mcpServersForRole /
+        mcpCallDenial) and hostChange.test.ts.
+      - 3a: hostApply calls `hostConfigChanged` synchronously inside a try that puts the widening part back on any throw
+        before the answer starts, then rethrows (applyProjectChange: 'next-run', "OrgAI could not apply it to this run.",
+        and now a run log line). 3b (L-f): `itemEditOf` `linkOwn` skips library-sourced fields of an item linked to the
+        same entry before and after unless the input named them. 3c: setLive records which call added each grant pair
+        (`grantOwners`); a rejected host change's undo puts back only pairs it still owns. Tests "follow-up item 3".
+      - Open: agents of a run that kept an old slug propose MCP / skill grants by that slug, which the stored project no
+        longer knows (fails closed); a run's own approved org chart card saves the kept slug back over the user's rename
+        (SetupService applies payload.roles; pre-existing for any deferred field). Unverified: the renderer side.
     - End to end: "a desktop save of a grant and of an org chart role reaches an idle mock run" drives the real
       RunManager and MockAdapter: `MockSession.configChanges` gets one `host: true` entry, `hostNotices` one
       'next-message' notice, RunManager sends nothing, one "You changed ..." log line.
