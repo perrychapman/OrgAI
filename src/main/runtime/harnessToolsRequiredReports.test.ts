@@ -64,9 +64,18 @@ describe('propose_org_chart requiredReports', () => {
 
   it('drops ids no longer in spawnable when spawnable is rewritten', async () => {
     const { roles } = await propose({
-      roles: [draft('Lead', null, { slug: 'lead', canSpawn: true, spawnable: ['Engineer', 'Reviewer'], requiredReports: ['Engineer', 'Nobody'] })]
+      roles: [draft('Lead', null, { slug: 'lead', canSpawn: true, spawnable: ['Engineer', 'Reviewer'], requiredReports: ['Engineer', 'Lead'] })]
     })
+    // The role itself resolves but is never its own spawn target, so it leaves the list.
     expect(lead(roles).requiredReports).toEqual(['r-eng'])
+  })
+
+  it('a required report that matches no role is a REVISE naming it (never silently dropped)', async () => {
+    const { roles, text } = await propose({
+      roles: [draft('Lead', null, { slug: 'lead', canSpawn: true, spawnable: ['Engineer'], requiredReports: ['Engineer', 'Nobody'] })]
+    })
+    expect(roles).toBeUndefined()
+    expect(text).toMatch(/^REVISE\..*Lead requiredReports "Nobody"/)
   })
 
   it('mergeTemplateDrafts maps ids to names', () => {

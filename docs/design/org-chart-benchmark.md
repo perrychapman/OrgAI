@@ -170,8 +170,18 @@ Imported from the TypeScript source through jiti (the `@shared` alias, no Electr
 `harnessToolsFor` (so every setup tool's real name, description, zod schema and handler, including `propose_org_chart` through
 the unexported `rolesFromDrafts`, and `decisionText`), `SetupService.hiddenContext`, `displayPrompt`, `retroPrompt` and
 `retroContext`, `profileRepo` (`src/main/setup/profile.ts`), `newProject` and `toRoles`. A prompt, schema or composer edit
-changes what the benchmark measures. The benchmark builds the project through `newProject`, so, as in the app, the Architect is
-shown the default chart under "Current org chart roles".
+changes what the benchmark measures. The benchmark builds the project through `newProject`, so, as in the app, a recommend
+session holds the starter chart; since the 2026-11-19 tuning `hiddenContext` shows it only as one "starter placeholder chart
+... carries no weight" line (no role list), and a retro session shows every role's tools, spawning and prompt as data.
+
+Tuning of 2026-11-19 (after the baseline-* passes; no live pass run by its author): sizing guidance that scales with the work
+(smallest chart, a root plus at most one checker for a one-file task, leads past about seven specialists or three busy
+domains), messaging off by default, a 60-word prompt floor, Edit / Write roles told to keep to their brief's files and report
+them, every prompt naming the architecture or engagement document, and revisions as patches (list a role by slug with only the
+fields that change). The tool now resolves references by name or slug and returns REVISE for an unresolved one, and treats
+an unknown slug in a first proposal as a new role (the likely cause of the fast tier's rejected first proposals: new roles
+given invented slugs; the REVISE texts were not recorded, so this is inferred from the accepted second proposals).
+`--self-check` adds a patch-style revision case (slug plus tools only).
 
 Mirrored (restated; marked `MIRRORS` in the code):
 

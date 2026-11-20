@@ -631,6 +631,25 @@ Application menu, run end and decision cards, settings, run titles, projects, us
     mention are kept (removal only through propose_org_chart `remove`), and an edited role keeps its model and tier
     unless the draft names a different resolving tier or listed id; a new role's unmapped tier never silently becomes
     'inherit' while a listed model or the root's model exists. Unit-tested only; no live Architect run.
+  - Patches and references (2026-11-19, benchmark tuning): `completeDrafts` (harnessTools.ts) runs before any
+    conversion. In a revision (propose_org_chart on a completed setup, and propose_org_change) a draft whose slug (else
+    name) matches a current role is a PATCH: omitted fields keep the current value (spawnable / reportsTo as current
+    slugs; a removed manager becomes the current root). A new role, and every role in first-time setup, needs name,
+    description, responsibilities, prompt, tools, canSpawn, spawnable and reportsTo, else REVISE naming the missing
+    fields. reportsTo / spawnable / requiredReports resolve by name or slug (case-insensitive, then the slug form; also
+    in `toRoles`, so drafts and imports gain slug lookup); one that matches nothing (in a revision: no draft and no
+    current role that is not removed) is a REVISE naming each, instead of the old silent re-parent to the root or drop.
+    An unknown slug is a new role in first-time setup, and in a revision only when it is the slug of the draft's own
+    name (the fast-tier baseline's rejected first proposals were new roles given an invented slug). A listed current
+    root stays the root ahead of a new draft that also says reportsTo null. A new role under a manager needs no restated
+    manager: managers always gain their direct reports in spawnable. Grants never come from a draft; the card shows
+    the merged roles. The hidden context (`currentChartBlock`, service.ts): a first-time setup on the starter chart (every
+    slug a `defaultRoles` / `engagementRoles` slug) gets one "carries no weight" line and no role list; a chart brought
+    before setup (imported) is listed without revision wording; a completed setup (and retrospectives) lists each role's
+    tools, canSpawn, spawnable (slugs), description and prompt through promptDatum inside <<< >>> (prompt 1,500 chars,
+    block 24,000 chars; past it later roles keep only the summary line). Checked by `harnessToolsRevise.test.ts`,
+    `harnessToolsRequiredReports.test.ts`, `draft.test.ts`, `serviceContext.test.ts` and the bench self-check
+    (patch-style revision case); live Architect behaviour is unverified until the next benchmark pass.
   - A `PreToolUse` hook answering `permissionDecision: 'allow'` bypasses the permission system in every mode
     (verified in `scripts/smoke-permission-hook.mjs` on haiku under `dontAsk`: the first Bash call was denied, the
     in-process MCP tool got through on the hook alone, and the retried Bash call ran with zero `canUseTool` calls).

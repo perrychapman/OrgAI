@@ -11,9 +11,9 @@ import { BRIDGE_BRIEF_MAX_CHARS, BRIDGE_HARNESS_TOOLS, CHAT_HARNESS_TOOLS, ENGAG
 import { knowledgeEdgesOf, knowledgeSearchLimit, knowledgeVocabulary, matchKnowledgeNodes, normalizeKnowledgeKey, resolveKnowledgeNode, searchKnowledge } from '@shared/knowledge'
 import { fenceDatum, fencedBlock, knowledgeField, knowledgeListItem } from '@shared/knowledgeIndex'
 import { skillProposalProblem } from '../skills/assist'
-import { PLAN_STEP_AFTER_MAX, cleanPlanStepGraph, MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId, projectDocumentPath, projectKindOf } from '@shared/defaults'
+import { PLAN_STEP_AFTER_MAX, cleanPlanStepGraph, MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT, libraryEntryFromSpec, linkedSpec, mcpSecretNames, newId, projectDocumentPath, projectKindOf, slugify } from '@shared/defaults'
 import { PROPOSAL_TOOLS } from '@shared/setup'
-import { revisedRoleModel, toRoles, type DraftModelContext } from '../ai/draft'
+import { refLookup, revisedRoleModel, toRoles, type DraftModelContext, type DraftRole as FullDraftRole } from '../ai/draft'
 import { mergeOrgChart, type OrgMergeResult } from '../setup/orgMerge'
 import { sameDefinition, specFromRegistry, validateLibraryEntry, validateSpec, type RegistryChoice } from '../mcp/validate'
 import { ROOT_AGENT_ID, isSetupLikeRun, type BridgeSpawnInput, type BridgeSpawnResult, type RunMessageOutcome, type RunSkill, type RuntimeContext } from './types'
@@ -373,25 +373,107 @@ function modelContext(ctx: RuntimeContext): DraftModelContext | undefined {
 }
 
 // The tools list stays in the schema: toRoles drops an unknown tool name silently, so no error could teach it.
+// Every field but slug, model, connection and requiredReports is required for a new role and in first-time setup; in a
+// revision a role given by an existing slug is a patch (completeDrafts fills omitted fields from the current role).
 export const draftRoleSchema = z.object({
-  slug: z.string().optional().describe("An existing role's slug (keeps its id and grants); omit for a new role"),
-  name: z.string(),
-  description: z.string().describe('When to delegate to it, one sentence'),
-  responsibilities: z.array(z.string()),
-  prompt: z.string().describe('System prompt, second person, 60 to 160 words'),
-  tools: z.array(z.string()).describe(`Subset of: ${TOOL_CATALOG.join(', ')}`),
+  slug: z.string().optional().describe("An existing role's slug (keeps id and grants; in a revision only given fields change); omit for a new role"),
+  name: z.string().optional(),
+  description: z.string().optional().describe('When to delegate to it, one sentence'),
+  responsibilities: z.array(z.string()).optional(),
+  prompt: z.string().optional().describe('System prompt, second person, at least 60 and at most 160 words'),
+  tools: z.array(z.string()).optional().describe(`Subset of: ${TOOL_CATALOG.join(', ')}`),
   model: z.string().optional().describe('Tier top, deep, everyday or fast, inherit, or a listed model id; omit to keep'),
   connection: z.string().optional().describe("Only for another provider: a connection id; omit for the project's"),
-  canSpawn: z.boolean(),
-  spawnable: z.array(z.string()).describe('Role names it may delegate to'),
+  canSpawn: z.boolean().optional(),
+  spawnable: z.array(z.string()).optional().describe('Role names or slugs it may delegate to'),
   requiredReports: z.array(z.string()).optional().describe('Names from spawnable it must always delegate to; omit to keep, [] to clear'),
-  reportsTo: z.string().nullable().describe("Manager's role name; null for the root")
+  reportsTo: z.string().nullable().optional().describe("Manager's role name or slug; null for the root")
 })
 // No grant fields (review H1): the org chart card does not show Role.mcpServers / Role.skills, so an org change never
 // grants servers or skills; a kept role keeps its grants (mergeOrgChart) and grant changes go through
 // propose_mcp_servers / propose_skills, whose cards show them.
 
-type DraftRole = z.infer<typeof draftRoleSchema>
+/** A draft as the model sent it (fields optional: a revision patch). */
+type DraftInput = z.infer<typeof draftRoleSchema>
+/** A complete draft (completeDrafts output): every field toRoles needs. */
+type DraftRole = FullDraftRole & { slug?: string }
+
+const DRAFT_REQUIRED = ['name', 'description', 'responsibilities', 'prompt', 'tools', 'canSpawn', 'spawnable', 'reportsTo'] as const
+const REF_PROBLEMS_SHOWN = 8
+
+/**
+ * Drafts to complete drafts, before anything is converted. Pure.
+ * - Revision (`revision` set): a draft whose slug (else name) matches an existing role is a PATCH: each omitted field
+ *   takes the current role's value (spawnable and reportsTo as the current roles' slugs, removed roles left out; a
+ *   removed manager becomes the current root). Every other draft (and every draft in first-time setup) must give
+ *   every DRAFT_REQUIRED field, else REVISE naming the missing ones.
+ * - An unknown slug is treated as a new role (slug dropped) in first-time setup, and in a revision when it is just
+ *   the slug of the draft's own name; otherwise REVISE.
+ * - References (reportsTo, spawnable, requiredReports) must resolve, by name or slug (case-insensitive), to a draft
+ *   in the same proposal or, in a revision, to a current role that is not removed; otherwise REVISE naming each one
+ *   (nothing is silently re-parented or dropped).
+ */
+export function completeDrafts(existing: readonly Role[], drafts: readonly DraftInput[], revision?: { remove: string[] }): { error: string } | { drafts: DraftRole[] } {
+  const removeSlugs = new Set((revision?.remove ?? []).map((s) => (typeof s === 'string' ? s.trim() : '')).filter(Boolean))
+  const live = existing.filter((r) => !removeSlugs.has(r.slug))
+  const root = live.find((r) => r.reportsTo === null)
+  const slugOfId = (id: string | null): string | null => (id === null ? null : (live.find((r) => r.id === id)?.slug ?? root?.slug ?? null))
+  const out: DraftRole[] = []
+  const NOT_SHOWN = 'REVISE. The org chart was not shown to the user:'
+  for (const [i, raw] of drafts.entries()) {
+    const d: DraftInput = { ...raw }
+    const label = datum(typeof d.name === 'string' && d.name.trim() ? d.name : (d.slug ?? `role ${i + 1}`), 60)
+    let slug = typeof d.slug === 'string' ? d.slug.trim() : ''
+    if (slug && !existing.some((r) => r.slug === slug)) {
+      if (!revision || slug === slugify(typeof d.name === 'string' ? d.name : '')) slug = ''
+      else return { error: `${NOT_SHOWN} there is no existing role with slug "${datum(slug, 60)}". Omit slug for a new role.` }
+    }
+    if (slug) d.slug = slug
+    else delete d.slug
+    const cur = revision ? (slug ? existing.find((r) => r.slug === slug) : existing.find((r) => lower(r.name) === lower(d.name) && lower(d.name))) : undefined
+    if (cur) {
+      d.name ??= cur.name
+      d.description ??= cur.description
+      d.responsibilities ??= [...cur.responsibilities]
+      d.prompt ??= cur.prompt
+      d.tools ??= [...cur.tools]
+      d.canSpawn ??= cur.canSpawn
+      d.spawnable ??= cur.spawnable.map((id) => live.find((r) => r.id === id)?.slug).filter((s): s is string => !!s)
+      if (d.reportsTo === undefined) d.reportsTo = cur.reportsTo === null ? null : removeSlugs.has(existing.find((r) => r.id === cur.reportsTo)?.slug ?? '') ? slugOfId(root?.id ?? null) : slugOfId(cur.reportsTo)
+    } else {
+      const missing = DRAFT_REQUIRED.filter((k) => d[k] === undefined)
+      if (missing.length) {
+        return {
+          error: `${NOT_SHOWN} role "${label}" is missing ${missing.join(', ')}. ${revision ? 'A new role needs every field; to change only some fields of an existing role, give its slug.' : 'In first-time setup every role needs every field.'}`
+        }
+      }
+    }
+    out.push(d as DraftRole)
+  }
+  // References: names and slugs of the drafts, plus (revision) every current role that is not removed.
+  const known = new Set<string>()
+  for (const d of out) for (const k of [lower(d.name), lower(d.slug), slugify(d.name)]) if (k) known.add(k)
+  if (revision) for (const r of live) for (const k of [lower(r.name), lower(r.slug)]) if (k) known.add(k)
+  const problems: string[] = []
+  for (const d of out) {
+    const refs: [string, unknown][] = [
+      ['reportsTo', d.reportsTo],
+      ...(Array.isArray(d.spawnable) ? d.spawnable : []).map((n): [string, unknown] => ['spawnable', n]),
+      ...(Array.isArray(d.requiredReports) ? d.requiredReports : []).map((n): [string, unknown] => ['requiredReports', n])
+    ]
+    for (const [field, ref] of refs) {
+      const n = lower(ref)
+      if (n && !known.has(n) && !known.has(slugify(String(ref)))) problems.push(`${datum(d.name, 60)} ${field} "${datum(String(ref), 60)}"`)
+    }
+  }
+  if (problems.length) {
+    const more = problems.length > REF_PROBLEMS_SHOWN ? ` and ${problems.length - REF_PROBLEMS_SHOWN} more` : ''
+    return {
+      error: `${NOT_SHOWN} these role references match no role${revision ? ' in the proposal or the current chart (removed roles do not count)' : ' in the proposal'}: ${problems.slice(0, REF_PROBLEMS_SHOWN).join('; ')}${more}. Use a role's name or slug from the chart, or null for the root's reportsTo.`
+    }
+  }
+  return { drafts: out }
+}
 
 /**
  * Drafts to roles for an org chart proposal: toRoles (new ids, no grants), then the explicit slug of an existing role,
@@ -401,11 +483,15 @@ type DraftRole = z.infer<typeof draftRoleSchema>
 function rolesFromDrafts(
   ctx: RuntimeContext,
   rationale: string,
-  drafts: DraftRole[],
+  input: readonly DraftInput[],
   extraModels: string[] = [],
   /** Revision mode (propose_org_chart on a completed setup): unmentioned roles are kept, `remove` names the ones dropped. */
   revision?: { remove: string[] }
 ): { error: string } | { roles: Role[]; merged: OrgMergeResult } {
+  // Patches become complete drafts and every reference must resolve before anything is converted.
+  const completed = completeDrafts(ctx.project.roles, input, revision)
+  if ('error' in completed) return completed
+  const drafts = completed.drafts
   let converted: Role[]
   const base = modelContext(ctx)
   // A template role's model was already mapped onto this connection: keep it (a listed id is kept by resolveDraftModel).
@@ -547,15 +633,19 @@ function reviseKeepingUnmentioned(
   }
   const removedIds = new Set(existing.filter((r) => removeSlugs.includes(r.slug)).map((r) => r.id))
   const keptRoles = existing.filter((r) => !matchedIds.has(r.id) && !removedIds.has(r.id)).map((r) => structuredClone(r))
-  const keptByRef = (name: unknown): Role | undefined => {
-    const n = lower(name)
-    return n ? keptRoles.find((k) => lower(k.name) === n || lower(k.slug) === n) : undefined
-  }
-  const draftIndexByName = new Map<string, number>()
+  // References resolve by name, then slug (refLookup: exact, then the slug form). Drafts win over kept roles.
+  const keptIndex = new Map<string, Role>()
+  for (const k of keptRoles) for (const key of [lower(k.name), lower(k.slug)]) if (key && !keptIndex.has(key)) keptIndex.set(key, k)
+  const keptByRef = (name: unknown): Role | undefined => refLookup(keptIndex, name)
+  const draftIndex = new Map<string, number>()
   drafts.forEach((d, i) => {
     const n = lower(d.name)
-    if (n && !draftIndexByName.has(n)) draftIndexByName.set(n, i)
+    if (n && !draftIndex.has(n)) draftIndex.set(n, i)
   })
+  drafts.forEach((d, i) => {
+    for (const n of [lower(d.slug), slugify(d.name ?? '')]) if (n && !draftIndex.has(n)) draftIndex.set(n, i)
+  })
+  const draftIndexByName = { get: (n: unknown): number | undefined => refLookup(draftIndex, n) }
 
   // Manager intent per draft: another draft, a kept role, or none (root candidate).
   const keptManager = new Map<number, Role>()
@@ -563,7 +653,7 @@ function reviseKeepingUnmentioned(
   const rootCandidates: number[] = []
   drafts.forEach((d, i) => {
     const ref = lower(d.reportsTo)
-    const at = ref ? draftIndexByName.get(ref) : undefined
+    const at = ref ? draftIndexByName.get(d.reportsTo) : undefined
     if (at !== undefined && at !== i) return
     const k = ref ? keptByRef(d.reportsTo) : undefined
     if (k) {
@@ -579,7 +669,9 @@ function reviseKeepingUnmentioned(
   // While the current root is kept unmentioned it stays the root: a new draft that says reportsTo null goes under it
   // (a model writing null for an ordinary new role must not take over the chart). Moving the root means listing the
   // current root with its new manager, or removing it.
-  const explicitRoots = keptRoot ? [] : rootCandidates.filter((i) => !unresolved.has(i))
+  // A listed current root (a patch that leaves reportsTo out) stays the root ahead of a new draft with no manager.
+  const wasRoot = (i: number): number => (matched.get(i)?.reportsTo === null ? 0 : 1)
+  const explicitRoots = keptRoot ? [] : rootCandidates.filter((i) => !unresolved.has(i)).sort((a, b) => wasRoot(a) - wasRoot(b))
   const draftRoot = explicitRoots[0]
   const rootId: string | undefined = draftRoot !== undefined ? converted[draftRoot].id : keptRoot?.id
 
@@ -595,7 +687,7 @@ function reviseKeepingUnmentioned(
     const role = converted[i]
     const named: string[] = []
     for (const n of Array.isArray(d.spawnable) ? d.spawnable : []) {
-      const at = draftIndexByName.get(lower(n))
+      const at = draftIndexByName.get(n)
       const target = at !== undefined ? converted[at] : keptByRef(n)
       if (target && target.id !== role.id) named.push(target.id)
     }
@@ -606,7 +698,7 @@ function reviseKeepingUnmentioned(
     if (Array.isArray(d.requiredReports)) {
       const req: string[] = []
       for (const n of d.requiredReports) {
-        const at = draftIndexByName.get(lower(n))
+        const at = draftIndexByName.get(n)
         const target = at !== undefined ? converted[at] : keptByRef(n)
         if (target && target.id !== role.id) req.push(target.id)
       }
@@ -666,9 +758,9 @@ function reviseKeepingUnmentioned(
  * propose_org_chart fromTemplate: the template's roles as drafts (reports and spawn targets by name), where each given
  * draft replaces the template role with the same name (case-insensitive, in place) or is appended. Pure.
  */
-export function mergeTemplateDrafts(template: readonly Role[], given: readonly DraftRole[]): DraftRole[] {
+export function mergeTemplateDrafts(template: readonly Role[], given: readonly DraftInput[]): DraftInput[] {
   const nameOf = new Map(template.map((r) => [r.id, r.name]))
-  const base: DraftRole[] = template.map((r) => ({
+  const base: DraftInput[] = template.map((r) => ({
     name: r.name,
     description: r.description,
     responsibilities: [...r.responsibilities],
@@ -682,8 +774,8 @@ export function mergeTemplateDrafts(template: readonly Role[], given: readonly D
   }))
   const out = [...base]
   for (const g of given) {
-    const key = g.name.trim().toLowerCase()
-    const at = out.findIndex((d) => d.name.trim().toLowerCase() === key)
+    const key = lower(g.name)
+    const at = key ? out.findIndex((d) => lower(d.name) === key) : -1
     if (at >= 0) out[at] = g
     else out.push(g)
   }
@@ -718,7 +810,7 @@ export const proposeArchitecture = defineTool({
 export const proposeOrgChart = defineTool({
   name: PROPOSAL_TOOLS.orgChart,
   description:
-    'Propose the org chart of agent roles. Blocks until the user approves or asks for changes. First-time setup: the roles you list are the whole chart. Revisions (setup already complete): list only roles that change plus new ones; roles you do not mention are kept unchanged, omit model to keep a role\'s model, and pass remove to drop roles.',
+    'Propose the org chart of agent roles; blocks until the user decides. First-time setup: the roles you list are the whole chart, each with every field. Revisions (setup complete): list only roles that change or are new; an existing role by slug is a patch (only given fields change), a new role needs every field, a manager may spawn its new reports automatically, remove drops roles. reportsTo and spawnable take a name or slug.',
   inputSchema: z.object({
     title: z.string(),
     rationale: z.string().describe('Two or three sentences on why this structure fits the project'),
@@ -736,7 +828,7 @@ export const proposeOrgChart = defineTool({
       .describe('Revisions only: slugs of existing roles to remove. Roles you do not mention are kept unchanged. Ignored in first-time setup.')
   }),
   async handler(ctx, { title, rationale, roles, fromTemplate, remove }, hooks) {
-    let drafts: DraftRole[]
+    let drafts: DraftInput[]
     let extraModels: string[] = []
     if (fromTemplate !== undefined && fromTemplate.trim() !== '') {
       if (!ctx.orgTemplate) return 'REVISE. The org chart was not shown to the user: saved team templates are not available in this session. Propose the roles directly.'
@@ -886,7 +978,7 @@ export const integrateWorktrees = defineTool({
 export const proposeOrgChange = defineTool({
   name: PROPOSAL_TOOLS.orgChange,
   description:
-    'Propose an org chart change: list only roles you change or add, existing ones by slug; unlisted roles are kept. Blocks until the user decides; the result says whether this run can use it.',
+    'Propose an org chart change: list only roles you change (by slug; only given fields change) or add (every field); unlisted roles are kept. Blocks until the user decides; the result says if this run can use it.',
   inputSchema: z.object({
     title: z.string(),
     rationale: z.string().describe('What this run revealed and what changes'),

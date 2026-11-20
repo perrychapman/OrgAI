@@ -38,6 +38,24 @@ describe('toRoles', () => {
     expect(lead.color).not.toBe(impl.color)
   })
 
+  it('resolves references by slug (given or from the name) as well as by name; a name match wins', () => {
+    const roles = toRoles(
+      payload([
+        draft('Tech Lead', { canSpawn: true, spawnable: ['web-implementer'] }),
+        draft('Web Implementer', { reportsTo: 'tech-lead' }),
+        draft('Web Tester', { reportsTo: 'WEB IMPLEMENTER' }),
+        draft('Ops', { slug: 'platform', reportsTo: 'Tech Lead' }),
+        draft('Ops Helper', { reportsTo: 'platform' })
+      ])
+    )
+    const [lead, web, tester, ops, helper] = roles
+    expect(lead.spawnable).toContain(web.id)
+    expect(web.reportsTo).toBe(lead.id)
+    expect(tester.reportsTo).toBe(web.id)
+    expect(ops.reportsTo).toBe(lead.id)
+    expect(helper.reportsTo).toBe(ops.id)
+  })
+
   it('guarantees exactly one root', () => {
     const roles = toRoles(payload([draft('A'), draft('B'), draft('C', { reportsTo: 'Nobody' })]))
     const roots = roles.filter((r) => r.reportsTo === null)
