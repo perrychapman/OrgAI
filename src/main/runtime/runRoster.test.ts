@@ -334,7 +334,7 @@ describe('fourth review: parallel cards', () => {
     card[1] = { ...card[1], slug: 'builder', prompt: 'p2' }
     const { change } = applyRosterChange({ running: run, saved: structuredClone(card), proposed: card })
     expect(change.changed).toEqual([])
-    expect(change.deferred).toEqual([{ id: 'r-eng', name: 'Engineer', reason: ROSTER_REASONS.identity }])
+    expect(change.deferred).toEqual([{ id: 'r-eng', name: 'Engineer', reason: ROSTER_REASONS.slugChange }])
     expect(run[1]).toMatchObject({ slug: 'engineer', prompt: 'You are engineer.' })
   })
 })
@@ -375,7 +375,7 @@ describe('review H1 second route: the card, not the save, defines what joins or 
     const run3 = running()
     const dup = { ...newX, slug: 'engineer' }
     const card3 = [...structuredClone(run3), dup]
-    expect(applyRosterChange({ running: run3, saved: structuredClone(card3), proposed: card3 }).change.deferred.map((d) => d.reason)).toEqual([ROSTER_REASONS.identity])
+    expect(applyRosterChange({ running: run3, saved: structuredClone(card3), proposed: card3 }).change.deferred.map((d) => d.reason)).toEqual([ROSTER_REASONS.slugTaken])
     expect(run3).toHaveLength(3)
   })
 

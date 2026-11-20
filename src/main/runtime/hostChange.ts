@@ -104,6 +104,72 @@ export function roleEditEmpty(edit: RoleEdit): boolean {
   return !edit.changed.size && !edit.added.length && !edit.removed.length
 }
 
+/** A running role whose saved slug changed (a rename in the editor): the run keeps `runSlug` until its next run. */
+export interface KeptSlug {
+  id: string
+  /** The slug this run keeps calling the role by (agents, definitions and spawn names are keyed by it). */
+  runSlug: string
+  /** The slug the save gave it (applies from the next run). */
+  savedSlug: string
+  /** The role's new name when the same edit renamed it, else undefined. */
+  newName?: string
+}
+
+/**
+ * A host edit of running roles with every slug change taken out (rename design, ARCHITECTURE.md "Host changes in a
+ * live run"): a running role's slug is its identity in the run, so the run keeps it and the rest of the edit (the name
+ * included) applies. Roles not in `running` (new or waiting roles) keep their slug edit. Returns the edit (a copy) and
+ * the slugs kept. Pure.
+ */
+export function keepRunSlugs(edit: RoleEdit, running: readonly Role[]): { edit: RoleEdit; kept: KeptSlug[] } {
+  const byId = new Map(running.map((r) => [r.id, r]))
+  const changed = new Map<string, Record<string, unknown>>()
+  const kept: KeptSlug[] = []
+  for (const [id, fields] of edit.changed) {
+    const run = byId.get(id)
+    if (!run || !('slug' in fields)) {
+      changed.set(id, fields)
+      continue
+    }
+    const { slug, ...rest } = fields
+    if (typeof slug === 'string' && slug !== run.slug) {
+      kept.push({ id, runSlug: run.slug, savedSlug: slug, ...(typeof rest.name === 'string' && rest.name !== run.name ? { newName: rest.name } : {}) })
+    }
+    if (Object.keys(rest).length) changed.set(id, rest)
+  }
+  return { edit: { changed, added: edit.added, removed: edit.removed }, kept }
+}
+
+/**
+ * McpServerSpec.roles (role slugs) of `items` as THIS RUN names those roles: a slug naming a role of `stored` (the
+ * project the list was saved with) becomes that role's slug in the run (by id), so a run that kept a renamed role's old
+ * slug (keepRunSlugs) neither loses nor gains a grant by slug text; a stored role the run does not have, whose slug the
+ * run uses for another role, is dropped (never granted to that other role); any other slug stays. Copies only items
+ * with a `roles` list. Pure.
+ */
+export function mcpRolesForRun<T extends { roles?: string[] }>(items: readonly T[] | undefined, stored: readonly Role[], run: readonly Role[]): T[] | undefined {
+  if (!items) return undefined
+  const storedBySlug = new Map(stored.map((r) => [r.slug, r.id]))
+  const runById = new Map(run.map((r) => [r.id, r.slug]))
+  const runSlugs = new Set(run.map((r) => r.slug))
+  if (stored.every((r) => !runById.has(r.id) || runById.get(r.id) === r.slug) && stored.every((r) => runById.has(r.id) || !runSlugs.has(r.slug))) return [...items]
+  return items.map((x) => {
+    if (!Array.isArray(x.roles)) return x
+    const roles: string[] = []
+    for (const slug of x.roles) {
+      const id = storedBySlug.get(slug)
+      const mapped = id === undefined ? slug : runById.get(id) ?? (runSlugs.has(slug) ? undefined : slug)
+      if (mapped !== undefined && !roles.includes(mapped)) roles.push(mapped)
+    }
+    return { ...x, roles }
+  })
+}
+
+/** Fields of a linked MCP server the project owns (defaults.ts linkedSpec); every other field comes from the library. */
+export const MCP_LINK_OWN: ReadonlySet<string> = new Set(['id', 'enabled', 'roles', 'envOverrides', 'headerOverrides', 'addedAt', 'source', 'libraryId'])
+/** Fields of a linked skill the project owns (skills/service.ts linkedSnapshot); every other field comes from the library. */
+export const SKILL_LINK_OWN: ReadonlySet<string> = new Set(['id', 'enabled', 'addedAt', 'source', 'libraryId'])
+
 /**
  * The chart to hand applyRosterChange for one run: the run's baseline (runBaselineOf) with only the edit's own fields
  * changed, the edit's removals left out and its additions appended. Diffed against that same baseline, nothing but the
@@ -244,7 +310,14 @@ export function itemEditOf<T extends { id: string; name: string; libraryId?: str
   before: readonly T[] | undefined,
   saved: readonly T[] | undefined,
   own: { ids: readonly string[]; names: readonly string[] },
-  fields?: readonly string[]
+  fields?: readonly string[],
+  /**
+   * Review L-f: the fields a library-linked item owns (MCP_LINK_OWN / SKILL_LINK_OWN). `before` is the raw stored
+   * project while `saved` is the handler's result with linked items refreshed from the library, so for an item linked to
+   * the same entry on both sides a library-sourced field the input did not name (`fields`) is not the user's edit and
+   * never moves (the gates refresh linked items from the library at read time anyway). Missing = every field compared.
+   */
+  linkOwn?: ReadonlySet<string>
 ): ItemEdit<T> {
   const ids = new Set(own.ids)
   const names = new Set(own.names)
@@ -281,8 +354,10 @@ export function itemEditOf<T extends { id: string; name: string; libraryId?: str
     const n = structuredClone(x) as unknown as Loose
     let narrows = false
     const wide: [string, unknown][] = []
+    const linked = !!linkOwn && typeof bl.libraryId === 'string' && bl.libraryId === sl.libraryId
     for (const k of new Set([...Object.keys(bl), ...Object.keys(sl)])) {
       if (k === 'id' || (only && !only.has(k)) || same(bl[k], sl[k])) continue
+      if (linked && !linkOwn!.has(k) && !only?.has(k)) continue
       if (narrowsField(k, x as unknown as Loose, sl)) {
         n[k] = structuredClone(sl[k])
         narrows = true

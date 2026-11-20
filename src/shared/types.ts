@@ -1274,9 +1274,22 @@ export interface LiveRunChange {
   availability: 'now' | 'after-idle' | 'next-run' | 'pending'
   /** With 'next-run': OrgAI's reason, one or two sentences. With 'now' / 'after-idle': what parts wait, when some do. */
   reason?: string
-  /** Org chart roles this run could not take (they apply from the next run), with OrgAI's reason. */
+  /** Org chart roles this run could not take (they apply from the next run), with OrgAI's plain-language reason. */
   deferred?: { name: string; reason: string }[]
+  /**
+   * Org chart roles this run took with a caveat, by their new name. A rename: "Renamed to <new>. This run keeps calling
+   * it <old slug> until the next run." (the run keeps the role's slug; agents and spawn names are keyed by it).
+   */
+  notes?: { name: string; note: string }[]
+  /**
+   * The role grants this change named for this run (role and item display names): `granted` false = the role no longer
+   * uses the item (in effect whenever the run took anything), true = it gains it (in effect per `availability`).
+   */
+  grants?: { role: string; item: string; kind: 'mcpServer' | 'skill'; granted: boolean }[]
 }
+
+/** What a host change touched (the `run.liveChange` event). */
+export type LiveChangeWhat = 'orgChart' | 'grants' | 'mcpServers' | 'skills'
 
 /**
  * How long a desktop save waits for each live run's answer before it reports 'pending' (LiveRunChange). The handler's
@@ -4008,6 +4021,14 @@ export type RunEvent =
    * quick or single-agent runs.
    */
   | { type: 'run.roster'; runId: string; roster: RunRosterRole[]; change: RunRosterChange }
+  /**
+   * RunManager only (an adapter's is dropped; desktop host only, RunManagerOptions.liveHostChanges): a change the user
+   * saved in the desktop app (projects:save, mcp:*, skills:*) or approved on another session's card reached this live
+   * work run (applyProjectChange). Emitted once per run per change, with the run log line; a 'pending' answer is followed
+   * by a second event with the final availability. Broadcast to the renderer only: not recorded in the run record and
+   * never sent to adapters. Names bounded. Structured-clone safe.
+   */
+  | { type: 'run.liveChange'; runId: string; projectId: string; source: 'user' | 'card'; what: LiveChangeWhat[]; change: LiveRunChange }
   /**
    * A run moved to another project (a quick run promoted with runs:promoteQuick). One event per moved run; from now
    * on runs:list(projectId) returns it and RunSummary.projectId is `projectId`.

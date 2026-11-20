@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { applyGrantEdits, grantEditsOf, itemEditOf, itemGrantEditsOf, proposedFromEdit, roleEditEmpty, roleEditOf, ungrantsOf } from './hostChange'
+import {
+  applyGrantEdits,
+  grantEditsOf,
+  itemEditOf,
+  itemGrantEditsOf,
+  keepRunSlugs,
+  mcpRolesForRun,
+  MCP_LINK_OWN,
+  proposedFromEdit,
+  roleEditEmpty,
+  roleEditOf,
+  SKILL_LINK_OWN,
+  ungrantsOf
+} from './hostChange'
 import { orgChart, role } from './testHelpers'
 
 describe('roleEditOf', () => {
@@ -100,5 +113,74 @@ describe('itemGrantEditsOf / ungrantsOf', () => {
     ])
     expect(itemGrantEditsOf(before, saved, 'skills', items, undefined)).toEqual([])
     expect(ungrantsOf(saved, 'skills', new Set(['s1'])).map((e) => e.roleId)).toEqual(['r-lead', 'r-eng'])
+  })
+})
+
+describe('keepRunSlugs (rename of a running role)', () => {
+  it("takes a running role's slug change out of the edit and keeps the rest; new roles keep their slug", () => {
+    const run = orgChart()
+    const before = orgChart()
+    const request = [
+      ...before.map((r) => (r.id === 'r-eng' ? { ...r, name: 'Engineer Prime', slug: 'engineer-prime', prompt: 'P' } : r.id === 'r-rev' ? { ...r, slug: 'checker' } : r)),
+      role({ id: 'r-qa', slug: 'qa' })
+    ]
+    const { edit, kept } = keepRunSlugs(roleEditOf(before, request, request), run)
+    expect([...edit.changed.entries()]).toEqual([['r-eng', { name: 'Engineer Prime', prompt: 'P' }]])
+    expect(edit.added.map((r) => r.slug)).toEqual(['qa'])
+    expect(kept).toEqual([
+      { id: 'r-eng', runSlug: 'engineer', savedSlug: 'engineer-prime', newName: 'Engineer Prime' },
+      { id: 'r-rev', runSlug: 'reviewer', savedSlug: 'checker' }
+    ])
+    // A role the run does not have keeps its slug edit.
+    const { edit: e2, kept: k2 } = keepRunSlugs(roleEditOf(before, request, request), run.filter((r) => r.id !== 'r-rev'))
+    expect(e2.changed.get('r-rev')).toEqual({ slug: 'checker' })
+    expect(k2.map((k) => k.id)).toEqual(['r-eng'])
+  })
+})
+
+describe('mcpRolesForRun (slug-keyed MCP grants as the run names its roles)', () => {
+  const spec = (roles?: string[]) => ({ id: 'm', name: 'docs', ...(roles ? { roles } : {}) })
+  it("maps a renamed role's new slug to the slug the run kept, by id; no list and unknown slugs stay", () => {
+    const run = orgChart()
+    const stored = orgChart().map((r) => (r.id === 'r-eng' ? { ...r, slug: 'engineer-prime' } : r))
+    expect(mcpRolesForRun([spec(['engineer-prime', 'reviewer']), spec(), spec(['ghost'])], stored, run)).toEqual([spec(['engineer', 'reviewer']), spec(), spec(['ghost'])])
+    // The old slug, which names no stored role now, still means the run's role (no grant lost).
+    expect(mcpRolesForRun([spec(['engineer'])], stored, run)).toEqual([spec(['engineer'])])
+  })
+  it('a stored role the run does not have, holding the slug the run kept for another role, never grants that role', () => {
+    const run = orgChart()
+    const stored = [...orgChart().map((r) => (r.id === 'r-eng' ? { ...r, slug: 'engineer-prime' } : r)), role({ id: 'r-new', slug: 'engineer' })]
+    expect(mcpRolesForRun([spec(['engineer'])], stored, run)).toEqual([spec([])])
+  })
+  it('returns the list unchanged when slugs agree', () => {
+    const items = [spec(['engineer'])]
+    expect(mcpRolesForRun(items, orgChart(), orgChart())).toEqual(items)
+    expect(mcpRolesForRun(undefined, orgChart(), orgChart())).toBeUndefined()
+  })
+})
+
+describe('itemEditOf with linkOwn (review L-f: library-linked items)', () => {
+  type Spec = { id: string; name: string; libraryId?: string; enabled?: boolean; command?: string; envOverrides?: Record<string, string> }
+  const raw: Spec = { id: 'm1', name: 'docs', libraryId: 'lib1', enabled: true, command: 'old-snapshot' }
+  it('a library-sourced field that differs only because the saved copy was refreshed does not move', () => {
+    const saved: Spec = { ...raw, command: 'fresh-from-library' }
+    const e = itemEditOf<Spec>([raw], [raw], [saved], { ids: ['m1'], names: [] }, undefined, MCP_LINK_OWN)
+    expect(e.widenedIds).toEqual([])
+    expect(e.narrowedIds).toEqual([])
+    // Without linkOwn (the old behaviour) it looked like the user's edit.
+    expect(itemEditOf<Spec>([raw], [raw], [saved], { ids: ['m1'], names: [] }).widenedIds).toEqual(['m1'])
+  })
+  it('a field the project owns still moves; a library field the input named still moves', () => {
+    const saved: Spec = { ...raw, command: 'fresh', enabled: false, envOverrides: { R: 'eu' } }
+    const e = itemEditOf<Spec>([raw], [raw], [saved], { ids: ['m1'], names: [] }, undefined, MCP_LINK_OWN)
+    expect(e.narrowed).toEqual([{ ...raw, enabled: false }])
+    expect(e.widened).toEqual([{ ...raw, enabled: false, envOverrides: { R: 'eu' } }])
+    const named = itemEditOf<Spec>([raw], [raw], [saved], { ids: ['m1'], names: [] }, ['command'], MCP_LINK_OWN)
+    expect(named.widened).toEqual([{ ...raw, command: 'fresh' }])
+  })
+  it('an item unlinked by the save (no libraryId after) is compared field by field', () => {
+    const saved: Spec = { id: 'm1', name: 'docs', enabled: true, command: 'own' }
+    expect(itemEditOf<Spec>([raw], [raw], [saved], { ids: ['m1'], names: [] }, undefined, MCP_LINK_OWN).widenedIds).toEqual(['m1'])
+    expect(SKILL_LINK_OWN.has('files')).toBe(false)
   })
 })
