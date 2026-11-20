@@ -288,6 +288,26 @@ describe('Codex hostConfigChanged', () => {
     expect(line).not.toContain('sk-live-abcdef123')
   })
 
+  it('item 2: a refused root thread resume at run start is logged redacted', async () => {
+    faults.resume = 'thread not found (Bearer tok-123456789, api_key=sk-live-abcdef123)'
+    const { ctx, servers } = await start({ resumeSessionId: 'th-old' })
+    expect(servers[0]!.of('thread/resume')).toHaveLength(1)
+    const line = ctx.events.filter((e) => e.type === 'log').map((e) => (e as { message: string }).message).find((m) => m.startsWith('Could not resume Codex thread th-old')) ?? ''
+    expect(line).toContain('thread not found')
+    // Regression: e.message went into the log raw.
+    expect(line).not.toContain('tok-123456789')
+    expect(line).not.toContain('sk-live-abcdef123')
+  })
+
+  it('item 2: an app-server turn failure is redacted in the log and the root activity', async () => {
+    const { ctx, servers } = await start()
+    servers[0]!.push('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', items: [], error: { message: 'upstream said Bearer tok-123456789' } } })
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'log' && e.message.startsWith('Run turn failed'))).toBe(true))
+    const text = JSON.stringify(ctx.events)
+    expect(text).toContain('upstream said')
+    expect(text).not.toContain('tok-123456789')
+  })
+
   it('L2: a Codex notice without an MCP part never says removed MCP tools are refused at once', () => {
     const text = hostChangeNotice({ prefix: 'Harness:', skills: [{ name: 'alpha', roles: [{ name: 'Lead', slug: 'lead' }] }] })
     expect(text).not.toContain('removed or ungranted tools are refused at once')

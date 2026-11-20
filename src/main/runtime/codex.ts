@@ -885,8 +885,13 @@ class CodexSession implements RuntimeSession {
     }
   }
 
+  /**
+   * Every run log line is redacted here (this.redact: connection key, gateway path, MCP secret slot values, key-like
+   * tokens), so an error text a call site passes through (a refused thread/resume, an app-server error, a failed
+   * delivery) never reaches the log raw. Redacting an already redacted text again changes nothing.
+   */
   private log(level: 'info' | 'warn' | 'error', message: string): void {
-    this.emit({ type: 'log', runId: this.ctx.run.id, level, message })
+    this.emit({ type: 'log', runId: this.ctx.run.id, level, message: this.redact(message) })
   }
 
   /** Exec settlement: adapter-internal activity (a listener's throw never breaks the session). */
@@ -1390,8 +1395,10 @@ class CodexSession implements RuntimeSession {
   }
 
   /** The run ended because the process died or startup failed. */
-  private fail(message: string): void {
+  private fail(raw: string): void {
     if (this.ended) return
+    // The text also becomes the root's activity and the run's error (run.status), not only a log line.
+    const message = this.redact(raw)
     this.log('error', message)
     this.setState(ROOT_AGENT_ID, 'error', message.slice(0, 80))
     this.endRun(message)
@@ -1458,7 +1465,7 @@ class CodexSession implements RuntimeSession {
           void _service
           started = await this.startThread({ threadId: ctx.resumeSessionId, ...resumeParams }, METHOD.threadResume)
         } catch (e) {
-          this.log('warn', `Could not resume Codex thread ${ctx.resumeSessionId} (${(e as Error).message}); starting a new thread.`)
+          this.log('warn', `Could not resume Codex thread ${ctx.resumeSessionId} (${this.redact((e as Error)?.message ?? String(e))}); starting a new thread.`)
           this.transcript(ROOT_AGENT_ID, { kind: 'system', text: 'The earlier Codex conversation could not be resumed; this run starts a new one.' }, { source: 'harness' })
         }
       }
@@ -1727,7 +1734,7 @@ class CodexSession implements RuntimeSession {
       root.activity = 'Usage limit reached'
     } else if (u.status === 'failed') {
       root.state = 'error'
-      root.activity = (u.error?.message ?? 'Turn failed').slice(0, 80)
+      root.activity = this.redact(u.error?.message ?? 'Turn failed').slice(0, 80)
       this.log('error', `Run turn failed: ${u.error?.message ?? 'unknown error'}`)
     } else {
       if (u.result) root.result = u.result
@@ -1777,7 +1784,7 @@ class CodexSession implements RuntimeSession {
       child.activity = 'Interrupted'
     } else if (u.status === 'failed') {
       child.state = 'error'
-      child.activity = (u.error?.message ?? 'Failed').slice(0, 80)
+      child.activity = this.redact(u.error?.message ?? 'Failed').slice(0, 80)
     } else {
       child.state = 'done'
       child.activity = 'Reported back'
@@ -1790,7 +1797,7 @@ class CodexSession implements RuntimeSession {
       this.recheckParent(child)
       return
     }
-    const text = reportMessage(child, u.status === 'failed' ? { status: 'failed', result: u.result, error: u.error?.message } : { status: 'completed', result: u.result })
+    const text = reportMessage(child, u.status === 'failed' ? { status: 'failed', result: u.result, error: u.error?.message === undefined ? undefined : this.redact(u.error.message) } : { status: 'completed', result: u.result })
     this.deliverTo(child.parentId ?? ROOT_AGENT_ID, text).catch((e: Error) => this.log('warn', `Could not deliver the report of ${child.handle ?? child.id}: ${e.message}`))
     this.recheckParent(child)
   }
@@ -2441,7 +2448,7 @@ class CodexSession implements RuntimeSession {
           if (!started) reject(e)
           else {
             this.log('warn', `Bridged report ${started.handle} ended without a result: ${(e as Error)?.message ?? String(e)}`)
-            this.bridgedFinished({ ...started, ok: false, text: (e as Error)?.message ?? 'It ended without a result.' }, req.role.name)
+            this.bridgedFinished({ ...started, ok: false, text: this.redact((e as Error)?.message ?? 'It ended without a result.') }, req.role.name)
           }
         }
       )
