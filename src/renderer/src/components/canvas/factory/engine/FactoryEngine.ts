@@ -624,6 +624,7 @@ export class FactoryEngine {
     // Main pass only: what was counted before the first pool mesh's onBeforeRender belongs to the shadow pass.
     const before = this.callsAtMainPass >= 0 ? this.callsAtMainPass : 0
     if (shadowFrame) this.shadowCalls = before
+    else if (!this.renderer.shadowMap.enabled) this.shadowCalls = 0
     this.drawCalls = info.calls - before
     this.triangles = info.triangles - (this.callsAtMainPass >= 0 ? this.trianglesAtMainPass : 0)
     this.frames++
