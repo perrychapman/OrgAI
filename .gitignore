@@ -9,4 +9,5 @@ scripts/*.log
 .claude/worktrees/
 .claude/settings.local.json
 e2e/shots/
+bench-results/
 release-*/

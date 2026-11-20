@@ -1,0 +1,2221 @@
+{
+ "tool": "org-chart-benchmark",
+ "scorerVersion": 1,
+ "label": "sample",
+ "model": "test-model",
+ "repeat": 1,
+ "maxUsd": 5,
+ "family": "all",
+ "gitSha": "abc1234",
+ "date": "2026-11-19T00:00:00.000Z",
+ "sessions": [
+  {
+   "family": "recommend",
+   "scenarioId": "c1",
+   "repeat": 1,
+   "model": "test-model",
+   "status": "ok",
+   "chart": {
+    "title": "t",
+    "rationale": "r",
+    "drafts": [
+     {
+      "name": "Orchestrator",
+      "description": "Plans the work and checks the result.",
+      "responsibilities": [
+       "Orchestrator work"
+      ],
+      "prompt": "You are the orchestrator for a one-file Python script. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Do a contained piece of work yourself; hand out work that splits into independent pieces or needs a specialist, and start independent pieces together. Give each report a brief that names its files, then check the results against the task.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "model": "deep",
+      "canSpawn": true,
+      "spawnable": [
+       "Developer"
+      ],
+      "reportsTo": null
+     },
+     {
+      "name": "Developer",
+      "description": "Writes and runs the script.",
+      "responsibilities": [
+       "Developer work"
+      ],
+      "prompt": "You are the developer of the photo renaming script. Read the EXIF handling carefully, keep the script in one file and print what it would rename before it changes anything. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "model": "everyday",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Orchestrator"
+     }
+    ],
+    "roles": [
+     {
+      "slug": "orchestrator",
+      "name": "Orchestrator",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "description": "Plans the work and checks the result.",
+      "responsibilities": [
+       "Orchestrator work"
+      ],
+      "prompt": "You are the orchestrator for a one-file Python script. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Do a contained piece of work yourself; hand out work that splits into independent pieces or needs a specialist, and start independent pieces together. Give each report a brief that names its files, then check the results against the task.",
+      "canSpawn": true,
+      "spawnable": [
+       "developer"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "developer",
+      "name": "Developer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and runs the script.",
+      "responsibilities": [
+       "Developer work"
+      ],
+      "prompt": "You are the developer of the photo renaming script. Read the EXIF handling carefully, keep the script in one file and print what it would rename before it changes anything. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     }
+    ]
+   },
+   "reviseRounds": 0,
+   "toolErrors": 0,
+   "askUserCalls": 0,
+   "questionTurns": 1,
+   "turns": 5,
+   "durationMs": 31000,
+   "costUsd": 0.21,
+   "kind": "code",
+   "complexity": 1
+  },
+  {
+   "family": "recommend",
+   "scenarioId": "c1",
+   "repeat": 2,
+   "model": "test-model",
+   "status": "ok",
+   "chart": {
+    "title": "t",
+    "rationale": "r",
+    "drafts": [
+     {
+      "name": "Chief Orchestrator",
+      "description": "Runs everything.",
+      "responsibilities": [
+       "Chief Orchestrator work"
+      ],
+      "prompt": "Delegate everything to your team and never do any work yourself.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "claude-opus-4",
+      "canSpawn": true,
+      "spawnable": [
+       "Ghost",
+       "Architect"
+      ],
+      "reportsTo": null
+     },
+     {
+      "name": "Architect",
+      "description": "Designs.",
+      "responsibilities": [
+       "Architect work"
+      ],
+      "prompt": "Design it.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "top",
+      "canSpawn": true,
+      "spawnable": [
+       "Frontend Lead"
+      ],
+      "reportsTo": "Chief Orchestrator"
+     },
+     {
+      "name": "Frontend Lead",
+      "description": "Leads.",
+      "responsibilities": [
+       "Frontend Lead work"
+      ],
+      "prompt": "Lead it.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "deep",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Architect"
+     },
+     {
+      "name": "Code Reviewer",
+      "description": "Reviews.",
+      "responsibilities": [
+       "Code Reviewer work"
+      ],
+      "prompt": "Review it.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "deep",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Chief Orchestrator"
+     },
+     {
+      "name": "Researcher",
+      "description": "Researches.",
+      "responsibilities": [
+       "Researcher work"
+      ],
+      "prompt": "Research it.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "deep",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Missing Manager"
+     },
+     {
+      "name": "QA Lead",
+      "description": "Tests.",
+      "responsibilities": [
+       "QA Lead work"
+      ],
+      "prompt": "Test it.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "deep",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Chief Orchestrator"
+     }
+    ],
+    "roles": [
+     {
+      "slug": "chief-orchestrator",
+      "name": "Chief Orchestrator",
+      "tier": "inherit",
+      "model": "claude-opus-4",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Runs everything.",
+      "responsibilities": [
+       "Chief Orchestrator work"
+      ],
+      "prompt": "Delegate everything to your team and never do any work yourself.",
+      "canSpawn": true,
+      "spawnable": [
+       "Ghost",
+       "architect"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "architect",
+      "name": "Architect",
+      "tier": "top",
+      "model": "top",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Designs.",
+      "responsibilities": [
+       "Architect work"
+      ],
+      "prompt": "Design it.",
+      "canSpawn": true,
+      "spawnable": [
+       "frontend-lead"
+      ],
+      "reportsTo": "chief-orchestrator"
+     },
+     {
+      "slug": "frontend-lead",
+      "name": "Frontend Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Leads.",
+      "responsibilities": [
+       "Frontend Lead work"
+      ],
+      "prompt": "Lead it.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "architect"
+     },
+     {
+      "slug": "code-reviewer",
+      "name": "Code Reviewer",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Reviews.",
+      "responsibilities": [
+       "Code Reviewer work"
+      ],
+      "prompt": "Review it.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "chief-orchestrator"
+     },
+     {
+      "slug": "researcher",
+      "name": "Researcher",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Researches.",
+      "responsibilities": [
+       "Researcher work"
+      ],
+      "prompt": "Research it.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Missing Manager"
+     },
+     {
+      "slug": "qa-lead",
+      "name": "QA Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "WebSearch",
+       "WebFetch",
+       "TodoWrite",
+       "NotebookEdit",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Tests.",
+      "responsibilities": [
+       "QA Lead work"
+      ],
+      "prompt": "Test it.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "chief-orchestrator"
+     }
+    ]
+   },
+   "reviseRounds": 2,
+   "toolErrors": 0,
+   "askUserCalls": 3,
+   "questionTurns": 2,
+   "turns": 11,
+   "durationMs": 88000,
+   "costUsd": 0.64,
+   "kind": "code",
+   "complexity": 1
+  },
+  {
+   "family": "recommend",
+   "scenarioId": "c4",
+   "repeat": 1,
+   "model": "test-model",
+   "status": "ok",
+   "chart": {
+    "title": "t",
+    "rationale": "r",
+    "drafts": [
+     {
+      "name": "Orchestrator",
+      "description": "Plans the release and hands out work to the leads.",
+      "responsibilities": [
+       "Orchestrator work"
+      ],
+      "prompt": "You are the orchestrator of a multi-service logistics platform. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Do a contained piece of work yourself; hand out work that splits into independent pieces or needs a specialist, and start independent pieces together. Give each report a brief that names its files, then check the results against the task.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "model": "deep",
+      "canSpawn": true,
+      "spawnable": [
+       "Product Lead",
+       "Platform Lead",
+       "Compliance Reviewer",
+       "QA Engineer"
+      ],
+      "reportsTo": null
+     },
+     {
+      "name": "Product Lead",
+      "description": "Leads the customer web app and the driver mobile app.",
+      "responsibilities": [
+       "Product Lead work"
+      ],
+      "prompt": "You are the product lead for the web and mobile clients. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Split the work between your reports, give each a brief that names its files, start independent pieces together and check their reports before you answer.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "deep",
+      "canSpawn": true,
+      "spawnable": [
+       "Web Implementer",
+       "Mobile Implementer"
+      ],
+      "reportsTo": "Orchestrator"
+     },
+     {
+      "name": "Web Implementer",
+      "description": "Implements the React web app.",
+      "responsibilities": [
+       "Web Implementer work"
+      ],
+      "prompt": "You are the web implementer for the React customer app. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Message the services implementer when you need an endpoint changed. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "everyday",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Product Lead"
+     },
+     {
+      "name": "Mobile Implementer",
+      "description": "Implements the React Native driver app.",
+      "responsibilities": [
+       "Mobile Implementer work"
+      ],
+      "prompt": "You are the mobile implementer for the React Native driver app on iOS and Android. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "model": "everyday",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Product Lead"
+     },
+     {
+      "name": "Platform Lead",
+      "description": "Leads the services, infrastructure and data pipeline.",
+      "responsibilities": [
+       "Platform Lead work"
+      ],
+      "prompt": "You are the platform lead for the services, the infrastructure and the analytics pipeline. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Split the work between your reports, give each a brief that names its files, start independent pieces together and check their reports before you answer.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "deep",
+      "canSpawn": true,
+      "spawnable": [
+       "Services Implementer",
+       "Infra Engineer",
+       "Data Pipeline Engineer"
+      ],
+      "reportsTo": "Orchestrator"
+     },
+     {
+      "name": "Services Implementer",
+      "description": "Implements the order, dispatch and billing services behind the API gateway.",
+      "responsibilities": [
+       "Services Implementer work"
+      ],
+      "prompt": "You are the services implementer for the dispatch, order and billing services. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Answer the web implementer's questions about endpoints. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "model": "everyday",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Platform Lead"
+     },
+     {
+      "name": "Infra Engineer",
+      "description": "Maintains the Terraform and the CI pipelines.",
+      "responsibilities": [
+       "Infra Engineer work"
+      ],
+      "prompt": "You are the infrastructure engineer for the Terraform and the GitHub Actions deployment. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Run terraform fmt and validate before you report. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "model": "everyday",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Platform Lead"
+     },
+     {
+      "name": "Data Pipeline Engineer",
+      "description": "Builds the Kafka to warehouse analytics pipeline and dbt models.",
+      "responsibilities": [
+       "Data Pipeline Engineer work"
+      ],
+      "prompt": "You are the data pipeline engineer for the analytics pipeline from Kafka to the warehouse. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "model": "everyday",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Platform Lead"
+     },
+     {
+      "name": "Compliance Reviewer",
+      "description": "Reviews changes for SOC 2 and GDPR concerns; read-only.",
+      "responsibilities": [
+       "Compliance Reviewer work"
+      ],
+      "prompt": "You are the compliance reviewer for SOC 2 and GDPR. Check audit logging, encryption, data deletion and access controls in the changes named in your brief. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. You never edit files; report concrete problems with the file and line, and say what you could not check.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "model": "everyday",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Orchestrator"
+     },
+     {
+      "name": "QA Engineer",
+      "description": "Writes and runs tests across the services and clients.",
+      "responsibilities": [
+       "QA Engineer work"
+      ],
+      "prompt": "You are the QA engineer. Write and run tests for the behavior in your brief with Bash and report which tests fail and why. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "model": "everyday",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "Orchestrator"
+     }
+    ],
+    "roles": [
+     {
+      "slug": "orchestrator",
+      "name": "Orchestrator",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "description": "Plans the release and hands out work to the leads.",
+      "responsibilities": [
+       "Orchestrator work"
+      ],
+      "prompt": "You are the orchestrator of a multi-service logistics platform. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Do a contained piece of work yourself; hand out work that splits into independent pieces or needs a specialist, and start independent pieces together. Give each report a brief that names its files, then check the results against the task.",
+      "canSpawn": true,
+      "spawnable": [
+       "product-lead",
+       "platform-lead",
+       "compliance-reviewer",
+       "qa-engineer"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "product-lead",
+      "name": "Product Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Leads the customer web app and the driver mobile app.",
+      "responsibilities": [
+       "Product Lead work"
+      ],
+      "prompt": "You are the product lead for the web and mobile clients. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Split the work between your reports, give each a brief that names its files, start independent pieces together and check their reports before you answer.",
+      "canSpawn": true,
+      "spawnable": [
+       "web-implementer",
+       "mobile-implementer"
+      ],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "web-implementer",
+      "name": "Web Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Implements the React web app.",
+      "responsibilities": [
+       "Web Implementer work"
+      ],
+      "prompt": "You are the web implementer for the React customer app. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Message the services implementer when you need an endpoint changed. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "product-lead"
+     },
+     {
+      "slug": "mobile-implementer",
+      "name": "Mobile Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements the React Native driver app.",
+      "responsibilities": [
+       "Mobile Implementer work"
+      ],
+      "prompt": "You are the mobile implementer for the React Native driver app on iOS and Android. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "product-lead"
+     },
+     {
+      "slug": "platform-lead",
+      "name": "Platform Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Leads the services, infrastructure and data pipeline.",
+      "responsibilities": [
+       "Platform Lead work"
+      ],
+      "prompt": "You are the platform lead for the services, the infrastructure and the analytics pipeline. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Split the work between your reports, give each a brief that names its files, start independent pieces together and check their reports before you answer.",
+      "canSpawn": true,
+      "spawnable": [
+       "services-implementer",
+       "infra-engineer",
+       "data-pipeline-engineer"
+      ],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "services-implementer",
+      "name": "Services Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Implements the order, dispatch and billing services behind the API gateway.",
+      "responsibilities": [
+       "Services Implementer work"
+      ],
+      "prompt": "You are the services implementer for the dispatch, order and billing services. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Answer the web implementer's questions about endpoints. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "infra-engineer",
+      "name": "Infra Engineer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Maintains the Terraform and the CI pipelines.",
+      "responsibilities": [
+       "Infra Engineer work"
+      ],
+      "prompt": "You are the infrastructure engineer for the Terraform and the GitHub Actions deployment. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Run terraform fmt and validate before you report. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "data-pipeline-engineer",
+      "name": "Data Pipeline Engineer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Builds the Kafka to warehouse analytics pipeline and dbt models.",
+      "responsibilities": [
+       "Data Pipeline Engineer work"
+      ],
+      "prompt": "You are the data pipeline engineer for the analytics pipeline from Kafka to the warehouse. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "compliance-reviewer",
+      "name": "Compliance Reviewer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "description": "Reviews changes for SOC 2 and GDPR concerns; read-only.",
+      "responsibilities": [
+       "Compliance Reviewer work"
+      ],
+      "prompt": "You are the compliance reviewer for SOC 2 and GDPR. Check audit logging, encryption, data deletion and access controls in the changes named in your brief. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. You never edit files; report concrete problems with the file and line, and say what you could not check.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "qa-engineer",
+      "name": "QA Engineer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and runs tests across the services and clients.",
+      "responsibilities": [
+       "QA Engineer work"
+      ],
+      "prompt": "You are the QA engineer. Write and run tests for the behavior in your brief with Bash and report which tests fail and why. Follow the architecture document in .orgai/ARCHITECTURE.md so your work matches the agreed conventions and commands. Keep your report short, lead with the outcome and list anything still open. Stay within the files named in your brief, run what you changed before you report back, and report every file you touched and anything you could not verify.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     }
+    ]
+   },
+   "reviseRounds": 0,
+   "toolErrors": 0,
+   "askUserCalls": 0,
+   "questionTurns": 1,
+   "turns": 9,
+   "durationMs": 74000,
+   "costUsd": 0.93,
+   "kind": "code",
+   "complexity": 4
+  },
+  {
+   "family": "recommend",
+   "scenarioId": "c2",
+   "repeat": 1,
+   "model": "test-model",
+   "kind": "code",
+   "complexity": 2,
+   "status": "noChart",
+   "chart": null,
+   "reviseRounds": 0,
+   "toolErrors": 0,
+   "askUserCalls": 2,
+   "questionTurns": 3,
+   "followUps": 2,
+   "turns": 7,
+   "durationMs": 52000,
+   "costUsd": 0.31,
+   "errors": []
+  },
+  {
+   "family": "recommend",
+   "scenarioId": "c3",
+   "repeat": 1,
+   "model": "test-model",
+   "kind": "code",
+   "complexity": 3,
+   "status": "skipped",
+   "errors": [
+    "--max-usd 5 reached"
+   ]
+  },
+  {
+   "family": "retro",
+   "scenarioId": "r2",
+   "repeat": 1,
+   "model": "test-model",
+   "status": "ok",
+   "revision": {
+    "ending": "propose",
+    "args": {
+     "title": "t",
+     "rationale": "r",
+     "roles": [],
+     "remove": []
+    },
+    "listed": 1,
+    "before": [
+     {
+      "slug": "orchestrator",
+      "name": "Orchestrator",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "TodoWrite"
+      ],
+      "description": "Plans the work and hands it out.",
+      "responsibilities": [
+       "Plan and sequence work",
+       "Check results against the task"
+      ],
+      "prompt": "You are the orchestrator. Read the architecture document first. Do a contained piece of work yourself; hand out work that splits into independent pieces or needs a specialist, and start independent pieces together. Give each report a brief that names its files. Check the result against the task before you report.",
+      "canSpawn": true,
+      "spawnable": [
+       "implementer",
+       "tester"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "implementer",
+      "name": "Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and changes the CLI code.",
+      "responsibilities": [
+       "Implement features in csvkit/",
+       "Fix defects"
+      ],
+      "prompt": "You are the implementer. Follow the architecture document. Stay within the files named in your brief and report every file you touched. Run the code you changed with Bash before you report back, and keep functions small and covered by the tester's cases.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "tester",
+      "name": "Tester",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write"
+      ],
+      "description": "Writes and runs tests for the CLI.",
+      "responsibilities": [
+       "Write pytest cases",
+       "Run the suite and report failures"
+      ],
+      "prompt": "You are the tester. Follow the architecture document. Write tests under tests/ for the behavior in your brief, run the suite and report which tests fail and why. Stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     }
+    ],
+    "after": [
+     {
+      "slug": "orchestrator",
+      "name": "Orchestrator",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "TodoWrite"
+      ],
+      "description": "Plans the work and hands it out.",
+      "responsibilities": [
+       "Plan and sequence work",
+       "Check results against the task"
+      ],
+      "prompt": "You are the orchestrator. Read the architecture document first. Do a contained piece of work yourself; hand out work that splits into independent pieces or needs a specialist, and start independent pieces together. Give each report a brief that names its files. Check the result against the task before you report.",
+      "canSpawn": true,
+      "spawnable": [
+       "implementer",
+       "tester"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "implementer",
+      "name": "Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and changes the CLI code.",
+      "responsibilities": [
+       "Implement features in csvkit/",
+       "Fix defects"
+      ],
+      "prompt": "You are the implementer. Follow the architecture document. Stay within the files named in your brief and report every file you touched. Run the code you changed with Bash before you report back, and keep functions small and covered by the tester's cases.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "tester",
+      "name": "Tester",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and runs tests for the CLI.",
+      "responsibilities": [
+       "Write pytest cases",
+       "Run the suite and report failures"
+      ],
+      "prompt": "You are the tester. Follow the architecture document. Write tests under tests/ for the behavior in your brief, run the suite and report which tests fail and why. Stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     }
+    ]
+   },
+   "reviseRounds": 0,
+   "toolErrors": 0,
+   "turns": 3,
+   "durationMs": 19000,
+   "costUsd": 0.12,
+   "kind": "code",
+   "complexity": 2
+  },
+  {
+   "family": "retro",
+   "scenarioId": "r3",
+   "repeat": 1,
+   "model": "test-model",
+   "status": "ok",
+   "revision": {
+    "ending": "propose",
+    "args": {
+     "title": "t",
+     "rationale": "r",
+     "roles": [],
+     "remove": []
+    },
+    "listed": 1,
+    "before": [
+     {
+      "slug": "orchestrator",
+      "name": "Orchestrator",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "TodoWrite"
+      ],
+      "description": "Plans the work and hands it out to the two leads.",
+      "responsibilities": [
+       "Plan and sequence work",
+       "Check results against the task"
+      ],
+      "prompt": "You are the orchestrator. Read the architecture document first. Do a contained piece of work yourself; hand out work that splits into independent pieces to the Client Lead and the Platform Lead, and start independent pieces together. Ask the reviewer to look at anything that changes behavior.",
+      "canSpawn": true,
+      "spawnable": [
+       "client-lead",
+       "platform-lead",
+       "reviewer",
+       "researcher"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "client-lead",
+      "name": "Client Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Leads web, mobile and UI test work.",
+      "responsibilities": [
+       "Split client work",
+       "Check client reports"
+      ],
+      "prompt": "You are the client lead. Follow the architecture document. Split client work between the web implementer, the mobile implementer and the UI tester, give each a brief that names its files, and check their reports before you answer the orchestrator.",
+      "canSpawn": true,
+      "spawnable": [
+       "web-implementer",
+       "mobile-implementer",
+       "ui-tester"
+      ],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "web-implementer",
+      "name": "Web Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Implements the React web app under apps/web/.",
+      "responsibilities": [
+       "Implement web UI"
+      ],
+      "prompt": "You are the web implementer. Follow the architecture document. Make the web app work end to end: if you find a bug or a missing endpoint anywhere in the repository while you work, fix it yourself right away in whatever file it lives, so nobody has to wait. Report back when the feature works.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "client-lead"
+     },
+     {
+      "slug": "mobile-implementer",
+      "name": "Mobile Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements the React Native app under apps/mobile/.",
+      "responsibilities": [
+       "Implement mobile UI"
+      ],
+      "prompt": "You are the mobile implementer. Follow the architecture document. Work on the app under apps/mobile/ as your brief says, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "client-lead"
+     },
+     {
+      "slug": "ui-tester",
+      "name": "UI Tester",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and runs end-to-end UI tests.",
+      "responsibilities": [
+       "Write e2e tests",
+       "Report failures"
+      ],
+      "prompt": "You are the UI tester. Follow the architecture document. Write and run Playwright tests under tests/e2e/ for the flows in your brief, stay within the files named in your brief and report which tests fail and why.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "client-lead"
+     },
+     {
+      "slug": "platform-lead",
+      "name": "Platform Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Leads API, data pipeline and infrastructure work.",
+      "responsibilities": [
+       "Split platform work",
+       "Check platform reports"
+      ],
+      "prompt": "You are the platform lead. Follow the architecture document. Split platform work between the API implementer, the data pipeline implementer and the infrastructure engineer, give each a brief that names its files, and check their reports before you answer the orchestrator.",
+      "canSpawn": true,
+      "spawnable": [
+       "api-implementer",
+       "data-pipeline-implementer",
+       "infra-engineer"
+      ],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "api-implementer",
+      "name": "API Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Implements the REST API under services/api/.",
+      "responsibilities": [
+       "Implement API endpoints"
+      ],
+      "prompt": "You are the API implementer. Follow the architecture document. Work on the API under services/api/ as your brief says, stay within the files named in your brief and report every file you touched. Answer the web implementer's questions about endpoints.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "data-pipeline-implementer",
+      "name": "Data Pipeline Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements the ETL jobs under services/pipeline/.",
+      "responsibilities": [
+       "Implement ETL jobs"
+      ],
+      "prompt": "You are the data pipeline implementer. Follow the architecture document. Work on the jobs under services/pipeline/ as your brief says, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "infra-engineer",
+      "name": "Infra Engineer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Maintains the Terraform under infra/.",
+      "responsibilities": [
+       "Maintain Terraform"
+      ],
+      "prompt": "You are the infrastructure engineer. Follow the architecture document. Work on the Terraform under infra/ as your brief says, run terraform fmt and validate before you report, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "reviewer",
+      "name": "Reviewer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "description": "Reviews changes for correctness and conventions; read-only.",
+      "responsibilities": [
+       "Review diffs"
+      ],
+      "prompt": "You are the reviewer. Follow the architecture document. Read the changes named in your brief, check them against the conventions and the task, and report concrete problems with file and line. You never edit files.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "researcher",
+      "name": "Researcher",
+      "tier": "fast",
+      "model": "fast",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "WebSearch",
+       "WebFetch"
+      ],
+      "description": "Looks things up; read-only.",
+      "responsibilities": [
+       "Find usages and versions"
+      ],
+      "prompt": "You are the researcher. Answer the question in your brief from the code and from documentation, quote the file or page you used and keep the answer short. You never edit files.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     }
+    ],
+    "after": [
+     {
+      "slug": "orchestrator",
+      "name": "Orchestrator",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "TodoWrite"
+      ],
+      "description": "Plans the work and hands it out to the two leads.",
+      "responsibilities": [
+       "Plan and sequence work",
+       "Check results against the task"
+      ],
+      "prompt": "You are the orchestrator. Read the architecture document first. Do a contained piece of work yourself; hand out work that splits into independent pieces to the Client Lead and the Platform Lead, and start independent pieces together. Ask the reviewer to look at anything that changes behavior.",
+      "canSpawn": true,
+      "spawnable": [
+       "client-lead",
+       "platform-lead",
+       "reviewer",
+       "researcher"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "client-lead",
+      "name": "Client Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Leads web, mobile and UI test work.",
+      "responsibilities": [
+       "Split client work",
+       "Check client reports"
+      ],
+      "prompt": "You are the client lead. Follow the architecture document. Split client work between the web implementer, the mobile implementer and the UI tester, give each a brief that names its files, and check their reports before you answer the orchestrator.",
+      "canSpawn": true,
+      "spawnable": [
+       "web-implementer",
+       "mobile-implementer",
+       "ui-tester"
+      ],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "web-implementer",
+      "name": "Web Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Implements the React web app under apps/web/.",
+      "responsibilities": [
+       "Implement web UI"
+      ],
+      "prompt": "You are the web implementer. Follow the architecture document. Work on the React app under apps/web/ as your brief says. Stay within the files named in your brief: if you find a problem in another area, do not edit it, message its owner or tell your lead. Report every file you touched. Message the API implementer when you need an endpoint changed.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "client-lead"
+     },
+     {
+      "slug": "mobile-implementer",
+      "name": "Mobile Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements the React Native app under apps/mobile/.",
+      "responsibilities": [
+       "Implement mobile UI"
+      ],
+      "prompt": "You are the mobile implementer. Follow the architecture document. Work on the app under apps/mobile/ as your brief says, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "client-lead"
+     },
+     {
+      "slug": "ui-tester",
+      "name": "UI Tester",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and runs end-to-end UI tests.",
+      "responsibilities": [
+       "Write e2e tests",
+       "Report failures"
+      ],
+      "prompt": "You are the UI tester. Follow the architecture document. Write and run Playwright tests under tests/e2e/ for the flows in your brief, stay within the files named in your brief and report which tests fail and why.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "client-lead"
+     },
+     {
+      "slug": "platform-lead",
+      "name": "Platform Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Leads API, data pipeline and infrastructure work.",
+      "responsibilities": [
+       "Split platform work",
+       "Check platform reports"
+      ],
+      "prompt": "You are the platform lead. Follow the architecture document. Split platform work between the API implementer, the data pipeline implementer and the infrastructure engineer, give each a brief that names its files, and check their reports before you answer the orchestrator.",
+      "canSpawn": true,
+      "spawnable": [
+       "api-implementer",
+       "data-pipeline-implementer",
+       "infra-engineer"
+      ],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "api-implementer",
+      "name": "API Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Implements the REST API under services/api/.",
+      "responsibilities": [
+       "Implement API endpoints"
+      ],
+      "prompt": "You are the API implementer. Follow the architecture document. Work on the API under services/api/ as your brief says, stay within the files named in your brief and report every file you touched. Answer the web implementer's questions about endpoints.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "data-pipeline-implementer",
+      "name": "Data Pipeline Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements the ETL jobs under services/pipeline/.",
+      "responsibilities": [
+       "Implement ETL jobs"
+      ],
+      "prompt": "You are the data pipeline implementer. Follow the architecture document. Work on the jobs under services/pipeline/ as your brief says, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "infra-engineer",
+      "name": "Infra Engineer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Maintains the Terraform under infra/.",
+      "responsibilities": [
+       "Maintain Terraform"
+      ],
+      "prompt": "You are the infrastructure engineer. Follow the architecture document. Work on the Terraform under infra/ as your brief says, run terraform fmt and validate before you report, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "reviewer",
+      "name": "Reviewer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "description": "Reviews changes for correctness and conventions; read-only.",
+      "responsibilities": [
+       "Review diffs"
+      ],
+      "prompt": "You are the reviewer. Follow the architecture document. Read the changes named in your brief, check them against the conventions and the task, and report concrete problems with file and line. You never edit files.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "researcher",
+      "name": "Researcher",
+      "tier": "fast",
+      "model": "fast",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "WebSearch",
+       "WebFetch"
+      ],
+      "description": "Looks things up; read-only.",
+      "responsibilities": [
+       "Find usages and versions"
+      ],
+      "prompt": "You are the researcher. Answer the question in your brief from the code and from documentation, quote the file or page you used and keep the answer short. You never edit files.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     }
+    ]
+   },
+   "reviseRounds": 0,
+   "toolErrors": 0,
+   "turns": 5,
+   "durationMs": 33000,
+   "costUsd": 0.4,
+   "kind": "code",
+   "complexity": 4
+  },
+  {
+   "family": "retro",
+   "scenarioId": "r5",
+   "repeat": 1,
+   "model": "test-model",
+   "status": "ok",
+   "revision": {
+    "ending": "propose",
+    "args": {
+     "title": "t",
+     "rationale": "r",
+     "roles": [],
+     "remove": []
+    },
+    "listed": 2,
+    "before": [
+     {
+      "slug": "orchestrator",
+      "name": "Orchestrator",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "TodoWrite"
+      ],
+      "description": "Plans the work and hands it out.",
+      "responsibilities": [
+       "Plan and sequence work",
+       "Check results against the task"
+      ],
+      "prompt": "You are the orchestrator. Read the architecture document first. Do a contained piece of work yourself; hand out work that splits into independent pieces or needs a specialist, and start independent pieces together. Give each report a brief that names its files, and have the reviewer look at anything that changes behavior.",
+      "canSpawn": true,
+      "spawnable": [
+       "backend-implementer",
+       "frontend-implementer",
+       "tester",
+       "reviewer",
+       "researcher"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "backend-implementer",
+      "name": "Backend Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements API handlers and server code under src/.",
+      "responsibilities": [
+       "Implement and change API handlers",
+       "Keep the server code consistent"
+      ],
+      "prompt": "You are the backend implementer. Follow the architecture document. Work on API handlers under src/ as your brief says, stay within the files named in your brief and report every file you touched. Run the tests you affect before you report back.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "frontend-implementer",
+      "name": "Frontend Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements the web client under web/.",
+      "responsibilities": [
+       "Implement and change UI components"
+      ],
+      "prompt": "You are the frontend implementer. Follow the architecture document. Work on the React client under web/ as your brief says, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "tester",
+      "name": "Tester",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and runs tests.",
+      "responsibilities": [
+       "Write tests",
+       "Run the suite and report failures"
+      ],
+      "prompt": "You are the tester. Follow the architecture document. Write and run tests for the behavior in your brief with Bash, stay within the files named in your brief and report which tests fail and why.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "reviewer",
+      "name": "Reviewer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "description": "Reviews changes for correctness and conventions; read-only.",
+      "responsibilities": [
+       "Review diffs",
+       "Report concrete problems"
+      ],
+      "prompt": "You are the reviewer. Follow the architecture document. Read the changes named in your brief, check them against the conventions and the task, and report concrete problems with file and line. You never edit files.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "researcher",
+      "name": "Researcher",
+      "tier": "fast",
+      "model": "fast",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "WebSearch",
+       "WebFetch"
+      ],
+      "description": "Looks things up: usages, versions, documentation; read-only.",
+      "responsibilities": [
+       "Find usages and versions",
+       "Summarize documentation"
+      ],
+      "prompt": "You are the researcher. Answer the question in your brief from the code and from documentation, quote the file or page you used and keep the answer short. You never edit files.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     }
+    ],
+    "after": [
+     {
+      "slug": "orchestrator",
+      "name": "Orchestrator",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "TodoWrite"
+      ],
+      "description": "Plans the work and hands it out.",
+      "responsibilities": [
+       "Plan and sequence work",
+       "Check results against the task"
+      ],
+      "prompt": "You are the orchestrator. Read the architecture document first. Do a contained piece of work yourself; hand out work that splits into independent pieces or needs a specialist, and start independent pieces together. Give each report a brief that names its files, and have the reviewer look at anything that changes behavior.",
+      "canSpawn": true,
+      "spawnable": [
+       "backend-implementer",
+       "frontend-implementer",
+       "tester",
+       "reviewer"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "backend-implementer",
+      "name": "Backend Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements API handlers and server code under src/.",
+      "responsibilities": [
+       "Implement and change API handlers",
+       "Keep the server code consistent"
+      ],
+      "prompt": "You are the backend implementer. Follow the architecture document. Work on API handlers under src/ as your brief says, stay within the files named in your brief and report every file you touched. Run the tests you affect before you report back.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "frontend-implementer",
+      "name": "Frontend Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements the web client under web/.",
+      "responsibilities": [
+       "Implement and change UI components"
+      ],
+      "prompt": "You are the frontend implementer. Follow the architecture document. Work on the React client under web/ as your brief says, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "tester",
+      "name": "Tester",
+      "tier": "deep",
+      "model": "opus",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and runs tests.",
+      "responsibilities": [
+       "Write tests",
+       "Run the suite and report failures"
+      ],
+      "prompt": "You are the tester. Follow the architecture document. Write and run tests for the behavior in your brief with Bash, stay within the files named in your brief and report which tests fail and why.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "reviewer",
+      "name": "Reviewer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "description": "Reviews changes for correctness and conventions; read-only.",
+      "responsibilities": [
+       "Review diffs",
+       "Report concrete problems"
+      ],
+      "prompt": "You are the reviewer. Follow the architecture document. Read the changes named in your brief, check them against the conventions and the task, and report concrete problems with file and line. You never edit files.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     }
+    ]
+   },
+   "reviseRounds": 0,
+   "toolErrors": 0,
+   "turns": 6,
+   "durationMs": 41000,
+   "costUsd": 0.55,
+   "kind": "code",
+   "complexity": 3
+  },
+  {
+   "family": "retro",
+   "scenarioId": "r6",
+   "repeat": 1,
+   "model": "test-model",
+   "status": "ok",
+   "revision": {
+    "ending": "noChange",
+    "summary": "nothing to change",
+    "listed": 0,
+    "before": [
+     {
+      "slug": "orchestrator",
+      "name": "Orchestrator",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "TodoWrite"
+      ],
+      "description": "Plans the work and hands it out to the two leads.",
+      "responsibilities": [
+       "Plan and sequence work",
+       "Check results against the task"
+      ],
+      "prompt": "You are the orchestrator. Read the architecture document first. Do a contained piece of work yourself; hand out work that splits into independent pieces to the Client Lead and the Platform Lead, and start independent pieces together. Ask the reviewer to look at anything that changes behavior.",
+      "canSpawn": true,
+      "spawnable": [
+       "client-lead",
+       "platform-lead",
+       "reviewer",
+       "researcher"
+      ],
+      "reportsTo": null
+     },
+     {
+      "slug": "client-lead",
+      "name": "Client Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Leads web, mobile and UI test work.",
+      "responsibilities": [
+       "Split client work",
+       "Check client reports"
+      ],
+      "prompt": "You are the client lead. Follow the architecture document. Split client work between the web implementer, the mobile implementer and the UI tester, give each a brief that names its files, and check their reports before you answer the orchestrator.",
+      "canSpawn": true,
+      "spawnable": [
+       "web-implementer",
+       "mobile-implementer",
+       "ui-tester"
+      ],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "web-implementer",
+      "name": "Web Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Implements the React web app under apps/web/.",
+      "responsibilities": [
+       "Implement web UI"
+      ],
+      "prompt": "You are the web implementer. Follow the architecture document. Work on the React app under apps/web/ as your brief says, stay within the files named in your brief and report every file you touched. Message the API implementer when you need an endpoint changed.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "client-lead"
+     },
+     {
+      "slug": "mobile-implementer",
+      "name": "Mobile Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements the React Native app under apps/mobile/.",
+      "responsibilities": [
+       "Implement mobile UI"
+      ],
+      "prompt": "You are the mobile implementer. Follow the architecture document. Work on the app under apps/mobile/ as your brief says, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "client-lead"
+     },
+     {
+      "slug": "ui-tester",
+      "name": "UI Tester",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Writes and runs end-to-end UI tests.",
+      "responsibilities": [
+       "Write e2e tests",
+       "Report failures"
+      ],
+      "prompt": "You are the UI tester. Follow the architecture document. Write and run Playwright tests under tests/e2e/ for the flows in your brief, stay within the files named in your brief and report which tests fail and why.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "client-lead"
+     },
+     {
+      "slug": "platform-lead",
+      "name": "Platform Lead",
+      "tier": "deep",
+      "model": "deep",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Leads API, data pipeline and infrastructure work.",
+      "responsibilities": [
+       "Split platform work",
+       "Check platform reports"
+      ],
+      "prompt": "You are the platform lead. Follow the architecture document. Split platform work between the API implementer, the data pipeline implementer and the infrastructure engineer, give each a brief that names its files, and check their reports before you answer the orchestrator.",
+      "canSpawn": true,
+      "spawnable": [
+       "api-implementer",
+       "data-pipeline-implementer",
+       "infra-engineer"
+      ],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "api-implementer",
+      "name": "API Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash",
+       "SendMessage",
+       "ListAgents"
+      ],
+      "description": "Implements the REST API under services/api/.",
+      "responsibilities": [
+       "Implement API endpoints"
+      ],
+      "prompt": "You are the API implementer. Follow the architecture document. Work on the API under services/api/ as your brief says, stay within the files named in your brief and report every file you touched. Answer the web implementer's questions about endpoints.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "data-pipeline-implementer",
+      "name": "Data Pipeline Implementer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Implements the ETL jobs under services/pipeline/.",
+      "responsibilities": [
+       "Implement ETL jobs"
+      ],
+      "prompt": "You are the data pipeline implementer. Follow the architecture document. Work on the jobs under services/pipeline/ as your brief says, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "infra-engineer",
+      "name": "Infra Engineer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "Edit",
+       "Write",
+       "Bash"
+      ],
+      "description": "Maintains the Terraform under infra/.",
+      "responsibilities": [
+       "Maintain Terraform"
+      ],
+      "prompt": "You are the infrastructure engineer. Follow the architecture document. Work on the Terraform under infra/ as your brief says, run terraform fmt and validate before you report, stay within the files named in your brief and report every file you touched.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "platform-lead"
+     },
+     {
+      "slug": "reviewer",
+      "name": "Reviewer",
+      "tier": "everyday",
+      "model": "everyday",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep"
+      ],
+      "description": "Reviews changes for correctness and conventions; read-only.",
+      "responsibilities": [
+       "Review diffs"
+      ],
+      "prompt": "You are the reviewer. Follow the architecture document. Read the changes named in your brief, check them against the conventions and the task, and report concrete problems with file and line. You never edit files.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     },
+     {
+      "slug": "researcher",
+      "name": "Researcher",
+      "tier": "fast",
+      "model": "fast",
+      "tools": [
+       "Read",
+       "Glob",
+       "Grep",
+       "WebSearch",
+       "WebFetch"
+      ],
+      "description": "Looks things up; read-only.",
+      "responsibilities": [
+       "Find usages and versions"
+      ],
+      "prompt": "You are the researcher. Answer the question in your brief from the code and from documentation, quote the file or page you used and keep the answer short. You never edit files.",
+      "canSpawn": false,
+      "spawnable": [],
+      "reportsTo": "orchestrator"
+     }
+    ],
+    "after": null
+   },
+   "reviseRounds": 0,
+   "toolErrors": 0,
+   "turns": 2,
+   "durationMs": 11000,
+   "costUsd": 0.07,
+   "kind": "code",
+   "complexity": 4
+  }
+ ]
+}
