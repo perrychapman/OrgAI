@@ -182,20 +182,26 @@ try {
   check(await noPageScroll(), 'forced floor plan has no page scroll at 1024x640')
   await shot('forced-floor-plan')
 
-  for (const [value, notice, retry] of [['no-webgl2', 'no-webgl2', false], ['chunk-failed', 'chunk-failed', true]]) {
+  // FactoryScene decides the reason in this order: forced floor-plan, no WebGL2, too many agents, context lost, chunk failed.
+  // A machine whose probe finds no WebGL2 (the macOS CI runner: its Live scene is already the floor plan above) therefore
+  // can never reach 'chunk-failed': the forced chunk failure is moot and the no-webgl2 notice (no Try 3D again) is correct.
+  const noWebgl2Here = liveRenderer !== 'webgl2'
+  for (const [value, notice, retry] of [['no-webgl2', 'no-webgl2', false], ['chunk-failed', noWebgl2Here ? 'no-webgl2' : 'chunk-failed', !noWebgl2Here]]) {
     await setKey(value)
     await remount()
     await scene('live').waitFor({ timeout: 15_000 })
     await page.locator('[data-testid=factory-notice]').first().waitFor({ timeout: 15_000 }).catch(() => {})
     const n = page.locator('[data-testid=factory-notice]').first()
     check((await n.count()) === 1 && (await n.getAttribute('data-notice')) === notice, `${value}: the ${notice} notice shows`, String(await n.getAttribute('data-notice').catch(() => null)))
-    check((await scene('live').getAttribute('data-renderer')) === 'floor-plan' && (await scene('live').getAttribute('data-reason')) === value, `${value}: the floor plan shows with reason ${value}`)
+    check((await scene('live').getAttribute('data-renderer')) === 'floor-plan' && (await scene('live').getAttribute('data-reason')) === notice, `${value}: the floor plan shows with reason ${notice}`)
     check((await page.locator('[data-testid=factory-use-graph]').count()) === 1, `${value}: Use Graph is offered`)
     if (retry) {
       check((await page.locator('[data-testid=factory-retry-3d]').count()) === 1, 'chunk-failed: Try 3D again is offered')
       await page.locator('[data-testid=factory-retry-3d]').click()
       await sleep(600)
       check((await page.locator('[data-testid=factory-notice]').count()) === 1, 'chunk-failed: Try 3D again fails again while the key is set')
+    } else if (value === 'chunk-failed') {
+      check((await page.locator('[data-testid=factory-retry-3d]').count()) === 0, 'chunk-failed on a machine without WebGL2: the no-webgl2 notice has no Try 3D again')
     }
     await shot(`notice-${value}`)
   }

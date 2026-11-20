@@ -164,6 +164,11 @@ try {
   const navRunId = await navRun.getAttribute('data-run')
   const statusOfNav = () => page.evaluate(async (id) => (await window.orgai.runs.listLive()).find((r) => r.id === id)?.status ?? 'ended', navRunId)
   check(await until(async () => (await statusOfNav()) === 'idle', 30_000), 'the second mock run settles idle')
+  // Close asks first unless the renderer's own view of the run is idle (closeConfirmFor), and main reporting idle does not
+  // prove that. CI run 44688833784 (macOS): the Close confirm opened 0.2 s after main reported idle. The row's status word
+  // is the renderer's view; checking it separately keeps a main/renderer disagreement visible instead of a later timeout.
+  const rowIdle = () => navRun.locator('.sr-only').first().innerText().then((t) => t.trim() === 'Idle')
+  check(await until(rowIdle, 5000), 'the sidebar row shows Idle once main reports idle', await navRun.locator('.sr-only').first().innerText().catch(() => ''))
   await navRun.click({ button: 'right' })
   await menuOpen('nav-run-menu').waitFor({ timeout: 5000 })
   check((await itemsOf('nav-run-menu')).join('|') === 'Open|Open in new window|Close', 'sidebar run menu: Open, Open in new window, Close', (await itemsOf('nav-run-menu')).join('|'))
