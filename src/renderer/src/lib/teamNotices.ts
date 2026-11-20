@@ -68,9 +68,16 @@ export function nextExpiry(list: readonly TeamNotice[], now: number): number | n
   return soonest
 }
 
-/** Priority first (error before hint), then the newest. */
+/**
+ * Rank used for ordering: an undoable edit and a "saved" confirmation share one rank, so the user's newest action is the
+ * one shown. (With the spec's strict order a "Saved the template" posted right after an add waited behind the add's
+ * 12 s Undo and expired at 8 s without ever being seen.)
+ */
+const rank = (k: NoticeKind): number => (k === 'saved' ? NOTICE_PRIORITY.edit : NOTICE_PRIORITY[k])
+
+/** Priority first (error before hint; edit and saved share a rank), then the newest. */
 export function compareNotices(a: TeamNotice, b: TeamNotice): number {
-  return NOTICE_PRIORITY[a.kind] - NOTICE_PRIORITY[b.kind] || b.at - a.at
+  return rank(a.kind) - rank(b.kind) || b.at - a.at
 }
 
 /**

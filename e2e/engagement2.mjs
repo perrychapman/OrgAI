@@ -108,7 +108,9 @@ try {
   await openProject(page, A)
   await openTeam(page)
   const before = (await roleNames(A)).length
-  await page.getByRole('button', { name: 'Add role', exact: true }).click()
+  // Phase 2: Add role opens the Add role popover; Enter in the name adds the role.
+  await page.locator('[data-testid=team-add-role]').click()
+  await page.locator('[data-testid=add-role-name]').press('Enter')
   check(await until(async () => (await roleNames(A)).length === before + 1), 'Add role saved one more role on A', `${before} -> ${(await roleNames(A)).length}`)
   const aRoles = await roleNames(A)
   const bRoles0 = await roleNames(B)
@@ -132,7 +134,8 @@ try {
   check(listed.length === 1 && listed[0].name === TEMPLATE && listed[0].roleCount === aRoles.length, 'templates.list has the saved template with A\'s role count', JSON.stringify(listed.map((t) => [t.name, t.roleCount])))
 
   // Manage templates -> App settings pane.
-  await savedNotice.getByRole('button', { name: 'Manage templates' }).click()
+  // Phase 2: the notice is a message of the notice row; its actions sit beside the message element.
+  await page.locator('[data-testid=team-notice-row]').getByRole('button', { name: 'Manage templates' }).click()
   await page.locator('[data-testid=templates-section]').waitFor({ state: 'visible' })
   check((await page.locator('[data-testid=template-row]').count()) === 1 && clean(await page.locator('[data-testid=template-row]').innerText()).includes(TEMPLATE), 'App settings > Templates and kit lists the row')
   const s1 = await windowShift(page)

@@ -108,7 +108,9 @@ try {
   fs.writeFileSync(reviewerFile, before)
   await notice.waitFor({ timeout: 10_000 })
   check((await page.locator('[data-testid=import-undo]').count()) === 1, 'Undo is offered right after the import')
-  await page.getByRole('button', { name: 'Add role' }).first().click()
+  // Phase 2: Add role opens the Add role popover; Enter in the name adds the role.
+  await page.locator('[data-testid=team-add-role]').click()
+  await page.locator('[data-testid=add-role-name]').press('Enter')
   await page.locator('[data-testid=import-undo]').waitFor({ state: 'detached', timeout: 10_000 })
   check(/chart|edit|changed|Undo/i.test(await notice.innerText()), 'banner stays but Undo is gone after a chart edit', await notice.innerText())
   await shot('undo-expired')

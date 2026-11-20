@@ -1,6 +1,6 @@
 # Team tab overhaul: build spec, phases 2 to 5
 
-Status: spec only. Author: Product Designer. Builds on `docs/design/team-tab.md` (keep its vocabulary table: **Tools**, **Connections**, **Skills**) and on `docs/design/ux-review-team-tab-5.md` (the evidence; "shot N" and "Flow N" refer to it).
+Status: phase 2 built (2026-11-19, see 1.14 "As built"); phases 3 to 5 spec only. Author: Product Designer. Builds on `docs/design/team-tab.md` (keep its vocabulary table: **Tools**, **Connections**, **Skills**) and on `docs/design/ux-review-team-tab-5.md` (the evidence; "shot N" and "Flow N" refer to it).
 
 Two things about the inputs:
 
@@ -383,6 +383,20 @@ Remove (end of phase 2 or 3, see 2.5): `components/team/TeamFilesLine.tsx`.
 - **Template role structure** for the preview tree: `OrgTemplateInfo` carries role names only. Optional; the flat list ships without it.
 - `teamFiles:commit` must not push (verify, then keep the sentence `Nothing is pushed.`).
 - Nothing else; the rest is renderer-only.
+
+### 1.14 As built (phase 2, 2026-11-19)
+
+Owner decisions applied: open questions 1 to 10 take the recommendation, except the delegation checkbox reads `Always involve` (title as specified). Deviations from sections 1.1 to 1.12:
+
+- **1.1 Header.** Icon-only below 800 px of header width, not 880 (measured: the header is about 824 px at 1440x900 and 584 px at 1024x640; full labels need about 710 px; one constant `HEADER_COMPACT_BELOW`). Below 640 px Layout and Start from stay two icon buttons instead of merging into `More`; the problems chip keeps its icon and moves its words to the tooltip and assistive text; below 560 px the count moves into the title tooltip. Add role's trigger testid is `team-add-role`. The "exactly one primary on the tab" rule holds for the header; the tray's `Recommend tools and skills` is still primary until phase 3 replaces the tray.
+- **1.2 Add role.** As specified. `add-role-parent` is a native `select` (options from `roleOps.parentOptions`, indented with non-breaking spaces). The node menu's and the role editor's "Add a report" open this popover with that role as parent (anchored to the header button). Undo of an add puts the manager's delegation fields back field by field (`lib/teamEdits.ts`).
+- **1.3 Start from.** As specified; the trigger's accessible name carries the count ("Start from, 3 agent files found"), the dot is decorative. The Architect form is shared with the tray's Design pane (phase 3 removes that pane); the quick draft is deleted in the UI, the store's draft actions remain as dead code for phase 3. Template preview stacks its columns under 700 px wide or 600 px high. The import dialog's replace-mode button still reads "Replace chart with N roles".
+- **1.4 Team files chip.** The chip is the Popover trigger (`team-files-chip`); `team-files-line` (with `data-state` / `data-tone`, tones `quiet | neutral | accent | attention | danger`) is on its wrapper. The popover is capped at the window width minus 16 px (it is in the top layer, not inside the frame). The commit confirm lists 8 files; its closing note keeps the phase 1 review M2 sentence (OrgAI commits the team files git reports as changed when you confirm, and only team files) and says "Nothing is pushed."; when main's list may be capped the label reads "Commit team files" without a number. The applied-at-once Undo lives only inside the popover.
+- **1.5 Notice row.** As specified, plus: the first-visit hint shows only when nothing else is in the row and is never counted in `+N`; the row stays visible while the team files approval card is open (the old rule hiding the footer is removed; Approve and Reject still fit at 1024x640, checked in `e2e/live-changes.mjs`). Session messages use `team-notice-session` / `team-notice-session-open`.
+- **1.6 Role editor.** Section 5 is a `details` whose summary holds the heading and the sentence. A pinned connection other than the project's adds " It runs on {name}." to the sentence. The ID fold is `role-details-fold`. A manager or ancestor the role already delegates to is never offered as a choice; it shows as one line "Also delegates to its manager X." with a Remove button. A cross-branch group of one role that heads itself has no heading. Raw tool names are 12 px (no 11 px token). The empty Connections / Skills sentences are the heading's title and an assistive description; the chooser header kept its own sentence ("Only this role gets what you add...").
+- **1.7 Wording.** As specified, with `Always involve`. The card chip is "Delegates to N" (`role-node-leads` kept).
+- **1.9 Sizes.** Edge type is the Default style's resolved value (bezier, `curved`), not smoothstep (section 4.4).
+- **1.12 e2e.** Pocket Office is no longer driven through Team: `e2e/pocket-office.mjs` dropped its Team section and checks that Team shows no scene; its Canvas style popover check moved to Live. `e2e/canvas.mjs` dropped the Team Canvas style, node-style and Auto-layout steps and checks Team stays cards under every app look, the Layout menu and Arrange automatically.
 
 ## 2. Phase 3: Side panel, Suggestions drawer, team files approval
 

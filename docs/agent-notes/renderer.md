@@ -698,3 +698,38 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
   looked at). The script now also covers the org chart line (rename note, prompt edit), the role inspector's "No longer uses", and
   four live runs answering one grant (now, `[mock:host-after-idle]`, `[mock:host-slow]` pending then final, `[mock:host-reject]` reason).
   Not looked at: the role-inspector and Connections placements in the browser, screen-reader speech, a run with a long title beyond the mock's, 'after-idle' / 'pending' on a live provider.
+
+## Team tab phase 2: header, Add role, Start from, team files chip, notice row, role editor (2026-11-19)
+
+- Spec `docs/design/team-tab-overhaul.md` sections 0 and 1 ("As built" notes there list every deviation). `views/TeamView.tsx` is
+  mount points and state wiring; the UI lives in `components/team/TeamHeader.tsx` (in `FrameToolbar`: h1, role count, static
+  `team-problems-chip`, empty `team-view-switch`, Layout menu `team-layout`, `StartFromMenu`, `TeamFilesChip`, `AddRolePopover`
+  trigger `team-add-role`, the only primary), `TeamNoticeRow.tsx` (always in `FrameFooter`, fixed 32 px, `team-notice-row`),
+  `AddRolePopover.tsx`, `StartFromMenu.tsx`, `ArchitectDialog.tsx` (`useArchitectForm` / `ArchitectFields` shared with the tray's
+  Design pane `DraftPanel`, whose quick draft is gone; the store's `draftOrgChart` / `applyDraft` / `discardDraft` are now dead code
+  for phase 3), `TeamFilesChip.tsx` (replaces the deleted `TeamFilesLine.tsx`; `team-files-line` stays on its wrapper with
+  `data-state` / `data-tone`; the commit confirm is owned by the chip and keeps review M2's note plus "Nothing is pushed."),
+  `RoleDelegation.tsx`, `RoleModelSentence.tsx`, `RoleToolGroups.tsx`. Pure, unit-tested libs: `teamNotices.ts` (priority queue;
+  the first-visit hint shows only when nothing else is in the row and is never counted in `+N`), `teamEdits.ts` (field-by-field
+  Undo of add and re-parent), `teamPrefs.ts` (`orgai.teamLayout`, `orgai.teamHintSeen`), `startFrom.ts`, `toolGroups.ts`,
+  `roleModelSentence.ts`, `delegation.ts` `delegationView`, `teamFiles.ts` `teamFilesChip` / `teamFilesPopoverSentence`,
+  `roleOps.ts` `parentOptions`. CSS per owner: `teamHeader.css`, `teamStartFrom.css`, `roleEditor.css`, `teamFiles.css`, `team.css`.
+- The Team editor no longer reads `useCanvasOptions()`: card nodes (220x96), `EDGE_TYPE[DEFAULT_STYLE.canvas.edges]` (bezier, not
+  the spec's smoothstep), graph only, its own direction (`orgai.teamLayout`, top-down | left-right). `RoleNode` takes optional
+  `data.team` / `data.layout` and its chip reads "Delegates to N". Pocket Office, Canvas style, Templates, Import, Auto-layout,
+  the footer hint, `toolbar-undo`, the banner stack and `import-found` are gone from Team (OfficeScene and CanvasStyleButton stay
+  for Live and App settings). `panActivationKeyCode={null}` on the Team ReactFlow: Space no longer pans, so it reaches buttons and
+  `<summary>` (e2e/team.mjs checks Space on "Choose individual tools"). RoleInspector ignores an Escape that comes from inside a
+  `dialog` or `[popover]` (TeamView's `focusNode` runs a frame later and used to steal the chooser's focus return).
+- Notices: added / removed / now reports to with 12 s Undo; remove asks only when the role has reports; import and template notices
+  keep their testids on the row's message element (`data-kind`). No "subagent" wording remains (`spawnNotice` / `moveNotice`
+  reworded). The team files approval card no longer hides the footer: `e2e/live-changes.mjs` now asserts the notice row stays and
+  Approve / Reject are inside the window and clear of it at 1024x640 and 1600x1000.
+- Security recheck carry-overs: `reservedSlugs` (a slug named by a server's explicit `roles` and not the edit's starting slug is
+  taken, for `renamePatch` and `slugFieldEdit`), `renameSnapshot` keeps the starting slug across re-snapshots of the same role
+  and project, `slugFieldEdit` refuses a value with no letter or number ("An ID needs at least one letter or number."), and the
+  store's debounced save applies only `mcpServers` from `projects:save`'s answer (`store/projectSave.test.ts`).
+- Checked: both tsconfigs, `vitest run src/renderer src/shared`, build, and on the mock: e2e team, team-files, import, canvas,
+  layout, org-change, proposals, connections, multi-provider, office, pocket-office, engagement2, skills, connectors, live-changes.
+  Not verified: screen-reader speech of the notice row and the mixed tool checkboxes, the zero-roles popover state, the `+N`
+  waiting list contents, the dot-before-open state of Start from in e2e (import.mjs reaches Team after the import wrote its memory).
