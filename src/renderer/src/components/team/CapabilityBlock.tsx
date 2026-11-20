@@ -6,12 +6,13 @@ export type CapabilityKind = 'tools' | 'connections' | 'skills'
 
 /**
  * One group of "What it can use": heading, one-line summary, the chips or rows, and the scoped Add control. An empty
- * group swaps the secondary "+ Add" for a primary action plus an "Ask the Team assistant" link, so the user never has
- * to leave to act.
+ * group is one line: heading, muted "None yet" and the secondary Add button. `description` (what the group is) is the
+ * heading's title text, so the long explanation stays out of the panel.
  */
 export function CapabilityGroup({
   id,
   title,
+  description,
   summary,
   helper,
   actions,
@@ -21,42 +22,40 @@ export function CapabilityGroup({
 }: {
   id: string
   title: string
+  /** Longer explanation, shown as the heading's tooltip. */
+  description?: string
   summary?: ReactNode
   helper?: string
   /** Right of the heading when the group has content (the "+ Add" or "Edit" button). */
   actions?: ReactNode
-  /** Set when the group has nothing: replaces `children` and `actions`. */
-  empty?: { text: string; primaryLabel: string; primaryTestId: string; onPrimary: () => void; onAsk?: () => void }
+  /** Set when the group has nothing: one line with the secondary Add; replaces `children` and `actions`. */
+  empty?: { addLabel: string; addTestId: string; onAdd: () => void }
   children?: ReactNode
   testId: string
 }): ReactElement {
   return (
-    <section className="role-cap-group" aria-labelledby={`${id}-title`} data-testid={testId}>
+    <section className="role-cap-group" aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-desc` : undefined} data-testid={testId} data-empty={empty ? 'true' : undefined}>
       <div className="role-cap-head">
-        <h4 className="side-section-title" id={`${id}-title`}>
+        <h4 className="side-section-title" id={`${id}-title`} title={description}>
           {title}
         </h4>
-        {!empty && actions && <div className="role-cap-actions">{actions}</div>}
-      </div>
-      {summary && !empty && <p className="role-cap-summary" data-testid={`${testId}-summary`}>{summary}</p>}
-      {helper && <p className="hint">{helper}</p>}
-      {empty ? (
-        <div className="role-cap-empty">
-          <p className="hint">{empty.text}</p>
-          <div className="role-cap-empty-actions">
-            <Button variant="primary" size="sm" icon={Plus} testId={empty.primaryTestId} onClick={empty.onPrimary}>
-              {empty.primaryLabel}
-            </Button>
-            {empty.onAsk && (
-              <button type="button" className="mcp-link" onClick={empty.onAsk} data-testid="role-ask-assistant">
-                <span className="mcp-link-text">Ask the Team assistant</span>
-              </button>
-            )}
+        {empty && <span className="role-cap-none">None yet</span>}
+        {empty ? (
+          <div className="role-cap-actions">
+            <AddButton label={empty.addLabel} testId={empty.addTestId} onClick={empty.onAdd} />
           </div>
-        </div>
-      ) : (
-        children
+        ) : (
+          actions && <div className="role-cap-actions">{actions}</div>
+        )}
+      </div>
+      {description && (
+        <span className="sr-only" id={`${id}-desc`}>
+          {description}
+        </span>
       )}
+      {summary && !empty && <p className="role-cap-summary" data-testid={`${testId}-summary`}>{summary}</p>}
+      {helper && !empty && <p className="hint">{helper}</p>}
+      {!empty && children}
     </section>
   )
 }

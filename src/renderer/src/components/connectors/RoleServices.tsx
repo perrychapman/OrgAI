@@ -26,8 +26,7 @@ export default function RoleServices({
   servers,
   error,
   onRevoke,
-  onAdd,
-  onAsk
+  onAdd
 }: {
   role: Role
   /** null while the list loads. */
@@ -35,7 +34,6 @@ export default function RoleServices({
   error?: string | null
   onRevoke: (info: McpServerInfo) => void
   onAdd: () => void
-  onAsk?: () => void
 }): ReactElement {
   const projectId = useAppStore((s) => s.selectedProjectId)
   const granted = grantedServers(servers ?? [], role)
@@ -61,17 +59,8 @@ export default function RoleServices({
       title="Connections"
       summary={summary}
       actions={<AddButton label={`Add a connection to ${role.name}`} testId="role-add-connection" onClick={onAdd} />}
-      empty={
-        servers !== null && granted.length === 0
-          ? {
-              text: 'No connections yet. A connection lets this role reach a service such as GitHub or Slack.',
-              primaryLabel: 'Add a connection',
-              primaryTestId: 'role-add-connection',
-              onPrimary: onAdd,
-              onAsk
-            }
-          : undefined
-      }
+      description="A connection lets this role reach a service such as GitHub or Slack."
+      empty={servers !== null && granted.length === 0 && !error ? { addLabel: `Add a connection to ${role.name}`, addTestId: 'role-add-connection', onAdd } : undefined}
     >
       {error && (
         <p className="invalid-text" role="alert">
