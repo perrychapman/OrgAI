@@ -51,7 +51,7 @@ export const RULES = [
   { match: ['.github/workflows/**'], kind: 'full', scripts: [], why: 'CI workflow change' },
   { match: ['.github/**'], kind: 'none', scripts: [], why: 'GitHub metadata (templates, dependabot)' },
   { match: ['scripts/smoke-*.mjs', 'scripts/probe-*.mjs', 'scripts/readme-media.mjs', 'scripts/measure-prompt-size.mjs', 'scripts/list-proxy-models.mjs'], kind: 'none', scripts: [], why: 'manual helper script no e2e runs' },
-  { match: ['scripts/bench-org-chart.mjs', 'scripts/lib/org-bench/**'], kind: 'none', scripts: [], why: 'org chart benchmark (manual, token-spending when run live); its node:test files run in test:scripts' },
+  { match: ['scripts/bench-org-chart.mjs', 'scripts/bench-org-heal.mjs', 'scripts/lib/org-bench/**'], kind: 'none', scripts: [], why: 'org chart benchmark (manual, token-spending when run live); its node:test files run in test:scripts' },
   { match: ['.gitignore'], kind: 'none', scripts: [], why: 'ignore list: no e2e reads it' },
   { match: ['scripts/audit-gate.mjs'], kind: 'none', scripts: [], why: 'CI dependency audit gate (the audit job); no e2e runs it' },
   { match: ['scripts/merge-latest-mac.mjs'], kind: 'none', scripts: [], why: 'release-only script (release.yml publish job); its node:test runs in test:scripts' },
