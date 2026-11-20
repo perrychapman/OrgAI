@@ -191,3 +191,7 @@ For "Lead" the sentence "This run keeps calling it lead until the next run" read
 - A busy (non-idle) run, an ended run, and the "being applied" case for an MCP grant; the slow case was driven only on a skill grant and a rename.
 - Role names with spaces; the real provider; the packaged build.
 - Time from clicking a skill to the dialog closing while a slow run is pending: at 0.5 s the chooser was still open and no line was shown, at 3 s all lines were up; the exact moment was not measured.
+
+## Fix status (UI Engineer, 2026-11-19)
+
+H1, H2, M1 to M6 and L1, L2 are addressed; the design and checks are in `docs/agent-notes/renderer.md` "Saves reach live runs" (re-walk fixes) and `e2e/live-changes.mjs` (phases e and f). L3 (silent slug change) stays with the inspector owner. Open: the overlay can cover top nodes of a small chart for up to 20 s; screen-reader speech is not verified.

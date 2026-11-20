@@ -662,14 +662,36 @@ scenario 5 (root row names Roster Tester). Unverified: the added row's body at 1
   `liveChangeStore.reportLiveEvent` and returns (no run state). Exactly `what.includes('orgChart')` (every projects:save, also a
   grants-only one such as a skill removed in the role inspector; never the mcp:* / skills:* routes) is the 'orgChart' surface: one note
   per save (events of one save for several runs within 5 s share it, a pending line is replaced by its final one), drawn by
-  `<LiveChangeNote surface="orgChart">` mounted in the canvas footer of `TeamView` (own row, no reserved height; an empty region is
-  visually hidden but mounted). Any other event never adds a line (the result path already shows it); it only replaces that
+  `<LiveChangeNote surface="orgChart">` (placement changed in the re-walk fix below; an empty region is visually hidden but
+  mounted). Any other event never adds a line (the result path already shows it); it only replaces that
   save's 'pending' line with the final answer, worded from the stored `action`. That is the dedupe: one save, one line, one polite
   region with text.
 - Wording: `LiveChangeAction` has `orgchart` ("Org chart changes are in use now"). For `changed` / `orgchart`, the run's own
   `grants` word the line (`actionFromGrants`: "No longer uses api-design and Context7", "Can use a, b and 2 more now"; mixed
   directions keep the generic wording). `LiveChangeLine.details` are plain text rows under the line (rename `notes`, deferred
   roles "Name waits for the next run: reason", and a next-run `reason`), always on screen, never tooltip-only.
+- Re-walk fixes (2026-11-19, `ux-review-live-changes.md` "Re-walk"): the org chart note is no longer in the footer (it grew to 248 px
+  with four runs and `teamFiles.css` hides the footer under the approval card). Its one mount line is the last child of `FrameStage` in
+  `TeamView`; CSS (`mcp-library.css`) makes it an absolutely positioned overlay at the stage's top right (width <= 30rem, max height
+  min(11rem, stage - 2 rows), its own scroll, `pointer-events` only on the card), so it takes no layout room, nothing moves when it
+  appears or clears and the approval card (in the tray below) is never covered. Deviation from "nothing floats over the canvas": it is a
+  transient status (20 s), and it can cover the top nodes of a small chart meanwhile. Two or more runs show ONE summary row
+  ("Org chart changes · 4 live runs: 2 now · 1 once idle · 1 from the next run", `summarizeLines`) that is a native `<details>`
+  summary (Enter and Space; the summary stops Space reaching React Flow's window pan key, which cancels it) with the per-run rows
+  inside (run title first and truncating, the effect wrapping, so rows never differ only in a hidden tail). A caveat every run shares is
+  shown once above the rows; rows keep the order of the run tabs (the app store's run order), so a slow answer never reshuffles them.
+  The region has `aria-atomic="true"`: the summary is one short sentence and a pending line replaced by its final answer must be read in
+  full, not as a fragment. The catalog and inspector regions use the same component; the inspector's `role:<id>` notes carry a `part`
+  (`connections` / `skills`) and mount under their own group header (skill grant and revoke under Skills, connection under
+  Connections; the Skills chooser's `useProjectSkills` notes default to `skills`); the region reserves one row once a note has shown
+  there (catalog: one row while a run is live), not one per run. A role inspector save through the project save (skill removed, a role's
+  connection list narrowed) calls `expectInspectorSave` so its `run.liveChange` event (which carries grants) is drawn in the inspector
+  under that group, not in the org chart note. `serverReach` names a connection by `serviceFor(spec).label` ("Context7", not the slug).
+  Added / removed role and a prompt edit get their own wording ("Added X to this run", "Removed X from this run", "Updated X is in use
+  now") from `roleChangeAction`, a diff of the roles the always-mounted org chart note tracks (`trackRoles`; the event does not say, so
+  a rename or several changes at once stay generic). The note expires 20 s after the last answer (the final one replaces a pending one)
+  and never later than 30 s after the save. Not verified: screen-reader speech; the role diff when the project list is updated by a
+  route other than the renderer's own save (a stale roster gives the generic wording).
 - Checked: typecheck, build, `liveRunChange.test.ts`, `liveChangeStore.test.ts`, `e2e/live-changes.mjs` (idle mock run: skill create + grant, role rename,
   status line wording, one visible line and one text-bearing status region per save, no layout move when it clears, run log lines,
   only harness notices added to the transcript, line inside the section at 1600x1000 and 1024x640 in both themes, screenshots

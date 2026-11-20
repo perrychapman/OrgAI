@@ -1,4 +1,5 @@
-import type { LiveRunChange } from '@shared/types'
+import type { LiveRunChange, Role } from '@shared/types'
+import { serviceFor } from './roleServices'
 
 /**
  * What the user just did, as the caller knows it. The wording of the status line is built from this plus each run's
@@ -11,8 +12,11 @@ export type LiveChangeAction =
   | { kind: 'revoke'; name: string }
   /** A skill or connection was saved but no role can load it yet. */
   | { kind: 'saved-ungranted'; name: string }
-  /** The content of something already granted was edited. */
+  /** The content of something already granted was edited (a skill's text, a role's prompt). */
   | { kind: 'updated'; name: string }
+  /** An org chart save added one role / removed one role. */
+  | { kind: 'role-added'; name: string }
+  | { kind: 'role-removed'; name: string }
   /** An org chart edit with no grants (a prompt, a name, the reporting lines). */
   | { kind: 'orgchart' }
   /** Anything else (import, suggestion, several items at once): no single name to give. */
@@ -41,8 +45,9 @@ export interface ItemReach {
 }
 
 /** A project server's reach: `roles` undefined = every role; disabled = nobody. */
-export function serverReach(s: { id: string; name: string; enabled: boolean; roles?: string[] }): ItemReach {
-  return { id: s.id, name: s.name, reach: s.enabled ? (s.roles === undefined ? Number.POSITIVE_INFINITY : s.roles.length) : 0 }
+export function serverReach(s: { id: string; name: string; connectorId?: string; enabled: boolean; roles?: string[] }): ItemReach {
+  // The display name the connection rows show ("Context7"), not the slug the server is stored under.
+  return { id: s.id, name: serviceFor(s).label, reach: s.enabled ? (s.roles === undefined ? Number.POSITIVE_INFINITY : s.roles.length) : 0 }
 }
 
 /** A project skill's reach: the roles granted it; disabled = nobody. */
@@ -129,6 +134,10 @@ export function effectOf(action: LiveChangeAction, availability: LiveRunChange['
         pending: `Updated ${n} is being applied`,
         'next-run': `Updated ${n} is in use from the next run`
       }[availability]
+    case 'role-added':
+      return { now: `Added ${n} to this run`, 'after-idle': `Adds ${n} once its agents are idle`, pending: `Adding ${n}`, 'next-run': `Adds ${n} from the next run` }[availability]
+    case 'role-removed':
+      return { now: `Removed ${n} from this run`, 'after-idle': `Removes ${n} once its agents are idle`, pending: `Removing ${n}`, 'next-run': `Removes ${n} from the next run` }[availability]
     case 'orgchart':
       return {
         now: 'Org chart changes are in use now',
@@ -168,4 +177,75 @@ export function liveChangeLines(liveRuns: LiveRunChange[] | undefined, action: L
       details
     }
   })
+}
+
+/**
+ * What one org chart save did to the roster, read from the roles before and after it (the run.liveChange event does not
+ * say). Exactly one role added or removed, or one role whose prompt changed under the same name, gives a named action;
+ * a rename, several roles or nothing visible give null (the generic org chart wording, with the rename's own note). Pure.
+ */
+export function roleChangeAction(before: Pick<Role, 'id' | 'name' | 'prompt'>[] | null, after: Pick<Role, 'id' | 'name' | 'prompt'>[]): LiveChangeAction | null {
+  if (!before) return null
+  const was = new Map(before.map((r) => [r.id, r]))
+  const now = new Map(after.map((r) => [r.id, r]))
+  const added = after.filter((r) => !was.has(r.id))
+  const removed = before.filter((r) => !now.has(r.id))
+  const edited = after.filter((r) => {
+    const old = was.get(r.id)
+    return !!old && (old.name !== r.name || old.prompt !== r.prompt)
+  })
+  if (added.length + removed.length + edited.length !== 1) return null
+  if (added.length) return { kind: 'role-added', name: squash(added[0].name) || 'a role' }
+  if (removed.length) return { kind: 'role-removed', name: squash(removed[0].name) || 'a role' }
+  const r = edited[0]
+  return was.get(r.id)?.name === r.name ? { kind: 'updated', name: squash(r.name) || 'a role' } : null
+}
+
+/** What the lines of one note say as a whole: a summary line, the details every run shares (said once) and the rest per run. */
+export interface LiveChangeSummary {
+  /** "Org chart changes · 4 live runs: 3 now · 1 from the next run". */
+  summary: string
+  /** Detail rows every line carries (a rename's sentence), in the order of the first line. */
+  shared: string[]
+  /** Per line (same order as the input), the detail rows that are not shared. */
+  own: string[][]
+}
+
+const WHEN_ORDER: LiveRunChange['availability'][] = ['now', 'pending', 'after-idle', 'next-run']
+const WHEN_WORDS: Record<LiveRunChange['availability'], string> = { now: 'now', pending: 'being applied', 'after-idle': 'once idle', 'next-run': 'from the next run' }
+
+/** The subject of a summary line, from what the user did. */
+function subjectOf(action: LiveChangeAction): string {
+  const n = 'name' in action ? action.name : ''
+  switch (action.kind) {
+    case 'grant':
+      return `Access to ${n} given`
+    case 'revoke':
+      return `Access to ${n} removed`
+    case 'saved-ungranted':
+      return `${n} saved`
+    case 'updated':
+      return `Updated ${n}`
+    case 'role-added':
+      return `Added ${n}`
+    case 'role-removed':
+      return `Removed ${n}`
+    case 'orgchart':
+      return 'Org chart changes'
+    case 'changed':
+      return 'Change'
+  }
+}
+
+/** One summary for the lines of a note, worded from their availabilities: "Change · 4 live runs: 2 now · 1 once idle · 1 from the next run". Pure. */
+export function summarizeLines(lines: Pick<LiveChangeLine, 'availability' | 'details'>[], action: LiveChangeAction = { kind: 'changed' }): LiveChangeSummary {
+  const parts = WHEN_ORDER.map((a) => [a, lines.filter((l) => l.availability === a).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([a, n]) => `${n} ${WHEN_WORDS[a]}`)
+  const total = lines.length
+  const summary = `${subjectOf(action)} · ${total} live run${total === 1 ? '' : 's'}: ${parts.join(' · ')}`
+  const first = lines[0]?.details ?? []
+  const shared = lines.length > 1 ? first.filter((d) => lines.every((l) => l.details.includes(d))) : []
+  const own = lines.map((l) => l.details.filter((d) => !shared.includes(d)))
+  return { summary, shared, own }
 }

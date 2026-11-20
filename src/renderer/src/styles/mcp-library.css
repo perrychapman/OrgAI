@@ -143,21 +143,108 @@
 .live-change-note {
   min-height: calc(var(--live-rows, 0) * var(--text-small-lh) + max(var(--live-rows, 0) - 1, 0) * var(--space-1));
 }
-.live-change-note:empty:not([style]):not([data-surface='orgChart']) {
-  display: none;
-}
-/* The org chart line sits in the canvas footer, on its own row. Empty, its region stays in the tree (so a line is announced
-   when it arrives) but takes no room. */
-.live-change-note[data-surface='orgChart'] {
-  flex: 1 1 100%;
-  min-width: 0;
-}
-.live-change-note[data-surface='orgChart']:empty {
+/* An empty region with nothing reserved stays in the tree (so a line is announced when it arrives) but takes no room. */
+.live-change-note:empty:not([style]) {
   position: absolute;
   width: 1px;
   height: 1px;
   overflow: hidden;
   clip-path: inset(50%);
+}
+/* The org chart note is an overlay in the canvas stage (the stage is position: relative and is never hidden by the team files
+   card), top right beside the inspector. It takes no room, so nothing moves when it appears or clears, and its height is
+   bounded by the stage: a summary line plus a scrolling list. Only the card takes the pointer; the canvas stays live around it. */
+.live-change-note[data-surface='orgChart']:not(:empty) {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: var(--z-canvas-overlay);
+  width: min(30rem, calc(100% - var(--space-4)));
+  max-height: min(11rem, calc(100% - var(--space-4)));
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+.live-change-note[data-surface='orgChart'] .live-change-body {
+  pointer-events: auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-1h) var(--space-2);
+  background: var(--surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+}
+/* Several runs: the summary row is the disclosure button; its panel scrolls inside the bounded note. */
+.live-change-more {
+  min-width: 0;
+}
+.live-change-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: var(--target-min, 24px);
+  list-style: none;
+  cursor: pointer;
+  color: var(--success-text);
+  border-radius: var(--radius-sm);
+}
+/* The summary may take two lines in a narrow panel rather than cut the counts off. */
+.live-change-summary .live-change-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.live-change-summary::-webkit-details-marker {
+  display: none;
+}
+.live-change-summary:focus-visible {
+  outline: var(--focus-ring-width, 2px) solid var(--focus-ring, var(--accent));
+  outline-offset: 1px;
+}
+.live-change-toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.live-change-more[open] .live-change-toggle svg {
+  transform: rotate(180deg);
+}
+.live-change-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-top: var(--space-1);
+}
+/* In the flow (catalog, inspector) the panel is bounded and scrolls on its own. */
+.live-change-note:not([data-surface='orgChart']) .live-change-panel {
+  max-height: 10rem;
+  overflow-y: auto;
+}
+.live-change-run-line {
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+}
+/* The run leads and truncates; the effect after it wraps, so what differs between rows is never cut off. */
+.live-change-run {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.live-change-effect {
+  flex: 1 1 8rem;
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 .live-change-list {
   list-style: none;

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LiveRunChange, RunEvent } from '@shared/types'
-import { reportLiveEvent, reportLiveRuns, useLiveChangeStore } from './liveChangeStore'
+import { expectInspectorSave, reportLiveEvent, reportLiveRuns, trackRoles, useLiveChangeStore } from './liveChangeStore'
 
 type Ev = Extract<RunEvent, { type: 'run.liveChange' }>
 const ev = (what: Ev['what'], change: Partial<LiveRunChange> & { runId?: string }): Ev => ({
@@ -51,6 +51,48 @@ describe('liveChangeStore events', () => {
     expect(note().surface).toBe('role:x')
     expect(note().lines).toHaveLength(1)
     expect(note().lines[0].text).toMatch(/^Can use api-design once its agents are idle/)
+  })
+
+  it('an event for a save the role inspector made goes to that role and group, not the org chart', () => {
+    expectInspectorSave('p1', 'role:x', 'skills')
+    reportLiveEvent(ev(['orgChart', 'grants'], { grants: [{ role: 'Dev', item: 'api-design', kind: 'skill', granted: false }] }))
+    expect(note().surface).toBe('role:x')
+    expect(note().part).toBe('skills')
+    expect(note().lines[0].effect).toBe('No longer uses api-design')
+    // A save without grants (a rename) is still the org chart's.
+    vi.advanceTimersByTime(6_000)
+    reportLiveEvent(ev(['orgChart'], {}))
+    expect(note().surface).toBe('orgChart')
+  })
+
+  it('names an added, removed or edited role from the roster change, also when the roster arrives after the event', () => {
+    const lead = { id: 'l', name: 'Lead', prompt: 'p' }
+    trackRoles('p1', [lead])
+    trackRoles('p1', [lead, { id: 'd', name: 'Dev', prompt: '' }])
+    reportLiveEvent(ev(['orgChart'], {}))
+    expect(note().lines[0].effect).toBe('Added Dev to this run')
+    vi.advanceTimersByTime(10_000)
+    reportLiveEvent(ev(['orgChart'], {}))
+    expect(note().lines[0].effect).toBe('Org chart changes are in use now')
+    vi.advanceTimersByTime(1_000)
+    trackRoles('p1', [{ ...lead, prompt: 'q' }, { id: 'd', name: 'Dev', prompt: '' }])
+    expect(note().lines[0].effect).toMatch(/^Updated Lead is in use now/)
+  })
+
+  it('the line ends 20 s after the final answer, and never later than 30 s after the save', () => {
+    reportLiveEvent(ev(['orgChart'], { availability: 'pending' }))
+    vi.advanceTimersByTime(15_000)
+    reportLiveEvent(ev(['orgChart'], { availability: 'now' }))
+    // 20 s after the final answer would be 35 s after the save: the 30 s ceiling wins.
+    vi.advanceTimersByTime(14_000)
+    expect(note()).toBeDefined()
+    vi.advanceTimersByTime(1_000)
+    expect(note()).toBeUndefined()
+    reportLiveEvent(ev(['orgChart'], { availability: 'now' }))
+    vi.advanceTimersByTime(19_000)
+    expect(note()).toBeDefined()
+    vi.advanceTimersByTime(1_000)
+    expect(note()).toBeUndefined()
   })
 
   it('a grants-only event reads its grants', () => {
