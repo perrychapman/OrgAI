@@ -1,5 +1,6 @@
 // Factory Floor, slice 1 (docs/design/factory-floor.md sections 6.6, 7.1, 8, 10.4, 10.5, 12). Token-free: mock adapter, temp data dir.
-// Checks: the presentation choice in App settings, the scene mounting in Team and Live, the renderer it picked (the script
+// Checks: the presentation choice in App settings, the scene mounting in Live (Team keeps the Graph: Factory Floor is
+// Live only by owner decision 2026-11-19), the renderer it picked (the script
 // passes on either path: 'webgl2' or 'floor-plan'), the developer key that forces the floor plan or the section 8 notices,
 // "Use Graph", both themes, both window sizes with no page scroll, zero CSP violations, the mirror group and the hidden
 // canvas, and that Pocket Office is still selectable. Slice 2+ checks (layout, stations, cues) are not here.
@@ -100,6 +101,8 @@ const checkMounted = async (mode, label) => {
   check((await group.count()) === 1 && (await group.getAttribute('role')) === 'group', `${label}: the mirror group exists`)
   check(/^Factory floor,/.test((await group.getAttribute('aria-label')) ?? ''), `${label}: the mirror's name starts "Factory floor,"`, String(await group.getAttribute('aria-label')))
   const canvases = page.locator('[data-testid=factory-canvas]')
+  // The 3D path mounts its canvas once the lazy chunk has loaded, after data-renderer is set.
+  if (renderer === 'webgl2') await canvases.first().waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {})
   if (await canvases.count()) {
     check((await canvases.first().getAttribute('aria-hidden')) === 'true', `${label}: the canvas is aria-hidden`)
     check(renderer === 'webgl2', `${label}: a canvas appears only on the 3D path`)
@@ -125,13 +128,14 @@ try {
   const saved = await page.evaluate(async () => (await window.orgai.settings.get()).appearance.canvas.presentation)
   check(saved === 'factory-floor', 'the presentation is saved in settings', String(saved))
 
-  // ---------- Team and Live mount the scene ----------
+  // ---------- Factory Floor is Live only (owner decision 2026-11-19): Team keeps the Graph ----------
   await openProject(page, NAME)
   projectOpen = true
   await openTeam(page)
-  const teamRenderer = await checkMounted('team', 'Team')
-  log('team renderer:', teamRenderer, 'gpu:', (await state().catch(() => ({}))).perf?.gpu)
-  await shot('team')
+  await page.locator('.react-flow').first().waitFor({ timeout: 15_000 }).catch(() => {})
+  check((await page.locator('.react-flow').count()) > 0, 'Team shows the Graph while Factory Floor is chosen')
+  check((await page.locator('[data-testid=factory-scene]').count()) === 0, 'Team never mounts the factory scene')
+  await shot('team-graph')
 
   await projectTab(page, 'Live').click()
   const ta = page.locator('.composer textarea')
@@ -141,18 +145,16 @@ try {
   await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
   const liveRenderer = await checkMounted('live', 'Live')
   const liveName = await page.locator('[data-testid=factory-floor]').first().getAttribute('aria-label')
-  check(/^Factory floor, \d+ workers/.test(liveName ?? ''), 'Live: the mirror says workers', String(liveName))
+  check(/^Factory floor, \d+ workers?$/.test(liveName ?? ''), 'Live: the mirror says workers', String(liveName))
   await shot('live')
-  log('live renderer:', liveRenderer)
+  log('live renderer:', liveRenderer, 'gpu:', (await state().catch(() => ({}))).perf?.gpu)
 
-  // ---------- Both themes and both sizes, Live then Team ----------
+  // ---------- Both themes and both sizes (Live) ----------
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
     await resizeTo(w, h)
     for (const theme of ['dark', 'light']) {
       await setAppearance({ theme })
-      for (const mode of ['live', 'team']) {
-        if (mode === 'team') await openTeam(page)
-        else await projectTab(page, 'Live').click()
+      for (const mode of ['live']) {
         await scene(mode).waitFor({ timeout: 15_000 })
         const st = await state().catch(() => null)
         check(!!st && ['webgl2', 'floor-plan'].includes(st.renderer), `${mode} scene state readable at ${w}x${h} ${theme}`)
@@ -165,14 +167,13 @@ try {
   await resizeTo(1024, 640)
   await setAppearance({ theme: 'dark' })
 
-  // ---------- Forced floor plan, notices, Use Graph (Team scene, reads the key at mount) ----------
-  await openTeam(page)
+  // ---------- Forced floor plan, notices, Use Graph (Live scene, reads the key at mount) ----------
   await setKey('floor-plan')
   await remount()
-  await scene('team').waitFor({ timeout: 15_000 })
+  await scene('live').waitFor({ timeout: 15_000 })
   await page.waitForFunction(() => document.querySelector('[data-testid=factory-scene]')?.getAttribute('data-renderer') === 'floor-plan', null, { timeout: 10_000 }).catch(() => {})
-  check((await scene('team').getAttribute('data-renderer')) === 'floor-plan', 'the developer key forces the floor plan')
-  check((await scene('team').getAttribute('data-reason')) === 'forced', 'the forced floor plan reports reason forced')
+  check((await scene('live').getAttribute('data-renderer')) === 'floor-plan', 'the developer key forces the floor plan')
+  check((await scene('live').getAttribute('data-reason')) === 'forced', 'the forced floor plan reports reason forced')
   const forced = await state()
   check(forced.renderer === 'floor-plan' && forced.reason === 'forced', 'factory-state reports floor-plan / forced', JSON.stringify(forced).slice(0, 160))
   check((await page.locator('[data-testid=factory-canvas]').count()) === 0, 'the forced floor plan has no canvas')
@@ -184,11 +185,11 @@ try {
   for (const [value, notice, retry] of [['no-webgl2', 'no-webgl2', false], ['chunk-failed', 'chunk-failed', true]]) {
     await setKey(value)
     await remount()
-    await scene('team').waitFor({ timeout: 15_000 })
+    await scene('live').waitFor({ timeout: 15_000 })
     await page.locator('[data-testid=factory-notice]').first().waitFor({ timeout: 15_000 }).catch(() => {})
     const n = page.locator('[data-testid=factory-notice]').first()
     check((await n.count()) === 1 && (await n.getAttribute('data-notice')) === notice, `${value}: the ${notice} notice shows`, String(await n.getAttribute('data-notice').catch(() => null)))
-    check((await scene('team').getAttribute('data-renderer')) === 'floor-plan' && (await scene('team').getAttribute('data-reason')) === value, `${value}: the floor plan shows with reason ${value}`)
+    check((await scene('live').getAttribute('data-renderer')) === 'floor-plan' && (await scene('live').getAttribute('data-reason')) === value, `${value}: the floor plan shows with reason ${value}`)
     check((await page.locator('[data-testid=factory-use-graph]').count()) === 1, `${value}: Use Graph is offered`)
     if (retry) {
       check((await page.locator('[data-testid=factory-retry-3d]').count()) === 1, 'chunk-failed: Try 3D again is offered')
@@ -210,8 +211,8 @@ try {
   // Without the key the real path comes back.
   await setKey(null)
   await setCanvas({ presentation: 'factory-floor' })
-  const again = await checkMounted('team', 'Team after clearing the key')
-  check(again === teamRenderer, 'the same renderer returns once the key is removed', `${teamRenderer} -> ${again}`)
+  const again = await checkMounted('live', 'Live after clearing the key')
+  check(again === liveRenderer, 'the same renderer returns once the key is removed', `${liveRenderer} -> ${again}`)
 
   // ---------- Pocket Office is still selectable ----------
   await setCanvas({ presentation: 'pocket-office' })
