@@ -65,6 +65,36 @@ test('a good middle-layer chart scores high on the largest scenario', () => {
   assert.equal(r.metrics.depth, 2)
 })
 
+test('a chart that names a role by slug: the tool drops the reference and wires the role itself, so structure is judged on what it accepted', () => {
+  const slugDrafts = goodC1().map((d) => (d.name === 'Developer' ? { ...d, name: 'Backend Implementer' } : d))
+  slugDrafts[0] = { ...slugDrafts[0], spawnable: ['backend-implementer'] }
+  slugDrafts[1] = { ...slugDrafts[1], reportsTo: 'orchestrator' }
+  // What toRoles produced: the unresolved spawnable was dropped, the manager got its direct report added, the orphan was re-rooted.
+  const views = [
+    { ...viewsFromDrafts(slugDrafts)[0], spawnable: ['backend-implementer'], reportsTo: null, canSpawn: true },
+    { ...viewsFromDrafts(slugDrafts)[1], reportsTo: 'orchestrator' }
+  ]
+  const s = recommendSession('c1', slugDrafts)
+  s.chart.roles = views
+  const r = scoreChart(s, scenarioById('c1'))
+  for (const id of ['reportsTo-exists', 'spawnable-exist', 'spawnable-covers-reports', 'no-cycles', 'one-root']) assert.equal(chk(r, id).pass, true, id)
+  assert.equal(dim(r, 'structure').checks.filter((c) => !c.pass).map((c) => c.id).join(), 'references-resolve')
+  assert.equal(chk(r, 'references-resolve').credit, 0.5)
+  assert.match(chk(r, 'references-resolve').detail, /Orchestrator spawnable backend-implementer/)
+  // Weighted lightly: far less than the four failures it used to cause.
+  assert.ok(dim(r, 'structure').score > 0.9, String(dim(r, 'structure').score))
+})
+
+test('a wiring the tool resolved fully gets references-resolve credit; a view with a truly dangling id still fails the structure checks', () => {
+  const ok = score('c1', goodC1())
+  assert.equal(chk(ok, 'references-resolve').pass, true)
+  const s = recommendSession('c1', goodC1())
+  s.chart.roles[1] = { ...s.chart.roles[1], reportsTo: 'ghost-lead' }
+  const r = scoreChart(s, scenarioById('c1'))
+  assert.ok(failed(r).includes('reportsTo-exists'))
+  assert.ok(failed(r).includes('no-cycles'))
+})
+
 test('a bloated, over-privileged, badly wired chart fails many named checks', () => {
   const r = score('c1', badC1(), { reviseRounds: 2 })
   assert.ok(r.total < 55, String(r.total))

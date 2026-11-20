@@ -115,7 +115,7 @@ edited expectation changes old results on `--score`.
 
 Every dimension is the mean of its checks' credit (0 to 1); a check that does not apply to a scenario is `na` and left out.
 The session total is the weighted sum, 0 to 100. Every check has a stable id so failures can be counted across scenarios.
-`SCORER_VERSION` (now 1) changes whenever a check, weight or threshold changes; compare runs only at the same version (a
+`SCORER_VERSION` (now 2; `report.md` shows a draft's resolved tier when it left `model` out) changes whenever a check, weight or threshold changes; compare runs only at the same version (a
 `--score` or `--compare` always re-scores with the current one).
 
 ### recommend
@@ -123,7 +123,7 @@ The session total is the weighted sum, 0 to 100. Every check has a stable id so 
 | dimension | weight | checks |
 | --- | --- | --- |
 | validity | 15 | `chart-produced` (a session with no chart scores 0 overall); `revise-rounds` (minus 0.25 per REVISE round or tool error) |
-| structure | 15 | `one-root`, `unique-names`, `reportsTo-exists`, `spawnable-exist`, `spawnable-covers-reports`, `manager-can-spawn`, `leaf-no-spawn`, `no-cycles`; judged on the drafts as the model wrote them, because normalization (`toRoles`) repairs a missing root or manager and would hide these |
+| structure | 15 | `one-root`, `unique-names`, `reportsTo-exists`, `spawnable-exist`, `spawnable-covers-reports`, `manager-can-spawn`, `leaf-no-spawn`, `no-cycles`, `references-resolve` (half weight). Scorer 2: `one-root`, `unique-names`, `manager-can-spawn` and `leaf-no-spawn` still read the drafts. The reference and topology checks (`reportsTo-exists`, `spawnable-exist`, `spawnable-covers-reports`, `no-cycles`, depth, middle layer, root) read the normalized roles in `chart.roles`, the chart `propose_org_chart` accepted. `toRoles` (`src/main/ai/draft.ts`) matches `reportsTo` / `spawnable` by role NAME only (case-insensitive): a slug or any unknown name is silently dropped, an orphan is re-attached to the root, and a manager's direct reports are added to its `spawnable`. Scorer 1 judged the raw drafts, so a chart that referred to a role by slug (`backend-implementer`) lost four checks for a wiring the user never saw. `references-resolve` keeps the drop visible: the share of draft references that name no role, lightly weighted. A session without `chart.roles` falls back to the drafts (check n/a). |
 | right-sizing | 20 | `role-count` (partial credit by distance from the range), `depth`, `middle-layer` (only when expected) |
 | coverage | 15 | `cover:<group>` per expected capability group; `forbid:<name>` for unwanted roles (a developer in a no-coding engagement) |
 | least-privilege | 10 | `readonly-no-write` (roles whose name reads reviewer, researcher, advisor, auditor, critic, inspector or assessor hold no Edit, Write or NotebookEdit); `messaging-matches` (SendMessage/ListAgents against `wantsMessaging`: none means none, some means at least one role but not all); `no-role-has-every-tool` |
