@@ -185,7 +185,7 @@ export function ResumeSection({ lastSeen }: { lastSeen?: number }): ReactElement
     const action = resumeAction(row, outs.length)
     // The action slot keeps its width while the project's outputs are still on the way, so a late "Open output" shifts nothing.
     const reserve = action !== null || (wantsOutputs(row) && outputsByProject[row.projectId] === undefined && !isVirtualProjectId(row.projectId))
-    const line2 = run ? resumeCaption(row, { project: projectName, client, age: relativeTime(run.endedAt ?? run.startedAt, now) }) : ''
+    const line2 = run ? resumeCaption(row, { project: projectName, client, age: relativeTime(run.endedAt ?? run.startedAt, now), now }) : ''
     const motionProps = rowMotionProps(motion, 'dash-row dash-row-resume')
     return (
       <li
@@ -223,7 +223,11 @@ export function ResumeSection({ lastSeen }: { lastSeen?: number }): ReactElement
                 {showsRunCost(runCostInput(run)) && <Cost value={runCostInput(run)} compact className="dash-num" />}
               </span>
             )}
-            {row.detail && <span className={`dash-row-cap dash-row-detail${row.kind === 'paused' ? ' dash-row-clamp' : ''}`}>{row.detail}</span>}
+            {row.detail && (
+              <span className={`dash-row-cap dash-row-detail${row.kind === 'paused' ? ' dash-row-clamp' : ''}`} title={row.detail}>
+                {row.detail}
+              </span>
+            )}
           </span>
         </button>
         {reserve && (

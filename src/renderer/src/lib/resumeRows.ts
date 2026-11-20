@@ -6,6 +6,7 @@
  * (their newest thread, or "no runs yet"), then every other thread newest first. A live chain belongs to Working
  * now and is left out unless that section is hidden; then it is a `recent` row with the action "Open".
  */
+import type { RunSummary } from '@shared/types'
 import { costView, type CostInput } from './cost'
 import { chainGroups, isOpenStatus, lastActivityAt, type ChainSummary } from './runChains'
 import { endedKind, errorFirstLine, SINCE_WINDOW_MS, type EndedRunLike } from './dashboard'
@@ -231,9 +232,35 @@ export function outputProjects(rows: readonly Pick<ResumeRow<ResumeRun>, 'flavor
   return out
 }
 
+const startOfLocalDay = (t: number): number => {
+  const d = new Date(t)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+
+/**
+ * A paused row's caption with the day when the resume is not today (walk 4 M1), in local time: "resumes at 10:40 PM if OrgAI
+ * stays open" today, "resumes tomorrow at 10:40 PM ..." the next local day, "resumes Saturday at ..." within a week after
+ * that, else "resumes Nov 28 at ...". Without an automatic resume it is the plain "waits for you to continue" that
+ * `pausedCaption` (lib/needsInline.ts, left untouched) gives.
+ */
+export function pausedResumeCaption(s: Pick<RunSummary, 'autoResume' | 'pausedUntil'>, now: number, locale?: string): string {
+  if (!(s.autoResume && s.pausedUntil)) return pausedCaption(s)
+  const at = new Date(s.pausedUntil)
+  const time = at.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })
+  const days = Math.round((startOfLocalDay(s.pausedUntil) - startOfLocalDay(now)) / 86_400_000)
+  let when = `at ${time}`
+  if (days === 1) when = `tomorrow at ${time}`
+  else if (days >= 2 && days <= 6) when = `${at.toLocaleDateString(locale, { weekday: 'long' })} at ${time}`
+  else if (days >= 7) when = `${at.toLocaleDateString(locale, { month: 'short', day: 'numeric' })} at ${time}`
+  return `resumes ${when} if OrgAI stays open`
+}
+
 /** Line 2: "{project} · {age}", or "{client} · {project} · {age}". A paused row's age is its pause caption. */
-export function resumeCaption(row: Pick<ResumeRow<ResumeRun>, 'flavor' | 'run'>, ctx: { project: string; client?: string; age: string }): string {
-  const tail = row.flavor === 'paused' && row.run ? pausedCaption(row.run) : ctx.age
+export function resumeCaption(
+  row: Pick<ResumeRow<ResumeRun>, 'flavor' | 'run'>,
+  ctx: { project: string; client?: string; age: string; now?: number; locale?: string }
+): string {
+  const tail = row.flavor === 'paused' && row.run ? pausedResumeCaption(row.run, ctx.now ?? Date.now(), ctx.locale) : ctx.age
   return [ctx.client, ctx.project, tail].filter((p): p is string => !!p).join(' · ')
 }
 

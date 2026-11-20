@@ -248,6 +248,24 @@ try {
   check((await page.locator('main .btn.primary:visible').count()) === 1, 'still exactly one primary with Chat now chosen')
   await T('dash-start-choice').getByRole('radio', { name: 'Start a project' }).check({ force: true })
 
+  // Walk 4 M2: on first launch a saved name shows in the greeting at once, and "Add your name" looks like a control.
+  const addBox = await T('dash-name-add').evaluate((el) => {
+    const s = getComputedStyle(el)
+    return { border: parseFloat(s.borderTopWidth), bg: s.backgroundColor }
+  })
+  check(addBox.border >= 1 && addBox.bg !== 'rgba(0, 0, 0, 0)', 'M2 "Add your name" has a border and a fill (it reads as a control)', JSON.stringify(addBox))
+  await T('dash-name-add').click()
+  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await page.keyboard.type('Sam')
+  await page.keyboard.press('Enter')
+  check(!!(await until(async () => (await salutationText()) === 'Welcome to OrgAI, Sam.', 8000)), 'M2 first launch: saving a name puts it in the greeting at once', await salutationText())
+  await T('dash-name-edit').click()
+  await T('dash-name-input').waitFor({ timeout: 5000 })
+  await page.keyboard.press('Control+A')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.press('Enter')
+  check(!!(await until(async () => (await salutationText()) === 'Welcome to OrgAI.', 5000)), 'M2 first launch: removing the name restores the plain welcome', await salutationText())
+
   // ---------------------------------------------------------------- Projects with no runs yet
   const waiting = await createProject(page, { path: repoA, name: WAIT })
   check(!!waiting, 'first project created from the inline form')

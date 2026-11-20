@@ -21,11 +21,11 @@ export function greetingWord(hour: number): string {
 }
 
 /**
- * "Good morning, Sam." with a name, "Good morning." without; "Welcome to OrgAI." on first launch (never the name there:
- * it is a first-launch screen).
+ * "Good morning, Sam." with a name, "Good morning." without; on first launch "Welcome to OrgAI." or, once a name is
+ * saved, "Welcome to OrgAI, Sam." (walk 4 M2: saving a name must visibly land).
  */
 export function salutation(hour: number, name: string | undefined, firstLaunch: boolean): string {
-  if (firstLaunch) return 'Welcome to OrgAI.'
+  if (firstLaunch) return name ? `Welcome to OrgAI, ${name}.` : 'Welcome to OrgAI.'
   const word = greetingWord(hour)
   return name ? `${word}, ${name}.` : `${word}.`
 }
@@ -51,6 +51,8 @@ export interface BriefInput {
   cost?: CostInput
   /** Open decisions (the bell). */
   decisions: number
+  /** Live runs that are idle and waiting for the person's reply (not decisions). Absent reads as none. */
+  awaitingReply?: number
   /** Agents working now and the runs holding them. */
   workingAgents: number
   workingRuns: number
@@ -83,6 +85,11 @@ function waitingSentence(n: number): string {
   return n === 1 ? '1 decision is waiting on you.' : `${n} decisions are waiting on you.`
 }
 
+/** An idle run that waits for the person's next message is not a decision, but the brief must not say nothing waits. */
+function replySentence(n: number): string {
+  return n === 1 ? '1 run is idle and waiting on your reply.' : `${n} runs are idle and waiting on your reply.`
+}
+
 function sinceSentence(i: BriefInput): string {
   const when = sinceIsLongAgo(i.lastSeen, i.now, i.firstVisit) ? 'in the past 7 days' : 'since you were last here'
   const clause = costClause(i.cost)
@@ -109,7 +116,8 @@ function pausedSentence(n: number, until: string | undefined): string {
 
 /**
  * The brief under the salutation: at most two sentences (section 5.4).
- * 1. Decisions waiting lead, then one more: the first present of since, closed, working, paused.
+ * 1. Decisions waiting lead, then idle runs awaiting a reply, then the rest: the first present of since, closed, working,
+ *    paused, up to two sentences in all.
  * 2. With none waiting: the first two present of since, closed, working, paused.
  * 3. None present: the quiet sentence, or "No runs yet" when no run ever existed.
  * 4. Until `ready` only waiting, working and paused can show, so "Nothing has changed" never flashes before history loads
@@ -122,8 +130,8 @@ export function dashboardBrief(i: BriefInput): string {
   const working = i.workingAgents > 0 ? workingSentence(i.workingAgents, i.workingRuns) : ''
   const paused = i.paused > 0 ? pausedSentence(i.paused, i.pausedUntilLabel) : ''
   const rest = [since, closed, working, paused].filter((s) => s !== '')
-  const waiting = i.decisions > 0 ? waitingSentence(i.decisions) : ''
-  const picked = waiting ? [waiting, ...rest.slice(0, 1)] : rest.slice(0, 2)
+  const leads = [i.decisions > 0 ? waitingSentence(i.decisions) : '', (i.awaitingReply ?? 0) > 0 ? replySentence(i.awaitingReply ?? 0) : ''].filter((s) => s !== '')
+  const picked = [...leads, ...rest].slice(0, 2)
   if (picked.length > 0) return picked.join(' ')
   if (!i.ready) return ''
   if (!i.anyRunEver) return NO_RUNS_BRIEF

@@ -36,6 +36,14 @@ describe('bandWorkFacts (walk-3 M1: one source for the greeting brief and the ba
     expect(f.workingAgents).toBe(0)
     expect(f.counts).toEqual({ working: 0, waiting: 1, idle: 1 })
   })
+  it('counts idle runs whose root waits for the reply, not decisions or working runs (walk 4 M3)', () => {
+    const runs = [
+      input('reply', [root({ state: 'idle', activity: 'Waiting for you' })], { summary: summary('reply', { status: 'idle' }) }),
+      input('idle', [root({ state: 'idle', activity: 'Done' })], { summary: summary('idle', { status: 'idle' }) }),
+      input('wait', [root({ state: 'idle', activity: 'Waiting for you' })], { decisions: 1, firstDecision: 'Allow: Run npm test' })
+    ]
+    expect(bandWorkFacts(runs, [project()], {}).awaitingReply).toBe(1)
+  })
   it('agrees with bandModel counts', () => {
     const runs = [
       input('w1', [root(), ag('a'), ag('b', { state: 'tool' })], { summary: summary('w1', { startedAt: 2 }) }),
@@ -242,7 +250,7 @@ describe('groups and words', () => {
     expect(currentStep(undefined)).toBeUndefined()
   })
   it('words counts, suffixes and summaries', () => {
-    expect(countParts({ working: 2, waiting: 1, idle: 0 }).map((p) => p.text)).toEqual(['2 working', '1 waiting for you'])
+    expect(countParts({ working: 2, waiting: 1, idle: 0 }).map((p) => p.text)).toEqual(['2 working', '1 waiting on you'])
     expect(countParts({ working: 0, waiting: 0, idle: 0 })).toEqual([])
     expect(decisionsSuffix(0)).toBe('')
     // Plain text, no count: the decision itself lives in Waiting on you.

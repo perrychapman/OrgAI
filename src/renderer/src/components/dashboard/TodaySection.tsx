@@ -133,9 +133,16 @@ export function TodaySection(): ReactElement | null {
                   })}
                 </ul>
                 {scheduleRows.length > caps.schedules && (
-                  <Button variant="ghost" size="sm" className="dash-today-more" testId="dash-today-more-schedules" onClick={() => setMoreSchedules((v) => !v)}>
+                  // The shared Button has no aria-expanded; this is its markup (as the to-do "Show more" below).
+                  <button
+                    type="button"
+                    className="btn ghost sm dash-today-more"
+                    data-testid="dash-today-more-schedules"
+                    aria-expanded={moreSchedules}
+                    onClick={() => setMoreSchedules((v) => !v)}
+                  >
                     {moreSchedules ? 'Show fewer' : `Show ${scheduleRows.length - caps.schedules} more`}
-                  </Button>
+                  </button>
                 )}
               </>
             )}
