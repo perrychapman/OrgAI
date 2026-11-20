@@ -20,9 +20,12 @@ export function createLighting(theme: FactoryTheme): FactoryLighting {
   key.shadow.bias = -0.0005
   key.shadow.normalBias = 0.02
 
-  const applyTheme = (next: FactoryTheme, dim: 'on' | 'paused' | 'ended'): void => {
+  const level = (next: FactoryTheme, dim: 'on' | 'paused' | 'ended'): number => {
     const l = FACTORY_PALETTE[next].light
-    const k = dim === 'on' ? 1 : dim === 'paused' ? l.dimPaused : l.dimEnded
+    return dim === 'on' ? 1 : dim === 'paused' ? l.dimPaused : l.dimEnded
+  }
+  const apply = (next: FactoryTheme, k: number): void => {
+    const l = FACTORY_PALETTE[next].light
     hemi.color.set(l.sky)
     hemi.groundColor.set(l.ground)
     hemi.intensity = l.hemisphere * k
@@ -30,12 +33,21 @@ export function createLighting(theme: FactoryTheme): FactoryLighting {
     key.intensity = l.keyIntensity * k
     ambient.intensity = l.ambient * k
   }
+  const applyTheme = (next: FactoryTheme, dim: 'on' | 'paused' | 'ended'): void => apply(next, level(next, dim))
+  /** Slice 4 hall dim tween: the multiplier moves linearly between the two states; t 1 is exactly applyTheme(theme, to). */
+  const applyBlend = (next: FactoryTheme, from: 'on' | 'paused' | 'ended', to: 'on' | 'paused' | 'ended', t: number): void => {
+    const a = level(next, from)
+    const b = level(next, to)
+    const u = Number.isFinite(t) ? Math.min(1, Math.max(0, t)) : 1
+    apply(next, u >= 1 ? b : a + (b - a) * u)
+  }
   applyTheme(theme, 'on')
 
   return {
     lights: [hemi, key, ambient],
     key,
     applyTheme,
+    applyBlend,
     dispose(): void {
       key.shadow.map?.dispose()
       key.dispose()

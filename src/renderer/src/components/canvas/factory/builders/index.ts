@@ -1,7 +1,8 @@
 // The Technical Artist's kits for the Factory Floor engine (docs/design/factory-floor.md section 4, slice 2).
 import { FACTORY_PALETTE } from '../../../../lib/factory/palette'
-import { board, boardLamp, boardLampColour } from './board'
+import { board, boardLamp, boardLampColour, boardLampMarkColour } from './board'
 import { booth } from './booth'
+import { capsule, toolPart, tote } from './carriers'
 import { dock } from './dock'
 import { hall } from './hall'
 import { createLighting } from './lighting'
@@ -39,5 +40,9 @@ export const factoryKits: FactoryKitSource = {
   crate,
   holdPad,
   boardLamp,
-  boardLampColour
+  boardLampColour,
+  boardLampMarkColour,
+  tote,
+  capsule,
+  part: toolPart
 }

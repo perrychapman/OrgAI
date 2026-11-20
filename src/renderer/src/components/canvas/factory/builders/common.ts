@@ -20,6 +20,10 @@ interface PartOptions {
   receive?: boolean
   lods?: readonly LodBand[]
   instanceColor?: boolean
+  /** Slice 4: the moving sub-part of a machine's ambient stroke (types.ts PartSpec.stroke). */
+  stroke?: PartSpec['stroke']
+  /** Slice 4: a console screen whose glow the engine modulates (needs instanceColor). */
+  screen?: boolean
 }
 
 /** A part drawn in every LOD that casts and receives shadows unless the options say otherwise. */
@@ -31,6 +35,8 @@ export function part(key: string, geometry: BufferGeometry, role: string, option
     castShadow: options.cast ?? true,
     receiveShadow: options.receive ?? true,
     lods: options.lods ?? ALL_LODS,
-    ...(options.instanceColor ? { instanceColor: true } : {})
+    ...(options.instanceColor ? { instanceColor: true } : {}),
+    ...(options.stroke ? { stroke: options.stroke } : {}),
+    ...(options.screen ? { screen: true } : {})
   }
 }

@@ -7,7 +7,7 @@
 // (rotY 0, translation only), so each step takes its own colour from boardLampColour().
 import type { BufferGeometry } from 'three'
 import { FACTORY_PALETTE } from '../../../../lib/factory/palette'
-import { box, cyl, merge, place } from './geo'
+import { box, cyl, merge, place, quad } from './geo'
 import { part } from './common'
 import type { Anchor, FactoryTheme, FactoryTokenColours, ObjectKit } from './types'
 
@@ -61,12 +61,44 @@ export function board(): ObjectKit {
 
 /**
  * One plan-step lamp lens, origin at its centre (a `lamp.i` anchor), its axis along the panel normal: a 0.44 m domed disc,
- * 0.07 m thick, 10 sides (about 40 triangles). One part, 'boardLamp.lens', with instanceColor; unlit.
+ * 0.07 m thick, 10 sides (40 triangles), part 'boardLamp.lens', and (slice 4) a flat check mark lying on the lens face, part
+ * 'lamp.mark' (4 triangles). Both have instanceColor and are unlit; 44 triangles in all.
+ *
+ * The check is two 0.06 m bars 4 mm above the lens face (a short leg down-left, a long leg up-right, as seen on the board).
+ * The engine colours it with boardLampMarkColour: the dark panel colour on a done step and the lens's own colour on every
+ * other state, so the check exists only on done lamps and the two unlit colours match exactly at any hall dimming. (An
+ * earlier ring round the lens was dropped: the lamp pitch leaves 6 cm between rows, and a ring in the panel colour read as a
+ * lighter halo on the lit panel.)
  */
 export function boardLamp(): ObjectKit {
   // A cylinder's axis is +y; tilt it onto the panel normal (the same rotation the old merged lamps used).
-  const lens = place(cyl(LAMP_R * 0.78, LAMP_R, LAMP_H, 10, 0, -LAMP_H / 2, 0), 0, 0, 0, 0, Math.PI / 2 + LEAN)
-  return { name: 'boardLamp', parts: [part('boardLamp.lens', lens, 'lamp', { cast: false, receive: false, instanceColor: true })] }
+  const tilt = Math.PI / 2 + LEAN
+  const lens = place(cyl(LAMP_R * 0.78, LAMP_R, LAMP_H, 10, 0, -LAMP_H / 2, 0), 0, 0, 0, 0, tilt)
+  // In the lens frame (before the tilt): +x is the board's east, +z is down the panel.
+  const y = LAMP_H / 2 + 0.004
+  const t = 0.06
+  const short = quad(0.12, t, -0.065, y, 0.03, -Math.PI / 4)
+  const long = quad(0.21, t, 0.035, y, -0.015, 0.82)
+  const mark = place(merge([short, long]), 0, 0, 0, 0, tilt)
+  return {
+    name: 'boardLamp',
+    parts: [
+      part('boardLamp.lens', lens, 'lamp', { cast: false, receive: false, instanceColor: true }),
+      part('lamp.mark', mark, 'lamp', { cast: false, receive: false, instanceColor: true })
+    ]
+  }
+}
+
+/**
+ * Colour of the 'lamp.mark' check: the dark panel colour on a done step (a dark check on the pale mint lens, 12:1 or more),
+ * and the lens's own colour on every other state, so the check is invisible there. Both are unlit, so they match at any dimming.
+ */
+export function boardLampMarkColour(
+  theme: FactoryTheme,
+  state: 'pending' | 'active' | 'done' | 'blocked' | 'skipped',
+  tokens: FactoryTokenColours
+): string {
+  return state === 'done' ? FACTORY_PALETTE[theme].roles.boardPanel : boardLampColour(theme, state, tokens)
 }
 
 function mix(a: string, b: string, t: number): string {
@@ -84,8 +116,7 @@ function mix(a: string, b: string, t: number): string {
  *   done               the success token mixed 62 percent towards white (a pale mint), clearly lighter than active;
  *   blocked            the warning token (amber).
  * Active and done share a hue family by design (both are "going well"); lightness separates them in both themes (checked in
- * the tests). A ring or cap on done lamps needs a second instanced part with its own visibility, which the kit contract
- * does not carry; recorded as open.
+ * the tests). Slice 4 adds the shape cue: a done lamp also shows a dark check (the 'lamp.mark' part, boardLampMarkColour).
  */
 export function boardLampColour(
   theme: FactoryTheme,
