@@ -74,13 +74,20 @@
  *   it; `security`, `keyring` (python-keyring) or `kwallet-query` / `kwalletcli` followed by the `OrgAI Vault` name
  *   (spec 8.4's "any word `OrgAI Vault`" is read as a word given to a keyring front end, so a search of the sources for
  *   the name passes); any `secret-tool` call; busctl
- *   / gdbus / dbus-send / qdbus naming the Secret Service; PowerShell text naming ProtectedData or Unprotect (the
+ *   / gdbus / dbus-send / qdbus naming the Secret Service; PowerShell text naming ProtectedData, CryptUnprotect, a
+ *   DataProtector class or `Unprotect` as a word of its own (PS_DPAPI: `::Unprotect(`, `Unprotect-CmsMessage`; not an
+ *   instance call `$ws.Unprotect()` or `Unprotected`, owner report 2026-11-19) (the
  *   PowerShell tool, `pwsh -c`, a pipe or here-string into pwsh, and `-EncodedCommand` texts, which are decoded and
  *   scanned like any command); and code a code runner in the text runs (its own words, a here-document, a pipe into
- *   one that reads stdin) that names any of these (CUSTODIAN_CODE, custodianCodeRuns; also `security -i` and a bare
- *   `security` at the end of a string or array or after a `|`, which read stdin). Program, wrapper and subcommand
+ *   one that reads stdin) that names any of these (CUSTODIAN_CODE, custodianCodeRuns; also `security -i`, and a bare
+ *   `security`, which reads stdin, as a whole command string, a first array element or after a `|` in a string:
+ *   codeRunsBareSecurity, which since the owner report of 2026-11-19 reads a subscript key `df['Security']`, an output
+ *   call's or string method's only argument `print('security')`, a later element of a list of words
+ *   `['privacy', 'security']`, the tail of a sentence `'Topics: privacy, security'` and a markdown table row in a list
+ *   as data). Program, wrapper and subcommand
  *   names are read through backslash escapes and globs (wordMayBe: `sec\urity`, `/usr/bin/secur*y`, `np?`, `npm
- *   ex?c`; a single-letter bracket class counts as its letter, `[s][e][c][u][r][i][t][y]`), and `arch -arch <name>` /
+ *   ex?c`; a single-letter bracket class counts as its letter, `[s][e][c][u][r][i][t][y]`; a word whose only glob
+ *   character is an unclosed `[`, such as the test builtins `[` / `[[`, is literal and no name, literalOpenBracket), and `arch -arch <name>` /
  *   `xcrun --sdk <x>`, `launchctl asuser|bsexec <id>` and `script [options] <file> <cmd>` are unwrapped (util-linux
  *   `script -c <text>` is read as a command text).
  * - On win32 a local drive written as a device path or an admin share (`\\?\C:\...`, `\\.\C:\...`,
@@ -97,8 +104,11 @@
  * either (`ORGAI_`, `ORGAI_*`, `ORGAI_M*`, `${!ORGAI@}`) is denied. NOT stopped: a code runner printing its
  * environment (`python -c 'import os; print(os.environ)'`, `node -p process.env`), a script file, and stdio MCP servers
  * (they inherit the CLI's environment); a bar against casual or injected dumps, not a boundary. An awk or other program text that names a
- * custodian (`awk '/secret-tool/'`) is read as code and denied, as is interpreter code that only prints the word
- * (`print('security')`); a program word that is all wildcards (`/usr/bin/????????`) or a class of several letters is
+ * custodian (`awk '/secret-tool/'`) is read as code and denied; interpreter code that only prints the word
+ * (`print('security')`) passes, so its output piped into a shell (`python3 -c "print('security')" | sh`, like `echo
+ * security | sh`) or an output call rebound to a process call (`print = os.system`) is not seen, nor is a data list
+ * or table row a later run-time step hands to a process (`subprocess.run(rows[1])`, Perl's open of `"| x |"` taken
+ * from a list) or a list headed by a wrapper not in ARGV_RUNNERS / programIndex; a program word that is all wildcards (`/usr/bin/????????`) or a class of several letters is
  * not read as a custodian name; a UNC path to this computer under its own host name (`\\MYPC\c$`) is not mapped; the
  * keyring service name passed through a variable or built by code at run time is not seen.
  */
@@ -386,6 +396,7 @@ function globKeptLetters(glob: string): string {
  */
 function wordMayBe(word: string, names: readonly string[]): boolean {
   for (const n of wordNames(word)) {
+    if (literalOpenBracket(n)) continue
     const variants = expandShellGlobAlternatives(n)
     if (!variants) return true
     for (const candidate of variants) {
@@ -526,9 +537,14 @@ const SECRET_TOOL_SUBCOMMANDS: readonly string[] = ['lookup', 'store', 'search',
 const DBUS_TOOLS: readonly string[] = ['busctl', 'gdbus', 'dbus-send', 'qdbus', 'qdbus6', 'qdbus-qt5', 'qdbus-qt6']
 /** The Secret Service bus name, object path or interface (`org.freedesktop.secrets`, `/org/freedesktop/secrets`, `org.freedesktop.Secret.Service`). */
 const SECRETS_BUS = /org[./]freedesktop[./]secrets?\b/i
-/** PowerShell programs, and the DPAPI names their text may not carry (ProtectedData, Unprotect, CryptUnprotectData). */
+/**
+ * PowerShell programs, and the DPAPI names their text may not carry: ProtectedData, CryptUnprotect(Data), the
+ * DataProtector classes (DpapiDataProtector), and `Unprotect` as a word of its own (`::Unprotect(`, `Unprotect-CmsMessage`,
+ * `'Unprotect'` handed to reflection). Owner report 2026-11-19: an instance method call `.Unprotect(` (an Excel sheet's
+ * `$ws.Unprotect()`) and longer words (`Unprotected`) are not DPAPI; ProtectedData's Unprotect is static and needs `::`.
+ */
 const POWERSHELLS: readonly string[] = ['pwsh', 'pwsh-preview', 'powershell', 'powershell_ise']
-const PS_DPAPI = /ProtectedData|Unprotect/i
+const PS_DPAPI = /ProtectedData|CryptUnprotect|DataProtector|(?<![\w.])Unprotect(?!\w)/i
 const SECURITY: readonly string[] = ['security']
 const SECRET_TOOL: readonly string[] = ['secret-tool']
 /**
@@ -642,13 +658,253 @@ const CUSTODIAN_CODE: readonly RegExp[] = [
   // Review round 2: `security -i` (also after other options), and `security` alone at the end of a string, array or call
   // (`os.system('security')`, `run(['security'], input=...)`, `execSync('printf x | security')`): it reads stdin.
   new RegExp(`\\bsecurity${SEP}{1,16}${SECURITY_CODE_OPTION}{0,8}-[hlqv]*i`, 'i'),
-  /\bsecurity['"`]\s*(?:[\]);]|$)/im,
-  /\|\s*(?:[^\s|'"]*\/)?security(?![\w.-])/i,
   /\bsecret-tool\b/i,
   SECRETS_BUS,
   VAULT_LABEL,
   /CryptUnprotectData|ProtectedData/i
 ]
+
+/**
+ * Code text naming a key custodian (CUSTODIAN_CODE), or running a bare `security`, which reads its commands from stdin
+ * (codeRunsBareSecurity). Used for the whole text, a code runner's segment and the pieces piped into one.
+ */
+function codeNamesCustodian(text: string): boolean {
+  return CUSTODIAN_CODE.some((re) => re.test(text)) || codeRunsBareSecurity(text)
+}
+
+/** A string literal ending in `security` and closing an array, a call or a statement (review round 2's trigger). */
+const BARE_SECURITY_LITERAL = /\bsecurity(['"`])\s*(?:[\]);]|$)/gim
+/** `| security` with no subcommand (it reads stdin), maybe as a path. */
+const PIPE_SECURITY = /\|\s*(?:[^\s|'"]*\/)?security(?![\w.-])/gi
+/** How far back a literal's opening quote or its list's opener is looked for; past this the text counts (fail closed). */
+const LITERAL_WINDOW = 4096
+/** Trigger matches read per text; past this the text counts (fail closed). */
+const MAX_BARE_SECURITY_MATCHES = 256
+/** Calls whose arguments are output, not a command (`print('security')`, `console.log('security')`). */
+const OUTPUT_CALLS: ReadonlySet<string> = new Set(['print', 'println', 'puts', 'console.log', 'console.info', 'console.warn', 'console.error', 'console.debug'])
+/**
+ * String and collection methods whose argument is data (`text.count("information security")`); method form only.
+ * Never methods that return, split or store their argument (`get`, `replace`, `split`, `append`; review M1), and the
+ * call itself must not be an argument of another call (dataCallAt).
+ */
+const DATA_METHODS: ReadonlySet<string> = new Set([
+  'count', 'find', 'rfind', 'index', 'rindex', 'startswith', 'endswith', 'startsWith', 'endsWith', 'includes', 'indexOf',
+  'lastIndexOf', 'contains', 'test', 'has'
+])
+/** Words before a `[` that make it a list, not a subscript (`return ['security']`, `in ['security']`). */
+const NOT_SUBSCRIPT_WORDS: ReadonlySet<string> = new Set([
+  'return', 'yield', 'in', 'is', 'not', 'and', 'or', 'if', 'elif', 'else', 'await', 'lambda', 'print', 'puts', 'case',
+  'when', 'then', 'do', 'of', 'typeof', 'new', 'void', 'delete', 'throw', 'exec', 'system', 'spawn', 'assert', 'del',
+  'from', 'import', 'with', 'as', 'while', 'for', 'unless', 'until', 'echo', 'p', 'pp', 'say', 'my', 'our', 'local', 'const', 'let', 'var',
+  // Perl quoting operators (`qx["security"]`; review L1).
+  'q', 'qq', 'qw', 'qx', 'qr'
+])
+/** First argv words that run the rest as a command beyond programIndex's wrappers (a list's later `security` is then not data). */
+const ARGV_RUNNERS: ReadonlySet<string> = new Set([
+  ...NESTING_SHELLS, ...CODE_RUNNERS, ...POWERSHELLS, 'sandbox-exec', 'nsenter', 'unbuffer', 'runuser', 'su', 'sg', 'pkexec', 'chroot',
+  'flock', 'parallel', 'firejail', 'strace', 'ltrace', 'dtruss', 'valgrind', 'lldb', 'gdb', 'faketime', 'proxychains',
+  'proxychains4', 'torsocks', 'tsocks', 'systemd-run', 'dbus-run-session', 'xvfb-run', 'eval', 'open', 'ssh', 'flatpak-spawn',
+  'taskpolicy', 'ifne', 'chronic'
+])
+
+/**
+ * Owner report 2026-11-19 (replaces review round 2's two loose patterns, which refused `print(df['Security'])`,
+ * `['privacy', 'security']`, `console.log('security')` and a markdown row `"| Security | Dana |"`): code that may run
+ * a bare `security`, which then reads keychain commands from stdin. Read in the text as written and with `\"` / `\'`
+ * unescaped. A string literal ending in `security` and closing an array, call or statement counts unless it is data:
+ * a subscript key (`df['Security']`; not Perl `qx[` or Ruby `%x[`), the only argument of an output call or a
+ * non-returning string method (`print('security')`, `text.count("information security")`) that is not piped on (awk
+ * `print("x") | "sh"`) or handed to another call (dataCallAt), a one-command literal of letters and `,:.'-` whose
+ * program word ends in `,` or `:` (`'Topics: privacy, security'`), or a later element of a list of letter-only literals
+ * whose argv runs no `security` (`['privacy', 'security']`; not `['sudo', 'security']`, `['-c', 'security']`,
+ * `['5', 'security']` or a list headed by a shell or wrapper) that is neither indexed nor handed to a call.
+ * `| security` counts unless it sits in a markdown table row (a one-line literal starting and ending with `|`) that is
+ * an element of such a `[...]` list of literals. A literal whose opening quote or list opener is not found within LITERAL_WINDOW, or more than
+ * MAX_BARE_SECURITY_MATCHES triggers, counts (fail closed).
+ */
+function codeRunsBareSecurity(text: string): boolean {
+  if (!/security/i.test(text)) return false
+  const unescaped = text.replace(/\\(['"`])/g, '$1')
+  let seen = 0
+  for (const s of unescaped === text ? [text] : [text, unescaped]) {
+    for (const m of s.matchAll(BARE_SECURITY_LITERAL)) {
+      if (++seen > MAX_BARE_SECURITY_MATCHES) return true
+      if (!securityLiteralIsData(s, m.index, m[1])) return true
+    }
+    for (const m of s.matchAll(PIPE_SECURITY)) {
+      if (++seen > MAX_BARE_SECURITY_MATCHES) return true
+      if (!pipeInTableRow(s, m.index)) return true
+    }
+  }
+  return false
+}
+
+/** The last non-blank character before `at` and its index (-1 when none within LITERAL_WINDOW). */
+function charBefore(s: string, at: number): { ch: string; at: number } {
+  for (let i = at - 1; i >= 0 && at - i <= LITERAL_WINDOW; i--) if (!/\s/.test(s[i])) return { ch: s[i], at: i }
+  return { ch: '', at: -1 }
+}
+
+/** The opening quote of the literal whose closing quote `q` is at `close` (-1 when not found within LITERAL_WINDOW). */
+function literalOpen(s: string, close: number, q: string): number {
+  const from = Math.max(0, close - LITERAL_WINDOW)
+  const k = s.slice(from, close).lastIndexOf(q)
+  return k < 0 ? -1 : from + k
+}
+
+/**
+ * The list or argument list a literal opening at `open` sits in: the opener (`[` or `(`) and the earlier elements, each
+ * a plain string literal (`'a', "b",`). Null when an earlier element is anything else (a variable, an expression) or
+ * nothing is found within LITERAL_WINDOW.
+ */
+function enclosingLiterals(s: string, open: number): { opener: '[' | '('; at: number; elems: string[] } | null {
+  const elems: string[] = []
+  let pos = open
+  for (let guard = 0; guard < 64; guard++) {
+    const b = charBefore(s, pos)
+    if (b.ch === '[' || b.ch === '(') return { opener: b.ch, at: b.at, elems }
+    if (b.ch !== ',') return null
+    const q = charBefore(s, b.at)
+    if (q.ch !== "'" && q.ch !== '"' && q.ch !== '`') return null
+    const o = literalOpen(s, q.at, q.ch)
+    if (o < 0 || open - o > LITERAL_WINDOW) return null
+    elems.unshift(s.slice(o + 1, q.at))
+    pos = o
+  }
+  return null
+}
+
+/** The `[` at `at` indexes a value (`df['x']`, `rows)[`, `m][`): an identifier that is no keyword, `)` or `]` right before it. */
+function isSubscript(s: string, at: number): boolean {
+  const prev = s[at - 1] ?? ''
+  if (prev === ')' || prev === ']') return true
+  if (!/[\w$]/.test(prev)) return false
+  const m = /[A-Za-z_$][\w$]*$/.exec(s.slice(Math.max(0, at - 64), at))
+  const word = m?.[0] ?? ''
+  // Ruby `%x[...]` / `%q[...]` and Perl `qx[...]` quote, they do not index (review L1).
+  const before = m ? s[at - word.length - 1] ?? '' : ''
+  return word !== '' && before !== '%' && !NOT_SUBSCRIPT_WORDS.has(word)
+}
+
+/**
+ * The callee of the call whose `(` is at `at`: a dotted name (`console.log`, `text.count`), a method on an expression
+ * (`.count` in `read().count(`), or '' when it is anything else.
+ */
+function calleeAt(s: string, at: number): { name: string; start: number } {
+  const from = Math.max(0, at - 256)
+  const m = /(?:^|[^\w$.\s])\s*((?:\.\s*)?(?:[A-Za-z_$][\w$]*\s*\.\s*)*[A-Za-z_$][\w$]*)\s*$/.exec(s.slice(from, at))
+  return m ? { name: m[1].replace(/\s+/g, ''), start: from + m.index + m[0].indexOf(m[1]) } : { name: '', start: at }
+}
+
+/** A call whose arguments are data: OUTPUT_CALLS, or a DATA_METHODS method (`x.count(`, `.count(`). */
+function dataCall(callee: string): boolean {
+  if (OUTPUT_CALLS.has(callee)) return true
+  const dot = callee.lastIndexOf('.')
+  return dot >= 0 && DATA_METHODS.has(callee.slice(dot + 1))
+}
+
+/**
+ * The call whose `(` is at `at` is a data call (dataCall) that is not itself handed to another call (review M1:
+ * `os.system(x.count(...))`), except as the sole argument of a data call (`print(text.count(...))`), two levels deep.
+ */
+function dataCallAt(s: string, at: number, depth = 0): boolean {
+  const callee = calleeAt(s, at)
+  if (!dataCall(callee.name)) return false
+  return notHandedOn(s, callee.start, depth)
+}
+
+/** The expression starting at `start` is not an argument of a call other than a data call (review M3). */
+function notHandedOn(s: string, start: number, depth = 0): boolean {
+  const b = charBefore(s, start)
+  if (b.ch === ',') return false
+  if (b.ch === '(') return depth < 2 && dataCallAt(s, b.at, depth + 1)
+  return true
+}
+
+/** A list literal's closing `]` follows `from` and nothing indexes or slices it (`[...][1]`; review M3). */
+function listClosesCleanly(s: string, from: number): boolean {
+  const m = /^\s*\][ \t]*/.exec(s.slice(from, from + LITERAL_WINDOW))
+  if (!m) return false
+  const next = s[from + m[0].length]
+  return next === undefined || /[,;)\]}\n\r]/.test(next)
+}
+
+/** Some command of `text`, read as shell code, has `security` at its program position (also after sudo, env...). */
+function shellTextRunsSecurity(text: string): boolean {
+  if (/\$\(|`|<\(/.test(text)) return true
+  for (const segments of cliSegmentReadings(text)) {
+    for (const seg of segments) {
+      const words = segmentWords(seg.text)
+      const prog = words[programIndex(words)]
+      if (prog !== undefined && wordMayBe(prog, SECURITY)) return true
+    }
+  }
+  return false
+}
+
+/** An argv (a list's literal elements) that may run `security`: at the program position, after an option, or under a runner. */
+function argvRunsSecurity(argv: readonly string[]): boolean {
+  if (!argv.every((w) => /^[A-Za-z][A-Za-z ]*$/.test(w))) return true
+  if (wordNames(argv[0]).some((n) => ARGV_RUNNERS.has(n) || isCodeRunner(n))) return true
+  const prog = argv[programIndex(argv)]
+  return prog !== undefined && wordMayBe(prog, SECURITY)
+}
+
+/** The literal ending in `security` at `at` (closing quote `q`) is data, not a command (see codeRunsBareSecurity). */
+function securityLiteralIsData(s: string, at: number, q: string): boolean {
+  const close = at + 'security'.length
+  const open = literalOpen(s, at, q)
+  if (open < 0) return false
+  const content = s.slice(open + 1, close)
+  const after = s.slice(close + 1, close + 257)
+  // `'Topics: privacy, security'`: one plain command (no operators, escapes or expansions; review M2) whose program
+  // word is prose ending in `,` or `:`.
+  if (/^[A-Za-z][A-Za-z0-9 ,:.'-]*$/.test(content) && !shellTextRunsSecurity(content)) {
+    const words = segmentWords(content)
+    const prog = words[programIndex(words)]
+    if (prog !== undefined && /^[A-Za-z][\w-]*[,:]$/.test(prog)) return true
+  }
+  const soleArgument = /^\s*\)/.test(after) && !/^\s*\)\s*\|/.test(after)
+  const prev = charBefore(s, open)
+  if (prev.ch === '[') return isSubscript(s, prev.at)
+  if (prev.ch === '(') return soleArgument && dataCallAt(s, prev.at)
+  if (prev.ch === ',') {
+    const list = enclosingLiterals(s, open)
+    if (!list) return false
+    if (list.opener === '[') {
+      if (isSubscript(s, list.at)) return true
+      return list.elems.length > 0 && !argvRunsSecurity([...list.elems, content]) && listClosesCleanly(s, close + 1) && notHandedOn(s, list.at)
+    }
+    return soleArgument && dataCallAt(s, list.at)
+  }
+  return false
+}
+
+/**
+ * The `| security` at `at` sits in a markdown table row (`"| Security | Dana |"`): a one-line literal starting and
+ * ending with `|`, followed by `,` or `]`, that is an element of a `[...]` list of literals (not an argument: Perl's
+ * two-argument open runs `"| cmd |"`).
+ */
+function pipeInTableRow(s: string, at: number): boolean {
+  let open = -1
+  for (let i = at - 1; i >= 0 && at - i <= LITERAL_WINDOW; i--) {
+    const ch = s[i]
+    if (ch === '\n') return false
+    if (ch === '"' || ch === "'") {
+      open = i
+      break
+    }
+  }
+  if (open < 0) return false
+  const q = s[open]
+  const close = s.indexOf(q, at)
+  if (close < 0) return false
+  const content = s.slice(open + 1, close)
+  if (!/^[ \t]*\|[^\n]*\|[ \t]*$/.test(content)) return false
+  if (!/^\s*,/.test(s.slice(close + 1, close + 65)) && !listClosesCleanly(s, close + 1)) return false
+  const list = enclosingLiterals(s, open)
+  return list !== null && list.opener === '[' && !isSubscript(s, list.at) && notHandedOn(s, list.at)
+}
 
 /** A code runner's program name: CODE_RUNNERS, versioned pythons (`python3.12`) included. */
 function isCodeRunner(bare: string): boolean {
@@ -684,7 +940,7 @@ function custodianCodeRuns(text: string): boolean {
 }
 
 function custodianCodeRunsIn(segments: readonly CliSegment[]): boolean {
-  const custodianBefore = earlierPieces(segments, (t) => CUSTODIAN_CODE.some((re) => re.test(t)))
+  const custodianBefore = earlierPieces(segments, codeNamesCustodian)
   for (let k = 0; k < segments.length; k++) {
     const seg = segments[k]
     const words = segmentWords(seg.text)
@@ -694,7 +950,7 @@ function custodianCodeRunsIn(segments: readonly CliSegment[]): boolean {
     const bare = wordNames(prog).find(isCodeRunner)
     if (bare === undefined) continue
     const rest = words.slice(at + 1)
-    if (CUSTODIAN_CODE.some((re) => re.test(seg.text))) return true
+    if (codeNamesCustodian(seg.text)) return true
     if (rest.some((w) => /^\d*<<(?!<)/.test(w))) return true
     if (seg.pipeIn && codeRunnerReadsStdin(bare, rest) && custodianBefore(k)) return true
   }
@@ -1913,12 +2169,26 @@ const CLI_FILE_NAMES = ['orgai', 'orgai.exe', 'orgai.cmd', 'orgai.bat', 'orgai.p
 const GLOB_CHARS = /[*?[]/
 const SHELL_GLOB_AMBIGUITY = /(?:\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\}))|(?:[?*+@!]\([^()\s]*\))/
 
+/**
+ * Owner report 2026-11-19: a word whose only glob character is an unclosed `[` (the test builtins `[` and `[[`, a
+ * here-document's code word `["| Area |",`) is no glob: with no `]` anywhere bash reads the `[` literally (zsh refuses a
+ * bad pattern and runs nothing), so it is never a name. expandShellGlobAlternatives answers such a word with
+ * 'unreadable', which every name check read as "may be anything" (fail closed), so `[ -f x ]` was refused as the CLI.
+ * A word that also holds `]`, `*`, `?`, `(`, `$`, a backtick or a backslash keeps the fail-closed reading (an expansion
+ * or escape may supply the `]`: `[o$x`).
+ */
+function literalOpenBracket(word: string): boolean {
+  return word.includes('[') && !/[\]*?($`\\]/.test(word)
+}
+
 function hasShellGlobGroup(pattern: string): boolean {
+  if (literalOpenBracket(pattern)) return false
   const variants = expandShellGlobAlternatives(pattern)
   return variants === null || variants.length !== 1 || variants[0] !== pattern
 }
 
 function hasShellGlobWord(pattern: string): boolean {
+  if (literalOpenBracket(pattern)) return false
   return GLOB_CHARS.test(pattern) || hasShellGlobGroup(pattern)
 }
 
@@ -2250,7 +2520,7 @@ function textRunsCli(text: string, depth: number, budget: CliBudget, check: CliC
   if (/\bsetx\s+ELECTRON_RUN_AS_NODE\b/i.test(plain)) return true
   for (const segment of cliSegments(plain)) if (assignsElectronAsNode(segment.text)) return true
   // Wave 7: code run by an interpreter (inline, piped or a here-document) that calls a key custodian tool.
-  if (CUSTODIAN_CODE.some((re) => re.test(text)) && custodianCodeRuns(text)) return true
+  if (codeNamesCustodian(text) && custodianCodeRuns(text)) return true
   // A second pass keeps brace expansions whole (`<Resources>/bin/orga{i,} status`) when there are any.
   // zsh glob qualifiers run code: `*(e:'orgai status':)`, `*(+orgai)` (PR 47 review).
   const qualifiers = text.includes('(') ? zshQualifierTexts(text) : []
