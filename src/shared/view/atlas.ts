@@ -305,13 +305,13 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'dashboard-needs-you',
-    label: 'Needs you',
-    path: ['Dashboard', 'Needs you'],
+    label: 'Waiting on you',
+    path: ['Dashboard', 'Waiting on you'],
     kind: 'section',
     scope: 'app',
-    summary: 'The decisions waiting on you across projects, plus running, paused and recently ended runs. A row opens the run and its card.',
+    summary: 'The decisions waiting on you across projects, first on the Dashboard; Working now lists live runs and Pick up where you left off lists paused, ended and recent runs. A row opens the run and its card.',
     reach: [{ via: 'sidebar', label: 'Dashboard' }],
-    testIds: ['dash-needs-you', 'dash-needs-row', 'dash-running', 'dash-since', 'dash-paused']
+    testIds: ['dash-needs-you', 'dash-needs-row', 'dash-now', 'dash-running-row', 'dash-resume', 'dash-resume-row']
   },
   {
     id: 'dashboard-new-project',

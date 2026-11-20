@@ -379,7 +379,7 @@ options of at most 40 characters without descriptions. The Reviewer re-checks th
 | Many | Cap, then Show more; the count is the full number |
 | Error | `dash-needs-error` in the row, announced, as built |
 | Loading | Rows render from live runs at once; the arrival baseline rule stays (rows present once history is loaded never animate; 1.5 s settle) |
-| Copy | Row strings unchanged (dashboard-2.md section 13): "{agent} wants to run:", "wants to edit:", "Allow once", "Deny", "Long command: open it to review", "Answer in the run", "Touches a reference folder (read only)", "{project} · Team files". Walk 3 M2: a refused two-step command says "2 steps: open it to review" |
+| Copy | Row strings unchanged (dashboard-2.md section 13): "{agent} wants to run:", "wants to edit:", "Allow once", "Deny", "Long command: open it to review", "Answer in the run", "Touches a reference folder (read only)", "{project} · Team files". Walk 3 M2 is not taken up (decision 2026-11-19): a two-step command is allowed inline (at most 4 steps, ARCHITECTURE.md), so the refusal copy stays as built in `lib/needsInline.ts` ("{N} steps: open it to review" from 5 steps); changing it would mean editing that file, which this build must not do |
 | Test ids | Kept: `dash-needs-you`, `dash-needs-row[data-kind][data-inline][data-run][data-key]`, `dash-needs-allow`, `dash-needs-deny`, `dash-needs-option`, `dash-needs-error`, `dash-needs-reference`, `dash-needs-more` |
 | Keyboard | As built: per row the main button then its inline buttons; after an inline answer focus goes to the next row's main button, else the previous, else this section's h2 |
 
@@ -684,7 +684,8 @@ Numbered for the UI Lead and QA (mock adapter, throwaway data dir, both sizes, b
    waiting, working, paused, older than 7 days, first visit, no runs ever; never more than two sentences; never "$0.00"; before
    history loads it never says "Nothing has changed".
 5. The greeting text is not inside a live region; `dashboard-live` is the only element on the page with `aria-live` or
-   `role=status`.
+   `role=status`, except the first-launch New project form's own progress status `new-project-status` (FirstLaunch is
+   unchanged, section 2.6; clone and setup steps speak through it).
 6. Long text: a 40-character name, a 120-character run name and a 200-character to-do title clip with an ellipsis and a `title`,
    never widen the page or push a button out of its row, at 1024x640 and 1600x1000.
 7. Name: Add your name opens the popover with focus in the input; Enter saves; Esc cancels and focus returns; saved name shows
@@ -801,3 +802,41 @@ Owners: UI Lead assigns; slices 1 and 8 touch hot shared files (`types.ts`, sett
 - Reading the OS account name for the greeting (a main call; rejected for now, see 4.1).
 - Knowledge counts per engagement, skill-evaluation suggestions and uncommitted team files outside `listAttention`
   (dashboard-2.md section 18 stands).
+
+## 17. Implementation notes (built 2026-11-19, UI Lead)
+
+Built as specified in slices 1 (renderer half) to 10, renderer only; the display-name contract had landed before.
+Where the build differs from the text above, and why:
+
+- Assumption 2 resolved: `waitingMs`, `idleMs` and `limitHoldMs` are three independent timers in `runManager.ts` and
+  overlap (a usage-limited run's turn ends, so its hold sits inside idle time). Time working is per run
+  `max(0, wallMs - idleMs - waitingMs)`; `limitHoldMs` is not subtracted (`lib/weekRecap.ts`, `lib/activityStrip.ts`
+  `runWorkMs`). A card left open after a turn ended can still overlap idle; the floor hides that.
+- 7.2 walk-3 M2 ("2 steps") dropped, see 7.2; `needsInline.ts` and `NeedsInline.tsx` are byte-for-byte unchanged.
+- Section 10 / acceptance 5: on first launch the inline New project form keeps its own `new-project-status`.
+- Pin announcement: "Pinned {name}. It is now first." only when it is the only pin; otherwise "Pinned {name}. It is pin
+  {n} of {m}." (pins keep pin order, so a later pin is not first; Reviewer L1).
+- `saveDisplayName` lives in `lib/dashboardName.ts` (not beside `saveSchedulesPaused` in the schedules hook).
+- The section Move up / Move down controls and the tile pin toggle are native buttons with the `icon-btn` classes:
+  `IconButton` has no `aria-pressed` and its `inert` blocks the click that must announce "already first".
+- Pick up: the action buttons are native `btn sm` buttons (the shared `Button` takes no `data-*`); closed rows show for
+  7 days regardless of last seen; a pinned project whose newest thread is live (and Working now visible) gets no row;
+  outputs load through `projectQueue` kind 'outputs' (5 min max age).
+- Today: a schedule that ran today and is due again shows two rows; to-dos load three at a time with a local pool after
+  first paint (projectQueue has no to-do kind); no arrival animation on Today rows.
+- Your week counts only `kind === 'work'` runs (Chat included); Most active counts stored projects only.
+- Working now sorts waiting runs first (was working first). The worktree label `.dash-wt` keeps `--warning-text`.
+- Empty Waiting on you stays mounted with `hidden` (the shared section's focus hand-off needs it); it is not displayed.
+
+Verification (token-free, mock adapter): typecheck clean; whole unit suite with only failures in untouched `src/cli`
+and `src/main` symlink / ink-pin tests of this Windows worktree; build; `e2e/dashboard.mjs` rewritten (277 checks
+pass at both sizes and themes, keyboard customise path, reduced motion, relaunch), `proposals.mjs`, `usage-app.mjs`
+(selector updates) and `layout.mjs` pass. Reviewer: no Critical or High; M1 (Esc in native dialogs), L1, L2, L3, L4
+fixed. Screenshots of both sizes and themes in `e2e/shots/dashboard-*.png`, looked at by the UI Lead.
+
+Open: the UX walkthrough `ux-review-dashboard-4.md` (acceptance 32) is not written yet; not verified: the Allow once
+IPC argument by spy, a failed name save on screen, the 25th pin, a real second window, a decision entering 2 s after
+load, brief variants other than no-runs / waiting / closed on screen (unit tests only), real plan limits, a screen
+reader, macOS. Reviewer M3 (main `settings.ts` logs the JSON parse error, which may quote settings text) and L5 (a
+name save racing the Settings page's debounced save) are outside this renderer build. The proposal row label repeats
+"Schedules: Schedules:" (pre-existing NeedsRow copy, not changed here).

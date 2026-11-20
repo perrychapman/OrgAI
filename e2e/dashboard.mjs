@@ -193,8 +193,10 @@ async function checkBrief(tag) {
       parent: e.parentElement?.className?.toString().slice(0, 40) ?? ''
     }))
   )
-  const inside = regions.filter((r) => r.inDashboard)
-  check(inside.length === 1 && inside[0].id === 'dashboard-live', `A5 dashboard-live is the only aria-live / role=status element in the Dashboard ${tag}${tag === 'on first launch' ? ' [PRODUCT: the inline form keeps its own role=status new-project-status]' : ''}`, JSON.stringify(regions))
+  // The inline New project form on first launch keeps its own progress status (new-project-status, clone and setup
+  // steps; FirstLaunch is unchanged by the overhaul, spec 2.6 and the amended section 10): it is the one allowed extra.
+  const inside = regions.filter((r) => r.inDashboard && r.id !== 'new-project-status')
+  check(inside.length === 1 && inside[0].id === 'dashboard-live', `A5 dashboard-live is the only Dashboard aria-live / role=status element (besides the New project form's own status) ${tag}`, JSON.stringify(regions))
   const outside = regions.filter((r) => !r.inDashboard)
   if (outside.length) log(`note: live regions outside the Dashboard view ${tag}: ${JSON.stringify(outside)}`)
 }

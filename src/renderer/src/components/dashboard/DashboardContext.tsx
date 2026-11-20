@@ -95,7 +95,7 @@ export function DashSection({ id, testId, empty, count, headExtra, className, se
   return (
     <div className="dash-slot" data-testid="dash-section" data-section={id} data-state={state} data-span={customising ? 'full' : spanOf(id)}>
       {customising && (
-        <div className="dash-section-controls motion-fade" role="group" aria-label={`Arrange ${title}`} data-testid="dash-section-controls" data-section={id}>
+        <div className="dash-section-controls motion-fade" role="group" aria-label={hidden ? `Arrange ${title}, hidden` : empty ? `Arrange ${title}, nothing to show right now` : `Arrange ${title}`} data-testid="dash-section-controls" data-section={id}>
           <span className="dash-section-controls-title" aria-hidden="true">
             {hidden ? `${title}, hidden` : empty ? `${title}: nothing to show right now.` : title}
           </span>

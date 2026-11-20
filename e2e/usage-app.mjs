@@ -178,15 +178,15 @@ try {
   await settle()
   check(await visible('[data-testid=usage-view]'), 'entry: View > Usage (menu click) opens the page')
 
-  // Dashboard strip link opens on 30 days
+  // Your week's "See usage" opens on 30 days
   await gotoProjects(page)
   await page.waitForSelector('[data-testid=dashboard]')
-  if (await T('dash-strip-usage-link').count()) {
-    await T('dash-strip-usage-link').click()
+  if (await T('dash-week-usage').count()) {
+    await T('dash-week-usage').click()
     await settle()
-    check(await visible('[data-testid=usage-view]') && /30 days/.test(await T('usage-period-label').innerText()), 'entry: dash-strip-usage-link opens Usage on the 30 days period')
-    check((await chips()).length === 0, 'entry: the strip link adds no chip', JSON.stringify(await chips()))
-  } else skip('dash-strip-usage-link', 'the Dashboard strip is not rendered (no link on screen)')
+    check(await visible('[data-testid=usage-view]') && /30 days/.test(await T('usage-period-label').innerText()), 'entry: dash-week-usage opens Usage on the 30 days period')
+    check((await chips()).length === 0, 'entry: the See usage link adds no chip', JSON.stringify(await chips()))
+  } else skip('dash-week-usage', 'Your week is not rendered (no runs in the last 7 days)')
 
   // Trends link: Project chip
   await openProject(page, A)

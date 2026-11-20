@@ -145,6 +145,7 @@ export function ResumeSection({ lastSeen }: { lastSeen?: number }): ReactElement
         resumeNow(run.id).catch((e: unknown) => {
           exits.unmark(row.key)
           console.debug('resume now', e)
+          announce(`Could not resume ${displayRunName(run)}. Try again.`)
         })
         return
       case 'continue':

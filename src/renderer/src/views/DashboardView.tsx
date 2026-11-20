@@ -149,7 +149,9 @@ export default function DashboardView(): ReactElement {
         return false
       }
       updateLayout(() => next)
-      say(next.pinned.includes(projectId) ? `Pinned ${name}. It is now first.` : `Unpinned ${name}.`)
+      // Pins keep pin order, so a new pin is first only when it is the only one; otherwise say where it went.
+      const at = next.pinned.indexOf(projectId)
+      say(at < 0 ? `Unpinned ${name}.` : at === 0 ? `Pinned ${name}. It is now first.` : `Pinned ${name}. It is pin ${at + 1} of ${next.pinned.length}.`)
       return true
     },
     [say, updateLayout]
@@ -166,7 +168,7 @@ export default function DashboardView(): ReactElement {
     if (!customising || e.key !== 'Escape' || e.defaultPrevented) return
     const t = e.target as HTMLElement
     // A popover, menu or dialog takes its own Escape first.
-    if (t.closest('[role=dialog], [role=menu], [role=listbox], .popover')) return
+    if (t.closest('dialog, [role=dialog], [role=alertdialog], [role=menu], [role=listbox], [popover], .popover-panel')) return
     e.preventDefault()
     leaveCustomise()
   }
@@ -202,7 +204,7 @@ export default function DashboardView(): ReactElement {
       className="btn ghost dash-customise"
       data-testid="dash-customise"
       aria-expanded={customising}
-      aria-controls="dash-customise-bar"
+      aria-controls={customising ? 'dash-customise-bar' : undefined}
       onClick={() => (customising ? leaveCustomise() : setCustomising(true))}
     >
       <Icon icon={SlidersHorizontal} size="sm" />
