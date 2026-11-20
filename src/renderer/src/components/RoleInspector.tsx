@@ -1,6 +1,6 @@
 import type { KeyboardEvent, ReactElement } from 'react'
 import { useState } from 'react'
-import { Trash2 } from 'lucide-react'
+import { Trash2, UserPlus } from 'lucide-react'
 import type { Project, Role } from '@shared/types'
 import { projectConnection, roleConnection } from '@shared/defaults'
 import RoleModelPicker from './RoleModelPicker'
@@ -15,7 +15,8 @@ import { Checkbox } from './ui/Checkbox'
 import { Input } from './ui/Input'
 import { Textarea } from './ui/Textarea'
 import { initials } from '../lib/layout'
-import { setReportsTo, withRequiredReport, withSpawnableToggled, wouldCycle } from '../lib/roleOps'
+import { delegationChoices } from '../lib/delegation'
+import { renamePatch, setReportsTo, slugPatch, spawnNotice, withRequiredReport, withSpawnableToggled, wouldCycle } from '../lib/roleOps'
 import { roleModelSummary } from '../lib/roleModels'
 import { modelFoldSummary } from '../lib/roleConnection'
 
@@ -31,9 +32,11 @@ interface Props {
   onEscape?: () => void
   /** Hands a scope to the Team assistant from an empty capability group. */
   onAskAssistant?: (scope: CapabilityKind) => void
+  /** Adds a new role under this one. */
+  onAddReport?: () => void
 }
 
-export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape, onAskAssistant }: Props): ReactElement {
+export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape, onAskAssistant, onAddReport }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
   const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === roleConnection(role, project))?.connection.tierModels)
   const others = project.roles.filter((r) => r.id !== role.id)
@@ -49,10 +52,40 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
 
   const changeParent = (value: string): void => {
     const reportsTo = value || null
-    const parent = project.roles.find((r) => r.id === reportsTo)
+    const before = useAppStore.getState().projects.find((p) => p.id === project.id)?.roles ?? project.roles
     updateRoles(project.id, (roles) => setReportsTo(roles, role.id, reportsTo))
-    onNotice?.(parent && !parent.canSpawn ? `${parent.name} can now create subagents, because ${role.name} reports to it.` : null)
+    onNotice?.(spawnNotice(before, setReportsTo(before, role.id, reportsTo), role.name))
   }
+
+  const choices = delegationChoices(project.roles, role)
+  const delegateRow = (r: Role): ReactElement => (
+    <div key={r.id} className="delegate-row">
+      <Checkbox
+        checked={role.spawnable.includes(r.id)}
+        onChange={() => toggleSpawnable(r.id)}
+        testId={`role-delegate-${r.slug}`}
+        title={r.name}
+        label={
+          <span className="delegate-name">
+            <span className="avatar xs" style={{ ['--role' as string]: r.color }} aria-hidden="true" />
+            <span className="delegate-name-text">{r.name}</span>
+          </span>
+        }
+      />
+      <Checkbox
+        checked={(role.requiredReports ?? []).includes(r.id)}
+        onChange={(v) => patch(withRequiredReport(role, r.id, v))}
+        disabled={!role.spawnable.includes(r.id)}
+        title="The harness requires this report to be delegated to every time this role finishes"
+        testId={`role-required-report-${r.slug}`}
+        label={
+          <>
+            Required<span className="sr-only">: {r.name}</span>
+          </>
+        }
+      />
+    </div>
+  )
 
   const onKeyDown = (e: KeyboardEvent<HTMLElement>): void => {
     if (e.key === 'Escape' && !e.defaultPrevented && onEscape) {
@@ -69,18 +102,25 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
         </div>
         <h2>{role.name || 'Role'}</h2>
         <div className="grow" />
-        {!isRoot && (
-          <Button size="sm" variant="danger" icon={Trash2} onClick={onRemove}>
-            Remove
-          </Button>
-        )}
+        <div className="role-header-actions">
+          {onAddReport && (
+            <Button size="sm" icon={UserPlus} onClick={onAddReport} testId="role-add-report">
+              Add a report
+            </Button>
+          )}
+          {!isRoot && (
+            <Button size="sm" variant="danger" icon={Trash2} onClick={onRemove}>
+              Remove
+            </Button>
+          )}
+        </div>
       </div>
       <div className="side-body stack-3" onKeyDown={onKeyDown}>
         {notice && <Banner tone="info" onDismiss={() => onNotice?.(null)}>{notice}</Banner>}
 
         <div className="field">
           <label htmlFor="role-name-input">Name</label>
-          <Input id="role-name-input" value={role.name} onChange={(v) => patch({ name: v, slug: slugify(v) })} />
+          <Input id="role-name-input" value={role.name} onChange={(v) => patch(renamePatch(project, role, v))} />
         </div>
 
         <RoleCapabilities project={project} role={role} onChange={patch} onAskAssistant={onAskAssistant} />
@@ -94,7 +134,7 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
           </summary>
           <div className="field">
             <label htmlFor={id('slug')}>Slug (subagent type)</label>
-            <Input id={id('slug')} value={role.slug} mono onChange={(v) => patch({ slug: slugify(v) })} />
+            <Input id={id('slug')} value={role.slug} mono onChange={(v) => patch(slugPatch(project, role, slugify(v)))} />
           </div>
           <div className="field">
             <label htmlFor={id('description')}>When should a manager delegate to this role?</label>
@@ -165,31 +205,19 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
           </h3>
           <Checkbox checked={role.canSpawn} onChange={(v) => patch({ canSpawn: v })} label="May create subagents" />
           {role.canSpawn && (
-            <div className="check-grid">
+            <>
+              <span className="hint">Required: this role must hand work to that report before it finishes.</span>
               {others.length === 0 && <span className="hint">Add more roles to delegate to.</span>}
-              {others.map((r) => (
-                <div key={r.id} className="row gap-3">
-                  <Checkbox
-                    checked={role.spawnable.includes(r.id)}
-                    onChange={() => toggleSpawnable(r.id)}
-                    label={
-                      <span className="row gap-2">
-                        <span className="avatar xs" style={{ ['--role' as string]: r.color }} aria-hidden="true" />
-                        {r.name}
-                      </span>
-                    }
-                  />
-                  <Checkbox
-                    checked={(role.requiredReports ?? []).includes(r.id)}
-                    onChange={(v) => patch(withRequiredReport(role, r.id, v))}
-                    disabled={!role.spawnable.includes(r.id)}
-                    title="The harness requires this report to be delegated to every time this role finishes"
-                    testId={`role-required-report-${r.slug}`}
-                    label="Required"
-                  />
-                </div>
-              ))}
-            </div>
+              {choices.direct.length > 0 && <div className="delegate-list">{choices.direct.map(delegateRow)}</div>}
+              {choices.other.length > 0 && (
+                <details className="delegate-other" open={choices.other.some((r) => role.spawnable.includes(r.id))} data-testid="role-delegate-other">
+                  <summary>
+                    Other roles <span className="muted">({choices.other.length})</span>
+                  </summary>
+                  <div className="delegate-list">{choices.other.map(delegateRow)}</div>
+                </details>
+              )}
+            </>
           )}
         </section>
 
