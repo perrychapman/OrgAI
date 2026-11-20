@@ -65,6 +65,7 @@ describe('factoryTestState', () => {
       renderer: 'floor-plan',
       reason: 'forced',
       quality: 'high',
+      qualityStart: 'high',
       mode: 'team',
       motion: 'reduced',
       workers: [],
