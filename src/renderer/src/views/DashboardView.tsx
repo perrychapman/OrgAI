@@ -8,6 +8,7 @@ import { Badge } from '../components/ui/Badge'
 import { Icon } from '../components/ui/Icon'
 import { forgetNoticeText } from '../lib/dashboard'
 import { isDevBuild } from '../lib/buildChannel'
+import { registerProjectHues } from '../lib/projectIdentity'
 import { tokenMs } from '../lib/useExitPresence'
 import {
   SECTION_TITLES,
@@ -99,6 +100,8 @@ export default function DashboardView(): ReactElement {
 
   const mockAvailable = !!appInfo?.mockAdapter
   const empty = projects.length === 0
+  // Project identity hues for this list, before any section renders (idempotent for the same ids; projectIdentity.ts).
+  registerProjectHues(projects.map((p) => p.id))
 
   // ---- Layout and customise (sections 4.2, 6) ----
   const [layout, updateLayout] = useDashboardLayout()

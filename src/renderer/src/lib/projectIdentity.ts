@@ -19,10 +19,57 @@ function fnv1a(text: string): number {
   return h >>> 0
 }
 
-/** The hue index 1..PROJECT_HUES for a project id. An empty id (Chat, no project) gets 0: the neutral mark. */
+/** The hue a project id hashes to, 1..PROJECT_HUES, before collisions are resolved. */
+export function hashedHue(projectId: string): number {
+  return (fnv1a(projectId) % PROJECT_HUES) + 1
+}
+
+/**
+ * Hues for a list of projects in their stored order (creation order), so up to PROJECT_HUES projects never share a hue:
+ * each takes its hashed hue, or, when an earlier project holds it, the next hue (wrapping) among the least used. A new
+ * project appended to the list never changes the hue of an earlier one; deleting a project may shift later ones that had
+ * collided. Pure.
+ */
+export function assignProjectHues(projectIds: readonly string[]): Map<string, number> {
+  const out = new Map<string, number>()
+  const used = new Array<number>(PROJECT_HUES + 1).fill(0)
+  for (const id of projectIds) {
+    if (!id || out.has(id)) continue
+    const start = hashedHue(id)
+    const least = Math.min(...used.slice(1))
+    let hue = start
+    for (let k = 0; k < PROJECT_HUES; k++) {
+      const h = ((start - 1 + k) % PROJECT_HUES) + 1
+      if (used[h] === least) {
+        hue = h
+        break
+      }
+    }
+    used[hue]++
+    out.set(id, hue)
+  }
+  return out
+}
+
+/** The assignment for the projects the renderer knows now; set by `useProjectHueRegistry` (DashboardView). */
+let registry: Map<string, number> = new Map()
+let registryKey = ''
+
+/** Replace the known-project assignment (idempotent for the same id list). */
+export function registerProjectHues(projectIds: readonly string[]): void {
+  const key = projectIds.join('\u0000')
+  if (key === registryKey) return
+  registryKey = key
+  registry = assignProjectHues(projectIds)
+}
+
+/**
+ * The hue index 1..PROJECT_HUES for a project id: the registered assignment when the project is known, else its hashed
+ * hue. An empty id (Chat, no project) gets 0: the neutral mark.
+ */
 export function projectHue(projectId: string | null | undefined): number {
   if (!projectId) return 0
-  return (fnv1a(projectId) % PROJECT_HUES) + 1
+  return registry.get(projectId) ?? hashedHue(projectId)
 }
 
 /** The CSS colour for a hue index: `var(--project-N)`, or the neutral `var(--text-tertiary)` for 0. */
