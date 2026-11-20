@@ -183,7 +183,8 @@ describe('floorInstances', () => {
     expect(out.boardLamp).toHaveLength(BOARD_LAMP_COUNT)
     const lens = out.boardLamp.map((l) => l.colours!['boardLamp.lens'])
     expect(lens.slice(0, 6)).toEqual(['done', 'done', 'active', 'blocked', 'pending', 'skipped'].map((s) => ctx.boardLamp(s as BoardLampState)))
-    for (const c of lens.slice(6)) expect(c).toBe(ctx.lamps.off)
+    // Slots without a step take the pending treatment (light theme: matches real pending steps).
+    for (const c of lens.slice(6)) expect(c).toBe(ctx.boardLamp('pending'))
     const few = floorInstances({ model: model({ dockCrates: 3 }), selectedId: null }, ctx)
     expect(few.crate).toHaveLength(3)
     expect(few.boardLamp).toHaveLength(0)

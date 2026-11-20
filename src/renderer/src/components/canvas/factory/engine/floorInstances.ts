@@ -135,7 +135,8 @@ export function floorInstances(floor: EngineFloor, ctx: FloorContext): Record<Ki
         const a = boardKit.anchors?.[`lamp.${i}`]
         if (!a) continue
         const state = board.lamps[i]
-        const colour = state ? ctx.boardLamp(state) : ctx.lamps.off
+        // Slots without a step take the pending (unlit) treatment, so they match real pending steps in the light theme.
+        const colour = ctx.boardLamp(state ?? 'pending')
         // The lens geometry is already tilted onto the panel normal: translation only.
         const m = boardBase.clone().multiply(place(a.x, a.y, a.z))
         const lens: Record<string, Color> = {}
