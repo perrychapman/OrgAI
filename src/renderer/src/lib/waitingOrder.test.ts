@@ -16,7 +16,17 @@ describe('waitingOrder', () => {
     const kinds = ['team', 'rules', 'install', 'proposal', 'merge', 'permission', 'question', 'plan']
     const rows = kinds.map((kind, i): Row => ({ key: `k${i}`, kind, start: 1 }))
     expect(waitingOrder(rows, facts).map((r) => r.kind)).toEqual(['plan', 'question', 'permission', 'merge', 'proposal', 'install', 'rules', 'team'])
-    expect(Object.keys(WAITING_KIND_WEIGHT)).toEqual(['plan', 'question', 'permission', 'merge', 'proposal', 'install', 'rules', 'team'])
+    expect(Object.keys(WAITING_KIND_WEIGHT)).toEqual(['plan', 'question', 'permission', 'merge', 'proposal', 'install', 'rules', 'team', 'reply'])
+  })
+
+  it('puts a run awaiting a reply after every decision, the longest wait first', () => {
+    const rows: Row[] = [
+      { key: 'r-new', kind: 'reply', start: 500 },
+      { key: 't', kind: 'team', start: 0 },
+      { key: 'r-old', kind: 'reply', start: 100 },
+      { key: 'p', kind: 'permission', start: 900 }
+    ]
+    expect(keys(waitingOrder(rows, facts))).toEqual(['p', 't', 'r-old', 'r-new'])
   })
 
   it('puts the oldest run first within a kind, then the key', () => {

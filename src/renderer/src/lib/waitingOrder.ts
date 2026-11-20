@@ -7,7 +7,11 @@
  * the rule among the rows already shown.
  */
 
-/** Lower weighs first. 'team' (a team-files approval) has no run behind it and comes last. */
+/**
+ * Lower weighs first. 'team' (a team-files approval) has no run behind it and comes after every decision. 'reply' is a
+ * tile, not a decision: an idle run waiting for the person's reply (lib/attentionTiles.ts) comes after all of them, its
+ * `start` being when the wait began so the longest wait is first.
+ */
 export const WAITING_KIND_WEIGHT: Readonly<Record<string, number>> = {
   plan: 0,
   question: 1,
@@ -16,7 +20,8 @@ export const WAITING_KIND_WEIGHT: Readonly<Record<string, number>> = {
   proposal: 4,
   install: 5,
   rules: 6,
-  team: 7
+  team: 7,
+  reply: 8
 }
 
 /** What the order reads of one row. */
