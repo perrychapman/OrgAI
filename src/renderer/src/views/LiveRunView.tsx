@@ -59,7 +59,7 @@ import { Button } from '../components/ui/Button'
 import { CHAIN_EAGER_MEMBERS, canContinueIn, chainKeyOf, chainOf, continuedByIn, earlierMembersToLoad, endedComposerCopy, sessionOpenRunId } from '../lib/runChains'
 import { AgentNode, type AgentFlowNode } from '../components/AgentNode'
 import { messageSides, msgHandleId, type PlacedBox } from '../lib/canvasShapes'
-import { fitOptions } from '../lib/canvasFit'
+import { fitOptions, legacyFitPadding } from '../lib/canvasFit'
 import { DoneGroupNode, groupId, type DoneGroupFlowNode } from '../components/DoneGroupNode'
 import type { FinishedGroup } from '../components/FinishedList'
 import TranscriptPanel from '../components/TranscriptPanel'
@@ -1261,7 +1261,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
               nodesConnectable={false}
               elementsSelectable
               fitView
-              fitViewOptions={{ padding: radial ? 0.12 : 0.25, maxZoom: 1 }}
+              fitViewOptions={{ padding: legacyFitPadding(radial ? 0.12 : 0.25), maxZoom: 1 }}
               elevateEdgesOnSelect={false}
               proOptions={{ hideAttribution: true }}
               deleteKeyCode={null}
