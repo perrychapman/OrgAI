@@ -36,7 +36,7 @@ import { countUsage, setModelTokens, usageOf } from './runUsage'
 import { cliProjectSettings, projectSettingsLoad } from './claude'
 import { APP_REFERENCE_TOOL, OPEN_IN_APP_TOOL, PROPOSE_APP_SETTINGS_TOOL, PROPOSE_PROJECT_SETTINGS_TOOL, PROPOSE_SCHEDULE_TOOL } from '@shared/types'
 import { bridgedRolesOf, bridgedSpawnDenial } from './claude'
-import { BRIDGE_HARNESS_TOOLS, READ_DOCUMENT_TOOL, TODO_TOOL } from '@shared/types'
+import { BRIDGE_HARNESS_TOOLS, LIVE_RUN_CHANGE_WAIT_MS, READ_DOCUMENT_TOOL, TODO_TOOL } from '@shared/types'
 import { buildRolePrompt } from './prompts'
 import { obligationsFor } from './delegation'
 import { StaffingBook } from './staffingBook'
@@ -140,6 +140,11 @@ import { waitingNote, waitingNoteExcluded } from './waitingNote'
  * Model switching markers (all run kinds): [mock:model-switch] yields one root text then idle, without cards;
  * replies echo the active root model. [mock:model-switch-limit] ends the first session at a usage limit with
  * a reset 24 hours away (set autoResume off in the test); [mock:model-switch-error] ends it with a provider error.
+ * Host change answer markers (hostConfigChanged, read from the first prompt; add [mock:model-switch] so the run idles):
+ * [mock:host-after-idle] answers 'after-idle' (notice never in line, it waits for the next message); [mock:host-slow]
+ * answers after MOCK_HOST_SLOW_MS (LIVE_RUN_CHANGE_WAIT_MS + 1.5 s), so the host reports 'pending' first; combined with
+ * [mock:host-after-idle] the late answer is 'after-idle'; [mock:host-reject] rejects with MOCK_HOST_REJECT_REASON and
+ * applies nothing. Without them the answer is 'now'.
  * Live permission mode markers (setPermissionMode): an applied mode logs "Mock session permission mode: <mode>." (info);
  * [mock:mode-refuse] makes it refuse, [mock:mode-reports-unchanged] makes it answer reportsUnchanged >= 1.
  * Both recovery markers yield the simple idle script when resumed, so recovery never repeats the failure.
@@ -762,6 +767,19 @@ export const MODE_REFUSE_TOKEN = '[mock:mode-refuse]'
 export const MODE_REPORTS_UNCHANGED_TOKEN = '[mock:mode-reports-unchanged]'
 /** The run log line the mock writes when it applies a live permission mode (e2e reads it). */
 export const mockPermissionModeLog = (mode: PermissionMode): string => `Mock session permission mode: ${mode}.`
+/**
+ * hostConfigChanged answer markers (read from the run's first prompt; combine with [mock:model-switch] so the run idles).
+ * Each is an answer a real adapter gives: [mock:host-after-idle] 'after-idle' (Claude's restart at idle, Codex's MCP
+ * restart: the notice is never in line, it waits for the next message); [mock:host-slow] answers after
+ * MOCK_HOST_SLOW_MS, longer than LIVE_RUN_CHANGE_WAIT_MS (Claude waits on mcpServerStatus up to 5 s), so the host
+ * reports 'pending' and then the final answer; [mock:host-reject] rejects with MOCK_HOST_REJECT_REASON before applying
+ * anything (as Claude does for an org change a session without liveRoster cannot take).
+ */
+export const HOST_AFTER_IDLE_TOKEN = '[mock:host-after-idle]'
+export const HOST_SLOW_TOKEN = '[mock:host-slow]'
+export const HOST_REJECT_TOKEN = '[mock:host-reject]'
+export const MOCK_HOST_SLOW_MS = LIVE_RUN_CHANGE_WAIT_MS + 1_500
+export const MOCK_HOST_REJECT_REASON = 'This session does not take this change; it applies from the next run.'
 export const MODEL_SWITCH_LIMIT_TOKEN = '[mock:model-switch-limit]'
 export const MODEL_SWITCH_ERROR_TOKEN = '[mock:model-switch-error]'
 export const EXEC_SLOW_TOKEN = '[mock:exec-slow]'
@@ -1750,6 +1768,13 @@ export class MockSession implements RuntimeSession {
   async hostConfigChanged(change: ConfigChange): Promise<ConfigChangeResult> {
     if (this.isSetup) throw new Error('Setup-like runs do not take project config changes.')
     if (this.stopped || this.ended) throw new Error('The session is ending; the change applies from the next run.')
+    // Answer markers (HOST_*_TOKEN): reject before anything is applied; a slow answer applies when it answers.
+    if (this.ctx.prompt.includes(HOST_REJECT_TOKEN)) throw new Error(MOCK_HOST_REJECT_REASON)
+    if (this.ctx.prompt.includes(HOST_SLOW_TOKEN)) {
+      await new Promise((r) => setTimeout(r, MOCK_HOST_SLOW_MS))
+      if (this.stopped || this.ended) throw new Error('The session is ending; the change applies from the next run.')
+    }
+    const afterIdle = this.ctx.prompt.includes(HOST_AFTER_IDLE_TOKEN)
     this.configChanges.push({ ...structuredClone(change), host: true })
     this.rebindForConfig(change)
     const live = this.liveMcpServers()
@@ -1776,7 +1801,8 @@ export class MockSession implements RuntimeSession {
         : {})
     })
     const summary = 'The user changed the configuration; in effect now'
-    if (!this.held && this.inTurn) {
+    // 'after-idle' (a real adapter's restart at idle) is never told in line: the notice waits for the next message.
+    if (!this.held && this.inTurn && !afterIdle) {
       this.hostNotices.push({ text, delivery: 'inline' })
       this.deliverHarness(text, 'Reading a configuration change…', { summary })
     } else {
@@ -1785,7 +1811,7 @@ export class MockSession implements RuntimeSession {
       this.hostHeld.push(text)
       this.transcript(ROOT_AGENT_ID, { kind: 'system', text: summary, detail: text }, { source: 'harness' })
     }
-    return { availability: 'now' }
+    return { availability: afterIdle ? 'after-idle' : 'now' }
   }
 
   /** The run's MCP servers as they are now (project servers plus run-scoped installs). */

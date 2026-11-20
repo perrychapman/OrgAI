@@ -71,6 +71,9 @@ const sdk = vi.hoisted(() => {
       return { added: Object.keys(rec), removed: [], errors: {} }
     }
     async mcpServerStatus() {
+      // state.statusGate: the answer waits until the test opens it (read at call time).
+      const gate = state.statusGate
+      if (gate) await gate
       return state.status
     }
     async interrupt() {}
@@ -79,7 +82,14 @@ const sdk = vi.hoisted(() => {
       this.end()
     }
   }
-  const state = { FakeQuery, queries: [] as FakeQuery[], status: [] as { name: string; status: string; tools?: { name: string }[] }[], manualRead: false, lingerAfterInput: false }
+  const state = {
+    FakeQuery,
+    queries: [] as FakeQuery[],
+    status: [] as { name: string; status: string; tools?: { name: string }[] }[],
+    manualRead: false,
+    lingerAfterInput: false,
+    statusGate: undefined as Promise<void> | undefined
+  }
   return state
 })
 vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
@@ -112,6 +122,7 @@ afterEach(async () => {
   sdk.status = []
   sdk.manualRead = false
   sdk.lingerAfterInput = false
+  sdk.statusGate = undefined
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
 })
 
@@ -610,6 +621,103 @@ describe('Claude hostConfigChanged: a change the user saves never starts a turn 
     expect(sent.match(/Harness: check the plan\./g)).toHaveLength(1)
     expect(sent.match(/The MCP server notes is attached now\./g)).toHaveLength(1)
     expect(sent).toContain('go on')
+  }, 20_000)
+
+  it('a restarted query that dies before its init while its attach notice is still on its way: the late notice is dropped, the retry says it once', async () => {
+    const servers: McpServerSpec[] = []
+    let hold: Promise<void> | undefined
+    let resolvedCalls = 0
+    const { ctx, session, q1 } = await running(servers, {
+      resolvedMcpServers: async () => {
+        resolvedCalls += 1
+        if (hold) await hold
+        return servers.map((spec) => ({ spec, env: {}, headers: {} }))
+      }
+    })
+    q1.emit(result)
+    await sleep(50)
+    // The restarted query's mcpServerStatus answers only when the test says so.
+    let openStatus!: () => void
+    sdk.statusGate = new Promise<void>((r) => (openStatus = r))
+    servers.push(notes())
+    expect((await host(session, { mcp: { upserted: ['notes'], removed: [] } })).availability).toBe('after-idle')
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    // The retry's build waits, so this.q still points at the dead query meanwhile.
+    let release!: () => void
+    hold = new Promise<void>((r) => (release = r))
+    const calls = resolvedCalls
+    sdk.queries[1]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(resolvedCalls).toBeGreaterThan(calls), restartWait)
+    // The dead query's status answers now (after dropFailedRestartNotes ran); the retry's answers at once.
+    sdk.statusGate = undefined
+    openStatus()
+    await sleep(100)
+    hold = undefined
+    release()
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(3), restartWait)
+    const q3 = sdk.queries[2]!
+    q3.emit(init)
+    const inEffect = (b: { text?: string }) => !!b.text?.startsWith('Configuration change in effect')
+    await vi.waitFor(() => expect(rows(ctx).filter(inEffect).length).toBeGreaterThanOrEqual(1))
+    await sleep(100)
+    // Regression: the dead query's late notice landed in hostNotices too (two rows, two notices for one change).
+    expect(rows(ctx).filter(inEffect)).toHaveLength(1)
+    await session.send('one')
+    await vi.waitFor(() => expect(q3.inputs).toHaveLength(1))
+    expect(texts(q3).match(/The MCP server notes is attached now\./g)).toHaveLength(1)
+    expect(texts(q3).match(/The user changed this project/g)).toHaveLength(1)
+  }, 20_000)
+
+  /**
+   * A host change mid-turn (the user adds a server) makes a restart due; the turn's end is held back for it. The
+   * restarted query dies before its init (before its attach notice could release the turn end), and the retry's and the
+   * fallback's options cannot be built (each a failure, recoverRestart): three failures, no query started since, so the
+   * turn end is still held back when the run pauses.
+   */
+  async function hostRestartFailsAfterMidTurnChange(over: Partial<RuntimeContext>) {
+    const servers: McpServerSpec[] = []
+    let broken = false
+    const { ctx, session, q1 } = await running(servers, {
+      resolvedMcpServers: async () => {
+        if (broken) throw new Error('secret store unavailable')
+        return servers.map((spec) => ({ spec, env: {}, headers: {} }))
+      },
+      ...over
+    })
+    // The restarted query's status never answers before it dies.
+    sdk.statusGate = new Promise<void>(() => {})
+    servers.push(notes())
+    expect((await host(session, { mcp: { upserted: ['notes'], removed: [] } })).availability).toBe('after-idle')
+    q1.emit(result)
+    await vi.waitFor(() => expect(sdk.queries).toHaveLength(2), restartWait)
+    broken = true
+    sdk.queries[1]!.fail(new Error('spawn failed'))
+    await vi.waitFor(() => expect(ctx.events.some((e) => e.type === 'run.status' && e.status === 'paused')).toBe(true))
+    expect(sdk.queries).toHaveLength(2)
+    expect((session as unknown as { turnEndDeferred: boolean }).turnEndDeferred).toBe(true)
+    return ctx.events.find((e) => e.type === 'run.status' && e.status === 'paused') as { autoResume?: boolean; pausedUntil?: number; pauseReason?: string }
+  }
+
+  it('item 3: a host-only restart that fails after a mid-turn change pauses for the user when the driver would not have nudged', async () => {
+    // autoContinue off (running()'s default): nothing would have continued the run at that turn end.
+    const paused = await hostRestartFailsAfterMidTurnChange({})
+    // Regression: turnEndDeferred made it auto-resume (RESUME_TEXT), a turn caused by the user's change alone.
+    expect(paused.autoResume).toBe(false)
+    expect(paused.pausedUntil).toBeUndefined()
+    expect(paused.pauseReason).toContain('after the change you made in OrgAI')
+  }, 20_000)
+
+  it('item 3: the limit reached counts as no nudge too', async () => {
+    const plan = { goal: 'g', steps: [{ id: 'p1', title: 'Step', status: 'pending' as const }], status: 'active' as const, autoContinues: 3, updatedAt: 0 }
+    const paused = await hostRestartFailsAfterMidTurnChange({ autoContinue: true, maxAutoContinues: 3, getPlan: () => plan })
+    expect(paused.autoResume).toBe(false)
+  }, 20_000)
+
+  it('item 3 counterpart: when the driver would have continued the plan at that turn end, the run still auto-resumes', async () => {
+    const plan = { goal: 'g', steps: [{ id: 'p1', title: 'Step', status: 'pending' as const }], status: 'active' as const, autoContinues: 0, updatedAt: 0 }
+    const paused = await hostRestartFailsAfterMidTurnChange({ autoContinue: true, maxAutoContinues: 5, getPlan: () => plan })
+    expect(paused.autoResume).toBe(true)
+    expect(paused.pausedUntil).toBeGreaterThan(Date.now())
   }, 20_000)
 
   it('M2: the trailing init and empty result of a query closed for a restart are no turn', async () => {
