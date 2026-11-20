@@ -994,12 +994,8 @@ export function FactoryScene(props: FactorySceneProps): ReactElement {
         onFit={fit}
         pauseMotion={mode === 'live' ? pauseMotion : undefined}
       />
-      {/* Floor log (section 6.5), live only, over the stage's bottom right. Not a live region. */}
-      {mode === 'live' && (
-        <div className="factory-log-slot">
-          <FactoryLog entries={log} />
-        </div>
-      )}
+      {/* Floor log (section 6.5), live only, over the stage's bottom right (placed by factory-chrome.css). Not a live region. */}
+      {mode === 'live' && <FactoryLog entries={log} />}
       <output hidden data-testid="factory-state" ref={outRef} />
     </div>
   )

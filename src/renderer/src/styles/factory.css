@@ -16,22 +16,6 @@
   background: var(--surface-0);
 }
 
-/*
- * Slice 4: the floor log's place (section 6.7): over the stage's bottom right, opposite the controls. Bottom-anchored, so
- * an open log grows upward over the stage; closed, the strip's summary row (factory-chrome.css) keeps it within 48 px of
- * the stage's height. The strip itself stays in normal flow inside this slot.
- */
-.factory-log-slot {
-  position: absolute;
-  right: var(--space-2);
-  bottom: var(--space-2);
-  z-index: var(--z-canvas-overlay);
-  max-width: min(360px, 45%);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
 .factory-notice {
   flex: none;
   padding: var(--space-2) var(--space-2) 0;
