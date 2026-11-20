@@ -30,7 +30,7 @@ const model: FloorModel = {
     },
     order: ['root', 'a', 'b', 'gone'],
     lines: [{ number: 1, leadId: 'root', rows: [0], count: 2 }],
-    vacant: [{ line: 1, row: 0, slot: 2, center: { x: 14, z: 1.5 } }],
+    vacant: [{ id: 'c', line: 1, row: 0, slot: 2, center: { x: 14, z: 1.5 } }],
     routes: [],
     rows: 1,
     hall: { minX: 0, maxX: 30, minZ: -10, maxZ: 8 },

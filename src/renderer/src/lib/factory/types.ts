@@ -55,7 +55,8 @@ export interface FloorLayout {
   /** Reading order: booth first, then rows north to south, slots west to east. */
   order: string[]
   lines: FloorLine[]
-  vacant: { line: number; row: number; slot: number; center: Vec2 }[]
+  /** Slots of agents that left the floor (never reused within a session); `id` is the agent that held the slot. */
+  vacant: { id: string; line: number; row: number; slot: number; center: Vec2 }[]
   routes: FloorRoute[]
   rows: number
   hall: Bounds
