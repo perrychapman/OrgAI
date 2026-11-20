@@ -164,6 +164,10 @@ export default function DashboardView(): ReactElement {
     setCustomising(false)
     requestAnimationFrame(() => customiseRef.current?.focus({ preventScroll: true }))
   }
+  const openCustomise = (): void => {
+    setCustomising(true)
+    requestAnimationFrame(() => customiseRef.current?.focus({ preventScroll: true }))
+  }
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (!customising || e.key !== 'Escape' || e.defaultPrevented) return
     const t = e.target as HTMLElement
@@ -258,6 +262,14 @@ export default function DashboardView(): ReactElement {
                 <NeedsYouRegion caps={caps} onAnnounce={say} />
                 <SetupGaps caps={caps} />
                 <div className="dash-arranged">{layout.order.map((id) => sections[id])}</div>
+                {!customising && layout.order.every((id) => layout.hidden.includes(id)) && (
+                  <p className="dash-all-hidden" data-testid="dash-all-hidden">
+                    All sections are hidden.
+                    <Button variant="ghost" size="sm" testId="dash-all-hidden-show" onClick={openCustomise}>
+                      Show sections
+                    </Button>
+                  </p>
+                )}
               </>
             )}
             <footer className="dash-footer" data-testid="dashboard-app-facts">
