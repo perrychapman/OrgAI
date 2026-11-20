@@ -27,10 +27,18 @@ describe('normalizeLayout', () => {
       expect(normalizeLayout(raw)).toEqual(DEFAULT_LAYOUT)
     }
   })
-  it('drops unknown ids, duplicates and non-strings, and appends missing ids in default order', () => {
+  it('drops unknown ids, duplicates and non-strings, and inserts missing ids before their first present default successor', () => {
     const l = normalizeLayout({ v: 1, order: ['week', 'nope', 3, 'week', 'today'], hidden: ['today', 'today', 'x', null], pinned: [] })
-    expect(l.order).toEqual(['week', 'today', 'resume', 'working', 'projects'])
+    expect(l.order).toEqual(['resume', 'working', 'week', 'today', 'engagements', 'projects'])
     expect(l.hidden).toEqual(['today'])
+  })
+  it('a stored five-section layout gains Engagements at its default place, before Projects', () => {
+    const l = normalizeLayout({ v: 1, order: ['projects', 'week', 'today', 'resume', 'working'], hidden: ['week'], pinned: ['p'] })
+    expect(l.order).toEqual(['engagements', 'projects', 'week', 'today', 'resume', 'working'])
+    expect(l.hidden).toEqual(['week'])
+    expect(l.pinned).toEqual(['p'])
+    const d = normalizeLayout({ v: 1, order: ['resume', 'today', 'working', 'week', 'projects'], hidden: [], pinned: [] })
+    expect(d.order).toEqual([...DASH_SECTIONS])
   })
   it('keeps pins in order, drops duplicates, empties and non-strings, and stops at the limit', () => {
     const many = Array.from({ length: PIN_LIMIT + 5 }, (_, i) => `p${i}`)
@@ -47,7 +55,7 @@ describe('normalizeLayout', () => {
 describe('moves, hiding and reset', () => {
   it('moves one place and is a no-op at the ends', () => {
     const l = base()
-    expect(moveSection(l, 'today', 'up').order).toEqual(['today', 'resume', 'working', 'week', 'projects'])
+    expect(moveSection(l, 'today', 'up').order).toEqual(['today', 'resume', 'working', 'week', 'engagements', 'projects'])
     expect(moveSection(l, 'resume', 'up')).toBe(l)
     expect(moveSection(l, 'projects', 'down')).toBe(l)
   })
@@ -68,7 +76,7 @@ describe('moves, hiding and reset', () => {
     expect(isDefaultArrangement(r)).toBe(true)
   })
   it('announces moves and ends', () => {
-    expect(movedText(moveSection(base(), 'today', 'up'), 'today', 'up')).toBe('Today moved up. Position 1 of 5.')
+    expect(movedText(moveSection(base(), 'today', 'up'), 'today', 'up')).toBe('Today moved up. Position 1 of 6.')
     expect(atEndText('today', 'up')).toBe('Today is already first.')
     expect(atEndText('projects', 'down')).toBe('Projects is already last.')
   })
@@ -102,7 +110,7 @@ describe('placeSections', () => {
     ])
   })
   it('pairs the default order and puts Projects across', () => {
-    expect(placeSections([...DASH_SECTIONS], true).map((p) => p.span)).toEqual(['half', 'half', 'half', 'half', 'full'])
+    expect(placeSections([...DASH_SECTIONS], true).map((p) => p.span)).toEqual(['half', 'half', 'half', 'half', 'full', 'full'])
   })
   it('a hidden middle section leaves the unpartnered half full', () => {
     expect(placeSections(['resume', 'today', 'week', 'projects'], true)).toEqual([

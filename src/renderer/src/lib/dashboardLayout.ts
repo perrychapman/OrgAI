@@ -1,10 +1,10 @@
 /**
  * The person's Dashboard arrangement (docs/design/dashboard-overhaul.md section 4.2): the order and hidden list of the
- * five arrangeable sections and the pinned projects. Pure; kept in renderer localStorage under `orgai.dashboardLayout`
+ * six arrangeable sections and the pinned projects. Pure; kept in renderer localStorage under `orgai.dashboardLayout`
  * (a view preference of this machine's window: main has no reader for it). Every function returns a new object.
  */
 
-export const DASH_SECTIONS = ['resume', 'today', 'working', 'week', 'projects'] as const
+export const DASH_SECTIONS = ['resume', 'today', 'working', 'week', 'engagements', 'projects'] as const
 export type DashSectionId = (typeof DASH_SECTIONS)[number]
 
 export interface DashboardLayout {
@@ -28,11 +28,12 @@ export const SECTION_TITLES: Record<DashSectionId, string> = {
   today: 'Today',
   working: 'Working now',
   week: 'Your week',
+  engagements: 'Engagements',
   projects: 'Projects'
 }
 
 /** Half-width sections pair up in two tracks; Projects always takes the full row. */
-const HALF: ReadonlySet<DashSectionId> = new Set<DashSectionId>(['resume', 'today', 'working', 'week'])
+const HALF: ReadonlySet<DashSectionId> = new Set<DashSectionId>(['resume', 'today', 'working', 'week', 'engagements'])
 
 const isSection = (v: unknown): v is DashSectionId => typeof v === 'string' && (DASH_SECTIONS as readonly string[]).includes(v)
 
@@ -56,7 +57,16 @@ export function normalizeLayout(raw: unknown): DashboardLayout {
   const r = raw as Record<string, unknown>
   if (r.v !== 1) return fresh()
   const order = uniqueSections(r.order)
-  for (const id of DASH_SECTIONS) if (!order.includes(id)) order.push(id)
+  // A section added after the layout was stored goes in at its default place (before the first default successor that is
+  // present), so an older layout gains Engagements above Projects rather than after it.
+  DASH_SECTIONS.forEach((id, i) => {
+    if (order.includes(id)) return
+    const after = DASH_SECTIONS.slice(i + 1)
+      .map((n) => order.indexOf(n))
+      .filter((n) => n >= 0)
+    if (after.length === 0) order.push(id)
+    else order.splice(Math.min(...after), 0, id)
+  })
   const hidden = uniqueSections(r.hidden)
   const pinned: string[] = []
   if (Array.isArray(r.pinned)) {

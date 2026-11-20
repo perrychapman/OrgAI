@@ -34,6 +34,8 @@ import { ResumeSection } from '../components/dashboard/ResumeSection'
 import { TodaySection } from '../components/dashboard/TodaySection'
 import { WeekSection } from '../components/dashboard/WeekSection'
 import { SetupGaps } from '../components/dashboard/SetupGaps'
+import { CommitsSection } from '../components/dashboard/CommitsSection'
+import { EngagementsSection } from '../components/dashboard/EngagementsSection'
 import { useDashCaps } from '../components/dashboard/dashCaps'
 import { NewProjectDialog } from '../components/dashboard/NewProjectDialog'
 import { FirstLaunch } from '../components/dashboard/FirstLaunch'
@@ -198,6 +200,7 @@ export default function DashboardView(): ReactElement {
     today: <TodaySection key="today" />,
     working: <RightNowBand key="working" caps={caps} onAnnounce={say} />,
     week: <WeekSection key="week" />,
+    engagements: <EngagementsSection key="engagements" />,
     projects: <ProjectsGrid key="projects" onAnnounce={say} />
   }
 
@@ -258,9 +261,18 @@ export default function DashboardView(): ReactElement {
               <FirstLaunch mockAvailable={mockAvailable} />
             ) : (
               <>
-                {/* Fixed: first and second, never hidden or moved (a decision or a blocker must not be hideable). */}
-                <NeedsYouRegion caps={caps} onAnnounce={say} />
-                <SetupGaps caps={caps} />
+                {/* The lead band (Visual pass): fixed, never hidden or moved (a decision or a blocker must not be hideable).
+                    Left and widest: Waiting on you and To finish setting up; right: Commits this week. One column below the
+                    two-track width, attention first. */}
+                <div className="dash-lead" data-tracks={caps.wide && !customising ? '2' : '1'}>
+                  <div className="dash-lead-main">
+                    <NeedsYouRegion caps={caps} onAnnounce={say} />
+                    <SetupGaps caps={caps} />
+                  </div>
+                  <div className="dash-lead-side">
+                    <CommitsSection />
+                  </div>
+                </div>
                 <div className="dash-arranged">{layout.order.map((id) => sections[id])}</div>
                 {!customising && layout.order.every((id) => layout.hidden.includes(id)) && (
                   <p className="dash-all-hidden" data-testid="dash-all-hidden">

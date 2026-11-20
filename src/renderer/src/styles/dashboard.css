@@ -37,6 +37,34 @@
   }
 }
 
+/* The lead band (Visual pass): attention on the left and widest, Commits this week on the right in two tracks; one column
+   (attention first) otherwise. An empty side folds away and the main column takes the row. */
+.dash-lead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-6);
+}
+.dash-lead-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.dash-lead-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+.dash-lead-side:empty {
+  display: none;
+}
+.dash-lead[data-tracks='2']:has(> .dash-lead-side:not(:empty)) {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  column-gap: var(--space-8);
+}
+
 /* The arranged sections. Pairing is computed in JS (placeSections): a slot is half or full; visual order is DOM order. */
 .dash-arranged {
   display: grid;
