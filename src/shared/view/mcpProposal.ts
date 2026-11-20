@@ -47,12 +47,16 @@ export interface RoleRef {
   name: string
 }
 
-/** Role names for slugs, in the given order. A slug the project does not have is dropped. */
+/**
+ * Role names for slugs, in the given order. A slug the project does not have is dropped. A slug two roles share (a
+ * project:save does not refuse duplicates) names both: a slug grant reaches every role holding the slug, so the card
+ * shows every role the save grants. `roles` must be the stored project's roles: main maps a live run's card slugs to
+ * the stored slugs when the card is created (RunManager cardRolesForStoreAtCreation), so these names are who gets it.
+ */
 export function roleNames(slugs: readonly string[], roles: readonly RoleRef[]): string[] {
   const out: string[] = []
   for (const slug of slugs) {
-    const r = roles.find((x) => x.slug === slug)
-    if (r) {
+    for (const r of roles.filter((x) => x.slug === slug)) {
       const n = clampLabel(r.name, 40)
       if (!out.includes(n)) out.push(n)
     }

@@ -230,24 +230,31 @@ function withPrompt<R extends DiffRole>(c: ChangedRole<R>): ChangedRole<R> {
 export function diffOrgChart<R extends DiffRole>(current: readonly DiffRole[], proposed: readonly R[]): OrgDiff<R> {
   const curById = new Map(current.map((r) => [r.id, r]))
   const propById = new Map<string, DiffRole>(proposed.map((r) => [r.id, r]))
-  const curByKey = new Map(current.map((r) => [keyOf(r), r]))
-  const seen = new Set<string>()
+  const propIds = new Set(proposed.map((r) => r.id))
+  const seen = new Set<DiffRole>()
   const added: R[] = []
   const changed: ChangedRole<R>[] = []
   const unchanged: R[] = []
+  // Third review L-1: a role is matched by id when both sides have it under the same slug, so two roles sharing a slug (a
+  // live run's kept slug and a waiting role) pair with their own rows; otherwise by slug, never with a current role whose
+  // id another proposed role carries (that role is someone else, e.g. renamed away from this slug).
+  const match = (role: R): DiffRole | undefined => {
+    const byId = curById.get(role.id)
+    if (byId && keyOf(byId) === keyOf(role) && !seen.has(byId)) return byId
+    return current.find((c) => !seen.has(c) && keyOf(c) === keyOf(role) && !(c.id !== role.id && propIds.has(c.id)))
+  }
   for (const role of proposed) {
-    const key = keyOf(role)
-    const before = curByKey.get(key)
+    const before = match(role)
     if (!before) {
       added.push(role)
       continue
     }
-    seen.add(key)
+    seen.add(before)
     const changes = fieldChanges(before, role, curById, propById)
     if (changes.length > 0) changed.push(withPrompt({ role, before, changes }))
     else unchanged.push(role)
   }
-  let removed = current.filter((r) => !seen.has(keyOf(r)))
+  let removed = current.filter((r) => !seen.has(r))
   // A rename that also changes the slug looks like one removed plus one added role. Pair the most alike ones.
   const pairs: { r: DiffRole; a: R; score: number }[] = []
   for (const r of removed) for (const a of added) pairs.push({ r, a, score: nameSimilarity(r.name, a.name) })

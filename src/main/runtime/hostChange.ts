@@ -143,35 +143,81 @@ export function keepRunSlugs(edit: RoleEdit, running: readonly Role[]): { edit: 
 /**
  * McpServerSpec.roles (role slugs) of `items` as THIS RUN names those roles. `running` must be the run's RUNNING roles
  * (ctx.roles) only, never the waiting roles of its view (review H1: a waiting role can hold a slug a running role kept).
- * A slug naming a role of `stored` (the project the list was saved with) that is running becomes that role's slug in the
- * run (by id), so a run that kept a renamed role's old slug (keepRunSlugs) neither loses nor gains a grant by slug text.
- * A slug naming a stored role that is not running is dropped when a running role holds that slug text (it would reach a
- * role it does not name: fails closed) and otherwise stays as it is; a slug no stored role has stays (it means what it
- * meant when the run started, e.g. an old slug saved before a rename). So a waiting role's
- * slug-keyed grant is remembered under its slug and applies if that role joins under it (it cannot join while a running
- * role holds the slug: runRoster.ts slugTaken / retired slugs). Copies only items with a `roles` list. Pure.
+ *
+ * THE SLUG INVARIANT (third review, N1): inside a live run a slug text in the run's server list means exactly one running
+ * role, the one it named BY ID when the text entered the run, and no slug text the run did not map by id grants anything
+ * to a running role. So: a slug naming roles of `stored` (the project the list was saved with; every stored role holding
+ * it, duplicates included) that are running becomes their slugs in the run (by id), so a run that kept a renamed role's
+ * old slug (keepRunSlugs) neither loses nor gains a grant by slug text. Any other slug (it names a stored role that is not
+ * running, or no stored role at all, e.g. an old slug left in the list by a rename) is carried as text only while no
+ * running role holds that text; when one does, it is dropped (it would reach a role it does not name: fails closed). So
+ * a waiting role's slug-keyed grant is remembered under its slug and applies if that role joins under it (it cannot join
+ * while a running role holds the slug: runRoster.ts slugTaken / retired slugs). Copies only items with a `roles` list. Pure.
  */
 export function mcpRolesForRun<T extends { roles?: string[] }>(items: readonly T[] | undefined, stored: readonly Role[], running: readonly Role[]): T[] | undefined {
   if (!items) return undefined
-  const storedBySlug = new Map(stored.map((r) => [r.slug, r.id]))
+  const storedIds = new Map<string, string[]>()
+  for (const r of stored) storedIds.set(r.slug, [...(storedIds.get(r.slug) ?? []), r.id])
   const runSlugOf = new Map(running.map((r) => [r.id, r.slug]))
-  const runOwner = new Map(running.map((r) => [r.slug, r.id]))
-  const map = (slug: string): string | undefined => {
-    const id = storedBySlug.get(slug)
-    // A slug no stored role has (e.g. saved before a rename) means what it meant when the run started.
-    if (id === undefined) return slug
-    if (runSlugOf.has(id)) return runSlugOf.get(id)
-    return runOwner.has(slug) ? undefined : slug
+  const runSlugs = new Set(running.map((r) => r.slug))
+  const map = (slug: string): string[] => {
+    const mapped = (storedIds.get(slug) ?? []).flatMap((id) => (runSlugOf.has(id) ? [runSlugOf.get(id)!] : []))
+    if (mapped.length) return mapped
+    return runSlugs.has(slug) ? [] : [slug]
   }
   return items.map((x) => {
     if (!Array.isArray(x.roles)) return x
     const roles: string[] = []
-    for (const slug of x.roles) {
-      const mapped = map(slug)
-      if (mapped !== undefined && !roles.includes(mapped)) roles.push(mapped)
-    }
+    for (const slug of x.roles) for (const m of map(slug)) if (!roles.includes(m)) roles.push(m)
     return { ...x, roles }
   })
+}
+
+/**
+ * N1 (third review): slug texts in the run's server list that the stored project no longer backs for the running role
+ * holding them. For each pair (running role `roleId`, server `itemId`) asked about: when the run's server lists the role's
+ * RUN slug, that text is legitimate only while the saved server grants the role by slug too (its `roles` is undefined or
+ * lists the role's SAVED slug, which mcpRolesForRun maps to the run slug); otherwise the text is a leftover (an old slug
+ * left in the stored list by a rename, or a slug the user's revoke could not reach) and is removed from the run's copy.
+ * When the saved role holds the server by id (Role.mcpServers: the role inspector's rename copies slug grants to ids) the
+ * removal comes with an id grant in `convert` (access kept, never widened: the role had it by text); otherwise the role
+ * loses the server and the pair is in `lost`. Pure; returns `items` itself when nothing changes.
+ */
+export function staleSlugTexts<T extends { id: string; roles?: string[] }>(
+  items: readonly T[] | undefined,
+  pairs: readonly { roleId: string; itemId: string }[],
+  running: readonly Role[],
+  saved: Pick<Project, 'roles' | 'mcpServers'>
+): { items: T[] | undefined; convert: GrantEdit[]; lost: GrantEdit[] } {
+  const convert: GrantEdit[] = []
+  const lost: GrantEdit[] = []
+  if (!items) return { items: undefined, convert, lost }
+  const runById = new Map(running.map((r) => [r.id, r]))
+  const savedRole = new Map(saved.roles.map((r) => [r.id, r]))
+  const savedItem = new Map((saved.mcpServers ?? []).map((s) => [s.id, s]))
+  const drop = new Map<string, Set<string>>()
+  for (const { roleId, itemId } of pairs) {
+    const run = runById.get(roleId)
+    const item = items.find((x) => x.id === itemId)
+    const stored = savedItem.get(itemId)
+    if (!run || !item || !Array.isArray(item.roles) || !item.roles.includes(run.slug) || !stored) continue
+    const sr = savedRole.get(roleId)
+    if (sr && (stored.roles === undefined || stored.roles.includes(sr.slug))) continue
+    if (drop.get(itemId)?.has(run.slug)) continue
+    drop.set(itemId, new Set([...(drop.get(itemId) ?? []), run.slug]))
+    const edit: GrantEdit = { roleId, field: 'mcpServers', id: itemId, granted: true }
+    if ((sr?.mcpServers ?? []).includes(itemId)) convert.push(edit)
+    else lost.push({ ...edit, granted: false })
+  }
+  if (!drop.size) return { items: items as T[], convert, lost }
+  return {
+    items: items.map((x) => {
+      const gone = drop.get(x.id)
+      return gone && Array.isArray(x.roles) ? { ...x, roles: x.roles.filter((s) => !gone.has(s)) } : x
+    }),
+    convert,
+    lost
+  }
 }
 
 /**

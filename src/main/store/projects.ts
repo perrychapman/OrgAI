@@ -131,6 +131,44 @@ export function reconcileNearLimitProject(stored: Project, incoming: Project): P
   return next
 }
 
+/**
+ * A renderer save that renames roles (third review of the rename work; changes a saved shape): for each stored role whose
+ * slug the save changes (matched by id), when no OTHER stored role held that old slug, every stored server whose `roles`
+ * lists the old slug drops it and the renamed role gets the server by id (Role.mcpServers), so its access is kept and no
+ * stale slug is left for another role to inherit. That holds even when another incoming role takes the old slug in the same
+ * save (a swap, a new role): nobody gains a grant by picking up another role's old slug. When another stored role already
+ * held the old slug (a duplicate, e.g. a slug typed through another role's slug key by key), nothing changes, so the
+ * renamed role never gains that other role's servers. `roles` undefined (every role) is untouched. Only saveFromRenderer
+ * calls this; save() (team-file ingest, the service's own saves) never does. Pure: returns `roles` itself and no
+ * `mcpServers` when nothing changes.
+ */
+export function renamedSlugGrants(stored: Pick<Project, 'roles' | 'mcpServers'>, roles: Role[]): { roles: Role[]; mcpServers?: Project['mcpServers'] } {
+  const servers = stored.mcpServers
+  if (!servers?.length || !Array.isArray(stored.roles)) return { roles }
+  const was = new Map(stored.roles.map((r) => [r?.id, r]))
+  const moves = new Map<string, string>()
+  for (const r of roles) {
+    const before = r && was.get(r.id)
+    if (!before || typeof r.slug !== 'string' || r.slug === before.slug) continue
+    if (stored.roles.some((o) => o !== before && o?.slug === before.slug)) continue
+    moves.set(r.id, before.slug)
+  }
+  if (!moves.size) return { roles }
+  const oldSlugs = new Set(moves.values())
+  const touched = servers.some((s) => Array.isArray(s.roles) && s.roles.some((x) => oldSlugs.has(x)))
+  if (!touched) return { roles }
+  const nextRoles = roles.map((r) => {
+    const old = moves.get(r.id)
+    if (old === undefined) return r
+    const add = servers.filter((s) => Array.isArray(s.roles) && s.roles.includes(old)).map((s) => s.id)
+    const have = Array.isArray(r.mcpServers) ? r.mcpServers : []
+    const merged = [...have, ...add.filter((id) => !have.includes(id))]
+    return merged.length === have.length ? r : { ...r, mcpServers: merged }
+  })
+  const mcpServers = servers.map((s) => (Array.isArray(s.roles) && s.roles.some((x) => oldSlugs.has(x)) ? { ...s, roles: s.roles.filter((x) => !oldSlugs.has(x)) } : s))
+  return { roles: nextRoles, mcpServers }
+}
+
 /** The file-system calls checkProjectPath makes; node:fs by default, a fake in tests. */
 export interface PathFs {
   statSync(path: string): { isDirectory(): boolean }
@@ -629,6 +667,12 @@ export class ProjectStore {
     else delete next.folderConfigTrust
     if (stored.mcpServers !== undefined) next.mcpServers = stored.mcpServers
     else delete next.mcpServers
+    // A rename moves the role's slug-keyed server grants to its id (renamedSlugGrants): no stale old slug stays behind.
+    if (Array.isArray(next.roles)) {
+      const moved = renamedSlugGrants(stored, next.roles)
+      next.roles = moved.roles
+      if (moved.mcpServers) next.mcpServers = moved.mcpServers
+    }
     if (stored.plugins !== undefined) next.plugins = stored.plugins
     else delete next.plugins
     // Skills change only through skills:*: the stored list wins, and a role keeps only grants that exist there.

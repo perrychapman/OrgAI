@@ -52,6 +52,10 @@ describe('mcpProposal', () => {
     expect(whoCanUse({ ...base, roles: ['ghost'] }, roles)).toBeNull()
     expect(whoCanUse({ ...base, roles: [] }, roles)).toBe('No role yet')
   })
+  it('third review: a slug two roles share names both (a slug grant reaches every role holding it)', () => {
+    const dup = [...roles, { slug: 'reviewer', name: 'Second Reviewer' }]
+    expect(whoCanUse({ ...base, roles: ['reviewer'] }, dup)).toBe('Reviewer, Second Reviewer')
+  })
   it('roles, secrets', () => {
     expect(whoCanUse(base)).toBe('Every role')
     const secrets = [{ serverId: 'a', kind: 'env', name: 'TOKEN' }] as never

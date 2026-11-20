@@ -57,6 +57,67 @@ describe('ProjectStore.saveFromRenderer', () => {
     expect(saved.mcpServers).toBeUndefined()
   })
 
+  describe('renames move slug-keyed server grants to id grants (renamedSlugGrants, third review; a saved-shape change)', () => {
+    const srv = (id: string, roles?: string[]): McpServerSpec => ({ id, name: id, transport: 'stdio', command: 'x', enabled: true, ...(roles ? { roles } : {}) }) as McpServerSpec
+    const slugOf = (p: Project, id: string): Role => p.roles.find((r) => r.id === id)!
+    const renamed = (p: Project, id: string, slug: string, name = slug): Project => ({ ...p, roles: p.roles.map((r) => (r.id === id ? { ...r, slug, name } : r)) })
+
+    it('a rename drops the old slug from server roles and grants the role those servers by id; other servers untouched', () => {
+      const store = new ProjectStore(dataDir())
+      store.save(project({ mcpServers: [srv('docs', ['engineer', 'reviewer']), srv('wiki', ['reviewer']), srv('all')] }))
+      const saved = store.saveFromRenderer(renamed(store.get('p1')!, 'r-eng', 'builder', 'Builder'))
+      expect(saved.mcpServers!.map((s) => [s.id, s.roles])).toEqual([['docs', ['reviewer']], ['wiki', ['reviewer']], ['all', undefined]])
+      expect(slugOf(saved, 'r-eng').mcpServers).toEqual(['docs'])
+      expect(slugOf(saved, 'r-rev').mcpServers ?? []).toEqual([])
+      expect(store.get('p1')).toEqual(saved)
+      // The role inspector's patch already carries the id grant: no duplicate.
+      const store2 = new ProjectStore(dataDir())
+      store2.save(project({ mcpServers: [srv('docs', ['engineer'])] }))
+      const s2 = store2.saveFromRenderer({ ...renamed(store2.get('p1')!, 'r-eng', 'builder'), roles: renamed(store2.get('p1')!, 'r-eng', 'builder').roles.map((r) => (r.id === 'r-eng' ? { ...r, mcpServers: ['docs'] } : r)) })
+      expect(slugOf(s2, 'r-eng').mcpServers).toEqual(['docs'])
+      expect(s2.mcpServers![0].roles).toEqual([])
+    })
+
+    it('per-keystroke saves through in-between slugs, one of them another role\'s slug, end with exactly the start grants', () => {
+      const store = new ProjectStore(dataDir())
+      store.save(project({ mcpServers: [srv('docs', ['engineer']), srv('wiki', ['reviewer'])] }))
+      // "engineer" -> ... -> "reviewer" (the reviewer's slug: a duplicate for one save) -> "reviewers" -> "builder".
+      for (const slug of ['r', 're', 'rev', 'review', 'reviewer', 'reviewers', 'b', 'builder']) store.saveFromRenderer(renamed(store.get('p1')!, 'r-eng', slug))
+      const p = store.get('p1')!
+      expect(slugOf(p, 'r-eng')).toMatchObject({ slug: 'builder', mcpServers: ['docs'] })
+      expect(p.mcpServers!.map((s) => [s.id, s.roles])).toEqual([['docs', []], ['wiki', ['reviewer']]])
+      expect(slugOf(p, 'r-rev').mcpServers ?? []).toEqual([])
+    })
+
+    it('a swap: each role keeps its own servers by id and nobody inherits the other\'s old slug', () => {
+      const store = new ProjectStore(dataDir())
+      store.save(project({ mcpServers: [srv('docs', ['engineer']), srv('wiki', ['reviewer'])] }))
+      const p = store.get('p1')!
+      const saved = store.saveFromRenderer({ ...p, roles: p.roles.map((r) => (r.id === 'r-eng' ? { ...r, slug: 'reviewer' } : r.id === 'r-rev' ? { ...r, slug: 'engineer' } : r)) })
+      expect(saved.mcpServers!.map((s) => s.roles)).toEqual([[], []])
+      expect(slugOf(saved, 'r-eng').mcpServers).toEqual(['docs'])
+      expect(slugOf(saved, 'r-rev').mcpServers).toEqual(['wiki'])
+      // A new role taking the old slug in the same save gains nothing either.
+      const store2 = new ProjectStore(dataDir())
+      store2.save(project({ mcpServers: [srv('docs', ['engineer'])] }))
+      const q = renamed(store2.get('p1')!, 'r-eng', 'builder')
+      const s2 = store2.saveFromRenderer({ ...q, roles: [...q.roles, role({ id: 'r-new', slug: 'engineer' })] })
+      expect(s2.mcpServers![0].roles).toEqual([])
+      expect(slugOf(s2, 'r-new').mcpServers ?? []).toEqual([])
+      expect(slugOf(s2, 'r-eng').mcpServers).toEqual(['docs'])
+    })
+
+    it('only a renderer save applies it: save() (team-file ingest, the services\' own saves) keeps server roles as given', () => {
+      const store = new ProjectStore(dataDir())
+      store.save(project({ mcpServers: [srv('docs', ['engineer'])] }))
+      const saved = store.save(renamed(store.get('p1')!, 'r-eng', 'builder'))
+      expect(saved.mcpServers![0].roles).toEqual(['engineer'])
+      expect(slugOf(saved, 'r-eng').mcpServers ?? []).toEqual([])
+      const internal = store.saveInternal(renamed(store.get('p1')!, 'r-eng', 'maker'))
+      expect(internal.mcpServers![0].roles).toEqual(['engineer'])
+    })
+  })
+
   it('refuses unknown ids, unsafe ids and the harness id', () => {
     const store = new ProjectStore(dataDir())
     expect(() => store.saveFromRenderer(project({ id: 'new', mcpServers: [server] }))).toThrow('Project not found')
