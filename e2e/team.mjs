@@ -398,9 +398,8 @@ async function sectionConnections(page, shot) {
 async function sectionAssistant(page, shot) {
   const tray = page.locator('[data-testid=team-assistant]')
   await tray.waitFor({ timeout: 10_000 })
-  check((await tray.locator('[data-testid=team-mode-recommend]').getAttribute('aria-selected')) === 'true', 'the tray opens on Recommend')
-  check((await tray.locator('[data-testid=architect-open]').count()) === 1, 'the Design mode switch is in the tray')
-  check((await page.locator('.frame-toolbar [data-testid=architect-open]').count()) === 0, 'the toolbar no longer has a Design button')
+  check((await page.locator('[data-testid=architect-open]').count()) === 0, 'the tray has no Design tab (the Architect is in Start from)')
+  check((await page.locator('[data-testid=org-change-start]').count()) === 0, 'no Architect form is mounted until the dialog opens')
   check((await tray.locator('[data-testid=team-include-outside]').count()) === 1, 'the outside-sources opt-in is present')
   check(!(await tray.locator('[data-testid=team-include-outside]').isChecked()), 'outside sources are off by default')
   check((await tray.locator('[data-testid=team-scope] select').count()) === 1, 'the scope chip is present')
@@ -493,14 +492,13 @@ async function sectionDesignDecisions(page, shot) {
   check(!/R\?/.test(await page.locator('.frame-tray').innerText()), 'the Architect card is not labelled R?')
   await shot('design-permission')
   await openTeam(page)
-  await tray.locator('[data-testid=architect-open]').click()
-  check((await tray.locator('[data-testid=org-change-pointer]').count()) === 1, 'Team > Design points at the open session')
+  check((await tray.locator('[data-testid=org-change-pointer]').count()) === 1, 'the Team tray points at the open session')
+  check(/is open/.test(await page.locator('[data-testid=team-notice-row]').innerText()), 'the notice row says the Architect session is open', await page.locator('[data-testid=team-notice-row]').innerText())
   await page.locator('[data-testid=topbar-needs-you]').click()
   await page.locator('.frame-tray .decision-card').first().waitFor({ timeout: 5_000 })
   check((await page.locator('[data-testid=tab-live]').getAttribute('aria-selected')) === 'true', 'the Needs-you pill lands on the Architect card in Live')
   await endSession(page)
   await openTeam(page)
-  await tray.locator('[data-testid=team-mode-recommend]').click()
 }
 
 /**

@@ -39,10 +39,12 @@ try {
   // The Architect is reached from Start from (docs/design/team-tab-overhaul.md 1.3), not from the tray. The menu and its
   // dialog are another engineer's component: the step runs when the menu is mounted.
   const startFrom = page.locator('[data-testid=team-start-from]')
+  check((await startFrom.count()) === 1, 'the Start from menu is in the header')
   if ((await startFrom.count()) === 1) {
     await startFrom.click()
     await page.locator('[data-testid=start-from-architect]').click()
-    await page.locator('[data-testid=org-change-start]').waitFor({ state: 'visible', timeout: 5000 })
+    // The tray's Design pane still holds the same form until phase 3: scope to the dialog.
+    await page.locator('[data-testid=architect-dialog] [data-testid=org-change-start]').waitFor({ state: 'visible', timeout: 5000 })
     check((await page.locator('[data-testid=role-capabilities]').count()) === 1, 'the Architect dialog does not replace the role inspector')
     await shot('team-architect')
     await page.keyboard.press('Escape')

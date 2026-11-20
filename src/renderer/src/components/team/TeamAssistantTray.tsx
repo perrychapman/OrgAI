@@ -26,7 +26,6 @@ import {
 } from '../../lib/capabilities'
 import { cleanIpcError } from '../../lib/ipcError'
 import { openConnectorSetup } from './openConnectorSetup'
-import DraftPanel from '../DraftPanel'
 import { OrgChangePointer } from './OrgChangePointer'
 import { Banner } from '../ui/Banner'
 import { Button } from '../ui/Button'
@@ -36,20 +35,12 @@ import { IconButton } from '../ui/IconButton'
 import { openProjectSettings } from '../../lib/openProjectSettings'
 import { PROJECT_SETTINGS_SECTIONS } from '../../lib/settingsTarget'
 import { Select } from '../ui/Select'
-import { Tabs, panelDomId } from '../ui/Tabs'
 import { AppliedRow, CapabilityCard, DismissedList, DismissedRow, type AppliedInfo } from './CapabilityCard'
 import { CapabilityGaps } from './CapabilityGaps'
 
 /** What the Team assistant is looking at: the whole team, or one role. Follows the canvas selection unless pinned. */
 export type TeamScope = { kind: 'team' } | { kind: 'role'; roleId: string }
 
-/** Which mode the tray shows. Recommend finds tools and skills; Design is the Architect (always the whole team). */
-export type TeamAssistantMode = 'recommend' | 'design'
-
-const MODE_TABS = [
-  { id: 'recommend', label: 'Recommend', testId: 'team-mode-recommend' },
-  { id: 'design', label: 'Design', testId: 'architect-open' }
-]
 
 const outsideKey = (projectId: string): string => `orgai.teamOutside.${projectId}`
 function readOutside(projectId: string): boolean {
@@ -76,29 +67,26 @@ function writeSeenAt(projectId: string): void {
 }
 
 /**
- * Body of the canvas frame's tray on the Team tab: the Team assistant. Both modes stay mounted (the inactive one is
- * hidden) so a search keeps running while the user designs, and the other way round. Design starts an org change
- * session, an ordinary setup run on Live; the tray only points at it.
+ * Body of the canvas frame's tray on the Team tab: the Team assistant (tools and skills suggestions). Team tab phase 2
+ * removed the Design tab: the Architect is reached only from the header's Start from menu (one `org-change-start` on
+ * the tab); "Open the Architect" here calls `onOpenArchitect`, which opens that same dialog.
  */
 export default function TeamAssistantTray({
   project,
   scope,
-  mode,
-  onModeChange
+  onOpenArchitect
 }: {
   project: Project
   scope?: TeamScope
-  mode: TeamAssistantMode
-  onModeChange: (mode: TeamAssistantMode) => void
+  onOpenArchitect: () => void
 }): ReactElement {
   const hasResults = useTeamAssistantStore((s) => !!s.sessions[project.id]?.result)
-  const trayPhase = mode === 'design' ? 'design' : hasResults ? 'results' : 'recommend'
+  const trayPhase = hasResults ? 'results' : 'recommend'
   return (
-    <div className="team-assistant" data-testid="team-assistant" data-mode={mode} data-tray-phase={trayPhase}>
+    <div className="team-assistant" data-testid="team-assistant" data-mode="recommend" data-tray-phase={trayPhase}>
       <div className="team-tray-head">
         <h2>Team assistant</h2>
         <div className="grow" />
-        <Tabs tabs={MODE_TABS} value={mode} onChange={(id) => onModeChange(id as TeamAssistantMode)} label="Assistant mode" idPrefix="team-mode" compact />
         {/* The Off / Free checks / AI suggestions select lives in Project settings > Permissions > Advanced (ux-review-config-2 N6). */}
         <IconButton
           icon={Settings2}
@@ -108,13 +96,10 @@ export default function TeamAssistantTray({
           onClick={() => openProjectSettings(project.id, PROJECT_SETTINGS_SECTIONS.teamAssistant)}
         />
       </div>
-      {/* Both modes: an open org change session is never hidden behind the Design tab (walk H1). */}
+      {/* An open org change session is always pointed at here (walk H1); the notice row says it too. */}
       <OrgChangePointer project={project} />
-      <div role="tabpanel" id={panelDomId('team-mode', 'recommend')} hidden={mode !== 'recommend'} className="team-mode-pane">
-        <RecommendPane project={project} scope={scope} active={mode === 'recommend'} onDesign={() => onModeChange('design')} />
-      </div>
-      <div role="tabpanel" id={panelDomId('team-mode', 'design')} hidden={mode !== 'design'} className="team-mode-pane team-tray-body">
-        <DraftPanel project={project} />
+      <div className="team-mode-pane">
+        <RecommendPane project={project} scope={scope} active onDesign={onOpenArchitect} />
       </div>
     </div>
   )
