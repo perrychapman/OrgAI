@@ -196,23 +196,45 @@ export function wouldCycle(roles: Role[], childId: string, parentId: string | nu
  * keystroke when no focus event came). Every keystroke of that edit is computed against this, never against the
  * slug of the previous keystroke (review H1).
  */
-export type RenameStart = Pick<Role, 'slug' | 'mcpServers'>
+export type RenameStart = Pick<Role, 'id' | 'slug' | 'mcpServers'>
+
+/** The project fields a rename reads: its servers, and its roles so the slug stays unique. */
+export type RenameProject = Pick<Project, 'mcpServers'> & { roles?: readonly Pick<Role, 'id' | 'slug'>[] }
+
+/** Does a role other than `roleId` hold `slug`? (The CLI refuses the same thing: teamRoleEdit `--name`.) */
+export function slugTaken(roles: readonly Pick<Role, 'id' | 'slug'>[] | undefined, roleId: string, slug: string): boolean {
+  return !!slug && (roles ?? []).some((r) => r.id !== roleId && r.slug === slug)
+}
+
+/** `base`, or `base-2`, `base-3`... the first one no other role holds (as nextRoleName picks a free name). */
+export function uniqueSlug(roles: readonly Pick<Role, 'id' | 'slug'>[] | undefined, roleId: string, base: string): string {
+  if (!slugTaken(roles, roleId, base)) return base
+  for (let n = 2; ; n++) if (!slugTaken(roles, roleId, `${base}-${n}`)) return `${base}-${n}`
+}
 
 /**
  * A rename as ONE patch (D8). The slug follows the name, and connection grants are keyed by slug (McpServerSpec.roles),
  * which projects:save cannot remap: so every server the role held by its STARTING slug is also granted by id
  * (Role.mcpServers), which survives the slug change. Servers for every role (roles undefined) need nothing.
  *
+ * The slug is unique in the project (recheck M): when `slugify(name)` is another role's slug the name stays as typed
+ * and the slug gets the next free numeric suffix (`qa-2`), so a role never takes another role's slug-keyed servers
+ * and the subagent type stays unambiguous, not even for one keystroke.
+ *
  * Review H1: the grant list is always `start.mcpServers ∪ {servers whose roles include start.slug}`, never the current
- * value plus something. An in-between slug while typing ("QA Lead" passes through `qa`) therefore adds nothing, even
- * when another role's server lists that slug. Back at the starting slug the grants are exactly the starting ones.
+ * value plus something. An in-between slug while typing therefore adds nothing.
  */
-export function renamePatch(project: Pick<Project, 'mcpServers'>, start: RenameStart, name: string): Partial<Role> {
-  return slugPatch(project, start, slugify(name), name)
+export function renamePatch(project: RenameProject, start: RenameStart, name: string): Partial<Role> {
+  return slugPatch(project, start, uniqueSlug(project.roles, start.id, slugify(name)), name)
 }
 
-/** The same for an edit of the slug field alone (name left as it is). */
-export function slugPatch(project: Pick<Project, 'mcpServers'>, start: RenameStart, slug: string, name?: string): Partial<Role> {
+/**
+ * The same for an edit of the slug field alone (name left as it is). The caller refuses a taken slug first
+ * (`slugFieldEdit`). Recheck M (main's rename rule): once anything is carried, the patch carries it at every slug,
+ * the starting one included. A debounced save of an in-between slug may already have let main move the starting
+ * slug's grants to ids, so typing back must not drop those ids; a redundant id grant is harmless.
+ */
+export function slugPatch(project: RenameProject, start: RenameStart, slug: string, name?: string): Partial<Role> {
   const patch: Partial<Role> = name === undefined ? { slug } : { name, slug }
   const have = start.mcpServers ?? []
   const add = (project.mcpServers ?? [])
@@ -220,15 +242,25 @@ export function slugPatch(project: Pick<Project, 'mcpServers'>, start: RenameSta
     .map((s) => s.id)
   // Nothing to carry over: the grants stay the starting ones throughout, so the patch leaves them alone.
   if (add.length === 0) return patch
-  patch.mcpServers = slug === start.slug ? (start.mcpServers ? [...start.mcpServers] : undefined) : [...have, ...add]
+  patch.mcpServers = [...have, ...add]
   return patch
+}
+
+export const SLUG_TAKEN_TEXT = 'Another role already uses this ID.'
+
+/** The Slug field: a slug another role holds is refused with a field error and not applied. */
+export function slugFieldEdit(project: RenameProject, start: RenameStart, value: string): { patch: Partial<Role> } | { error: string } {
+  const slug = slugify(value)
+  if (slugTaken(project.roles, start.id, slug)) return { error: SLUG_TAKEN_TEXT }
+  return { patch: slugPatch(project, start, slug) }
 }
 
 /**
  * Review M3: the servers that still name a renamed role's OLD slug in `roles`, and may now drop it. Only when no role in
  * the project holds that slug any more (another role may have taken it), only servers with an explicit list (`undefined`
  * means every role and is left alone), and only servers the renamed role now holds by id, so it keeps its access.
- * Returns each server with the `roles` list to send.
+ * Returns each server with the `roles` list to send: exactly the old slug removed (recheck M). Other slugs no current
+ * role holds stay, since they may belong to a role removed with Undo on screen or named by team files awaiting approval.
  */
 export function staleSlugServers(
   project: Pick<Project, 'roles'>,
@@ -240,11 +272,9 @@ export function staleSlugServers(
   const role = project.roles.find((r) => r.id === roleId)
   if (!role) return []
   const held = role.mcpServers ?? []
-  // The list written back keeps only slugs some role holds: it never re-adds a stale slug (this one or an older one).
-  const slugs = new Set(project.roles.map((r) => r.slug))
   return servers
     .filter((s) => s.roles !== undefined && s.roles.includes(oldSlug) && held.includes(s.id))
-    .map((s) => ({ spec: s, roles: (s.roles ?? []).filter((x) => x !== oldSlug && slugs.has(x)) }))
+    .map((s) => ({ spec: s, roles: (s.roles ?? []).filter((x) => x !== oldSlug) }))
 }
 
 export interface SettleRenameDeps {

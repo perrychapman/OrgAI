@@ -154,7 +154,7 @@ try {
   check(/agents\/dev\.md/.test(confirmText) && /Nothing is pushed/.test(confirmText), 'Commit opens a confirmation that lists the files', confirmText)
   check(
     /Git reports \d+ changed team files? in \.orgai\/ right now/.test(confirmText) &&
-      /commits the team files git reports as changed when you press Commit, and only team files/.test(confirmText) &&
+      /commits the team files git reports as changed when you confirm, and only team files/.test(confirmText) &&
       !/Only these files/.test(confirmText),
     'the confirmation says main commits what git reports at commit time (review M2)',
     confirmText

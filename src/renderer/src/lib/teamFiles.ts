@@ -175,11 +175,11 @@ export interface CommitConfirmText {
 }
 
 /**
- * The fixed footnote of the commit confirmation. Main re-reads git when the user presses Commit and commits the team
+ * The fixed footnote of the commit confirmation. Main re-reads git when the user confirms (Commit or Commit anyway) and commits the team
  * files it finds then (never anything else), so the list above is what git reported, not a promise.
  */
 export const COMMIT_CONFIRM_NOTE =
-  'OrgAI commits the team files git reports as changed when you press Commit, and only team files. Anything else you staged stays staged. Nothing is pushed.'
+  'OrgAI commits the team files git reports as changed when you confirm, and only team files. Anything else you staged stays staged. Nothing is pushed.'
 
 export const TEAM_FILES_STALE_TEXT = 'The files changed. Review them again.'
 

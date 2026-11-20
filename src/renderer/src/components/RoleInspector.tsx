@@ -21,7 +21,7 @@ import {
   renamePatch,
   setReportsTo,
   settleRename,
-  slugPatch,
+  slugFieldEdit,
   withRequiredReport,
   withSpawnableToggled,
   wouldCycle,
@@ -36,6 +36,8 @@ interface Props {
   /** Inline explanation of a side effect of the last change ("Implementer can now create subagents"). */
   notice?: string | null
   onNotice?: (text: string | null) => void
+  /** A rename cleanup that failed after this inspector moved to another role or closed: the view shows it. */
+  onSettleError?: (text: string) => void
   /** Remove goes through the view's confirm dialog and undo row. */
   onRemove: () => void
   /** Escape inside the inspector hands focus back to the node. */
@@ -46,7 +48,13 @@ interface Props {
   onAddReport?: () => void
 }
 
-export default function RoleInspector({ project, role, notice, onNotice, onRemove, onEscape, onAskAssistant, onAddReport }: Props): ReactElement {
+const sameIds = (a: readonly string[] | undefined, b: readonly string[] | undefined): boolean => {
+  const x = a ?? []
+  const y = b ?? []
+  return x.length === y.length && x.every((v, i) => v === y[i])
+}
+
+export default function RoleInspector({ project, role, notice, onNotice, onSettleError, onRemove, onEscape, onAskAssistant, onAddReport }: Props): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
   const replaceProject = useAppStore((s) => s.replaceProject)
   const tierModels = useAppStore((s) => s.connections?.find((c) => c.connection.id === roleConnection(role, project))?.connection.tierModels)
@@ -70,28 +78,47 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
   }
 
   // Review H1 / M3: a Name or Slug edit is computed against the role as it was when the edit began, and settled once
-  // when it ends (blur, switching role, closing the inspector). See renamePatch and settleRename in lib/roleOps.
-  const renameStart = useRef<(RenameStart & { roleId: string; projectId: string }) | null>(null)
-  const shownRoleId = useRef(role.id)
+  // when it ends (blur, switching role or project, closing the inspector). See renamePatch and settleRename in lib/roleOps.
+  // `wrote` is the Role.mcpServers this edit last put in the store; anything else there means a change from outside.
+  const renameStart = useRef<(RenameStart & { projectId: string; wrote: string[] | undefined }) | null>(null)
+  // `project/role` the inspector shows now; null once it closed.
+  const shownKey = useRef<string | null>(`${project.id}/${role.id}`)
   const noticeRef = useRef(onNotice)
+  const settleErrorRef = useRef(onSettleError)
   useEffect(() => {
-    shownRoleId.current = role.id
+    shownKey.current = `${project.id}/${role.id}`
     noticeRef.current = onNotice
+    settleErrorRef.current = onSettleError
   })
-  /** Takes the start snapshot on focus, or on the first keystroke when no focus event came (autofocus, scripted input). */
+  /**
+   * Takes the start snapshot on focus, or on the first keystroke when no focus event came (autofocus, scripted input).
+   * An open edit of another role or project, or one whose grants changed from outside (review L), is settled first and
+   * a fresh snapshot taken, so a grant revoked elsewhere does not come back with the next keystroke.
+   */
   const beginRename = (): RenameStart => {
-    if (!renameStart.current || renameStart.current.roleId !== role.id || renameStart.current.projectId !== project.id) {
-      renameStart.current = { roleId: role.id, projectId: project.id, slug: role.slug, mcpServers: role.mcpServers ? [...role.mcpServers] : undefined }
+    const open = renameStart.current
+    if (open && (open.id !== role.id || open.projectId !== project.id || !sameIds(open.wrote, role.mcpServers))) endRename.current()
+    if (!renameStart.current) {
+      const mcpServers = role.mcpServers ? [...role.mcpServers] : undefined
+      renameStart.current = { id: role.id, projectId: project.id, slug: role.slug, mcpServers, wrote: mcpServers }
     }
     return renameStart.current
   }
+  /** Applies a rename patch and remembers the grants it wrote. */
+  const renameApply = (start: RenameStart, p: Partial<Role>): void => {
+    if (renameStart.current === start && 'mcpServers' in p) renameStart.current.wrote = p.mcpServers
+    patch(p)
+  }
+  // A Slug value another role holds: shown with a field error, never applied (recheck M).
+  const [slugDraft, setSlugDraft] = useState<{ roleId: string; text: string; error: string } | null>(null)
+  const slugError = slugDraft && slugDraft.roleId === role.id ? slugDraft : null
   const endRename = useRef<() => void>(() => undefined)
   endRename.current = (): void => {
     const s = renameStart.current
     renameStart.current = null
     if (!s) return
     const projectOf = (): Project | undefined => useAppStore.getState().projects.find((p) => p.id === s.projectId)
-    void settleRename(s.roleId, s.slug, {
+    void settleRename(s.id, s.slug, {
       current: projectOf,
       // Awaited before any upsert: the save carries the id grants that keep the renamed role's access. Its result is not
       // put back in the store, so an edit typed meanwhile is not overwritten (the debounced save writes that edit).
@@ -105,16 +132,28 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
         if (cur) replaceProject({ ...cur, mcpServers: r.project.mcpServers })
       }
     }).then((res) => {
-      if (!res.error || shownRoleId.current !== s.roleId) return
-      noticeRef.current?.(
+      if (!res.error) return
+      const shown = shownKey.current === `${s.projectId}/${s.id}`
+      // Named when the user has moved on, since the text then shows in the Team view rather than in this role's inspector.
+      const who = shown ? 'This role' : (projectOf()?.roles.find((r) => r.id === s.id)?.name ?? 'The renamed role')
+      const text =
         res.error === 'save'
-          ? `The project could not be saved, so connections still name the old slug "${s.slug}". This role keeps its connections.`
-          : `${res.left === 1 ? '1 connection still names' : `${res.left} connections still name`} the old slug "${s.slug}": a role given that slug later would get ${res.left === 1 ? 'it' : 'them'}. Removing ${res.left === 1 ? 'it' : 'them'} from this role and granting again cleans that up.`
-      )
+          ? `The project could not be saved, so connections still name the old slug "${s.slug}". ${who} keeps its connections.`
+          : `${res.left === 1 ? '1 connection still names' : `${res.left} connections still name`} the old slug "${s.slug}": a role given that slug later would get ${res.left === 1 ? 'it' : 'them'}. Removing ${res.left === 1 ? 'it' : 'them'} from ${shown ? 'this role' : who} and granting again cleans that up.`
+      // A failure after the user switched role (or project) must not vanish with the selection (review L).
+      if (shown) noticeRef.current?.(text)
+      else settleErrorRef.current?.(text)
     })
   }
-  // Switching role or closing the inspector ends an edit that had no blur.
-  useEffect(() => () => endRename.current(), [role.id])
+  // Switching role or project, or closing the inspector, ends an edit that had no blur.
+  // The render after a switch sets shownKey again; after a close nothing does, so a late failure goes to the Team view.
+  useEffect(
+    () => () => {
+      shownKey.current = null
+      endRename.current()
+    },
+    [role.id, project.id]
+  )
 
   const choices = delegationChoices(project.roles, role)
   const delegateRow = (r: Role): ReactElement => (
@@ -184,7 +223,10 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
             value={role.name}
             onFocus={() => void beginRename()}
             onBlur={() => endRename.current()}
-            onChange={(v) => patch(renamePatch(project, beginRename(), v))}
+            onChange={(v) => {
+              const start = beginRename()
+              renameApply(start, renamePatch(project, start, v))
+            }}
           />
         </div>
 
@@ -201,12 +243,31 @@ export default function RoleInspector({ project, role, notice, onNotice, onRemov
             <label htmlFor={id('slug')}>Slug (subagent type)</label>
             <Input
               id={id('slug')}
-              value={role.slug}
+              value={slugError ? slugError.text : role.slug}
               mono
+              invalid={!!slugError}
+              aria-describedby={slugError ? id('slug-error') : undefined}
               onFocus={() => void beginRename()}
-              onBlur={() => endRename.current()}
-              onChange={(v) => patch(slugPatch(project, beginRename(), slugify(v)))}
+              onBlur={() => {
+                setSlugDraft(null)
+                endRename.current()
+              }}
+              onChange={(v) => {
+                const start = beginRename()
+                const edit = slugFieldEdit(project, start, v)
+                if ('error' in edit) {
+                  setSlugDraft({ roleId: role.id, text: slugify(v), error: edit.error })
+                  return
+                }
+                setSlugDraft(null)
+                renameApply(start, edit.patch)
+              }}
             />
+            {slugError && (
+              <span className="field-error" id={id('slug-error')} role="alert" data-testid="role-slug-error">
+                {slugError.error}
+              </span>
+            )}
           </div>
           <div className="field">
             <label htmlFor={id('description')}>When should a manager delegate to this role?</label>

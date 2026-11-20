@@ -214,6 +214,8 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
   const [undo, setUndo] = useState<{ removed: RemovedRole; name: string; note: string | null } | null>(null)
   // Why a dragged reporting line was refused (a cycle, the root): a polite status in the toolbar for a few seconds.
   const [dropNote, setDropNote] = useState<string | null>(null)
+  // A role rename's cleanup that failed after the user switched role: shown here, whatever is selected (review L).
+  const [renameNote, setRenameNote] = useState<string | null>(null)
   useEffect(() => {
     if (!dropNote) return undefined
     const t = window.setTimeout(() => setDropNote(null), DROP_NOTE_MS)
@@ -857,6 +859,11 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
             )}
           </FrameToolbar>
         <div className="import-notices">
+          {renameNote && (
+            <Banner tone="warning" testId="team-rename-note" onDismiss={() => setRenameNote(null)}>
+              {renameNote}
+            </Banner>
+          )}
           {savedTemplate && (
             <Banner
               tone="success"
@@ -1072,6 +1079,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
                 role={selectedRole}
                 notice={notice && notice.roleId === selectedRole.id ? notice.text : null}
                 onNotice={(text) => setNotice(text ? { roleId: selectedRole.id, text } : null)}
+                onSettleError={setRenameNote}
                 onRemove={() => void requestRemove(selectedRole.id)}
                 onAddReport={() => addRole(selectedRole)}
                 onEscape={() => { const id = selectedRole.id; if (options.presentation === 'pocket-office') { selectRole(null); setPanelTab('catalog') } returnToNode(id) }}

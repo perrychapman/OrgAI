@@ -86,7 +86,7 @@ describe('teamFilesLine', () => {
     expect(commitConfirmText({ uncommittedFiles: [] }, 200)).toMatchObject({ lead: 'OrgAI commits the team files in .orgai/ to the git repository in this folder.', files: [], more: 0 })
     // Review M2: the footnote promises what main does (re-reads git at commit time), not "only these files".
     expect(COMMIT_CONFIRM_NOTE).toBe(
-      'OrgAI commits the team files git reports as changed when you press Commit, and only team files. Anything else you staged stays staged. Nothing is pushed.'
+      'OrgAI commits the team files git reports as changed when you confirm, and only team files. Anything else you staged stays staged. Nothing is pushed.'
     )
     expect(COMMIT_CONFIRM_NOTE).not.toMatch(/Only these files/)
   })

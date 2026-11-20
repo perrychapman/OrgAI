@@ -248,21 +248,32 @@ and the frontend-design skill is not vendored in `.claude/skills` (only `run-des
   "and N more", "at least" at `TEAM_FILES_LIST_MAX`; `commitConfirmText`), Cancel commits nothing; the line's parts are
   separated by an `aria-hidden` dot. Main re-reads git at commit time, so a file that changed between the confirm and the
   click is committed too (it is still only team files); the confirm says so (review M2: lead "Git reports N changed team
-  files in .orgai/ right now:", footnote "OrgAI commits the team files git reports as changed when you press Commit, and
-  only team files. ..."; a stricter check in main is a follow-up). D8 rename: grants `McpServerSpec.roles` are role slugs and
+  files in .orgai/ right now:", footnote "OrgAI commits the team files git reports as changed when you confirm, and
+  only team files. ..." since the button may read "Commit anyway"; a stricter check in main is a follow-up). D8 rename: grants `McpServerSpec.roles` are role slugs and
   `projects:save` keeps the stored `mcpServers` (store/projects.ts `saveFromRenderer`), so a rename dropped slug grants;
   `renamePatch` / `slugPatch` add the server ids to `Role.mcpServers` in the same role patch. Review H1: the patch is
   computed against a `RenameStart` (slug and `mcpServers`) RoleInspector takes when the Name or Slug edit begins (focus, or
   the first keystroke when no focus came; keyed to role and project id), always `start grants ∪ servers naming the start
-  slug`, so an in-between slug while typing ("QA Lead" passes through `qa`) never copies another role's server in. Review
-  M3: when the edit ends (blur, role switch or unmount through an effect cleanup) and the slug changed, `settleRename`
+  slug`, so an in-between slug while typing never copies another role's server in. Once anything is carried the patch
+  carries it at every slug, the starting one included (recheck: main is getting a rule that moves an old slug's servers to
+  ids on a save of a slug change, and debounced saves carry in-between slugs, so typing back must keep the ids; a
+  redundant id grant is harmless); nothing to carry leaves `mcpServers` alone. Slugs are unique in the project like the
+  CLI's `teamRoleEdit` rule: `renamePatch` gives a colliding `slugify(name)` the next free suffix (`uniqueSlug`: `qa-2`,
+  `qa-3`), the name stays as typed, so "QA Lead" never passes through another role's `qa`; the Slug field refuses a
+  taken slug (`slugFieldEdit`) with the field error "Another role already uses this ID." (`role-slug-error`,
+  `aria-invalid`, the typed text stays in the field until blur) and applies nothing. RoleInspector records the
+  `mcpServers` each rename patch wrote; on the next keystroke a different value (changed from outside) settles the open
+  edit and takes a fresh snapshot, as does a snapshot of another role or project; the cleanup effect depends on role and
+  project id. Review M3: when the edit ends (blur, role or project switch or unmount through an effect cleanup) and the slug changed, `settleRename`
   saves the store's project with `projects:save` (awaited, through `trackSave`; its result is not put back in the store,
   so an edit typed meanwhile is not overwritten), then re-reads `mcp.list`, and only when no role holds the old slug sends
   one `mcp.upsert` per server whose explicit `roles` still names it and that the renamed role holds by id, dropping the old
-  slug (and never writing back any slug no role holds). A failed save sends nothing; a failure says so in the inspector
-  banner if that role is still shown. From the upsert answer only `mcpServers` is applied over the store copy. A rename
+  slug and only that slug (recheck: other slugs no current role holds stay, as they may belong to a role removed with
+  Undo on screen or named by team files awaiting approval). A failed save sends nothing; a failure says so in the
+  inspector banner if that role is still shown, otherwise (role or project switched, inspector closed) through
+  `onSettleError` in the Team view's warning banner `team-rename-note`. From the upsert answer only `mcpServers` is applied over the store copy. A rename
   therefore makes 0 calls per keystroke and at its end one save plus at most one upsert per affected server (0 when main
-  already dropped the slug itself). `revokePlan` also drops slugs no role holds. L1: a drop on the manager a role already
+  already dropped the slug itself). `revokePlan` removes only the revoked role's slug. L1: a drop on the manager a role already
   reports to does nothing; `moveNotice` names roles that no longer delegate to the moved role. L2: "Nobody (root
   orchestrator)" is offered only on the root. Known gap: `RoleCapabilities` applies an `mcp.upsert` answer with
   `replaceProject(r.project)` whole, which can replace newer unsaved role edits (pending 350 ms debounce) with main's copy
