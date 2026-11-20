@@ -6,7 +6,7 @@
  * `null`. Nothing here touches the DOM or the store.
  */
 
-export type ProjectCallKind = 'worktrees' | 'teamReview' | 'mcpList'
+export type ProjectCallKind = 'worktrees' | 'teamReview' | 'mcpList' | 'outputs'
 
 export const MAX_IN_FLIGHT = 3
 
@@ -14,7 +14,9 @@ export const MAX_IN_FLIGHT = 3
 export const MAX_AGE_MS: Record<ProjectCallKind, number> = {
   worktrees: 10 * 60_000,
   teamReview: Number.POSITIVE_INFINITY,
-  mcpList: 10 * 60_000
+  mcpList: 10 * 60_000,
+  // Pick up's "Open output": the store keeps the list current from the outputs-changed push once it is loaded.
+  outputs: 5 * 60_000
 }
 
 interface Entry {
