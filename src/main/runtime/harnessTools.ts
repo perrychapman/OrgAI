@@ -373,8 +373,9 @@ function modelContext(ctx: RuntimeContext): DraftModelContext | undefined {
 }
 
 // The tools list stays in the schema: toRoles drops an unknown tool name silently, so no error could teach it.
-// Every field but slug, model, connection and requiredReports is required for a new role and in first-time setup; in a
-// revision a role given by an existing slug is a patch (completeDrafts fills omitted fields from the current role).
+// Every field but slug, model, connection, requiredReports, canSpawn and spawnable is required for a new role and in
+// first-time setup (canSpawn and spawnable may be omitted for a role that cannot spawn); in a revision a role given by
+// an existing slug is a patch (completeDrafts fills omitted fields from the current role).
 export const draftRoleSchema = z.object({
   slug: z.string().optional().describe("An existing role's slug (keeps id and grants; in a revision only given fields change); omit for a new role"),
   name: z.string().optional(),
@@ -406,7 +407,11 @@ const REF_PROBLEMS_SHOWN = 8
  * - Revision (`revision` set): a draft whose slug (else name) matches an existing role is a PATCH: each omitted field
  *   takes the current role's value (spawnable and reportsTo as the current roles' slugs, removed roles left out; a
  *   removed manager becomes the current root). Every other draft (and every draft in first-time setup) must give
- *   every DRAFT_REQUIRED field, else REVISE naming the missing ones.
+ *   every DRAFT_REQUIRED field except canSpawn and spawnable (omitted: false and [], a role that cannot spawn), else
+ *   REVISE naming the missing ones. A new role is also a REVISE when it sets canSpawn true with no spawnable and no
+ *   draft reporting to it, or gives requiredReports with no spawnable (unless every one reports to it), and, in a
+ *   revision, when its name's slug is the slug of a live role of another name (mergeOrgChart would match and rename
+ *   that role).
  * - An unknown slug is treated as a new role (slug dropped) in first-time setup, and in a revision when it is just
  *   the slug of the draft's own name; otherwise REVISE.
  * - References (reportsTo, spawnable, requiredReports) must resolve, by name or slug (case-insensitive), to a draft
@@ -419,6 +424,8 @@ export function completeDrafts(existing: readonly Role[], drafts: readonly Draft
   const root = live.find((r) => r.reportsTo === null)
   const slugOfId = (id: string | null): string | null => (id === null ? null : (live.find((r) => r.id === id)?.slug ?? root?.slug ?? null))
   const out: DraftRole[] = []
+  /** New roles that gave canSpawn true or requiredReports but no spawnable (checked once every draft is known). */
+  const unlisted: { at: number; label: string; canSpawn: boolean; required: string[] }[] = []
   const NOT_SHOWN = 'REVISE. The org chart was not shown to the user:'
   for (const [i, raw] of drafts.entries()) {
     const d: DraftInput = { ...raw }
@@ -448,7 +455,18 @@ export function completeDrafts(existing: readonly Role[], drafts: readonly Draft
         d.reportsTo = cur.reportsTo === null ? null : managerRemoved ? slugOfId(root!.id) : slugOfId(cur.reportsTo)
       }
     } else {
+      // mergeOrgChart matches a draft with no slug by slugify(name): a new-looking role whose name slugifies to the slug
+      // of a live role of another name would silently rename it and replace its prompt and spawn list.
+      const nameSlug = typeof d.name === 'string' ? slugify(d.name) : ''
+      const clash = revision && nameSlug ? live.find((r) => r.slug === nameSlug && lower(r.name) !== lower(d.name)) : undefined
+      if (clash) {
+        return {
+          error: `${NOT_SHOWN} a role with slug "${datum(clash.slug, 60)}" already exists (named "${datum(clash.name, 60)}"), and "${label}" would take its place. Give slug "${datum(clash.slug, 60)}" to change that role, or choose another name for a new one.`
+        }
+      }
       // A leaf role that cannot spawn is unambiguous: omitted canSpawn is false, omitted spawnable is [].
+      const required = Array.isArray(d.requiredReports) ? d.requiredReports.filter((n): n is string => typeof n === 'string' && n.trim() !== '') : []
+      if (d.spawnable === undefined && (d.canSpawn === true || required.length > 0)) unlisted.push({ at: out.length, label, canSpawn: d.canSpawn === true, required })
       d.canSpawn ??= false
       d.spawnable ??= []
       const missing = DRAFT_REQUIRED.filter((k) => d[k] === undefined)
@@ -459,6 +477,20 @@ export function completeDrafts(existing: readonly Role[], drafts: readonly Draft
       }
     }
     out.push(d as DraftRole)
+  }
+  // A new role that omitted spawnable is allowed only when that cannot hide a mistake: with no list, its spawn targets
+  // are exactly the drafts that report to it (mergeOrgChart / reviseKeepingUnmentioned add them).
+  for (const u of unlisted) {
+    const me = out[u.at]
+    const keys = new Set([lower(me.name), lower(me.slug), slugify(me.name)].filter(Boolean))
+    const isMine = (ref: unknown): boolean => keys.has(lower(ref)) || keys.has(slugify(String(ref ?? '')))
+    const reports = out.filter((x, j) => j !== u.at && lower(x.reportsTo) !== '' && isMine(x.reportsTo))
+    if (u.required.length > 0 && !u.required.every((n) => reports.some((x) => lower(x.name) === lower(n) || slugify(x.name) === slugify(n) || lower(x.slug) === lower(n)))) {
+      return { error: `${NOT_SHOWN} role "${u.label}" gives requiredReports but no spawnable, so they would be dropped. List them in spawnable too (only roles it may spawn can be required), or omit requiredReports.` }
+    }
+    if (u.canSpawn && reports.length === 0) {
+      return { error: `${NOT_SHOWN} role "${u.label}" sets canSpawn true but lists no spawnable and no role reports to it, so it could spawn nothing. Name the roles it may spawn, or omit canSpawn.` }
+    }
   }
   // References: names and slugs of the drafts, plus (revision) every current role that is not removed.
   const known = new Set<string>()
@@ -825,14 +857,14 @@ export const proposeArchitecture = defineTool({
 export const proposeOrgChart = defineTool({
   name: PROPOSAL_TOOLS.orgChart,
   description:
-    'Propose the org chart of agent roles; blocks until the user decides. First-time setup: the roles you list are the whole chart, each with every field. Revisions (setup complete): list only roles that change or are new; an existing role by slug is a patch (only given fields change), a new role needs every field, a manager may spawn its new reports automatically, remove drops roles. reportsTo and spawnable take a name or slug.',
+    'Propose the org chart of agent roles; blocks until the user decides. First-time setup: the roles you list are the whole chart. A new role needs every field but canSpawn and spawnable (omit for a leaf). Revisions (setup complete): list only changed or new roles; an existing role by slug is a patch (only given fields change), a manager may spawn its new reports automatically, remove drops roles. reportsTo and spawnable take a name or slug.',
   inputSchema: z.object({
     title: z.string(),
     rationale: z.string().describe('Two or three sentences on why this structure fits the project'),
     roles: z
       .array(draftRoleSchema)
       .optional()
-      .describe('The roles. Required unless fromTemplate is given; with fromTemplate each role here (every field) replaces the template role of the same name or is added'),
+      .describe('The roles. Required unless fromTemplate is given; with fromTemplate each role here replaces the same-named template role or is added'),
     fromTemplate: z
       .string()
       .optional()
@@ -993,7 +1025,7 @@ export const integrateWorktrees = defineTool({
 export const proposeOrgChange = defineTool({
   name: PROPOSAL_TOOLS.orgChange,
   description:
-    'Propose an org chart change: list only roles you change (by slug; only given fields change) or add (every field); unlisted roles are kept. Blocks until the user decides; the result says if this run can use it.',
+    'Propose an org chart change: list only changed roles (by slug; given fields only) or add (every field but canSpawn, spawnable); others are kept. Blocks until the user decides; the result says if this run can use it.',
   inputSchema: z.object({
     title: z.string(),
     rationale: z.string().describe('What this run revealed and what changes'),

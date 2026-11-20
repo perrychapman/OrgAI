@@ -129,7 +129,7 @@ function parentName(r: DiffRole, byId: Map<string, DiffRole>): string {
 function spawnNames(r: DiffRole, byId: Map<string, DiffRole>): string {
   if (!r.canSpawn) return 'cannot spawn'
   const names = (r.spawnable ?? []).map((id) => byId.get(id)?.name ?? id).sort()
-  return names.length > 0 ? names.join(', ') : 'any'
+  return names.length > 0 ? names.join(', ') : 'none listed'
 }
 
 /** The lines an added role's row shows for what it may start and must delegate to, named against the proposed chart. */
