@@ -149,7 +149,7 @@ export function AttentionTileView({ tile, motion, ctx }: { tile: TileModel<Needs
                 {`+${hidden} more`}
               </button>
             )}
-            <button type="button" className="btn ghost sm" data-testid="dash-attn-open" aria-label={actionName} onClick={open}>
+            <button type="button" className="btn sm" data-testid="dash-attn-open" aria-label={actionName} onClick={open}>
               Open
             </button>
           </>

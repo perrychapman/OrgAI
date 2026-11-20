@@ -125,6 +125,11 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
         {decisionTotal > 0 && <span className="dash-count">{decisionTotal}</span>}
         {replyCount > 0 && (
           <span className="dash-attn-reply-count" data-testid="dash-attn-reply-count">
+            {decisionTotal > 0 && (
+              <span className="dash-sep" aria-hidden="true">
+                {'· '}
+              </span>
+            )}
             {replyCount} awaiting reply
           </span>
         )}

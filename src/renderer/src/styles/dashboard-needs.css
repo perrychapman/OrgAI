@@ -281,6 +281,21 @@
 .dash-attn-tile .dash-needs-row {
   background: var(--surface-1);
 }
+/* In a narrow tile the answer buttons go under the ask (the row is its own container, so its own rule cannot see its width;
+   the tile is the container here). Nothing is hidden or reworded: only where the buttons sit. */
+.dash-attn-tile {
+  container: attn-tile / inline-size;
+}
+@container attn-tile (max-width: 440px) {
+  .dash-needs-row[data-has-action='true'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dash-needs-row .dash-needs-actions {
+    justify-content: flex-start;
+    padding: 0 var(--space-3) var(--space-2);
+    max-width: none;
+  }
+}
 .dash-attn-foot {
   display: flex;
   flex-wrap: wrap;
