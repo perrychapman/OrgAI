@@ -14,6 +14,36 @@ import { makeHandlers, newState, runSession } from './session.mjs'
 
 const ARCH_ARGS = { title: 'Architecture', summary: 'A small script.', stack: ['Python 3'], modules: [{ name: 'script', purpose: 'renames photos', paths: ['rename.py'] }], conventions: ['PEP 8'], commands: [{ name: 'run', command: 'python rename.py DIR' }], risks: [] }
 
+/**
+ * Runs a retro fixture's own tests in its prepared folder (`scenario.exec`: runner 'node' = node:test, 'python' = unittest; cwd
+ * relative to the folder; `tests` = the count the run record claims). No package is installed: fixtures with `exec` use only
+ * Node built-ins or the standard library. Returns { skipped, note } when the toolchain is missing, else { passed, failed, ok }.
+ */
+export function runFixtureTests(scenario, dir) {
+  const ex = scenario.exec
+  if (!ex) return { skipped: true, note: 'static fixture: its tests need packages that are not installed' }
+  const cwd = join(dir, ...ex.cwd.split('/').filter((p) => p && p !== '.'))
+  const env = { ...process.env, PYTHONDONTWRITEBYTECODE: '1', NODE_NO_WARNINGS: '1' }
+  delete env.NODE_TEST_CONTEXT // set when this runs inside node --test: the child must report on its own
+  if (ex.runner === 'node') {
+    const [major, minor] = process.versions.node.split('.').map(Number)
+    if (major < 22 || (major === 22 && minor < 13)) return { skipped: true, note: `node ${process.versions.node} is older than 22.13 (node:sqlite)` }
+    const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap'], { cwd, env, encoding: 'utf8', timeout: 120_000 })
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`
+    const passed = Number(/^# pass (\d+)/m.exec(out)?.[1] ?? NaN)
+    const failed = Number(/^# fail (\d+)/m.exec(out)?.[1] ?? NaN)
+    return { ok: r.status === 0 && failed === 0 && passed === ex.tests, passed, failed, expected: ex.tests, log: out.slice(-1500) }
+  }
+  for (const py of process.platform === 'win32' ? ['python', 'py'] : ['python3', 'python']) {
+    const r = spawnSync(py, ['-m', 'unittest', 'discover', '-s', 'tests'], { cwd, env, encoding: 'utf8', timeout: 120_000 })
+    const ran = /^Ran (\d+) tests?/m.exec(r.stderr ?? '')
+    if (r.error || !ran) continue // not installed, or a Windows store stub
+    const passed = Number(ran[1])
+    return { ok: r.status === 0 && passed === ex.tests, passed, failed: r.status === 0 ? 0 : 'some', expected: ex.tests, log: (r.stderr ?? '').slice(-1500) }
+  }
+  return { skipped: true, note: 'python 3 not found' }
+}
+
 /** A scripted stand-in for the SDK's query(): each turn is a list of { text } or { tool, args } actions; one result per turn. */
 export function scriptedQuery(script) {
   return ({ prompt }, api) => {
@@ -135,6 +165,9 @@ export async function runSelfCheck(log = console.log) {
       const b = await buildCase(src, s, d)
       const missing = recordPaths(s).filter((p) => !existsSync(join(d, ...p.split('/'))))
       ok(missing.length === 0 && existsSync(join(d, '.orgai', 'ARCHITECTURE.md')), `${s.id}: fixture holds every path its record names${missing.length ? ` (missing ${missing.join(', ')})` : ''}`)
+      const t = runFixtureTests(s, d)
+      if (t.skipped) log(`  skip ${s.id}: fixture tests not executed (${t.note})`)
+      else ok(t.ok, `${s.id}: the fixture's own tests run and pass in the prepared folder (${t.passed} passed, ${t.failed} failed, record claims ${t.expected})${t.ok ? '' : `\n${t.log}`}`)
       if (s.git) {
         const head = b.git?.ok ? spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: d, encoding: 'utf8' }) : null
         ok(head?.status === 0 && head.stdout.trim() === '1', `${s.id}: git fixture is a repository with one commit${b.git?.ok ? '' : ` (${b.git?.note})`}`)

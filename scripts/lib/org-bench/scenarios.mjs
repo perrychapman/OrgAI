@@ -198,8 +198,8 @@ function chart3() {
       'You are the implementer. Follow the architecture document. Stay within the files named in your brief and report every file you touched. Run the code you changed with Bash before you report back, and keep functions small and covered by the tester\'s cases.',
       WRITE, 'everyday', 'Orchestrator', [], { responsibilities: ['Implement features in csvkit/', 'Fix defects'] }),
     draft('Tester', 'Writes and runs tests for the CLI.',
-      'You are the tester. Follow the architecture document. Write tests under tests/ for the behavior in your brief, run the suite and report which tests fail and why. Stay within the files named in your brief and report every file you touched.',
-      ['Read', 'Glob', 'Grep', 'Edit', 'Write'], 'everyday', 'Orchestrator', [], { responsibilities: ['Write pytest cases', 'Run the suite and report failures'] })
+      'You are the tester. Follow the architecture document. Write unittest tests under tests/ for the behavior in your brief, run the suite and report which tests fail and why. Stay within the files named in your brief and report every file you touched.',
+      ['Read', 'Glob', 'Grep', 'Edit', 'Write'], 'everyday', 'Orchestrator', [], { responsibilities: ['Write unit tests', 'Run the suite and report failures'] })
   ]
 }
 
@@ -213,7 +213,7 @@ function chart6({ researcherTier = 'fast' } = {}) {
       'You are the backend implementer. Follow the architecture document. Work on API handlers under src/ as your brief says, stay within the files named in your brief and report every file you touched. Run the tests you affect before you report back.',
       WRITE, 'everyday', 'Orchestrator', [], { responsibilities: ['Implement and change API handlers', 'Keep the server code consistent'] }),
     draft('Frontend Implementer', 'Implements the web client under web/.',
-      'You are the frontend implementer. Follow the architecture document. Work on the React client under web/ as your brief says, stay within the files named in your brief and report every file you touched.',
+      'You are the frontend implementer. Follow the architecture document. Work on the web client under web/ as your brief says, stay within the files named in your brief and report every file you touched.',
       WRITE, 'everyday', 'Orchestrator', [], { responsibilities: ['Implement and change UI components'] }),
     draft('Tester', 'Writes and runs tests.',
       'You are the tester. Follow the architecture document. Write and run tests for the behavior in your brief with Bash, stay within the files named in your brief and report which tests fail and why.',
@@ -267,22 +267,6 @@ function chart11({ webPrompt } = {}) {
   ]
 }
 
-const FILES3 = {
-  'README.md': '# csvkit\n\nA small command-line tool for sorting, filtering and joining CSV files.\n\nUsage: python -m csvkit sort FILE --by COLUMN\n',
-  'csvkit/__main__.py': 'from csvkit.cli import main\n\nmain()\n',
-  'csvkit/cli.py': "import argparse\nfrom csvkit import ops\n\n\ndef main():\n    p = argparse.ArgumentParser(prog='csvkit')\n    sub = p.add_subparsers(dest='cmd', required=True)\n    s = sub.add_parser('sort')\n    s.add_argument('file')\n    s.add_argument('--by', required=True)\n    args = p.parse_args()\n    if args.cmd == 'sort':\n        ops.sort_file(args.file, args.by)\n",
-  'csvkit/ops.py': "import csv\nimport sys\n\n\ndef sort_file(path, column):\n    with open(path, newline='') as f:\n        rows = list(csv.DictReader(f))\n    rows.sort(key=lambda r: r[column])\n    w = csv.DictWriter(sys.stdout, fieldnames=rows[0].keys())\n    w.writeheader()\n    w.writerows(rows)\n",
-  'tests/test_ops.py': "from csvkit import ops\n\n\ndef test_sort_file_exists():\n    assert callable(ops.sort_file)\n"
-}
-
-const FILES6 = {
-  'package.json': '{\n  "name": "inventory",\n  "scripts": { "test": "vitest run", "dev": "tsx src/server.ts" },\n  "dependencies": { "fastify": "5.0.0", "better-sqlite3": "11.3.0" }\n}\n',
-  'README.md': '# inventory\n\nStock levels API (src/) and a small React admin client (web/).\n',
-  'src/server.ts': "import Fastify from 'fastify'\nimport { stock } from './db'\n\nconst app = Fastify()\napp.get('/stock/:sku', async (req) => stock((req.params as { sku: string }).sku))\napp.listen({ port: 3000 })\n",
-  'src/db.ts': "import Database from 'better-sqlite3'\n\nconst db = new Database('inventory.db')\n\nexport function stock(sku: string) {\n  return db.prepare('select sku, qty from stock where sku = ?').get(sku)\n}\n",
-  'web/App.tsx': "import { useState } from 'react'\n\nexport function App() {\n  const [sku, setSku] = useState('')\n  return <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder=\"SKU\" />\n}\n",
-  'tests/api.test.ts': "import { describe, it, expect } from 'vitest'\n\ndescribe('api', () => {\n  it('has tests', () => expect(1).toBe(1))\n})\n"
-}
 
 const FILES11 = {
   'package.json': '{\n  "name": "fleet",\n  "private": true,\n  "workspaces": ["apps/*", "services/*"]\n}\n',
@@ -303,75 +287,528 @@ const archDoc = (title, summary, modules) =>
 
 const ARCH6 = archDoc('Inventory architecture', 'A Fastify API over a SQLite file with a small React admin client; tests run with vitest.',
   [['src/server.ts', 'Fastify routes'], ['src/db.ts', 'SQLite queries'], ['web/App.tsx', 'React admin client'], ['tests/', 'vitest tests']])
-const ARCH3 = archDoc('csvkit architecture', 'A pure-Python CLI (argparse) with the logic in csvkit/ops.py and pytest tests under tests/.',
-  [['csvkit/cli.py', 'argparse entry point'], ['csvkit/ops.py', 'CSV operations'], ['tests/', 'pytest tests']])
+const ARCH3 = archDoc('csvkit architecture', 'A pure-Python CLI (argparse) with the logic in csvkit/ops.py and unittest tests under tests/.',
+  [['csvkit/cli.py', 'argparse entry point'], ['csvkit/ops.py', 'CSV operations'], ['tests/', 'unittest tests (python -m unittest discover -s tests)']])
 const ARCH11 = archDoc('Fleet architecture', 'A monorepo: React web app and React Native app, a Fastify API, a Python ETL pipeline and Terraform; Playwright e2e tests.',
   [['apps/web', 'React web app'], ['apps/mobile', 'React Native app'], ['services/api', 'Fastify API'], ['services/pipeline', 'Python ETL'], ['infra', 'Terraform'], ['tests/e2e', 'Playwright tests']])
 
-const SERVER6 = (routes) => `import Fastify from 'fastify'\nimport { stock, lowStock } from './db'\n\nconst app = Fastify()\n${routes}app.listen({ port: 3000 })\n`
+
 const MIGRATION_INIT = 'create table stock (\n  sku text primary key,\n  qty integer not null default 0\n);\n'
 
-// r1: the run added a reorder-level column (migrations 004-006 written by the orchestrator, handlers, client column, tests).
+// Fixture files are written with String.raw so the code in them needs no escaping (no backticks or dollar-brace inside).
+const raw = (strings) => strings.raw[0].replace(/^\n/, '')
+
+// ---- csvkit (r2): a pure-Python CLI with unittest tests; node is not needed, python 3 is.
+const R2_FILES = {
+  'README.md': raw`
+# csvkit
+
+A small command-line tool for sorting, filtering and joining CSV files.
+
+Usage:
+
+    python -m csvkit sort FILE --by COLUMN
+    python -m csvkit filter FILE --where COLUMN=VALUE
+
+Tests: python -m unittest discover -s tests
+`,
+  '.orgai/ARCHITECTURE.md': ARCH3,
+  'pyproject.toml': raw`
+[project]
+name = "csvkit"
+version = "0.1.0"
+`,
+  'csvkit/__main__.py': raw`
+from csvkit.cli import main
+
+main()
+`,
+  'csvkit/cli.py': raw`
+import argparse
+from csvkit import ops
+
+
+def main():
+    p = argparse.ArgumentParser(prog='csvkit')
+    sub = p.add_subparsers(dest='cmd', required=True)
+    s = sub.add_parser('sort')
+    s.add_argument('file')
+    s.add_argument('--by', required=True)
+    f = sub.add_parser('filter')
+    f.add_argument('file')
+    f.add_argument('--where', required=True, help='COLUMN=VALUE')
+    args = p.parse_args()
+    if args.cmd == 'sort':
+        ops.sort_file(args.file, args.by)
+    elif args.cmd == 'filter':
+        column, _, value = args.where.partition('=')
+        ops.filter_file(args.file, column, value)
+`,
+  'csvkit/ops.py': raw`
+import csv
+import sys
+
+
+def sort_file(path, column):
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f))
+    rows.sort(key=lambda r: r[column])
+    w = csv.DictWriter(sys.stdout, fieldnames=rows[0].keys())
+    w.writeheader()
+    w.writerows(rows)
+
+
+def filter_file(path, column, value):
+    with open(path, newline='') as f:
+        reader = csv.DictReader(f)
+        rows = [r for r in reader if r[column] == value]
+        fieldnames = reader.fieldnames
+    w = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
+    w.writeheader()
+    w.writerows(rows)
+`,
+  'tests/test_ops.py': raw`
+import contextlib
+import csv
+import io
+import os
+import tempfile
+import unittest
+
+from csvkit import ops
+
+
+def run_sort(text, column):
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, 'in.csv')
+        with open(path, 'w', newline='') as f:
+            f.write(text)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ops.sort_file(path, column)
+    return list(csv.DictReader(io.StringIO(out.getvalue())))
+
+
+class SortTests(unittest.TestCase):
+    def test_sorts_rows_by_the_column(self):
+        rows = run_sort('name,city\nbob,rome\nann,oslo\n', 'name')
+        self.assertEqual([r['name'] for r in rows], ['ann', 'bob'])
+
+    def test_keeps_every_column(self):
+        rows = run_sort('name,city\nbob,rome\nann,oslo\n', 'city')
+        self.assertEqual(rows[0], {'name': 'ann', 'city': 'oslo'})
+
+
+if __name__ == '__main__':
+    unittest.main()
+`,
+  'tests/test_filter.py': raw`
+import contextlib
+import csv
+import io
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+
+from csvkit import ops
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TEXT = 'name,city\nann,oslo\nbob,rome\ncy,oslo\n'
+
+
+class FilterTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = os.path.join(self.dir.name, 'in.csv')
+        with open(self.path, 'w', newline='') as f:
+            f.write(TEXT)
+
+    def test_keeps_only_matching_rows(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ops.filter_file(self.path, 'city', 'oslo')
+        rows = list(csv.DictReader(io.StringIO(out.getvalue())))
+        self.assertEqual([r['name'] for r in rows], ['ann', 'cy'])
+
+    def test_no_match_prints_the_header_only(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ops.filter_file(self.path, 'city', 'paris')
+        self.assertEqual(out.getvalue().splitlines(), ['name,city'])
+
+    def test_where_option_on_the_command_line(self):
+        done = subprocess.run(
+            [sys.executable, '-m', 'csvkit', 'filter', self.path, '--where', 'city=oslo'],
+            cwd=ROOT, capture_output=True, text=True, check=True)
+        rows = list(csv.DictReader(io.StringIO(done.stdout)))
+        self.assertEqual([r['name'] for r in rows], ['ann', 'cy'])
+
+
+if __name__ == '__main__':
+    unittest.main()
+`
+}
+
+// ---- inventory (r1, r5): a dependency-free Node service so node:test can run the fixture's tests; node:sqlite needs Node 22.13+.
+const INV_PKG = '{\n  "name": "inventory",\n  "type": "module",\n  "engines": { "node": ">=22.13" },\n  "scripts": { "start": "node src/server.js", "test": "node --test" }\n}\n'
+const INV_README = '# inventory\n\nStock levels API (src/) and a small web client (web/). Needs Node 22.13 or newer.\n\nRun: npm start (PORT, INVENTORY_DB env). Tests: npm test (node:test).\n'
+const ARCH_INV = archDoc('Inventory architecture', 'A dependency-free Node service: an http API over a SQLite file (node:sqlite, migrations applied in order from migrations/) and a small web client of plain ES modules; tests run with node:test.',
+  [['src/server.js', 'http routes'], ['src/db.js', 'SQLite queries and the migration runner'], ['migrations/', 'ordered SQL migrations'], ['web/app.js', 'web client: fetch and render'], ['tests/', 'node:test tests']])
+
+const INV_OPEN = raw`
+import { DatabaseSync } from 'node:sqlite'
+import { readdirSync, readFileSync } from 'node:fs'
+
+const MIGRATIONS = new URL('../migrations/', import.meta.url)
+
+// Applies the migrations that the file has not seen yet, in file name order (pragma user_version counts them).
+export function openDb(file = ':memory:') {
+  const db = new DatabaseSync(file)
+  const names = readdirSync(MIGRATIONS).filter((n) => n.endsWith('.sql')).sort()
+  const applied = db.prepare('pragma user_version').get().user_version
+  names.slice(applied).forEach((name, i) => {
+    db.exec(readFileSync(new URL(name, MIGRATIONS), 'utf8'))
+    db.exec('pragma user_version = ' + (applied + i + 1))
+  })
+`
+const INV_DB_R1 = INV_OPEN + raw`
+  return {
+    raw: db,
+    stock: (sku) => db.prepare('select sku, qty, reorder_level as reorderLevel from stock where sku = ?').get(sku)
+  }
+}
+`
+const INV_DB_R5 = INV_OPEN + raw`
+  return {
+    raw: db,
+    stock: (sku) => db.prepare('select sku, qty from stock where sku = ?').get(sku),
+    lowStock: () => db.prepare('select sku, qty, reorder_level as reorderLevel from stock where qty < reorder_level order by sku').all()
+  }
+}
+`
+const INV_SERVER = (extraRoute, comment) => raw`
+import { createServer as createHttpServer } from 'node:http'
+import { fileURLToPath } from 'node:url'
+import { openDb } from './db.js'
+
+export function createServer(db) {
+  return createHttpServer((req, res) => {
+    const { pathname } = new URL(req.url, 'http://localhost')
+    const send = (status, body) => {
+      res.writeHead(status, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(body))
+    }
+` + extraRoute + raw`
+    const match = req.method === 'GET' ? pathname.match(/^\/stock\/([^/]+)$/) : null
+    if (match) {
+` + comment + raw`
+      const row = db.stock(decodeURIComponent(match[1]))
+      return row ? send(200, row) : send(404, { error: 'unknown sku' })
+    }
+    send(404, { error: 'not found' })
+  })
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  createServer(openDb(process.env.INVENTORY_DB ?? 'inventory.db')).listen(Number(process.env.PORT ?? 3000))
+}
+`
+const INV_ESC = raw`
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+`
+const INV_HELPER = raw`
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { openDb } from '../src/db.js'
+import { createServer } from '../src/server.js'
+
+// Serves a fresh in-memory database (migrations applied, extra rows [sku, qty, reorder_level] inserted) on a free port.
+async function withServer(rows, fn) {
+  const db = openDb()
+  const add = db.raw.prepare('insert into stock (sku, qty, reorder_level) values (?, ?, ?)')
+  for (const r of rows) add.run(...r)
+  const server = createServer(db)
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    await fn('http://127.0.0.1:' + server.address().port, db)
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolve) => server.close(resolve))
+  }
+}
+
+const getJson = async (url) => {
+  const res = await fetch(url)
+  return { status: res.status, body: await res.json() }
+}
+`
+
 const R1_FILES = {
-  ...FILES6,
-  '.orgai/ARCHITECTURE.md': ARCH6,
+  'package.json': INV_PKG,
+  'README.md': INV_README,
+  '.orgai/ARCHITECTURE.md': ARCH_INV,
   'migrations/001_init.sql': MIGRATION_INIT,
   'migrations/002_index_qty.sql': 'create index stock_qty on stock (qty);\n',
   'migrations/003_seed.sql': "insert into stock (sku, qty) values ('A-1', 10), ('B-2', 4);\n",
   'migrations/004_reorder_level.sql': 'alter table stock add column reorder_level integer not null default 0;\n',
   'migrations/005_backfill.sql': 'update stock set reorder_level = 5 where reorder_level = 0;\n',
   'migrations/006_index.sql': 'create index stock_reorder on stock (reorder_level);\n',
-  'src/db.ts': "import Database from 'better-sqlite3'\n\nconst db = new Database('inventory.db')\n\nexport function stock(sku: string) {\n  return db.prepare('select sku, qty, reorder_level as reorderLevel from stock where sku = ?').get(sku)\n}\n",
-  'src/server.ts': "import Fastify from 'fastify'\nimport { stock } from './db'\n\nconst app = Fastify()\n// returns { sku, qty, reorderLevel }\napp.get('/stock/:sku', async (req) => stock((req.params as { sku: string }).sku))\napp.listen({ port: 3000 })\n",
-  'web/App.tsx': "import { useState } from 'react'\n\nexport function App() {\n  const [sku, setSku] = useState('')\n  const [row, setRow] = useState<{ qty: number; reorderLevel: number } | null>(null)\n  return (\n    <div>\n      <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder=\"SKU\" />\n      {row && <table><tbody><tr><td>{row.qty}</td><td>Reorder level: {row.reorderLevel}</td></tr></tbody></table>}\n    </div>\n  )\n}\n",
-  'tests/api.test.ts': "import { describe, it, expect } from 'vitest'\n\ndescribe('api', () => {\n  it('has tests', () => expect(1).toBe(1))\n  it('returns reorderLevel with the stock row', () => expect({ sku: 'A-1', qty: 10, reorderLevel: 5 }).toHaveProperty('reorderLevel', 5))\n})\n"
+  'src/db.js': INV_DB_R1,
+  'src/server.js': INV_SERVER('', '      // responds with { sku, qty, reorderLevel }\n'),
+  'web/app.js': INV_ESC + raw`
+export function renderStock(row) {
+  return '<table><tbody><tr><td>' + esc(row.sku) + '</td><td>' + esc(row.qty) + '</td><td>Reorder level: ' + esc(row.reorderLevel) + '</td></tr></tbody></table>'
 }
 
-// r2: the run added the filter subcommand and tests/test_filter.py (the tester could not run it).
-const R2_FILES = {
-  ...FILES3,
-  '.orgai/ARCHITECTURE.md': ARCH3,
-  'pyproject.toml': '[project]\nname = "csvkit"\nversion = "0.1.0"\n\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
-  'csvkit/cli.py': "import argparse\nfrom csvkit import ops\n\n\ndef main():\n    p = argparse.ArgumentParser(prog='csvkit')\n    sub = p.add_subparsers(dest='cmd', required=True)\n    s = sub.add_parser('sort')\n    s.add_argument('file')\n    s.add_argument('--by', required=True)\n    f = sub.add_parser('filter')\n    f.add_argument('file')\n    f.add_argument('--where', required=True, help='COLUMN=VALUE')\n    args = p.parse_args()\n    if args.cmd == 'sort':\n        ops.sort_file(args.file, args.by)\n    elif args.cmd == 'filter':\n        column, _, value = args.where.partition('=')\n        ops.filter_file(args.file, column, value)\n",
-  'csvkit/ops.py': "import csv\nimport sys\n\n\ndef sort_file(path, column):\n    with open(path, newline='') as f:\n        rows = list(csv.DictReader(f))\n    rows.sort(key=lambda r: r[column])\n    w = csv.DictWriter(sys.stdout, fieldnames=rows[0].keys())\n    w.writeheader()\n    w.writerows(rows)\n\n\ndef filter_file(path, column, value):\n    with open(path, newline='') as f:\n        rows = [r for r in csv.DictReader(f) if r[column] == value]\n    w = csv.DictWriter(sys.stdout, fieldnames=rows[0].keys() if rows else [column])\n    w.writeheader()\n    w.writerows(rows)\n",
-  'tests/test_filter.py': "from csvkit import ops\n\n\ndef test_filter_file_exists():\n    assert callable(ops.filter_file)\n\n\ndef test_filter_keeps_matching_rows(tmp_path, capsys):\n    f = tmp_path / 'a.csv'\n    f.write_text('name,city\\nann,oslo\\nbob,rome\\n')\n    ops.filter_file(str(f), 'city', 'oslo')\n    assert 'ann' in capsys.readouterr().out\n"
+export async function loadStock(sku, base = '', fetchFn = fetch) {
+  const res = await fetchFn(base + '/stock/' + encodeURIComponent(sku))
+  if (!res.ok) throw new Error('GET /stock/' + sku + ' failed: ' + res.status)
+  return renderStock(await res.json())
+}
+`,
+  'tests/api.test.js': INV_HELPER + raw`
+
+import { loadStock } from '../web/app.js'
+
+test('the migrations add reorder_level and backfill the seeded rows', () => {
+  const db = openDb()
+  assert.deepEqual({ ...db.stock('A-1') }, { sku: 'A-1', qty: 10, reorderLevel: 5 })
+  assert.deepEqual({ ...db.stock('B-2') }, { sku: 'B-2', qty: 4, reorderLevel: 5 })
+})
+
+test('GET /stock/:sku returns the reorder level; a row added after the migrations defaults to 0', () =>
+  withServer([['C-3', 7, 0]], async (base) => {
+    assert.deepEqual(await getJson(base + '/stock/A-1'), { status: 200, body: { sku: 'A-1', qty: 10, reorderLevel: 5 } })
+    assert.deepEqual((await getJson(base + '/stock/C-3')).body, { sku: 'C-3', qty: 7, reorderLevel: 0 })
+  }))
+
+test('GET /stock/:sku answers 404 for an unknown SKU', () =>
+  withServer([], async (base) => {
+    assert.equal((await getJson(base + '/stock/nope')).status, 404)
+  }))
+
+test('the client shows the quantity and reorder level it loads from the API', () =>
+  withServer([], async (base) => {
+    const html = await loadStock('A-1', base)
+    assert.match(html, /<td>10<\/td>/)
+    assert.match(html, /Reorder level: 5/)
+  }))
+`
 }
 
-// r3: the run added /vehicles/status to the API (the API implementer's version was kept after the merge conflict) and the
-// web dashboard that shows it. The web implementer's out-of-brief edit of services/api/src/server.ts is in the record and logs.
+const R5_FILES = {
+  'package.json': INV_PKG,
+  'README.md': INV_README,
+  '.orgai/ARCHITECTURE.md': ARCH_INV,
+  'migrations/001_init.sql': 'create table stock (\n  sku text primary key,\n  qty integer not null default 0,\n  reorder_level integer not null default 0\n);\n',
+  'src/db.js': INV_DB_R5,
+  'src/server.js': INV_SERVER("    if (req.method === 'GET' && pathname === '/stock/low') return send(200, db.lowStock())\n", ''),
+  'web/app.js': INV_ESC + raw`
+export function renderLowStock(rows) {
+  const body = rows.map((r) => '<tr><td>' + esc(r.sku) + '</td><td>' + esc(r.qty) + '</td><td>' + esc(r.reorderLevel) + '</td></tr>').join('')
+  return '<table><thead><tr><th>SKU</th><th>Qty</th><th>Reorder level</th></tr></thead><tbody>' + body + '</tbody></table>'
+}
+
+export async function loadLowStock(base = '', fetchFn = fetch) {
+  const res = await fetchFn(base + '/stock/low')
+  if (!res.ok) throw new Error('GET /stock/low failed: ' + res.status)
+  return renderLowStock(await res.json())
+}
+`,
+  'tests/api.test.js': INV_HELPER + raw`
+
+import { loadLowStock, renderLowStock } from '../web/app.js'
+
+const ROWS = [['A-1', 2, 5], ['B-2', 9, 5], ['C-3', 5, 5], ['D-4', 0, 3]]
+
+test('GET /stock/low lists only SKUs under their reorder level, in SKU order', () =>
+  withServer(ROWS, async (base) => {
+    const { status, body } = await getJson(base + '/stock/low')
+    assert.equal(status, 200)
+    assert.deepEqual(body, [{ sku: 'A-1', qty: 2, reorderLevel: 5 }, { sku: 'D-4', qty: 0, reorderLevel: 3 }])
+  }))
+
+test('GET /stock/:sku still works next to /stock/low and answers 404 for an unknown SKU', () =>
+  withServer(ROWS, async (base) => {
+    assert.deepEqual(await getJson(base + '/stock/B-2'), { status: 200, body: { sku: 'B-2', qty: 9 } })
+    assert.equal((await getJson(base + '/stock/nope')).status, 404)
+  }))
+
+test('the client renders one table row per low-stock SKU returned by the API', () =>
+  withServer(ROWS, async (base) => {
+    const html = await loadLowStock(base)
+    assert.equal(html.match(/<tr>/g).length, 3) // header row plus A-1 and D-4
+    assert.match(html, /<td>A-1<\/td><td>2<\/td><td>5<\/td>/)
+    assert.match(html, /<td>D-4<\/td><td>0<\/td><td>3<\/td>/)
+    assert.doesNotMatch(html, /B-2|C-3/)
+  }))
+
+test('the client escapes SKU text and renders an empty body when nothing is low', () => {
+  assert.match(renderLowStock([{ sku: '<b>', qty: 1, reorderLevel: 2 }]), /&lt;b&gt;/)
+  assert.match(renderLowStock([]), /<tbody><\/tbody>/)
+})
+`
+}
+
+// ---- inventory on fastify (r4): needs fastify, vitest and better-sqlite3, which are not installed here, so its tests are not executed by the self-check.
+const R4_FILES = {
+  'package.json': '{\n  "name": "inventory",\n  "scripts": { "test": "vitest run", "dev": "tsx src/server.ts" },\n  "dependencies": { "fastify": "5.2.1", "better-sqlite3": "11.3.0", "react": "19.0.0", "react-dom": "19.0.0" },\n  "devDependencies": { "vitest": "2.1.8", "tsx": "4.19.2" }\n}\n',
+  'README.md': '# inventory\n\nStock levels API (src/) and a small React admin client (web/).\n',
+  '.orgai/ARCHITECTURE.md': ARCH6,
+  'src/server.ts': raw`
+import Fastify from 'fastify'
+import { stock } from './db'
+
+export const app = Fastify()
+app.get('/stock/:sku', async (req, reply) => {
+  const row = stock((req.params as { sku: string }).sku)
+  return row ?? reply.code(404).send({ error: 'unknown sku' })
+})
+// fastify 5: listen takes an options object
+if (process.env.VITEST === undefined) app.listen({ port: 3000, host: '127.0.0.1' })
+`,
+  'src/db.ts': raw`
+import Database from 'better-sqlite3'
+
+const db = new Database('inventory.db')
+db.exec('create table if not exists stock (sku text primary key, qty integer not null default 0)')
+
+export function stock(sku: string) {
+  return db.prepare('select sku, qty from stock where sku = ?').get(sku)
+}
+`,
+  'web/App.tsx': "import { useState } from 'react'\n\nexport function App() {\n  const [sku, setSku] = useState('')\n  return <input value={sku} onChange={(e) => setSku(e.target.value)} placeholder=\"SKU\" />\n}\n",
+  'tests/api.test.ts': raw`
+import { describe, it, expect, vi } from 'vitest'
+
+vi.mock('../src/db', () => ({ stock: (sku: string) => (sku === 'A-1' ? { sku: 'A-1', qty: 10 } : undefined) }))
+
+import { app } from '../src/server'
+
+describe('GET /stock/:sku', () => {
+  it('returns the row of a known SKU', async () => {
+    const res = await app.inject({ method: 'GET', url: '/stock/A-1' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ sku: 'A-1', qty: 10 })
+  })
+
+  it('answers 404 for an unknown SKU', async () => {
+    const res = await app.inject({ method: 'GET', url: '/stock/nope' })
+    expect(res.statusCode).toBe(404)
+  })
+})
+`
+}
+
+// ---- fleet on fastify (r3): static; fastify and Playwright are not installed here.
 const R3_FILES = {
   ...FILES11,
   '.orgai/ARCHITECTURE.md': ARCH11,
   'apps/web/src/App.tsx': "import { Dashboard } from './Dashboard'\n\nexport function App() {\n  return <Dashboard />\n}\n",
-  'apps/web/src/Dashboard.tsx': "import { useEffect, useState } from 'react'\n\nexport function Dashboard() {\n  const [status, setStatus] = useState<{ vehicleId: string; state: string }[]>([])\n  useEffect(() => { fetch('/vehicles/status').then((r) => r.json()).then(setStatus) }, [])\n  return <ul>{status.map((v) => <li key={v.vehicleId}>{v.vehicleId}: {v.state}</li>)}</ul>\n}\n",
+  'apps/web/src/Dashboard.tsx': "import { useEffect, useState } from 'react'\n\nexport function Dashboard() {\n  const [status, setStatus] = useState<{ vehicleId: string; state: string }[]>([])\n  useEffect(() => { fetch('/vehicles/status').then((r) => r.json()).then(setStatus) }, [])\n  return (\n    <div>\n      <h1>Fleet</h1>\n      <ul>{status.map((v) => <li key={v.vehicleId}>{v.vehicleId}: {v.state}</li>)}</ul>\n    </div>\n  )\n}\n",
   'services/api/src/server.ts': "import Fastify from 'fastify'\n\nconst app = Fastify()\napp.get('/vehicles', async () => [])\n// Resolved merge: the API implementer's version of this endpoint was kept.\napp.get('/vehicles/status', async () => [{ vehicleId: 'v1', state: 'idle' }])\napp.listen({ port: 3000 })\n"
 }
 
-// r4: fastify was upgraded to a 5.x release and src/server.ts adapted.
-const R4_FILES = {
-  ...FILES6,
-  '.orgai/ARCHITECTURE.md': ARCH6,
-  'package.json': '{\n  "name": "inventory",\n  "scripts": { "test": "vitest run", "dev": "tsx src/server.ts" },\n  "dependencies": { "fastify": "5.2.1", "better-sqlite3": "11.3.0" }\n}\n',
-  'src/server.ts': "import Fastify from 'fastify'\nimport { stock } from './db'\n\nconst app = Fastify()\napp.get('/stock/:sku', async (req) => stock((req.params as { sku: string }).sku))\n// fastify 5: listen takes an options object\napp.listen({ port: 3000, host: '127.0.0.1' })\n"
-}
-
-// r5: /stock/low in src/server.ts, its query in src/db.ts, the table in web/App.tsx and tests for both.
-const R5_FILES = {
-  ...FILES6,
-  '.orgai/ARCHITECTURE.md': ARCH6,
-  'migrations/001_init.sql': 'create table stock (\n  sku text primary key,\n  qty integer not null default 0,\n  reorder_level integer not null default 0\n);\n',
-  'src/db.ts': "import Database from 'better-sqlite3'\n\nconst db = new Database('inventory.db')\n\nexport function stock(sku: string) {\n  return db.prepare('select sku, qty from stock where sku = ?').get(sku)\n}\n\nexport function lowStock() {\n  return db.prepare('select sku, qty, reorder_level as reorderLevel from stock where qty < reorder_level').all()\n}\n",
-  'src/server.ts': SERVER6("app.get('/stock/low', async () => lowStock())\napp.get('/stock/:sku', async (req) => stock((req.params as { sku: string }).sku))\n"),
-  'web/App.tsx': "import { useEffect, useState } from 'react'\n\nexport function App() {\n  const [low, setLow] = useState<{ sku: string; qty: number; reorderLevel: number }[]>([])\n  useEffect(() => { fetch('/stock/low').then((r) => r.json()).then(setLow) }, [])\n  return (\n    <table>\n      <thead><tr><th>SKU</th><th>Qty</th><th>Reorder level</th></tr></thead>\n      <tbody>{low.map((r) => <tr key={r.sku}><td>{r.sku}</td><td>{r.qty}</td><td>{r.reorderLevel}</td></tr>)}</tbody>\n    </table>\n  )\n}\n",
-  'tests/api.test.ts': "import { describe, it, expect } from 'vitest'\n\ndescribe('api', () => {\n  it('has tests', () => expect(1).toBe(1))\n  it('lists SKUs under their reorder level', () => expect([{ sku: 'A-1', qty: 2, reorderLevel: 5 }].filter((r) => r.qty < r.reorderLevel)).toHaveLength(1))\n  it('renders the low-stock table rows', () => expect(['A-1']).toContain('A-1'))\n})\n"
-}
-
-// r6: GET /vehicles paginates (limit and cursor) with tests next to the server.
+// ---- fleet on node:http (r6): the API is dependency-free so its node:test tests can run.
+const ARCH11_NODE = archDoc('Fleet architecture', 'A monorepo: React web app and React Native app, a dependency-free Node http API tested with node:test, a Python ETL pipeline and Terraform; Playwright e2e tests.',
+  [['apps/web', 'React web app'], ['apps/mobile', 'React Native app'], ['services/api', 'Node http API (node:test)'], ['services/pipeline', 'Python ETL'], ['infra', 'Terraform'], ['tests/e2e', 'Playwright tests']])
+const { 'services/api/src/server.ts': _fastifyApi, ...FLEET_BASE } = FILES11
 const R6_FILES = {
-  ...FILES11,
-  '.orgai/ARCHITECTURE.md': ARCH11,
-  'services/api/src/server.ts': "import Fastify from 'fastify'\n\nconst app = Fastify()\nconst vehicles = Array.from({ length: 50 }, (_, i) => ({ id: 'v' + i }))\napp.get('/vehicles', async (req) => {\n  const { limit = '20', cursor = '0' } = req.query as { limit?: string; cursor?: string }\n  const start = Number(cursor)\n  const items = vehicles.slice(start, start + Number(limit))\n  return { items, nextCursor: start + items.length < vehicles.length ? String(start + items.length) : null }\n})\napp.listen({ port: 3000 })\n",
-  'services/api/src/server.test.ts': "import { describe, it, expect } from 'vitest'\n\ndescribe('GET /vehicles pagination', () => {\n  it('pages by limit and cursor', () => {\n    const all = ['v0', 'v1', 'v2']\n    expect(all.slice(1, 3)).toEqual(['v1', 'v2'])\n  })\n})\n"
+  ...FLEET_BASE,
+  '.orgai/ARCHITECTURE.md': ARCH11_NODE,
+  'services/api/package.json': '{\n  "name": "@fleet/api",\n  "type": "module",\n  "scripts": { "start": "node src/server.js", "test": "node --test" }\n}\n',
+  'services/api/src/server.js': raw`
+import { createServer as createHttpServer } from 'node:http'
+import { fileURLToPath } from 'node:url'
+
+export const VEHICLES = Array.from({ length: 50 }, (_, i) => ({ id: 'v' + i }))
+const DEFAULT_LIMIT = 20
+const MAX_LIMIT = 100
+
+export function createServer(vehicles = VEHICLES) {
+  return createHttpServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost')
+    const send = (status, body) => {
+      res.writeHead(status, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(body))
+    }
+    if (req.method !== 'GET' || url.pathname !== '/vehicles') return send(404, { error: 'not found' })
+    const limit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : DEFAULT_LIMIT
+    const start = url.searchParams.has('cursor') ? Number(url.searchParams.get('cursor')) : 0
+    if (!Number.isInteger(limit) || limit < 1) return send(400, { error: 'limit must be a positive integer' })
+    if (!Number.isInteger(start) || start < 0 || start > vehicles.length) return send(400, { error: 'invalid cursor' })
+    const items = vehicles.slice(start, start + Math.min(limit, MAX_LIMIT))
+    const end = start + items.length
+    send(200, { items, nextCursor: end < vehicles.length ? String(end) : null })
+  })
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) createServer().listen(Number(process.env.PORT ?? 3000))
+`,
+  'services/api/src/server.test.js': raw`
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { createServer, VEHICLES } from './server.js'
+
+async function withServer(vehicles, fn) {
+  const server = createServer(vehicles)
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    await fn(async (query) => {
+      const res = await fetch('http://127.0.0.1:' + server.address().port + '/vehicles' + query)
+      return { status: res.status, body: await res.json() }
+    })
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolve) => server.close(resolve))
+  }
+}
+
+test('the first page holds 20 vehicles and points at the next one', () =>
+  withServer(VEHICLES, async (get) => {
+    const { status, body } = await get('')
+    assert.equal(status, 200)
+    assert.equal(body.items.length, 20)
+    assert.equal(body.items[0].id, 'v0')
+    assert.equal(body.nextCursor, '20')
+  }))
+
+test('following nextCursor visits every vehicle once and ends with a null cursor', () =>
+  withServer(VEHICLES, async (get) => {
+    const ids = []
+    let cursor = null
+    do {
+      const { body } = await get('?limit=20' + (cursor ? '&cursor=' + cursor : ''))
+      ids.push(...body.items.map((v) => v.id))
+      cursor = body.nextCursor
+    } while (cursor)
+    assert.deepEqual(ids, VEHICLES.map((v) => v.id))
+  }))
+
+test('limit sets the page size', () =>
+  withServer(VEHICLES, async (get) => {
+    const { body } = await get('?limit=3&cursor=10')
+    assert.deepEqual(body.items.map((v) => v.id), ['v10', 'v11', 'v12'])
+    assert.equal(body.nextCursor, '13')
+  }))
+
+test('a limit above the maximum is capped at 100', () =>
+  withServer(Array.from({ length: 150 }, (_, i) => ({ id: 'x' + i })), async (get) => {
+    const { body } = await get('?limit=500')
+    assert.equal(body.items.length, 100)
+    assert.equal(body.nextCursor, '100')
+  }))
+
+test('a bad cursor or limit is a 400', () =>
+  withServer(VEHICLES, async (get) => {
+    assert.equal((await get('?cursor=abc')).status, 400)
+    assert.equal((await get('?cursor=-1')).status, 400)
+    assert.equal((await get('?limit=0')).status, 400)
+  }))
+`
 }
 
 /**
@@ -380,7 +817,7 @@ const R6_FILES = {
  */
 export function recordPaths(scenario) {
   const text = [...(scenario.run?.agents ?? []).map((a) => a.result ?? ''), ...(scenario.run?.logs ?? []).map((l) => l.message), scenario.run?.finalReport ?? ''].join('\n')
-  const found = text.match(/[A-Za-z0-9_./-]+\.(?:tsx|ts|py|sql|md|json|tf|yml)\b/g) ?? []
+  const found = text.match(/[A-Za-z0-9_./-]+\.(?:tsx|ts|py|sql|md|json|js|tf|yml)\b/g) ?? []
   return [...new Set(found)]
 }
 
@@ -391,16 +828,16 @@ const agent = (slug, o = {}) => ({ slug, state: 'done', inputTokens: 40000, outp
 const r1 = {
   id: 'r1', family: 'retro', kind: 'code', setupKind: 'existing', complexity: 3,
   title: 'Missing specialty: the root did database work nobody owns (6 roles)',
-  brief: 'Inventory service: a stock API in src/ and a small React admin client in web/.',
-  architectureSummary: 'A Fastify API over a SQLite file with a small React admin client; tests run with vitest.',
-  chart: chart6(), files: R1_FILES, git: true,
+  brief: 'Inventory service: a stock API in src/ and a small web client in web/.',
+  architectureSummary: 'A dependency-free Node service: an http API over a SQLite file (node:sqlite, migrations applied in order from migrations/) and a small web client of plain ES modules; tests run with node:test.',
+  chart: chart6(), files: R1_FILES, git: true, exec: { runner: 'node', cwd: '.', tests: 4 },
   run: {
     task: 'Add a reorder-level column to stock and expose it in the API and the admin client.', status: 'done', minutes: 22, costUsd: 4.7,
     agents: [
       agent('orchestrator', { costUsd: 1.9, result: 'I wrote the three SQL migration files and the schema change myself (migrations/004 to 006) because none of my reports owns the database; the backend implementer\'s brief covers handlers only. Then the backend and frontend implementers finished their parts.' }),
-      agent('backend-implementer', { costUsd: 0.9, result: 'Added reorderLevel to the handlers in src/server.ts; had to adapt to the migration the orchestrator wrote.', worktree: { status: 'merged', files: 2 } }),
-      agent('frontend-implementer', { costUsd: 0.6, result: 'Added the reorder column to web/App.tsx.', worktree: { status: 'merged', files: 1 } }),
-      agent('tester', { costUsd: 0.7, result: 'Added tests for the new field; all pass.' }),
+      agent('backend-implementer', { costUsd: 0.9, result: 'Added reorderLevel to the stock query in src/db.js and noted the response shape in src/server.js; had to adapt to the migration the orchestrator wrote.', worktree: { status: 'merged', files: 2 } }),
+      agent('frontend-implementer', { costUsd: 0.6, result: 'Added the reorder level to the table in web/app.js.', worktree: { status: 'merged', files: 1 } }),
+      agent('tester', { costUsd: 0.7, result: 'Added 4 tests in tests/api.test.js for the new field (migrations, the endpoint with a real server, a 404, the client); all 4 pass.' }),
       agent('reviewer', { costUsd: 0.4, result: 'Looks fine. Note: the migrations have no rollback and nobody was assigned to check them.' })
     ],
     logs: [{ level: 'warn', message: 'The orchestrator edited files itself (migrations/004_reorder_level.sql, migrations/005_backfill.sql, migrations/006_index.sql) instead of delegating.' }],
@@ -418,18 +855,18 @@ const r2 = {
   id: 'r2', family: 'retro', kind: 'code', setupKind: 'existing', complexity: 2,
   title: 'A role lacked a tool it needed (3 roles)',
   brief: 'csvkit: a small Python command-line tool for sorting, filtering and joining CSV files.',
-  architectureSummary: 'A pure-Python CLI (argparse) with the logic in csvkit/ops.py and pytest tests under tests/.',
-  chart: chart3(), files: R2_FILES, git: true,
+  architectureSummary: 'A pure-Python CLI (argparse) with the logic in csvkit/ops.py and unittest tests under tests/.',
+  chart: chart3(), files: R2_FILES, git: true, exec: { runner: 'python', cwd: '.', tests: 5 },
   run: {
     task: 'Add a filter subcommand with a --where COLUMN=VALUE option and test it.', status: 'done', minutes: 12, costUsd: 1.9,
     agents: [
-      agent('orchestrator', { costUsd: 0.7, result: 'Implementer added the subcommand; the tester wrote tests but could not run them, so I ran the suite myself.' }),
+      agent('orchestrator', { costUsd: 0.7, result: 'Implementer added the subcommand; the tester wrote tests but could not run them, so I ran the suite myself: all 5 tests pass.' }),
       agent('implementer', { costUsd: 0.6, result: 'Added filter to csvkit/cli.py and csvkit/ops.py.', worktree: { status: 'merged', files: 2 } }),
-      agent('tester', { costUsd: 0.6, state: 'done', result: 'Wrote tests/test_filter.py. I could not run pytest: every Bash call was denied because my role has no Bash tool, so the tests are unverified.' })
+      agent('tester', { costUsd: 0.6, state: 'done', result: 'Wrote tests/test_filter.py (3 tests). I could not run them: every Bash call was denied because my role has no Bash tool, so the tests are unverified by me.' })
     ],
-    logs: [{ level: 'warn', message: 'Tester: Bash was denied (tool not in the role): "python -m pytest tests/"' }, { level: 'warn', message: 'Tester: Bash was denied (tool not in the role): "pytest -q"' }],
+    logs: [{ level: 'warn', message: 'Tester: Bash was denied (tool not in the role): "python -m unittest discover -s tests"' }, { level: 'warn', message: 'Tester: Bash was denied (tool not in the role): "python -m unittest tests.test_filter"' }],
     deniedToolResults: 7,
-    finalReport: 'Filter subcommand added and tested (I ran the suite after the tester could not).'
+    finalReport: 'Filter subcommand added and tested (the orchestrator ran the suite after the tester could not; 5 tests pass).'
   },
   expect: {
     mustChange: [{ slug: 'tester', fields: ['tools'], toolsAdded: ['Bash'] }],
@@ -486,9 +923,9 @@ const r4 = {
     agents: [
       agent('orchestrator', { costUsd: 1.5, result: 'Asked the researcher for the changelog and every call site, then had the backend implementer apply the upgrade.' }),
       agent('researcher', { costUsd: 4.8, inputTokens: 310000, outputTokens: 22000, result: 'Listed every call site of app.get and app.listen with file and line, and summarized the 5.x changelog entries about the listen signature. (Mechanical grep and changelog lookup; 41 tool calls.)' }),
-      agent('backend-implementer', { costUsd: 1.2, result: 'Applied the upgrade in src/server.ts; tests pass.', worktree: { status: 'merged', files: 2 } }),
-      agent('tester', { costUsd: 0.7, result: 'Suite passes.' }),
-      agent('reviewer', { costUsd: 0.7, result: 'Fine.' })
+      agent('backend-implementer', { costUsd: 1.2, result: 'Raised fastify in package.json and applied the upgrade in src/server.ts (listen takes an options object); the 2 tests in tests/api.test.ts pass.', worktree: { status: 'merged', files: 2 } }),
+      agent('tester', { costUsd: 0.7, result: 'Ran the suite: the 2 tests in tests/api.test.ts pass.' }),
+      agent('reviewer', { costUsd: 0.7, result: 'Read package.json and src/server.ts: the version and the listen call match fastify 5. No problems.' })
     ],
     logs: [{ level: 'info', message: 'Researcher (model opus, tier deep) used 332k tokens on lookups: grep for call sites and reading a changelog.' }],
     finalReport: 'fastify upgraded; all tests pass.'
@@ -503,21 +940,21 @@ const r4 = {
 const r5 = {
   id: 'r5', family: 'retro', kind: 'code', setupKind: 'existing', complexity: 3,
   title: 'A healthy run: nothing should change (6 roles)',
-  brief: 'Inventory service: a stock API in src/ and a small React admin client in web/.',
-  architectureSummary: 'A Fastify API over a SQLite file with a small React admin client; tests run with vitest.',
-  chart: chart6(), files: R5_FILES, git: true,
+  brief: 'Inventory service: a stock API in src/ and a small web client in web/.',
+  architectureSummary: 'A dependency-free Node service: an http API over a SQLite file (node:sqlite, migrations applied in order from migrations/) and a small web client of plain ES modules; tests run with node:test.',
+  chart: chart6(), files: R5_FILES, git: true, exec: { runner: 'node', cwd: '.', tests: 4 },
   run: {
-    task: 'Add a /stock/low endpoint listing SKUs under their reorder level, with a table in the admin client.', status: 'done', minutes: 20, costUsd: 3.6,
+    task: 'Add a /stock/low endpoint listing SKUs under their reorder level, with a table in the web client.', status: 'done', minutes: 20, costUsd: 3.6,
     agents: [
       agent('orchestrator', { costUsd: 1.1, result: 'Split API and client work, had the tester and reviewer check both, merged cleanly.' }),
-      agent('backend-implementer', { costUsd: 0.8, result: 'Added /stock/low in src/server.ts and the query in src/db.ts.', worktree: { status: 'merged', files: 2 } }),
-      agent('frontend-implementer', { costUsd: 0.6, result: 'Added the low-stock table in web/App.tsx.', worktree: { status: 'merged', files: 1 } }),
-      agent('tester', { costUsd: 0.5, result: 'Added tests for the endpoint and the table in tests/api.test.ts; all tests pass.' }),
-      agent('reviewer', { costUsd: 0.4, result: 'No problems found; conventions followed.' }),
-      agent('researcher', { costUsd: 0.2, result: 'Confirmed better-sqlite3 supports the query form used (docs link in the report).' })
+      agent('backend-implementer', { costUsd: 0.8, result: 'Added /stock/low in src/server.js and the query in src/db.js.', worktree: { status: 'merged', files: 2 } }),
+      agent('frontend-implementer', { costUsd: 0.6, result: 'Added the low-stock table (renderLowStock, loadLowStock) in web/app.js.', worktree: { status: 'merged', files: 1 } }),
+      agent('tester', { costUsd: 0.5, result: 'Added 4 tests in tests/api.test.js: /stock/low against a real server with a SKU exactly at its level, /stock/:sku next to it, the client table loading from the live endpoint, and escaping. Ran the suite: all 4 pass.' }),
+      agent('reviewer', { costUsd: 0.4, result: 'Read src/server.js, src/db.js, web/app.js and tests/api.test.js. The query uses a strict qty < reorder_level and the tests include a SKU exactly at its level. No problems found.' }),
+      agent('researcher', { costUsd: 0.2, result: 'Confirmed from the node:sqlite documentation that prepare().all() returns the rows the query relies on.' })
     ],
     logs: [],
-    finalReport: 'The low-stock endpoint and table are in and tested; no conflicts, no denied tools, every role was used as intended.'
+    finalReport: 'The low-stock endpoint and client table are in and tested (4 tests pass); no conflicts, no denied tools, every role was used as intended.'
   },
   expect: { mustChange: [], expectNoChange: true, mayChange: [], mustNotChange: [], mustNotRemove: [], maxRolesListed: 0, allowSpendRaise: false }
 }
@@ -526,18 +963,18 @@ const r6 = {
   id: 'r6', family: 'retro', kind: 'code', setupKind: 'existing', complexity: 4,
   title: 'Roles unused in this run must not be removed (11 roles)',
   brief: 'Fleet: web and mobile apps, an API, an ETL pipeline and Terraform.',
-  architectureSummary: 'A monorepo: React web app and React Native app, a Fastify API, a Python ETL pipeline and Terraform; Playwright e2e tests.',
-  chart: chart11(), files: R6_FILES, git: true,
+  architectureSummary: 'A monorepo: React web app and React Native app, a dependency-free Node http API tested with node:test, a Python ETL pipeline and Terraform; Playwright e2e tests.',
+  chart: chart11(), files: R6_FILES, git: true, exec: { runner: 'node', cwd: 'services/api', tests: 5 },
   run: {
     task: 'Add pagination to GET /vehicles in the API.', status: 'done', minutes: 11, costUsd: 3.1,
     agents: [
       agent('orchestrator', { costUsd: 0.9, result: 'A backend-only change: handed it to the platform lead, then asked the reviewer to check.' }),
       agent('platform-lead', { costUsd: 0.7, result: 'API implementer did it.' }),
-      agent('api-implementer', { costUsd: 0.9, result: 'Added limit and cursor to services/api/src/server.ts with tests; all pass.', worktree: { status: 'merged', files: 2 } }),
-      agent('reviewer', { costUsd: 0.6, result: 'Looks correct; edge cases covered.' })
+      agent('api-implementer', { costUsd: 0.9, result: 'Added limit and cursor to services/api/src/server.js with 5 tests in services/api/src/server.test.js; all 5 pass.', worktree: { status: 'merged', files: 2 } }),
+      agent('reviewer', { costUsd: 0.6, result: 'Read services/api/src/server.js and its tests. The tests cover the first page, walking to the last page, the page size, the limit cap and a bad cursor or limit. No problems found.' })
     ],
     logs: [],
-    finalReport: 'GET /vehicles now paginates; tests pass. The web, mobile, pipeline and infra roles were not needed for this task.'
+    finalReport: 'GET /vehicles now paginates; 5 tests pass. The web, mobile, pipeline and infra roles were not needed for this task.'
   },
   expect: {
     mustChange: [], mayChange: ['orchestrator', 'platform-lead', 'api-implementer', 'reviewer'],

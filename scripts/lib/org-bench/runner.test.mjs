@@ -11,6 +11,7 @@ import { DEFAULTS, parseArgs, selectScenarios } from '../../bench-org-chart.mjs'
 import { cleanupDir, initGitRepo, writeFixture } from './load.mjs'
 import { renderReport } from './report.mjs'
 import { RETRO_SCENARIOS, recordPaths } from './scenarios.mjs'
+import { runFixtureTests } from './selfcheck.mjs'
 import { makeHandlers, makeInput, newState } from './session.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -89,6 +90,40 @@ test('retro fixtures hold every path their record names, plus the architecture d
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  }
+})
+
+test('retro fixtures with an exec spec run their own tests in the prepared folder and the count matches the record (r1, r5, r6 on node:test, r2 on unittest); r3 and r4 stay static', () => {
+  const executable = RETRO_SCENARIOS.filter((s) => s.exec).map((s) => s.id)
+  assert.deepEqual(executable, ['r1', 'r2', 'r5', 'r6'])
+  assert.deepEqual(RETRO_SCENARIOS.filter((s) => !s.exec).map((s) => s.id), ['r3', 'r4'])
+  assert.equal(runFixtureTests(RETRO_SCENARIOS.find((s) => s.id === 'r4'), tmpdir()).skipped, true)
+  for (const s of RETRO_SCENARIOS.filter((x) => x.exec)) {
+    const dir = mkdtempSync(join(tmpdir(), 'orgai-bench-fixture-'))
+    try {
+      writeFixture(dir, s.files)
+      const t = runFixtureTests(s, dir)
+      if (t.skipped) continue // toolchain missing (python, node < 22.13): the self-check logs it
+      assert.equal(t.ok, true, `${s.id}: ${t.passed} passed, ${t.failed} failed, record claims ${t.expected}\n${t.log}`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+test('a broken fixture is caught: a failing test and a count that disagrees with the record both fail', () => {
+  const r5 = RETRO_SCENARIOS.find((s) => s.id === 'r5')
+  const dir = mkdtempSync(join(tmpdir(), 'orgai-bench-fixture-'))
+  try {
+    writeFixture(dir, { ...r5.files, 'src/db.js': r5.files['src/db.js'].replace('qty < reorder_level', 'qty > reorder_level') })
+    const t = runFixtureTests(r5, dir)
+    if (t.skipped) return
+    assert.equal(t.ok, false)
+    assert.ok(t.failed > 0)
+    writeFixture(dir, r5.files)
+    assert.equal(runFixtureTests({ ...r5, exec: { ...r5.exec, tests: 9 } }, dir).ok, false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 

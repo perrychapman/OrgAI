@@ -208,6 +208,21 @@ Mirrored (restated; marked `MIRRORS` in the code):
   most (its healthy-chart control measured the fixture); re-baseline before comparing.** Not verified: that live Architect
   sessions now leave r5 alone.
 
+- **Retro fixtures made real (2026-11-19, second pass).** A deep-tier r5 session still reconstructed the planted run as
+  unhealthy: the tests the tester "passed" only asserted array literals and never called `/stock/low` or the client. The
+  fixtures' tests now exercise what the record says. r1, r5 (inventory) and r6 (fleet API) are dependency-free Node
+  projects (`node:http`, `node:sqlite`, plain ES modules, `node:test`; r1 and r5 apply their SQL migrations to a real
+  in-memory database), r2 (csvkit) uses `unittest` and also runs the CLI; counts and file names in each record match
+  the files (r1 4 tests, r2 5, r5 4, r6 5). Vacuous before: r1 `expect({...}).toHaveProperty`, r5 a hand-filtered array and
+  `['A-1']` containing `'A-1'`, r6 a hand-sliced array, r2 `callable(ops.filter_file)` and an assertion that only checked
+  one name; r1/r5 clients never fetched anything; r3's dashboard dropped the `h1` the Playwright smoke test needs; r4's only
+  test was `expect(1).toBe(1)`, its manifest lacked react, vitest and tsx. `--self-check` and `runner.test.mjs` now RUN
+  r1, r2, r5 and r6 tests in the prepared folder and require them to pass with the count the record claims (`exec` on the
+  scenario; skipped with a note when python or Node 22.13 is missing). r3 and r4 stay static (fastify, vitest and
+  Playwright are not installed): their tests were rewritten to be real but have not been executed. Charts and summaries
+  that said "React", "Fastify" or "pytest" for r1, r2, r5 and r6 were changed to match. Not verified: that live Architect
+  sessions now leave r5 and r6 alone; that r3 and r4 sources compile or pass under their declared tools.
+
 - **No live session was run when this was written.** Verified without a model: the real source loads through jiti; the real
   `propose_org_chart` validation accepts the canned valid charts and refuses the canned invalid ones, in both families; the
   scorer on hand-written good and bad charts and revisions (`score.test.mjs`); the stub tools, the follow-up logic, the
