@@ -1,60 +1,149 @@
-/* ---------- Dashboard: Your week (docs/design/dashboard-overhaul.md 7.7) ----------
-   Owned by components/dashboard/WeekSection.tsx and WeekLimits.tsx; the ledger is dashboard-strip.css. The section is
-   unboxed (the shared .dash-section frame draws the hairline and the h2). `week` is the size container the ledger's label
-   rules read. Tokens only; nothing here animates. */
+/* ---------- Dashboard: Your week (docs/design/dashboard-overhaul.md 7.7, Visual pass) ----------
+   Owned by components/dashboard/WeekSection.tsx, WeekShare.tsx and WeekLimits.tsx; the ledger is dashboard-strip.css. The
+   section is a card (the shared .dash-section frame draws it, the icon and the h2). `week` is the size container the
+   ledger's label rules read. Tokens only; nothing here animates. */
 
 .dash-week {
   container: week / inline-size;
 }
 
-/* Three figures beside the ledger; under 560 px of section width the ledger drops under a row of figures. */
+/* Three stat blocks, then the ledger, then the share bar. */
 .dash-week-body {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  align-items: start;
-  column-gap: var(--space-8);
-  row-gap: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
   min-width: 0;
 }
 .dash-week-figures {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: var(--space-3);
   margin: 0;
   min-width: 0;
 }
-@container week (max-width: 559px) {
-  .dash-week-body {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .dash-week-figures {
-    flex-direction: row;
-    flex-wrap: wrap;
-    column-gap: var(--space-6);
-  }
-}
+/* A stat block: the figure large and mono, its one-to-three-word label under it. The label stays first in the DOM (it
+   names the figure for a screen reader) and sits under the figure visually. */
 .dash-week-figure {
   display: flex;
-  flex-direction: column;
+  flex-direction: column-reverse;
+  justify-content: flex-end;
+  gap: 2px;
   min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
 }
 .dash-week-figure dt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   color: var(--text-secondary);
 }
 .dash-week-figure dd {
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: var(--text-title);
-  line-height: var(--text-title-lh);
+  font-size: var(--text-display);
+  line-height: var(--text-display-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
+}
+@container week (max-width: 439px) {
+  .dash-week-figures {
+    gap: var(--space-2);
+  }
+  .dash-week-figure {
+    padding: var(--space-2) var(--space-3);
+  }
+  .dash-week-figure dd {
+    font-size: var(--text-title-lg);
+    line-height: var(--text-title-lg-lh);
+  }
 }
 /* While history loads the ledger keeps its place (its height is set inline); no spinner. */
 .dash-ledger-pending {
   min-width: 0;
+}
+
+/* ---- Runs by project: one stacked bar, a 2 px surface gap between segments, a legend of dot, name and figure ---- */
+.dash-week-share {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.dash-share-bar {
+  display: flex;
+  gap: 2px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.dash-share-seg {
+  flex: 1 1 0;
+  min-width: 6px;
+  background: var(--dash-hue, var(--text-tertiary));
+}
+/* Chat and "Other" are neutral; Other is the lighter of the two so they differ by more than position. */
+.dash-share-seg[data-kind='chat'] {
+  background: var(--text-tertiary);
+}
+.dash-share-seg[data-kind='other'] {
+  background: var(--border-strong);
+}
+.dash-share-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.dash-share-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+.dash-share-name {
+  min-width: 0;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.dash-share-figure {
+  flex: none;
+  color: var(--text-secondary);
+}
+.dash-share-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--text-tertiary);
+}
+.dash-share-dot[data-kind='other'] {
+  background: var(--border-strong);
+}
+@media (forced-colors: active) {
+  .dash-share-seg,
+  .dash-share-dot {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
 }
 
 /* The most active project: a ghost button whose long project name clips with an ellipsis. */
@@ -64,26 +153,29 @@
   min-width: 0;
 }
 
-/* ---------- Plan limits (moved from the old status bar, 7.7) ---------- */
+/* ---------- Plan limits (moved from the old status bar, 7.7) ----------
+   One line per connection: name, the figure, when it resets, then the shared UsageBar / SpendBar meter (the text carries
+   the meaning; the meter has its own text alternative). Hidden under the mock adapter. */
 
 .dash-limits {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-4);
+  flex-direction: column;
+  gap: var(--space-2);
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
   min-width: 0;
   font-size: var(--text-small);
   color: var(--text-secondary);
 }
 .dash-limit {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
   min-width: 0;
-  white-space: nowrap;
 }
 .dash-limit-name {
   color: var(--text-secondary);
@@ -101,12 +193,12 @@
 .dash-limit[data-level='warn'] .dash-limit-main {
   color: var(--warning-text);
 }
-/* The 40 x 4 px bar after the text; the text carries the meaning. */
+/* The meter fills the rest of the line (the shared bar: its own width rules are overridden here only). */
 .dash-limit .usage-mini {
-  flex: none;
-  width: 40px;
-  min-width: 0;
-  max-width: none;
+  flex: 1 1 64px;
+  min-width: 48px;
+  max-width: 200px;
+  height: 6px;
 }
 .dash-limit-more {
   color: var(--text-tertiary);

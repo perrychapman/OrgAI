@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 import { useId, useMemo, useRef } from 'react'
-import { ArrowUpRight } from 'lucide-react'
+import { ArrowUpRight, BarChart3 } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { Cost } from '../ui/Cost'
@@ -10,6 +10,7 @@ import { TIME_WORKING_TOOLTIP, topProjectText, weekRecap } from '../../lib/weekR
 import { DashSection, useDashboard } from './DashboardContext'
 import { WeekLedger } from './WeekLedger'
 import { WeekLimits, useLimitEntries } from './WeekLimits'
+import { WeekShare } from './WeekShare'
 import { useAllSummaries, useNow } from './useDashboardData'
 
 /** About what the ledger adds around its track (ring room, two label rows, readout): the placeholder reserves it while history loads. */
@@ -44,7 +45,7 @@ export function WeekSection(): ReactElement | null {
   const arrived = useArrival(empty ? [] : ['week'], 'week')('week') && Date.now() - mountedAt.current > SETTLE_MS
 
   return (
-    <DashSection id="week" testId="dash-week" empty={empty} className={arrived ? 'dash-week motion-enter' : 'dash-week'}>
+    <DashSection id="week" testId="dash-week" empty={empty} icon={BarChart3} className={arrived ? 'dash-week motion-enter' : 'dash-week'}>
       {(hasRuns || !ready) && (
         <div className="dash-week-body">
           <dl className="dash-week-figures">
@@ -69,6 +70,7 @@ export function WeekSection(): ReactElement | null {
             {TIME_WORKING_TOOLTIP}
           </span>
           {ready ? <WeekLedger days={recap.days} wide={caps.wide} /> : <div className="dash-ledger-pending" style={{ height: trackHeight(caps.wide) + LEDGER_CHROME_PX }} aria-hidden="true" />}
+          {ready && <WeekShare share={recap.share} />}
         </div>
       )}
       {ready && recap.top && (

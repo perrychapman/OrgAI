@@ -153,3 +153,23 @@ describe('weekRecap scope', () => {
     expect(quiet.costShown).toBe(false)
   })
 })
+
+describe('weekRecap share (the project share bar)', () => {
+  it('divides the week over projects from the same runs the ledger counts', () => {
+    const runs = [
+      run('a', at(2026, 11, 7), { project: 'p2' }),
+      run('b', at(2026, 11, 6), { project: 'p2' }),
+      run('c', at(2026, 11, 5), { project: 'p1' }),
+      run('old', at(2026, 10, 1), { project: 'p3' }),
+      run('setup', at(2026, 11, 7), { project: 'p3', kind: 'setup' })
+    ]
+    const r = weekRecap(runs, projects, NOW)
+    expect(r.share.show).toBe(true)
+    expect(r.share.segments.map((s) => [s.name, s.runs])).toEqual([['Billing API', 2], ['Mobile app', 1]])
+    expect(r.share.total).toBe(r.runs)
+    expect(r.share.text).toBe('Runs by project this week: Billing API 2, Mobile app 1.')
+  })
+  it('does not show with one project', () => {
+    expect(weekRecap([run('a', at(2026, 11, 7)), run('b', at(2026, 11, 6))], projects, NOW).share.show).toBe(false)
+  })
+})

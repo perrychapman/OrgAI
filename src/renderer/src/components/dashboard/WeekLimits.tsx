@@ -5,7 +5,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { connectionLabel, isProxyId } from '../../lib/connectionLabel'
 import { clockLabel, resetsAtText, resetsInLabel } from '../../lib/dashboard'
 import { connectionsInUse, reportsSpend, spendLevel, spendRowLabel, spendSentence } from '../../lib/usage'
-import { SpendBar, tightestWindowRow, usageRows } from '../UsageMeter'
+import { SpendBar, UsageBar, tightestWindowRow, usageRows } from '../UsageMeter'
 import { usageIsStale, windowLabel } from './dashboardProjects'
 import { useNow } from './useDashboardData'
 
@@ -33,6 +33,8 @@ export interface LimitEntry {
   title: string
   /** The spend bar element, for a proxy with a budget. */
   spend?: UsageStatus['spend']
+  /** The plan report behind a window entry: `UsageBar` draws its tightest window as the meter. */
+  usage?: UsageStatus
 }
 
 /** The full window list of a connection: "5-hour window 62%, resets 14:10. 7-day window 41%, resets Thu 09:00." */
@@ -53,10 +55,10 @@ export function windowEntry(id: ConnectionId, usage: UsageStatus, now: number): 
   const title = windowsTitle(usage, now)
   if (usage.status === 'rejected' && t.row.limited) {
     const until = clockLabel(usage.limitedUntil)
-    return { id, kind: 'window', level: 'danger', name, main: until ? `limited until ${until}` : 'limited', resets: '', pct: 100, title }
+    return { id, kind: 'window', level: 'danger', name, main: until ? `limited until ${until}` : 'limited', resets: '', pct: 100, title, usage }
   }
   const resets = resetsInLabel(t.row.window.resetsAt, now)
-  return { id, kind: 'window', level: t.level, name, main: `${windowLabel(t.label)} ${Math.round(t.pct)}%`, resets, pct: Math.min(100, Math.max(0, t.pct)), title }
+  return { id, kind: 'window', level: t.level, name, main: `${windowLabel(t.label)} ${Math.round(t.pct)}%`, resets, pct: Math.min(100, Math.max(0, t.pct)), title, usage }
 }
 
 /** The limit entries for the connections in use; empty under the mock adapter. */
@@ -128,11 +130,7 @@ export function WeekLimits({ entries }: { entries: readonly LimitEntry[] }): Rea
               <span className="dash-limit-resets">{e.resets}</span>
             </>
           )}
-          {e.kind === 'window' && e.pct !== null && (
-            <span className={`usage-mini ${e.level}`} aria-hidden="true">
-              <i style={{ width: `${e.pct}%` }} />
-            </span>
-          )}
+          {e.kind === 'window' && <UsageBar usage={e.usage} />}
           {e.kind === 'spend' && <SpendBar spend={e.spend} id={e.id} />}
         </li>
       ))}

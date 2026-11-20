@@ -4,34 +4,34 @@ import { splitLabelTail } from '@shared/view/agentTree'
 import { Cost } from '../ui/Cost'
 import { costView, runCostInput } from '../../lib/cost'
 import { useArrival } from '../../lib/useArrival'
+import { projectHue } from '../../lib/projectIdentity'
+import { ProjectBadge } from './ProjectBadge'
 import {
+  BAND_BREATHING_MAX,
   agentRowName,
   doneText,
   moreAgentsText,
   openedText,
+  planProgressText,
   runHeadName,
   type BandAgentRow,
   type BandRow,
   type BandRun as BandRunModel
 } from '../../lib/dashboardBand'
 
-/** At most this many marks breathe (the wide cap, spec 3.4). */
-const MAX_BREATHING = 12
-
-/** The agent mark (spec 3.1): role fill, state ring, halo; done and failed carry a glyph. */
+/**
+ * The agent mark (spec 3.1): role fill, state ring, halo; done and failed carry a glyph. Only the glance row's marks pass
+ * `breath` (the stagger index across the band): the first BAND_BREATHING_MAX working ones breathe, the agent rows' own
+ * marks stay still so one run never loops twice.
+ */
 function Mark({ state, color, breath }: { state: BandAgentRow['state']; color: string; breath?: number }): ReactElement {
   const style = { '--role': color, ...(breath !== undefined ? { '--i': breath } : {}) } as CSSProperties
   return (
-    <span className="dash-mark" data-state={state} data-breathe={breath !== undefined && breath < MAX_BREATHING ? '' : undefined} style={style} aria-hidden="true">
+    <span className="dash-mark" data-state={state} data-breathe={breath !== undefined && breath < BAND_BREATHING_MAX ? '' : undefined} style={style} aria-hidden="true">
       {state === 'done' && <Check size={10} strokeWidth={3} focusable="false" />}
       {state === 'failed' && <TriangleAlert size={10} strokeWidth={3} focusable="false" />}
     </span>
   )
-}
-
-/** The interchange mark of a run header: a ring in the root's role colour around a dot. */
-function Interchange({ color, tone }: { color: string; tone: BandRunModel['group'] }): ReactElement {
-  return <span className="dash-mark" data-root="" data-group={tone} style={{ '--role': color } as CSSProperties} aria-hidden="true" />
 }
 
 function lineStyle(row: BandRow, lineColor?: string): CSSProperties {
@@ -63,6 +63,9 @@ export function BandRun({ run, now, onOpen, enter }: BandRunProps): ReactElement
   const cost = costView(runCostInput(run.summary), { compact: true })
   const tone = run.status.tone
   const openRoot = (): void => onOpen(run.projectId, run.id, null, run.rootId)
+  // One line, cut with an ellipsis; the whole sentence rides in the title.
+  const caption = `${run.line2}${run.suffix}`.replace(/^ · /, '')
+  const captionFull = `${run.word}${caption ? `: ${caption}` : ''}`
   return (
     <li
       className={enter !== undefined ? 'dash-run motion-enter' : 'dash-run'}
@@ -73,6 +76,7 @@ export function BandRun({ run, now, onOpen, enter }: BandRunProps): ReactElement
       data-project={run.projectId}
       data-needs={run.decisions > 0 ? run.decisions : undefined}
       data-group={run.group}
+      data-hue={projectHue(run.projectId)}
     >
       <button
         type="button"
@@ -85,20 +89,52 @@ export function BandRun({ run, now, onOpen, enter }: BandRunProps): ReactElement
         onClick={openRoot}
       >
         <span className="dash-run-line">
-          <Interchange color={run.rootColor} tone={run.group} />
-          <span className="dash-dot" data-tone={tone} aria-hidden="true" />
-          <span className="dash-status">{run.word}</span>
-          <span className="dash-run-name">{run.name}</span>
-          {run.chip && <span className="dash-chip">{run.chip}</span>}
+          <ProjectBadge projectId={run.projectId} name={run.projectLabel} size="md" />
+          <span className="dash-run-main">
+            <span className="dash-run-title">
+              <span className="dash-run-name" title={run.name}>
+                {run.name}
+              </span>
+              {run.chip && <span className="dash-chip">{run.chip}</span>}
+            </span>
+            <span className="dash-run-cap" data-warn={run.decisions > 0 ? 'true' : undefined} title={captionFull}>
+              <span className="dash-dot" data-tone={tone} aria-hidden="true" />
+              <span className="dash-status">{run.word}</span>
+              {caption && <span className="dash-run-cap-text">{caption}</span>}
+            </span>
+          </span>
           <span className="dash-run-nums">
-            {run.planStep && <span className="dash-num dash-plan">{run.planStep}</span>}
             <Cost value={runCostInput(run.summary)} compact hideEmpty labelled className="dash-num" />
           </span>
         </span>
-        <span className="dash-run-cap" data-warn={run.decisions > 0 ? 'true' : undefined}>
-          {run.line2}
-          {run.suffix}
-        </span>
+        {(run.marks.length > 0 || run.plan) && (
+          <span className="dash-run-glance">
+            {run.marks.length > 0 && (
+              <span className="dash-marks" data-testid="dash-now-marks" data-count={run.marks.length + run.marksMore} aria-hidden="true" title={run.marksSummary}>
+                {run.marks.map((m) => (
+                  <Mark key={m.id} state={m.state} color={m.color} breath={m.breath} />
+                ))}
+                {run.marksMore > 0 && <span className="dash-num dash-marks-more">+{run.marksMore}</span>}
+              </span>
+            )}
+            {run.plan && (
+              <span
+                className="dash-plan-meter"
+                data-testid="dash-now-plan"
+                data-done={run.plan.done}
+                data-total={run.plan.total}
+                data-blocked={run.plan.blocked ? 'true' : undefined}
+                role="img"
+                aria-label={`Plan: ${planProgressText(run.plan)}`}
+              >
+                <span className="dash-plan-track" aria-hidden="true">
+                  <i style={{ width: `${Math.round((run.plan.done / run.plan.total) * 100)}%` }} />
+                </span>
+                <span className="dash-num dash-plan-text">{planProgressText(run.plan)}</span>
+              </span>
+            )}
+          </span>
+        )}
       </button>
       {run.rows.length > 0 && (
         <ul className="dash-agents" aria-label={`Agents in ${run.name}`}>
@@ -123,7 +159,7 @@ export function BandRun({ run, now, onOpen, enter }: BandRunProps): ReactElement
                     onClick={() => onOpen(run.projectId, run.id, row.id, run.rootId)}
                   >
                     <span className="dash-agent-indent" aria-hidden="true" />
-                    <Mark state={row.state} color={row.color} breath={row.breath} />
+                    <Mark state={row.state} color={row.color} />
                     <Label text={row.label} />
                     {row.role && row.role !== row.label ? <span className="dash-role">{row.role}</span> : <span />}
                     <span className="dash-activity" title={row.under ? `${row.activity} (under ${row.under})` : row.activity}>

@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, Project, RunSummary } from '@shared/types'
 import {
+  BAND_MARKS_MAX,
   BAND_MAX_DEPTH,
+  planProgress,
+  planProgressText,
+  runMarks,
   agentRowName,
   bandAgentState,
   bandAgents,
@@ -385,5 +389,64 @@ describe('accessible names and signature', () => {
     const s = (r: BandRunIn[]): string => bandSignature(r, [project()], {})
     expect(s(a)).toBe(s(same))
     expect(s(a)).not.toBe(s(moved))
+  })
+})
+
+describe('plan progress (the card bar)', () => {
+  const step = (status: string): never => ({ id: 'p', title: 't', status }) as never
+  const plan = (status: string, steps: string[]): never => ({ goal: 'g', status, autoContinues: 0, updatedAt: 0, steps: steps.map(step) }) as never
+
+  it('counts done of counted steps and leaves skipped steps out of both', () => {
+    expect(planProgress(plan('active', ['done', 'done', 'in_progress', 'pending', 'skipped']))).toEqual({ done: 2, total: 4, blocked: false })
+    expect(planProgressText({ done: 2, total: 4, blocked: false })).toBe('2 of 4 steps')
+    expect(planProgressText({ done: 0, total: 1, blocked: false })).toBe('0 of 1 step')
+  })
+  it('reads a finished plan as full and flags a blocked one in words', () => {
+    expect(planProgress(plan('done', ['done', 'pending', 'in_progress']))).toEqual({ done: 3, total: 3, blocked: false })
+    const blocked = planProgress(plan('blocked', ['done', 'blocked']))
+    expect(blocked).toEqual({ done: 1, total: 2, blocked: true })
+    expect(planProgressText(blocked!)).toBe('1 of 2 steps, blocked')
+  })
+  it('is null without a plan or a counted step', () => {
+    expect(planProgress(undefined)).toBeNull()
+    expect(planProgress(plan('active', []))).toBeNull()
+    expect(planProgress(plan('active', ['skipped']))).toBeNull()
+  })
+  it('puts it on the run card, and nothing without a plan', () => {
+    const withPlan = bandModel([input('a', [root()], { plan: plan('active', ['done', 'pending']) })], [project()], {}, NOW, caps).projects[0].runs[0]
+    expect(withPlan.plan).toEqual({ done: 1, total: 2, blocked: false })
+    expect(bandModel([input('a', [root()])], [project()], {}, NOW, caps).projects[0].runs[0].plan).toBeNull()
+  })
+})
+
+describe('run marks (the card glance row)', () => {
+  const many = (states: AgentInstance['state'][]): AgentInstance[] => [root(), ...states.map((s, i) => ag(`a${i}`, { state: s, startedAt: i + 1 }))]
+
+  it('never draws the root and says nothing for a run without reports', () => {
+    expect(runMarks([root()])).toEqual({ marks: [], more: 0, summary: '' })
+  })
+  it('orders waiting, failed, working, idle, done and keeps tree order inside a group', () => {
+    const r = runMarks(many(['done', 'thinking', 'idle', 'waiting', 'error', 'tool']))
+    expect(r.marks.map((m) => m.state)).toEqual(['waiting', 'failed', 'working', 'working', 'idle', 'done'])
+    expect(r.marks.filter((m) => m.state === 'working').map((m) => m.id)).toEqual(['a1', 'a5'])
+    expect(r.more).toBe(0)
+  })
+  it('caps at eight marks and counts the rest, keeping the ones that need the person', () => {
+    const r = runMarks(many(['done', 'done', 'done', 'done', 'done', 'done', 'done', 'done', 'done', 'waiting']))
+    expect(r.marks).toHaveLength(BAND_MARKS_MAX)
+    expect(r.marks[0].state).toBe('waiting')
+    expect(r.more).toBe(2)
+  })
+  it('writes one sentence about every agent, singular for one', () => {
+    expect(runMarks(many(['thinking', 'thinking', 'waiting', 'done'])).summary).toBe('4 agents: 1 waiting on you, 2 working, 1 done')
+    expect(runMarks(many(['idle'])).summary).toBe('1 agent: 1 idle')
+  })
+  it('staggers working marks across the whole band, in the order they are drawn, so the 12 cap holds for the page', () => {
+    const a = input('a', many(['thinking', 'tool', 'idle']), { summary: summary('a', { startedAt: 9 }) })
+    const b = input('b', many(['thinking', 'thinking']), { summary: summary('b', { startedAt: 8 }) })
+    const m = bandModel([a, b], [project()], {}, NOW, { ...caps, bandRuns: 5 })
+    const runs = m.projects.flatMap((p) => p.runs)
+    expect(runs.flatMap((r) => r.marks.filter((x) => x.state === 'working').map((x) => x.breath))).toEqual([0, 1, 2, 3])
+    expect(runs[0].marks.find((x) => x.state === 'idle')?.breath).toBeUndefined()
   })
 })
