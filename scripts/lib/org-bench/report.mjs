@@ -25,7 +25,9 @@ function sessionLine(s) {
     const bits = m ? [`changed ${m.changed.join(', ') || 'none'}`, m.added.length ? `added ${m.added.join(', ')}` : '', m.removed.length ? `removed ${m.removed.join(', ')}` : '', `ending ${m.ending ?? 'none'}`].filter(Boolean) : []
     return `- ${s.scenarioId} #${s.repeat}${status}: ${score}; ${bits.join('; ')}; revise ${s.reviseRounds ?? 0}; ${s.turns ?? '-'} turns, ${usd(s.costUsd)}, ${secs(s.durationMs)}`
   }
-  const roles = (s.chart?.drafts ?? []).map((d) => `${d.name} (${d.model ?? 'unset'})`).join(', ')
+  // A draft that left model out gets the tier the tool resolved (chart.roles, same order): shown as "tier, default".
+  const views = s.chart?.roles ?? []
+  const roles = (s.chart?.drafts ?? []).map((d, i) => `${d.name} (${d.model ?? (views[i]?.tier ? `${views[i].tier}, default` : 'default')})`).join(', ')
   return `- ${s.scenarioId} #${s.repeat}${status}: ${score}; ${roles || 'no chart'}; revise ${s.reviseRounds ?? 0}; ask_user ${s.askUserCalls ?? 0}; question turns ${s.questionTurns ?? 0}; ${usd(s.costUsd)}`
 }
 

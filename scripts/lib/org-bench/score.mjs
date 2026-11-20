@@ -10,7 +10,8 @@
 // check that does not apply to the scenario (it is left out of the dimension's mean and of the failure counts).
 //
 // Bump SCORER_VERSION whenever a check, a weight or a threshold changes: compared runs must share it.
-export const SCORER_VERSION = 1
+// v2: structure and sizing read the normalized roles (what propose_org_chart accepted); new check recommend/references-resolve.
+export const SCORER_VERSION = 2
 
 export const TIERS = ['top', 'deep', 'everyday', 'fast']
 /** Cost proxy weight per tier (unscored; a rough ratio, not a price). `inherit` and an unknown tier count as everyday. */
@@ -38,16 +39,17 @@ const share = (bad, total) => (total === 0 ? 1 : clamp01(1 - bad / total))
 const list = (xs, max = 6) => (xs.length > max ? `${xs.slice(0, max).join(', ')} and ${xs.length - max} more` : xs.join(', '))
 const slugOf = (s) => norm(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 
-function check(id, credit, detail) {
+function check(id, credit, detail, w = 1) {
   const c = clamp01(credit)
-  return { id, pass: c >= 1, credit: round(c, 3), detail }
+  return w === 1 ? { id, pass: c >= 1, credit: round(c, 3), detail } : { id, pass: c >= 1, credit: round(c, 3), detail, w }
 }
 const na = (id, detail) => ({ id, pass: true, credit: 1, detail, na: true })
 
+/** Mean of the checks' credit, each weighted by its optional `w` (default 1). */
 function dimension(id, weight, checks) {
   const live = checks.filter((c) => !c.na)
-  const wsum = live.length
-  const score = wsum === 0 ? 1 : live.reduce((n, c) => n + c.credit, 0) / wsum
+  const wsum = live.reduce((n, c) => n + (c.w ?? 1), 0)
+  const score = wsum === 0 ? 1 : live.reduce((n, c) => n + c.credit * (c.w ?? 1), 0) / wsum
   return { id, weight, score: round(score, 3), checks }
 }
 
@@ -85,36 +87,49 @@ export function effectiveTier(draft, normalizedByName) {
 
 export const tierWeight = (t) => TIER_WEIGHT[t] ?? 1
 
-function chartShape(drafts) {
-  const names = new Set(drafts.map((d) => norm(d.name)))
-  const hasMgr = (d) => norm(d.reportsTo) !== ''
-  const roots = drafts.filter((d) => !hasMgr(d))
+/**
+ * The wiring to judge. propose_org_chart resolves reportsTo / spawnable by role NAME only (toRoles in src/main/ai/draft.ts),
+ * drops what does not resolve and re-roots orphans, so the chart the user is shown is the normalized one (session.chart.roles,
+ * reportsTo / spawnable as slugs). When those views line up with the drafts (same order, same count) the topology comes from
+ * them; otherwise (a hand-made session without views) it comes from the drafts. A node: { d: draft, key, mgr, spawn }.
+ */
+export function wiringNodes(session) {
+  const drafts = arr(session?.chart?.drafts)
+  const views = arr(session?.chart?.roles)
+  if (views.length > 0 && views.length === drafts.length) {
+    return { normalized: true, nodes: drafts.map((d, i) => ({ d, key: norm(views[i].slug), mgr: norm(views[i].reportsTo), spawn: strs(views[i].spawnable) })) }
+  }
+  return { normalized: false, nodes: drafts.map((d) => ({ d, key: norm(d.name), mgr: norm(d.reportsTo), spawn: strs(d.spawnable) })) }
+}
+
+function chartShape(nodes) {
+  const names = new Set(nodes.map((n) => n.key))
+  const roots = nodes.filter((n) => n.mgr === '')
   const children = new Map()
-  for (const d of drafts) if (hasMgr(d)) children.set(norm(d.reportsTo), [...(children.get(norm(d.reportsTo)) ?? []), d])
-  const byName = new Map(drafts.map((d) => [norm(d.name), d]))
-  const depthOf = (d) => {
+  for (const n of nodes) if (n.mgr !== '') children.set(n.mgr, [...(children.get(n.mgr) ?? []), n])
+  const byKey = new Map(nodes.map((n) => [n.key, n]))
+  const depthOf = (node) => {
     let n = 0
     const seen = new Set()
-    let cur = d
-    while (cur && hasMgr(cur)) {
-      const k = norm(cur.name)
-      if (seen.has(k)) return null
-      seen.add(k)
-      cur = byName.get(norm(cur.reportsTo))
+    let cur = node
+    while (cur && cur.mgr !== '') {
+      if (seen.has(cur.key)) return null
+      seen.add(cur.key)
+      cur = byKey.get(cur.mgr)
       if (!cur) return null
       n++
     }
     return n
   }
-  const depths = drafts.map(depthOf)
+  const depths = nodes.map(depthOf)
   const depth = Math.max(0, ...depths.filter((x) => x !== null))
-  return { names, hasMgr, roots, children, byName, depthOf, depth }
+  return { names, roots, children, byKey, depthOf, depth }
 }
 
 export function recommendMetrics(session) {
   const drafts = arr(session?.chart?.drafts)
   const normalized = new Map(arr(session?.chart?.roles).map((r) => [norm(r.name), r]))
-  const shape = chartShape(drafts)
+  const shape = chartShape(wiringNodes(session).nodes)
   const tierMix = { top: 0, deep: 0, everyday: 0, fast: 0, inherit: 0, other: 0 }
   let cost = 0
   const toolCounts = {}
@@ -146,8 +161,11 @@ export function scoreChart(session, scenario) {
   if (!session?.chart || drafts.length === 0) return nothing(RECOMMEND_WEIGHTS, 'chart-produced', session?.status === 'error' ? 'the session failed before a chart' : 'no org chart was proposed (noChart)', metrics)
   const W = RECOMMEND_WEIGHTS
   const normalized = new Map(arr(session.chart.roles).map((r) => [norm(r.name), r]))
-  const shape = chartShape(drafts)
-  const { names, hasMgr, roots, children } = shape
+  const wiring = wiringNodes(session)
+  const nodes = wiring.nodes
+  const shape = chartShape(nodes)
+  const { names, children } = shape
+  const rootNode = shape.roots[0] ?? nodes[0]
   const n = drafts.length
 
   // 1. validity
@@ -157,25 +175,38 @@ export function scoreChart(session, scenario) {
     check('revise-rounds', 1 - 0.25 * rounds, rounds === 0 ? 'first proposal was accepted' : `${rounds} REVISE round(s) or tool error(s) before the chart was accepted`)
   ])
 
-  // 2. structure (on the drafts as the model wrote them: normalization repairs a missing root or manager and would hide these)
+  // 2. structure. one-root, unique-names, manager-can-spawn and leaf-no-spawn read the drafts (what the model wrote);
+  // the reference and topology checks read the normalized wiring (what the tool accepted; see wiringNodes), and
+  // references-resolve keeps the references the tool silently dropped visible (it resolves by role name only).
   const dupNames = drafts.map((d) => norm(d.name)).filter((k, i, a) => a.indexOf(k) !== i)
-  const badMgr = drafts.filter((d) => hasMgr(d) && !names.has(norm(d.reportsTo)))
-  const badSpawn = drafts.flatMap((d) => strs(d.spawnable).filter((s) => !names.has(norm(s))).map((s) => `${d.name}->${s}`))
-  const managers = drafts.filter((d) => (children.get(norm(d.name)) ?? []).length > 0)
-  const uncovered = managers.filter((m) => (children.get(norm(m.name)) ?? []).some((c) => !strs(m.spawnable).some((s) => norm(s) === norm(c.name))))
-  const noSpawnFlag = managers.filter((m) => m.canSpawn !== true)
-  const leaves = drafts.filter((d) => (children.get(norm(d.name)) ?? []).length === 0)
-  const leafBad = leaves.filter((l) => l.canSpawn === true || strs(l.spawnable).length > 0)
-  const unreachable = drafts.filter((d) => shape.depthOf(d) === null)
+  const draftRoots = drafts.filter((d) => norm(d.reportsTo) === '')
+  const badMgr = nodes.filter((x) => x.mgr !== '' && !names.has(x.mgr))
+  const badSpawn = nodes.flatMap((x) => x.spawn.filter((s) => !names.has(norm(s))).map((s) => `${x.d.name}->${s}`))
+  const kids = (x) => children.get(x.key) ?? []
+  const managers = nodes.filter((x) => kids(x).length > 0)
+  const uncovered = managers.filter((m) => kids(m).some((c) => !m.spawn.some((s) => norm(s) === c.key)))
+  const noSpawnFlag = managers.filter((m) => m.d.canSpawn !== true)
+  const leaves = nodes.filter((x) => kids(x).length === 0)
+  const leafBad = leaves.filter((l) => l.d.canSpawn === true || strs(l.d.spawnable).length > 0)
+  const unreachable = nodes.filter((x) => shape.depthOf(x) === null)
+  const draftNames = new Set(drafts.map((d) => norm(d.name)))
+  const refsTotal = drafts.reduce((c, d) => c + (norm(d.reportsTo) ? 1 : 0) + strs(d.spawnable).length, 0)
+  const dropped = drafts.flatMap((d) => [
+    ...(norm(d.reportsTo) && !draftNames.has(norm(d.reportsTo)) ? [`${d.name} reportsTo ${d.reportsTo}`] : []),
+    ...strs(d.spawnable).filter((s) => !draftNames.has(norm(s))).map((s) => `${d.name} spawnable ${s}`)
+  ])
   const structure = dimension('structure', W.structure, [
-    check('one-root', roots.length === 1 ? 1 : 0, `${roots.length} role(s) have no manager${roots.length === 1 ? '' : ' (expected exactly one)'}`),
+    check('one-root', draftRoots.length === 1 ? 1 : 0, `${draftRoots.length} role(s) have no manager${draftRoots.length === 1 ? '' : ' (expected exactly one)'}`),
     check('unique-names', dupNames.length === 0 ? 1 : 0, dupNames.length ? `duplicate names: ${list(dupNames)}` : 'names are unique'),
-    check('reportsTo-exists', share(badMgr.length, n), badMgr.length ? `unknown manager: ${list(badMgr.map((d) => `${d.name}->${d.reportsTo}`))}` : 'every manager exists'),
-    check('spawnable-exist', share(badSpawn.length, Math.max(1, drafts.reduce((c, d) => c + strs(d.spawnable).length, 0))), badSpawn.length ? `unknown spawn targets: ${list(badSpawn)}` : 'every spawn target exists'),
-    managers.length ? check('spawnable-covers-reports', share(uncovered.length, managers.length), uncovered.length ? `spawnable misses direct reports: ${list(uncovered.map((m) => m.name))}` : 'every manager can spawn its direct reports') : na('spawnable-covers-reports', 'no managers'),
-    managers.length ? check('manager-can-spawn', share(noSpawnFlag.length, managers.length), noSpawnFlag.length ? `canSpawn false on managers: ${list(noSpawnFlag.map((m) => m.name))}` : 'every manager has canSpawn') : na('manager-can-spawn', 'no managers'),
-    check('leaf-no-spawn', share(leafBad.length, leaves.length), leafBad.length ? `leaves that can spawn: ${list(leafBad.map((l) => l.name))}` : 'leaves cannot spawn'),
-    check('no-cycles', share(unreachable.length, n), unreachable.length ? `roles that do not reach the root (loop or missing manager): ${list(unreachable.map((d) => d.name))}` : 'every role reaches the root')
+    check('reportsTo-exists', share(badMgr.length, n), badMgr.length ? `unknown manager: ${list(badMgr.map((x) => `${x.d.name}->${x.mgr}`))}` : 'every manager exists'),
+    check('spawnable-exist', share(badSpawn.length, Math.max(1, nodes.reduce((c, x) => c + x.spawn.length, 0))), badSpawn.length ? `unknown spawn targets: ${list(badSpawn)}` : 'every spawn target exists'),
+    managers.length ? check('spawnable-covers-reports', share(uncovered.length, managers.length), uncovered.length ? `spawnable misses direct reports: ${list(uncovered.map((m) => m.d.name))}` : 'every manager can spawn its direct reports') : na('spawnable-covers-reports', 'no managers'),
+    managers.length ? check('manager-can-spawn', share(noSpawnFlag.length, managers.length), noSpawnFlag.length ? `canSpawn false on managers: ${list(noSpawnFlag.map((m) => m.d.name))}` : 'every manager has canSpawn') : na('manager-can-spawn', 'no managers'),
+    check('leaf-no-spawn', share(leafBad.length, leaves.length), leafBad.length ? `leaves that can spawn: ${list(leafBad.map((l) => l.d.name))}` : 'leaves cannot spawn'),
+    check('no-cycles', share(unreachable.length, n), unreachable.length ? `roles that do not reach the root (loop or missing manager): ${list(unreachable.map((x) => x.d.name))}` : 'every role reaches the root'),
+    wiring.normalized
+      ? check('references-resolve', share(dropped.length, Math.max(1, refsTotal)), dropped.length ? `the tool resolves references by role name only and dropped: ${list(dropped)}` : 'every reportsTo and spawnable reference names a role', 0.5)
+      : na('references-resolve', 'no normalized roles recorded; the checks above read the drafts')
   ])
 
   // 3. right-sizing
@@ -183,7 +214,7 @@ export function scoreChart(session, scenario) {
   const dist = n < min ? min - n : n > max ? n - max : 0
   const mid = Math.max(2, Math.ceil((min + max) / 2))
   const maxDepth = e.maxDepth ?? 99
-  const hasMiddle = drafts.some((d) => hasMgr(d) && (children.get(norm(d.name)) ?? []).length > 0)
+  const hasMiddle = nodes.some((x) => x.mgr !== '' && kids(x).length > 0)
   const rightSizing = dimension('right-sizing', W['right-sizing'], [
     check('role-count', dist === 0 ? 1 : 1 - dist / mid, dist === 0 ? `${n} roles (expected ${min}-${max})` : `${n} roles, expected ${min}-${max}`),
     check('depth', shape.depth <= maxDepth ? 1 : 1 - 0.5 * (shape.depth - maxDepth), `${shape.depth} level(s) below the root (at most ${maxDepth})`),
@@ -217,7 +248,7 @@ export function scoreChart(session, scenario) {
 
   // 6. tiering
   const tier = (d) => effectiveTier(d, normalized)
-  const root = roots[0] ?? drafts[0]
+  const root = rootNode?.d
   const rootTier = tier(root)
   const rootCredit = rootTier === 'deep' ? 1 : rootTier === 'top' ? (e.allowTop ? 1 : 0) : rootTier === 'inherit' ? 0.5 : 0
   const topRoles = drafts.filter((d) => tier(d) === 'top')
@@ -242,7 +273,7 @@ export function scoreChart(session, scenario) {
   const writers = drafts.filter((d) => d !== root && hasWrite(d))
   const noStay = writers.filter((d) => !STAY_IN_BRIEF.test(d.prompt ?? ''))
   const noReport = writers.filter((d) => !REPORT_FILES.test(d.prompt ?? ''))
-  const rootHasReports = (children.get(norm(root?.name)) ?? []).length > 0
+  const rootHasReports = (children.get(rootNode?.key) ?? []).length > 0
   const delegateAll = rootHasReports && scenario.kind !== 'engagement' ? DELEGATE_ALL.test(root.prompt ?? '') : false
   const promptQuality = dimension('prompt-quality', W['prompt-quality'], [
     check('prompt-length', share(badLen.length, n), badLen.length ? `outside 60-160 words: ${list(badLen.map((d) => `${d.name} (${words(d.prompt)})`))}` : 'every prompt is 60-160 words'),
