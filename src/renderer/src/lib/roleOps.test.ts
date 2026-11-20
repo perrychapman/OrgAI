@@ -9,7 +9,10 @@ import {
   restoreRole,
   setReportsTo,
   renamePatch,
+  renameSnapshot,
+  reservedSlugs,
   settleRename,
+  SLUG_EMPTY_TEXT,
   SLUG_TAKEN_TEXT,
   slugFieldEdit,
   slugPatch,
@@ -249,6 +252,46 @@ describe('renamePatch', () => {
       // Its own slug is never "taken".
       expect(slugFieldEdit(project, start, 'builder')).toEqual({ patch: { slug: 'builder', mcpServers: ['mine'] } })
     })
+  })
+
+  describe('slugs a server still names (security recheck Medium)', () => {
+    // `gone` was removed (Undo on screen) or named by team files awaiting approval: no role holds it, a server still does.
+    const project = { mcpServers: [srv('gone-db', ['gone']), srv('mine', ['builder'])], roles: [builder] }
+    const start = { id: builder.id, slug: builder.slug, mcpServers: builder.mcpServers }
+
+    it('reservedSlugs lists explicit server slugs except the starting one', () => {
+      expect([...reservedSlugs(project, 'builder')]).toEqual(['gone'])
+      expect(reservedSlugs({ mcpServers: [srv('all')] }, 'x').size).toBe(0)
+    })
+
+    it('a rename onto a reserved slug is suffixed and gains no server', () => {
+      const after = typeLetters(project, builder, 'Gone')
+      expect(after.slug).toBe('gone-2')
+      expect(after.mcpServers).toEqual(['mine'])
+      expect(serverGranted(project.mcpServers[0], after)).toBe(false)
+    })
+
+    it('a Slug field edit onto a reserved slug is refused', () => {
+      expect(slugFieldEdit(project, start, 'gone')).toEqual({ error: SLUG_TAKEN_TEXT })
+      // Its own starting slug stays free even though a server names it.
+      expect('patch' in slugFieldEdit(project, start, 'builder')).toBe(true)
+    })
+
+    it('a re-snapshot of the same role keeps the starting slug; another role or project takes its own', () => {
+      const open = { ...start, projectId: 'p1' }
+      const mid = { ...builder, slug: 'gon', mcpServers: ['mine'] }
+      expect(renameSnapshot(open, mid, 'p1')).toEqual({ id: builder.id, projectId: 'p1', slug: 'builder', mcpServers: ['mine'] })
+      expect(renameSnapshot(open, mid, 'p2').slug).toBe('gon')
+      expect(renameSnapshot(null, mid, 'p1').slug).toBe('gon')
+      expect(renameSnapshot(open, { ...mid, id: 'other' }, 'p1').slug).toBe('gon')
+    })
+  })
+
+  it('a Slug field edit with no letter or number is refused (Low)', () => {
+    const start = { id: builder.id, slug: builder.slug, mcpServers: builder.mcpServers }
+    for (const v of ['', '   ', '---', '!!@#']) expect(slugFieldEdit({ roles: [builder] }, start, v)).toEqual({ error: SLUG_EMPTY_TEXT })
+    expect(SLUG_EMPTY_TEXT).toBe('An ID needs at least one letter or number.')
+    expect(slugFieldEdit({ roles: [builder] }, start, '-a-')).toEqual({ patch: { slug: 'a' } })
   })
 
   it('a double rename (two edits) does not duplicate grants', () => {

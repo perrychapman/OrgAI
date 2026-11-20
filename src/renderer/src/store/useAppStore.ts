@@ -605,7 +605,20 @@ function debouncedSave(project: Project): void {
     project.id,
     setTimeout(() => {
       saveTimers.delete(project.id)
-      void useAppStore.getState().trackSave(() => window.orgai.projects.save(project)).catch(() => undefined)
+      void useAppStore
+        .getState()
+        .trackSave(() => window.orgai.projects.save(project))
+        .then((saved) => {
+          // Main may have moved a renamed role's old slug to an id grant on save: take only the server list from its
+          // answer. The roles stay the store's, which may hold a newer unsaved edit.
+          if (!saved || saved.id !== project.id) return
+          const cur = useAppStore.getState().projects.find((p) => p.id === saved.id)
+          if (!cur || JSON.stringify(cur.mcpServers ?? null) === JSON.stringify(saved.mcpServers ?? null)) return
+          useAppStore.setState((s) => ({
+            projects: s.projects.map((p) => (p.id === saved.id ? { ...p, mcpServers: saved.mcpServers } : p))
+          }))
+        })
+        .catch(() => undefined)
     }, 350)
   )
 }

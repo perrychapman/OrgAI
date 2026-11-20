@@ -21,6 +21,7 @@ import {
   renamePatch,
   setReportsTo,
   settleRename,
+  renameSnapshot,
   slugFieldEdit,
   withRequiredReport,
   withSpawnableToggled,
@@ -97,10 +98,12 @@ export default function RoleInspector({ project, role, notice, onNotice, onSettl
    */
   const beginRename = (): RenameStart => {
     const open = renameStart.current
+    // Security recheck (Medium): a re-snapshot of the same role and project keeps the slug the edit started from, so an
+    // in-between slug never becomes the "own" slug that reservedSlugs exempts.
     if (open && (open.id !== role.id || open.projectId !== project.id || !sameIds(open.wrote, role.mcpServers))) endRename.current()
     if (!renameStart.current) {
-      const mcpServers = role.mcpServers ? [...role.mcpServers] : undefined
-      renameStart.current = { id: role.id, projectId: project.id, slug: role.slug, mcpServers, wrote: mcpServers }
+      const start = renameSnapshot(open ? { ...open } : null, role, project.id)
+      renameStart.current = { ...start, wrote: start.mcpServers }
     }
     return renameStart.current
   }
