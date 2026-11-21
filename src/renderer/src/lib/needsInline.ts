@@ -357,6 +357,15 @@ export function newDecisionsText(fresh: readonly { project: string; label: strin
 }
 
 /**
+ * The count beside the Needs you heading: decisions first, then the runs that hold them ("3 decisions · 1 run"). A
+ * decision count never counts runs; with no run behind the decisions (team files) only the decisions are said.
+ */
+export function needsCountText(decisions: number, runs: number): string {
+  const d = `${decisions} ${decisions === 1 ? 'decision' : 'decisions'}`
+  return runs > 0 ? `${d} · ${runs} ${runs === 1 ? 'run' : 'runs'}` : d
+}
+
+/**
  * Recently ended, L5: a run the user ended (End session) in this window's lifetime is left out, the user just did it.
  * `timeOrigin` is `performance.timeOrigin`.
  */

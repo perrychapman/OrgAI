@@ -154,8 +154,11 @@
   font-size: var(--text-caption);
   color: var(--danger-text, var(--danger));
 }
-/* Narrow rows stack the buttons under the ask. */
-@container needs-row (max-width: 360px) {
+/* Narrow rows stack the buttons under the ask (the list is the container: a row cannot query itself). */
+.dash-needs-list {
+  container: needs-list / inline-size;
+}
+@container needs-list (max-width: 480px) {
   .dash-needs-row[data-has-action='true'] {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -166,184 +169,46 @@
   }
 }
 
-/* ---------- Attention tiles (board pass) ----------
-   Waiting on you is a grid of tiles, one per run that needs the person (components/dashboard/AttentionTile.tsx): a header
-   (project badge, run title, how long it waited), a body (the run's NeedsRow rows, or a two-line summary of its last
-   message) and a quick link. A 3 px band in the project's hue sits on the left; decision tiles carry a soft warning tint
-   (the attention colour stays theirs), reply tiles a calmer accent tint. Tokens only. Run text is clipped by CSS and
-   rendered as text; the full text is the title. Motion: a tile that arrives after the page settled gets `.motion-enter`,
-   one the user answered leaves with `.leave-collapse` (both from the component); nothing here loops. */
-.dash-section[data-testid='dash-needs-you'] > .dash-attn-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
-  gap: var(--space-3);
-  /* Tiles take their own height (no stretch to the tallest in the row). */
-  align-items: start;
-  /* A leaving tile folds in a grid cell: there is no list gap to fold away with it. */
-  --leave-gap: 0px;
-}
-@container dash (max-width: 520px) {
-  .dash-section[data-testid='dash-needs-you'] > .dash-attn-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-.dash-attn-tile {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-  overflow: clip;
-  padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 3px);
-  background: var(--surface-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
-.dash-attn-tile[data-kind='decision'],
-.dash-attn-tile[data-kind='team'] {
-  background: color-mix(in oklab, var(--warning) 7%, var(--surface-2));
-  border-color: var(--warning-border);
-}
-.dash-attn-tile[data-kind='reply'] {
-  background: color-mix(in oklab, var(--accent) 5%, var(--surface-2));
-}
-/* The identity band: the project's hue, neutral for the assistants. Decoration; the project's name is in text. */
-.dash-attn-tile::before {
-  content: '';
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: 0;
-  width: 3px;
-  background: var(--dash-hue, var(--border-strong));
-}
-.dash-attn-tile[data-hue='0']::before {
-  background: var(--border-strong);
-}
-.dash-attn-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.dash-attn-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-body);
-  line-height: var(--text-body-lh);
-  font-weight: var(--weight-semibold);
-  color: var(--text-primary);
-}
-.dash-attn-waited {
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-}
-.dash-attn-place {
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
-}
-/* The run's last message, plain text, two lines at most; the full text is the title. */
-.dash-attn-summary {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  margin: 0;
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
-  color: var(--text-primary);
-}
-.dash-attn-summary[data-empty] {
-  color: var(--text-secondary);
-}
-.dash-attn-items {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  --leave-gap: var(--space-2);
-}
-/* A row inside a tile is flat: the tile is the one surface (no inner border, background or radius, tighter padding).
-   Only box styling changes here; no text is hidden, clipped or reordered. */
-.dash-attn-tile .dash-needs-row,
-.dash-attn-tile .dash-needs-row:hover {
-  background: transparent;
+/* ---------- Needs you (docs/design/dashboard-usage-redesign/project/components/NeedsYou) ----------
+   A fixed region drawn only while a decision is open (AttentionColumn.tsx). The one amber surface of the page: each row is
+   a --warning-soft fill with a --warning-border edge, and the count beside the heading is --warning-text. The section
+   itself is not boxed (a heading and its rows). Rows keep the inline answers of NeedsInline.tsx; a row that arrives
+   rises (.motion-enter) and rings once (.motion-ring, amber here), the count pings (data-ping); rows on screen never move
+   for it. Nothing loops. Tokens only. */
+.dash-section.dash-needs {
+  background: none;
   border: 0;
   border-radius: 0;
   box-shadow: none;
+  padding: 0;
 }
-.dash-attn-tile .dash-needs-row .dash-needs-main {
-  padding-inline: 0;
+.dash-needs .dash-section-head {
+  margin-bottom: var(--space-2);
 }
-.dash-attn-tile .dash-needs-row .dash-needs-actions {
-  padding-inline-end: 0;
+.dash-needs .dash-count {
+  font-weight: var(--weight-semibold);
 }
-.dash-attn-tile .dash-attn-items {
-  gap: var(--space-1);
+.dash-needs-list {
+  gap: var(--space-2);
 }
-/* In a narrow tile the answer buttons go under the ask (the row is its own container, so its own rule cannot see its width;
-   the tile is the container here). Nothing is hidden or reworded: only where the buttons sit. */
-.dash-attn-tile {
-  container: attn-tile / inline-size;
-}
-@container attn-tile (max-width: 440px) {
-  .dash-needs-row[data-has-action='true'] {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .dash-needs-row .dash-needs-actions {
-    justify-content: flex-start;
-    padding: 0 var(--space-3) var(--space-2);
-    max-width: none;
-  }
-}
-.dash-attn-foot {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-1);
-  margin-top: auto;
-}
-.dash-attn-reply-count {
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-}
-
-/* All clear: a composed card in the lead column, never a blank. */
-.dash-needs-clear {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  background: var(--surface-1);
-  border: 1px solid var(--border-subtle);
+.dash-row.dash-needs-row {
   border-radius: var(--radius-lg);
-  box-shadow: var(--elev-1);
+  min-height: 52px;
 }
-.dash-needs-clear > p {
-  margin: 0;
-  font-size: var(--text-body);
-  line-height: var(--text-body-lh);
-  color: var(--text-secondary);
+.dash-needs-row.motion-ring::after {
+  border-color: var(--warning);
+  border-radius: inherit;
 }
-.dash-section-icon[data-tone='success'] {
-  background: var(--success-soft);
-  color: var(--success-text);
+/* A sent answer locks the row: the buttons keep focus and say so (aria-disabled), they just do nothing until the result. */
+.dash-needs-actions .btn[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: default;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-needs-row.motion-ring::after {
+    display: none;
+  }
+}
+:root[data-reduce-motion='on'] .dash-needs-row.motion-ring::after {
+  display: none;
 }

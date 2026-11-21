@@ -3,6 +3,7 @@ import { shellSegments } from './decisionTitle'
 import {
   commandLines,
   commandSteps,
+  needsCountText,
   inlineRefusal,
   ALLOW_ONCE,
   DENY,
@@ -237,6 +238,12 @@ describe('Recently ended and Paused', () => {
       { run: { endedBy: 'app' as const, endedAt: 2000 } }
     ]
     expect(hideUserEnded(items, 1000)).toEqual([items[1], items[2], items[3]])
+  })
+  it('counts decisions first and the runs holding them', () => {
+    expect(needsCountText(3, 1)).toBe('3 decisions · 1 run')
+    expect(needsCountText(1, 1)).toBe('1 decision · 1 run')
+    expect(needsCountText(2, 2)).toBe('2 decisions · 2 runs')
+    expect(needsCountText(1, 0)).toBe('1 decision')
   })
   it('words the paused caption', () => {
     expect(pausedCaption({ autoResume: false })).toBe('waits for you to continue')

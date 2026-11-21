@@ -6,6 +6,13 @@
 .dash-now {
   container: band / inline-size;
   gap: var(--space-3);
+  border-radius: var(--radius-xl);
+}
+/* Pause motion (the page root carries data-motion-paused, also under reduced motion): the working marks keep their static
+   halo and stop breathing. At most BAND_BREATHING_MAX (12) marks breathe on the page otherwise. */
+.dash-page[data-motion-paused] .dash-mark[data-state='working'][data-breathe]::after {
+  animation: none;
+  display: none;
 }
 .dash-now-counts {
   margin: 0 0 0 auto;
@@ -237,44 +244,83 @@
   font-size: var(--text-caption);
   color: var(--text-secondary);
 }
-.dash-plan-meter {
-  display: inline-flex;
+/* The plan bar (RightNow README): one segment per step, state-done when done, a partial state-working fill for the current
+   step (state-waiting while the plan is blocked), surface-3 otherwise; the current step is named beside it. The fill is a
+   transform on a pseudo-element, so a step that completes grows to full over --dur-slow without moving anything. */
+.dash-plan {
+  display: flex;
+  flex: 1 1 100%;
   align-items: center;
-  gap: var(--space-2);
-  flex: 1 1 140px;
+  gap: var(--space-3);
   min-width: 0;
-  max-width: 260px;
 }
-.dash-plan-track {
-  flex: 1 1 auto;
-  min-width: 48px;
-  height: 6px;
-  box-sizing: border-box;
-  border: 1px solid var(--border-default);
+.dash-plan-bar {
+  display: flex;
+  flex: 0 1 240px;
+  gap: var(--space-1);
+  min-width: 96px;
+}
+.dash-plan-bar > i {
+  position: relative;
+  flex: 1 1 0;
+  height: 4px;
   border-radius: var(--radius-full);
   background: var(--surface-3);
   overflow: hidden;
 }
-.dash-plan-track > i {
-  display: block;
-  height: 100%;
-  background: var(--accent);
+.dash-plan-bar > i::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--state-working);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur-slow) var(--ease-out);
 }
-.dash-plan-meter[data-blocked='true'] .dash-plan-track > i {
+.dash-plan-bar > i[data-s='done']::after {
+  background: var(--state-done);
+  transform: scaleX(1);
+}
+.dash-plan-bar > i[data-s='now']::after {
+  transform: scaleX(0.12);
+}
+.dash-plan-bar > i[data-s='now'][data-running]::after {
+  transform: scaleX(0.55);
+}
+.dash-plan[data-blocked='true'] .dash-plan-bar > i[data-s='now']::after {
   background: var(--state-waiting);
 }
 .dash-plan-text {
-  flex: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   color: var(--text-secondary);
-  white-space: nowrap;
+}
+.dash-plan-step {
+  color: var(--text-primary);
 }
 @media (forced-colors: active) {
-  .dash-plan-track > i {
+  .dash-plan-bar > i {
     forced-color-adjust: none;
+    border: 1px solid CanvasText;
+  }
+  .dash-plan-bar > i[data-s='done']::after,
+  .dash-plan-bar > i[data-s='now']::after {
     background: Highlight;
   }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-plan-bar > i::after {
+    transition: none;
+  }
+}
+:root[data-reduce-motion='on'] .dash-plan-bar > i::after {
+  transition: none;
 }
 
 /* ---- Agent rows (6.4), reporting lines (3.2) ---- */
@@ -287,7 +333,7 @@
   box-sizing: border-box;
   position: relative;
   display: grid;
-  grid-template-columns: calc(var(--depth, 1) * 16px) 12px max-content max-content minmax(0, 1fr) max-content;
+  grid-template-columns: calc(var(--depth, 1) * var(--space-4)) 12px max-content max-content minmax(0, 1fr) max-content;
   align-items: center;
   width: 100%;
   height: 32px;
@@ -311,7 +357,7 @@
   background-repeat: no-repeat;
   background-image: linear-gradient(var(--dash-line), var(--dash-line)), linear-gradient(var(--dash-line), var(--dash-line)), linear-gradient(var(--dash-line), var(--dash-line));
   background-position:
-    calc((var(--depth, 1) - 1) * 16px + 5px) 0,
+    calc((var(--depth, 1) - 1) * var(--space-4) + 5px) 0,
     5px 0,
     21px 0;
   background-size:
@@ -335,7 +381,7 @@
   content: '';
   position: absolute;
   top: calc(50% - 1px);
-  left: calc((var(--depth, 1) - 1) * 16px + 5px);
+  left: calc((var(--depth, 1) - 1) * var(--space-4) + 5px);
   width: 11px;
   height: 2px;
   background: var(--dash-line);

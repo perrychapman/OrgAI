@@ -1,4 +1,4 @@
-import type { FocusEventHandler, ReactElement, ReactNode, Ref } from 'react'
+import type { CSSProperties, FocusEventHandler, ReactElement, ReactNode, Ref } from 'react'
 import { createContext, useContext, useLayoutEffect } from 'react'
 import { ChevronDown, ChevronUp, type LucideIcon } from 'lucide-react'
 import { Button } from '../ui/Button'
@@ -32,6 +32,8 @@ export interface DashboardCtx {
   /** Each section says whether it has something to show, so the page can pair the visible ones (`placeSections`). */
   reportEmpty: (id: DashSectionId, empty: boolean) => void
   spanOf: (id: DashSectionId) => 'half' | 'full'
+  /** The section that sits in the work area's left column under Needs you (Your week, only while it is the first visible arrangeable section); null otherwise. */
+  lead: DashSectionId | null
   /** The page is staging its arrival (lib/usePageArrival): sections draw (sparklines wipe, map columns fade, figures count up). */
   arriving: boolean
   /** Pause motion (layout.motionPaused) or reduced motion: loops show their static end state. */
@@ -50,6 +52,7 @@ export const DashboardContext = createContext<DashboardCtx>({
   setSectionHidden: noop,
   reportEmpty: noop,
   spanOf: () => 'full',
+  lead: null,
   arriving: false,
   still: false
 })
@@ -93,7 +96,7 @@ export const sectionHeadingId = (id: DashSectionId | FixedSectionId): string => 
  * the control row, and the `section` with its h2. Outside customise mode a hidden or empty section renders nothing.
  */
 export function DashSection({ id, testId, empty, icon, count, headExtra, className, sectionRef, headingRef, sectionData, onFocus, onBlur, children }: DashSectionProps): ReactElement | null {
-  const { layout, customising, reportEmpty, spanOf, move, setSectionHidden } = useDashboard()
+  const { layout, customising, reportEmpty, spanOf, lead, arriving, move, setSectionHidden } = useDashboard()
   const fixed = id === 'now'
   const hidden = id !== 'now' && layout.hidden.includes(id)
   useLayoutEffect(() => {
@@ -121,7 +124,15 @@ export function DashSection({ id, testId, empty, icon, count, headExtra, classNa
   const first = index <= 0
   const last = index >= layout.order.length - 1
   return (
-    <div className="dash-slot" data-testid="dash-section" data-section={id} data-state={state} data-span={customising || id === 'now' ? 'full' : spanOf(id)}>
+    <div
+      className={arriving && !hidden && !empty ? 'dash-slot motion-arrive-band' : 'dash-slot'}
+      style={arriving ? ({ '--i': id === 'now' ? 1 : Math.max(0, index) + 2 } as CSSProperties) : undefined}
+      data-testid="dash-section"
+      data-section={id}
+      data-state={state}
+      data-span={customising || id === 'now' ? 'full' : spanOf(id)}
+      data-lead={!customising && lead === id ? '' : undefined}
+    >
       {arrangeable && (
         <div className="dash-section-controls motion-fade" role="group" aria-label={hidden ? `Arrange ${title}, hidden` : empty ? `Arrange ${title}, nothing to show right now` : `Arrange ${title}`} data-testid="dash-section-controls" data-section={id}>
           <span className="dash-section-controls-title" aria-hidden="true">

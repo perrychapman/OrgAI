@@ -1,1 +1,231 @@
-/* dashboard-briefing: dashboard-usage-redesign (see docs/design/dashboard-usage-redesign/implementation-notes.md). */
+/* ---------- The Briefing (docs/design/dashboard-usage-redesign/project/components/Briefing) ----------
+   The page's hero card (`.hero-card`, instruments.css: surface-1, aura). Left: the greeting (the page's one large line),
+   the status sentence, what changed since the last visit, the quick actions and the one set-up line. Right (from 880 px of the
+   `dash` container; below it under the text): Team pulse with the Pause motion toggle, and the plan gauges. Tokens only;
+   both themes come from the tokens. Components: components/dashboard/Briefing.tsx, NameControl.tsx, SetupGaps.tsx. */
+.dash-briefing {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4) var(--space-8);
+  align-items: center;
+}
+.dash-brief-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.dash-brief-side {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-4) var(--space-6);
+  min-width: 0;
+}
+@container dash (min-width: 880px) {
+  .dash-briefing[data-side] {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  }
+  .dash-brief-side {
+    flex-direction: column;
+    justify-content: center;
+    align-items: stretch;
+  }
+}
+
+/* The greeting row: the greeting, then the name control (pencil) beside it. */
+.dash-greeting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-width: 0;
+}
+.dash-greeting-row > .popover-wrap {
+  flex: none;
+}
+.dash-salutation {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--text-display-lg);
+  line-height: var(--text-display-lg-lh);
+  letter-spacing: var(--text-display-lg-ls);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+.dash-name-add-row {
+  display: flex;
+  align-items: center;
+}
+
+/* The status sentence: visible text (the baseline's finding 1), one of the page's two readable lines. The part that
+   carries the decision count is the page's amber text. */
+.dash-brief-status {
+  margin: 0;
+  max-width: 64ch;
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
+  color: var(--text-primary);
+  text-wrap: pretty;
+}
+.dash-brief-attn {
+  font-weight: var(--weight-semibold);
+  color: var(--warning-text);
+}
+
+/* What changed since the last visit: figures in tabular numerals, counted up on arrival (useCountUp). */
+.dash-since {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.dash-since-visual {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--space-2);
+}
+.dash-since-part:not(:last-child)::after {
+  content: ',';
+}
+.dash-since-figure {
+  font-weight: var(--weight-regular);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* Quick actions: Continue (primary) first, Customise last and quiet. */
+.dash-brief-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.dash-continue-name {
+  display: inline-block;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-brief-actions .btn.primary {
+  gap: var(--space-2);
+}
+
+/* The one set-up line and its popover. */
+.dash-setup-line {
+  margin-inline-start: calc(var(--space-2) * -1);
+}
+.dash-setup-panel {
+  width: min(28rem, calc(100vw - var(--space-6)));
+  max-height: min(24rem, 60vh);
+  overflow: auto;
+}
+.dash-setup-rows {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1);
+  display: flex;
+  flex-direction: column;
+}
+.dash-setup-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+}
+.dash-setup-row + .dash-setup-row {
+  border-top: 1px solid var(--border-default);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.dash-setup-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 2px;
+}
+.dash-setup-line-text {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.dash-setup-caption {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.dash-setup-row .btn {
+  flex: none;
+}
+
+/* Team pulse (ui-dash-pulse) with the Pause motion toggle under its caption. */
+.dash-pulse-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.dash-pause-toggle {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-sm, 28px);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  font: inherit;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  /* The state lives in the words and the weight, not in colour or motion alone. */
+  font-weight: var(--pause-weight, var(--weight-regular));
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.dash-pause-toggle[aria-pressed='true'] {
+  color: var(--text-primary);
+  background: var(--surface-2);
+}
+.dash-pause-toggle:hover {
+  background: var(--surface-2);
+}
+.dash-pause-toggle[aria-pressed='true']:hover {
+  background: var(--surface-3);
+}
+.dash-pause-toggle:active {
+  transform: scale(0.98);
+  transition: transform var(--dur-instant) var(--ease-out);
+}
+.dash-pause-toggle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Plan gauges in the card. */
+.dash-brief-gauges {
+  min-width: 0;
+}
+@container dash (min-width: 880px) {
+  .dash-brief-gauges {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+}
+
+/* The quiet Customise button keeps its place; its label folds away under 560 px (dashboard.css). */
+.dash-brief-actions .dash-customise {
+  margin-inline-start: var(--space-1);
+}

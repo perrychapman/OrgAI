@@ -226,9 +226,11 @@ export function NeedsRow({
   const questionId = item.kind === 'question' ? item.key : null
   const question = item.kind === 'question' ? item.run.questions.find((q) => q.id === item.key) : undefined
 
+  // A row that arrives while the page is open rises (motion-enter) and rings once (motion-ring).
+  const rowProps = motion ? rowMotionProps(motion, motion.arrived ? 'dash-row dash-needs-row motion-ring' : 'dash-row dash-needs-row') : { className: 'dash-row dash-needs-row' }
   return (
     <li
-      {...(motion ? rowMotionProps(motion, 'dash-row dash-needs-row') : { className: 'dash-row dash-needs-row' })}
+      {...rowProps}
       data-testid="dash-needs-row"
       data-kind={item.kind}
       data-run={runId ?? ''}
