@@ -80,15 +80,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Runs worth a look: the one-line "Why", the kind chip and the status dot beside the name. */
-.usage-why-clip {
-  display: inline-block;
-  max-inline-size: 24rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
+/* Runs worth a look: the kind chip and the status dot beside the name. */
 .usage-run-kind {
   margin-inline-start: var(--space-2);
 }

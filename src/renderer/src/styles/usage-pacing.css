@@ -1,1 +1,138 @@
-/* usage-pacing: dashboard-usage-redesign (see docs/design/dashboard-usage-redesign/implementation-notes.md). */
+/*
+ * Usage Pacing header (dashboard-usage-redesign Pacing): the page's one hero card (.hero-card, instruments.css), the
+ * period's spend as the page's one --text-figure, the pace line, the burn dial and the plan gauges. Sized from the
+ * `usage` container, never the window. Tokens only; the brand gradient fills the dial (a meter), never text.
+ */
+.hero-card.usage-pacing {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-4) var(--space-6);
+  padding: var(--space-4);
+}
+.usage-pacing-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.usage-pacing-label {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-pacing-figure {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-figure);
+  line-height: var(--text-figure-lh);
+  letter-spacing: var(--text-figure-ls);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.usage-pacing-line {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-4);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+}
+.usage-pacing-pace {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.usage-pacing-projection {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.usage-pacing-gauges {
+  align-self: center;
+}
+
+/* ---------- Burn dial ---------- */
+.usage-dial {
+  margin: 0;
+  display: grid;
+  justify-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.usage-dial-img {
+  position: relative;
+  inline-size: 200px;
+  block-size: 112px;
+}
+.usage-dial-img svg {
+  display: block;
+  overflow: visible;
+}
+.usage-dial-track,
+.usage-dial-fill {
+  fill: none;
+  stroke-width: 12;
+  stroke-linecap: round;
+}
+.usage-dial-track {
+  stroke: var(--surface-3);
+}
+/* The stroke is the gradient (set on the element); the dash pattern is the fill fraction on a pathLength-1 path. */
+.usage-dial-fill {
+  stroke-dasharray: var(--frac, 0) 1;
+}
+.usage-dial-tick {
+  stroke: var(--text-primary);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.usage-dial-text {
+  position: absolute;
+  inset-inline: 0;
+  top: 52px;
+  display: grid;
+  justify-items: center;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+}
+.usage-dial-pct {
+  color: var(--text-primary);
+  font-size: var(--text-stat);
+  line-height: var(--text-stat-lh);
+  letter-spacing: var(--text-stat-ls);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+.usage-dial-caption {
+  max-inline-size: 240px;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  text-align: center;
+}
+
+@container usage (min-width: 600px) {
+  .hero-card.usage-pacing {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: var(--space-6);
+  }
+  /* Without a dial the gauges take the second column; with one they span the row under both. */
+  .usage-pacing-gauges {
+    grid-column: 1 / -1;
+  }
+  .usage-pacing:not(:has(.usage-dial)) .usage-pacing-gauges {
+    grid-column: auto;
+  }
+}
+@container usage (min-width: 1100px) {
+  .hero-card.usage-pacing:has(.usage-dial) {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+  .usage-pacing:has(.usage-dial) .usage-pacing-gauges {
+    grid-column: auto;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

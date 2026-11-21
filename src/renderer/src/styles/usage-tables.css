@@ -175,20 +175,37 @@
   white-space: nowrap;
   vertical-align: bottom;
 }
-/* One line, clipped to the cell (the full sentence is in the row's detail and the title). */
+/* Why a run is listed: every reason, the one that listed it first. Reasons wrap; none is clipped. */
 .usage-why {
-  min-width: 8rem;
-  max-width: 16rem;
+  min-width: 10rem;
   color: var(--text-primary);
+}
+.usage-why-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  white-space: normal;
+}
+.usage-why-list > li + li {
+  color: var(--text-secondary);
+}
+.usage-wasteful-table .usage-run-cell {
+  white-space: normal;
+}
+.usage-wasteful-table .usage-why,
+.usage-wasteful-table thead th:last-child {
+  text-align: start;
+}
+.usage-wasteful-table .usage-run-cell .usage-cell-sub {
+  display: block;
 }
 .usage-status-word {
   margin-inline-start: var(--space-1);
   color: var(--text-secondary);
   font-size: var(--text-caption);
-}
-.usage-why .usage-why-clip {
-  display: block;
-  max-inline-size: 100%;
 }
 .usage-runs-details > summary h2 {
   font-size: var(--text-body);
@@ -258,37 +275,20 @@
 #usage-efficiency {
   container: usage-eff / inline-size;
 }
-/* A compact strip (dashboard rework): four across from 760 px, details clamped to two lines (the full text stays in
-   the accessible description and the definition popover). */
+/* Four measures, each a label, a value and a one-sentence reading: four across from 760 px, two under, one under 520 px.
+   The reading is never clamped: it is the part a person acts on. */
 .usage-eff-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3) var(--space-5);
+  gap: var(--space-4) var(--space-5);
 }
 @container usage-eff (min-width: 760px) {
   .usage-eff-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
-}
-.usage-eff-grid .usage-eff-detail {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  overflow: hidden;
-}
-.usage-timing-details > summary {
-  cursor: pointer;
-  color: var(--text-secondary);
-  font-size: var(--text-small);
-}
-.usage-timing-details > summary:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-  border-radius: var(--radius-xs);
-}
-.usage-timing-details[open] > summary {
-  margin-block-end: var(--space-3);
 }
 @container usage-eff (max-width: 520px) {
   .usage-eff-grid {
@@ -302,32 +302,17 @@
   gap: var(--space-1);
   min-width: 0;
 }
-.usage-eff-name {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-height: 24px;
-}
-.usage-eff-name dt {
+.usage-eff-label {
   color: var(--text-secondary);
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
+  min-height: 24px;
 }
-.usage-eff-item dd {
-  margin: 0;
-}
-.usage-eff-info {
-  color: var(--text-tertiary);
-}
-.usage-eff-pop {
-  max-width: 28rem;
-}
-.usage-eff-def {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
-  color: var(--text-primary);
+.usage-eff-none {
+  color: var(--text-secondary);
+  font-weight: var(--weight-regular);
+  font-size: var(--text-body);
+  line-height: var(--text-title-lh);
 }
 .usage-eff-value {
   all: unset;
@@ -352,64 +337,9 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
-.usage-eff-draw {
-  min-height: 12px;
-}
-.usage-eff-detail {
+.usage-eff-read {
+  margin: 0;
   color: var(--text-secondary);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-}
-.usage-eff-svg {
-  display: block;
-  overflow: visible;
-}
-.usage-eff-track {
-  fill: var(--surface-3);
-}
-.usage-eff-fill {
-  fill: var(--accent);
-}
-.usage-eff-seg-waiting {
-  fill: var(--info);
-}
-.usage-eff-seg-idle {
-  fill: var(--text-tertiary);
-}
-.usage-eff-seg-limit {
-  fill: var(--warning);
-}
-.usage-eff-range,
-.usage-eff-cap,
-.usage-eff-base {
-  stroke: var(--border-default);
-  stroke-width: 1;
-}
-.usage-eff-median {
-  fill: var(--accent);
-}
-.usage-eff-bar {
-  fill: var(--dash-strip-bar);
-}
-.usage-eff-dot-team {
-  fill: var(--accent);
-}
-.usage-eff-dot-ask {
-  fill: var(--info);
-}
-@media (forced-colors: active) {
-  .usage-eff-track {
-    fill: Canvas;
-    stroke: CanvasText;
-  }
-  .usage-eff-fill,
-  .usage-eff-seg-waiting,
-  .usage-eff-seg-idle,
-  .usage-eff-seg-limit,
-  .usage-eff-median,
-  .usage-eff-bar,
-  .usage-eff-dot-team,
-  .usage-eff-dot-ask {
-    fill: CanvasText;
-  }
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
 }

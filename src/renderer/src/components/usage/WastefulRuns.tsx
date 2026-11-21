@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { formatDateTime } from '../../lib/dates'
-import { effectiveWastefulSort, WASTEFUL_MORE, WASTEFUL_SHOWN, WASTEFUL_SORT_LABELS, wastefulRuns } from '../../lib/usageEfficiency'
+import { effectiveWastefulSort, runReasons, WASTEFUL_MORE, WASTEFUL_SHOWN, WASTEFUL_SORT_LABELS, wastefulRuns } from '../../lib/usageEfficiency'
 import { rowCostInput, rowKindWord, rowName, rowStatusWord } from '../../lib/usageRuns'
 import { useAppStore } from '../../store/useAppStore'
 import { CostText } from './RankedBars'
@@ -103,11 +103,10 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                   <th scope="col" className="sticky">
                     Run
                   </th>
-                  <th scope="col">When</th>
                   <th scope="col" className="num">
                     Cost
                   </th>
-                  <th scope="col">Why listed</th>
+                  <th scope="col">Why it is worth a look</th>
                 </tr>
               </thead>
               <tbody>
@@ -139,9 +138,10 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                         </span>
                         <span className="usage-tag usage-run-kind">{rowKindWord(r)}</span>
                         {e.noResult && <span className="usage-tag" data-testid="usage-no-result-tag">No result</span>}
-                        <span className="usage-cell-sub">{r.projectRemoved ? `${r.projectName}. Project removed` : r.projectName}</span>
+                        <span className="usage-cell-sub">
+                          {formatDateTime(r.startedAt)} · {r.projectRemoved ? `${r.projectName}. Project removed` : r.projectName}
+                        </span>
                       </th>
-                      <td className="nowrap">{formatDateTime(r.startedAt)}</td>
                       <td className="num">
                         <CostText value={rowCostInput(r)} />
                         {effective === 'no-result' && nr !== undefined && (
@@ -150,11 +150,17 @@ export default function WastefulRuns({ data, sort, onSort, focusSeq }: WastefulR
                           </span>
                         )}
                       </td>
-                      <td className="usage-why" title={e.why}>
-                        <span className="usage-why-clip">{e.why}</span>
+                      <td className="usage-why" data-testid="usage-why">
+                        <ul className="usage-why-list" aria-label="Reasons">
+                          {runReasons(e, effective).map((reason) => (
+                            <li key={reason.key} data-testid="usage-why-reason" data-reason={reason.key}>
+                              {reason.text}
+                            </li>
+                          ))}
+                        </ul>
                       </td>
                     </tr>
-                    {touched.has(r.runId) && <RunDetailRow id={detailId} colSpan={4} open={isOpen} row={r} why={e.why} />}
+                    {touched.has(r.runId) && <RunDetailRow id={detailId} colSpan={3} open={isOpen} row={r} />}
                     </Fragment>
                   )
                 })}
