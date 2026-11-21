@@ -355,6 +355,18 @@ describe('RunStore usage', () => {
     expect(again.get('ghost')).toBeNull()
   })
 
+  it('round-trips usage.decisions and leaves it absent on an older usage', () => {
+    const usage: RunUsage = { tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }, costUsd: 1, costSource: 'computed', models: [], roles: [], wallMs: 1, turns: 0, toolCalls: 0, retries: 0, agents: 1, agentsWithoutResult: 0, noResultTokens: 0, nudges: 0, waitingMs: 0, limitHoldMs: 0, idleMs: 0, updatedAt: 1 }
+    const store = new RunStore(dataDir)
+    store.upsert(run('with', { usage: { ...usage, decisions: 2 } }))
+    store.upsert(run('zero', { usage: { ...usage, decisions: 0 } }))
+    store.upsert(run('without', { usage }))
+    const again = new RunStore(dataDir)
+    expect(again.get('with')!.usage!.decisions).toBe(2)
+    expect(again.get('zero')!.usage!.decisions).toBe(0)
+    expect(again.get('without')!.usage!.decisions).toBeUndefined()
+  })
+
   it('reports removed runs to onRunsRemoved on prune and removeProject, and survives a throwing hook', () => {
     const s = new RunStore(dataDir)
     const seen: string[][] = []

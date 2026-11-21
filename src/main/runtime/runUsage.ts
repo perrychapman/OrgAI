@@ -99,6 +99,8 @@ export interface RunUsageInputs {
   /** RunPlan.autoContinues of this run. */
   nudges: number
   waitingMs: number
+  /** Decision cards opened so far (RunManager's tally). Missing = RunUsage.decisions stays unset (count unknown). */
+  decisions?: number
   limitHoldMs: number
   idleMs: number
   now: number
@@ -407,6 +409,7 @@ export function computeRunUsage(summary: RunSummary, agents: readonly AgentInsta
     updatedAt: now
   }
   if (cost.costPartial && !useProvider) usage.costPartial = true
+  if (inputs.decisions !== undefined && Number.isFinite(inputs.decisions)) usage.decisions = Math.max(0, Math.floor(inputs.decisions))
   if (noResultParts.length) {
     const nr = mergeCosts(noResultParts)
     usage.noResultCostUsd = nr.costUsd
@@ -965,6 +968,7 @@ function cleanStoredUsage(raw: unknown, fallback: () => RunUsage): RunUsage {
     updatedAt: amount(u.updatedAt)
   }
   if (runCost.costPartial) out.costPartial = true
+  if (typeof u.decisions === 'number') out.decisions = count(u.decisions)
   if (out.agentsWithoutResult > 0 && 'noResultCostUsd' in u) {
     const nr = cleanCost(u.noResultCostUsd, u.noResultCostUsd === null ? 'unknown' : 'computed', u.noResultCostPartial, out.noResultTokens)
     out.noResultCostUsd = nr.costUsd

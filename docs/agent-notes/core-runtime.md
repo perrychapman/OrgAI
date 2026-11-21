@@ -279,6 +279,7 @@ Application menu, run end and decision cards, settings, run titles, projects, us
   from the builtin table with no provider cost, and the default script's `mock-report-2` is unpriced and returns
   nothing. Verified by unit tests and the mock only; no live run has checked the builtin ids or which model id the CLI
   or a proxy reports.
+  - `RunUsage.decisions?` (2026-11-21): decision cards opened in the run (every `*.request` card event RunManager's broadcast wrapper sees, the same events that open `waitingMs`; permission, question, proposal, rules, merge, MCP install). Optional: absent on runs recorded before it, never invented as 0 (setup-time recompute passes no count). Counted per live run, so a continuation successor counts from 0. No CSV or CLI change. Checked by `runUsage.test.ts` and a `runs.test.ts` save/load round trip; not checked end to end through a live run.
   - `RunUsage.efficiency` (2026-11-09, `RunEfficiency` in types.ts; orchestration-efficiency.md 4.2): derived by
     `computeRunEfficiency` (runUsage.ts) from the root's direct reports' `startedAt` / `endedAt`, nothing tracked at
     runtime: reports, firstSpawnMs, reportSumMs, reportBusyMs (union), maxParallel, tailMs (after the first wave), afterLastReportMs (run end minus the last report's end) and reportStartMs
