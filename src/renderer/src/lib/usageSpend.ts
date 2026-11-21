@@ -116,18 +116,7 @@ export function previousTipText(f: OverlayFigure, metric: Metric): string {
   return f.state === 'unknown' ? 'cost unknown' : overlayCostText(f)
 }
 
-// ---------- crosshair and tooltip geometry ----------
-
-/**
- * The bucket column under x (plot coordinates, 0 at the svg's left edge), or null when x is outside the columns or there
- * are none. The whole column is the hit area, not the thin bar.
- */
-export function nearestBucket(x: number, gutter: number, slot: number, count: number): number | null {
-  if (count <= 0 || !(slot > 0)) return null
-  const rel = x - gutter
-  if (rel < 0 || rel > slot * count) return null
-  return Math.min(count - 1, Math.floor(rel / slot))
-}
+// ---------- tooltip geometry (the crosshair's index geometry is in usageAreas.ts) ----------
 
 export interface TipPlacement {
   side: 'right' | 'left'
@@ -150,66 +139,11 @@ export function tooltipPlacement(i: { cx: number; half: number; width: number; v
   return { side, left: Math.max(i.viewLeft, Math.min(i.viewRight - i.width, side === 'right' ? right : left)) }
 }
 
-// ---------- motion decisions ----------
-
-export type ChartMotion = 'none' | 'morph' | 'fade'
-/** A morph moves every segment at once; above this many it is skipped (docs/design usage motion plan 3.3). */
-export const MORPH_MAX_SEGMENTS = 120
+// ---------- set comparison ----------
 
 export const sameKeys = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((k, i) => k === b[i])
 
 export const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => a.size === b.size && [...a].every((k) => b.has(k))
-
-/**
- * Which motion a committed change gets. Only a user's change animates (the arrival rule): `viewChanged` is a filter,
- * period or group-by change whose data has arrived (one fade, bars never morph because they cannot be paired);
- * `metricChanged` or `hiddenChanged` over the same buckets morphs the bars; anything else (first paint, a data refresh
- * with the same filters) is none. Reduced motion, or more than MORPH_MAX_SEGMENTS segments, is none.
- */
-export function chartMotion(i: {
-  prevSlots: readonly string[] | null
-  nextSlots: readonly string[]
-  viewChanged: boolean
-  metricChanged: boolean
-  hiddenChanged: boolean
-  segments: number
-  reduced: boolean
-}): ChartMotion {
-  if (i.reduced || i.prevSlots === null) return 'none'
-  if (i.viewChanged) return 'fade'
-  if (!sameKeys(i.prevSlots, i.nextSlots)) return 'none'
-  if (!i.metricChanged && !i.hiddenChanged) return 'none'
-  return i.segments > MORPH_MAX_SEGMENTS ? 'none' : 'morph'
-}
-
-/** A drawn segment's resting geometry in svg px: the y of its bottom edge and its height. */
-export interface SegGeom {
-  bottom: number
-  h: number
-}
-
-export interface MorphFrom {
-  /** translateY in px and scaleY that map the segment's new rect (origin: its bottom edge) onto its old one. */
-  ty: number
-  sy: number
-  /** True when the segment had no old rect: it grows from nothing and fades in. */
-  entering: boolean
-}
-
-/** The start of one segment's morph, or null when it did not move (under half a pixel and 1% of height). */
-export function morphFrom(prev: SegGeom | undefined, next: SegGeom): MorphFrom | null {
-  if (next.h <= 0) return null
-  if (!prev || prev.h <= 0) return { ty: 0, sy: 0, entering: true }
-  const ty = prev.bottom - next.bottom
-  const sy = prev.h / next.h
-  if (Math.abs(ty) < 0.5 && Math.abs(sy - 1) < 0.01) return null
-  return { ty, sy, entering: false }
-}
-
-/** Where a segment visibly is while a morph's transform (ty, sy about its bottom edge) is applied to its geometry. */
-export function visualGeom(g: SegGeom, ty: number, sy: number): SegGeom {
-  return { bottom: g.bottom + ty, h: g.h * sy }
-}
 
 /** The visible stack's figure under the bar-top label: "$9.80", "$4.20+", "12k", "5", or "No price". */
 export function barValueLabel(metric: Metric, segments: readonly Segment[]): string {

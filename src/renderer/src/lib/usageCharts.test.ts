@@ -51,6 +51,19 @@ describe('niceTicks', () => {
     expect(niceTicks(100).ticks).toEqual([0, 25, 50, 75, 100])
     expect(niceTicks(0).max).toBe(1)
   })
+  it('keeps every tick a whole number for counts (runs), never half a run', () => {
+    expect(niceTicks(1, true).ticks).toEqual([0, 1, 2])
+    expect(niceTicks(3, true).ticks).toEqual([0, 1, 2, 3])
+    expect(niceTicks(7, true).ticks).toEqual([0, 2, 4, 6, 8])
+    expect(niceTicks(0, true)).toEqual({ max: 2, ticks: [0, 1, 2] })
+    for (const m of [1, 2, 5, 9, 13, 40, 99, 250, 1234]) {
+      const t = niceTicks(m, true)
+      expect(t.ticks.every(Number.isInteger)).toBe(true)
+      expect(t.max).toBeGreaterThanOrEqual(m)
+      expect(t.ticks.length).toBeGreaterThanOrEqual(3)
+      expect(t.ticks.length).toBeLessThanOrEqual(5)
+    }
+  })
 })
 
 describe('formatTick', () => {

@@ -144,34 +144,78 @@
   outline-offset: -2px;
 }
 
-/* Tab change entry (user only; the classes are applied for a moment after the click): bars draw from the left. */
-@keyframes usage-bar-draw {
-  from {
-    transform: scaleX(0);
-  }
+/* The proportional ribbon that leads the rows: one bar split by share of the known cost, the same colours as the rows,
+   a 1 px --chart-hatch gap between segments. It is a pointer shortcut (aria-hidden); the rows are the accessible path. */
+.uc-ribbon {
+  flex: none;
 }
-.uc-rank[data-enter] .uc-rank-row.motion-enter .uc-rank-bar {
-  transform-origin: left center;
-  animation: usage-bar-draw var(--dur-slow) var(--ease-out) backwards;
-  animation-delay: calc(min(var(--i, 0), 5) * var(--motion-stagger));
+.uc-ribbon-track {
+  display: flex;
+  gap: 1px;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--chart-hatch);
+}
+.uc-ribbon-seg {
+  position: relative;
+  flex-basis: 0;
+  flex-shrink: 0;
+  min-width: 3px;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.uc-ribbon-seg:not([data-other]) {
+  cursor: pointer;
+}
+/* A lower bound (some runs have no price): the end of the segment is hatched, as in the row's own bar. */
+.uc-ribbon-seg[data-partial='true']::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: min(10px, 100%);
+  background: repeating-linear-gradient(135deg, var(--chart-hatch) 0 1.5px, transparent 1.5px 4px);
+}
+/* Pointing at a row or a segment lights its partner and dims the rest of the ribbon. */
+.uc-ribbon[data-hl='on'] .uc-ribbon-seg:not([data-peek='true']) {
+  opacity: 0.35;
+}
+.uc-ribbon-note {
+  margin: calc(var(--space-1) * -1) 0 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.uc-rank-row[data-peek='true'] {
+  background: var(--surface-2);
+}
+.uc-rank-row[data-selected='true'][data-peek='true'] {
+  background: var(--accent-soft);
 }
 
+/* Reduced motion (system preference or Appearance > Reduce motion): the tab underline, row dim, ribbon dim and tab body
+   change at once. The draw classes are not applied at all under reduced motion (RankedBars reads useReducedMotion), and
+   motion.css collapses --dur-draw as well. */
 :root[data-reduce-motion='on'] .usage-where-indicator,
-:root[data-reduce-motion='on'] .usage-where-card .uc-rank-row {
+:root[data-reduce-motion='on'] .usage-where-card .uc-rank-row,
+:root[data-reduce-motion='on'] .uc-ribbon-seg {
   transition: none;
 }
 :root[data-reduce-motion='on'] .uc-rank[data-enter] .uc-rank-row.motion-enter,
-:root[data-reduce-motion='on'] .uc-rank[data-enter] .uc-rank-row.motion-enter .uc-rank-bar,
+:root[data-reduce-motion='on'] .uc-rank .motion-draw-grow,
+:root[data-reduce-motion='on'] .uc-ribbon-track.motion-draw-wipe,
 :root[data-reduce-motion='on'] .usage-where-body.motion-view {
   animation: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .usage-where-indicator,
-  .usage-where-card .uc-rank-row {
+  .usage-where-card .uc-rank-row,
+  .uc-ribbon-seg {
     transition: none;
   }
   .uc-rank[data-enter] .uc-rank-row.motion-enter,
-  .uc-rank[data-enter] .uc-rank-row.motion-enter .uc-rank-bar,
+  .uc-rank .motion-draw-grow,
+  .uc-ribbon-track.motion-draw-wipe,
   .usage-where-body.motion-view {
     animation: none;
   }
