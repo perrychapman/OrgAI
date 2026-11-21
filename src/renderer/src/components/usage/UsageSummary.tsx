@@ -7,15 +7,15 @@ import type { CostCoverage, SummaryItemModel, SummarySignal } from '../../lib/us
 import { KPI_METRIC, deltaChip, deltaVs, pricedChip, sparkDrawable, sparkSignal, type SparkPoint } from '../../lib/usageDashboard'
 import type { Metric } from '../../lib/usageCharts'
 import Sparkline from './Sparkline'
-import { DefinitionTip, tipHandlers } from './DefinedTerm'
+import DefinedTerm, { DefinitionTip, tipHandlers } from './DefinedTerm'
 import { figure, figureAt, figureNumber } from './kpiFigure'
 import { useDrawKey } from './useDrawKey'
 import '../../styles/usage-kpi.css'
 
-/** One bucket's value for the scrub text ("$0.0043", "6.0k", "no price"). */
+/** One bucket's value for the scrub text ("$0.0043", "6.0k", "not priced"). */
 function scrubValue(signal: SummarySignal, p: SparkPoint | undefined): string {
   if (!p) return ''
-  if (p.kind === 'unknown') return 'no price'
+  if (p.kind === 'unknown') return 'not priced'
   if (p.kind === 'empty') return signal === 'runs' ? '0 runs' : 'no runs'
   if (p.value === null) return 'not reported'
   switch (signal) {
@@ -234,10 +234,20 @@ function Tile({
   const { draw, key } = useDrawKey(drawSeq, drawable ? drawable.map((p) => p.value ?? 'x').join(',') : '', arriving)
   const deltaWords = i.delta ?? i.deltaNote ?? ''
 
+  // A tile that is a button carries its definition in the button's description. A static tile (Wall time) has no button of
+  // its own, so its label is the defined term: a native button whose tip is the definition, and the value is plain text
+  // read once beside it.
+  const staticTerm = !m && !!description
   const body = (
     <>
       <span className="usage-kpi-label" data-chip={priced ? 'true' : undefined} data-defined={definition ? 'true' : undefined}>
-        {i.label}
+        {staticTerm ? (
+          <DefinedTerm text={description} align={index >= 2 ? 'end' : 'start'} testId="usage-kpi-term">
+            {i.label}
+          </DefinedTerm>
+        ) : (
+          i.label
+        )}
         {i.signal === 'cost' && modelChip && <span className="usage-summary-model">{modelChip}</span>}
       </span>
       <span className="usage-kpi-row">
@@ -295,19 +305,13 @@ function Tile({
           {body}
         </button>
       ) : (
-        // A static figure that is still a keyboard stop, so its definition is reachable like the other three tiles'.
-        <div
-          className="usage-kpi-main usage-kpi-static"
-          role="group"
-          tabIndex={0}
-          aria-label={`${i.label}, ${final.text}${deltaWords ? `, ${deltaWords}` : ''}`}
-          aria-describedby={description ? descId : undefined}
-          data-testid="usage-kpi-static"
-        >
+        // A static figure: no role, no label of its own (a group's name would read the value a second time). Its
+        // definition is reachable through the label button.
+        <div className="usage-kpi-main usage-kpi-static" data-testid="usage-kpi-static">
           {body}
         </div>
       )}
-      {description && <DefinitionTip id={descId} text={description} className="usage-kpi-tip" />}
+      {description && m && <DefinitionTip id={descId} text={description} className="usage-kpi-tip" />}
       {priced && coverage && (
         <span className="usage-kpi-coverage" data-testid="usage-coverage">
           <button

@@ -81,7 +81,7 @@ export function spendSummary(i: SpendSummaryInput): string {
   const tail = i.hidden > 0 ? ` ${i.hidden} hidden.` : ''
   if (totals.runs === 0) return i.hidden > 0 ? `No runs in the series shown.${tail}` : 'No runs in this period.'
   if (metric === 'cost' && costView(totals.cost, { precision: 'page' }).kind === 'unknown') {
-    return `Cost unknown for ${plural(totals.runs, 'run')}: no price is known. Tokens are counted.${tail}`
+    return `Not priced: ${plural(totals.runs, 'run')} with no known price. Tokens are counted.${tail}`
   }
   if (!busiest) return `${plural(totals.runs, 'run')}.${tail}`
   const when = `Busiest ${bucket} ${bucket === 'week' ? 'from ' : ''}${axisLabel(busiest.start, bucket)}, `
@@ -90,7 +90,7 @@ export function spendSummary(i: SpendSummaryInput): string {
   return `${when}${costView({ costUsd: busiest.value, costSource: 'computed' }, { precision: 'page' }).text}.${tail}`
 }
 
-/** One series' figure in the tooltip: "$6.10", "12k", "3", or "No price" for an unpriced cost. */
+/** One series' figure in the tooltip: "$6.10", "12k", "3", or "Not priced" for an unpriced cost. */
 export function segmentFigure(metric: Metric, seg: Segment): string {
   if (metric === 'runs') return String(seg.value)
   if (metric === 'tokens') return formatTokens(seg.value)
@@ -113,7 +113,7 @@ export function previousTipText(f: OverlayFigure, metric: Metric): string {
   if (f.state === 'empty') return 'no runs'
   if (metric === 'runs') return plural(f.runs, 'run')
   if (metric === 'tokens') return `${formatTokens(f.value)} tokens`
-  return f.state === 'unknown' ? 'cost unknown' : overlayCostText(f)
+  return f.state === 'unknown' ? 'not priced' : overlayCostText(f)
 }
 
 // ---------- tooltip geometry (the crosshair's index geometry is in usageAreas.ts) ----------
@@ -145,13 +145,13 @@ export const sameKeys = (a: readonly string[], b: readonly string[]): boolean =>
 
 export const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => a.size === b.size && [...a].every((k) => b.has(k))
 
-/** The visible stack's figure under the bar-top label: "$9.80", "$4.20+", "12k", "5", or "No price". */
+/** The visible stack's figure under the bar-top label: "$9.80", "$4.20+", "12k", "5", or "Not priced". */
 export function barValueLabel(metric: Metric, segments: readonly Segment[]): string {
   const value = segments.reduce((n, s) => n + s.value, 0)
   if (metric === 'runs') return String(value)
   if (metric === 'tokens') return formatTokens(value)
   const partial = segments.some((s) => s.state === 'partial' || s.state === 'unknown')
-  if (value <= 0) return segments.some((s) => s.state === 'unknown') ? 'No price' : ''
+  if (value <= 0) return segments.some((s) => s.state === 'unknown') ? 'Not priced' : ''
   return costFigureText({ costUsd: value, costSource: 'computed', sourceMixed: true, ...(partial ? { costPartial: true } : {}) })
 }
 
@@ -175,7 +175,7 @@ export function previousCellText(f: OverlayFigure, metric: Metric): string {
   if (f.state === 'empty') return '—'
   if (metric === 'runs') return String(f.runs)
   if (metric === 'tokens') return formatTokens(f.value)
-  return f.state === 'unknown' ? 'No price' : overlayCostText(f)
+  return f.state === 'unknown' ? 'Not priced' : overlayCostText(f)
 }
 
 /** Why the overlay toggle is disabled, or null when it can be used. */

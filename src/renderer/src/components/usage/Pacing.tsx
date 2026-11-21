@@ -59,11 +59,10 @@ function BurnDial({ dial, arriving, drawSeq }: { dial: NonNullable<PacingModel['
           <span>of the projection</span>
         </span>
       </div>
-      {dial.tickText && (
-        <figcaption className="usage-dial-caption" aria-hidden="true" data-testid="usage-pacing-tick-text">
-          {dial.tickText}
-        </figcaption>
-      )}
+      {/* What the drawing means: the fill is spend so far of the projection; the tick is where the earlier period stood. */}
+      <figcaption className="usage-dial-caption" aria-hidden="true" data-testid="usage-pacing-tick-text">
+        {dial.caption}
+      </figcaption>
     </figure>
   )
 }
@@ -72,7 +71,7 @@ function BurnDial({ dial, arriving, drawSeq }: { dial: NonNullable<PacingModel['
  * The Usage page's one hero card (docs/design/dashboard-usage-redesign Pacing): the period's spend as the page's one
  * figure, its pace against the previous period at the same point, a burn dial toward the projection, and the plan or
  * budget gauges. The projection is "Projected", never a fact, and absent with its reason unless a fifth of the period
- * has passed and every run is priced (lib/usagePacing.ts). An unknown spend reads "No price", never $0 and never counts up.
+ * has passed and every run is priced (lib/usagePacing.ts). An unknown spend reads "Not priced", never $0 and never counts up.
  */
 export default function Pacing({
   item,
@@ -126,6 +125,14 @@ export default function Pacing({
         <p className="usage-pacing-line">
           {model?.pace && (
             <span className="usage-pacing-pace" data-testid="usage-pacing-pace" data-direction={model.pace.glyph ?? 'level'}>
+              {/* The arrow is decoration: "more than" / "less than" carry the direction. */}
+              {model.pace.glyph && (
+                <>
+                  <span aria-hidden="true" className="usage-pacing-glyph">
+                    {model.pace.glyph}
+                  </span>{' '}
+                </>
+              )}
               {model.pace.text}
             </span>
           )}

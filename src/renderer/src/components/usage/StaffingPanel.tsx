@@ -72,7 +72,7 @@ export default function StaffingPanel({ data, overview, filters, arriving, drawS
       {parts && total !== null && (
         <>
           <div className="usage-donut-row">
-            <TierDonut parts={parts} total={total} arriving={!!arriving} drawSeq={drawSeq} />
+            <TierDonut parts={parts} total={total} lowerBound={unpriced > 0 || data.lowerBound} arriving={!!arriving} drawSeq={drawSeq} />
             <ul className="usage-tier-list" aria-label="Cost by tier" data-testid="usage-tier-list">
               {parts.map((p) => (
                 <li key={p.key} className="usage-tier-row" data-testid="usage-tier-row" data-tier={p.key} data-cost={p.costUsd}>

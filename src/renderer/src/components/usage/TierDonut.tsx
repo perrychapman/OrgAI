@@ -19,8 +19,10 @@ const R = 46
 const GAP_DEG = 2
 
 /** The donut's one text alternative: every part with its cost and share, then the total. Same words as the legend. */
-export function donutText(parts: readonly TierPart[], total: number): string {
-  return `Cost by tier, ${pageCost(total)} in all. ${parts.map((p) => `${p.label} ${pageCost(p.costUsd)}, ${percentText(p.share)}`).join('. ')}.`
+export function donutText(parts: readonly TierPart[], total: number, lowerBound = false): string {
+  // Unpriced runs are not in the split, so the total is a lower bound and never "in all" (Reviewer M4).
+  const all = lowerBound ? `at least ${pageCost(total)}` : `${pageCost(total)} in all`
+  return `Cost by tier, ${all}. ${parts.map((p) => `${p.label} ${pageCost(p.costUsd)}, ${percentText(p.share)}`).join('. ')}.`
 }
 
 /**
@@ -28,7 +30,20 @@ export function donutText(parts: readonly TierPart[], total: number): string {
  * person's own filter change. Decorative to assistive tech: the legend list beside it (and the table under it) carry every
  * figure, and the whole drawing has one text alternative.
  */
-export default function TierDonut({ parts, total, arriving, drawSeq }: { parts: readonly TierPart[]; total: number; arriving: boolean; drawSeq: number }): ReactElement {
+export default function TierDonut({
+  parts,
+  total,
+  lowerBound = false,
+  arriving,
+  drawSeq
+}: {
+  parts: readonly TierPart[]
+  total: number
+  /** Some runs have no price and are not in the split: the total is "at least". */
+  lowerBound?: boolean
+  arriving: boolean
+  drawSeq: number
+}): ReactElement {
   const segments = donutSegments(
     parts.map((p) => p.costUsd),
     GAP_DEG
@@ -36,7 +51,7 @@ export default function TierDonut({ parts, total, arriving, drawSeq }: { parts: 
   const signature = parts.map((p) => `${p.key}:${p.costUsd}`).join(',')
   const { draw, key } = useDrawKey(drawSeq, signature, arriving)
   return (
-    <div className="usage-donut" role="img" aria-label={donutText(parts, total)} data-testid="usage-tier-donut">
+    <div className="usage-donut" role="img" aria-label={donutText(parts, total, lowerBound)} data-testid="usage-tier-donut" data-lower-bound={lowerBound ? 'true' : undefined}>
       <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={SIZE} height={SIZE} aria-hidden="true" focusable="false">
         <circle className="usage-donut-track" cx={SIZE / 2} cy={SIZE / 2} r={R} />
         <g key={key}>
@@ -58,8 +73,11 @@ export default function TierDonut({ parts, total, arriving, drawSeq }: { parts: 
         </g>
       </svg>
       <span className="usage-donut-center" aria-hidden="true">
-        <span className="usage-donut-total">{pageCost(total)}</span>
-        <span>in all</span>
+        <span className="usage-donut-total">
+          {pageCost(total)}
+          {lowerBound ? '+' : ''}
+        </span>
+        <span>{lowerBound ? 'at least' : 'in all'}</span>
       </span>
     </div>
   )

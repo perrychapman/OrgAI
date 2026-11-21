@@ -74,7 +74,7 @@ export const EFFICIENCY_NAMES: Record<EfficiencySignal, string> = {
 
 export const EFFICIENCY_DEFINITIONS: Record<EfficiencySignal, string> = {
   cache: 'The share of input tokens the provider read from its prompt cache instead of processing again. Higher is cheaper. "Not reported" means the connection does not say.',
-  'cost-per-run': 'The median estimated cost of a run in this view. The mean is in the tooltip.',
+  'cost-per-run': 'The median estimated cost of a run in this view: half of the runs cost less. Runs that are not priced are left out.',
   'tokens-per-turn': 'Tokens used divided by the number of turns agents took.',
   retries: 'Times a failed request was sent again. Counted per 100 turns.',
   'no-result': 'Tokens spent by agents that finished without giving a report back. The root agent is never counted here.',
@@ -214,7 +214,7 @@ export function efficiencyItems(rows: readonly UsageOverviewRow[], opts: Efficie
   const med = median(t.costs)
   const avg = mean(t.costs)
   if (med === null || avg === null) {
-    make('cost-per-run', 'No price', t.unpriced > 0 ? `${plural(t.unpriced, 'run has', 'runs have')} no price.` : 'No priced runs in this view.', { kind: 'none' })
+    make('cost-per-run', 'Not priced', t.unpriced > 0 ? `${plural(t.unpriced, 'run has', 'runs have')} no price.` : 'No priced runs in this view.', { kind: 'none' })
   } else {
     const detail = `Mean ${pageCost(avg)}${t.unpriced > 0 ? `. ${plural(t.unpriced, 'run has', 'runs have')} no price.` : ''}`
     make('cost-per-run', pageCost(med), detail, { kind: 'range', min: Math.min(...t.costs), max: Math.max(...t.costs), median: med, mean: avg })
@@ -441,7 +441,8 @@ export function runReasons(entry: Pick<WastefulEntry, 'row' | 'why'>, sort: Wast
   const r = entry.row
   const u = r.usage
   const primary: ReasonKey = sort
-  const out: RunReason[] = [{ key: primary, text: entry.why }]
+  // The shared sentence says "Cost unknown; N tokens"; this page says "Not priced" everywhere (src/shared is not edited here).
+  const out: RunReason[] = [{ key: primary, text: entry.why.replace(/^Cost unknown/, 'Not priced') }]
   const add = (key: ReasonKey, text: string): void => {
     if (key !== primary) out.push({ key, text })
   }
@@ -453,7 +454,7 @@ export function runReasons(entry: Pick<WastefulEntry, 'row' | 'why'>, sort: Wast
   if (!isLegacyRow(r) && cacheReportedBy(u.tokens) && prompt >= CACHE_MIN_INPUT_TOKENS && u.tokens.cacheRead / prompt < CACHE_REASON_RATE) {
     add('cache', `Cache hit ${percentText(u.tokens.cacheRead / prompt)}`)
   }
-  if (knownCost(r) === null && totalTokens(u.tokens) > 0) add('cost', 'Cost unknown')
+  if (knownCost(r) === null && totalTokens(u.tokens) > 0) add('cost', 'Not priced')
   return out
 }
 
@@ -493,7 +494,7 @@ export function efficiencyByProject(rows: readonly UsageOverviewRow[], opts: { c
       runs: list.length,
       cells: {
         runs: String(list.length),
-        cost: none ? '—' : med === null ? 'No price' : pageCost(med),
+        cost: none ? '—' : med === null ? 'Not priced' : pageCost(med),
         cache: none ? '—' : rate === null ? 'Not reported' : percentText(rate),
         'tokens-per-turn': tpt === null ? '—' : formatTokens(tpt),
         retries: per100 === null ? '—' : per100 === 0 ? '0' : per100 < 10 ? per100.toFixed(1) : String(Math.round(per100)),

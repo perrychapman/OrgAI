@@ -3,7 +3,7 @@
  * with their colour and the rest folded into Other. Pure; BreakdownCard's panels draw it.
  *
  * Shares are of known cost only. A row whose cost is unknown has no width (unknown is never a zero-width share): it is
- * counted so the caption can say so, and its row says "No price".
+ * counted so the caption can say so, and its row says "Not priced".
  */
 export const RIBBON_TOP = 5
 

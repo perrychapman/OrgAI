@@ -4,7 +4,7 @@ import { PARTIAL_COST_TITLE, type SummaryItemModel } from '../../lib/usagePage'
 
 /**
  * How a summary figure reads and what number it stands for, shared by the KPI band and the Pacing header so both say
- * the same thing in the same words: unknown is "No price" (never $0), a lower bound is "$0.42+" or "At least $4.20".
+ * the same thing in the same words: unknown is "Not priced" (never $0), a lower bound is "$0.42+" or "At least $4.20".
  */
 
 export function figure(i: SummaryItemModel): { text: string; title?: string } {

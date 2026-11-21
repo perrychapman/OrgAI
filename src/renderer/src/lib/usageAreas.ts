@@ -273,7 +273,7 @@ export function crosshairModel(i: CrosshairInput): CrosshairModel {
     })
     .map<CrosshairRow>((s) => ({ key: s.key, series: s.series, name: i.clip(i.name(s.key, s)), value: tipFigure(i.metric, s), state: s.state }))
   const rawTotal = barValueLabel(i.metric, i.segments)
-  const total = rawTotal === 'No price' ? 'Not priced' : rawTotal || null
+  const total = rawTotal || null
   const spoken = [...i.segments].sort((a, b) => at(b.key) - at(a.key)).map((s) => `${i.name(s.key, s)} ${spokenFigure(i.metric, s)}`)
   const head =
     i.metric === 'runs'

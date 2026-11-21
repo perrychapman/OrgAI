@@ -107,9 +107,9 @@ describe('efficiencyItems', () => {
     expect(i.draw).toMatchObject({ kind: 'range', min: 1, max: 100, median: 3 })
   })
 
-  it('shows No price when nothing is priced', () => {
+  it('shows Not priced when nothing is priced', () => {
     const i = item([row({}, { costUsd: null, costSource: 'unknown' })], 'cost-per-run')!
-    expect(i.value).toBe('No price')
+    expect(i.value).toBe('Not priced')
     expect(i.value).not.toContain('$0')
   })
 
@@ -176,7 +176,7 @@ describe('efficiencyByProject', () => {
     const rows = [row({ projectId: 'a', projectName: 'Alpha' }, { costUsd: 2 }), row({ projectId: 'b', projectName: 'Beta' }, { costUsd: null, costSource: 'unknown' }), row({ projectId: 'b', projectName: 'Beta' }, { costUsd: null, costSource: 'unknown' })]
     const t = efficiencyByProject(rows, names)
     expect(t.map((r) => r.project)).toEqual(['Beta', 'Alpha'])
-    expect(t[0]!.cells.cost).toBe('No price')
+    expect(t[0]!.cells.cost).toBe('Not priced')
     expect(sortEfficiencyRows(t, 'cost', 'desc').map((r) => r.project)).toEqual(['Alpha', 'Beta'])
     expect(sortEfficiencyRows(t, 'cost', 'asc').map((r) => r.project)).toEqual(['Alpha', 'Beta'])
     expect(sortEfficiencyRows(t, 'project', 'asc').map((r) => r.project)).toEqual(['Alpha', 'Beta'])
@@ -315,6 +315,9 @@ describe('runReasons', () => {
     const keys = runReasons(entry, 'cost').map((x) => x.key)
     expect(keys).toEqual(['cost', 'cache'])
     expect(runReasons(entry, 'retries').map((x) => x.key)).toContain('cost')
+    // One wording for a cost with no price: the shared "Cost unknown; N tokens" reads "Not priced; N tokens" on this page.
+    expect(runReasons(entry, 'cost')[0]!.text).toMatch(/^Not priced; /)
+    expect(runReasons(entry, 'retries').find((x) => x.key === 'cost')?.text).toBe('Not priced')
   })
   it('lists only the sort reason for an ordinary run', () => {
     const entry = wastefulRuns([row()], 'cost')[0]!

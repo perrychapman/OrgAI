@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   PROJECTION_EARLY_TEXT,
   PROJECTION_MIN_FRACTION,
+  PROJECTION_ROLLING_TEXT,
   PROJECTION_TRUNCATED_TEXT,
   PROJECTION_UNPRICED_TEXT,
   elapsedFraction,
@@ -141,12 +142,18 @@ describe('pacingModel projection', () => {
 describe('pacingModel pace and tick', () => {
   it('says more with a glyph and the figure', () => {
     const m = pacingModel(base())
-    expect(m.pace).toEqual({ glyph: '▲', text: '▲ $2.00 more than the previous 7 days at this point', deltaUsd: 2 })
+    // The glyph is decoration kept apart from the sentence: the words say "more than".
+    expect(m.pace).toEqual({ glyph: '▲', text: '$2.00 more than the previous 7 days at this point', deltaUsd: 2 })
   })
   it('says less', () => {
     const m = pacingModel(base({ previous: { usd: 12.4, exact: true } }))
     expect(m.pace?.glyph).toBe('▼')
-    expect(m.pace?.text).toBe('▼ $2.40 less than the previous 7 days at this point')
+    expect(m.pace?.text).toBe('$2.40 less than the previous 7 days at this point')
+  })
+  it('the sentence never contains the glyph, so the direction is in the words alone', () => {
+    for (const previous of [{ usd: 8, exact: true }, { usd: 12.4, exact: true }]) {
+      expect(pacingModel(base({ previous })).pace?.text).not.toMatch(/[▲▼]/)
+    }
   })
   it('says level inside half a cent', () => {
     const m = pacingModel(base({ previous: { usd: 10.001, exact: true } }))
@@ -155,7 +162,11 @@ describe('pacingModel pace and tick', () => {
   it('puts the tick where the previous period stood, as a share of the projection', () => {
     const m = pacingModel(base())
     expect(m.dial?.tick).toBeCloseTo(8 / 20)
-    expect(m.dial?.tickText).toBe('Tick: the previous 7 days at this point, $8.00')
+    expect(m.dial?.tickText).toBe('Tick: where the previous 7 days stood at this point, $8.00')
+  })
+  it('the dial caption says what the fill and the tick mean', () => {
+    expect(pacingModel(base()).dial?.caption).toBe('Fill: spend so far, $10.00 of the projected $20.00. Tick: where the previous 7 days stood at this point, $8.00.')
+    expect(pacingModel(base({ previous: null })).dial?.caption).toBe('Fill: spend so far, $10.00 of the projected $20.00. No tick: nothing to compare with.')
   })
   it('clamps a tick beyond the projection to the end of the dial', () => {
     expect(pacingModel(base({ previous: { usd: 100, exact: true } })).dial?.tick).toBe(1)
@@ -173,13 +184,60 @@ describe('pacingModel pace and tick', () => {
     expect(pacingModel(base({ previous: null })).dial?.tick).toBeNull()
   })
   it('a finished period compares in full, without "at this point"', () => {
-    expect(pacingModel(base({ now: 12 * DAY })).pace?.text).toBe('▲ $2.00 more than the previous 7 days')
+    expect(pacingModel(base({ now: 12 * DAY })).pace?.text).toBe('$2.00 more than the previous 7 days')
   })
   it('the dial text names spend, projection, share and tick for a screen reader', () => {
     const t = pacingModel(base()).dial?.text ?? ''
     expect(t).toContain('$10.00 so far of a projected $20.00')
     expect(t).toContain('50 percent')
-    expect(t).toContain('Tick: the previous 7 days at this point, $8.00')
+    expect(t).toContain('Tick: where the previous 7 days stood at this point, $8.00')
+  })
+  it('a previous period with no runs says so, compares nothing and draws no tick (the tiles say "no prior data")', () => {
+    const m = pacingModel(base({ previous: null, previousEmpty: true, previousWords: 'last month' }))
+    expect(m.pace).toEqual({ glyph: null, text: 'No runs in last month to compare.', deltaUsd: null })
+    expect(m.dial?.tick).toBeNull()
+    expect(m.dial?.tickText).toBeNull()
+    // Even if a figure were passed, an empty previous period never produces a tick or a comparison.
+    const both = pacingModel(base({ previous: { usd: 0, exact: true }, previousEmpty: true }))
+    expect(both.pace?.deltaUsd).toBeNull()
+    expect(both.dial?.tick).toBeNull()
+  })
+})
+
+describe('pacingModel rolling periods', () => {
+  it('shows no projection and no dial for a rolling window, but keeps the pace sentence', () => {
+    const m = pacingModel(base({ rolling: true, now: 9.9 * DAY }))
+    expect(m.state).toBe('rolling')
+    expect(m.projectionText).toBe(PROJECTION_ROLLING_TEXT)
+    expect(m.projectedUsd).toBeNull()
+    expect(m.dial).toBeNull()
+    expect(m.pace?.text).toBe('$2.00 more than the previous 7 days at this point')
+  })
+  it('a rolling window wins over every other hidden reason', () => {
+    expect(pacingModel(base({ rolling: true, now: DAY, allPriced: false })).state).toBe('rolling')
+    expect(pacingModel(base({ rolling: true, truncated: true })).state).toBe('rolling')
+  })
+  it('calendar periods still project (rolling false or absent)', () => {
+    expect(pacingModel(base({ rolling: false })).state).toBe('shown')
+  })
+})
+
+describe('the literal sentences of usage.md', () => {
+  it('"Projected" labels the projection of a calendar period', () => {
+    expect(pacingModel(base()).projectionText).toMatch(/^Projected \$20\.00 by \d{1,2} \w+$/)
+  })
+  it('"Projection needs more data" under a fifth of the period', () => {
+    expect(PROJECTION_EARLY_TEXT).toBe('Projection needs more data')
+    expect(pacingModel(base({ now: 1.9 * DAY })).projectionText).toBe('Projection needs more data')
+  })
+  it('"Projection hidden: some usage is not priced" when a run has no price', () => {
+    expect(PROJECTION_UNPRICED_TEXT).toBe('Projection hidden: some usage is not priced')
+    expect(pacingModel(base({ allPriced: false })).projectionText).toBe('Projection hidden: some usage is not priced')
+  })
+  it('the projection needs a fifth of the period: 19% hides, 20% shows', () => {
+    expect(PROJECTION_MIN_FRACTION).toBe(0.2)
+    expect(pacingModel(base({ now: 1.9 * DAY })).state).toBe('early')
+    expect(pacingModel(base({ now: 2 * DAY })).state).toBe('shown')
   })
 })
 
