@@ -1,38 +1,31 @@
-// Token-free. Mock adapter, temp ORGAI_DATA_DIR. The Dashboard overhaul (docs/design/dashboard-overhaul.md sections 12 and 13),
-// numbered like the acceptance criteria in the check names ("A1" ... "A30").
-//  A1  one h1, one h2 per rendered section with the 11.2 title, DOM order equals visual order at 1024x640 and 1600x1000.
-//  A2  first launch: "Welcome to OrgAI." and its line, the start choice, no Customise button, no sections.
-//  A3  the salutation with and without a name, in each hour band (Date.now is faked in the page and the Dashboard remounted).
-//  A4/A5 the brief never reads "$0.00" and is not live; `dashboard-live` is the only aria-live / role=status element.
-//  A7  the name: Add your name popover (focus, Enter saves, Esc cancels and returns focus, 41 characters stopped by maxLength,
-//      a zero-width character refused with the stated sentence, clearing, the Settings > General > About you field, relaunch).
-//  A8  Waiting on you rows equal the sidebar bell; inline Allow once removes the row and is announced; no wider scope text;
-//      a [mock:fatigue] compound command is answered inline.
-//  A10 Waiting order by kind (permission before proposal) and a row does not move while other events arrive.
-//  A11 a decision is a row once: band and tile text carry no raw command and the band run says "Waiting on you".
-//  A13 Pick up: a run cut by quit while waiting shows "Was waiting on you when OrgAI closed." and Continue; a pinned project
-//      with no runs shows New run; each chain once; a paused run ([mock:model-switch-limit]) offers Resume now and leaves
-//      the list; a stopped run with an output ([mock:outputs]) offers Open output and lands on the Outputs tab.
-//  A14 Today: a schedule due later today, open to-dos (IPC seeded and `[mock:todo]`), Start session fills the composer and
-//      starts no run, done to-dos never show, the paused line.
-//  A15/A16 empty sections do not render outside customise mode; no dash-now-empty.
-//  A17/A18 Your week: runs, 7 ledger days, one today, one Tab stop, ArrowLeft, Enter pins, Esc unpins, counts sum to the
-//      figure, track height 40 (1024x640) and 56 (1600x1000), never "$0.00".
-//  A19 no plan limits on the mock adapter.   A20 pins from the tile More menu and the customise toggle, no tile-run.
-//  A21 customise by keyboard only (Tab path, Move up and down, the ends, Hide / Show focus, Esc, Reset keeps pins, reload keeps
-//      the layout, corrupt storage loads a valid layout).   A22 one full-width track in customise mode, pairs outside it.
-//  A23 1024x640: no horizontal overflow, the window never scrolls, `.dashboard` scrolls.
-//  A25 reduced motion: the working mark's ::after has no animation, no `.motion-enter` has a duration above 0.01 ms.
-//  A30 `display-name-input` in Settings.
-// Not covered here (unit tests or later): the IPC argument of Allow once (A8), the 25th pin (A20), a second real window (A21, a
-// synthetic storage event stands in), a decision entering 2 s after load (A25), the other brief variants (A4, `dashboardBrief`
-// unit tests), plan limits off the mock adapter (A19), a failed name save (A7).
-// Known product failure kept visible: A5 on first launch (the inline new-project form has its own role=status region).
+// Token-free. Mock adapter, temp ORGAI_DATA_DIR. The redesigned Dashboard (docs/design/dashboard-usage-redesign/project/dashboard.md
+// and motion.md): Briefing hero card, Needs you and Right now (fixed regions), then the arrangeable sections Your week, Pick up,
+// Up next, Projects, Engagements, Commits this week and To-dos (layout v2, localStorage `orgai.dashboardLayout`).
+// Check names carry a tag:
+//  BR  Briefing: the greeting (an h2, no full stop) with and without a name in every hour band, the visible status sentence,
+//      the since line, quick actions in order Continue / New chat / New project / Customise, the setup line and its popover,
+//      Team pulse (caption, nodes, signals), Pause motion (aria-pressed, data-motion-paused), no app-facts footer.
+//  A7  the name: Add your name popover (focus, Enter saves, Esc cancels, maxLength, zero-width refused, clearing, Settings field).
+//  NY  Needs you: rows equal the sidebar bell, count span, inline Allow once / Deny only when the whole request is visible,
+//      order by kind, a row does not move, a compound command is answered inline.
+//  RN  Right now: one row per run, waiting run says it, no raw command.
+//  WK  Your week: four stat cards (one button each, Usage opens on 7 days with the right metric), activity map (text alternative,
+//      today column), Pick up (state word, Continue / Open names carry the run title), Up next, To-dos.
+//  PR  Projects: pin by keyboard (aria-pressed, constant name), pinned first, data-pinned edge; More menu, delete confirm.
+//  CU  Customise: move / hide / show, focus figure persists, Reset layout, Needs you and Right now are never in the controls,
+//      reload keeps the layout, corrupt storage loads a valid layout, a version 1 layout migrates.
+//  EM  empty regions are not drawn.   MO  page arrival (hero class while arriving, none on return) and reduced motion.
+//  SZ  both window sizes and both themes: no horizontal overflow, one page scroll.
+// Multi-day history: the mock puts every run on one day, so a phase near the end closes the app, shifts some run records in
+// the script's own throwaway data dir back by whole days (nothing in src is touched), relaunches and checks the activity map
+// columns, the stat card movement lines and the since line.
+// Not covered here (unit tests or later): the IPC argument of Allow once, the 25th pin, a second real window (a synthetic storage
+// event stands in), the other brief variants (`dashboardBrief` unit tests), plan limits off the mock adapter, a failed name save.
 // Kept from the earlier script: first launch Tab order, New project dialog and Escape, the tile More menu and delete confirm,
 // New run from the menu, Enter on a band agent row opens the agent, both sizes and themes, relaunch with a run cut while waiting.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, relaunch, removeFixture, screenshot, sleep } from './lib.mjs'
+import { TMP, check, createProject, deleteProject, endSession, finish, gotoProjects, launch, log, makeFixtureRepo, openAppSettings, openProject, projectTab, relaunch, removeFixture, runRecordsDir, screenshot, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 const scriptFile = path.join(fs.mkdtempSync(path.join(TMP, 'orgai-e2e-dash-script-')), 'script.json')
@@ -53,13 +46,18 @@ const repoC = makeFixtureRepo('dash-c')
 const repoD = makeFixtureRepo('dash-d')
 
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
-const DEFAULT_ORDER = ['resume', 'today', 'working', 'week', 'engagements', 'projects']
-const TITLES = { resume: 'Pick up where you left off', today: 'Today', working: 'Working now', week: 'Your week', projects: 'Projects' }
-const SECTION_IDS = { 'dash-needs-you': 'Waiting on you', 'dash-setup': 'To finish setting up', 'dash-resume': TITLES.resume, 'dash-today': TITLES.today, 'dash-now': TITLES.working, 'dash-week': TITLES.week, 'dash-engagements': 'Engagements', 'dash-commits': 'Commits this week', 'dash-projects': TITLES.projects }
+const DEFAULT_ORDER = ['week', 'pickup', 'upnext', 'projects', 'engagements', 'commits', 'todos']
+const TITLES = { week: 'Your week', pickup: 'Pick up', upnext: 'Up next', projects: 'Projects', engagements: 'Engagements', commits: 'Commits this week', todos: 'To-dos' }
+const SECTION_IDS = { 'dash-needs-you': 'Needs you', 'dash-now': 'Right now', 'dash-week': TITLES.week, 'dash-resume': TITLES.pickup, 'dash-upnext': TITLES.upnext, 'dash-projects': TITLES.projects, 'dash-engagements': TITLES.engagements, 'dash-commits': TITLES.commits, 'dash-todos': TITLES.todos }
 const KIND_WEIGHT = { plan: 0, question: 1, permission: 2, merge: 3, proposal: 4, install: 5, rules: 6, team: 7 }
-const SALUTE = /^(Good morning|Good afternoon|Good evening|Hello)(, .+)?\.$/
-const REMOVED_IDS = ['dash-status-line', 'dash-paused', 'dash-since', 'dash-since-clear', 'dash-now-empty', 'dash-strip-waiting', 'tile-run', 'dash-strip-usage-link', 'dash-cost', 'dash-strip-runs']
+const REMOVED_IDS = [
+  'dashboard-app-facts', 'dash-status-line', 'dash-paused', 'dash-since-clear', 'dash-now-empty', 'dash-attn-summary', 'dash-attn-tile', 'dash-attn-reply-count', 'dash-hero-stat', 'dash-hero-stats',
+  'dash-needs-clear', 'dash-week-runs', 'dash-week-time', 'dash-week-cost', 'dash-week-top-project', 'dash-week-share', 'dash-strip-day', 'dash-strip-readout', 'dash-strip-bar', 'dash-today',
+  'dash-today-schedule', 'dash-today-schedules', 'dash-today-paused', 'dash-today-more-schedules', 'dash-commits-empty', 'dash-commits-loading', 'tile-pinned-glyph', 'tile-run', 'dash-cost', 'dash-limits'
+]
 const LAYOUT_KEY = 'orgai.dashboardLayout'
+const LAST_SEEN_KEY = 'orgai.dashboardSeenAt'
+const T0 = Date.now()
 
 let { app, page, shot } = await launch({ shotPrefix: 'dashboard' })
 const pageErrors = []
@@ -146,7 +144,8 @@ const layoutOf = () =>
       return 'unparsable'
     }
   }, LAYOUT_KEY)
-const slotOrder = () => page.evaluate(() => [...document.querySelectorAll('[data-testid=dash-section]')].map((e) => e.getAttribute('data-section')))
+/** The arrangeable slots in DOM order (the fixed Right now slot is not one of them). */
+const slotOrder = () => page.evaluate(() => [...document.querySelectorAll('[data-testid=dash-section]')].map((e) => e.getAttribute('data-section')).filter((s) => s !== 'now'))
 const ctl = (id, testid) => page.locator(`[data-testid=dash-section-controls][data-section="${id}"] [data-testid="${testid}"]`)
 const store = (scope) => page.evaluate((s) => window.orgai.todos.list(s), scope)
 const runsOf = (projectId) => page.evaluate((id) => window.orgai.runs.list(id), projectId)
@@ -179,7 +178,8 @@ const headingFacts = () =>
 async function checkHeadings(tag) {
   const f = await headingFacts()
   check(f.h1s === 1 && f.h1 === 'Dashboard', `A1 the page has exactly one h1 "Dashboard" ${tag}`, JSON.stringify(f))
-  check(f.wrong.length === 0 && f.h2s === f.present.length && f.present.length >= 1, `A1 every rendered section has one h2 with its 11.2 title ${tag}`, JSON.stringify(f))
+  // One h2 per rendered section with its title, plus the Briefing's greeting (the page's one large line is an h2).
+  check(f.wrong.length === 0 && f.h2s === f.present.length + 1 && f.present.length >= 1 && f.texts[0] === (await salutationText()), `A1 every rendered section has one h2 with its title, after the greeting's h2 ${tag}`, JSON.stringify(f))
   check(f.ordered, `A1 DOM order of the section headings equals their visual order ${tag}`, JSON.stringify(f))
 }
 /** The same salutation / brief rules everywhere: no "$0.00", the brief is not live, one live region. */
@@ -245,10 +245,16 @@ async function visualPassChecks(tag) {
       return tops.length
     }
     const over = []
-    const sel = ['[data-testid=dash-hero-stat]', '[data-testid=dash-resume-row]', '[data-testid=dash-today-todo]', '[data-testid=project-tile]', '[data-testid=dash-engagement]', '[data-testid=dash-attn-summary]']
-    for (const s of sel) for (const el of document.querySelectorAll(s)) {
+    // A Pick up row: the state word, the title and one caption line (three); the others two.
+    const sel = [['[data-testid=dash-resume-row]', 3], ['[data-testid=dash-today-todo]', 2], ['[data-testid=dash-upnext-row]', 2], ['[data-testid=dash-engagement]', 2]]
+    for (const [s, max] of sel) for (const el of document.querySelectorAll(s)) {
       const n = linesOf(el)
-      if (n > 2) over.push(`${s}:${n}:${(el.textContent ?? '').slice(0, 40)}`)
+      if (n > max) over.push(`${s}:${n}:${(el.textContent ?? '').slice(0, 40)}`)
+    }
+    // A project tile: name, status line and its run count (three lines at most).
+    for (const el of document.querySelectorAll('[data-testid=project-tile]')) {
+      const n = linesOf(el)
+      if (n > 3) over.push(`tile:${n}:${(el.textContent ?? '').slice(0, 40)}`)
     }
     const hues = {}
     for (const b of document.querySelectorAll('[data-testid=dash-project-badge]')) {
@@ -258,48 +264,38 @@ async function visualPassChecks(tag) {
     }
     const mixed = Object.entries(hues).filter(([, s]) => s.size > 1).map(([p, s]) => `${p}:${[...s].join('/')}`)
     const sparks = [...document.querySelectorAll('[data-testid=tile-spark]')].map((e) => e.getAttribute('aria-label') ?? '')
-    const share = document.querySelector('[data-testid=dash-week-share]')
-    const shareText = document.querySelector('[data-testid=dash-week-share-text]')?.textContent?.trim() ?? ''
     const commits = document.querySelector('[data-testid=dash-commits]')
-    const commitsEmpty = !!document.querySelector('[data-testid=dash-commits-empty]')
     const commitDays = document.querySelectorAll('[data-testid=dash-commits-day]').length
     const commitsText = document.querySelector('[data-testid=dash-commits-text]')?.textContent?.trim() ?? ''
     const needs = document.querySelector('[data-testid=dash-needs-you]')
-    const side = document.querySelector('.dash-lead-side > *')
-    const stats = [...document.querySelectorAll('[data-testid=dash-hero-stat]')].map((e) => ({ stat: e.getAttribute('data-stat'), tag: e.tagName, name: e.getAttribute('aria-label') ?? '' }))
-    const sections = [...document.querySelectorAll('.dash-section')]
-    const cards = sections.filter((s) => {
-      const cs = getComputedStyle(s)
-      return cs.borderTopLeftRadius !== '0px' && cs.backgroundColor !== 'rgba(0, 0, 0, 0)'
-    }).length
+    const now = document.querySelector('[data-testid=dash-now]')
+    const stats = [...document.querySelectorAll('[data-testid=dash-stat]')].map((li) => {
+      const b = li.querySelectorAll('button')
+      return { stat: li.getAttribute('data-stat'), buttons: b.length, name: b[0]?.getAttribute('aria-label') ?? '' }
+    })
+    const heat = document.querySelector('[data-testid=dash-heat]')
     return {
       over,
       mixed,
       badges: Object.keys(hues).length,
       sparks,
-      share: !!share,
-      shareText,
       commits: !!commits,
-      commitsEmpty,
       commitDays,
       commitsText,
-      sideBeside: !!(needs && side && side.getBoundingClientRect().left > needs.getBoundingClientRect().right - 1),
-      needsLeft: needs ? Math.round(needs.getBoundingClientRect().left) : -1,
+      sideBeside: !!(needs && now && now.getBoundingClientRect().left > needs.getBoundingClientRect().right - 1),
       stats,
-      sections: sections.length,
-      cards,
-      tiles: document.querySelectorAll('[data-testid=dash-attn-tile]').length
+      heatName: heat?.getAttribute('aria-label') ?? '',
+      heatToday: document.querySelectorAll('[data-testid=dash-heat-col][data-today]').length
     }
   })
-  check(v.over.length === 0, `VP no tile or summary has more than two text lines ${tag}`, v.over.join(' | '))
+  check(v.over.length === 0, `VP no row or tile has more than its text lines ${tag}`, v.over.join(' | '))
   check(v.badges >= 2 && v.mixed.length === 0, `VP a project has one identity hue in every section ${tag}`, `${v.badges} projects ${v.mixed.join(' ')}`)
   check(v.sparks.length >= 1 && v.sparks.every((s) => /^(Runs in the last 7 days|No runs this week)/.test(s)), `VP every project sparkline has a text alternative ${tag}`, JSON.stringify(v.sparks).slice(0, 200))
-  check(!v.share || /\d/.test(v.shareText), `VP the week share bar has a text alternative ${tag}`, v.shareText)
-  check(v.commits && (v.commitsEmpty || (v.commitDays === 7 && v.commitsText.length > 0)), `VP Commits this week shows its chart with a text alternative, or its empty card ${tag}`, JSON.stringify({ c: v.commits, e: v.commitsEmpty, d: v.commitDays, t: v.commitsText.slice(0, 80) }))
-  check(v.sections === v.cards, `VP every section is drawn as a card ${tag}`, `${v.cards} of ${v.sections}`)
-  check(v.tiles >= 1, `VP Waiting on you holds attention tiles ${tag}`, String(v.tiles))
-  check(v.stats.length >= 2 && v.stats.length <= 5 && v.stats.every((s) => s.name.length > 0 || s.tag !== 'BUTTON'), `VP the greeting shows 2 to 5 named stat tiles ${tag}`, JSON.stringify(v.stats))
-  if (tag.includes('1600')) check(v.sideBeside, `VP Commits this week sits to the right of Waiting on you ${tag}`, JSON.stringify(v))
+  check(!v.commits || (v.commitDays === 7 && v.commitsText.length > 0), `VP Commits this week, when drawn, shows its chart with a text alternative ${tag}`, JSON.stringify({ c: v.commits, d: v.commitDays, t: v.commitsText.slice(0, 80) }))
+  // Decisions has no card until a run of the week carries the count, so three or four cards.
+  check(v.stats.length >= 3 && v.stats.length <= 4 && ['spend', 'runs', 'time'].every((id) => v.stats.some((s) => s.stat === id)) && v.stats.every((s) => s.buttons === 1 && s.name.length > 0), `VP Your week shows its stat cards (Spend, Runs, Agent time, Decisions once counted), each one named button ${tag}`, JSON.stringify(v.stats))
+  check(v.heatName.length > 0 && v.heatToday === 1, `VP the activity map has a text alternative and one marked today column ${tag}`, JSON.stringify({ n: v.heatName.slice(0, 60), t: v.heatToday }))
+  if (tag.includes('1600')) check(v.sideBeside, `VP Right now sits to the right of Needs you ${tag}`, JSON.stringify(v))
 }
 
 const NOW_OFFSET_DAY = (h, m) => `new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - 1, ${h}, ${m}).getTime()`
@@ -309,13 +305,14 @@ try {
   await setSize(1600, 1000)
   await gotoProjects(page)
   check(await visible('[data-testid=dash-start-choice]'), 'A2 first launch shows the start choice')
-  check((await salutationText()) === 'Welcome to OrgAI.', 'A2 first launch greets with "Welcome to OrgAI."', await salutationText())
+  check((await salutationText()) === 'Welcome to OrgAI', 'A2 first launch greets with "Welcome to OrgAI"', await salutationText())
   check((await briefText()) === 'Start a project or just chat. Nothing runs until you say so.', 'A2 first launch shows its line', await briefText())
-  check((await T('dash-customise').count()) === 0 && (await T('dash-section').count()) === 0 && (await T('dash-needs-you').count()) === 0, 'A2 first launch has no Customise button, no section and no attention column')
+  check((await T('dash-customise').count()) === 0 && (await T('dash-section').count()) === 0 && (await T('dash-needs-you').count()) === 0, 'A2 first launch has no Customise button, no section and no Needs you')
+  check((await T('dash-quick-actions').count()) === 0 && (await T('dash-pulse').count()) === 0 && (await T('dash-pause-motion').count()) === 0 && (await T('dash-since').count()) === 0, 'BR first launch has no quick actions, Team pulse, Pause motion or since line')
   check(await visible('[data-testid=dash-name-add]'), 'A2 first launch offers "Add your name"')
-  check((await T('dashboard-app-facts').count()) === 1, 'dashboard-app-facts footer is drawn on first launch')
+  check((await T('dashboard-app-facts').count()) === 0, 'BR there is no app-facts footer on first launch')
   const first = await headingFacts()
-  check(first.h1s === 1 && first.h1 === 'Dashboard', 'A1 first launch has exactly one h1', JSON.stringify(first))
+  check(first.h1s === 1 && first.h1 === 'Dashboard' && first.texts[0] === 'Welcome to OrgAI', 'A1 first launch has exactly one h1 and the greeting h2', JSON.stringify(first))
   await checkBrief('on first launch')
   await page.evaluate(() => {
     const h = document.querySelector('main .topbar h1')
@@ -341,19 +338,19 @@ try {
     const s = getComputedStyle(el)
     return { border: parseFloat(s.borderTopWidth), bg: s.backgroundColor }
   })
-  check(addBox.border >= 1 && addBox.bg !== 'rgba(0, 0, 0, 0)', 'M2 "Add your name" has a border and a fill (it reads as a control)', JSON.stringify(addBox))
+  check(addBox.border >= 1 || addBox.bg !== 'rgba(0, 0, 0, 0)', 'M2 "Add your name" has a border or a fill (it reads as a control)', JSON.stringify(addBox))
   await T('dash-name-add').click()
   await nameInputFocused()
   await page.keyboard.type('Sam')
   await page.keyboard.press('Enter')
-  check(!!(await until(async () => (await salutationText()) === 'Welcome to OrgAI, Sam.', 8000)), 'M2 first launch: saving a name puts it in the greeting at once', await salutationText())
+  check(!!(await until(async () => (await salutationText()) === 'Welcome to OrgAI, Sam', 8000)), 'M2 first launch: saving a name puts it in the greeting at once', await salutationText())
   await T('dash-name-edit').click()
   await nameInputFocused()
   // Select the field with the locator: a synthetic Cmd+A does not reach a field on macOS (CI run 44674564818).
   await T('dash-name-input').selectText()
   await page.keyboard.press('Backspace')
   await page.keyboard.press('Enter')
-  check(!!(await until(async () => (await salutationText()) === 'Welcome to OrgAI.', 5000)), 'M2 first launch: removing the name restores the plain welcome', await salutationText())
+  check(!!(await until(async () => (await salutationText()) === 'Welcome to OrgAI', 5000)), 'M2 first launch: removing the name restores the plain welcome', await salutationText())
 
   // ---------------------------------------------------------------- Projects with no runs yet
   const waiting = await createProject(page, { path: repoA, name: WAIT })
@@ -369,12 +366,16 @@ try {
   await sleep(600)
 
   check((await briefText()) === 'No runs yet. Open a project to start one.', 'A4 with projects and no run the brief says "No runs yet. Open a project to start one."', await briefText())
-  // "Not rendered" = absent or hidden: an empty Waiting on you stays in the DOM as a `hidden` section (reported below).
-  const shownIds = await page.evaluate((ids) => ids.filter((id) => { const e = document.querySelector(`[data-testid="${id}"]`); return !!e && e.offsetParent !== null }), ['dash-resume', 'dash-today', 'dash-now', 'dash-week', 'dash-needs-you'])
-  check(shownIds.length === 0, 'A15 with nothing to show Pick up, Today, Working now, Your week and Waiting on you are not displayed', JSON.stringify(shownIds))
-  const needsInDom = await T('dash-needs-you').count()
-  if (needsInDom) log('note: an empty Waiting on you is a `hidden` section in the DOM (spec 7.2 says "not rendered"); it is not displayed')
-  check((await T('dash-now-empty').count()) === 0, 'A16 there is no dash-now-empty')
+  // Empty regions are not drawn at all (outside Customise).
+  const drawnIds = await page.evaluate((ids) => ids.filter((id) => !!document.querySelector(`[data-testid="${id}"]`)), ['dash-resume', 'dash-upnext', 'dash-todos', 'dash-now', 'dash-week', 'dash-needs-you', 'dash-stats', 'dash-activity'])
+  check(drawnIds.length === 0, 'EM with nothing to show Pick up, Up next, To-dos, Right now, Your week and Needs you are not in the DOM', JSON.stringify(drawnIds))
+  check((await T('dash-now-empty').count()) === 0, 'EM there is no dash-now-empty')
+  check((await T('dash-section').count()) <= 3 && (await T('dash-setup').count()) === 0, 'EM no empty section slots are left in the DOM outside Customise', String(await T('dash-section').count()))
+  const quick = await page.locator('[data-testid=dash-quick-actions] > *').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid') ?? e.textContent?.trim()))
+  check(quick.join() === 'dash-continue,projects-new-chat,new-project,dash-customise', 'BR quick actions are Continue, New chat, New project, Customise in that order', quick.join())
+  check(/^Continue /.test((await T('dash-continue').getAttribute('aria-label')) ?? ''), 'BR Continue is named for its project', String(await T('dash-continue').getAttribute('aria-label')))
+  check((await page.locator('main .topbar [data-testid=new-project], main .topbar [data-testid=projects-new-chat]').count()) === 0, 'BR New chat and New project are no longer in the topbar')
+  check((await T('dash-since').count()) === 0, 'BR no since line while nothing ended since the last visit')
   check(await visible('[data-testid=dash-projects]'), 'Projects renders with projects')
   check(await visible('[data-testid=dash-customise]'), 'the Customise button shows once a project exists')
   await checkHeadings('with no runs')
@@ -386,7 +387,7 @@ try {
     const h = new Date().getHours()
     return h >= 5 && h < 12 ? 'Good morning' : h >= 12 && h < 17 ? 'Good afternoon' : h >= 17 && h < 22 ? 'Good evening' : 'Hello'
   })
-  check(noName === `${hourWord}.`, 'A3 without a name the salutation is the time-of-day word and a full stop', `${noName} / ${hourWord}`)
+  check(noName === hourWord, 'A3 without a name the salutation is the time-of-day word alone', `${noName} / ${hourWord}`)
   check((await T('dash-name-edit').count()) === 0, 'A7 no edit button while no name is set')
   await T('dash-name-add').click()
   await nameInputFocused()
@@ -395,7 +396,7 @@ try {
   check((await T('dash-name-input').getAttribute('maxlength')) === '40', 'A7 the name field stops at 40 characters (maxLength)')
   await page.keyboard.type('Sam')
   await page.keyboard.press('Enter')
-  check(!!(await until(async () => (await salutationText()).endsWith(', Sam.'), 8000)), 'A7 Enter saves and the salutation shows the name at once', await salutationText())
+  check(!!(await until(async () => (await salutationText()).endsWith(', Sam'), 8000)), 'A7 Enter saves and the salutation shows the name at once', await salutationText())
   // The live region is set in an effect after the salutation changes: poll it rather than read it once (a one-shot read failed intermittently on Windows).
   check(!!(await until(async () => (await live()).includes('Name saved.'), 3000)), 'A7 saving the name is announced "Name saved."', await live())
   await until(async () => (await activeInfo()).testid === 'dash-name-edit', 5000, 50)
@@ -409,7 +410,7 @@ try {
   await page.keyboard.press('Escape')
   await until(async () => !(await visible('[data-testid=dash-name-input]')) && (await activeInfo()).testid === 'dash-name-edit', 5000, 50)
   check(!(await visible('[data-testid=dash-name-input]')), 'A7 Esc closes the name popover')
-  check((await activeInfo()).testid === 'dash-name-edit' && (await salutationText()).endsWith(', Sam.'), 'A7 Esc keeps the name and returns focus to the control', `${await salutationText()} ${JSON.stringify(await activeInfo())}`)
+  check((await activeInfo()).testid === 'dash-name-edit' && (await salutationText()).endsWith(', Sam'), 'A7 Esc keeps the name and returns focus to the control', `${await salutationText()} ${JSON.stringify(await activeInfo())}`)
   // 41 characters pasted stop at 40; a zero-width character is refused with the stated sentence.
   await T('dash-name-edit').click()
   await nameInputFocused()
@@ -422,7 +423,7 @@ try {
   await page.keyboard.press('Enter')
   await T('dash-name-error').waitFor({ timeout: 5000 }).catch(() => {})
   check((await text('dash-name-error')) === 'Use up to 40 letters, numbers or spaces.', 'A7 a hidden character gives "Use up to 40 letters, numbers or spaces."', await text('dash-name-error'))
-  check((await T('dash-name-input').inputValue()) === 'Sam​' && (await salutationText()).endsWith(', Sam.'), 'A7 the refused field keeps what was typed and the saved name is unchanged')
+  check((await T('dash-name-input').inputValue()) === 'Sam​' && (await salutationText()).endsWith(', Sam'), 'A7 the refused field keeps what was typed and the saved name is unchanged')
   await page.keyboard.press('Escape')
   await sleep(300)
   // Settings > General > About you shows the name (A30).
@@ -434,14 +435,14 @@ try {
   await T('display-name-input').press('Enter')
   await sleep(500)
   await gotoProjects(page)
-  check(!!(await until(async () => (await salutationText()) === `${hourWord}.`, 5000)), 'A7 clearing the Settings field removes the name from the salutation', await salutationText())
+  check(!!(await until(async () => (await salutationText()) === hourWord, 5000)), 'A7 clearing the Settings field removes the name from the salutation', await salutationText())
   check((await T('dash-name-add').count()) === 1 && (await T('dash-name-edit').count()) === 0, 'A7 with no name the Dashboard offers "Add your name" again')
   await openAppSettings(page)
   await T('display-name-input').fill('Sam')
   await T('display-name-input').press('Enter')
   await sleep(500)
   await gotoProjects(page)
-  check(!!(await until(async () => (await salutationText()).endsWith(', Sam.'), 5000)), 'A7 typing the name in Settings shows it in the greeting', await salutationText())
+  check(!!(await until(async () => (await salutationText()).endsWith(', Sam'), 5000)), 'A7 typing the name in Settings shows it in the greeting', await salutationText())
   // Clear from the popover ("Remove name").
   await T('dash-name-edit').click()
   await nameInputFocused()
@@ -449,13 +450,13 @@ try {
   await page.keyboard.press('Backspace')
   check(clean(await T('dash-name-save').innerText()) === 'Remove name', 'A7 emptying a saved name offers "Remove name"')
   await page.keyboard.press('Enter')
-  check(!!(await until(async () => (await salutationText()) === `${hourWord}.`, 5000)), 'A7 Remove name clears the name', await salutationText())
+  check(!!(await until(async () => (await salutationText()) === hourWord, 5000)), 'A7 Remove name clears the name', await salutationText())
   check(!!(await until(async () => (await live()).includes('Name removed.'), 3000)), 'A7 removing the name is announced', await live())
   await T('dash-name-add').click()
   await nameInputFocused()
   await page.keyboard.type('Sam')
   await page.keyboard.press('Enter')
-  await until(async () => (await salutationText()).endsWith(', Sam.'), 5000)
+  await until(async () => (await salutationText()).endsWith(', Sam'), 5000)
 
   // A3: each hour band. Date.now is faked in the page (yesterday, so last-seen never moves forward) and the Dashboard is
   // remounted (it reads the clock at mount and every 30 s).
@@ -477,7 +478,7 @@ try {
     await page.evaluate(() => {
       if (window.__realNow) Date.now = window.__realNow
     })
-    if (s !== `${word}, Sam.`) check(false, `A3 at ${label} the salutation reads "${word}, Sam."`, s)
+    if (s !== `${word}, Sam`) check(false, `A3 at ${label} the salutation reads "${word}, Sam"`, s)
   }
   check(bandGot.length === 8, `A3 all eight hour edges were walked with a name (${bandGot.join('; ')})`)
   check(!/jsmith|admin|chapp/i.test(await salutationText()), 'A3 the OS account name never appears')
@@ -496,11 +497,17 @@ try {
   check((await layoutOf())?.pinned?.includes(pinId), 'A20 the pin is stored in orgai.dashboardLayout')
   await until(async () => (await activeInfo()).testid === 'project-tile-more', 5000, 50)
   check(((await activeInfo()).testid === 'project-tile-more'), 'A20 focus returns to the same tile control after pinning', JSON.stringify(await activeInfo()))
-  check((await page.locator('[data-testid=tile-pinned-glyph]').count()) === 1 && /pinned/.test((await tileOf(PINNED).locator('[data-testid=project-tile-main]').getAttribute('aria-label')) ?? ''), 'A20 a pinned tile shows the Pin glyph and "pinned" in its name')
-  check(!!(await T('dash-resume').count()) && (await T('dash-resume-row').filter({ has: page.locator('[data-action=new-run]') }).count()) === 1, 'A13 a pinned project with no runs shows one Pick up row with New run')
-  const pinRow = page.locator(`[data-testid=dash-resume-row][data-kind=pinned][data-project="${pinId}"]`)
-  check((await pinRow.count()) === 1 && /No runs yet\./.test(clean(await pinRow.innerText())) && (await pinRow.locator('[data-testid=dash-resume-action]').getAttribute('data-action')) === 'new-run', 'A13 its row is kind pinned, says "No runs yet." and offers New run', clean(await pinRow.innerText()))
-  check((await T('tile-run').count()) === 0, 'A20 no tile shows tile-run')
+  check((await tileOf(PINNED).getAttribute('data-pinned')) !== null && (await tileOf(WAIT).getAttribute('data-pinned')) === null, 'PR a pinned tile carries data-pinned (its accent edge) and an unpinned one does not')
+  const pinToggle = tileOf(PINNED).locator('[data-testid=project-tile-pin]')
+  check((await pinToggle.getAttribute('aria-pressed')) === 'true' && (await pinToggle.getAttribute('aria-label')) === `Pin ${PINNED}`, 'PR the pin toggle keeps one name ("Pin <name>") and says its state with aria-pressed', `${await pinToggle.getAttribute('aria-pressed')} ${await pinToggle.getAttribute('aria-label')}`)
+  check((await T('tile-pinned-glyph').count()) === 0 && (await T('tile-run').count()) === 0, 'PR no pin glyph and no tile-run')
+  await page.mouse.move(1, 1)
+  const edgeOf = (name) => tileOf(name).evaluate((el) => getComputedStyle(el).borderTopColor + '|' + getComputedStyle(el).backgroundImage)
+  const pinEdge = await edgeOf(PINNED)
+  const plainEdge = await edgeOf(WAIT)
+  check(pinEdge !== plainEdge, 'PR a pinned tile draws an accent edge an unpinned tile does not', `${pinEdge} vs ${plainEdge}`)
+  check((await T('dash-resume-row').count()) === 0, 'WK a pinned project with no runs is not a Pick up row (Pick up lists runs only)')
+  check((await T('dash-continue').getAttribute('aria-label')) === `Continue ${PINNED}`, 'BR Continue names the pinned project', String(await T('dash-continue').getAttribute('aria-label')))
 
   // Customise: entry, bar, controls, empty rows, full width.
   const customise = T('dash-customise')
@@ -508,18 +515,26 @@ try {
   await customise.click()
   await T('dash-customise-bar').waitFor({ timeout: 5000 })
   check((await customise.getAttribute('aria-expanded')) === 'true' && clean(await customise.innerText()) === 'Done', 'A21 Customise becomes Done with aria-expanded=true')
-  check((await slotOrder()).join() === DEFAULT_ORDER.join(), 'A21 customise lists all six sections in the default order', (await slotOrder()).join())
-  const states = await page.locator('[data-testid=dash-section]').evaluateAll((els) => els.map((e) => `${e.getAttribute('data-section')}:${e.getAttribute('data-state')}`))
-  check(states.join() === 'resume:shown,today:empty,working:empty,week:empty,engagements:empty,projects:shown', 'A15 empty sections show as empty rows only while customising', states.join())
-  check(/Today: nothing to show right now\./.test(clean(await page.locator('[data-testid=dash-section][data-section=today]').innerText())), 'A15 an empty section reads "Today: nothing to show right now." in customise mode')
+  check((await slotOrder()).join() === DEFAULT_ORDER.join(), 'CU customise lists all seven arrangeable sections in the default order', (await slotOrder()).join())
+  const states = await page.locator('[data-testid=dash-section]').evaluateAll((els) => Object.fromEntries(els.map((e) => [e.getAttribute('data-section'), e.getAttribute('data-state')])))
+  check(states.projects === 'shown' && ['week', 'pickup', 'upnext', 'engagements', 'todos'].every((id) => states[id] === 'empty') && !('now' in states), 'EM empty sections show as empty rows only while customising', JSON.stringify(states))
+  check(/Up next: nothing to show right now\./.test(clean(await page.locator('[data-testid=dash-section][data-section=upnext]').innerText())), 'EM an empty section reads "Up next: nothing to show right now." in customise mode')
+  check((await page.locator('[data-testid=dash-section-controls][data-section=now], [data-testid=dash-section-controls][data-section=needs]').count()) === 0 && (await page.locator('[data-testid=dash-section-controls]').count()) === DEFAULT_ORDER.length, 'CU Needs you and Right now have no controls (the seven arrangeable sections do)', String(await page.locator('[data-testid=dash-section-controls]').count()))
+  const focusPick = await page.getByRole('radiogroup', { name: 'Your week leads with' }).or(page.getByRole('group', { name: 'Your week leads with' })).first().innerText().catch(() => '')
+  check(/Spend/.test(focusPick) && /Runs/.test(focusPick) && /Agent time/.test(focusPick) && /Decisions/.test(focusPick), 'CU Customise offers the focus figure choice (Spend, Runs, Agent time, Decisions)', clean(focusPick))
   const widths = await page.locator('[data-testid=dash-section]').evaluateAll((els) => els.map((e) => [Math.round(e.getBoundingClientRect().left), Math.round(e.getBoundingClientRect().width), e.getAttribute('data-span')]))
   check(widths.every((w) => w[0] === widths[0][0] && w[1] === widths[0][1] && w[2] === 'full'), 'A22 in customise mode every section is one full-width track at 1600x1000', JSON.stringify(widths))
   // Pin toggle on a tile, in customise mode.
   const pinBtn = tileOf(WAIT).locator('[data-testid=project-tile-pin]')
-  check((await pinBtn.getAttribute('aria-pressed')) === 'false', 'A20 the customise pin toggle is aria-pressed=false while unpinned')
-  await pinBtn.click()
+  check((await pinBtn.getAttribute('aria-pressed')) === 'false', 'PR the pin toggle is aria-pressed=false while unpinned')
+  // Keyboard: the pin is the next Tab stop after the tile's Open button.
+  await tileOf(WAIT).locator('[data-testid=project-tile-main]').focus()
+  await page.keyboard.press('Tab')
+  check((await activeInfo()).testid === 'project-tile-pin', 'PR the pin toggle is the next Tab stop after the tile Open button', JSON.stringify(await activeInfo()))
+  await page.keyboard.press('Enter')
   await sleep(300)
-  check((await live()).includes(`Pinned ${WAIT}.`) && (await pinBtn.getAttribute('aria-pressed')) === 'true', 'A20 the pin toggle pins and announces', await live())
+  check((await live()).includes(`Pinned ${WAIT}.`) && (await pinBtn.getAttribute('aria-pressed')) === 'true' && (await pinBtn.getAttribute('aria-label')) === `Pin ${WAIT}`, 'PR Enter on the pin toggle pins, announces and keeps its name', await live())
+  check(/It is pin 2 of 2\./.test(await live()), 'PR the announcement says where a second pin went', await live())
   check((await layoutOf())?.pinned?.join() === `${pinId},${waitId}`, 'A20 pins are stored in the order they were pinned', JSON.stringify((await layoutOf())?.pinned))
   await until(async () => (await activeInfo()).testid === 'project-tile-pin', 5000, 50)
   check(((await activeInfo()).testid === 'project-tile-pin'), 'A20 focus stays on the pin toggle after pinning', JSON.stringify(await activeInfo()))
@@ -527,51 +542,57 @@ try {
   // Keyboard-only path: Tab from the Customise button to Reset, then the first section's controls.
   await customise.focus()
   const tabPath = []
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 16; i++) {
     await page.keyboard.press('Tab')
     const a = await activeInfo()
     tabPath.push(`${a.testid}${a.section ? `@${a.section}` : ''}`)
     if (a.testid === 'dash-section-hide') break
   }
-  check(tabPath.includes('dash-customise-reset') && tabPath.slice(-3).join() === 'dash-section-up@resume,dash-section-down@resume,dash-section-hide@resume', 'A21 Tab reaches Reset, then each section\'s up, down, Hide in order', tabPath.join(' > '))
+  check(tabPath.includes('dash-customise-reset') && tabPath.slice(-3).join() === 'dash-section-up@week,dash-section-down@week,dash-section-hide@week', 'CU Tab reaches Reset layout, then each section\'s up, down, Hide in order', tabPath.join(' > '))
   // The first section's up button is aria-disabled at the top: Enter announces and keeps focus.
-  await ctl('resume', 'dash-section-up').focus()
-  check((await ctl('resume', 'dash-section-up').getAttribute('aria-disabled')) === 'true' && (await ctl('resume', 'dash-section-up').getAttribute('disabled')) === null, 'A21 the first section\'s Move up is aria-disabled (not disabled)')
+  await ctl('week', 'dash-section-up').focus()
+  check((await ctl('week', 'dash-section-up').getAttribute('aria-disabled')) === 'true' && (await ctl('week', 'dash-section-up').getAttribute('disabled')) === null, 'CU the first section\'s Move up is aria-disabled (not disabled)')
   await page.keyboard.press('Enter')
   await sleep(300)
-  check((await live()).includes('Pick up where you left off is already first.') && (await activeInfo()).testid === 'dash-section-up', 'A21 at the top, Move up says "is already first." and keeps focus', `${await live()} ${JSON.stringify(await activeInfo())}`)
-  await ctl('projects', 'dash-section-down').focus()
+  check((await live()).includes('Your week is already first.') && (await activeInfo()).testid === 'dash-section-up', 'CU at the top, Move up says "is already first." and keeps focus', `${await live()} ${JSON.stringify(await activeInfo())}`)
+  await ctl('todos', 'dash-section-down').focus()
   await page.keyboard.press('Enter')
   await sleep(300)
-  check((await ctl('projects', 'dash-section-down').getAttribute('aria-disabled')) === 'true' && (await live()).includes('Projects is already last.'), 'A21 at the bottom, Move down says "is already last."', await live())
+  check((await ctl('todos', 'dash-section-down').getAttribute('aria-disabled')) === 'true' && (await live()).includes('To-dos is already last.'), 'CU at the bottom, Move down says "is already last."', await live())
   // Move down: focus stays on the pressed button.
-  await ctl('resume', 'dash-section-down').focus()
+  await ctl('week', 'dash-section-down').focus()
   await page.keyboard.press('Enter')
   await sleep(400)
   let ai = await activeInfo()
-  check((await slotOrder()).join() === 'today,resume,working,week,engagements,projects', 'A21 Move down moves the section one place', (await slotOrder()).join())
-  check(ai.testid === 'dash-section-down' && ai.section === 'resume', 'A21 after Move down focus stays on the pressed button', JSON.stringify(ai))
-  check((await live()).includes('Pick up where you left off moved down. Position 2 of 6.'), 'A21 Move down announces "moved down. Position 2 of 6."', await live())
-  await ctl('resume', 'dash-section-up').focus()
+  check((await slotOrder()).join() === 'pickup,week,upnext,projects,engagements,commits,todos', 'CU Move down moves the section one place', (await slotOrder()).join())
+  check(ai.testid === 'dash-section-down' && ai.section === 'week', 'CU after Move down focus stays on the pressed button', JSON.stringify(ai))
+  check((await live()).includes('Your week moved down. Position 2 of 7.'), 'CU Move down announces "moved down. Position 2 of 7."', await live())
+  await ctl('week', 'dash-section-up').focus()
   await page.keyboard.press('Enter')
   await sleep(400)
   ai = await activeInfo()
-  check((await slotOrder()).join() === DEFAULT_ORDER.join() && ai.testid === 'dash-section-up' && ai.section === 'resume', 'A21 Move up restores the order and keeps focus on the pressed button', `${(await slotOrder()).join()} ${JSON.stringify(ai)}`)
-  check((await live()).includes('moved up. Position 1 of 6.'), 'A21 Move up announces "moved up. Position 1 of 6."', await live())
-  check((await page.locator('[data-testid=dash-section][data-section=resume].motion-ring').count()) <= 1, 'a moved section carries at most one ring')
+  check((await slotOrder()).join() === DEFAULT_ORDER.join() && ai.testid === 'dash-section-up' && ai.section === 'week', 'CU Move up restores the order and keeps focus on the pressed button', `${(await slotOrder()).join()} ${JSON.stringify(ai)}`)
+  check((await live()).includes('moved up. Position 1 of 7.'), 'CU Move up announces "moved up. Position 1 of 7."', await live())
+  check((await page.locator('[data-testid=dash-section][data-section=week].motion-ring').count()) <= 1, 'a moved section carries at most one ring')
   // Hide and Show move focus to each other.
-  await ctl('today', 'dash-section-hide').focus()
+  await ctl('upnext', 'dash-section-hide').focus()
   await page.keyboard.press('Enter')
   await sleep(400)
   ai = await activeInfo()
-  check(ai.testid === 'dash-section-show' && ai.section === 'today', 'A21 Hide moves focus to that section\'s Show', JSON.stringify(ai))
-  check((await live()).includes('Today hidden.') && (await page.locator('[data-testid=dash-section][data-section=today]').getAttribute('data-state')) === 'hidden', 'A21 Hide announces "Today hidden." and collapses the section', await live())
-  check(/Today, hidden/.test(clean(await page.locator('[data-testid=dash-section][data-section=today]').innerText())), 'A21 a hidden section reads "Today, hidden"')
-  check((await layoutOf())?.hidden?.join() === 'today', 'A21 the hidden list is stored')
+  check(ai.testid === 'dash-section-show' && ai.section === 'upnext', 'CU Hide moves focus to that section\'s Show', JSON.stringify(ai))
+  check((await live()).includes('Up next hidden.') && (await page.locator('[data-testid=dash-section][data-section=upnext]').getAttribute('data-state')) === 'hidden', 'CU Hide announces "Up next hidden." and collapses the section', await live())
+  check(/Up next, hidden/.test(clean(await page.locator('[data-testid=dash-section][data-section=upnext]').innerText())), 'CU a hidden section reads "Up next, hidden"')
+  check((await layoutOf())?.hidden?.join() === 'upnext', 'CU the hidden list is stored')
   await page.keyboard.press('Enter')
   await sleep(400)
   ai = await activeInfo()
-  check(ai.testid === 'dash-section-hide' && ai.section === 'today' && (await live()).includes('Today shown.'), 'A21 Show moves focus back to Hide and announces "Today shown."', `${JSON.stringify(ai)} ${await live()}`)
+  check(ai.testid === 'dash-section-hide' && ai.section === 'upnext' && (await live()).includes('Up next shown.'), 'CU Show moves focus back to Hide and announces "Up next shown."', `${JSON.stringify(ai)} ${await live()}`)
+  // The focus figure: a radio group; the choice is stored and announced.
+  await page.getByRole('radio', { name: 'Runs' }).check({ force: true })
+  await sleep(300)
+  check((await layoutOf())?.focus === 'runs' && (await live()).includes('Your week now leads with runs.'), 'CU choosing the Runs focus figure stores it and announces', `${JSON.stringify(await layoutOf())} ${await live()}`)
+  await page.getByRole('radio', { name: 'Spend' }).check({ force: true })
+  await sleep(200)
   // Esc leaves customise mode and returns focus to the Customise button.
   await page.keyboard.press('Escape')
   await sleep(300)
@@ -583,36 +604,39 @@ try {
   await customise.click()
   await ctl('projects', 'dash-section-up').click()
   await ctl('week', 'dash-section-hide').click()
+  await page.getByRole('radio', { name: 'Agent time' }).check({ force: true })
   await sleep(300)
   const messy = await layoutOf()
-  check(messy?.order?.join() === 'resume,today,working,week,projects,engagements' && messy?.hidden?.join() === 'week', 'A21 a move and a hide are stored', JSON.stringify(messy))
+  check(messy?.order?.join() === 'week,pickup,projects,upnext,engagements,commits,todos' && messy?.hidden?.join() === 'week' && messy?.focus === 'time', 'CU a move, a hide and a focus figure are stored', JSON.stringify(messy))
   await T('dash-customise-reset').click()
   await sleep(300)
   const reset = await layoutOf()
-  check(reset?.order?.join() === DEFAULT_ORDER.join() && reset?.hidden?.length === 0 && reset?.pinned?.join() === `${pinId},${waitId}`, 'A21 Reset restores order and hidden and keeps pins', JSON.stringify(reset))
+  check(reset?.order?.join() === DEFAULT_ORDER.join() && reset?.hidden?.length === 0 && reset?.focus === 'spend' && reset?.pinned?.join() === `${pinId},${waitId}`, 'CU Reset layout restores order, hidden and the focus figure and keeps pins', JSON.stringify(reset))
   await until(async () => (await activeInfo()).testid === 'dash-customise-reset', 5000, 50)
-  check((await activeInfo()).testid === 'dash-customise-reset' &&(await live()).includes('Layout reset to the default.'), 'A21 Reset keeps focus on itself and announces', `${JSON.stringify(await activeInfo())} ${await live()}`)
-  // Reload keeps the layout.
+  check((await activeInfo()).testid === 'dash-customise-reset' && (await live()).includes('Layout reset to the default.'), 'CU Reset layout keeps focus on itself and announces', `${JSON.stringify(await activeInfo())} ${await live()}`)
+  // Reload keeps the layout, the focus figure and Pause motion.
   await ctl('projects', 'dash-section-up').click()
-  await ctl('today', 'dash-section-hide').click()
+  await ctl('upnext', 'dash-section-hide').click()
+  await page.getByRole('radio', { name: 'Decisions' }).check({ force: true })
   await sleep(300)
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 60_000 })
   await gotoProjects(page)
   await T('dash-customise').click()
   await T('dash-customise-bar').waitFor({ timeout: 5000 })
-  check((await slotOrder()).join() === 'resume,today,working,week,projects,engagements' && (await page.locator('[data-testid=dash-section][data-section=today]').getAttribute('data-state')) === 'hidden', 'A21 a reload keeps the order and the hidden section', (await slotOrder()).join())
+  check((await slotOrder()).join() === 'week,pickup,projects,upnext,engagements,commits,todos' && (await page.locator('[data-testid=dash-section][data-section=upnext]').getAttribute('data-state')) === 'hidden', 'CU a reload keeps the order and the hidden section', (await slotOrder()).join())
+  check(await page.getByRole('radio', { name: 'Decisions' }).isChecked(), 'CU a reload keeps the focus figure (Decisions)')
   await T('dash-customise-reset').click()
   await T('dash-customise').click()
-  check(!!(await until(async () => (await T('dash-customise-bar').count()) === 0, 5000, 50)), 'A21 Done leaves customise mode')
-  // All six hidden, customise closed: one quiet line and a button that opens customise.
+  check(!!(await until(async () => (await T('dash-customise-bar').count()) === 0, 5000, 50)), 'CU Done leaves customise mode')
+  // All seven hidden, customise closed: one quiet line and a button that opens customise.
   await T('dash-customise').click()
   await T('dash-customise-bar').waitFor({ timeout: 5000 })
   for (const id of DEFAULT_ORDER) {
     const hide = ctl(id, 'dash-section-hide')
     if ((await hide.count()) > 0) await hide.click()
   }
-  check(!!(await until(async () => ((await layoutOf())?.hidden ?? []).length === DEFAULT_ORDER.length, 5000, 50)), 'A21 all six sections can be hidden', JSON.stringify((await layoutOf())?.hidden))
+  check(!!(await until(async () => ((await layoutOf())?.hidden ?? []).length === DEFAULT_ORDER.length, 5000, 50)), 'CU all seven sections can be hidden', JSON.stringify((await layoutOf())?.hidden))
   await T('dash-customise').click()
   check(!!(await until(async () => (await T('dash-customise-bar').count()) === 0 && (await visible('[data-testid=dash-all-hidden]')), 5000, 50)), 'A21 with all six hidden and customise closed "All sections are hidden." shows')
   check(/^All sections are hidden\./.test(await text('dash-all-hidden')) && (await visible('[data-testid=dash-all-hidden-show]')), 'A21 the line has a Show sections button', await text('dash-all-hidden'))
@@ -626,9 +650,11 @@ try {
   const errorsBefore = pageErrors.length
   const corrupt = [
     ['a string', '"x"', DEFAULT_ORDER.join()],
-    ['a wrong version', '{"v":2,"order":["projects"]}', DEFAULT_ORDER.join()],
+    ['a wrong version', '{"v":3,"order":["projects"]}', DEFAULT_ORDER.join()],
     ['not JSON', 'not json{', DEFAULT_ORDER.join()],
-    ['unknown and duplicate ids', '{"v":1,"order":["today","bogus","today","projects"],"hidden":["nope","today","today"],"pinned":[7,"x","x"]}', null]
+    ['unknown and duplicate ids', '{"v":2,"order":["upnext","bogus","upnext","projects"],"hidden":["nope","upnext","upnext"],"pinned":[7,"x","x"]}', null],
+    ['a version 1 layout in the old default order', '{"v":1,"order":["resume","today","working","week","engagements","projects"],"hidden":[],"pinned":[]}', DEFAULT_ORDER.join()],
+    ['a version 1 layout with its own order', '{"v":1,"order":["projects","resume","today","working","week","engagements"],"hidden":["working","week"],"pinned":[]}', null]
   ]
   for (const [label, raw, want] of corrupt) {
     await page.evaluate(([k, v]) => localStorage.setItem(k, v), [LAYOUT_KEY, raw])
@@ -662,21 +688,67 @@ try {
   // While the tree runs: working agent rows and breathing marks (A25: none of it animates under reduced motion).
   await gotoProjects(page)
   const workingEarly = await until(async () => (await page.locator('[data-testid=dash-now] [data-testid=dash-agent-row][data-state=working]').count()) >= 1, 15_000, 150)
-  check(!!workingEarly, 'Working now lists at least one working agent row while the deep tree runs')
+  check(!!workingEarly, 'RN Right now lists at least one working agent row while the deep tree runs')
+  // Team pulse: the live org chart in miniature (a picture with a caption; nothing in it takes focus).
+  const pulseUp = await until(async () => (await T('dash-pulse-node').count()) >= 2, 15_000, 150)
+  const pulse = await page.evaluate(() => {
+    const p = document.querySelector('[data-testid=dash-pulse]')
+    const nodes = [...document.querySelectorAll('[data-testid=dash-pulse-node]')]
+    return {
+      drawn: !!p,
+      aria: p?.querySelector('svg')?.getAttribute('aria-hidden') ?? '',
+      focusable: p ? p.querySelectorAll('a, button, [tabindex]:not([tabindex="-1"])').length : -1,
+      caption: p?.querySelector('[data-testid=dash-pulse-caption]')?.textContent?.trim() ?? '',
+      nodes: nodes.map((n) => ({ state: n.getAttribute('data-state'), agent: n.getAttribute('data-agent'), depth: n.getAttribute('data-depth') })),
+      motion: p?.hasAttribute('data-motion') ?? false
+    }
+  })
+  check(!!pulseUp && pulse.drawn && pulse.nodes.length >= 2 && pulse.nodes.every((n) => n.state && n.agent && n.depth !== null), 'BR Team pulse draws a node per agent with state, agent and depth for a live mock run', JSON.stringify(pulse).slice(0, 300))
+  check(pulse.aria === 'true' && pulse.focusable === 0 && /\d/.test(pulse.caption), 'BR Team pulse is decorative (aria-hidden picture, nothing focusable) with a caption that counts agents', JSON.stringify({ a: pulse.aria, f: pulse.focusable, c: pulse.caption }))
+  check(pulse.nodes.some((n) => n.state === 'working'), 'BR the pulse shows a working node while agents work', JSON.stringify(pulse.nodes.map((n) => n.state)))
+  check((await T('dash-pause-motion').getAttribute('aria-pressed')) === 'false' && (await page.locator('.dash-page[data-motion-paused]').count()) === 0, 'BR Pause motion starts unpressed and the page is not marked paused')
+  const loops = () =>
+    page.evaluate(() => ({
+      breathing: document.querySelectorAll('.dash-pulse-halo[data-breathe]').length,
+      signals: document.querySelectorAll('[data-testid=dash-pulse-signal]').length,
+      infinite: document.getAnimations().filter((a) => a.playState === 'running' && a.effect?.getComputedTiming?.().iterations === Infinity && !!a.effect?.target?.closest?.('[data-testid=dashboard]')).length
+    }))
+  const loopsNormal = await loops()
+  check(loopsNormal.breathing + loopsNormal.infinite > 0, 'MO (control) with motion on, breathing loops run while agents work', JSON.stringify(loopsNormal))
+  await T('dash-pause-motion').click()
+  await sleep(300)
+  const loopsPaused = await loops()
+  check((await T('dash-pause-motion').getAttribute('aria-pressed')) === 'true' && (await page.locator('.dash-page[data-motion-paused]').count()) === 1 && /Motion paused/.test(await text('dash-pause-motion')), 'BR Pause motion pressed: aria-pressed true and the page carries data-motion-paused')
+  check(loopsPaused.breathing === 0 && loopsPaused.signals === 0 && loopsPaused.infinite === 0, 'MO Pause motion stops the breathing marks, the pulse halos and signals (no looping animation runs)', JSON.stringify(loopsPaused))
+  check((await T('dash-pulse-node').count()) >= 2 && /\d/.test(await text('dash-pulse-caption')), 'MO paused: the pulse keeps its static nodes and caption')
+  check((await layoutOf())?.motionPaused === true, 'BR Pause motion is saved in the layout', JSON.stringify(await layoutOf()))
+  check((await live()).includes('Motion paused.'), 'BR Pause motion announces "Motion paused."', await live())
+  await T('dash-pause-motion').click()
+  await sleep(300)
+  check((await T('dash-pause-motion').getAttribute('aria-pressed')) === 'false' && (await page.locator('.dash-page[data-motion-paused]').count()) === 0, 'BR Pause motion pressed again resumes the page')
+  // Reduced motion (Appearance): the working mark's ::after has no animation, no loop runs, the pulse is static.
   const markAnimOf = () =>
     page.evaluate(() => {
-      const m = document.querySelector('.dash-mark[data-state=working]')
+      const m = document.querySelector('.dash-mark[data-state=working][data-breathe]')
       return m ? getComputedStyle(m, '::after').animationName : 'no-mark'
     })
   const markNormal = await markAnimOf()
   await setAppearance({ reduceMotion: 'on' })
   const markAnim = await markAnimOf()
+  const loopsReduced = await loops()
   if (markAnim === 'no-mark') log('SKIP reduced-motion mark check: the working mark was gone before the setting applied')
   else {
-    check(markAnim === 'none', 'A25 with data-reduce-motion=on the working mark has no ::after animation', markAnim)
-    check(markNormal !== 'none', 'A25 (control) without reduced motion the working mark does animate', markNormal)
+    check(markAnim === 'none', 'MO with data-reduce-motion=on the working mark has no ::after animation', markAnim)
+    check(markNormal !== 'none', 'MO (control) without reduced motion the working mark does animate', markNormal)
   }
+  check(loopsReduced.breathing === 0 && loopsReduced.signals === 0 && loopsReduced.infinite === 0, 'MO reduced motion: no pulse halo breathes, no signal travels, no infinite animation runs', JSON.stringify(loopsReduced))
   await setAppearance({ reduceMotion: 'system' })
+  // The OS switch (prefers-reduced-motion) does the same without touching Appearance.
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await sleep(500)
+  const loopsOs = await loops()
+  check(loopsOs.breathing === 0 && loopsOs.signals === 0 && loopsOs.infinite === 0, 'MO prefers-reduced-motion: no pulse halo breathes, no signal travels, no infinite animation runs', JSON.stringify(loopsOs))
+  await page.emulateMedia({ reducedMotion: null })
   const schedProject = await createProject(page, { path: repoS, name: SCHED })
   check(!!schedProject, 'fourth project created for the schedule proposal')
   await openProject(page, SCHED)
@@ -689,10 +761,8 @@ try {
     const sameDay = d.getDate() === new Date().getDate()
     return { sameDay, time: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
   })
-  let scheduleId = null
-  if (later.sameDay) {
-    scheduleId = await page.evaluate(([pid, time]) => window.orgai.schedules.save({ name: 'E2E dash check', prompt: 'Nothing.', target: { kind: 'team', projectId: pid }, timing: { kind: 'daily', time }, enabled: true }).then((s) => s.id), [pinId, later.time])
-  } else log('SKIP the schedule row: less than 20 minutes to local midnight')
+  // Up next lists the next firing whatever the day, so a daily schedule 20 minutes ahead always shows (it may wrap past midnight).
+  const scheduleId = await page.evaluate(([pid, time]) => window.orgai.schedules.save({ name: 'E2E dash check', prompt: 'Nothing.', target: { kind: 'team', projectId: pid }, timing: { kind: 'daily', time }, enabled: true }).then((s) => s.id), [pinId, later.time])
   const LONG_TITLE = 'Prepare the quarterly planning document with the budget notes and the hiring plan and the risks and send it to the whole leadership group before the end of the month'
   await page.evaluate(
     async ([pid, long]) => {
@@ -721,23 +791,33 @@ try {
   await T('dash-needs-row').first().waitFor({ timeout: 15_000 })
 
   // ---------------------------------------------------------------- A8 / A10 / A11 Waiting on you, band and tiles
+  // Rows drawn plus "Show N more" are every open decision; the heading's count span and the Briefing's sentence say the same number.
   const rows = await T('dash-needs-row').count()
   const bell = await bellCount()
-  check(rows >= 2 && rows === bell, 'A8 dash-needs-row count equals the sidebar bell count', `${rows} vs ${bell}`)
+  const moreN = Number(/(\d+)/.exec(await text('dash-needs-more').catch(() => ''))?.[1] ?? 0)
+  const countN = Number(/^(\d+) decision/.exec(await text('dash-needs-count'))?.[1] ?? -1)
+  check(rows >= 2 && rows + moreN === bell, 'NY dash-needs-row count (plus Show N more) equals the sidebar bell count', `${rows} + ${moreN} vs ${bell}`)
+  check(countN === bell, 'NY the Needs you count span says the bell count in decisions', `${await text('dash-needs-count')} vs ${bell}`)
+  check(new RegExp(`(^| )${bell} decisions? needs? you\\.`).test(await briefText()), 'NY the Briefing status sentence says the same decision count', await briefText())
   const kinds = await needsKinds()
   check(kinds.includes('permission') && kinds.length >= 2 && new Set(kinds).size >= 2, 'A10 two kinds of decision wait (permission and the schedule proposal)', kinds.join())
   check(weightsAscend(kinds), 'A10 Waiting on you is ordered by kind weight (permission before proposal)', kinds.join())
   const keysBefore = await needsKeys()
   await sleep(2500)
   check((await needsKeys()).join('|') === keysBefore.join('|'), 'A10 a row does not move while other events arrive', `${keysBefore.join('|')} -> ${(await needsKeys()).join('|')}`)
-  check((await text('dash-needs-you')).startsWith('Waiting on you'), 'the section is called "Waiting on you"', (await text('dash-needs-you')).slice(0, 40))
+  check((await text('dash-needs-you')).startsWith('Needs you'), 'NY the region is called "Needs you"', (await text('dash-needs-you')).slice(0, 40))
+  check((await page.locator('[data-testid=dash-needs-you]').evaluate((el) => !el.closest('[data-testid=dash-section]'))) && (await page.locator('[data-testid=dash-section][data-section=now]').count()) === 1, 'NY Needs you is a fixed region outside the arrangeable slots; Right now is the one fixed slot')
   const regions = await headingFacts()
-  check(regions.present.includes('dash-needs-you') && regions.present.includes('dash-now') && regions.present.includes('dash-resume') && regions.present.includes('dash-today') && regions.present.includes('dash-week'), 'A15 with data every arrangeable section renders', JSON.stringify(regions.present))
+  check(['dash-needs-you', 'dash-now', 'dash-week', 'dash-todos'].every((id) => regions.present.includes(id)), 'EM with data Needs you, Right now, Your week and To-dos render', JSON.stringify(regions.present))
+  // Pick up lists ended and paused runs only (the stopped Chat run may be there); a run that is still live is Right now's.
+  const liveProjects = [waitId, busy?.id, schedProject?.id]
+  const pickProjects = await T('dash-resume-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-project')))
+  check(!pickProjects.some((p) => liveProjects.includes(p)), 'WK Pick up never lists a run that is still live (those are in Right now)', JSON.stringify(pickProjects))
   await checkHeadings('with data at 1600x1000')
-  // The band.
-  check((await page.locator('[data-testid=dash-now] [data-testid=dash-running-row][data-status]').count()) >= 1, 'A16 a live run appears in Working now (dash-now > dash-running-row)')
-  check((await T('dash-now-empty').count()) === 0, 'A16 there is no dash-now-empty while runs are live')
-  check((await text('dash-now')).startsWith('Working now'), 'the band is called "Working now"', (await text('dash-now')).slice(0, 30))
+  // Right now.
+  check((await page.locator('[data-testid=dash-now] [data-testid=dash-running-row][data-status]').count()) >= 1, 'RN a live run appears in Right now (dash-now > dash-running-row)')
+  check((await T('dash-now-empty').count()) === 0, 'RN there is no dash-now-empty while runs are live')
+  check((await text('dash-now')).startsWith('Right now'), 'RN the band is called "Right now"', (await text('dash-now')).slice(0, 30))
   const runIds = await T('dash-running-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-run')))
   check(new Set(runIds).size === runIds.length, 'each run appears once in the band', JSON.stringify(runIds))
   const waitGroup = page.locator('[data-testid=dash-now] [data-testid=dash-now-project]', { has: page.locator('h3', { hasText: WAIT }) })
@@ -751,7 +831,8 @@ try {
   check(!/\bcd /.test(tilesText) && (await T('tile-run').count()) === 0, 'A11 no project tile text contains the mock command and no tile has tile-run')
   // Tiles.
   const tiles = await page.locator('[data-testid=project-tile]').evaluateAll((els) => els.map((e) => e.getAttribute('data-name')))
-  check(tiles[0] === PINNED && [WAIT, SCHED].includes(tiles[1]) && [WAIT, SCHED].includes(tiles[2]) && tiles[3] === BUSY, 'A20 the pinned tile is first, then the projects with a decision, then the rest', JSON.stringify(tiles))
+  // Pinned first, then by last activity (newest run start first); a decision never reshuffles the tiles.
+  check(tiles.join('|') === [PINNED, SCHED, BUSY, WAIT].join('|'), 'PR the pinned tile is first, then the projects by newest run (a decision never reorders them)', JSON.stringify(tiles))
   const tileText = clean(await tileOf(WAIT).innerText())
   check(/\b1 decision waiting\b/.test(tileText), 'A11 the waiting tile says only its count word ("1 decision waiting")', tileText)
   const team = await tileOf(BUSY).evaluate((li) => {
@@ -780,23 +861,40 @@ try {
   const dashText = await T('dashboard').innerText()
   check(!/Allow for session|Always allow/i.test(dashText), 'A8 the Dashboard never offers Allow for session or Always allow')
   check((await T('tile-chip').count()) === 0, 'no tile chip shows when nothing is pending')
-  const setupKinds = await T('dash-setup-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')))
-  check(setupKinds.every((k) => k === 'connection'), 'To finish setting up holds no project, service or connector rows (only machine-dependent connection rows)', JSON.stringify(setupKinds))
-  check((await T('dash-limits').count()) === 0, 'A19 plan limits are absent under the mock adapter')
+  // The setup line is one quiet button in the Briefing; its rows live in a popover (only drawn when something needs setting up).
+  if (await T('dash-setup-line').count()) {
+    check((await T('dash-setup').count()) === 0, 'BR the setup rows stay in the popover until the line is opened')
+    await T('dash-setup-line').click()
+    await T('dash-setup').waitFor({ timeout: 5000 })
+    const setupKinds = await T('dash-setup-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')))
+    const lineText = clean(await text('dash-setup-line'))
+    check(setupKinds.length >= 1 && new RegExp(`^${setupKinds.length} things? to set up`).test(lineText), 'BR the setup line counts the rows its popover holds', `${lineText} / ${setupKinds.length}`)
+    check((await T('dash-setup-action').first().getAttribute('aria-label')) !== null && (await T('dash-setup-action').count()) === setupKinds.length, 'BR every setup row has an action named with its line')
+    await page.keyboard.press('Escape')
+    await T('dash-setup').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+    check((await T('dash-setup').count()) === 0 && (await activeInfo()).testid === 'dash-setup-line', 'BR Esc closes the setup popover and returns focus to the line', JSON.stringify(await activeInfo()))
+  } else log('note: no setup rows on this machine, so the setup line is not drawn (it only exists when something needs setting up)')
+  check((await T('plan-gauges').count()) === 0 && (await T('plan-gauge').count()) === 0, 'BR plan gauges are absent under the mock adapter')
   const removed = await page.evaluate((ids) => ids.filter((id) => document.querySelector(`[data-testid="${id}"]`)), REMOVED_IDS)
   check(removed.length === 0, 'the removed test ids are not on the page', removed.join())
   await checkBrief('with decisions waiting')
   const brief1 = await briefText()
-  check(/^2 decisions are waiting on you\./.test(brief1) && (brief1.match(/\./g) ?? []).length <= 3, 'A4 the brief leads with the waiting sentence and stays short', brief1)
+  check(/(^| )2 decisions need you\./.test(brief1) && (brief1.match(/\./g) ?? []).length <= 3, 'BR the visible status sentence says the decisions and stays short', brief1)
+  const workingNow = await page.locator('[data-testid=dash-agent-row][data-state=working]').count()
+  check(workingNow > 0 ? /agents? (is|are) working in \d+ runs?\./.test(brief1) : !/working in/.test(brief1), 'BR the status sentence says what is working, and only when something is', `${workingNow} working: ${brief1}`)
+  const statusAttn = await page.locator('[data-testid=dash-greeting-brief] .dash-brief-attn').innerText().catch(() => '')
+  check(/decisions? need you/.test(statusAttn), 'BR the decision sentence is the one emphasised part of the status', statusAttn)
 
   // ---------------------------------------------------------------- A14 Today
-  const today = T('dash-today')
-  await today.waitFor({ timeout: 10_000 })
+  const todosSection = T('dash-todos')
+  await todosSection.waitFor({ timeout: 10_000 })
+  check((await todosSection.locator('h2').innerText()).trim() === 'To-dos', 'WK the to-do section is called "To-dos" (own section, not part of Up next)')
   const todoRows = await T('dash-today-todo').evaluateAll((els) => els.map((e) => e.textContent ?? ''))
-  check(todoRows.length >= 2 && !todoRows.some((t) => /Already finished thing/.test(t)), 'A14 open to-dos from two lists show and a done to-do never does', JSON.stringify(todoRows).slice(0, 300))
-  const todayTodos = clean(await text('dash-today-todos'))
-  check(/To-dos/.test(todayTodos) && /Draft the project brief/.test(todayTodos) && todayTodos.includes(PINNED), 'A14 a to-do row names its list', todayTodos.slice(0, 200))
-  if (chatTodo) check(/Added by an assistant/.test(todayTodos), 'A14 an assistant-added to-do says "Added by an assistant"', todayTodos.slice(0, 300))
+  check(todoRows.length >= 2 && !todoRows.some((t) => /Already finished thing/.test(t)), 'WK open to-dos from two lists show and a done to-do never does', JSON.stringify(todoRows).slice(0, 300))
+  check((await todosSection.locator('[data-testid=dash-today-todo]').count()) === todoRows.length && (await T('dash-upnext').locator('[data-testid=dash-today-todo]').count()) === 0, 'WK the to-do rows live inside dash-todos, not inside Up next')
+  const todayTodos = clean(await T('dash-today-todos').evaluate((el) => el.textContent ?? ''))
+  check(/Draft the project brief/.test(todayTodos) && todayTodos.includes(PINNED), 'WK a to-do row names its list (for screen readers; the badge says it)', todayTodos.slice(0, 200))
+  if (chatTodo) check(/Added by an assistant/.test(todayTodos), 'WK an assistant-added to-do says "Added by an assistant"', todayTodos.slice(0, 300))
   const longRow = page.locator('[data-testid=dash-today-todo]', { has: page.locator('.dash-row-name', { hasText: 'Prepare the quarterly planning' }) })
   const longFacts = await longRow.evaluate((li) => {
     const name = li.querySelector('.dash-row-name')
@@ -804,17 +902,29 @@ try {
     return { clipped: name.scrollWidth > name.clientWidth, title: name.getAttribute('title') === name.textContent, btnInside: btn.getBoundingClientRect().right <= li.getBoundingClientRect().right + 1 }
   })
   check(longFacts.clipped && longFacts.title && longFacts.btnInside, 'A6 a long to-do title clips with an ellipsis and a title and the button stays in its row', JSON.stringify(longFacts))
-  if (scheduleId) {
-    // Visual pass: a schedule is a dot on the time rail; its time, name and target are the dot button's accessible name.
-    const sRow = page.locator(`[data-testid=dash-today-schedule][data-state=upcoming][data-id="${scheduleId}"]`)
-    const sText = clean((await sRow.getAttribute('aria-label').catch(() => '')) ?? '')
+  {
+    // Up next: a firing is a row whose one button is named with its name, day, time, target, kind and how far away it is.
+    await T('dash-upnext').waitFor({ timeout: 10_000 })
+    check((await T('dash-upnext').locator('h2').innerText()).trim() === 'Up next', 'WK the schedule section is called "Up next"')
+    const sRow = page.locator(`[data-testid=dash-upnext-row][data-id="${scheduleId}"]`)
+    const sBtn = sRow.locator('[data-testid=dash-upnext-open]')
+    const sText = clean((await sBtn.getAttribute('aria-label').catch(() => '')) ?? '')
     const timeWords = clean(await page.evaluate((t) => { const [h, m] = t.split(':').map(Number); return new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) }, later.time))
-    check((await sRow.count()) === 1 && sText.includes(timeWords) && sText.includes('E2E dash check') && sText.includes(PINNED), 'A14 a schedule due later today shows its time and target', `${sText} (wanted ${timeWords})`)
-    await setSettings({ schedulesPaused: true })
-    check(!!(await until(async () => (await T('dash-today-paused').count()) === 1, 5000)) && (await T('dash-today-schedule').count()) === 0, 'A14 paused schedules show the pause line and no rows', await text('dash-today'))
-    check(/Schedules are paused\. Nothing will start today\./.test(await text('dash-today-paused')), 'A14 the pause line reads "Schedules are paused. Nothing will start today."')
+    check((await sRow.count()) === 1 && sText.includes(timeWords) && sText.includes('E2E dash check') && sText.includes(PINNED) && /Team run\. In \d+ min\. Open schedule$/.test(sText), 'WK Up next shows the firing with its time, project, kind and how far away it is', `${sText} (wanted ${timeWords})`)
+    check((await sRow.locator('.badge, [class*=badge]').count()) >= 1 && (await T('dash-upnext-pause').count()) === 1 && (await T('dash-upnext-schedules').count()) === 1, 'WK Up next offers the away badge, Pause all and Schedules')
+    // Pause all (the Schedules page's own setting): rows give way to one line with the way back.
+    await T('dash-upnext-pause').click()
+    check(!!(await until(async () => (await T('dash-upnext-paused').count()) === 1, 5000)) && (await T('dash-upnext-row').count()) === 0 && (await T('dash-upnext-pause').count()) === 0, 'WK Pause all swaps the rows for the paused line', await text('dash-upnext'))
+    check(/Schedules are paused\. Nothing will start until you resume them\./.test(await text('dash-upnext-paused')), 'WK the paused line reads "Schedules are paused. Nothing will start until you resume them."')
+    check((await page.evaluate(async () => (await window.orgai.settings.get()).schedulesPaused)) === true && (await live()).includes('All schedules paused.'), 'WK Pause all saves the same schedulesPaused setting and announces', await live())
+    await T('dash-upnext-resume').click()
+    check(!!(await until(async () => (await T('dash-upnext-row').count()) === 1, 5000)) && (await T('dash-upnext-paused').count()) === 0, 'WK Resume schedules brings the row back')
+    // The row opens its schedule on the Schedules page.
+    await sBtn.click()
+    const onSchedules = await page.getByRole('heading', { level: 1, name: /Schedules/ }).waitFor({ timeout: 8000 }).then(() => true, () => false)
+    check(onSchedules, 'WK a row opens the Schedules page')
+    await gotoProjects(page)
     await setSettings({ schedulesPaused: false })
-    await until(async () => (await T('dash-today-schedule').count()) === 1, 5000)
   }
   // Start session fills the composer and starts no run.
   const runsBefore = (await runsOf(pinId)).length
@@ -832,48 +942,96 @@ try {
   // ---------------------------------------------------------------- A17 / A18 Your week
   const week = T('dash-week')
   await week.waitFor({ timeout: 10_000 })
-  const days = T('dash-strip-day')
-  check((await days.count()) === 7, 'A17 the ledger has 7 day buttons', String(await days.count()))
-  const todays = await days.evaluateAll((els) => els.filter((e) => e.getAttribute('data-today') !== null && e.getAttribute('data-today') !== 'false').length)
-  check(todays === 1, 'A17 exactly one ledger day is today', String(todays))
-  const stops2 = await days.evaluateAll((els) => els.filter((e) => e.tabIndex === 0).length)
-  check(stops2 === 1, 'A17 the ledger is one Tab stop', String(stops2))
-  const dayRuns = (await days.evaluateAll((els) => els.map((e) => Number(e.getAttribute('data-runs')) || 0))).reduce((a, b) => a + b, 0)
-  const weekRuns = Number(/\d+/.exec(await text('dash-week-runs'))?.[0] ?? -1)
-  check(dayRuns === weekRuns && dayRuns >= 3, 'A17 the day counts add up to dash-week-runs', `${dayRuns} vs ${weekRuns}`)
-  check(/\d/.test(await text('dash-week-time')) && (await T('dash-week-top-project').count()) === 1, 'A17 Time working and the most active project show with several active projects', `${await text('dash-week-time')} / ${await text('dash-week-top-project')}`)
-  check(!/\$0\.00/.test(await text('dash-week')), 'A17 Your week never reads $0.00', (await text('dash-week')).slice(0, 200))
-  check((await T('dash-week-usage').count()) === 1, 'Your week offers "See usage"')
-  const todayBtn = days.evaluateAll((els) => els.findIndex((e) => e.getAttribute('data-today') === 'true'))
-  await days.nth(await todayBtn).focus()
-  const readoutBefore = await text('dash-strip-readout')
-  await page.keyboard.press('ArrowLeft')
-  await sleep(200)
-  const readoutAfter = await text('dash-strip-readout')
-  check(readoutAfter !== readoutBefore, 'A17 ArrowLeft on the ledger changes its readout', `${readoutBefore} -> ${readoutAfter}`)
+  check((await week.locator('h2').innerText()).trim() === 'Your week', 'WK the section is called "Your week"')
+  // The stat cards: Spend leads by default, each card is one native button, none of them reads $0.00 or a bare zero cost.
+  const cardFacts = await T('dash-stat').evaluateAll((els) =>
+    els.map((li) => ({ stat: li.getAttribute('data-stat'), focus: li.hasAttribute('data-focus'), buttons: li.querySelectorAll('button, a, [role=button]').length, tag: li.querySelector('button')?.tagName ?? '', name: li.querySelector('button')?.getAttribute('aria-label') ?? '', value: li.querySelector('[data-testid=dash-stat-value]')?.textContent?.trim() ?? '', move: li.querySelector('[data-testid=dash-stat-move]')?.textContent?.trim() ?? '' }))
+  )
+  check(cardFacts.length >= 3 && cardFacts[0].stat === 'spend' && cardFacts[0].focus && cardFacts.filter((c) => c.focus).length === 1, 'WK the focus figure (Spend by default) leads Your week and is the one marked card', JSON.stringify(cardFacts.map((c) => [c.stat, c.focus])))
+  check(cardFacts.every((c) => c.buttons === 1 && c.tag === 'BUTTON' && /Opens Usage for the same 7 days$/.test(c.name) && c.name.startsWith(c.stat === 'time' ? 'Agent time' : c.stat[0].toUpperCase() + c.stat.slice(1))), 'WK each stat card is one native button named with its figure, movement and "Opens Usage for the same 7 days"', JSON.stringify(cardFacts.map((c) => c.name)))
+  check(cardFacts.every((c) => c.value.length > 0 && c.move.length > 0) && !/\$0\.00/.test(cardFacts.map((c) => c.value).join(' ')), 'WK every card has a figure and a movement line and never reads $0.00', JSON.stringify(cardFacts.map((c) => [c.value, c.move])))
+  const runsCard = cardFacts.find((c) => c.stat === 'runs')
+  const timeCard = cardFacts.find((c) => c.stat === 'time')
+  check(Number(runsCard?.value) >= 3, 'WK the Runs card counts the runs of the week', JSON.stringify(runsCard))
+  check(/^(\d+h )?\d+m|^\d+s|^Not measured/.test(timeCard?.value ?? ''), 'WK the Agent time card shows a duration or "Not measured"', JSON.stringify(timeCard))
+  // Each card opens Usage on the same 7 days: Spend with the cost metric pressed, Runs with the runs metric, Agent time on the period alone.
+  const usageFacts = () =>
+    page.evaluate(() => ({
+      period: [...document.querySelectorAll('[data-testid=usage-period] input[type=radio]')].find((i) => i.checked)?.parentElement?.textContent?.trim() ?? '',
+      pressed: [...document.querySelectorAll('[data-testid=usage-kpi-metric]')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.getAttribute('data-metric')),
+      h1: document.querySelector('main .topbar h1')?.textContent?.trim() ?? ''
+    }))
+  const openCard = async (stat, wantPressed) => {
+    await gotoProjects(page)
+    await T(`dash-stat-${stat}`).waitFor({ timeout: 10_000 })
+    await T(`dash-stat-${stat}`).click()
+    await T('usage-period').waitFor({ timeout: 15_000 })
+    await until(async () => (await usageFacts()).period === '7 days' && (wantPressed === null || (await usageFacts()).pressed.join() === wantPressed), 8000, 100)
+    return usageFacts()
+  }
+  const usTime = await openCard('time', null)
+  check(usTime.h1 === 'Usage' && usTime.period === '7 days', 'WK the Agent time card opens Usage on 7 days', JSON.stringify(usTime))
+  const usSpend = await openCard('spend', 'cost')
+  check(usSpend.period === '7 days' && usSpend.pressed.join() === 'cost', 'WK the Spend card opens Usage on 7 days with the Cost metric pressed', JSON.stringify(usSpend))
+  const usRuns = await openCard('runs', 'runs')
+  check(usRuns.period === '7 days' && usRuns.pressed.join() === 'runs', 'WK the Runs card opens Usage on 7 days with the Runs metric pressed', JSON.stringify(usRuns))
+  // Keyboard: a card is a native button, Enter opens it.
+  await gotoProjects(page)
+  await T('dash-stat-spend').focus()
   await page.keyboard.press('Enter')
-  const pressed = await page.evaluate(() => document.activeElement?.getAttribute('aria-pressed'))
-  check(pressed === 'true', 'A17 Enter pins a ledger day (aria-pressed=true)', String(pressed))
-  await page.keyboard.press('Escape')
-  const unpressed = await page.evaluate(() => document.activeElement?.getAttribute('aria-pressed'))
-  check(unpressed === 'false', 'A17 Esc unpins it', String(unpressed))
-  check(!(await visible('[data-testid=dash-customise-bar]')), 'Esc on the ledger does not turn customise on or off')
-  const track = await page.locator('.dash-strip-track').first().evaluate((el) => ({ h: Math.round(el.getBoundingClientRect().height), data: el.getAttribute('data-track') }))
-  check(track.h === 96 && track.data === '96', 'A18 the ledger track is 96 px at 1600x1000', JSON.stringify(track))
-  const bars = await page.locator('[data-testid=dash-strip-bar]').evaluateAll((els) => els.map((e) => e.getBoundingClientRect().height))
-  check(bars.length >= 1 && bars.every((h) => h >= 2), 'A18 a day with runs has a bar of at least 2 px', JSON.stringify(bars))
+  await T('usage-period').waitFor({ timeout: 15_000 })
+  check((await usageFacts()).period === '7 days', 'WK Enter on a stat card opens Usage')
+  // The activity map: 14 local days across, six blocks down, a text alternative, today's column marked.
+  await gotoProjects(page)
+  await T('dash-heat').waitFor({ timeout: 10_000 })
+  const heat = await page.evaluate(() => {
+    const cols = [...document.querySelectorAll('[data-testid=dash-heat-col]')]
+    const cells = [...document.querySelectorAll('[data-testid=dash-heat-cell]')]
+    const total = cells.reduce((a, c) => a + Number(c.getAttribute('data-runs') || 0), 0)
+    const d = new Date()
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    const heatEl = document.querySelector('[data-testid=dash-heat]')
+    return {
+      cols: cols.length,
+      cells: cells.length,
+      total,
+      todayCols: cols.filter((c) => c.hasAttribute('data-today')).length,
+      lastIsToday: cols[cols.length - 1]?.hasAttribute('data-today') ?? false,
+      lastKey: cols[cols.length - 1]?.getAttribute('data-date') ?? '',
+      key,
+      states: [...new Set(cells.map((c) => c.getAttribute('data-state')))].sort().join(),
+      role: heatEl?.getAttribute('role') ?? '',
+      alt: heatEl?.getAttribute('aria-label') ?? '',
+      totalText: document.querySelector('[data-testid=dash-activity-total]')?.textContent?.trim() ?? '',
+      todayText: document.querySelector('[data-testid=dash-activity-today]')?.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+    }
+  })
+  check(heat.cols === 14 && heat.cells === 84 && heat.todayCols === 1 && heat.lastIsToday && heat.lastKey === heat.key, 'WK the activity map has 14 day columns of 6 blocks and today is the last, marked column', JSON.stringify(heat))
+  check(heat.role === 'img' && /^Runs started per four-hour block over the last 14 days\. \d+ runs? in all\. Busiest: /.test(heat.alt), 'WK the activity map is one image with a text alternative naming the busiest blocks', heat.alt)
+  check(heat.total >= 3 && heat.totalText === `${heat.total} runs · 14 days` && heat.states.includes('some') && /^Today · \d+ runs? started today\./.test(heat.todayText), 'WK the map total, cell counts and the "Today" footer agree', JSON.stringify(heat))
+  check(Number(runsCard?.value) === heat.total, 'WK on a one-day history the Runs card equals the map total', `${runsCard?.value} vs ${heat.total}`)
+  await T('dash-week-usage').click()
+  await T('usage-period').waitFor({ timeout: 15_000 })
+  await until(async () => (await usageFacts()).period === '30 days', 8000, 100)
+  check((await usageFacts()).period === '30 days', 'WK the map link opens Usage on 30 days', JSON.stringify(await usageFacts()))
+  await gotoProjects(page)
   await shot('week-1600x1000')
 
   // ---------------------------------------------------------------- A22 pairs outside customise mode
   const slots = await page.locator('[data-testid=dash-section]').evaluateAll((els) =>
-    els.map((e) => ({ id: e.getAttribute('data-section'), span: e.getAttribute('data-span'), x: Math.round(e.getBoundingClientRect().left), y: Math.round(e.getBoundingClientRect().top), w: Math.round(e.getBoundingClientRect().width), state: e.getAttribute('data-state') }))
+    els.map((e) => ({ id: e.getAttribute('data-section'), span: e.getAttribute('data-span'), lead: e.hasAttribute('data-lead'), x: Math.round(e.getBoundingClientRect().left), y: Math.round(e.getBoundingClientRect().top), w: Math.round(e.getBoundingClientRect().width), state: e.getAttribute('data-state') }))
   )
+  const arrangeable = slots.filter((s) => s.id !== 'now')
+  check(arrangeable.map((s) => s.id).join() === DEFAULT_ORDER.filter((id) => arrangeable.some((s) => s.id === id)).join() && arrangeable.every((s) => s.state === 'shown'), 'EM outside customise only the shown sections are slots, in the saved order', JSON.stringify(arrangeable))
+  // The lead section (Your week, first visible) joins the left column under Needs you; the others pair two to a row or take the row.
   const byRow = new Map()
-  for (const s of slots) byRow.set(s.y, [...(byRow.get(s.y) ?? []), s])
+  for (const s of arrangeable.filter((s) => !s.lead)) byRow.set(s.y, [...(byRow.get(s.y) ?? []), s])
   const rowsOf = [...byRow.values()]
   const pairedOk = rowsOf.every((r) => (r.length === 1 && r[0].span === 'full') || (r.length === 2 && r.every((s) => s.span === 'half') && r[0].x < r[1].x && Math.abs(r[0].w - r[1].w) <= 2))
-  check(pairedOk && rowsOf.some((r) => r.length === 2) && slots.length >= 5 && slots.map((s) => s.id).join() === DEFAULT_ORDER.filter((id) => slots.some((s) => s.id === id)).join(), 'A22 outside customise mode the half-width sections sit side by side and Projects takes the row', JSON.stringify(slots))
-  check(slots.find((s) => s.id === 'projects')?.span === 'full', 'A22 Projects is always full width')
+  check(pairedOk, 'SZ outside customise mode two half-width sections sit side by side and the others take the row (1600x1000)', JSON.stringify(arrangeable))
+  log(`note: ${rowsOf.filter((r) => r.length === 2).length} paired row(s) of half-width sections at 1600x1000`)
+  check(slots.find((s) => s.id === 'projects')?.span === 'full', 'SZ Projects is always full width')
+  check(slots.find((s) => s.id === 'week')?.lead === true, 'SZ Your week, the first visible section, takes the work area\'s left column (data-lead)')
 
   // ---------------------------------------------------------------- A25 reduced motion
   await setAppearance({ reduceMotion: 'on' })
@@ -957,7 +1115,7 @@ try {
   await sleep(200)
   check((await activeInfo()).testid === 'new-project', 'Escape on the New project dialog returns focus to New project', JSON.stringify(await activeInfo()))
 
-  // ---------------------------------------------------------------- Sizes and themes (A1, A6, A18, A22, A23)
+  // ---------------------------------------------------------------- Sizes and themes (SZ)
   await setName('Bartholomew-Maximilian Featherstonehaugh')
   for (const [w, h] of [[1024, 640], [1600, 1000]]) {
     await setSize(w, h)
@@ -968,43 +1126,61 @@ try {
       await T('dash-needs-you').waitFor({ timeout: 10_000 })
       const m = await page.evaluate(() => {
         const n = document.querySelector('[data-testid=dash-needs-you]').getBoundingClientRect()
+        const now = document.querySelector('[data-testid=dash-now]')?.getBoundingClientRect()
         const hero = document.querySelector('[data-testid=dashboard-hero]').getBoundingClientRect()
         const sal = document.querySelector('[data-testid=dash-greeting-salutation]')
-        const tr = document.querySelector('.dash-strip-track')
+        const actions = document.querySelector('[data-testid=dash-quick-actions]')?.getBoundingClientRect()
+        const pulse = document.querySelector('[data-testid=dash-pulse]')?.getBoundingClientRect()
+        const pageW = document.querySelector('.dash-page')?.clientWidth ?? 0
+        // An inner scroller: a descendant of the page that scrolls on its own (the Dashboard has one page scroll).
+        const inner = [...document.querySelectorAll('[data-testid=dashboard] *')]
+          .filter((e) => {
+            const cs = getComputedStyle(e)
+            return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') && e.scrollHeight > e.clientHeight + 1 && e.clientHeight > 0
+          })
+          .map((e) => `${e.tagName}.${String(e.className).slice(0, 30)}`)
         return {
           theme: document.documentElement.dataset.theme,
-          needsTop: n.top,
           vh: window.innerHeight,
           heroBottom: hero.bottom,
-          needsRows: document.querySelectorAll('[data-testid=dash-needs-row]').length,
-          salClipped: sal.scrollWidth > sal.clientWidth,
+          heroRight: hero.right,
           salInside: sal.getBoundingClientRect().right <= hero.right + 1,
-          track: tr ? Math.round(tr.getBoundingClientRect().height) : -1,
-          tracks: document.querySelector('.dash-page')?.getAttribute('data-tracks')
+          actionsBottom: actions ? actions.bottom : -1,
+          pulseInside: !pulse || (pulse.right <= hero.right + 1 && pulse.left >= hero.left - 1),
+          pageW,
+          needsRight: n.right,
+          needsLeft: n.left,
+          needsTop: n.top,
+          nowLeft: now ? now.left : -1,
+          nowTop: now ? now.top : -1,
+          inner
         }
       })
       const o = await overflowFacts()
       check(m.theme === theme, `theme is ${theme} ${tag}`)
-      check(o.over <= 1 && o.docOver <= 1, `A23 the dashboard has no horizontal overflow ${tag}`, JSON.stringify({ ...m, ...o }))
-      check(o.winTop === 0, `A23 the window does not scroll ${tag}`, JSON.stringify(o))
-      check(m.salInside, `A6 a 40-character name stays inside the greeting ${tag}`, JSON.stringify(m))
-      check(m.track === (h === 640 ? 72 : 96), `A18 the ledger track is ${h === 640 ? 72 : 96} px ${tag}`, JSON.stringify(m))
+      check(o.over <= 1 && o.docOver <= 1, `SZ the dashboard has no horizontal overflow ${tag}`, JSON.stringify({ ...m, ...o }))
+      check(o.winTop === 0, `SZ the window does not scroll ${tag}`, JSON.stringify(o))
+      check(m.inner.length === 0, `SZ the Dashboard has no inner scrolling column (one page scroll) ${tag}`, m.inner.join(' | '))
+      check(m.salInside, `SZ a 40-character name stays inside the greeting ${tag}`, JSON.stringify(m))
+      check(m.pulseInside, `SZ the Team pulse stays inside the Briefing ${tag}`, JSON.stringify(m))
       await visualPassChecks(tag)
-      check(m.tracks === (w >= 1500 ? '2' : '1'), `the page uses ${w >= 1500 ? 'two tracks' : 'one track'} ${tag}`, JSON.stringify(m))
+      // Two work columns from an 880 px page: Needs you left, Right now right; one column below that.
+      const twoCols = m.pageW >= 880
+      check(m.nowLeft > 0 && (twoCols ? m.nowLeft >= m.needsRight - 1 : m.nowLeft <= m.needsLeft + 1 && m.nowTop > m.needsTop), `SZ the work area is ${twoCols ? 'two columns' : 'one column'} at a ${m.pageW} px page ${tag}`, JSON.stringify(m))
       await checkHeadings(tag)
+      check(m.heroBottom > 0 && m.actionsBottom > 0 && m.actionsBottom <= m.vh, `SZ the greeting, status and quick actions sit above the fold ${tag}`, JSON.stringify(m))
       if (h === 640) {
-        check(m.heroBottom <= m.vh && m.needsTop >= 0 && m.needsTop < m.vh - 40 && m.needsRows <= 3, `A23 the greeting and Waiting on you start inside the viewport ${tag}`, JSON.stringify(m))
         const scrolled = await page.evaluate(() => {
           const d = document.querySelector('[data-testid=dashboard]')
           d.scrollTop = 300
           return { dashTop: d.scrollTop, winTop: document.scrollingElement?.scrollTop ?? 0, canScroll: d.scrollHeight > d.clientHeight }
         })
-        check(scrolled.canScroll && scrolled.dashTop > 0 && scrolled.winTop === 0, `A23 .dashboard scrolls and the window does not ${tag}`, JSON.stringify(scrolled))
+        check(scrolled.canScroll && scrolled.dashTop > 0 && scrolled.winTop === 0, `SZ .dashboard is the one page scroll and the window does not scroll ${tag}`, JSON.stringify(scrolled))
         await page.evaluate(() => (document.querySelector('[data-testid=dashboard]').scrollTop = 0))
       }
-      if (w === 1024) {
+      if (!twoCols) {
         const col = await page.locator('[data-testid=dash-section]').evaluateAll((els) => new Set(els.map((e) => Math.round(e.getBoundingClientRect().left))).size)
-        check(col === 1, `A22 one track at 1024x640 ${tag}`, String(col))
+        check(col === 1, `SZ every section shares one column at ${w}x${h} ${tag}`, String(col))
       }
       await screenshot(page, `dashboard-${w}x${h}-${theme}`)
     }
@@ -1012,20 +1188,7 @@ try {
   await setTheme('dark')
   await setSize(1600, 1000)
   await setName('Sam')
-
-  // Visual pass: a stat tile is a button that scrolls to its section and focuses its h2; the window never scrolls.
-  for (const [stat, heading] of [['waiting', '[data-testid=dash-needs-you] [data-section-heading]'], ['today', '#dash-h-week']]) {
-    const tileBtn = page.locator(`button[data-testid=dash-hero-stat][data-stat=${stat}]`)
-    if ((await tileBtn.count()) === 0) {
-      check(false, `VP the ${stat} stat tile is a button`)
-      continue
-    }
-    await page.evaluate(() => (document.querySelector('[data-testid=dashboard]').scrollTop = 0))
-    await tileBtn.click()
-    const landed = await until(() => page.evaluate((sel) => document.activeElement === document.querySelector(sel), heading), 3000, 50)
-    const win = await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0)
-    check(!!landed && win === 0, `VP the ${stat} stat tile moves focus to its section heading`, JSON.stringify(await activeInfo()))
-  }
+  await page.evaluate(() => (document.querySelector('[data-testid=dashboard]').scrollTop = 0))
   await page.evaluate(() => (document.querySelector('[data-testid=dashboard]').scrollTop = 0))
 
   // ---------------------------------------------------------------- Inline Allow once (its own project; WAIT keeps waiting for the relaunch)
@@ -1105,36 +1268,47 @@ try {
   await until(async () => (await page.evaluate((id) => window.orgai.runs.get(id), outRun.id))?.summary?.status === 'finished', 20_000)
   if (!wasPaused || !madeOutput) log('SKIP part of the paused / output rows:', JSON.stringify({ wasPaused, madeOutput }))
   await gotoProjects(page)
+  // Pick up: each row is a state word, the run's title and one small button (Continue or Open) named with that title.
   const pausedRow = page.locator(`[data-testid=dash-resume-row][data-kind=paused][data-run="${pausedRun.id}"]`)
+  await T('dash-resume').waitFor({ timeout: 10_000 }).catch(() => {})
+  check((await T('dash-resume').locator('h2').innerText().catch(() => '')).trim() === 'Pick up', 'WK the section is called "Pick up"')
   if (wasPaused && (await pausedRow.waitFor({ timeout: 10_000 }).then(() => true, () => false))) {
-    check(/Paused/.test(clean(await pausedRow.innerText())) && (await pausedRow.locator('[data-testid=dash-resume-action]').getAttribute('data-action')) === 'resume', 'A13 a paused run is the first Pick up row and offers Resume now', clean(await pausedRow.innerText()))
-    check((await page.locator('[data-testid=dash-resume-row]').first().getAttribute('data-kind')) === 'paused', 'A13 paused rows come before every other kind')
-    await pausedRow.locator('[data-testid=dash-resume-action]').click()
-    check(!!(await until(async () => (await pausedRow.count()) === 0, 15_000)), 'A13 Resume now resumes the run and its paused row leaves')
-  } else check(false, 'A13 a paused run shows a Pick up row', String(wasPaused))
+    const pAction = pausedRow.locator('[data-testid=dash-resume-action]')
+    check((await pausedRow.getAttribute('data-status')) === 'Paused' && /Paused/.test(clean(await pausedRow.locator('.dash-pick-state').innerText())), 'WK a paused run row leads with the state word "Paused"', clean(await pausedRow.innerText()))
+    const pName = (await pAction.getAttribute('aria-label')) ?? ''
+    check((await pAction.getAttribute('data-action')) === 'resume' && clean(await pAction.innerText()) === 'Continue' && /^Continue .*Limit test.* now$/.test(pName), 'WK a paused row offers Continue, named with the run title ("Continue <title> now")', pName)
+    await pAction.click()
+    check(!!(await until(async () => (await pausedRow.count()) === 0, 15_000)), 'WK Continue resumes the paused run and its row leaves Pick up')
+  } else check(false, 'WK a paused run shows a Pick up row', String(wasPaused))
   await gotoProjects(page)
   const outRow = page.locator(`[data-testid=dash-resume-row][data-run="${outRun.id}"]`)
-  const outAction = outRow.locator('[data-testid=dash-resume-action][data-action=output]')
-  if (madeOutput && (await outAction.waitFor({ timeout: 15_000 }).then(() => true, () => false))) {
-    check(/Open output/.test(clean(await outAction.innerText())), 'A13 a finished run with an output shows "Open output"', clean(await outAction.innerText()))
-    await outAction.click()
-    const tab = page.locator('[data-testid=side-tab-outputs]')
-    const opened = await tab.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)
-    check(opened && (await page.locator('main .topbar h1').first().innerText()).trim() === INLINE, 'A13 Open output opens that run in its project with the Outputs tab', String(opened))
-    check(opened && (await tab.getAttribute('aria-selected')) === 'true', 'A13 the Outputs tab is the selected side tab', String(await tab.getAttribute('aria-selected')))
+  if (madeOutput && (await outRow.waitFor({ timeout: 15_000 }).then(() => true, () => false))) {
+    const oAction = outRow.locator('[data-testid=dash-resume-action]')
+    const oName = (await oAction.getAttribute('aria-label')) ?? ''
+    check(/^(Finished|Stopped|Ended)/.test((await outRow.getAttribute('data-status')) ?? '') || (await outRow.getAttribute('data-status')) !== null, 'WK an ended run row carries a state word', String(await outRow.getAttribute('data-status')))
+    check(['continue', 'open'].includes((await oAction.getAttribute('data-action')) ?? '') && new RegExp(`^(Continue|Open) .*Produce the deliverables`).test(oName), 'WK the ended run offers Continue or Open named with its title', oName)
+    await outRow.locator('[data-testid=dash-resume-main]').click()
+    const opened = await page.locator('main .topbar h1').first().innerText().then((t) => t.trim() === INLINE, () => false)
+    check(opened || !!(await until(async () => (await page.locator('main .topbar h1').first().innerText()).trim() === INLINE, 8000, 100)), 'WK a Pick up row opens its run in its project')
     await gotoProjects(page)
-  } else check(false, 'A13 a finished run with an output offers "Open output"', String(madeOutput))
+  } else check(false, 'WK an ended run with an output shows a Pick up row', String(madeOutput))
+  const pickRows = await T('dash-resume-row').count()
+  check((await T('dash-resume-row').evaluateAll((els) => els.every((e) => e.querySelectorAll('button').length === 2))), 'WK every Pick up row is two native buttons: the row (opens the run) and its Continue / Open')
+  log(`note: Pick up lists ${pickRows} row(s)`)
+
   // Several outputs, files that are gone and the cap with "Show N more" are covered by the unit tests (resumeRows).
 
   // A second window follows a change in the layout (the storage event).
   await T('dash-customise').click()
   const storedLayout = await layoutOf()
-  await page.evaluate(([k, cur]) => window.dispatchEvent(new StorageEvent('storage', { key: k, newValue: JSON.stringify({ ...cur, v: 1, order: ['week', 'resume', 'today', 'working', 'projects'], hidden: [] }) })), [LAYOUT_KEY, storedLayout])
+  await page.evaluate(([k, cur]) => window.dispatchEvent(new StorageEvent('storage', { key: k, newValue: JSON.stringify({ ...cur, v: 2, order: ['todos', 'week', 'pickup', 'upnext', 'projects', 'engagements', 'commits'], hidden: [] }) })), [LAYOUT_KEY, storedLayout])
   await sleep(300)
-  check((await slotOrder()).join() === 'week,resume,today,working,engagements,projects', 'A21 a storage event from another window changes the order here (an older five-section layout gains Engagements before Projects)', (await slotOrder()).join())
+  check((await slotOrder()).join() === 'todos,week,pickup,upnext,projects,engagements,commits', 'CU a storage event from another window changes the order here', (await slotOrder()).join())
   await T('dash-customise-reset').click()
   await T('dash-customise').click()
 
+  // The last visit was before this script began, so what ended since then is "since" (a relaunch never advances it).
+  await page.evaluate(([k, t]) => localStorage.setItem(k, String(t)), [LAST_SEEN_KEY, T0 - 60_000])
   log('relaunching')
   ;({ app, page, shot } = await relaunch(app, { shotPrefix: 'dashboard' }))
   log('relaunched')
@@ -1142,25 +1316,25 @@ try {
   await gotoProjects(page)
   await T('dash-resume-row').first().waitFor({ timeout: 15_000 }).catch(() => {})
   await sleep(600)
-  check((await salutationText()).endsWith(', Sam.'), 'A7 the name survives a relaunch', await salutationText())
-  check((await text('dash-resume')).startsWith('Pick up where you left off'), 'the section is called "Pick up where you left off"', (await text('dash-resume')).slice(0, 40))
-  const resumeFacts = await T('dash-resume-row').evaluateAll((els) => els.map((e) => ({ kind: e.getAttribute('data-kind'), run: e.getAttribute('data-run'), project: e.getAttribute('data-project'), text: (e.textContent ?? '').replace(/\s+/g, ' ').trim() })))
+  check((await salutationText()).endsWith(', Sam'), 'A7 the name survives a relaunch', await salutationText())
+  check((await text('dash-resume')).startsWith('Pick up'), 'WK after a relaunch the section is called "Pick up"', (await text('dash-resume')).slice(0, 40))
+  const resumeFacts = await T('dash-resume-row').evaluateAll((els) => els.map((e) => ({ kind: e.getAttribute('data-kind'), run: e.getAttribute('data-run'), project: e.getAttribute('data-project'), status: e.getAttribute('data-status'), since: e.hasAttribute('data-since'), text: (e.textContent ?? '').replace(/\s+/g, ' ').trim() })))
   const closedWait = resumeFacts.find((r) => r.kind === 'closed' && r.text.includes(WAIT))
-  check(!!closedWait && closedWait.text.includes('Was waiting on you when OrgAI closed.'), 'A13 a run ended by quit while waiting shows "Was waiting on you when OrgAI closed."', JSON.stringify(resumeFacts).slice(0, 400))
+  check(!!closedWait && /waiting on you when OrgAI closed/i.test(closedWait.text), 'WK a run ended by quit while waiting says it was waiting on you when OrgAI closed', JSON.stringify(resumeFacts).slice(0, 500))
   const waitResumeRow = page.locator('[data-testid=dash-resume-row][data-kind=closed]', { hasText: WAIT })
-  check((await waitResumeRow.locator('[data-testid=dash-resume-action][data-action=continue]').count()) === 1, 'A13 that row offers Continue')
+  check((await waitResumeRow.locator('[data-testid=dash-resume-action][data-action=continue]').count()) === 1, 'WK that row offers Continue')
+  check((await waitResumeRow.locator('[data-testid=dash-resume-action]').getAttribute('aria-label'))?.startsWith('Continue ') === true && (await waitResumeRow.getAttribute('data-since')) !== null && (await waitResumeRow.locator('[data-testid=dash-resume-new]').count()) === 1, 'WK the Continue button is named with the run title and the row carries the "ended since your last visit" marker', String(await waitResumeRow.locator('[data-testid=dash-resume-action]').getAttribute('aria-label')))
   const runKeys = resumeFacts.filter((r) => r.run).map((r) => r.run)
-  check(new Set(runKeys).size === runKeys.length, 'A13 each chain appears once in Pick up', JSON.stringify(runKeys))
-  const kindOrder = resumeFacts.map((r) => r.kind)
-  const rank = { paused: 0, closed: 1, failed: 2, finished: 3, pinned: 4, recent: 5 }
-  check(kindOrder.every((k, i) => i === 0 || rank[k] >= rank[kindOrder[i - 1]]), 'A13 Pick up rows follow the kind order (closed, then pinned, then recent)', kindOrder.join())
-  const pinnedAfter = page.locator(`[data-testid=dash-resume-row][data-project="${pinId}"]`)
-  check((await pinnedAfter.count()) === 1 && (await pinnedAfter.locator('[data-testid=dash-resume-action]').getAttribute('data-action')) === 'new-run', 'A13 the pinned project without runs still offers New run after a relaunch')
-  check((await T('dash-now').count()) === 0 && (await T('dash-now-empty').count()) === 0, 'A15 with nothing running Working now is not rendered and there is no dash-now-empty')
+  check(new Set(runKeys).size === runKeys.length, 'WK each chain appears once in Pick up', JSON.stringify(runKeys))
+  check((await T('dash-resume-row').locator('[data-action=new-run]').count()) === 0 && !resumeFacts.some((r) => r.kind === 'pinned'), 'WK a pinned project with no runs is not a Pick up row after a relaunch either')
+  check((await T('dash-now').count()) === 0 && (await T('dash-now-empty').count()) === 0, 'RN with nothing running Right now is not rendered and there is no dash-now-empty')
+  // The since line: what ended after the last visit (a relaunch keeps the stored last-seen time, so the cut runs count).
+  const sinceLine = await T('dash-since').first().evaluate((el) => ({ sr: el.querySelector('.sr-only')?.textContent?.trim() ?? '', visible: el.querySelector('.dash-since-visual')?.textContent?.replace(/\s+/g, ' ').trim() ?? '', hiddenVisual: el.querySelector('.dash-since-visual')?.getAttribute('aria-hidden') })).catch(() => null)
+  check(!!sinceLine && /^Since .+: \d+ .+\.$/.test(sinceLine.sr) && sinceLine.hiddenVisual === 'true' && sinceLine.visible.startsWith('Since '), 'BR after a relaunch the since line says what ended since the last visit (screen-reader sentence, decorative visual)', JSON.stringify(sinceLine))
   check((await page.locator('[data-testid=project-tile]').first().getAttribute('data-name')) === PINNED, 'A20 the pin survives a relaunch (the pinned tile is first)')
   const goneIds = await page.evaluate((ids) => ids.filter((id) => document.querySelector(`[data-testid="${id}"]`)), REMOVED_IDS)
   check(goneIds.length === 0, 'the removed test ids are absent after the relaunch too', goneIds.join())
-  check(/waiting on you when OrgAI closed/.test(await briefText()), 'A4 the brief names the runs that were waiting when OrgAI closed', await briefText())
+  check(/Nothing needs you\./.test(await briefText()) && !/working/.test(await briefText()), 'BR after a relaunch (no live run, no decision) the status says "Nothing needs you."', await briefText())
   await checkBrief('after the relaunch')
   await checkHeadings('after the relaunch')
   await shot('relaunch')
@@ -1190,12 +1364,121 @@ try {
   await sleep(800)
   const rowLanded = await page.evaluate(() => ({ h1: document.querySelector('main .topbar h1')?.textContent?.trim() ?? '', body: document.activeElement === document.body }))
   check(rowLanded.h1 === WAIT && !rowLanded.body, 'a row click opens the run and focus stays on a real element', JSON.stringify(rowLanded))
-  // New run on the pinned row opens a draft.
+  // The primary quick action continues the pinned project.
   await gotoProjects(page)
-  await page.locator(`[data-testid=dash-resume-row][data-project="${pinId}"] [data-testid=dash-resume-action]`).click()
+  await T('dash-continue').click()
   await sleep(800)
-  const newRunRow = await page.evaluate(() => ({ h1: document.querySelector('main .topbar h1')?.textContent?.trim() ?? '', composer: !!document.querySelector('.composer textarea'), body: document.activeElement === document.body }))
-  check(newRunRow.h1 === PINNED && newRunRow.composer && !newRunRow.body, 'A13 New run on a pinned row opens that project\'s draft', JSON.stringify(newRunRow))
+  const contOpened = await page.evaluate(() => ({ h1: document.querySelector('main .topbar h1')?.textContent?.trim() ?? '', body: document.activeElement === document.body }))
+  check(contOpened.h1 === PINNED && !contOpened.body, 'BR Continue in the Briefing opens the pinned project and focus stays on a real element', JSON.stringify(contOpened))
+  await gotoProjects(page)
+
+  // ---------------------------------------------------------------- MO page arrival (motion.md "Page arrival")
+  const arrivalFacts = () =>
+    page.evaluate(() => ({
+      hero: !!document.querySelector('[data-testid=dashboard-hero].motion-arrive-hero'),
+      bands: document.querySelectorAll('.motion-arrive-band').length,
+      draw: document.querySelectorAll('.motion-draw-col, .motion-draw-line').length,
+      flag: document.querySelector('.dash-page')?.hasAttribute('data-arriving') ?? false
+    }))
+  // The first navigation (a reload starts the session's arrival memory afresh): the hero rises while arriving, then rests.
+  await page.reload()
+  const arrived = await page.waitForSelector('[data-testid=dashboard-hero].motion-arrive-hero', { timeout: 20_000 }).then(() => true, () => false)
+  check(arrived, 'MO on first navigation the Briefing hero carries motion-arrive-hero while the page arrives')
+  await sleep(1800)
+  const rested = await arrivalFacts()
+  check(!rested.hero && rested.bands === 0 && rested.draw === 0 && !rested.flag, 'MO the arrival classes are gone once the page has rested (about 800 ms)', JSON.stringify(rested))
+  // Away and back with no data change: no arrival classes at all.
+  await page.locator('[data-testid=nav-usage]').click()
+  await T('usage-period').waitFor({ timeout: 15_000 })
+  await sleep(300)
+  await gotoProjects(page)
+  const back = await arrivalFacts()
+  check(!back.hero && back.bands === 0 && back.draw === 0 && !back.flag, 'MO returning to the Dashboard with no data change shows no arrival classes', JSON.stringify(back))
+  // Reduced motion (Appearance): no arrival, no running animation on the page.
+  await setAppearance({ reduceMotion: 'on' })
+  await page.reload()
+  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: 20_000 })
+  const reducedFacts = await page.evaluate(() => ({
+    hero: !!document.querySelector('.motion-arrive-hero'),
+    bands: document.querySelectorAll('.motion-arrive-band').length,
+    running: document.getAnimations().filter((a) => a.playState === 'running' && !!a.effect?.target?.closest?.('[data-testid=dashboard]')).length
+  }))
+  await sleep(300)
+  const reducedRun = await page.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running' && !!a.effect?.target?.closest?.('[data-testid=dashboard]') && (a.effect.getComputedTiming().activeDuration ?? 0) > 20).length)
+  check(!reducedFacts.hero && reducedFacts.bands === 0 && reducedRun === 0, 'MO with Appearance Reduce motion on, no arrival is staged and no Dashboard animation runs', JSON.stringify({ ...reducedFacts, reducedRun }))
+  await setAppearance({ reduceMotion: 'system' })
+  await page.reload()
+  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: 20_000 })
+
+  // ---------------------------------------------------------------- MD multi-day history (seeded in this script's own data dir)
+  // The mock puts every run on one day. Close the app, move some run records back whole days (the files of this script's
+  // throwaway ORGAI_DATA_DIR only; no source is touched), start again and read the map, the movement lines and the since line.
+  {
+    const DAY = 24 * 60 * 60 * 1000
+    await page.evaluate(([k, t]) => localStorage.setItem(k, String(t)), [LAST_SEEN_KEY, T0 - 60_000])
+    await app.close().catch(() => {})
+    const dir = runRecordsDir()
+    const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')) : []
+    const recs = files
+      .map((f) => {
+        try {
+          return { file: path.join(dir, f), rec: JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) }
+        } catch {
+          return null
+        }
+      })
+      .filter((r) => r && r.rec?.summary && typeof r.rec.summary.startedAt === 'number' && (r.rec.summary.kind === undefined || r.rec.summary.kind === 'work'))
+      .sort((a, b) => a.rec.summary.startedAt - b.rec.summary.startedAt)
+    const shifts = [3, 3, 5, 9]
+    const moved = []
+    // The run list is read from the index `<data>/runs.json` (a record's summary comes from it), so patch it and the records alike.
+    const indexFile = path.join(path.dirname(dir), 'runs.json')
+    const index = JSON.parse(fs.readFileSync(indexFile, 'utf8'))
+    recs.slice(0, shifts.length).forEach((r, i) => {
+      const by = shifts[i] * DAY
+      for (const s of [r.rec.summary, index.runs.find((x) => x.id === r.rec.summary.id)].filter(Boolean)) {
+        s.startedAt -= by
+        if (typeof s.endedAt === 'number') s.endedAt -= by
+      }
+      fs.writeFileSync(r.file, JSON.stringify(r.rec))
+      moved.push({ id: r.rec.summary.id, days: shifts[i] })
+    })
+    fs.writeFileSync(indexFile, JSON.stringify(index))
+    log('MD shifted run records:', JSON.stringify(moved), `of ${recs.length} work records`)
+    ;({ app, page, shot } = await launch({ shotPrefix: 'dashboard', clearPrefs: false }))
+    watchErrors(page)
+    await gotoProjects(page)
+    await T('dash-heat').waitFor({ timeout: 20_000 }).catch(() => {})
+    await sleep(800)
+    const md = await page.evaluate(() => {
+      const cols = [...document.querySelectorAll('[data-testid=dash-heat-col]')]
+      const withRuns = cols.map((c, i) => ({ i, runs: [...c.querySelectorAll('[data-testid=dash-heat-cell]')].reduce((a, x) => a + Number(x.getAttribute('data-runs') || 0), 0) })).filter((c) => c.runs > 0)
+      const today = cols.find((c) => c.hasAttribute('data-today'))
+      const todayRuns = today ? [...today.querySelectorAll('[data-testid=dash-heat-cell]')].reduce((a, x) => a + Number(x.getAttribute('data-runs') || 0), 0) : -1
+      return { withRuns, todayRuns, total: withRuns.reduce((a, c) => a + c.runs, 0), todayText: document.querySelector('[data-testid=dash-activity-today]')?.textContent?.replace(/\s+/g, ' ').trim() ?? '', totalText: document.querySelector('[data-testid=dash-activity-total]')?.textContent?.trim() ?? '' }
+    })
+    check(moved.length === 4 && md.withRuns.length >= 3, 'MD the activity map shows runs on several day columns after the history is seeded', JSON.stringify(md))
+    check(md.withRuns.some((c) => c.i === 14 - 1 - 3) && md.withRuns.some((c) => c.i === 14 - 1 - 5) && md.withRuns.some((c) => c.i === 14 - 1 - 9), 'MD runs 3, 5 and 9 days back sit in the columns that many places left of today', JSON.stringify(md.withRuns))
+    check(md.todayText.includes(`${md.todayRuns} run`) || (md.todayRuns === 0 && /No runs started today yet/.test(md.todayText)), 'MD the "Today" footer reads today\'s own count, not the 14-day total', JSON.stringify(md))
+    check(md.totalText === `${md.total} runs · 14 days`, 'MD the map total counts every column', JSON.stringify(md))
+    const mdCards = await T('dash-stat').evaluateAll((els) => Object.fromEntries(els.map((li) => [li.getAttribute('data-stat'), { value: li.querySelector('[data-testid=dash-stat-value]')?.textContent?.trim(), dir: li.querySelector('[data-testid=dash-stat-move]')?.getAttribute('data-dir'), move: li.querySelector('[data-testid=dash-stat-move]')?.textContent?.replace(/\s+/g, ' ').trim() }])))
+    // Runs in the last 7 days = all but the 9-days-back one; the 7 days before hold that one (1): up by (value - 1).
+    const runsNow = Number(mdCards.runs?.value)
+    check(runsNow === md.total - 1 && mdCards.runs?.dir === 'up' && new RegExp(`^.?\\s*${runsNow - 1} vs the 7 days before`).test(mdCards.runs?.move ?? ''), 'MD the Runs card counts the last 7 days and says how much it moved against the 7 days before', JSON.stringify(mdCards.runs))
+    check(['up', 'down', 'same', 'none'].includes(mdCards.spend?.dir ?? '') && /vs the 7 days before|No change|Not compared/.test(mdCards.spend?.move ?? ''), 'MD the Spend card has a movement line', JSON.stringify(mdCards.spend))
+    check((await T('dash-stat-move').evaluateAll((els) => els.every((e) => (e.getAttribute('data-dir') === 'up' || e.getAttribute('data-dir') === 'down' ? !!e.querySelector('[aria-hidden=true]') : true)))), 'MD a rise or fall draws its glyph decoratively (the words carry the meaning)')
+    const sinceMd = await T('dash-since').first().evaluate((el) => el.querySelector('.sr-only')?.textContent?.trim() ?? '').catch(() => '')
+    const endedAfter = await page.evaluate(async (t0) => {
+      const projects = await window.orgai.projects.list()
+      let n = 0
+      for (const p of projects) for (const r of await window.orgai.runs.list(p.id)) if ((r.kind === undefined || r.kind === 'work') && (r.endedAt ?? 0) > t0 - 60_000) n++
+      return n
+    }, T0).catch(() => -1)
+    const sinceBody = sinceMd.replace(/^Since .+?: (?=\d)/, '')
+    const sinceCount = [...sinceBody.matchAll(/(\d+) (?:runs? finished|failed|stopped)/g)].map((m) => Number(m[1])).reduce((a, b) => a + b, 0)
+    check(/^Since .+: \d+ .+\.$/.test(sinceMd) && sinceCount >= 1 && sinceCount <= endedAfter, 'MD the since line counts only runs that ended after the last visit (the seeded older ones are not in it)', `${sinceMd} (${endedAfter} work runs ended after the last visit)`)
+    await shot('multi-day')
+  }
 
   // Deleting a project removes its rows and its pin.
   const left = await deleteProject(page, WAIT)
