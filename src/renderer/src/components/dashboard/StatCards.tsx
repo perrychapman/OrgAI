@@ -2,7 +2,7 @@ import type { CSSProperties, ReactElement } from 'react'
 import { useId } from 'react'
 import { formatDuration, type CostInput } from '../../lib/cost'
 import { useCountUp } from '../../lib/useCountUp'
-import { MOVE_GLYPH, type StatCard } from '../../lib/weekRecap'
+import { MOVE_GLYPH, OPENS_USAGE_HINT, type StatCard } from '../../lib/weekRecap'
 import { Cost } from '../ui/Cost'
 import Sparkline from '../usage/Sparkline'
 
@@ -91,7 +91,7 @@ export function StatCards({
             className="dash-stat-btn"
             data-testid={`dash-stat-${c.id}`}
             aria-label={pending ? `${c.label}, loading` : c.name}
-            aria-describedby={c.help ? `${helpId}-${c.id}` : undefined}
+            aria-describedby={`${helpId}-${c.id}`}
             aria-busy={pending ? true : undefined}
             title={c.help || undefined}
             onClick={() => onOpen(c)}
@@ -103,11 +103,10 @@ export function StatCards({
               {!pending && <Sparkline points={c.series} active={null} onScrub={noop} area draw={draw} />}
             </span>
           </button>
-          {c.help && (
-            <span id={`${helpId}-${c.id}`} className="sr-only">
-              {c.help}
-            </span>
-          )}
+          {/* The instruction and the definition are the description, never part of the name (the name reads the figure once). */}
+          <span id={`${helpId}-${c.id}`} className="sr-only">
+            {c.help ? `${OPENS_USAGE_HINT} ${c.help}` : OPENS_USAGE_HINT}
+          </span>
         </li>
       ))}
     </ul>

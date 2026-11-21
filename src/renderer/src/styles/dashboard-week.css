@@ -108,7 +108,7 @@
 }
 .dash-stat-glyph {
   flex: none;
-  font-size: 10px;
+  font-size: calc(var(--text-caption) * 0.85);
   color: var(--text-primary);
 }
 .dash-stat-move-text {

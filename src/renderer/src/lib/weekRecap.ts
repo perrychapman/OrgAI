@@ -125,7 +125,7 @@ export interface StatCard {
   metric?: 'cost' | 'runs'
   /** A definition for the tooltip and the description; '' when the label says it all. */
   help: string
-  /** The accessible name: label, figure and movement, then what the card opens once. */
+  /** The accessible name: label, figure and movement (the instruction is the description: `OPENS_USAGE_HINT`). */
   name: string
 }
 
@@ -207,9 +207,19 @@ function decisionsCard(r: WeekRecap): StatCard | null {
   })
 }
 
+/** The Decisions card is drawn only once a run of the week carries decision counts; Customise offers it as a lead figure only then. */
+export const hasDecisionsCard = (r: WeekRecap): boolean => decisionsCard(r) !== null
+
+/** What a card opens, said once through `aria-describedby` and never inside the name. */
+export const OPENS_USAGE_HINT = 'Opens Usage for the same 7 days.'
+
+/**
+ * The accessible name is the reading alone: label, figure, movement. The instruction (`OPENS_USAGE_HINT`) rides in the
+ * description, and a card with a definition adds it there, so a screen reader never hears the figure twice.
+ */
 function finish(c: Omit<StatCard, 'name'>): StatCard {
   const move = c.movement.label
-  return { ...c, name: `${c.label} ${c.label2}, ${move.charAt(0).toLowerCase()}${move.slice(1)}. Opens Usage for the same 7 days` }
+  return { ...c, name: `${c.label} ${c.label2}, ${move.charAt(0).toLowerCase()}${move.slice(1)}` }
 }
 
 /**

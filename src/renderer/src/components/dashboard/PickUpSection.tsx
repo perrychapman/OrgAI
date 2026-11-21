@@ -3,21 +3,22 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { History } from 'lucide-react'
 import { isVirtualProjectId, type Project, type RunSummary } from '@shared/types'
 import { projectKindOf } from '@shared/defaults'
-import { pendingDecisionCount, useAppStore } from '../../store/useAppStore'
+import { useShallow } from 'zustand/react/shallow'
+import { pendingDecisionCount, useAppStore, type RunState } from '../../store/useAppStore'
 import { Cost } from '../ui/Cost'
 import { AttentionRows, useArrivalSettle, useAttentionList, useRowExits, rowMotionProps, type RowMotion } from './AttentionSection'
 import { DashSection, useDashboard } from './DashboardContext'
 import { RunMark, markOfTone } from './RunMark'
 import { useAllSummaries, useNow } from './useDashboardData'
 import { RESUME_MAX } from './dashCaps'
-import { runCostInput } from '../../lib/cost'
+import { costView, runCostInput } from '../../lib/cost'
 import { readLastSeen } from '../../lib/dashboard'
 import { locationLabel } from '../../lib/assistants'
 import { clientOf } from '../../lib/clientGroups'
 import { displayRunName } from '../../lib/orgChange'
 import { relativeTime } from '../../lib/runChains'
-import { statusOfRun } from '../../lib/runStatus'
-import { endedSinceLastVisit, pickUpAction, pickUpRows, resumeActionLabel, resumeActionName, resumeCaption, resumeRows, showsRunCost, type ResumeAction, type ResumeRow } from '../../lib/resumeRows'
+import { isStoppedRun, statusOfRun } from '../../lib/runStatus'
+import { NOT_PRICED, endedSinceLastVisit, isUnpricedRun, pickUpAction, pickUpRows, resumeActionLabel, resumeActionName, resumeCaption, resumeRows, showsRunCost, type ResumeAction, type ResumeRow } from '../../lib/resumeRows'
 
 type Row = ResumeRow<RunSummary>
 
@@ -25,6 +26,31 @@ type Row = ResumeRow<RunSummary>
 export const PICKUP_WIDE_PX = 1280
 const CAP_NARROW = 4
 const CAP_WIDE = 6
+
+/**
+ * What a row reads of the live run behind it, as one string so the store selector can be shallow-compared: open decisions,
+ * the plan's status and auto-continue count, and whether the root agent says Stopped (old records). Empty for a run that is
+ * not in the store (it is read from its summary alone).
+ */
+function liveFactsOf(state: RunState | undefined): string {
+  if (!state) return ''
+  return [pendingDecisionCount(state), state.plan?.status ?? '', state.plan?.autoContinues ?? 0, isStoppedRun(state.agents) ? 1 : 0].join('|')
+}
+
+/** The run's status view from its summary and `liveFactsOf`: the same result `statusOfRun` gives for the whole store entry. */
+function viewOfRun(summary: RunSummary, facts: string, project: Project | undefined): ReturnType<typeof statusOfRun> {
+  if (!facts) return statusOfRun({ summary }, project, false)
+  const [pending, planStatus, autoContinues, stopped] = facts.split('|')
+  return statusOfRun(
+    {
+      summary,
+      ...(planStatus ? { plan: { status: planStatus, autoContinues: Number(autoContinues) } } : {}),
+      ...(stopped === '1' ? { agents: { root: { parentId: null, activity: 'Stopped' } } } : {})
+    },
+    project,
+    Number(pending) > 0
+  )
+}
 
 /** After a row opens a run, focus the topbar heading unless focus already moved somewhere real (the composer). */
 function settleFocus(): void {
@@ -72,7 +98,6 @@ export function PickUpSection({ lastSeen }: { lastSeen?: number }): ReactElement
   const now = useNow()
   const projects = useAppStore((s) => s.projects)
   const virtual = useAppStore((s) => s.virtualProjects)
-  const runs = useAppStore((s) => s.runs)
   const focusRun = useAppStore((s) => s.focusRun)
   const resumeNow = useAppStore((s) => s.resumeNow)
   const continueFromHistory = useAppStore((s) => s.continueFromHistory)
@@ -105,6 +130,10 @@ export function PickUpSection({ lastSeen }: { lastSeen?: number }): ReactElement
       ),
     [summaries, since, now, layout.pinned, projects]
   )
+
+  // Only the listed runs' status facts (shallow-compared strings), not the run map: an agent or transcript event renders nothing here.
+  const liveFacts = useAppStore(useShallow((s) => rows.map((r) => liveFactsOf(r.run ? s.runs[r.run.id] : undefined))))
+  const factsOf = useMemo(() => new Map(rows.map((r, i) => [r.key, liveFacts[i] ?? ''])), [rows, liveFacts])
 
   const pageWidth = usePageWidth(sectionRef, rows.length > 0)
   const cap = pageWidth >= PICKUP_WIDE_PX ? CAP_WIDE : CAP_NARROW
@@ -141,8 +170,7 @@ export function PickUpSection({ lastSeen }: { lastSeen?: number }): ReactElement
     const project = projectOf(row.projectId)
     const projectName = locationLabel(row.projectId, projects)
     const client = project && projectKindOf(project) === 'engagement' ? clientOf(project) : ''
-    const liveState = runs[run.id]
-    const view = statusOfRun(liveState ? { ...liveState } : { summary: run }, project, liveState ? pendingDecisionCount(liveState) > 0 : false)
+    const view = viewOfRun(run, factsOf.get(row.key) ?? '', project)
     const name = displayRunName(run)
     const action = pickUpAction(row)
     const caption = resumeCaption(row, { project: projectName, client, age: relativeTime(run.endedAt ?? run.startedAt, now), now })
@@ -194,6 +222,11 @@ export function PickUpSection({ lastSeen }: { lastSeen?: number }): ReactElement
                 {caption}
               </span>
               {showsRunCost(cost) && <Cost value={cost} compact className="dash-num dash-pick-cost" />}
+              {isUnpricedRun(cost) && (
+                <span className="cost cost-unknown dash-pick-cost" data-testid="dash-resume-unpriced" title={costView(cost).title}>
+                  {NOT_PRICED}
+                </span>
+              )}
               {reason && (
                 <span className="dash-clip dash-pick-reason" title={reason}>
                   {reason}

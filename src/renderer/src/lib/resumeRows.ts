@@ -9,7 +9,7 @@
 import type { RunSummary } from '@shared/types'
 import { costView, type CostInput } from './cost'
 import { chainGroups, isOpenStatus, lastActivityAt, type ChainSummary } from './runChains'
-import { endedKind, errorFirstLine, SINCE_WINDOW_MS, type EndedRunLike } from './dashboard'
+import { clockLabel, endedKind, errorFirstLine, SINCE_WINDOW_MS, type EndedRunLike } from './dashboard'
 import { pausedCaption } from './needsInline'
 
 export type ResumeKind = 'paused' | 'closed' | 'failed' | 'finished' | 'pinned' | 'recent'
@@ -233,7 +233,7 @@ const startOfLocalDay = (t: number): number => {
 export function pausedResumeCaption(s: Pick<RunSummary, 'autoResume' | 'pausedUntil'>, now: number, locale?: string): string {
   if (!(s.autoResume && s.pausedUntil)) return pausedCaption(s)
   const at = new Date(s.pausedUntil)
-  const time = at.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })
+  const time = clockLabel(s.pausedUntil, locale)
   const days = Math.round((startOfLocalDay(s.pausedUntil) - startOfLocalDay(now)) / 86_400_000)
   let when = `at ${time}`
   if (days === 1) when = `tomorrow at ${time}`
@@ -268,8 +268,16 @@ export function resumeActionLabel(action: ResumeAction): string {
   return action === 'open' ? 'Open' : 'Continue'
 }
 
-/** The row's muted cost: only a known figure (or a lower bound) above zero. Unknown and zero show nothing. */
+/** The row's muted cost: a known figure (or a lower bound) above zero. Zero shows nothing; an unpriced run says so (`isUnpricedRun`). */
 export function showsRunCost(input: CostInput): boolean {
   const v = costView(input)
   return (v.kind === 'known' || v.kind === 'partial') && input.costUsd !== null && input.costUsd > 0
+}
+
+/** The words of an unpriced run's cost: usage was recorded but no price is known, never a blank and never $0. */
+export const NOT_PRICED = 'Not priced'
+
+/** The run has usage but its cost is unknown (no price for its model): the row says "Not priced" where a priced row shows its figure. */
+export function isUnpricedRun(input: CostInput): boolean {
+  return costView(input).kind === 'unknown'
 }

@@ -17,6 +17,7 @@ import { bandWorkFacts } from '../../lib/dashboardBand'
 import { continueProjectId, salutation, statusParts } from '../../lib/dashboardBrief'
 import { sinceSentence, sinceSummary, outcomeText, type SincePart } from '../../lib/sinceSummary'
 import { useCountUp } from '../../lib/useCountUp'
+import { pulseBreathBudget } from '../../lib/teamPulse'
 
 /**
  * The Briefing (docs/design/dashboard-usage-redesign/project/components/Briefing, dashboard.md): the page's hero card.
@@ -60,7 +61,7 @@ function SincePartView({ part, arriving, still }: { part: SincePart; arriving: b
 }
 
 export function Briefing({ firstLaunch, announce, onAnnounce, customise, onNewProject, motionPaused, onMotionPaused, lastSeen, firstVisit }: BriefingProps): ReactElement {
-  const { arriving, still, layout } = useDashboard()
+  const { arriving, still, layout, bandBreathing } = useDashboard()
   const now = useNow()
   const summaries = useAllSummaries()
   const snapshot = useBandSnapshot()
@@ -126,7 +127,8 @@ export function Briefing({ firstLaunch, announce, onAnnounce, customise, onNewPr
           </h2>
           {name && <NameControl name={name} onSaved={saved} />}
         </div>
-        <p className="dash-brief-status" data-testid="dash-greeting-brief">
+        {/* tabIndex -1: the status sentence is where focus lands when the last decision is answered and no run is open. */}
+        <p className="dash-brief-status" data-testid="dash-greeting-brief" tabIndex={-1}>
           {status.map((p, i) => (
             <span key={i}>
               {i > 0 && ' '}
@@ -173,7 +175,8 @@ export function Briefing({ firstLaunch, announce, onAnnounce, customise, onNewPr
       {showSide && (
         <div className="dash-brief-side">
           <div className="dash-pulse-wrap">
-            <TeamPulse arriving={arriving} paused={still} restProjectId={continueId} />
+            <TeamPulse arriving={arriving} paused={still} restProjectId={continueId} breathBudget={pulseBreathBudget(bandBreathing)} />
+            {/* A toggle: the name stays "Pause motion" and aria-pressed carries the state; the look shows it through weight, fill and border. */}
             <button
               type="button"
               className="dash-pause-toggle"
@@ -182,10 +185,10 @@ export function Briefing({ firstLaunch, announce, onAnnounce, customise, onNewPr
               onClick={() => onMotionPaused(!motionPaused)}
               style={{ '--pause-weight': motionPaused ? 'var(--weight-semibold)' : 'var(--weight-regular)' } as CSSProperties}
             >
-              {motionPaused ? 'Motion paused' : 'Pause motion'}
+              Pause motion
             </button>
           </div>
-          <PlanGauges entries={limits} arrive={arriving} className="dash-brief-gauges" />
+          <PlanGauges entries={limits} arrive={arriving} still={motionPaused} className="dash-brief-gauges" />
         </div>
       )}
       <DashboardLive announce={announce} />

@@ -3,10 +3,10 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState, useEffect } fr
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { BandRun } from './BandRun'
-import { DashSection } from './DashboardContext'
+import { DashSection, useDashboard } from './DashboardContext'
 import type { DashCaps } from './dashCaps'
 import { useBandSnapshot, useNow } from './useDashboardData'
-import { bandModel, countParts, holdBandOrder, moreRunsLabel } from '../../lib/dashboardBand'
+import { bandBreathingCount, bandModel, countParts, holdBandOrder, moreRunsLabel } from '../../lib/dashboardBand'
 import { useArrival } from '../../lib/useArrival'
 import { nextSettleAt, settleTimerDelay } from '../../lib/foldFinished'
 
@@ -150,6 +150,14 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
     else headingRef.current?.focus({ preventScroll: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runKeySig, model])
+
+  // The page's breathing budget (12): this band's marks take their share first, Team pulse breathes with what is left.
+  const { reportBreathing } = useDashboard()
+  const breathing = bandBreathingCount(model)
+  useLayoutEffect(() => {
+    reportBreathing(breathing)
+  }, [breathing, reportBreathing])
+  useLayoutEffect(() => () => reportBreathing(0), [reportBreathing])
 
   const parts = countParts(model.counts)
   const countsLine =

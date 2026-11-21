@@ -140,6 +140,25 @@
   font-size: var(--text-small);
   color: var(--text-secondary);
 }
+/* The lead-figure group of Your week: a visible caption over the radio group, and the reason a figure is not offered. */
+.dash-lead-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.dash-lead-caption {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+}
+.dash-lead-reason {
+  max-width: 44ch;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
 .dash-section-controls {
   display: flex;
   align-items: center;

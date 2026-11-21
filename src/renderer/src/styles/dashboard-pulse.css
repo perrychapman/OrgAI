@@ -3,7 +3,7 @@
  * Team pulse (components/dashboard/TeamPulse.tsx, lib/teamPulse.ts): the live org chart in miniature. A picture with a
  * caption, never interactive. Node fill is the agent's role colour (--role, never text); the ring is the state colour.
  * Reporting lines are orthogonal, drawn in the parent's role colour mixed into --edge. Two loops exist and both mean
- * "alive": the working halo breathes (at most 12) and a signal dot travels a line while agents message. Paused or
+ * "alive": the working halo breathes (at most 12 minus the marks Right now breathes) and a signal dot travels a line while agents message. Paused or
  * reduced motion render neither (TeamPulse.tsx leaves the signal out), the static halo stays. Tokens only.
  */
 
@@ -95,28 +95,70 @@
 }
 
 /* Signal: a dot travels the line between two agents, one trip per --dur-signal, linear, while the pair keeps messaging
-   (the component drops it SIGNAL_WINDOW_MS after the pair's last message). */
+   (the component drops it SIGNAL_WINDOW_MS after the pair's last message). Transform and opacity only (motion.md): the
+   dot is drawn at 0,0 and TeamPulse.tsx gives each dot its route as --x0..--x16 / --y0..--y16 (px): the corners of the
+   elbows, long legs split so the speed stays even. Each of the 16 legs takes 1/16 of the trip (lib/teamPulse.ts SIGNAL_LEGS). */
 .dash-pulse-signal {
   fill: var(--text-primary);
   stroke: var(--surface-1);
   stroke-width: 1.5;
-  offset-rotate: 0deg;
   opacity: 0;
   animation: dash-pulse-trip var(--dur-signal) linear infinite;
 }
 @keyframes dash-pulse-trip {
   0% {
-    offset-distance: 0%;
+    transform: translate(var(--x0), var(--y0));
     opacity: 0;
   }
-  8% {
+  6.25% {
+    transform: translate(var(--x1), var(--y1));
     opacity: 1;
   }
-  92% {
+  12.5% {
+    transform: translate(var(--x2), var(--y2));
+  }
+  18.75% {
+    transform: translate(var(--x3), var(--y3));
+  }
+  25% {
+    transform: translate(var(--x4), var(--y4));
+  }
+  31.25% {
+    transform: translate(var(--x5), var(--y5));
+  }
+  37.5% {
+    transform: translate(var(--x6), var(--y6));
+  }
+  43.75% {
+    transform: translate(var(--x7), var(--y7));
+  }
+  50% {
+    transform: translate(var(--x8), var(--y8));
+  }
+  56.25% {
+    transform: translate(var(--x9), var(--y9));
+  }
+  62.5% {
+    transform: translate(var(--x10), var(--y10));
+  }
+  68.75% {
+    transform: translate(var(--x11), var(--y11));
+  }
+  75% {
+    transform: translate(var(--x12), var(--y12));
+  }
+  81.25% {
+    transform: translate(var(--x13), var(--y13));
+  }
+  87.5% {
+    transform: translate(var(--x14), var(--y14));
+  }
+  93.75% {
+    transform: translate(var(--x15), var(--y15));
     opacity: 1;
   }
   100% {
-    offset-distance: 100%;
+    transform: translate(var(--x16), var(--y16));
     opacity: 0;
   }
 }
@@ -141,8 +183,8 @@
 .dash-pulse-caption {
   max-width: 100%;
   text-align: center;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
   color: var(--text-secondary);
   text-wrap: balance;
 }

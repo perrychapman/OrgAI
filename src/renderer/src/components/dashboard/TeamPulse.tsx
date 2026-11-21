@@ -11,6 +11,8 @@ export interface TeamPulseProps {
   paused: boolean
   /** With no open run, the pinned (else most recent) project's team is drawn at rest. */
   restProjectId: string | null
+  /** How many halos may breathe: the page's budget of 12 minus the marks Right now breathes (`pulseBreathBudget`). */
+  breathBudget: number
 }
 
 interface Published {
@@ -21,7 +23,7 @@ interface Published {
 
 const NO_FRESH: ReadonlySet<string> = new Set()
 
-function computeModel(restProjectId: string | null, since: number): PulseModel | null {
+function computeModel(restProjectId: string | null, since: number, breathBudget: number): PulseModel | null {
   const s = useAppStore.getState()
   const known = new Set(s.projects.map((p) => p.id))
   const runs = Object.values(s.runs)
@@ -34,7 +36,7 @@ function computeModel(restProjectId: string | null, since: number): PulseModel |
       agents: r.agents,
       messages: r.messages
     }))
-  return pulseModel(pulseInput(runs, s.projects, s.virtualProjects, restProjectId, Date.now(), since))
+  return pulseModel(pulseInput(runs, s.projects, s.virtualProjects, restProjectId, Date.now(), since, breathBudget))
 }
 
 /**
@@ -42,9 +44,9 @@ function computeModel(restProjectId: string | null, since: number): PulseModel |
  * when what is drawn changed, so a burst of agent events renders once and an unrelated event renders nothing. A timer
  * also retires a signal when its message leaves the window.
  */
-function usePulse(restProjectId: string | null): Published {
+function usePulse(restProjectId: string | null, breathBudget: number): Published {
   const sinceRef = useRef(Date.now())
-  const [pub, setPub] = useState<Published>(() => ({ model: computeModel(restProjectId, sinceRef.current), fresh: NO_FRESH }))
+  const [pub, setPub] = useState<Published>(() => ({ model: computeModel(restProjectId, sinceRef.current, breathBudget), fresh: NO_FRESH }))
   useEffect(() => {
     let timer: number | undefined
     let expiry: number | undefined
@@ -54,7 +56,7 @@ function usePulse(restProjectId: string | null): Published {
       timer = undefined
       if (expiry !== undefined) window.clearTimeout(expiry)
       expiry = undefined
-      const next = computeModel(restProjectId, sinceRef.current)
+      const next = computeModel(restProjectId, sinceRef.current, breathBudget)
       const sig = JSON.stringify(next)
       if (sig !== last) {
         const nextKeys = new Set((next?.nodes ?? []).map((n) => n.key))
@@ -77,8 +79,19 @@ function usePulse(restProjectId: string | null): Published {
       if (timer !== undefined) window.clearTimeout(timer)
       if (expiry !== undefined) window.clearTimeout(expiry)
     }
-  }, [restProjectId])
+    // A change of budget (Right now gained or lost breathing marks) publishes at once when it changes what is drawn.
+  }, [restProjectId, breathBudget])
   return pub
+}
+
+/** `--x0 ... --xN` / `--y0 ... --yN` in px for the `dash-pulse-trip` keyframes (transform only: the dot is drawn at 0,0). */
+function signalStyle(stops: readonly [number, number][]): CSSProperties {
+  const style: Record<string, string> = {}
+  stops.forEach(([x, y], i) => {
+    style[`--x${i}`] = `${x}px`
+    style[`--y${i}`] = `${y}px`
+  })
+  return style as CSSProperties
 }
 
 function Node({ node, motion, arriving, fresh }: { node: PulseNode; motion: boolean; arriving: boolean; fresh: boolean }): ReactElement {
@@ -105,12 +118,13 @@ function Node({ node, motion, arriving, fresh }: { node: PulseNode; motion: bool
 
 /**
  * Team pulse: the live org chart in miniature. A picture with a caption; the rows in Right now remain the way to act, so
- * nothing in it takes focus. Working nodes breathe and a signal dot travels the line between two agents that just
- * messaged (the only two loops); paused or reduced motion keep the static halo and drop both.
+ * nothing in it takes focus. Working nodes breathe (as many as the page's budget leaves after Right now) and a signal dot
+ * travels the line between two agents that just messaged, on transform keyframes (the only two loops); paused or reduced
+ * motion keep the static halo and drop both.
  */
-export function TeamPulse({ arriving, paused, restProjectId }: TeamPulseProps): ReactElement | null {
+export function TeamPulse({ arriving, paused, restProjectId, breathBudget }: TeamPulseProps): ReactElement | null {
   const reduced = useReducedMotion()
-  const { model, fresh } = usePulse(restProjectId)
+  const { model, fresh } = usePulse(restProjectId, breathBudget)
   if (!model) return null
   const motion = !paused && !reduced
   const draw = arriving && motion
@@ -139,7 +153,7 @@ export function TeamPulse({ arriving, paused, restProjectId }: TeamPulseProps): 
         </g>
         {motion &&
           model.signals.map((s) => (
-            <circle key={s.key} className="dash-pulse-signal" data-testid="dash-pulse-signal" data-from={s.from} data-to={s.to} r={3} style={{ offsetPath: `path("${s.d}")` }} />
+            <circle key={s.key} className="dash-pulse-signal" data-testid="dash-pulse-signal" data-from={s.from} data-to={s.to} cx={0} cy={0} r={3} style={signalStyle(s.stops)} />
           ))}
         <g className="dash-pulse-nodes">
           {model.nodes.map((n) => (

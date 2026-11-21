@@ -62,7 +62,7 @@
 .dash-heat-l {
   height: 16px;
   color: var(--text-tertiary);
-  line-height: 16px;
+  line-height: var(--text-caption-lh);
 }
 /* One column per day, each six cells tall. */
 .dash-heat-cols {

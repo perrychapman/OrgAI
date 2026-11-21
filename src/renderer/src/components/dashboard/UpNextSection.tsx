@@ -8,6 +8,7 @@ import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
 import { saveSchedulesPaused, useSchedules } from '../schedules/useSchedules'
+import { focusAfterRemoval } from './AttentionSection'
 import { DashSection, useDashboard } from './DashboardContext'
 import { useNow } from './useDashboardData'
 
@@ -41,13 +42,29 @@ export function UpNextSection(): ReactElement | null {
     // The button stays focusable while saving (a disabled control drops keyboard focus); a second press waits.
     if (busy) return
     const before = sched.paused === true
+    // The pressed button unmounts (Pause all becomes Resume schedules and back): focus moves to its counterpart, and on a
+    // failed save back to the original, unless the person has already moved on to something real.
+    const counterpart = v ? 'dash-upnext-resume' : 'dash-upnext-pause'
+    const original = v ? 'dash-upnext-pause' : 'dash-upnext-resume'
+    const focusIfLost = (testId: string, from: string): void => {
+      requestAnimationFrame(() => {
+        const a = document.activeElement
+        // Lost (body) or still on the button that is going away; anything else is the person's own move.
+        if (a && a !== document.body && a !== document.documentElement && a.getAttribute('data-testid') !== from) return
+        const target = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`)
+        if (target) target.focus({ preventScroll: true })
+        else if (!a || a === document.body) focusAfterRemoval(null) // the section left with its button (no firing to show): the page heading
+      })
+    }
     sched.setPausedLocal(v)
+    focusIfLost(counterpart, original)
     setBusy(true)
     try {
       await saveSchedulesPaused(v)
       announce(v ? 'All schedules paused.' : 'Schedules resumed.')
     } catch {
       sched.setPausedLocal(before)
+      focusIfLost(original, counterpart)
       announce(v ? 'Schedules could not be paused. Try again.' : 'Schedules could not be resumed. Try again.')
     } finally {
       setBusy(false)

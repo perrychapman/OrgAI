@@ -237,10 +237,11 @@ export function resetsInLabel(resetsAt: number | null | undefined, now: number):
   return `resets ${clockText(resetsAt, true)}`
 }
 
-const clockText = (ms: number, withDay: boolean): string => {
+const clockText = (ms: number, withDay: boolean, locale?: string): string => {
   const d = new Date(ms)
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  return withDay ? `${d.toLocaleDateString([], { weekday: 'short' })} ${time}` : time
+  const loc = locale ?? []
+  const time = d.toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' })
+  return withDay ? `${d.toLocaleDateString(loc, { weekday: 'short' })} ${time}` : time
 }
 
 /** When a window resets, for a tooltip: "14:10" within a day, "Thu 09:00" from then on. Empty when unknown. */
@@ -249,9 +250,13 @@ export function resetsAtText(resetsAt: number | null | undefined, now: number): 
   return clockText(resetsAt, resetsAt - now >= DAY)
 }
 
-/** A clock time ("14:00") for "limited until": the same format as the resume time in the status sentence. */
-export function clockLabel(ms: number | null | undefined): string {
-  return typeof ms === 'number' && Number.isFinite(ms) ? clockText(ms, false) : ''
+/**
+ * The app's one clock format on the Dashboard ("05:34 PM" or "17:34" as the system locale writes it): the status sentence,
+ * the since line, Up next and a paused row's resume time all go through it, so a card never mixes two formats.
+ * `locale` is for tests.
+ */
+export function clockLabel(ms: number | null | undefined, locale?: string): string {
+  return typeof ms === 'number' && Number.isFinite(ms) ? clockText(ms, false, locale) : ''
 }
 
 // ---------------------------------------------------------------- forget an engagement (engagement-2 spec 6)

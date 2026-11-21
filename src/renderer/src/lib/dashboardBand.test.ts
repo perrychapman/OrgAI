@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, Project, RunSummary } from '@shared/types'
 import {
+  BAND_BREATHING_MAX,
   BAND_MARKS_MAX,
+  bandBreathingCount,
   BAND_MAX_DEPTH,
   bandRunIds,
   holdBandOrder,
@@ -464,6 +466,17 @@ describe('run marks (the card glance row)', () => {
     const runs = m.projects.flatMap((p) => p.runs)
     expect(runs.flatMap((r) => r.marks.filter((x) => x.state === 'working').map((x) => x.breath))).toEqual([0, 1, 2, 3])
     expect(runs[0].marks.find((x) => x.state === 'idle')?.breath).toBeUndefined()
+  })
+  it('counts the marks that breathe (the share of the page budget Right now takes first), at most 12', () => {
+    const a = input('a', many(['thinking', 'tool', 'idle']), { summary: summary('a', { startedAt: 9 }) })
+    const b = input('b', many(['thinking', 'thinking']), { summary: summary('b', { startedAt: 8 }) })
+    expect(bandBreathingCount(bandModel([a, b], [project()], {}, NOW, { ...caps, bandRuns: 5 }))).toBe(4)
+    expect(bandBreathingCount(bandModel([], [project()], {}, NOW, caps))).toBe(0)
+    // Past the cap the extra working marks stay static and do not count.
+    const wide = Array.from({ length: 7 }, (_, i) => input(`w${i}`, many(['thinking', 'thinking', 'thinking']), { summary: summary(`w${i}`, { startedAt: 100 - i }) }))
+    const m = bandModel(wide, [project()], {}, NOW, { ...caps, bandRuns: 10 })
+    expect(m.projects.flatMap((p) => p.runs).flatMap((r) => r.marks).filter((x) => x.state === 'working').length).toBeGreaterThan(BAND_BREATHING_MAX)
+    expect(bandBreathingCount(m)).toBe(BAND_BREATHING_MAX)
   })
 })
 

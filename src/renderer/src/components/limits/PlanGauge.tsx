@@ -17,10 +17,16 @@ const R = (SIZE - STROKE) / 2
 
 const TRACK = arcPath(SIZE / 2, SIZE / 2, R, GAUGE_START_DEG, GAUGE_SWEEP_DEG)
 
-export function PlanGauge({ entry, arrive }: { entry: LimitEntry; arrive: boolean }): ReactElement {
+/**
+ * `still`: the page's Pause motion (the Dashboard passes layout.motionPaused); like reduced motion it draws the gauge at
+ * rest with the final percentage, whatever `arrive` says.
+ */
+export function PlanGauge({ entry, arrive, still = false }: { entry: LimitEntry; arrive: boolean; still?: boolean }): ReactElement {
   const reduced = useReducedMotion()
+  const frozen = reduced || still
+  const drawing = arrive && !frozen
   const frac = gaugeFraction(entry.pct)
-  const shown = useCountUp(entry.pct === null ? null : Math.round(entry.pct), { arriving: arrive, still: reduced })
+  const shown = useCountUp(entry.pct === null ? null : Math.round(entry.pct), { arriving: drawing, still: frozen })
   const label = [entry.name, entry.main, entry.resets].filter(Boolean).join(', ')
   return (
     <li className="plan-gauge" data-testid="plan-gauge" data-connection={entry.id} data-kind={entry.kind} data-level={entry.level} title={entry.title}>
@@ -28,7 +34,7 @@ export function PlanGauge({ entry, arrive }: { entry: LimitEntry; arrive: boolea
         <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={SIZE} height={SIZE} aria-hidden="true" focusable="false">
           <path className="plan-gauge-track" d={TRACK} pathLength={1} />
           {entry.pct !== null && frac > 0 && (
-            <path className={arrive ? 'plan-gauge-fill motion-draw-trace' : 'plan-gauge-fill'} d={TRACK} pathLength={1} style={{ '--frac': frac } as CSSProperties} />
+            <path className={drawing ? 'plan-gauge-fill motion-draw-trace' : 'plan-gauge-fill'} d={TRACK} pathLength={1} style={{ '--frac': frac } as CSSProperties} />
           )}
         </svg>
         <span className="plan-gauge-pct" aria-hidden="true">
@@ -45,14 +51,14 @@ export function PlanGauge({ entry, arrive }: { entry: LimitEntry; arrive: boolea
 }
 
 /** At most LIMITS_MAX gauges, then "+N more"; nothing without entries (hidden for API keys and the mock adapter). */
-export function PlanGauges({ entries, arrive, className }: { entries: readonly LimitEntry[]; arrive: boolean; className?: string }): ReactElement | null {
+export function PlanGauges({ entries, arrive, still = false, className }: { entries: readonly LimitEntry[]; arrive: boolean; still?: boolean; className?: string }): ReactElement | null {
   const shown = entries.slice(0, LIMITS_MAX)
   const more = entries.length - shown.length
   if (shown.length === 0) return null
   return (
     <ul className={className ? `plan-gauges ${className}` : 'plan-gauges'} data-testid="plan-gauges" aria-label="Plan limits">
       {shown.map((e) => (
-        <PlanGauge key={e.id} entry={e} arrive={arrive} />
+        <PlanGauge key={e.id} entry={e} arrive={arrive} still={still} />
       ))}
       {more > 0 && (
         <li className="plan-gauge-more" data-testid="plan-gauge-more">

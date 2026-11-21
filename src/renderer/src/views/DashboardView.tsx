@@ -5,14 +5,12 @@ import { useAppStore } from '../store/useAppStore'
 import { Button } from '../components/ui/Button'
 import { Banner } from '../components/ui/Banner'
 import { Icon } from '../components/ui/Icon'
-import { SegmentedControl } from '../components/ui/SegmentedControl'
 import { forgetNoticeText } from '../lib/dashboard'
 import { registerProjectHues } from '../lib/projectIdentity'
 import { tokenMs } from '../lib/useExitPresence'
 import { useReducedMotion } from '../lib/canvas'
 import { usePageArrival } from '../lib/usePageArrival'
 import {
-  FOCUS_FIGURES,
   FOCUS_TITLES,
   SECTION_TITLES,
   atEndText,
@@ -33,9 +31,10 @@ import { hasParkedDraft } from '../components/dashboard/NewProjectForm'
 import { DashboardContext, type DashboardAnnouncement, type DashboardCtx } from '../components/dashboard/DashboardContext'
 import { useDashboardLayout } from '../components/dashboard/useDashboardLayout'
 import { Briefing } from '../components/dashboard/Briefing'
+import { CustomiseBar } from '../components/dashboard/CustomiseBar'
 import { NeedsYouRegion } from '../components/dashboard/AttentionColumn'
 import { useLastSeen } from '../components/dashboard/useLastSeen'
-import { useAllSummaries, useDecisionTotal, useLiveRuns } from '../components/dashboard/useDashboardData'
+import { useArrivalSignature } from '../components/dashboard/useDashboardData'
 import { ProjectsGrid } from '../components/dashboard/ProjectsGrid'
 import { RightNowBand } from '../components/dashboard/RightNowBand'
 import { PickUpSection } from '../components/dashboard/PickUpSection'
@@ -125,17 +124,17 @@ export default function DashboardView(): ReactElement {
 
   // Page arrival (lib/usePageArrival): staged once when the person arrives or the app opens here, and again only when what
   // the page shows has changed since they last saw it (a decision, a run opening or ending, a project added).
-  const decisions = useDecisionTotal()
-  const live = useLiveRuns()
-  const summaries = useAllSummaries()
-  const signature = useMemo(() => {
-    const newestEnd = summaries.reduce((m, s) => Math.max(m, s.endedAt ?? 0), 0)
-    return [decisions, live.map((r) => r.summary.id).join(','), newestEnd, projects.length].join('|')
-  }, [decisions, live, summaries, projects.length])
-  const arriving = usePageArrival('dashboard', signature)
+  // The signature is selected piece by piece (useArrivalSignature), so a run event that changes none of them does not render the page.
+  const signature = useArrivalSignature()
+  // Pause motion (saved) also stops the page's arrival, not only the loops.
+  const staged = usePageArrival('dashboard', signature)
+  const arriving = staged && !layout.motionPaused
   // Pause motion (saved) or reduced motion (the OS switch or Appearance): the live loops show their static cue.
   const reduced = useReducedMotion()
   const still = layout.motionPaused || reduced
+  // Right now's breathing marks (reported by the band) come off the page's budget of 12 before Team pulse breathes.
+  const [bandBreathing, setBandBreathing] = useState(0)
+  const reportBreathing = useCallback((n: number) => setBandBreathing((v) => (v === n ? v : n)), [])
 
   // A deleted project's pin goes with it. Only once projects are known, so a load in progress never drops pins.
   useEffect(() => {
@@ -228,10 +227,12 @@ export default function DashboardView(): ReactElement {
       spanOf: (id) => placed.find((p) => p.id === id)?.span ?? 'full',
       lead,
       arriving,
-      still
+      still,
+      bandBreathing,
+      reportBreathing
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [layout, customising, caps, say, togglePin, move, setSectionHidden, reportEmpty, spanKey, lead, arriving, still]
+    [layout, customising, caps, say, togglePin, move, setSectionHidden, reportEmpty, spanKey, lead, arriving, still, bandBreathing, reportBreathing]
   )
 
   const sections: Record<DashSectionId, ReactElement> = {
@@ -289,20 +290,7 @@ export default function DashboardView(): ReactElement {
                 lastSeen={lastSeen}
                 firstVisit={firstVisit}
               />
-              {!empty && customising && (
-                <div className="dash-customise-bar motion-fade" id="dash-customise-bar" data-testid="dash-customise-bar">
-                  <p>Move, hide or show sections. Changes save as you go.</p>
-                  <SegmentedControl<FocusFigure>
-                    label="Your week leads with"
-                    value={layout.focus}
-                    options={FOCUS_FIGURES.map((f) => ({ value: f, label: FOCUS_TITLES[f] }))}
-                    onChange={chooseFocus}
-                  />
-                  <Button variant="ghost" size="sm" testId="dash-customise-reset" onClick={reset}>
-                    Reset layout
-                  </Button>
-                </div>
-              )}
+              {!empty && customising && <CustomiseBar focus={layout.focus} onFocus={chooseFocus} onReset={reset} />}
               {empty ? (
                 <FirstLaunch mockAvailable={mockAvailable} />
               ) : (
