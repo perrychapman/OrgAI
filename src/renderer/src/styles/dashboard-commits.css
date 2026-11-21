@@ -1,5 +1,5 @@
 /* ---------- Dashboard: Commits this week (components/dashboard/CommitsSection.tsx, lib/commitChart.ts) ----------
-   The right column of the lead band. One stacked bar per local day, oldest left, today right: a segment per project in its
+   An optional section (id `commits`, drawn through DashSection; not drawn when empty). One stacked bar per local day, oldest left, today right: a segment per project in its
    identity hue (data-hue sets --dash-hue), a 2 px surface gap between stacked segments so neighbours differ by more than
    hue, a linear scale from zero, a segment never under 2 px, an empty day only the baseline hairline. Other is neutral.
    Declared track height: 96 px from 360 px of chart width, 72 px under it (container `dash-commits`); the weekday initials
@@ -190,23 +190,4 @@
     forced-color-adjust: none;
     background: CanvasText;
   }
-}
-
-/* Loading: the chart's frame without bars (no spinner, no jump): track, label rows, the readout's two lines, a legend line. */
-.dash-commits-placeholder {
-  box-sizing: border-box;
-  height: calc(var(--space-1) + var(--commit-track) + var(--space-1) + 32px + var(--text-caption-lh) * 2 + var(--space-4));
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-}
-
-/* Composed empty state: an icon and one line. */
-.dash-commits-empty {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) 0 var(--space-1);
-}
-.dash-commits-empty svg {
-  color: var(--text-tertiary);
 }

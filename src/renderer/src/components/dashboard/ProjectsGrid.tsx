@@ -124,7 +124,7 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
   }, [])
 
   const teamItems = useTeamAttentionItems()
-  const { layout, customising, togglePin } = useDashboard()
+  const { layout, customising, togglePin, arriving, still } = useDashboard()
   const pinned = layout.pinned
   const [rings, setRings] = useState<Record<string, number>>({})
   const ordered = useMemo(() => pinnedFirst(projects, pinned, buildAttentionCtx(Object.values(runs), history, teamItems)), [projects, pinned, runs, history, teamItems])
@@ -264,10 +264,12 @@ export function ProjectsGrid({ onAnnounce }: { onAnnounce: (text: string) => voi
       ) : (
         <div className="dash-projects-fit">
         <ul className="dash-projects-grid" aria-labelledby={sectionHeadingId('projects')}>
-          {models.map((m) => (
+          {models.map((m, i) => (
             <ProjectTile
               key={m.project.id}
-              enter={tileArrived(m.project.id)}
+              // Tiles rise only while the page arrives (max six stagger steps in the CSS) or when a project is created.
+              enter={tileArrived(m.project.id) || (arriving && !still)}
+              index={i}
               customising={customising}
               pinFull={pinFull}
               ring={rings[m.project.id] ?? 0}

@@ -1,37 +1,34 @@
-import type { Project } from '@shared/types'
-import { isVirtualProjectId } from '@shared/types'
-import { costView, formatDuration, type CostInput } from './cost'
-import { projectShare, type ProjectShare } from './projectShare'
-import { dayKey, dayLedger, ledgerTotals, LEDGER_DAYS, type CostKind, type DayBucket, type LedgerRun } from './activityStrip'
+import { costView, formatDuration, formatUsdCompact, type CostInput } from './cost'
+import { dayLedger, ledgerTotals, LEDGER_DAYS, type CostKind, type DayBucket, type LedgerRun, type LedgerTotals } from './activityStrip'
+import { FOCUS_FIGURES, FOCUS_TITLES, type FocusFigure } from './dashboardLayout'
+import type { SparkPoint } from './usageDashboard'
 
 /**
- * Your week (docs/design/dashboard-overhaul.md 7.7): honest numbers about the last 7 local days including today. Pure.
- * No comparison, no target, no streak, no "best day". Built on `dayLedger(summaries, now, 7)`.
+ * Your week (docs/design/dashboard-usage-redesign dashboard.md "Your week"): honest numbers about the last 7 local days
+ * including today, and how they moved against the 7 days before. Pure. Built on `dayLedger(summaries, now, 14)`: the older
+ * seven days are the comparison, the newer seven the week. No target, no streak, no "best day".
  *
- * Time working is, per run, `max(0, usage.wallMs - usage.idleMs - usage.waitingMs)` summed over the runs of the window
- * (see `runWorkMs` in activityStrip.ts for why `limitHoldMs` is NOT subtracted: the three timers overlap, a usage-limited
- * run's hold sits inside its idle time). It is the time runs were busy, never summed across parallel agents. A run
- * without `usage` is left out and the figure becomes a lower bound ("6h 40m+", "at least 6h 40m").
+ * Agent time is, per run, `max(0, usage.wallMs - usage.idleMs - usage.waitingMs)` summed over the runs of the window (see
+ * `runWorkMs` in activityStrip.ts for why `limitHoldMs` is NOT subtracted: the three timers overlap, a usage-limited run's
+ * hold sits inside its idle time). It is the time runs were busy, never summed across parallel agents, and it is not the
+ * Usage page's Wall time (which counts the whole open time, waiting on you included). A run without `usage` is left out
+ * and the figure becomes a lower bound ("6h 40m+", "at least 6h 40m").
  */
 
 /** A summary the recap reads: a ledger run plus the project it belongs to. */
 export type RecapRun = LedgerRun & { projectId: string }
 
-export interface TopProject {
-  id: string
-  name: string
-  runs: number
-}
-
 export interface WeekRecap {
-  /** The seven day buckets, oldest first, today last (the ledger draws these). */
+  /** The seven day buckets of the week, oldest first, today last. */
   days: DayBucket[]
+  /** The seven days before them (the comparison), oldest first. */
+  previousDays: DayBucket[]
   runs: number
   failed: number
   /** Time working in ms and whether it is a lower bound. */
   workMs: number
   workPartial: boolean
-  /** "6h 40m" or "6h 40m+"; "" when nothing was measured and every run lacks usage. */
+  /** "6h 40m" or "6h 40m+"; "unknown" when nothing was measured and every run lacks usage. */
   workText: string
   /** "at least 6h 40m" for a lower bound, else the same as `workText`. */
   workLabel: string
@@ -40,18 +37,18 @@ export interface WeekRecap {
   costKind: CostKind
   /** False when nothing was spent or the cost is a reported zero (flat-rate plans): the figure is omitted. */
   costShown: boolean
-  /** The stored project with the most runs; only when two or more stored projects had runs. */
-  top: TopProject | null
-  /** How the week's runs divide over projects (the share bar); `show` is false below two entries. */
-  share: ProjectShare
+  /** The week before, for the movement lines. */
+  previous: LedgerTotals
 }
 
 /** Only work runs: setup, MCP-assistant and Skill-assistant runs are not part of the person's week. */
-const isWorkRun = (r: LedgerRun): boolean => r.kind === undefined || r.kind === 'work'
+export const isWorkRun = (r: { kind?: string }): boolean => r.kind === undefined || r.kind === 'work'
 
-export function weekRecap(summaries: readonly RecapRun[], projects: readonly Pick<Project, 'id' | 'name'>[], now: number): WeekRecap {
+export function weekRecap(summaries: readonly RecapRun[], _projects: readonly { id: string; name: string }[], now: number): WeekRecap {
   const work = summaries.filter(isWorkRun)
-  const days = dayLedger(work, now, LEDGER_DAYS)
+  const both = dayLedger(work, now, LEDGER_DAYS * 2)
+  const days = both.slice(LEDGER_DAYS)
+  const previousDays = both.slice(0, LEDGER_DAYS)
   const totals = ledgerTotals(days)
 
   // "0s+" says nothing: when no run in the window has usage, the time is simply unknown.
@@ -62,32 +59,9 @@ export function weekRecap(summaries: readonly RecapRun[], projects: readonly Pic
   const kind = costView(totals.cost).kind
   const costShown = kind === 'unknown' || kind === 'partial' || (kind === 'known' && (totals.cost.costUsd ?? 0) > 0)
 
-  // Most active: stored projects only (Chat and the assistants have no project page to open), counted over the same
-  // runs and days the ledger shows. Ties go to the project whose newest run is newer, then to the name.
-  const perProject = new Map<string, { runs: number; newest: number }>()
-  const seen = new Set<string>()
-  const keys = new Set(days.map((d) => d.key))
-  for (const r of work) {
-    if (seen.has(r.id)) continue
-    seen.add(r.id)
-    if (isVirtualProjectId(r.projectId) || !Number.isFinite(r.startedAt)) continue
-    if (!keys.has(dayKey(r.startedAt))) continue
-    const cur = perProject.get(r.projectId) ?? { runs: 0, newest: 0 }
-    cur.runs += 1
-    cur.newest = Math.max(cur.newest, r.startedAt)
-    perProject.set(r.projectId, cur)
-  }
-  let top: TopProject | null = null
-  if (perProject.size >= 2) {
-    const ranked = [...perProject.entries()]
-      .map(([id, v]) => ({ id, name: projects.find((p) => p.id === id)?.name ?? '', ...v }))
-      .filter((p) => p.name !== '')
-      .sort((a, b) => b.runs - a.runs || b.newest - a.newest || a.name.localeCompare(b.name))
-    if (ranked.length >= 2) top = { id: ranked[0].id, name: ranked[0].name, runs: ranked[0].runs }
-  }
-
   return {
     days,
+    previousDays,
     runs: totals.runs,
     failed: totals.failed,
     workMs: totals.workMs,
@@ -97,15 +71,155 @@ export function weekRecap(summaries: readonly RecapRun[], projects: readonly Pic
     cost: totals.cost,
     costKind: totals.costKind,
     costShown,
-    top,
-    share: projectShare(work, keys, projects)
+    previous: ledgerTotals(previousDays)
   }
 }
 
-/** "Most active: Mobile app, 8 runs". */
-export function topProjectText(top: TopProject): string {
-  return `Most active: ${top.name}, ${top.runs} ${top.runs === 1 ? 'run' : 'runs'}`
+/** The tooltip and description of the Agent time card. Never the same thing as Usage's Wall time. */
+export const AGENT_TIME_TOOLTIP = 'Time agents spent working on your runs this week. Time a run was idle or waiting on you is left out, and parallel agents are not added together. Not the same as Wall time on Usage, which counts the whole time a run was open.'
+
+/** The tooltip and description of the Decisions card. */
+export const DECISIONS_TOOLTIP = 'Decision cards agents asked of you in runs that started this week: permissions, questions, proposals.'
+
+export const COMPARED_WITH = 'vs the 7 days before'
+
+export type MoveDir = 'up' | 'down' | 'same' | 'none'
+
+export interface Movement {
+  dir: MoveDir
+  /** The visible line after the glyph: "$4.20 vs the 7 days before"; the whole line for `same` and `none`. */
+  text: string
+  /** The same for assistive tech: "up $4.20 vs the 7 days before". */
+  label: string
 }
 
-/** The tooltip on the Time working label. */
-export const TIME_WORKING_TOOLTIP = 'Time runs were busy this week. Time spent waiting for you or idle is left out. Parallel agents are not added together.'
+/** ▲ for up, ▼ for down; nothing else carries a glyph. */
+export const MOVE_GLYPH: Record<'up' | 'down', string> = { up: '▲', down: '▼' }
+
+function movement(cur: number, prev: number, fmt: (n: number) => string): Movement {
+  if (cur === prev) return { dir: 'same', text: `No change ${COMPARED_WITH}`, label: `No change ${COMPARED_WITH}` }
+  const dir = cur > prev ? 'up' : 'down'
+  const amount = fmt(Math.abs(cur - prev))
+  return { dir, text: `${amount} ${COMPARED_WITH}`, label: `${dir} ${amount} ${COMPARED_WITH}` }
+}
+
+const notCompared = (why: string): Movement => ({ dir: 'none', text: `Not compared: ${why}`, label: `Not compared: ${why}` })
+
+export interface StatCard {
+  id: FocusFigure
+  label: string
+  /** The number the figure counts up to; null when there is nothing to count (unknown, none, not measured). */
+  value: number | null
+  /** The final text of the figure; "Not priced", "None" and "Not measured" are words, never "$0". */
+  text: string
+  /** The text for assistive tech when it differs from `text` ("at least 6h 40m"). */
+  label2: string
+  /** The figure is a lower bound ("$4.20+"). */
+  partial: boolean
+  /** Spend only: how the figure reads (the Cost component renders known and partial amounts). */
+  cost?: CostInput
+  movement: Movement
+  /** One value per local day, oldest first, for the area sparkline. */
+  series: SparkPoint[]
+  /** What the card opens on Usage: the same 7 days; a metric only for Spend and Runs. */
+  metric?: 'cost' | 'runs'
+  /** A definition for the tooltip and the description; '' when the label says it all. */
+  help: string
+  /** The accessible name: label, figure and movement, then what the card opens once. */
+  name: string
+}
+
+const dayPoint = (value: number, runs: number): SparkPoint => (runs === 0 ? { value: 0, kind: 'empty' } : { value, kind: 'known' })
+
+function spendCard(r: WeekRecap): StatCard {
+  const label = FOCUS_TITLES.spend
+  const prevKind = r.previous.costKind
+  const series: SparkPoint[] = r.days.map((d) => {
+    if (d.runs === 0 || d.costKind === 'none') return { value: 0, kind: 'empty' }
+    if (d.costKind === 'unknown') return { value: null, kind: 'unknown' }
+    return { value: d.cost.costUsd ?? 0, kind: d.costKind === 'partial' ? 'partial' : 'known' }
+  })
+  let text: string
+  let value: number | null
+  let label2: string
+  const partial = r.costKind === 'partial'
+  if (r.costKind === 'unknown') {
+    text = 'Not priced'
+    value = null
+    label2 = 'not priced'
+  } else if (!r.costShown) {
+    text = 'None'
+    value = null
+    label2 = 'nothing spent'
+  } else {
+    value = r.cost.costUsd ?? 0
+    text = `${formatUsdCompact(value)}${partial ? '+' : ''}`
+    label2 = partial ? `at least ${formatUsdCompact(value)}` : text
+  }
+  const comparable = (k: CostKind): boolean => k === 'known' || k === 'none'
+  const move = comparable(r.costKind) && comparable(prevKind) ? movement(r.cost.costUsd ?? 0, r.previous.cost.costUsd ?? 0, formatUsdCompact) : notCompared('some runs are not priced')
+  return finish({ id: 'spend', label, value, text, label2, partial, ...(r.costShown && r.costKind !== 'unknown' ? { cost: r.cost } : {}), movement: move, series, metric: 'cost', help: '' })
+}
+
+function runsCard(r: WeekRecap): StatCard {
+  const series = r.days.map((d) => dayPoint(d.runs, d.runs))
+  const text = String(r.runs)
+  return finish({ id: 'runs', label: FOCUS_TITLES.runs, value: r.runs, text, label2: text, partial: false, movement: movement(r.runs, r.previous.runs, String), series, metric: 'runs', help: '' })
+}
+
+function timeCard(r: WeekRecap): StatCard {
+  const unknown = r.workText === 'unknown'
+  const series: SparkPoint[] = r.days.map((d) => (d.runs === 0 ? { value: 0, kind: 'empty' } : { value: d.workMs, kind: d.workPartial ? 'partial' : 'known' }))
+  const comparable = !r.workPartial && !r.previous.workPartial
+  const move = comparable ? movement(r.workMs, r.previous.workMs, formatDuration) : notCompared('some runs have no timing')
+  return finish({
+    id: 'time',
+    label: FOCUS_TITLES.time,
+    value: unknown ? null : r.workMs,
+    text: unknown ? 'Not measured' : r.workText,
+    label2: unknown ? 'not measured' : r.workLabel,
+    partial: r.workPartial && !unknown,
+    movement: move,
+    series,
+    help: AGENT_TIME_TOOLTIP
+  })
+}
+
+/** Decisions asked in the week; null (no card) until at least one run of the week carries the count. */
+function decisionsCard(r: WeekRecap): StatCard | null {
+  const cur = r.days.reduce((a, d) => a + d.decisionRuns, 0)
+  if (cur === 0) return null
+  const sum = r.days.reduce((a, d) => a + d.decisions, 0)
+  const partial = cur < r.runs
+  const prevPartial = r.previous.decisionRuns < r.previous.runs
+  const series: SparkPoint[] = r.days.map((d) => (d.runs === 0 ? { value: 0, kind: 'empty' } : { value: d.decisions, kind: d.decisionRuns < d.runs ? 'partial' : 'known' }))
+  const text = `${sum}${partial ? '+' : ''}`
+  return finish({
+    id: 'decisions',
+    label: FOCUS_TITLES.decisions,
+    value: sum,
+    text,
+    label2: partial ? `at least ${sum}` : text,
+    partial,
+    movement: partial || prevPartial ? notCompared('some runs do not count decisions') : movement(sum, r.previous.decisions, String),
+    series,
+    help: DECISIONS_TOOLTIP
+  })
+}
+
+function finish(c: Omit<StatCard, 'name'>): StatCard {
+  const move = c.movement.label
+  return { ...c, name: `${c.label} ${c.label2}, ${move.charAt(0).toLowerCase()}${move.slice(1)}. Opens Usage for the same 7 days` }
+}
+
+/**
+ * The cards of Your week in display order: the focus figure first, the rest in canonical order. A card without data is
+ * left out (Decisions until runs carry the count); a focus that is left out falls back to the first card.
+ */
+export function statCards(recap: WeekRecap, focus: FocusFigure): StatCard[] {
+  const all = [spendCard(recap), runsCard(recap), timeCard(recap), decisionsCard(recap)].filter((c): c is StatCard => c !== null)
+  const lead = all.find((c) => c.id === focus)
+  const order = [...FOCUS_FIGURES]
+  const rest = all.filter((c) => c !== lead).sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id))
+  return lead ? [lead, ...rest] : rest
+}

@@ -57,6 +57,7 @@ const CHIP_ICON: Record<TileChipKind, LucideIcon> = { branches: GitBranch, sugge
 export function ProjectTile({
   model,
   enter,
+  index = 0,
   onOpen,
   onDelete,
   onNewRun,
@@ -69,9 +70,11 @@ export function ProjectTile({
   onTogglePin
 }: {
   model: TileModel
-  /** The tile appeared after first paint (create, clone). */
+  /** The tile rises in: the page is arriving, or the tile appeared after first paint (create, clone). */
   enter?: boolean
-  /** Customise mode: the tile shows its pin toggle. */
+  /** Its place in the grid, for the arrival stagger (the CSS caps it at six steps). */
+  index?: number
+  /** Customise mode (the pin toggle is always drawn now; kept so the tile can say it in `data-customising`). */
   customising?: boolean
   /** The pin limit is reached, so an unpinned tile cannot be pinned from the menu. */
   pinFull?: boolean
@@ -148,6 +151,7 @@ export function ProjectTile({
   return (
     <li
       className={enter ? 'project-tile motion-enter' : 'project-tile'}
+      style={enter ? ({ '--i': index } as CSSProperties) : undefined}
       data-testid="project-tile"
       data-name={project.name}
       data-id={project.id}
@@ -173,11 +177,6 @@ export function ProjectTile({
               onClick={onOpen}
               onKeyDown={(e) => void menu.onKeyDown(e, project.id)}
             >
-              {pinned && (
-                <span className="project-tile-pinned" data-testid="tile-pinned-glyph">
-                  <Icon icon={Pin} size="sm" />
-                </span>
-              )}
               <span className="project-tile-name">{project.name}</span>
             </button>
           </h3>
@@ -194,6 +193,19 @@ export function ProjectTile({
           </p>
         </div>
       </div>
+      {/* The pin is its own button, right after the Open button in the tab order; it sits above the tile's cover. A pressed
+          toggle keeps one name and says its state with aria-pressed. */}
+      <button
+        type="button"
+        className="icon-btn size-sm project-tile-pin"
+        data-testid="project-tile-pin"
+        aria-pressed={pinned}
+        aria-label={`Pin ${project.name}`}
+        title={pinned ? `Unpin ${project.name}` : pinFull ? `You can pin up to ${PIN_LIMIT} projects.` : `Pin ${project.name} to the top`}
+        onClick={() => onTogglePin?.('button')}
+      >
+        <Icon icon={pinned ? PinOff : Pin} size="sm" />
+      </button>
       <div className="project-tile-spark">
         <svg
           className="tile-spark"
@@ -265,19 +277,6 @@ export function ProjectTile({
       )}
       {/* Last in the DOM so the tab order is Open, chips, More; placed top right by the CSS. */}
       <div className="project-tile-more">
-        {customising && (
-          <button
-            type="button"
-            className="icon-btn size-sm"
-            data-testid="project-tile-pin"
-            aria-pressed={pinned}
-            aria-label={pinned ? `Unpin ${project.name}` : `Pin ${project.name} to the top`}
-            title={pinned ? `Unpin ${project.name}` : `Pin ${project.name} to the top`}
-            onClick={() => onTogglePin?.('button')}
-          >
-            <Icon icon={pinned ? PinOff : Pin} size="sm" />
-          </button>
-        )}
         <MenuButton control={menu} target={project.id} label={`More actions for ${project.name}`} testId="project-tile-more" />
       </div>
       <ContextMenu control={menu} label={`Actions for ${project.name}`} items={menuItems} testId="project-tile-menu" />

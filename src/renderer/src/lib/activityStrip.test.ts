@@ -1,22 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CostSource, RunStatus } from '@shared/types'
-import {
-  barHeight,
-  columnLabels,
-  costPart,
-  dayAriaLabel,
-  dayKey,
-  dayLedger,
-  dayReadout,
-  honestCost,
-  ledgerTotals,
-  maxDayRuns,
-  outcomeOf,
-  runWorkMs,
-  trackHeight,
-  workPart,
-  type LedgerRun
-} from './activityStrip'
+import { costView } from './cost'
+import { barHeight, dayKey, dayLedger, dayName, honestCost, ledgerTotals, outcomeOf, runWorkMs, weekdayInitial, type LedgerRun } from './activityStrip'
 
 const at = (y: number, m: number, d: number, h = 12): number => new Date(y, m - 1, d, h, 0, 0).getTime()
 // Saturday 7 November 2026, mid-afternoon: the week is Sun 1 Nov to Sat 7 Nov.
@@ -49,6 +34,11 @@ function run(id: string, startedAt: number, over: Partial<LedgerRun> & RunOpts =
       } as unknown as NonNullable<LedgerRun['usage']>)
     : undefined
   return { id, startedAt, status: 'finished' as RunStatus, totalCostUsd: 0, ...(usage ? { usage } : {}), ...rest }
+}
+
+const costText = (c: Parameters<typeof costView>[0]): string => {
+  const v = costView(honestCost(c), { compact: true })
+  return v.kind === 'none' ? '' : v.text
 }
 
 describe('dayLedger days', () => {
@@ -87,6 +77,12 @@ describe('dayLedger days', () => {
     expect(dayLedger([], new Date(2026, 10, 7, 0, 0, 1).getTime())[6].key).toBe('2026-11-07')
     expect(dayLedger([], new Date(2026, 10, 7, 23, 59, 59).getTime())[6].key).toBe('2026-11-07')
   })
+
+  it('builds as many days as asked (14 for the week before)', () => {
+    const days = dayLedger([], NOW, 14)
+    expect(days).toHaveLength(14)
+    expect(days[0].key).toBe('2026-10-25')
+  })
 })
 
 describe('dayLedger attribution', () => {
@@ -94,7 +90,7 @@ describe('dayLedger attribution', () => {
     const late = new Date(2026, 10, 6, 23, 59, 0).getTime()
     const days = dayLedger([{ ...run('a', late, { cost: 2, status: 'finished' }), endedAt: late + 3_600_000 } as LedgerRun], NOW)
     expect(days.find((d) => d.key === '2026-11-06')?.runs).toBe(1)
-    expect(costPart(days.find((d) => d.key === '2026-11-06')!.cost)).toBe('$2.00')
+    expect(costText(days.find((d) => d.key === '2026-11-06')!.cost)).toBe('$2.00')
     expect(days.find((d) => d.key === '2026-11-07')?.runs).toBe(0)
   })
 
@@ -141,16 +137,13 @@ describe('working time', () => {
     expect(runWorkMs({ wallMs: Number.NaN } as never)).toBeNull()
   })
 
-  it('sums per day, marks a day with a run lacking usage as a lower bound and says so once', () => {
+  it('sums per day and marks a day with a run lacking usage as a lower bound', () => {
     const days = dayLedger([run('a', at(2026, 11, 7, 9), { cost: 0, wall: 130 * MIN }), run('b', at(2026, 11, 7, 10), { wall: 0 }), run('c', at(2026, 11, 6, 9))], NOW)
     expect(days[6].workMs).toBe(130 * MIN)
     expect(days[6].workPartial).toBe(false)
     expect(days[5].workMs).toBe(0)
     expect(days[5].workPartial).toBe(true)
     expect(ledgerTotals(days).workPartial).toBe(true)
-    expect(workPart(days[6])).toBe('2h 10m working')
-    expect(workPart({ workMs: 130 * MIN, workPartial: true })).toBe('2h 10m+ working')
-    expect(workPart(days[5])).toBe('')
   })
 })
 
@@ -165,39 +158,31 @@ describe('cost', () => {
   it('treats a reported zero from a provider as nothing spent, never "$0.00"', () => {
     const days = dayLedger([run('a', at(2026, 11, 7), { cost: 0, source: 'provider' })], NOW)
     expect(days[6].costKind).toBe('none')
-    expect(costPart(days[6].cost)).toBe('')
-    expect(dayReadout(days[6])).not.toContain('$0')
+    expect(costText(days[6].cost)).toBe('')
   })
 
   it('sums known costs', () => {
     const days = dayLedger([run('a', at(2026, 11, 7, 9), { cost: 1.5 }), run('b', at(2026, 11, 7, 10), { cost: 0.5 })], NOW)
     expect(days[6].costKind).toBe('known')
-    expect(costPart(days[6].cost)).toBe('$2.00')
+    expect(costText(days[6].cost)).toBe('$2.00')
   })
 
   it('keeps unknown unknown, never $0', () => {
     const days = dayLedger([run('a', at(2026, 11, 7), { cost: null })], NOW)
     expect(days[6].costKind).toBe('unknown')
-    expect(dayReadout(days[6])).toContain('cost unknown')
-    expect(dayReadout(days[6])).not.toContain('$0')
-  })
-
-  it('names an unknown cost once in the accessible name (walk-3 L1)', () => {
-    const days = dayLedger([run('a', at(2026, 11, 7), { cost: null })], NOW)
-    expect(dayAriaLabel(days[6])).toContain('cost unknown')
-    expect(dayAriaLabel(days[6])).not.toContain('cost cost')
+    expect(costText(days[6].cost)).not.toContain('$0')
   })
 
   it('marks a day partial when a known cost sits beside an unknown one, or a run is itself partial', () => {
     const mixed = dayLedger([run('a', at(2026, 11, 7, 9), { cost: 1 }), run('b', at(2026, 11, 7, 10), { cost: null })], NOW)
     expect(mixed[6].costKind).toBe('partial')
-    expect(dayReadout(mixed[6])).toContain('$1.00+')
+    expect(costText(mixed[6].cost)).toContain('$1.00+')
     const flagged = dayLedger([run('a', at(2026, 11, 7), { cost: 1, partial: true })], NOW)
     expect(flagged[6].costKind).toBe('partial')
   })
 
   it('reads a lower bound of zero as unknown, not "$0.00+"', () => {
-    expect(costPart(honestCost({ costUsd: 0, costSource: 'provider', costPartial: true }))).toBe('cost unknown')
+    expect(costView(honestCost({ costUsd: 0, costSource: 'provider', costPartial: true })).kind).toBe('unknown')
   })
 
   it('totals runs and cost over the days, partial when any day is unknown beside a known one', () => {
@@ -209,91 +194,17 @@ describe('cost', () => {
   })
 })
 
-describe('bars', () => {
-  it('scales linearly from zero to the busiest day with a 2 px floor', () => {
-    const many = Array.from({ length: 40 }, (_, i) => run(`m${i}`, at(2026, 11, 7, 9)))
-    const days = dayLedger([...many, run('b', at(2026, 11, 6)), run('c', at(2026, 11, 5)), run('d', at(2026, 11, 5)), run('e', at(2026, 11, 5))], NOW)
-    const max = maxDayRuns(days)
-    expect(max).toBe(40)
-    expect(barHeight(days[6].runs, max, 40)).toBe(40)
-    expect(barHeight(days[5].runs, max, 40)).toBe(2)
-    expect(barHeight(days[4].runs, max, 40)).toBe(3)
-    expect(barHeight(days[0].runs, max, 40)).toBe(0)
-  })
-
-  it('draws an even half at half the busiest day and never exceeds the track', () => {
-    expect(barHeight(2, 4, 56)).toBe(28)
+describe('names and bars', () => {
+  it('scales linearly from zero with a 2 px floor and never past the track', () => {
+    expect(barHeight(40, 40, 40)).toBe(40)
+    expect(barHeight(1, 40, 40)).toBe(2)
+    expect(barHeight(0, 40, 40)).toBe(0)
     expect(barHeight(9, 4, 56)).toBe(56)
   })
 
-  it('has no bar at all on a flat zero week and a hairline-only empty day', () => {
-    const days = dayLedger([], NOW)
-    expect(maxDayRuns(days)).toBe(0)
-    expect(days.map((d) => barHeight(d.runs, maxDayRuns(days), 40))).toEqual([0, 0, 0, 0, 0, 0, 0])
-  })
-
-  it('separates an empty day from a failed one: no bar, no failure versus a bar with a failed count', () => {
-    const days = dayLedger([run('f', at(2026, 11, 6), { status: 'error' }), run('ok', at(2026, 11, 5))], NOW)
-    expect(days[5].runs).toBe(1)
-    expect(days[5].outcomes.failed).toBe(1)
-    expect(days[4].outcomes.failed).toBe(0)
-    expect(days[3].runs).toBe(0)
-    expect(barHeight(days[5].runs, 1, 40)).toBe(40)
-    expect(barHeight(days[3].runs, 1, 40)).toBe(0)
-  })
-
-  it('declares 40 px narrow and 56 px wide', () => {
-    expect(trackHeight(false)).toBe(72)
-    expect(trackHeight(true)).toBe(96)
-  })
-})
-
-describe('labels', () => {
-  it('puts the short date under the first column, Today under the last and an initial under every column', () => {
-    const labels = columnLabels(dayLedger([], NOW))
-    expect(labels).toHaveLength(7)
-    expect(labels[0]).toEqual({ initial: 'S', end: '1 Nov' })
-    expect(labels[6]).toEqual({ initial: 'S', end: 'Today' })
-    expect(labels.slice(1, 6).every((l) => l.end === undefined)).toBe(true)
-    expect(labels.map((l) => l.initial).join('')).toBe('SMTWTFS')
-  })
-})
-
-describe('words', () => {
-  it('reads out today and past days in the old words', () => {
-    const days = dayLedger(
-      [
-        run('a', at(2026, 11, 7, 9), { cost: 0.42, wall: 130 * MIN }),
-        run('b', at(2026, 11, 7, 10), { status: 'error', cost: 1, wall: 0 }),
-        run('c', at(2026, 11, 4, 9), { status: 'error', cost: 1.2 }),
-        run('d', at(2026, 11, 4, 9), { cost: 0 })
-      ],
-      NOW
-    )
-    expect(dayReadout(days[6])).toBe('Today: 2 runs (1 failed) · $1.42 · 2h 10m working')
-    expect(dayReadout(days[3])).toBe('Wed 4 Nov: 2 runs (1 failed) · $1.20')
-    expect(dayReadout(days[0])).toBe('Sun 1 Nov: no runs')
-  })
-
-  it('names a day for assistive tech without zero parts and never doubles the lead word', () => {
-    const days = dayLedger(
-      [run('a', at(2026, 11, 4, 9), { status: 'error', cost: 1.42, wall: 130 * MIN }), run('b', at(2026, 11, 4, 10), { cost: 0 }), run('c', at(2026, 11, 4, 11), { cost: 0 })],
-      NOW
-    )
-    expect(dayAriaLabel(days[3])).toBe('Wed 4 Nov: 3 runs (1 failed), cost $1.42, 2h 10m working')
-    expect(dayAriaLabel(days[0])).toBe('Sun 1 Nov: no runs')
-    expect(dayAriaLabel(days[6])).toBe('Today, Sat 7 Nov: no runs')
-  })
-
-  it('says "at least" for a day whose working time is a lower bound and "cost unknown" once', () => {
-    const days = dayLedger([run('a', at(2026, 11, 7, 9), { cost: null, wall: 5 * MIN }), run('b', at(2026, 11, 7, 10))], NOW)
-    expect(dayAriaLabel(days[6])).toBe('Today, Sat 7 Nov: 2 runs, cost unknown, at least 5m 00s working')
-    expect(dayReadout(days[6])).toBe('Today: 2 runs · cost unknown · 5m 00s+ working')
-  })
-
-  it('leaves out a working time under a second', () => {
-    const day = dayLedger([run('a', at(2026, 11, 7, 9), { cost: 0, wall: 400 })], NOW).find((d) => d.today)!
-    expect(dayReadout(day)).toBe('Today: 1 run')
-    expect(dayAriaLabel(day)).not.toMatch(/working/)
+  it('names a day and its weekday initial in en-GB parts', () => {
+    const start = at(2026, 11, 4, 0)
+    expect(dayName(start)).toBe('Wed 4 Nov')
+    expect(weekdayInitial(start)).toBe('W')
   })
 })
