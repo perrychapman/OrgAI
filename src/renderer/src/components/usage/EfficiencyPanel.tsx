@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactElement } from 'react'
-import { useId, useMemo, useRef, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { connectionLabel } from '../../lib/connectionLabel'
 import {
   efficiencyByProject,
@@ -10,7 +10,6 @@ import {
   type EfficiencyMeasure,
   type SortDir
 } from '../../lib/usageEfficiency'
-import { useRovingFocus } from '../connectors/useRovingFocus'
 import DefinedTerm from './DefinedTerm'
 import type { UsagePanelProps, WastefulSort } from './panelProps'
 import { SortTh, TableWrap } from './usageTableParts'
@@ -77,9 +76,6 @@ export default function EfficiencyPanel({ data, onPickSignal, announce, arriving
   const [sort, setSort] = useState<{ col: EfficiencyColumn; dir: SortDir }>({ col: 'runs', dir: 'desc' })
   const table = useMemo(() => sortEfficiencyRows(byProject, sort.col, sort.dir), [byProject, sort])
 
-  const groupRef = useRef<HTMLUListElement>(null)
-  const roving = useRovingFocus(groupRef, '.usage-term, button.usage-eff-value')
-
   const pick = (m: EfficiencyMeasure): void => {
     if (!m.sort) return
     onPickSignal(m.sort)
@@ -103,14 +99,8 @@ export default function EfficiencyPanel({ data, onPickSignal, announce, arriving
       {data.rows.length === 0 ? (
         <p className="usage-note">No runs in this view.</p>
       ) : (
-        <ul
-          ref={groupRef}
-          className="usage-eff-grid"
-          data-testid="usage-eff-main"
-          aria-label="Efficiency measures. Arrow keys move between them; press a value to sort Runs worth a look by it."
-          onKeyDown={roving.onKeyDown}
-          onFocus={roving.onFocus}
-        >
+        // Every label and every sortable value is its own Tab stop: all four definitions are reachable without arrow keys.
+        <ul className="usage-eff-grid" data-testid="usage-eff-main" aria-label="Efficiency measures. Press a value to sort Runs worth a look by it.">
           {measures.map((m, i) => (
             <Measure key={m.key} m={m} index={i} onPick={pick} />
           ))}

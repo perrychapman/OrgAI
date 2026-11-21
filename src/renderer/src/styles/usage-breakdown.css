@@ -72,9 +72,14 @@
   min-block-size: 0;
   overflow-y: auto;
 }
+/* The card is its own size container, so the table answers to the card's width and not the page's: from a 900 px page
+   the card sits beside the chart at about 345 px, and at 1280 px it is about 500 px. */
+.usage-view .usage-where-card {
+  container: usage-where / inline-size;
+}
 /* In the narrow side-by-side card the table keeps name, runs and cost (columns marked optional drop) and the name
    truncates, so it fits the card with no inner horizontal scroll. */
-@container usage (min-width: 1100px) {
+@container usage-where (max-width: 559px) {
   .usage-where-card .uc-table .opt {
     display: none;
   }
@@ -159,6 +164,13 @@
 }
 .uc-ribbon-seg {
   position: relative;
+  appearance: none;
+  display: block;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  font: inherit;
+  color: inherit;
   flex-basis: 0;
   flex-shrink: 0;
   min-width: 3px;

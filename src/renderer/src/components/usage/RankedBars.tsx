@@ -30,7 +30,7 @@ export function rankFill(index: number): string {
 export const RankArmContext = createContext('')
 const REORDER_ARM_MS = 5000
 
-/** One cost figure on the page: "No price" for unknown (never $0), "+" and "~" as costView says, full value in the title. */
+/** One cost figure on the page: "Not priced" for unknown (never $0), "+" and "~" as costView says, full value in the title. */
 export function CostText({ value, title }: { value: CostInput; title?: string }): ReactElement {
   const v = costView(value, { precision: 'page' })
   return (
@@ -239,7 +239,11 @@ export function RankedBars({
             {ribbon.segments.map((s) => {
               const item = s.id === null ? undefined : items.find((it) => it.id === s.id)
               return (
-                <span
+                // Native buttons for the click (the pointer shortcut), kept out of the Tab order and the accessibility tree
+                // with the aria-hidden ribbon; the rows are the keyboard and screen reader path.
+                <button
+                  type="button"
+                  tabIndex={-1}
                   key={s.id ?? 'other'}
                   className="uc-ribbon-seg"
                   data-testid="usage-where-ribbon-seg"
@@ -254,6 +258,7 @@ export function RankedBars({
                     if (item) onHover?.(item)
                   }}
                   onClick={item ? () => onActivate(item) : undefined}
+                  onMouseDown={(e) => e.preventDefault()}
                 />
               )
             })}

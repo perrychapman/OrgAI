@@ -303,14 +303,14 @@ export function readoutText(label: string, bar: { runs: number; cost: CostInput;
 /** A segment's own readout: "Tue 3 Nov, Billing: $6.10, 9 runs." */
 export function segmentReadout(label: string, name: string, seg: Segment, metric: Metric): string {
   if (metric === 'runs') return `${label}, ${name}: ${plural(seg.runs, 'run')}.`
-  const v = seg.state === 'unknown' && metric === 'cost' ? 'cost unknown' : metricFigure(seg, metric)
+  const v = seg.state === 'unknown' && metric === 'cost' ? 'not priced' : metricFigure(seg, metric)
   return `${label}, ${name}: ${v}, ${plural(seg.runs, 'run')}.`
 }
 
-/** A cost with no known value reads "No price" in compact places; the figure otherwise. */
+/** A cost with no known value reads "Not priced" in compact places; the figure otherwise. */
 export function costFigureText(c: CostInput): string {
   const v = costView(c, { precision: 'page' })
-  return v.kind === 'unknown' ? 'No price' : v.text
+  return v.kind === 'unknown' ? 'Not priced' : v.text
 }
 
 /** The rollup's cost as a CostInput: "+" iff a run folded into it has unknown cost (the one partial rule, 5). */

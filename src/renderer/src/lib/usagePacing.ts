@@ -19,6 +19,8 @@ export const PROJECTION_MIN_FRACTION = 0.2
 export const PROJECTION_EARLY_TEXT = 'Projection needs more data'
 export const PROJECTION_UNPRICED_TEXT = 'Projection hidden: some usage is not priced'
 export const PROJECTION_TRUNCATED_TEXT = 'Projection hidden: older runs in this period are not loaded'
+/** A 7 or 30 day window ends today, so a straight line to "today" is the spend itself: no projection, the pace stays. */
+export const PROJECTION_ROLLING_TEXT = 'No projection for a rolling period'
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/
 
@@ -102,14 +104,18 @@ export interface PacingInput {
   previous: PreviousPoint | null
   /** "the previous 7 days", "last month". */
   previousWords: string
+  /** The period is a rolling window (7 or 30 days ending today): it has no projection. */
+  rolling?: boolean
+  /** The previous period was read and had no runs at all: the KPI band says "no prior data", so the pace says it too and draws no tick. */
+  previousEmpty?: boolean
 }
 
-export type ProjectionState = 'shown' | 'early' | 'unpriced' | 'truncated' | 'ended'
+export type ProjectionState = 'shown' | 'early' | 'unpriced' | 'truncated' | 'ended' | 'rolling'
 
 export interface PacingPace {
-  /** ▲ more, ▼ less, null = level or not compared. */
+  /** ▲ more, ▼ less, null = level or not compared. The glyph is decoration: the words carry the direction. */
   glyph: '▲' | '▼' | null
-  /** The whole sentence, glyph first when there is one. */
+  /** The whole sentence without the glyph ("$2.00 more than the previous 7 days at this point"). */
   text: string
   /** Spend minus the previous period at this point; null when not compared. */
   deltaUsd: number | null
@@ -123,13 +129,15 @@ export interface PacingModel {
   /** The sentence for the projection or the reason it is missing. */
   projectionText: string
   /** The burn dial; null whenever the projection is hidden. */
-  dial: { fill: number; tick: number | null; text: string; tickText: string | null } | null
+  dial: { fill: number; tick: number | null; text: string; tickText: string | null; caption: string } | null
   pace: PacingPace | null
 }
 
 const dayWord = (ms: number): string => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })
 
 function paceOf(i: PacingInput): PacingPace | null {
+  // The same fact the KPI tiles state ("no prior data"): never a comparison with a period that has no runs.
+  if (i.previousEmpty) return { glyph: null, text: `No runs in ${i.previousWords} to compare.`, deltaUsd: null }
   const p = i.previous
   if (!p) return null
   if (i.spendUsd === null || !i.allPriced || i.truncated || !p.exact) {
@@ -141,8 +149,8 @@ function paceOf(i: PacingInput): PacingPace | null {
   // Half a cent either way is level: both figures read the same on the page.
   if (Math.abs(delta) < 0.005) return { glyph: null, text: `Level with ${i.previousWords}${at}.`, deltaUsd: 0 }
   return delta > 0
-    ? { glyph: '▲', text: `▲ ${pageCost(delta)} more than ${i.previousWords}${at}`, deltaUsd: delta }
-    : { glyph: '▼', text: `▼ ${pageCost(-delta)} less than ${i.previousWords}${at}`, deltaUsd: delta }
+    ? { glyph: '▲', text: `${pageCost(delta)} more than ${i.previousWords}${at}`, deltaUsd: delta }
+    : { glyph: '▼', text: `${pageCost(-delta)} less than ${i.previousWords}${at}`, deltaUsd: delta }
 }
 
 /** The pacing model for a period. Never throws; every branch has words. */
@@ -151,6 +159,8 @@ export function pacingModel(i: PacingInput): PacingModel {
   const pace = paceOf(i)
   const hidden = (state: Exclude<ProjectionState, 'shown'>, text: string): PacingModel => ({ fraction, state, projectedUsd: null, projectionText: text, dial: null, pace })
 
+  // A rolling window ends today: the line from spend so far to "today" is the spend itself, so there is nothing to project.
+  if (i.rolling) return hidden('rolling', PROJECTION_ROLLING_TEXT)
   if (fraction >= 1) return hidden('ended', 'No projection: this period is over')
   if (fraction < PROJECTION_MIN_FRACTION) return hidden('early', PROJECTION_EARLY_TEXT)
   if (i.truncated) return hidden('truncated', PROJECTION_TRUNCATED_TEXT)
@@ -158,17 +168,20 @@ export function pacingModel(i: PacingInput): PacingModel {
 
   const projected = i.spendUsd / fraction
   const fill = projected > 0 ? Math.min(1, i.spendUsd / projected) : 0
-  const tick = i.previous && i.previous.exact && projected > 0 ? Math.min(1, i.previous.usd / projected) : null
+  const hasTick = !!i.previous && i.previous.exact && !i.previousEmpty
+  const tick = hasTick && projected > 0 ? Math.min(1, i.previous!.usd / projected) : null
   const by = dayWord(i.end - 1)
-  const tickText = i.previous && i.previous.exact ? `Tick: ${i.previousWords} at this point, ${pageCost(i.previous.usd)}` : null
+  const tickText = hasTick ? `Tick: where ${i.previousWords} stood at this point, ${pageCost(i.previous!.usd)}` : null
   const pct = Math.round(fill * 100)
   const text = `${pageCost(i.spendUsd)} so far of a projected ${pageCost(projected)} by ${by}, ${pct} percent.${tickText ? ` ${tickText}.` : ''}`
+  // What the drawing means, in words: the fill is spend so far as a share of the projection, the tick is the earlier period.
+  const caption = `Fill: spend so far, ${pageCost(i.spendUsd)} of the projected ${pageCost(projected)}.${tickText ? ` ${tickText}.` : ' No tick: nothing to compare with.'}`
   return {
     fraction,
     state: 'shown',
     projectedUsd: projected,
     projectionText: `Projected ${pageCost(projected)} by ${by}`,
-    dial: { fill, tick, text, tickText },
+    dial: { fill, tick, text, tickText, caption },
     pace
   }
 }

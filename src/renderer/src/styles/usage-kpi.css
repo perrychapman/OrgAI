@@ -157,7 +157,7 @@
   color: var(--text-primary);
 }
 .usage-kpi-glyph {
-  font-size: 0.85em;
+  font-size: var(--text-caption);
 }
 .usage-kpi-vs,
 .usage-kpi-nodelta {

@@ -201,10 +201,10 @@ describe('text', () => {
     const t = readoutText('Tue 3 Nov', { runs: 2, cost: { costUsd: 6.1, costSource: 'computed', costPartial: true }, tokens: 200 }, segs, names, 'cost')
     expect(t).toBe('Tue 3 Nov: $6.10+, 2 runs. Billing $6.10, Docs unknown.')
     expect(readoutText('Wed 4 Nov', { runs: 0, cost: { costUsd: 0, costSource: 'none' }, tokens: 0 }, [], names, 'cost')).toBe('Wed 4 Nov: no runs.')
-    expect(segmentReadout('Tue 3 Nov', 'Docs', segs[1]!, 'cost')).toBe('Tue 3 Nov, Docs: cost unknown, 1 run.')
+    expect(segmentReadout('Tue 3 Nov', 'Docs', segs[1]!, 'cost')).toBe('Tue 3 Nov, Docs: not priced, 1 run.')
   })
   it('never prints $0 for an unknown cost', () => {
-    expect(costFigureText({ costUsd: null, costSource: 'unknown' })).toBe('No price')
+    expect(costFigureText({ costUsd: null, costSource: 'unknown' })).toBe('Not priced')
     expect(costFigureText({ costUsd: 0.4261, costSource: 'computed', costPartial: true })).toBe('$0.426+')
   })
   it('puts + on a rollup iff a run in it is unknown', () => {

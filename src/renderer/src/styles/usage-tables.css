@@ -133,7 +133,7 @@
 .usage-sort-mark {
   display: inline-block;
   min-width: 1em;
-  font-size: 9px;
+  font-size: var(--text-caption);
 }
 .usage-tbl th.num .usage-sort {
   flex-direction: row-reverse;

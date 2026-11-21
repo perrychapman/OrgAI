@@ -83,7 +83,6 @@ export default function ModelsPanel({ data, filters, onNarrow, announce, embedde
       selected: filters.model === m.model,
       extra: missing ? (
         <span className="uc-unpriced">
-          No price known.{' '}
           <button type="button" className="link-btn" data-testid="usage-set-price" onClick={() => setPrice(m.model)}>
             Set a price
           </button>

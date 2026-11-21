@@ -489,8 +489,10 @@ export default function UsageView(): ReactElement {
     const kind = costItem.cost ? costView(costItem.cost).kind : 'none'
     const bounds = periodBounds(filters.period, context.now)
     const ended = elapsedFraction(bounds.since, bounds.end, context.now) >= 1
+    // A previous period with no runs is "no prior data" on the tiles; the pace says the same and draws no tick.
+    const previousEmpty = !!previousData && !previousData.truncated && previousData.data.totals.runs === 0
     const previous =
-      previousData && !previousData.truncated && prevSpan
+      previousData && !previousData.truncated && !previousEmpty && prevSpan
         ? previousAtPoint(pacingRuns(previousData.data.rows, filters.model), prevSpan, Math.min(context.now, bounds.end) - bounds.since, ended)
         : null
     return pacingModel({
@@ -501,7 +503,9 @@ export default function UsageView(): ReactElement {
       allPriced: (kind === 'known' || kind === 'none') && data.totals.costUnknownRuns === 0 && !data.lowerBound,
       truncated: data.lowerBound,
       previous,
-      previousWords: previousPeriodWords(filters.period)
+      previousWords: previousPeriodWords(filters.period),
+      rolling: filters.period.kind === 'days',
+      previousEmpty
     })
   }, [data, costItem, context, filters.bucketPick, filters.period, filters.model, previousData, prevSpan])
 

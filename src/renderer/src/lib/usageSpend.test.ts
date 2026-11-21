@@ -73,18 +73,18 @@ describe('spendSummary', () => {
     expect(spendSummary({ metric: 'runs', bucket: 'day', totals: totals(3), busiest: { start, value: 2 }, hidden: 2 })).toBe('Busiest day 3 Nov, 2 runs. 2 hidden.')
     expect(spendSummary({ metric: 'runs', bucket: 'day', totals: totals(0), busiest: null, hidden: 0 })).toBe('No runs in this period.')
     expect(spendSummary({ metric: 'runs', bucket: 'day', totals: totals(0), busiest: null, hidden: 1 })).toBe('No runs in the series shown. 1 hidden.')
-    expect(spendSummary({ metric: 'cost', bucket: 'day', totals: totals(4, null), busiest: null, hidden: 0 })).toBe('Cost unknown for 4 runs: no price is known. Tokens are counted.')
+    expect(spendSummary({ metric: 'cost', bucket: 'day', totals: totals(4, null), busiest: null, hidden: 0 })).toBe('Not priced: 4 runs with no known price. Tokens are counted.')
     expect(spendSummary({ metric: 'runs', bucket: 'day', totals: totals(1), busiest: null, hidden: 0 })).toBe('1 run.')
   })
 })
 
 describe('barValueLabel', () => {
-  it('formats the visible stack by metric, with + for a lower bound and No price for unknown', () => {
+  it('formats the visible stack by metric, with + for a lower bound and Not priced for unknown', () => {
     const segs = segmentsOf([slice('a', 2), slice('b', 3, { costKnownRuns: 1, costUnknownRuns: 1 })], series, 'cost')
     expect(barValueLabel('cost', segs)).toMatch(/\+$/)
     expect(barValueLabel('runs', segmentsOf([slice('a', 2, { runs: 3 })], series, 'runs'))).toBe('3')
     expect(barValueLabel('tokens', segmentsOf([slice('a', 2, { tokens: T(1500) })], series, 'tokens'))).toBe('1.5k')
-    expect(barValueLabel('cost', segmentsOf([slice('a', null)], series, 'cost'))).toBe('No price')
+    expect(barValueLabel('cost', segmentsOf([slice('a', null)], series, 'cost'))).toBe('Not priced')
     expect(barValueLabel('cost', [])).toBe('')
   })
 })
@@ -96,7 +96,7 @@ describe('previous-period cells', () => {
   it('reads text and sort values; unknown and empty have none', () => {
     expect(overlayCostText(known)).toContain('4.2')
     expect(previousCellText(known, 'cost')).toContain('4.2')
-    expect(previousCellText(unknown, 'cost')).toBe('No price')
+    expect(previousCellText(unknown, 'cost')).toBe('Not priced')
     expect(previousCellText(empty, 'cost')).toBe('—')
     expect(previousSortValue(known, 'cost')).toBeCloseTo(4.2)
     expect(previousSortValue(unknown, 'cost')).toBeNull()
@@ -113,7 +113,7 @@ describe('previous-period cells', () => {
     const runs = overlayFigure({ start: 0, key: '', point: point([slice('a', 1, { runs: 4 })]) }, series, 'runs', new Set())
     expect(previousTipText(runs, 'runs')).toBe('4 runs')
     expect(previousTipText(known, 'cost')).toContain('4.2')
-    expect(previousTipText(unknown, 'cost')).toBe('cost unknown')
+    expect(previousTipText(unknown, 'cost')).toBe('not priced')
     expect(previousTipText(empty, 'tokens')).toBe('no runs')
   })
 })
@@ -124,7 +124,7 @@ describe('tooltip text', () => {
     expect(segmentFigure('runs', segmentsOf([slice('a', 2, { runs: 3 })], series, 'runs')[0]!)).toBe('3')
     expect(segmentFigure('tokens', segmentsOf([slice('a', 2, { tokens: T(1500) })], series, 'tokens')[0]!)).toBe('1.5k')
     expect(segmentFigure('cost', seg!)).toContain('2')
-    expect(segmentFigure('cost', segmentsOf([slice('a', null)], series, 'cost')[0]!)).toBe('No price')
+    expect(segmentFigure('cost', segmentsOf([slice('a', null)], series, 'cost')[0]!)).toBe('Not priced')
     expect(runsLine(2, 1)).toBe('2 runs, 1 unpriced')
     expect(runsLine(1, 0)).toBe('1 run')
   })

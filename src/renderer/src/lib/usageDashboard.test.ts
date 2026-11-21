@@ -152,7 +152,7 @@ describe('previous-period overlay', () => {
     expect(overlayMax([{ value: 2, state: 'known', runs: 1 }, { value: 5, state: 'partial', runs: 1 }])).toBe(5)
   })
   it('words the readout without a made-up zero', () => {
-    expect(overlayReadout({ value: 0, state: 'unknown', runs: 1 }, 'cost', '$0.00')).toBe('Previous period: cost unknown.')
+    expect(overlayReadout({ value: 0, state: 'unknown', runs: 1 }, 'cost', '$0.00')).toBe('Previous period: not priced.')
     expect(overlayReadout({ value: 0, state: 'empty', runs: 0 }, 'cost', '')).toBe('Previous period: no runs.')
     expect(overlayReadout({ value: 2, state: 'partial', runs: 2 }, 'cost', '$2.00+')).toBe('Previous period: $2.00+.')
     expect(overlayReadout({ value: 2, state: 'known', runs: 1 }, 'runs', '')).toBe('Previous period: 1 run.')

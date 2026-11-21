@@ -208,7 +208,7 @@ export default function SpendPanel({
     if (metric === 'runs') return `${label}: ${runs} ${runs === 1 ? 'run' : 'runs'}`
     if (metric === 'tokens') return `${label}: ${formatTokens(sum)} tokens`
     const known = figs.some((f) => f.state === 'known' || f.state === 'partial')
-    if (!known) return `${label}: cost unknown`
+    if (!known) return `${label}: not priced`
     const partial = figs.some((f) => f.state === 'partial' || f.state === 'unknown')
     return `${label}: ${costView({ costUsd: sum, costSource: 'computed', sourceMixed: true, ...(partial ? { costPartial: true } : {}) }, { precision: 'page' }).text}`
   })()
@@ -371,6 +371,8 @@ export default function SpendPanel({
       clearPointer()
       setRove(next)
       setDismissed(null)
+      // Any keyboard move shows the crosshair and tooltip, even when focus arrived by pointer or script (UX post walk H2).
+      setKeyFocus(true)
     } else if (e.key === 'Escape') {
       // The tooltip goes first and focus stays; with none showing, Escape clears a day pick.
       if (tipOn) setDismissed(tipIdx)
@@ -611,7 +613,7 @@ export default function SpendPanel({
               <svg width="10" height="10" aria-hidden="true" focusable="false">
                 <circle cx="5" cy="5" r="3" className="uc-prev uc-prev-unknown" />
               </svg>
-              previous cost unknown
+              previous not priced
             </li>
           )}
         </ul>
