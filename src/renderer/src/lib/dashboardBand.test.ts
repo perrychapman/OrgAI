@@ -3,6 +3,9 @@ import type { AgentInstance, Project, RunSummary } from '@shared/types'
 import {
   BAND_MARKS_MAX,
   BAND_MAX_DEPTH,
+  bandRunIds,
+  holdBandOrder,
+  planCurrentText,
   planProgress,
   planProgressText,
   runMarks,
@@ -25,6 +28,7 @@ import {
   openedText,
   roleColorFor,
   treeOrder,
+  type BandModel,
   type BandRow,
   type BandRunIn
 } from './dashboardBand'
@@ -397,15 +401,27 @@ describe('plan progress (the card bar)', () => {
   const plan = (status: string, steps: string[]): never => ({ goal: 'g', status, autoContinues: 0, updatedAt: 0, steps: steps.map(step) }) as never
 
   it('counts done of counted steps and leaves skipped steps out of both', () => {
-    expect(planProgress(plan('active', ['done', 'done', 'in_progress', 'pending', 'skipped']))).toEqual({ done: 2, total: 4, blocked: false })
-    expect(planProgressText({ done: 2, total: 4, blocked: false })).toBe('2 of 4 steps')
-    expect(planProgressText({ done: 0, total: 1, blocked: false })).toBe('0 of 1 step')
+    expect(planProgress(plan('active', ['done', 'done', 'in_progress', 'pending', 'skipped']))).toEqual({
+      done: 2,
+      total: 4,
+      blocked: false,
+      segments: ['done', 'done', 'now', 'todo'],
+      current: { index: 3, title: 't', running: true }
+    })
+    expect(planProgressText({ done: 2, total: 4, blocked: false, segments: [] })).toBe('2 of 4 steps')
+    expect(planProgressText({ done: 0, total: 1, blocked: false, segments: [] })).toBe('0 of 1 step')
   })
   it('reads a finished plan as full and flags a blocked one in words', () => {
-    expect(planProgress(plan('done', ['done', 'pending', 'in_progress']))).toEqual({ done: 3, total: 3, blocked: false })
+    expect(planProgress(plan('done', ['done', 'pending', 'in_progress']))).toEqual({ done: 3, total: 3, blocked: false, segments: ['done', 'done', 'done'] })
     const blocked = planProgress(plan('blocked', ['done', 'blocked']))
-    expect(blocked).toEqual({ done: 1, total: 2, blocked: true })
+    expect(blocked).toEqual({ done: 1, total: 2, blocked: true, segments: ['done', 'now'], current: { index: 2, title: 't', running: false } })
     expect(planProgressText(blocked!)).toBe('1 of 2 steps, blocked')
+  })
+  it('names the current step beside the bar', () => {
+    const p = planProgress(plan('active', ['done', 'in_progress', 'pending']))!
+    expect(planCurrentText(p)).toBe('Step 2 of 3 · t')
+    expect(planCurrentText(planProgress(plan('blocked', ['done', 'blocked']))!)).toBe('Step 2 of 2, blocked · t')
+    expect(planCurrentText(planProgress(plan('done', ['done']))!)).toBe('1 of 1 step')
   })
   it('is null without a plan or a counted step', () => {
     expect(planProgress(undefined)).toBeNull()
@@ -414,7 +430,7 @@ describe('plan progress (the card bar)', () => {
   })
   it('puts it on the run card, and nothing without a plan', () => {
     const withPlan = bandModel([input('a', [root()], { plan: plan('active', ['done', 'pending']) })], [project()], {}, NOW, caps).projects[0].runs[0]
-    expect(withPlan.plan).toEqual({ done: 1, total: 2, blocked: false })
+    expect(withPlan.plan).toEqual({ done: 1, total: 2, blocked: false, segments: ['done', 'now'], current: { index: 2, title: 't', running: false } })
     expect(bandModel([input('a', [root()])], [project()], {}, NOW, caps).projects[0].runs[0].plan).toBeNull()
   })
 })
@@ -448,5 +464,27 @@ describe('run marks (the card glance row)', () => {
     const runs = m.projects.flatMap((p) => p.runs)
     expect(runs.flatMap((r) => r.marks.filter((x) => x.state === 'working').map((x) => x.breath))).toEqual([0, 1, 2, 3])
     expect(runs[0].marks.find((x) => x.state === 'idle')?.breath).toBeUndefined()
+  })
+})
+
+describe('holdBandOrder (rows do not reorder while reading)', () => {
+  const model = (...groups: string[][]): BandModel =>
+    ({ counts: { working: 0, waiting: 0, idle: 0 }, total: 0, shownRuns: 0, hiddenRuns: 0, projects: groups.map((ids, i) => ({ id: `p${i}`, label: `p${i}`, runs: ids.map((id) => ({ id })) })) }) as unknown as BandModel
+
+  it('takes the model order the first time and whenever a run joins or leaves', () => {
+    const first = holdBandOrder(model(['a', 'b'], ['c']), null)
+    expect(first.order).toEqual(['a', 'b', 'c'])
+    const joined = holdBandOrder(model(['d', 'a', 'b'], ['c']), first.order)
+    expect(joined.order).toEqual(['d', 'a', 'b', 'c'])
+    const left = holdBandOrder(model(['b'], ['c']), first.order)
+    expect(left.order).toEqual(['b', 'c'])
+  })
+  it('keeps the last drawn order while the same runs are shown, even when the model ranks them differently', () => {
+    const first = holdBandOrder(model(['a', 'b'], ['c']), null)
+    // `c` became urgent and the model ranks its project first now.
+    const held = holdBandOrder(model(['c'], ['b', 'a']), first.order)
+    expect(bandRunIds(held.model)).toEqual(['a', 'b', 'c'])
+    expect(held.model.projects.map((p) => p.id)).toEqual(['p1', 'p0'])
+    expect(held.order).toEqual(['a', 'b', 'c'])
   })
 })

@@ -123,11 +123,18 @@ export const BAND_MARKS_MAX = 8
 /** At most this many marks breathe on the whole band (motion-design: 12 at once). */
 export const BAND_BREATHING_MAX = 12
 
+/** One segment of the plan bar: done, the current step (partly filled while it runs), or still to do. */
+export type PlanSegment = 'done' | 'now' | 'todo'
+
 /** A run's plan progress: steps done of steps counted (skipped steps are not counted). */
 export interface PlanProgress {
   done: number
   total: number
   blocked: boolean
+  /** One per counted step, in plan order: the bar draws one segment each. */
+  segments: PlanSegment[]
+  /** The current step (the first not done, 1-based) and its title; absent when every step is done. */
+  current?: { index: number; title: string; running: boolean }
 }
 
 export interface BandRun {
@@ -343,8 +350,24 @@ export function planProgress(plan: Pick<RunPlan, 'status' | 'steps'> | null | un
   if (!plan) return null
   const steps = plan.steps.filter((s) => s.status !== 'skipped')
   if (steps.length === 0) return null
-  const done = plan.status === 'done' ? steps.length : steps.filter((s) => s.status === 'done').length
-  return { done, total: steps.length, blocked: plan.status === 'blocked' }
+  const finished = plan.status === 'done'
+  const done = finished ? steps.length : steps.filter((s) => s.status === 'done').length
+  const open = finished ? -1 : steps.findIndex((s) => s.status !== 'done')
+  const segments = steps.map((_, i): PlanSegment => (finished || i < (open < 0 ? steps.length : open) ? 'done' : i === open ? 'now' : 'todo'))
+  const step = open >= 0 ? steps[open] : undefined
+  return {
+    done,
+    total: steps.length,
+    blocked: plan.status === 'blocked',
+    segments,
+    ...(step ? { current: { index: open + 1, title: oneLine(step.title, 120), running: step.status === 'in_progress' } } : {})
+  }
+}
+
+/** "Step 3 of 5 · Run the unit suite", or the plan's progress sentence once no step is open. */
+export function planCurrentText(p: PlanProgress): string {
+  if (!p.current) return planProgressText(p)
+  return `Step ${p.current.index} of ${p.total}${p.blocked ? ', blocked' : ''} · ${p.current.title}`
 }
 
 /** "3 of 7 steps" ("1 of 1 step"), with ", blocked" when the plan is blocked. */
@@ -508,6 +531,27 @@ export function bandModel(
   let breath = 0
   for (const p of byProject.values()) for (const run of p.runs) for (const m of run.marks) if (m.state === 'working') m.breath = breath++
   return { counts, total: runs.length, projects: [...byProject.values()], shownRuns: out.length, hiddenRuns: runs.length - out.length }
+}
+
+/** The run ids of a model in the order they are drawn. */
+export function bandRunIds(model: Pick<BandModel, 'projects'>): string[] {
+  return model.projects.flatMap((p) => p.runs.map((r) => r.id))
+}
+
+/**
+ * Rows do not reorder while the person is reading (motion.md "Live updates"): while the same runs are shown, projects and
+ * runs keep the order they were last drawn in, even when a run changes group (working to waiting). The order is taken
+ * afresh from the model only when a run joins or leaves the shown set. `held` is the previous return value's `order`.
+ */
+export function holdBandOrder(model: BandModel, held: readonly string[] | null): { model: BandModel; order: string[] } {
+  const ids = bandRunIds(model)
+  const same = held !== null && held.length === ids.length && ids.every((id) => held.includes(id))
+  if (!same) return { model, order: ids }
+  const at = (id: string): number => held.indexOf(id)
+  const projects = model.projects
+    .map((p) => ({ ...p, runs: [...p.runs].sort((a, b) => at(a.id) - at(b.id)) }))
+    .sort((a, b) => at(a.runs[0]!.id) - at(b.runs[0]!.id))
+  return { model: { ...model, projects }, order: [...held] }
 }
 
 /** "2 working · 1 waiting on you · 1 idle", empty parts left out. */

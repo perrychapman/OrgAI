@@ -4,19 +4,21 @@ import type { ConnectorInfo, McpLibraryInfo, McpServerInfo } from '@shared/types
 import { useAppStore } from '../../store/useAppStore'
 import { APP_SETTINGS_PANES, requestAppSettingsSection, requestConnector } from '../../lib/settingsTarget'
 import { connectionRow, connectionsNeeded, libraryRows, orderSetupRows, projectServerRows, projectsWithOwnServers, type SetupRow, type SetupTarget } from '../../lib/setupGaps'
+import { ListTodo } from 'lucide-react'
 import { Button } from '../ui/Button'
-import { AttentionSection } from './AttentionSection'
-import type { DashCaps } from './dashCaps'
+import { Icon } from '../ui/Icon'
+import { Popover } from '../ui/Popover'
 import { connectionProblems } from './dashboardProjects'
 import { afterFirstPaint, projectQueue } from './projectQueue'
 
 /**
- * To finish setting up (docs/design/dashboard-2.md section 8, dashboard-overhaul.md 7.3): what will make a run fail or skip a service. Rows come from the
- * connection list, the MCP library, the connector gallery and (through the shared project queue) each project's own
- * servers. Never counted as decisions, never in the bell. Loads after first paint and again when the library changes;
- * a failed call leaves its rows out silently. Renders nothing when empty, so its grid area collapses.
+ * To set up (docs/design/dashboard-2.md section 8): what will make a run fail or skip a service. The Briefing shows one
+ * line ("2 things to set up") that opens a popover holding the rows. Rows come from the connection list, the MCP library,
+ * the connector gallery and (through the shared project queue) each project's own servers. Never counted as decisions,
+ * never in the bell. Loads after first paint and again when the library changes; a failed call leaves its rows out
+ * silently. Renders nothing when empty.
  */
-export function SetupGaps({ caps }: { caps: DashCaps }): ReactElement | null {
+export function SetupGaps(): ReactElement | null {
   const connections = useAppStore((s) => s.connections)
   const defaultConnection = useAppStore((s) => s.defaultConnection)
   const projects = useAppStore((s) => s.projects)
@@ -109,33 +111,41 @@ export function SetupGaps({ caps }: { caps: DashCaps }): ReactElement | null {
     }
   }
 
+  if (rows.length === 0) return null
+  const word = rows.length === 1 ? '1 thing to set up' : `${rows.length} things to set up`
   return (
-    <AttentionSection
+    <Popover
+      trigger={
+        <>
+          <Icon icon={ListTodo} size="sm" />
+          {word}
+        </>
+      }
+      triggerClassName="btn ghost sm dash-setup-line"
+      triggerTestId="dash-setup-line"
+      label="To set up"
+      className="dash-setup-panel"
       testId="dash-setup"
-      title="To finish setting up"
-      count={rows.length}
-      items={rows}
-      cap={caps.setup}
-      itemKey={(r) => `${r.kind}/${r.id}`}
-      renderItem={(r) => (
-        <li key={`${r.kind}/${r.id}`} className="dash-row dash-setup-row" data-has-action="true" data-testid="dash-setup-row" data-kind={r.kind} data-id={r.id} data-row-key={`${r.kind}/${r.id}`}>
-          <div className="dash-row-text dash-setup-text">
-            <span className="dash-row-line" title={r.line}>
-              {r.line}
-            </span>
-            {r.caption && (
-              <span className="dash-row-cap" title={r.caption}>
-                {r.caption}
+    >
+      <ul className="dash-setup-rows">
+        {rows.map((r) => (
+          <li key={`${r.kind}/${r.id}`} className="dash-setup-row" data-testid="dash-setup-row" data-kind={r.kind} data-id={r.id}>
+            <div className="dash-setup-text">
+              <span className="dash-setup-line-text" title={r.line}>
+                {r.line}
               </span>
-            )}
-          </div>
-          <div className="dash-row-side">
+              {r.caption && (
+                <span className="dash-setup-caption" title={r.caption}>
+                  {r.caption}
+                </span>
+              )}
+            </div>
             <Button variant="secondary" size="sm" testId="dash-setup-action" ariaLabel={`${r.action}: ${r.line}`} onClick={() => go(r.target)}>
               {r.action}
             </Button>
-          </div>
-        </li>
-      )}
-    />
+          </li>
+        ))}
+      </ul>
+    </Popover>
   )
 }

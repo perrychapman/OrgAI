@@ -8,9 +8,8 @@
  */
 
 /**
- * Lower weighs first. 'team' (a team-files approval) has no run behind it and comes after every decision. 'reply' is a
- * tile, not a decision: an idle run waiting for the person's reply (lib/attentionTiles.ts) comes after all of them, its
- * `start` being when the wait began so the longest wait is first.
+ * Lower weighs first. 'team' (a team-files approval) has no run behind it and comes after every decision. 'reply' is not
+ * a decision (an idle run waiting for the person's reply; Needs you no longer draws it) and weighs after all of them.
  */
 export const WAITING_KIND_WEIGHT: Readonly<Record<string, number>> = {
   plan: 0,
