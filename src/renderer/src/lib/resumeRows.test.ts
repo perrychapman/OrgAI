@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  chainOutputs,
   CLOSED_WAITING_DETAIL,
+  endedSinceLastVisit,
   NO_RUNS_DETAIL,
-  outputProjects,
   pausedResumeCaption,
-  resumeAction,
+  pickUpAction,
+  pickUpRows,
   resumeActionLabel,
   resumeActionName,
   resumeCaption,
@@ -120,7 +120,7 @@ describe('resumeRows exclusions', () => {
     const out = rows([run({ id: 'live', status: 'running' })], { workingHidden: true })
     expect(shape(out)).toEqual(['recent:live'])
     expect(out[0].flavor).toBe('live')
-    expect(resumeAction(out[0], 0)).toBe('open')
+    expect(pickUpAction(out[0])).toBe('open')
   })
 
   it('counts a run once when the live store and history both hold it', () => {
@@ -147,7 +147,6 @@ describe('resumeRows pinned', () => {
     expect(out).toHaveLength(1)
     expect(out[0]).toMatchObject({ key: 'pin:p3', kind: 'pinned', flavor: 'empty', projectId: 'p3', run: null, detail: 'No runs yet.' })
     expect(NO_RUNS_DETAIL).toBe('No runs yet.')
-    expect(resumeAction(out[0], 0)).toBe('new-run')
   })
 
   it('ignores a pin of a project that does not exist and a repeated pin', () => {
@@ -176,21 +175,17 @@ describe('resumeRows cap', () => {
   })
 })
 
-describe('resumeAction', () => {
+describe('pickUpAction', () => {
   const mk = (flavor: ResumeRow<ResumeRun>['flavor'], continuable: boolean): Pick<ResumeRow<ResumeRun>, 'flavor' | 'continuable'> => ({ flavor, continuable })
 
-  it('decides the one action from the status and the outputs', () => {
-    expect(resumeAction(mk('paused', true), 0)).toBe('resume')
-    expect(resumeAction(mk('closed', true), 3)).toBe('continue')
-    expect(resumeAction(mk('closed', false), 0)).toBeNull()
-    expect(resumeAction(mk('failed', true), 2)).toBe('continue')
-    expect(resumeAction(mk('failed', false), 0)).toBeNull()
-    expect(resumeAction(mk('done', true), 0)).toBe('continue')
-    expect(resumeAction(mk('done', true), 1)).toBe('output')
-    expect(resumeAction(mk('done', false), 2)).toBe('output')
-    expect(resumeAction(mk('done', false), 0)).toBeNull()
-    expect(resumeAction(mk('live', false), 0)).toBe('open')
-    expect(resumeAction(mk('empty', false), 0)).toBe('new-run')
+  it('Continues a paused run and a stopped run with a session, and Opens the rest', () => {
+    expect(pickUpAction(mk('paused', true))).toBe('resume')
+    expect(pickUpAction(mk('paused', false))).toBe('resume')
+    expect(pickUpAction(mk('closed', true))).toBe('continue')
+    expect(pickUpAction(mk('failed', true))).toBe('continue')
+    expect(pickUpAction(mk('done', true))).toBe('continue')
+    expect(pickUpAction(mk('done', false))).toBe('open')
+    expect(pickUpAction(mk('failed', false))).toBe('open')
   })
 
   it('marks a finished chain with a provider session continuable and one without not', () => {
@@ -200,23 +195,37 @@ describe('resumeAction', () => {
   })
 })
 
-describe('outputs of a chain', () => {
-  const list = [
-    { id: 'o1', runId: 'a' },
-    { id: 'o2', runId: 'b', missing: true as const },
-    { id: 'o3', runId: 'b' },
-    { id: 'o4', runId: 'other' }
-  ]
-  it('counts outputs of any chain member that are not missing', () => {
-    expect(chainOutputs(list, ['a', 'b']).map((o) => o.id)).toEqual(['o1', 'o3'])
-    expect(chainOutputs(undefined, ['a'])).toEqual([])
-    expect(chainOutputs(list, [])).toEqual([])
+describe('pickUpRows', () => {
+  const DAY = 24 * HOUR
+  it('lists paused and recently ended runs as one list, newest first', () => {
+    const rs = rows([
+      run({ id: 'paused', status: 'paused', startedAt: NOW - 5 * HOUR }),
+      run({ id: 'done', endedAt: NOW - HOUR, startedAt: NOW - 2 * HOUR }),
+      run({ id: 'failed', status: 'error', endedAt: NOW - 30 * 60_000, startedAt: NOW - 3 * HOUR, error: 'Boom' })
+    ])
+    const keys = pickUpRows(rs, NOW).map((r) => r.key)
+    expect(keys).toHaveLength(3)
+    expect(keys[0]).toBe('failed')
   })
 
-  it('loads outputs for at most six projects, only for rows that may show Open output', () => {
-    const rs = Array.from({ length: 9 }, (_, i) => ({ flavor: 'done' as const, projectId: `p${i % 8}` }))
-    expect(outputProjects(rs, () => true)).toEqual(['p0', 'p1', 'p2', 'p3', 'p4', 'p5'])
-    expect(outputProjects([{ flavor: 'paused', projectId: 'a' }, { flavor: 'done', projectId: 'quick' }, { flavor: 'done', projectId: 'b' }], (id) => id !== 'quick')).toEqual(['b'])
+  it('leaves out an empty pinned project and a live chain, and an old run that cannot be continued', () => {
+    const rs = rows(
+      [
+        run({ id: 'live', status: 'running' }),
+        run({ id: 'old', endedAt: NOW - 20 * DAY, startedAt: NOW - 21 * DAY, sessionId: undefined }),
+        run({ id: 'old-cont', endedAt: NOW - 20 * DAY, startedAt: NOW - 21 * DAY }),
+        run({ id: 'ok', endedAt: NOW - 3 * DAY, startedAt: NOW - 3 * DAY - HOUR, projectId: 'p2' })
+      ],
+      { pinned: ['p3'], workingHidden: true }
+    )
+    const keys = pickUpRows(rs, NOW).map((r) => r.key)
+    expect(keys).toEqual(['ok'])
+  })
+
+  it('knows which rows ended since the last visit', () => {
+    const rs = rows([run({ id: 'new', endedAt: NOW - HOUR }), run({ id: 'before', endedAt: LAST_SEEN - HOUR, startedAt: LAST_SEEN - 2 * HOUR })])
+    expect(endedSinceLastVisit(rs.find((r) => r.key === 'new')!)).toBe(true)
+    expect(endedSinceLastVisit(rs.find((r) => r.key === 'before')!)).toBe(false)
   })
 })
 
@@ -233,17 +242,13 @@ describe('showsRunCost', () => {
 
 describe('strings', () => {
   it('names the actions as the spec says', () => {
-    expect(resumeActionName('continue', { runName: 'Fix rounding', project: 'Billing' })).toBe('Continue Fix rounding')
-    expect(resumeActionName('output', { runName: 'Fix rounding', project: 'Billing', outputs: 1 })).toBe('Open the output of Fix rounding')
-    expect(resumeActionName('output', { runName: 'Fix rounding', project: 'Billing', outputs: 3 })).toBe('Open the outputs of Fix rounding')
-    expect(resumeActionName('resume', { runName: 'Import job', project: 'Docs' })).toBe('Resume Import job now')
-    expect(resumeActionName('new-run', { runName: '', project: 'Docs' })).toBe('New run in Docs')
-    expect(resumeActionName('open', { runName: 'Chat', project: 'Chat' })).toBe('Open Chat')
+    expect(resumeActionName('continue', { runName: 'Fix rounding' })).toBe('Continue Fix rounding')
+    expect(resumeActionName('resume', { runName: 'Import job' })).toBe('Continue Import job now')
+    expect(resumeActionName('open', { runName: 'Chat' })).toBe('Open Chat')
   })
 
-  it('labels the actions', () => {
-    expect(['resume', 'continue', 'output', 'new-run', 'open'].map((a) => resumeActionLabel(a as 'resume'))).toEqual(['Resume now', 'Continue', 'Open output', 'New run', 'Open'])
-    expect(resumeActionLabel('output', 2)).toBe('Open outputs')
+  it('labels the actions: Continue or Open, and each name carries the run title', () => {
+    expect((['resume', 'continue', 'open'] as const).map((a) => resumeActionLabel(a))).toEqual(['Continue', 'Continue', 'Open'])
   })
 
   it('line 2 is project and age, with the client first when there is one', () => {
