@@ -13,18 +13,45 @@ import { BAND_RECOMPUTE_MS, bandSignature, type BandRunIn } from '../../lib/dash
  */
 export function useAllSummaries(): RunSummary[] {
   const history = useAppStore((s) => s.historyByProject)
-  const runs = useAppStore((s) => s.runs)
+  // Only the live runs' summaries (shallow-compared), not the run objects: an event that leaves every summary alone (a
+  // streamed token, an agent update) renders nothing.
+  const live = useAppStore(useShallow((s) => Object.values(s.runs).map((r) => r.summary)))
   const projects = useAppStore((s) => s.projects)
   return useMemo(() => {
     const known = new Set(projects.map((p) => p.id))
     const byId = new Map<string, RunSummary>()
     for (const list of Object.values(history)) for (const h of list) byId.set(h.id, h)
-    for (const r of Object.values(runs)) byId.set(r.summary.id, r.summary)
+    for (const summary of live) byId.set(summary.id, summary)
     // H2: a late event for a deleted project must not bring its run back.
     return [...byId.values()]
       .filter((s) => (known.has(s.projectId) || isVirtualProjectId(s.projectId)))
       .sort((a, b) => b.startedAt - a.startedAt || a.id.localeCompare(b.id))
-  }, [history, runs, projects])
+  }, [history, live, projects])
+}
+
+/**
+ * What the page's arrival depends on: the open decisions, the ids of the open runs, the newest end time and the number of
+ * projects, as one string. Selected with shallow-compared pieces so a run event that changes none of them renders nothing
+ * (the Dashboard subscribes to this, not to the run map).
+ */
+export function useArrivalSignature(): string {
+  const decisions = useDecisionTotal()
+  const liveIds = useAppStore(
+    useShallow((s) =>
+      Object.values(s.runs)
+        .filter((r) => isRunLive(r) && (isVirtualProjectId(r.summary.projectId) || s.projects.some((p) => p.id === r.summary.projectId)))
+        .map((r) => r.summary.id)
+        .sort()
+    )
+  )
+  const newestEnd = useAppStore((s) => {
+    let m = 0
+    for (const list of Object.values(s.historyByProject)) for (const h of list) if ((h.endedAt ?? 0) > m) m = h.endedAt ?? 0
+    for (const r of Object.values(s.runs)) if ((r.summary.endedAt ?? 0) > m) m = r.summary.endedAt ?? 0
+    return m
+  })
+  const projectCount = useAppStore((s) => s.projects.length)
+  return [decisions, liveIds.join(','), newestEnd, projectCount].join('|')
 }
 
 /** Runs with at least one open decision (the same set the bell counts), in start order. */

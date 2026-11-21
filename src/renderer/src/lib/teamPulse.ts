@@ -11,8 +11,19 @@ import type { AgentInstance, AgentMessage, Project, RunRosterRole } from '@share
 import { bandAgentState, roleColorFor, type BandAgentState } from './dashboardBand'
 import { rolesForRun } from './runRoster'
 
-/** Nodes drawn at most; breathing is capped by the same number (motion-design: 12 at once). */
+/** Nodes drawn at most. */
 export const PULSE_MAX_NODES = 12
+/** At most this many elements breathe at once on the whole page (motion-design); Right now's marks take their share first. */
+export const PAGE_BREATHING_MAX = 12
+
+/**
+ * How many Team pulse halos may breathe when `bandBreathing` marks of Right now already do: the page's budget minus those,
+ * never below zero and never above the nodes drawn. The rest keep their static halo.
+ */
+export function pulseBreathBudget(bandBreathing: number): number {
+  const taken = Number.isFinite(bandBreathing) ? Math.max(0, Math.floor(bandBreathing)) : PAGE_BREATHING_MAX
+  return Math.min(PULSE_MAX_NODES, Math.max(0, PAGE_BREATHING_MAX - taken))
+}
 /** Most signals travelling at once. */
 export const PULSE_MAX_SIGNALS = 3
 /** A pair's signal travels until this long after its last message (two trips of --dur-signal); older messages never replay. */
@@ -85,7 +96,57 @@ export interface PulseSignal {
   to: string
   /** When the message was sent; the signal is dropped SIGNAL_WINDOW_MS later. */
   at: number
+  /** The route as an SVG path ("M x y L x y ..."), kept for tests and tooling. */
   d: string
+  /** The route as SIGNAL_LEGS + 1 stops (corners kept, long legs split) for the transform-only keyframes `dash-pulse-trip`. */
+  stops: [number, number][]
+}
+
+/** Legs of a signal's route; the stylesheet's `dash-pulse-trip` keyframes have one stop per leg end (1 / SIGNAL_LEGS of the trip each). */
+export const SIGNAL_LEGS = 16
+
+const legLength = (a: [number, number], b: [number, number]): number => Math.hypot(b[0] - a[0], b[1] - a[1])
+
+/**
+ * A route as exactly `legs + 1` stops with equal time per leg: corners are kept, the longest leg is split in half until
+ * there are enough legs (so the dot keeps a near-even speed), and for a route with too many legs the corner that adds the
+ * least path is dropped. Pure; null for a route that does not move.
+ */
+export function signalStops(points: readonly [number, number][], legs: number = SIGNAL_LEGS): [number, number][] | null {
+  const pts: [number, number][] = []
+  for (const p of points) {
+    const last = pts[pts.length - 1]
+    if (!last || last[0] !== p[0] || last[1] !== p[1]) pts.push([p[0], p[1]])
+  }
+  if (pts.length < 2) return null
+  while (pts.length - 1 > legs) {
+    let best = 1
+    let bestAdd = Infinity
+    for (let j = 1; j < pts.length - 1; j++) {
+      const add = legLength(pts[j - 1], pts[j + 1]) - legLength(pts[j - 1], pts[j]) - legLength(pts[j], pts[j + 1])
+      const cost = Math.abs(add)
+      if (cost < bestAdd) {
+        bestAdd = cost
+        best = j
+      }
+    }
+    pts.splice(best, 1)
+  }
+  while (pts.length - 1 < legs) {
+    let longest = 0
+    let len = -1
+    for (let j = 0; j < pts.length - 1; j++) {
+      const l = legLength(pts[j], pts[j + 1])
+      if (l > len) {
+        len = l
+        longest = j
+      }
+    }
+    const a = pts[longest]
+    const b = pts[longest + 1]
+    pts.splice(longest + 1, 0, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])
+  }
+  return pts
 }
 
 export interface PulseCaption {
@@ -117,6 +178,8 @@ export interface PulseInput {
   now: number
   /** Messages sent before this moment never make a signal (the picture was not there to see them). */
   since: number
+  /** Halos that may breathe (`pulseBreathBudget`); defaults to PULSE_MAX_NODES. */
+  breathBudget?: number
 }
 
 const RANK: Record<PulseNodeState, number> = { waiting: 0, working: 1, failed: 2, idle: 3, done: 4, rest: 5 }
@@ -285,6 +348,7 @@ export function pulseModel(input: PulseInput): PulseModel | null {
   const nodes: PulseNode[] = []
   const nodeAt = new Map<string, PulseNode>()
   let breath = 0
+  const breathBudget = Math.max(0, Math.min(PULSE_MAX_NODES, input.breathBudget ?? PULSE_MAX_NODES))
   const emit = (t: Tree, it: PulseItem): void => {
     const depth = t.depth.get(it.id) ?? 0
     const key = `${t.group.key}\u0000${it.id}`
@@ -299,7 +363,7 @@ export function pulseModel(input: PulseInput): PulseModel | null {
       y: y0 + depth * row,
       r: radiusAt(depth),
       depth,
-      ...(it.state === 'working' && breath < PULSE_MAX_NODES ? { breath: breath++ } : {})
+      ...(it.state === 'working' && breath < breathBudget ? { breath: breath++ } : {})
     }
     nodes.push(node)
     nodeAt.set(key, node)
@@ -377,7 +441,9 @@ export function pulseModel(input: PulseInput): PulseModel | null {
         prev = n
       }
       // Keyed by the pair, not the message: a conversation keeps one dot travelling instead of restarting it each message.
-      signals.push({ key: `${t.group.key}:${lo}>${hi}`, from: lo, to: hi, at: m.at, d: polyline(pts) })
+      const stops = signalStops(pts)
+      if (!stops) continue
+      signals.push({ key: `${t.group.key}:${lo}>${hi}`, from: lo, to: hi, at: m.at, d: polyline(pts), stops })
     }
   }
 
@@ -437,7 +503,8 @@ export function pulseInput(
   virtualProjects: Partial<Record<string, Project>>,
   restProjectId: string | null,
   now: number,
-  since: number
+  since: number,
+  breathBudget: number = PULSE_MAX_NODES
 ): PulseInput {
   const projectOf = (id: string): Project | undefined => projects.find((p) => p.id === id) ?? virtualProjects[id]
   const groups: PulseGroup[] = [...runs]
@@ -465,5 +532,5 @@ export function pulseInput(
           items: rp.roles.map((r, i) => ({ id: r.id, parentId: r.reportsTo, state: 'rest' as const, label: r.name, color: r.color || 'var(--text-tertiary)', order: i }))
         }
       : null
-  return { groups, rest, now, since }
+  return { groups, rest, now, since, breathBudget }
 }

@@ -183,13 +183,13 @@
   align-items: center;
   min-height: var(--control-sm, 28px);
   padding: 0 var(--space-3);
-  border: 0;
+  /* A border so it reads as a button; the name never changes, so the pressed state is the weight, the fill and a stronger border. */
+  border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
   background: transparent;
   font: inherit;
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
-  /* The state lives in the words and the weight, not in colour or motion alone. */
   font-weight: var(--pause-weight, var(--weight-regular));
   color: var(--text-secondary);
   cursor: pointer;
@@ -197,6 +197,7 @@
 .dash-pause-toggle[aria-pressed='true'] {
   color: var(--text-primary);
   background: var(--surface-2);
+  border-color: var(--border-strong);
 }
 .dash-pause-toggle:hover {
   background: var(--surface-2);

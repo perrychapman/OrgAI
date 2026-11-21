@@ -533,6 +533,16 @@ export function bandModel(
   return { counts, total: runs.length, projects: [...byProject.values()], shownRuns: out.length, hiddenRuns: runs.length - out.length }
 }
 
+/**
+ * How many marks of the band breathe: the working marks whose stagger index is under BAND_BREATHING_MAX. Right now takes the
+ * page's breathing budget first (its marks are actionable); Team pulse breathes with what is left (`pulseBreathBudget`).
+ */
+export function bandBreathingCount(model: Pick<BandModel, 'projects'>): number {
+  let n = 0
+  for (const p of model.projects) for (const run of p.runs) for (const m of run.marks) if (m.state === 'working' && m.breath !== undefined && m.breath < BAND_BREATHING_MAX) n++
+  return n
+}
+
 /** The run ids of a model in the order they are drawn. */
 export function bandRunIds(model: Pick<BandModel, 'projects'>): string[] {
   return model.projects.flatMap((p) => p.runs.map((r) => r.id))

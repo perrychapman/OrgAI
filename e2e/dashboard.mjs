@@ -520,8 +520,13 @@ try {
   check(states.projects === 'shown' && ['week', 'pickup', 'upnext', 'engagements', 'todos'].every((id) => states[id] === 'empty') && !('now' in states), 'EM empty sections show as empty rows only while customising', JSON.stringify(states))
   check(/Up next: nothing to show right now\./.test(clean(await page.locator('[data-testid=dash-section][data-section=upnext]').innerText())), 'EM an empty section reads "Up next: nothing to show right now." in customise mode')
   check((await page.locator('[data-testid=dash-section-controls][data-section=now], [data-testid=dash-section-controls][data-section=needs]').count()) === 0 && (await page.locator('[data-testid=dash-section-controls]').count()) === DEFAULT_ORDER.length, 'CU Needs you and Right now have no controls (the seven arrangeable sections do)', String(await page.locator('[data-testid=dash-section-controls]').count()))
-  const focusPick = await page.getByRole('radiogroup', { name: 'Your week leads with' }).or(page.getByRole('group', { name: 'Your week leads with' })).first().innerText().catch(() => '')
+  const focusPick = await page.getByRole('radiogroup', { name: 'Lead figure in Your week' }).first().innerText().catch(() => '')
   check(/Spend/.test(focusPick) && /Runs/.test(focusPick) && /Agent time/.test(focusPick) && /Decisions/.test(focusPick), 'CU Customise offers the focus figure choice (Spend, Runs, Agent time, Decisions)', clean(focusPick))
+  // The group has a visible caption, and a figure Your week does not draw is disabled with its reason in view (no runs carry decision counts yet).
+  const leadCaption = clean(await T('dash-lead-caption').innerText().catch(() => ''))
+  check(leadCaption === 'Lead figure in Your week' && (await T('dash-lead-caption').isVisible()), 'CU the focus figure group has the visible caption "Lead figure in Your week"', leadCaption)
+  check((await page.getByRole('radio', { name: 'Decisions' }).isDisabled()) && (await T('dash-lead-reason').isVisible()) && /no run this week carries decision counts/.test(await T('dash-lead-reason').innerText()), 'CU Decisions is disabled with its reason while no run carries decision counts', clean(await T('dash-lead-reason').innerText().catch(() => '')))
+  check(!(await page.getByRole('radio', { name: 'Spend' }).isDisabled()) && !(await page.getByRole('radio', { name: 'Runs' }).isDisabled()) && !(await page.getByRole('radio', { name: 'Agent time' }).isDisabled()), 'CU the figures Your week draws stay selectable')
   const widths = await page.locator('[data-testid=dash-section]').evaluateAll((els) => els.map((e) => [Math.round(e.getBoundingClientRect().left), Math.round(e.getBoundingClientRect().width), e.getAttribute('data-span')]))
   check(widths.every((w) => w[0] === widths[0][0] && w[1] === widths[0][1] && w[2] === 'full'), 'A22 in customise mode every section is one full-width track at 1600x1000', JSON.stringify(widths))
   // Pin toggle on a tile, in customise mode.
@@ -617,7 +622,8 @@ try {
   // Reload keeps the layout, the focus figure and Pause motion.
   await ctl('projects', 'dash-section-up').click()
   await ctl('upnext', 'dash-section-hide').click()
-  await page.getByRole('radio', { name: 'Decisions' }).check({ force: true })
+  // Decisions cannot be picked while no run carries decision counts (it is disabled), so the stored choice is written directly.
+  await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ ...JSON.parse(localStorage.getItem(k) ?? '{}'), focus: 'decisions' })), LAYOUT_KEY)
   await sleep(300)
   await page.reload()
   await page.waitForSelector('.sidebar', { timeout: 60_000 })
@@ -715,10 +721,24 @@ try {
     }))
   const loopsNormal = await loops()
   check(loopsNormal.breathing + loopsNormal.infinite > 0, 'MO (control) with motion on, breathing loops run while agents work', JSON.stringify(loopsNormal))
+  // One page-wide breathing budget of 12 (Right now's marks first, the pulse with the rest) and a signal made of transform keyframes only.
+  const pageBreathing = await page.evaluate(() => document.querySelectorAll('[data-testid=dashboard] [data-breathe]').length)
+  check(pageBreathing <= 12, 'MO at most 12 elements breathe on the whole Dashboard (Right now first, Team pulse with the rest)', String(pageBreathing))
+  const tripCss = await page.evaluate(() => {
+    for (const sheet of [...document.styleSheets]) {
+      try {
+        for (const rule of [...sheet.cssRules]) if (rule.type === CSSRule.KEYFRAMES_RULE && rule.name === 'dash-pulse-trip') return rule.cssText
+      } catch {
+        // cross-origin sheet: not ours
+      }
+    }
+    return ''
+  })
+  check(tripCss !== '' && /transform/.test(tripCss) && /opacity/.test(tripCss) && !/offset/.test(tripCss), 'MO the Team pulse signal animates transform and opacity only (no offset-distance)', tripCss.slice(0, 120))
   await T('dash-pause-motion').click()
   await sleep(300)
   const loopsPaused = await loops()
-  check((await T('dash-pause-motion').getAttribute('aria-pressed')) === 'true' && (await page.locator('.dash-page[data-motion-paused]').count()) === 1 && /Motion paused/.test(await text('dash-pause-motion')), 'BR Pause motion pressed: aria-pressed true and the page carries data-motion-paused')
+  check((await T('dash-pause-motion').getAttribute('aria-pressed')) === 'true' && (await page.locator('.dash-page[data-motion-paused]').count()) === 1 && clean(await text('dash-pause-motion')) === 'Pause motion', 'BR Pause motion pressed: aria-pressed true, the name stays "Pause motion" and the page carries data-motion-paused')
   check(loopsPaused.breathing === 0 && loopsPaused.signals === 0 && loopsPaused.infinite === 0, 'MO Pause motion stops the breathing marks, the pulse halos and signals (no looping animation runs)', JSON.stringify(loopsPaused))
   check((await T('dash-pulse-node').count()) >= 2 && /\d/.test(await text('dash-pulse-caption')), 'MO paused: the pulse keeps its static nodes and caption')
   check((await layoutOf())?.motionPaused === true, 'BR Pause motion is saved in the layout', JSON.stringify(await layoutOf()))
@@ -915,10 +935,13 @@ try {
     // Pause all (the Schedules page's own setting): rows give way to one line with the way back.
     await T('dash-upnext-pause').click()
     check(!!(await until(async () => (await T('dash-upnext-paused').count()) === 1, 5000)) && (await T('dash-upnext-row').count()) === 0 && (await T('dash-upnext-pause').count()) === 0, 'WK Pause all swaps the rows for the paused line', await text('dash-upnext'))
+    // The pressed button unmounts: focus goes to its counterpart, never to the body.
+    check(!!(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'dash-upnext-resume', 3000, 50)), 'WK after Pause all focus moves to Resume schedules', String(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName)))
     check(/Schedules are paused\. Nothing will start until you resume them\./.test(await text('dash-upnext-paused')), 'WK the paused line reads "Schedules are paused. Nothing will start until you resume them."')
     check((await page.evaluate(async () => (await window.orgai.settings.get()).schedulesPaused)) === true && (await live()).includes('All schedules paused.'), 'WK Pause all saves the same schedulesPaused setting and announces', await live())
     await T('dash-upnext-resume').click()
     check(!!(await until(async () => (await T('dash-upnext-row').count()) === 1, 5000)) && (await T('dash-upnext-paused').count()) === 0, 'WK Resume schedules brings the row back')
+    check(!!(await until(async () => (await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))) === 'dash-upnext-pause', 3000, 50)), 'WK after Resume schedules focus moves back to Pause all', String(await page.evaluate(() => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName)))
     // The row opens its schedule on the Schedules page.
     await sBtn.click()
     const onSchedules = await page.getByRole('heading', { level: 1, name: /Schedules/ }).waitFor({ timeout: 8000 }).then(() => true, () => false)
@@ -945,10 +968,11 @@ try {
   check((await week.locator('h2').innerText()).trim() === 'Your week', 'WK the section is called "Your week"')
   // The stat cards: Spend leads by default, each card is one native button, none of them reads $0.00 or a bare zero cost.
   const cardFacts = await T('dash-stat').evaluateAll((els) =>
-    els.map((li) => ({ stat: li.getAttribute('data-stat'), focus: li.hasAttribute('data-focus'), buttons: li.querySelectorAll('button, a, [role=button]').length, tag: li.querySelector('button')?.tagName ?? '', name: li.querySelector('button')?.getAttribute('aria-label') ?? '', value: li.querySelector('[data-testid=dash-stat-value]')?.textContent?.trim() ?? '', move: li.querySelector('[data-testid=dash-stat-move]')?.textContent?.trim() ?? '' }))
+    els.map((li) => ({ stat: li.getAttribute('data-stat'), focus: li.hasAttribute('data-focus'), buttons: li.querySelectorAll('button, a, [role=button]').length, tag: li.querySelector('button')?.tagName ?? '', name: li.querySelector('button')?.getAttribute('aria-label') ?? '', described: (document.getElementById(li.querySelector('button')?.getAttribute('aria-describedby') ?? '')?.textContent ?? '').trim(), value: li.querySelector('[data-testid=dash-stat-value]')?.textContent?.trim() ?? '', move: li.querySelector('[data-testid=dash-stat-move]')?.textContent?.trim() ?? '' }))
   )
   check(cardFacts.length >= 3 && cardFacts[0].stat === 'spend' && cardFacts[0].focus && cardFacts.filter((c) => c.focus).length === 1, 'WK the focus figure (Spend by default) leads Your week and is the one marked card', JSON.stringify(cardFacts.map((c) => [c.stat, c.focus])))
-  check(cardFacts.every((c) => c.buttons === 1 && c.tag === 'BUTTON' && /Opens Usage for the same 7 days$/.test(c.name) && c.name.startsWith(c.stat === 'time' ? 'Agent time' : c.stat[0].toUpperCase() + c.stat.slice(1))), 'WK each stat card is one native button named with its figure, movement and "Opens Usage for the same 7 days"', JSON.stringify(cardFacts.map((c) => c.name)))
+  check(cardFacts.every((c) => c.buttons === 1 && c.tag === 'BUTTON' && !/Opens Usage/.test(c.name) && c.name.startsWith(c.stat === 'time' ? 'Agent time' : c.stat[0].toUpperCase() + c.stat.slice(1))), 'WK each stat card is one native button named with its figure and movement only (no instruction in the name)', JSON.stringify(cardFacts.map((c) => c.name)))
+  check(cardFacts.every((c) => /^Opens Usage for the same 7 days\./.test(c.described)), 'WK the instruction "Opens Usage for the same 7 days" is each card\'s description (aria-describedby), not its name', JSON.stringify(cardFacts.map((c) => c.described)))
   check(cardFacts.every((c) => c.value.length > 0 && c.move.length > 0) && !/\$0\.00/.test(cardFacts.map((c) => c.value).join(' ')), 'WK every card has a figure and a movement line and never reads $0.00', JSON.stringify(cardFacts.map((c) => [c.value, c.move])))
   const runsCard = cardFacts.find((c) => c.stat === 'runs')
   const timeCard = cardFacts.find((c) => c.stat === 'time')
@@ -1331,6 +1355,7 @@ try {
   // The since line: what ended after the last visit (a relaunch keeps the stored last-seen time, so the cut runs count).
   const sinceLine = await T('dash-since').first().evaluate((el) => ({ sr: el.querySelector('.sr-only')?.textContent?.trim() ?? '', visible: el.querySelector('.dash-since-visual')?.textContent?.replace(/\s+/g, ' ').trim() ?? '', hiddenVisual: el.querySelector('.dash-since-visual')?.getAttribute('aria-hidden') })).catch(() => null)
   check(!!sinceLine && /^Since .+: \d+ .+\.$/.test(sinceLine.sr) && sinceLine.hiddenVisual === 'true' && sinceLine.visible.startsWith('Since '), 'BR after a relaunch the since line says what ended since the last visit (screen-reader sentence, decorative visual)', JSON.stringify(sinceLine))
+  check(!!sinceLine && /was waiting on you when OrgAI closed|were waiting on you when OrgAI closed/.test(sinceLine.sr), 'BR the since line says a run was waiting on you when OrgAI closed, so "Nothing needs you." never stands alone above it', JSON.stringify(sinceLine))
   check((await page.locator('[data-testid=project-tile]').first().getAttribute('data-name')) === PINNED, 'A20 the pin survives a relaunch (the pinned tile is first)')
   const goneIds = await page.evaluate((ids) => ids.filter((id) => document.querySelector(`[data-testid="${id}"]`)), REMOVED_IDS)
   check(goneIds.length === 0, 'the removed test ids are absent after the relaunch too', goneIds.join())
@@ -1372,6 +1397,39 @@ try {
   check(contOpened.h1 === PINNED && !contOpened.body, 'BR Continue in the Briefing opens the pinned project and focus stays on a real element', JSON.stringify(contOpened))
   await gotoProjects(page)
 
+  // ---------------------------------------------------------------- The last decision, answered by keyboard: focus never falls to the body
+  {
+    const lastRun = await page.evaluate((id) => window.orgai.runs.start({ projectId: id, prompt: 'First task' }), inline.id)
+    await gotoProjects(page)
+    const lastRows = page.locator('[data-testid=dash-needs-row][data-kind=permission]')
+    if ((await lastRows.first().waitFor({ timeout: 20_000 }).then(() => true, () => false)) && (await T('dash-needs-row').count()) === 1) {
+      await lastRows.first().locator('[data-testid=dash-needs-allow]').focus()
+      await page.keyboard.press('Enter')
+      await until(async () => (await T('dash-needs-you').count()) === 0, 15_000, 100)
+      await sleep(500)
+      const landed = await page.evaluate(() => {
+        const a = document.activeElement
+        return { body: !a || a === document.body || a === document.documentElement, testid: a?.getAttribute?.('data-testid') ?? '', id: a?.id ?? '', tag: a?.tagName ?? '', visible: !!a && a.getClientRects().length > 0 }
+      })
+      check(!landed.body && landed.visible && (landed.id === 'dash-h-now' || landed.testid === 'dash-greeting-brief'), 'A8 after the last decision is answered the Needs you section is gone and focus lands on the Right now heading or the status sentence, not the body', JSON.stringify(landed))
+      check((await live()).includes('Nothing else needs you.'), 'A8 dashboard-live says "Nothing else needs you." once', await live())
+    } else log('SKIP last-decision focus check: the single permission row did not appear', await T('dash-needs-row').count())
+    await page.evaluate((id) => window.orgai.runs.stop(id), lastRun.id).catch(() => {})
+    await gotoProjects(page)
+
+    // An unpriced run with usage says "Not priced" in Pick up, as a priced row shows its figure (never a blank).
+    const noPrice = await page.evaluate((id) => window.orgai.runs.start({ projectId: id, prompt: 'Unpriced run [mock:no-price]' }), inline.id)
+    await until(async () => ['idle', 'finished', 'error'].includes((await page.evaluate((id) => window.orgai.runs.get(id), noPrice.id))?.summary?.status), 20_000)
+    await page.evaluate((id) => window.orgai.runs.stop(id), noPrice.id).catch(() => {})
+    await until(async () => (await page.evaluate((id) => window.orgai.runs.get(id), noPrice.id))?.summary?.status === 'finished', 20_000)
+    await gotoProjects(page)
+    const unpricedRow = page.locator(`[data-testid=dash-resume-row][data-run="${noPrice.id}"]`)
+    if (await unpricedRow.waitFor({ timeout: 15_000 }).then(() => true, () => false)) {
+      const unpriced = await unpricedRow.locator('[data-testid=dash-resume-unpriced]').innerText().catch(() => '')
+      check(clean(unpriced) === 'Not priced', 'WK an unpriced run row in Pick up says "Not priced" instead of nothing', clean(await unpricedRow.innerText()))
+    } else log('SKIP unpriced Pick up row: the [mock:no-price] run did not list')
+  }
+
   // ---------------------------------------------------------------- MO page arrival (motion.md "Page arrival")
   const arrivalFacts = () =>
     page.evaluate(() => ({
@@ -1394,6 +1452,21 @@ try {
   await gotoProjects(page)
   const back = await arrivalFacts()
   check(!back.hero && back.bands === 0 && back.draw === 0 && !back.flag, 'MO returning to the Dashboard with no data change shows no arrival classes', JSON.stringify(back))
+  // Pause motion (saved in the layout) also stops the page arrival, not only the loops.
+  await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ ...JSON.parse(localStorage.getItem(k) ?? '{}'), motionPaused: true })), LAYOUT_KEY)
+  await page.reload()
+  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: 20_000 })
+  const pausedArrival = await page.evaluate(() => ({
+    hero: !!document.querySelector('.motion-arrive-hero'),
+    bands: document.querySelectorAll('.motion-arrive-band').length,
+    flag: document.querySelector('.dash-page')?.hasAttribute('data-arriving') ?? false,
+    paused: document.querySelector('.dash-page')?.hasAttribute('data-motion-paused') ?? false,
+    trace: document.querySelectorAll('.plan-gauge-fill.motion-draw-trace').length
+  }))
+  check(pausedArrival.paused && !pausedArrival.hero && pausedArrival.bands === 0 && !pausedArrival.flag && pausedArrival.trace === 0, 'MO with Pause motion saved, the page stages no arrival (no hero rise, no band rise, no gauge trace)', JSON.stringify(pausedArrival))
+  await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ ...JSON.parse(localStorage.getItem(k) ?? '{}'), motionPaused: false })), LAYOUT_KEY)
+  await page.reload()
+  await page.waitForSelector('[data-testid=dashboard-hero]', { timeout: 20_000 })
   // Reduced motion (Appearance): no arrival, no running animation on the page.
   await setAppearance({ reduceMotion: 'on' })
   await page.reload()

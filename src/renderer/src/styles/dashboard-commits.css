@@ -107,7 +107,7 @@
   flex-direction: column;
   margin-top: var(--space-1);
   font-size: var(--text-caption);
-  line-height: 16px;
+  line-height: var(--text-caption-lh);
   color: var(--text-tertiary);
   white-space: nowrap;
   pointer-events: none;

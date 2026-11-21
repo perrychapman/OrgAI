@@ -1,10 +1,10 @@
 import type { CSSProperties, ReactElement } from 'react'
-import { useId, useMemo, useRef } from 'react'
+import { useEffect, useId, useMemo, useRef } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { projectKindOf } from '@shared/defaults'
 import { Button } from '../ui/Button'
 import { useArrivalSettle, useAttentionList, useRowExits, type RowMotion } from './AttentionSection'
-import { useDashboard } from './DashboardContext'
+import { sectionHeadingId, useDashboard } from './DashboardContext'
 import type { DashCaps } from './dashCaps'
 import { NeedsRow, needsItemKey, useNewDecisionAnnouncer, type NeedsItem } from './NeedsInline'
 import { useDecisionTotal, useWaitingRuns } from './useDashboardData'
@@ -15,6 +15,9 @@ import { waitingItems } from '../../lib/needsYou'
 import { needsCountText } from '../../lib/needsInline'
 import { waitingOrder, type WaitingOrderFacts } from '../../lib/waitingOrder'
 import { useBellCue } from '../../lib/useBellCue'
+
+/** Spoken once when the last decision leaves while focus was in Needs you. */
+export const NOTHING_ELSE_NEEDS_YOU = 'Nothing else needs you.'
 
 /** What the order reads of a row: its kind, the start of its run (a team-files item has none) and its key. */
 const orderFacts = (it: NeedsItem): WaitingOrderFacts => ({ key: needsItemKey(it), kind: it.kind, start: it.kind === 'team' ? 0 : it.run.summary.startedAt })
@@ -66,7 +69,44 @@ function NeedsYouSection({ cap, onAnnounce }: { cap: number; onAnnounce: (text: 
   const { arriving } = useDashboard()
   const { rows } = model
 
-  if (rows.length === 0) return null
+  // The last decision is answered (or goes): the section is drawn no more, so focus cannot stay in it. It moves to the
+  // Right now heading when a run is open, else to the status sentence under the greeting, and the live region says so
+  // once. Only when focus was inside the section and nothing real holds it by then; the hook above has already handed
+  // focus to the next row when one remains.
+  const none = rows.length === 0
+  const hadRows = useRef(false)
+  const focusInside = useRef(false)
+  useEffect(() => {
+    const onIn = (e: FocusEvent): void => {
+      focusInside.current = !!sectionRef.current?.contains(e.target as Node)
+    }
+    document.addEventListener('focusin', onIn)
+    return () => document.removeEventListener('focusin', onIn)
+  }, [])
+  useEffect(() => {
+    if (!none) {
+      hadRows.current = true
+      return undefined
+    }
+    if (!hadRows.current) return undefined
+    hadRows.current = false
+    if (!focusInside.current) return undefined
+    focusInside.current = false
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (!active || active === document.body || active === document.documentElement) {
+        const target = document.getElementById(sectionHeadingId('now')) ?? document.querySelector<HTMLElement>('[data-testid="dash-greeting-brief"]')
+        if (target) {
+          if (!target.hasAttribute('tabindex')) target.tabIndex = -1
+          target.focus({ preventScroll: true })
+        }
+      }
+      onAnnounce(NOTHING_ELSE_NEEDS_YOU)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [none, onAnnounce])
+
+  if (none) return null
 
   const runIds = new Set(items.flatMap((it) => (it.kind === 'team' ? [] : [it.run.summary.id])))
   return (

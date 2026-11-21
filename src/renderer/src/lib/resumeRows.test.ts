@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   CLOSED_WAITING_DETAIL,
   endedSinceLastVisit,
+  isUnpricedRun,
   NO_RUNS_DETAIL,
+  NOT_PRICED,
   pausedResumeCaption,
   pickUpAction,
   pickUpRows,
@@ -240,6 +242,27 @@ describe('showsRunCost', () => {
   })
 })
 
+describe('isUnpricedRun', () => {
+  it('says "Not priced" for a run with usage and no known price, and for nothing else', () => {
+    expect(NOT_PRICED).toBe('Not priced')
+    expect(isUnpricedRun({ costUsd: null, costSource: 'unknown' })).toBe(true)
+    expect(isUnpricedRun({ costUsd: 3, costSource: 'unknown' })).toBe(true)
+    expect(isUnpricedRun({ costUsd: 0.42, costSource: 'provider' })).toBe(false)
+    expect(isUnpricedRun({ costUsd: 0.42, costSource: 'computed', costPartial: true })).toBe(false)
+    // A run with no usage and no spend is a zero, not an unknown.
+    expect(isUnpricedRun({ costUsd: 0, costSource: 'none' })).toBe(false)
+  })
+  it('never overlaps showsRunCost: a row shows a figure or "Not priced", never both and never a blank for usage', () => {
+    for (const c of [
+      { costUsd: null, costSource: 'unknown' as const },
+      { costUsd: 0.42, costSource: 'provider' as const },
+      { costUsd: 0, costSource: 'none' as const }
+    ]) {
+      expect(showsRunCost(c) && isUnpricedRun(c)).toBe(false)
+    }
+  })
+})
+
 describe('strings', () => {
   it('names the actions as the spec says', () => {
     expect(resumeActionName('continue', { runName: 'Fix rounding' })).toBe('Continue Fix rounding')
@@ -276,8 +299,9 @@ describe('strings', () => {
       expect(clean(pausedResumeCaption(p(at(20, 0, 5)), now, 'en-US'))).toBe('resumes tomorrow at 12:05 AM if OrgAI stays open')
     })
     it('later in the week names the weekday, later still the date', () => {
-      expect(clean(pausedResumeCaption(p(at(22, 9, 0)), now, 'en-US'))).toBe('resumes Sunday at 9:00 AM if OrgAI stays open')
-      expect(clean(pausedResumeCaption(p(at(30, 9, 0)), now, 'en-US'))).toBe('resumes Nov 30 at 9:00 AM if OrgAI stays open')
+      // The time is the app's one clock format (clockLabel), the same as the Briefing's "paused until".
+      expect(clean(pausedResumeCaption(p(at(22, 9, 0)), now, 'en-US'))).toBe('resumes Sunday at 09:00 AM if OrgAI stays open')
+      expect(clean(pausedResumeCaption(p(at(30, 9, 0)), now, 'en-US'))).toBe('resumes Nov 30 at 09:00 AM if OrgAI stays open')
     })
     it('without an automatic resume it waits for the person', () => {
       expect(pausedResumeCaption({ autoResume: false }, now, 'en-US')).toBe('waits for you to continue')

@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, Project } from '@shared/types'
 import {
+  PAGE_BREATHING_MAX,
   PULSE_MAX_NODES,
   PULSE_MAX_SIGNALS,
+  SIGNAL_LEGS,
   SIGNAL_WINDOW_MS,
+  pulseBreathBudget,
   pulseInput,
   pulseModel,
+  signalStops,
   type PulseGroup,
   type PulseInput,
   type PulseItem,
@@ -172,6 +176,72 @@ describe('pulseModel: node cap and fold count', () => {
     expect(breathing.map((n) => n.breath)).toEqual(Array.from({ length: 12 }, (_, i) => i))
     const idle = model([fan('r', 3, 'idle')])
     expect(idle.nodes.filter((n) => n.breath !== undefined)).toHaveLength(1)
+  })
+
+  it('splits the page budget of 12: Right now breathes first, Team pulse with what is left', () => {
+    expect(PAGE_BREATHING_MAX).toBe(12)
+    expect(pulseBreathBudget(0)).toBe(12)
+    expect(pulseBreathBudget(5)).toBe(7)
+    expect(pulseBreathBudget(11)).toBe(1)
+    expect(pulseBreathBudget(12)).toBe(0)
+    expect(pulseBreathBudget(40)).toBe(0)
+    expect(pulseBreathBudget(-3)).toBe(12)
+    expect(pulseBreathBudget(2.9)).toBe(10)
+    // The two parts of the page never add up to more than 12.
+    for (let band = 0; band <= 16; band++) expect(Math.min(band, 12) + pulseBreathBudget(Math.min(band, 12))).toBeLessThanOrEqual(12)
+  })
+
+  it('breathes at most the budget it is given, in index order; the rest keep the static halo', () => {
+    const m = model([fan('r', 8, 'working')], { breathBudget: 3 })
+    expect(m.nodes.filter((n) => n.breath !== undefined).map((n) => n.breath)).toEqual([0, 1, 2])
+    expect(m.nodes.filter((n) => n.state === 'working')).toHaveLength(9)
+    expect(model([fan('r', 8, 'working')], { breathBudget: 0 }).nodes.some((n) => n.breath !== undefined)).toBe(false)
+    expect(model([fan('r', 16, 'working')], { breathBudget: 99 }).nodes.filter((n) => n.breath !== undefined)).toHaveLength(12)
+  })
+
+  it('pulseInput carries the budget, and a full band leaves none', () => {
+    expect(pulseInput([], [], {}, null, NOW, 0, 4).breathBudget).toBe(4)
+    expect(pulseInput([], [], {}, null, NOW, 0).breathBudget).toBe(PULSE_MAX_NODES)
+  })
+})
+
+describe('signalStops (transform-only signal route)', () => {
+  const legsOf = (s: [number, number][]): number => s.length - 1
+  it('keeps the corners and splits the longest legs up to exactly SIGNAL_LEGS legs', () => {
+    const route: [number, number][] = [[10, 10], [10, 30], [90, 30], [90, 50]]
+    const stops = signalStops(route)!
+    expect(legsOf(stops)).toBe(SIGNAL_LEGS)
+    expect(stops[0]).toEqual([10, 10])
+    expect(stops[stops.length - 1]).toEqual([90, 50])
+    for (const corner of route) expect(stops.some((s) => s[0] === corner[0] && s[1] === corner[1])).toBe(true)
+    // Every leg stays on the route (orthogonal: x or y never changes within a leg).
+    for (let i = 0; i < stops.length - 1; i++) expect(stops[i][0] === stops[i + 1][0] || stops[i][1] === stops[i + 1][1]).toBe(true)
+    // The long horizontal leg took most of the splits, so the speed is near even.
+    const lens = stops.slice(1).map((s, i) => Math.hypot(s[0] - stops[i][0], s[1] - stops[i][1]))
+    expect(Math.max(...lens) / Math.min(...lens)).toBeLessThan(2.5)
+  })
+  it('drops the cheapest corners of a route with too many legs and still ends where it started and ends', () => {
+    const route: [number, number][] = []
+    for (let i = 0; i < 30; i++) route.push([i * 10, i % 2 === 0 ? 0 : 20])
+    const stops = signalStops(route)!
+    expect(legsOf(stops)).toBe(SIGNAL_LEGS)
+    expect(stops[0]).toEqual(route[0])
+    expect(stops[stops.length - 1]).toEqual(route[route.length - 1])
+  })
+  it('ignores repeated points and refuses a route that does not move', () => {
+    expect(signalStops([[1, 1], [1, 1], [1, 1]])).toBeNull()
+    expect(signalStops([[1, 1]])).toBeNull()
+    expect(legsOf(signalStops([[0, 0], [0, 0], [0, 8]])!)).toBe(SIGNAL_LEGS)
+  })
+  it('gives every signal of a model exactly SIGNAL_LEGS + 1 stops, starting and ending on its nodes', () => {
+    const items = [item('root', null, 'working', 0), item('a', 'root', 'working', 1), item('b', 'root', 'working', 2), item('c', 'a', 'working', 3)]
+    const m = model([group('r', items, [{ from: 'c', to: 'b', at: NOW - 1000 }])])
+    expect(m.signals).toHaveLength(1)
+    const sig = m.signals[0]
+    expect(sig.stops).toHaveLength(SIGNAL_LEGS + 1)
+    const at = (id: string) => m.nodes.find((n) => n.id === id)!
+    expect(sig.stops[0]).toEqual([at(sig.from).x, at(sig.from).y])
+    expect(sig.stops[SIGNAL_LEGS]).toEqual([at(sig.to).x, at(sig.to).y])
   })
 })
 

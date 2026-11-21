@@ -192,7 +192,7 @@
   border: 1px solid var(--border-default);
   border-radius: var(--radius-full);
   font-size: var(--text-caption);
-  line-height: 18px;
+  line-height: var(--text-small-lh);
   color: var(--text-secondary);
 }
 .dash-run-nums {

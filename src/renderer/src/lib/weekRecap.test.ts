@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CostSource, RunStatus } from '@shared/types'
-import { AGENT_TIME_TOOLTIP, statCards, weekRecap, type RecapRun } from './weekRecap'
+import { AGENT_TIME_TOOLTIP, OPENS_USAGE_HINT, hasDecisionsCard, statCards, weekRecap, type RecapRun } from './weekRecap'
 
 const at = (y: number, m: number, d: number, h = 12): number => new Date(y, m - 1, d, h, 0, 0).getTime()
 // Saturday 7 November 2026: the week is Sun 1 Nov to Sat 7 Nov, the week before Sun 25 Oct to Sat 31 Oct.
@@ -95,10 +95,17 @@ describe('statCards', () => {
     expect(statCards(weekRecap([run('a', at(2026, 11, 7)), run('p', at(2026, 10, 28))], projects, NOW), 'runs')[0].movement.dir).toBe('same')
   })
 
-  it('names the figure and what it opens once, with no value repeated', () => {
+  it('names the figure once and keeps the instruction out of the name (it is the description)', () => {
     const spend = statCards(r, 'spend')[0]
-    expect(spend.name).toBe('Spend $8.00, up $4.00 vs the 7 days before. Opens Usage for the same 7 days')
+    expect(spend.name).toBe('Spend $8.00, up $4.00 vs the 7 days before')
     expect(spend.name.match(/\$8\.00/g)).toHaveLength(1)
+    for (const c of statCards(r, 'spend')) expect(c.name).not.toMatch(/Opens Usage/)
+    expect(OPENS_USAGE_HINT).toBe('Opens Usage for the same 7 days.')
+  })
+
+  it('offers Decisions as a lead figure only when its card is drawn', () => {
+    expect(hasDecisionsCard(r)).toBe(statCards(r, 'spend').some((c) => c.id === 'decisions'))
+    expect(hasDecisionsCard(weekRecap([], projects, NOW))).toBe(false)
   })
 
   it('opens Usage with a metric for Spend and Runs only', () => {

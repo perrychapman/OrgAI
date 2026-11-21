@@ -38,6 +38,9 @@ export interface DashboardCtx {
   arriving: boolean
   /** Pause motion (layout.motionPaused) or reduced motion: loops show their static end state. */
   still: boolean
+  /** The page breathes at most 12 elements: Right now's marks take their share first and report it here; Team pulse breathes with the rest (`pulseBreathBudget`). */
+  bandBreathing: number
+  reportBreathing: (count: number) => void
 }
 
 const noop = (): void => undefined
@@ -54,7 +57,9 @@ export const DashboardContext = createContext<DashboardCtx>({
   spanOf: () => 'full',
   lead: null,
   arriving: false,
-  still: false
+  still: false,
+  bandBreathing: 0,
+  reportBreathing: noop
 })
 
 export function useDashboard(): DashboardCtx {
