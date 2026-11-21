@@ -31,8 +31,9 @@ import { NeedsYouRegion } from '../components/dashboard/AttentionColumn'
 import { useLastSeen } from '../components/dashboard/useLastSeen'
 import { ProjectsGrid } from '../components/dashboard/ProjectsGrid'
 import { RightNowBand } from '../components/dashboard/RightNowBand'
-import { ResumeSection } from '../components/dashboard/ResumeSection'
-import { TodaySection } from '../components/dashboard/TodaySection'
+import { PickUpSection } from '../components/dashboard/PickUpSection'
+import { UpNextSection } from '../components/dashboard/UpNextSection'
+import { TodosSection } from '../components/dashboard/TodosSection'
 import { WeekSection } from '../components/dashboard/WeekSection'
 import { SetupGaps } from '../components/dashboard/SetupGaps'
 import { CommitsSection } from '../components/dashboard/CommitsSection'
@@ -209,7 +210,9 @@ export default function DashboardView(): ReactElement {
       move,
       setSectionHidden,
       reportEmpty,
-      spanOf: (id) => placed.find((p) => p.id === id)?.span ?? 'full'
+      spanOf: (id) => placed.find((p) => p.id === id)?.span ?? 'full',
+      arriving: false,
+      still: layout.motionPaused
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [layout, customising, caps, say, togglePin, move, setSectionHidden, reportEmpty, spanKey]
@@ -217,12 +220,12 @@ export default function DashboardView(): ReactElement {
 
   const sections: Record<DashSectionId, ReactElement> = {
     week: <WeekSection key="week" />,
-    pickup: <ResumeSection key="pickup" lastSeen={lastSeen} />,
-    upnext: <TodaySection key="upnext" />,
+    pickup: <PickUpSection key="pickup" lastSeen={lastSeen} />,
+    upnext: <UpNextSection key="upnext" />,
     projects: <ProjectsGrid key="projects" onAnnounce={say} />,
     engagements: <EngagementsSection key="engagements" />,
     commits: <CommitsSection key="commits" />,
-    todos: <span key="todos" hidden />
+    todos: <TodosSection key="todos" />
   }
 
   const customiseButton = empty ? undefined : (

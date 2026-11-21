@@ -32,6 +32,10 @@ export interface DashboardCtx {
   /** Each section says whether it has something to show, so the page can pair the visible ones (`placeSections`). */
   reportEmpty: (id: DashSectionId, empty: boolean) => void
   spanOf: (id: DashSectionId) => 'half' | 'full'
+  /** The page is staging its arrival (lib/usePageArrival): sections draw (sparklines wipe, map columns fade, figures count up). */
+  arriving: boolean
+  /** Pause motion (layout.motionPaused) or reduced motion: loops show their static end state. */
+  still: boolean
 }
 
 const noop = (): void => undefined
@@ -45,7 +49,9 @@ export const DashboardContext = createContext<DashboardCtx>({
   move: noop,
   setSectionHidden: noop,
   reportEmpty: noop,
-  spanOf: () => 'full'
+  spanOf: () => 'full',
+  arriving: false,
+  still: false
 })
 
 export function useDashboard(): DashboardCtx {
