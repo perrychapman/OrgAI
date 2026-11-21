@@ -14,15 +14,30 @@ const PAD = 3
 export default function Sparkline({
   points,
   active,
-  onScrub
+  onScrub,
+  area = false,
+  draw = false
 }: {
   points: readonly SparkPoint[]
   /** The slot being read out, or null. */
   active: number | null
   onScrub: (i: number | null) => void
+  /** Fill under each line (redesign: area sparklines on the KPI band and the Your week stat cards). */
+  area?: boolean
+  /** Wipe in left to right once (page arrival or the person's filter change; motion-draw-wipe). */
+  draw?: boolean
 }): ReactElement | null {
   const shape = sparkShape(points, SPARK_W, SPARK_H, PAD)
   if (!shape) return null
+  // Each line segment closed down to the baseline; a gap (unknown bucket) splits the area as it splits the line.
+  const areas = area
+    ? shape.lines.map((l) => {
+        const pts = l.trim().split(/\s+/)
+        const first = pts[0]?.split(',')[0]
+        const last = pts[pts.length - 1]?.split(',')[0]
+        return first !== undefined && last !== undefined && pts.length > 1 ? `${first},${SPARK_H - PAD} ${l} ${last},${SPARK_H - PAD}` : null
+      })
+    : []
   const left = (x: number): string => `${(x / SPARK_W) * 100}%`
   const at = (e: PointerEvent<HTMLElement>): number | null => {
     const r = e.currentTarget.getBoundingClientRect()
@@ -45,11 +60,12 @@ export default function Sparkline({
       onPointerCancel={() => onScrub(null)}
     >
       <svg
-        className="usage-kpi-spark"
+        className={draw ? 'usage-kpi-spark motion-draw-wipe' : 'usage-kpi-spark'}
         viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
         preserveAspectRatio="none"
         focusable="false"
       >
+        {areas.map((a, i) => (a ? <polygon key={`a${i}`} points={a} className="spark-area" /> : null))}
         {shape.lines.map((l, i) => (
           <polyline key={i} points={l} fill="none" className="usage-kpi-spark-line" vectorEffect="non-scaling-stroke" />
         ))}

@@ -15,6 +15,13 @@
     var(--surface-1);
 }
 
+/* ---------- Area sparkline (components/usage/Sparkline area): the fill takes the line's colour, faint ---------- */
+.spark-area {
+  fill: currentColor;
+  stroke: none;
+  opacity: 0.16;
+}
+
 /* ---------- Plan gauge ---------- */
 .plan-gauges {
   list-style: none;
