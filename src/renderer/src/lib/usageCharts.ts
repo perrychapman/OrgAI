@@ -51,13 +51,17 @@ export interface Ticks {
 
 const STEPS = [1, 2, 2.5, 5, 10]
 
-/** Nice ticks from 0 covering `maxValue`: 3 to 5 labels (0 and 2 to 4 steps). Nothing to draw gives 0 and 1. */
-export function niceTicks(maxValue: number): Ticks {
-  if (!(maxValue > 0) || !Number.isFinite(maxValue)) return { max: 1, ticks: [0, 0.5, 1] }
+/**
+ * Nice ticks from 0 covering `maxValue`: 3 to 5 labels (0 and 2 to 4 steps). Nothing to draw gives 0 and 1 (0, 1 and 2
+ * when `integer`). With `integer` (a count, like runs) every tick is a whole number: half a run is never a label.
+ */
+export function niceTicks(maxValue: number, integer = false): Ticks {
+  if (!(maxValue > 0) || !Number.isFinite(maxValue)) return integer ? { max: 2, ticks: [0, 1, 2] } : { max: 1, ticks: [0, 0.5, 1] }
   const exp = Math.floor(Math.log10(maxValue / 4))
   for (let e = exp; e <= exp + 2; e++) {
     for (const m of STEPS) {
       const step = m * 10 ** e
+      if (integer && !(step >= 1 && Number.isInteger(step))) continue
       const n = Math.ceil(maxValue / step - 1e-9)
       if (n <= 4) {
         const count = Math.max(2, n)

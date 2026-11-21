@@ -4,7 +4,8 @@ import type { UsageOverviewConnection } from '@shared/types'
 import { barFraction, clipMiddle, rankByCost, rollupCost, runsText, sharePercent } from '../../lib/usageCharts'
 import type { UsagePanelProps } from './panelProps'
 import { ChartTable } from './ChartTable'
-import { CostText, RANK_TOP, RankedBars, type RankedItem } from './RankedBars'
+import { buildRibbon } from '../../lib/usageRibbon'
+import { CostText, RANK_TOP, rankFill, RankedBars, type RankedItem } from './RankedBars'
 import '../../styles/usage-charts.css'
 import '../../styles/usage-breakdown.css'
 
@@ -27,7 +28,12 @@ export default function ConnectionsPanel({ data, filters, onNarrow, announce, em
   const maxCost = ranked.reduce((n, c) => Math.max(n, c.costUsd ?? 0), 0)
   const byId = new Map(ranked.map((c) => [idOf(c), c]))
 
-  const items: RankedItem[] = shown.map((c) => ({
+  const ribbon = buildRibbon(
+    ranked.map((c, i) => ({ id: idOf(c), name: c.name, value: c.costUsd, partial: c.costUnknownRuns > 0, fill: rankFill(i) })),
+    'var(--chart-other)'
+  )
+
+  const items: RankedItem[] = shown.map((c, i) => ({
     id: idOf(c),
     data: { connection: c.connection ?? '' },
     name: c.name,
@@ -35,7 +41,7 @@ export default function ConnectionsPanel({ data, filters, onNarrow, announce, em
     sub: c.kind ? KIND_WORD[c.kind] : undefined,
     fraction: c.costUsd === null ? 0 : barFraction(c.costUsd, maxCost),
     state: c.costUsd === null ? 'unknown' : c.costUnknownRuns > 0 ? 'partial' : 'known',
-    fill: 'var(--chart-other)',
+    fill: rankFill(i),
     cost: rollupCost(c),
     detail: `${runsText(c.runs)} · ${agentsText(c.agents)}`,
     selected: !!c.connection && filters.connection === c.connection
@@ -79,6 +85,7 @@ export default function ConnectionsPanel({ data, filters, onNarrow, announce, em
         <RankedBars
           label="Connections by estimated cost"
           items={items}
+          ribbon={ribbon}
           rowTestId="usage-connection-row"
           onActivate={(it) => {
             const c = byId.get(it.id)

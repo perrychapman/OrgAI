@@ -5,7 +5,8 @@ import { formatTokens } from '../../lib/cost'
 import { barFraction, clipMiddle, rankByCost, rollupCost, sharePercent, tokenSum } from '../../lib/usageCharts'
 import type { UsagePanelProps } from './panelProps'
 import { ChartTable } from './ChartTable'
-import { CostText, RANK_TOP, RankedBars, type RankedItem } from './RankedBars'
+import { buildRibbon } from '../../lib/usageRibbon'
+import { CostText, RANK_TOP, rankFill, RankedBars, type RankedItem } from './RankedBars'
 import '../../styles/usage-charts.css'
 
 const MODEL_COST_TITLE = 'Model cost per role is not recorded'
@@ -25,7 +26,12 @@ export default function RolesPanel({ data, filters, onNarrow, announce, embedded
   const maxCost = ranked.reduce((n, r) => Math.max(n, r.costUsd ?? 0), 0)
   const byId = new Map(ranked.map((r) => [idOf(r), r]))
 
-  const items: RankedItem[] = shown.map((r) => ({
+  const ribbon = buildRibbon(
+    ranked.map((r, i) => ({ id: idOf(r), name: nameOf(r), value: r.costUsd, partial: r.costUnknownRuns > 0, fill: rankFill(i) })),
+    'var(--chart-other)'
+  )
+
+  const items: RankedItem[] = shown.map((r, i) => ({
     id: idOf(r),
     data: { project: r.projectId, role: roleKey(r) },
     name: `${r.projectName} / ${r.roleName}`,
@@ -33,7 +39,7 @@ export default function RolesPanel({ data, filters, onNarrow, announce, embedded
     sub: oneProject ? undefined : r.projectName,
     fraction: r.costUsd === null ? 0 : barFraction(r.costUsd, maxCost),
     state: r.costUsd === null ? 'unknown' : r.costUnknownRuns > 0 ? 'partial' : 'known',
-    fill: 'var(--chart-other)',
+    fill: rankFill(i),
     cost: rollupCost(r),
     costTitle: filters.model ? MODEL_COST_TITLE : undefined,
     detail: `${formatTokens(tokenSum(r.tokens))} tokens`,
@@ -74,6 +80,7 @@ export default function RolesPanel({ data, filters, onNarrow, announce, embedded
         <RankedBars
           label={filters.model ? 'Roles that used this model, by tokens' : 'Roles by estimated cost'}
           items={items}
+          ribbon={ribbon}
           rowTestId="usage-role-row"
           onActivate={(it) => {
             const r = byId.get(it.id)

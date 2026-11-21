@@ -4,11 +4,7 @@ import { segmentsOf } from './usageCharts'
 import { overlayFigure } from './usageDashboard'
 import {
   barValueLabel,
-  chartMotion,
   hiddenCount,
-  MORPH_MAX_SEGMENTS,
-  morphFrom,
-  nearestBucket,
   overlayCostText,
   overlayDisabledReason,
   previousCellText,
@@ -22,8 +18,7 @@ import {
   spendSummary,
   tooltipPlacement,
   unpricedRuns,
-  visibleTotals,
-  visualGeom
+  visibleTotals
 } from './usageSpend'
 
 const T = (n: number) => ({ input: n, output: 0, cacheRead: 0, cacheWrite: 0 })
@@ -141,18 +136,6 @@ describe('tooltip text', () => {
   })
 })
 
-describe('nearestBucket', () => {
-  it('maps x to the column under it and null outside the columns', () => {
-    expect(nearestBucket(48, 48, 20, 5)).toBe(0)
-    expect(nearestBucket(67.9, 48, 20, 5)).toBe(0)
-    expect(nearestBucket(68, 48, 20, 5)).toBe(1)
-    expect(nearestBucket(148, 48, 20, 5)).toBe(4)
-    expect(nearestBucket(47, 48, 20, 5)).toBeNull()
-    expect(nearestBucket(149, 48, 20, 5)).toBeNull()
-    expect(nearestBucket(60, 48, 20, 0)).toBeNull()
-  })
-})
-
 describe('tooltipPlacement', () => {
   const base = { half: 10, width: 120, viewLeft: 0, viewRight: 600 }
   it('sits right of the column, clear of its own bar', () => {
@@ -175,31 +158,7 @@ describe('tooltipPlacement', () => {
   })
 })
 
-describe('chartMotion', () => {
-  const slots = ['1', '2', '3']
-  const base = { prevSlots: slots, nextSlots: slots, viewChanged: false, metricChanged: false, hiddenChanged: false, segments: 40, reduced: false }
-  it('does nothing on first paint or when nothing the user did changed', () => {
-    expect(chartMotion({ ...base, prevSlots: null })).toBe('none')
-    expect(chartMotion(base)).toBe('none')
-    expect(chartMotion({ ...base, nextSlots: ['2', '3', '4'] })).toBe('none')
-  })
-  it('morphs when the metric or a legend series changed over the same buckets', () => {
-    expect(chartMotion({ ...base, metricChanged: true })).toBe('morph')
-    expect(chartMotion({ ...base, hiddenChanged: true })).toBe('morph')
-  })
-  it('fades once, never morphs, when the filters changed the buckets', () => {
-    expect(chartMotion({ ...base, viewChanged: true, nextSlots: ['4', '5'] })).toBe('fade')
-    expect(chartMotion({ ...base, viewChanged: true, metricChanged: true })).toBe('fade')
-  })
-  it('does not morph a different bucket set even when the metric also changed', () => {
-    expect(chartMotion({ ...base, metricChanged: true, nextSlots: ['1', '2'] })).toBe('none')
-  })
-  it('skips above the segment cap and under reduced motion', () => {
-    expect(chartMotion({ ...base, metricChanged: true, segments: MORPH_MAX_SEGMENTS })).toBe('morph')
-    expect(chartMotion({ ...base, metricChanged: true, segments: MORPH_MAX_SEGMENTS + 1 })).toBe('none')
-    expect(chartMotion({ ...base, metricChanged: true, reduced: true })).toBe('none')
-    expect(chartMotion({ ...base, viewChanged: true, reduced: true })).toBe('none')
-  })
+describe('set comparison', () => {
   it('compares key lists and sets by content', () => {
     expect(sameKeys(['a', 'b'], ['a', 'b'])).toBe(true)
     expect(sameKeys(['a', 'b'], ['b', 'a'])).toBe(false)
@@ -208,23 +167,3 @@ describe('chartMotion', () => {
   })
 })
 
-describe('morph geometry', () => {
-  it('maps the new rect onto the old one about its bottom edge', () => {
-    // Old: bottom 100, height 40. New: bottom 100, height 80 -> scale 0.5, no shift.
-    expect(morphFrom({ bottom: 100, h: 40 }, { bottom: 100, h: 80 })).toEqual({ ty: 0, sy: 0.5, entering: false })
-    // Old stacked higher (bottom 60) than the new one (bottom 100): shift up by 40.
-    expect(morphFrom({ bottom: 60, h: 20 }, { bottom: 100, h: 20 })).toEqual({ ty: -40, sy: 1, entering: false })
-  })
-  it('grows a segment with no old rect from nothing and skips one that did not move', () => {
-    expect(morphFrom(undefined, { bottom: 100, h: 30 })).toEqual({ ty: 0, sy: 0, entering: true })
-    expect(morphFrom({ bottom: 100, h: 30 }, { bottom: 100.2, h: 30.1 })).toBeNull()
-    expect(morphFrom({ bottom: 100, h: 30 }, { bottom: 100, h: 0 })).toBeNull()
-  })
-  it('puts a segment where a running morph shows it, for a reversal that starts mid-flight', () => {
-    const old = { bottom: 100, h: 40 }
-    const next = { bottom: 100, h: 80 }
-    const from = morphFrom(old, next)!
-    expect(visualGeom(next, from.ty, from.sy)).toEqual(old)
-    expect(visualGeom(next, from.ty / 2, 0.75)).toEqual({ bottom: 100, h: 60 })
-  })
-})

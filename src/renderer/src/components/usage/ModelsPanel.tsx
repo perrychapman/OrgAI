@@ -10,7 +10,8 @@ import { useAppStore } from '../../store/useAppStore'
 import { barFraction, clipMiddle, rankByCost, rollupCost, sharePercent, tokenSum } from '../../lib/usageCharts'
 import type { UsagePanelProps } from './panelProps'
 import { ChartTable } from './ChartTable'
-import { CostText, RANK_TOP, RankedBars, type RankedItem } from './RankedBars'
+import { buildRibbon } from '../../lib/usageRibbon'
+import { CostText, RANK_TOP, rankFill, RankedBars, type RankedItem } from './RankedBars'
 import '../../styles/usage-charts.css'
 
 const PRICE_WORD: Record<PriceSource, string> = {
@@ -54,7 +55,12 @@ export default function ModelsPanel({ data, filters, onNarrow, announce, embedde
     setView('appSettings')
   }
 
-  const items: RankedItem[] = shown.map((m) => {
+  const ribbon = buildRibbon(
+    ranked.map((m, i) => ({ id: m.model, name: m.model, value: m.costUsd, partial: m.costUnknownRuns > 0, fill: rankFill(i) })),
+    'var(--chart-other)'
+  )
+
+  const items: RankedItem[] = shown.map((m, i) => {
     const tokens = tokenSum(m.tokens)
     const conn = connText(m.model)
     const missing = unpriced(m)
@@ -71,7 +77,7 @@ export default function ModelsPanel({ data, filters, onNarrow, announce, embedde
       ),
       fraction: m.costUsd === null ? 0 : barFraction(m.costUsd, maxCost),
       state: m.costUsd === null ? 'unknown' : m.costUnknownRuns > 0 ? 'partial' : 'known',
-      fill: 'var(--chart-other)',
+      fill: rankFill(i),
       cost: rollupCost(m),
       detail: `${formatTokens(tokens)} tokens · ${sharePercent(tokens, totalTokens)}%`,
       selected: filters.model === m.model,
@@ -123,7 +129,7 @@ export default function ModelsPanel({ data, filters, onNarrow, announce, embedde
         </div>
       )}
       {items.length > 0 ? (
-        <RankedBars label="Models by estimated cost" items={items} rowTestId="usage-model-row" onActivate={(it) => onNarrow({ model: it.id })} />
+        <RankedBars label="Models by estimated cost" items={items} ribbon={ribbon} rowTestId="usage-model-row" onActivate={(it) => onNarrow({ model: it.id })} />
       ) : (
         <p className="uc-empty">No runs in this period.</p>
       )}

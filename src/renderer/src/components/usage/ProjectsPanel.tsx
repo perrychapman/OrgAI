@@ -18,6 +18,7 @@ import {
   sharePercent,
   tokenSum
 } from '../../lib/usageCharts'
+import { buildRibbon } from '../../lib/usageRibbon'
 import type { SeriesHighlightProps, UsagePanelProps } from './panelProps'
 import { Icon } from '../ui/Icon'
 import { ChartTable } from './ChartTable'
@@ -56,10 +57,19 @@ export default function ProjectsPanel({
   const maxCost = ranked.reduce((m, p) => Math.max(m, p.costUsd ?? 0), 0)
   const byId = new Map(ranked.map((p) => [p.projectId, p]))
 
+  const fillOf = (p: UsageProjectRollup): string => {
+    const idx = series.get(p.projectId)
+    return idx !== undefined ? `var(${SERIES_VAR[idx]})` : 'var(--chart-other)'
+  }
+  // The ribbon leads the rows: the same colours (the chart's series colours), top five then Other.
+  const ribbon = buildRibbon(
+    ranked.map((p) => ({ id: p.projectId, name: p.projectName, value: p.costUsd, partial: p.costUnknownRuns > 0, fill: fillOf(p) })),
+    'var(--chart-other)'
+  )
+
   const items: RankedItem[] = shown.map((p) => {
     const cost = rollupCost(p)
     const unknown = p.costUsd === null
-    const idx = series.get(p.projectId)
     return {
       id: p.projectId,
       data: { id: p.projectId },
@@ -69,7 +79,7 @@ export default function ProjectsPanel({
       sub: p.projectRemoved ? 'Project removed' : (p.client ?? undefined),
       fraction: unknown ? 0 : barFraction(p.costUsd ?? 0, maxCost),
       state: unknown ? 'unknown' : p.costUnknownRuns > 0 ? 'partial' : 'known',
-      fill: idx !== undefined ? `var(${SERIES_VAR[idx]})` : 'var(--chart-other)',
+      fill: fillOf(p),
       cost,
       detail: runsText(p.runs),
       seriesKey: series.has(p.projectId) ? p.projectId : OTHER_KEY,
@@ -138,6 +148,7 @@ export default function ProjectsPanel({
         <RankedBars
           label="Projects by estimated cost"
           items={items}
+          ribbon={ribbon}
           rowTestId="usage-project-row"
           onActivate={(it) => onNarrow({ projectId: it.id })}
           onMenu={(it, anchor) => {
