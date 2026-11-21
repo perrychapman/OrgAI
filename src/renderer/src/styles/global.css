@@ -2,6 +2,7 @@
 @import './tokens.css';
 /* Shared motion recipes (docs/design/motion.md 2.1): keyframes, .motion-* classes, disclosure and collapse. */
 @import './motion.css';
+@import './instruments.css';
 @import './shell.css';
 @import './controls.css';
 @import './ui.css';

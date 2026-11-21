@@ -198,14 +198,16 @@ describe('tile signals', () => {
     expect(tileStatusKind({ ...base, newestStartedAt: 5 })).toBe('idle')
     expect(tileStatusKind(base)).toBe('none')
   })
-  it('puts pinned projects first in pin order, then the attention order', () => {
+  it('puts pinned projects first in pin order, then the rest by last activity, then name', () => {
     const p = (id: string, name: string) => ({ id, name })
     const list = [p('a', 'Alpha'), p('b', 'Beta'), p('c', 'Gamma'), p('d', 'Delta')]
-    const ctx = { c: { decisions: 2, liveRuns: 0 }, d: { decisions: 0, liveRuns: 1 } }
-    expect(pinnedFirst(list, [], ctx).map((x) => x.id)).toEqual(['c', 'd', 'a', 'b'])
-    expect(pinnedFirst(list, ['b', 'a'], ctx).map((x) => x.id)).toEqual(['b', 'a', 'c', 'd'])
-    // Ids of deleted projects and repeats are ignored.
-    expect(pinnedFirst(list, ['gone', 'd', 'd'], ctx).map((x) => x.id)).toEqual(['d', 'c', 'a', 'b'])
+    // Decisions and live runs do not move a tile: only the start of the newest run does.
+    const ctx = { c: { decisions: 2, liveRuns: 0, newestStart: 10 }, d: { decisions: 0, liveRuns: 1, newestStart: 30 }, a: { decisions: 0, liveRuns: 0, newestStart: 20 } }
+    expect(pinnedFirst(list, [], ctx).map((x) => x.id)).toEqual(['d', 'a', 'c', 'b'])
+    expect(pinnedFirst(list, ['b', 'a'], ctx).map((x) => x.id)).toEqual(['b', 'a', 'd', 'c'])
+    // Ids of deleted projects and repeats are ignored; projects with no run sort last, by name.
+    expect(pinnedFirst(list, ['gone', 'd', 'd'], ctx).map((x) => x.id)).toEqual(['d', 'a', 'c', 'b'])
+    expect(pinnedFirst(list, [], {}).map((x) => x.id)).toEqual(['a', 'b', 'd', 'c'])
   })
   it('orders the team row breadth first, root first, capped at 8', () => {
     const r = (id: string, reportsTo: string | null, color = '#fff') => ({ id, name: id.toUpperCase(), color, reportsTo })

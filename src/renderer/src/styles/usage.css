@@ -595,16 +595,16 @@
   --usage-tbl-bg: var(--surface-1);
 }
 
-/* Hero: the spend chart beside the tabbed breakdown from 1100 px, stacked below. */
+/* Hero row: the spend chart beside the tabbed breakdown (7 to 5) from a 900 px container, stacked below. */
 .usage-hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
   align-items: stretch;
 }
-@container usage (min-width: 1100px) {
+@container usage (min-width: 900px) {
   .usage-hero {
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
   }
   /* Equal heights by default: the breakdown's own height does not size the row, it fills the chart's. */
   .usage-hero > .usage-where-card {
@@ -621,17 +621,17 @@
   }
 }
 
-/* Runs worth a look beside Cost by tier from 1100 px; one column below. */
+/* Runs worth a look beside Cost by tier (7 to 5) from 900 px, like the hero row; one column below. The runs table is
+   three columns (run, cost, why) and wraps its reasons, so it keeps its room at that width. */
 .usage-pair {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 0 var(--space-6);
   align-items: start;
 }
-/* Side by side only where Runs worth a look keeps room for its columns (the walk found it clipped at 805 px). */
-@container usage (min-width: 1500px) {
+@container usage (min-width: 900px) {
   .usage-pair {
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
   }
 }
 .usage-panel-head {
@@ -707,35 +707,103 @@
   color: var(--text-secondary);
   font-size: var(--text-small);
 }
-.usage-definitions > summary {
-  cursor: pointer;
-  color: var(--text-secondary);
-  font-size: var(--text-small);
+
+/* ---------- Definitions on labels (components/usage/DefinedTerm): a tooltip a label describes, shown on hover and on
+   keyboard focus, hidden by Esc. It holds a definition only, never the only way to read a value. ---------- */
+.usage-term-host {
+  position: relative;
+  display: inline-block;
+  max-inline-size: 100%;
 }
-.usage-definitions > summary:focus-visible {
+.usage-term {
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: underline dotted var(--text-tertiary);
+  text-underline-offset: 3px;
+  border-radius: var(--radius-xs);
+  cursor: help;
+}
+.usage-term:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
-  border-radius: var(--radius-xs);
 }
-.usage-definitions-list {
-  margin: var(--space-2) 0 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2);
+.usage-term-tip {
+  position: absolute;
+  z-index: var(--z-popover);
+  inset-block-start: calc(100% + var(--space-1));
+  inset-inline-start: 0;
+  inline-size: max-content;
+  max-inline-size: min(320px, 80cqi);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  box-shadow: var(--elev-2);
+  color: var(--text-primary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-regular, 400);
+  text-align: start;
+  text-decoration: none;
+  white-space: normal;
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    visibility 0s var(--dur-fast);
 }
-@container usage (min-width: 880px) {
-  .usage-definitions-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+/* A floating tip lives in the top layer (a manual popover): it is placed from the label's rectangle and never clipped by a table wrapper. */
+.usage-term-tip.usage-term-float {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  overflow: visible;
+  visibility: visible;
+  opacity: 1;
+  transition: none;
+  max-inline-size: min(320px, calc(100vw - var(--space-4)));
+}
+.usage-term-host[data-align='end'] > .usage-term-tip {
+  inset-inline-start: auto;
+  inset-inline-end: 0;
+}
+.usage-term-host:is(:hover, :focus-within) > .usage-term-tip {
+  visibility: visible;
+  opacity: 1;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    visibility 0s;
+}
+.usage-term-host[data-tip-off] > .usage-term-tip,
+.usage-term-host[data-tip-off]:is(:hover, :focus-within) > .usage-term-tip {
+  visibility: hidden;
+  opacity: 0;
+}
+.usage-kpi-item > .usage-term-tip:hover,
+.usage-kpi-item:has(.usage-kpi-main:focus-visible) > .usage-term-tip,
+.usage-kpi-item:has(.usage-kpi-label:hover) > .usage-term-tip {
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    visibility 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .usage-term-tip {
+    transition: none;
   }
 }
-.usage-definitions-list dt {
-  font-weight: var(--weight-semibold);
-  font-size: var(--text-small);
+:root[data-reduce-motion='on'] .usage-term-tip {
+  transition: none;
 }
-.usage-definitions-list dd {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: var(--text-small);
+@media (forced-colors: active) {
+  .usage-term-tip {
+    border-color: CanvasText;
+  }
 }
 
 /* Loading placeholders at the loaded heights (nothing moves when data arrives) */

@@ -1,0 +1,219 @@
+/* dashboard-pulse: dashboard-usage-redesign (see docs/design/dashboard-usage-redesign/implementation-notes.md). */
+/*
+ * Team pulse (components/dashboard/TeamPulse.tsx, lib/teamPulse.ts): the live org chart in miniature. A picture with a
+ * caption, never interactive. Node fill is the agent's role colour (--role, never text); the ring is the state colour.
+ * Reporting lines are orthogonal, drawn in the parent's role colour mixed into --edge. Two loops exist and both mean
+ * "alive": the working halo breathes (at most 12 minus the marks Right now breathes) and a signal dot travels a line while agents message. Paused or
+ * reduced motion render neither (TeamPulse.tsx leaves the signal out), the static halo stays. Tokens only.
+ */
+
+.dash-pulse {
+  margin: 0;
+  display: grid;
+  gap: var(--space-2);
+  justify-items: center;
+  min-width: 0;
+  --pulse-max-h: 148px;
+}
+@container dash (max-width: 880px) {
+  .dash-pulse {
+    --pulse-max-h: 120px;
+  }
+}
+
+/* Natural size at 1:1; shrinks with its container and is capped in height so the Briefing stays compact. */
+.dash-pulse-svg {
+  display: block;
+  max-width: 100%;
+  max-height: var(--pulse-max-h);
+  height: auto;
+  overflow: visible;
+}
+
+.dash-pulse-line {
+  fill: none;
+  stroke: color-mix(in oklab, var(--line, var(--edge)) 55%, var(--edge));
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dash-pulse-node,
+.dash-pulse-halo {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Fill: the role colour, softened into the surface so the ring reads against it. Ring: the state. */
+.dash-pulse-dot {
+  fill: color-mix(in oklab, var(--role, var(--text-tertiary)) 70%, var(--surface-1));
+  stroke: var(--state-idle);
+  stroke-width: 2.5;
+}
+.dash-pulse-node[data-state='rest'] .dash-pulse-dot {
+  stroke: var(--border-strong);
+  stroke-width: 2;
+}
+.dash-pulse-node[data-state='working'] .dash-pulse-dot {
+  stroke: var(--state-working);
+}
+.dash-pulse-node[data-state='waiting'] .dash-pulse-dot {
+  stroke: var(--state-waiting);
+}
+.dash-pulse-node[data-state='done'] .dash-pulse-dot {
+  stroke: var(--state-done);
+  stroke-width: 3.5;
+}
+.dash-pulse-node[data-state='failed'] .dash-pulse-dot {
+  stroke: var(--state-error);
+  stroke-width: 3.5;
+}
+
+/* Static cues, one per state beyond the colour: a ring around working, a double ring when it needs you, a dashed one failed. */
+.dash-pulse-halo {
+  fill: none;
+  stroke-width: 2;
+  opacity: 0.5;
+}
+.dash-pulse-node[data-state='working'] .dash-pulse-halo {
+  stroke: var(--state-working);
+}
+.dash-pulse-node[data-state='waiting'] .dash-pulse-halo {
+  stroke: var(--state-waiting);
+  opacity: 0.7;
+}
+.dash-pulse-node[data-state='failed'] .dash-pulse-halo {
+  stroke: var(--state-error);
+  stroke-dasharray: 3 3;
+  opacity: 0.8;
+}
+
+/* Breathe: the one live cue, on the working halo only; transform and opacity (global.css keyframes). */
+.dash-pulse-halo[data-breathe] {
+  animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
+  animation-delay: calc(var(--i, 0) * var(--motion-stagger) * 5);
+}
+
+/* Signal: a dot travels the line between two agents, one trip per --dur-signal, linear, while the pair keeps messaging
+   (the component drops it SIGNAL_WINDOW_MS after the pair's last message). Transform and opacity only (motion.md): the
+   dot is drawn at 0,0 and TeamPulse.tsx gives each dot its route as --x0..--x16 / --y0..--y16 (px): the corners of the
+   elbows, long legs split so the speed stays even. Each of the 16 legs takes 1/16 of the trip (lib/teamPulse.ts SIGNAL_LEGS). */
+.dash-pulse-signal {
+  fill: var(--text-primary);
+  stroke: var(--surface-1);
+  stroke-width: 1.5;
+  opacity: 0;
+  animation: dash-pulse-trip var(--dur-signal) linear infinite;
+}
+@keyframes dash-pulse-trip {
+  0% {
+    transform: translate(var(--x0), var(--y0));
+    opacity: 0;
+  }
+  6.25% {
+    transform: translate(var(--x1), var(--y1));
+    opacity: 1;
+  }
+  12.5% {
+    transform: translate(var(--x2), var(--y2));
+  }
+  18.75% {
+    transform: translate(var(--x3), var(--y3));
+  }
+  25% {
+    transform: translate(var(--x4), var(--y4));
+  }
+  31.25% {
+    transform: translate(var(--x5), var(--y5));
+  }
+  37.5% {
+    transform: translate(var(--x6), var(--y6));
+  }
+  43.75% {
+    transform: translate(var(--x7), var(--y7));
+  }
+  50% {
+    transform: translate(var(--x8), var(--y8));
+  }
+  56.25% {
+    transform: translate(var(--x9), var(--y9));
+  }
+  62.5% {
+    transform: translate(var(--x10), var(--y10));
+  }
+  68.75% {
+    transform: translate(var(--x11), var(--y11));
+  }
+  75% {
+    transform: translate(var(--x12), var(--y12));
+  }
+  81.25% {
+    transform: translate(var(--x13), var(--y13));
+  }
+  87.5% {
+    transform: translate(var(--x14), var(--y14));
+  }
+  93.75% {
+    transform: translate(var(--x15), var(--y15));
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--x16), var(--y16));
+    opacity: 0;
+  }
+}
+
+/* Arrival: lines trace from the root outward level by level, then nodes pop in as their line reaches them (under 800 ms). */
+.dash-pulse[data-arriving] .dash-pulse-line {
+  --draw-delay: calc(var(--lvl, 0) * 2 * var(--motion-stagger));
+}
+.dash-pulse[data-arriving] .dash-pulse-node.motion-pop {
+  animation-delay: calc(var(--dur-draw) * 0.85 + var(--lvl, 0) * 2 * var(--motion-stagger));
+}
+.dash-pulse[data-arriving] .dash-pulse-node.motion-pop[data-depth='0'] {
+  animation-delay: 0ms;
+}
+
+/* A live update animates only what changed: a new agent pops in, its line traces. */
+.dash-pulse-new {
+  animation: motion-pop var(--dur-base) var(--ease-out) backwards;
+}
+
+/* ---------- Caption: the picture's text alternative, visible ---------- */
+.dash-pulse-caption {
+  max-width: 100%;
+  text-align: center;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  text-wrap: balance;
+}
+/* A small ring before each state word echoes the node's ring (decorative; the word says it). */
+.dash-pulse-key {
+  white-space: nowrap;
+}
+.dash-pulse-key::before {
+  content: '';
+  display: inline-block;
+  box-sizing: border-box;
+  width: 8px;
+  height: 8px;
+  margin-inline-end: var(--space-1);
+  border-radius: var(--radius-full);
+  border: 2px solid var(--state-idle);
+  vertical-align: baseline;
+}
+.dash-pulse-key[data-state='working']::before {
+  border-color: var(--state-working);
+}
+.dash-pulse-key[data-state='waiting']::before {
+  border-color: var(--state-waiting);
+}
+.dash-pulse-key[data-state='done']::before {
+  border-color: var(--state-done);
+  background: var(--state-done);
+}
+.dash-pulse-key[data-state='failed']::before {
+  border-color: var(--state-error);
+  background: var(--state-error);
+}

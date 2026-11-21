@@ -1,0 +1,144 @@
+/* ---------- Dashboard: the activity map of Your week (components/dashboard/ActivityMap.tsx, lib/activityMap.ts) ----------
+   14 days across, six four-hour blocks down. A cell mixes surface-3 toward the accent text colour by its strength (--v);
+   a block that has not happened yet is an outline (data-state='future'), a block with no run a flat surface (zero); the
+   two differ in shape, not colour. Today's column carries one outline (.dash-heat-today). Columns fade in left to right
+   while the page arrives (.motion-draw-col, --col and --cols). Tokens only. */
+
+.dash-activity {
+  min-width: 0;
+}
+.dash-activity-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  min-height: 24px;
+  margin-bottom: var(--space-2);
+}
+.dash-activity-head h3 {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-regular);
+  color: var(--text-secondary);
+}
+.dash-activity-total {
+  color: var(--text-tertiary);
+}
+.dash-activity-link {
+  all: unset;
+  box-sizing: border-box;
+  margin-left: auto;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--accent-text);
+  cursor: pointer;
+}
+.dash-activity-link:hover {
+  text-decoration: underline;
+}
+.dash-activity-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.dash-heat {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.dash-heat-pending {
+  height: calc(6 * 16px + 5 * 3px);
+}
+/* The row labels: six 16 px lines on the same 3 px rhythm as the cells. */
+.dash-heat-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: none;
+}
+.dash-heat-l {
+  height: 16px;
+  color: var(--text-tertiary);
+  line-height: var(--text-caption-lh);
+}
+/* One column per day, each six cells tall. */
+.dash-heat-cols {
+  flex: 1 1 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 14), minmax(0, 1fr));
+  gap: 3px;
+  /* Room for today's outline at the right edge. */
+  padding: 1px 2px 1px 0;
+}
+.dash-heat-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+/* Today's column carries one outline round all six cells. */
+.dash-heat-col[data-today] {
+  outline: 1px solid var(--text-tertiary);
+  outline-offset: 1px;
+  border-radius: var(--radius-xs);
+}
+.dash-heat-cell {
+  display: block;
+  height: 16px;
+  border-radius: var(--radius-xs);
+  background: color-mix(in oklab, var(--accent-text) calc(var(--v, 0) * 100%), var(--surface-3));
+}
+.dash-heat-cell[data-state='future'] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.dash-heat-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0 var(--space-3);
+  margin-top: var(--space-2);
+  font-size: var(--text-caption);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.dash-heat-foot b {
+  font-weight: var(--weight-regular);
+  color: var(--text-primary);
+}
+.dash-heat-scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.dash-heat-scale i {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-xs);
+  background: color-mix(in oklab, var(--accent-text) calc(var(--v, 0) * 100%), var(--surface-3));
+}
+@container week (max-width: 459px) {
+  .dash-heat-scale {
+    display: none;
+  }
+  .dash-heat-cols,
+  .dash-heat-col {
+    gap: 2px;
+  }
+}
+@media (forced-colors: active) {
+  .dash-heat-cell {
+    forced-color-adjust: none;
+    background: GrayText;
+    opacity: calc(0.2 + var(--v, 0) * 0.8);
+  }
+  .dash-heat-cell[data-state='zero'] {
+    opacity: 0.15;
+  }
+}

@@ -113,7 +113,7 @@ export interface SummaryItemModel {
   text?: string
   /** "At least " shown before a cost that is a lower bound over folded or truncated data. */
   atLeast?: boolean
-  /** Text for a cost with no price at all ("No price"). */
+  /** Text for a cost with no price at all ("Not priced"). */
   noPriceText?: string
   title?: string
   delta: string | null
@@ -187,7 +187,7 @@ export function summaryModel(data: UsageData, prev: PreviousSpan | null, o: { tr
       label: model ? 'Model cost' : 'Estimated cost',
       cost,
       atLeast: lowerBound && t.cost.costUsd !== null,
-      ...(view.kind === 'unknown' ? { noPriceText: 'No price' } : {}),
+      ...(view.kind === 'unknown' ? { noPriceText: 'Not priced' } : {}),
       ...(model ? { title: MODEL_COST_TITLE } : {}),
       delta: p && costExact(cost) && costExact(p.totals.cost) && !lowerBound ? percentDelta(cost.costUsd, p.totals.cost.costUsd, o.words) : null,
       // A lower bound on either side is not compared; say so instead of "no prior data" (post-rebuild walk H2).
@@ -212,7 +212,7 @@ export function summaryModel(data: UsageData, prev: PreviousSpan | null, o: { tr
     {
       signal: 'cost-per-run',
       label: model ? 'Model cost per run' : 'Cost per run',
-      ...(med !== null ? { cost: { costUsd: med, costSource: 'computed' as const, sourceMixed: true } } : { noPriceText: t.runs > 0 ? 'No price' : '—' }),
+      ...(med !== null ? { cost: { costUsd: med, costSource: 'computed' as const, sourceMixed: true } } : { noPriceText: t.runs > 0 ? 'Not priced' : '—' }),
       ...(perRunTitle ? { title: perRunTitle.trim() } : {}),
       delta: rowsAreAll && med !== null && prevMed !== null ? percentDelta(med, prevMed, o.words) : null
     },
@@ -311,10 +311,10 @@ export function emptyModel(f: UsageFilters, chips: readonly UsageChip[], lastRun
 
 // ---------- announcements ----------
 
-/** "estimated $42.10" / "cost unknown"; empty when nothing was spent. */
+/** "estimated $42.10" / "not priced"; empty when nothing was spent. */
 export function costPhrase(cost: CostInput): string {
   const v = costView(cost, { precision: 'page' })
-  if (v.kind === 'unknown') return 'cost unknown'
+  if (v.kind === 'unknown') return 'not priced'
   if (v.kind === 'none') return ''
   return `estimated ${v.text}`
 }

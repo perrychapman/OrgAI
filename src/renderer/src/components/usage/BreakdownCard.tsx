@@ -1,7 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent, ReactElement } from 'react'
 import type { SeriesHighlightProps, UsagePanelProps } from './panelProps'
-import { RankArmContext, RankEnterContext } from './RankedBars'
+import { useReducedMotion } from '../../lib/canvas'
+import { RankArmContext, RankDrawContext, RankEnterContext } from './RankedBars'
+import { useDrawGen } from './useDrawGen'
 import ProjectsPanel from './ProjectsPanel'
 import ModelsPanel from './ModelsPanel'
 import RolesPanel from './RolesPanel'
@@ -29,9 +31,16 @@ export default function BreakdownCard(props: UsagePanelProps & SeriesHighlightPr
   const [enter, setEnter] = useState(false)
   const enterTimer = useRef(0)
   useEffect(() => () => window.clearTimeout(enterTimer.current), [])
+  // Draw: the ribbon wipes and the row bars grow on arrival, for each change the person made (drawSeq, once its data has
+  // rendered) and for a tab they chose. Never for a background refresh. 0 = nothing to draw (and under reduced motion).
+  const pageGen = useDrawGen({ arriving: panel.arriving, drawSeq: panel.drawSeq, fingerprint: [panel.data] })
+  const [tabGen, setTabGen] = useState(0)
+  const reduced = useReducedMotion()
+  const gen = pageGen + tabGen
   const choose = (t: Tab): void => {
     if (t === tab) return
     setTab(t)
+    if (!reduced) setTabGen((g) => g + 1)
     setEnter(true)
     window.clearTimeout(enterTimer.current)
     enterTimer.current = window.setTimeout(() => setEnter(false), 700)
@@ -148,10 +157,12 @@ export default function BreakdownCard(props: UsagePanelProps & SeriesHighlightPr
       >
         <RankArmContext.Provider value={armKey}>
           <RankEnterContext.Provider value={enter}>
-            {tab === 'project' && <ProjectsPanel {...panel} embedded highlight={highlight} onHighlight={onHighlight} />}
-            {tab === 'model' && <ModelsPanel {...panel} embedded />}
-            {tab === 'role' && <RolesPanel {...panel} embedded />}
-            {tab === 'connection' && <ConnectionsPanel {...panel} embedded />}
+            <RankDrawContext.Provider value={gen}>
+              {tab === 'project' && <ProjectsPanel {...panel} embedded highlight={highlight} onHighlight={onHighlight} />}
+              {tab === 'model' && <ModelsPanel {...panel} embedded />}
+              {tab === 'role' && <RolesPanel {...panel} embedded />}
+              {tab === 'connection' && <ConnectionsPanel {...panel} embedded />}
+            </RankDrawContext.Provider>
           </RankEnterContext.Provider>
         </RankArmContext.Provider>
       </div>

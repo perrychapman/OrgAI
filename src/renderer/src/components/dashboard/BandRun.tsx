@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactElement } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, TriangleAlert } from 'lucide-react'
 import { splitLabelTail } from '@shared/view/agentTree'
 import { Cost } from '../ui/Cost'
@@ -12,6 +13,7 @@ import {
   doneText,
   moreAgentsText,
   openedText,
+  planCurrentText,
   planProgressText,
   runHeadName,
   type BandAgentRow,
@@ -30,6 +32,38 @@ function Mark({ state, color, breath }: { state: BandAgentRow['state']; color: s
     <span className="dash-mark" data-state={state} data-breathe={breath !== undefined && breath < BAND_BREATHING_MAX ? '' : undefined} style={style} aria-hidden="true">
       {state === 'done' && <Check size={10} strokeWidth={3} focusable="false" />}
       {state === 'failed' && <TriangleAlert size={10} strokeWidth={3} focusable="false" />}
+    </span>
+  )
+}
+
+/** An activity line changes its words at most once a second (motion.md "Live updates"). */
+export const ACTIVITY_MIN_GAP_MS = 1000
+
+/** The text to show for `text`: the first value at once, later changes no sooner than `minGapMs` after the last one. */
+function useSteadyText(text: string, minGapMs: number): string {
+  const [shown, setShown] = useState(text)
+  const changedAt = useRef(0)
+  useEffect(() => {
+    if (text === shown) return undefined
+    const t = window.setTimeout(
+      () => {
+        changedAt.current = Date.now()
+        setShown(text)
+      },
+      Math.max(0, changedAt.current + minGapMs - Date.now())
+    )
+    return () => window.clearTimeout(t)
+  }, [text, shown, minGapMs])
+  return shown
+}
+
+/** One agent's activity: the new words cross-fade in (`--dur-fade`, opacity only; the first text and reduced motion do not animate). */
+function ActivityText({ text }: { text: string }): ReactElement {
+  const first = useRef(text)
+  const shown = useSteadyText(text, ACTIVITY_MIN_GAP_MS)
+  return (
+    <span key={shown} className={shown === first.current ? undefined : 'motion-fade'}>
+      {shown}
     </span>
   )
 }
@@ -118,19 +152,22 @@ export function BandRun({ run, now, onOpen, enter }: BandRunProps): ReactElement
               </span>
             )}
             {run.plan && (
-              <span
-                className="dash-plan-meter"
-                data-testid="dash-now-plan"
-                data-done={run.plan.done}
-                data-total={run.plan.total}
-                data-blocked={run.plan.blocked ? 'true' : undefined}
-                role="img"
-                aria-label={`Plan: ${planProgressText(run.plan)}`}
-              >
-                <span className="dash-plan-track" aria-hidden="true">
-                  <i style={{ width: `${Math.round((run.plan.done / run.plan.total) * 100)}%` }} />
+              <span className="dash-plan" data-testid="dash-now-plan" data-done={run.plan.done} data-total={run.plan.total} data-blocked={run.plan.blocked ? 'true' : undefined}>
+                <span className="dash-plan-bar" role="img" aria-label={`Plan: ${planCurrentText(run.plan)}`}>
+                  {run.plan.segments.map((s, i) => (
+                    <i key={i} data-s={s} data-running={s === 'now' && run.plan?.current?.running ? '' : undefined} />
+                  ))}
                 </span>
-                <span className="dash-num dash-plan-text">{planProgressText(run.plan)}</span>
+                <span className="dash-plan-text" aria-hidden="true" title={planCurrentText(run.plan)}>
+                  {run.plan.current ? (
+                    <>
+                      <span className="dash-num">{`Step ${run.plan.current.index} of ${run.plan.total}`}</span>
+                      <span className="dash-plan-step"> · {run.plan.current.title}</span>
+                    </>
+                  ) : (
+                    <span className="dash-num">{planProgressText(run.plan)}</span>
+                  )}
+                </span>
               </span>
             )}
           </span>
@@ -164,7 +201,7 @@ export function BandRun({ run, now, onOpen, enter }: BandRunProps): ReactElement
                     {row.role && row.role !== row.label ? <span className="dash-role">{row.role}</span> : <span />}
                     <span className="dash-activity" title={row.under ? `${row.activity} (under ${row.under})` : row.activity}>
                       {row.under ? `under ${row.under} · ` : ''}
-                      {row.activity}
+                      <ActivityText text={row.activity} />
                     </span>
                     {row.worktree ? <span className="dash-wt">{row.worktree}</span> : <span />}
                   </button>

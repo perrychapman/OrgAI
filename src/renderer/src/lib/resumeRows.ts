@@ -9,13 +9,13 @@
 import type { RunSummary } from '@shared/types'
 import { costView, type CostInput } from './cost'
 import { chainGroups, isOpenStatus, lastActivityAt, type ChainSummary } from './runChains'
-import { endedKind, errorFirstLine, SINCE_WINDOW_MS, type EndedRunLike } from './dashboard'
+import { clockLabel, endedKind, errorFirstLine, SINCE_WINDOW_MS, type EndedRunLike } from './dashboard'
 import { pausedCaption } from './needsInline'
 
 export type ResumeKind = 'paused' | 'closed' | 'failed' | 'finished' | 'pinned' | 'recent'
 
 /** The one action of a row (`data-action`). */
-export type ResumeAction = 'resume' | 'continue' | 'output' | 'new-run' | 'open'
+export type ResumeAction = 'resume' | 'continue' | 'open'
 
 /** How the row's action is decided: see `resumeAction`. */
 export type ResumeFlavor = 'paused' | 'live' | 'failed' | 'closed' | 'done' | 'empty'
@@ -190,46 +190,33 @@ function canContinueRun(r: ResumeRun): boolean {
   return (r.status === 'finished' || r.status === 'error' || r.status === 'paused') && (!!r.sessionId || !!r.modelSelection)
 }
 
-/** Outputs that count for a row: the output's run is a member of the chain and the file is not missing. */
-export function chainOutputs<O extends { runId: string; missing?: true }>(outputs: readonly O[] | undefined, chainIds: readonly string[]): O[] {
-  if (!outputs || chainIds.length === 0) return []
-  const ids = new Set(chainIds)
-  return outputs.filter((o) => ids.has(o.runId) && !o.missing)
+/**
+ * The rows of Pick up (dashboard-usage-redesign dashboard.md): the paused and recently ended work runs of `resumeRows`,
+ * newest first, as one list. Left out: a pinned project that has no run yet (Projects says it), a live chain (Right now
+ * shows it) and a run that ended before the last visit or more than 7 days ago unless it can still be continued. Rows
+ * that are paused, closed with OrgAI or ended since the last visit keep their kind; `since` marks those ended after
+ * `lastSeen`.
+ */
+export function pickUpRows<T extends ResumeRun>(rows: readonly ResumeRow<T>[], now: number): ResumeRow<T>[] {
+  return rows
+    .filter((r) => {
+      if (!r.run || r.flavor === 'empty' || r.flavor === 'live') return false
+      if (r.kind === 'paused' || r.kind === 'closed' || r.kind === 'failed' || r.kind === 'finished') return true
+      return r.continuable && r.at >= now - SINCE_WINDOW_MS
+    })
+    .sort(byActivity)
 }
+
+/** Ended after the person last left the Dashboard (the rows that are `closed`, `failed` or `finished` by `resumeRows`). */
+export const endedSinceLastVisit = (row: Pick<ResumeRow<ResumeRun>, 'kind'>): boolean => row.kind === 'closed' || row.kind === 'failed' || row.kind === 'finished'
 
 /**
- * The row's action. `outputCount` is the number of counted outputs of the chain (0 until the list arrives).
- * paused: Resume now. live: Open. closed and failed: Continue, when it can be. A pinned project with no runs: New run.
- * Any other ended run: Open output (one or several) when the chain has outputs, else Continue, else none.
+ * The one action of a Pick up row: a paused run Continues in place ("Continue" resumes it now), a stopped run that has a
+ * provider session Continues in its composer, anything else Opens.
  */
-export function resumeAction(row: Pick<ResumeRow<ResumeRun>, 'flavor' | 'continuable'>, outputCount: number): ResumeAction | null {
-  switch (row.flavor) {
-    case 'paused':
-      return 'resume'
-    case 'live':
-      return 'open'
-    case 'empty':
-      return 'new-run'
-    case 'closed':
-    case 'failed':
-      return row.continuable ? 'continue' : null
-    case 'done':
-      return outputCount > 0 ? 'output' : row.continuable ? 'continue' : null
-  }
-}
-
-/** Whether the row's action may turn into "Open output" once its project's outputs arrive. */
-export const wantsOutputs = (row: Pick<ResumeRow<ResumeRun>, 'flavor'>): boolean => row.flavor === 'done'
-
-/** The project ids whose outputs the shown rows may need: first appearance order, at most `limit` (6). */
-export function outputProjects(rows: readonly Pick<ResumeRow<ResumeRun>, 'flavor' | 'projectId'>[], isLoadable: (projectId: string) => boolean, limit = 6): string[] {
-  const out: string[] = []
-  for (const r of rows) {
-    if (!wantsOutputs(r) || !isLoadable(r.projectId) || out.includes(r.projectId)) continue
-    out.push(r.projectId)
-    if (out.length >= limit) break
-  }
-  return out
+export function pickUpAction(row: Pick<ResumeRow<ResumeRun>, 'flavor' | 'continuable'>): ResumeAction {
+  if (row.flavor === 'paused') return 'resume'
+  return row.continuable ? 'continue' : 'open'
 }
 
 const startOfLocalDay = (t: number): number => {
@@ -246,7 +233,7 @@ const startOfLocalDay = (t: number): number => {
 export function pausedResumeCaption(s: Pick<RunSummary, 'autoResume' | 'pausedUntil'>, now: number, locale?: string): string {
   if (!(s.autoResume && s.pausedUntil)) return pausedCaption(s)
   const at = new Date(s.pausedUntil)
-  const time = at.toLocaleTimeString(locale, { hour: 'numeric', minute: '2-digit' })
+  const time = clockLabel(s.pausedUntil, locale)
   const days = Math.round((startOfLocalDay(s.pausedUntil) - startOfLocalDay(now)) / 86_400_000)
   let when = `at ${time}`
   if (days === 1) when = `tomorrow at ${time}`
@@ -264,40 +251,33 @@ export function resumeCaption(
   return [ctx.client, ctx.project, tail].filter((p): p is string => !!p).join(' · ')
 }
 
-/** The accessible name of a row's action button; null for none. */
-export function resumeActionName(action: ResumeAction, ctx: { runName: string; project: string; outputs?: number }): string {
+/** The accessible name of a row's action button: the verb and the run's title, so no two buttons read alike. */
+export function resumeActionName(action: ResumeAction, ctx: { runName: string }): string {
   switch (action) {
     case 'resume':
-      return `Resume ${ctx.runName} now`
+      return `Continue ${ctx.runName} now`
     case 'continue':
       return `Continue ${ctx.runName}`
-    case 'output':
-      return (ctx.outputs ?? 1) > 1 ? `Open the outputs of ${ctx.runName}` : `Open the output of ${ctx.runName}`
-    case 'new-run':
-      return `New run in ${ctx.project}`
     case 'open':
       return `Open ${ctx.runName}`
   }
 }
 
 /** The visible label of an action. */
-export function resumeActionLabel(action: ResumeAction, outputs = 1): string {
-  switch (action) {
-    case 'resume':
-      return 'Resume now'
-    case 'continue':
-      return 'Continue'
-    case 'output':
-      return outputs > 1 ? 'Open outputs' : 'Open output'
-    case 'new-run':
-      return 'New run'
-    case 'open':
-      return 'Open'
-  }
+export function resumeActionLabel(action: ResumeAction): string {
+  return action === 'open' ? 'Open' : 'Continue'
 }
 
-/** The row's muted cost: only a known figure (or a lower bound) above zero. Unknown and zero show nothing. */
+/** The row's muted cost: a known figure (or a lower bound) above zero. Zero shows nothing; an unpriced run says so (`isUnpricedRun`). */
 export function showsRunCost(input: CostInput): boolean {
   const v = costView(input)
   return (v.kind === 'known' || v.kind === 'partial') && input.costUsd !== null && input.costUsd > 0
+}
+
+/** The words of an unpriced run's cost: usage was recorded but no price is known, never a blank and never $0. */
+export const NOT_PRICED = 'Not priced'
+
+/** The run has usage but its cost is unknown (no price for its model): the row says "Not priced" where a priced row shows its figure. */
+export function isUnpricedRun(input: CostInput): boolean {
+  return costView(input).kind === 'unknown'
 }

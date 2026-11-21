@@ -2,7 +2,7 @@ import { isVirtualProjectId, type ConnectionId, type ConnectionInfo, type Pendin
 import { NEUTRAL_ROLE_COLOR } from '../../lib/dashboardBand'
 import { projectConnection, projectKindOf } from '@shared/defaults'
 import { runCostInput, sumCosts, type CostInput } from '../../lib/cost'
-import { WEEK_MS, projectAttentionOrder, type ProjectAttention } from '../../lib/dashboard'
+import { WEEK_MS, type ProjectAttention } from '../../lib/dashboard'
 import { folderName } from '../../lib/paths'
 import { connectionLabel } from '../../lib/connectionLabel'
 
@@ -209,7 +209,11 @@ export function tileStatusKind(input: { open: number; decisions: number; working
   return input.newestStartedAt !== undefined ? 'idle' : 'none'
 }
 
-/** Pinned projects first in pin order (ids matching no project are ignored), then the rest in attention order. */
+/**
+ * Pinned projects first in pin order (ids matching no project are ignored), then the rest by last activity: the project
+ * whose newest run started most recently first, a project without runs last, ties by name. What needs the person is not
+ * a matter of tile order (Needs you and Right now say it), so a decision never reshuffles the tiles.
+ */
 export function pinnedFirst<T extends { id: string; name: string }>(projects: readonly T[], pinned: readonly string[], ctx: Readonly<Record<string, ProjectAttention | undefined>>): T[] {
   const byId = new Map(projects.map((p) => [p.id, p]))
   const seen = new Set<string>()
@@ -220,7 +224,10 @@ export function pinnedFirst<T extends { id: string; name: string }>(projects: re
     seen.add(id)
     head.push(p)
   }
-  return [...head, ...projectAttentionOrder(projects.filter((p) => !seen.has(p.id)), ctx)]
+  const rest = projects
+    .filter((p) => !seen.has(p.id))
+    .sort((a, b) => (ctx[b.id]?.newestStart ?? 0) - (ctx[a.id]?.newestStart ?? 0) || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.id.localeCompare(b.id))
+  return [...head, ...rest]
 }
 
 // ---------- The tile's team row ----------

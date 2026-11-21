@@ -70,7 +70,7 @@ export function RunDetailRow({ id, colSpan, open, row, why }: { id: string; colS
                   <dd title={cache.title}>{cache.text}</dd>
                 </div>
               </dl>
-              {unpriced && <p className="usage-run-unpriced">No price is known for this run, so its cost is not counted in the totals.</p>}
+              {unpriced && <p className="usage-run-unpriced">Not priced: no price is known for this run's model, so its cost is not counted in the totals.</p>}
               {!row.projectRemoved && (
                 <button type="button" className="btn ghost sm" data-testid="usage-run-open" onClick={() => void openRun(row.projectId, row.runId)}>
                   Open run

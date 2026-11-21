@@ -233,7 +233,17 @@ try {
   }).catch(() => {})
   await sleep(2500)
   await page.locator('[data-testid=nav-usage]').click()
+  // Page arrival (motion.md): the first visit stages it with the arrival classes for about 800 ms, then they go.
+  const staged = await page
+    .waitForFunction(() => !!document.querySelector('[data-testid=usage-pacing].motion-arrive-hero') && document.querySelectorAll('.usage-view .motion-arrive-band, [data-testid=usage-view] .motion-arrive-band').length > 0, null, { timeout: 15_000, polling: 'raf' })
+    .then(() => true)
+    .catch(() => false)
+  const stagedAnim = staged ? await page.evaluate(() => document.querySelector('[data-testid=usage-pacing]')?.getAnimations().some((a) => a.playState === 'running') ?? false) : false
+  check(staged || (await page.locator('[data-testid=usage-pacing]').count()) === 0, 'usage: the first visit stages its arrival (hero and band classes)', String(staged))
+  check(!staged || stagedAnim, 'usage: the arriving Pacing hero runs an animation', String(stagedAnim))
   await page.locator('[data-testid=usage-summary]').waitFor({ timeout: 20_000 }).catch(() => {})
+  await sleep(1200)
+  check((await page.locator('[data-testid=usage-view] .motion-arrive-hero, [data-testid=usage-view] .motion-arrive-band').count()) === 0, 'usage: the arrival classes are gone after it (the page rests)')
   await sleep(800)
   if (await page.locator('[data-testid=usage-kpi-metric]').count()) {
     const ms = (s) => (s.endsWith('ms') ? parseFloat(s) : parseFloat(s) * 1000)
@@ -242,16 +252,36 @@ try {
       return el ? getComputedStyle(el).transitionDuration.split(',')[0].trim() : null
     }, id)
     const running = () => page.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running' && (a.effect?.getComputedTiming().duration ?? 0) > 1).length)
+    const PLOT = '[data-testid=usage-spend-plot]'
+    const drawGen = () => page.evaluate((s) => Number(document.querySelector(s)?.getAttribute('data-draw') ?? -1), PLOT)
+    // The areas group runs the clip wipe (motion-wipe, --dur-draw) for a person's own change: sampled in the first frames.
+    const wipeNow = () =>
+      page.evaluate((s) => {
+        const g = document.querySelector(`${s} [data-testid=usage-spend-areas]`)
+        return g ? g.getAnimations().filter((a) => a.animationName === 'motion-wipe' && a.playState === 'running').length : -1
+      }, PLOT)
+    // Let the page's own arrival settle, then a no-change moment must not redraw: the generation holds.
+    await sleep(1200)
+    const gen0 = await drawGen()
+    await sleep(900)
+    check((await drawGen()) === gen0 && (await wipeNow()) === 0, 'usage: at rest the plot does not redraw by itself (data-draw holds, no wipe running)', `${gen0} -> ${await drawGen()}`)
     await page.locator('[data-testid=usage-kpi-metric][data-metric=tokens]').click()
     await sleep(50)
     const kpiDur = await indicator('usage-kpi-indicator')
     check(kpiDur !== null && ms(kpiDur) >= 200, 'usage: the KPI selected bar slides at --dur-slow', String(kpiDur))
-    // The chart's own svg (the card header also holds icon svgs), and only animations on its segment groups count.
-    const morph = await page.evaluate(() => ({
-      attr: document.querySelector('[data-testid=usage-spend-plot] svg.uc-svg')?.getAttribute('data-morph') ?? null,
-      anims: [...document.querySelectorAll('[data-testid=usage-spend-plot] g[data-gk]')].reduce((n, g) => n + g.getAnimations().length, 0)
-    }))
-    check(morph.attr === 'running' || morph.anims > 0, 'usage: a metric change starts the bar morph', JSON.stringify(morph))
+    const wipeRunning = await wipeNow()
+    check((await drawGen()) > gen0 && wipeRunning >= 1, 'usage: a metric change the person made redraws the plot (data-draw rises, a motion-wipe animation runs)', JSON.stringify({ gen0, now: await drawGen(), wipeRunning }))
+    const wipeDur = await page.evaluate((s) => document.querySelector(`${s} [data-testid=usage-spend-areas]`)?.getAnimations().find((a) => a.animationName === 'motion-wipe')?.effect?.getComputedTiming().duration ?? null, PLOT)
+    check(wipeDur === null || (wipeDur >= 300 && wipeDur <= 800), 'usage: the wipe runs for --dur-draw', String(wipeDur))
+    // Only transform / opacity / clip animate on the chart: no layout properties.
+    const props = await page.evaluate((s) => [...document.querySelectorAll(`${s}, ${s} *`)].flatMap((e) => e.getAnimations().map((a) => a.transitionProperty ?? a.animationName)).filter(Boolean), PLOT)
+    check(!props.some((p) => /^(width|height|top|left|margin|padding)/.test(p)), 'usage: no layout property animates on the chart', JSON.stringify(props))
+    await sleep(900)
+    check((await wipeNow()) === 0, 'usage: the wipe ends (nothing loops on the chart)')
+    const gen1 = await drawGen()
+    await page.locator('[data-testid=usage-kpi-metric][data-metric=tokens]').click()
+    await sleep(150)
+    check((await drawGen()) === gen1 && (await wipeNow()) === 0, 'usage: pressing the already pressed tile does not redraw', `${gen1} -> ${await drawGen()}`)
     await sleep(600)
     await page.locator('[data-testid=usage-where-tab][data-tab=model]').click()
     await sleep(30)
@@ -266,6 +296,9 @@ try {
     const kpiOff = await indicator('usage-kpi-indicator')
     check(kpiOff !== null && ms(kpiOff) <= 1, 'usage: with Reduce motion on the KPI bar does not slide', String(kpiOff))
     check((await running()) === 0, 'usage: with Reduce motion on a metric or tab change runs no animation', String(await running()))
+    check((await drawGen()) === 0 && (await wipeNow()) === 0, 'usage: with Reduce motion on the plot shows its end state (data-draw 0, no wipe)', String(await drawGen()))
+    const hero = await page.evaluate(() => ({ shown: document.querySelector('[data-testid=usage-pacing-figure]')?.textContent?.trim() ?? '', final: document.querySelector('[data-testid=usage-pacing-figure-text]')?.textContent?.trim() ?? '' }))
+    check(hero.final !== '' && (hero.shown === hero.final || hero.final === 'Nothing spent'), 'usage: with Reduce motion on the Pacing figure shows its final value, not a count-up frame', JSON.stringify(hero))
     await page.locator('[data-testid=usage-kpi-metric][data-metric=cost]').click()
   } else check(true, 'usage: no data on the Usage page in this run; its motion checks were skipped')
   await setReduceMotion(page, 'system')

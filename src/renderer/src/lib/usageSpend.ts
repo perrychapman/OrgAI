@@ -81,7 +81,7 @@ export function spendSummary(i: SpendSummaryInput): string {
   const tail = i.hidden > 0 ? ` ${i.hidden} hidden.` : ''
   if (totals.runs === 0) return i.hidden > 0 ? `No runs in the series shown.${tail}` : 'No runs in this period.'
   if (metric === 'cost' && costView(totals.cost, { precision: 'page' }).kind === 'unknown') {
-    return `Cost unknown for ${plural(totals.runs, 'run')}: no price is known. Tokens are counted.${tail}`
+    return `Not priced: ${plural(totals.runs, 'run')} with no known price. Tokens are counted.${tail}`
   }
   if (!busiest) return `${plural(totals.runs, 'run')}.${tail}`
   const when = `Busiest ${bucket} ${bucket === 'week' ? 'from ' : ''}${axisLabel(busiest.start, bucket)}, `
@@ -90,7 +90,7 @@ export function spendSummary(i: SpendSummaryInput): string {
   return `${when}${costView({ costUsd: busiest.value, costSource: 'computed' }, { precision: 'page' }).text}.${tail}`
 }
 
-/** One series' figure in the tooltip: "$6.10", "12k", "3", or "No price" for an unpriced cost. */
+/** One series' figure in the tooltip: "$6.10", "12k", "3", or "Not priced" for an unpriced cost. */
 export function segmentFigure(metric: Metric, seg: Segment): string {
   if (metric === 'runs') return String(seg.value)
   if (metric === 'tokens') return formatTokens(seg.value)
@@ -113,21 +113,10 @@ export function previousTipText(f: OverlayFigure, metric: Metric): string {
   if (f.state === 'empty') return 'no runs'
   if (metric === 'runs') return plural(f.runs, 'run')
   if (metric === 'tokens') return `${formatTokens(f.value)} tokens`
-  return f.state === 'unknown' ? 'cost unknown' : overlayCostText(f)
+  return f.state === 'unknown' ? 'not priced' : overlayCostText(f)
 }
 
-// ---------- crosshair and tooltip geometry ----------
-
-/**
- * The bucket column under x (plot coordinates, 0 at the svg's left edge), or null when x is outside the columns or there
- * are none. The whole column is the hit area, not the thin bar.
- */
-export function nearestBucket(x: number, gutter: number, slot: number, count: number): number | null {
-  if (count <= 0 || !(slot > 0)) return null
-  const rel = x - gutter
-  if (rel < 0 || rel > slot * count) return null
-  return Math.min(count - 1, Math.floor(rel / slot))
-}
+// ---------- tooltip geometry (the crosshair's index geometry is in usageAreas.ts) ----------
 
 export interface TipPlacement {
   side: 'right' | 'left'
@@ -150,74 +139,19 @@ export function tooltipPlacement(i: { cx: number; half: number; width: number; v
   return { side, left: Math.max(i.viewLeft, Math.min(i.viewRight - i.width, side === 'right' ? right : left)) }
 }
 
-// ---------- motion decisions ----------
-
-export type ChartMotion = 'none' | 'morph' | 'fade'
-/** A morph moves every segment at once; above this many it is skipped (docs/design usage motion plan 3.3). */
-export const MORPH_MAX_SEGMENTS = 120
+// ---------- set comparison ----------
 
 export const sameKeys = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((k, i) => k === b[i])
 
 export const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => a.size === b.size && [...a].every((k) => b.has(k))
 
-/**
- * Which motion a committed change gets. Only a user's change animates (the arrival rule): `viewChanged` is a filter,
- * period or group-by change whose data has arrived (one fade, bars never morph because they cannot be paired);
- * `metricChanged` or `hiddenChanged` over the same buckets morphs the bars; anything else (first paint, a data refresh
- * with the same filters) is none. Reduced motion, or more than MORPH_MAX_SEGMENTS segments, is none.
- */
-export function chartMotion(i: {
-  prevSlots: readonly string[] | null
-  nextSlots: readonly string[]
-  viewChanged: boolean
-  metricChanged: boolean
-  hiddenChanged: boolean
-  segments: number
-  reduced: boolean
-}): ChartMotion {
-  if (i.reduced || i.prevSlots === null) return 'none'
-  if (i.viewChanged) return 'fade'
-  if (!sameKeys(i.prevSlots, i.nextSlots)) return 'none'
-  if (!i.metricChanged && !i.hiddenChanged) return 'none'
-  return i.segments > MORPH_MAX_SEGMENTS ? 'none' : 'morph'
-}
-
-/** A drawn segment's resting geometry in svg px: the y of its bottom edge and its height. */
-export interface SegGeom {
-  bottom: number
-  h: number
-}
-
-export interface MorphFrom {
-  /** translateY in px and scaleY that map the segment's new rect (origin: its bottom edge) onto its old one. */
-  ty: number
-  sy: number
-  /** True when the segment had no old rect: it grows from nothing and fades in. */
-  entering: boolean
-}
-
-/** The start of one segment's morph, or null when it did not move (under half a pixel and 1% of height). */
-export function morphFrom(prev: SegGeom | undefined, next: SegGeom): MorphFrom | null {
-  if (next.h <= 0) return null
-  if (!prev || prev.h <= 0) return { ty: 0, sy: 0, entering: true }
-  const ty = prev.bottom - next.bottom
-  const sy = prev.h / next.h
-  if (Math.abs(ty) < 0.5 && Math.abs(sy - 1) < 0.01) return null
-  return { ty, sy, entering: false }
-}
-
-/** Where a segment visibly is while a morph's transform (ty, sy about its bottom edge) is applied to its geometry. */
-export function visualGeom(g: SegGeom, ty: number, sy: number): SegGeom {
-  return { bottom: g.bottom + ty, h: g.h * sy }
-}
-
-/** The visible stack's figure under the bar-top label: "$9.80", "$4.20+", "12k", "5", or "No price". */
+/** The visible stack's figure under the bar-top label: "$9.80", "$4.20+", "12k", "5", or "Not priced". */
 export function barValueLabel(metric: Metric, segments: readonly Segment[]): string {
   const value = segments.reduce((n, s) => n + s.value, 0)
   if (metric === 'runs') return String(value)
   if (metric === 'tokens') return formatTokens(value)
   const partial = segments.some((s) => s.state === 'partial' || s.state === 'unknown')
-  if (value <= 0) return segments.some((s) => s.state === 'unknown') ? 'No price' : ''
+  if (value <= 0) return segments.some((s) => s.state === 'unknown') ? 'Not priced' : ''
   return costFigureText({ costUsd: value, costSource: 'computed', sourceMixed: true, ...(partial ? { costPartial: true } : {}) })
 }
 
@@ -241,7 +175,7 @@ export function previousCellText(f: OverlayFigure, metric: Metric): string {
   if (f.state === 'empty') return '—'
   if (metric === 'runs') return String(f.runs)
   if (metric === 'tokens') return formatTokens(f.value)
-  return f.state === 'unknown' ? 'No price' : overlayCostText(f)
+  return f.state === 'unknown' ? 'Not priced' : overlayCostText(f)
 }
 
 /** Why the overlay toggle is disabled, or null when it can be used. */

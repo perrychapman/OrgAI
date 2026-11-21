@@ -1,13 +1,11 @@
-import { costView, formatUsdCompact, type CostInput } from './cost'
 import { plural } from '../components/dashboard/dashboardProjects'
 
 /**
- * The Dashboard greeting (docs/design/dashboard-overhaul.md section 5): the salutation by local hour and the brief, one or
- * two true sentences about what changed and what waits. Pure: plain numbers and objects in, strings out. Every figure is
- * computed from stored facts; there is no model call.
+ * The Briefing's words (docs/design/dashboard-usage-redesign/project/components/Briefing): the salutation by local hour,
+ * the status sentence and the project the primary quick action continues. Pure: plain numbers and objects in, strings out.
+ * Every figure is computed from stored facts; there is no model call. What changed since the last visit is
+ * `lib/sinceSummary.ts`.
  */
-
-const DAY_MS = 24 * 60 * 60 * 1000
 
 export const FIRST_LAUNCH_BRIEF = 'Start a project or just chat. Nothing runs until you say so.'
 export const NO_RUNS_BRIEF = 'No runs yet. Open a project to start one.'
@@ -21,35 +19,23 @@ export function greetingWord(hour: number): string {
 }
 
 /**
- * "Good morning, Sam." with a name, "Good morning." without; on first launch "Welcome to OrgAI." or, once a name is
- * saved, "Welcome to OrgAI, Sam." (walk 4 M2: saving a name must visibly land).
+ * "Good morning, Sam" with a name, "Good morning" without; on first launch "Welcome to OrgAI" or, once a name is saved,
+ * "Welcome to OrgAI, Sam" (walk 4 M2: saving a name must visibly land). A display line: no full stop.
  */
 export function salutation(hour: number, name: string | undefined, firstLaunch: boolean): string {
-  if (firstLaunch) return name ? `Welcome to OrgAI, ${name}.` : 'Welcome to OrgAI.'
+  if (firstLaunch) return name ? `Welcome to OrgAI, ${name}` : 'Welcome to OrgAI'
   const word = greetingWord(hour)
-  return name ? `${word}, ${name}.` : `${word}.`
+  return name ? `${word}, ${name}` : word
 }
 
-export interface BriefInput {
-  /** No projects: the brief is the one welcome line. */
+export interface StatusInput {
+  /** No projects: the status is the one welcome line. */
   firstLaunch: boolean
-  /** Every project's history is loaded. Until then "since" and "quiet" are never claimed. */
+  /** Every project's history is loaded. Until then "No runs yet" is never claimed. */
   ready: boolean
   /** At least one run exists anywhere (live or history). Only read once `ready`. */
   anyRunEver: boolean
-  now: number
-  /** The time the person last left the Dashboard (epoch ms). */
-  lastSeen: number
-  firstVisit: boolean
-  /** Runs that finished since `lastSeen` (kind finished). */
-  finished: number
-  /** Runs that failed since `lastSeen`. */
-  failed: number
-  /** Runs cut by a quit while waiting on the person, since `lastSeen`. */
-  closedWaiting: number
-  /** The summed cost of the finished and failed runs; absent when there are none. */
-  cost?: CostInput
-  /** Open decisions (the bell). */
+  /** Open decisions: the bell's count (`useDecisionTotal`). */
   decisions: number
   /** Live runs that are idle and waiting for the person's reply (not decisions). Absent reads as none. */
   awaitingReply?: number
@@ -61,47 +47,10 @@ export interface BriefInput {
   pausedUntilLabel?: string
 }
 
-/** True when "since you were last here" must read "in the past 7 days". */
-export function sinceIsLongAgo(lastSeen: number, now: number, firstVisit: boolean): boolean {
-  return firstVisit || now - lastSeen > 7 * DAY_MS
-}
-
-/**
- * ", costing $1.42" (known), ", costing at least $1.42" (partial), ", costing less than $0.01" (a known amount under a cent).
- * Empty for an unknown cost, a reported zero or nothing spent, and for a partial figure under a cent (a lower bound that
- * small says nothing true). Never "$0.00".
- */
-export function costClause(cost: CostInput | undefined): string {
-  if (!cost) return ''
-  const view = costView(cost, { compact: true })
-  if (view.kind !== 'known' && view.kind !== 'partial') return ''
-  const usd = cost.costUsd
-  if (usd === null || !(usd > 0)) return ''
-  if (usd < 0.01) return view.kind === 'known' ? ', costing less than $0.01' : ''
-  return view.kind === 'partial' ? `, costing at least ${formatUsdCompact(usd)}` : `, costing ${formatUsdCompact(usd)}`
-}
-
-function waitingSentence(n: number): string {
-  return n === 1 ? '1 decision is waiting on you.' : `${n} decisions are waiting on you.`
-}
-
-/** An idle run that waits for the person's next message is not a decision, but the brief must not say nothing waits. */
-function replySentence(n: number): string {
-  return n === 1 ? '1 run is idle and waiting on your reply.' : `${n} runs are idle and waiting on your reply.`
-}
-
-function sinceSentence(i: BriefInput): string {
-  const when = sinceIsLongAgo(i.lastSeen, i.now, i.firstVisit) ? 'in the past 7 days' : 'since you were last here'
-  const clause = costClause(i.cost)
-  let lead: string
-  if (i.finished > 0 && i.failed > 0) lead = `${plural(i.finished, 'run', 'runs')} finished and ${i.failed} failed`
-  else if (i.finished > 0) lead = `${plural(i.finished, 'run', 'runs')} finished`
-  else lead = `${plural(i.failed, 'run', 'runs')} failed`
-  return `${lead} ${when}${clause}.`
-}
-
-function closedSentence(n: number): string {
-  return n === 1 ? '1 run was waiting on you when OrgAI closed.' : `${n} runs were waiting on you when OrgAI closed.`
+/** One sentence of the status; `attention` marks the one that carries the decision count (warning text, semibold). */
+export interface StatusPart {
+  text: string
+  attention?: true
 }
 
 function workingSentence(agents: number, runs: number): string {
@@ -114,27 +63,54 @@ function pausedSentence(n: number, until: string | undefined): string {
   return n === 1 ? `1 run is paused${tail}.` : `${n} runs are paused${tail}.`
 }
 
+/** "2 decisions need you." The one place a count of decisions is written on the Briefing. */
+export function decisionsSentence(n: number): string {
+  return n === 1 ? '1 decision needs you.' : `${n} decisions need you.`
+}
+
+function replySentence(n: number): string {
+  return n === 1 ? '1 run is idle and waiting on your reply.' : `${n} runs are idle and waiting on your reply.`
+}
+
 /**
- * The brief under the salutation: at most two sentences (section 5.4).
- * 1. Decisions waiting lead, then idle runs awaiting a reply, then the rest: the first present of since, closed, working,
- *    paused, up to two sentences in all.
- * 2. With none waiting: the first two present of since, closed, working, paused.
- * 3. None present: the quiet sentence, or "No runs yet" when no run ever existed.
- * 4. Until `ready` only waiting, working and paused can show, so "Nothing has changed" never flashes before history loads
- *    (the result may be empty; the line keeps its height in CSS).
+ * The status under the greeting, as sentences: what is working, what needs the person (decisions, then idle runs waiting
+ * for a reply), what is paused; "Nothing needs you." when no decision and no reply waits. Before history is in and with
+ * nothing live, nothing is claimed beyond that (the decision count is live, so it is always true).
  */
-export function dashboardBrief(i: BriefInput): string {
-  if (i.firstLaunch) return FIRST_LAUNCH_BRIEF
-  const since = i.ready && i.finished + i.failed > 0 ? sinceSentence(i) : ''
-  const closed = i.ready && i.closedWaiting > 0 ? closedSentence(i.closedWaiting) : ''
-  const working = i.workingAgents > 0 ? workingSentence(i.workingAgents, i.workingRuns) : ''
-  const paused = i.paused > 0 ? pausedSentence(i.paused, i.pausedUntilLabel) : ''
-  const rest = [since, closed, working, paused].filter((s) => s !== '')
-  const leads = [i.decisions > 0 ? waitingSentence(i.decisions) : '', (i.awaitingReply ?? 0) > 0 ? replySentence(i.awaitingReply ?? 0) : ''].filter((s) => s !== '')
-  const picked = [...leads, ...rest].slice(0, 2)
-  if (picked.length > 0) return picked.join(' ')
-  if (!i.ready) return ''
-  if (!i.anyRunEver) return NO_RUNS_BRIEF
-  const span = sinceIsLongAgo(i.lastSeen, i.now, i.firstVisit) ? 'in the past 7 days' : 'since you were last here'
-  return `Nothing has changed ${span}, and nothing is waiting on you.`
+export function statusParts(i: StatusInput): StatusPart[] {
+  if (i.firstLaunch) return [{ text: FIRST_LAUNCH_BRIEF }]
+  const replies = i.awaitingReply ?? 0
+  const parts: StatusPart[] = []
+  if (i.workingAgents > 0) parts.push({ text: workingSentence(i.workingAgents, i.workingRuns) })
+  if (i.decisions > 0) parts.push({ text: decisionsSentence(i.decisions), attention: true })
+  if (replies > 0) parts.push({ text: replySentence(replies) })
+  if (i.paused > 0) parts.push({ text: pausedSentence(i.paused, i.pausedUntilLabel) })
+  if (i.decisions === 0 && replies === 0) {
+    const quiet = i.workingAgents === 0 && i.paused === 0 && i.ready && !i.anyRunEver
+    parts.push({ text: quiet ? NO_RUNS_BRIEF : 'Nothing needs you.' })
+  }
+  return parts
+}
+
+/** The status as one string (the accessible text and the live check in tests). */
+export function statusSentence(i: StatusInput): string {
+  return statusParts(i)
+    .map((p) => p.text)
+    .join(' ')
+}
+
+/**
+ * The project the primary quick action continues: the first pinned project that still exists, else the project whose
+ * newest run started last, else the first project. Null with no projects.
+ */
+export function continueProjectId(pinned: readonly string[], projects: readonly { id: string }[], summaries: readonly { projectId: string; startedAt: number }[]): string | null {
+  const known = new Set(projects.map((p) => p.id))
+  const pin = pinned.find((id) => known.has(id))
+  if (pin) return pin
+  let best: { id: string; at: number } | null = null
+  for (const s of summaries) {
+    if (!known.has(s.projectId)) continue
+    if (!best || s.startedAt > best.at) best = { id: s.projectId, at: s.startedAt }
+  }
+  return best?.id ?? projects[0]?.id ?? null
 }

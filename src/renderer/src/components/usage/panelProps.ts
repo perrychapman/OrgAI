@@ -32,6 +32,16 @@ export interface UsagePanelProps {
   periodTrend?: UsageOverviewTrendPoint[]
   /** SpendPanel only: Esc on a bar while a day is picked removes the day chip. */
   onClearBucket?: () => void
+  /**
+   * Draw motion (dashboard-usage-redesign usage.md "Draw motion"): true while the page stages its arrival
+   * (usePageArrival). Charts draw (areas wipe, arcs trace, bars fill) once on mount while it is true.
+   */
+  arriving?: boolean
+  /**
+   * Bumped by the view for each filter or metric change the person makes (never a background refresh). A panel draws
+   * once when it changes and its new data has rendered; background updates only tween figures.
+   */
+  drawSeq?: number
 }
 
 /**

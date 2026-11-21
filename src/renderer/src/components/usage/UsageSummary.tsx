@@ -1,80 +1,21 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement } from 'react'
 import { costView, formatDuration, formatTokens } from '../../lib/cost'
 import { useReducedMotion } from '../../lib/canvas'
-import { tokenMs } from '../../lib/useExitPresence'
-import { useTweenedNumber } from '../../lib/useTweenedNumber'
-import { parseDurationText, parseTokenText } from '../../lib/tween'
-import { PARTIAL_COST_TITLE, type CostCoverage, type SummaryItemModel, type SummarySignal } from '../../lib/usagePage'
-import {
-  KPI_METRIC,
-  deltaChip,
-  deltaVs,
-  pricedChip,
-  sparkDrawable,
-  sparkSignal,
-  type SparkPoint
-} from '../../lib/usageDashboard'
+import { useCountUp } from '../../lib/useCountUp'
+import { definitionOf } from '../../lib/usageDefinitions'
+import type { CostCoverage, SummaryItemModel, SummarySignal } from '../../lib/usagePage'
+import { KPI_METRIC, deltaChip, deltaVs, pricedChip, sparkDrawable, sparkSignal, type SparkPoint } from '../../lib/usageDashboard'
 import type { Metric } from '../../lib/usageCharts'
 import Sparkline from './Sparkline'
+import DefinedTerm, { DefinitionTip, tipHandlers } from './DefinedTerm'
+import { figure, figureAt, figureNumber } from './kpiFigure'
+import { useDrawKey } from './useDrawKey'
 import '../../styles/usage-kpi.css'
 
-function figure(i: SummaryItemModel): { text: string; title?: string } {
-  if (i.cost) {
-    const v = costView(i.cost, { precision: 'page' })
-    if (v.kind === 'unknown' && i.noPriceText) return { text: i.noPriceText, ...(v.title ? { title: v.title } : {}) }
-    // "At least" already says it is a lower bound, so the "+" goes (never "At least $4.20+").
-    const atLeast = i.atLeast && v.kind !== 'unknown' && v.kind !== 'none'
-    const text = atLeast ? `At least ${v.text.replace(/\+$/, '')}` : v.text
-    const partial = i.atLeast || v.kind === 'partial' ? PARTIAL_COST_TITLE : ''
-    const title = [i.title, v.title, partial].filter(Boolean).join(' ')
-    return { text, ...(title ? { title } : {}) }
-  }
-  if (i.text !== undefined) return { text: `${i.text}${i.atLeast ? '+' : ''}`, ...(i.title ? { title: i.title } : {}) }
-  return { text: i.noPriceText ?? '—', ...(i.title ? { title: i.title } : {}) }
-}
-
-/** The number a tile's figure stands for (null = unknown or not numeric: it never tweens). The item carries text, so parse it back. */
-function figureNumber(i: SummaryItemModel): number | null {
-  switch (i.signal) {
-    case 'cost': {
-      // Only a known or lower-bound figure tweens; unknown or nothing spent never counts up from a made-up number.
-      if (!i.cost) return null
-      const kind = costView(i.cost, { precision: 'page' }).kind
-      return kind === 'known' || kind === 'partial' ? (i.cost.costUsd ?? null) : null
-    }
-    case 'tokens':
-      return i.text === undefined ? null : parseTokenText(i.text)
-    case 'runs': {
-      const n = i.text === undefined ? NaN : Number(i.text)
-      return Number.isFinite(n) ? n : null
-    }
-    case 'wall':
-      return i.text === undefined ? null : parseDurationText(i.text)
-    default:
-      return null
-  }
-}
-
-/** The item as it reads while a tween shows `v` (same formatters as the final figure). */
-function figureAt(i: SummaryItemModel, v: number): SummaryItemModel {
-  switch (i.signal) {
-    case 'cost':
-      return i.cost ? { ...i, cost: { ...i.cost, costUsd: v } } : i
-    case 'tokens':
-      return { ...i, text: formatTokens(Math.round(v)) }
-    case 'runs':
-      return { ...i, text: String(Math.round(v)) }
-    case 'wall':
-      return { ...i, text: formatDuration(v) }
-    default:
-      return i
-  }
-}
-
-/** One bucket's value for the scrub text ("$0.0043", "6.0k", "no price"). */
+/** One bucket's value for the scrub text ("$0.0043", "6.0k", "not priced"). */
 function scrubValue(signal: SummarySignal, p: SparkPoint | undefined): string {
   if (!p) return ''
-  if (p.kind === 'unknown') return 'no price'
+  if (p.kind === 'unknown') return 'not priced'
   if (p.kind === 'empty') return signal === 'runs' ? '0 runs' : 'no runs'
   if (p.value === null) return 'not reported'
   switch (signal) {
@@ -99,10 +40,23 @@ export interface UsageTokenSplit {
 }
 
 /**
- * The KPI band: four tiles in one borderless row. Cost, Tokens and Runs are also the chart's metric switch (native
- * toggle buttons, aria-pressed); a 2 px bar slides to the pressed tile. Each tile shows its figure (it eases to a new
- * value after a user-triggered change), a glyph-and-sign delta chip and a full-width sparkline that can be read by
- * pointer. The spend chart is the keyboard path to per-day values.
+ * The definition a tile's label carries. Wall time says how it differs from the Dashboard's Agent time (baseline UX
+ * finding 2): wall time is the clock time runs were open, Agent time is the time agents spent working.
+ */
+export function kpiDefinition(signal: SummarySignal): string {
+  if (signal === 'cost') return definitionOf('Estimated cost')
+  if (signal === 'wall') {
+    return `${definitionOf('Wall time')} It is not the Dashboard's Agent time, which leaves out time a run was idle or waiting on you.`
+  }
+  return ''
+}
+
+/**
+ * The KPI band: four tiles in one hairline-separated row. Cost, Tokens and Runs are also the chart's metric switch
+ * (native toggle buttons, aria-pressed); a 2 px bar slides to the pressed tile. Wall time is a static figure that is
+ * still a keyboard stop, so its definition is reachable. Each tile shows its figure (it counts up on arrival and tweens
+ * after), a glyph-and-sign delta chip and a full-width area sparkline that can be read by pointer. The spend chart is
+ * the keyboard path to per-day values.
  */
 export default function UsageSummary({
   items,
@@ -110,13 +64,13 @@ export default function UsageSummary({
   modelChip,
   onNoPrice,
   spark,
-  bucketWord,
   metric,
   onMetric,
   tokens,
   bucketLabels,
   onScrub,
-  tweenKey,
+  arriving,
+  drawSeq,
   unpricedNote
 }: {
   items: readonly SummaryItemModel[]
@@ -126,8 +80,6 @@ export default function UsageSummary({
   onNoPrice: () => void
   /** Per-signal sparkline points from the chart's bucket slots. Missing key = no sparkline. */
   spark: Partial<Record<SummarySignal, SparkPoint[]>>
-  /** "per day" / "per week" / "per month": for the sparkline's title text only. */
-  bucketWord: string
   metric: Metric
   onMetric: (m: Metric) => void
   tokens: UsageTokenSplit
@@ -135,16 +87,17 @@ export default function UsageSummary({
   bucketLabels: string[]
   /** Sparkline scrub: pointer over a tile's sparkline reports the bucket slot index, null on leave. */
   onScrub: (i: number | null) => void
-  /** Bumped by the view on every user-triggered filter or metric change; numbers tween only when this changed since the last value change (never first paint, never a poll refresh). */
-  tweenKey: number
+  /** The page is staging its arrival: figures count up from zero, sparklines wipe in. */
+  arriving: boolean
+  /** Bumped by the view on every filter change the person makes: sparklines draw again once the new data is in. */
+  drawSeq: number
   /** Unpriced explanation for the "7 of 10 priced" popover (the view passes notes.partial or similar text, may be null). */
   unpricedNote: string | null
 }): ReactElement {
-  const reduced = useReducedMotion()
-  const durationMs = useMemo(() => tokenMs('--dur-slow') || 260, [])
   const [scrub, setScrub] = useState<{ signal: SummarySignal; i: number } | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const barRef = useRef<HTMLSpanElement>(null)
+  const hintId = useId()
 
   const place = (animate: boolean): void => {
     const ul = listRef.current
@@ -181,17 +134,26 @@ export default function UsageSummary({
   }, [])
 
   return (
-    <div className="usage-summary-wrap" role="group" aria-label="Key figures. Cost, Tokens and Runs choose what the chart shows.">
+    <div
+      className={arriving ? 'usage-summary-wrap motion-arrive-band' : 'usage-summary-wrap'}
+      style={{ '--i': 0 } as CSSProperties}
+      role="group"
+      aria-label="Key figures"
+      aria-describedby={hintId}
+    >
+      <span id={hintId} className="sr-only">
+        Cost, Tokens and Runs choose what the chart shows.
+      </span>
       <ul ref={listRef} className="usage-kpi" data-testid="usage-summary">
-        {items.map((i) => (
+        {items.map((i, index) => (
           <Tile
             key={i.signal}
             item={i}
+            index={index}
             coverage={coverage}
             modelChip={modelChip}
             onNoPrice={onNoPrice}
             points={spark[i.signal]}
-            bucketWord={bucketWord}
             metric={metric}
             onMetric={onMetric}
             tokens={tokens}
@@ -201,9 +163,8 @@ export default function UsageSummary({
               setScrub(n === null ? null : { signal: i.signal, i: n })
               onScrub(n)
             }}
-            tweenKey={tweenKey}
-            reduced={reduced}
-            durationMs={durationMs}
+            arriving={arriving}
+            drawSeq={drawSeq}
             unpricedNote={unpricedNote}
           />
         ))}
@@ -215,45 +176,45 @@ export default function UsageSummary({
 
 function Tile({
   item: i,
+  index,
   coverage,
   modelChip,
   onNoPrice,
   points,
-  bucketWord,
   metric,
   onMetric,
   tokens,
   bucketLabels,
   scrubIndex,
   onScrub,
-  tweenKey,
-  reduced,
-  durationMs,
+  arriving,
+  drawSeq,
   unpricedNote
 }: {
   item: SummaryItemModel
+  index: number
   coverage: CostCoverage | null
   modelChip: string | null
   onNoPrice: () => void
   points: SparkPoint[] | undefined
-  bucketWord: string
   metric: Metric
   onMetric: (m: Metric) => void
   tokens: UsageTokenSplit
   bucketLabels: string[]
   scrubIndex: number | null
   onScrub: (i: number | null) => void
-  tweenKey: number
-  reduced: boolean
-  durationMs: number
+  arriving: boolean
+  drawSeq: number
   unpricedNote: string | null
 }): ReactElement {
   const descId = useId()
+  const reduced = useReducedMotion()
   const m = KPI_METRIC[i.signal]
   const pressed = m !== undefined && metric === m
   const final = figure(i)
   const target = figureNumber(i)
-  const shown = useTweenedNumber(target, { key: tweenKey, reduced, durationMs })
+  // Counts up from zero on arrival; later changes tween. Unknown never counts up and is never tweened from.
+  const shown = useCountUp(target, { arriving, still: reduced })
   const live = shown !== null && target !== null && shown !== target ? figure(figureAt(i, shown)) : final
   const chip = deltaChip(i.delta)
   const vs = deltaVs(i.delta)
@@ -263,25 +224,36 @@ function Tile({
     i.signal === 'tokens'
       ? `in ${formatTokens(tokens.input)} · out ${formatTokens(tokens.output)}, cache read ${formatTokens(tokens.cacheRead)}, cache write ${formatTokens(tokens.cacheWrite)}`
       : ''
-  const title = [final.title, split].filter(Boolean).join(' ') || undefined
-  const hint = drawable ? `Point at the sparkline to read a ${bucketWord.replace(/^per /, '')}; the chart is the keyboard path.` : ''
-  // aria-describedby replaces the title as the description, so the figure's own title (model cost, lower bound) joins it.
-  const description = [final.title, split, hint].filter(Boolean).join('. ')
+  const definition = kpiDefinition(i.signal)
+  // The tip and the description are one text: the figure's own note (model cost, lower bound), the token split, the
+  // definition. No title attribute: it would be a second tooltip over the first.
+  const description = [final.title, split, definition].filter(Boolean).join(' ')
   const scrubPoint = drawable && scrubIndex !== null ? drawable[scrubIndex] : undefined
   const scrubText = scrubPoint ? `${bucketLabels[scrubIndex ?? 0] ?? ''} · ${scrubValue(i.signal, scrubPoint)}` : null
   const priced = i.signal === 'cost' && coverage ? (pricedChip(coverage.line) ?? coverage.line) : null
+  const { draw, key } = useDrawKey(drawSeq, drawable ? drawable.map((p) => p.value ?? 'x').join(',') : '', arriving)
+  const deltaWords = i.delta ?? i.deltaNote ?? ''
 
+  // A tile that is a button carries its definition in the button's description. A static tile (Wall time) has no button of
+  // its own, so its label is the defined term: a native button whose tip is the definition, and the value is plain text
+  // read once beside it.
+  const staticTerm = !m && !!description
   const body = (
     <>
-      <span className="usage-kpi-label" data-chip={priced ? 'true' : undefined}>
-        {i.label}
+      <span className="usage-kpi-label" data-chip={priced ? 'true' : undefined} data-defined={definition ? 'true' : undefined}>
+        {staticTerm ? (
+          <DefinedTerm text={description} align={index >= 2 ? 'end' : 'start'} testId="usage-kpi-term">
+            {i.label}
+          </DefinedTerm>
+        ) : (
+          i.label
+        )}
         {i.signal === 'cost' && modelChip && <span className="usage-summary-model">{modelChip}</span>}
       </span>
       <span className="usage-kpi-row">
-        <span className="usage-kpi-value" title={final.title} aria-hidden="true" data-testid="usage-kpi-value">
+        <span className="usage-kpi-value" aria-hidden="true" data-testid="usage-kpi-value">
           {live.text}
         </span>
-        <span className="sr-only">{final.text}</span>
         <span className="usage-kpi-chip-slot" aria-hidden="true">
           {scrubText !== null ? (
             <span className="usage-kpi-scrub" data-testid="usage-kpi-scrub">
@@ -298,8 +270,11 @@ function Tile({
             <span className="usage-kpi-delta usage-kpi-nodelta">{i.deltaNote ?? 'no prior data'}</span>
           )}
         </span>
-        {i.delta && <span className="sr-only">, {i.delta}</span>}
-        {!i.delta && i.deltaNote && <span className="sr-only">, {i.deltaNote}</span>}
+        {/* The final figure for assistive tech: the counting frames above are aria-hidden and never announced. */}
+        <span className="sr-only">
+          {final.text}
+          {deltaWords ? `, ${deltaWords}` : ''}
+        </span>
       </span>
     </>
   )
@@ -310,6 +285,12 @@ function Tile({
       data-testid="usage-summary-item"
       data-signal={i.signal}
       data-on-chart={pressed ? 'true' : undefined}
+      data-tip-host=""
+      data-align={index >= 2 ? 'end' : 'start'}
+      style={{ '--i': index } as CSSProperties}
+      onKeyDown={tipHandlers.onKeyDown}
+      onBlur={tipHandlers.onBlur}
+      onPointerLeave={tipHandlers.onPointerLeave}
     >
       {m ? (
         <button
@@ -320,20 +301,17 @@ function Tile({
           onClick={() => onMetric(m)}
           data-testid="usage-kpi-metric"
           data-metric={m}
-          title={title}
         >
           {body}
         </button>
       ) : (
-        <div className="usage-kpi-main" title={title}>
+        // A static figure: no role, no label of its own (a group's name would read the value a second time). Its
+        // definition is reachable through the label button.
+        <div className="usage-kpi-main usage-kpi-static" data-testid="usage-kpi-static">
           {body}
         </div>
       )}
-      {description && (
-        <span id={descId} className="sr-only">
-          {description}
-        </span>
-      )}
+      {description && m && <DefinitionTip id={descId} text={description} className="usage-kpi-tip" />}
       {priced && coverage && (
         <span className="usage-kpi-coverage" data-testid="usage-coverage">
           <button
@@ -350,7 +328,7 @@ function Tile({
       )}
       {/* Always present (empty when no sparkline) so the tiles keep one height. */}
       <span className="usage-kpi-spark-wrap">
-        {drawable && <Sparkline points={drawable} active={scrubIndex} onScrub={onScrub} />}
+        {drawable && <Sparkline key={key} points={drawable} active={scrubIndex} onScrub={onScrub} area draw={draw} />}
       </span>
     </li>
   )

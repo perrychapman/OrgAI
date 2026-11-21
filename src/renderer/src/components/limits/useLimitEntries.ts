@@ -1,21 +1,21 @@
-import type { ReactElement } from 'react'
 import { useEffect, useMemo } from 'react'
 import type { ConnectionId, UsageStatus } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { connectionLabel, isProxyId } from '../../lib/connectionLabel'
 import { clockLabel, resetsAtText, resetsInLabel } from '../../lib/dashboard'
-import { connectionsInUse, reportsSpend, spendLevel, spendRowLabel, spendSentence } from '../../lib/usage'
-import { SpendBar, UsageBar, tightestWindowRow, usageRows } from '../UsageMeter'
-import { usageIsStale, windowLabel } from './dashboardProjects'
-import { useNow } from './useDashboardData'
+import { connectionsInUse, reportsSpend, spendLevel, spendPct, spendRowFigure, spendSentence } from '../../lib/usage'
+import { tightestWindowRow, usageRows } from '../UsageMeter'
+import { usageIsStale, windowLabel } from '../dashboard/dashboardProjects'
+import { useNow } from '../dashboard/useDashboardData'
 
 /**
- * The plan limits in use (docs/design/dashboard-overhaul.md 7.7, moved from the old status bar into Your week): one entry per
- * connection in use that reports something, none under the mock adapter or for API keys, at most 2 and "+N more".
+ * The plan limits in use, shared by the Dashboard Briefing and the Usage Pacing header (PlanGauge README): one entry per
+ * connection in use that reports something (its tightest window, or a proxy's budget), none under the mock adapter or
+ * for API keys. Callers show at most `LIMITS_MAX` and "+N more".
  */
 
-/** Limit entries shown before "+N more". */
-const LIMITS_MAX = 2
+/** Gauges shown before "+N more". */
+export const LIMITS_MAX = 2
 
 /** One usage refresh at a time across mounts. */
 let refreshing = false
@@ -24,16 +24,15 @@ export interface LimitEntry {
   id: ConnectionId
   kind: 'window' | 'spend'
   level: '' | 'warn' | 'danger'
-  /** Parts of the visible text. */
+  /** Parts of the visible text: "Claude plan", "5-hour window 62%", "resets in 2 h". */
   name: string
   main: string
   resets: string
-  /** Bar fill, 0..100; null = no bar. */
+  /** Arc fill, 0..100; null = no arc (a proxy without a budget). */
   pct: number | null
+  /** The full sentence (every window, or the budget sentence): the gauge's text alternative. */
   title: string
-  /** The spend bar element, for a proxy with a budget. */
   spend?: UsageStatus['spend']
-  /** The plan report behind a window entry: `UsageBar` draws its tightest window as the meter. */
   usage?: UsageStatus
 }
 
@@ -61,6 +60,21 @@ export function windowEntry(id: ConnectionId, usage: UsageStatus, now: number): 
   return { id, kind: 'window', level: t.level, name, main: `${windowLabel(t.label)} ${Math.round(t.pct)}%`, resets, pct: Math.min(100, Math.max(0, t.pct)), title, usage }
 }
 
+export function spendEntry(id: ConnectionId, spend: NonNullable<UsageStatus['spend']>): LimitEntry {
+  const pct = spendPct(spend)
+  return {
+    id,
+    kind: 'spend',
+    level: spendLevel(spend),
+    name: `${connectionLabel(id)} budget`,
+    main: spendRowFigure(spend),
+    resets: '',
+    pct: pct === null ? null : Math.min(100, Math.max(0, pct)),
+    title: spendSentence(spend, id),
+    spend
+  }
+}
+
 /** The limit entries for the connections in use; empty under the mock adapter. */
 export function useLimitEntries(): LimitEntry[] {
   const appInfo = useAppStore((s) => s.appInfo)
@@ -81,8 +95,7 @@ export function useLimitEntries(): LimitEntry[] {
       if (!usage?.available) continue
       if (isProxyId(id)) {
         if (c.status.state !== 'connected' || !reportsSpend(c) || !usage.spend) continue
-        const spend = usage.spend
-        out.push({ id, kind: 'spend', level: spendLevel(spend), name: '', main: spendRowLabel(spend, id), resets: '', pct: null, title: spendSentence(spend, id), spend })
+        out.push(spendEntry(id, usage.spend))
       } else {
         const e = windowEntry(id, usage, now)
         if (e) out.push(e)
@@ -102,39 +115,4 @@ export function useLimitEntries(): LimitEntry[] {
     })
   }, [mock])
   return entries
-}
-
-/** The limits list (`dash-limits`); renders nothing without entries. */
-export function WeekLimits({ entries }: { entries: readonly LimitEntry[] }): ReactElement | null {
-  const shown = entries.slice(0, LIMITS_MAX)
-  const more = entries.length - shown.length
-  if (shown.length === 0) return null
-  return (
-    <ul className="dash-limits" data-testid="dash-limits">
-      {shown.map((e) => (
-        <li key={e.id} className="dash-limit" data-testid="dash-limit" data-connection={e.id} data-kind={e.kind} data-level={e.level} title={e.title}>
-          {e.name && (
-            <>
-              <span className="dash-limit-name">{e.name}</span>
-              <span className="dash-sep" aria-hidden="true">
-                ·
-              </span>
-            </>
-          )}
-          <span className="dash-limit-main">{e.main}</span>
-          {e.resets && (
-            <>
-              <span className="dash-sep" aria-hidden="true">
-                ·
-              </span>
-              <span className="dash-limit-resets">{e.resets}</span>
-            </>
-          )}
-          {e.kind === 'window' && <UsageBar usage={e.usage} />}
-          {e.kind === 'spend' && <SpendBar spend={e.spend} id={e.id} />}
-        </li>
-      ))}
-      {more > 0 && <li className="dash-limit-more">+{more} more</li>}
-    </ul>
-  )
 }

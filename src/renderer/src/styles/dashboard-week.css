@@ -1,205 +1,152 @@
-/* ---------- Dashboard: Your week (docs/design/dashboard-overhaul.md 7.7, Visual pass) ----------
-   Owned by components/dashboard/WeekSection.tsx, WeekShare.tsx and WeekLimits.tsx; the ledger is dashboard-strip.css. The
-   section is a card (the shared .dash-section frame draws it, the icon and the h2). `week` is the size container the
-   ledger's label rules read. Tokens only; nothing here animates. */
+/* ---------- Dashboard: Your week (docs/design/dashboard-usage-redesign dashboard.md, components/StatCards) ----------
+   Owned by components/dashboard/WeekSection.tsx and StatCards.tsx; the activity map is dashboard-activity.css. The section
+   is a card (the shared .dash-section frame draws it, the icon and the h2). `week` is the size container the stat grid
+   reads. Each stat card is one native button; the focus figure leads (data-focus) and draws its sparkline in the accent
+   text colour. Movement is a glyph and words, never colour. Tokens only; under reduced motion and Pause motion the
+   distance tokens are 0, so the hover lift collapses with them. */
 
 .dash-week {
   container: week / inline-size;
 }
-
-/* Three stat blocks, then the ledger, then the share bar. */
-.dash-week-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  min-width: 0;
-}
-.dash-week-figures {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  gap: var(--space-3);
-  margin: 0;
-  min-width: 0;
-}
-/* A stat block: the figure large and mono, its one-to-three-word label under it. The label stays first in the DOM (it
-   names the figure for a screen reader) and sits under the figure visually. */
-.dash-week-figure {
-  display: flex;
-  flex-direction: column-reverse;
-  justify-content: flex-end;
-  gap: 2px;
-  min-width: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-}
-.dash-week-figure dt {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.dash-week-range {
+  margin-left: var(--space-1);
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
 }
-.dash-week-figure dd {
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: var(--text-display);
-  line-height: var(--text-display-lh);
-  font-weight: var(--weight-semibold);
-  color: var(--text-primary);
-}
-@container week (max-width: 439px) {
-  .dash-week-figures {
-    gap: var(--space-2);
-  }
-  .dash-week-figure {
-    padding: var(--space-2) var(--space-3);
-  }
-  .dash-week-figure dd {
-    font-size: var(--text-title-lg);
-    line-height: var(--text-title-lg-lh);
-  }
-}
-/* While history loads the ledger keeps its place (its height is set inline); no spinner. */
-.dash-ledger-pending {
-  min-width: 0;
+.dash-week > .dash-activity {
+  margin-top: var(--space-5);
 }
 
-/* ---- Runs by project: one stacked bar, a 2 px surface gap between segments, a legend of dot, name and figure ---- */
-.dash-week-share {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.dash-share-bar {
-  display: flex;
-  gap: 2px;
-  height: 12px;
-  border-radius: var(--radius-full);
-  overflow: hidden;
-}
-.dash-share-seg {
-  flex: 1 1 0;
-  min-width: 6px;
-  background: var(--dash-hue, var(--text-tertiary));
-}
-/* Chat and "Other" are neutral; Other is the lighter of the two so they differ by more than position. */
-.dash-share-seg[data-kind='chat'] {
-  background: var(--text-tertiary);
-}
-.dash-share-seg[data-kind='other'] {
-  background: var(--border-strong);
-}
-.dash-share-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-4);
+/* Four cards across from 640 px, two under it, one under 300 px; three cards (no Decisions) share the row the same way. */
+.dash-stats {
   list-style: none;
   margin: 0;
   padding: 0;
-  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(10rem, 22%), 1fr));
+  gap: var(--space-3);
 }
-.dash-share-item {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
+.dash-stat {
+  position: relative;
   min-width: 0;
-  max-width: 100%;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.dash-stat:hover,
+.dash-stat:has(.dash-stat-btn:focus-visible) {
+  border-color: var(--border-strong);
+}
+.dash-stat:hover {
+  transform: translateY(calc(var(--motion-distance-sm) / -2));
+  box-shadow: var(--elev-1);
+}
+.dash-stat-btn {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0h);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: var(--space-3) var(--space-4) 0;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.dash-stat-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+  border-radius: var(--radius-lg);
+}
+.dash-stat-btn:active {
+  transform: scale(0.98);
+  transition: transform var(--dur-instant);
+}
+.dash-stat-label {
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   color: var(--text-secondary);
 }
-.dash-share-name {
+.dash-stat-value {
+  display: block;
   min-width: 0;
-  max-width: 18ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-primary);
-}
-.dash-share-figure {
-  flex: none;
-  color: var(--text-secondary);
-}
-.dash-share-dot {
-  flex: none;
-  width: 10px;
-  height: 10px;
-  border-radius: var(--radius-full);
-  background: var(--text-tertiary);
-}
-.dash-share-dot[data-kind='other'] {
-  background: var(--border-strong);
-}
-@media (forced-colors: active) {
-  .dash-share-seg,
-  .dash-share-dot {
-    forced-color-adjust: none;
-    background: CanvasText;
-  }
-}
-
-/* The most active project: a ghost button whose long project name clips with an ellipsis. */
-.dash-week-top {
-  max-width: 100%;
-  justify-content: flex-start;
-  min-width: 0;
-}
-
-/* ---------- Plan limits (moved from the old status bar, 7.7) ----------
-   One line per connection: name, the figure, when it resets, then the shared UsageBar / SpendBar meter (the text carries
-   the meaning; the meter has its own text alternative). Hidden under the mock adapter. */
-
-.dash-limits {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  list-style: none;
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-  min-width: 0;
-  font-size: var(--text-small);
-  color: var(--text-secondary);
-}
-.dash-limit {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-2);
-  min-width: 0;
-}
-.dash-limit-name {
-  color: var(--text-secondary);
-}
-.dash-limit-main {
-  color: var(--text-primary);
+  font-size: var(--text-stat);
+  line-height: var(--text-stat-lh);
+  letter-spacing: var(--text-stat-ls);
+  font-weight: var(--weight-semibold);
   font-variant-numeric: tabular-nums;
 }
-.dash-limit-resets {
+/* A word where a figure would be ("Not priced", "None", "Not measured") reads as a word, not a figure. */
+.dash-stat-value[data-word] {
+  font-size: var(--text-title);
+  line-height: var(--text-stat-lh);
   color: var(--text-secondary);
 }
-.dash-limit[data-level='danger'] .dash-limit-main {
-  color: var(--danger-text);
+.dash-stat-value .cost {
+  font: inherit;
+  letter-spacing: inherit;
 }
-.dash-limit[data-level='warn'] .dash-limit-main {
-  color: var(--warning-text);
+.dash-stat-move {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-height: var(--text-small-lh);
+  font-size: var(--text-caption);
+  line-height: var(--text-small-lh);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
 }
-/* The meter fills the rest of the line (the shared bar: its own width rules are overridden here only). */
-.dash-limit .usage-mini {
-  flex: 1 1 64px;
-  min-width: 48px;
-  max-width: 200px;
-  height: 6px;
+.dash-stat-glyph {
+  flex: none;
+  font-size: calc(var(--text-caption) * 0.85);
+  color: var(--text-primary);
 }
-.dash-limit-more {
-  color: var(--text-tertiary);
+.dash-stat-move-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The area sparkline runs edge to edge along the card's foot. It is decorative, so it takes no pointer. */
+.dash-stat-spark {
+  display: block;
+  margin: var(--space-2) calc(-1 * var(--space-4)) 0;
+  height: 44px;
+  line-height: 0;
+  color: var(--text-secondary);
+}
+.dash-stat[data-focus] .dash-stat-spark {
+  color: var(--accent-text);
+}
+.dash-stat-spark .usage-kpi-spark-box {
+  height: 44px;
+  cursor: inherit;
+  pointer-events: none;
+}
+/* The end dot and the hollow unknown-day dots stay inside the card. */
+.dash-stat-spark .usage-kpi-spark {
+  overflow: hidden;
+}
+
+@container week (max-width: 299px) {
+  .dash-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (forced-colors: active) {
+  .dash-stat-spark .spark-area {
+    forced-color-adjust: none;
+    fill: GrayText;
+  }
 }

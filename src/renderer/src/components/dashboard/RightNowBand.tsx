@@ -1,13 +1,12 @@
 import type { ReactElement } from 'react'
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, useEffect } from 'react'
-import { Activity } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
 import { BandRun } from './BandRun'
-import { DashSection } from './DashboardContext'
+import { DashSection, useDashboard } from './DashboardContext'
 import type { DashCaps } from './dashCaps'
 import { useBandSnapshot, useNow } from './useDashboardData'
-import { bandModel, countParts, moreRunsLabel } from '../../lib/dashboardBand'
+import { bandBreathingCount, bandModel, countParts, holdBandOrder, moreRunsLabel } from '../../lib/dashboardBand'
 import { useArrival } from '../../lib/useArrival'
 import { nextSettleAt, settleTimerDelay } from '../../lib/foldFinished'
 
@@ -43,9 +42,12 @@ function openRun(projectId: string, runId: string, agentId: string | null, rootI
 }
 
 /**
- * Working now (docs/design/dashboard-overhaul.md 7.6, dashboard-2.md section 6): each run a card (project badge, a row of
- * agent marks, a plan bar) with its agents hanging from it as subway lines, never announced. No height budget: the caps come from the page width alone. Rendered through `DashSection`, so with nothing
- * open it draws nothing (the greeting says so) outside customise mode.
+ * Right now (docs/design/dashboard-usage-redesign/project/components/RightNow; mechanics of dashboard-overhaul.md 7.6): each
+ * open run a card (project badge, the run header as one button, a row of agent marks, the plan bar with one segment per step
+ * and the current step named) with its agents hanging from it as reporting lines, one `--space-4` per level, never
+ * announced. Fixed region: never hidden, reordered or listed in Customise; drawn only while a run is open (through
+ * `DashSection` id 'now'). No height budget: the caps come from the page width alone. Runs keep their places while the
+ * same runs are shown (`holdBandOrder`).
  */
 export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: string) => void }): ReactElement {
   const snap = useBandSnapshot()
@@ -71,8 +73,14 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
     return () => window.clearTimeout(id)
   }, [settleDue])
 
+  // Rows do not reorder while the person reads: the order is taken afresh only when a run joins or leaves (holdBandOrder).
+  const heldOrder = useRef<string[] | null>(null)
   const model = useMemo(
-    () => bandModel(snap.runs, snap.projects, snap.virtualProjects, Date.now(), caps, { showAllRuns: showAll }),
+    () => {
+      const held = holdBandOrder(bandModel(snap.runs, snap.projects, snap.virtualProjects, Date.now(), caps, { showAllRuns: showAll }), heldOrder.current)
+      heldOrder.current = held.order
+      return held.model
+    },
     // `tick` re-evaluates the agents' grace periods (bandModel reads the clock).
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [snap, caps, showAll, tick]
@@ -143,6 +151,14 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runKeySig, model])
 
+  // The page's breathing budget (12): this band's marks take their share first, Team pulse breathes with what is left.
+  const { reportBreathing } = useDashboard()
+  const breathing = bandBreathingCount(model)
+  useLayoutEffect(() => {
+    reportBreathing(breathing)
+  }, [breathing, reportBreathing])
+  useLayoutEffect(() => () => reportBreathing(0), [reportBreathing])
+
   const parts = countParts(model.counts)
   const countsLine =
     parts.length > 0 ? (
@@ -163,10 +179,9 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
     ) : null
   return (
     <DashSection
-      id="working"
+      id="now"
       testId="dash-now"
       empty={model.total === 0}
-      icon={Activity}
       headExtra={countsLine}
       className={bandArrived ? 'dash-now motion-enter' : 'dash-now'}
       sectionRef={rootRef}

@@ -4,11 +4,7 @@ import { segmentsOf } from './usageCharts'
 import { overlayFigure } from './usageDashboard'
 import {
   barValueLabel,
-  chartMotion,
   hiddenCount,
-  MORPH_MAX_SEGMENTS,
-  morphFrom,
-  nearestBucket,
   overlayCostText,
   overlayDisabledReason,
   previousCellText,
@@ -22,8 +18,7 @@ import {
   spendSummary,
   tooltipPlacement,
   unpricedRuns,
-  visibleTotals,
-  visualGeom
+  visibleTotals
 } from './usageSpend'
 
 const T = (n: number) => ({ input: n, output: 0, cacheRead: 0, cacheWrite: 0 })
@@ -78,18 +73,18 @@ describe('spendSummary', () => {
     expect(spendSummary({ metric: 'runs', bucket: 'day', totals: totals(3), busiest: { start, value: 2 }, hidden: 2 })).toBe('Busiest day 3 Nov, 2 runs. 2 hidden.')
     expect(spendSummary({ metric: 'runs', bucket: 'day', totals: totals(0), busiest: null, hidden: 0 })).toBe('No runs in this period.')
     expect(spendSummary({ metric: 'runs', bucket: 'day', totals: totals(0), busiest: null, hidden: 1 })).toBe('No runs in the series shown. 1 hidden.')
-    expect(spendSummary({ metric: 'cost', bucket: 'day', totals: totals(4, null), busiest: null, hidden: 0 })).toBe('Cost unknown for 4 runs: no price is known. Tokens are counted.')
+    expect(spendSummary({ metric: 'cost', bucket: 'day', totals: totals(4, null), busiest: null, hidden: 0 })).toBe('Not priced: 4 runs with no known price. Tokens are counted.')
     expect(spendSummary({ metric: 'runs', bucket: 'day', totals: totals(1), busiest: null, hidden: 0 })).toBe('1 run.')
   })
 })
 
 describe('barValueLabel', () => {
-  it('formats the visible stack by metric, with + for a lower bound and No price for unknown', () => {
+  it('formats the visible stack by metric, with + for a lower bound and Not priced for unknown', () => {
     const segs = segmentsOf([slice('a', 2), slice('b', 3, { costKnownRuns: 1, costUnknownRuns: 1 })], series, 'cost')
     expect(barValueLabel('cost', segs)).toMatch(/\+$/)
     expect(barValueLabel('runs', segmentsOf([slice('a', 2, { runs: 3 })], series, 'runs'))).toBe('3')
     expect(barValueLabel('tokens', segmentsOf([slice('a', 2, { tokens: T(1500) })], series, 'tokens'))).toBe('1.5k')
-    expect(barValueLabel('cost', segmentsOf([slice('a', null)], series, 'cost'))).toBe('No price')
+    expect(barValueLabel('cost', segmentsOf([slice('a', null)], series, 'cost'))).toBe('Not priced')
     expect(barValueLabel('cost', [])).toBe('')
   })
 })
@@ -101,7 +96,7 @@ describe('previous-period cells', () => {
   it('reads text and sort values; unknown and empty have none', () => {
     expect(overlayCostText(known)).toContain('4.2')
     expect(previousCellText(known, 'cost')).toContain('4.2')
-    expect(previousCellText(unknown, 'cost')).toBe('No price')
+    expect(previousCellText(unknown, 'cost')).toBe('Not priced')
     expect(previousCellText(empty, 'cost')).toBe('—')
     expect(previousSortValue(known, 'cost')).toBeCloseTo(4.2)
     expect(previousSortValue(unknown, 'cost')).toBeNull()
@@ -118,7 +113,7 @@ describe('previous-period cells', () => {
     const runs = overlayFigure({ start: 0, key: '', point: point([slice('a', 1, { runs: 4 })]) }, series, 'runs', new Set())
     expect(previousTipText(runs, 'runs')).toBe('4 runs')
     expect(previousTipText(known, 'cost')).toContain('4.2')
-    expect(previousTipText(unknown, 'cost')).toBe('cost unknown')
+    expect(previousTipText(unknown, 'cost')).toBe('not priced')
     expect(previousTipText(empty, 'tokens')).toBe('no runs')
   })
 })
@@ -129,7 +124,7 @@ describe('tooltip text', () => {
     expect(segmentFigure('runs', segmentsOf([slice('a', 2, { runs: 3 })], series, 'runs')[0]!)).toBe('3')
     expect(segmentFigure('tokens', segmentsOf([slice('a', 2, { tokens: T(1500) })], series, 'tokens')[0]!)).toBe('1.5k')
     expect(segmentFigure('cost', seg!)).toContain('2')
-    expect(segmentFigure('cost', segmentsOf([slice('a', null)], series, 'cost')[0]!)).toBe('No price')
+    expect(segmentFigure('cost', segmentsOf([slice('a', null)], series, 'cost')[0]!)).toBe('Not priced')
     expect(runsLine(2, 1)).toBe('2 runs, 1 unpriced')
     expect(runsLine(1, 0)).toBe('1 run')
   })
@@ -138,18 +133,6 @@ describe('tooltip text', () => {
     expect(unpricedRuns(p, series, new Set())).toBe(2)
     expect(unpricedRuns(p, series, new Set(['b']))).toBe(1)
     expect(unpricedRuns(p, series, new Set(['other']))).toBe(1)
-  })
-})
-
-describe('nearestBucket', () => {
-  it('maps x to the column under it and null outside the columns', () => {
-    expect(nearestBucket(48, 48, 20, 5)).toBe(0)
-    expect(nearestBucket(67.9, 48, 20, 5)).toBe(0)
-    expect(nearestBucket(68, 48, 20, 5)).toBe(1)
-    expect(nearestBucket(148, 48, 20, 5)).toBe(4)
-    expect(nearestBucket(47, 48, 20, 5)).toBeNull()
-    expect(nearestBucket(149, 48, 20, 5)).toBeNull()
-    expect(nearestBucket(60, 48, 20, 0)).toBeNull()
   })
 })
 
@@ -175,31 +158,7 @@ describe('tooltipPlacement', () => {
   })
 })
 
-describe('chartMotion', () => {
-  const slots = ['1', '2', '3']
-  const base = { prevSlots: slots, nextSlots: slots, viewChanged: false, metricChanged: false, hiddenChanged: false, segments: 40, reduced: false }
-  it('does nothing on first paint or when nothing the user did changed', () => {
-    expect(chartMotion({ ...base, prevSlots: null })).toBe('none')
-    expect(chartMotion(base)).toBe('none')
-    expect(chartMotion({ ...base, nextSlots: ['2', '3', '4'] })).toBe('none')
-  })
-  it('morphs when the metric or a legend series changed over the same buckets', () => {
-    expect(chartMotion({ ...base, metricChanged: true })).toBe('morph')
-    expect(chartMotion({ ...base, hiddenChanged: true })).toBe('morph')
-  })
-  it('fades once, never morphs, when the filters changed the buckets', () => {
-    expect(chartMotion({ ...base, viewChanged: true, nextSlots: ['4', '5'] })).toBe('fade')
-    expect(chartMotion({ ...base, viewChanged: true, metricChanged: true })).toBe('fade')
-  })
-  it('does not morph a different bucket set even when the metric also changed', () => {
-    expect(chartMotion({ ...base, metricChanged: true, nextSlots: ['1', '2'] })).toBe('none')
-  })
-  it('skips above the segment cap and under reduced motion', () => {
-    expect(chartMotion({ ...base, metricChanged: true, segments: MORPH_MAX_SEGMENTS })).toBe('morph')
-    expect(chartMotion({ ...base, metricChanged: true, segments: MORPH_MAX_SEGMENTS + 1 })).toBe('none')
-    expect(chartMotion({ ...base, metricChanged: true, reduced: true })).toBe('none')
-    expect(chartMotion({ ...base, viewChanged: true, reduced: true })).toBe('none')
-  })
+describe('set comparison', () => {
   it('compares key lists and sets by content', () => {
     expect(sameKeys(['a', 'b'], ['a', 'b'])).toBe(true)
     expect(sameKeys(['a', 'b'], ['b', 'a'])).toBe(false)
@@ -208,23 +167,3 @@ describe('chartMotion', () => {
   })
 })
 
-describe('morph geometry', () => {
-  it('maps the new rect onto the old one about its bottom edge', () => {
-    // Old: bottom 100, height 40. New: bottom 100, height 80 -> scale 0.5, no shift.
-    expect(morphFrom({ bottom: 100, h: 40 }, { bottom: 100, h: 80 })).toEqual({ ty: 0, sy: 0.5, entering: false })
-    // Old stacked higher (bottom 60) than the new one (bottom 100): shift up by 40.
-    expect(morphFrom({ bottom: 60, h: 20 }, { bottom: 100, h: 20 })).toEqual({ ty: -40, sy: 1, entering: false })
-  })
-  it('grows a segment with no old rect from nothing and skips one that did not move', () => {
-    expect(morphFrom(undefined, { bottom: 100, h: 30 })).toEqual({ ty: 0, sy: 0, entering: true })
-    expect(morphFrom({ bottom: 100, h: 30 }, { bottom: 100.2, h: 30.1 })).toBeNull()
-    expect(morphFrom({ bottom: 100, h: 30 }, { bottom: 100, h: 0 })).toBeNull()
-  })
-  it('puts a segment where a running morph shows it, for a reversal that starts mid-flight', () => {
-    const old = { bottom: 100, h: 40 }
-    const next = { bottom: 100, h: 80 }
-    const from = morphFrom(old, next)!
-    expect(visualGeom(next, from.ty, from.sy)).toEqual(old)
-    expect(visualGeom(next, from.ty / 2, 0.75)).toEqual({ bottom: 100, h: 60 })
-  })
-})

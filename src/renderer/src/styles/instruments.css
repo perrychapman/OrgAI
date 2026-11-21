@@ -1,0 +1,112 @@
+/*
+ * Shared instruments of the Dashboard and Usage redesign (docs/design/dashboard-usage-redesign/project): the hero card
+ * aura and the plan gauge. Tokens only; both themes come from tokens.css.
+ */
+
+/* ---------- Hero card: surface-1, border-default, the aura (one per page; nothing else carries a gradient) ---------- */
+.hero-card {
+  position: relative;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  background:
+    radial-gradient(120% 90% at 0% 0%, var(--aura-from), transparent 60%),
+    radial-gradient(120% 90% at 100% 100%, var(--aura-to), transparent 60%),
+    var(--surface-1);
+}
+
+/* ---------- Area sparkline (components/usage/Sparkline area): the fill takes the line's colour, faint ---------- */
+.spark-area {
+  fill: currentColor;
+  stroke: none;
+  opacity: 0.16;
+}
+
+/* ---------- Plan gauge ---------- */
+.plan-gauges {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+.plan-gauge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.plan-gauge-dial {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+}
+.plan-gauge-dial svg {
+  display: block;
+}
+.plan-gauge-track,
+.plan-gauge-fill {
+  fill: none;
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+.plan-gauge-track {
+  stroke: var(--surface-3);
+}
+.plan-gauge-fill {
+  stroke: var(--brand-ui-from);
+  stroke-dasharray: var(--frac, 0) 1;
+}
+.plan-gauge[data-level='warn'] .plan-gauge-fill {
+  stroke: var(--warning);
+}
+.plan-gauge[data-level='danger'] .plan-gauge-fill {
+  stroke: var(--danger);
+}
+.plan-gauge-pct {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.plan-gauge[data-level='warn'] .plan-gauge-pct {
+  color: var(--warning-text);
+}
+.plan-gauge[data-level='danger'] .plan-gauge-pct {
+  color: var(--danger-text);
+}
+.plan-gauge-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.plan-gauge-name {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.plan-gauge-main,
+.plan-gauge-resets {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.plan-gauge-name,
+.plan-gauge-main,
+.plan-gauge-resets {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-gauge-more {
+  color: var(--text-tertiary);
+  font-size: var(--text-small);
+}

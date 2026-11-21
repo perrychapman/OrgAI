@@ -4,14 +4,25 @@ import { costView, type CostInput } from '../../lib/cost'
 import { useReducedMotion } from '../../lib/canvas'
 import { tokenMs } from '../../lib/useExitPresence'
 import { costFigureText } from '../../lib/usageCharts'
+import { ribbonNote, ribbonTitle, type Ribbon } from '../../lib/usageRibbon'
 import { enterIndex, flipPlan } from './rankFlip'
 import '../../styles/usage-charts.css'
 
 /** Rows shown before "Show all N" in every Where it went tab. */
 export const RANK_TOP = 5
 
-/** True for a short while after the user changed the Where it went tab: the rows rise in and the bars draw. */
+/** True for a short while after the user changed the Where it went tab: the rows rise in. */
 export const RankEnterContext = createContext(false)
+/**
+ * The draw generation (0 = nothing to draw): ranked bars grow from the left and the ribbon wipes in each time it rises
+ * (page arrival, a filter or metric change the person made, a tab they chose). Never for a background refresh.
+ */
+export const RankDrawContext = createContext(0)
+
+/** The colour of the n-th ranked row where rows have no series of their own (models, roles, connections): s1..s5, then Other. */
+export function rankFill(index: number): string {
+  return index >= 0 && index < RANK_TOP ? `var(--chart-s${index + 1})` : 'var(--chart-other)'
+}
 /**
  * The filters the user last chose (a stable string). A reorder glides only within REORDER_ARM_MS of it changing, so a
  * silent refresh that reorders rows never animates (Reviewer M2).
@@ -19,7 +30,7 @@ export const RankEnterContext = createContext(false)
 export const RankArmContext = createContext('')
 const REORDER_ARM_MS = 5000
 
-/** One cost figure on the page: "No price" for unknown (never $0), "+" and "~" as costView says, full value in the title. */
+/** One cost figure on the page: "Not priced" for unknown (never $0), "+" and "~" as costView says, full value in the title. */
 export function CostText({ value, title }: { value: CostInput; title?: string }): ReactElement {
   const v = costView(value, { precision: 'page' })
   return (
@@ -79,11 +90,18 @@ export interface RankedItem {
 }
 
 /** A horizontal bar in a row: solid, solid + hatched end (partial), or a dashed stub (unknown). */
-function RankBar({ fraction, state, fill }: { fraction: number; state: RankState; fill: string }): ReactElement {
+function RankBar({ fraction, state, fill, draw }: { fraction: number; state: RankState; fill: string; draw: number | null }): ReactElement {
   const pid = `uch${useId().replace(/[^a-zA-Z0-9]/g, '')}`
   const pct = `${(fraction * 100).toFixed(2)}%`
   return (
-    <svg className="uc-rank-bar" aria-hidden="true" focusable="false" height="10" width="100%">
+    <svg
+      className={draw === null ? 'uc-rank-bar' : 'uc-rank-bar motion-draw-grow'}
+      style={draw === null ? undefined : ({ '--i': draw } as CSSProperties)}
+      aria-hidden="true"
+      focusable="false"
+      height="10"
+      width="100%"
+    >
       {state === 'unknown' ? (
         <rect x="0.5" y="0.5" width="24" height="9" fill="none" stroke="var(--chart-unknown)" strokeWidth="1" strokeDasharray="3 2" />
       ) : (
@@ -114,8 +132,11 @@ export function RankedBars({
   onMenu,
   moreLabel,
   onHover,
-  highlighted
+  highlighted,
+  ribbon
 }: {
+  /** The proportional ribbon that leads the rows (lib/usageRibbon.ts buildRibbon); omitted = none. */
+  ribbon?: Ribbon
   label: string
   items: RankedItem[]
   rowTestId: string
@@ -132,7 +153,10 @@ export function RankedBars({
   const [active, setActive] = useState<string | null>(null)
   const current = items.some((i) => i.id === active) ? active : (items[0]?.id ?? null)
   const enter = useContext(RankEnterContext)
+  const gen = useContext(RankDrawContext)
   const reduced = useReducedMotion()
+  // The row a pointer or focus is on lights its ribbon segment (and the segment lights its row's highlight, below).
+  const [peek, setPeek] = useState<string | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
   const lastLayout = useRef<{ keys: string[]; tops: Map<string, number> }>({ keys: [], tops: new Map() })
   const arm = useContext(RankArmContext)
@@ -192,21 +216,70 @@ export function RankedBars({
     e.preventDefault()
   }
 
+  const drawing = gen > 0 && !reduced
+  // Only the rows that were there when this generation rose grow: a row that appears later (Show all, a background refresh)
+  // never replays the draw.
+  const drawnRef = useRef<{ gen: number; ids: Set<string> }>({ gen: -1, ids: new Set() })
+  if (drawnRef.current.gen !== gen) drawnRef.current = { gen, ids: new Set(items.map((it) => it.id)) }
+  const grows = (id: string): boolean => drawing && drawnRef.current.ids.has(id)
+  const peekOn = peek !== null && !!ribbon?.segments.some((s) => s.id === peek)
+  const ribbonNoteText = ribbon ? ribbonNote(ribbon) : ''
+  const leave = (): void => {
+    setPeek(null)
+    onHover?.(null)
+  }
+
   return (
+    <>
+      {ribbon && ribbon.segments.length > 0 && (
+        // A pointer shortcut only: the rows below are the accessible path (names, figures, one Tab stop), so the ribbon is
+        // hidden from assistive tech and holds no focus stops.
+        <div className="uc-ribbon" data-testid="usage-where-ribbon" aria-hidden="true" data-hl={peekOn ? 'on' : undefined} onPointerLeave={leave}>
+          <div key={gen} className={drawing ? 'uc-ribbon-track motion-draw-wipe' : 'uc-ribbon-track'} data-draw={gen}>
+            {ribbon.segments.map((s) => {
+              const item = s.id === null ? undefined : items.find((it) => it.id === s.id)
+              return (
+                // Native buttons for the click (the pointer shortcut), kept out of the Tab order and the accessibility tree
+                // with the aria-hidden ribbon; the rows are the keyboard and screen reader path.
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  key={s.id ?? 'other'}
+                  className="uc-ribbon-seg"
+                  data-testid="usage-where-ribbon-seg"
+                  data-id={s.id ?? 'other'}
+                  data-other={s.id === null ? 'true' : undefined}
+                  data-partial={s.partial ? 'true' : undefined}
+                  data-peek={s.id !== null && s.id === peek ? 'true' : undefined}
+                  title={ribbonTitle(s)}
+                  style={{ flexGrow: s.share, background: s.fill }}
+                  onPointerEnter={() => {
+                    setPeek(s.id)
+                    if (item) onHover?.(item)
+                  }}
+                  onClick={item ? () => onActivate(item) : undefined}
+                  onMouseDown={(e) => e.preventDefault()}
+                />
+              )
+            })}
+          </div>
+        </div>
+      )}
+      {ribbonNoteText && (
+        <p className="uc-ribbon-note" data-testid="usage-where-ribbon-note">
+          {ribbonNoteText}
+        </p>
+      )}
     <ul
       ref={listRef}
       className="uc-rank"
       data-hl={hlOn ? 'on' : undefined}
       data-enter={enter ? 'true' : undefined}
       aria-label={label}
-      onPointerLeave={onHover ? () => onHover(null) : undefined}
-      onBlur={
-        onHover
-          ? (e) => {
-              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onHover(null)
-            }
-          : undefined
-      }
+      onPointerLeave={leave}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) leave()
+      }}
     >
       {items.map((item, i) => {
         const stagger = enter ? enterIndex(i) : null
@@ -219,7 +292,11 @@ export function RankedBars({
           data-state={item.state}
           data-selected={item.selected ? 'true' : undefined}
           data-highlight={highlighted != null && (item.seriesKey ?? item.id) === highlighted ? 'true' : undefined}
-          onPointerEnter={onHover ? () => onHover(item) : undefined}
+          data-peek={ribbon && peek === item.id ? 'true' : undefined}
+          onPointerEnter={() => {
+            setPeek(item.id)
+            onHover?.(item)
+          }}
           {...Object.fromEntries(Object.entries(item.data).map(([k, v]) => [`data-${k}`, v]))}
         >
           <button
@@ -232,6 +309,7 @@ export function RankedBars({
             }}
             onFocus={() => {
               setActive(item.id)
+              setPeek(item.id)
               onHover?.(item)
             }}
             onClick={() => onActivate(item)}
@@ -249,7 +327,7 @@ export function RankedBars({
               <span className="uc-rank-text">{item.shown}</span>
             </span>
             {item.sub && <span className="uc-rank-sub">{item.sub}</span>}
-            <RankBar fraction={item.fraction} state={item.state} fill={item.fill} />
+            <RankBar key={gen} fraction={item.fraction} state={item.state} fill={item.fill} draw={grows(item.id) ? Math.min(i, 5) : null} />
             <span className="uc-rank-cost">
               <CostText value={item.cost} title={item.costTitle} />
             </span>
@@ -279,6 +357,7 @@ export function RankedBars({
         )
       })}
     </ul>
+    </>
   )
 }
 

@@ -54,12 +54,53 @@
 .usage-kpi-switch:active::before {
   background: var(--surface-2);
 }
-.usage-kpi-switch:focus-visible {
+.usage-kpi-switch:focus-visible,
+.usage-kpi-static:focus-visible {
   outline: none;
 }
-.usage-kpi-switch:focus-visible::before {
+.usage-kpi-switch:focus-visible::before,
+.usage-kpi-static:focus-visible::before {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
+}
+/* Wall time: a static figure (no hover lift, no pointer, no pressed state) that is still a keyboard stop, so its
+   definition is reachable like the other tiles'. The ring is the same inset one over the tile. */
+.usage-kpi-static {
+  position: static;
+  cursor: default;
+}
+.usage-kpi-static::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/* The definition under the label: shown on keyboard focus of the tile or pointer over its label, hidden by Esc. */
+.usage-kpi-tip {
+  inset-block-start: calc(var(--space-2) + var(--text-caption-lh));
+}
+.usage-kpi-item:has(.usage-kpi-main:focus-visible) > .usage-kpi-tip,
+.usage-kpi-item:has(.usage-kpi-label:hover) > .usage-kpi-tip,
+.usage-kpi-item > .usage-kpi-tip:hover {
+  visibility: visible;
+  opacity: 1;
+}
+.usage-kpi-item[data-tip-off] > .usage-kpi-tip.usage-term-tip.usage-term-tip {
+  visibility: hidden;
+  opacity: 0;
+}
+.usage-kpi-item[data-align='end'] > .usage-kpi-tip {
+  inset-inline-start: auto;
+  inset-inline-end: var(--space-2);
+}
+.usage-kpi-item > .usage-kpi-tip {
+  inset-inline-start: var(--space-3);
+}
+/* A defined label shows a dotted underline, so the definition is discoverable without a pointer. */
+.usage-kpi-label[data-defined='true'] {
+  text-decoration: underline dotted var(--text-tertiary);
+  text-underline-offset: 3px;
+  width: fit-content;
 }
 .usage-kpi-main > *,
 .usage-kpi-spark-wrap,
@@ -116,7 +157,7 @@
   color: var(--text-primary);
 }
 .usage-kpi-glyph {
-  font-size: 0.85em;
+  font-size: var(--text-caption);
 }
 .usage-kpi-vs,
 .usage-kpi-nodelta {

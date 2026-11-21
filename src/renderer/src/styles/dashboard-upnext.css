@@ -1,0 +1,108 @@
+/* ---------- Dashboard: Up next (components/dashboard/UpNextSection.tsx, lib/upNext.ts) ----------
+   An unboxed list of the next schedule firings (hairlines between rows come from the shared .dash-rows rule in
+   dashboard.css; surface-2 on hover). The time is mono in a fixed-width column so names align; the badge says how far away
+   the firing is and takes the accent tone within the hour. Paused schedules show one line in place of the rows. Tokens only. */
+
+.dash-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+.dash-upnext-row {
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.dash-upnext-row:hover {
+  background: var(--surface-2);
+}
+.dash-upnext-main {
+  all: unset;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: inherit;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.dash-upnext-main:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.dash-upnext-when {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: var(--text-small-lh);
+}
+.dash-upnext-clock {
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.dash-upnext-day {
+  font-size: var(--text-caption);
+  color: var(--text-secondary);
+}
+.dash-upnext-row[data-soon] .dash-upnext-clock {
+  color: var(--accent-text);
+}
+.dash-upnext-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.dash-upnext-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-upnext-sub {
+  display: flex;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.dash-upnext-sub > span:last-child {
+  flex: none;
+}
+.dash-upnext-away {
+  flex: none;
+}
+.dash-upnext-more {
+  margin-top: var(--space-2);
+}
+
+/* ---------- Paused ---------- */
+.dash-upnext-paused {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.dash-upnext-paused-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--text-secondary);
+}
+.dash-upnext-paused-text {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--text-small);
+  color: var(--text-secondary);
+}

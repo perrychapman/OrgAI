@@ -8,10 +8,12 @@ import type { EfficiencySignal, WastefulSort } from '../components/usage/panelPr
 import { costView, formatTokens, type CostInput } from './cost'
 import { totalTokens } from './trends'
 import { usageKindOf } from './usageOverview'
+import { reportTimingSummary, TIMING_DEFINITIONS } from './usageStaffing'
 import { effectiveWastefulSort, isLegacyRow, knownCost, median, minutesText, noResultSentence, pageCost, percentText, wastefulRuns } from '@shared/view/usageInsights'
 
 export { effectiveWastefulSort, isLegacyRow, knownCost, median, minutesText, noResultSentence, pageCost, percentText, wastefulRuns }
-export type { WastefulEntry } from '@shared/view/usageInsights'
+import type { WastefulEntry } from '@shared/view/usageInsights'
+export type { WastefulEntry }
 
 // ---------- shared helpers ----------
 
@@ -72,7 +74,7 @@ export const EFFICIENCY_NAMES: Record<EfficiencySignal, string> = {
 
 export const EFFICIENCY_DEFINITIONS: Record<EfficiencySignal, string> = {
   cache: 'The share of input tokens the provider read from its prompt cache instead of processing again. Higher is cheaper. "Not reported" means the connection does not say.',
-  'cost-per-run': 'The median estimated cost of a run in this view. The mean is in the tooltip.',
+  'cost-per-run': 'The median estimated cost of a run in this view: half of the runs cost less. Runs that are not priced are left out.',
   'tokens-per-turn': 'Tokens used divided by the number of turns agents took.',
   retries: 'Times a failed request was sent again. Counted per 100 turns.',
   'no-result': 'Tokens spent by agents that finished without giving a report back. The root agent is never counted here.',
@@ -212,7 +214,7 @@ export function efficiencyItems(rows: readonly UsageOverviewRow[], opts: Efficie
   const med = median(t.costs)
   const avg = mean(t.costs)
   if (med === null || avg === null) {
-    make('cost-per-run', 'No price', t.unpriced > 0 ? `${plural(t.unpriced, 'run has', 'runs have')} no price.` : 'No priced runs in this view.', { kind: 'none' })
+    make('cost-per-run', 'Not priced', t.unpriced > 0 ? `${plural(t.unpriced, 'run has', 'runs have')} no price.` : 'No priced runs in this view.', { kind: 'none' })
   } else {
     const detail = `Mean ${pageCost(avg)}${t.unpriced > 0 ? `. ${plural(t.unpriced, 'run has', 'runs have')} no price.` : ''}`
     make('cost-per-run', pageCost(med), detail, { kind: 'range', min: Math.min(...t.costs), max: Math.max(...t.costs), median: med, mean: avg })
@@ -316,6 +318,146 @@ export function efficiencySummary(rows: readonly UsageOverviewRow[], opts: { con
   return `${plural(tracked.length, 'run')} measured.`
 }
 
+// ---------- the four measures and their readings (redesign: Efficiency) ----------
+
+/** A measure needs this many runs to say anything. */
+export const MEASURE_MIN_RUNS = 3
+
+export type MeasureKey = 'cost-per-run' | 'overlap' | 'first-spawn' | 'no-result'
+
+export interface EfficiencyMeasure {
+  key: MeasureKey
+  /** The label the definition tooltip hangs on. */
+  label: string
+  /** The headline ("$0.61", "1.8×"); null = too few runs, the view says "Not enough runs yet". */
+  value: string | null
+  /** One plain sentence a person can act on. */
+  reading: string
+  /** "Based on 12 runs." */
+  basis: string
+  definition: string
+  /** The Runs worth a look sort this measure leads to; null = none. */
+  sort: WastefulSort | null
+}
+
+/** "1.8×". */
+export const overlapMultiple = (r: number): string => `${r.toFixed(1)}×`
+
+/** The overlap reading: the multiple and what it says about how the team worked. */
+export function overlapReading(r: number): string {
+  if (r < 1.2) return `Reports overlap ${overlapMultiple(r)}: they mostly work one after another. Work that does not depend on each other could run side by side.`
+  if (r < 1.5) return `Reports overlap ${overlapMultiple(r)}: the team is working in parallel some of the time.`
+  return `Reports overlap ${overlapMultiple(r)}: the team is working in parallel.`
+}
+
+/** The first-spawn reading from the median wait in ms. */
+export function firstSpawnReading(ms: number): string {
+  if (ms < 60_000) return 'The lead hands work to reports quickly.'
+  if (ms < 300_000) return `The lead works ${minutesText(ms)} before it hands anything to a report.`
+  return `The lead works ${minutesText(ms)} alone before it delegates. That is long for a team run: check what it is planning.`
+}
+
+/** The four measures, in reading order. Only runs recorded since usage tracking count; each says why when it has too few. */
+export function efficiencyMeasures(rows: readonly UsageOverviewRow[]): EfficiencyMeasure[] {
+  const tracked = rows.filter((r) => !isLegacyRow(r))
+  const t = tally(tracked)
+  const runsBasis = (n: number): string => `Based on ${plural(n, 'run')}.`
+
+  // Cost per run: the median of the priced runs, with the dearest one named so the next step is clear.
+  const costs = t.costs
+  const med = median(costs)
+  const cost: EfficiencyMeasure = {
+    key: 'cost-per-run',
+    label: 'Cost per run',
+    value: med !== null && costs.length >= MEASURE_MIN_RUNS ? pageCost(med) : null,
+    reading:
+      med !== null && costs.length >= MEASURE_MIN_RUNS
+        ? `Half of your runs cost less than ${pageCost(med)}; the dearest cost ${pageCost(Math.max(...costs))}.${t.unpriced > 0 ? ` ${plural(t.unpriced, 'run has', 'runs have')} no price and ${t.unpriced === 1 ? 'is' : 'are'} left out.` : ''}`
+        : 'Cost per run needs at least three priced runs.',
+    basis: runsBasis(costs.length),
+    definition: EFFICIENCY_DEFINITIONS['cost-per-run'],
+    sort: 'cost'
+  }
+
+  // Overlap and time to first spawn: only runs that handed work to reports.
+  const timing = reportTimingSummary(tracked)
+  const enoughTiming = timing.runs >= MEASURE_MIN_RUNS
+  const overlap: EfficiencyMeasure = {
+    key: 'overlap',
+    label: 'Overlap',
+    value: enoughTiming && timing.overlap !== null ? overlapMultiple(timing.overlap) : null,
+    reading: enoughTiming && timing.overlap !== null ? overlapReading(timing.overlap) : 'Overlap needs at least three team runs that used reports.',
+    basis: runsBasis(timing.runs),
+    definition: TIMING_DEFINITIONS.overlap,
+    sort: null
+  }
+  const first: EfficiencyMeasure = {
+    key: 'first-spawn',
+    label: 'Time to first report',
+    value: enoughTiming && timing.firstSpawnMs !== null ? minutesText(timing.firstSpawnMs) : null,
+    reading: enoughTiming && timing.firstSpawnMs !== null ? firstSpawnReading(timing.firstSpawnMs) : 'This needs at least three team runs that used reports.',
+    basis: runsBasis(timing.runs),
+    definition: TIMING_DEFINITIONS.firstSpawn,
+    sort: null
+  }
+
+  // No result: the share of tokens that went to agents that gave nothing back.
+  const enoughRuns = t.runs >= MEASURE_MIN_RUNS && t.tokens > 0
+  const share = t.tokens > 0 ? t.noResultTokens / t.tokens : 0
+  const noResult: EfficiencyMeasure = {
+    key: 'no-result',
+    label: 'No result',
+    value: enoughRuns ? percentText(share) : null,
+    reading: !enoughRuns
+      ? 'This needs at least three runs.'
+      : t.noResultAgents === 0
+        ? 'Every agent that finished gave a result back.'
+        : `${plural(t.noResultAgents, 'agent')} returned nothing in ${plural(t.noResultRuns, 'run')}, and ${percentText(share)} of tokens went to them. See Runs worth a look.`,
+    basis: runsBasis(t.runs),
+    definition: EFFICIENCY_DEFINITIONS['no-result'],
+    sort: 'no-result'
+  }
+  return [cost, overlap, first, noResult]
+}
+
+// ---------- why a run is worth a look (every reason, not only the sort's) ----------
+
+export type ReasonKey = 'no-result' | 'retries' | 'nudges' | 'idle' | 'cache' | 'cost'
+
+export interface RunReason {
+  key: ReasonKey
+  text: string
+}
+
+/** A run counts as idle-heavy from this share of its wall time, and a cache hit under this share is low. */
+export const IDLE_REASON_SHARE = 0.3
+export const CACHE_REASON_RATE = 0.3
+
+/**
+ * Every reason a run is worth a look, the one that put it on the list first. The other signals that used to sit under
+ * "More signals" show here: no result, retries, nudges, idle time, a low cache hit, and cost (unknown, or the sort).
+ */
+export function runReasons(entry: Pick<WastefulEntry, 'row' | 'why'>, sort: WastefulSort): RunReason[] {
+  const r = entry.row
+  const u = r.usage
+  const primary: ReasonKey = sort
+  // The shared sentence says "Cost unknown; N tokens"; this page says "Not priced" everywhere (src/shared is not edited here).
+  const out: RunReason[] = [{ key: primary, text: entry.why.replace(/^Cost unknown/, 'Not priced') }]
+  const add = (key: ReasonKey, text: string): void => {
+    if (key !== primary) out.push({ key, text })
+  }
+  if (u.agentsWithoutResult > 0) add('no-result', `${plural(u.agentsWithoutResult, 'agent')} returned no result`)
+  if (u.retries > 0) add('retries', u.retries === 1 ? 'Retried once' : `Retried ${u.retries} times`)
+  if (u.nudges > 0) add('nudges', u.nudges === 1 ? 'Auto-continued once' : `Auto-continued ${u.nudges} times`)
+  if (!isLegacyRow(r) && u.wallMs > 0 && u.idleMs / u.wallMs >= IDLE_REASON_SHARE) add('idle', `Idle ${percentText(u.idleMs / u.wallMs)} of its time`)
+  const prompt = promptTokens(u.tokens)
+  if (!isLegacyRow(r) && cacheReportedBy(u.tokens) && prompt >= CACHE_MIN_INPUT_TOKENS && u.tokens.cacheRead / prompt < CACHE_REASON_RATE) {
+    add('cache', `Cache hit ${percentText(u.tokens.cacheRead / prompt)}`)
+  }
+  if (knownCost(r) === null && totalTokens(u.tokens) > 0) add('cost', 'Not priced')
+  return out
+}
+
 // ---------- efficiency by project (table alternative) ----------
 
 export type EfficiencyColumn = 'project' | 'runs' | 'cost' | 'cache' | 'tokens-per-turn' | 'retries' | 'no-result' | 'idle'
@@ -352,7 +494,7 @@ export function efficiencyByProject(rows: readonly UsageOverviewRow[], opts: { c
       runs: list.length,
       cells: {
         runs: String(list.length),
-        cost: none ? '—' : med === null ? 'No price' : pageCost(med),
+        cost: none ? '—' : med === null ? 'Not priced' : pageCost(med),
         cache: none ? '—' : rate === null ? 'Not reported' : percentText(rate),
         'tokens-per-turn': tpt === null ? '—' : formatTokens(tpt),
         retries: per100 === null ? '—' : per100 === 0 ? '0' : per100 < 10 ? per100.toFixed(1) : String(Math.round(per100)),

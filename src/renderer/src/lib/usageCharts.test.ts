@@ -51,6 +51,19 @@ describe('niceTicks', () => {
     expect(niceTicks(100).ticks).toEqual([0, 25, 50, 75, 100])
     expect(niceTicks(0).max).toBe(1)
   })
+  it('keeps every tick a whole number for counts (runs), never half a run', () => {
+    expect(niceTicks(1, true).ticks).toEqual([0, 1, 2])
+    expect(niceTicks(3, true).ticks).toEqual([0, 1, 2, 3])
+    expect(niceTicks(7, true).ticks).toEqual([0, 2, 4, 6, 8])
+    expect(niceTicks(0, true)).toEqual({ max: 2, ticks: [0, 1, 2] })
+    for (const m of [1, 2, 5, 9, 13, 40, 99, 250, 1234]) {
+      const t = niceTicks(m, true)
+      expect(t.ticks.every(Number.isInteger)).toBe(true)
+      expect(t.max).toBeGreaterThanOrEqual(m)
+      expect(t.ticks.length).toBeGreaterThanOrEqual(3)
+      expect(t.ticks.length).toBeLessThanOrEqual(5)
+    }
+  })
 })
 
 describe('formatTick', () => {
@@ -188,10 +201,10 @@ describe('text', () => {
     const t = readoutText('Tue 3 Nov', { runs: 2, cost: { costUsd: 6.1, costSource: 'computed', costPartial: true }, tokens: 200 }, segs, names, 'cost')
     expect(t).toBe('Tue 3 Nov: $6.10+, 2 runs. Billing $6.10, Docs unknown.')
     expect(readoutText('Wed 4 Nov', { runs: 0, cost: { costUsd: 0, costSource: 'none' }, tokens: 0 }, [], names, 'cost')).toBe('Wed 4 Nov: no runs.')
-    expect(segmentReadout('Tue 3 Nov', 'Docs', segs[1]!, 'cost')).toBe('Tue 3 Nov, Docs: cost unknown, 1 run.')
+    expect(segmentReadout('Tue 3 Nov', 'Docs', segs[1]!, 'cost')).toBe('Tue 3 Nov, Docs: not priced, 1 run.')
   })
   it('never prints $0 for an unknown cost', () => {
-    expect(costFigureText({ costUsd: null, costSource: 'unknown' })).toBe('No price')
+    expect(costFigureText({ costUsd: null, costSource: 'unknown' })).toBe('Not priced')
     expect(costFigureText({ costUsd: 0.4261, costSource: 'computed', costPartial: true })).toBe('$0.426+')
   })
   it('puts + on a rollup iff a run in it is unknown', () => {

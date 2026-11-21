@@ -4,7 +4,11 @@ import {
   effectiveWastefulSort,
   efficiencyByProject,
   efficiencyItems,
+  efficiencyMeasures,
   efficiencySummary,
+  firstSpawnReading,
+  overlapReading,
+  runReasons,
   median,
   minutesText,
   noResultAgentsLine,
@@ -103,9 +107,9 @@ describe('efficiencyItems', () => {
     expect(i.draw).toMatchObject({ kind: 'range', min: 1, max: 100, median: 3 })
   })
 
-  it('shows No price when nothing is priced', () => {
+  it('shows Not priced when nothing is priced', () => {
     const i = item([row({}, { costUsd: null, costSource: 'unknown' })], 'cost-per-run')!
-    expect(i.value).toBe('No price')
+    expect(i.value).toBe('Not priced')
     expect(i.value).not.toContain('$0')
   })
 
@@ -172,7 +176,7 @@ describe('efficiencyByProject', () => {
     const rows = [row({ projectId: 'a', projectName: 'Alpha' }, { costUsd: 2 }), row({ projectId: 'b', projectName: 'Beta' }, { costUsd: null, costSource: 'unknown' }), row({ projectId: 'b', projectName: 'Beta' }, { costUsd: null, costSource: 'unknown' })]
     const t = efficiencyByProject(rows, names)
     expect(t.map((r) => r.project)).toEqual(['Beta', 'Alpha'])
-    expect(t[0]!.cells.cost).toBe('No price')
+    expect(t[0]!.cells.cost).toBe('Not priced')
     expect(sortEfficiencyRows(t, 'cost', 'desc').map((r) => r.project)).toEqual(['Alpha', 'Beta'])
     expect(sortEfficiencyRows(t, 'cost', 'asc').map((r) => r.project)).toEqual(['Alpha', 'Beta'])
     expect(sortEfficiencyRows(t, 'project', 'asc').map((r) => r.project)).toEqual(['Alpha', 'Beta'])
@@ -233,5 +237,90 @@ describe('wastefulRuns', () => {
   it('is empty when nothing has a signal', () => {
     expect(wastefulRuns([row()], 'retries')).toEqual([])
     expect(wastefulRuns([row()], 'no-result')).toEqual([])
+  })
+})
+
+describe('efficiencyMeasures', () => {
+  const eff = (o: Record<string, number> = {}) => ({ reports: 2, firstSpawnMs: 20_000, reportSumMs: 90_000, reportBusyMs: 50_000, tailMs: 10_000, afterLastReportMs: 5_000, ...o })
+  const team = (u: Partial<RunUsage> = {}) => row({}, { efficiency: eff(), ...u } as Partial<RunUsage>)
+
+  it('is exactly four measures, in reading order', () => {
+    expect(efficiencyMeasures([]).map((m) => m.key)).toEqual(['cost-per-run', 'overlap', 'first-spawn', 'no-result'])
+  })
+  it('says "not enough runs" with a null value under three runs, never a made-up figure', () => {
+    const ms = efficiencyMeasures([team(), team()])
+    for (const m of ms) expect(m.value).toBeNull()
+    expect(ms[0]!.reading).toContain('three')
+  })
+  it('cost per run is the median of the priced runs, and names the dearest', () => {
+    const m = efficiencyMeasures([team({ costUsd: 1 }), team({ costUsd: 3 }), team({ costUsd: 8 })])[0]!
+    expect(m.value).toBe('$3.00')
+    expect(m.reading).toBe('Half of your runs cost less than $3.00; the dearest cost $8.00.')
+  })
+  it('cost per run leaves unpriced runs out and says so', () => {
+    const m = efficiencyMeasures([team({ costUsd: 1 }), team({ costUsd: 3 }), team({ costUsd: 8 }), team({ costUsd: null, costSource: 'unknown' })])[0]!
+    expect(m.value).toBe('$3.00')
+    expect(m.reading).toContain('1 run has no price and is left out.')
+  })
+  it('overlap names the multiple and what it means', () => {
+    const m = efficiencyMeasures([team(), team(), team()])[1]!
+    expect(m.value).toBe('1.8×')
+    expect(m.reading).toBe('Reports overlap 1.8×: the team is working in parallel.')
+    expect(overlapReading(1.0)).toContain('one after another')
+    expect(overlapReading(1.3)).toContain('some of the time')
+  })
+  it('time to first report reads quick, long and very long waits', () => {
+    expect(efficiencyMeasures([team(), team(), team()])[2]).toMatchObject({ value: '20 s', reading: 'The lead hands work to reports quickly.' })
+    expect(firstSpawnReading(120_000)).toBe('The lead works 2 min before it hands anything to a report.')
+    expect(firstSpawnReading(600_000)).toContain('long for a team run')
+  })
+  it('overlap and first report need runs that used reports', () => {
+    const ms = efficiencyMeasures([row(), row(), row()])
+    expect(ms[1]!.value).toBeNull()
+    expect(ms[2]!.value).toBeNull()
+    expect(ms[0]!.value).not.toBeNull()
+  })
+  it('no result reads zero as good news and a share as a pointer to the runs', () => {
+    expect(efficiencyMeasures([row(), row(), row()])[3]).toMatchObject({ value: '0%', reading: 'Every agent that finished gave a result back.' })
+    const m = efficiencyMeasures([row({}, { agentsWithoutResult: 2, noResultTokens: 4_200 }), row(), row()])[3]!
+    expect(m.value).toBe('3%')
+    expect(m.reading).toContain('2 agents returned nothing in 1 run')
+    expect(m.reading).toContain('See Runs worth a look.')
+    expect(m.sort).toBe('no-result')
+  })
+  it('ignores runs recorded before usage tracking', () => {
+    const legacy = row({ legacy: true }, { legacy: true })
+    expect(efficiencyMeasures([legacy, legacy, legacy]).every((m) => m.value === null)).toBe(true)
+  })
+  it('every measure carries a definition and a basis', () => {
+    for (const m of efficiencyMeasures([team(), team(), team()])) {
+      expect(m.definition.length).toBeGreaterThan(10)
+      expect(m.basis).toMatch(/^Based on \d+ runs?\.$/)
+    }
+  })
+})
+
+describe('runReasons', () => {
+  it('leads with the reason that listed the run, then adds every other that applies', () => {
+    const r = row({ status: 'finished' }, { retries: 2, nudges: 1, agentsWithoutResult: 1, wallMs: 100_000, idleMs: 50_000, turns: 10 })
+    const entry = wastefulRuns([r], 'retries')[0]!
+    const reasons = runReasons(entry, 'retries')
+    expect(reasons[0]).toEqual({ key: 'retries', text: 'Retried 2 times' })
+    expect(reasons.map((x) => x.key)).toEqual(['retries', 'no-result', 'nudges', 'idle'])
+    expect(reasons.find((x) => x.key === 'idle')?.text).toBe('Idle 50% of its time')
+  })
+  it('adds a low cache hit and an unknown cost', () => {
+    const r = row({}, { tokens: { input: 40_000, output: 100, cacheRead: 5_000, cacheWrite: 0 }, costUsd: null, costSource: 'unknown' })
+    const entry = wastefulRuns([r], 'cost')[0]!
+    const keys = runReasons(entry, 'cost').map((x) => x.key)
+    expect(keys).toEqual(['cost', 'cache'])
+    expect(runReasons(entry, 'retries').map((x) => x.key)).toContain('cost')
+    // One wording for a cost with no price: the shared "Cost unknown; N tokens" reads "Not priced; N tokens" on this page.
+    expect(runReasons(entry, 'cost')[0]!.text).toMatch(/^Not priced; /)
+    expect(runReasons(entry, 'retries').find((x) => x.key === 'cost')?.text).toBe('Not priced')
+  })
+  it('lists only the sort reason for an ordinary run', () => {
+    const entry = wastefulRuns([row()], 'cost')[0]!
+    expect(runReasons(entry, 'cost')).toHaveLength(1)
   })
 })

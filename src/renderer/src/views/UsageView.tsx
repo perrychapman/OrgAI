@@ -1,11 +1,14 @@
-import type { ReactElement } from 'react'
+import type { CSSProperties, ReactElement, ReactNode } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { VIRTUAL_PROJECT_LABELS, USAGE_REMOVED_PROJECT_NAME, isVirtualProjectId } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import AppNavigateBanner from '../components/AppNavigateBanner'
 import { joinAnnouncement } from '../components/layout/CanvasFrame'
 import { connectionLabel } from '../lib/connectionLabel'
+import { costView } from '../lib/cost'
 import { scrollWithin } from '../lib/scrollWithin'
+import { usePageArrival } from '../lib/usePageArrival'
+import { elapsedFraction, pacingModel, pacingRuns, periodBounds, previousAtPoint } from '../lib/usagePacing'
 import { allUnpriced, assignSeries, axisLabel, fillBuckets, OTHER_KEY, type Metric, type SeriesState } from '../lib/usageCharts'
 import { metricAnnouncement, resolveMetric, seriesAnnouncement, sparkSeries, sparkSignal, toggleSeries, type SparkPoint } from '../lib/usageDashboard'
 import {
@@ -52,7 +55,7 @@ import UsageHeader, { UsageTopbarActions } from '../components/usage/UsageHeader
 import UsageFilterBar, { BucketControl } from '../components/usage/UsageFilterBar'
 import UsageChips from '../components/usage/UsageChips'
 import UsageSummary from '../components/usage/UsageSummary'
-import UsageDefinitions from '../components/usage/UsageDefinitions'
+import Pacing from '../components/usage/Pacing'
 import { LegacyNote, SummaryNotes, TruncatedBanner } from '../components/usage/UsageNotes'
 import { EmptyAll, EmptyFiltered, LoadError, LoadingSkeleton, RefreshFailed } from '../components/usage/UsageStates'
 import { useUsageCsv } from '../components/usage/useUsageCsv'
@@ -60,6 +63,21 @@ import { useUsageOverview } from '../components/usage/useUsageOverview'
 
 /** The usageFocus request already handled; module level so a remount never replays an old request. */
 let handledFocusSeq = -1
+/** The usageFocus metric already pressed (Dashboard hand-off); module level for the same reason. */
+let handledMetricSeq = -1
+
+/**
+ * Stages the page's arrival once the data is on screen (lib/usePageArrival): mounted only while there is something to show,
+ * so the decision is made from the data signature, never from the loading state. Children get the arriving flag.
+ */
+function ArrivalScope({ signature, children }: { signature: string; children: (arriving: boolean) => ReactNode }): ReactElement {
+  const arriving = usePageArrival('usage', signature)
+  return <>{children(arriving)}</>
+}
+
+/** The arrival stagger of a band: `motion-arrive-band` with its reading-order slot while the page arrives. */
+const bandProps = (arriving: boolean, slot: number): { className?: string; style?: CSSProperties } =>
+  arriving ? { className: 'motion-arrive-band', style: { '--i': slot } as CSSProperties } : {}
 
 const connectionName = (id: string | null): string => (id ? connectionLabel(id) : 'Unknown connection')
 
@@ -243,15 +261,16 @@ export default function UsageView(): ReactElement {
     }
   }, [emptyAll])
 
-  // The sparkline bucket under the pointer (shared with the chart's crosshair) and the KPI number tween's trigger:
-  // only a filter or metric change the user made bumps it, never first paint or the periodic refresh.
+  // The sparkline bucket under the pointer (shared with the chart's crosshair) and the draw triggers: only a filter or
+  // metric change the person made bumps them, never first paint or the periodic refresh (those only tween figures).
   const [scrub, setScrub] = useState<number | null>(null)
-  const [tweenKey, setTweenKey] = useState(0)
+  const [filterSeq, setFilterSeq] = useState(0)
+  const [metricSeq, setMetricSeq] = useState(0)
 
   // ---- filter changes ----
   const applyFilters = useCallback(
     (next: UsageFilters, opts?: { moved?: string; cleared?: boolean; scrollRuns?: boolean }) => {
-      setTweenKey((k) => k + 1)
+      setFilterSeq((k) => k + 1)
       const before = chips
       const after = usageChips(next, chipNames)
       const added = addedChips(before, after)
@@ -408,12 +427,20 @@ export default function UsageView(): ReactElement {
   const metric = resolveMetric(chosenMetric, unpriced)
   const onMetric = useCallback(
     (m: Metric) => {
-      // No tween key here: the KPI figures do not depend on the chart metric (Reviewer M1).
+      // No filter bump here: the KPI figures do not depend on the chart metric (Reviewer M1); only the chart redraws.
       setChosenMetric(m)
+      setMetricSeq((k) => k + 1)
       say(metricAnnouncement(m))
     },
     [say]
   )
+  // Dashboard hand-off: arriving from a Your week figure presses that figure's metric in the KPI band once. It is set
+  // directly (not through onMetric): arriving is not a change the person makes on this page, so it is not announced twice.
+  useEffect(() => {
+    if (!focusReq || !data || focusReq.seq === handledMetricSeq) return
+    handledMetricSeq = focusReq.seq
+    if (focusReq.metric) setChosenMetric(focusReq.metric)
+  }, [focusReq, data])
   const legendKeys = useMemo(() => {
     const ps = data?.projects ?? []
     const own = ps.filter((p) => series.has(p.projectId)).map((p) => p.projectId)
@@ -453,6 +480,34 @@ export default function UsageView(): ReactElement {
   }, [chartTrend, span, bucket, summary])
   // The band shows four headline figures; cost per run and cache hit live in the Efficiency strip.
   const kpiItems = useMemo(() => (summary ?? []).filter((i) => i.signal === 'cost' || i.signal === 'tokens' || i.signal === 'runs' || i.signal === 'wall'), [summary])
+
+  // The Pacing header: spend against the previous period at the same point, and the projection (lib/usagePacing.ts).
+  // One picked bucket (a day chip) is not the whole period, so pacing does not apply to it.
+  const costItem = useMemo(() => (summary ?? []).find((i) => i.signal === 'cost') ?? null, [summary])
+  const pacing = useMemo(() => {
+    if (!data || !costItem || !context || filters.bucketPick) return null
+    const kind = costItem.cost ? costView(costItem.cost).kind : 'none'
+    const bounds = periodBounds(filters.period, context.now)
+    const ended = elapsedFraction(bounds.since, bounds.end, context.now) >= 1
+    // A previous period with no runs is "no prior data" on the tiles; the pace says the same and draws no tick.
+    const previousEmpty = !!previousData && !previousData.truncated && previousData.data.totals.runs === 0
+    const previous =
+      previousData && !previousData.truncated && !previousEmpty && prevSpan
+        ? previousAtPoint(pacingRuns(previousData.data.rows, filters.model), prevSpan, Math.min(context.now, bounds.end) - bounds.since, ended)
+        : null
+    return pacingModel({
+      since: bounds.since,
+      end: bounds.end,
+      now: context.now,
+      spendUsd: kind === 'none' ? 0 : kind === 'unknown' ? null : (costItem.cost?.costUsd ?? null),
+      allPriced: (kind === 'known' || kind === 'none') && data.totals.costUnknownRuns === 0 && !data.lowerBound,
+      truncated: data.lowerBound,
+      previous,
+      previousWords: previousPeriodWords(filters.period),
+      rolling: filters.period.kind === 'days',
+      previousEmpty
+    })
+  }, [data, costItem, context, filters.bucketPick, filters.period, filters.model, previousData, prevSpan])
 
   return (
     <div className="usage-view" ref={rootRef} data-testid="usage-view" aria-busy={state.busy}>
@@ -495,7 +550,24 @@ export default function UsageView(): ReactElement {
               {state.error && !overview && <LoadError message={state.error} onRetry={retry} />}
               {!overview && !state.error && <LoadingSkeleton />}
               {panelProps && summary && data && notes && (
+                <ArrivalScope signature={`${state.settledKey ?? ''}|${data.matchedRuns}|${data.totals.cost.costUsd ?? 'unknown'}`}>
+                  {(arriving) => {
+                  // Draw motion for the panels: the page's arrival, then only the person's own filter or metric changes.
+                  const drawSeq = filterSeq + metricSeq
+                  const pp = { ...panelProps, arriving, drawSeq }
+                  return (
                 <>
+                  {costItem && !noRuns && (
+                    <Pacing
+                      item={costItem}
+                      label={costItem.label}
+                      periodText={periodLabel(filters.period, barNow)}
+                      model={pacing}
+                      unavailable={filters.bucketPick ? 'Pacing needs the whole period: remove the day chip to see it.' : null}
+                      arriving={arriving}
+                      drawSeq={filterSeq}
+                    />
+                  )}
                   <UsageSummary
                     items={kpiItems}
                     coverage={costCoverage(data.totals)}
@@ -504,9 +576,9 @@ export default function UsageView(): ReactElement {
                     spark={sparkData.spark}
                     bucketLabels={sparkData.labels}
                     onScrub={setScrub}
-                    tweenKey={tweenKey}
+                    arriving={arriving}
+                    drawSeq={filterSeq}
                     unpricedNote={notes.partial ?? notes.unpriced}
-                    bucketWord={`per ${bucket}`}
                     metric={metric}
                     onMetric={onMetric}
                     tokens={data.totals.tokens}
@@ -517,9 +589,9 @@ export default function UsageView(): ReactElement {
                     <EmptyFiltered model={emptyModel(filters, chips, anyRuns?.lastAt ?? null, barNow)} onClear={onClearAll} onUseThirtyDays={useThirtyDays} />
                   ) : (
                     <>
-                      <div className="usage-hero">
+                      <div className={`usage-hero${arriving ? ' motion-arrive-band' : ''}`} style={bandProps(arriving, 1).style}>
                         <SpendPanel
-                          {...panelProps}
+                          {...pp}
                           periodTrend={periodTrend}
                           onClearBucket={filters.bucketPick ? onClearBucket : undefined}
                           metric={metric}
@@ -541,23 +613,29 @@ export default function UsageView(): ReactElement {
                             ) : undefined
                           }
                         />
-                        <BreakdownCard {...panelProps} highlight={highlight} onHighlight={setHighlight} />
+                        <BreakdownCard {...pp} highlight={highlight} onHighlight={setHighlight} />
                       </div>
                       <EfficiencyPanel
-                        {...panelProps}
+                        {...pp}
+                        band={2}
                         onPickSignal={(s) => {
                           setWastefulSort(s)
                           setWastefulFocus((n) => n + 1)
                         }}
                       />
-                      <div className="usage-pair">
-                        <WastefulRuns {...panelProps} sort={wastefulSort} onSort={setWastefulSort} focusSeq={wastefulFocus} />
-                        <StaffingPanel {...panelProps} />
+                      <div className={`usage-pair${arriving ? ' motion-arrive-band' : ''}`} style={bandProps(arriving, 3).style}>
+                        <WastefulRuns {...pp} sort={wastefulSort} onSort={setWastefulSort} focusSeq={wastefulFocus} />
+                        <StaffingPanel {...pp} />
                       </div>
-                      <AllRuns {...panelProps} open={runsOpen} onToggle={setRunsOpen} />
+                      <div className={arriving ? 'motion-arrive-band' : undefined} style={bandProps(arriving, 4).style}>
+                        <AllRuns {...pp} open={runsOpen} onToggle={setRunsOpen} />
+                      </div>
                     </>
                   )}
                 </>
+                  )
+                  }}
+                </ArrivalScope>
               )}
               <footer className="usage-footer">
                 {!overview && !state.error && (
@@ -566,7 +644,6 @@ export default function UsageView(): ReactElement {
                   </p>
                 )}
                 <LegacyNote text={notes?.legacy ?? null} />
-                <UsageDefinitions />
               </footer>
             </>
           )}

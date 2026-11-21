@@ -1,24 +1,25 @@
 import type { CSSProperties, KeyboardEvent, ReactElement } from 'react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { GitBranch, GitCommitHorizontal } from 'lucide-react'
+import { GitCommitHorizontal } from 'lucide-react'
 import { projectKindOf } from '@shared/defaults'
 import { isRunLive, useAppStore, type RunState } from '../../store/useAppStore'
 import { commitChart, type CommitActivityInput, type CommitColumn, type CommitLegendItem } from '../../lib/commitChart'
-import { Icon } from '../ui/Icon'
 import { useRovingFocus } from '../connectors/useRovingFocus'
+import { DashSection } from './DashboardContext'
 import { ProjectBadge } from './ProjectBadge'
 import { useNow } from './useDashboardData'
 
 /**
- * Commits this week by project (docs/design/dashboard-overhaul.md "Visual pass"): fixed in the right column of the lead
- * band, beside Waiting on you; not arrangeable, so it draws its own card with the shared `.dash-section` head. One stacked
- * bar per local day (oldest left, today right), a segment per project in its identity hue with a 2 px surface gap, a
- * linear scale from zero, then a legend. The model is `lib/commitChart.ts`; this file only draws it and asks for the data.
+ * Commits this week by project (section id `commits`, an optional section kept from the previous Dashboard; it renders
+ * through the shared `DashSection` frame, so it is arrangeable and hideable like the others). One stacked bar per local
+ * day (oldest left, today right), a segment per project in its identity hue with a 2 px surface gap, a linear scale from
+ * zero, then a legend. The model is `lib/commitChart.ts`; this file only draws it and asks for the data.
  *
  * Data: `window.orgai.projects.commitActivity()` (read-only, desktop; main caches 60 s), read through a feature-detecting
- * accessor so the tile shows its empty state wherever the call is missing. It is asked once after first paint and again
+ * accessor so the section stays undrawn wherever the call is missing. It is asked once after first paint and again
  * when a work run leaves the live set, never more than once per COMMIT_REFRESH_MIN_MS (a run end inside the window waits
- * for its end). A failure is silent: the earlier answer stays, or the empty card shows.
+ * for its end). A failure is silent: the earlier answer stays, or the section is not drawn. The section is also not
+ * drawn while the first answer is on its way, without code projects, or without a commit this week.
  *
  * Keyboard: the day group is one Tab stop (roving, today at rest); arrows, Home and End move, Enter or Space pins the day
  * in the readout (aria-pressed), Esc unpins. The readout is a plain paragraph, not a live region. Nothing here animates.
@@ -104,24 +105,6 @@ function useCommitActivity(enabled: boolean): Loaded {
     }
   }, [enabled])
   return state
-}
-
-function Head({ total }: { total: number }): ReactElement {
-  return (
-    <div className="dash-section-head">
-      <span className="dash-section-icon" aria-hidden="true">
-        <Icon icon={GitCommitHorizontal} size="sm" />
-      </span>
-      <h2 id="dash-h-commits" tabIndex={-1} data-section-heading="">
-        Commits this week
-      </h2>
-      {total > 0 && (
-        <span className="dash-count" data-testid="dash-commits-total">
-          {total}
-        </span>
-      )}
-    </div>
-  )
 }
 
 function Day({
@@ -256,24 +239,22 @@ export function CommitsSection(): ReactElement | null {
   const now = useNow(60_000)
   const chart = useMemo(() => commitChart(loaded.data, code, now), [loaded.data, code, now])
 
-  if (code.length === 0) return null
+  // Not drawn without code projects, while the first answer is on its way, or without a commit this week.
+  const empty = code.length === 0 || loaded.status === 'loading' || chart.empty
   return (
-    <section className="dash-section dash-commits" data-testid="dash-commits" aria-labelledby="dash-h-commits">
-      <Head total={loaded.status === 'ready' ? chart.total : 0} />
-      {loaded.status === 'loading' ? (
-        <div className="dash-commits-body" data-testid="dash-commits-loading" aria-hidden="true">
-          <div className="dash-commits-inner">
-            <div className="dash-commits-placeholder" />
-          </div>
-        </div>
-      ) : chart.empty ? (
-        <p className="dash-empty dash-commits-empty" data-testid="dash-commits-empty">
-          <Icon icon={GitBranch} size="sm" />
-          <span>No commits this week.</span>
-        </p>
-      ) : (
-        <Chart columns={chart.columns} legend={chart.legend} text={chart.text} />
-      )}
-    </section>
+    <DashSection
+      id="commits"
+      testId="dash-commits"
+      icon={GitCommitHorizontal}
+      empty={empty}
+      className="dash-commits"
+      headExtra={
+        <span className="dash-count" data-testid="dash-commits-total">
+          {chart.total}
+        </span>
+      }
+    >
+      <Chart columns={chart.columns} legend={chart.legend} text={chart.text} />
+    </DashSection>
   )
 }

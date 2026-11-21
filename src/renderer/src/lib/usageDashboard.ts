@@ -213,7 +213,7 @@ export function overlayReadout(f: OverlayFigure, metric: Metric, costText: strin
   if (f.state === 'empty') return 'Previous period: no runs.'
   if (metric === 'runs') return `Previous period: ${f.runs} ${f.runs === 1 ? 'run' : 'runs'}.`
   if (metric === 'tokens') return `Previous period: ${formatTokens(f.value)} tokens.`
-  if (f.state === 'unknown') return 'Previous period: cost unknown.'
+  if (f.state === 'unknown') return 'Previous period: not priced.'
   return `Previous period: ${costText}.`
 }
 

@@ -2,9 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { NARROW_CAPS, WIDE_CAPS, capsFor } from './dashCaps'
 
 describe('dashCaps', () => {
-  it('is wide from 1000 px of page width', () => {
-    expect(capsFor(999).wide).toBe(false)
-    expect(capsFor(1000).wide).toBe(true)
+  it('is wide (two work columns) from 880 px of page width', () => {
+    expect(capsFor(879).wide).toBe(false)
+    expect(capsFor(880).wide).toBe(true)
+  })
+  it('pairs half-width sections from 1280 px', () => {
+    expect(capsFor(1279).pair).toBe(false)
+    expect(capsFor(1280).pair).toBe(true)
+    expect(capsFor(1280).wide).toBe(true)
+    expect(capsFor(879).pair).toBe(false)
   })
   it('carries the overhaul caps (narrow / wide)', () => {
     expect([NARROW_CAPS.needs, WIDE_CAPS.needs]).toEqual([3, 5])

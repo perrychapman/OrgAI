@@ -51,13 +51,17 @@ export interface Ticks {
 
 const STEPS = [1, 2, 2.5, 5, 10]
 
-/** Nice ticks from 0 covering `maxValue`: 3 to 5 labels (0 and 2 to 4 steps). Nothing to draw gives 0 and 1. */
-export function niceTicks(maxValue: number): Ticks {
-  if (!(maxValue > 0) || !Number.isFinite(maxValue)) return { max: 1, ticks: [0, 0.5, 1] }
+/**
+ * Nice ticks from 0 covering `maxValue`: 3 to 5 labels (0 and 2 to 4 steps). Nothing to draw gives 0 and 1 (0, 1 and 2
+ * when `integer`). With `integer` (a count, like runs) every tick is a whole number: half a run is never a label.
+ */
+export function niceTicks(maxValue: number, integer = false): Ticks {
+  if (!(maxValue > 0) || !Number.isFinite(maxValue)) return integer ? { max: 2, ticks: [0, 1, 2] } : { max: 1, ticks: [0, 0.5, 1] }
   const exp = Math.floor(Math.log10(maxValue / 4))
   for (let e = exp; e <= exp + 2; e++) {
     for (const m of STEPS) {
       const step = m * 10 ** e
+      if (integer && !(step >= 1 && Number.isInteger(step))) continue
       const n = Math.ceil(maxValue / step - 1e-9)
       if (n <= 4) {
         const count = Math.max(2, n)
@@ -299,14 +303,14 @@ export function readoutText(label: string, bar: { runs: number; cost: CostInput;
 /** A segment's own readout: "Tue 3 Nov, Billing: $6.10, 9 runs." */
 export function segmentReadout(label: string, name: string, seg: Segment, metric: Metric): string {
   if (metric === 'runs') return `${label}, ${name}: ${plural(seg.runs, 'run')}.`
-  const v = seg.state === 'unknown' && metric === 'cost' ? 'cost unknown' : metricFigure(seg, metric)
+  const v = seg.state === 'unknown' && metric === 'cost' ? 'not priced' : metricFigure(seg, metric)
   return `${label}, ${name}: ${v}, ${plural(seg.runs, 'run')}.`
 }
 
-/** A cost with no known value reads "No price" in compact places; the figure otherwise. */
+/** A cost with no known value reads "Not priced" in compact places; the figure otherwise. */
 export function costFigureText(c: CostInput): string {
   const v = costView(c, { precision: 'page' })
-  return v.kind === 'unknown' ? 'No price' : v.text
+  return v.kind === 'unknown' ? 'Not priced' : v.text
 }
 
 /** The rollup's cost as a CostInput: "+" iff a run folded into it has unknown cost (the one partial rule, 5). */

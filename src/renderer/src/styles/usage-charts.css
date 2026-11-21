@@ -1,9 +1,9 @@
 /*
- * Usage page charts (docs/design/usage-app.md sections 5 and 6.1-6.4): the stacked spend chart, ranked bars, row menu and
- * the table alternatives. The panel shell (.usage-panel, .usage-panel-head, .usage-table-details) is styled in usage.css.
- * Colours are tokens only (--chart-* in tokens.css). The spend chart's motion (docs/design usage plan 3, M2-M7) is only what a
- * user's own change starts: the metric morph and legend toggle run from SpendPanel through the Web Animations API, and
- * this file carries the fades, the linked-highlight dim and the reduced-motion switch-off at the end of the spend block.
+ * Usage page charts (docs/design/usage-app.md sections 5 and 6.1-6.4; dashboard-usage-redesign SpendChart): the stacked-area
+ * spend chart, ranked bars, row menu and the table alternatives. The panel shell (.usage-panel, .usage-panel-head,
+ * .usage-table-details) is styled in usage.css. Colours are tokens only (--chart-* in tokens.css). The chart's motion is
+ * only what a person's own change starts: the areas wipe in (.motion-draw-wipe from motion.css, class set by SpendPanel
+ * for one generation), plus the linked-highlight dim and the reduced-motion switch-off at the end of the spend block.
  * The crosshair and tooltip never transition.
  */
 
@@ -46,13 +46,19 @@
   font-size: var(--text-small);
   color: var(--text-secondary);
 }
-.uc-spend-scroll {
-  overflow-x: auto;
-  overflow-y: hidden;
-}
+/* The plot is one Tab stop (a slider by role) and spans the card; the pointer anywhere over it reads the nearest slot. */
 .uc-spend-plot {
   position: relative;
-  max-width: none;
+  max-width: 100%;
+  cursor: pointer;
+}
+.uc-spend-plot:focus {
+  outline: none;
+}
+.uc-spend-plot:focus-visible {
+  outline: 2px solid var(--chart-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 .uc-svg {
   display: block;
@@ -79,35 +85,56 @@
   stroke: var(--border-default);
   stroke-width: 1;
 }
-.uc-hit {
-  fill: transparent;
-  cursor: pointer;
-}
-.uc-seg {
-  stroke: var(--surface-1);
+/* One series' area: a 1 px --chart-hatch (the card's own surface) edge separates it from its neighbours. */
+.uc-area {
+  stroke: var(--chart-hatch);
   stroke-width: 1;
+  stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
   cursor: pointer;
 }
+/* Unpriced usage: a hatched band the height of the plot (never an empty dip that reads as zero). */
+.uc-gap {
+  stroke: none;
+  opacity: 0.7;
+  pointer-events: none;
+}
+.uc-gap[data-kind='not-loaded'] {
+  opacity: 0.4;
+}
+/* The lane under the axis: dashed outline = not priced, no outline = a lower bound (shape, not only colour). */
 .uc-stub {
   stroke: var(--chart-unknown);
   stroke-width: 1.5;
   stroke-dasharray: 3 2;
-  cursor: pointer;
+  pointer-events: none;
+}
+.uc-lane {
+  stroke: none;
+  pointer-events: none;
+}
+/* The day pick: everything outside the picked slot is veiled to --dim-opacity, the slot itself is outlined (.uc-selected). */
+.uc-veil {
+  fill: var(--surface-1);
+  opacity: calc(1 - var(--dim-opacity));
+}
+/* Where the crosshair crosses each series' top edge. */
+.uc-marker {
+  stroke: var(--surface-1);
+  stroke-width: 1.5;
+  pointer-events: none;
 }
 /*
- * Linked highlight (M7): while a legend chip, a segment or a "Where it went" row is pointed at or focused, every other
+ * Linked highlight (M7): while a legend chip, an area or a "Where it went" row is pointed at or focused, every other
  * series dims to 0.35 over --dur-fast (restore uses the same transition, so it sits on the resting rule). The
- * highlighted segment also gets a 2 px outline (.uc-hl), so it never rests on the dim alone. 0.35 is stronger than
+ * highlighted area also gets a 2 px edge (.uc-hl), so it never rests on the dim alone. 0.35 is stronger than
  * --dim-opacity (0.5 to 0.55, used for the day pick) on purpose: the pick keeps its figures readable, this one points.
  */
-.uc-segg,
-.uc-stub,
+.uc-area,
 .uc-legend-row {
   transition: opacity var(--dur-fast) var(--ease-out);
 }
-.uc-spend .uc-segg[data-dim='true'],
-.uc-spend .uc-stub[data-dim='true'],
+.uc-spend .uc-area[data-dim='true'],
 .uc-spend .uc-legend-row[data-dim='true'] {
   opacity: 0.35;
 }
@@ -115,23 +142,14 @@
   fill: none;
   stroke: var(--text-primary);
   stroke-width: 2;
+  stroke-linejoin: round;
   pointer-events: none;
 }
-/* Metric morph and legend toggle (M2, M5): each segment group scales about its own bottom edge. */
-.uc-segg,
-.uc-ghost {
-  transform-box: fill-box;
-  transform-origin: 50% 100%;
-}
-.uc-ghost {
-  pointer-events: none;
-}
-/* A bucket-set change (period, group by, project filter) fades the chart body once (M3): SpendPanel adds .motion-fade. */
-/* Compare turned on by the user (M4): the previous-period outlines fade in; SpendPanel sets data-anim-overlay for one --dur-base. */
+/* Compare turned on by the user: the previous-period outline fades in; SpendPanel sets data-anim-overlay for one --dur-base. */
 .uc-spend-plot[data-anim-overlay='in'] .uc-prev {
   animation: motion-fade var(--dur-base) var(--ease-out) backwards;
 }
-/* The previous-period overlay: a dashed outline at the previous total (or a hollow circle when its cost is unknown). */
+/* The previous-period overlay: a dashed line through the previous totals (or a hollow circle when its cost is unknown). */
 .uc-prev {
   fill: none;
   stroke: var(--text-secondary);
@@ -153,17 +171,6 @@
   stroke-width: 2;
   pointer-events: none;
 }
-.uc-bar:focus,
-.uc-seg:focus,
-.uc-stub:focus {
-  outline: none;
-}
-.uc-bar:focus-visible,
-.uc-seg:focus-visible,
-.uc-stub:focus-visible {
-  outline: 2px solid var(--chart-focus);
-  outline-offset: 2px;
-}
 .uc-note {
   margin: var(--space-1) 0 0;
   font-size: var(--text-small);
@@ -173,33 +180,18 @@
 
 /* ---------- crosshair and tooltip (2.1, M6): both move with no transition; the tooltip's first show fades over --dur-fade ---------- */
 
-/* One column band and a 1 px rule at --cx (written by SpendPanel). It sits under the svg, so bars stay crisp over it. */
+/* A 1 px rule at --cx (written by SpendPanel through the pointer's frame or the layout effect), over the areas. */
 .uc-crosshair {
   position: absolute;
-  z-index: 0;
+  z-index: 2;
   left: 0;
-  width: var(--slot);
-  transform: translateX(calc(var(--cx, 0px) - var(--slot) / 2));
-  pointer-events: none;
-}
-.uc-crosshair::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: var(--surface-2);
-  opacity: 0.6;
-}
-.uc-crosshair::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc(50% - 0.5px);
   width: 1px;
   background: var(--border-strong);
+  transform: translateX(calc(var(--cx, 0px) - 0.5px));
+  pointer-events: none;
 }
-/* A positioned overlay over the card, not inside the plot scroller, so a tall tooltip is never clipped. aria-hidden:
-   the visually hidden readout carries the same words. */
+/* A positioned overlay over the card, not inside the plot, so a tall tooltip is never clipped. aria-hidden: the focused
+   plot's value text (aria-valuetext) carries the same words. */
 .uc-tip {
   position: absolute;
   z-index: 3;
@@ -582,10 +574,19 @@ button.uc-legend-btn:focus-visible {
   .uc-prev {
     stroke: CanvasText;
   }
-  .uc-selected,
-  .uc-bar:focus-visible {
+  .uc-selected {
     stroke: Highlight;
+  }
+  .uc-spend-plot:focus-visible {
     outline-color: Highlight;
+  }
+  .uc-area {
+    stroke: Canvas;
+  }
+  .uc-gap,
+  .uc-stub,
+  .uc-lane {
+    stroke: CanvasText;
   }
   .uc-hl {
     stroke: CanvasText;

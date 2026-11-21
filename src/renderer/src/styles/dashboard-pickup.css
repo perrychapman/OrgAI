@@ -1,0 +1,149 @@
+/* ---------- Dashboard: Pick up (components/dashboard/PickUpSection.tsx, RunMark.tsx; lib/resumeRows.ts) ----------
+   An unboxed list of paused and recently ended runs, newest first: no fill at rest, a border-default hairline between rows
+   (the shared .dash-rows rule in dashboard.css), surface-2 on hover. Each row: a 12 px state mark and the fixed status word,
+   the title over one meta line (when, project, cost only if any, the stop reason), then one small button. The whole row but
+   the button is the Open target. Tokens only; nothing here loops. The "ended since your last visit" marker is a dot with
+   its words for assistive tech. */
+
+.dash-pick-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.dash-pick-row:hover,
+.dash-pick-row:focus-within {
+  background: var(--surface-2);
+}
+.dash-pick-main {
+  all: unset;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 6.25rem minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  min-height: 44px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: inherit;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.dash-pick-main:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.dash-pick-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-semibold);
+}
+.dash-pick-word {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-pick-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.dash-pick-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-pick-sub {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.dash-pick-sub > .dash-clip:first-child {
+  flex: 0 1 auto;
+}
+.dash-pick-cost {
+  flex: none;
+  color: var(--text-secondary);
+}
+/* The stop reason gives way first when the line is short. */
+.dash-pick-reason {
+  flex: 1 1 0;
+  color: var(--text-tertiary);
+}
+.dash-pick-reason::before {
+  content: '·';
+  margin-right: var(--space-2);
+}
+.dash-pick-foot {
+  display: flex;
+  align-items: center;
+  padding-right: var(--space-2);
+}
+
+/* Ended since the person last left the Dashboard: an accent dot before the title. */
+.dash-pick-new {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--space-2);
+  vertical-align: 2px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+/* ---------- The state mark: a ring in the state colour, filled for Finished and Failed ---------- */
+.run-mark {
+  position: relative;
+  flex: none;
+  box-sizing: border-box;
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--state-idle);
+  background: var(--surface-1);
+}
+.run-mark[data-state='done'] {
+  border-color: var(--state-done);
+  background: var(--state-done);
+}
+.run-mark[data-state='failed'] {
+  border-color: var(--state-error);
+  background: var(--state-error);
+}
+.run-mark[data-state='waiting'] {
+  border-color: var(--state-waiting);
+  box-shadow: 0 0 0 3px var(--warning-soft);
+}
+.run-mark[data-state='working'] {
+  border-color: var(--state-working);
+}
+@media (forced-colors: active) {
+  .run-mark {
+    forced-color-adjust: none;
+    border-color: CanvasText;
+  }
+  .run-mark[data-state='done'],
+  .run-mark[data-state='failed'] {
+    background: CanvasText;
+  }
+}
+@container dash (max-width: 559px) {
+  .dash-pick-main {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 0;
+  }
+}
