@@ -1,0 +1,24 @@
+{
+  "v": 3,
+  "layout": "files",
+  "createdOnFiles": { "v": 1, "at": "2026-11-21T22:40:00Z" },
+  "title": "OrgAI Dashboard & Usage Design System",
+  "namespace": "OrgAI",
+  "libraries": [],
+  "sections": {},
+  "groups": ["Logos"],
+  "assetGroups": {
+    "Logos": {
+      "name": "Logos",
+      "tile": "l",
+      "order": ["mark.svg", "mark-glyph.svg"],
+      "files": {
+        "mark.svg": { "name": "mark.svg", "blob": "0f32e5516d2a3263b4a7d42a167e6673", "size": 932, "type": "image/svg+xml" },
+        "mark-glyph.svg": { "name": "mark-glyph.svg", "blob": "7dff14c0b1b045ed0777f1a3be1860d2", "size": 618, "type": "image/svg+xml" }
+      }
+    }
+  },
+  "blobs": {},
+  "docs": { "sections": [] },
+  "lastChange": { "by": "Claude", "at": "2026-11-21T22:40:00Z", "via": "Claude Code", "note": "First version: foundations from the renderer's tokens, and the redesigned Dashboard and Usage components." }
+}

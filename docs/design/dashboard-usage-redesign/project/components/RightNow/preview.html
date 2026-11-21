@@ -1,0 +1,52 @@
+<!-- @dsCard group="Dashboard" height=340 -->
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.441.0/dist/umd/lucide.min.js"></script>
+<div class="oa">
+<button class="oa-btn sm ghost oa-replay" data-replay><i data-lucide="rotate-ccw" aria-hidden="true"></i>Replay</button>
+<section class="oa-card" aria-label="Right now">
+  <div class="oa-head"><h2>Right now</h2><span class="oa-num">1 running · 1 waiting</span></div>
+  <div class="oa-runs">
+    <div class="oa-run">
+      <button class="oa-run-head"><span class="oa-mark" data-state="working" style="--role:var(--role-1)"></span><span class="oa-run-title">Fix the flaky retry test</span><span class="oa-badge" data-tone="info">Running</span><span class="oa-num">orgai · 12:04</span></button>
+      <div class="oa-plan">
+        <div class="oa-plan-bar" role="img" aria-label="Plan: step 3 of 5"><i data-s="done" class="oa-fill" style="--i:0"></i><i data-s="done" class="oa-fill" style="--i:1"></i><i data-s="now"></i><i></i><i></i></div>
+        <span class="oa-plan-label">Step 3 of 5 · <b>Run the unit suite</b></span>
+      </div>
+      <ul class="oa-agents">
+        <li class="oa-agent oa-rise" style="--role:var(--role-1);--d:0;--i:0">
+  <span class="oa-mark" data-state="working" style="--i:0"></span>
+  <span class="oa-agent-line"><span class="oa-agent-name">Orchestrator</span><span class="oa-agent-act">Waiting on 2 reports</span></span>
+  <span class="oa-num">12:04</span>
+</li>
+        <li class="oa-agent oa-rise" style="--role:var(--role-2);--d:1;--i:1">
+  <span class="oa-mark" data-state="working" style="--i:1"></span>
+  <span class="oa-agent-line"><span class="oa-agent-name">Runtime Engineer</span><span class="oa-agent-act">Running npm test</span></span>
+  <span class="oa-num">04:12</span>
+</li>
+        <li class="oa-agent oa-rise" style="--role:var(--role-3);--d:1;--i:2">
+  <span class="oa-mark" data-state="idle" style="--i:2"></span>
+  <span class="oa-agent-line"><span class="oa-agent-name">Reviewer</span><span class="oa-agent-act">Queued for the review step</span></span>
+  <span class="oa-num"></span>
+</li>
+      </ul>
+    </div>
+    <div class="oa-run">
+      <button class="oa-run-head"><span class="oa-mark" data-state="waiting" style="--role:var(--role-1)"></span><span class="oa-run-title">Usage page pass</span><span class="oa-badge" data-tone="warning">Needs you</span><span class="oa-num">orgai · 31:40</span></button>
+      <div class="oa-plan">
+        <div class="oa-plan-bar" role="img" aria-label="Plan: step 2 of 4"><i data-s="done" class="oa-fill"></i><i data-s="now"></i><i></i><i></i></div>
+        <span class="oa-plan-label">Step 2 of 4 · <b>Choose the lead chart</b></span>
+      </div>
+      <ul class="oa-agents">
+        <li class="oa-agent oa-rise" style="--role:var(--role-4);--d:0;--i:3">
+  <span class="oa-mark" data-state="waiting" style="--i:3"></span>
+  <span class="oa-agent-line"><span class="oa-agent-name">UI Lead</span><span class="oa-agent-act">Asked you a question</span></span>
+  <span class="oa-num">02:15</span>
+</li>
+      </ul>
+    </div>
+  </div>
+</section>
+</div>
+<script>
+
+window.OrgAI && window.OrgAI.init();
+</script>

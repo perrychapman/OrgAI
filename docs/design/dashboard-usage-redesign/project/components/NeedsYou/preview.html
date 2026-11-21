@@ -1,0 +1,35 @@
+<!-- @dsCard group="Dashboard" height=200 -->
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.441.0/dist/umd/lucide.min.js"></script>
+<div class="oa">
+<button class="oa-btn sm ghost oa-replay" data-replay><i data-lucide="rotate-ccw" aria-hidden="true"></i>Replay</button>
+<section aria-label="Needs you">
+  <div class="oa-head" data-tone="warning"><h2>Needs you</h2><span class="oa-num">2</span></div>
+  <ul class="oa-needs">
+    <li class="oa-need oa-rise oa-ring" style="--i:0">
+      <div class="oa-need-body">
+        <span class="oa-need-kind">Runtime Engineer wants to run a command</span>
+        <code class="oa-need-cmd">npm run typecheck</code>
+        <span class="oa-need-where">orgai · Fix the flaky retry test · in the project folder</span>
+      </div>
+      <div class="oa-need-actions">
+        <button class="oa-btn sm" aria-label="Deny: npm run typecheck">Deny</button>
+        <button class="oa-btn sm primary" aria-label="Allow once: npm run typecheck">Allow once</button>
+      </div>
+    </li>
+    <li class="oa-need oa-rise" style="--i:1">
+      <div class="oa-need-body">
+        <span class="oa-need-kind">UI Lead asks: which chart leads the Usage page?</span>
+        <span class="oa-need-where">orgai · Usage page pass</span>
+      </div>
+      <div class="oa-need-actions">
+        <button class="oa-btn sm">Spend over time</button>
+        <button class="oa-btn sm">Where it went</button>
+      </div>
+    </li>
+  </ul>
+</section>
+</div>
+<script>
+
+window.OrgAI && window.OrgAI.init();
+</script>

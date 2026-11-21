@@ -1,0 +1,12 @@
+<!-- @dsCard group="Shared" height=80 -->
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.441.0/dist/umd/lucide.min.js"></script>
+<div class="oa">
+<button class="oa-btn sm ghost oa-replay" data-replay><i data-lucide="rotate-ccw" aria-hidden="true"></i>Replay</button>
+<ul class="oa-gauges">
+  <li style="display:flex;align-items:center;gap:var(--space-2)"><span class="oa-mark" data-state="working" style="--role:var(--role-1)"></span>Running</li><li style="display:flex;align-items:center;gap:var(--space-2)"><span class="oa-mark" data-state="waiting" style="--role:var(--role-2)"></span>Needs you</li><li style="display:flex;align-items:center;gap:var(--space-2)"><span class="oa-mark" data-state="idle" style="--role:var(--role-3)"></span>Idle</li><li style="display:flex;align-items:center;gap:var(--space-2)"><span class="oa-mark" data-state="done" style="--role:var(--role-4)"></span>Finished</li><li style="display:flex;align-items:center;gap:var(--space-2)"><span class="oa-mark" data-state="failed" style="--role:var(--role-5)"></span>Failed</li>
+</ul>
+</div>
+<script>
+
+window.OrgAI && window.OrgAI.init();
+</script>

@@ -1,0 +1,25 @@
+<!-- @dsCard group="Shared" height=110 -->
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.441.0/dist/umd/lucide.min.js"></script>
+<div class="oa">
+<button class="oa-btn sm ghost oa-replay" data-replay><i data-lucide="rotate-ccw" aria-hidden="true"></i>Replay</button>
+<ul class="oa-gauges" aria-label="Plan limits">
+<li class="oa-gauge">
+  <div class="oa-gauge-dial" role="img" aria-label="5-hour window: 62 percent used. Claude plan · resets in 1 h 40 min">
+    <svg viewBox="0 0 64 64"><circle class="oa-gauge-track" cx="32" cy="32" r="26"/><circle class="oa-gauge-arc oa-arc" cx="32" cy="32" r="26" pathLength="100" style="--pct:62"/></svg>
+    <span class="oa-gauge-pct" data-to="62" data-suf="%">62%</span>
+  </div>
+  <div class="oa-gauge-text"><span class="oa-gauge-name">5-hour window</span><span class="oa-gauge-sub">Claude plan · resets in 1 h 40 min</span></div>
+</li>
+<li class="oa-gauge" data-level="warn">
+  <div class="oa-gauge-dial" role="img" aria-label="7-day window: 84 percent used. Claude plan · resets Thu 09:00">
+    <svg viewBox="0 0 64 64"><circle class="oa-gauge-track" cx="32" cy="32" r="26"/><circle class="oa-gauge-arc oa-arc" cx="32" cy="32" r="26" pathLength="100" style="--pct:84"/></svg>
+    <span class="oa-gauge-pct" data-to="84" data-suf="%">84%</span>
+  </div>
+  <div class="oa-gauge-text"><span class="oa-gauge-name">7-day window</span><span class="oa-gauge-sub">Claude plan · resets Thu 09:00</span></div>
+</li>
+</ul>
+</div>
+<script>
+
+window.OrgAI && window.OrgAI.init();
+</script>

@@ -1,0 +1,43 @@
+<!-- @dsCard group="Dashboard" height=330 -->
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.441.0/dist/umd/lucide.min.js"></script>
+<div class="oa">
+<button class="oa-btn sm ghost oa-replay" data-replay><i data-lucide="rotate-ccw" aria-hidden="true"></i>Replay</button>
+<section class="oa-brief oa-hero-card oa-rise-lg" aria-label="Briefing">
+  <div class="oa-brief-main">
+    <p class="oa-brief-date">Saturday 21 November</p>
+    <h1 class="oa-brief-hello">Good evening, Alex</h1>
+    <p class="oa-brief-status">3 agents are working in 2 runs. <b>2 decisions need you.</b></p>
+    <p class="oa-brief-since"><span>Since yesterday 18:40</span><span class="oa-sep">·</span><span><b data-to="4">4</b> runs finished</span><span class="oa-sep">·</span><span><b>1</b> failed</span><span class="oa-sep">·</span><span><b data-to="6.42" data-dec="2" data-pre="$">$6.42</b> spent</span></p>
+    <div class="oa-brief-actions">
+      <button class="oa-btn primary"><i data-lucide="play" aria-hidden="true"></i>Continue orgai</button>
+      <button class="oa-btn"><i data-lucide="message-square" aria-hidden="true"></i>New chat</button>
+      <button class="oa-btn"><i data-lucide="plus" aria-hidden="true"></i>New project</button>
+      <button class="oa-btn ghost"><i data-lucide="sliders-horizontal" aria-hidden="true"></i>Customise</button>
+    </div>
+  </div>
+  <figure class="oa-pulse" aria-label="Team pulse: 6 agents, 3 working, 1 waiting on you">
+  <svg viewBox="0 0 288 184" role="img" aria-hidden="true"><path class="oa-pulse-line oa-trace" pathLength="1" style="--role:var(--role-1);--i:0" d="M160 47 V69 H64 V94"/><path class="oa-pulse-line oa-trace" pathLength="1" style="--role:var(--role-1);--i:1" d="M160 47 V69 H160 V94"/><path class="oa-pulse-line oa-trace" pathLength="1" style="--role:var(--role-1);--i:2" d="M160 47 V69 H256 V94"/><path class="oa-pulse-line oa-trace" pathLength="1" style="--role:var(--role-2);--i:3" d="M64 114 V135 H32 V158"/><path class="oa-pulse-line oa-trace" pathLength="1" style="--role:var(--role-2);--i:4" d="M64 114 V135 H96 V158"/><circle class="oa-pulse-signal" r="3"><animateMotion dur="2.4s" repeatCount="indefinite" path="M160 47 V69 H64 V94" keyPoints="1;0" keyTimes="0;1" calcMode="linear"/></circle><g class="oa-pulse-node oa-pop" data-state="working" style="--role:var(--role-1);--i:0"><circle class="oa-pulse-halo" cx="160" cy="34" r="13" style="--i:0"/><circle class="oa-pulse-dot" cx="160" cy="34" r="13"><title>Orchestrator: working</title></circle></g><g class="oa-pulse-node oa-pop" data-state="working" style="--role:var(--role-2);--i:1"><circle class="oa-pulse-halo" cx="64" cy="104" r="10" style="--i:1"/><circle class="oa-pulse-dot" cx="64" cy="104" r="10"><title>Runtime Engineer: working</title></circle></g><g class="oa-pulse-node oa-pop" data-state="waiting" style="--role:var(--role-4);--i:2"><circle class="oa-pulse-dot" cx="160" cy="104" r="10"><title>UI Lead: waiting</title></circle></g><g class="oa-pulse-node oa-pop" data-state="idle" style="--role:var(--role-3);--i:3"><circle class="oa-pulse-dot" cx="256" cy="104" r="10"><title>Reviewer: idle</title></circle></g><g class="oa-pulse-node oa-pop" data-state="working" style="--role:var(--role-7);--i:4"><circle class="oa-pulse-halo" cx="32" cy="166" r="8" style="--i:4"/><circle class="oa-pulse-dot" cx="32" cy="166" r="8"><title>Test runner: working</title></circle></g><g class="oa-pulse-node oa-pop" data-state="done" style="--role:var(--role-6);--i:5"><circle class="oa-pulse-dot" cx="96" cy="166" r="8"><title>Scan-cost fixer: done</title></circle></g></svg>
+  <figcaption><span><b>6</b> agents</span><span class="oa-key" data-state="working">3 working</span><span class="oa-key" data-state="waiting">1 needs you</span><span class="oa-key" data-state="done">1 finished</span></figcaption>
+</figure>
+  <ul class="oa-gauges" aria-label="Plan limits">
+<li class="oa-gauge">
+  <div class="oa-gauge-dial" role="img" aria-label="5-hour window: 62 percent used. Claude plan · resets in 1 h 40 min">
+    <svg viewBox="0 0 64 64"><circle class="oa-gauge-track" cx="32" cy="32" r="26"/><circle class="oa-gauge-arc oa-arc" cx="32" cy="32" r="26" pathLength="100" style="--pct:62"/></svg>
+    <span class="oa-gauge-pct" data-to="62" data-suf="%">62%</span>
+  </div>
+  <div class="oa-gauge-text"><span class="oa-gauge-name">5-hour window</span><span class="oa-gauge-sub">Claude plan · resets in 1 h 40 min</span></div>
+</li>
+<li class="oa-gauge" data-level="warn">
+  <div class="oa-gauge-dial" role="img" aria-label="7-day window: 84 percent used. Claude plan · resets Thu 09:00">
+    <svg viewBox="0 0 64 64"><circle class="oa-gauge-track" cx="32" cy="32" r="26"/><circle class="oa-gauge-arc oa-arc" cx="32" cy="32" r="26" pathLength="100" style="--pct:84"/></svg>
+    <span class="oa-gauge-pct" data-to="84" data-suf="%">84%</span>
+  </div>
+  <div class="oa-gauge-text"><span class="oa-gauge-name">7-day window</span><span class="oa-gauge-sub">Claude plan · resets Thu 09:00</span></div>
+</li>
+</ul>
+</section>
+</div>
+<script>
+
+window.OrgAI && window.OrgAI.init();
+</script>

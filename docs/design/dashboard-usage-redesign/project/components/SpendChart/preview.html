@@ -1,0 +1,60 @@
+<!-- @dsCard group="Usage" height=380 -->
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.441.0/dist/umd/lucide.min.js"></script>
+<div class="oa">
+<button class="oa-btn sm ghost oa-replay" data-replay><i data-lucide="rotate-ccw" aria-hidden="true"></i>Replay</button>
+<section class="oa-card" aria-label="Spend over time">
+  <div class="oa-chart-head">
+    <h2>Spend over time</h2>
+    <div class="oa-seg" role="group" aria-label="Metric"><button aria-pressed="true">Cost</button><button aria-pressed="false">Tokens</button><button aria-pressed="false">Runs</button></div>
+    <button class="oa-btn sm ghost"><i data-lucide="table" aria-hidden="true"></i>Table</button>
+  </div>
+  <div class="oa-legend" role="group" aria-label="Series">
+    <button aria-pressed="true"><span class="oa-swatch" style="--c:var(--chart-s1)"></span>orgai</button>
+    <button aria-pressed="true"><span class="oa-swatch" style="--c:var(--chart-s2)"></span>docs-site</button>
+    <button aria-pressed="true"><span class="oa-swatch" style="--c:var(--chart-s3)"></span>billing-api</button>
+  </div>
+  <div class="oa-plot">
+    <div class="oa-plot-grid" aria-hidden="true"><span style="--y:0%" data-l="$0"></span><span style="--y:33.3%" data-l="$4"></span><span style="--y:66.6%" data-l="$8"></span><span style="--y:100%" data-l="$12"></span></div>
+    <div class="oa-plot-area" tabindex="0" role="slider" aria-label="Day" aria-valuemin="1" aria-valuemax="21" aria-valuenow="21" aria-valuetext="21 November" data-series='{"orgai":[3.1,4.2,2,0.6,0.4,5.1,6.2,4.8,3.9,5.5,1,0.3,4.4,6.8,7.2,5.9,6.1,1.2,0.8,5.4,4.1],"docs":[1,0.8,1.5,0,0,2.1,1.2,0.9,1.8,2.2,0,0,1.1,0.9,2.4,1.9,1.3,0,0.2,1.6,1.2],"billing":[0.5,0,0.9,0,0,0.4,1.1,0.6,0,1.3,0,0,0.8,1.4,0.7,0.3,0.9,0,0,1,0.6]}'>
+      <svg class="oa-wipe" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polygon style="--c:var(--chart-s1)" points="0.00,74.17 5.00,65.00 10.00,83.33 15.00,95.00 20.00,96.67 25.00,57.50 30.00,48.33 35.00,60.00 40.00,67.50 45.00,54.17 50.00,91.67 55.00,97.50 60.00,63.33 65.00,43.33 70.00,40.00 75.00,50.83 80.00,49.17 85.00,90.00 90.00,93.33 95.00,55.00 100.00,65.83 100.00,100.00 95.00,100.00 90.00,100.00 85.00,100.00 80.00,100.00 75.00,100.00 70.00,100.00 65.00,100.00 60.00,100.00 55.00,100.00 50.00,100.00 45.00,100.00 40.00,100.00 35.00,100.00 30.00,100.00 25.00,100.00 20.00,100.00 15.00,100.00 10.00,100.00 5.00,100.00 0.00,100.00"/><polygon style="--c:var(--chart-s2)" points="0.00,65.83 5.00,58.33 10.00,70.83 15.00,95.00 20.00,96.67 25.00,40.00 30.00,38.33 35.00,52.50 40.00,52.50 45.00,35.83 50.00,91.67 55.00,97.50 60.00,54.17 65.00,35.83 70.00,20.00 75.00,35.00 80.00,38.33 85.00,90.00 90.00,91.67 95.00,41.67 100.00,55.83 100.00,65.83 95.00,55.00 90.00,93.33 85.00,90.00 80.00,49.17 75.00,50.83 70.00,40.00 65.00,43.33 60.00,63.33 55.00,97.50 50.00,91.67 45.00,54.17 40.00,67.50 35.00,60.00 30.00,48.33 25.00,57.50 20.00,96.67 15.00,95.00 10.00,83.33 5.00,65.00 0.00,74.17"/><polygon style="--c:var(--chart-s3)" points="0.00,61.67 5.00,58.33 10.00,63.33 15.00,95.00 20.00,96.67 25.00,36.67 30.00,29.17 35.00,47.50 40.00,52.50 45.00,25.00 50.00,91.67 55.00,97.50 60.00,47.50 65.00,24.17 70.00,14.17 75.00,32.50 80.00,30.83 85.00,90.00 90.00,91.67 95.00,33.33 100.00,50.83 100.00,55.83 95.00,41.67 90.00,91.67 85.00,90.00 80.00,38.33 75.00,35.00 70.00,20.00 65.00,35.83 60.00,54.17 55.00,97.50 50.00,91.67 45.00,35.83 40.00,52.50 35.00,52.50 30.00,38.33 25.00,40.00 20.00,96.67 15.00,95.00 10.00,70.83 5.00,58.33 0.00,65.83"/></svg>
+      <span class="oa-cross" aria-hidden="true"></span>
+      <div class="oa-tip" role="status"></div>
+    </div>
+  </div>
+  <div class="oa-axis" aria-hidden="true"><span>1 Nov</span><span>7 Nov</span><span>14 Nov</span><span>21 Nov</span></div>
+</section>
+</div>
+<script>
+(function () {
+  var plot = document.querySelector('.oa-plot-area'); if (!plot) return;
+  var tip = plot.querySelector('.oa-tip'), cross = plot.querySelector('.oa-cross');
+  var s = JSON.parse(plot.getAttribute('data-series')), n = s.orgai.length, at = n - 1;
+  function show(i) {
+    at = Math.max(0, Math.min(n - 1, i));
+    var a = s.orgai[at], b = s.docs[at], c = s.billing[at], x = at / (n - 1) * plot.clientWidth;
+    cross.style.transform = 'translateX(' + x + 'px)'; cross.setAttribute('data-on', '');
+    tip.innerHTML = '<b>' + (at + 1) + ' Nov · $' + (a + b + c).toFixed(2) + '</b><div><span>orgai</span><span>$' + a.toFixed(2) + '</span></div><div><span>docs-site</span><span>$' + b.toFixed(2) + '</span></div><div><span>billing-api</span><span>$' + c.toFixed(2) + '</span></div>';
+    tip.style.left = Math.max(0, Math.min(plot.clientWidth - 148, x - 74)) + 'px'; tip.setAttribute('data-on', '');
+    plot.setAttribute('aria-valuenow', at + 1); plot.setAttribute('aria-valuetext', (at + 1) + ' November, $' + (a + b + c).toFixed(2));
+  }
+  function hide() { cross.removeAttribute('data-on'); tip.removeAttribute('data-on'); }
+  plot.addEventListener('mousemove', function (e) { var r = plot.getBoundingClientRect(); show(Math.round((e.clientX - r.left) / r.width * (n - 1))); });
+  plot.addEventListener('mouseleave', hide);
+  plot.addEventListener('focus', function () { show(at); });
+  plot.addEventListener('blur', hide);
+  plot.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowLeft') show(at - 1); else if (e.key === 'ArrowRight') show(at + 1); else if (e.key === 'Home') show(0); else if (e.key === 'End') show(n - 1); else return;
+    e.preventDefault();
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.oa-seg, .oa-legend'), function (g) {
+    var single = g.classList.contains('oa-seg');
+    Array.prototype.forEach.call(g.querySelectorAll('button'), function (b) {
+      b.addEventListener('click', function () {
+        if (single) { Array.prototype.forEach.call(g.querySelectorAll('button'), function (o) { o.setAttribute('aria-pressed', 'false'); }); b.setAttribute('aria-pressed', 'true'); }
+        else b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+      });
+    });
+  });
+})();
+window.OrgAI && window.OrgAI.init();
+</script>
