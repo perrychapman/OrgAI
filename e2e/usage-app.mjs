@@ -4,7 +4,8 @@
 // one announcement per action), keyboard (spend plot, project rows, efficiency grid), states (filtered-empty, Kind chip),
 // layout at 1024x640 and 1600x1000 in both themes, and a live run with the page open. Seeds through the IPC
 // (runs.start / runs.startQuick), so it never drives the composer. A check that cannot be driven logs SKIP with a reason.
-import { TMP, check, endSession, gotoProjects, finish, launch, log, makeFixtureRepo, openProject, projectTab, removeFixture, sleep } from './lib.mjs'
+import { DATA_DIR, TMP, check, endSession, gotoProjects, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, runRecordsDir, sleep } from './lib.mjs'
+import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 process.env.ORGAI_MOCK = '1'
@@ -16,7 +17,7 @@ const repoB = makeFixtureRepo('usage-b')
 const repoE = makeFixtureRepo('usage-e', { initGit: false })
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 
-const { app, page, shot } = await launch({ shotPrefix: 'usage-app' })
+let { app, page, shot } = await launch({ shotPrefix: 'usage-app' })
 const skip = (what, why) => log(`SKIP ${what}: ${why}`)
 const setSize = async (w, h) => {
   await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
@@ -32,7 +33,16 @@ const setTheme = async (theme) => {
   await sleep(600)
 }
 const T = (id) => page.locator(`[data-testid=${id}]`)
-const liveBar = () => page.locator('[data-testid=usage-spend-bar]:not([data-state=empty])').first()
+/** The spend chart's plot: one slider Tab stop; its aria-valuetext is the tooltip sentence of the day the crosshair is on. */
+const plot = () => T('usage-spend-plot')
+/** Moves the pointer to a fraction (0..1) of the plot's width, at mid height. */
+const pointPlot = async (frac) => {
+  const b = await plot().boundingBox()
+  if (!b) return false
+  await page.mouse.move(b.x + Math.max(40, b.width * frac), b.y + b.height / 2)
+  return true
+}
+const valueText = () => plot().getAttribute('aria-valuetext')
 const visible = async (sel) => (await page.locator(sel).count()) > 0 && (await page.locator(sel).first().isVisible())
 const focusInfo = () =>
   page.evaluate(() => {
@@ -75,6 +85,36 @@ const bodyText = () => T('usage-view').innerText()
 const whereTab = async (tab) => {
   await page.locator(`[data-testid=usage-where-tab][data-tab=${tab}]`).click()
   await sleep(200)
+}
+
+const DAY = 86_400_000
+/**
+ * The mock puts every run on one day, so pacing, Compare and the areas over several days would have nothing to show.
+ * With the app closed, copies the seeded runs of the code projects into the throwaway data dir's own run store
+ * (runs.json plus one record file each) at earlier dates: some inside the 30 days, some in the 30 before them.
+ * `data/runs.json` is the index; `data/runs/<id>.json` holds { summary, agents, transcript, logs }.
+ */
+function backdateRuns(sourceIds, offsetsDays) {
+  const indexFile = path.join(DATA_DIR, 'data', 'runs.json')
+  const index = JSON.parse(fs.readFileSync(indexFile, 'utf8'))
+  const added = []
+  let n = 0
+  for (const src of sourceIds) {
+    const base = index.runs.find((r) => r.id === src)
+    if (!base) continue
+    const recFile = path.join(runRecordsDir(), `${src}.json`)
+    const rec = fs.existsSync(recFile) ? JSON.parse(fs.readFileSync(recFile, 'utf8')) : null
+    for (const days of offsetsDays) {
+      const id = `${src}_old${++n}`
+      const shift = days * DAY
+      const copy = (r) => ({ ...r, id, startedAt: r.startedAt - shift, ...(r.endedAt ? { endedAt: r.endedAt - shift } : {}), ...(r.usage ? { usage: { ...r.usage, updatedAt: (r.usage.updatedAt ?? r.startedAt) - shift } } : {}) })
+      added.push(copy(base))
+      if (rec) fs.writeFileSync(path.join(runRecordsDir(), `${id}.json`), JSON.stringify({ ...rec, summary: copy(rec.summary) }))
+    }
+  }
+  index.runs = [...index.runs, ...added]
+  fs.writeFileSync(indexFile, JSON.stringify(index))
+  return added.length
 }
 
 /** Start a mock run, let it spend, stop it and wait until it is no longer live. Returns its id. */
@@ -154,12 +194,38 @@ try {
   await page.evaluate((r) => window.orgai.runs.stop(r), runIds.chat).catch(() => {})
   await sleep(2000)
   log('seeded', JSON.stringify(runIds))
+  // Older history: copies of the priced / plain runs 3, 6, 11 and 20 days back (this period) and 34, 41 and 52 days back
+  // (the period before it, for Compare and the pace line). The unpriced run stays on today only.
+  await app.close().catch(() => {})
+  const copies = backdateRuns([runIds.aPrice, runIds.aPlain, runIds.bPlain, runIds.bPrice], [3, 6, 11, 20, 34, 41, 52])
+  log('backdated copies', copies)
+  ;({ app, page, shot } = await launch({ shotPrefix: 'usage-app-b', clearPrefs: false }))
+  await page.waitForSelector('.sidebar')
 
   // ---------- 1. Entry ----------
   await setSize(1600, 1000)
   await setTheme('dark')
   await gotoProjects(page)
+  // The first navigation to the page in this session stages its arrival: the pacing hero rises, the bands rise in
+  // order, the plot wipes in. The classes go after ARRIVAL_REST_MS (800 ms), so they are caught while they are there.
   await T('nav-usage').click()
+  const arrived = await page
+    .waitForFunction(() => document.querySelector('[data-testid=usage-pacing].motion-arrive-hero') && document.querySelectorAll('[data-testid=usage-view] .motion-arrive-band').length >= 3, null, { timeout: 15_000, polling: 'raf' })
+    .then(() => true)
+    .catch(() => false)
+  check(arrived, 'arrival: the first navigation to Usage stages it (motion-arrive-hero on Pacing, at least three motion-arrive-band bands)')
+  await settle()
+  await sleep(1200)
+  check((await page.locator('[data-testid=usage-view] .motion-arrive-hero, [data-testid=usage-view] .motion-arrive-band').count()) === 0, 'arrival: the arrival classes are gone once the page is at rest')
+  check(Number(await plot().getAttribute('data-draw')) >= 1, 'arrival: the plot drew once on arrival (data-draw is at least 1)', String(await plot().getAttribute('data-draw')))
+  // Back to the Dashboard and again to Usage, no data change: the page appears at rest.
+  await gotoProjects(page)
+  await T('nav-usage').click()
+  await T('usage-view').waitFor({ timeout: 15_000 })
+  await page.waitForSelector('[data-testid=usage-pacing]', { timeout: 15_000 })
+  const again = await page.locator('[data-testid=usage-view] .motion-arrive-hero, [data-testid=usage-view] .motion-arrive-band').count()
+  check(again === 0, 'arrival: returning to Usage without a data change shows no arrival classes', String(again))
+  check(Number(await plot().getAttribute('data-draw')) === 0, 'arrival: and the plot does not redraw (data-draw is 0)', String(await plot().getAttribute('data-draw')))
   await settle()
   check(await visible('[data-testid=usage-view]'), 'entry: nav-usage opens the Usage page in the full sidebar')
   check((await T('nav-usage').getAttribute('aria-current')) === 'page', 'entry: nav-usage has aria-current=page')
@@ -284,8 +350,9 @@ try {
   check(!(await focusInfo()).body, 'drilldown: focus is not on body after removing a chip', JSON.stringify(await focusInfo()))
   check((await said()).filter((t) => /Filter removed/.test(t)).length === 1, 'drilldown: removing a chip announces once', JSON.stringify(await said()))
 
-  await drill('a spend bar (Enter)', async () => {
-    await liveBar().focus()
+  await drill('a day on the spend chart (Home, Enter)', async () => {
+    await plot().focus()
+    await page.keyboard.press('End')
     await page.keyboard.press('Enter')
   }, 'bucket')
   await drill('a project row (Enter)', async () => {
@@ -366,31 +433,47 @@ try {
   await setSize(1600, 1000)
   await goUsage()
   await clearAll()
-  const plot = T('usage-spend-plot')
-  const stops = await plot.evaluate((el) => [...el.querySelectorAll('[tabindex="0"]')].length)
+  const stops = await plot().evaluate((el) => [el, ...el.querySelectorAll('[tabindex]')].filter((e) => e.tabIndex === 0).length)
   check(stops === 1, 'keyboard: the spend plot is one Tab stop', String(stops))
-  await liveBar().focus()
-  const r0 = clean(await T('usage-spend-readout').innerText())
-  check(r0.length > 0, 'keyboard: focusing a bar fills the readout', r0)
-  const nBars = await T('usage-spend-bar').count()
-  if (nBars > 1) {
-    await page.keyboard.press('ArrowLeft')
+  check((await plot().getAttribute('role')) === 'slider', 'keyboard: the spend plot is a slider (one stop, arrow keys inside)')
+  await page.keyboard.press('Shift')
+  await plot().focus()
+  await sleep(150)
+  const slots = Number(await plot().getAttribute('aria-valuemax')) + 1
+  const vt0 = await valueText()
+  check(!!vt0 && /\d/.test(vt0), 'keyboard: focusing the plot gives aria-valuetext with the tooltip sentence', String(vt0))
+  check(slots > 1, 'keyboard: the backdated history gives several days on the chart', String(slots))
+  if (slots > 1) {
     await page.keyboard.press('Home')
-    const a = clean(await T('usage-spend-readout').innerText())
+    const first = await valueText()
+    const firstNow = await plot().getAttribute('aria-valuenow')
     await page.keyboard.press('End')
-    const b = clean(await T('usage-spend-readout').innerText())
-    check(a !== b, 'keyboard: Home and End move the readout', `${a} | ${b}`)
+    const last = await valueText()
+    const lastNow = await plot().getAttribute('aria-valuenow')
+    check((await T('usage-chart-tooltip').count()) === 1 && (await T('usage-chart-crosshair').count()) >= 1, 'keyboard: arrowing in the plot shows the tooltip and the crosshair')
+    check(first !== last && firstNow === '0' && Number(lastNow) === slots - 1, 'keyboard: Home and End jump to the first and last day (aria-valuenow, aria-valuetext)', JSON.stringify({ first, last, firstNow, lastNow }))
     await page.keyboard.press('ArrowLeft')
-    const c = clean(await T('usage-spend-readout').innerText())
-    check(c !== b, 'keyboard: ArrowLeft moves the readout', `${b} | ${c}`)
-  } else skip('spend plot Left/Right/Home/End', `only ${nBars} bucket in the seed (all runs are today)`)
-  await liveBar().focus()
-  await page.keyboard.press('ArrowUp')
-  const seg = await focusInfo()
-  check(seg.testid === 'usage-spend-segment', 'keyboard: ArrowUp moves into a segment of the bucket', JSON.stringify(seg))
-  check(/\S/.test(clean(await T('usage-spend-readout').innerText())), 'keyboard: the readout names the segment')
+    const left = await valueText()
+    check(left !== last && Number(await plot().getAttribute('aria-valuenow')) === slots - 2, 'keyboard: ArrowLeft moves one day back', `${last} | ${left}`)
+    await page.keyboard.press('ArrowRight')
+    check((await valueText()) === last, 'keyboard: ArrowRight moves one day forward')
+  } else skip('spend plot Left/Right/Home/End', 'one day on the chart')
+  check((await focusInfo()).testid === 'usage-spend-plot', 'keyboard: focus stays on the plot while the crosshair moves', JSON.stringify(await focusInfo()))
+  // Escape: the tooltip first, then a picked day.
   await page.keyboard.press('Escape')
-  await page.locator('[data-testid=usage-spend-plot]').evaluate(() => {})
+  await sleep(150)
+  check(!(await T('usage-chart-tooltip').isVisible().catch(() => false)), 'keyboard: Escape hides the tooltip')
+  check((await focusInfo()).testid === 'usage-spend-plot', 'keyboard: focus stays on the plot after Escape')
+  await page.keyboard.press('End')
+  await page.keyboard.press('Enter')
+  await sleep(2500)
+  check((await chipKinds()).includes('bucket'), 'keyboard: Enter on the plot picks the day (day chip)', JSON.stringify(await chips()))
+  await plot().focus()
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  await sleep(1500)
+  check(!(await chipKinds()).includes('bucket'), 'keyboard: Escape (tooltip hidden) clears the day pick', JSON.stringify(await chips()))
+  await clearAll()
 
   // Projects roving
   const rows = T('usage-project-row')
@@ -411,27 +494,38 @@ try {
 
   // Efficiency grid
   // The Team timing grid shares the class (PR 51); this check is about the efficiency measures only.
-  const effStops = await page.locator('[data-testid=usage-eff-main]').evaluate((g) => [...g.querySelectorAll('button')].filter((e) => e.tabIndex === 0).length)
+  // The grid's Tab stops are the defined terms and the sortable values; one roving stop for all of them.
+  const effStops = await page.locator('[data-testid=usage-eff-main]').evaluate((g) => [...g.querySelectorAll('.usage-term, button.usage-eff-value')].filter((e) => e.tabIndex === 0).length)
   check(effStops === 1, 'keyboard: the efficiency grid is one Tab stop', String(effStops))
   const sortBefore = await T('usage-wasteful-sort').inputValue()
-  const target = page.locator('[data-testid=usage-eff-item][data-signal=cache] [data-testid=usage-eff-value]')
+  // Cost per run sorts by cost (the default) and No result by no-result: press the last sortable measure so the sort moves.
+  const target = page.locator('[data-testid=usage-eff-item] button[data-testid=usage-eff-value]').last()
+  check((await page.locator('[data-testid=usage-eff-item] button[data-testid=usage-eff-value]').count()) >= 1, 'keyboard: at least one efficiency value is a sort button')
   await target.click()
   await sleep(500)
   const hf = await page.evaluate(() => ({ id: document.activeElement?.id, text: document.activeElement?.textContent?.trim() }))
   check(hf.id === 'usage-wasteful-h' && /Runs worth a look/.test(hf.text ?? ''), 'keyboard: pressing an efficiency value focuses the "Runs worth a look" heading', JSON.stringify(hf))
   const sortAfter = await T('usage-wasteful-sort').inputValue()
-  check(sortAfter !== sortBefore, 'keyboard: the efficiency press changes usage-wasteful-sort', `${sortBefore} -> ${sortAfter}`)
+  const pressed = await page.locator('[data-testid=usage-eff-item]:has(button[data-testid=usage-eff-value])').evaluateAll((els) => els.map((e) => e.getAttribute('data-signal')))
+  const expectSort = { 'cost-per-run': 'cost', 'no-result': 'no-result' }[pressed[pressed.length - 1]]
+  // WastefulRuns falls back to Cost when no run has a no-result agent (the mock never has one), so No result may read cost.
+  check(!!expectSort && (sortAfter === expectSort || (expectSort === 'no-result' && sortAfter === 'cost')), 'keyboard: the efficiency press sets usage-wasteful-sort to that measure (Cost per run: cost, No result: no-result, or the cost fallback with no such agent)', `${pressed.join(',')}: ${sortBefore} -> ${sortAfter}`)
 
   // ---------- 4b. Dashboard interactions (metric switch, legend toggle, overlay, highlight, tabs, sort) ----------
   await clearAll()
   await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 0))
   check((await T('usage-summary-item').count()) === 4 && (await page.locator('[data-testid=usage-summary-item][data-signal=cache]').count()) === 0, 'kpi: four tiles; Cache hit lives only in Efficiency')
   // Crosshair and tooltip on the spend chart.
-  await liveBar().hover()
+  await pointPlot(0.5)
   await sleep(200)
   const tip = T('usage-chart-tooltip')
   check((await tip.count()) === 1 && (await tip.isVisible()), 'chart: pointing at a bucket shows usage-chart-tooltip')
-  check((await T('usage-chart-crosshair').count()) >= 1, 'chart: pointing at a bucket shows the crosshair')
+  check((await T('usage-chart-crosshair').count()) >= 1, 'chart: pointing at the plot shows the crosshair')
+  const crossW = await T('usage-chart-crosshair').first().evaluate((el) => Math.round(el.getBoundingClientRect().width))
+  check(crossW <= 2, 'chart: the crosshair is a 1 px line', String(crossW))
+  check(!/No price/.test(clean(await T('usage-chart-tooltip').innerText())), 'chart: the tooltip says "Not priced", never "No price"')
+  check(!/\$0(\.0+)?(?![\d.])/.test(clean(await T('usage-chart-tooltip').innerText())), 'chart: the tooltip never shows $0')
+  check(Number(await plot().getAttribute('data-cursor')) >= 0, 'chart: the plot carries data-cursor for the slot under the pointer')
   const tipText = clean(await tip.innerText().catch(() => ''))
   check(/\d/.test(tipText), 'chart: the tooltip names the date and the total', tipText)
   const tipInside = await page.evaluate(() => {
@@ -442,17 +536,23 @@ try {
   check(tipInside, 'chart: the tooltip stays inside the chart card')
   const crossAnims = await page.evaluate(() => [...document.querySelectorAll('[data-testid=usage-chart-crosshair]')].reduce((n, el) => n + el.getAnimations().length, 0))
   check(crossAnims === 0, 'chart: the crosshair never animates', String(crossAnims))
-  await liveBar().focus()
+  await page.mouse.move(5, 5)
+  // A keyboard event first, so the focus is a keyboard focus (focus-visible) and the tooltip follows the arrow keys.
+  await page.keyboard.press('Shift')
+  await plot().focus()
+  await page.keyboard.press('End')
   await sleep(150)
   const tipA = clean(await tip.innerText().catch(() => ''))
+  const vtA = await valueText()
   await page.keyboard.press('ArrowLeft')
   await sleep(150)
   const tipB = clean(await tip.innerText().catch(() => ''))
-  if ((await T('usage-spend-bar').count()) > 1) check(tipA !== tipB, 'chart: ArrowLeft moves the tooltip to the next bucket', `${tipA} | ${tipB}`)
+  const vtB = await valueText()
+  check(tipA !== tipB && vtA !== vtB, 'chart: ArrowLeft moves the tooltip and aria-valuetext to the previous day', `${tipA} | ${tipB}`)
   await page.keyboard.press('Escape')
   await sleep(150)
   check(!(await tip.isVisible().catch(() => false)), 'chart: Escape hides the tooltip')
-  check((await focusInfo()).testid === 'usage-spend-bar', 'chart: focus stays on the plot after Escape', JSON.stringify(await focusInfo()))
+  check((await focusInfo()).testid === 'usage-spend-plot', 'chart: focus stays on the plot after Escape', JSON.stringify(await focusInfo()))
   await page.mouse.move(5, 5)
   // Table toggle in the chart header.
   const tableBtn = T('usage-spend-table-toggle')
@@ -493,13 +593,13 @@ try {
   // Legend toggle hides a series.
   const legend0 = T('usage-spend-legend-row').first()
   const hiddenProject = await legend0.getAttribute('data-project')
-  const segsBefore = await page.locator(`[data-testid=usage-spend-segment][data-project="${hiddenProject}"]`).count()
+  const segsBefore = await page.locator(`[data-testid=usage-spend-area][data-project="${hiddenProject}"]`).count()
   await watchLive()
   await legend0.focus()
   await page.keyboard.press('Enter')
   await sleep(2500)
   check((await legend0.getAttribute('aria-pressed')) === 'false', 'legend: Enter on a legend entry hides its series (aria-pressed false)')
-  check((await page.locator(`[data-testid=usage-spend-segment][data-project="${hiddenProject}"]`).count()) === 0, 'legend: the hidden series draws no segments', `${segsBefore} before`)
+  check(segsBefore >= 1 && (await page.locator(`[data-testid=usage-spend-area][data-project="${hiddenProject}"]`).count()) === 0, 'legend: the hidden series draws no area', `${segsBefore} before`)
   check((await said()).some((t) => /hidden from the chart/.test(t)), 'legend: hiding is announced', JSON.stringify(await said()))
   check((await chips()).length === 0, 'legend: a legend toggle adds no chip')
   await legend0.click()
@@ -513,9 +613,12 @@ try {
     await ov.click()
     await sleep(400)
     check((await ov.getAttribute('aria-pressed')) === 'true', 'overlay: the toggle turns it on')
-    await liveBar().focus()
-    check(/Previous period/.test(clean(await T('usage-spend-readout').innerText())), 'overlay: the readout names the previous period', clean(await T('usage-spend-readout').innerText()))
-    log('info: overlay marks', await T('usage-spend-overlay-mark').count())
+    await plot().focus()
+    await page.keyboard.press('End')
+    await sleep(150)
+    check(/Previous/.test(`${await valueText()} ${clean(await T('usage-chart-tooltip').innerText().catch(() => ''))}`), 'overlay: the tooltip sentence names the previous period', String(await valueText()))
+    const marks = await T('usage-spend-overlay-mark').evaluateAll((els) => els.map((e) => ({ tag: e.tagName.toLowerCase(), state: e.getAttribute('data-state') })))
+    check(marks.length >= 1 && marks.filter((m) => m.state === 'line').every((m) => m.tag === 'path'), 'overlay: the previous period draws dashed paths (one per run) and circles for unknown', JSON.stringify(marks.slice(0, 6)))
     await ov.click()
     await sleep(300)
     check((await T('usage-spend-overlay-mark').count()) === 0, 'overlay: off again removes the marks')
@@ -531,8 +634,8 @@ try {
   await chip0.focus()
   await sleep(400)
   const dim = await page.evaluate((k) => {
-    const others = [...document.querySelectorAll('[data-testid=usage-spend-segment]')].filter((s) => s.getAttribute('data-project') !== k)
-    return others.length ? Math.max(...others.map((s) => parseFloat(getComputedStyle(s.closest('[data-dim]') ?? s).opacity))) : null
+    const others = [...document.querySelectorAll('[data-testid=usage-spend-area]')].filter((s) => s.getAttribute('data-project') !== k)
+    return others.length ? Math.max(...others.map((s) => parseFloat(getComputedStyle(s).opacity))) : null
   }, chipKey)
   check(dim === null || dim < 0.5, 'highlight: focusing a legend chip dims the other series', String(dim))
   const rowHl = await page.locator(`[data-testid=usage-project-row][data-highlight=true]`).count()
@@ -588,12 +691,194 @@ try {
     check((await runToggle.getAttribute('aria-expanded')) === 'false', 'run rows: Enter closes them again')
   } else skip('run row toggle', 'no Runs worth a look rows in the seed')
 
-  // ---------- 5. States ----------
+  // ---------- 4c. The redesigned page: pacing, KPI band, definitions, efficiency, reasons, donut, ribbon ----------
+  await setSize(1600, 1000)
+  await goUsage()
   await clearAll()
-  await T('usage-period').getByText('Last month', { exact: true }).click()
+  await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 0))
+  check((await T('usage-pacing').count()) === 1 && (await T('usage-pacing-figure').count()) === 1, 'pacing: one Pacing hero and one figure on the page')
+  const figureText = clean(await T('usage-pacing-figure-text').innerText().catch(() => ''))
+  check(figureText.length > 0 && !/^\$0(\.0+)?$/.test(figureText), 'pacing: the figure has a text for assistive tech and is never $0', figureText)
+  check((await T('usage-pacing-figure').getAttribute('aria-hidden')) === 'true', 'pacing: the counting figure is hidden from assistive tech (the final one is read once)')
+  const projAll = clean(await T('usage-pacing-projection').innerText().catch(() => ''))
+  check(/^(Projected |Projection needs more data|Projection hidden: |No projection: )/.test(projAll), 'pacing: the projection line is "Projected ..." or a documented hidden-state sentence', projAll)
+  check(projAll === 'Projection hidden: some usage is not priced' && (await T('usage-pacing').getAttribute('data-projection')) === 'unpriced' && (await T('usage-pacing-dial').count()) === 0, 'pacing: with unpriced runs in the period the projection is hidden with its reason and the dial is absent', projAll)
+  // One project, all priced: the projection and the dial show.
+  await T('usage-project-row').filter({ hasText: 'E2E usage B' }).locator('button').first().click()
+  await sleep(2500)
+  const projB = clean(await T('usage-pacing-projection').innerText().catch(() => ''))
+  check(/^Projected /.test(projB) && (await T('usage-pacing').getAttribute('data-projection')) === 'shown', 'pacing: a fully priced scope shows "Projected ..."', projB)
+  const dialLabel = await T('usage-pacing-dial').locator('[role=img]').getAttribute('aria-label').catch(() => null)
+  check(!!dialLabel && /so far of a projected/.test(dialLabel) && /percent/.test(dialLabel), 'pacing: the dial has one text alternative that says spend, projection and percent', String(dialLabel))
+  check((await T('usage-pacing-dial').locator('svg').getAttribute('aria-hidden')) === 'true', 'pacing: the dial drawing is hidden from assistive tech')
+  check((await T('usage-pacing-arc').count()) === 1, 'pacing: the dial arc is drawn')
+  const paceText = clean(await T('usage-pacing-pace').innerText().catch(() => ''))
+  check(/more than|less than|Level with|Not compared/.test(paceText), 'pacing: the pace line compares with the previous period', paceText)
+  const noZero = !/\$0(\.0+)?(?![\d.])/.test(clean(await T('usage-pacing').innerText()))
+  check(noZero, 'pacing: the hero never shows $0')
+  await clearAll()
+
+  // KPI band: four tiles, each one keyboard stop; the pressed one has aria-pressed and the indicator.
+  const tileInfo = await T('usage-summary-item').evaluateAll((els) =>
+    els.map((e) => {
+      const stop = e.querySelector('button.usage-kpi-switch, .usage-kpi-static')
+      return { signal: e.getAttribute('data-signal'), stop: !!stop && stop.tabIndex === 0, pressed: stop?.getAttribute('aria-pressed') ?? null, static: stop?.matches('.usage-kpi-static') ?? false }
+    })
+  )
+  check(tileInfo.length === 4 && tileInfo.every((t) => t.stop), 'kpi: all four tiles (Cost, Tokens, Runs, Wall time) are keyboard stops', JSON.stringify(tileInfo))
+  check(tileInfo.filter((t) => t.static).length === 1 && tileInfo.find((t) => t.static)?.signal !== 'cost', 'kpi: Wall time is the one static tile, and focusable', JSON.stringify(tileInfo))
+  for (const t of tileInfo) {
+    await T('usage-summary-item').and(page.locator(`[data-signal=${t.signal}]`)).locator('button.usage-kpi-switch, .usage-kpi-static').focus()
+    const at = await page.evaluate(() => document.activeElement?.closest('[data-testid=usage-summary-item]')?.getAttribute('data-signal'))
+    check(at === t.signal, `kpi: the ${t.signal} tile takes focus`, String(at))
+  }
+  const costPressed = await T('usage-kpi-metric').and(page.locator('[data-metric=cost]')).getAttribute('aria-pressed')
+  check(costPressed === 'true', 'kpi: with no hand-off the Cost tile is the pressed one', String(costPressed))
+  await T('usage-kpi-metric').and(page.locator('[data-metric=tokens]')).click()
+  await sleep(500)
+  const ind = await page.evaluate(() => {
+    const t = document.querySelector('[data-testid=usage-kpi-metric][data-metric=tokens]')?.closest('li')?.getBoundingClientRect()
+    const i = document.querySelector('[data-testid=usage-kpi-indicator]')?.getBoundingClientRect()
+    return t && i ? { tileL: Math.round(t.left), tileR: Math.round(t.right), indL: Math.round(i.left), indR: Math.round(i.right) } : null
+  })
+  check(!!ind && ind.indL >= ind.tileL - 2 && ind.indR <= ind.tileR + 2, 'kpi: the pressed tile (Tokens) has the indicator under it', JSON.stringify(ind))
+  check((await T('usage-kpi-metric').and(page.locator('[data-metric=tokens]')).getAttribute('aria-pressed')) === 'true' && (await T('usage-kpi-metric').and(page.locator('[data-metric=cost]')).getAttribute('aria-pressed')) === 'false', 'kpi: exactly the Tokens tile is pressed')
+  await T('usage-kpi-metric').and(page.locator('[data-metric=cost]')).click()
+  await sleep(300)
+  const kpiTitles = await T('usage-summary-item').evaluateAll((els) => els.flatMap((e) => [e, ...e.querySelectorAll('*')]).filter((n) => n.hasAttribute('title') && !n.matches('.usage-kpi-delta, .usage-kpi-priced, .usage-kpi-spark-wrap *')).map((n) => n.getAttribute('title')))
+  check(kpiTitles.length === 0, 'kpi: the tiles carry no title attribute (the tooltip is the definition)', JSON.stringify(kpiTitles))
+
+  // Definitions are tooltips on the labels, reachable by keyboard; the closed section and More signals are gone.
+  check((await T('usage-definitions').count()) === 0 && (await T('usage-eff-more').count()) === 0 && (await T('usage-eff-info').count()) === 0 && (await T('usage-timing').count()) === 0, 'definitions: no Definitions section, More signals disclosure or timing grid')
+  const term = T('usage-eff-term').first()
+  await term.focus()
+  await sleep(350)
+  const termInfo = await term.evaluate((el) => {
+    const tip = document.getElementById(el.getAttribute('aria-describedby') ?? '')
+    const cs = tip ? getComputedStyle(tip) : null
+    return { role: tip?.getAttribute('role') ?? null, text: (tip?.textContent ?? '').length, shown: !!cs && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0.5, tab: el.tabIndex }
+  })
+  check(termInfo.role === 'tooltip' && termInfo.text > 10 && termInfo.shown, 'definitions: focusing a defined term shows its tooltip, which the term describes', JSON.stringify(termInfo))
+  await page.keyboard.press('Escape')
+  await sleep(350)
+  const termShown = await term.evaluate((el) => {
+    const cs = getComputedStyle(document.getElementById(el.getAttribute('aria-describedby') ?? '') ?? document.body)
+    return cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0.5
+  })
+  check(!termShown, 'definitions: Escape hides the tooltip while focus stays on the term')
+  // Every tile that has a description (its definition, the token split, a note) shows it as a tooltip on focus.
+  const kpiTips = await page.evaluate(async () => {
+    const out = []
+    for (const li of document.querySelectorAll('[data-testid=usage-summary-item]')) {
+      const el = li.querySelector('button.usage-kpi-switch, .usage-kpi-static')
+      if (!el) continue
+      el.focus()
+      await new Promise((r) => setTimeout(r, 350))
+      const tip = document.getElementById(el.getAttribute('aria-describedby') ?? '')
+      const cs = tip ? getComputedStyle(tip) : null
+      out.push({ signal: li.getAttribute('data-signal'), described: !!tip, role: tip?.getAttribute('role') ?? null, shown: !!cs && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0.5 })
+    }
+    return out
+  })
+  check(kpiTips.filter((t) => t.described).length >= 2 && kpiTips.filter((t) => t.described).every((t) => t.role === 'tooltip' && t.shown), 'definitions: focusing a KPI tile shows its description as a tooltip (at least two tiles have one)', JSON.stringify(kpiTips))
+  await page.mouse.move(5, 5)
+  await page.evaluate(() => document.activeElement?.blur())
+
+  // Efficiency: exactly four measures, each with a reading.
+  const eff = await T('usage-eff-item').evaluateAll((els) => els.map((e) => ({ signal: e.getAttribute('data-signal'), reading: (e.querySelector('[data-testid=usage-eff-reading]')?.textContent ?? '').trim(), value: (e.querySelector('[data-testid=usage-eff-value]')?.textContent ?? '').trim() })))
+  check(eff.length === 4 && JSON.stringify(eff.map((e) => e.signal).sort()) === JSON.stringify(['cost-per-run', 'first-spawn', 'no-result', 'overlap']), 'efficiency: four measures (cost per run, overlap, first spawn, no result)', JSON.stringify(eff.map((e) => e.signal)))
+  check(eff.every((e) => e.reading.length > 8 && e.value.length > 0), 'efficiency: each measure has a value and a one-line reading', JSON.stringify(eff))
+  check(!eff.some((e) => /\$0(\.0+)?(?![\d.])/.test(`${e.value} ${e.reading}`)), 'efficiency: no value or reading shows $0')
+
+  // Runs worth a look: reasons.
+  const sortSel = T('usage-wasteful-sort')
+  const sortOpts = await sortSel.locator('option').evaluateAll((os) => os.map((o) => o.value))
+  let reasonRows = 0
+  for (const v of sortOpts) {
+    await sortSel.selectOption(v)
+    await sleep(250)
+    reasonRows = await T('usage-wasteful-row').count()
+    if (reasonRows > 0) break
+  }
+  if (reasonRows > 0) {
+    const reasons = await T('usage-wasteful-row').first().locator('[data-testid=usage-why-reason]').evaluateAll((els) => els.map((e) => ({ key: e.getAttribute('data-reason'), text: (e.textContent ?? '').trim() })))
+    check(reasons.length >= 1 && reasons.every((r) => r.key && r.text.length > 3), 'runs worth a look: a row says why it is listed (usage-why reasons)', JSON.stringify(reasons))
+  } else skip('usage-why reasons', 'no run is listed under any sort in this seed')
+  await sortSel.selectOption(sortOpts[0])
+
+  // Cost by tier: donut with a text alternative, a legend and a table.
+  if (await T('usage-tier-donut').count()) {
+    const dl = await T('usage-tier-donut').getAttribute('aria-label')
+    const segN = await T('usage-tier-seg').count()
+    const rowN = await T('usage-tier-row').count()
+    check(/^Cost by tier, /.test(dl ?? '') && segN >= 1 && segN <= rowN, 'tier: the donut has one text alternative and a segment per legend row', `${dl} | ${segN} segments, ${rowN} rows`)
+    check((await T('usage-tier-donut').getAttribute('role')) === 'img' && (await T('usage-tier-donut').locator('svg').getAttribute('aria-hidden')) === 'true', 'tier: the donut is an image whose drawing is hidden from assistive tech')
+    check((await T('usage-tier-table').count()) === 1, 'tier: the table of the same figures is in the page')
+  } else skip('tier donut', `no tier split in this seed: ${clean(await T('usage-tier-summary').innerText().catch(() => ''))}`)
+
+  // Where it went: the ribbon is a pointer shortcut; rows are the accessible path and light their segment.
+  await whereTab('project')
+  const ribbon = T('usage-where-ribbon')
+  if (await ribbon.count()) {
+    check((await ribbon.getAttribute('aria-hidden')) === 'true' && (await T('usage-where-ribbon-seg').count()) >= 1, 'ribbon: the Where it went ribbon is decorative (aria-hidden) and has segments')
+    await T('usage-project-row').first().locator('button').first().hover()
+    await sleep(250)
+    check((await ribbon.getAttribute('data-hl')) === 'on' && (await page.locator('[data-testid=usage-where-ribbon-seg][data-peek=true]').count()) === 1, 'ribbon: pointing at a row lights its ribbon segment')
+    await page.mouse.move(5, 5)
+  } else skip('ribbon', 'no ribbon for the Project breakdown in this seed')
+
+  // Table view and CSV export still work.
+  const tbtn = T('usage-spend-table-toggle')
+  await tbtn.click()
+  await sleep(200)
+  check((await T('usage-spend-table').count()) === 1 && (await T('usage-spend-table').locator('tbody tr').count()) >= 2, 'chart: the Table view lists the days', String(await T('usage-spend-table').locator('tbody tr').count()))
+  await tbtn.click()
+  check(await T('usage-copy-csv').isEnabled() && await T('usage-save-csv').isEnabled(), 'csv: Copy as CSV and Save CSV are enabled with runs in range')
+  await T('usage-copy-csv').click()
+  await page.waitForFunction(() => /\S/.test(document.querySelector('[data-testid=usage-csv-status]')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => {})
+  const csvStatus = clean(await T('usage-csv-status').innerText())
+  check(/cop|row|run/i.test(csvStatus) && (await T('usage-csv-status').getAttribute('class'))?.includes('failed') !== true, 'csv: Copy as CSV reports its result', csvStatus)
+
+  // A row click narrows and does not scroll.
+  await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 400))
+  await sleep(200)
+  const sc0 = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTop ?? -1)
+  await T('usage-project-row').first().locator('button').first().click()
+  await sleep(2000)
+  const sc1 = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTop ?? -1)
+  check(sc0 > 100 && sc1 === sc0, 'drilldown: a row click narrows and the page scrollTop is unchanged', `${sc0} -> ${sc1}`)
+  await clearAll()
+
+  // Dashboard hand-off: the Your week figures open Usage on 7 days with that figure's metric pressed.
+  await gotoProjects(page)
+  await page.waitForSelector('[data-testid=dash-stats]', { timeout: 15_000 }).catch(() => {})
+  for (const [card, metric] of [['spend', 'cost'], ['runs', 'runs']]) {
+    if (!(await T(`dash-stat-${card}`).count())) {
+      skip(`dash-stat-${card}`, 'the card is not rendered')
+      continue
+    }
+    await T(`dash-stat-${card}`).click()
+    await settle()
+    check(/7 days/.test(await T('usage-period-label').innerText()), `hand-off: dash-stat-${card} opens Usage on 7 days`, await T('usage-period-label').innerText())
+    check((await T('usage-kpi-metric').and(page.locator(`[data-metric=${metric}]`)).getAttribute('aria-pressed')) === 'true', `hand-off: dash-stat-${card} presses the ${metric} tile`)
+    check((await T('usage-spend').getAttribute('data-metric')) === metric, `hand-off: the chart shows ${metric}`)
+    await T('usage-period').getByText('30 days', { exact: true }).click()
+    await settle()
+    await gotoProjects(page)
+  }
+
+  // ---------- 5. States ----------
+  await goUsage()
+  await clearAll()
+  // The backdated history reaches last month, so the empty period is the oldest month the picker lists.
+  await T('usage-period').locator('label', { hasText: 'Months' }).click()
+  await settle()
+  const monthValues = await T('usage-month').locator('option').evaluateAll((os) => os.map((o) => o.value).sort())
+  await T('usage-month').selectOption(monthValues[0])
+  await T('usage-month-to').selectOption(monthValues[0])
   await settle()
   await sleep(500)
-  check(await visible('[data-testid=usage-empty]'), 'states: Last month (no runs) shows usage-empty')
+  check(await visible('[data-testid=usage-empty]'), 'states: the oldest month (no runs) shows usage-empty', monthValues[0])
   check(!(await chipKinds()).includes('period') && /Oct|Nov|Sep|Dec|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug/.test(await T('usage-period-label').innerText()), 'chips: a non-default period gets no chip; the date text names it', JSON.stringify(await chipKinds()))
   check(await visible('[data-testid=usage-empty-30]'), 'states: the filtered-empty state offers Use 30 days when the period is the cause')
   check((await T('usage-empty-clear').count()) === 0, 'states: with only the period narrowed there is no pointless Clear all (it would keep the period)')
@@ -660,9 +945,12 @@ try {
     await sleep(300)
     const fit = await page.evaluate(() => {
       const wrap = document.querySelector('[data-testid=usage-where] .usage-table-wrap')
-      return wrap ? { sw: wrap.scrollWidth, cw: wrap.clientWidth } : null
+      return wrap ? { sw: wrap.scrollWidth, cw: wrap.clientWidth, region: wrap.getAttribute('role') === 'region' && wrap.tabIndex === 0 && !!wrap.getAttribute('aria-label') } : null
     })
-    check(fit && fit.sw <= fit.cw + 1, `polish ${w}: the Where table has no inner horizontal scroll`, JSON.stringify(fit))
+    // The breakdown is the 5-column card beside the chart now, so a narrow window may scroll its table sideways; that is
+    // allowed only as a labelled, focusable region (TableWrap), never as a clipped table.
+    if (w >= 1600) check(fit && fit.sw <= fit.cw + 1, `polish ${w}: the Where table has no inner horizontal scroll`, JSON.stringify(fit))
+    else check(fit && (fit.sw <= fit.cw + 1 || fit.region), `polish ${w}: the Where table either fits or scrolls as a labelled, focusable region`, JSON.stringify(fit))
     const heads = await T('usage-where').locator('thead th').evaluateAll((els) => els.filter((e) => e.getBoundingClientRect().width > 0).map((e) => (e.textContent ?? '').trim()))
     check(heads.includes('Runs') && heads.includes('Cost'), `polish ${w}: Runs and Cost stay visible in the Where table`, JSON.stringify(heads))
     if (w >= 1600) {
@@ -724,12 +1012,12 @@ try {
       })
       if (boxes.s && boxes.w) {
         const beside = Math.abs(boxes.s.y - boxes.w.y) < 4 && boxes.s.x + boxes.s.w <= boxes.w.x && boxes.s.w > boxes.w.w
-        const stacked = boxes.w.y >= boxes.s.y + boxes.s.h - 2
-        if (w >= 1600) check(beside, `layout ${tag}: the spend chart and the wider-than-it "Where it went" card sit side by side`, JSON.stringify(boxes))
-        else check(stacked, `layout ${tag}: "Where it went" sits under the spend chart`, JSON.stringify(boxes))
+        // From a 900 px container (both window sizes: 958 px and 1500 px) the hero row is two columns, chart 7 : breakdown 5.
+        check(beside, `layout ${tag}: the spend chart and the narrower "Where it went" card sit side by side (7 : 5)`, JSON.stringify(boxes))
+        check(Math.abs(boxes.s.w / (boxes.s.w + boxes.w.w) - 7 / 12) < 0.03, `layout ${tag}: the hero columns are about 7 : 5`, JSON.stringify(boxes))
       } else check(false, `layout ${tag}: the spend chart and the Where it went card are rendered`, JSON.stringify(boxes))
       if (boxes.k && boxes.s) check(boxes.s.y < h, `layout ${tag}: the KPI band and the top of the spend chart are in the first view`, JSON.stringify(boxes))
-      if (w >= 1600 && boxes.s && boxes.w) check(Math.abs(boxes.s.h - boxes.w.h) <= 2, `layout ${tag}: the hero cards have equal heights`, JSON.stringify(boxes))
+      if (boxes.s && boxes.w) check(Math.abs(boxes.s.h - boxes.w.h) <= 2, `layout ${tag}: the hero cards have equal heights`, JSON.stringify(boxes))
       const pageH = await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollHeight ?? 0)
       log(`info: layout ${tag}: page content height ${pageH} px`)
       // Tuned to this seed (Runs worth a look stacks above Cost by tier below a 1500 px container).
@@ -751,7 +1039,7 @@ try {
       // (the bar's height) must keep it clear of the sticky bar.
       await page.evaluate(() => document.querySelector('.usage-scroll')?.scrollTo(0, 99999))
       await sleep(150)
-      await page.locator('[data-testid=usage-eff-value]').first().focus()
+      await page.locator('[data-testid=usage-eff-main] .usage-term').first().focus()
       await sleep(200)
       const shiftedAnc = await page.evaluate(() => {
         const out = []
@@ -811,10 +1099,11 @@ try {
     })
   const runsBefore = clean(await T('usage-summary-item').filter({ has: page.locator('[data-signal=runs]') }).innerText().catch(async () => (await page.locator('[data-testid=usage-summary-item][data-signal=runs]').innerText())))
   const offBefore = await offsets()
+  const drawBefore = await page.evaluate(() => document.querySelector('[data-testid=usage-spend-plot]')?.getAttribute('data-draw') ?? null)
   const liveRun = await page.evaluate((i) => window.orgai.runs.start(i), { projectId: pa.id, prompt: 'Live work [mock:computed-cost]' })
   const liveId = liveRun.id ?? liveRun.runId ?? liveRun.summary?.id
   // Put focus on a stable element and note it
-  await liveBar().focus()
+  await plot().focus()
   const focusBefore = await focusInfo()
   const end = Date.now() + 40_000
   let note = false
@@ -848,6 +1137,8 @@ try {
   // gain a row when the new run adds a model or role, so its shift is logged, not asserted.
   const shifted2 = ['spend', 'projects'].filter((k) => Math.abs(offAfter[k] - offBefore[k]) > 2)
   check(shifted2.length === 0, 'live: the spend and projects panels keep their offsets after the refresh', JSON.stringify({ offBefore, offAfter }))
+  const drawAfter = await page.evaluate(() => document.querySelector('[data-testid=usage-spend-plot]')?.getAttribute('data-draw') ?? null)
+  check(drawBefore !== null && drawAfter === drawBefore, 'live: a background refresh from a run starting and ending does not redraw the chart (data-draw holds)', `${drawBefore} -> ${drawAfter}`)
   log('info: efficiency offset', offBefore.eff, '->', offAfter.eff, '(ranked lists may gain a row)')
   await shot('live-after')
 } catch (e) {
