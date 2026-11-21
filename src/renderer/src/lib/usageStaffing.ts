@@ -7,7 +7,7 @@
  * model stands for on the run's connection, and everything else goes in one remainder.
  */
 import type { UsageOverviewRow } from '@shared/types'
-import { median } from './usageEfficiency'
+import { median } from '@shared/view/usageInsights'
 
 // ---------- time to first spawn, overlap, tail ----------
 
