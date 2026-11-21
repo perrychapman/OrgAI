@@ -101,6 +101,8 @@ export const RULES = [
   { match: [`${C}dashboard/NewProjectForm.tsx`, `${C}dashboard/NewProjectDialog.tsx`], scripts: PROJECT_FORM, why: 'New project form is driven by many scripts' },
   { match: [`${C}dashboard/ProjectTile.tsx`], scripts: ['dashboard', 'engagement', 'context-menus'], why: 'project tile (client display, More menu)' },
   { match: [`${C}dashboard/**`, `${R}views/DashboardView.tsx`, `${S}dashboard*.css`, `${L}dashboard*.ts`, `${L}setupGaps.ts`], scripts: ['dashboard'], why: 'Dashboard' },
+  { match: [`${L}activityMap*`, `${L}activityStrip*`, `${L}attentionTiles*`, `${L}countUp*`, `${L}useCountUp.ts`, `${L}gauge*`, `${L}heroStats*`, `${L}needsInline*`, `${L}pageArrival*`, `${L}usePageArrival.ts`, `${L}projectShare*`, `${L}resumeRows*`, `${L}scheduleRail*`, `${L}sinceSummary*`, `${L}teamPulse*`, `${L}todayModel*`, `${L}upNext*`, `${L}waitingOrder*`, `${L}weekRecap*`], scripts: ['dashboard'], why: 'Dashboard models (week, map, pulse, Pick up, Up next, Needs you)' },
+  { match: [`${C}limits/**`], scripts: ['dashboard', 'usage', 'usage-app'], why: 'plan gauges (Dashboard Briefing, Usage pacing)' },
 
   { match: [`${C}knowledge/KnowledgeList.tsx`, `${C}knowledge/KnowledgeRow.tsx`], scripts: [...KNOWLEDGE, 'context-menus'], why: 'Knowledge list and its row menu' },
   { match: [`${C}knowledge/**`,`${R}views/KnowledgeView.tsx`, `${L}knowledge*.ts`, `${L}runKnowledge.ts`, `${S}knowledge*.css`], scripts: KNOWLEDGE, why: 'Knowledge tab and graph' },
