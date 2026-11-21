@@ -2555,6 +2555,11 @@ export interface RunUsage {
   nudges: number
   /** Time with at least one decision card open (permission, question, proposal, rules, merge, MCP install), ms. */
   waitingMs: number
+  /**
+   * Decision cards opened in the run (permission, question, proposal, rules, merge, MCP install requests: the cards
+   * that open a waitingMs interval). Absent on runs recorded before this field existed; never 0 for an unknown count.
+   */
+  decisions?: number
   /** Time held on a usage limit (from the provider's limit report until the user's next send or the run's end), ms. */
   limitHoldMs: number
   /** Time the run spent in status 'idle' (the orchestrator's turn ended, waiting for the user), ms. */

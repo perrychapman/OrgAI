@@ -532,6 +532,8 @@ interface ActiveRun {
   engagementDocumentText?: string
   /** Time with at least one decision card open. */
   waiting: IntervalTimer
+  /** Decision cards opened in this run (every *.request card event; RunUsage.decisions). */
+  decisionsOpened: number
   /** Time held on a usage limit, until the user's next send or the run's end. */
   limitTimer: IntervalTimer
   /** Time in status 'idle'. */
@@ -1374,7 +1376,10 @@ export class RunManager {
       raw(e)
       if ('runId' in e && /\.(request|resolved)$/.test(e.type)) {
         const a = this.runs.get(e.runId)
-        if (a) a.waiting.set(pendingCount(a) > 0, Date.now())
+        if (a) {
+          if (e.type.endsWith('.request')) a.decisionsOpened++
+          a.waiting.set(pendingCount(a) > 0, Date.now())
+        }
       }
     }
   }
@@ -1915,6 +1920,7 @@ export class RunManager {
       inbox: [],
       held: false,
       waiting: new IntervalTimer(),
+      decisionsOpened: 0,
       limitTimer: new IntervalTimer(),
       idleTimer: new IntervalTimer(),
       lastUsageAt: 0,
@@ -3840,6 +3846,7 @@ export class RunManager {
       providerTotalUsd: a.providerTotalUsd,
       nudges: a.record.plan?.autoContinues ?? 0,
       waitingMs: a.waiting.elapsed(now),
+      decisions: a.decisionsOpened,
       limitHoldMs: a.limitTimer.elapsed(now),
       idleMs: a.idleTimer.elapsed(now),
       now,

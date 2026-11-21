@@ -204,6 +204,29 @@ describe('computeRunUsage', () => {
   })
 })
 
+describe('RunUsage.decisions', () => {
+  const summary = runSummary({ startedAt: 1000 })
+  it('is 0 for a new run without decisions and counts what the tally says', () => {
+    expect(computeRunUsage(summary, [], inputs({ decisions: 0 })).decisions).toBe(0)
+    expect(computeRunUsage(summary, [], inputs({ decisions: 2 })).decisions).toBe(2)
+  })
+  it('stays undefined when the count is unknown', () => {
+    expect('decisions' in computeRunUsage(summary, [], inputs())).toBe(false)
+  })
+  it('stays undefined for a stored old usage through the recompute and load paths', () => {
+    const rec: RunRecord = { summary: runSummary({ startedAt: 1000, endedAt: 3000, status: 'finished' }), agents: {}, transcript: [], logs: [] }
+    expect(normalizeRunRecord(rec, 5).summary.usage!.decisions).toBeUndefined()
+    const stored = computeRunUsage(rec.summary, [], inputs())
+    const again = normalizeRunRecord({ ...rec, summary: { ...rec.summary, usage: stored } }, 9)
+    expect(again.summary.usage!.decisions).toBeUndefined()
+  })
+  it('keeps a stored count', () => {
+    const rec: RunRecord = { summary: runSummary({ startedAt: 1000, endedAt: 3000, status: 'finished' }), agents: {}, transcript: [], logs: [] }
+    const stored = computeRunUsage(rec.summary, [], inputs({ decisions: 3 }))
+    expect(normalizeRunRecord({ ...rec, summary: { ...rec.summary, usage: stored } }, 9).summary.usage!.decisions).toBe(3)
+  })
+})
+
 describe('normalizeRunRecord hardening', () => {
   it('skips a persisted __proto__ agent id instead of setting a prototype', () => {
     const agents = JSON.parse('{"__proto__": {"id": "x"}}') as Record<string, AgentInstance>
