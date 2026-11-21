@@ -216,12 +216,13 @@ export default function DashboardView(): ReactElement {
   )
 
   const sections: Record<DashSectionId, ReactElement> = {
-    resume: <ResumeSection key="resume" lastSeen={lastSeen} />,
-    today: <TodaySection key="today" />,
-    working: <RightNowBand key="working" caps={caps} onAnnounce={say} />,
     week: <WeekSection key="week" />,
+    pickup: <ResumeSection key="pickup" lastSeen={lastSeen} />,
+    upnext: <TodaySection key="upnext" />,
+    projects: <ProjectsGrid key="projects" onAnnounce={say} />,
     engagements: <EngagementsSection key="engagements" />,
-    projects: <ProjectsGrid key="projects" onAnnounce={say} />
+    commits: <CommitsSection key="commits" />,
+    todos: <span key="todos" hidden />
   }
 
   const customiseButton = empty ? undefined : (
@@ -290,7 +291,7 @@ export default function DashboardView(): ReactElement {
                     <SetupGaps caps={caps} />
                   </div>
                   <div className="dash-lead-side">
-                    <CommitsSection />
+                    <RightNowBand caps={caps} onAnnounce={say} />
                   </div>
                 </div>
                 <div className="dash-arranged">{layout.order.map((id) => sections[id])}</div>

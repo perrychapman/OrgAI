@@ -111,7 +111,7 @@ export function ResumeSection({ lastSeen }: { lastSeen?: number }): ReactElement
         summaries,
         lastSeen: since,
         now,
-        workingHidden: layout.hidden.includes('working'),
+        workingHidden: false,
         pinned: layout.pinned,
         projectIds: projects.map((p) => p.id),
         max: RESUME_MAX
@@ -266,7 +266,7 @@ export function ResumeSection({ lastSeen }: { lastSeen?: number }): ReactElement
   }
 
   return (
-    <DashSection id="resume" testId="dash-resume" icon={History} empty={rows.length === 0} count={rows.length} sectionRef={sectionRef} headingRef={headingRef}>
+    <DashSection id="pickup" testId="dash-resume" icon={History} empty={rows.length === 0} count={rows.length} sectionRef={sectionRef} headingRef={headingRef}>
       <AttentionRows model={model} renderItem={(row, motion) => renderRow(row, motion)} moreTestId="dash-resume-more" className="dash-resume-grid" />
     </DashSection>
   )

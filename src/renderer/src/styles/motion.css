@@ -186,6 +186,66 @@ details.motion-none::details-content {
   transition: none;
 }
 
+/* ---------- Draw and page arrival (dashboard-usage-redesign motion.md) ---------- */
+/*
+ * Applied only while a page stages its arrival (lib/usePageArrival) or right after a filter change the person made.
+ * Draw is one of the three permitted non-transform properties: stroke tracing (stroke-dashoffset on a path with
+ * pathLength="1"; set --frac for a partial arc, default the whole path) and the clip wipe that reveals a chart.
+ */
+@keyframes motion-trace {
+  from {
+    stroke-dashoffset: var(--frac, 1);
+  }
+}
+@keyframes motion-wipe {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+/* An arc, a reporting line or a donut segment traces along its path. */
+.motion-draw-trace {
+  animation: motion-trace var(--dur-draw) var(--ease-out) backwards;
+  animation-delay: var(--draw-delay, 0ms);
+}
+/* A full path with no --frac (a reporting line) needs its own dash pattern. */
+.motion-draw-line {
+  stroke-dasharray: 1 1;
+  animation: motion-trace var(--dur-draw) var(--ease-out) backwards;
+  animation-delay: var(--draw-delay, 0ms);
+}
+/* Areas and sparklines wipe in left to right. */
+.motion-draw-wipe {
+  animation: motion-wipe var(--dur-draw) var(--ease-out) backwards;
+  animation-delay: var(--draw-delay, 0ms);
+}
+/* Heatmap columns fade in left to right inside --dur-draw: set --col (0..13) and --cols (14). */
+.motion-draw-col {
+  animation: motion-fade var(--dur-base) var(--ease-out) backwards;
+  animation-delay: calc(var(--col, 0) * (var(--dur-draw) - var(--dur-base)) / max(1, var(--cols, 14) - 1));
+}
+/* A bar fills from its start (transform, so no exception needed): set transform-origin on the element. */
+@keyframes motion-grow-x {
+  from {
+    transform: scaleX(0);
+  }
+}
+.motion-draw-grow {
+  transform-origin: left center;
+  animation: motion-grow-x var(--dur-draw) var(--ease-out) backwards;
+  animation-delay: calc(min(var(--i, 0), 5) * var(--motion-stagger));
+}
+/* Page arrival: the hero rises large, the bands below rise in reading order, at most six stagger steps. */
+.motion-arrive-hero {
+  animation: motion-rise-lg var(--dur-slow) var(--ease-out) backwards;
+}
+.motion-arrive-band {
+  animation: motion-rise-lg var(--dur-slow) var(--ease-out) backwards;
+  animation-delay: calc((1 + min(var(--i, 0), 5)) * var(--motion-stagger));
+}
+
 /* ---------- Opt-out ---------- */
 .motion-none,
 .motion-none::before,

@@ -7,6 +7,11 @@
 @import './dashboard-week.css';
 @import './dashboard-commits.css';
 @import './dashboard-engagements.css';
+@import './dashboard-briefing.css';
+@import './dashboard-pulse.css';
+@import './dashboard-pickup.css';
+@import './dashboard-upnext.css';
+@import './dashboard-activity.css';
 
 /* ---------- Dashboard (docs/design/dashboard-overhaul.md) ----------
    Page shell (section 2): greeting, the fixed sections, the arranged sections in one or two tracks, the footer; the

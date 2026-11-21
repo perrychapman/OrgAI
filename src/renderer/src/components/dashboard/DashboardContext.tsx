@@ -3,7 +3,7 @@ import { createContext, useContext, useLayoutEffect } from 'react'
 import { ChevronDown, ChevronUp, type LucideIcon } from 'lucide-react'
 import { Button } from '../ui/Button'
 import { Icon } from '../ui/Icon'
-import { DASH_SECTIONS, SECTION_TITLES, type DashboardLayout, type DashSectionId } from '../../lib/dashboardLayout'
+import { DEFAULT_LAYOUT, SECTION_TITLES, type DashboardLayout, type DashSectionId } from '../../lib/dashboardLayout'
 import { NARROW_CAPS, type DashCaps } from './dashCaps'
 
 /**
@@ -37,7 +37,7 @@ export interface DashboardCtx {
 const noop = (): void => undefined
 
 export const DashboardContext = createContext<DashboardCtx>({
-  layout: { v: 1, order: [...DASH_SECTIONS], hidden: [], pinned: [] },
+  layout: DEFAULT_LAYOUT,
   customising: false,
   caps: NARROW_CAPS,
   announce: noop,
@@ -52,8 +52,12 @@ export function useDashboard(): DashboardCtx {
   return useContext(DashboardContext)
 }
 
+/** Fixed regions drawn through the same frame: never hidden, moved or listed in Customise, drawn only with content. */
+export type FixedSectionId = 'now'
+const FIXED_TITLES: Record<FixedSectionId, string> = { now: 'Right now' }
+
 export interface DashSectionProps {
-  id: DashSectionId
+  id: DashSectionId | FixedSectionId
   /** The section's own test id (`dash-resume`, `dash-today`, ...), on the `section` element. */
   testId: string
   /** True when there is nothing to show: outside customise mode nothing renders. */
@@ -76,7 +80,7 @@ export interface DashSectionProps {
 }
 
 /** The heading id of a section, for `aria-labelledby` and for focus moves. */
-export const sectionHeadingId = (id: DashSectionId): string => `dash-h-${id}`
+export const sectionHeadingId = (id: DashSectionId | FixedSectionId): string => `dash-h-${id}`
 
 /**
  * The frame of one arrangeable section: a grid slot (`dash-section[data-section][data-state]`) holding, while customising,
@@ -84,19 +88,35 @@ export const sectionHeadingId = (id: DashSectionId): string => `dash-h-${id}`
  */
 export function DashSection({ id, testId, empty, icon, count, headExtra, className, sectionRef, headingRef, sectionData, onFocus, onBlur, children }: DashSectionProps): ReactElement | null {
   const { layout, customising, reportEmpty, spanOf, move, setSectionHidden } = useDashboard()
-  const hidden = layout.hidden.includes(id)
-  useLayoutEffect(() => reportEmpty(id, empty), [id, empty, reportEmpty])
-  useLayoutEffect(() => () => reportEmpty(id, true), [id, reportEmpty])
+  const fixed = id === 'now'
+  const hidden = id !== 'now' && layout.hidden.includes(id)
+  useLayoutEffect(() => {
+    if (id !== 'now') reportEmpty(id, empty)
+  }, [id, empty, reportEmpty])
+  useLayoutEffect(
+    () => () => {
+      if (id !== 'now') reportEmpty(id, true)
+    },
+    [id, reportEmpty]
+  )
 
+  if (fixed && empty) return null
   if (!customising && (hidden || empty)) return null
-  const title = SECTION_TITLES[id]
+  const title = id === 'now' ? FIXED_TITLES[id] : SECTION_TITLES[id]
+  const arrangeable = id !== 'now' && customising
   const state = hidden ? 'hidden' : empty ? 'empty' : 'shown'
-  const index = layout.order.indexOf(id)
+  const index = id === 'now' ? -1 : layout.order.indexOf(id)
+  const doMove = (dir: 'up' | 'down'): void => {
+    if (id !== 'now') move(id, dir)
+  }
+  const doHide = (h: boolean): void => {
+    if (id !== 'now') setSectionHidden(id, h)
+  }
   const first = index <= 0
   const last = index >= layout.order.length - 1
   return (
-    <div className="dash-slot" data-testid="dash-section" data-section={id} data-state={state} data-span={customising ? 'full' : spanOf(id)}>
-      {customising && (
+    <div className="dash-slot" data-testid="dash-section" data-section={id} data-state={state} data-span={customising || id === 'now' ? 'full' : spanOf(id)}>
+      {arrangeable && (
         <div className="dash-section-controls motion-fade" role="group" aria-label={hidden ? `Arrange ${title}, hidden` : empty ? `Arrange ${title}, nothing to show right now` : `Arrange ${title}`} data-testid="dash-section-controls" data-section={id}>
           <span className="dash-section-controls-title" aria-hidden="true">
             {hidden ? `${title}, hidden` : empty ? `${title}: nothing to show right now.` : title}
@@ -109,7 +129,7 @@ export function DashSection({ id, testId, empty, icon, count, headExtra, classNa
             aria-label={`Move ${title} up`}
             title={`Move ${title} up`}
             aria-disabled={first ? 'true' : undefined}
-            onClick={() => move(id, 'up')}
+            onClick={() => doMove('up')}
           >
             <Icon icon={ChevronUp} size="sm" />
           </button>
@@ -120,16 +140,16 @@ export function DashSection({ id, testId, empty, icon, count, headExtra, classNa
             aria-label={`Move ${title} down`}
             title={`Move ${title} down`}
             aria-disabled={last ? 'true' : undefined}
-            onClick={() => move(id, 'down')}
+            onClick={() => doMove('down')}
           >
             <Icon icon={ChevronDown} size="sm" />
           </button>
           {hidden ? (
-            <Button variant="ghost" size="sm" testId="dash-section-show" ariaLabel={`Show ${title}`} onClick={() => setSectionHidden(id, false)}>
+            <Button variant="ghost" size="sm" testId="dash-section-show" ariaLabel={`Show ${title}`} onClick={() => doHide(false)}>
               Show
             </Button>
           ) : (
-            <Button variant="ghost" size="sm" testId="dash-section-hide" ariaLabel={`Hide ${title}`} onClick={() => setSectionHidden(id, true)}>
+            <Button variant="ghost" size="sm" testId="dash-section-hide" ariaLabel={`Hide ${title}`} onClick={() => doHide(true)}>
               Hide
             </Button>
           )}

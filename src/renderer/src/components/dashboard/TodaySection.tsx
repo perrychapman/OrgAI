@@ -125,7 +125,7 @@ export function TodaySection(): ReactElement | null {
 
   return (
     <>
-      <DashSection id="today" testId="dash-today" icon={CalendarDays} empty={noGroups} sectionRef={rootRef} headExtra={<span className="dash-today-date">{date}</span>}>
+      <DashSection id="upnext" testId="dash-today" icon={CalendarDays} empty={noGroups} sectionRef={rootRef} headExtra={<span className="dash-today-date">{date}</span>}>
         {!noSchedules && (
           <div className="dash-today-group" data-testid="dash-today-schedules">
             <h3 className="dash-today-h3">

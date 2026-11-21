@@ -90,6 +90,10 @@
   --brand-to: #2bb0ff;
   --brand-ui-from: #7c5cff;
   --brand-ui-to: #2bb0ff;
+  /* Hero card aura (dashboard-usage-redesign tokens.json): brand-ui-from at 18% top left, brand-ui-to at 12% bottom right.
+     Behind the Briefing and Pacing cards only; text sits on surface-1 through it. */
+  --aura-from: #7c5cff2e;
+  --aura-to: #2bb0ff1f;
 
   --edge: #3a4258;
   --edge-message: #5d8bd6;
@@ -243,6 +247,8 @@
   --brand-to: #2bb0ff;
   --brand-ui-from: #6a4cf0;
   --brand-ui-to: #1a86d9;
+  --aura-from: #6a4cf01f;
+  --aura-to: #1a86d914;
 
   --edge: #aab3c7;
   --edge-message: #2f67b4;
@@ -390,6 +396,8 @@
     --brand-to: #2bb0ff;
     --brand-ui-from: #6a4cf0;
     --brand-ui-to: #1a86d9;
+    --aura-from: #6a4cf01f;
+    --aura-to: #1a86d914;
 
     --edge: #aab3c7;
     --edge-message: #2f67b4;
@@ -515,6 +523,17 @@
   --text-display-lh: 32px;
   --text-mono: 12px;
   --text-mono-lh: 18px;
+  /* Dashboard and Usage redesign additions (tokens.json): the stat card value and burn dial value, the Briefing greeting
+     (one per page) and the Usage period spend (one per page). Weight 600; tabular-nums where the value changes. */
+  --text-stat: 28px;
+  --text-stat-lh: 36px;
+  --text-stat-ls: -0.01em;
+  --text-display-lg: 40px;
+  --text-display-lg-lh: 48px;
+  --text-display-lg-ls: -0.02em;
+  --text-figure: 48px;
+  --text-figure-lh: 56px;
+  --text-figure-ls: -0.02em;
   --weight-regular: 400;
   /* Weights are 400 and 600 only; --weight-medium stays as a 600 alias for settings.css until brief 3C. */
   --weight-medium: 600;
@@ -583,6 +602,11 @@
      strip's bars (today in the accent text colour). */
   --halo-working: 0 0 0 3px color-mix(in oklab, var(--state-working) 28%, transparent);
   --dur-pulse: 1800ms;
+  /* Draw (dashboard-usage-redesign motion.md): data drawing itself once on arrival (arcs and lines trace, areas and
+     sparklines wipe in, heatmap columns fade in, figures count up). 0.01ms under reduced motion. */
+  --dur-draw: 480ms;
+  /* Signal (motion.md): one trip of the Team pulse dot along a reporting line, linear. The second permitted loop. */
+  --dur-signal: 2400ms;
   --dash-strip-bar: var(--text-tertiary);
   --dash-strip-today: var(--accent-text);
   --inset-border-strong: inset 0 0 0 1px var(--border-strong);
@@ -611,6 +635,7 @@
     --dur-base: 0.01ms;
     --dur-slow: 0.01ms;
     --dur-fade: 0.01ms;
+    --dur-draw: 0.01ms;
   }
 }
 :root[data-reduce-motion='on'] {
@@ -623,6 +648,7 @@
   --dur-base: 0.01ms;
   --dur-slow: 0.01ms;
   --dur-fade: 0.01ms;
+  --dur-draw: 0.01ms;
 }
 
 /* ---------- 5. Element-scoped composites (need the element's own --role) ---------- */

@@ -163,7 +163,7 @@ export function RightNowBand({ caps }: { caps: DashCaps; onAnnounce: (text: stri
     ) : null
   return (
     <DashSection
-      id="working"
+      id="now"
       testId="dash-now"
       empty={model.total === 0}
       icon={Activity}

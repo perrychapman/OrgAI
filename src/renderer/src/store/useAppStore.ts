@@ -84,6 +84,8 @@ function initialUsageFilters(): UsageFilters {
 /** Where the Usage page should land after `openUsage` (a section heading), bumped per request. */
 export interface UsageFocusRequest {
   section?: 'usage-efficiency' | 'usage-runs'
+  /** The KPI metric to press on arrival (OpenUsageOptions.metric). */
+  metric?: 'cost' | 'tokens' | 'runs'
   seq: number
 }
 
@@ -100,6 +102,8 @@ export interface OpenUsageOptions {
   /** A local day (any time in it): opens on 30 days with the Day chip (Dashboard strip). */
   day?: number
   section?: 'usage-efficiency' | 'usage-runs'
+  /** The KPI the Usage page opens with pressed (a Your week stat card hand-off); absent leaves the page's own choice. */
+  metric?: 'cost' | 'tokens' | 'runs'
 }
 
 /** Project tabs: run (Live), history, knowledge (engagements only), team (Team; was 'org', see lib/teamView normalizeView), settings. projects and appSettings are app-level. */
@@ -1637,7 +1641,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().setUsageFilters(next)
     }
     const seq = (get().usageFocus?.seq ?? 0) + 1
-    set({ view: 'usage', usageReturn: null, usageFocus: opts.section ? { section: opts.section, seq } : { seq } })
+    set({
+      view: 'usage',
+      usageReturn: null,
+      usageFocus: { ...(opts.section ? { section: opts.section } : {}), ...(opts.metric ? { metric: opts.metric } : {}), seq }
+    })
   },
 
   openSchedules(opts = {}) {
