@@ -52,7 +52,6 @@ import UsageHeader, { UsageTopbarActions } from '../components/usage/UsageHeader
 import UsageFilterBar, { BucketControl } from '../components/usage/UsageFilterBar'
 import UsageChips from '../components/usage/UsageChips'
 import UsageSummary from '../components/usage/UsageSummary'
-import UsageDefinitions from '../components/usage/UsageDefinitions'
 import { LegacyNote, SummaryNotes, TruncatedBanner } from '../components/usage/UsageNotes'
 import { EmptyAll, EmptyFiltered, LoadError, LoadingSkeleton, RefreshFailed } from '../components/usage/UsageStates'
 import { useUsageCsv } from '../components/usage/useUsageCsv'
@@ -566,7 +565,6 @@ export default function UsageView(): ReactElement {
                   </p>
                 )}
                 <LegacyNote text={notes?.legacy ?? null} />
-                <UsageDefinitions />
               </footer>
             </>
           )}

@@ -1,5 +1,3 @@
-import type { ReactElement } from 'react'
-
 /** The terms of docs/design/usage-app.md 12.2, verbatim. Info buttons elsewhere on the page use these as their titles. */
 export const USAGE_DEFINITIONS: readonly { term: string; text: string }[] = [
   {
@@ -24,19 +22,12 @@ export const USAGE_DEFINITIONS: readonly { term: string; text: string }[] = [
   { term: 'Legacy', text: 'Recorded before usage tracking; figures are approximate.' }
 ]
 
-/** Footer disclosure "What these terms mean" (usage-definitions). */
-export default function UsageDefinitions(): ReactElement {
-  return (
-    <details className="usage-definitions" data-testid="usage-definitions">
-      <summary>What these terms mean</summary>
-      <dl className="usage-definitions-list">
-        {USAGE_DEFINITIONS.map((d) => (
-          <div key={d.term}>
-            <dt>{d.term}</dt>
-            <dd>{d.text}</dd>
-          </div>
-        ))}
-      </dl>
-    </details>
-  )
+export type UsageTerm = (typeof USAGE_DEFINITIONS)[number]['term']
+
+/**
+ * The definition of a term, for the tooltip on the label it defines (dashboard-usage-redesign usage.md: the closed
+ * Definitions section is retired; each definition moves to its label). Empty for an unknown term.
+ */
+export function definitionOf(term: string): string {
+  return USAGE_DEFINITIONS.find((d) => d.term === term)?.text ?? ''
 }
