@@ -46,7 +46,7 @@ export interface UsageTokenSplit {
 export function kpiDefinition(signal: SummarySignal): string {
   if (signal === 'cost') return definitionOf('Estimated cost')
   if (signal === 'wall') {
-    return `${definitionOf('Wall time')} It is not the Dashboard's Agent time, which counts the time agents spent working.`
+    return `${definitionOf('Wall time')} It is not the Dashboard's Agent time, which leaves out time a run was idle or waiting on you.`
   }
   return ''
 }
