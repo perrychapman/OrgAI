@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { EXIT } from './types'
 import { listSessions } from '../main/host/sessions'
 import { VITE_NODE_CLI } from '../main/host/testFixtures/viteNodeCli'
+import { killAndWait } from '../main/store/shared/testing/viteNode'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..', '..')
@@ -79,9 +80,11 @@ async function eventually(check: () => boolean, ms = 15_000): Promise<boolean> {
   return check()
 }
 
-afterEach(() => {
-  for (const c of children.splice(0)) c.kill('SIGKILL')
-  if (dir) rmSync(dir, { recursive: true, force: true })
+afterEach(async () => {
+  // Wait until every child is gone before removing the folder: on Windows a process that was just killed still holds
+  // its session lock file for a moment, and unlinking it then fails with EBUSY.
+  await killAndWait(children)
+  if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
   dir = ''
 })
 
