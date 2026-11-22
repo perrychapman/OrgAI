@@ -2,6 +2,7 @@ import { normalizeView } from '../lib/teamView'
 import { applyRunDelegation } from '@shared/delegationView'
 import { droppedExtrasMessage } from '../lib/folderLists'
 import { rulesChangedProject } from '../lib/rulesChange'
+import { adoptRecordRunState } from '../lib/runPlaceholder'
 import { reportLiveEvent } from './liveChangeStore'
 import { applyPermissionModePatch, permissionModeEventPatch } from '../lib/runSettings'
 import { clearKnowledgePrefs } from '../lib/knowledgePrefs'
@@ -600,6 +601,8 @@ const outputsLoadSeq = new Map<string, number>()
 let tabNoticeSeq = 0
 /** Runs whose real summary is being fetched after an event created a placeholder. */
 const summaryLookups = new Set<string>()
+/** Placeholders made by a non-status event and no run.status since: fillSummary takes their status from the record (lib/runPlaceholder.ts). */
+const placeholderStatusUnseen = new Set<string>()
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
 function debouncedSave(project: Project): void {
   const sentServers = JSON.stringify(project.mcpServers ?? null)
@@ -2269,6 +2272,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         : emptyRun({ id: e.runId, projectId: '', kind: 'work', prompt: '', status: 'starting', startedAt: Date.now(), totalCostUsd: 0 })
       // A run nobody opened yet (another run of this project, or another project's): fetch its real summary.
       if (!existing) queueMicrotask(() => void get().fillSummary(e.runId))
+      if (e.type === 'run.status') placeholderStatusUnseen.delete(e.runId)
+      else if (!existing) placeholderStatusUnseen.add(e.runId)
       switch (e.type) {
         case 'run.model':
           run.summary = { ...run.summary, modelSelection: e.selection }
@@ -2526,12 +2531,18 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...(record.summary.scheduleId ? { scheduleId: record.summary.scheduleId, scheduleName: record.summary.scheduleName } : {}),
           ...(resumedFrom ? { resumedFrom } : {}), ...(surface ? { surface } : {}), ...(title ? { title } : {}) }
         const agents = Object.keys(run.agents).length ? run.agents : record.agents
+        // No run.status reached this window since the placeholder: the record's status is the newest (not the default 'starting').
+        const statusSeen = !placeholderStatusUnseen.has(runId)
+        placeholderStatusUnseen.delete(runId)
+        const withStatus = adoptRecordRunState(summary, record.summary, statusSeen)
+        // A placeholder that saw no transcript event shows the conversation so far from the record.
+        const transcript = !statusSeen && run.transcript.length === 0 ? record.transcript : run.transcript
         // A paused run the user is looking at was resumed automatically: follow it to its continuation.
         const viewed = s.activeRunByProject[projectId]
         // A newer member of the viewed chain (auto-resume, a continue from another window) takes the tab: the tab shows the chain's newest member.
         const follow = !!resumedFrom && viewed === resumedFrom
         return {
-          runs: { ...s.runs, [runId]: { ...run, summary, agents } },
+          runs: { ...s.runs, [runId]: { ...run, summary: withStatus, agents, transcript } },
           ...(follow ? { activeRunByProject: { ...s.activeRunByProject, [projectId]: runId }, selectedAgentId: 'root' } : {})
         }
       })

@@ -25,6 +25,17 @@ As built, deviations and open items: `docs/design/dashboard-usage-redesign/imple
   - stops the breathing and signal loops;
   - suppresses page arrival;
   - draws the gauges at rest.
+- **Startup appearance and page arrival (2026-11-21):** `main.tsx` renders at once; it must never wait for `settings:get`. A
+  window that waited (commit 899d7394) subscribed to run events late, and a just-opened run window could take a trailing
+  `run.usage` as a placeholder run stuck on `starting` (CI macOS `e2e/model-switch.mjs`, reproduced locally with a delayed
+  settings reply). Instead `lib/theme.ts` applies a localStorage copy of the last saved appearance (`orgai.appearance`,
+  written only from the settings reply and `settings:changed`) before the first paint, and `isAppearanceKnown()` gates the
+  page arrival (`lib/pageArrival.ts` `stagesArrival`): no arrival before the saved Reduce motion is known, so only a first
+  launch of a data dir whose settings reply lands after the Dashboard mounts skips it. In the store, a placeholder made by a
+  non-status event takes its status, end facts and (if it holds none) transcript from the record in `fillSummary`
+  unless a `run.status` event reached the window first (`lib/runPlaceholder.ts`). Checked by unit tests (theme,
+  pageArrival, runPlaceholder), `e2e/model-switch.mjs` with a 650 ms delayed settings reply under the old gate (fails
+  without the store fix, passes with it) and `e2e/dashboard.mjs` MO with a 400 ms delay.
 - **Team pulse** (`lib/teamPulse.ts`):
   - It reads `RunState.agents`, `roster` and `messages`, with a 250 ms trailing recompute that publishes only on change.
   - Signals count only messages after mount within 4.8 s.

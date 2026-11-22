@@ -30,3 +30,12 @@ export class ArrivalMemory {
 }
 
 export const arrivalMemory = new ArrivalMemory()
+
+/**
+ * Whether a mount stages its arrival. Only when the saved appearance is known (theme.ts isAppearanceKnown: the startup
+ * cache or the settings reply), so a still-unknown saved Reduce motion never lets one through; then only with motion on
+ * (the slow duration token is at least 1 ms; Reduce motion collapses it) and a fresh signature (ArrivalMemory.shouldStage).
+ */
+export function stagesArrival(input: { appearanceKnown: boolean; slowMs: number; fresh: boolean }): boolean {
+  return input.appearanceKnown && input.slowMs >= 1 && input.fresh
+}
