@@ -1,5 +1,6 @@
-/* ---------- Settings pages (App settings and project Settings): page frame, pane nav, sections, cards, rows ---------- */
-/* The page is a container (settings-page): the nav is a left rail from 640px, a tab strip above the content below that. */
+/* ---------- Settings pages (App settings and project Settings): page frame, settings menu, sections, cards, rows ---------- */
+/* ui-overhaul settings boards: a glass settings menu (App and Project groups) beside the pane; glass group cards hold the
+   rows. Glass tokens come from tokens.css (ov-foundation); the fallbacks keep the old solid surfaces until they land. */
 .settings-scroll {
   flex: 1;
   container-type: inline-size;
@@ -7,7 +8,7 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: var(--space-5) var(--space-6);
+  padding: var(--space-4);
   /* Contain absolutely positioned descendants (sr-only live regions, native inputs) so they never extend the window. */
   position: relative;
 }
@@ -20,6 +21,7 @@
 }
 .settings-page-title {
   margin: 0 0 var(--space-4);
+  font-family: var(--font-display, inherit);
   font-size: var(--text-title-lg);
   line-height: var(--text-title-lg-lh);
   font-weight: var(--weight-semibold);
@@ -31,76 +33,122 @@
   align-items: start;
 }
 
-/* Pane nav (role=tablist). Narrow: a scrolling strip with an underline on the active tab. */
+/* Settings menu. Narrow: a scrolling glass strip, groups side by side, the active tab underlined. */
 .settings-nav {
   display: flex;
-  gap: var(--space-1);
+  align-items: stretch;
+  gap: var(--space-3);
   position: sticky;
-  top: calc(var(--space-5) * -1);
+  top: calc(var(--space-4) * -1);
   z-index: var(--z-sticky);
-  padding: var(--space-1) 0 0;
-  margin-inline: calc(var(--space-6) * -1);
-  padding-inline: var(--space-6);
+  padding: var(--space-1) var(--space-2);
   overflow-x: auto;
   scrollbar-width: none;
-  background: var(--surface-0);
-  border-bottom: 1px solid var(--border-subtle);
+  background: var(--glass-strong, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  border-radius: var(--radius-xl);
 }
 .settings-nav::-webkit-scrollbar {
   display: none;
 }
+.settings-nav-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+}
+.settings-nav-head {
+  flex: none;
+  padding: 0 var(--space-2);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.settings-nav-tabs,
+.settings-nav-links {
+  display: flex;
+  gap: var(--space-0h);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
 .settings-nav-item {
   flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  min-height: 32px;
   border: 0;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-secondary);
   font: inherit;
   font-size: var(--text-body);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
+  font-weight: var(--weight-medium);
+  padding: 0 var(--space-2h, 10px);
   cursor: pointer;
   text-align: left;
   white-space: nowrap;
 }
 .settings-nav-item:hover {
   color: var(--text-primary);
-  background: var(--surface-3);
+  background: var(--field-bg);
 }
 .settings-nav-item.active {
   color: var(--text-primary);
   font-weight: var(--weight-semibold);
-  border-bottom-color: var(--accent);
+  background: var(--field-bg);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 .settings-nav-item:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
+.settings-nav-item.is-link > span {
+  flex: 1 1 auto;
+}
+.settings-nav-link-icon {
+  flex: none;
+  color: var(--text-tertiary);
+}
 @container settings-page (min-width: 640px) {
   .settings-layout {
-    grid-template-columns: 168px minmax(0, 1fr);
-    gap: var(--space-8);
+    grid-template-columns: minmax(190px, 220px) minmax(0, 1fr);
+    gap: var(--space-4);
   }
   .settings-nav {
     flex-direction: column;
+    gap: var(--space-1);
     top: 0;
-    margin-inline: 0;
-    padding: 0;
+    padding: var(--space-2);
     overflow: visible;
-    background: transparent;
-    border-bottom: 0;
   }
-  .settings-nav-item {
-    border-bottom: 0;
-    margin-bottom: 0;
-    border-radius: var(--radius-md);
-    padding: var(--space-1) var(--space-3);
+  .settings-nav-group {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-0h);
+  }
+  .settings-nav-head {
+    padding: var(--space-2h, 10px) var(--space-2h, 10px) var(--space-1);
+    max-width: none;
+  }
+  .settings-nav-tabs,
+  .settings-nav-links {
+    flex-direction: column;
   }
   .settings-nav-item.active {
-    background: var(--accent-faint);
+    box-shadow: none;
   }
   .settings-nav-item:focus-visible {
-    outline-offset: 2px;
+    outline-offset: 0;
   }
 }
 
@@ -110,22 +158,48 @@
   container-name: settings-col;
   display: flex;
   flex-direction: column;
-  gap: var(--space-8);
+  gap: var(--space-4);
   width: 100%;
-  max-width: 720px;
+  max-width: 860px;
   min-width: 0;
 }
-/* Sections that bring their own markup (connections, MCP, plugins) are still separated by a rule. */
-.settings-col > section + section {
-  padding-top: var(--space-8);
-  border-top: 1px solid var(--border-subtle);
+.settings-col.is-wide {
+  max-width: 1240px;
+}
+
+/* Pane header: scope caption, the h2 (tab label) and its one line; page actions to the right. */
+.settings-pane-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2) var(--space-3);
+}
+.settings-pane-heading {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.settings-pane-scope {
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+.settings-pane-sub {
+  margin: var(--space-0h) 0 0;
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+}
+.settings-pane-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 /* ---------- Section: title tier, lead, actions ---------- */
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
   min-width: 0;
 }
 .settings-section-head,
@@ -138,9 +212,10 @@
 }
 /* Pane heading (h2, the tab name) is the first tier; section titles (h3) sit one tier below it. */
 .settings-pane-title {
-  margin: 0 0 calc(var(--space-4) * -1);
-  font-size: var(--text-title-lg);
-  line-height: var(--text-title-lg-lh);
+  margin: 0;
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-display);
+  line-height: var(--text-display-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
   border-radius: var(--radius-xs);
@@ -156,6 +231,7 @@
 .settings-col .section-head h2,
 .settings-col .section-head h3 {
   margin: 0;
+  font-family: var(--font-display, inherit);
   font-size: var(--text-title);
   line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
@@ -182,7 +258,7 @@
   margin-bottom: 0;
 }
 
-/* Lower tier inside a section: caption, secondary, sentence case. */
+/* Lower tier inside a section: caption, tertiary, sentence case (the boards' group label). */
 .settings-group {
   display: flex;
   flex-direction: column;
@@ -191,23 +267,27 @@
 }
 .settings-group-title {
   margin: 0;
+  padding-inline: var(--space-1);
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
-  font-weight: var(--weight-medium);
-  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
 }
 
-/* ---------- Card of rows ---------- */
+/* ---------- Glass group card of rows ---------- */
 .settings-card {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--surface-2);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
+  padding: var(--space-1) var(--space-4);
+  background: var(--glass, var(--surface-2));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border: 1px solid var(--glass-line, var(--border-default));
+  border-radius: var(--radius-xl);
 }
 .settings-card > * {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-3) 0;
   min-width: 0;
 }
 .settings-card > * + * {
