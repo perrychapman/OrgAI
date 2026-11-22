@@ -89,6 +89,19 @@ export function applyAppearance(a: AppearanceSettings, prefersDark: boolean, roo
 
 let current: AppearanceSettings = DEFAULT_APPEARANCE
 let query: MediaQueryList | null = null
+let appearanceLoaded: Promise<void> = Promise.resolve()
+
+/** How long main.tsx waits for the saved appearance before it renders anyway (a stuck settings call must not leave a blank window). */
+export const APPEARANCE_WAIT_MS = 1500
+
+/**
+ * Resolves once the saved appearance is applied (or after APPEARANCE_WAIT_MS, or when the read failed). The app renders only
+ * then: a page that decides on mount from the motion tokens (the page arrival) must not read the defaults while the saved
+ * Reduce motion is still in flight, which staged an arrival under Reduce motion when settings answered after the first data.
+ */
+export function whenAppearanceApplied(): Promise<void> {
+  return Promise.race([appearanceLoaded, new Promise<void>((resolve) => window.setTimeout(resolve, APPEARANCE_WAIT_MS))])
+}
 
 function reapply(): void {
   applyAppearance(current, query?.matches ?? true)
@@ -109,7 +122,7 @@ export function initTheme(): () => void {
   query.addEventListener('change', reapply)
   reapply()
   const off = window.orgai.onSettingsChanged((s: AppSettingsInfo) => setAppearance(s.appearance ?? DEFAULT_APPEARANCE))
-  void window.orgai.settings
+  appearanceLoaded = window.orgai.settings
     .get()
     .then((s) => setAppearance(s.appearance ?? DEFAULT_APPEARANCE))
     .catch(() => undefined)
