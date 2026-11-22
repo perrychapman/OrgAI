@@ -23,27 +23,27 @@ const project = (p: Partial<Project> = {}): Project => ({ id: 'p', roles: [root,
 
 describe('roleStaffingLine', () => {
   it('automatic with an effort', () => {
-    expect(roleStaffingLine(role({ effort: 'medium' }), project(), false)).toEqual({ text: 'Automatic, up to Deep / medium' })
+    expect(roleStaffingLine(role({ effort: 'medium' }), project(), false)).toEqual({ text: 'Automatic, up to Advanced / medium' })
   })
   it('automatic without an effort says it goes up to high', () => {
     const l = roleStaffingLine(role(), project(), false)
-    expect(l.text).toBe('Automatic, up to Deep / high')
+    expect(l.text).toBe('Automatic, up to Advanced / high')
     expect(l.note).toMatch(/up to high/)
   })
   it('automatic with an effort cap', () => {
-    expect(roleStaffingLine(role({ effort: 'xhigh', staffing: { mode: 'auto', maxEffort: 'medium' } }), project(), false).text).toBe('Automatic, up to Deep / medium')
+    expect(roleStaffingLine(role({ effort: 'xhigh', staffing: { mode: 'auto', maxEffort: 'medium' } }), project(), false).text).toBe('Automatic, up to Advanced / medium')
   })
   it('automatic with a floor', () => {
-    expect(roleStaffingLine(role({ effort: 'high', staffing: { mode: 'auto', minTier: 'fast' } }), project(), false).text).toBe('Automatic, from Fast up to Deep / high')
+    expect(roleStaffingLine(role({ effort: 'high', staffing: { mode: 'auto', minTier: 'fast' } }), project(), false).text).toBe('Automatic, from Fast up to Advanced / high')
   })
   it('fixed', () => {
-    expect(roleStaffingLine(role({ effort: 'high', staffing: { mode: 'fixed' } }), project(), false)).toEqual({ text: 'Always Deep / high' })
+    expect(roleStaffingLine(role({ effort: 'high', staffing: { mode: 'fixed' } }), project(), false)).toEqual({ text: 'Always Advanced / high' })
     const none = roleStaffingLine(role({ staffing: { mode: 'fixed' } }), project(), false)
-    expect(none.text).toBe('Always Deep / default effort')
+    expect(none.text).toBe('Always Advanced / default effort')
     expect(none.note).toMatch(/default/)
   })
   it('a fixed project makes every role fixed', () => {
-    expect(roleStaffingLine(role({ effort: 'low' }), project({ staffing: 'fixed' }), false).text).toBe('Always Deep / low')
+    expect(roleStaffingLine(role({ effort: 'low' }), project({ staffing: 'fixed' }), false).text).toBe('Always Advanced / low')
   })
   it('an exact model with no tier is fixed', () => {
     expect(roleStaffingLine(role({ model: 'gpt-x', tier: undefined, effort: 'low' }), project(), false).text).toBe('Always gpt-x / low')
@@ -53,7 +53,7 @@ describe('roleStaffingLine', () => {
     expect(roleStaffingLine(role({ model: 'inherit', tier: undefined, effort: 'low', staffing: { mode: 'fixed' } }), project(), false).text).toBe('Always the model of the agent that started it / low')
   })
   it('the root always runs as configured', () => {
-    expect(roleStaffingLine(role({ reportsTo: null, effort: 'high' }), project(), true).text).toBe('Always Deep / high')
+    expect(roleStaffingLine(role({ reportsTo: null, effort: 'high' }), project(), true).text).toBe('Always Advanced / high')
   })
 })
 
@@ -145,7 +145,7 @@ describe('project settings', () => {
 
 describe('import and kit lines', () => {
   it('shows what an imported role may spend', () => {
-    expect(importedRoleSpend({ model: 'opus', tier: 'deep', effort: 'high' }, {}, false)?.text).toBe('Automatic, up to Deep / high')
+    expect(importedRoleSpend({ model: 'opus', tier: 'deep', effort: 'high' }, {}, false)?.text).toBe('Automatic, up to Advanced / high')
     expect(importedRoleSpend(undefined, {}, false)).toBeNull()
   })
   it('kit roles show a line only when the preview carries a model', () => {
