@@ -205,7 +205,7 @@ const spawnWork = (tree, slug) => [
 ]
 /** Start a fresh Live run with `prompt` (the previous one is ended first). */
 let runsStarted = 0
-const startLiveRun = async (prompt) => {
+const startLiveRun = async (prompt, metaTimeout = 15_000) => {
   if (runsStarted++ > 0 || (await page.getByRole('button', { name: 'End session' }).count())) await endSession(page)
   await projectTab(page, 'Live').click()
   await page.keyboard.press('Control+t')
@@ -214,7 +214,17 @@ const startLiveRun = async (prompt) => {
   await ta.waitFor({ timeout: 10_000 })
   await ta.fill(prompt)
   await page.locator('.composer .btn.primary').click()
-  await page.locator('[data-testid=run-meta]').waitFor({ timeout: 15_000 })
+  await page.locator('[data-testid=run-meta]').waitFor({ timeout: metaTimeout }).catch(async (error) => {
+    // What the page showed when the run never appeared (CI windows-latest timed out here after the stress phase).
+    const seen = await page.evaluate(() => ({
+      newRun: !!document.querySelector('.new-run'),
+      draft: document.querySelector('.composer textarea')?.value ?? null,
+      endSession: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === 'End session'),
+      tab: document.querySelector('.run-tab[aria-selected=true]')?.textContent?.trim() ?? null
+    })).catch(() => ({}))
+    log(`startLiveRun(${JSON.stringify(prompt)}) found no run-meta after ${metaTimeout} ms: ${JSON.stringify(seen)}`)
+    throw error
+  })
 }
 /** Wait until the mirror has `n` workers and the scene has a readable state of that size. */
 const waitForFloor = async (n, extra = () => true, timeout = Number(process.env.E2E_FACTORY_WAIT_MS) || 90_000) => {
@@ -1346,7 +1356,9 @@ try {
     const LARGE = 121
     const big = Array.from({ length: LARGE }, (_, i) => ({ type: 'spawn', id: `lt${String(i + 1).padStart(3, '0')}`, name: `lt${String(i + 1).padStart(3, '0')}`, role: slug, description: `Large team ${i + 1}` }))
     writeTimed([...big, { type: 'text', text: 'The large team is staffed.' }], 15)
-    await startLiveRun('Factory floor large team')
+    // After the 40-agent stress and the cue phases a SwiftShader runner can take longer to end the last session and show
+    // the new run (CI windows-latest hit the 15 s default here twice): this one start waits longer.
+    await startLiveRun('Factory floor large team', 45_000)
     const bigState = await untilState((s) => s.mode === 'live' && s.workers.length >= LARGE + 1, 150_000)
     chk6(!!bigState, `large team: ${LARGE + 1} agents (root and ${LARGE} spawns) are on the floor`, await state().then((s) => s.workers.length).catch(() => null))
     if (bigState) {

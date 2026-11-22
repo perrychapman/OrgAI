@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_APPEARANCE } from '@shared/defaults'
-import { accentVars, applyAppearance, normalizeHex, onAccent, resolveTheme } from './theme'
+import { accentVars, applyAppearance, isAppearanceKnown, normalizeHex, onAccent, parseCachedAppearance, resolveTheme } from './theme'
+
+describe('startup appearance cache', () => {
+  it('reads a saved copy, filling missing fields from the defaults', () => {
+    const a = parseCachedAppearance(JSON.stringify({ reduceMotion: 'on', theme: 'light', canvas: { pattern: 'grid' } }))
+    expect(a?.reduceMotion).toBe('on')
+    expect(a?.theme).toBe('light')
+    expect(a?.canvas.pattern).toBe('grid')
+    expect(a?.canvas.edges).toBe(DEFAULT_APPEARANCE.canvas.edges)
+    expect(a?.accent).toBe(DEFAULT_APPEARANCE.accent)
+  })
+  it('ignores absent, broken or non-object copies', () => {
+    for (const raw of [null, '', '{', '[]', '"on"', 'null', '3']) expect(parseCachedAppearance(raw)).toBeNull()
+    expect(parseCachedAppearance(JSON.stringify({ canvas: [1] }))?.canvas).toEqual(DEFAULT_APPEARANCE.canvas)
+  })
+  it('is not known before initTheme has applied a saved appearance', () => {
+    expect(isAppearanceKnown()).toBe(false)
+  })
+})
 
 describe('theme', () => {
   it('writes scene attributes and defaults legacy canvas settings', () => {

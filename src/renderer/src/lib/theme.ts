@@ -89,18 +89,46 @@ export function applyAppearance(a: AppearanceSettings, prefersDark: boolean, roo
 
 let current: AppearanceSettings = DEFAULT_APPEARANCE
 let query: MediaQueryList | null = null
-let appearanceLoaded: Promise<void> = Promise.resolve()
+let appearanceKnown = false
 
-/** How long main.tsx waits for the saved appearance before it renders anyway (a stuck settings call must not leave a blank window). */
-export const APPEARANCE_WAIT_MS = 1500
+/** localStorage copy of the last saved appearance, applied synchronously at startup before the settings reply. */
+export const APPEARANCE_CACHE_KEY = 'orgai.appearance'
 
 /**
- * Resolves once the saved appearance is applied (or after APPEARANCE_WAIT_MS, or when the read failed). The app renders only
- * then: a page that decides on mount from the motion tokens (the page arrival) must not read the defaults while the saved
- * Reduce motion is still in flight, which staged an arrival under Reduce motion when settings answered after the first data.
+ * The cached appearance as full settings (missing fields from the defaults), or null when absent or not an object.
+ * Only a first paint reads it; the settings reply replaces it moments later.
  */
-export function whenAppearanceApplied(): Promise<void> {
-  return Promise.race([appearanceLoaded, new Promise<void>((resolve) => window.setTimeout(resolve, APPEARANCE_WAIT_MS))])
+export function parseCachedAppearance(raw: string | null): AppearanceSettings | null {
+  if (!raw) return null
+  try {
+    const v: unknown = JSON.parse(raw)
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+    const a = v as Partial<AppearanceSettings>
+    const canvas = a.canvas && typeof a.canvas === 'object' && !Array.isArray(a.canvas) ? a.canvas : {}
+    return { ...DEFAULT_APPEARANCE, ...a, canvas: { ...DEFAULT_APPEARANCE.canvas, ...canvas } }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * True once this window applied the saved appearance (from the startup cache or the settings reply), so motion tokens
+ * read now honour the saved Reduce motion. The page arrival (usePageArrival) stages only then: the app renders at once and
+ * never waits for settings (a delayed first render made run windows subscribe late and miss run events).
+ */
+export function isAppearanceKnown(): boolean {
+  return appearanceKnown
+}
+
+/** The saved appearance (settings reply or settings:changed): apply, remember for the next startup. */
+function adoptSaved(a: AppearanceSettings): void {
+  appearanceKnown = true
+  setAppearance(a)
+  try {
+    window.localStorage.setItem(APPEARANCE_CACHE_KEY, JSON.stringify(a))
+  } catch {
+    // storage unavailable: the next startup waits for the settings reply instead
+  }
 }
 
 function reapply(): void {
@@ -120,12 +148,26 @@ export function setAppearance(a: AppearanceSettings): void {
 export function initTheme(): () => void {
   query = window.matchMedia('(prefers-color-scheme: dark)')
   query.addEventListener('change', reapply)
+  let cached: AppearanceSettings | null = null
+  try {
+    cached = parseCachedAppearance(window.localStorage.getItem(APPEARANCE_CACHE_KEY))
+  } catch {
+    cached = null
+  }
+  if (cached) {
+    // Last saved appearance, before the first paint: theme and Reduce motion are right from the first frame.
+    current = cached
+    appearanceKnown = true
+  }
   reapply()
-  const off = window.orgai.onSettingsChanged((s: AppSettingsInfo) => setAppearance(s.appearance ?? DEFAULT_APPEARANCE))
-  appearanceLoaded = window.orgai.settings
+  const off = window.orgai.onSettingsChanged((s: AppSettingsInfo) => adoptSaved(s.appearance ?? DEFAULT_APPEARANCE))
+  void window.orgai.settings
     .get()
-    .then((s) => setAppearance(s.appearance ?? DEFAULT_APPEARANCE))
-    .catch(() => undefined)
+    .then((s) => adoptSaved(s.appearance ?? DEFAULT_APPEARANCE))
+    .catch(() => {
+      // The read failed: the defaults (or the cache) stand, and pages may decide from them.
+      appearanceKnown = true
+    })
   return () => {
     query?.removeEventListener('change', reapply)
     off()

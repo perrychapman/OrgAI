@@ -3,15 +3,14 @@ import ReactDOM from 'react-dom/client'
 import '@xyflow/react/dist/style.css'
 import './styles/global.css'
 import App from './App'
-import { initTheme, whenAppearanceApplied } from './lib/theme'
+import { initTheme } from './lib/theme'
 
+// Applies the cached saved appearance synchronously, then the settings reply. Render at once: a window that waited for
+// settings subscribed to run events late and could miss them (lib/theme.ts isAppearanceKnown, lib/usePageArrival.ts).
 initTheme()
 
-// Render once the saved appearance is applied (bounded wait), so the first page sees the saved theme and Reduce motion.
-void whenAppearanceApplied().then(() => {
-  ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>
-  )
-})
+ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+)
