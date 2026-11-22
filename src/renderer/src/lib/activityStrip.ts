@@ -116,10 +116,10 @@ export function runWorkMs(usage: LedgerRun['usage']): number | null {
 
 /**
  * Decision cards asked in a run (RunUsage.decisions); null for a run that does not carry the count (an older record).
- * Read through a local cast until the field lands in src/shared/types.ts; absent is unknown, never 0.
+ * Absent is unknown, never 0.
  */
 export function decisionsOf(usage: LedgerRun['usage']): number | null {
-  const n = (usage as { decisions?: unknown } | undefined)?.decisions
+  const n = usage?.decisions
   return finite(n) && n >= 0 ? Math.floor(n) : null
 }
 
