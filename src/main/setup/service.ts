@@ -210,13 +210,18 @@ export class SetupService {
   /** Profile the working directory and record it on the project. */
   async prepare(project: Project): Promise<Project> {
     const profile = await profileRepo(project.path, projectKindOf(project))
-    const setup: ProjectSetup = {
-      kind: project.setup?.kind ?? (profile.isEmpty ? 'new' : 'existing'),
-      ...project.setup,
-      state: project.setup?.state === 'complete' ? 'complete' : 'in_progress',
-      profile
+    const withProfile = (p: Project): Project => {
+      const setup: ProjectSetup = {
+        kind: p.setup?.kind ?? (profile.isEmpty ? 'new' : 'existing'),
+        ...p.setup,
+        state: p.setup?.state === 'complete' ? 'complete' : 'in_progress',
+        profile
+      }
+      return { ...p, setup }
     }
-    return this.projects.save({ ...project, setup })
+    // The profile took a while: it goes onto the project as it is stored now, so a setup that another orgai session
+    // completed meanwhile is not put back to "in progress" from the copy this call started with.
+    return this.projects.save(withProfile(this.projects.get(project.id) ?? project))
   }
 
   /** The visible first message of a setup session. */

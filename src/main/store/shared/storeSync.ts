@@ -209,17 +209,20 @@ export function lockedForProcess<T>(fn: () => T): T {
  * in one project then do such a call one after the other, each on what the other left. A call that returns a promise
  * holds the lock for its synchronous start only; work that spans awaits takes a named lock (namedLock.ts).
  *
- * Calls the service makes on itself are not wrapped (they are already inside the caller's hold). With one process per
- * data folder the service is returned as it is.
+ * Calls the service makes on itself are not wrapped (they are already inside the caller's hold). `except` names
+ * methods that only read this process's memory and are asked often (a count the activity tracker polls, `dispose`):
+ * they run without the lock. With one process per data folder the service is returned as it is.
  */
-export function oneChangePerCall<T extends object>(dataDir: string, service: T): T {
+export function oneChangePerCall<T extends object>(dataDir: string, service: T, opts: { except?: readonly (keyof T & string)[] } = {}): T {
   const sync = storeSyncFor(dataDir)
   if (!sync.shared) return service
+  const plain = new Set<PropertyKey>(opts.except ?? [])
   const wrapped = new Map<PropertyKey, unknown>()
   return new Proxy(service, {
     get(target, key) {
       const value = Reflect.get(target, key, target) as unknown
       if (typeof value !== 'function') return value
+      if (plain.has(key)) return (value as (...args: unknown[]) => unknown).bind(target)
       let fn = wrapped.get(key) as { of: unknown; call: unknown } | undefined
       if (!fn || fn.of !== value) {
         const method = value as (...args: unknown[]) => unknown

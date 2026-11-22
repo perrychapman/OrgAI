@@ -477,7 +477,14 @@ describe('a project open in several orgai sessions', () => {
     expect(session.getState().activeRunId).toBe('theirs')
     expect(session.getState().runs.theirs?.summary.liveElsewhere).toEqual(where)
     expect(session.getState().notices.map((n) => n.text)).toContain(liveElsewhereNotice(where))
-    expect(liveElsewhereNotice(where)).toBe('This run is live in another orgai (/term/two, pid 4188). It shows here as last saved, read-only; steer it there.')
+    expect(liveElsewhereNotice(where)).toBe('This run is live in another orgai (/term/two, pid 4188). It shows here as last saved, read-only; steer it there. /new starts a run here.')
+    // It is steered where it is hosted: nothing is sent from here, and it is not this terminal's run to stop at quit.
+    await expect(session.submitPrompt('hello')).rejects.toThrow(liveElsewhereNotice(where))
+    await expect(session.interrupt()).rejects.toThrow('steer it there')
+    await expect(session.stop()).rejects.toThrow('steer it there')
+    expect(h.callsOf('runs:send')).toHaveLength(0)
+    expect(h.callsOf('runs:interrupt')).toHaveLength(0)
+    expect(statusSummary(session.getState()).liveRuns).toBe(0)
 
     // Its host saves more: the next re-read shows it.
     transcript = [...transcript, said('e2', 'more words', 2)]

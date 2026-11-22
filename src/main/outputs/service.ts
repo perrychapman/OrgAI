@@ -70,6 +70,7 @@ import {
 import { PREVIEW_BUSY, queuedHeavy } from './heavyQueue'
 import { type OutputVersionMeta, type StoredOutput, applyVersionFields, createOutputStore, newOutputId } from './store'
 import { withNamedLock } from '../store/shared/namedLock'
+import { storeSyncFor } from '../store/shared/storeSync'
 import {
   VersionStorageFullError,
   assertVersionRoom,
@@ -293,6 +294,12 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
    * next version simply becomes v2). Call BEFORE the file is changed. Returns the fresh entry.
    */
   function ensureV1(scope: OutputScope, id: string): StoredOutput {
+    // Read, snapshot and index as one step: under the write lock, like every other change of a project's outputs
+    // (a call from inside a queued operation holds only that project's named lock).
+    return storeSyncFor(dataDir).locked(() => ensureV1Unlocked(scope, id))
+  }
+
+  function ensureV1Unlocked(scope: OutputScope, id: string): StoredOutput {
     const e = entryOf(scope.projectId, id)
     if (e.versions.length) return e
     try {
@@ -331,6 +338,12 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
 
   /** Snapshot (first), then the index: add the version, apply the caps. Reads the entry fresh. */
   function commitVersion(projectId: string, id: string, a: Commit): StoredOutput {
+    // Read, snapshot and index as one step: under the write lock, like every other change of a project's outputs
+    // (a call from inside a queued operation holds only that project's named lock).
+    return storeSyncFor(dataDir).locked(() => commitVersionUnlocked(projectId, id, a))
+  }
+
+  function commitVersionUnlocked(projectId: string, id: string, a: Commit): StoredOutput {
     const fresh = entryOf(projectId, id)
     const n = nextVersionNumber(fresh)
     assertRoom(projectId, a.bytes.length, id)
@@ -385,6 +398,12 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
   }
 
   function markAnswered(projectId: string, outputId: string, requestId: string, n: number): void {
+    // Read, snapshot and index as one step: under the write lock, like every other change of a project's outputs
+    // (a call from inside a queued operation holds only that project's named lock).
+    return storeSyncFor(dataDir).locked(() => markAnsweredUnlocked(projectId, outputId, requestId, n))
+  }
+
+  function markAnsweredUnlocked(projectId: string, outputId: string, requestId: string, n: number): void {
     try {
       const all = revisionsForWrite(dataDir, projectId, outputId)
       const r = all.find((x) => x.id === requestId)

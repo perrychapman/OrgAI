@@ -102,6 +102,9 @@ export function sessionWords(s: Pick<SessionRecord, 'pid' | 'cwd'> | undefined):
 /** A project's lock is tried this many more times, this far apart, before it counts as held alone by another session. */
 const OPEN_RETRIES = 5
 const OPEN_RETRY_MS = 4
+/** The lock of the turn to try for a project alone, and how often it is tried (about half a second in all). */
+const ALONE_TURN_LOCK = 'alone-turn.lock'
+const TURN_RETRIES = 120
 
 const RECORD_RE = /^([0-9a-f]{12})\.json$/
 const LOCK_RE = /^([0-9a-f]{12})\.lock$/
@@ -201,8 +204,11 @@ export function isSessionLive(dataDir: string, id: string): boolean {
   return isLiveLock(sessionLockPath(dataDir, id))
 }
 
-/** Every session with a record, live or not, oldest first. Reads and probes only: safe without a host. */
-export function listSessions(dataDir: string): SessionListing[] {
+/**
+ * Every session with a record, live or not, oldest first. Reads and probes only: safe without a host. `exceptId`: a
+ * session to leave out without reading or probing it (the caller's own; it knows it runs).
+ */
+export function listSessions(dataDir: string, exceptId?: string): SessionListing[] {
   let names: string[]
   try {
     names = readdirSync(sessionsDirOf(dataDir))
@@ -212,7 +218,7 @@ export function listSessions(dataDir: string): SessionListing[] {
   const out: SessionListing[] = []
   for (const name of names) {
     const id = RECORD_RE.exec(name)?.[1]
-    if (!id) continue
+    if (!id || id === exceptId) continue
     const record = readRecord(dataDir, id)
     if (!record) continue
     out.push({ record, live: isLiveLock(sessionLockPath(dataDir, id)) })
@@ -220,9 +226,9 @@ export function listSessions(dataDir: string): SessionListing[] {
   return out.sort((a, b) => a.record.startedAt - b.record.startedAt || (a.record.hostInstanceId < b.record.hostInstanceId ? -1 : 1))
 }
 
-/** The running sessions. */
-export function liveSessions(dataDir: string): SessionRecord[] {
-  return listSessions(dataDir)
+/** The running sessions (without `exceptId`, see listSessions). */
+export function liveSessions(dataDir: string, exceptId?: string): SessionRecord[] {
+  return listSessions(dataDir, exceptId)
     .filter((s) => s.live)
     .map((s) => s.record)
 }
@@ -334,10 +340,38 @@ export function registerSession(dataDir: string, info: Omit<SessionRecord, 'proj
     lock.release()
     throw e
   }
+  /** Projects this session holds alone right now (it is removing or moving them). */
+  const alone = new Map<string, SyncLockHandle>()
   const save = (): void => {
     if (released) return
     record = { ...record, projects: [...claims.keys()] }
     writeRecord(dataDir, record)
+  }
+  const saveQuietly = (): void => {
+    try {
+      save()
+    } catch {
+      /* the record is rewritten at the next change; the locks are what count */
+    }
+  }
+  /** A shared hold of a project's lock, tried a few times: an exclusive attempt that is about to fail keeps it out for an instant. */
+  const sharedHold = (projectId: string): SyncLockHandle | null => {
+    let hold = trySyncSharedLock(projectLockPath(dataDir, projectId))
+    for (let i = 0; !hold && i < OPEN_RETRIES; i++) {
+      sleepSync(OPEN_RETRY_MS)
+      hold = trySyncSharedLock(projectLockPath(dataDir, projectId))
+    }
+    return hold
+  }
+  /** The turn to try for a project alone (one session at a time, for a few milliseconds); null when it stays taken. */
+  const attemptTurn = (): SyncLockHandle | null => {
+    const path = join(sessionsDirOf(dataDir), ALONE_TURN_LOCK)
+    let turn = trySyncLock(path)
+    for (let i = 0; !turn && i < TURN_RETRIES; i++) {
+      sleepSync(OPEN_RETRY_MS)
+      turn = trySyncLock(path)
+    }
+    return turn
   }
   const handle: SessionHandle = {
     dataDir,
@@ -350,13 +384,10 @@ export function registerSession(dataDir: string, info: Omit<SessionRecord, 'proj
     openProject(projectId) {
       if (released) return { ok: false, holder: undefined }
       if (claims.has(projectId)) return { ok: true }
-      // Only an exclusive holder keeps a shared one out: another session is removing or moving the project. An
-      // exclusive attempt that is about to fail also does for an instant, so the try is repeated a few times.
-      let hold = trySyncSharedLock(projectLockPath(dataDir, projectId))
-      for (let i = 0; !hold && i < OPEN_RETRIES; i++) {
-        sleepSync(OPEN_RETRY_MS)
-        hold = trySyncSharedLock(projectLockPath(dataDir, projectId))
-      }
+      // This session itself is removing or moving it right now (another request of the same host).
+      if (alone.has(projectId)) return { ok: false, holder: undefined }
+      const hold = sharedHold(projectId)
+      // Only an exclusive holder keeps a shared one out: another session is removing or moving the project.
       if (!hold) return { ok: false, holder: undefined }
       claims.set(projectId, hold)
       try {
@@ -378,55 +409,66 @@ export function registerSession(dataDir: string, info: Omit<SessionRecord, 'proj
       if (!hold) return
       claims.delete(projectId)
       hold.release()
-      try {
-        save()
-      } catch {
-        /* the record keeps naming it until the next save; the lock is what counts */
-      }
+      saveQuietly()
     },
     exclusiveProject(projectId) {
-      if (released) return { ok: false, holders: [] }
-      const path = projectLockPath(dataDir, projectId)
-      const own = claims.get(projectId)
-      // This session's own shared hold would keep the exclusive one out: it steps aside for the attempt.
-      own?.release()
-      const exclusive = trySyncLock(path)
-      if (!exclusive) {
-        if (own) {
-          const back = trySyncSharedLock(path)
-          if (back) claims.set(projectId, back)
-          else claims.delete(projectId)
-        }
-        return { ok: false, holders: handle.othersIn(projectId) }
-      }
-      claims.delete(projectId)
-      let done = false
-      return {
-        ok: true,
-        held: {
-          release(reopen) {
-            if (done) return
-            done = true
-            exclusive.release()
-            if (reopen && !released) handle.openProject(projectId)
+      if (released || alone.has(projectId)) return { ok: false, holders: [] }
+      // One session at a time tries to take any project alone. Without that, two sessions that both have a project
+      // open and both want it alone would each step aside for the other, and one would get it while the other still
+      // works in it.
+      const turn = attemptTurn()
+      if (!turn) return { ok: false, holders: handle.othersIn(projectId) }
+      try {
+        const path = projectLockPath(dataDir, projectId)
+        const own = claims.get(projectId)
+        // This session's own shared hold would keep the exclusive one out: it steps aside for the attempt.
+        own?.release()
+        const exclusive = trySyncLock(path)
+        if (!exclusive) {
+          if (own) {
+            // Nobody else can hold it alone meanwhile (they would need the turn), so this succeeds; if it does not,
+            // the record must not go on saying the project is open here.
+            const back = sharedHold(projectId)
+            if (back) claims.set(projectId, back)
             else {
-              try {
-                save()
-              } catch {
-                /* the record is rewritten at the next change */
+              claims.delete(projectId)
+              saveQuietly()
+            }
+          }
+          return { ok: false, holders: handle.othersIn(projectId) }
+        }
+        claims.delete(projectId)
+        alone.set(projectId, exclusive)
+        saveQuietly()
+        let done = false
+        return {
+          ok: true,
+          held: {
+            release(reopen) {
+              if (done) return
+              done = true
+              alone.delete(projectId)
+              exclusive.release()
+              if (reopen && !released) {
+                // Still this session's project (it was moved, not removed): open again, and say so in the record.
+                if (!handle.openProject(projectId).ok) saveQuietly()
               }
             }
           }
         }
+      } finally {
+        turn.release()
       }
     },
-    othersIn: (projectId) => projectHolders(dataDir, projectId).filter((s) => s.hostInstanceId !== id),
-    others: () => liveSessions(dataDir).filter((s) => s.hostInstanceId !== id),
+    othersIn: (projectId) => liveSessions(dataDir, id).filter((s) => s.projects.includes(projectId)),
+    others: () => liveSessions(dataDir, id),
     release() {
       if (released) return
       released = true
       for (const claim of claims.values()) claim.release()
       claims.clear()
+      for (const held of alone.values()) held.release()
+      alone.clear()
       // The record first (the session stops being listed), then the lock, then its file.
       for (const file of [sessionRecordPath(dataDir, id)]) {
         try {

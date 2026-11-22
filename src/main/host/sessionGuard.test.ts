@@ -44,7 +44,7 @@ const guardOf = (sync: StoreSync, hosted: Record<string, string> = {}, liveIn: R
     project: (id) => projects.get(id),
     run: (id) => runs.get(id),
     hostedElsewhere: (id) => hosted[id] ?? null,
-    liveElsewhereIn: (projectId) => liveIn[projectId] ?? []
+    workingElsewhereIn: (projectId) => liveIn[projectId] ?? []
   })
 
 describe('shortStringsIn', () => {
@@ -128,19 +128,34 @@ describe('createSessionGuard', () => {
     expect(b.handle.hasProjectOpen('proj_1')).toBe(true)
   })
 
-  it('report branches are not merged or discarded here while another session hosts a live run in the project', () => {
+  it('report branches are not merged or discarded here while another session hosts a run that is working in the project', () => {
     const a = session(A)
     const b = session(B)
     const busy = guardOf(b.sync, {}, { proj_1: [A] })
-    for (const channel of ['maintenance:integrateWorktree', 'maintenance:discardWorktree', 'maintenance:uninstallRepo']) {
-      expect(() => busy(channel, ['proj_1', 'worktree-agent-x'])).toThrow(WorktreesBusyError)
+    for (const channel of ['maintenance:integrateWorktree', 'maintenance:discardWorktree']) {
+      expect(() => busy(channel, [{ projectId: 'proj_1', branch: 'worktree-agent-x' }])).toThrow(WorktreesBusyError)
     }
-    expect(() => busy('maintenance:integrateWorktree', ['proj_1', 'worktree-agent-x'])).toThrow(
-      `The project Alpha has a run live in another orgai session (/work/${A}, pid ${process.pid}): its report branches may be that run's work in progress. Merge or discard them there, or after it ends.`
+    expect(() => busy('maintenance:integrateWorktree', [{ projectId: 'proj_1', branch: 'worktree-agent-x' }])).toThrow(
+      `The project Alpha has a run working in another orgai session (/work/${A}, pid ${process.pid}): its report branches may be that run's work in progress. Merge or discard them there, or once it is idle.`
     )
-    // Another session only having the project open (no live run) does not stop it, nor does a live run in another project.
+    // Another session only having the project open (nothing working there) does not stop it, nor does work in another project.
     guardOf(a.sync)('runs:start', [{ projectId: 'proj_1', prompt: 'go' }])
-    expect(guardOf(b.sync, {}, { proj_2: [A] })('maintenance:integrateWorktree', ['proj_1', 'worktree-agent-x'])).toBeUndefined()
+    expect(guardOf(b.sync, {}, { proj_2: [A] })('maintenance:integrateWorktree', [{ projectId: 'proj_1', branch: 'worktree-agent-x' }])).toBeUndefined()
+  })
+
+  it('taking OrgAI out of a repository needs the project alone, and leaves it this session\'s', () => {
+    const a = session(A)
+    const b = session(B)
+    guardOf(a.sync)('runs:start', [{ projectId: 'proj_1', prompt: 'go' }])
+    const guard = guardOf(b.sync)
+    expect(() => guard('maintenance:uninstallRepo', ['proj_1'])).toThrow(ProjectBusyError)
+    a.handle.closeProject('proj_1')
+    const done = guard('maintenance:uninstallRepo', ['proj_1'])
+    expect(typeof done).toBe('function')
+    // While it is held alone, this session's own other requests cannot open it either, and say why at once.
+    expect(() => guard('runs:start', [{ projectId: 'proj_1', prompt: 'go' }])).toThrow('is being removed or moved by another orgai session')
+    ;(done as () => void)()
+    expect(b.handle.hasProjectOpen('proj_1')).toBe(true)
   })
 
   it('refuses a run another session hosts before any project is opened, Chat runs included', () => {

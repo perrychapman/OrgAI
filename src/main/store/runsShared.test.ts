@@ -174,9 +174,17 @@ describe('two sessions, one run index', () => {
     expect(b.store.get('a1')?.liveElsewhere).toEqual(where)
     expect(a.store.get('a1')?.liveElsewhere).toBeUndefined()
     expect(b.store.all().find((r) => r.id === 'a1')?.liveElsewhere).toEqual(where)
-    expect(a.store.liveElsewhereIn('proj_1')).toEqual([B])
-    expect(b.store.liveElsewhereIn('proj_1')).toEqual([A])
-    expect(b.store.liveElsewhereIn('proj_2')).toEqual([])
+    // Who is working in the project elsewhere: runs that are starting, running or stopping, of kind work.
+    expect(a.store.workingElsewhereIn('proj_1')).toEqual([B])
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([A])
+    expect(b.store.workingElsewhereIn('proj_2')).toEqual([])
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'idle', startedAt: 1 }))
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
+    expect(b.store.get('a1')?.liveElsewhere).toEqual(where)
+    a.store.upsert(run('a-setup', { projectId: 'proj_1', status: 'running', kind: 'setup', startedAt: 3 }))
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
+    a.store.upsert(run('a-setup', { projectId: 'proj_1', status: 'finished', kind: 'setup', startedAt: 3 }))
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'running', startedAt: 1 }))
     // The mark is never stored, even when a summary that carries it is written back.
     expect(() => b.store.upsert({ ...(b.store.get('a1') as RunSummary), title: 'not mine' })).toThrow(RunBusyError)
     b.store.upsert({ ...run('b1', { projectId: 'proj_1', status: 'running', startedAt: 2 }), liveElsewhere: where })
@@ -185,7 +193,7 @@ describe('two sessions, one run index', () => {
     // Its host ends the run: nobody is live elsewhere in the project for the other session any more.
     a.store.upsert(run('a1', { projectId: 'proj_1', status: 'finished', startedAt: 1 }))
     expect(b.store.get('a1')?.liveElsewhere).toBeUndefined()
-    expect(b.store.liveElsewhereIn('proj_1')).toEqual([])
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
     expect(onDisk().owners).toEqual({ b1: B, 'a-chat': A })
   })
 

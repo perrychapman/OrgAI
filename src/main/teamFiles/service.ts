@@ -1164,7 +1164,10 @@ export class TeamFilesService {
     const wanted = ids(ap.project)
     setImmediate(() => {
       try {
-        if (ids(this.deps.projects.get(projectId)) === wanted) ap.commit()
+        // One step with whatever another orgai session does to the same files (the tombstones are read and rewritten).
+        this.oneChange(() => {
+          if (ids(this.deps.projects.get(projectId)) === wanted) ap.commit()
+        })
       } catch (e) {
         this.warn(`cleanup after a save failed: ${e instanceof Error ? e.message : String(e)}`)
       }

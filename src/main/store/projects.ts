@@ -559,6 +559,11 @@ export class ProjectStore {
         this.projects = parsed.projects
         this.fileVersion = parsed.version
         for (const p of this.projects) this.remember(p)
+        // Versions of projects that are gone (removed here or by another session) are of no use to any save.
+        if (this.versions.size > this.projects.length) {
+          const stored = new Set(this.projects.map((p) => p.id))
+          for (const id of [...this.versions.keys()]) if (!stored.has(id)) this.versions.delete(id)
+        }
       }
     } catch (e) {
       if (!first) {
@@ -589,7 +594,8 @@ export class ProjectStore {
     let known = this.versions.get(p.id)
     if (!known) this.versions.set(p.id, (known = new Map()))
     known.delete(p.updatedAt)
-    known.set(p.updatedAt, p)
+    // A copy of its own: whatever a caller later does to the object it was handed, the version stays what was stored.
+    known.set(p.updatedAt, structuredClone(p))
     while (known.size > VERSIONS_KEPT) known.delete(known.keys().next().value as string)
   }
 
@@ -640,6 +646,8 @@ export class ProjectStore {
         if (limits.changed || m.changed || clean.changed || dirs.changed) changed++
         return dirs.project
       })
+      // What the migration made of each project is the version a later save may have been made from.
+      if (changed) for (const p of this.projects) this.remember(p)
       // Persist after a version bump too, so the one-time limits migration never runs again on explicit 3 / 8 values.
       if (changed || this.fileVersion < PROJECTS_FILE_VERSION) {
         if (this.projects.length || changed) this.persist()
@@ -878,5 +886,6 @@ export class ProjectStore {
       this.projects = this.projects.filter((p) => p.id !== id)
       this.persist()
     })
+    this.versions.delete(id)
   }
 }

@@ -315,7 +315,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     : projectId === QUICK_PROJECT_ID ? quickRuns?.displayProject()
     : projectId === SKILLS_PROJECT_ID ? skillsProject(connections.effectiveSettings(), dataDir, { mock: mockAdapter })
     : projects.get(projectId)
-  const mcp = new McpService({
+  const mcp = oneChangePerCall(dataDir, new McpService({
     projects,
     secrets,
     library: new McpLibraryStore(dataDir),
@@ -331,7 +331,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     // Wave 7 (round 6 item 9): only an authorization's final commit holds a mutation lease. `activityRef` is set below,
     // before any call can arrive.
     commitLease: (label) => (activityRef ? activityRef.acquire('inFlightRpcMutations', label) : () => {})
-  })
+  }), { except: ['activeAuthorizationCount', 'refreshingCount', 'dispose'] })
   // oneChangePerCall (here and below): with several orgai sessions on this data folder, each call into a service that
   // rewrites a project's own files runs as one change under the write lock. One process per data folder: unchanged.
   const skills = oneChangePerCall(
@@ -712,14 +712,14 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   })
   // A pruned or deleted quick run takes its scratch dir with it when no other run uses it.
   runStore.onRunsRemoved = (removed: RunSummary[]) => quick.runsRemoved(removed)
-  const skillEvaluation = new SkillEvaluationService({
+  const skillEvaluation = oneChangePerCall(dataDir, new SkillEvaluationService({
     dataDir,
     project: (projectId) => projects.get(projectId),
     listRuns: (projectId) => rm.list(projectId),
     getRun: (runId) => rm.get(runId),
     skills,
     complete: (project, input) => rm.completeForProject(project, input)
-  })
+  }), { except: ['inFlightCount', 'dispose'] })
   skillEvaluationService = skillEvaluation
   // The engine's single hybrid completion names no project; the call chain carries it (AsyncLocalStorage), so the
   // completion runs on the connection of the project being analysed.
@@ -838,7 +838,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     env: mockAdapter ? {} : processEnv,
     platform,
     mock: mockAdapter
-  }))
+  }), { except: ['inFlightCount', 'dispose'] })
   capabilities = caps
   const maintenance = new MaintenanceService(projects, teamFiles)
   const importer = new AgentImportService({
@@ -1023,7 +1023,7 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
             project: (id) => projects.get(id),
             run: (id) => rm.summary(id) ?? runStore.get(id),
             hostedElsewhere: (id) => runStore.hostedElsewhere(id),
-            liveElsewhereIn: (projectId) => runStore.liveElsewhereIn(projectId)
+            workingElsewhereIn: (projectId) => runStore.workingElsewhereIn(projectId)
           })
         }
       : {})

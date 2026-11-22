@@ -30,9 +30,9 @@ What is refused, with exit 6 and a sentence naming the other session's folder an
 
 - Changing a run another session hosts: sending to it, stopping it, answering its cards, continuing its conversation
   before it has ended there. A run is steered in the terminal that hosts it (unit, e2e).
-- Removing a project, or moving it to another folder, while another session has it open (unit, e2e).
-- Merging or discarding report branches, and taking OrgAI out of a repository, while another session hosts a live run
-  in that project (unit).
+- Removing a project, moving it to another folder, or taking OrgAI out of its repository, while another session has
+  it open (unit, e2e).
+- Merging or discarding report branches while another session hosts a run that is working in that project (unit).
 - `orgai secrets init` and `reset` while another session runs: they replace secure storage under everyone (unit).
 
 ## The model
@@ -54,15 +54,16 @@ A **session** is one `orgai` host process. Five rules make any number of them sa
    run whose owner is gone is a crashed run and is settled as "ended when orgai closed" by whoever looks next, with no
    write needed. (Processes: a killed host's run.)
 4. **A project is open in any number of sessions, and held alone only to remove or move it.** A session has the
-   projects it works in *open*: `project-<hash>.lock`, held shared. Removing a project, or moving it to another
-   folder, takes the same lock exclusively, which succeeds only when nobody else has it open; meanwhile nobody opens
-   it. The host does this before every changing request (`host/sessionGuard.ts`): the projects the request names are
+   projects it works in *open*: `project-<hash>.lock`, held shared. Removing a project, moving it to another
+   folder, or taking OrgAI out of its repository takes the same lock exclusively, which succeeds only when nobody else
+   has it open; meanwhile nobody opens it. One session at a time tries for a project alone (`alone-turn.lock`), so two
+   sessions that both have it open and both want it alone never both step aside. The host does this before every changing request (`host/sessionGuard.ts`): the projects the request names are
    opened, or held alone for the length of the request. (Processes: a shared hold in another process keeps an
    exclusive one out, and is gone when that process is killed.)
 5. **A project's own files are changed as one step, on their newest content.** Rule 2 for everything scoped to one
    project: its record, its notes and document, its knowledge graph, its team files and their state, its staffing
    profile, its outputs, its skills, its permission rules, its evolution ledger. And a run leaves alone the report
-   branches it did not make while any other run is live in the project. See "Sharing a project".
+   branches it did not make while any other run is working in the project. See "Sharing a project".
 
 The desktop app is untouched. It keeps one process per data folder and its own data folder; its stores get a sync
 that does nothing (`SOLO`), so every path there is byte for byte what it was. (Unit: the whole existing suite.)
@@ -80,6 +81,7 @@ that does nothing (`SOLO`), so every path there is byte for byte what it was. (U
     <id>.json              its record: pid, cwd, command, claimed projects
     project-<hash>.lock    a project's lock: 0 bytes, never deleted; shared by every session that has it open
     work-<hash>.lock       a named lock held across awaits (team evolution, output changes of one project)
+    alone-turn.lock        the turn to try for a project alone (held for milliseconds)
     write.lock             the data folder's write lock
 <data>/runs.json           { version, runs, owners? }
 ```
@@ -132,7 +134,10 @@ project, by kind of state (inventory of 2026-11-22):
   a function with a locked wrapper (knowledge graph, notes, engagement document, permission rules, staffing profile:
   the work is in its `...Unlocked` half); `TeamFilesService.oneChange` around each check and change of the team files
   and their state; and `oneChangePerCall` (`storeSync.ts`), which wraps a whole service so that each call into it is
-  one step (skills, outputs, setup, team reviews; `host/bootstrap.ts`). (Processes: two processes each add 60 notes,
+  one step (skills, skill evaluation, MCP servers, outputs, setup, team reviews; `host/bootstrap.ts`). A call that
+  returns a promise holds the lock for its synchronous start only, so code that awaits and then saves must save onto
+  what is stored then, not onto the copy it started with (`SetupService.prepare` does; the outputs service takes the
+  lock again around each read-snapshot-index step). (Processes: two processes each add 60 notes,
   60 knowledge nodes, 60 permission rules and 60 roles at the same moment; all 480 are there. With one lock taken
   away the test fails: between 34 and 57 of the 120 were lost in four runs.)
 - **The project record** is saved whole, from a copy read earlier. A save now stores a three-way merge: the store
@@ -143,11 +148,12 @@ project, by kind of state (inventory of 2026-11-22):
   (`store/shared/namedLock.ts`): one at a time per project across sessions, waiting up to 60 s for the other.
 - **Agent worktrees.** A run start used to commit "leftover" work in every `worktree-agent-*` worktree of the
   repository and offer them for merging, and `integrate_worktrees` merged any of them; neither could tell that another
-  live run was working in one. Now a run leaves alone every report branch it did not make while another run is live
-  in the project, in this process or another session (`RuntimeContext.otherRunsLive`, `runtime/integration.ts`), and
-  the explicit commands (`orgai worktrees merge|discard`, the repository uninstall) are refused while another
-  session hosts a live run there. This also closes the same hole between two runs of one project in the desktop app.
-  (Unit.)
+  live run was working in one. Now a run leaves alone every report branch it did not make while another run is
+  working in the project (starting, running or stopping), in this process or another session
+  (`RuntimeContext.otherRunsLive`, `runtime/integration.ts`), and `orgai worktrees merge|discard` is refused while
+  another session hosts a run that is working there. A run that only waits for its user has no report at work, so
+  the branches it left are leftovers as before. This also closes the same hole between two runs of one project in
+  the desktop app. (Unit.)
 - **What one process keeps in memory about a project** is rebuilt from the files where it matters: the team files'
   status cache is keyed on the saved state too, so a change by another session invalidates it (unit); a skill's undo
   backups are no longer wiped at start while another session runs.
@@ -184,8 +190,8 @@ A re-read that cannot parse a file keeps the store's memory and never writes an 
 - **Two runs in one project share its checkout.** Each orchestrator works in the project's own folder, as two runs
   in the desktop app do; writing reports are isolated in worktrees when the project isolates writers, and merges are
   serialised by the repository lock. Two orchestrators editing the same file at once is not prevented.
-- **Leftover report branches wait while another run is live.** A run start neither commits nor offers branches left
-  by earlier runs while any other run is live in the project; the next run that starts alone does.
+- **Leftover report branches wait while another run is working.** A run start neither commits nor offers branches
+  left by earlier runs while another run is working in the project; the next run that starts when none is does.
 - **The same field, or the same role, saved by two sessions at once:** the later save wins. Different fields and
   different roles are both kept.
 - **A change to the team, the MCP servers or the skills made in one terminal does not reach a run that is live in
@@ -193,6 +199,9 @@ A re-read that cannot parse a file keeps the store's memory and never writes an 
   live runs; an `orgai` session does not, in its own runs either.)
 - **Runs in different sessions do not message each other** (`message_run` answers that the target is not live here).
 - **Undo of a skill or team change** works in the session that made the change, while it runs.
+- **A team review** (the Team assistant's recommendations and what was dismissed) is saved whole: one computed or
+  edited in one session replaces what another saved meanwhile. It is advisory data.
+- **A project created in one terminal is open there from its next request on**, not from the moment it is created.
 - **A process stopped inside a write** (SIGSTOP in the few milliseconds a section takes) makes other sessions' writes
   wait up to 15 s and then fail with an error naming the lock. A crash there loses nothing: files are replaced whole.
 - **Settings merge is per field and best effort**: two sessions changing the same field at the same moment, the later

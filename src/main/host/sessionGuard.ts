@@ -6,10 +6,10 @@
  * - A stored project the request names (directly, or through one of its runs) is opened for this session
  *   (sessions.ts): any number of sessions can have a project open, and its files are changed under the data folder's
  *   write lock on their newest content. Opening fails only while another session is removing or moving the project.
- * - Removing a project, or moving it to another folder, needs it alone: refused (ProjectBusyError) while another
- *   session has it open, and held alone until the request is done.
- * - Merging or discarding report branches, and taking OrgAI out of a repository, are refused (WorktreesBusyError)
- *   while another session hosts a live run in that project: those branches may be that run's work in progress.
+ * - Removing a project, moving it to another folder, or taking OrgAI out of its repository needs it alone: refused
+ *   (ProjectBusyError) while another session has it open, and held alone until the request is done.
+ * - Merging or discarding report branches is refused (WorktreesBusyError) while another session hosts a run that is
+ *   working in that project: those branches may be that run's work in progress.
  *
  * All of these reach the client as `session_busy` (exit 6 in the CLI). Read requests are never checked: every session
  * sees every project and run. A request that names no stored project or run (settings, connections, the libraries)
@@ -69,19 +69,24 @@ export interface SessionGuardDeps {
   run(id: string): Pick<RunSummary, 'id' | 'projectId'> | null | undefined
   /** The id of another running session hosting this run, or null (RunStore.hostedElsewhere). */
   hostedElsewhere(runId: string): string | null
-  /** The other running sessions hosting a live run of this project, by session id (RunStore.liveElsewhereIn). */
-  liveElsewhereIn(projectId: string): string[]
+  /** The other running sessions hosting a run of this project that is working right now (RunStore.workingElsewhereIn). */
+  workingElsewhereIn(projectId: string): string[]
 }
 
-/** Channels that need the project alone: nobody else may have it open (sessions.ts exclusiveProject). */
+/** Channels that end a project here: nobody else may have it open, and this session does not keep it open afterwards. */
 const REMOVES_PROJECT: ReadonlySet<string> = new Set([IPC.projectsRemove])
+/**
+ * Channels that need the project alone and leave it this session's: taking OrgAI out of its repository removes the
+ * `.orgai/` files, the worktrees and the setup of a project that stays.
+ */
+const NEEDS_ALONE: ReadonlySet<string> = new Set([IPC.maintUninstall])
 /** Channels that act on a repository's report branches, whoever made them. */
-const TOUCHES_WORKTREES: ReadonlySet<string> = new Set([IPC.maintIntegrate, IPC.maintDiscard, IPC.maintUninstall])
+const TOUCHES_WORKTREES: ReadonlySet<string> = new Set([IPC.maintIntegrate, IPC.maintDiscard])
 
 /** Report branches of a project cannot be merged or discarded here while another session's run is working in it. */
 export class WorktreesBusyError extends SessionBusyError {
   constructor(readonly projectId: string, readonly holder: SessionRecord | undefined, what = 'This project') {
-    super(`${what} has a run live in another orgai session${sessionWords(holder)}: its report branches may be that run's work in progress. Merge or discard them there, or after it ends.`)
+    super(`${what} has a run working in another orgai session${sessionWords(holder)}: its report branches may be that run's work in progress. Merge or discard them there, or once it is idle.`)
     this.name = 'WorktreesBusyError'
   }
 }
@@ -115,12 +120,12 @@ export function createSessionGuard(deps: SessionGuardDeps): (channel: string, ar
     const what = (p: Pick<Project, 'name'>): string | undefined => (p.name ? `The project ${p.name}` : undefined)
     if (TOUCHES_WORKTREES.has(channel)) {
       for (const p of projects.values()) {
-        const elsewhere = deps.liveElsewhereIn(p.id)
+        const elsewhere = deps.workingElsewhereIn(p.id)
         if (elsewhere.length) throw new WorktreesBusyError(p.id, sessionOf(elsewhere[0]), what(p))
       }
     }
-    // Alone: a removal, or a save that moves the project to another folder.
-    const alone = [...projects.values()].filter((p) => REMOVES_PROJECT.has(channel) || (channel === IPC.projectsSave && movesProject(args, p)))
+    // Alone: a removal, an uninstall, or a save that moves the project to another folder.
+    const alone = [...projects.values()].filter((p) => REMOVES_PROJECT.has(channel) || NEEDS_ALONE.has(channel) || (channel === IPC.projectsSave && movesProject(args, p)))
     const held: Array<{ release(reopen: boolean): void; reopen: boolean }> = []
     try {
       for (const p of alone) {

@@ -156,6 +156,32 @@ describe('open projects', () => {
     expect(a.openProject('proj_1')).toEqual({ ok: true })
   })
 
+  it('two sessions that both have a project open and both want it alone: neither gets it, and both still have it open', () => {
+    const a = register(A)
+    const b = register(B)
+    a.requireProject('proj_1')
+    b.requireProject('proj_1')
+    // Each attempt steps aside for itself only: the other's hold is still there, and its own comes back.
+    expect(a.exclusiveProject('proj_1').ok).toBe(false)
+    expect(b.exclusiveProject('proj_1').ok).toBe(false)
+    expect(a.exclusiveProject('proj_1').ok).toBe(false)
+    expect([a.hasProjectOpen('proj_1'), b.hasProjectOpen('proj_1')]).toEqual([true, true])
+    expect(projectHolders(dataDir, 'proj_1').map((s) => s.hostInstanceId)).toEqual([A, B])
+  })
+
+  it('a project held alone is not opened by the same session meanwhile, and is given back when the session ends', () => {
+    const a = register(A)
+    const b = register(B)
+    const alone = a.exclusiveProject('proj_1')
+    expect(alone.ok).toBe(true)
+    expect(a.openProject('proj_1')).toEqual({ ok: false, holder: undefined })
+    expect(a.exclusiveProject('proj_1')).toEqual({ ok: false, holders: [] })
+    expect(b.openProject('proj_1').ok).toBe(false)
+    // The session ends in the middle of it (a quit during a removal): the lock goes with it.
+    a.release()
+    expect(b.openProject('proj_1')).toEqual({ ok: true })
+  })
+
   it('a session that ends no longer has its projects open', () => {
     const a = register(A)
     const b = register(B)
@@ -202,7 +228,8 @@ describe('sweepDeadSessions and liveness', () => {
     expect(projectHolders(dataDir, 'proj_1')).toEqual([])
     expect(b.exclusiveProject('proj_1').ok).toBe(true)
     expect(sweepDeadSessions(dataDir)).toBe(1)
-    expect(readdirSync(sessionsDirOf(dataDir)).filter((n) => !n.startsWith('project-')).sort()).toEqual([`${B}.json`, `${B}.lock`])
+    // (Project locks and the lock of the turn to take one alone stay: they are never deleted.)
+    expect(readdirSync(sessionsDirOf(dataDir)).filter((n) => /^[0-9a-f]{12}\./.test(n)).sort()).toEqual([`${B}.json`, `${B}.lock`])
   })
 
   it('sessionLiveness caches: a dead id stays dead, a live one is asked again after its window', () => {

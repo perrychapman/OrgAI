@@ -251,7 +251,7 @@ export const TUI_WATCH_ELSEWHERE_MS = 1500
 /** The line shown when the followed run is live in another orgai session. */
 export function liveElsewhereNotice(where: { pid: number; cwd: string }): string {
   const at = where.cwd ? `${where.cwd}, pid ${where.pid}` : `pid ${where.pid}`
-  return `This run is live in another orgai (${at}). It shows here as last saved, read-only; steer it there.`
+  return `This run is live in another orgai (${at}). It shows here as last saved, read-only; steer it there. /new starts a run here.`
 }
 
 export interface TuiSessionInternals {
@@ -515,7 +515,9 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       const { othersHere: _was, ...rest } = state
       set(here > 0 ? { ...rest, othersHere: here } : rest)
     }
-    if (!followed?.liveElsewhere && here === 0) return
+    // Nothing hosted elsewhere to look at: nobody else is in the project, and no run this terminal knows was live
+    // there the last time it looked (one that was is read once more, so that its end shows).
+    if (!followed?.liveElsewhere && here === 0 && !Object.values(state.runs).some((r) => r.summary.liveElsewhere)) return
     watching = true
     try {
       const list = pid ? await runsOf(pid) : []
@@ -549,6 +551,16 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
   const activeId = (): string => {
     const id = state.activeRunId
     if (!id) throw new Error('No run is open.')
+    return id
+  }
+  /**
+   * The followed run, to change it (send, interrupt, stop). A run another orgai session hosts is steered there: the
+   * refusal says so here, before any request (the host would refuse it too).
+   */
+  const ownActiveId = (): string => {
+    const id = activeId()
+    const elsewhere = state.runs[id]?.summary.liveElsewhere
+    if (elsewhere) throw new Error(sanitizeTty(liveElsewhereNotice(elsewhere)))
     return id
   }
   const projectIdOf = (runId?: string): string => {
@@ -640,7 +652,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     selectedOrSelection: ProviderModel | { model: string; connection?: ConnectionId },
     opts?: { confirm(): Promise<boolean> }
   ): Promise<Awaited<ReturnType<typeof switchRunModel>> | SwitchRunModelResult> {
-    const runId = activeId()
+    const runId = ownActiveId()
     if (opts !== undefined) {
       const out = await switchRunModel(call, runId, selectedOrSelection as ProviderModel, opts)
       // The run.model event updates the status bar; the summary also carries the selection kept for the next message.
@@ -684,7 +696,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
         case 'readOnly':
           throw new Error(safeLine(state.readOnlyReason) || 'This session is read-only.')
         case 'send':
-          await call('runs:send', [{ runId: activeId(), text }])
+          await call('runs:send', [{ runId: ownActiveId(), text }])
           return undefined
         case 'continue': {
           const from = activeId()
@@ -750,13 +762,13 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       return next && next.id !== from ? adopt(next, chain) : adopt(next)
     },
     async cancelAutoResume() {
-      await call('runs:cancelAutoResume', [activeId()])
+      await call('runs:cancelAutoResume', [ownActiveId()])
     },
     async interrupt() {
-      await call('runs:interrupt', [activeId()])
+      await call('runs:interrupt', [ownActiveId()])
     },
     async stop() {
-      await call('runs:stop', [activeId()])
+      await call('runs:stop', [ownActiveId()])
     },
     async decide(dc: DecisionCall) {
       const p = dc.payload ?? {}
@@ -800,7 +812,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
       return Array.isArray(list) ? list : []
     },
     async setPermissionMode(mode: PermissionMode) {
-      const runId = activeId()
+      const runId = ownActiveId()
       const res = await call<SetRunPermissionModeResult>('runs:setPermissionMode', [{ runId, mode }])
       if (res?.run && res.run.id === runId) set(upsertRunSummary(state, { ...state.runs[runId]?.summary, ...res.run }))
       return res

@@ -366,10 +366,10 @@ describe('sessions: several hosts on one data folder (docs/design/cli-sessions.m
       expect(await c.call<Project>('projects:get', [projA.id])).toMatchObject({ brief: 'the brief, from terminal one', name: 'Alpha renamed in terminal two' })
     }
 
-    // What needs the project alone is refused while the other terminal is in it; so is touching its report branches.
+    // What needs the project alone is refused while the other terminal is in it: removing it, taking OrgAI out of it.
     await expect(b.call('projects:remove', [{ projectId: projA.id }])).rejects.toMatchObject({ data: { code: 'session_busy' } })
     await expect(b.call('projects:remove', [{ projectId: projA.id }])).rejects.toThrow(/is open in another orgai session \(\/term\/one, pid \d+\)\. Quit it there first\./)
-    await expect(b.call('maintenance:discardWorktree', [{ projectId: projA.id, branch: 'worktree-agent-x' }])).rejects.toThrow(/has a run live in another orgai session/)
+    await expect(b.call('maintenance:uninstallRepo', [projA.id])).rejects.toThrow(/is open in another orgai session/)
     expect((await a.call<Project[]>('projects:list', [])).map((p) => p.id)).toEqual([projA.id])
 
     const index = JSON.parse(readFileSync(join(dataDir, 'runs.json'), 'utf8')) as { runs: RunSummary[]; owners: Record<string, string> }

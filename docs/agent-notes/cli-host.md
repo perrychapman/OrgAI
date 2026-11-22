@@ -28,8 +28,7 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     drop it). A run whose owner's lock is held keeps its status elsewhere and `RunStore.upsert` / `moveToProject` refuse
     it (`RunBusyError`); otherwise an open run is normalized as crashed on read, and a read re-checks the owners every
     second so a host's death shows without a write. An open run of a stored project opens the project in `upsert`. `list` / `get` / `all` / `getRecord` mark a run another
-    session hosts with `liveElsewhere` (pid, cwd, command; added on read, never stored); `liveElsewhereIn(projectId)`
-    names the sessions with a live run in a project.
+    session hosts with `liveElsewhere` (pid, cwd, command; added on read, never stored).
     `RunManager.continueRun` refuses a conversation with a member hosted elsewhere (`assertHostedHere`; inert alone).
     A live record reaches disk every 1.5 s, so another session reads it that much behind.
   - Projects: open in any number of sessions (`project-<sha256 prefix>.lock` held SHARED, `syncLock.ts`
@@ -37,10 +36,12 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     project or move it to another folder, which succeeds only when nobody else has it open (`sessions.ts`
     `openProject` / `exclusiveProject` / `othersIn`). `host/sessionGuard.ts` runs before every mutating RPC: every
     short string in the arguments that is a stored project id or a run id counts (no per-channel table); a run hosted
-    elsewhere throws `RunBusyError`; the projects named are opened; `projects:remove`, and a `projects:save` that
-    changes the path, hold the project alone until the request is done (the guard returns the release, the dispatcher
-    calls it in `finally`) or throw `ProjectBusyError`; `maintenance:integrateWorktree` / `discardWorktree` /
-    `uninstallRepo` throw `WorktreesBusyError` while another session hosts a live run in the project. All three are
+    elsewhere throws `RunBusyError`; the projects named are opened; `projects:remove`, `maintenance:uninstallRepo`, and a
+    `projects:save` that changes the path, hold the project alone until the request is done (the guard returns the
+    release, the dispatcher calls it in `finally`) or throw `ProjectBusyError`; one session at a time tries for a
+    project alone (`alone-turn.lock`), and a session's exclusive holds are released when it ends;
+    `maintenance:integrateWorktree` / `discardWorktree` throw `WorktreesBusyError` while another session hosts a work
+    run that is working in the project (`RunStore.workingElsewhereIn`: starting, running or stopping). All three are
     `session_busy` on the wire and exit 6 in the CLI (`manage.ts` `hostError`, `exec.ts` `hostFailure`). Checked by
     `sessions.test.ts` (also across processes), `sessionGuard.test.ts`, `inprocHost.test.ts` (two hosts in one project
     over RPC), `cli.int.test.ts`, e2e.
@@ -50,9 +51,12 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     `runtime/permissionRules.ts` through `lockedForProcess`, `store/staffingProfile.ts`);
     `TeamFilesService.oneChange` around `check`, `beforeSave`, `approve`, `reject`, `undo`, `enable`, `markRemoved`,
     `createFromFolder`, `adopted` (its status cache key also carries `TeamFilesStore.stamp` when shared);
-    `oneChangePerCall(dataDir, service)` in `bootstrap.ts` for SkillService, the outputs service, SetupService and
-    CapabilityService (a Proxy: each call under the lock; a call that returns a promise holds it for its synchronous
-    start only). Work across awaits takes `store/shared/namedLock.ts` `withNamedLock` (`work-<hash>.lock`, 60 s wait,
+    `oneChangePerCall(dataDir, service, { except })` in `bootstrap.ts` for McpService, SkillService,
+    SkillEvaluationService, the outputs service, SetupService and CapabilityService (a Proxy: each call under the
+    lock; `except` names in-memory counters the activity tracker polls; a call that returns a promise holds the lock
+    for its synchronous start only, so code that awaits and then saves must save onto the stored project, not its
+    old copy: `SetupService.prepare`, `maintenance.uninstallRepo`; the outputs service's `ensureV1`, `commitVersion`
+    and `markAnswered` take the lock themselves). Not covered, last writer wins: a team review file. Work across awaits takes `store/shared/namedLock.ts` `withNamedLock` (`work-<hash>.lock`, 60 s wait,
     then `SessionBusyError`): the evolve service's `serial`, the outputs service's `queued`. With `SOLO` (desktop,
     most tests) every one of these is a plain call. A NEW project-scoped writer must use one of the three shapes and
     be labelled `PROJECT_LOCKED` in `writePathInventory.allowlist.ts`. Checked by `store/sameProject.test.ts` (two real
@@ -63,13 +67,15 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     last 8 per project, shared folder only), the save is `mergeProject(base, mine, theirs)` (`store/projectMerge.ts`:
     whole fields, lists with ids per item); an unknown base is stored as it is. `nextUpdatedAt` keeps two saves of one
     project from sharing an `updatedAt` (shared only). Checked by `projectMerge.test.ts`, `sameProject.test.ts`.
-  - Worktrees: `RuntimeContext.otherRunsLive()` (RunManager: another work run of the project live in this process, or
-    `RunStore.liveElsewhereIn`) makes `WorktreeIntegrator.reconcileLeftovers` skip (nothing committed or announced)
+  - Worktrees: `RuntimeContext.otherRunsLive()` (RunManager: another work run of the project that is working, in this
+    process or by `RunStore.workingElsewhereIn`; an idle or paused run does not count) makes `WorktreeIntegrator.reconcileLeftovers` skip (nothing committed or announced)
     and `integratePending` refuse a branch this run does not track. This also covers two runs of one project in the
     desktop app. Checked by `integration.test.ts`.
   - Terminal UI: `TuiState.othersHere` (the status bar shows "Name (2 terminals)"), kept current by
     `session.ts` `watchElsewhere` every `TUI_WATCH_ELSEWHERE_MS` (1500): it also re-reads the run list and, for a
-    followed run with `liveElsewhere`, its record. `pickDefault` never opens such a run. Checked by `session.test.ts`
+    followed run with `liveElsewhere`, its record. `pickDefault` never opens such a run, and send / interrupt / stop / model and mode
+    changes on one are refused in the session before any request (`ownActiveId`); `statusSummary.liveRuns` leaves
+    such runs out (the quit prompt counts this terminal's runs). Checked by `session.test.ts`
     and `e2e/cli-parallel.mjs` (two terminal UIs in one project).
   - Not built, on purpose: answering or steering a run from another terminal, and one shared host process. Both
     need one process to trust another with approvals (docs/design/cli-sessions.md "Considered and not built").

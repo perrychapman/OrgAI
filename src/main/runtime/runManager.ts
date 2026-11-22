@@ -154,7 +154,7 @@ import { clampText } from '../capabilities/sanitize'
 import { datum, type ConfigChange, type ConfigChangeResult } from './harnessTools'
 import type { OutputScope, OutputWriteResult, OutputsServiceApi } from '../outputs/api'
 import type { SkillRunSource } from '../skills/types'
-import { RunStore } from '../store/runs'
+import { RunStore, isWorkingRunStatus } from '../store/runs'
 import { isValidId } from '../windowScope'
 import type { SetupService } from '../setup/service'
 import { log, logPermission, logRunEvent } from '../log'
@@ -4547,18 +4547,20 @@ export class RunManager {
   }
 
   /**
-   * RuntimeContext.otherRunsLive: another work run of the same stored project that has not ended, in this process or
-   * hosted by another orgai session (RunStore.liveElsewhereIn). A few words for the log, or null.
+   * RuntimeContext.otherRunsLive: another work run of the same stored project that is working right now (starting,
+   * running or stopping), in this process or hosted by another orgai session (RunStore.workingElsewhereIn). A few
+   * words for the log, or null. A run that only waits for its user does not count: none of its reports is at work,
+   * so the branches it left are leftovers like any other, as they always were for a second run in the project.
    */
   private otherRunsLive(runId: string, projectId: string): string | null {
     if (isVirtualProjectId(projectId)) return null
     for (const r of this.runs.values()) {
       const s = r.summary
-      if (s.id === runId || s.projectId !== projectId || isSetupLikeRun(s.kind) || s.status === 'finished' || s.status === 'error') continue
-      return 'another run of this project is live'
+      if (s.id === runId || s.projectId !== projectId || isSetupLikeRun(s.kind) || !isWorkingRunStatus(s.status)) continue
+      return 'another run of this project is working'
     }
     try {
-      if (this.store.liveElsewhereIn(projectId).length > 0) return 'a run of this project is live in another orgai session'
+      if (this.store.workingElsewhereIn(projectId).length > 0) return 'a run of this project is working in another orgai session'
     } catch {
       // The index could not be read: this run keeps to its own branches either way.
     }

@@ -11,7 +11,7 @@
  *
  * The caller's changes are what differs between `base` and `mine`, and only those are put onto `theirs`. Fields are
  * compared whole, except lists of things with an `id` (roles, MCP servers, skills): those are merged per item, so two
- * sessions that each edit a different role both keep their edit. Two sessions that change the same field, or the same
+ * sessions that each edit a different role, or each add a server to a project that had none, both keep theirs. Two sessions that change the same field, or the same
  * role, at the same moment: the later save wins, as with any two saves.
  *
  * Pure. Electron-free; relative imports only.
@@ -22,6 +22,11 @@ type Item = { id: string }
 
 function isIdList(v: unknown): v is Item[] {
   return Array.isArray(v) && v.every((x) => x !== null && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string')
+}
+
+/** Whether a field is merged per item: every side is a list of items with ids or missing, and at least one is a list with items. */
+function mergesPerItem(...sides: unknown[]): boolean {
+  return sides.every((v) => v === undefined || isIdList(v)) && sides.some((v) => Array.isArray(v) && v.length > 0)
 }
 
 /** {@link mergeProject} for one list of items with ids. Order: the caller's, then what only the others added. */
@@ -58,8 +63,12 @@ export function mergeProject<P extends { id: string; updatedAt?: string }>(base:
   for (const key of new Set([...Object.keys(b), ...Object.keys(m)])) {
     if (key === 'updatedAt' || key === 'id') continue
     if (isDeepStrictEqual(m[key], b[key])) continue
-    if (isIdList(b[key]) && isIdList(m[key]) && isIdList(t[key])) out[key] = mergeIdList(b[key] as Item[], m[key] as Item[], t[key] as Item[])
-    else if (m[key] === undefined) delete out[key]
+    if (mergesPerItem(b[key], m[key], t[key])) {
+      // A list that is missing on a side is an empty one there (a project starts without `mcpServers` or `skills`).
+      const merged = mergeIdList((b[key] as Item[] | undefined) ?? [], (m[key] as Item[] | undefined) ?? [], (t[key] as Item[] | undefined) ?? [])
+      if (merged.length > 0 || Array.isArray(m[key])) out[key] = merged
+      else delete out[key]
+    } else if (m[key] === undefined) delete out[key]
     else out[key] = m[key]
   }
   return out as P

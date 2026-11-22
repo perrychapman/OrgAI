@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, isAbsolute } from 'node:path'
 import { renameSyncRetry } from '../host/fsRetry'
-import { RunBusyError } from '../host/sessions'
+import { RunBusyError, type SessionRecord } from '../host/sessions'
 import { storeSyncFor, type StoreSync } from './shared/storeSync'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
@@ -164,6 +164,11 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
 }
 
 /** Not ended: a run its host still has in memory (starting, running, idle, stopping) or holds paused. */
+/** A run that is working right now, not waiting for its user: its reports may be writing in their worktrees. */
+export function isWorkingRunStatus(status: RunSummary['status']): boolean {
+  return status === 'starting' || status === 'running' || status === 'stopping'
+}
+
 export function isOpenRunStatus(status: RunSummary['status']): boolean {
   return status !== 'finished' && status !== 'error'
 }
@@ -256,6 +261,9 @@ export function runRecordFileName(runId: string): string {
  * `runs/<runId>/images/<sha256>.<ext>` (content-addressed bytes of images sent with user messages).
  * Records on disk carry `ImageAttachment.ref` with `data: ''`; getRecord rehydrates `data` and drops `ref`.
  */
+/** How long RunStore keeps its list of the other sessions (who they are, not whether they run: that is the lock). */
+const PEERS_FOR_MS = 250
+
 export class RunStore {
   private file: string
   private recordsDir: string
@@ -358,15 +366,17 @@ export class RunStore {
   }
 
   /**
-   * The other running sessions that host a run of `projectId` which has not ended (their ids, no duplicates): what a
-   * session asks before it touches the project's report branches, and what tells a new run that it is not alone.
+   * The other running sessions that host a work run of `projectId` which is working right now (starting, running or
+   * stopping; their ids, no duplicates): what a session asks before it touches the project's report branches, and
+   * what tells a new run that those branches may be another run's work in progress. A run that only waits for its
+   * user (idle, paused) has no report at work, and a setup or assistant run makes no branches.
    */
-  liveElsewhereIn(projectId: string): string[] {
+  workingElsewhereIn(projectId: string): string[] {
     if (!this.sync.shared) return []
     this.fresh()
     const out = new Set<string>()
     for (const r of this.runs) {
-      if (r.projectId !== projectId) continue
+      if (r.projectId !== projectId || !isWorkingRunStatus(r.status) || (r.kind !== undefined && r.kind !== 'work')) continue
       const owner = this.elsewhere(r.id)
       if (owner) out.add(owner)
     }
@@ -442,8 +452,25 @@ export class RunStore {
   private asSeenHere(run: RunSummary, copy = false): RunSummary {
     const owner = this.sync.shared ? this.elsewhere(run.id) : null
     if (!owner) return copy ? { ...run } : run
-    const s = this.sync.session?.others().find((o) => o.hostInstanceId === owner)
+    let s = this.peers().find((o) => o.hostInstanceId === owner)
+    if (!s) {
+      // A session that started since the list was read: read it again rather than answer without its pid and folder.
+      this.peersAt = 0
+      s = this.peers().find((o) => o.hostInstanceId === owner)
+    }
     return { ...run, liveElsewhere: { pid: s?.pid ?? 0, cwd: s?.cwd ?? '', command: s?.command ?? '' } }
+  }
+
+  /** The other running sessions, read at most once per PEERS_FOR_MS: a list of many runs asks for each of them. */
+  private peersAt = 0
+  private peersSeen: SessionRecord[] = []
+  private peers(): SessionRecord[] {
+    const now = Date.now()
+    if (now - this.peersAt >= PEERS_FOR_MS || now < this.peersAt) {
+      this.peersSeen = this.sync.session?.others() ?? []
+      this.peersAt = now
+    }
+    return this.peersSeen
   }
 
   get(runId: string): RunSummary | null {

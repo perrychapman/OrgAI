@@ -77,6 +77,19 @@ describe('mergeProject', () => {
     ])
   })
 
+  it('a list that is missing on some side is an empty one there: both sides\' additions are kept', () => {
+    type S = P & { mcpServers?: { id: string }[] }
+    const none: S = { ...base }
+    // A project starts without servers; each session adds one.
+    expect(mergeProject(none, { ...none, mcpServers: [{ id: 'm2' }] }, { ...none, updatedAt: 't1', mcpServers: [{ id: 'm1' }] }).mcpServers).toEqual([{ id: 'm2' }, { id: 'm1' }])
+    // The caller dropped its last one (the field is gone on its side); the others added one meanwhile.
+    const one: S = { ...base, mcpServers: [{ id: 'm1' }] }
+    const mine: S = { ...base }
+    expect(mergeProject(one, mine, { ...one, updatedAt: 't1', mcpServers: [{ id: 'm1' }, { id: 'm3' }] }).mcpServers).toEqual([{ id: 'm3' }])
+    // Nothing left on any side: the field stays away, as the caller had it.
+    expect('mcpServers' in mergeProject(one, mine, { ...one, updatedAt: 't1' })).toBe(false)
+  })
+
   it('a plain list is one value: the caller\'s when the caller changed it', () => {
     expect(mergeProject(base, { ...base, tags: ['a', 'c'] }, { ...base, updatedAt: 't1', tags: ['a', 'b', 'd'] }).tags).toEqual(['a', 'c'])
     expect(mergeProject(base, { ...base }, { ...base, updatedAt: 't1', tags: ['a', 'b', 'd'] }).tags).toEqual(['a', 'b', 'd'])

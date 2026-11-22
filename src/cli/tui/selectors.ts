@@ -802,7 +802,8 @@ export function windowText(u: UsageStatus | undefined): string | undefined {
 }
 
 export function statusSummary(s: TuiState): StatusSummary {
-  const live = Object.values(s.runs).filter((r) => isOpenStatus(r.summary.status))
+  // This terminal's live runs: one that is live in another orgai session is neither its to stop at quit nor waiting on it.
+  const live = Object.values(s.runs).filter((r) => isOpenStatus(r.summary.status) && !r.summary.liveElsewhere)
   const chips = runChips(s)
   const out: StatusSummary = {
     needsYou: decisionCount(live.map(waitRunOf)),
