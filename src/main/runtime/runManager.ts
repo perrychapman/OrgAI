@@ -2866,6 +2866,7 @@ export class RunManager {
         maxAutoContinues: runProject.maxAutoContinues ?? DEFAULT_MAX_AUTO_CONTINUES,
         onRootTurnEnded: (e: RootTurnEnd) => this.rootTurnEnded(active, e),
         noteActivity: () => this.bumpActivity(active),
+        otherRunsLive: () => this.otherRunsLive(summary.id, summary.projectId),
         ...(this.options.continuationDelayMs !== undefined ? { continuationDelayMs: this.options.continuationDelayMs } : {}),
         completeSetup: async (text) => {
           const updated = this.setup.complete(project.id, text)
@@ -4543,6 +4544,25 @@ export class RunManager {
   /** The post-run evolve pass of a run, resolved when it settles; undefined when the run had none (not started with evolve, stopped, still live, or the pass failed). */
   async awaitEvolvePass(runId: string): Promise<EvolvePostRunResult | undefined> {
     return this.evolvePasses.get(runId)
+  }
+
+  /**
+   * RuntimeContext.otherRunsLive: another work run of the same stored project that has not ended, in this process or
+   * hosted by another orgai session (RunStore.liveElsewhereIn). A few words for the log, or null.
+   */
+  private otherRunsLive(runId: string, projectId: string): string | null {
+    if (isVirtualProjectId(projectId)) return null
+    for (const r of this.runs.values()) {
+      const s = r.summary
+      if (s.id === runId || s.projectId !== projectId || isSetupLikeRun(s.kind) || s.status === 'finished' || s.status === 'error') continue
+      return 'another run of this project is live'
+    }
+    try {
+      if (this.store.liveElsewhereIn(projectId).length > 0) return 'a run of this project is live in another orgai session'
+    } catch {
+      // The index could not be read: this run keeps to its own branches either way.
+    }
+    return null
   }
 
   /** Runs whose session is still open. */

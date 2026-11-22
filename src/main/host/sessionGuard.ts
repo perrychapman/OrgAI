@@ -1,26 +1,30 @@
 /**
  * The host's check before a request that changes something, on a data folder several orgai sessions share
- * (docs/design/cli-sessions.md): the projects and runs the request names must be this session's to change.
+ * (docs/design/cli-sessions.md).
  *
  * - A run that another running session hosts can be read here, never changed: RunBusyError.
- * - A stored project the request names (directly, or through one of its runs) is claimed for this session; when another
- *   session holds it: ProjectBusyError. One session per project keeps the project's own files (team, worktrees, notes,
- *   outputs, staffing profile) with one writer, which is what every project service assumes.
+ * - A stored project the request names (directly, or through one of its runs) is opened for this session
+ *   (sessions.ts): any number of sessions can have a project open, and its files are changed under the data folder's
+ *   write lock on their newest content. Opening fails only while another session is removing or moving the project.
+ * - Removing a project, or moving it to another folder, needs it alone: refused (ProjectBusyError) while another
+ *   session has it open, and held alone until the request is done.
+ * - Merging or discarding report branches, and taking OrgAI out of a repository, are refused (WorktreesBusyError)
+ *   while another session hosts a live run in that project: those branches may be that run's work in progress.
  *
- * Both reach the client as `session_busy` (exit 6 in the CLI). Read requests are never checked: every session sees every
- * project and run. A request that names no stored project or run (settings, connections, the libraries) passes: the
- * files behind those are written under the data folder's write lock (store/shared/storeSync.ts).
+ * All of these reach the client as `session_busy` (exit 6 in the CLI). Read requests are never checked: every session
+ * sees every project and run. A request that names no stored project or run (settings, connections, the libraries)
+ * passes: the files behind those are written under the write lock (store/shared/storeSync.ts).
  *
  * The ids are found by looking at the request's own values, not by a per-channel table: every string in the arguments
  * (a few levels deep, long text skipped) that is the id of a stored project or run counts. A new channel is therefore
- * covered without anybody remembering to list it; the cost of a coincidence (a short text equal to an id) is a claim
- * this session did not strictly need.
+ * covered without anybody remembering to list it; the cost of a coincidence (a short text equal to an id) is a project
+ * this session has open without strictly needing it.
  *
  * Electron-free; relative imports only.
  */
-import { isVirtualProjectId } from '../../shared/types'
+import { IPC, isVirtualProjectId } from '../../shared/types'
 import type { Project, RunSummary } from '../../shared/types'
-import { RunBusyError } from './sessions'
+import { ProjectBusyError, RunBusyError, SessionBusyError, sessionWords, type SessionRecord } from './sessions'
 import type { StoreSync } from '../store/shared/storeSync'
 
 /** Strings longer than this are text (a prompt, a file), never an id. */
@@ -60,33 +64,87 @@ export function shortStringsIn(args: readonly unknown[]): Set<string> {
 export interface SessionGuardDeps {
   sync: StoreSync
   /** A stored project by id (ProjectStore.get). */
-  project(id: string): Pick<Project, 'id' | 'name'> | null | undefined
+  project(id: string): Pick<Project, 'id' | 'name' | 'path'> | null | undefined
   /** A run's summary by id, stored or live (RunStore.get). */
   run(id: string): Pick<RunSummary, 'id' | 'projectId'> | null | undefined
   /** The id of another running session hosting this run, or null (RunStore.hostedElsewhere). */
   hostedElsewhere(runId: string): string | null
+  /** The other running sessions hosting a live run of this project, by session id (RunStore.liveElsewhereIn). */
+  liveElsewhereIn(projectId: string): string[]
 }
 
-/** The check for one mutating request; throws RunBusyError or ProjectBusyError. A no-op when the folder is not shared. */
-export function createSessionGuard(deps: SessionGuardDeps): (channel: string, args: readonly unknown[]) => void {
-  return (_channel, args) => {
-    if (!deps.sync.shared) return
-    const projects = new Map<string, string>()
+/** Channels that need the project alone: nobody else may have it open (sessions.ts exclusiveProject). */
+const REMOVES_PROJECT: ReadonlySet<string> = new Set([IPC.projectsRemove])
+/** Channels that act on a repository's report branches, whoever made them. */
+const TOUCHES_WORKTREES: ReadonlySet<string> = new Set([IPC.maintIntegrate, IPC.maintDiscard, IPC.maintUninstall])
+
+/** Report branches of a project cannot be merged or discarded here while another session's run is working in it. */
+export class WorktreesBusyError extends SessionBusyError {
+  constructor(readonly projectId: string, readonly holder: SessionRecord | undefined, what = 'This project') {
+    super(`${what} has a run live in another orgai session${sessionWords(holder)}: its report branches may be that run's work in progress. Merge or discard them there, or after it ends.`)
+    this.name = 'WorktreesBusyError'
+  }
+}
+
+/**
+ * The check for one mutating request. Throws RunBusyError, ProjectBusyError or WorktreesBusyError. May return a
+ * function the caller runs once the request is done (it gives back a project held alone). A no-op when the folder is
+ * not shared.
+ */
+export function createSessionGuard(deps: SessionGuardDeps): (channel: string, args: readonly unknown[]) => void | (() => void) {
+  const sessionOf = (id: string | undefined): SessionRecord | undefined => (id ? deps.sync.session?.others().find((s) => s.hostInstanceId === id) : undefined)
+  return (channel, args) => {
+    const session = deps.sync.session
+    if (!deps.sync.shared || !session) return
+    const projects = new Map<string, Pick<Project, 'id' | 'name' | 'path'>>()
     for (const text of shortStringsIn(args)) {
       const run = deps.run(text)
       if (run) {
         const owner = deps.hostedElsewhere(run.id)
-        if (owner) throw new RunBusyError(run.id, deps.sync.session?.others().find((s) => s.hostInstanceId === owner))
+        if (owner) throw new RunBusyError(run.id, sessionOf(owner))
         if (!isVirtualProjectId(run.projectId)) {
           const p = deps.project(run.projectId)
-          if (p) projects.set(p.id, p.name)
+          if (p) projects.set(p.id, p)
         }
         continue
       }
       if (isVirtualProjectId(text)) continue
       const p = deps.project(text)
-      if (p) projects.set(p.id, p.name)
+      if (p) projects.set(p.id, p)
     }
-    for (const [id, name] of projects) deps.sync.requireProject(id, name ? `The project ${name}` : undefined)
+    const what = (p: Pick<Project, 'name'>): string | undefined => (p.name ? `The project ${p.name}` : undefined)
+    if (TOUCHES_WORKTREES.has(channel)) {
+      for (const p of projects.values()) {
+        const elsewhere = deps.liveElsewhereIn(p.id)
+        if (elsewhere.length) throw new WorktreesBusyError(p.id, sessionOf(elsewhere[0]), what(p))
+      }
+    }
+    // Alone: a removal, or a save that moves the project to another folder.
+    const alone = [...projects.values()].filter((p) => REMOVES_PROJECT.has(channel) || (channel === IPC.projectsSave && movesProject(args, p)))
+    const held: Array<{ release(reopen: boolean): void; reopen: boolean }> = []
+    try {
+      for (const p of alone) {
+        const r = session.exclusiveProject(p.id)
+        if (!r.ok) throw new ProjectBusyError(p.id, r.holders[0], what(p))
+        // After a removal there is nothing to keep open; a moved project stays this session's.
+        held.push({ release: (reopen) => r.held.release(reopen), reopen: !REMOVES_PROJECT.has(channel) })
+      }
+      for (const p of projects.values()) if (!alone.includes(p)) deps.sync.requireProject(p.id, what(p))
+    } catch (e) {
+      for (const h of held) h.release(true)
+      throw e
+    }
+    if (!held.length) return
+    return () => {
+      for (const h of held) h.release(h.reopen)
+    }
   }
+}
+
+/** A projects:save whose project (the first argument) carries another folder than the stored one. */
+function movesProject(args: readonly unknown[], stored: Pick<Project, 'id' | 'path'>): boolean {
+  const next = args[0]
+  if (next === null || typeof next !== 'object') return false
+  const { id, path } = next as { id?: unknown; path?: unknown }
+  return id === stored.id && typeof path === 'string' && path !== stored.path
 }

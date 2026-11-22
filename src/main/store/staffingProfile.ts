@@ -7,6 +7,7 @@ import { FILE_WRITE_TOOLS } from '../runtime/runUsage'
 import type { StaffingRequest } from '../runtime/staffing'
 import type { RuntimeContext } from '../runtime/types'
 import { DurableFsError, errorCode, writeFileDurable } from './durableFs'
+import { storeSyncFor } from './shared/storeSync'
 
 /**
  * The per-project staffing profile (docs/design/orchestration-efficiency.md 4.5): the last assignments of a project's
@@ -488,8 +489,11 @@ export function recordRunInStaffingProfile(
     const entries = profileEntriesFromRun(record)
     if (entries.length === 0) return false
     const projectId = record.summary.projectId
-    const next = mergeProfile(readStaffingProfile(dataDir, projectId), entries)
-    return writeStaffingProfile(dataDir, projectId, next, (reason) => warn(`Run ${record.summary.id}: the project's staffing profile was not saved (${reason}).`))
+    // Read, merge and write as one change: two orgai sessions ending runs of one project both keep their entries.
+    return storeSyncFor(dataDir).locked(() => {
+      const next = mergeProfile(readStaffingProfile(dataDir, projectId), entries)
+      return writeStaffingProfile(dataDir, projectId, next, (reason) => warn(`Run ${record.summary.id}: the project's staffing profile was not saved (${reason}).`))
+    })
   } catch (e) {
     warn(`Run ${record.summary?.id}: the project's staffing profile was not saved (${errorCode(e) ?? 'error'}).`)
     return false

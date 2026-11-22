@@ -350,9 +350,11 @@ export class HostDispatcher {
     const leased = mutation && !COMMIT_LEASED_CHANNELS.has(g.channel)
     const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
     let writing = false
+    // What the session guard holds for the length of this request (a project held alone while it is removed or moved).
+    let guardDone: (() => void) | undefined
     try {
       // Several orgai sessions on this data folder: what the request names must be this session's to change.
-      if (mutation) this.services.sessionGuard?.(g.channel, g.args)
+      if (mutation) guardDone = this.services.sessionGuard?.(g.channel, g.args) || undefined
       // Wave 7 (cli-standalone.md 5.6): a call that will store a non-empty secret value prepares the vault first (Node /
       // inproc hosts create it lazily), inside the mutation lease, so the handler stays synchronous. Clears and calls
       // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts. From the prepare until the
@@ -368,6 +370,7 @@ export class HostDispatcher {
       throw rpcError(err)
     } finally {
       if (writing) this.secretWritesInFlight -= 1
+      if (guardDone) guardDone()
       release?.()
     }
   }

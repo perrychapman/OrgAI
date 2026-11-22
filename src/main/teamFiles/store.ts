@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { McpServerSpec, TeamFileChange, TeamFilesUndoInfo } from '@shared/types'
 import { TEAM_FILES_LIST_MAX } from '@shared/types'
 import { atomicWrite, ensurePlainDir, projectDataDir, readPlain } from '../store/projectData'
+import { fileStamp } from '../store/shared/storeSync'
 import type { TeamDoc } from './doc'
 import { normalizeDoc } from './digest'
 
@@ -101,6 +102,11 @@ function cleanInfo(v: unknown): TeamFilesUndoInfo | undefined {
 
 export class TeamFilesStore {
   constructor(private dataDir: string) {}
+
+  /** A stamp of the project's saved state files: changes whenever any of them is rewritten (by this or another orgai session). */
+  stamp(projectId: string): string {
+    return [stateFile, approvedFile, undoFile, tombstoneFile].map((f) => fileStamp(f(this.dataDir, projectId))).join(',')
+  }
 
   readState(projectId: string): TeamFilesState {
     try {

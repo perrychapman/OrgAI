@@ -406,14 +406,17 @@ try {
       await t.waitFor('E2E-CARDS-START', 40_000)
       await t.waitFor(CARD_ON_SCREEN, 30_000)
 
-      // h2. A second orgai beside the TUI: a command that needs a host starts its own; one that would change the
-      // project the TUI holds is refused at once with exit 6; the read-only commands show the TUI's run as live.
+      // h2. A second orgai beside the TUI: a command that needs a host starts its own, also one in the TUI's project;
+      // removing that project needs it alone and is refused at once with exit 6; the read-only commands show the
+      // TUI's run as live.
       const began = Date.now()
       const second = await cli(['connections', 'list'], { cwd: repo })
       check(second.code === 0, 'a second orgai runs beside the TUI', show(second))
-      const held = await cli(['projects', 'set', '--brief', 'from the second orgai'], { cwd: repo })
-      check(held.code === 6 && /is open in another orgai session \(.*, pid \d+\)\. Use that one, or quit it first\./.test(held.err), 'changing the project the TUI holds is refused with exit 6 naming the TUI', show(held))
-      check(Date.now() - began < 15_000, 'both answers came at once', `${Date.now() - began} ms`)
+      const same = await cli(['projects', 'show', '--output-format', 'json'], { cwd: repo })
+      check(same.code === 0, 'a second orgai works in the project the TUI has open', show(same))
+      const held = await cli(['projects', 'remove', '--yes'], { cwd: repo })
+      check(held.code === 6 && /is open in another orgai session \(.*, pid \d+\)\. Quit it there first\./.test(held.err), 'removing the project the TUI has open is refused with exit 6 naming the TUI', show(held))
+      check(Date.now() - began < 15_000, 'the answers came at once', `${Date.now() - began} ms`)
       const beside = await cli(['runs', 'list'], { cwd: repo })
       check(beside.code === 0 && !beside.err.includes('saved snapshot') && /(Needs you|Running|Idle)/.test(beside.out), 'runs list beside the TUI shows its run as live, with no snapshot note', show(beside))
       const statusBeside = await cli(['status', '--output-format', 'json'], { cwd: repo })

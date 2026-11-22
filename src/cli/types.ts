@@ -190,11 +190,11 @@ export interface InprocHostHandle {
    */
   connectLocal?(scopes: HostScope[], opts?: { clientKind?: HostClientKind; cwd?: string }): Promise<ConnectResult>
   /**
-   * Sessions (several orgai processes on one data folder): claim a project for this process until it ends. `ok: false`
-   * names the session that holds it. Absent on a handle that has no sessions (a fake); `ok: true` when the folder is
-   * owned alone.
+   * Sessions (several orgai processes on one data folder): this process works in the project from now on. Any number
+   * of sessions can have a project open; `others` are the ones that do. `ok: false` only while another session is
+   * removing or moving the project. Absent on a handle that has no sessions (a fake).
    */
-  claimProject?(projectId: string): { ok: true } | { ok: false; holder: { pid: number; cwd: string } | undefined }
+  openProject?(projectId: string): { ok: true; others: SessionPeer[] } | { ok: false }
   /** The other orgai sessions running on this data folder right now. */
   otherSessions?(): SessionPeer[]
 }
@@ -205,7 +205,7 @@ export interface SessionPeer {
   cwd: string
   /** What it runs: 'tui', 'exec', 'projects', ... */
   command: string
-  /** Ids of the projects it holds. */
+  /** Ids of the projects it has open. */
   projects: string[]
   /** Epoch ms. */
   startedAt: number

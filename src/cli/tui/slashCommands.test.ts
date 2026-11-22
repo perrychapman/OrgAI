@@ -288,22 +288,22 @@ describe('/help layout', () => {
 describe('/sessions text', () => {
   const peer = (over: Partial<Parameters<typeof sessionsText>[0][number]> = {}) => ({ pid: 4242, cwd: '/work/beta', command: 'tui', projects: ['proj_b'], startedAt: 1_000_000, ...over })
 
-  it('names what this terminal holds and says when nobody else runs', () => {
-    expect(sessionsText([], 'Alpha')).toContain('This terminal holds Alpha.')
+  it('names the project this terminal is in and says when nobody else runs', () => {
+    expect(sessionsText([], 'Alpha')).toContain('This terminal is in Alpha.')
     expect(sessionsText([], 'Alpha')).toContain('No other orgai session is running.')
-    expect(sessionsText([])).toContain('This terminal holds no project.')
+    expect(sessionsText([])).toContain('This terminal has no project open.')
   })
 
-  it('lists each other session with its command, pid, age, the projects it holds by name, and its folder on its own line', () => {
+  it('lists each other session with its command, pid, age, the projects it has open by name, and its folder on its own line', () => {
     const text = sessionsText([peer(), peer({ pid: 7, cwd: '/work/gamma', command: 'exec', projects: [], startedAt: 1_000_000 - 5 * 60_000 })], 'Alpha', 1_000_000, new Map([['proj_b', 'Beta']]))
     expect(text).toContain('2 other orgai sessions:')
-    expect(text).toContain('  tui · pid 4242 · just started · holds Beta\n    /work/beta')
-    expect(text).toContain('  exec · pid 7 · up 5 min · holds no project\n    /work/gamma')
+    expect(text).toContain('  tui · pid 4242 · just started · in Beta\n    /work/beta')
+    expect(text).toContain('  exec · pid 7 · up 5 min · no project open\n    /work/gamma')
     for (const line of text.split('\n')) if (!line.startsWith('    /')) expect(line.length, line).toBeLessThanOrEqual(78)
   })
 
   it('falls back to a count when a project name is not known, and cleans what another session wrote', () => {
-    expect(sessionsText([peer({ projects: ['proj_b', 'proj_x'] })], undefined, 1_000_000, new Map([['proj_b', 'Beta']]))).toContain('holds 2 projects')
+    expect(sessionsText([peer({ projects: ['proj_b', 'proj_x'] })], undefined, 1_000_000, new Map([['proj_b', 'Beta']]))).toContain('in 2 projects')
     const hostile = sessionsText([peer({ cwd: '/work/\u001b[2Jx', command: 'tui\u0007' })], undefined, 1_000_000)
     expect(hostile).not.toMatch(/[\u001b\u0007]/)
   })

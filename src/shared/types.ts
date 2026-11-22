@@ -3385,6 +3385,12 @@ export interface SwitchRunModelResult {
 }
 
 export interface RunSummary {
+  /**
+   * Set by an orgai host that shares its data folder with other orgai sessions (never stored): this run is live in
+   * another session, the process named here. It can be read from this session, about as fresh as its last save, and
+   * not changed; it is steered in the terminal that hosts it.
+   */
+  liveElsewhere?: { pid: number; cwd: string; command: string }
   /** Main-owned: the schedule that started this run, and its name then (section "Schedules"). Continuations do not carry them. */
   scheduleId?: string; scheduleName?: string
   /** Required-delegation outcome (delegation-enforcement spec 4.3). Set by RunManager once a ledger exists. */

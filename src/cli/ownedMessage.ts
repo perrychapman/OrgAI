@@ -24,12 +24,7 @@ export function ownerWordsOf(info: Pick<DaemonInfo, 'pid' | 'ownerCwd'> | null |
 /** The line a read-only command prints when it answers from the files beside a running owner. */
 export const SNAPSHOT_NOTE = 'orgai is running in another terminal; this is a saved snapshot.'
 
-/**
- * Exit 6 text for a project another orgai session holds: the same sentence the host answers (`session_busy`,
- * main/host/sessions.ts ProjectBusyError), for a command that asks before it sends anything.
- */
-export function projectBusyMessage(projectName: string | undefined, holder: { pid: number; cwd: string } | undefined): string {
-  const what = projectName ? `The project ${projectName}` : 'This project'
-  const where = holder ? (holder.cwd ? ` (${holder.cwd}, pid ${holder.pid})` : ` (pid ${holder.pid})`) : ''
-  return `${what} is open in another orgai session${where}. Use that one, or quit it first.`
+/** Exit 6 text for a project another orgai session is removing or moving right now (main/host/sessions.ts ProjectBusyError). */
+export function projectChangingMessage(projectName: string | undefined): string {
+  return `${projectName ? `The project ${projectName}` : 'This project'} is being removed or moved by another orgai session. Try again in a moment.`
 }

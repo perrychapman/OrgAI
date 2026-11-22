@@ -809,7 +809,8 @@ export function statusSummary(s: TuiState): StatusSummary {
     liveRuns: live.length,
     ...(chips.length > 0 ? { runChips: chips } : {}),
     connection: s.connection,
-    ...(s.project ? { projectName: safeLine(s.project.name) } : {}),
+    // A project open in other orgai sessions too says so beside its name ("Alpha (2 terminals)").
+    ...(s.project ? { projectName: s.othersHere ? `${safeLine(s.project.name)} (${s.othersHere + 1} terminals)` : safeLine(s.project.name) } : {}),
     ...(s.hostKind ? { hostKind: s.hostKind } : {}),
     ...(s.readOnlyReason ? { readOnlyReason: safeLine(s.readOnlyReason) } : {})
   }

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import type { RunSummary } from '@shared/types'
-import { ProjectBusyError, RunBusyError, registerSession, type SessionHandle } from '../host/sessions'
+import { RunBusyError, registerSession, type SessionHandle } from '../host/sessions'
 import { RunStore, loadRunIndex, parseRunOwners } from './runs'
 import { createSharedStoreSync, type StoreSync } from './shared/storeSync'
 import { killAndWait, viteNodeCli } from './shared/testing/viteNode'
@@ -153,20 +153,40 @@ describe('two sessions, one run index', () => {
     expect(a.store.get('old-live')?.status).toBe('idle')
   })
 
-  it('an open run in a stored project claims the project; a Chat run claims nothing', () => {
+  it('two sessions each host a run in the same project; each sees the other\'s as live elsewhere and cannot change it', () => {
     const a = session(A)
     const b = session(B)
-    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'running' }))
-    expect(a.handle.holdsProject('proj_1')).toBe(true)
-    expect(() => b.store.upsert(run('b1', { projectId: 'proj_1', status: 'running' }))).toThrow(ProjectBusyError)
-    expect(b.store.get('b1')).toBeNull()
-    // An ended run of that project may still be written by anyone (a late title, usage): it is not live work.
-    b.store.upsert(run('b-old', { projectId: 'proj_1' }))
-    // Chat runs in both sessions at once.
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'running', startedAt: 1 }))
+    b.store.upsert(run('b1', { projectId: 'proj_1', status: 'running', startedAt: 2 }))
+    // An open run opens its project for the session that hosts it; a Chat run has no project.
+    expect(a.handle.hasProjectOpen('proj_1')).toBe(true)
+    expect(b.handle.hasProjectOpen('proj_1')).toBe(true)
     a.store.upsert(run('a-chat', { status: 'running' }))
-    b.store.upsert(run('b-chat', { status: 'running' }))
-    expect(b.handle.holdsProject('quick')).toBe(false)
-    expect(onDisk().owners).toEqual({ a1: A, 'a-chat': A, 'b-chat': B })
+    expect(a.handle.hasProjectOpen('quick')).toBe(false)
+    expect(onDisk().owners).toEqual({ a1: A, b1: B, 'a-chat': A })
+
+    // Each session's view of the project's runs: its own as it is, the other's marked with where it is live.
+    const where = { pid: process.pid, cwd: `/work/${A}`, command: 'tui' }
+    expect(b.store.list('proj_1').map((r) => [r.id, r.status, r.liveElsewhere])).toEqual([
+      ['b1', 'running', undefined],
+      ['a1', 'running', where]
+    ])
+    expect(b.store.get('a1')?.liveElsewhere).toEqual(where)
+    expect(a.store.get('a1')?.liveElsewhere).toBeUndefined()
+    expect(b.store.all().find((r) => r.id === 'a1')?.liveElsewhere).toEqual(where)
+    expect(a.store.liveElsewhereIn('proj_1')).toEqual([B])
+    expect(b.store.liveElsewhereIn('proj_1')).toEqual([A])
+    expect(b.store.liveElsewhereIn('proj_2')).toEqual([])
+    // The mark is never stored, even when a summary that carries it is written back.
+    expect(() => b.store.upsert({ ...(b.store.get('a1') as RunSummary), title: 'not mine' })).toThrow(RunBusyError)
+    b.store.upsert({ ...run('b1', { projectId: 'proj_1', status: 'running', startedAt: 2 }), liveElsewhere: where })
+    expect(JSON.stringify(onDisk())).not.toContain('liveElsewhere')
+
+    // Its host ends the run: nobody is live elsewhere in the project for the other session any more.
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'finished', startedAt: 1 }))
+    expect(b.store.get('a1')?.liveElsewhere).toBeUndefined()
+    expect(b.store.liveElsewhereIn('proj_1')).toEqual([])
+    expect(onDisk().owners).toEqual({ b1: B, 'a-chat': A })
   })
 
   it('a re-read that fails keeps the runs in memory instead of emptying the index', () => {

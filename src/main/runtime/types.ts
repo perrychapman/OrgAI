@@ -622,6 +622,12 @@ export interface RuntimeContext {
   /** Adapter-internal activity that should keep an exec run from settling or stalling (bumps activityGen). */
   noteActivity?(reason: ExecActivityReason): void
   /**
+   * Whether another run of this project has not ended, in this process or in another orgai session
+   * (docs/design/cli-sessions.md): a few words saying so, else null. While one is, the report branches already in the
+   * repository may be that run's work in progress, so this run neither commits nor merges branches it did not make.
+   */
+  otherRunsLive?(): string | null
+  /**
    * Required delegation (docs/design/delegation-enforcement.md 5.2): the run's ledger gate, implemented by RunManager on
    * work runs only (missing on setup, assistant, quick and single-agent runs: nothing is enforced). Adapters call it at
    * each spawn, completion, delivery and native-spawn attempt and act on the answer.

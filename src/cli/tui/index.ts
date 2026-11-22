@@ -10,7 +10,7 @@
 import { PassThrough } from 'node:stream'
 import { render } from 'ink'
 import { createElement } from 'react'
-import { projectBusyMessage } from '../ownedMessage'
+import { projectChangingMessage } from '../ownedMessage'
 import { CliError, EXIT, type CliContext } from '../types'
 import { App, type ExitInfo, type InputSource } from './App'
 import { KeyParser } from './input/keys'
@@ -107,17 +107,20 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
   let resolved: TuiLaunch
   try {
     resolved = opts.prepare ? await opts.prepare(conn) : launch
-    // Several orgai sessions may share the data folder, one per project: this terminal takes its project now, so a
-    // second one on the same project is told at once (exit 6) instead of at its first message.
+    // Several orgai sessions may share the data folder and the project: this terminal opens its project now and knows
+    // how many others are in it. Only a project another session is removing or moving right now is refused (exit 6).
+    let othersHere = 0
     if (resolved.project) {
-      const claim = conn.inproc.claimProject?.(resolved.project.id)
-      if (claim && !claim.ok) throw new CliError(sanitizeTty(projectBusyMessage(resolved.project.name, claim.holder)), EXIT.hostBusy)
+      const opened = conn.inproc.openProject?.(resolved.project.id)
+      if (opened && !opened.ok) throw new CliError(sanitizeTty(projectChangingMessage(resolved.project.name)), EXIT.hostBusy)
+      if (opened?.ok) othersHere = opened.others.length
     }
     const sessionOpts: OpenTuiSessionOptions = {
       folder: resolved.onboarding?.folder ?? ctx.cwd,
       ...(resolved.project ? { project: resolved.project } : {}),
       ...(resolved.runId ? { runId: resolved.runId } : {}),
-      ...(resolved.readOnlyReason ? { readOnlyReason: resolved.readOnlyReason } : {})
+      ...(resolved.readOnlyReason ? { readOnlyReason: resolved.readOnlyReason } : {}),
+      ...(othersHere ? { othersHere } : {})
     }
     session = await openTuiSession(conn, sessionOpts)
   } catch (e) {

@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url'
 import { bootOrgAIHost, type HostBackgroundOptions, type OrgAIHost } from '../main/host/bootstrap'
 import { currentHostInstanceId } from '../main/host/identity'
 import { HostAlreadyRunningError, HostOwnershipError, HostStartingOrBusyError, acquireHostOwnership, runDirHint, runDirOf, type HostOwnership } from '../main/host/ownership'
-import { isSessionLive, registerSession, sweepDeadSessions, type ClaimResult, type SessionHandle, type SessionRecord } from '../main/host/sessions'
+import { isSessionLive, registerSession, sweepDeadSessions, type SessionHandle, type SessionRecord } from '../main/host/sessions'
 import { sweepStaleSkillDirsAsync } from '../main/runtime/claudeSkills'
 import { createSharedStoreSync, enableStoreSync } from '../main/store/shared/storeSync'
 import { LineReader, newNonce } from '../main/host/protocol'
@@ -498,8 +498,11 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
     server,
     ownership,
     ...(held ? { session: held } : {}),
-    // The project a command works in, claimed up front so that a second session on it is told at once (exit 6).
-    claimProject: (projectId: string): ClaimResult => (held ? held.claimProject(projectId) : { ok: true }),
+    // The project a command works in, opened up front: it learns at once who else is in it.
+    openProject: (projectId: string): { ok: true; others: SessionRecord[] } | { ok: false } => {
+      if (!held) return { ok: true, others: [] }
+      return held.openProject(projectId).ok ? { ok: true, others: held.othersIn(projectId) } : { ok: false }
+    },
     otherSessions: (): SessionRecord[] => (held ? held.others() : []),
     closed,
     ownerKey,

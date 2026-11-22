@@ -42,6 +42,7 @@ import { parseTeamFiles, skillScripts, type ParsedTeam } from './parse'
 import { serializeMcpJson, serializeRole, serializeSkill, serializeTeam, serializeTeamJson } from './serialize'
 import { hasTeamContent, isHeldPath, readTeamFolder, teamFilesStampOf, writeTeamFiles, type TeamFolderRead } from './disk'
 import { SERVER_TOMBSTONES_MAX, TeamFilesStore, type ServerTombstone, type TeamFilesState } from './store'
+import { storeSyncFor } from '../store/shared/storeSync'
 
 /**
  * Team files: the service between the project cache, the approved snapshot and the `.orgai/` folder (design: ARCHITECTURE.md
@@ -251,6 +252,16 @@ export class TeamFilesService {
   }
 
   // ---------- small helpers ----------
+
+  /**
+   * One change of a project's team files and their state as a whole: under the data folder's write lock when several
+   * orgai sessions share it (store/shared/storeSync.ts), so two sessions that check the same project at the same
+   * moment (each at a run start, or one saving the team while the other starts a run) do it one after the other, each
+   * on what the other left. Everything in here is synchronous. With one process per data folder it is just `fn()`.
+   */
+  private oneChange<T>(fn: () => T): T {
+    return storeSyncFor(this.deps.dataDir).locked(fn)
+  }
 
   private now(): number {
     return this.deps.now ? this.deps.now() : Date.now()
@@ -772,10 +783,16 @@ export class TeamFilesService {
    * attention list) never writes a file. Changes the gate allows are applied at once; the rest wait for approval.
    */
   check(projectId: string, opts: { firstWrite?: boolean } = {}): TeamFilesStatus {
+    return this.oneChange(() => this.checkNow(projectId, opts))
+  }
+
+  private checkNow(projectId: string, opts: { firstWrite?: boolean } = {}): TeamFilesStatus {
     const project = this.stored(projectId)
     const off = this.offState(project)
     if (off) return off
-    const keyOf = (p: Project): string => `${teamFilesStampOf(p.path)}|${p.updatedAt}|${p.path}|${this.versions.get(projectId) ?? 0}`
+    // The saved state is part of the key where another orgai session can change it (this process's own changes bump `versions`).
+    const shared = storeSyncFor(this.deps.dataDir).shared
+    const keyOf = (p: Project): string => `${teamFilesStampOf(p.path)}|${p.updatedAt}|${p.path}|${this.versions.get(projectId) ?? 0}${shared ? `|${this.store.stamp(projectId)}` : ''}`
     const hit = this.memo.get(projectId)
     if (hit && hit.key === keyOf(project) && !(opts.firstWrite && hit.status.offReason === 'not-written')) return hit.status
     let status: TeamFilesStatus
@@ -1034,6 +1051,10 @@ export class TeamFilesService {
    * change are written. Pending or rejected changes in a file survive. Never throws.
    */
   beforeSave(before: Project | null, next: Project): Project {
+    return this.oneChange(() => this.beforeSaveNow(before, next))
+  }
+
+  private beforeSaveNow(before: Project | null, next: Project): Project {
     if (!before || this.inHook.has(next.id)) return next
     this.inHook.add(next.id)
     try {
@@ -1166,6 +1187,10 @@ export class TeamFilesService {
   }
 
   approve(input: { projectId: string; digest: string }): TeamFilesActionResult {
+    return this.oneChange(() => this.approveNow(input))
+  }
+
+  private approveNow(input: { projectId: string; digest: string }): TeamFilesActionResult {
     const project = this.requireApplicable(input.projectId)
     const id = project.id
     const st = this.store.readState(id)
@@ -1197,6 +1222,10 @@ export class TeamFilesService {
   }
 
   reject(input: { projectId: string; digest: string }): TeamFilesActionResult {
+    return this.oneChange(() => this.rejectNow(input))
+  }
+
+  private rejectNow(input: { projectId: string; digest: string }): TeamFilesActionResult {
     const project = this.requireApplicable(input.projectId)
     const id = project.id
     const approved = this.store.readApproved(id)
@@ -1211,6 +1240,10 @@ export class TeamFilesService {
   }
 
   undo(input: { projectId: string }): TeamFilesActionResult {
+    return this.oneChange(() => this.undoNow(input))
+  }
+
+  private undoNow(input: { projectId: string }): TeamFilesActionResult {
     const project = this.requireApplicable(input.projectId)
     const id = project.id
     const st = this.store.readState(id)
@@ -1249,6 +1282,10 @@ export class TeamFilesService {
 
   /** Turns team files back on after "Remove OrgAI files": writes the files from the current team. */
   enable(input: { projectId: string }): TeamFilesActionResult {
+    return this.oneChange(() => this.enableNow(input))
+  }
+
+  private enableNow(input: { projectId: string }): TeamFilesActionResult {
     const project = this.stored(input.projectId)
     const off = this.offState(project)
     if (off && off.offReason !== 'removed') throw new Error('Team files are not available for this project.')
@@ -1278,6 +1315,10 @@ export class TeamFilesService {
 
   /** "Remove OrgAI files" ran: no later save recreates the files until `enable`. */
   markRemoved(projectId: string): void {
+    return this.oneChange(() => this.markRemovedNow(projectId))
+  }
+
+  private markRemovedNow(projectId: string): void {
     const st = this.store.readState(projectId)
     st.removed = true
     this.store.writeState(projectId, st)
@@ -1375,6 +1416,10 @@ export class TeamFilesService {
    * digest or a folder with problems with a readable message.
    */
   createFromFolder(project: Project, digest: string): Project {
+    return this.oneChange(() => this.createFromFolderNow(project, digest))
+  }
+
+  private createFromFolderNow(project: Project, digest: string): Project {
     if (!writesToProjectFolder(project) || projectKindOf(project) === 'engagement') throw new Error('Team files are for code projects only.')
     const { read, parsed } = this.load(project.path, null)
     if (!read.orgaiOk) throw new Error(read.readProblems[0]?.message ?? 'The .orgai folder cannot be used.')
@@ -1413,6 +1458,10 @@ export class TeamFilesService {
 
   /** After createFromFolder's project is stored: the folder's team is the approved team. */
   adopted(projectId: string, doc?: TeamDoc): void {
+    return this.oneChange(() => this.adoptedNow(projectId, doc))
+  }
+
+  private adoptedNow(projectId: string, doc?: TeamDoc): void {
     const d = doc ?? this.adoptions.get(projectId)
     this.adoptions.delete(projectId)
     this.pendingCreates.delete(projectId)

@@ -106,7 +106,7 @@ describe.skipIf(!wave2Merged)('orgai read-only commands read the saved files; a 
     expect(existsSync(join(userDataDir, 'data', 'run', 'daemon.json'))).toBe(false)
   })
 
-  it('beside another orgai session: every command works, on its own host; only the project that session holds is refused (exit 6)', async () => {
+  it('beside another orgai session in the same project: every command works on its own host, a run starts here too, and only the other session\'s run is not to be changed', async () => {
     let live: RunSummary | undefined
     await withSeedHost(userDataDir, async (seed) => {
       // The other session works in the project: a run of its own, left waiting for input.
@@ -123,7 +123,7 @@ describe.skipIf(!wave2Merged)('orgai read-only commands read the saved files; a 
       const status = await cli(['--project', projectDir, 'status'])
       expect(status.code).toBe(0)
       expect(status.out).toContain('orgai sessions running: 1')
-      expect(status.out).toContain('holds Int project')
+      expect(status.out).toContain('in Int project')
       const statusJson = JSON.parse((await cli(['--project', projectDir, 'status', '--output-format', 'json'])).out)
       expect(statusJson.hostState).toBe('ready')
       expect(statusJson.sessions).toHaveLength(1)
@@ -136,25 +136,31 @@ describe.skipIf(!wave2Merged)('orgai read-only commands read the saved files; a 
       expect(connections.code).toBe(0)
       expect(connections.err).not.toContain('already running')
 
-      // The project is the other session's: a run here is refused at once, naming where it is open.
-      const began = Date.now()
-      const exec = await cli(['--project', projectDir, 'exec', 'hello'])
-      expect(exec.code).toBe(6)
-      expect(exec.err).toMatch(/The project Int project is open in another orgai session \(.*, pid \d+\)\. Use that one, or quit it first\./)
-      expect(Date.now() - began).toBeLessThan(5000)
-      // So is changing it.
+      // The same project: a run here works beside the other session's, and so does changing the project.
+      const exec = await cli(['--project', projectDir, 'exec', 'hello from the second session'])
+      expect(exec.code).toBe(0)
+      expect(exec.err).not.toContain('another orgai session')
       const set = await cli(['--project', projectDir, 'projects', 'set', '--brief', 'changed from the second session'])
-      expect(set.code).toBe(6)
-      // Nothing of the refused commands reached the project or the other session's run.
-      expect((await seed.call<Project>('projects:get', [project.id])).brief).toBe('')
+      expect(set.code).toBe(0)
+      // The other session sees both at once, and its own run was not touched.
+      expect((await seed.call<Project>('projects:get', [project.id])).brief).toBe('changed from the second session')
+      expect((await seed.call<RunSummary[]>('runs:list', [project.id])).length).toBe(3)
       expect((await seed.call<RunRecord | null>('runs:get', [running.id]))?.summary.status).toBe('idle')
+
+      // What needs the project alone is refused (exit 6), naming where it is open.
+      const began = Date.now()
+      const remove = await cli(['--project', projectDir, 'projects', 'remove', '--yes'])
+      expect(remove.code).toBe(6)
+      expect(remove.err).toMatch(/The project Int project is open in another orgai session \(.*, pid \d+\)\. Quit it there first\./)
+      expect(Date.now() - began).toBeLessThan(5000)
+      expect((await seed.call<Project | null>('projects:get', [project.id]))?.id).toBe(project.id)
     })
-    // The other session quit with its run open: the run reads as cut by the app, and the project is free again.
+    // The other session quit with its run open: the run reads as cut by the app.
     const after = await cli(['--project', projectDir, 'runs', 'list', '--output-format', 'json'])
     const ended = (JSON.parse(after.out).runs as { summary: RunSummary }[]).find((r) => r.summary.id === live?.id)
     expect(ended?.summary).toMatchObject({ status: 'finished', endedBy: 'app' })
-    expect((await cli(['--project', projectDir, 'projects', 'set', '--brief', 'free again'])).code).toBe(0)
-  }, 60_000)
+    expect((await cli(['--project', projectDir, 'projects', 'set', '--brief', 'alone again'])).code).toBe(0)
+  }, 90_000)
 
   it('beside an orgai that owns the folder alone (an older version): read-only commands answer from the files with a snapshot note; a command that needs a host is refused at once (exit 6)', async () => {
     await withSeedHost(

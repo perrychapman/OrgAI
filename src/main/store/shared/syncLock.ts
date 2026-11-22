@@ -7,8 +7,10 @@
  * they need is small: a few milliseconds of mutual exclusion around "re-read the file, change it, write it back". This
  * module gives exactly that, and two lifetime locks:
  *
- * - {@link trySyncLock}: one attempt, no waiting. A session's own lock and its project claims (sessions.ts) are held
- *   this way for the life of the process.
+ * - {@link trySyncLock}: one attempt, no waiting, exclusive. A session's own lock (sessions.ts) is held this way for the
+ *   life of the process; removing or moving a project takes the project's lock this way for a moment.
+ * - {@link trySyncSharedLock}: one attempt, shared. A session holds the lock of every project it has open this way,
+ *   so any number of sessions can have a project open while none can remove it under the others.
  * - {@link ReentrantSyncLock}: the data folder's write lock (storeSync.ts). `acquire` blocks the thread, polling with a
  *   short jittered backoff, until the lock is free or the wait budget is spent. It must only be held inside synchronous
  *   code (never across an await), so a holder cannot be interleaved by its own process and keeps it for milliseconds.
@@ -120,7 +122,43 @@ export function trySyncLock(path: string): SyncLockHandle | null {
   }
 }
 
-/** Test seam: how many locks taken with trySyncLock this process holds. */
+/**
+ * Take the lock at `path` (created if missing) shared, trying once: any number of holders, in this process or others,
+ * can hold it shared at the same time, and while one does nobody gets it exclusively ({@link trySyncLock} answers
+ * null). Returns null while somebody holds it exclusively. A shared hold is a read transaction on the empty file
+ * (`BEGIN` plus a read of `sqlite_schema`, as in osLock.ts); it writes nothing.
+ */
+export function trySyncSharedLock(path: string): SyncLockHandle | null {
+  let db: DatabaseSync
+  try {
+    db = open(path)
+  } catch (e) {
+    if (retryable(e)) return null
+    throw e
+  }
+  try {
+    db.exec('BEGIN')
+    // The read is what takes the shared lock; a plain BEGIN defers it.
+    db.prepare('SELECT count(*) AS n FROM sqlite_schema').get()
+  } catch (e) {
+    closeQuietly(db)
+    if (retryable(e)) return null
+    throw e
+  }
+  holding.add(db)
+  let released = false
+  return {
+    path,
+    release() {
+      if (released) return
+      released = true
+      holding.delete(db)
+      closeQuietly(db)
+    }
+  }
+}
+
+/** Test seam: how many locks taken with trySyncLock or trySyncSharedLock this process holds. */
 export function _heldSyncLockCount(): number {
   return holding.size
 }

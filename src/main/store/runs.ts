@@ -357,6 +357,22 @@ export class RunStore {
     this.refuseElsewhere(runId)
   }
 
+  /**
+   * The other running sessions that host a run of `projectId` which has not ended (their ids, no duplicates): what a
+   * session asks before it touches the project's report branches, and what tells a new run that it is not alone.
+   */
+  liveElsewhereIn(projectId: string): string[] {
+    if (!this.sync.shared) return []
+    this.fresh()
+    const out = new Set<string>()
+    for (const r of this.runs) {
+      if (r.projectId !== projectId) continue
+      const owner = this.elsewhere(r.id)
+      if (owner) out.add(owner)
+    }
+    return [...out]
+  }
+
   /** {@link hostedElsewhere} on the index as loaded (no refresh; used inside a change). */
   private elsewhere(runId: string): string | null {
     const owner = this.owners[runId]
@@ -381,9 +397,11 @@ export class RunStore {
         if (open) this.owners[run.id] = this.sync.sessionId
         else delete this.owners[run.id]
       }
+      // liveElsewhere is what a read adds for the caller, never part of the stored summary.
+      const { liveElsewhere: _seen, ...stored } = run
       const idx = this.runs.findIndex((r) => r.id === run.id)
-      if (idx === -1) this.runs.push({ ...run })
-      else this.runs[idx] = { ...run }
+      if (idx === -1) this.runs.push(stored)
+      else this.runs[idx] = stored
       this.persist()
     })
   }
@@ -411,13 +429,27 @@ export class RunStore {
 
   list(projectId: string): RunSummary[] {
     this.fresh()
-    return this.runs.filter((r) => r.projectId === projectId).sort((a, b) => b.startedAt - a.startedAt)
+    return this.runs
+      .filter((r) => r.projectId === projectId)
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .map((r) => this.asSeenHere(r))
+  }
+
+  /**
+   * A stored summary as this session hands it out: one that another running session hosts says so
+   * (RunSummary.liveElsewhere, never written back). `copy`: always a new object.
+   */
+  private asSeenHere(run: RunSummary, copy = false): RunSummary {
+    const owner = this.sync.shared ? this.elsewhere(run.id) : null
+    if (!owner) return copy ? { ...run } : run
+    const s = this.sync.session?.others().find((o) => o.hostInstanceId === owner)
+    return { ...run, liveElsewhere: { pid: s?.pid ?? 0, cwd: s?.cwd ?? '', command: s?.command ?? '' } }
   }
 
   get(runId: string): RunSummary | null {
     this.fresh()
     const run = this.runs.find((r) => r.id === runId)
-    return run ? { ...run } : null
+    return run ? this.asSeenHere(run, true) : null
   }
 
   allProjectIds(): string[] {
@@ -541,7 +573,7 @@ export class RunStore {
       // The index is the source of truth for status; a crash can leave a record marked live.
       this.fresh()
       const summary = this.runs.find((r) => r.id === runId)
-      return summary ? { ...record, summary } : record
+      return summary ? { ...record, summary: this.asSeenHere(summary, true) } : record
     } catch {
       return null
     }
@@ -633,7 +665,7 @@ export class RunStore {
   /** Every stored summary (copies), for the scratch-dir sweep. */
   all(): RunSummary[] {
     this.fresh()
-    return this.runs.map((r) => ({ ...r }))
+    return this.runs.map((r) => this.asSeenHere(r, true))
   }
 
   /** Delete record files and run directories (image stores) whose run is no longer in the index. */

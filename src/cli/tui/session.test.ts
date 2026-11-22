@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { HostScope, PendingCards, RunsSubscribeInput, RunsSubscribeResult, RunSummary } from '../../shared/types'
+import type { HostScope, PendingCards, RunRecord, RunsSubscribeInput, RunsSubscribeResult, RunSummary } from '../../shared/types'
 import { FakeHostClient, fakeContext, fakeInproc, flush, project, record, rpcError, summary } from '../testing/fakeContext'
 import { EXIT, HOST_STARTING_WAIT_MS } from '../types'
-import { connectTuiHost, openTuiSession, TUI_DECIDE_TIMEOUT_MS } from './session'
+import { statusSummary } from './selectors'
+import { connectTuiHost, liveElsewhereNotice, openTuiSession, TUI_DECIDE_TIMEOUT_MS } from './session'
 
 const P = project('p1', '/work', { name: 'Shop' })
 const SCOPES: HostScope[] = ['read', 'operate', 'decide', 'configure']
@@ -42,12 +43,17 @@ function host(o: { live?: RunSummary[]; list?: RunSummary[]; cards?: Record<stri
   return h
 }
 
-async function open(h: FakeHostClient, opts: { project?: typeof P; runId?: string; readOnlyReason?: string } = {}, extra: { connect?: (FakeHostClient | { ok: false; reason: 'no_host'; message: string })[] } = {}) {
+async function open(
+  h: FakeHostClient,
+  opts: { project?: typeof P; runId?: string; readOnlyReason?: string; othersHere?: number } = {},
+  extra: { connect?: (FakeHostClient | { ok: false; reason: 'no_host'; message: string })[]; watchElsewhereMs?: number } = {}
+) {
   const f = fakeContext({ connect: extra.connect ?? [h] })
   const conn = await connectTuiHost(f.ctx)
   const fired: number[] = []
   const queued: (() => void)[] = []
-  const session = await openTuiSession(conn, { folder: '/work', ...opts }, { schedule: (fn) => void queued.push(fn) })
+  // Runs hosted by another orgai session are not re-read on a timer in these tests unless one asks for it.
+  const session = await openTuiSession(conn, { folder: '/work', ...opts }, { schedule: (fn) => void queued.push(fn), watchElsewhereMs: extra.watchElsewhereMs ?? 0 })
   session.subscribe(() => fired.push(1))
   return { f, conn, session, fired, queued, flushNotify: () => queued.splice(0).forEach((fn) => fn()) }
 }
@@ -439,5 +445,56 @@ describe('openTuiSession', () => {
     expect(states[0]).toBe('reconnecting')
     expect(session.getState().connection).toBe('gone')
     expect(session.getState().notices.at(-1)?.tone).toBe('danger')
+  })
+})
+
+describe('a project open in several orgai sessions', () => {
+  const where = { pid: 4188, cwd: '/term/two', command: 'tui' }
+
+  it('the status bar counts the terminals in the project; a run live in another session is not the default focus', async () => {
+    const theirs = summary('theirs', { status: 'running', startedAt: 9, liveElsewhere: where })
+    const mine = summary('mine', { status: 'idle', startedAt: 1 })
+    // The host's snapshot lists only what it hosts; the other session's run arrives through the list.
+    const { session } = await open(host({ live: [mine], list: [mine, theirs] }), { project: P, othersHere: 1 })
+    expect(session.getState().activeRunId).toBe('mine')
+    expect(session.getState().othersHere).toBe(1)
+    expect(statusSummary(session.getState()).projectName).toBe('Shop (2 terminals)')
+    const alone = await open(host({ live: [], list: [theirs] }), { project: P })
+    expect(alone.session.getState().activeRunId).toBeUndefined()
+    expect(alone.session.getState().composeTarget).toBe('new')
+    expect(statusSummary(alone.session.getState()).projectName).toBe('Shop')
+  })
+
+  it('a run live in another session is shown as last saved and re-read until it ends there', async () => {
+    // The host answers from this list; the other session's host changes what is in it.
+    const list = [summary('theirs', { status: 'running', startedAt: 9, liveElsewhere: where })]
+    const said = (id: string, text: string, at: number): RunRecord['transcript'][number] => ({ id, agentId: 'root', at, block: { kind: 'text', text } })
+    let transcript = [said('e1', 'first words', 1)]
+    const h = host({ live: [], list, answers: { 'runs:get': () => record(list[0]!, { transcript }) } })
+    const { session } = await open(h, { project: P }, { watchElsewhereMs: 15 })
+    await session.focusRun('theirs')
+    const read = (): string[] => (session.getState().runs.theirs?.transcript ?? []).map((e) => (e.block.kind === 'text' ? e.block.text : ''))
+    expect(session.getState().activeRunId).toBe('theirs')
+    expect(session.getState().runs.theirs?.summary.liveElsewhere).toEqual(where)
+    expect(session.getState().notices.map((n) => n.text)).toContain(liveElsewhereNotice(where))
+    expect(liveElsewhereNotice(where)).toBe('This run is live in another orgai (/term/two, pid 4188). It shows here as last saved, read-only; steer it there.')
+
+    // Its host saves more: the next re-read shows it.
+    transcript = [...transcript, said('e2', 'more words', 2)]
+    const waitFor = async (what: string, ok: () => boolean): Promise<void> => {
+      for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 10))
+      if (!ok()) throw new Error(`timed out waiting for ${what}`)
+    }
+    await waitFor('the new entry', () => read().includes('more words'))
+    expect(read()).toEqual(['first words', 'more words'])
+
+    // It ends there: the run is an ordinary ended run here, and the re-reading stops.
+    list[0] = summary('theirs', { status: 'finished', startedAt: 9, endedBy: 'user' })
+    await waitFor('the end', () => session.getState().runs.theirs?.summary.status === 'finished')
+    expect(session.getState().runs.theirs?.summary.liveElsewhere).toBeUndefined()
+    const gets = h.callsOf('runs:get').length
+    await new Promise((r) => setTimeout(r, 80))
+    expect(h.callsOf('runs:get').length).toBe(gets)
+    await session.close()
   })
 })

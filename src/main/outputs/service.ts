@@ -69,6 +69,7 @@ import {
 } from './notes'
 import { PREVIEW_BUSY, queuedHeavy } from './heavyQueue'
 import { type OutputVersionMeta, type StoredOutput, applyVersionFields, createOutputStore, newOutputId } from './store'
+import { withNamedLock } from '../store/shared/namedLock'
 import {
   VersionStorageFullError,
   assertVersionRoom,
@@ -227,7 +228,10 @@ export function createOutputsService(dataDir: string, options: OutputsServiceOpt
   const tails = new Map<string, Promise<void>>()
   function queued<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
     const key = `p:${projectId}`
-    const run = (tails.get(key) ?? Promise.resolve()).then(fn)
+    // One at a time per project in this process, and across the orgai sessions that share the data folder (namedLock.ts).
+    const run = (tails.get(key) ?? Promise.resolve()).then(() =>
+      withNamedLock(dataDir, `outputs:${projectId}`, fn, { busy: "This project's outputs are being changed by another orgai session; try again in a moment." })
+    )
     const tail = run.then(
       () => undefined,
       () => undefined

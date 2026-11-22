@@ -5,15 +5,16 @@
  * its whole life and writes `<id>.json` beside it, so "is that session alive" is a lock probe: never a pid, a start
  * time, a heartbeat or a file's age. The kernel drops the lock when the process ends, however it ends.
  *
- * A session also claims the projects it works in: `project-<hash>.lock`, held the same way. One session per project
- * keeps a project's own files (team, worktrees, notes, outputs, staffing profile, evolution ledger) with a single
- * writer, which is the rule every project-scoped service was written under. Chat runs have no project and need no
- * claim; a run is tied to the session that hosts it by the run index (store/runs.ts).
+ * A session also has the projects it works in *open*: `project-<hash>.lock`, held shared. Any number of sessions can
+ * have a project open; its files are changed under the data folder's write lock on their newest content
+ * (store/shared/storeSync.ts), and a run is tied to the session that hosts it by the run index (store/runs.ts). The
+ * one thing a session needs a project alone for is removing or moving it: that takes the same lock exclusively, which
+ * succeeds only when nobody else has the project open. Chat runs have no project.
  *
  * What lives in the sessions folder:
  * - `<id>.lock`           the session's lock (0 bytes, never written)
- * - `<id>.json`           its record: pid, cwd, command, claimed projects (tmp + rename)
- * - `project-<hash>.lock` a project claim (0 bytes; never deleted, reused by the next claimant)
+ * - `<id>.json`           its record: pid, cwd, command, open projects (tmp + rename)
+ * - `project-<hash>.lock` a project's lock (0 bytes; never deleted): shared by every session that has it open
  * - `write.lock`          the data folder's write lock (store/shared/storeSync.ts)
  *
  * Registering and sweeping dead sessions happen while the caller holds the startup mutex (host/ownership.ts), so two
@@ -26,7 +27,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { probeSyncLock, trySyncLock, type SyncLockHandle } from '../store/shared/syncLock'
+import { probeSyncLock, sleepSync, trySyncLock, trySyncSharedLock, type SyncLockHandle } from '../store/shared/syncLock'
 import { renameSyncRetry } from './fsRetry'
 import { HOST_INSTANCE_ID_RE } from './identity'
 
@@ -47,7 +48,7 @@ export interface SessionRecord {
   endpoint?: string
   /** `endpoint` is bound by a liveness-only listener (DaemonInfo.livenessProbe). */
   livenessProbe?: boolean
-  /** Ids of the projects this session has claimed. */
+  /** Ids of the projects this session has open (it works in them; any number of sessions can have one open). */
   projects: string[]
 }
 
@@ -69,10 +70,17 @@ export class SessionBusyError extends Error {
   }
 }
 
-/** A project is claimed by another live session. */
+/**
+ * A project cannot be used the way that was asked because of another live session: it is open there and this
+ * session wanted it alone (to remove or move it), or it is being removed or moved there right now.
+ */
 export class ProjectBusyError extends SessionBusyError {
-  constructor(readonly projectId: string, readonly holder: SessionRecord | undefined, what = 'This project') {
-    super(`${what} is open in another orgai session${sessionWords(holder)}. Use that one, or quit it first.`)
+  constructor(readonly projectId: string, readonly holder: SessionRecord | undefined, what = 'This project', why: 'open' | 'changing' = 'open') {
+    super(
+      why === 'open'
+        ? `${what} is open in another orgai session${sessionWords(holder)}. Quit it there first.`
+        : `${what} is being removed or moved by another orgai session${sessionWords(holder)}. Try again in a moment.`
+    )
     this.name = 'ProjectBusyError'
   }
 }
@@ -90,6 +98,10 @@ export function sessionWords(s: Pick<SessionRecord, 'pid' | 'cwd'> | undefined):
   if (!s) return ''
   return s.cwd ? ` (${s.cwd}, pid ${s.pid})` : ` (pid ${s.pid})`
 }
+
+/** A project's lock is tried this many more times, this far apart, before it counts as held alone by another session. */
+const OPEN_RETRIES = 5
+const OPEN_RETRY_MS = 4
 
 const RECORD_RE = /^([0-9a-f]{12})\.json$/
 const LOCK_RE = /^([0-9a-f]{12})\.lock$/
@@ -215,9 +227,9 @@ export function liveSessions(dataDir: string): SessionRecord[] {
     .map((s) => s.record)
 }
 
-/** The live session that claimed `projectId`, when its record says so. */
-export function projectHolder(dataDir: string, projectId: string): SessionRecord | undefined {
-  return liveSessions(dataDir).find((s) => s.projects.includes(projectId))
+/** The live sessions that have `projectId` open, as their records say, oldest first. */
+export function projectHolders(dataDir: string, projectId: string): SessionRecord[] {
+  return liveSessions(dataDir).filter((s) => s.projects.includes(projectId))
 }
 
 /**
@@ -264,7 +276,14 @@ export function sweepDeadSessions(dataDir: string): number {
   return removed
 }
 
-export type ClaimResult = { ok: true } | { ok: false; holder: SessionRecord | undefined }
+export type OpenResult = { ok: true } | { ok: false; holder: SessionRecord | undefined }
+
+/** A project held alone for a moment (to remove or move it). */
+export interface ExclusiveProject {
+  /** Give it back. `reopen`: this session keeps the project open afterwards (it still exists). */
+  release(reopen: boolean): void
+}
+export type ExclusiveResult = { ok: true; held: ExclusiveProject } | { ok: false; holders: SessionRecord[] }
 
 export interface SessionHandle {
   readonly dataDir: string
@@ -273,13 +292,23 @@ export interface SessionHandle {
   record(): SessionRecord
   /** Change the record (e.g. the liveness endpoint once it is bound). */
   update(patch: Partial<Pick<SessionRecord, 'endpoint' | 'command' | 'processStartTime'>>): void
-  /** Claim a project for the rest of this session. Already ours is ok. Never waits. */
-  claimProject(projectId: string): ClaimResult
-  /** {@link claimProject}, throwing ProjectBusyError when another session holds it. */
+  /**
+   * Have a project open for the rest of this session: this session works in it. Any number of sessions can; it only
+   * fails (`ok: false`) while another session is removing or moving the project. Already open is ok. Never waits.
+   */
+  openProject(projectId: string): OpenResult
+  /** {@link openProject}, throwing ProjectBusyError while another session is removing or moving the project. */
   requireProject(projectId: string, what?: string): void
-  holdsProject(projectId: string): boolean
-  /** Give a claim back before the session ends (the caller knows nothing of this session uses the project any more). */
-  releaseProject(projectId: string): void
+  hasProjectOpen(projectId: string): boolean
+  /** Stop having a project open before the session ends (the caller knows nothing of this session uses it any more). */
+  closeProject(projectId: string): void
+  /**
+   * Hold a project alone, to remove or move it: succeeds only when no other session has it open. `ok: false` names
+   * the sessions that do, and leaves this session's own hold as it was. Never waits.
+   */
+  exclusiveProject(projectId: string): ExclusiveResult
+  /** The other running sessions that have `projectId` open. */
+  othersIn(projectId: string): SessionRecord[]
   /** The other running sessions. */
   others(): SessionRecord[]
   /** End the session: release every claim and remove its own files. Synchronous and idempotent (process 'exit'). */
@@ -318,37 +347,80 @@ export function registerSession(dataDir: string, info: Omit<SessionRecord, 'proj
       record = { ...record, ...patch }
       save()
     },
-    claimProject(projectId) {
+    openProject(projectId) {
       if (released) return { ok: false, holder: undefined }
       if (claims.has(projectId)) return { ok: true }
-      const claim = trySyncLock(projectLockPath(dataDir, projectId))
-      if (!claim) return { ok: false, holder: projectHolder(dataDir, projectId) }
-      claims.set(projectId, claim)
+      // Only an exclusive holder keeps a shared one out: another session is removing or moving the project. An
+      // exclusive attempt that is about to fail also does for an instant, so the try is repeated a few times.
+      let hold = trySyncSharedLock(projectLockPath(dataDir, projectId))
+      for (let i = 0; !hold && i < OPEN_RETRIES; i++) {
+        sleepSync(OPEN_RETRY_MS)
+        hold = trySyncSharedLock(projectLockPath(dataDir, projectId))
+      }
+      if (!hold) return { ok: false, holder: undefined }
+      claims.set(projectId, hold)
       try {
         save()
       } catch (e) {
         claims.delete(projectId)
-        claim.release()
+        hold.release()
         throw e
       }
       return { ok: true }
     },
     requireProject(projectId, what) {
-      const r = handle.claimProject(projectId)
-      if (!r.ok) throw new ProjectBusyError(projectId, r.holder, what)
+      const r = handle.openProject(projectId)
+      if (!r.ok) throw new ProjectBusyError(projectId, r.holder, what, 'changing')
     },
-    holdsProject: (projectId) => claims.has(projectId),
-    releaseProject(projectId) {
-      const claim = claims.get(projectId)
-      if (!claim) return
+    hasProjectOpen: (projectId) => claims.has(projectId),
+    closeProject(projectId) {
+      const hold = claims.get(projectId)
+      if (!hold) return
       claims.delete(projectId)
-      claim.release()
+      hold.release()
       try {
         save()
       } catch {
         /* the record keeps naming it until the next save; the lock is what counts */
       }
     },
+    exclusiveProject(projectId) {
+      if (released) return { ok: false, holders: [] }
+      const path = projectLockPath(dataDir, projectId)
+      const own = claims.get(projectId)
+      // This session's own shared hold would keep the exclusive one out: it steps aside for the attempt.
+      own?.release()
+      const exclusive = trySyncLock(path)
+      if (!exclusive) {
+        if (own) {
+          const back = trySyncSharedLock(path)
+          if (back) claims.set(projectId, back)
+          else claims.delete(projectId)
+        }
+        return { ok: false, holders: handle.othersIn(projectId) }
+      }
+      claims.delete(projectId)
+      let done = false
+      return {
+        ok: true,
+        held: {
+          release(reopen) {
+            if (done) return
+            done = true
+            exclusive.release()
+            if (reopen && !released) handle.openProject(projectId)
+            else {
+              try {
+                save()
+              } catch {
+                /* the record is rewritten at the next change */
+              }
+            }
+          }
+        }
+      }
+    },
+    othersIn: (projectId) => projectHolders(dataDir, projectId).filter((s) => s.hostInstanceId !== id),
     others: () => liveSessions(dataDir).filter((s) => s.hostInstanceId !== id),
     release() {
       if (released) return

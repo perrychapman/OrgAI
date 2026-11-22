@@ -492,6 +492,11 @@ export interface TuiState {
   hostKind?: HostKind
   connection: ConnectionState
   project?: Project
+  /**
+   * How many other orgai sessions have this project open right now (docs/design/cli-sessions.md): the status bar says
+   * so, and runs started there show here read-only. Kept current by the session; absent or 0 = this terminal only.
+   */
+  othersHere?: number
   folder: string
   runs: Record<string, TuiRun>
   /**
@@ -540,6 +545,8 @@ export interface OpenTuiSessionOptions {
   runId?: string
   folder: string
   readOnlyReason?: string
+  /** How many other orgai sessions have this project open right now (TuiState.othersHere). */
+  othersHere?: number
 }
 
 /** Per-run choices (/model, /effort, /mode, /goal) held by the session for the next run it starts; dropped once a run used them. */

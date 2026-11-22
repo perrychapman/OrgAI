@@ -18,7 +18,7 @@
 //      its own vault id; a secret saved by one is counted only in its own vault.json; with no key file set, the CLI's
 //      doctor names its own key store (OrgAI CLI Vault on macOS, not the app's "OrgAI Vault").
 //   f. The CLI refuses A (exit non-zero, "belongs to the OrgAI app"; A's marker is untouched). A second orgai on B runs
-//      beside the first (sessions); in the project the first one holds it is refused at once with exit 6. The app, started on B, refuses it ("belongs to the orgai command line tool", exit 2, its
+//      beside the first (sessions), also in the first one's project; removing that project is refused at once with exit 6. The app, started on B, refuses it ("belongs to the orgai command line tool", exit 2, its
 //      dialog text recorded by e2e/dialog-stub.cjs instead of shown) before it writes anything there: B's top-level
 //      listing is the same before and after.
 //      The app also refuses a folder whose data/ is a CLI folder (its parent) and one whose data entry links into one.
@@ -232,13 +232,15 @@ try {
   check(onA.code !== 0 && /belongs to the OrgAI app/.test(onA.err), 'orgai refuses the app\'s folder A', `${onA.code} ${onA.err.slice(0, 200)}`)
   check(readJson(path.join(A, 'product.json'))?.product === 'orgai-desktop', 'folder A still carries the desktop marker after the refusal')
   const began = Date.now()
-  // Several orgai processes share the CLI's folder (docs/design/cli-sessions.md): a second one works beside the held
-  // exec, and only the project that exec holds is refused, at once, with exit 6.
+  // Several orgai processes share the CLI's folder and its projects (docs/design/cli-sessions.md): a second one works
+  // beside the held exec, also in its project; only what needs the project alone is refused, at once, with exit 6.
   const second = await cli(['connections', 'list'])
   check(second.code === 0, 'a second orgai on B runs beside the held exec', `${second.code} ${second.err.slice(0, 200)}`)
-  const sameProject = await cli(['exec', 'a second run in the held project'], { cwd: repoB })
-  check(sameProject.code === 6 && /is open in another orgai session/.test(sameProject.err), 'a second orgai in the project the held exec works in is refused with exit 6', `${sameProject.code} ${sameProject.err.slice(0, 200)}`)
-  check(Date.now() - began < 15_000, 'both answers came at once', `${Date.now() - began} ms`)
+  const sameProject = await cli(['projects', 'show'], { cwd: repoB })
+  check(sameProject.code === 0, 'a second orgai works in the project the held exec is in', `${sameProject.code} ${sameProject.err.slice(0, 200)}`)
+  const alone = await cli(['projects', 'remove', '--yes'], { cwd: repoB })
+  check(alone.code === 6 && /is open in another orgai session/.test(alone.err), 'removing the project the held exec works in is refused with exit 6 (it needs the project alone)', `${alone.code} ${alone.err.slice(0, 200)}`)
+  check(Date.now() - began < 15_000, 'the answers came at once', `${Date.now() - began} ms`)
   heldStillRuns('after the second orgai came and went')
   const beforeB = topLevel(B)
   const markerB = read(path.join(B, 'product.json'))

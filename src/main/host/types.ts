@@ -147,7 +147,7 @@ export interface HostServices {
    * arguments; throws when a project or run the request names is open in another session. Absent on a host that has
    * its data folder to itself (the desktop app, tests).
    */
-  sessionGuard?: (channel: string, args: readonly unknown[]) => void
+  sessionGuard?: (channel: string, args: readonly unknown[]) => void | (() => void)
 }
 
 /** How a call reached the dispatcher. */
