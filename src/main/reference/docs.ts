@@ -17,7 +17,10 @@ const RAW = import.meta.glob(
     // table comes from commandTable.ts instead.
     '!../../../docs/design/cli-approvals.md',
     '!../../../docs/design/cli-spec.md',
-    '!../../../docs/design/cli-standalone.md'
+    '!../../../docs/design/cli-standalone.md',
+    // A design that was not built (cli-sessions.md is what shipped): self-help must not quote its file layout,
+    // journals or claims as how OrgAI works.
+    '!../../../docs/design/parallel-sessions.md'
   ],
   { query: '?raw', import: 'default' }
 )

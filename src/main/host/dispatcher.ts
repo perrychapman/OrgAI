@@ -262,7 +262,8 @@ const RPC_ERROR_CODES: ReadonlySet<string> = new Set<HostRpcErrorCode>([
   'auth_failed',
   'protocol_mismatch',
   'too_many_connections',
-  'too_many_requests'
+  'too_many_requests',
+  'session_busy'
 ])
 
 /** Used when no env is given (unit tests that only exercise other channels): app:info reports placeholders. */
@@ -350,6 +351,8 @@ export class HostDispatcher {
     const release = leased ? this.activity.acquire('inFlightRpcMutations', channel) : undefined
     let writing = false
     try {
+      // Several orgai sessions on this data folder: what the request names must be this session's to change.
+      if (mutation) this.services.sessionGuard?.(g.channel, g.args)
       // Wave 7 (cli-standalone.md 5.6): a call that will store a non-empty secret value prepares the vault first (Node /
       // inproc hosts create it lazily), inside the mutation lease, so the handler stays synchronous. Clears and calls
       // that store nothing never reach prepareWrite. The predicates live in storesSecret.ts. From the prepare until the

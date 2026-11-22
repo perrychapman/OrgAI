@@ -101,6 +101,13 @@ export function noHost(message = 'No OrgAI host is running.'): ConnectResult {
 export interface FakeStore {
   hostState?: ReadOnlySnapshot['hostState']
   daemon?: DaemonInfo
+  /** The running orgai sessions. Default none. */
+  sessions?: ReadOnlySnapshot['sessions']
+  /**
+   * An orgai that cannot share the folder owns it. Default: true for a host state other than 'stopped' with no sessions
+   * and no `daemon.sessions` (the record an orgai from before sessions writes), else false.
+   */
+  soleOwner?: boolean
   projects?: Project[]
   runs?: RunSummary[]
   records?: Record<string, RunRecord>
@@ -232,8 +239,12 @@ export function fakeContext(o: FakeContextOptions = {}): FakeContext {
     },
     readStore: async () => {
       const records = store.records ?? {}
+      const sessions = store.sessions ?? []
+      const hostState = store.hostState ?? (sessions.length ? 'ready' : 'stopped')
       return {
-        hostState: store.hostState ?? 'stopped',
+        hostState,
+        sessions,
+        soleOwner: store.soleOwner ?? (hostState !== 'stopped' && sessions.length === 0 && store.daemon?.sessions !== true),
         liveInboxAvailable: false,
         ...(store.daemon ? { daemon: store.daemon } : {}),
         projects: store.projects ?? [],

@@ -10,6 +10,7 @@ import { isInsideEither, pathKey, samePath } from '../quick/scratch'
 import { allowedDirectoryRisk } from '../runtime/allowedDirectories'
 import { cleanFolderConfigTrust, initialFolderConfigTrust } from '../runtime/folderConfigTrust'
 import { homedir } from 'node:os'
+import { storeSyncFor, type StoreSync } from './shared/storeSync'
 
 /** The tier mapping of a connection, for the invalid-model fallback. Default: the connection's builtin catalog only. */
 export type TierContextFor = (connection: ConnectionId) => TierContext | undefined
@@ -519,21 +520,30 @@ export class ProjectStore {
    */
   private renameCarry = new Map<string, Map<string, { ids: Set<string>; at: number }>>()
   private renamedAway = new Map<string, Set<string>>()
+  /** How this store stays correct when several orgai sessions share the data folder (store/shared/storeSync.ts). */
+  private sync: StoreSync
 
   /**
    * `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels).
    * `opts.home` overrides os.homedir() for the allowed-directory rules (tests).
+   * `opts.sync` overrides the data folder's own sync (tests that put two sessions in one process).
    */
-  constructor(dataDir: string, opts: { tierContext?: TierContextFor; home?: string } = {}) {
+  constructor(dataDir: string, opts: { tierContext?: TierContextFor; home?: string; sync?: StoreSync } = {}) {
     this.tierContext = opts.tierContext
     this.dataDir = dataDir
     this.home = opts.home ?? homedir()
     this.file = join(dataDir, 'projects.json')
-    this.load()
+    this.sync = opts.sync ?? storeSyncFor(dataDir)
+    this.sync.load(this.file, () => this.load(true))
     this.migrateAll()
   }
 
-  private load(): void {
+  /**
+   * Read projects.json. A first read that fails starts empty, as before. A later re-read that fails (several orgai
+   * sessions on one data folder) keeps what is in memory: the file is only ever replaced whole, so that is damage from
+   * outside, and saving an empty list over it would lose every project.
+   */
+  private load(first: boolean): void {
     try {
       if (existsSync(this.file)) {
         const parsed = parseProjectsFile(JSON.parse(readFileSync(this.file, 'utf8')))
@@ -541,9 +551,23 @@ export class ProjectStore {
         this.fileVersion = parsed.version
       }
     } catch (e) {
+      if (!first) {
+        console.error('Failed to read projects.json again, keeping the projects in memory:', e)
+        return
+      }
       console.error('Failed to read projects.json, starting empty:', e)
       this.projects = []
     }
+  }
+
+  /** Before a read: pick up what another session saved. Nothing to do with one process per data folder. */
+  private fresh(): void {
+    this.sync.refresh(this.file, () => this.load(false))
+  }
+
+  /** A change to the list: under the write lock, on the newest content (shared), or directly (one process). */
+  private change<T>(fn: () => T): T {
+    return this.sync.write(this.file, () => this.load(false), fn)
   }
 
   private persist(): void {
@@ -558,22 +582,24 @@ export class ProjectStore {
    * and Role.tier (see migrateProject). Persists only when something changed. Returns how many projects changed.
    */
   migrateAll(): number {
-    let changed = 0
-    const legacyLimits = this.fileVersion < 2
-    this.projects = this.projects.map((p) => {
-      const limits = legacyLimits ? dropLegacyLimitDefaults(p) : { project: p, changed: false }
-      const m = migrateProject(limits.project)
-      const clean = sanitizeRoleModels(m.project, this.tierContext)
-      const dirs = withCleanAllowedDirectories(clean.project, this.dataDir, this.home)
-      if (limits.changed || m.changed || clean.changed || dirs.changed) changed++
-      return dirs.project
+    return this.change(() => {
+      let changed = 0
+      const legacyLimits = this.fileVersion < 2
+      this.projects = this.projects.map((p) => {
+        const limits = legacyLimits ? dropLegacyLimitDefaults(p) : { project: p, changed: false }
+        const m = migrateProject(limits.project)
+        const clean = sanitizeRoleModels(m.project, this.tierContext)
+        const dirs = withCleanAllowedDirectories(clean.project, this.dataDir, this.home)
+        if (limits.changed || m.changed || clean.changed || dirs.changed) changed++
+        return dirs.project
+      })
+      // Persist after a version bump too, so the one-time limits migration never runs again on explicit 3 / 8 values.
+      if (changed || this.fileVersion < PROJECTS_FILE_VERSION) {
+        if (this.projects.length || changed) this.persist()
+        this.fileVersion = PROJECTS_FILE_VERSION
+      }
+      return changed
     })
-    // Persist after a version bump too, so the one-time limits migration never runs again on explicit 3 / 8 values.
-    if (changed || this.fileVersion < PROJECTS_FILE_VERSION) {
-      if (this.projects.length || changed) this.persist()
-      this.fileVersion = PROJECTS_FILE_VERSION
-    }
-    return changed
   }
 
   /** Installed once by index.ts after the team files service exists. */
@@ -582,10 +608,12 @@ export class ProjectStore {
   }
 
   list(): Project[] {
+    this.fresh()
     return [...this.projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
   get(id: string): Project | null {
+    this.fresh()
     return this.projects.find((p) => p.id === id) ?? null
   }
 
@@ -633,8 +661,11 @@ export class ProjectStore {
     // gated: runs ignore that config until the user accepts it. A missing folder or an engagement stays ungated.
     const trust = initialFolderConfigTrust(project)
     if (trust) project = { ...project, folderConfigTrust: trust }
-    this.projects.push(project)
-    this.persist()
+    const created = project
+    this.change(() => {
+      this.projects.push(created)
+      this.persist()
+    })
     if (fromFiles) {
       try {
         opts.teamFiles?.adopted(project)
@@ -698,10 +729,12 @@ export class ProjectStore {
       if (!away.size) this.renamedAway.delete(cleaned.id)
     }
     const updated = { ...cleaned, updatedAt: new Date().toISOString() }
-    const idx = this.projects.findIndex((p) => p.id === cleaned.id)
-    if (idx === -1) this.projects.push(updated)
-    else this.projects[idx] = updated
-    this.persist()
+    this.change(() => {
+      const idx = this.projects.findIndex((p) => p.id === cleaned.id)
+      if (idx === -1) this.projects.push(updated)
+      else this.projects[idx] = updated
+      this.persist()
+    })
     return updated
   }
 
@@ -769,15 +802,22 @@ export class ProjectStore {
     return this.save(next)
   }
 
-  /** Read-modify-write one stored project. Throws when it does not exist. */
+  /**
+   * Read-modify-write one stored project. Throws when it does not exist. On a shared data folder the read and the
+   * save happen under one hold of the write lock, so `fn` always works on what is stored now.
+   */
   update(id: string, fn: (p: Project) => Project): Project {
-    const stored = this.get(id)
-    if (!stored) throw new Error('Project not found')
-    return this.save(fn(structuredClone(stored)))
+    return this.change(() => {
+      const stored = this.projects.find((p) => p.id === id) ?? null
+      if (!stored) throw new Error('Project not found')
+      return this.save(fn(structuredClone(stored)))
+    })
   }
 
   remove(id: string): void {
-    this.projects = this.projects.filter((p) => p.id !== id)
-    this.persist()
+    this.change(() => {
+      this.projects = this.projects.filter((p) => p.id !== id)
+      this.persist()
+    })
   }
 }

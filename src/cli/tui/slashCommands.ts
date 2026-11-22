@@ -22,6 +22,7 @@ import { projectConnection } from '../../shared/defaults'
 import { connectionName, modelChoices, pickModel as pickModelFromCatalog } from '../modelSwitch'
 import { parseSlashRunArgs } from '../runStartFlags'
 import type { SlashCommand, SlashContext, TuiState } from './types'
+import type { SessionPeer } from '../types'
 
 /** One line of untrusted text, sanitized, whitespace folded, at most `max` characters. */
 export function cleanLine(s: string | undefined, max = 200): string {
@@ -231,6 +232,27 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
  * /approvals (cli-parity 3.4 as built, read-only): what waits for approval, in full (the gate's summary, "May spend
  * more", what an undo would bring back, a folder's own config), ending with where approving is done and why.
  */
+/**
+ * /sessions: several orgai processes can run on one data folder, one per project. This lists the others, so it is
+ * clear why a project may be refused here ("open in another orgai session") and where it is open.
+ */
+export function sessionsText(others: readonly SessionPeer[], here?: string, now: number = Date.now()): string {
+  const lines = [here ? `This terminal holds ${cleanLine(here, 80)}.` : 'This terminal holds no project.', '']
+  if (!others.length) {
+    lines.push('No other orgai session is running.')
+  } else {
+    lines.push(`${others.length} other orgai ${others.length === 1 ? 'session' : 'sessions'}:`)
+    for (const s of others) {
+      const up = Math.max(0, Math.round((now - s.startedAt) / 60_000))
+      const facts = [`pid ${s.pid}`, up < 1 ? 'just started' : `up ${up} min`, s.projects.length ? `holds ${s.projects.length} ${s.projects.length === 1 ? 'project' : 'projects'}` : 'holds no project']
+      lines.push(`  ${cleanLine(s.command || 'orgai', 24)}  ${cleanLine(s.cwd, 160)}`)
+      lines.push(`      ${facts.join(' · ')}`)
+    }
+  }
+  lines.push('', 'Each session works in its own projects: a project open in one session is refused in another until that one quits.', 'Chats without a project run in any number of sessions. orgai status lists every session from outside.')
+  return lines.join('\n')
+}
+
 async function runApprovals(ctx: SlashContext): Promise<void> {
   const api = ctx.session.approvals
   if (!api) {
@@ -412,6 +434,11 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
       guarded(ctx, async () => {
         if (await ctx.confirm('End this session?')) await ctx.session.stop()
       })
+  },
+  {
+    name: 'sessions',
+    summary: 'The other orgai sessions running now: their folder, what they run and the projects they hold',
+    run: (ctx) => guarded(ctx, () => ctx.openText('Sessions', sessionsText(ctx.session.otherSessions?.() ?? [], ctx.state().project?.name)))
   },
   {
     name: 'approvals',

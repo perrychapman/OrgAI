@@ -29,6 +29,7 @@ import {
 import { isSafeId, newId } from '@shared/defaults'
 import type { ProjectStore } from '../store/projects'
 import { SkillLibraryStore } from '../store/skillLibrary'
+import { storeSyncFor } from '../store/shared/storeSync'
 import type { RunSkill } from '../runtime/types'
 import type { SkillRunSource, SkillServiceApi, SkillSnapshotInput } from './types'
 import { childPath, digestFiles, fileInfos, readBundle, readStoredFolder, removeFolder, writeFolder, type FileData } from './files'
@@ -539,6 +540,15 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
 
   // ---------- library ----------
 
+  /**
+   * A change to the library touches the entry's folder under `<data>/skills/` and its line in skill-library.json. When
+   * several orgai sessions share the data folder the whole change runs under the folder's write lock, so two of them
+   * never work on one entry's files at the same time. A no-op for a process that has its data folder to itself.
+   */
+  private libraryLocked<T>(fn: () => T): T {
+    return storeSyncFor(this.deps.dataDir).locked(fn)
+  }
+
   libraryList(): SkillLibraryInfo[] {
     const all = this.deps.projects.list()
     return this.library.list().map((entry) => ({
@@ -581,6 +591,10 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
   }
 
   libraryCreate(draft: SkillDraft): SkillLibraryInfo[] {
+    return this.libraryLocked(() => this.libraryCreateNow(draft))
+  }
+
+  private libraryCreateNow(draft: SkillDraft): SkillLibraryInfo[] {
     const d = validDraft(draft)
     const files = assembleFiles(d, [])
     this.addEntry(this.newEntry(d.name, d.description, 'user', files), files)
@@ -589,6 +603,10 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
   }
 
   libraryAddFromFolder(input: SkillLibraryFolderInput): SkillLibraryInfo[] {
+    return this.libraryLocked(() => this.libraryAddFromFolderNow(input))
+  }
+
+  private libraryAddFromFolderNow(input: SkillLibraryFolderInput): SkillLibraryInfo[] {
     const scanned = scanSkillFolder(input?.path)
     if ('invalid' in scanned) throw new Error(scanned.invalid)
     const s = scanned.skill
@@ -610,6 +628,10 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
    * the event loop).
    */
   libraryAddFromBundle(input: SkillBundleInput): SkillLibraryInfo[] {
+    return this.libraryLocked(() => this.libraryAddFromBundleNow(input))
+  }
+
+  private libraryAddFromBundleNow(input: SkillBundleInput): SkillLibraryInfo[] {
     const read = readBundle(input)
     if (!read.ok) throw new Error(read.reason)
     const name = typeof input?.name === 'string' ? input.name : ''
@@ -621,6 +643,10 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
   }
 
   libraryUpdate(input: { libraryId: string; draft: SkillDraft }): SkillLibraryInfo[] {
+    return this.libraryLocked(() => this.libraryUpdateNow(input))
+  }
+
+  private libraryUpdateNow(input: { libraryId: string; draft: SkillDraft }): SkillLibraryInfo[] {
     const prev = this.entry(input?.libraryId)
     const d = validDraft(input.draft)
     this.assertNameFree(this.library.list().filter((e) => e.id !== prev.id).map((e) => e.name), d.name, 'The skill library')
@@ -645,6 +671,10 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
   }
 
   libraryRemove(input: { libraryId: string }): SkillLibraryInfo[] {
+    return this.libraryLocked(() => this.libraryRemoveNow(input))
+  }
+
+  private libraryRemoveNow(input: { libraryId: string }): SkillLibraryInfo[] {
     const entry = this.entry(input?.libraryId)
     for (const p of this.deps.projects.list()) {
       const links = (p.skills ?? []).filter((s) => s.libraryId === entry.id).map((s) => s.id)
@@ -671,6 +701,10 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
    * project that links it is refreshed). The caller has already validated name, description and files (buildScannedSkill).
    */
   libraryImportForKit(input: { name: string; description: string; files: FileData[] }, replaceId?: string): SkillLibraryEntry {
+    return this.libraryLocked(() => this.libraryImportForKitNow(input, replaceId))
+  }
+
+  private libraryImportForKitNow(input: { name: string; description: string; files: FileData[] }, replaceId?: string): SkillLibraryEntry {
     if (replaceId === undefined) {
       const entry = this.newEntry(input.name, input.description, 'user', input.files)
       this.addEntry(entry, input.files)

@@ -386,7 +386,8 @@ export const RPC_NUMERIC_CODE: Record<HostRpcErrorCode, number> = {
   auth_failed: -32000,
   protocol_mismatch: -32000,
   too_many_connections: -32000,
-  too_many_requests: -32000
+  too_many_requests: -32000,
+  session_busy: -32000
 }
 
 /** JSON-RPC parse error code (an unparsable frame). */

@@ -10,6 +10,7 @@
 import { PassThrough } from 'node:stream'
 import { render } from 'ink'
 import { createElement } from 'react'
+import { projectBusyMessage } from '../ownedMessage'
 import { CliError, EXIT, type CliContext } from '../types'
 import { App, type ExitInfo, type InputSource } from './App'
 import { KeyParser } from './input/keys'
@@ -106,6 +107,12 @@ export async function runTui(ctx: CliContext, launch: TuiLaunch, flags: TuiFlags
   let resolved: TuiLaunch
   try {
     resolved = opts.prepare ? await opts.prepare(conn) : launch
+    // Several orgai sessions may share the data folder, one per project: this terminal takes its project now, so a
+    // second one on the same project is told at once (exit 6) instead of at its first message.
+    if (resolved.project) {
+      const claim = conn.inproc.claimProject?.(resolved.project.id)
+      if (claim && !claim.ok) throw new CliError(sanitizeTty(projectBusyMessage(resolved.project.name, claim.holder)), EXIT.hostBusy)
+    }
     const sessionOpts: OpenTuiSessionOptions = {
       folder: resolved.onboarding?.folder ?? ctx.cwd,
       ...(resolved.project ? { project: resolved.project } : {}),

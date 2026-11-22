@@ -1,9 +1,9 @@
 /**
  * The host of every command that starts, continues or manages work (`orgai exec`, `resume`, the terminal UI, a bare
  * prompt and every `withHost` management command; cli-standalone-default.md 4.1): this process's own in-process host,
- * started here and connected to over its own socket with the memory-only owner proof. There is no other kind of host,
- * no background host and no app to find. While another orgai owns the data folder the start is refused at once with
- * exit 6 (ownership `wait: 'none'`, ownedMessage.ts).
+ * started here and connected to in memory. There is no other kind of host, no background host and no app to find.
+ * Other orgai processes may be running on the same data folder (sessions, inprocHost.ts): this one joins them. Only an
+ * orgai from before sessions that owns the folder alone makes the start fail with exit 6 (ownedMessage.ts).
  *
  * Interactivity follows the client kind: exec, resume --exec and the other commands connect as 'cli' (the default) and
  * never count as interactive. The terminal UI connects with `clientKind: 'tui'`: the host counts 'tui' sockets as
@@ -20,7 +20,9 @@ export const ENSURE_HOST_STARTING_WAIT_MS = HOST_STARTING_WAIT_MS
  * prices and the usage monitor are off (system certificates stay on in inprocHost.ts).
  */
 export const MANAGEMENT_INPROC: InprocStartOptions = {
-  background: { connectionProbes: true, modelDiscovery: false, communityPrices: false, usageMonitor: false }
+  background: { connectionProbes: true, modelDiscovery: false, communityPrices: false, usageMonitor: false },
+  // A short command never waits on a read of the temp folder.
+  tempSweep: false
 }
 
 /**

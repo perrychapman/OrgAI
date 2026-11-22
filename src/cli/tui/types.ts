@@ -83,7 +83,7 @@ import type {
   WorktreeDiff,
   WorktreeStatus
 } from '../../shared/types'
-import type { HostClient, InprocHostHandle } from '../types'
+import type { HostClient, InprocHostHandle, SessionPeer } from '../types'
 import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
 import type { ApprovalsApi } from './approvals'
 import type { TuiConfigApi } from './configApi'
@@ -550,6 +550,8 @@ export interface StagedRunOptions {
 export interface TuiSessionApi {
   /** Read-only /approvals (cli-parity 3.4 as built): what waits for approval; deciding is done in the desktop app. */
   approvals?: ApprovalsApi
+  /** /sessions: the other orgai sessions running on this data folder right now (each with its folder and projects). */
+  otherSessions?(): SessionPeer[]
   /** The host calls of /team and /settings (cli-parity 3.7): the channels the commands use. */
   config?: TuiConfigApi
   getState(): TuiState

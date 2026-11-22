@@ -397,8 +397,8 @@ try {
   }
 
   // ---------- f, g: cards in the TUI that owns the folder ----------
-  // The TUI is the only process that can answer its cards (spec 4.4). Every other `orgai` is refused at once, and the
-  // read-only commands answer from the files beside it.
+  // The TUI is the only process that can answer its cards (spec 4.4). Another `orgai` works beside it (sessions,
+  // docs/design/cli-sessions.md) but may not touch the project it holds; the read-only commands answer from the files.
   {
     const t = tui(['--', 'E2E cards run'], { cols: 120, rows: 30, cwd: repo, script: SCRIPTS.cards })
     open.push(t)
@@ -406,15 +406,18 @@ try {
       await t.waitFor('E2E-CARDS-START', 40_000)
       await t.waitFor(CARD_ON_SCREEN, 30_000)
 
-      // h2. A second orgai: refused at once with exit 6; the read-only commands work beside it.
+      // h2. A second orgai beside the TUI: a command that needs a host starts its own; one that would change the
+      // project the TUI holds is refused at once with exit 6; the read-only commands show the TUI's run as live.
       const began = Date.now()
       const second = await cli(['connections', 'list'], { cwd: repo })
-      check(second.code === 6 && /orgai is already running in another terminal \(.*, pid \d+\)\. Use that one, or quit it first\./.test(second.err), 'a second orgai is refused with exit 6 naming the first', show(second))
-      check(Date.now() - began < 15_000, 'the refusal came at once', `${Date.now() - began} ms`)
+      check(second.code === 0, 'a second orgai runs beside the TUI', show(second))
+      const held = await cli(['projects', 'set', '--brief', 'from the second orgai'], { cwd: repo })
+      check(held.code === 6 && /is open in another orgai session \(.*, pid \d+\)\. Use that one, or quit it first\./.test(held.err), 'changing the project the TUI holds is refused with exit 6 naming the TUI', show(held))
+      check(Date.now() - began < 15_000, 'both answers came at once', `${Date.now() - began} ms`)
       const beside = await cli(['runs', 'list'], { cwd: repo })
-      check(beside.code === 0 && beside.err.includes('this is a saved snapshot'), 'runs list beside the TUI is a saved snapshot', show(beside))
+      check(beside.code === 0 && !beside.err.includes('saved snapshot') && /(Needs you|Running|Idle)/.test(beside.out), 'runs list beside the TUI shows its run as live, with no snapshot note', show(beside))
       const statusBeside = await cli(['status', '--output-format', 'json'], { cwd: repo })
-      check(statusBeside.code === 0, 'status beside the TUI answers from the saved files', show(statusBeside))
+      check(statusBeside.code === 0 && json(statusBeside.out)?.sessions?.[0]?.command === 'tui', 'status beside the TUI lists it as a session', show(statusBeside))
 
       // An idle empty prompt focuses the arriving inline approval; Esc returns to drafting.
       await t.waitFor('Enter confirm', 5000)

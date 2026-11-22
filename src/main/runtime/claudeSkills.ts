@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { lstat, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { SKILL_MAX_FILE_BYTES } from '@shared/types'
@@ -155,6 +156,36 @@ export function sweepStaleSkillDirs(opts: { dir?: string; now?: number; maxAgeMs
       const st = lstatSync(full)
       if (!st.isDirectory() || st.isSymbolicLink() || st.mtimeMs >= cutoff) continue
       rmSync(full, { recursive: true, force: true })
+      removed++
+    } catch {
+      // skip this entry
+    }
+  }
+  return removed
+}
+
+/**
+ * {@link sweepStaleSkillDirs} without blocking: the temp folder can hold many thousands of entries, and reading it on
+ * the start path costs every command that time. The folder is read on the thread pool; only the few entries with the
+ * prefix are looked at. Never rejects; resolves with the count.
+ */
+export async function sweepStaleSkillDirsAsync(opts: { dir?: string; now?: number; maxAgeMs?: number } = {}): Promise<number> {
+  const dir = opts.dir ?? tmpdir()
+  const cutoff = (opts.now ?? Date.now()) - (opts.maxAgeMs ?? SKILL_TEMP_MAX_AGE_MS)
+  let names: string[]
+  try {
+    names = await readdir(dir)
+  } catch {
+    return 0
+  }
+  let removed = 0
+  for (const name of names) {
+    if (!name.startsWith(SKILL_TEMP_PREFIX)) continue
+    try {
+      const full = join(dir, name)
+      const st = await lstat(full)
+      if (!st.isDirectory() || st.isSymbolicLink() || st.mtimeMs >= cutoff) continue
+      await rm(full, { recursive: true, force: true })
       removed++
     } catch {
       // skip this entry

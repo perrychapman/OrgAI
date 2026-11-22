@@ -174,7 +174,7 @@ export async function main(argv: string[] = process.argv.slice(2), overrides: Ma
         if (!plan.dropOverlay) overlay = collected.overlay
       }
       if (plan.warning) io.stderr.write(`${plan.warning}\n`)
-      return contextFor(globals, env, io, overrides, overlay)
+      return contextFor(globals, env, io, overrides, overlay, command ?? 'tui')
     }
 
     // Bare `orgai`, `orgai [tui options] [--] <prompt>` or a quoted prompt (an unknown first word with whitespace).
@@ -250,7 +250,8 @@ function contextFor(
   env: NodeJS.ProcessEnv,
   io: CliIo,
   overrides: MainOverrides,
-  overlay?: Map<string, string>
+  overlay?: Map<string, string>,
+  command?: string
 ): ReturnType<typeof buildContext> {
   return buildContext({
     globals,
@@ -258,7 +259,8 @@ function contextFor(
     cwd: overrides.cwd ?? process.cwd(),
     platform: overrides.platform ?? process.platform,
     io,
-    ...(overlay ? { overlay } : {})
+    ...(overlay ? { overlay } : {}),
+    ...(command ? { command } : {})
   })
 }
 

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -17,12 +17,15 @@ import { VaultNotReady } from '../main/store/vaultTypes'
 import { connectProbe } from '../main/host/ownership'
 import { connectHost } from './client/hostClient'
 import { INPROC_HARD_LIMIT_MESSAGE, inprocCliRoots, inprocHardLimitExit, memoryStreamPair, startInprocHost, type InprocHost } from './inprocHost'
-import { CliError } from './types'
+import { CliError, type HostClient } from './types'
+import type { HostScope, Project, RunRecord, RunSummary } from '../shared/types'
 import { CLI_VERSION } from './version'
 
 let userDataDir: string
 let dataDir: string
 const started: InprocHost[] = []
+/** A second host in this process needs its own instance id (two processes always have different ones). */
+const SECOND = 'bbbbbbbbbbbb'
 
 beforeEach(() => {
   userDataDir = realpathSync(mkdtempSync(join(tmpdir(), 'inp-')))
@@ -118,15 +121,17 @@ describe('startInprocHost', () => {
     expect(status.state).toBe('ready')
     // Scopes still gate: no 'decide' was granted.
     await expect(c.client.call('runs:decide', [{}])).rejects.toMatchObject({ data: { code: 'scope_denied' } })
-    // The single-owner guarantee does not depend on a socket.
-    await expect(startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false })).rejects.toMatchObject({ exitCode: 6 })
+    // A host that needs the folder to itself (a socket, `listen: true`) is refused while this one runs, socket or not.
+    await expect(startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, listen: true, hostInstanceId: SECOND })).rejects.toMatchObject({ exitCode: 6 })
     c.client.close()
   })
 
-  it('a second host on the same data dir is refused at once with exit 6, naming the owner (spec 4.2)', async () => {
-    await start(new Map(), { cwd: '/work/first' })
+  it('a host that owns the data dir alone (an older orgai, or one serving a socket) refuses a second one at once with exit 6, naming the owner (spec 4.2)', async () => {
+    // `listen: true` writes the record an orgai from before sessions writes: no `sessions`, so nobody may join it.
+    await start(new Map(), { cwd: '/work/first', listen: true })
+    expect(JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')).sessions).toBeUndefined()
     const began = Date.now()
-    const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false }).catch((e: unknown) => e)
+    const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, hostInstanceId: SECOND }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CliError)
     expect((err as CliError).exitCode).toBe(6)
     const message = (err as CliError).message
@@ -245,11 +250,143 @@ describe('startInprocHost system certificates (issue #16)', () => {
   it('does nothing with systemCertificates false, and a host that fails to take ownership never starts the read', async () => {
     const calls: string[] = []
     const hooks = { trust: () => calls.push('trust'), stop: () => calls.push('stop') }
-    const first = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false })
+    const first = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: false, listen: true })
     started.push(first)
-    const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: hooks }).catch((e: unknown) => e)
+    const err = await startInprocHost({ userDataDir, dataDir, env: {}, mock: true, overlay: new Map(), logging: false, startBackground: false, systemCertificates: hooks, hostInstanceId: SECOND }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CliError)
     expect(calls).toEqual([])
+  })
+})
+
+describe('sessions: several hosts on one data folder (docs/design/cli-sessions.md)', () => {
+  const all = ['read', 'operate', 'configure', 'decide'] as HostScope[]
+  const clientOf = async (h: InprocHost): Promise<HostClient> => {
+    const c = await h.connectLocal!(all, {})
+    if (!c.ok) throw new Error(c.message)
+    return c.client
+  }
+  const daemon = (): Record<string, unknown> | undefined => {
+    try {
+      return JSON.parse(readFileSync(join(dataDir, 'run', 'daemon.json'), 'utf8')) as Record<string, unknown>
+    } catch {
+      return undefined
+    }
+  }
+  const until = async (what: string, fn: () => Promise<boolean>): Promise<void> => {
+    const end = Date.now() + 20_000
+    while (Date.now() < end) {
+      if (await fn()) return
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    throw new Error(`timed out waiting for ${what}`)
+  }
+
+  it('a second host joins: both are ready, one is advertised, each sees the other', async () => {
+    const first = await start(new Map(), { cwd: '/work/first', command: 'tui' })
+    const second = await start(new Map(), { cwd: '/work/second', command: 'exec', hostInstanceId: SECOND })
+    expect([first.status().state, second.status().state]).toEqual(['ready', 'ready'])
+    expect([first.ownership.advertised, second.ownership.advertised]).toEqual([true, false])
+    expect(daemon()).toMatchObject({ hostInstanceId: first.hostInstanceId, sessions: true, state: 'ready' })
+    expect(first.otherSessions!().map((s) => [s.cwd, s.command])).toEqual([['/work/second', 'exec']])
+    expect(second.otherSessions!().map((s) => [s.cwd, s.command])).toEqual([['/work/first', 'tui']])
+    // The advertised one ends: the record names the other at once, and it knows it is the advertised host now.
+    await first.stop(true)
+    expect(daemon()).toMatchObject({ hostInstanceId: SECOND, sessions: true })
+    expect(second.ownership.adopt()).toBe(true)
+    expect(second.otherSessions!()).toEqual([])
+    await second.stop(true)
+    expect(daemon()).toBeUndefined()
+    expect(existsSync(join(dataDir, 'run', 'sessions', `${SECOND}.json`))).toBe(false)
+  })
+
+  it('housekeeping runs only for a host that is alone on the folder', async () => {
+    const orphan = (name: string): string => join(dataDir, 'runs', `${name}.json`)
+    mkdirSync(join(dataDir, 'runs'), { recursive: true })
+    writeFileSync(orphan('run_left_by_nobody'), '{}')
+    const first = await start()
+    // Alone at its start: a record file no run points to is removed.
+    expect(existsSync(orphan('run_left_by_nobody'))).toBe(false)
+    // While it runs, a file appears that the index does not list (a run another session is just creating looks like this).
+    writeFileSync(orphan('run_being_created'), '{}')
+    const second = await start(new Map(), { hostInstanceId: SECOND })
+    expect(existsSync(orphan('run_being_created'))).toBe(true)
+    await first.stop(true)
+    await second.stop(true)
+    // The next lone host cleans it up.
+    const third = await start()
+    expect(existsSync(orphan('run_being_created'))).toBe(false)
+    void third
+  })
+
+  it('each host works in its own project; the other one\'s project and run are refused with session_busy', async () => {
+    const dirA = join(userDataDir, 'proj-a')
+    const dirB = join(userDataDir, 'proj-b')
+    mkdirSync(dirA)
+    mkdirSync(dirB)
+    const first = await start(new Map(), { cwd: dirA })
+    const second = await start(new Map(), { cwd: dirB, hostInstanceId: SECOND })
+    const a = await clientOf(first)
+    const b = await clientOf(second)
+    const projA = await a.call<Project>('projects:create', [{ name: 'Alpha', path: dirA, brief: '', mock: true }])
+    const projB = await b.call<Project>('projects:create', [{ name: 'Beta', path: dirB, brief: '', mock: true }])
+    // Both projects are in the one list, whichever host is asked.
+    expect((await a.call<Project[]>('projects:list', [])).map((p) => p.name).sort()).toEqual(['Alpha', 'Beta'])
+    expect((await b.call<Project[]>('projects:list', [])).map((p) => p.name).sort()).toEqual(['Alpha', 'Beta'])
+
+    const runA = await a.call<RunSummary>('runs:start', [{ projectId: projA.id, prompt: 'alpha work', team: 'single' }])
+    const runB = await b.call<RunSummary>('runs:start', [{ projectId: projB.id, prompt: 'beta work', team: 'single' }])
+    await until('both runs to go idle', async () => (await a.call<RunRecord | null>('runs:get', [runA.id]))?.summary.status === 'idle' && (await b.call<RunRecord | null>('runs:get', [runB.id]))?.summary.status === 'idle')
+    expect(first.claimProject!(projA.id)).toEqual({ ok: true })
+    const refused = second.claimProject!(projA.id)
+    expect(refused).toMatchObject({ ok: false, holder: { pid: process.pid, cwd: dirA } })
+
+    // The other host reads everything: the run is in its list at once, as live as its host says...
+    expect(await b.call<RunSummary[]>('runs:list', [projA.id])).toMatchObject([{ id: runA.id, status: 'idle' }])
+    // ...and its record as its host last saved it (a live record is written every 1.5 s, so it trails by that much).
+    await until('the first host to save its run record', async () => (await b.call<RunRecord | null>('runs:get', [runA.id])) !== null)
+    expect((await b.call<RunRecord | null>('runs:get', [runA.id]))?.summary).toMatchObject({ id: runA.id, status: 'idle' })
+    // ...and changes nothing of it: the run, the project, a new run in it.
+    for (const [channel, params] of [
+      ['runs:send', [{ runId: runA.id, text: 'from the other host' }]],
+      ['runs:stop', [runA.id]],
+      ['runs:start', [{ projectId: projA.id, prompt: 'second run in alpha', team: 'single' }]],
+      ['projects:save', [{ ...projA, brief: 'changed by the other host' }]]
+    ] as const) {
+      await expect(b.call(channel, [...params])).rejects.toMatchObject({ data: { code: 'session_busy' } })
+    }
+    await expect(b.call('runs:send', [{ runId: runA.id, text: 'x' }])).rejects.toThrow(/is live in another orgai session/)
+    expect((await a.call<Project>('projects:get', [projA.id])).brief).toBe('')
+    expect((await a.call<RunRecord | null>('runs:get', [runA.id]))?.summary.status).toBe('idle')
+    expect((await a.call<RunSummary[]>('runs:list', [projA.id])).length).toBe(1)
+
+    // Its own project works as ever, and the run index holds both runs with their hosts.
+    await b.call('runs:send', [{ runId: runB.id, text: 'more beta work' }])
+    const index = JSON.parse(readFileSync(join(dataDir, 'runs.json'), 'utf8')) as { runs: RunSummary[]; owners: Record<string, string> }
+    expect(index.runs.map((r) => r.id).sort()).toEqual([runA.id, runB.id].sort())
+    expect(index.owners).toEqual({ [runA.id]: first.hostInstanceId, [runB.id]: SECOND })
+
+    // The first host quits with its run open: the second sees the run ended, and the project is free for it.
+    a.close()
+    await first.stop(true)
+    expect((await b.call<RunRecord | null>('runs:get', [runA.id]))?.summary).toMatchObject({ status: 'finished', endedBy: 'app' })
+    expect(second.claimProject!(projA.id)).toEqual({ ok: true })
+    await b.call('projects:save', [{ ...(await b.call<Project>('projects:get', [projA.id])), brief: 'now mine' }])
+    expect((await b.call<Project>('projects:get', [projA.id])).brief).toBe('now mine')
+    b.close()
+  }, 60_000)
+
+  it('settings one host saves reach the other, and neither drops the other\'s change', async () => {
+    const first = await start()
+    const second = await start(new Map(), { hostInstanceId: SECOND })
+    const a = await clientOf(first)
+    const b = await clientOf(second)
+    const before = await b.call<Record<string, unknown>>('settings:get', [])
+    await a.call('settings:set', [{ ...(await a.call<Record<string, unknown>>('settings:get', [])), defaultMaxBudgetUsd: 9 }])
+    // b still holds the settings from before a's save and changes another field.
+    await b.call('settings:set', [{ ...before, displayName: 'Ada' }])
+    expect(await a.call<Record<string, unknown>>('settings:get', [])).toMatchObject({ defaultMaxBudgetUsd: 9, displayName: 'Ada' })
+    a.close()
+    b.close()
   })
 })
 

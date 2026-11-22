@@ -88,17 +88,20 @@ export async function openReadSource(ctx: CliContext, opts: { quiet?: boolean } 
 }
 
 /**
- * For the read commands that start their own host when nobody owns the folder (usage show, secrets status): the saved
- * files as a ReadSource while another orgai owns it (with the snapshot note), else null. Chosen before any connect, so
- * an owned answer never reaches a host call.
+ * For the read commands that start their own host (usage show, secrets status): the saved files as a ReadSource while
+ * an orgai that cannot share the folder owns it (an older version; with the snapshot note), else null. Beside other
+ * orgai sessions the answer is null: this command starts its own host next to them. Chosen before any connect, so an
+ * owned answer never reaches a host call.
  */
 export async function ownerSnapshot(ctx: CliContext, opts: { quiet?: boolean } = {}): Promise<ReadSource | null> {
   const snap = await ctx.readStore()
-  return snap.hostState === 'stopped' ? null : sourceOf(ctx, snap, opts)
+  return snap.soleOwner ? sourceOf(ctx, snap, opts) : null
 }
 
 function sourceOf(ctx: CliContext, snap: ReadOnlySnapshot, opts: { quiet?: boolean }): ReadSource {
-  if (!opts.quiet && snap.hostState !== 'stopped') note(ctx, SNAPSHOT_NOTE)
+  // Only beside an orgai that owns the folder alone: its live runs are known only from what it last saved. Sessions
+  // record which runs they host, so their runs read as live without a note.
+  if (!opts.quiet && snap.soleOwner) note(ctx, SNAPSHOT_NOTE)
   const byProject = (projectId: string): RunSummary[] => snap.runs.filter((r) => r.projectId === projectId).sort(newestFirst)
   return {
     snapshot: snap,

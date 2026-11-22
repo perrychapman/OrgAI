@@ -8,6 +8,22 @@
 // data folder today). Later phases replace each with the real rule (osLock, atomicWrite, chain claim, journal ...) as the
 // site moves under the shared-store primitives. A new site MUST name its rule; do not add 'single owner' for new code.
 //
+// Sessions (docs/design/cli-sessions.md, 2026-11): the orgai CLI now runs several processes on one data folder. The
+// shared JSON files carry their rule (WRITE_LOCK, RUN_HOST, SESSION_*, VAULT_*). A site that still says 'single owner'
+// was looked at for that change and is one of:
+// - the desktop app only (it keeps one process per data folder);
+// - inside one project's own data (`projects/<id>/` other than the Chat's outputs index, `staffing/<id>.json`, the
+//   project folder), written by the one session that holds the project (host/sessionGuard.ts, one session per project);
+// - a library entry's own folder (`skills/<entryId>/`, an MCP build): the skill library changes it under the write
+//   lock (SkillService.libraryLocked); an MCP build belongs to the one assistant run that builds it;
+// - the outputs index, written through OutputStore, whose changes run under the write lock (outputs/store.ts `locked`);
+// - a per-run or per-process file with a unique name (run skill folders, scratch folders, temp files, the Codex
+//   catalog's temp file), or an append to a log;
+// - a file every writer fills with the same content (the product marker, the mock home), or one whose lost update only
+//   repeats a hint (`tui-hints.json`);
+// - a file outside the data folder.
+// MCP builds and the logs are the two that rely on convention rather than a lock.
+//
 // Labels for pre-existing sites that are not covered by data-folder ownership:
 // - OWNERSHIP_PRIMITIVE: the write is part of the cross-process data-folder ownership protocol itself (host/ownership.ts:
 //   startup mkdir mutex, endpoint and secret files); it is safe by that protocol, not by an owner.
@@ -43,6 +59,28 @@ const TEST_TEMP = 'test helper: private mkdtemp folder under the OS temp dir, ne
 // write its download cache outside the data folder, in the OS per-user cache (Windows %LOCALAPPDATA%\orgai-updater
 // (electron-builder's updaterCacheDirName, from app-update.yml)\pending), only after the user's updates:download. One desktop per user data folder (single-instance
 // lock); the CLI never loads electron-updater. Recorded so the inventory names every writer the app starts.
+// Sessions (docs/design/cli-sessions.md): several orgai processes on one CLI data folder. The labels below name the rule
+// that covers a site there; the desktop app has its data folder to itself, where the same sites are written by the one
+// process that owns it.
+const WRITE_LOCK =
+  "write lock: the file is re-read and rewritten under the data folder's write lock (store/shared/storeSync.ts) when orgai sessions share the folder; one process per folder writes it directly"
+const WRITE_LOCK_CACHE =
+  "write lock: a whole-file cache replaced under the data folder's write lock (storeSync.ts SyncedFile.replace; nothing to merge, any writer's content is valid)"
+const RUN_HOST =
+  'run host: a run record and its images are written only by the session that hosts the run (the run index `owners`), or by one that changes an ended run of a project it holds'
+const RUN_REMOVAL =
+  'run removal: files of runs the index no longer lists (dropped under the write lock), and the orphan sweep only by a session that is alone on the folder, inside the startup mutex'
+const SESSION_OWN = "sessions: a session's own record, written while it holds its <id>.lock (own temp name + rename)"
+const SESSION_RELEASE = "sessions: a session's own record and lock file, removed by that session when it ends"
+const SESSION_SWEEP = "sessions: files of sessions whose lock is free (their process is gone), removed inside the startup mutex"
+const SESSION_MKDIR = 'sessions: idempotent recursive mkdir of <data>/run/sessions (mode 0700), inside <data>/run'
+const VAULT_LOCKED =
+  "vault: every commit runs under the data folder's write lock; a value change re-reads vault.json first; a creation re-checks under the lock that no other session created one"
+const VAULT_ALONE = 'vault reset: refused while another orgai session runs (SecretStore.refuseWhileOthersRun)'
+const TEMP_AGE = 'temp folder: run skill folders older than 24 h, swept by a session that is alone on its data folder (age keeps a session that starts meanwhile safe)'
+const DATA_MKDIR = 'data folder creation: idempotent recursive mkdir'
+const COMPILE_CACHE =
+  "compile cache: <data>/run/compile-cache (mode 0700, inside the folder agent tools are kept out of); V8 writes its own entries there with unique names, and the version stamp and a stale folder's removal are idempotent (any session writes the same)"
 export const WRITE_SITES: Record<string, string> = {
   'src/cli/commands/exec.ts:writeLastMessage:openSync': EXEC_OUTPUT_FILE,
   'src/cli/commands/exec.ts:writeLastMessage:renameSync': EXEC_OUTPUT_FILE,
@@ -61,6 +99,9 @@ export const WRITE_SITES: Record<string, string> = {
   'src/cli/commands/teamRoleEdit.ts:editTextIn:rmSync': 'single owner',
   'src/cli/commands/teamRoleEdit.ts:editTextIn:writeFileSync': 'single owner',
   'src/cli/commands/usage.ts:runCsv:fs.writeFileSync': 'single owner',
+  'src/cli/compileCache.ts:enableCliCompileCache:mkdirSync': COMPILE_CACHE,
+  'src/cli/compileCache.ts:enableCliCompileCache:rmSync': COMPILE_CACHE,
+  'src/cli/compileCache.ts:enableCliCompileCache:writeFileSync': COMPILE_CACHE,
   'src/cli/inprocHost.ts:inprocHardLimitExit:writeSync': 'single owner',
   'src/cli/manage.ts:ttyAsk:fs.openSync': 'single owner',
   'src/cli/tui/configApi.ts:hintStore:mkdirSync': 'single owner',
@@ -87,14 +128,14 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/connections/anthropicAuth.ts:removeWithoutFollowing:rmdirSync': 'single owner',
   'src/main/connections/anthropicAuth.ts:removeWithoutFollowing:rmSync': 'single owner',
   'src/main/connections/anthropicAuth.ts:removeWithoutFollowing:unlinkSync': 'single owner',
-  'src/main/connections/communityPrices.ts:CommunityPrices.save:mkdirSync': 'single owner',
-  'src/main/connections/communityPrices.ts:CommunityPrices.save:renameSync': 'single owner',
-  'src/main/connections/communityPrices.ts:CommunityPrices.save:rmSync': 'single owner',
-  'src/main/connections/communityPrices.ts:CommunityPrices.save:writeFileSync': 'single owner',
+  'src/main/connections/communityPrices.ts:CommunityPrices.save:mkdirSync': WRITE_LOCK_CACHE,
+  'src/main/connections/communityPrices.ts:CommunityPrices.save:renameSync': WRITE_LOCK_CACHE,
+  'src/main/connections/communityPrices.ts:CommunityPrices.save:rmSync': WRITE_LOCK_CACHE,
+  'src/main/connections/communityPrices.ts:CommunityPrices.save:writeFileSync': WRITE_LOCK_CACHE,
   'src/main/connections/service.ts:ConnectionService.createCodex:mkdirSync': 'single owner',
-  'src/main/connections/service.ts:ConnectionService.persistModels:mkdirSync': 'single owner',
-  'src/main/connections/service.ts:ConnectionService.persistModels:renameSync': 'single owner',
-  'src/main/connections/service.ts:ConnectionService.persistModels:writeFileSync': 'single owner',
+  'src/main/connections/service.ts:ConnectionService.persistModels:mkdirSync': WRITE_LOCK,
+  'src/main/connections/service.ts:ConnectionService.persistModels:renameSync': WRITE_LOCK,
+  'src/main/connections/service.ts:ConnectionService.persistModels:writeFileSync': WRITE_LOCK,
   'src/main/evolve/ratchet.ts:readLedger:renameSync': DATA_FOLDER_OWNER,
   'src/main/evolve/ratchet.ts:writeLedger:writeFileDurable': DATA_FOLDER_OWNER,
   'src/main/host/consumers.ts:ConsumerEvidence.flush:writeFileAtomic':
@@ -108,6 +149,7 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/host/ownership.ts:acquire:mkdirSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:acquire:rmSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:acquire:writeAtomic': OWNERSHIP_PRIMITIVE,
+  'src/main/host/ownership.ts:adopt:writeAtomic': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:bindListener:mkdirSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:bindListener:rmSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:bindListener:writeAtomic': OWNERSHIP_PRIMITIVE,
@@ -118,6 +160,7 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/host/ownership.ts:releaseNow:renameSyncRetry': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:releaseNow:rmSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:releaseNow:unlinkSync': OWNERSHIP_PRIMITIVE,
+  'src/main/host/ownership.ts:releaseNow:writeAtomic': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:releaseNow:writeFileSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:removeEndpointFiles:rmSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:removeSecretIfOurs:rmSync': OWNERSHIP_PRIMITIVE,
@@ -126,10 +169,19 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/host/ownership.ts:takeStartupMutex:mkdirSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:takeStartupMutex:renameSyncRetry': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:takeStartupMutex:writeFileSync': OWNERSHIP_PRIMITIVE,
+  'src/main/host/ownership.ts:tryUnderStartupMutex:mkdirSync': OWNERSHIP_PRIMITIVE,
+  'src/main/host/ownership.ts:tryUnderStartupMutex:renameSyncRetry': OWNERSHIP_PRIMITIVE,
+  'src/main/host/ownership.ts:tryUnderStartupMutex:rmSync': OWNERSHIP_PRIMITIVE,
+  'src/main/host/ownership.ts:tryUnderStartupMutex:writeFileSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:unlinkStaleEndpoint:unlinkSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:write:writeAtomic': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:writeAtomic:renameSyncRetry': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:writeAtomic:writeFileSync': OWNERSHIP_PRIMITIVE,
+  'src/main/host/sessions.ts:registerSession:mkdirSync': SESSION_MKDIR,
+  'src/main/host/sessions.ts:release:unlinkSync': SESSION_RELEASE,
+  'src/main/host/sessions.ts:remove:unlinkSync': SESSION_SWEEP,
+  'src/main/host/sessions.ts:writeRecord:renameSync': SESSION_OWN,
+  'src/main/host/sessions.ts:writeRecord:writeFileSync': SESSION_OWN,
   'src/main/host/shimInstaller.ts:remove:fs.unlinkSync': 'single owner',
   'src/main/host/shimInstaller.ts:unlinkSync:nodeFs.unlinkSync': 'single owner',
   'src/main/index.ts:<module>:mkdirSync': 'single owner',
@@ -158,9 +210,9 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/mcp/builds.ts:stageBuild:copyFileSync': 'single owner',
   'src/main/mcp/builds.ts:stageBuild:mkdirSync': 'single owner',
   'src/main/mcp/builds.ts:stageBuild:rmSync': 'single owner',
-  'src/main/mcp/presets.ts:ConnectorPresetStore.persist:mkdirSync': 'single owner',
-  'src/main/mcp/presets.ts:ConnectorPresetStore.persist:renameSync': 'single owner',
-  'src/main/mcp/presets.ts:ConnectorPresetStore.persist:writeFileSync': 'single owner',
+  'src/main/mcp/presets.ts:ConnectorPresetStore.persist:mkdirSync': WRITE_LOCK,
+  'src/main/mcp/presets.ts:ConnectorPresetStore.persist:renameSync': WRITE_LOCK,
+  'src/main/mcp/presets.ts:ConnectorPresetStore.persist:writeFileSync': WRITE_LOCK,
   'src/main/outputs/notes.ts:writeNotes:atomicWrite': 'single owner',
   'src/main/outputs/notes.ts:writeRevisions:atomicWrite': 'single owner',
   'src/main/outputs/paths.ts:ensureLinkFreeDir:mkdirSync': 'single owner',
@@ -208,6 +260,7 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/runtime/claudeSkills.ts:copySkill:rmSync': 'single owner',
   'src/main/runtime/claudeSkills.ts:copySkill:writeFileSync': 'single owner',
   'src/main/runtime/claudeSkills.ts:sweepStaleSkillDirs:rmSync': 'single owner',
+  'src/main/runtime/claudeSkills.ts:sweepStaleSkillDirsAsync:rm': TEMP_AGE,
   'src/main/runtime/codexAppServer.ts:CodexAppServer.start:mkdirSync': 'single owner',
   'src/main/runtime/codexNativeCatalog.ts:mkdir:mkdirSync': 'single owner',
   'src/main/runtime/codexNativeCatalog.ts:nativeAgentsCatalogConfig:fs.mkdir': 'single owner',
@@ -253,16 +306,16 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/setup/import/export.ts:writeOrgExport:writeFileSync': 'single owner',
   'src/main/setup/service.ts:writeArchitecture:mkdirSync': 'single owner',
   'src/main/setup/service.ts:writeArchitecture:writeFileSync': 'single owner',
-  'src/main/setup/templates.ts:atomicWrite:renameSync': 'single owner',
-  'src/main/setup/templates.ts:atomicWrite:rmSync': 'single owner',
-  'src/main/setup/templates.ts:atomicWrite:writeFileSync': 'single owner',
-  'src/main/setup/templates.ts:ensurePlainDir:mkdirSync': 'single owner',
-  'src/main/setup/templates.ts:TemplateService.remove:rmSync': 'single owner',
-  'src/main/setup/templates.ts:TemplateService.saveFromKit:atomicWrite': 'single owner',
-  'src/main/setup/templates.ts:TemplateService.saveFromKit:rmSync': 'single owner',
-  'src/main/setup/templates.ts:TemplateService.saveFromProject:atomicWrite': 'single owner',
-  'src/main/setup/templates.ts:TemplateService.saveFromProject:rmSync': 'single owner',
-  'src/main/setup/templates.ts:TemplateService.writeIndex:atomicWrite': 'single owner',
+  'src/main/setup/templates.ts:atomicWrite:renameSync': WRITE_LOCK,
+  'src/main/setup/templates.ts:atomicWrite:rmSync': WRITE_LOCK,
+  'src/main/setup/templates.ts:atomicWrite:writeFileSync': WRITE_LOCK,
+  'src/main/setup/templates.ts:ensurePlainDir:mkdirSync': WRITE_LOCK,
+  'src/main/setup/templates.ts:TemplateService.removeNow:rmSync': WRITE_LOCK,
+  'src/main/setup/templates.ts:TemplateService.saveFromKitNow:atomicWrite': WRITE_LOCK,
+  'src/main/setup/templates.ts:TemplateService.saveFromKitNow:rmSync': WRITE_LOCK,
+  'src/main/setup/templates.ts:TemplateService.saveFromProjectNow:atomicWrite': WRITE_LOCK,
+  'src/main/setup/templates.ts:TemplateService.saveFromProjectNow:rmSync': WRITE_LOCK,
+  'src/main/setup/templates.ts:TemplateService.writeIndex:atomicWrite': WRITE_LOCK,
   'src/main/skills/assist.ts:skillsProject:mkdirSync': 'single owner',
   'src/main/skills/evaluation.ts:SkillEvaluationService.write:mkdirSync': 'single owner',
   'src/main/skills/evaluation.ts:SkillEvaluationService.write:renameSync': 'single owner',
@@ -300,9 +353,9 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/store/durableFs.ts:writeSync:fs.writeSync': 'single owner',
   'src/main/store/knowledge.ts:clearKnowledge:rmSync': 'single owner',
   'src/main/store/knowledge.ts:writeGraph:atomicWrite': 'single owner',
-  'src/main/store/mcpLibrary.ts:McpLibraryStore.persist:mkdirSync': 'single owner',
-  'src/main/store/mcpLibrary.ts:McpLibraryStore.persist:renameSync': 'single owner',
-  'src/main/store/mcpLibrary.ts:McpLibraryStore.persist:writeFileSync': 'single owner',
+  'src/main/store/mcpLibrary.ts:McpLibraryStore.persist:mkdirSync': WRITE_LOCK,
+  'src/main/store/mcpLibrary.ts:McpLibraryStore.persist:renameSync': WRITE_LOCK,
+  'src/main/store/mcpLibrary.ts:McpLibraryStore.persist:writeFileSync': WRITE_LOCK,
   'src/main/store/productMarker.ts:writeProductMarker:linkSync': 'single owner',
   'src/main/store/productMarker.ts:writeProductMarker:mkdirSync': 'single owner',
   'src/main/store/productMarker.ts:writeProductMarker:rmSync': 'single owner',
@@ -315,35 +368,35 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/store/projectData.ts:removeFileIfExists:rmSync': 'single owner',
   'src/main/store/projectData.ts:removeNote:rmSync': 'single owner',
   'src/main/store/projectData.ts:removeProjectData:rmSync': 'single owner',
-  'src/main/store/projectData.ts:retainRunProject:atomicWrite': 'single owner',
-  'src/main/store/projectData.ts:retainRunProject:mkdirSync': 'single owner',
+  'src/main/store/projectData.ts:retainRunProject:atomicWrite': WRITE_LOCK,
+  'src/main/store/projectData.ts:retainRunProject:mkdirSync': WRITE_LOCK,
   'src/main/store/projectData.ts:saveNote:atomicWrite': 'single owner',
   'src/main/store/projectData.ts:saveNote:rmSync': 'single owner',
   'src/main/store/projectData.ts:writeEngagementDocument:rmSync': 'single owner',
   'src/main/store/projectData.ts:writeIndex:atomicWrite': 'single owner',
-  'src/main/store/projects.ts:ProjectStore.persist:mkdirSync': 'single owner',
-  'src/main/store/projects.ts:ProjectStore.persist:renameSync': 'single owner',
-  'src/main/store/projects.ts:ProjectStore.persist:writeFileSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.persist:mkdirSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.persist:renameSyncRetry': 'single owner',
-  'src/main/store/runs.ts:RunStore.persist:writeFileSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.removeRecord:rmSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.removeRecord:unlinkSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.saveRecord:mkdirSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.saveRecord:renameSyncRetry': 'single owner',
-  'src/main/store/runs.ts:RunStore.saveRecord:writeFileSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.storeImage:mkdirSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.storeImage:renameSyncRetry': 'single owner',
-  'src/main/store/runs.ts:RunStore.storeImage:writeFileSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.sweepOrphans:rmSync': 'single owner',
-  'src/main/store/runs.ts:RunStore.sweepOrphans:unlinkSync': 'single owner',
-  'src/main/store/secrets.ts:SecretStore.moveAside:renameDurable': 'single owner',
-  'src/main/store/secrets.ts:SecretStore.writeStep:unlinkDurable': 'single owner',
-  'src/main/store/secrets.ts:SecretStore.writeStep:writeFileDurable': 'single owner',
-  'src/main/store/settings.ts:SettingsStore.constructor:mkdirSync': 'single owner',
-  'src/main/store/settings.ts:SettingsStore.persist:mkdirSync': 'single owner',
-  'src/main/store/settings.ts:SettingsStore.persist:renameSync': 'single owner',
-  'src/main/store/settings.ts:SettingsStore.persist:writeFileSync': 'single owner',
+  'src/main/store/projects.ts:ProjectStore.persist:mkdirSync': WRITE_LOCK,
+  'src/main/store/projects.ts:ProjectStore.persist:renameSync': WRITE_LOCK,
+  'src/main/store/projects.ts:ProjectStore.persist:writeFileSync': WRITE_LOCK,
+  'src/main/store/runs.ts:RunStore.persist:mkdirSync': WRITE_LOCK,
+  'src/main/store/runs.ts:RunStore.persist:renameSyncRetry': WRITE_LOCK,
+  'src/main/store/runs.ts:RunStore.persist:writeFileSync': WRITE_LOCK,
+  'src/main/store/runs.ts:RunStore.removeRecord:rmSync': RUN_REMOVAL,
+  'src/main/store/runs.ts:RunStore.removeRecord:unlinkSync': RUN_REMOVAL,
+  'src/main/store/runs.ts:RunStore.saveRecord:mkdirSync': RUN_HOST,
+  'src/main/store/runs.ts:RunStore.saveRecord:renameSyncRetry': RUN_HOST,
+  'src/main/store/runs.ts:RunStore.saveRecord:writeFileSync': RUN_HOST,
+  'src/main/store/runs.ts:RunStore.storeImage:mkdirSync': RUN_HOST,
+  'src/main/store/runs.ts:RunStore.storeImage:renameSyncRetry': RUN_HOST,
+  'src/main/store/runs.ts:RunStore.storeImage:writeFileSync': RUN_HOST,
+  'src/main/store/runs.ts:RunStore.sweepOrphans:rmSync': RUN_REMOVAL,
+  'src/main/store/runs.ts:RunStore.sweepOrphans:unlinkSync': RUN_REMOVAL,
+  'src/main/store/secrets.ts:SecretStore.moveAside:renameDurable': VAULT_ALONE,
+  'src/main/store/secrets.ts:SecretStore.writeStep:unlinkDurable': VAULT_LOCKED,
+  'src/main/store/secrets.ts:SecretStore.writeStep:writeFileDurable': VAULT_LOCKED,
+  'src/main/store/settings.ts:SettingsStore.constructor:mkdirSync': DATA_MKDIR,
+  'src/main/store/settings.ts:SettingsStore.persist:mkdirSync': WRITE_LOCK,
+  'src/main/store/settings.ts:SettingsStore.persist:renameSync': WRITE_LOCK,
+  'src/main/store/settings.ts:SettingsStore.persist:writeFileSync': WRITE_LOCK,
   'src/main/store/shared/atomicWrite.ts:unlinkDurable:unlinkSync':
     'atomicWrite: durable unlink (the caller holds the covering osLock)',
   'src/main/store/shared/atomicWrite.ts:writeFileAtomic:openSync': 'atomicWrite: unique temp + rename',
@@ -366,9 +419,10 @@ export const WRITE_SITES: Record<string, string> = {
     'sharedJsonFile: read-modify-write under osLock, atomicWrite',
   'src/main/store/shared/sharedJsonFile.ts:SharedJsonFile.update:writeFileAtomic':
     'sharedJsonFile: read-modify-write under osLock, atomicWrite',
-  'src/main/store/skillLibrary.ts:SkillLibraryStore.persist:mkdirSync': 'single owner',
-  'src/main/store/skillLibrary.ts:SkillLibraryStore.persist:renameSync': 'single owner',
-  'src/main/store/skillLibrary.ts:SkillLibraryStore.persist:writeFileSync': 'single owner',
+  'src/main/store/shared/storeSync.ts:createSharedStoreSync:mkdirSync': SESSION_MKDIR,
+  'src/main/store/skillLibrary.ts:SkillLibraryStore.persist:mkdirSync': WRITE_LOCK,
+  'src/main/store/skillLibrary.ts:SkillLibraryStore.persist:renameSync': WRITE_LOCK,
+  'src/main/store/skillLibrary.ts:SkillLibraryStore.persist:writeFileSync': WRITE_LOCK,
   'src/main/store/staffingProfile.ts:writeStaffingProfile:writeFileDurable': 'single owner',
   'src/main/teamFiles/disk.ts:ensureParents:mkdirSync': 'single owner',
   'src/main/teamFiles/disk.ts:removeOrgaiIfEmpty:rmdirSync': 'single owner',

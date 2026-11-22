@@ -467,7 +467,7 @@ async function evolveLoop(ctx: CliContext, args: string[]): Promise<number> {
   // The same cwd refusals exec has, before any host starts.
   if (ctx.globals.project === undefined) refuseManagedWorktree(ctx.resolveProject([]).managedWorktree)
   const snap = await ctx.readStore().catch(() => undefined)
-  if (snap && snap.hostState === 'stopped') {
+  if (snap && !snap.soleOwner) {
     const res = ctx.resolveProject(snap.projects)
     if (res.error) throw usage(res.error)
     refuseManagedWorktree(res.managedWorktree)

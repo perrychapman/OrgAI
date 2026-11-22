@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { storeSyncFor } from './shared/storeSync'
 import { join } from 'node:path'
 import type { EngagementDocumentInfo, EngagementNote, EngagementNoteContent, EngagementNoteWriter, Project } from '@shared/types'
 import {
@@ -507,11 +508,15 @@ export function readRetainedRunProjects(dataDir: string): Set<string> {
 /** Remember that a removed project's runs are kept, so boot housekeeping does not delete them. */
 export function retainRunProject(dataDir: string, projectId: string): void {
   if (!isSafeId(projectId)) throw new Error('Invalid project id')
-  const ids = readRetainedRunProjects(dataDir)
-  if (ids.has(projectId)) return
-  const list = [...ids, projectId].slice(-RETAINED_RUN_PROJECTS_MAX)
-  mkdirSync(dataDir, { recursive: true })
-  atomicWrite(retainedFile(dataDir), `${JSON.stringify({ version: 1, projectIds: list }, null, 2)}\n`)
+  // Read, add and write back under the data folder's write lock: two orgai sessions removing projects at the same
+  // time must both end up in the list, or housekeeping would delete the runs one of them chose to keep.
+  storeSyncFor(dataDir).locked(() => {
+    const ids = readRetainedRunProjects(dataDir)
+    if (ids.has(projectId)) return
+    const list = [...ids, projectId].slice(-RETAINED_RUN_PROJECTS_MAX)
+    mkdirSync(dataDir, { recursive: true })
+    atomicWrite(retainedFile(dataDir), `${JSON.stringify({ version: 1, projectIds: list }, null, 2)}\n`)
+  })
 }
 
 /** Run project ids housekeeping may delete: not live, not retained. */

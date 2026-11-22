@@ -71,6 +71,8 @@ import type { AppSettingsProposalPayload, CliCommandStatus, SchedulesProposalPay
 import { scheduledRunCap } from '../schedules/validate'
 import { harnessProjectFor, settingsSetArgs, withEffectiveDefault } from './args'
 import { HostDispatcher } from './dispatcher'
+import { createSessionGuard } from './sessionGuard'
+import { storeSyncFor } from '../store/shared/storeSync'
 import { HostEventBus } from './events'
 import type { HostOwnership } from './ownership'
 import type { HostRuntimeEnv } from './runtimeEnv'
@@ -161,6 +163,13 @@ export interface BootOrgAIHostOptions {
   background?: HostBackgroundOptions
   housekeeping?: Partial<HousekeepingSteps>
   /**
+   * Several orgai sessions on one data folder (docs/design/cli-sessions.md): the boot runs no housekeeping. It deletes
+   * what no run in the index points to and prunes old runs, which is only right while no other session is working, so
+   * the caller runs `OrgAIHost.housekeep()` itself when it finds itself alone, and sweeps the temp folder off the start
+   * path. Default false: housekeeping runs here, as before.
+   */
+  deferHousekeeping?: boolean
+  /**
    * Called once a shutdown released ownership (Wave 7, cli-standalone.md 4.3: after the writers settled and the socket
    * closed, or at the hard limit): the process may exit now. Desktop: quit the app; inproc: resolve `closed`.
    */
@@ -210,6 +219,11 @@ export interface OrgAIHost {
   shutdown: ShutdownCoordinator
   /** Stop background timers and probes (before-quit). Idempotent. */
   dispose(): void
+  /**
+   * The boot housekeeping (runs of removed projects, runs past retention, record files and scratch dirs nothing points
+   * to), without the temp folder sweep. Returns how many runs or files went. Boot calls it unless `deferHousekeeping`.
+   */
+  housekeep(): number
 }
 
 /**
@@ -854,19 +868,26 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
   // Housekeeping: runs of projects that no longer exist, runs past retention, record files nobody indexes.
   // The virtual projects (harness, quick, skills) own runs without being stored: their runs survive restarts.
   const steps: HousekeepingSteps = { ...defaultHousekeeping, ...opts.housekeeping }
-  const ctx: HousekeepingContext = {
+  const housekeepingContext = (): HousekeepingContext => ({
     dataDir,
     runStore,
     keepRunsFor,
     knownProjects: new Set([...projects.list().map((p) => p.id), HARNESS_PROJECT_ID, QUICK_PROJECT_ID, SKILLS_PROJECT_ID])
+  })
+  const housekeep = (): number => {
+    const ctx = housekeepingContext()
+    let dropped = 0
+    for (const projectId of steps.orphanRunProjects(ctx)) dropped += steps.removeProject(ctx, projectId)
+    dropped += steps.prune(ctx)
+    dropped += steps.sweepOrphans(ctx)
+    dropped += steps.sweepScratchDirs(ctx)
+    if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
+    return dropped
   }
-  let dropped = 0
-  for (const projectId of steps.orphanRunProjects(ctx)) dropped += steps.removeProject(ctx, projectId)
-  dropped += steps.prune(ctx)
-  dropped += steps.sweepOrphans(ctx)
-  dropped += steps.sweepScratchDirs(ctx)
-  steps.sweepStaleSkillDirs(ctx)
-  if (dropped) console.log(`Housekeeping removed ${dropped} stale run(s) or record file(s).`)
+  if (!opts.deferHousekeeping) {
+    housekeep()
+    steps.sweepStaleSkillDirs(housekeepingContext())
+  }
 
   // Wave 7 (cli-standalone.md 4.3): the one shutdown sequence. The activity tracker drains and settles the writers; the
   // coordinator closes the socket, releases ownership (never before the writers are done), ends the process through
@@ -985,7 +1006,18 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     },
     ...(opts.desktop ? { desktop: opts.desktop } : {}),
     host: hostControl,
-    secrets
+    secrets,
+    // Several orgai sessions on this data folder: a mutating request may only touch this session's projects and runs.
+    ...(storeSyncFor(dataDir).shared
+      ? {
+          sessionGuard: createSessionGuard({
+            sync: storeSyncFor(dataDir),
+            project: (id) => projects.get(id),
+            run: (id) => rm.summary(id) ?? runStore.get(id),
+            hostedElsewhere: (id) => runStore.hostedElsewhere(id)
+          })
+        }
+      : {})
   }
   const dispatcher = new HostDispatcher(services)
   dispatcherRef = dispatcher
@@ -1011,5 +1043,5 @@ export function bootOrgAIHost(opts: BootOrgAIHostOptions): OrgAIHost {
     secrets.dispose()
   }
 
-  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, dispose }
+  return { services, events, dispatcher, activity, runs: rm, settings, projectOrHarness, hostControl, shutdown, dispose, housekeep }
 }
