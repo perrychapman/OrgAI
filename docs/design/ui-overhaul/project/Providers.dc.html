@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI AI providers</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad)}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line)">
+<h1 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">Settings</h1>
+<span class="glass" style="flex: 1 1 200px; max-width: 320px; height: 34px; padding: 0 12px; border-radius: 10px; font-size: 13px; color: var(--ink-3); display: flex; align-items: center">Search settings</span>
+</header>
+<div class="dots" style="flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; min-height: 0">
+<nav aria-label="Settings" class="glass" style="flex: 1 0 190px; max-width: 220px; align-self: flex-start; border-radius: 16px; padding: 8px; display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{snav}}" as="n" hint-placeholder-count="8">
+<sc-if value="{{n.head}}" hint-placeholder-val="{{false}}"><div style="padding: 10px 10px 4px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{n.head}}</div></sc-if>
+<a href="{{n.href}}" style="height: 32px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; display: flex; align-items: center; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">{{n.label}}</a>
+</sc-for>
+</nav>
+
+<section aria-label="AI providers" style="flex: 999 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px"><div style="flex: 1 1 260px"><h2 style="margin: 0; font-family: var(--display); font-size: 22px; font-weight: 600">AI providers</h2><p style="margin: 2px 0 0; font-size: 13.5px; color: var(--ink-2)">Where your teams get their models from. One is the default; a project can use another.</p></div><button class="b b-p">Add a provider</button></div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px">
+<sc-for list="{{conns}}" as="c" hint-placeholder-count="4">
+<button onClick="{{c.pick}}" aria-pressed="{{c.sel}}" class="glass lift" style="border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; text-align: left; border: 1.5px solid {{c.bd}}">
+<span style="display: flex; align-items: center; gap: 10px"><span aria-hidden="true" style="flex: none; width: 34px; height: 34px; border-radius: 10px; background: {{c.tint}}; color: #fff; font-family: var(--display); font-weight: 600; display: grid; place-items: center">{{c.initial}}</span><span style="flex: 1 1 0; min-width: 0; display: flex; flex-direction: column"><span style="font-size: 14px; font-weight: 600">{{c.name}}</span><span style="font-size: 12.5px; color: var(--ink-2)">{{c.how}}</span></span><sc-if value="{{c.isDefault}}" hint-placeholder-val="{{false}}"><span style="flex: none; height: 20px; padding: 0 8px; border-radius: 10px; background: var(--accent-soft); color: var(--accent-text); font-size: 11.5px; font-weight: 600; display: grid; place-items: center">Default</span></sc-if></span>
+<span style="display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: {{c.ink}}"><span aria-hidden="true" class="{{c.cls}}" style="width: 8px; height: 8px; border-radius: 50%; background: {{c.dot}}"></span>{{c.status}}</span>
+<span style="font-size: 12px; color: var(--ink-3)">{{c.used}}</span>
+</button>
+</sc-for>
+</div>
+
+<div class="glass" style="border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 12px">
+<div><h3 style="margin: 0; font-family: var(--display); font-size: 16px; font-weight: 600">Which model does what</h3><p style="margin: 2px 0 0; font-size: 13px; color: var(--ink-2)">Roles pick a level, not a model name. Change what each level means here and every role follows.</p></div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px">
+<sc-for list="{{tiers}}" as="t" hint-placeholder-count="3">
+<div style="border-radius: 14px; padding: 12px; background: var(--glass-strong); border: 1px solid var(--glass-line); display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: center; gap: 8px"><span aria-hidden="true" style="display: flex; gap: 2px; align-items: flex-end"><sc-for list="{{t.bars}}" as="b" hint-placeholder-count="3"><span style="width: 4px; height: {{b.h}}px; border-radius: 1px; background: {{b.c}}"></span></sc-for></span><span style="font-size: 14px; font-weight: 600">{{t.name}}</span></div>
+<div style="font-size: 12.5px; color: var(--ink-2)">{{t.for}}</div>
+<button style="height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--bg); display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; text-align: left"><span style="flex: 1 1 0">{{t.model}}</span><span aria-hidden="true" style="color: var(--ink-3)">▾</span></button>
+<div style="font-size: 12px; color: var(--ink-3)">{{t.roles}} · {{t.price}}</div>
+</div>
+</sc-for>
+</div>
+</div>
+</section>
+
+<aside aria-label="Selected provider" class="glass a-rise" style="flex: 1 1 300px; max-width: 360px; min-width: 0; align-self: flex-start; border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 14px">
+<div><h2 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">{{d.name}}</h2><div style="font-size: 12.5px; color: var(--ink-2)">{{d.how}}</div></div>
+<div style="display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; border-radius: 12px; background: {{d.noteBg}}; font-size: 13px"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: {{d.dot}}"></span><span>{{d.note}}</span></div>
+<div style="display: flex; flex-direction: column"><sc-for list="{{d.rows}}" as="r" hint-placeholder-count="4"><div style="display: flex; align-items: baseline; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px"><span style="flex: 0 0 104px; color: var(--ink-3)">{{r.a}}</span><span style="flex: 1 1 0; min-width: 0; font-weight: 600">{{r.b}}</span></div></sc-for></div>
+<div style="display: flex; flex-direction: column; gap: 6px"><span style="font-size: 12px; font-weight: 600; color: var(--ink-3)">Models it offers</span><div style="display: flex; flex-wrap: wrap; gap: 6px"><sc-for list="{{d.models}}" as="m" hint-placeholder-count="4"><span style="height: 26px; padding: 0 10px; border-radius: 8px; background: var(--sunk); font-size: 12.5px; display: inline-flex; align-items: center">{{m}}</span></sc-for></div></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><button class="b b-p">{{d.main}}</button><button class="b b-s">Test it</button><button class="b b-s">Make default</button><span style="flex-grow: 1"></span><button class="b b-g">Remove</button></div>
+</aside>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":960}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+snav(a) {
+const it = (k, label, href, head) => ({ label: label, href: href || '#', head: head || '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 });
+return [it('general', 'General', 'SettingsGeneral.dc.html', 'App'), it('appearance', 'Appearance', 'Appearance.dc.html'), it('providers', 'AI providers', 'Providers.dc.html'), it('tools', 'Tools and services', 'Tools.dc.html'), it('skills', 'Skills', 'Skills.dc.html'), it('templates', 'Templates', 'Templates.dc.html'), it('about', 'About and updates', 'About.dc.html'),
+it('basics', 'Basics', '#', 'Project: Notes API'), it('perms', 'Permissions', 'Settings.dc.html'), it('limits', 'Spending limits', 'Limits.dc.html'), it('branches', 'Branches', 'Branches.dc.html')];
+}
+renderVals() {
+const sel = this.state.sel || 'claude';
+const raw = [
+{ id: 'claude', name: 'Claude', how: 'Signed in with your Claude plan', tint: '#c9673f', st: 'ok', status: 'Connected · plan limit at 22%', used: 'Used by 3 projects', def: true,
+note: 'Working. Usage counts against your plan, not a bill.', models: ['Claude Haiku', 'Claude Sonnet', 'Claude Opus'], rows: [['Signed in as', 'you@example.com'], ['Pays through', 'Your Claude plan'], ['Limit resets', 'In 3 h 40 min'], ['Used by', 'Notes API, Website refresh, Chat']], main: 'Sign in again' },
+{ id: 'key', name: 'Anthropic API', how: 'With an API key', tint: '#8a5cf0', st: 'off', status: 'Not set up', used: 'Not used', def: false,
+note: 'Add a key to pay per use instead of using plan limits. The key is stored in your system keychain.', models: [], rows: [['Key', 'None yet'], ['Pays through', 'Per-use billing']], main: 'Add a key' },
+{ id: 'gpt', name: 'ChatGPT', how: 'Signed in with your ChatGPT plan', tint: '#10a37f', st: 'ok', status: 'Connected', used: 'Used by 1 project', def: false,
+note: 'Working. Teams on this provider run through the Codex tools installed on this computer.', models: ['GPT fast', 'GPT standard', 'GPT most capable'], rows: [['Signed in as', 'you@example.com'], ['Pays through', 'Your ChatGPT plan'], ['Used by', 'Acme onboarding']], main: 'Sign in again' },
+{ id: 'proxy', name: 'Company gateway', how: 'A proxy your company runs', tint: '#5b6b82', st: 'warn', status: 'Needs attention · 2 models not found', used: 'Not used', def: false,
+note: 'The gateway answers, but two of the models it listed last week are gone. Roles set to them fall back to the default provider.', models: ['bedrock sonnet', 'bedrock haiku', 'internal-small'], rows: [['Address', 'https://ai.example.internal'], ['Key', 'Stored in keychain'], ['Last checked', '4 min ago']], main: 'Check again' }
+];
+const DOT = { ok: 'var(--ok)', off: 'var(--line-strong)', warn: 'var(--warn)' };
+const cur = raw.find((c) => c.id === sel);
+const bars = (n) => [8, 12, 16].map((h, i) => ({ h: h, c: i < n ? 'var(--accent)' : 'var(--line-strong)' }));
+return Object.assign({
+theme: this.props.theme ?? 'dark',
+conns: raw.map((c) => ({ name: c.name, how: c.how, tint: c.tint, initial: c.name[0], status: c.status, used: c.used, isDefault: c.def, dot: DOT[c.st], cls: c.st === 'warn' ? 'a-breathe' : '', ink: c.st === 'warn' ? 'var(--warn)' : 'var(--ink-2)',
+sel: c.id === sel, bd: c.id === sel ? 'var(--accent)' : 'var(--glass-line)', pick: () => this.setState({ sel: c.id }) })),
+tiers: [
+{ name: 'Fast', bars: bars(1), for: 'Quick, simple steps: reading, searching, small edits.', model: 'Claude Haiku', roles: '5 roles', price: 'lowest cost' },
+{ name: 'Standard', bars: bars(2), for: 'Most of the work: writing code, analysis, reviews.', model: 'Claude Sonnet', roles: '14 roles', price: 'mid cost' },
+{ name: 'Most capable', bars: bars(3), for: 'Planning, hard problems and final checks.', model: 'Claude Opus', roles: '3 roles', price: 'highest cost' }
+],
+d: { name: cur.name, how: cur.how, note: cur.note, dot: DOT[cur.st], noteBg: cur.st === 'warn' ? 'var(--warn-soft)' : cur.st === 'ok' ? 'var(--ok-soft)' : 'var(--sunk)', models: cur.models.length ? cur.models : ['None until it is set up'], rows: cur.rows.map((r) => ({ a: r[0], b: r[1] })), main: cur.main }
+}, { snav: this.snav('providers') }, this.side('gear'));
+}
+}
+</script>
+</body>
+</html>

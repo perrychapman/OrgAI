@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Components</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+.dcard{border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:10px;border:1px solid var(--warn-line);background:var(--glass);position:relative;overflow:hidden}
+.dcard::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--warn)}
+.dhead{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-3)}
+.dkind{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:11px;background:var(--warn-soft);color:var(--warn);font-weight:600}
+.dtitle{font-size:14px;font-weight:600;line-height:20px}
+.dnote{font-size:12.5px;color:var(--ink-2)}
+.dact{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding-top:2px}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad);border-color:transparent}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+.lab{font-size:12px;font-weight:600;color:var(--ink-3)}
+.tile{border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="min-height: 100vh; padding: 32px; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px; display: flex; flex-direction: column; gap: 28px">
+
+<section style="display: flex; flex-direction: column; gap: 14px">
+<div class="row"><h2 style="margin: 0; flex-grow: 1; font-family: var(--display); font-size: 20px; font-weight: 600">Decision cards</h2><span class="dnote">One layout for all six: who is asking, what happens if you say yes, one main action.</span></div>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; align-items: start">
+
+<article class="dcard">
+<div class="dhead"><span class="dkind">Permission</span><span>Implementer 2 · Build</span><span style="flex-grow: 1"></span><span>2 min</span></div>
+<div class="dtitle">Run a command in Notes API</div>
+<div class="code">npm test</div>
+<div class="dnote">Runs in Implementer 2's own copy of the code. Nothing outside that folder changes.</div>
+<div class="dact"><button class="b b-p">Allow once <span class="kbd" style="border-color: rgba(255,255,255,0.4); color: inherit">Enter</span></button><button class="b b-s">Always allow npm test</button><span style="flex-grow: 1"></span><button class="b b-g">Deny <span class="kbd">Esc</span></button></div>
+</article>
+
+<article class="dcard">
+<div class="dhead"><span class="dkind">Question</span><span>Lead analyst · Analysis</span><span style="flex-grow: 1"></span><span>5 min</span></div>
+<div class="dtitle">Which office should be the pilot?</div>
+<div role="radiogroup" aria-label="Answer" style="display: flex; flex-direction: column; gap: 6px">
+<sc-for list="{{answers}}" as="a" hint-placeholder-count="3">
+<button role="radio" aria-checked="{{a.on}}" onClick="{{a.pick}}" style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; border: 1px solid {{a.bd}}; background: {{a.bg}}; text-align: left; font-size: 13px"><span aria-hidden="true" style="flex: none; width: 16px; height: 16px; border-radius: 50%; border: 2px solid {{a.ring}}; display: grid; place-items: center"><span style="width: 8px; height: 8px; border-radius: 50%; background: {{a.fill}}"></span></span><span style="font-weight: 600">{{a.label}}</span><span style="color: var(--ink-2)">{{a.sub}}</span></button>
+</sc-for>
+<div style="height: 36px; padding: 0 12px; border-radius: 10px; border: 1px dashed var(--line-strong); font-size: 13px; color: var(--ink-3); display: flex; align-items: center">Something else</div>
+</div>
+<div class="dact"><button class="b b-p">Answer</button><button class="b b-g">Let the team decide</button></div>
+</article>
+
+<article class="dcard">
+<div class="dhead"><span class="dkind">Proposal</span><span>Architect</span><span style="flex-grow: 1"></span><span>just now</span></div>
+<div class="dtitle">A team for Notes API: 12 roles in 3 groups</div>
+<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px">
+<sc-for list="{{teamGroups}}" as="g" hint-placeholder-count="3">
+<div style="border-radius: 10px; padding: 8px; background: var(--glass-strong); border: 1px solid var(--glass-line); display: flex; flex-direction: column; gap: 4px"><span style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 3px; background: {{g.color}}"></span>{{g.name}}</span><span class="dnote" style="font-size: 12px">{{g.roles}}</span></div>
+</sc-for>
+</div>
+<div class="dnote">Takes effect on the next run. A typical run with this team costs about $2 to $4.</div>
+<div class="dact"><button class="b b-p">Approve</button><button class="b b-s">Ask for changes</button><button class="b b-s">Open on the canvas</button><span style="flex-grow: 1"></span><button class="b b-g">Reject</button></div>
+</article>
+
+<article class="dcard">
+<div class="dhead"><span class="dkind">Review and merge</span><span>Implementer 1 · Build</span><span style="flex-grow: 1"></span><span>1 min</span></div>
+<div class="dtitle">Add the cache layer</div>
+<div class="row" style="gap: 6px 14px; font-size: 12.5px"><span><b style="color: var(--ok); font-weight: 600">+128</b> <b style="color: var(--bad); font-weight: 600">−14</b> in 4 files</span><span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--ok)"></span>42 of 42 tests pass</span><span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--ok)"></span>Reviewer 1 approved</span></div>
+<div class="code" style="display: flex; flex-direction: column; gap: 2px"><span>src/cache.js <span style="color: var(--ok)">+96</span></span><span>src/server.js <span style="color: var(--ok)">+18</span> <span style="color: var(--bad)">−9</span></span><span style="color: var(--ink-3)">2 more files</span></div>
+<div class="dnote">Merges into main in your folder. You can undo it from History.</div>
+<div class="dact"><button class="b b-p">Merge</button><button class="b b-s">View changes</button><span style="flex-grow: 1"></span><button class="b b-g">Send back</button></div>
+</article>
+
+<article class="dcard">
+<div class="dhead"><span class="dkind">Rule</span><span>Reviewer 1 · Quality</span><span style="flex-grow: 1"></span><span>8 min</span></div>
+<div class="dtitle">Stop asking about reading the docs folder?</div>
+<div class="code">Read files in docs/</div>
+<div class="dnote">You have allowed this 6 times in this run.</div>
+<div role="group" aria-label="Keep for" class="row" style="gap: 2px; padding: 3px; border-radius: 11px; background: var(--sunk); align-self: flex-start">
+<sc-for list="{{scopes}}" as="s" hint-placeholder-count="2"><button aria-pressed="{{s.on}}" onClick="{{s.pick}}" style="height: 28px; padding: 0 11px; border-radius: 8px; border: 0; background: {{s.bg}}; color: {{s.fg}}; font-size: 12.5px; font-weight: 600">{{s.label}}</button></sc-for>
+</div>
+<div class="dact"><button class="b b-p">Always allow</button><button class="b b-g">Keep asking</button></div>
+</article>
+
+<article class="dcard">
+<div class="dhead"><span class="dkind">New tool</span><span>Lead researcher · Research</span><span style="flex-grow: 1"></span><span>3 min</span></div>
+<div class="dtitle">Connect GitHub for this project</div>
+<div class="dnote">The team could read issues and pull requests. It could not push code or change settings.</div>
+<div class="row" style="padding: 8px 10px; border-radius: 10px; background: var(--glass-strong); border: 1px solid var(--glass-line); font-size: 12.5px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--warn)"></span><span style="flex-grow: 1">Needs you to sign in to GitHub once</span></div>
+<div class="dact"><button class="b b-p">Connect</button><button class="b b-s">See what it can use</button><span style="flex-grow: 1"></span><button class="b b-g">Not now</button></div>
+</article>
+
+</div>
+</section>
+
+<section style="display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; align-items: start">
+
+<div class="glass tile">
+<span class="lab">Decision tray, when several are waiting</span>
+<div class="row" style="padding: 10px 12px; border-radius: 13px; border: 1px solid var(--warn-line); background: var(--warn-soft)"><span aria-hidden="true" class="a-breathe" style="width: 8px; height: 8px; border-radius: 50%; background: var(--warn)"></span><span style="font-weight: 600; color: var(--warn)">4 waiting on you</span><span class="dnote" style="flex-grow: 1">2 permissions · 1 question · 1 merge</span><button class="b b-s" style="height: 28px; width: 28px; padding: 0; justify-content: center" aria-label="Previous">‹</button><span class="dnote">1 of 4</span><button class="b b-s" style="height: 28px; width: 28px; padding: 0; justify-content: center" aria-label="Next">›</button></div>
+<span class="lab">After you answer</span>
+<div class="row" style="padding: 9px 12px; border-radius: 12px; border: 1px solid var(--line); font-size: 13px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--ok)"></span><span style="flex-grow: 1">Allowed once: <span style="font-family: var(--mono); font-size: 12.5px">npm test</span></span><button class="b b-g" style="height: 26px; padding: 0 8px">Undo</button></div>
+<div class="row" style="padding: 9px 12px; border-radius: 12px; border: 1px solid var(--line); font-size: 13px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--bad)"></span><span style="flex-grow: 1">Denied. Implementer 2 will try another way.</span></div>
+</div>
+
+<div class="glass tile">
+<span class="lab">Buttons</span>
+<div class="row"><button class="b b-p">Start run</button><button class="b b-s">Pause</button><button class="b b-g">Cancel</button><button class="b b-d">End run</button><button class="b b-p" style="opacity: 0.45" disabled>Disabled</button></div>
+<div class="row"><button class="b b-p" style="height: 26px; padding: 0 10px; font-size: 12px">Small</button><button class="b b-s" style="height: 26px; padding: 0 10px; font-size: 12px">Small</button><button class="b b-s" style="width: 32px; padding: 0; justify-content: center" aria-label="More">···</button><button class="b b-s"><span class="sheen" style="width: 28px; height: 4px; border-radius: 2px; background-color: var(--accent-2)"></span>Working</button></div>
+<span class="lab">Status, always a colour and a word</span>
+<div class="row">
+<sc-for list="{{pills}}" as="p" hint-placeholder-count="6"><span style="display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px; border-radius: 13px; background: {{p.bg}}; color: {{p.fg}}; font-size: 12.5px; font-weight: 600"><span aria-hidden="true" class="{{p.cls}}" style="width: 8px; height: 8px; border-radius: 50%; background: {{p.dot}}"></span>{{p.label}}</span></sc-for>
+</div>
+<span class="lab">Kind and count badges</span>
+<div class="row"><span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 12px; border: 1px solid var(--line-strong); color: var(--ink-2); font-size: 12px; font-weight: 600">Code project · main</span><span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 12px; background: var(--eng-soft); color: var(--eng); font-size: 12px; font-weight: 600">Engagement · Acme Corp</span><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">3</span><span style="height: 20px; padding: 0 7px; border-radius: 10px; background: var(--accent-soft); color: var(--accent-text); font-size: 11.5px; font-weight: 600; display: grid; place-items: center">6 new</span></div>
+</div>
+
+<div class="glass tile">
+<span class="lab">Fields</span>
+<div style="display: flex; flex-direction: column; gap: 5px"><span style="font-size: 12.5px; font-weight: 600">Name</span><span style="height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-strong); background: var(--bg); display: flex; align-items: center">Notes API</span></div>
+<div style="display: flex; flex-direction: column; gap: 5px"><span style="font-size: 12.5px; font-weight: 600">Spending limit per run</span><span style="height: 36px; padding: 0 12px; border-radius: 10px; border: 1.5px solid var(--accent); background: var(--bg); box-shadow: 0 0 0 3px var(--accent-soft); display: flex; align-items: center">$5.00</span><span class="dnote" style="font-size: 12px">The run pauses and asks you when it reaches this.</span></div>
+<div style="display: flex; flex-direction: column; gap: 5px"><span style="font-size: 12.5px; font-weight: 600">Folder</span><span style="height: 36px; padding: 0 12px; border-radius: 10px; border: 1.5px solid var(--bad); background: var(--bg); display: flex; align-items: center">C:\Code\missing</span><span style="font-size: 12px; color: var(--bad)">That folder does not exist. Choose another or create it.</span></div>
+<div class="row" style="gap: 14px">
+<button role="switch" aria-checked="{{swOn}}" onClick="{{swToggle}}" style="display: inline-flex; align-items: center; gap: 9px; padding: 0; border: 0; background: transparent; font-size: 13px"><span aria-hidden="true" style="width: 34px; height: 20px; border-radius: 10px; background: {{swBg}}; padding: 2px; display: flex; justify-content: {{swPos}}"><span style="width: 16px; height: 16px; border-radius: 50%; background: #fff"></span></span>Pause motion</button>
+<span style="display: inline-flex; align-items: center; gap: 8px; font-size: 13px"><span aria-hidden="true" style="width: 18px; height: 18px; border-radius: 5px; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; font-size: 12px">✓</span>Must pass review</span>
+<span role="group" aria-label="Model" style="display: inline-flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--sunk)"><span style="height: 26px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; display: grid; place-items: center; color: var(--ink-2)">Fast</span><span style="height: 26px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; font-weight: 600; background: var(--glass-strong); display: grid; place-items: center">Standard</span><span style="height: 26px; padding: 0 10px; border-radius: 8px; font-size: 12.5px; display: grid; place-items: center; color: var(--ink-2)">Most capable</span></span>
+</div>
+</div>
+
+<div class="glass tile">
+<span class="lab">Notices</span>
+<sc-for list="{{notices}}" as="n" hint-placeholder-count="4">
+<div class="row" style="padding: 10px 12px; border-radius: 12px; background: {{n.bg}}; border: 1px solid {{n.bd}}; font-size: 13px"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 50%; background: {{n.dot}}"></span><span style="flex: 1 1 200px"><b style="font-weight: 600">{{n.title}}</b> <span style="color: var(--ink-2)">{{n.text}}</span></span><sc-if value="{{n.action}}" hint-placeholder-val="{{true}}"><button class="b b-s" style="height: 26px; padding: 0 10px; font-size: 12px">{{n.action}}</button></sc-if></div>
+</sc-for>
+</div>
+
+<div class="glass tile">
+<span class="lab">Agent on the canvas, every state</span>
+<sc-for list="{{agents}}" as="ag" hint-placeholder-count="5">
+<div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 11px; background: {{ag.bg}}; border: 1px solid {{ag.bd}}; opacity: {{ag.op}}"><span aria-hidden="true" class="{{ag.cls}}" style="flex: none; width: 9px; height: 9px; border-radius: 50%; background: {{ag.dot}}"></span><span style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column"><span style="font-size: 13px; font-weight: 600">{{ag.name}}</span><span style="font-size: 12px; color: {{ag.tc}}">{{ag.doing}}</span></span><span style="font-size: 11.5px; color: var(--ink-3)">{{ag.cost}}</span></div>
+</sc-for>
+</div>
+
+<div class="glass tile">
+<span class="lab">Menu</span>
+<div style="align-self: flex-start; width: 230px; padding: 6px; border-radius: 13px; background: var(--glass-strong); border: 1px solid var(--glass-line); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 1px; font-size: 13px">
+<span style="padding: 7px 9px; border-radius: 8px; background: var(--accent-soft); display: flex"><span style="flex-grow: 1">Open the agent</span><span class="kbd">Enter</span></span>
+<span style="padding: 7px 9px; display: flex"><span style="flex-grow: 1">Message it</span><span class="kbd">M</span></span>
+<span style="padding: 7px 9px">Show its files</span>
+<span aria-hidden="true" style="height: 1px; margin: 4px 2px; background: var(--line)"></span>
+<span style="padding: 7px 9px; color: var(--bad)">Stop this agent</span>
+</div>
+<span class="lab">Tooltip, empty state, progress</span>
+<div class="row" style="gap: 14px; align-items: flex-start">
+<span style="padding: 6px 9px; border-radius: 8px; background: var(--ink); color: var(--bg-base); font-size: 12px">Fit the whole team · <b style="font-weight: 600">0</b></span>
+<div style="flex: 1 1 180px; padding: 16px; border-radius: 12px; border: 1px dashed var(--line-strong); display: flex; flex-direction: column; align-items: flex-start; gap: 8px"><span style="font-weight: 600; font-size: 13.5px">No files yet</span><span class="dnote" style="font-size: 12.5px">Documents and slides the team produces show up here.</span><button class="b b-s" style="height: 28px; font-size: 12.5px">Start a run</button></div>
+</div>
+<div style="height: 6px; border-radius: 3px; background: var(--sunk); overflow: hidden"><div class="sheen" style="width: 62%; height: 6px; border-radius: 3px; background-color: var(--accent-2)"></div></div>
+</div>
+
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1500}}'>
+class Component extends DCLogic {
+renderVals() {
+const ans = this.state.ans || 'leeds';
+const a = (id, label, sub) => ({ label: label, sub: sub, on: ans === id, bd: ans === id ? 'var(--accent)' : 'var(--line)', bg: ans === id ? 'var(--accent-soft)' : 'transparent', ring: ans === id ? 'var(--accent)' : 'var(--line-strong)', fill: ans === id ? 'var(--accent)' : 'transparent', pick: () => this.setState({ ans: id }) });
+const scope = this.state.scope || 'project';
+const s = (id, label) => ({ label: label, on: scope === id, bg: scope === id ? 'var(--glass-strong)' : 'transparent', fg: scope === id ? 'var(--ink)' : 'var(--ink-2)', pick: () => this.setState({ scope: id }) });
+const sw = this.state.sw === true;
+const pill = (label, dot, bg, fg, cls) => ({ label: label, dot: dot, bg: bg, fg: fg || 'var(--ink)', cls: cls || '' });
+const ag = (name, doing, cost, dot, cls, tc, bd, bg, op) => ({ name: name, doing: doing, cost: cost, dot: dot, cls: cls, tc: tc, bd: bd, bg: bg, op: op });
+return {
+theme: this.props.theme ?? 'dark',
+answers: [a('leeds', 'Leeds', '140 staff, most new starters'), a('bristol', 'Bristol', '60 staff'), a('glasgow', 'Glasgow', '35 staff, newest office')],
+teamGroups: [{ name: 'Build', color: 'var(--r-impl)', roles: 'Lead, 4 implementers' }, { name: 'Quality', color: 'var(--r-rev)', roles: 'Lead, reviewer, tester' }, { name: 'Research', color: 'var(--r-res)', roles: 'Lead, 2 researchers' }],
+scopes: [s('run', 'This run only'), s('project', 'This project')],
+swOn: sw, swBg: sw ? 'var(--primary)' : 'var(--line-strong)', swPos: sw ? 'flex-end' : 'flex-start', swToggle: () => this.setState({ sw: !sw }),
+pills: [pill('Running', 'var(--accent-2)', 'var(--glass-strong)', '', 'a-pulse'), pill('Needs you', 'var(--warn)', 'var(--warn-soft)', 'var(--warn)', 'a-breathe'), pill('Finished', 'var(--ok)', 'var(--ok-soft)', 'var(--ok)'), pill('Failed', 'var(--bad)', 'var(--bad-soft)', 'var(--bad)'), pill('Queued', 'var(--line-strong)', 'var(--sunk)', 'var(--ink-2)'), pill('Paused', 'var(--ink-3)', 'var(--sunk)', 'var(--ink-2)')],
+notices: [
+{ title: 'Run finished.', text: '3 files changed, merged into main.', action: 'See changes', dot: 'var(--ok)', bg: 'var(--ok-soft)', bd: 'transparent' },
+{ title: 'Plan limit at 90%.', text: 'The run will pause at the limit and resume by itself.', action: 'Usage', dot: 'var(--warn)', bg: 'var(--warn-soft)', bd: 'var(--warn-line)' },
+{ title: 'Could not reach the provider.', text: 'Your work is saved. Trying again in 20 seconds.', action: 'Try now', dot: 'var(--bad)', bg: 'var(--bad-soft)', bd: 'transparent' },
+{ title: 'Removed the Tester role.', text: '', action: 'Undo', dot: 'var(--ink-3)', bg: 'var(--glass-strong)', bd: 'var(--glass-line)' }
+],
+agents: [
+ag('Implementer 1', 'Editing cache.js', '$0.31', 'var(--accent-2)', 'a-pulse', 'var(--ink-2)', 'var(--glass-line)', 'var(--glass-strong)', 1),
+ag('Implementer 2', 'Waiting on you: npm test', '$0.22', 'var(--warn)', 'a-breathe', 'var(--warn)', 'var(--warn-line)', 'var(--warn-soft)', 1),
+ag('Researcher 1', 'Done · compared Redis and in-memory', '$0.14', 'var(--ok)', '', 'var(--ink-3)', 'var(--line)', 'transparent', 0.8),
+ag('Reviewer 2', 'Failed · tests did not pass twice', '$0.19', 'var(--bad)', '', 'var(--bad)', 'var(--line-strong)', 'var(--bad-soft)', 1),
+ag('Implementer 4', 'Queued for the docs update', '', 'var(--line-strong)', '', 'var(--ink-3)', 'var(--line)', 'transparent', 0.8)
+]
+};
+}
+}
+</script>
+</body>
+</html>

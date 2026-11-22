@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Skills</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad)}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line)">
+<h1 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">Settings</h1>
+<span class="glass" style="flex: 1 1 200px; max-width: 320px; height: 34px; padding: 0 12px; border-radius: 10px; font-size: 13px; color: var(--ink-3); display: flex; align-items: center">Search settings</span>
+</header>
+<div class="dots" style="flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; min-height: 0">
+<nav aria-label="Settings" class="glass" style="flex: 1 0 190px; max-width: 220px; align-self: flex-start; border-radius: 16px; padding: 8px; display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{snav}}" as="n" hint-placeholder-count="8">
+<sc-if value="{{n.head}}" hint-placeholder-val="{{false}}"><div style="padding: 10px 10px 4px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{n.head}}</div></sc-if>
+<a href="{{n.href}}" style="height: 32px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; display: flex; align-items: center; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">{{n.label}}</a>
+</sc-for>
+</nav>
+
+<section aria-label="{{page.title}}" style="flex: 999 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px"><div style="flex: 1 1 260px"><h2 style="margin: 0; font-family: var(--display); font-size: 22px; font-weight: 600">{{page.title}}</h2><p style="margin: 2px 0 0; font-size: 13.5px; color: var(--ink-2)">{{page.sub}}</p></div><button class="b b-s">{{page.second}}</button><button class="b b-p">{{page.primary}}</button></div>
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+<span class="glass" style="flex: 1 1 180px; max-width: 280px; height: 34px; padding: 0 12px; border-radius: 10px; font-size: 13px; color: var(--ink-3); display: flex; align-items: center">{{page.search}}</span>
+<sc-for list="{{chips}}" as="c" hint-placeholder-count="4"><button aria-pressed="{{c.on}}" onClick="{{c.pick}}" style="height: 30px; padding: 0 11px; border-radius: 15px; border: 1px solid {{c.bd}}; background: {{c.bg}}; font-size: 12.5px; font-weight: 500">{{c.label}}</button></sc-for>
+</div>
+
+<sc-for list="{{sections}}" as="s" hint-placeholder-count="2">
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: baseline; gap: 8px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">{{s.label}}</span><span style="font-weight: 500">{{s.note}}</span></div>
+<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px">
+<sc-for list="{{s.cards}}" as="c" hint-placeholder-count="4">
+<div class="glass lift" style="position: relative; border-radius: 14px; border: 1.5px {{c.line}} {{c.bd}}; opacity: {{c.op}}; display: flex; flex-direction: column">
+<button onClick="{{c.pick}}" aria-pressed="{{c.sel}}" style="flex: 1 1 auto; padding: 12px; border: 0; background: transparent; text-align: left; display: flex; flex-direction: column; gap: 8px">
+<span style="display: flex; align-items: center; gap: 10px; padding-right: {{c.pad}}px"><span aria-hidden="true" style="flex: none; width: 32px; height: 32px; border-radius: 10px; background: {{c.tint}}; color: #fff; font-family: var(--display); font-size: 14px; font-weight: 600; display: grid; place-items: center">{{c.initial}}</span><span style="flex: 1 1 0; min-width: 0; display: flex; flex-direction: column"><span style="font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{c.name}}</span><span style="font-size: 12px; color: var(--ink-3)">{{c.tag}}</span></span></span>
+<span style="font-size: 12.5px; color: var(--ink-2)">{{c.sub}}</span>
+<sc-if value="{{c.hasDots}}" hint-placeholder-val="{{false}}"><span aria-hidden="true" style="display: flex; flex-wrap: wrap; gap: 8px"><sc-for list="{{c.groups}}" as="g" hint-placeholder-count="3"><span style="display: flex; gap: 3px"><sc-for list="{{g.dots}}" as="x" hint-placeholder-count="3"><span style="width: 9px; height: 9px; border-radius: 3px; background: {{g.color}}"></span></sc-for></span></sc-for></span></sc-if>
+<span style="display: flex; align-items: center; gap: 7px; font-size: 12px; color: {{c.ink}}"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: {{c.dot}}"></span>{{c.status}}</span>
+</button>
+<sc-if value="{{c.hasSwitch}}" hint-placeholder-val="{{false}}"><button role="switch" aria-checked="{{c.on}}" aria-label="{{c.swLabel}}" onClick="{{c.toggle}}" style="position: absolute; right: 12px; top: 14px; width: 34px; height: 20px; padding: 2px; border: 0; border-radius: 10px; background: {{c.swBg}}; display: flex; justify-content: {{c.swPos}}"><span style="width: 16px; height: 16px; border-radius: 50%; background: #fff"></span></button></sc-if>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-for>
+</section>
+
+<aside aria-label="Selected" class="glass a-rise" style="flex: 1 1 300px; max-width: 370px; min-width: 0; align-self: flex-start; border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: center; gap: 12px"><span aria-hidden="true" style="flex: none; width: 40px; height: 40px; border-radius: 12px; background: {{d.tint}}; color: #fff; font-family: var(--display); font-size: 16px; font-weight: 600; display: grid; place-items: center">{{d.initial}}</span><div style="flex-grow: 1; min-width: 0"><h2 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">{{d.name}}</h2><div style="font-size: 12.5px; color: var(--ink-2)">{{d.tag}}</div></div></div>
+<sc-if value="{{d.note}}" hint-placeholder-val="{{true}}"><div style="display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; border-radius: 12px; background: {{d.noteBg}}; font-size: 13px"><span aria-hidden="true" style="flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: {{d.dot}}"></span><span>{{d.note}}</span></div></sc-if>
+<sc-for list="{{d.lists}}" as="l" hint-placeholder-count="2">
+<div style="display: flex; flex-direction: column; gap: 6px"><span style="font-size: 12px; font-weight: 600; color: var(--ink-3)">{{l.label}}</span>
+<sc-for list="{{l.items}}" as="i" hint-placeholder-count="3"><div style="display: flex; align-items: baseline; gap: 9px; font-size: 13px"><span aria-hidden="true" style="flex: none; color: {{i.ink}}; font-weight: 700; width: 12px">{{i.mark}}</span><span style="flex: 1 1 0; min-width: 0">{{i.text}}</span><span style="flex: none; font-size: 12px; color: var(--ink-3)">{{i.side}}</span></div></sc-for>
+</div>
+</sc-for>
+<sc-if value="{{d.body}}" hint-placeholder-val="{{false}}"><div style="display: flex; flex-direction: column; gap: 6px"><span style="font-size: 12px; font-weight: 600; color: var(--ink-3)">{{d.bodyLabel}}</span><div style="padding: 10px 12px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); font-size: 13px; line-height: 21px; color: var(--ink-2); white-space: pre-line">{{d.body}}</div></div></sc-if>
+<div style="display: flex; flex-direction: column; gap: 6px"><span style="font-size: 12px; font-weight: 600; color: var(--ink-3)">{{d.chipsLabel}}</span><div style="display: flex; flex-wrap: wrap; gap: 6px"><sc-for list="{{d.chips}}" as="u" hint-placeholder-count="3"><span style="height: 26px; padding: 0 10px; border-radius: 8px; background: var(--sunk); font-size: 12.5px; display: inline-flex; align-items: center">{{u}}</span></sc-for></div></div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><sc-for list="{{d.actions}}" as="a" hint-placeholder-count="3"><button class="{{a.cls}}">{{a.label}}</button></sc-for></div>
+<sc-if value="{{d.help}}" hint-placeholder-val="{{true}}"><a href="Chat.dc.html" style="font-size: 12.5px; font-weight: 600; text-decoration: none">{{d.help}}</a></sc-if>
+</aside>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+gallery(cfg) {
+const f = this.state.f || 'all', off = this.state.off || {}, sel = this.state.sel || cfg.first;
+const DOT = { ok: 'var(--ok)', warn: 'var(--warn)', off: 'var(--line-strong)', info: 'var(--accent-2)' };
+const act = (label, cls) => ({ label: label, cls: 'b ' + cls });
+const card = (r) => { const on = !off[r.id], isSel = r.id === sel; return {
+name: r.name, tag: r.tag, sub: r.sub, tint: r.tint, initial: r.name[0], status: r.sw && !on ? 'Turned off' : r.status, dot: r.sw && !on ? DOT.off : DOT[r.st], ink: r.st === 'warn' ? 'var(--warn)' : 'var(--ink-2)',
+sel: isSel, bd: isSel ? 'var(--accent)' : r.dashed ? 'var(--line-strong)' : 'var(--glass-line)', line: r.dashed ? 'dashed' : 'solid', op: r.sw && !on ? 0.6 : 1, pad: r.sw ? 40 : 0,
+hasDots: !!r.groups, groups: (r.groups || []).map((g) => ({ color: g[0], dots: new Array(g[1]).fill(0) })),
+hasSwitch: !!r.sw, on: on, swBg: on ? 'var(--primary)' : 'var(--line-strong)', swPos: on ? 'flex-end' : 'flex-start', swLabel: r.name + (on ? ', on' : ', off'),
+pick: () => this.setState({ sel: r.id }), toggle: () => this.setState({ off: Object.assign({}, off, { [r.id]: on }) }) }; };
+const shown = cfg.items.filter((r) => f === 'all' || r.f === f);
+const sections = cfg.sections.map((s) => ({ label: s[1], note: s[2] || '', cards: shown.filter((r) => r.sec === s[0]).map(card) })).filter((s) => s.cards.length);
+const cur = cfg.items.find((r) => r.id === sel);
+const li = (x) => ({ mark: x[0], text: x[1], side: x[2] || '', ink: x[0] === '✓' ? 'var(--ok)' : x[0] === '×' ? 'var(--bad)' : 'var(--ink-3)' });
+return {
+page: cfg.page,
+chips: cfg.chips.map((c) => ({ label: c[1], on: f === c[0], bg: f === c[0] ? 'var(--accent-soft)' : 'var(--glass)', bd: f === c[0] ? 'var(--accent)' : 'var(--glass-line)', pick: () => this.setState({ f: c[0] }) })),
+sections: sections,
+d: { name: cur.name, tag: cur.tag, tint: cur.tint, initial: cur.name[0], note: cur.note || '', dot: DOT[cur.st], noteBg: cur.st === 'warn' ? 'var(--warn-soft)' : cur.st === 'ok' ? 'var(--ok-soft)' : 'var(--sunk)',
+lists: (cur.lists || []).map((l) => ({ label: l[0], items: l[1].map(li) })), body: cur.body || '', bodyLabel: cur.bodyLabel || '', chipsLabel: cur.chipsLabel, chips: cur.chips,
+actions: cur.actions.map((a) => act(a[0], a[1])), help: cfg.help }
+};
+}
+snav(a) {
+const it = (k, label, href, head) => ({ label: label, href: href || '#', head: head || '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 });
+return [it('general', 'General', 'SettingsGeneral.dc.html', 'App'), it('appearance', 'Appearance', 'Appearance.dc.html'), it('providers', 'AI providers', 'Providers.dc.html'), it('tools', 'Tools and services', 'Tools.dc.html'), it('skills', 'Skills', 'Skills.dc.html'), it('templates', 'Templates', 'Templates.dc.html'), it('about', 'About and updates', 'About.dc.html'),
+it('basics', 'Basics', '#', 'Project: Notes API'), it('perms', 'Permissions', 'Settings.dc.html'), it('limits', 'Spending limits', 'Limits.dc.html'), it('branches', 'Branches', 'Branches.dc.html')];
+}
+renderVals() {
+const S = (id, sec, f, name, tag, tint, sub, body, roles, extra) => Object.assign({ id: id, sec: sec, f: f, name: name, tag: tag, tint: tint, st: 'ok', status: 'Used by ' + roles.length + (roles.length === 1 ? ' role' : ' roles'), sub: sub, sw: true,
+body: body, bodyLabel: 'What it tells the agent', chipsLabel: 'Roles that have it', chips: roles, lists: [['Comes with', [['·', 'Instructions', '1 page'], ['·', 'Examples', extra && extra.ex ? extra.ex : '2 files']]]],
+actions: [['Edit', 'b-p'], ['Duplicate', 'b-s'], ['Export', 'b-s'], ['Delete', 'b-g']] }, extra || {});
+const g = this.gallery({
+first: 'review',
+page: { title: 'Skills', sub: 'Reusable know-how you give to roles: how you review code, how you write for your readers, what "done" means here.', primary: 'New skill', second: 'Import', search: 'Search skills' },
+chips: [['all', 'All'], ['mine', 'Yours'], ['built', 'Built in'], ['shared', 'From a kit']],
+sections: [['mine', 'Yours', '3 skills'], ['built', 'Built in', 'kept up to date with the app'], ['shared', 'From a kit', 'imported 3 Nov']],
+help: 'Want help writing one? Ask the Skills helper',
+items: [
+S('review', 'mine', 'mine', 'How we review code', 'Yours · edited 12 Nov', 'var(--r-rev)', 'Our review checklist and what blocks a merge.', 'Check behaviour before style.\nA change needs a test that fails without it.\nBlock the merge for: missing tests, secrets in code, unexplained new dependencies.\nSay what is good as well as what is wrong.', ['Reviewer', 'Lead reviewer']),
+S('voice', 'mine', 'mine', 'Our writing voice', 'Yours · edited 4 Nov', 'var(--r-writer)', 'Plain words, short sentences, no jargon.', 'Write for a busy reader who was not in the room.\nLead with the decision or the ask.\nOne idea per paragraph. No internal names for things.', ['Writer', 'Lead writer', 'Editor']),
+S('commits', 'mine', 'mine', 'Commit messages', 'Yours · edited 28 Oct', 'var(--r-impl)', 'How we title and describe commits.', 'Title in the imperative, under 60 characters.\nBody says why, not what.\nReference the issue number on the last line.', ['Implementer']),
+S('tests', 'built', 'built', 'Writing good tests', 'Built in', '#5b6b82', 'What to test and how to name it.', 'Test behaviour a user would notice.\nName the test after the behaviour.\nOne reason to fail per test.', ['Implementer', 'Tester'], { actions: [['Duplicate to edit', 'b-p'], ['Export', 'b-s']] }),
+S('sources', 'built', 'built', 'Citing sources', 'Built in', '#5b6b82', 'Every claim points to where it came from.', 'Quote the document and page for each fact.\nSay "not found" instead of guessing.', ['Researcher', 'Analyst'], { actions: [['Duplicate to edit', 'b-p'], ['Export', 'b-s']] }),
+S('slides', 'shared', 'shared', 'Summary slides', 'From "Shared kit"', 'var(--r-analyst)', 'Slide structure for summary decks.', 'One message per slide, written as the title.\nNo more than 3 numbers on a slide.\nAppendix for everything else.', ['Writer'], { ex: '1 template deck' })
+]
+});
+return Object.assign({ theme: this.props.theme ?? 'dark' }, g, { snav: this.snav('skills') }, this.side('gear'));
+}
+}
+</script>
+</body>
+</html>

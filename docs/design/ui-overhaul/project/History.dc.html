@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Run history</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad)}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line)">
+<h1 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">Notes API</h1>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 12px; border: 1px solid var(--line-strong); color: var(--ink-2); font-size: 12px; font-weight: 600">Code project · main</span>
+<nav aria-label="Project" style="display: flex; gap: 2px">
+<a href="ProjectHome.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; color: var(--ink-2); font-size: 13.5px; font-weight: 500; text-decoration: none; display: flex; align-items: center">Home</a>
+<a href="Run.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; background: var(--sunk); color: var(--ink); font-size: 13.5px; font-weight: 600; text-decoration: none; display: flex; align-items: center">Work</a>
+<a href="Team.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; color: var(--ink-2); font-size: 13.5px; font-weight: 500; text-decoration: none; display: flex; align-items: center">Team</a>
+<a href="Files.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; color: var(--ink-2); font-size: 13.5px; font-weight: 500; text-decoration: none; display: flex; align-items: center">Files</a>
+</nav>
+<div role="group" aria-label="Runs" style="display: flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--sunk)">
+<a href="Run.dc.html" style="height: 26px; padding: 0 11px; border-radius: 8px; color: var(--ink-2); font-size: 12.5px; font-weight: 600; text-decoration: none; display: flex; align-items: center; gap: 7px"><span aria-hidden="true" class="a-pulse" style="width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2)"></span>Running now</a>
+<span style="height: 26px; padding: 0 11px; border-radius: 8px; background: var(--glass-strong); font-size: 12.5px; font-weight: 600; display: flex; align-items: center">All runs · 47</span>
+</div>
+<span style="flex-grow: 1"></span>
+<a href="NewRun.dc.html" class="b b-p" style="text-decoration: none">New run</a>
+</header>
+
+<div class="dots" style="flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; min-height: 0">
+
+<section aria-label="Runs" style="flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+<span class="glass" style="flex: 1 1 200px; max-width: 300px; height: 36px; padding: 0 12px; border-radius: 11px; font-size: 13px; color: var(--ink-3); display: flex; align-items: center">Search runs and what they changed</span>
+<sc-for list="{{chips}}" as="c" hint-placeholder-count="5">
+<button aria-pressed="{{c.on}}" onClick="{{c.pick}}" style="height: 30px; padding: 0 11px; border-radius: 15px; border: 1px solid {{c.bd}}; background: {{c.bg}}; font-size: 12.5px; font-weight: 500">{{c.label}} <span style="color: var(--ink-3)">{{c.n}}</span></button>
+</sc-for>
+<span style="flex-grow: 1"></span>
+<button class="b b-s" style="height: 30px; font-size: 12.5px">Last 30 days <span aria-hidden="true" style="color: var(--ink-3)">▾</span></button>
+</div>
+
+<sc-for list="{{days}}" as="d" hint-placeholder-count="3">
+<div class="glass" style="border-radius: 16px; padding: 8px; display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; padding: 4px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">{{d.label}}</span><span style="font-weight: 500">{{d.total}}</span></div>
+<sc-for list="{{d.runs}}" as="r" hint-placeholder-count="3">
+<button aria-pressed="{{r.sel}}" onClick="{{r.pick}}" style="display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 11px; border: 1px solid {{r.bd}}; background: {{r.bg}}; text-align: left">
+<span aria-hidden="true" class="{{r.cls}}" style="flex: none; width: 9px; height: 9px; border-radius: 50%; background: {{r.dot}}"></span>
+<span style="flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 1px"><span style="font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.title}}</span><span style="font-size: 12.5px; color: {{r.ink}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.result}}</span></span>
+<span aria-hidden="true" style="flex: none; display: flex; gap: 2px; width: 92px; flex-wrap: wrap"><sc-for list="{{r.dots}}" as="x" hint-placeholder-count="12"><span style="width: 6px; height: 6px; border-radius: 2px; background: {{x}}"></span></sc-for></span>
+<span style="flex: none; width: 64px; font-size: 12px; color: var(--ink-2); text-align: right">{{r.agents}}</span>
+<span style="flex: none; width: 54px; font-size: 12px; color: var(--ink-2); text-align: right">{{r.time}}</span>
+<span style="flex: none; width: 50px; font-size: 12.5px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums">{{r.cost}}</span>
+</button>
+</sc-for>
+</div>
+</sc-for>
+<button style="align-self: flex-start; height: 32px; padding: 0 12px; border-radius: 10px; border: 1px dashed var(--line-strong); background: transparent; font-size: 12.5px; color: var(--ink-3)">Show 39 older runs</button>
+</section>
+
+<aside aria-label="Selected run" class="glass a-rise" style="flex: 1 1 340px; max-width: 420px; min-width: 0; align-self: flex-start; border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span style="align-self: flex-start; display: inline-flex; align-items: center; gap: 7px; height: 24px; padding: 0 10px; border-radius: 12px; background: {{d.pillBg}}; color: {{d.pillFg}}; font-size: 12.5px; font-weight: 600"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: {{d.dot}}"></span>{{d.status}}</span>
+<h2 style="margin: 0; font-family: var(--display); font-size: 18px; line-height: 24px; font-weight: 600">{{d.title}}</h2>
+<span style="font-size: 12.5px; color: var(--ink-2)">{{d.meta}}</span>
+</div>
+<p style="margin: 0; font-size: 13.5px">{{d.summary}}</p>
+<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px">
+<sc-for list="{{d.stats}}" as="s" hint-placeholder-count="3"><div style="padding: 9px 10px; border-radius: 11px; background: var(--sunk)"><div style="font-size: 11.5px; color: var(--ink-3)">{{s.label}}</div><div style="font-family: var(--display); font-size: 16px; font-weight: 600">{{s.value}}</div></div></sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">How it went</div>
+<sc-for list="{{d.steps}}" as="s" hint-placeholder-count="4"><div style="display: flex; align-items: center; gap: 9px; font-size: 13px"><span aria-hidden="true" style="flex: none; width: 16px; height: 16px; border-radius: 50%; background: {{s.bg}}; color: #fff; font-size: 10px; display: grid; place-items: center">{{s.mark}}</span><span style="flex: 1 1 0; min-width: 0">{{s.text}}</span><span style="flex: none; font-size: 12px; color: var(--ink-3)">{{s.time}}</span></div></sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 4px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">What it left</div>
+<sc-for list="{{d.left}}" as="l" hint-placeholder-count="2"><div style="display: flex; align-items: baseline; gap: 8px; padding: 7px 10px; border-radius: 9px; background: var(--glass-strong); border: 1px solid var(--glass-line); font-size: 13px"><span style="flex: 1 1 0; min-width: 0; font-weight: 600">{{l.a}}</span><span style="color: var(--ink-2)">{{l.b}}</span></div></sc-for>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><button class="b b-p">Open the run</button><button class="b b-s">Run it again</button><button class="b b-s">Continue from here</button></div>
+<button class="b b-g" style="align-self: flex-start; padding: 0">{{d.undo}}</button>
+</aside>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":980}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+renderVals() {
+const C = { ok: 'var(--ok)', bad: 'var(--bad)', stop: 'var(--ink-3)', run: 'var(--accent-2)' };
+const strip = (n, bad) => { const a = []; for (let i = 0; i < n; i++) a.push(i < bad ? C.bad : C.ok); return a; };
+const raw = [
+{ id: 'r47', day: 'Today', st: 'run', title: 'Add response caching', result: 'Running · step 2 of 4 · 1 waiting on you', agents: 16, time: '14 min', cost: '$2.31', bad: 0,
+summary: 'In progress. Research is done and Build is adding the cache now.', left: [['Nothing merged yet', '']], undo: 'Stop this run' },
+{ id: 'r46', day: 'Today', st: 'ok', title: 'Fix the flaky pagination test', result: 'Merged · 2 files changed', agents: 5, time: '6 min', cost: '$0.48', bad: 0,
+summary: 'The test relied on insertion order. The team sorted by id in the query and the test now passes 50 times in a row.', left: [['src/notes.js', '+3 −1'], ['test/pagination.test.js', '+12 −4']], undo: 'Undo the merge' },
+{ id: 'r45', day: 'Yesterday', st: 'ok', title: 'Add rate limiting to the public endpoints', result: 'Merged · 5 files changed', agents: 14, time: '22 min', cost: '$3.10', bad: 0,
+summary: 'Added a per-address limit of 60 requests a minute with a clear error message, plus tests and a README section.', left: [['5 files in src/ and test/', '+164 −9'], ['README.md', 'section added']], undo: 'Undo the merge' },
+{ id: 'r44', day: 'Yesterday', st: 'bad', title: 'Upgrade the test runner', result: 'Failed · 3 tests broke after the upgrade', agents: 9, time: '17 min', cost: '$1.92', bad: 3,
+summary: 'The upgrade changed how timers are faked and 3 tests could not be fixed in two tries. Nothing was merged.', left: [['Branch upgrade-test-runner', 'kept, not merged'], ['A note on what failed', 'in Files']], undo: 'Delete the branch' },
+{ id: 'r43', day: 'Yesterday', st: 'ok', title: 'Daily dependency check', result: 'Scheduled · nothing needed', agents: 1, time: '1 min', cost: '$0.03', bad: 0,
+summary: 'No updates need attention today.', left: [['Nothing changed', '']], undo: 'Open the schedule' },
+{ id: 'r42', day: 'Tuesday', st: 'stop', title: 'Rewrite the export in streams', result: 'Stopped by you · nothing merged', agents: 11, time: '9 min', cost: '$1.05', bad: 0,
+summary: 'You ended this run after the research step. The comparison of approaches is saved in Files.', left: [['export-options.md', 'in Files']], undo: 'Delete its branch' },
+{ id: 'r41', day: 'Tuesday', st: 'ok', title: 'Document the notes endpoints', result: 'Merged · 1 file changed', agents: 4, time: '5 min', cost: '$0.36', bad: 0,
+summary: 'Wrote reference docs for all 6 endpoints with examples.', left: [['docs/api.md', '+210']], undo: 'Undo the merge' }
+];
+const f = this.state.f || 'all', sel = this.state.sel || 'r45';
+const WORD = { ok: 'Finished', bad: 'Failed', stop: 'Stopped', run: 'Running' };
+const chip = (id, label) => ({ label: label, n: id === 'all' ? 47 : raw.filter((r) => r.st === id).length, on: f === id, bg: f === id ? 'var(--accent-soft)' : 'var(--glass)', bd: f === id ? 'var(--accent)' : 'var(--glass-line)', pick: () => this.setState({ f: id }) });
+const shown = raw.filter((r) => f === 'all' || r.st === f);
+const days = [];
+shown.forEach((r) => { let d = days.find((x) => x.label === r.day); if (!d) { d = { label: r.day, runs: [], sum: 0 }; days.push(d); }
+d.sum += Number(r.cost.slice(1));
+d.runs.push({ title: r.title, result: r.result, agents: r.agents + (r.agents === 1 ? ' agent' : ' agents'), time: r.time, cost: r.cost, dot: C[r.st], cls: r.st === 'run' ? 'a-pulse' : '', ink: r.st === 'bad' ? 'var(--bad)' : 'var(--ink-2)',
+dots: strip(Math.min(r.agents, 16), r.bad), sel: r.id === sel, bg: r.id === sel ? 'var(--accent-soft)' : 'transparent', bd: r.id === sel ? 'var(--accent)' : 'transparent', pick: () => this.setState({ sel: r.id }) }); });
+days.forEach((d) => { d.total = d.runs.length + (d.runs.length === 1 ? ' run · $' : ' runs · $') + d.sum.toFixed(2); });
+const cur = raw.find((r) => r.id === sel);
+const done = cur.st === 'ok', bad = cur.st === 'bad';
+const step = (text, time, state) => ({ text: text, time: time, mark: state === 'ok' ? '✓' : state === 'bad' ? '!' : '', bg: state === 'ok' ? 'var(--ok)' : state === 'bad' ? 'var(--bad)' : 'var(--line-strong)' });
+return Object.assign({
+theme: this.props.theme ?? 'dark',
+chips: [chip('all', 'All'), chip('ok', 'Finished'), chip('bad', 'Failed'), chip('stop', 'Stopped')],
+days: days,
+d: { title: cur.title, status: WORD[cur.st], dot: C[cur.st], pillBg: done ? 'var(--ok-soft)' : bad ? 'var(--bad-soft)' : 'var(--sunk)', pillFg: done ? 'var(--ok)' : bad ? 'var(--bad)' : 'var(--ink-2)',
+meta: cur.day + ' · started by you · whole team', summary: cur.summary, undo: cur.undo,
+stats: [{ label: 'Agents', value: cur.agents }, { label: 'Time', value: cur.time }, { label: 'Cost', value: cur.cost }],
+steps: [step('Plan the work', '2 min', 'ok'), step('Make the change', cur.time, bad ? 'bad' : cur.st === 'stop' ? '' : 'ok'), step('Review and test', '', done ? 'ok' : ''), step('Merge and summarise', '', done ? 'ok' : '')],
+left: cur.left.map((l) => ({ a: l[0], b: l[1] })) }
+}, this.side('notes'));
+}
+}
+</script>
+</body>
+</html>

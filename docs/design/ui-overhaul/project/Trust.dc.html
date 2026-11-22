@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Folder trust</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad)}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+<div class="dots" style="flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: 28px 20px; background-color: rgba(0, 0, 0, 0.28)">
+<article role="dialog" aria-labelledby="trust-h" class="glass a-rise" style="width: 100%; max-width: 680px; border-radius: 22px; padding: 22px; display: flex; flex-direction: column; gap: 16px; background: var(--glass-strong); box-shadow: var(--shadow), var(--glow)">
+<div style="display: flex; align-items: flex-start; gap: 14px">
+<span aria-hidden="true" style="flex: none; width: 44px; height: 44px; border-radius: 14px; background: var(--warn-soft); color: var(--warn); display: grid; place-items: center"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h6l2 2h10v10H3zM12 12v3M12 17.5v.5"></path></svg></span>
+<div><h1 id="trust-h" style="margin: 0; font-family: var(--display); font-size: 21px; line-height: 27px; font-weight: 600">This folder comes with its own team setup</h1><p style="margin: 4px 0 0; font-size: 13.5px; color: var(--ink-2)"><span style="font-family: var(--mono); font-size: 12.5px">C:\Code\payments-service</span> was cloned from GitHub and includes settings someone else wrote. Nothing in it has been used yet.</p></div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">What it would set up</div>
+<sc-for list="{{found}}" as="f" hint-placeholder-count="5">
+<div style="display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 11px; border: 1px solid {{f.bd}}; background: {{f.bg}}">
+<span aria-hidden="true" style="flex: none; width: 8px; height: 8px; border-radius: 50%; background: {{f.dot}}"></span>
+<span style="flex: 1 1 0; min-width: 0; display: flex; flex-direction: column"><span style="font-size: 13.5px; font-weight: 600">{{f.name}}</span><span style="font-size: 12.5px; color: {{f.ink}}">{{f.note}}</span></span>
+<button class="b b-g" style="height: 28px; padding: 0 8px; font-size: 12.5px">Look</button>
+</div>
+</sc-for>
+</div>
+
+<div role="radiogroup" aria-label="How to open it" style="display: flex; flex-direction: column; gap: 8px">
+<sc-for list="{{choices}}" as="c" hint-placeholder-count="3">
+<button role="radio" aria-checked="{{c.on}}" onClick="{{c.pick}}" style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 13px; border: 1.5px solid {{c.bd}}; background: {{c.bg}}; text-align: left"><span aria-hidden="true" style="flex: none; width: 18px; height: 18px; border-radius: 50%; border: 2px solid {{c.ring}}; display: grid; place-items: center"><span style="width: 9px; height: 9px; border-radius: 50%; background: {{c.fill}}"></span></span><span style="flex: 1 1 0; min-width: 0; display: flex; flex-direction: column"><span style="font-size: 14px; font-weight: 600">{{c.label}} <sc-if value="{{c.badge}}" hint-placeholder-val="{{false}}"><span style="margin-left: 6px; padding: 2px 8px; border-radius: 10px; background: var(--ok-soft); color: var(--ok); font-size: 11.5px">{{c.badge}}</span></sc-if></span><span style="font-size: 12.5px; color: var(--ink-2)">{{c.sub}}</span></span></button>
+</sc-for>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 4px; border-top: 1px solid var(--line)"><span style="flex: 1 1 240px; padding-top: 12px; font-size: 12.5px; color: var(--ink-3)">{{summary}}</span><button class="b b-s" style="margin-top: 12px">Don't open it</button><button class="b b-p" style="margin-top: 12px">{{go}}</button></div>
+</article>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+renderVals() {
+const pick = this.state.pick || 'mine';
+const f = (name, note, risk) => ({ name: name, note: note, dot: risk ? 'var(--warn)' : 'var(--ok)', ink: risk ? 'var(--warn)' : 'var(--ink-2)', bd: risk ? 'var(--warn-line)' : 'var(--line)', bg: risk ? 'var(--warn-soft)' : 'transparent' });
+const c = (id, label, sub, badge) => ({ label: label, sub: sub, badge: badge || '', on: pick === id, bd: pick === id ? 'var(--accent)' : 'var(--line)', bg: pick === id ? 'var(--accent-soft)' : 'transparent', ring: pick === id ? 'var(--accent)' : 'var(--line-strong)', fill: pick === id ? 'var(--accent)' : 'transparent', pick: () => this.setState({ pick: id }) });
+const S = { mine: ['Opens with your default team. Their setup stays in the folder, unused.', 'Open with my team'], review: ['You go through the 5 items one by one before anything is used.', 'Review their setup'], theirs: ['Uses everything listed above, including the 2 flagged items.', 'Trust and open'] };
+return Object.assign({
+theme: this.props.theme ?? 'dark',
+found: [
+f('A team of 8 roles', 'Instructions for each role, written by the repository\'s authors.'),
+f('2 tools', 'GitHub and an internal "deploy" tool that runs on this computer.', true),
+f('3 "always allow" rules', 'Includes: run any command starting with "make".', true),
+f('2 skills', 'Coding style and commit message guides.'),
+f('Spending limit of $20 a run', 'Higher than your default of $5.')
+],
+choices: [c('mine', 'Open with my own team', 'Ignore their setup. Safest for a folder you do not know.', 'Safest'), c('review', 'Review their setup, then decide', 'See each item and keep only what you want.'), c('theirs', 'Trust this folder and use their setup', 'Only for folders from people you trust.')],
+summary: S[pick][0], go: S[pick][1]
+}, this.side('home'));
+}
+}
+</script>
+</body>
+</html>

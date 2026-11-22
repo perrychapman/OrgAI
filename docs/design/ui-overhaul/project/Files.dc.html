@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Files</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line)">
+<h1 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">Acme onboarding</h1>
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 12px; background: var(--eng-soft); border: 1px solid transparent; color: var(--eng); font-size: 12px; font-weight: 600"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h16v11H4zM9 8V5h6v3M4 13h16"></path></svg>Engagement · Acme Corp</span>
+<nav aria-label="Project" style="display: flex; gap: 2px">
+<a href="EngagementHome.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; color: var(--ink-2); font-size: 13.5px; font-weight: 500; text-decoration: none; display: flex; align-items: center">Home</a>
+<a href="Engagement.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; color: var(--ink-2); font-size: 13.5px; font-weight: 500; text-decoration: none; display: flex; align-items: center">Work</a>
+<a href="Team.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; color: var(--ink-2); font-size: 13.5px; font-weight: 500; text-decoration: none; display: flex; align-items: center">Team</a>
+<a href="Files.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; background: var(--sunk); color: var(--ink); font-size: 13.5px; font-weight: 600; text-decoration: none; display: flex; align-items: center">Files</a>
+<a href="Knowledge.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; color: var(--ink-2); font-size: 13.5px; font-weight: 500; text-decoration: none; display: flex; align-items: center">Knowledge</a>
+</nav>
+<span style="flex-grow: 1"></span>
+<a href="Settings.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; color: var(--ink-2); font-size: 13px; font-weight: 500; text-decoration: none; display: flex; align-items: center">Project settings</a>
+</header>
+
+<div style="flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; min-height: 0">
+
+<section aria-label="Files" style="flex: 999 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+<label for="find" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%)">Search files</label>
+<input id="find" type="search" placeholder="Search files" class="glass" style="flex: 1 1 180px; min-width: 0; height: 36px; border-radius: 11px; padding: 0 12px; font-size: 13.5px">
+<div role="group" aria-label="Kind" class="glass" style="display: flex; gap: 2px; padding: 3px; border-radius: 11px">
+<button style="height: 30px; padding: 0 12px; border-radius: 8px; border: 0; background: var(--primary); color: var(--on-primary); font-size: 12.5px; font-weight: 600">All 6</button>
+<button style="height: 30px; padding: 0 10px; border-radius: 8px; border: 0; background: transparent; font-size: 12.5px; font-weight: 500; color: var(--ink-2)">Documents</button>
+<button style="height: 30px; padding: 0 10px; border-radius: 8px; border: 0; background: transparent; font-size: 12.5px; font-weight: 500; color: var(--ink-2)">Slides</button>
+<button style="height: 30px; padding: 0 10px; border-radius: 8px; border: 0; background: transparent; font-size: 12.5px; font-weight: 500; color: var(--ink-2)">Data</button>
+<button style="height: 30px; padding: 0 10px; border-radius: 8px; border: 0; background: transparent; font-size: 12.5px; font-weight: 500; color: var(--ink-2)">Diagrams</button>
+</div>
+<button class="glass" style="height: 36px; padding: 0 12px; border-radius: 11px; font-size: 13px; font-weight: 500">Newest first <span aria-hidden="true" style="color: var(--ink-3)">▾</span></button>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 14px">
+<sc-for list="{{files}}" as="f" hint-placeholder-count="6">
+<button class="lift a-rise" style="display: flex; flex-direction: column; gap: 10px; padding: 10px; border-radius: 16px; text-align: left; background: {{f.bg}}; border: 1px solid {{f.bd}}; box-shadow: {{f.sh}}; animation-delay: {{f.delay}}">
+<span aria-hidden="true" style="height: 128px; border-radius: 10px; background: var(--bg); display: grid; place-items: center; overflow: hidden">
+<sc-if value="{{f.doc}}" hint-placeholder-val="{{true}}"><span style="width: 84px; height: 108px; margin-top: 20px; border-radius: 4px 4px 0 0; background: var(--glass-strong); border: 1px solid var(--glass-line); padding: 10px 9px; display: flex; flex-direction: column; gap: 5px"><span style="height: 5px; width: 60%; border-radius: 2px; background: var(--ink-2)"></span><span style="height: 3px; border-radius: 2px; background: var(--line-strong)"></span><span style="height: 3px; border-radius: 2px; background: var(--line-strong)"></span><span style="height: 3px; width: 80%; border-radius: 2px; background: var(--line-strong)"></span><span style="height: 3px; margin-top: 4px; border-radius: 2px; background: var(--line-strong)"></span><span style="height: 3px; width: 70%; border-radius: 2px; background: var(--line-strong)"></span></span></sc-if>
+<sc-if value="{{f.slides}}" hint-placeholder-val="{{false}}"><span style="width: 150px; height: 86px; border-radius: 5px; background: var(--glass-strong); border: 1px solid var(--glass-line); padding: 12px; display: flex; flex-direction: column; gap: 8px"><span style="height: 6px; width: 55%; border-radius: 2px; background: var(--ink-2)"></span><span style="flex-grow: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px"><span style="border-radius: 3px; background: var(--accent-soft)"></span><span style="border-radius: 3px; background: var(--sunk)"></span></span></span></sc-if>
+<sc-if value="{{f.sheet}}" hint-placeholder-val="{{false}}"><span style="width: 150px; height: 86px; border-radius: 5px; background: var(--glass-strong); border: 1px solid var(--glass-line); background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 37px 14px; border-top: 14px solid var(--sunk)"></span></sc-if>
+<sc-if value="{{f.diagram}}" hint-placeholder-val="{{false}}"><span style="display: flex; align-items: center; gap: 0"><span style="width: 30px; height: 22px; border-radius: 5px; background: var(--accent-soft); border: 1px solid var(--accent)"></span><span style="width: 16px; height: 2px; background: var(--line-strong)"></span><span style="width: 30px; height: 22px; border-radius: 5px; background: var(--glass-strong); border: 1px solid var(--line-strong)"></span><span style="width: 16px; height: 2px; background: var(--line-strong)"></span><span style="width: 30px; height: 22px; border-radius: 11px; background: var(--ok-soft); border: 1px solid var(--ok)"></span></span></sc-if>
+</span>
+<span style="display: flex; align-items: flex-start; gap: 8px; padding: 0 4px 2px">
+<span style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column"><span style="font-weight: 600; font-size: 13.5px">{{f.name}}</span><span style="font-size: 12px; color: var(--ink-3)">{{f.meta}}</span></span>
+<sc-if value="{{f.badge}}" hint-placeholder-val="{{false}}"><span style="font-size: 11.5px; font-weight: 600; color: {{f.badgeFg}}; background: {{f.badgeBg}}; border-radius: 6px; padding: 2px 7px; white-space: nowrap">{{f.badge}}</span></sc-if>
+</span>
+</button>
+</sc-for>
+</div>
+</section>
+
+<aside aria-label="Preview" class="glass a-rise" style="flex: 1 1 400px; max-width: 480px; min-width: 0; border-radius: 18px; padding: 18px; display: flex; flex-direction: column; gap: 14px">
+<div style="display: flex; align-items: flex-start; gap: 10px">
+<div style="flex-grow: 1; min-width: 0">
+<h2 style="margin: 0; font-family: var(--display); font-size: 19px; line-height: 24px; font-weight: 600">Q3 findings</h2>
+<div style="font-size: 12.5px; color: var(--ink-3)">Written by Writer in “Draft Q3 findings” · 12 minutes ago</div>
+</div>
+<button aria-label="More actions" style="width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--line-strong); background: transparent; font-weight: 600">···</button>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button style="flex: 1 1 auto; height: 36px; padding: 0 14px; border-radius: 10px; border: 0; background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 600">Ask the team to revise</button>
+<button style="height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line-strong); background: transparent; font-size: 13px; font-weight: 500">Open</button>
+<button style="height: 36px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line-strong); background: transparent; font-size: 13px; font-weight: 500">Add a note</button>
+</div>
+
+<article style="flex: 1 1 auto; background: var(--glass-strong); border: 1px solid var(--glass-line); border-radius: 10px; padding: 26px 28px; display: flex; flex-direction: column; gap: 10px">
+<div style="font-size: 11.5px; font-weight: 600; color: var(--ink-3)">Acme · Onboarding review</div>
+<h3 style="margin: 0; font-family: var(--display); font-size: 21px; line-height: 26px; font-weight: 600; letter-spacing: -0.01em">Q3 findings</h3>
+<p style="margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 21px">New customers take longest between signing and their first login. The interviews point to one cause: account setup needs an administrator, and most teams do not know who theirs is.</p>
+<h4 style="margin: 6px 0 0; font-size: 14px; font-weight: 600">1. Where people get stuck</h4>
+<div style="position: relative; background: var(--warn-soft); border-radius: 6px; padding: 4px 8px; margin: 0 -8px">
+<p style="margin: 0; font-size: 13.5px; line-height: 21px">The welcome email arrives before the account exists, so the first link people click leads to an error page.</p>
+<span style="position: absolute; right: -10px; top: -10px; width: 22px; height: 22px; border-radius: 50%; background: var(--warn); color: var(--bg-base); font-size: 11px; font-weight: 600; display: grid; place-items: center" aria-label="Note 1">1</span>
+</div>
+<p style="margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 21px">Administrators are asked for billing details they rarely have to hand, and the form cannot be saved part way through.</p>
+<h4 style="margin: 6px 0 0; font-size: 14px; font-weight: 600">2. What we recommend</h4>
+<p style="margin: 0; color: var(--ink-2); font-size: 13.5px; line-height: 21px">Send the welcome email only once the account is ready, and let administrators finish billing later.</p>
+</article>
+
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: center"><span style="font-size: 13px; font-weight: 600; flex-grow: 1">Versions</span><a href="#" style="font-size: 13px; text-decoration: none">Compare</a></div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px">
+<button style="padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: transparent; text-align: left; display: flex; flex-direction: column"><span style="font-size: 12.5px; font-weight: 600">Version 1</span><span style="font-size: 12px; color: var(--ink-3)">Yesterday</span></button>
+<button style="padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: transparent; text-align: left; display: flex; flex-direction: column"><span style="font-size: 12.5px; font-weight: 600">Version 2</span><span style="font-size: 12px; color: var(--ink-3)">2 hours ago</span></button>
+<button style="padding: 8px 10px; border-radius: 10px; border: 1px solid var(--accent); background: var(--accent-soft); text-align: left; display: flex; flex-direction: column"><span style="font-size: 12.5px; font-weight: 600">Version 3</span><span style="font-size: 12px; color: var(--ink-2)">Current</span></button>
+</div>
+</div>
+</aside>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+renderVals() {
+const f = (kind, name, meta, badge, sel, i) => ({
+name: name, meta: meta, badge: badge || '',
+doc: kind === 'doc', slides: kind === 'slides', sheet: kind === 'sheet', diagram: kind === 'diagram',
+bg: sel ? 'var(--accent-soft)' : 'var(--glass)',
+bd: sel ? 'var(--accent)' : 'var(--glass-line)',
+sh: sel ? '0 0 26px -10px var(--accent)' : 'none',
+badgeFg: badge === 'New' ? 'var(--accent-text)' : 'var(--warn)',
+badgeBg: badge === 'New' ? 'var(--accent-soft)' : 'var(--warn-soft)',
+delay: (i * 50) + 'ms'
+});
+const files = [
+f('doc', 'Q3 findings', 'Writer · 12 minutes ago', '2 notes', true, 0),
+f('slides', 'Summary deck', 'Writer · yesterday', 'New', false, 1),
+f('sheet', 'Interview coding', 'Analyst · yesterday', '', false, 2),
+f('doc', 'Interview guide', 'Specialist · 3 days ago', '', false, 3),
+f('diagram', 'Onboarding journey map', 'Analyst · 4 days ago', '', false, 4),
+f('sheet', 'Risk register', 'Analyst · last week', '', false, 5)
+];
+return Object.assign({ theme: this.props.theme ?? 'dark', files: files }, this.side('acme'));
+}
+}
+</script>
+</body>
+</html>

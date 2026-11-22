@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Appearance</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad)}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line)">
+<h1 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">Settings</h1>
+<span class="glass" style="flex: 1 1 200px; max-width: 320px; height: 34px; padding: 0 12px; border-radius: 10px; font-size: 13px; color: var(--ink-3); display: flex; align-items: center">Search settings</span>
+<span style="flex-grow: 1"></span>
+<span style="font-size: 12.5px; color: var(--ink-3)">Changes save as you make them</span>
+</header>
+<div class="dots" style="flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; min-height: 0">
+<nav aria-label="Settings" class="glass" style="flex: 1 0 190px; max-width: 220px; align-self: flex-start; border-radius: 16px; padding: 8px; display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{snav}}" as="n" hint-placeholder-count="8">
+<sc-if value="{{n.head}}" hint-placeholder-val="{{false}}"><div style="padding: 10px 10px 4px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{n.head}}</div></sc-if>
+<a href="{{n.href}}" style="height: 32px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; display: flex; align-items: center; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">{{n.label}}</a>
+</sc-for>
+</nav>
+
+<section aria-label="Appearance" style="flex: 999 1 460px; max-width: 820px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+<div><div style="font-size: 12.5px; font-weight: 600; color: var(--ink-3)">App</div><h2 style="margin: 0; font-family: var(--display); font-size: 22px; font-weight: 600">Appearance</h2><p style="margin: 2px 0 0; font-size: 13.5px; color: var(--ink-2)">How OrgAI looks and moves. Try the options; this page changes as you pick.</p></div>
+
+<div class="glass" style="border-radius: 16px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">Colour mode</div>
+<div role="radiogroup" aria-label="Colour mode" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px">
+<sc-for list="{{modes}}" as="m" hint-placeholder-count="3">
+<button role="radio" aria-checked="{{m.on}}" onClick="{{m.pick}}" style="padding: 8px; border-radius: 14px; border: 1.5px solid {{m.bd}}; background: {{m.bg}}; display: flex; flex-direction: column; gap: 8px; text-align: left">
+<span aria-hidden="true" style="height: 84px; border-radius: 9px; background: {{m.art}}; border: 1px solid var(--line); padding: 8px; display: flex; gap: 6px"><span style="width: 26%; border-radius: 5px; background: {{m.pane}}"></span><span style="flex: 1 1 0; display: flex; flex-direction: column; align-items: center; gap: 5px; padding-top: 6px"><span style="width: 44%; height: 12px; border-radius: 4px; background: #6a59f0"></span><span style="display: flex; gap: 4px; width: 100%"><span style="flex: 1 1 0; height: 26px; border-radius: 5px; background: {{m.pane}}"></span><span style="flex: 1 1 0; height: 26px; border-radius: 5px; background: {{m.pane}}"></span><span style="flex: 1 1 0; height: 26px; border-radius: 5px; background: {{m.pane}}"></span></span></span></span>
+<span style="display: flex; align-items: center; gap: 8px; padding: 0 4px 2px"><span style="flex-grow: 1; font-size: 13.5px; font-weight: 600">{{m.label}}</span><span style="font-size: 12px; color: var(--ink-3)">{{m.note}}</span></span>
+</button>
+</sc-for>
+</div>
+</div>
+
+<div class="glass" style="border-radius: 16px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; align-items: baseline; gap: 8px"><span style="flex-grow: 1; font-size: 12px; font-weight: 600; color: var(--ink-3)">Canvas theme for new projects</span><span style="font-size: 12px; color: var(--ink-3)">Each project can pick its own from the canvas</span></div>
+<div role="radiogroup" aria-label="Canvas theme" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px">
+<sc-for list="{{canvases}}" as="c" hint-placeholder-count="3">
+<button role="radio" aria-checked="{{c.on}}" onClick="{{c.pick}}" style="padding: 10px; border-radius: 14px; border: 1.5px solid {{c.bd}}; background: {{c.bg}}; display: flex; align-items: center; gap: 10px; text-align: left"><span aria-hidden="true" style="flex: none; width: 44px; height: 32px; border-radius: 8px; background: {{c.swatch}}; border: 1px solid var(--glass-line)"></span><span style="display: flex; flex-direction: column"><span style="font-size: 13.5px; font-weight: 600">{{c.name}}</span><span style="font-size: 12px; color: var(--ink-3)">{{c.sub}}</span></span></button>
+</sc-for>
+</div>
+</div>
+
+<div class="glass" style="border-radius: 16px; padding: 4px 16px">
+<sc-for list="{{rows}}" as="r" hint-placeholder-count="5">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 0; border-bottom: 1px solid var(--line)">
+<div style="flex: 1 1 240px; min-width: 0"><div style="font-size: 13.5px; font-weight: 600">{{r.label}}</div><div style="font-size: 12.5px; color: var(--ink-2)">{{r.help}}</div></div>
+<sc-if value="{{r.isSeg}}" hint-placeholder-val="{{true}}"><div role="group" aria-label="{{r.label}}" style="flex: none; display: flex; gap: 2px; padding: 3px; border-radius: 11px; background: var(--sunk)"><sc-for list="{{r.opts}}" as="o" hint-placeholder-count="3"><button aria-pressed="{{o.on}}" onClick="{{o.pick}}" style="height: 28px; padding: 0 11px; border-radius: 8px; border: 0; background: {{o.bg}}; color: {{o.fg}}; font-size: 12.5px; font-weight: 600">{{o.label}}</button></sc-for></div></sc-if>
+<sc-if value="{{r.isSwitch}}" hint-placeholder-val="{{false}}"><button role="switch" aria-checked="{{r.on}}" aria-label="{{r.label}}" onClick="{{r.toggle}}" style="flex: none; width: 38px; height: 22px; padding: 2px; border: 0; border-radius: 11px; background: {{r.swBg}}; display: flex; justify-content: {{r.swPos}}"><span style="width: 18px; height: 18px; border-radius: 50%; background: #fff"></span></button></sc-if>
+</div>
+</sc-for>
+</div>
+</section>
+
+<aside aria-label="Preview" style="flex: 1 1 280px; max-width: 340px; min-width: 0; align-self: flex-start; display: flex; flex-direction: column; gap: 10px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">Preview</div>
+<div style="border-radius: 18px; padding: {{pv.pad}}px; display: flex; flex-direction: column; gap: {{pv.gap}}px; border: 1px solid var(--glass-line); background: {{pv.panel}}; -webkit-backdrop-filter: {{pv.blur}}; backdrop-filter: {{pv.blur}}; font-size: {{pv.font}}px">
+<div style="display: flex; align-items: center; gap: 10px"><span aria-hidden="true" style="flex: none; width: 32px; height: 32px; border-radius: 10px; background: var(--r-orch); color: #fff; font-weight: 600; display: grid; place-items: center">O</span><span style="display: flex; flex-direction: column"><span style="font-weight: 600">Orchestrator</span><span style="color: var(--ink-2); font-size: 0.92em">Coordinating step 2 of 4</span></span></div>
+<sc-for list="{{pv.agents}}" as="a" hint-placeholder-count="3">
+<div style="display: flex; align-items: center; gap: 9px; padding: {{pv.rowPad}}px 10px; border-radius: 11px; background: {{a.bg}}; border: 1px solid {{a.bd}}"><span aria-hidden="true" class="{{a.cls}}" style="flex: none; width: 9px; height: 9px; border-radius: 50%; background: {{a.dot}}"></span><span style="flex: 1 1 0; min-width: 0; display: flex; flex-direction: column"><span style="font-weight: 600">{{a.name}}</span><span style="color: {{a.tc}}; font-size: 0.92em">{{a.doing}}</span></span></div>
+</sc-for>
+<div aria-hidden="true" style="height: 5px; border-radius: 3px; background: var(--sunk); overflow: hidden"><div class="{{pv.sheen}}" style="width: 60%; height: 5px; border-radius: 3px; background-color: var(--accent-2)"></div></div>
+<div style="display: flex; gap: 8px"><button class="b b-p">Allow once</button><button class="b b-s">Deny</button></div>
+</div>
+<div style="font-size: 12.5px; color: var(--ink-2)">{{pv.note}}</div>
+</aside>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+snav(a) {
+const it = (k, label, href, head) => ({ label: label, href: href || '#', head: head || '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 });
+return [it('general', 'General', 'SettingsGeneral.dc.html', 'App'), it('appearance', 'Appearance', 'Appearance.dc.html'), it('providers', 'AI providers', 'Providers.dc.html'), it('tools', 'Tools and services', 'Tools.dc.html'), it('skills', 'Skills', 'Skills.dc.html'), it('templates', 'Templates', 'Templates.dc.html'), it('about', 'About and updates', 'About.dc.html'),
+it('basics', 'Basics', '#', 'Project: Notes API'), it('perms', 'Permissions', 'Settings.dc.html'), it('limits', 'Spending limits', 'Limits.dc.html'), it('branches', 'Branches', 'Branches.dc.html')];
+}
+renderVals() {
+const base = this.props.theme ?? 'dark';
+const mode = this.state.mode || base;
+const theme = mode === 'system' ? base : mode;
+const cv = this.state.cv || 'org';
+const seg = Object.assign({ motion: 'Full', size: 'Default', density: 'Comfortable' }, this.state.seg || {});
+const sw = Object.assign({ glass: true, dots: true }, this.state.sw || {});
+const m = (id, label, note, art, pane) => ({ label: label, note: note, art: art, pane: pane, on: mode === id, bd: mode === id ? 'var(--accent)' : 'var(--line)', bg: mode === id ? 'var(--accent-soft)' : 'transparent', pick: () => this.setState({ mode: id }) });
+const c = (id, name, sub, swatch) => ({ name: name, sub: sub, swatch: swatch, on: cv === id, bd: cv === id ? 'var(--accent)' : 'var(--line)', bg: cv === id ? 'var(--accent-soft)' : 'transparent', pick: () => this.setState({ cv: id }) });
+const segRow = (id, label, help, options) => ({ label: label, help: help, isSeg: true, isSwitch: false, opts: options.map((o) => ({ label: o, on: seg[id] === o, bg: seg[id] === o ? 'var(--glass-strong)' : 'transparent', fg: seg[id] === o ? 'var(--ink)' : 'var(--ink-2)', pick: () => this.setState({ seg: Object.assign({}, seg, { [id]: o }) }) })) });
+const swRow = (id, label, help) => ({ label: label, help: help, isSeg: false, isSwitch: true, on: sw[id], swBg: sw[id] ? 'var(--primary)' : 'var(--line-strong)', swPos: sw[id] ? 'flex-end' : 'flex-start', toggle: () => this.setState({ sw: Object.assign({}, sw, { [id]: !sw[id] }) }) });
+const moving = seg.motion === 'Full', compact = seg.density === 'Compact';
+const font = seg.size === 'Small' ? 12.5 : seg.size === 'Large' ? 15 : 13.5;
+return Object.assign({
+theme: theme,
+modes: [m('dark', 'Dark', 'default', 'linear-gradient(135deg, #17142e, #0c0e18)', 'rgba(255,255,255,0.12)'), m('light', 'Light', '', 'linear-gradient(135deg, #f1efff, #f7f8fc)', 'rgba(20,22,40,0.1)'), m('system', 'Match my computer', '', 'linear-gradient(90deg, #17142e 50%, #f1efff 50%)', 'rgba(127,127,160,0.28)')],
+canvases: [c('org', 'Org chart', 'Roles and reporting lines', 'linear-gradient(135deg, var(--accent), var(--accent-2))'), c('office', 'Pocket Office', 'One building per team', 'linear-gradient(135deg, #f0b35a, #e86f8a)'), c('factory', 'Factory floor', 'Lines and stations', 'linear-gradient(135deg, #5b6b82, #f08a3c)')],
+rows: [
+segRow('motion', 'Motion', 'Reduced keeps state changes and drops ambient movement. Your computer\'s own setting always wins.', ['Full', 'Reduced', 'Off']),
+swRow('glass', 'See-through panels', 'Turn off for solid panels and sharper contrast.'),
+segRow('size', 'Text size', '', ['Small', 'Default', 'Large']),
+segRow('density', 'Spacing', 'Compact fits more agents on the canvas.', ['Comfortable', 'Compact']),
+swRow('dots', 'Show activity dots in the sidebar', 'A dot beside each project that has a team working.')
+],
+pv: { pad: compact ? 10 : 14, gap: compact ? 6 : 10, rowPad: compact ? 5 : 8, font: font, panel: sw.glass ? 'var(--glass)' : 'var(--panel)', blur: sw.glass ? 'var(--blur)' : 'none', sheen: moving ? 'sheen' : '',
+note: (sw.glass ? 'See-through panels' : 'Solid panels') + ', ' + seg.motion.toLowerCase() + ' motion, ' + seg.size.toLowerCase() + ' text, ' + seg.density.toLowerCase() + ' spacing.',
+agents: [
+{ name: 'Implementer 1', doing: 'Editing cache.js', dot: 'var(--accent-2)', cls: moving ? 'a-pulse' : '', tc: 'var(--ink-2)', bg: 'var(--glass-strong)', bd: 'var(--glass-line)' },
+{ name: 'Implementer 2', doing: 'Waiting on you: npm test', dot: 'var(--warn)', cls: seg.motion === 'Off' ? '' : 'a-breathe', tc: 'var(--warn)', bg: 'var(--warn-soft)', bd: 'var(--warn-line)' },
+{ name: 'Researcher 1', doing: 'Done · compared two options', dot: 'var(--ok)', cls: '', tc: 'var(--ink-3)', bg: 'transparent', bd: 'var(--line)' }
+] }
+}, { snav: this.snav('appearance') }, this.side('gear'));
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Agent</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad)}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line); font-size: 13px">
+<a href="Run.dc.html" class="b b-s" style="height: 30px; text-decoration: none; color: var(--ink)">‹ Back to the team</a>
+<nav aria-label="Where this agent is" style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--ink-2)">
+<a href="Run.dc.html" style="text-decoration: none; color: var(--ink-2)">Notes API</a><span aria-hidden="true" style="color: var(--ink-3)">›</span>
+<a href="Run.dc.html" style="text-decoration: none; color: var(--ink-2)">Add response caching</a><span aria-hidden="true" style="color: var(--ink-3)">›</span>
+<span>Build</span><span aria-hidden="true" style="color: var(--ink-3)">›</span>
+<span style="font-weight: 600; color: var(--ink)">Implementer 2</span>
+</nav>
+<span style="flex-grow: 1"></span>
+<span style="color: var(--ink-3)">2 of 5 in Build</span>
+<button class="b b-s" style="width: 30px; height: 30px; padding: 0; justify-content: center" aria-label="Previous agent">‹</button>
+<button class="b b-s" style="width: 30px; height: 30px; padding: 0; justify-content: center" aria-label="Next agent">›</button>
+</header>
+
+<div class="dots" style="flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; min-height: 0">
+
+<section aria-label="Agent" style="flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+
+<div class="glass" style="border-radius: 18px; padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 14px; border: 1px solid var(--warn-line)">
+<span aria-hidden="true" style="flex: none; width: 44px; height: 44px; border-radius: 14px; background: var(--r-impl); color: #fff; font-family: var(--display); font-size: 17px; font-weight: 600; display: grid; place-items: center">I2</span>
+<div style="flex: 1 1 220px; min-width: 0"><div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px"><h1 style="margin: 0; font-family: var(--display); font-size: 19px; font-weight: 600">Implementer 2</h1><span style="display: inline-flex; align-items: center; gap: 7px; height: 24px; padding: 0 10px; border-radius: 12px; background: var(--warn-soft); color: var(--warn); font-size: 12.5px; font-weight: 600"><span aria-hidden="true" class="a-breathe" style="width: 8px; height: 8px; border-radius: 50%; background: var(--warn)"></span>Needs you</span></div><div style="font-size: 12.5px; color: var(--ink-2)">Implementer · reports to Lead implementer · Claude Sonnet · 9 min · $0.22</div></div>
+<button class="b b-s">Message</button><button class="b b-s">Pause</button><button class="b b-d">Stop</button>
+</div>
+
+<div role="tablist" aria-label="Agent" style="display: flex; gap: 2px; border-bottom: 1px solid var(--line)">
+<sc-for list="{{tabs}}" as="t" hint-placeholder-count="4">
+<button role="tab" aria-selected="{{t.on}}" onClick="{{t.pick}}" style="height: 36px; padding: 0 14px; border: 0; border-bottom: 2px solid {{t.line}}; background: transparent; color: {{t.fg}}; font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 6px">{{t.label}}<sc-if value="{{t.n}}" hint-placeholder-val="{{false}}"><span style="height: 18px; padding: 0 6px; border-radius: 9px; background: var(--sunk); font-size: 11px; color: var(--ink-2); display: grid; place-items: center">{{t.n}}</span></sc-if></button>
+</sc-for>
+<span style="flex-grow: 1"></span>
+<button class="b b-g" style="height: 30px; font-size: 12.5px">Show its reasoning</button>
+</div>
+
+<sc-if value="{{isActivity}}" hint-placeholder-val="{{true}}">
+<div style="display: flex; flex-direction: column">
+<sc-for list="{{steps}}" as="s" hint-placeholder-count="6">
+<div style="display: flex; gap: 12px">
+<div aria-hidden="true" style="flex: none; width: 20px; display: flex; flex-direction: column; align-items: center"><span style="width: 10px; height: 10px; margin-top: 6px; border-radius: 50%; background: {{s.dot}}"></span><span style="flex: 1 1 auto; width: 2px; background: var(--line)"></span></div>
+<div style="flex: 1 1 0; min-width: 0; padding-bottom: 14px; display: flex; flex-direction: column; gap: 4px"><div style="display: flex; align-items: baseline; gap: 8px"><span style="flex: 1 1 0; min-width: 0; font-size: 13.5px; font-weight: 600">{{s.title}}</span><span style="flex: none; font-size: 12px; color: var(--ink-3)">{{s.when}}</span></div>
+<sc-if value="{{s.text}}" hint-placeholder-val="{{true}}"><div style="font-size: 13px; color: var(--ink-2)">{{s.text}}</div></sc-if>
+<sc-if value="{{s.code}}" hint-placeholder-val="{{false}}"><div class="code" style="align-self: flex-start">{{s.code}}</div></sc-if>
+</div>
+</div>
+</sc-for>
+<div style="display: flex; gap: 12px">
+<div aria-hidden="true" style="flex: none; width: 20px; display: flex; justify-content: center"><span class="a-breathe" style="width: 10px; height: 10px; margin-top: 16px; border-radius: 50%; background: var(--warn)"></span></div>
+<article style="flex: 1 1 0; min-width: 0; border-radius: 16px; padding: 14px; border: 1px solid var(--warn-line); background: var(--warn-soft); display: flex; flex-direction: column; gap: 10px">
+<div style="font-size: 12px; font-weight: 600; color: var(--warn)">Waiting on you · 2 min</div>
+<div style="font-weight: 600">Run a command in its copy of Notes API</div>
+<div class="code">npm test</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><button class="b b-p">Allow once</button><button class="b b-s">Always allow npm test</button><span style="flex-grow: 1"></span><button class="b b-g">Deny</button></div>
+</article>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{isChanges}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-direction: column; gap: 12px">
+<sc-for list="{{files}}" as="f" hint-placeholder-count="2">
+<div class="glass" style="border-radius: 14px; overflow: hidden">
+<div style="display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 13px"><span style="flex-grow: 1; font-family: var(--mono); font-size: 12.5px; font-weight: 600">{{f.path}}</span><span style="color: var(--ok); font-weight: 600">+{{f.add}}</span><span style="color: var(--bad); font-weight: 600">−{{f.del}}</span></div>
+<div style="font-family: var(--mono); font-size: 12.5px; line-height: 20px; padding: 6px 0">
+<sc-for list="{{f.lines}}" as="l" hint-placeholder-count="5"><div style="display: flex; gap: 10px; padding: 0 12px; background: {{l.bg}}"><span aria-hidden="true" style="flex: none; width: 10px; color: {{l.ink}}">{{l.sign}}</span><span style="white-space: pre-wrap; color: {{l.fg}}">{{l.text}}</span></div></sc-for>
+</div>
+</div>
+</sc-for>
+</div>
+</sc-if>
+
+<sc-if value="{{isOther}}" hint-placeholder-val="{{false}}">
+<div class="glass" style="border-radius: 14px; padding: 6px 14px">
+<sc-for list="{{rows}}" as="r" hint-placeholder-count="4"><div style="display: flex; align-items: baseline; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px"><span style="flex: 1 1 0; min-width: 0; font-weight: 600">{{r.a}}</span><span style="color: var(--ink-2)">{{r.b}}</span></div></sc-for>
+</div>
+</sc-if>
+
+</section>
+
+<aside aria-label="About this agent" style="flex: 1 1 300px; max-width: 360px; min-width: 0; display: flex; flex-direction: column; gap: 12px">
+<div class="glass" style="border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">Its brief, from Lead implementer</div>
+<div style="font-size: 13.5px">Write tests that prove the cache returns the same response for repeated reads and is cleared after a write. Run the suite when cache.js lands.</div>
+<div style="font-size: 12.5px; color: var(--ink-2)">Part of step 2 of 4 · Add the cache layer</div>
+</div>
+<div class="glass" style="border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">Where it sits</div>
+<div style="display: flex; flex-direction: column; gap: 4px; font-size: 13px">
+<sc-for list="{{chain}}" as="c" hint-placeholder-count="3"><div style="display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin-left: {{c.indent}}px; border-radius: 9px; background: {{c.bg}}; border: 1px solid {{c.bd}}"><span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 3px; background: {{c.color}}"></span><span style="flex-grow: 1; font-weight: {{c.w}}">{{c.name}}</span><span style="font-size: 12px; color: var(--ink-3)">{{c.note}}</span></div></sc-for>
+</div>
+</div>
+<div class="glass" style="border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">Working in</div>
+<div style="font-size: 13px">Its own copy of the code, on branch <span style="font-family: var(--mono); font-size: 12.5px">impl-2-cache-tests</span></div>
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3); padding-top: 4px">Allowed without asking</div>
+<div style="display: flex; flex-wrap: wrap; gap: 6px"><sc-for list="{{allowed}}" as="a" hint-placeholder-count="4"><span style="height: 24px; padding: 0 9px; border-radius: 8px; background: var(--sunk); font-size: 12px; display: inline-flex; align-items: center">{{a}}</span></sc-for></div>
+</div>
+<div class="glass" style="border-radius: 16px; padding: 10px; display: flex; flex-direction: column; gap: 8px; background: var(--glass-strong)">
+<label for="amsg" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%)">Message</label>
+<textarea id="amsg" rows="2" placeholder="Message Implementer 2 directly" style="width: 100%; border: 0; outline: 0; resize: none; background: transparent; font-size: 13.5px; line-height: 20px; padding: 2px 4px"></textarea>
+<div style="display: flex; align-items: center; gap: 6px"><span style="flex-grow: 1; font-size: 12px; color: var(--ink-3)">The Orchestrator is told too</span><button class="b b-p" style="height: 30px">Send</button></div>
+</div>
+</aside>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+renderVals() {
+const tab = this.state.tab || 'activity';
+const t = (id, label, n) => ({ label: label, n: n || '', on: tab === id, line: tab === id ? 'var(--accent)' : 'transparent', fg: tab === id ? 'var(--ink)' : 'var(--ink-2)', pick: () => this.setState({ tab: id }) });
+const s = (title, text, when, dot, code) => ({ title: title, text: text || '', when: when, dot: dot || 'var(--line-strong)', code: code || '' });
+const l = (sign, text) => ({ sign: sign, text: text, bg: sign === '+' ? 'var(--ok-soft)' : sign === '-' ? 'var(--bad-soft)' : 'transparent', ink: sign === '+' ? 'var(--ok)' : sign === '-' ? 'var(--bad)' : 'var(--ink-3)', fg: sign === ' ' ? 'var(--ink-2)' : 'var(--ink)' });
+const ROWS = {
+files: [{ a: 'test/notes.test.js', b: 'edited · 6 tests added' }, { a: 'test/helpers/server.js', b: 'edited' }, { a: 'src/cache.js', b: 'read' }, { a: 'src/server.js', b: 'read' }, { a: 'package.json', b: 'read' }],
+usage: [{ a: 'Cost so far', b: '$0.22' }, { a: 'Time working', b: '9 min, 2 min waiting' }, { a: 'Model', b: 'Claude Sonnet, standard effort' }, { a: 'Read and wrote', b: '18,400 words in, 2,100 out' }, { a: 'Steps taken', b: '14 (5 reads, 3 edits, 6 other)' }]
+};
+return Object.assign({
+theme: this.props.theme ?? 'dark',
+tabs: [t('activity', 'Activity'), t('changes', 'Changes', 2), t('files', 'Files', 5), t('usage', 'Usage')],
+isActivity: tab === 'activity', isChanges: tab === 'changes', isOther: tab === 'files' || tab === 'usage',
+rows: ROWS[tab] || [],
+steps: [
+s('Got its brief from Lead implementer', 'Prove the cache works: repeated reads match, and a write clears it.', '9 min ago', 'var(--accent)'),
+s('Read 3 files', 'src/server.js, src/cache.js and the existing test file, to see how responses are built.', '8 min ago'),
+s('Wrote 6 tests in test/notes.test.js', 'Covers repeated reads, expiry after 60 seconds, and clearing on create, update and delete.', '5 min ago', 'var(--ok)'),
+s('Added a test helper', 'A small server start and stop helper so each test gets a clean cache.', '4 min ago', 'var(--ok)'),
+s('Told Lead implementer the tests are ready', '', '3 min ago', 'var(--accent-2)')
+],
+files: [
+{ path: 'test/notes.test.js', add: 84, del: 2, lines: [l(' ', "describe('notes cache', () => {"), l('+', "  it('returns the cached list on a second read', async () => {"), l('+', "    const first = await get('/notes')"), l('+', "    const second = await get('/notes')"), l('+', "    expect(second.headers['x-cache']).toBe('hit')"), l('+', '  })'), l('-', "  it.todo('caching')")] },
+{ path: 'test/helpers/server.js', add: 21, del: 0, lines: [l('+', 'export async function startServer() {'), l('+', '  const app = createApp({ cache: new Map() })'), l('+', '  return app.listen(0)'), l('+', '}')] }
+],
+chain: [
+{ name: 'Orchestrator', note: '', color: 'var(--r-orch)', indent: 0, w: 500, bg: 'transparent', bd: 'transparent' },
+{ name: 'Lead implementer', note: 'gave the brief', color: 'var(--r-impl)', indent: 14, w: 500, bg: 'transparent', bd: 'transparent' },
+{ name: 'Implementer 2', note: 'this agent', color: 'var(--r-impl)', indent: 28, w: 600, bg: 'var(--accent-soft)', bd: 'var(--accent)' }
+],
+allowed: ['Read any file', 'Edit files in test/', 'git status', 'git diff']
+}, this.side('notes'));
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Home</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; padding: 36px 40px">
+<div style="max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px">
+
+<section style="display: flex; flex-direction: column; gap: 14px">
+<h1 style="margin: 0; font-family: var(--display); font-size: 30px; line-height: 36px; font-weight: 600; letter-spacing: -0.02em">What should your team work on?</h1>
+<div style="background: var(--glass-strong); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border: 1px solid var(--glass-line); border-radius: 18px; box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 12px">
+<label for="task" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%)">Task</label>
+<textarea id="task" rows="2" placeholder="Describe the task. Your team plans it, splits it up and checks in when it needs you." style="width: 100%; border: 0; outline: 0; resize: none; background: transparent; font-size: 15px; line-height: 22px; padding: 4px"></textarea>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px">
+<button style="height: 32px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--sunk); font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2)"></span>Notes API<span aria-hidden="true" style="color: var(--ink-3)">▾</span></button>
+<button style="height: 32px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--sunk); font-size: 13px; font-weight: 500">Whole team · 12 roles <span aria-hidden="true" style="color: var(--ink-3)">▾</span></button>
+<button style="height: 32px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--sunk); font-size: 13px; font-weight: 500">Asks before risky actions <span aria-hidden="true" style="color: var(--ink-3)">▾</span></button>
+<span style="flex-grow: 1"></span>
+<span style="font-size: 12px; color: var(--ink-3)">Ctrl + Enter</span>
+<a href="Run.dc.html" style="height: 36px; padding: 0 18px; border-radius: 10px; background: var(--primary); color: var(--on-primary); font-size: 13.5px; font-weight: 600; text-decoration: none; display: flex; align-items: center; box-shadow: 0 8px 22px -8px var(--primary)">Start run</a>
+</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px">
+<span style="color: var(--ink-3)">Try</span>
+<button style="height: 30px; padding: 0 12px; border-radius: 15px; border: 1px solid var(--glass-line); background: var(--glass); font-size: 13px">Fix a failing test</button>
+<button style="height: 30px; padding: 0 12px; border-radius: 15px; border: 1px solid var(--glass-line); background: var(--glass); font-size: 13px">Review my last change</button>
+<button style="height: 30px; padding: 0 12px; border-radius: 15px; border: 1px solid var(--glass-line); background: var(--glass); font-size: 13px">Plan a new feature</button>
+<button style="height: 30px; padding: 0 12px; border-radius: 15px; border: 1px solid var(--glass-line); background: var(--glass); font-size: 13px">Just chat with one assistant</button>
+</div>
+</section>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 24px; align-items: start">
+
+<section style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; align-items: center; gap: 8px"><h2 style="margin: 0; flex-grow: 1; font-family: var(--display); font-size: 16px; font-weight: 600">Working now</h2><span style="font-size: 13px; color: var(--ink-3)">2 runs · 23 agents</span></div>
+
+<a href="Run.dc.html" class="lift" style="background: var(--glass); border: 1px solid var(--glass-line); border-radius: 16px; box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 14px; text-decoration: none; color: var(--ink)">
+<div style="display: flex; align-items: center; gap: 10px"><span aria-hidden="true" class="a-pulse" style="width: 9px; height: 9px; border-radius: 50%; background: var(--accent-2)"></span><span style="font-weight: 600; flex-grow: 1">Add response caching</span><span style="font-size: 12.5px; color: var(--ink-3)">Notes API · $2.31</span></div>
+<div role="img" aria-label="16 agents: 7 working, 1 waiting on you, 2 queued, 6 finished" style="display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 12px; border-radius: 12px; background: var(--bg)">
+<span style="width: 14px; height: 14px; border-radius: 5px; background: var(--r-orch)"></span>
+<sc-for list="{{run1}}" as="dt" hint-placeholder-count="15">
+<span class="{{dt.cls}}" style="width: 10px; height: 10px; border-radius: 50%; margin-left: {{dt.ml}}px; background: {{dt.bg}}"></span>
+</sc-for>
+</div>
+<div style="display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2)"><span style="flex-grow: 1">Step 2 of 4 · Build is adding the cache layer</span><span style="color: var(--warn); font-weight: 600">1 waiting on you</span></div>
+<div aria-hidden="true" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px"><div style="height: 4px; border-radius: 2px; background: var(--ok)"></div><div style="height: 4px; border-radius: 2px; background: var(--sunk); overflow: hidden"><div class="sheen" style="width: 60%; height: 4px; background-color: var(--accent-2)"></div></div><div style="height: 4px; border-radius: 2px; background: var(--sunk)"></div><div style="height: 4px; border-radius: 2px; background: var(--sunk)"></div></div>
+</a>
+
+<a href="Files.dc.html" class="lift" style="background: var(--glass); border: 1px solid var(--glass-line); border-radius: 16px; box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 14px; text-decoration: none; color: var(--ink)">
+<div style="display: flex; align-items: center; gap: 10px"><span aria-hidden="true" class="a-pulse" style="width: 9px; height: 9px; border-radius: 50%; background: var(--accent-2)"></span><span style="font-weight: 600; flex-grow: 1">Draft Q3 findings</span><span style="font-size: 12.5px; color: var(--ink-3)">Acme onboarding · $1.10</span></div>
+<div role="img" aria-label="7 agents: 3 working, 1 queued, 3 finished" style="display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 12px; border-radius: 12px; background: var(--bg)">
+<span style="width: 14px; height: 14px; border-radius: 5px; background: var(--r-orch)"></span>
+<sc-for list="{{run2}}" as="dt" hint-placeholder-count="6">
+<span class="{{dt.cls}}" style="width: 10px; height: 10px; border-radius: 50%; margin-left: {{dt.ml}}px; background: {{dt.bg}}"></span>
+</sc-for>
+</div>
+<div style="font-size: 13px; color: var(--ink-2)">Step 3 of 5 · Writer is drafting section 2</div>
+<div aria-hidden="true" style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px"><div style="height: 4px; border-radius: 2px; background: var(--ok)"></div><div style="height: 4px; border-radius: 2px; background: var(--ok)"></div><div style="height: 4px; border-radius: 2px; background: var(--sunk); overflow: hidden"><div class="sheen" style="width: 40%; height: 4px; background-color: var(--accent-2)"></div></div><div style="height: 4px; border-radius: 2px; background: var(--sunk)"></div><div style="height: 4px; border-radius: 2px; background: var(--sunk)"></div></div>
+</a>
+
+<div style="display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--ink-3)">
+<span style="display: flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2)"></span>Working</span>
+<span style="display: flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--warn)"></span>Waiting on you</span>
+<span style="display: flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--ok)"></span>Finished</span>
+<span style="display: flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong)"></span>Queued</span>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; align-items: center; gap: 8px">
+<h2 style="margin: 0; font-family: var(--display); font-size: 16px; font-weight: 600">Waiting on you</h2>
+<span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">3</span>
+<span style="flex-grow: 1"></span>
+<a href="#" style="font-size: 13px; text-decoration: none">Open inbox</a>
+</div>
+
+<div style="background: var(--glass); border: 1px solid var(--warn-line); border-radius: 16px; box-shadow: var(--shadow); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: center; gap: 10px">
+<span aria-hidden="true" style="width: 28px; height: 28px; border-radius: 9px; background: var(--r-impl); color: #fff; font-size: 12px; font-weight: 600; display: grid; place-items: center">I</span>
+<div style="flex-grow: 1; min-width: 0"><div style="font-weight: 600">Implementer 2 wants to run a command</div><div style="font-size: 12px; color: var(--ink-3)">Notes API · Add response caching</div></div>
+<span aria-hidden="true" class="a-breathe" style="width: 8px; height: 8px; border-radius: 50%; background: var(--warn)"></span>
+</div>
+<code style="font-family: var(--mono); font-size: 12.5px; background: var(--bg); border-radius: 8px; padding: 8px 10px">npm test</code>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button style="height: 32px; padding: 0 14px; border-radius: 8px; border: 0; background: var(--primary); color: var(--on-primary); font-size: 13px; font-weight: 600">Allow once</button>
+<button style="height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: transparent; font-size: 13px; font-weight: 500">Always allow in this project</button>
+<button style="height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: transparent; font-size: 13px; font-weight: 500">Deny</button>
+</div>
+</div>
+
+<div style="background: var(--glass); border: 1px solid var(--warn-line); border-radius: 16px; box-shadow: var(--shadow); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: center; gap: 10px">
+<span aria-hidden="true" style="width: 28px; height: 28px; border-radius: 9px; background: var(--r-orch); color: #fff; font-size: 12px; font-weight: 600; display: grid; place-items: center">O</span>
+<div style="flex-grow: 1; min-width: 0"><div style="font-weight: 600">Keep the cache in memory, or use Redis?</div><div style="font-size: 12px; color: var(--ink-3)">Orchestrator asks · Notes API</div></div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px">
+<button style="height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: transparent; font-size: 13px; font-weight: 500">In memory</button>
+<button style="height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: transparent; font-size: 13px; font-weight: 500">Redis</button>
+<button style="height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: transparent; font-size: 13px; font-weight: 500">Let the team decide</button>
+</div>
+</div>
+
+<div style="background: var(--glass); border: 1px solid var(--warn-line); border-radius: 16px; box-shadow: var(--shadow); padding: 14px 16px; display: flex; align-items: center; gap: 10px">
+<span aria-hidden="true" style="width: 28px; height: 28px; border-radius: 9px; background: var(--primary); color: var(--on-primary); font-size: 12px; font-weight: 600; display: grid; place-items: center">A</span>
+<div style="flex-grow: 1; min-width: 0"><div style="font-weight: 600">Team change: add a Tester</div><div style="font-size: 12px; color: var(--ink-3)">Architect suggests · Notes API</div></div>
+<a href="Team.dc.html" style="height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); color: var(--ink); font-size: 13px; font-weight: 500; text-decoration: none; display: flex; align-items: center">Review</a>
+</div>
+</section>
+</div>
+
+<section style="display: flex; flex-direction: column; gap: 12px">
+<h2 style="margin: 0; font-family: var(--display); font-size: 16px; font-weight: 600">Projects</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 16px">
+<a href="Run.dc.html" class="lift" style="background: var(--glass); border: 1px solid var(--glass-line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 14px; text-decoration: none; color: var(--ink)">
+<div style="display: flex; align-items: center; gap: 4px" aria-hidden="true"><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-orch)"></span><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-impl)"></span><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-rev)"></span><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-res)"></span><span style="font-size: 12px; color: var(--ink-3); margin-left: 4px">+8</span></div>
+<div><div style="font-weight: 600">Notes API</div><div style="font-size: 12px; color: var(--ink-3)">Code · 12 roles</div></div>
+<div style="display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); font-weight: 500"><span aria-hidden="true" class="a-pulse" style="width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2)"></span>Working · 16 agents</div>
+</a>
+<a href="Files.dc.html" class="lift" style="background: var(--glass); border: 1px solid var(--glass-line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 14px; text-decoration: none; color: var(--ink)">
+<div style="display: flex; align-items: center; gap: 4px" aria-hidden="true"><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-orch)"></span><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-writer)"></span><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-analyst)"></span><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-rev)"></span><span style="font-size: 12px; color: var(--ink-3); margin-left: 4px">+1</span></div>
+<div><div style="font-weight: 600">Acme onboarding</div><div style="font-size: 12px; color: var(--ink-3)">Engagement · Acme · 5 roles</div></div>
+<div style="display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); font-weight: 500"><span aria-hidden="true" class="a-pulse" style="width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2)"></span>Working · 7 agents</div>
+</a>
+<a href="#" class="lift" style="background: var(--glass); border: 1px solid var(--glass-line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 14px; text-decoration: none; color: var(--ink)">
+<div style="display: flex; align-items: center; gap: 4px" aria-hidden="true"><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-orch)"></span><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-impl)"></span><span style="width: 24px; height: 24px; border-radius: 8px; background: var(--r-rev)"></span></div>
+<div><div style="font-weight: 600">Website refresh</div><div style="font-size: 12px; color: var(--ink-3)">Code · 3 roles</div></div>
+<div style="display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-3)"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong)"></span>Last run 2 hours ago</div>
+</a>
+<button class="lift" style="border: 1px dashed var(--line-strong); border-radius: 16px; padding: 16px; background: transparent; color: var(--ink-2); font-weight: 500; display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 120px"><span aria-hidden="true" style="font-size: 18px; line-height: 1">+</span>New project</button>
+</div>
+</section>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":940}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+dots(spec) {
+const M = { w: ['var(--accent-2)', 'a-pulse'], a: ['var(--warn)', 'a-breathe'], q: ['var(--line-strong)', ''], d: ['var(--ok)', ''] };
+const out = [];
+let gap = 10;
+spec.split('').forEach((ch) => {
+if (ch === '|') { gap = 14; return; }
+out.push({ bg: M[ch][0], cls: M[ch][1], ml: gap });
+gap = 0;
+});
+return out;
+}
+renderVals() {
+return Object.assign({
+theme: this.props.theme ?? 'dark',
+run1: this.dots('wwawq|wwwq|dddddd'),
+run2: this.dots('ww|wq|ddd')
+}, this.side('home'));
+}
+}
+</script>
+</body>
+</html>

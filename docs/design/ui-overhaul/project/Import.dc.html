@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Import agents</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad)}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line)">
+<a href="Team.dc.html" class="b b-s" style="height: 30px; text-decoration: none; color: var(--ink)">‹ Back to Team</a>
+<h1 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">Import agents into Notes API</h1>
+<span style="flex-grow: 1"></span>
+<span style="font-size: 12.5px; color: var(--ink-3)">Nothing changes until you press Add</span>
+</header>
+
+<div class="dots" style="flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; min-height: 0">
+
+<section aria-label="Found agents" style="flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+<div class="glass" style="border-radius: 16px; padding: 12px 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px">
+<span style="font-size: 12px; font-weight: 600; color: var(--ink-3)">From</span>
+<sc-for list="{{sources}}" as="s" hint-placeholder-count="3"><button aria-pressed="{{s.on}}" style="height: 32px; padding: 0 12px; border-radius: 10px; border: 1px solid {{s.bd}}; background: {{s.bg}}; font-size: 13px; font-weight: 500">{{s.label}}</button></sc-for>
+<span style="flex: 1 1 200px; min-width: 0; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">C:\Code\notes-api\.claude\agents</span>
+<button class="b b-s" style="height: 30px">Choose another</button>
+</div>
+
+<div style="display: flex; align-items: center; gap: 10px; font-size: 13px"><span style="flex-grow: 1; color: var(--ink-2)">Found 6 agents. {{picked}} selected.</span><button class="b b-g" style="height: 28px; padding: 0 8px">Select all</button></div>
+
+<sc-for list="{{agents}}" as="a" hint-placeholder-count="6">
+<div class="glass" style="border-radius: 14px; padding: 12px 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; border: 1px solid {{a.bd}}; opacity: {{a.op}}">
+<button role="checkbox" aria-checked="{{a.on}}" aria-label="{{a.name}}" onClick="{{a.toggle}}" style="flex: none; width: 20px; height: 20px; padding: 0; border-radius: 6px; border: 1.5px solid {{a.boxBd}}; background: {{a.box}}; color: var(--on-primary); font-size: 13px; display: grid; place-items: center">{{a.tick}}</button>
+<div style="flex: 1 1 220px; min-width: 0"><div style="font-size: 14px; font-weight: 600">{{a.name}}</div><div style="font-size: 12.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{a.does}}</div></div>
+<button style="flex: none; height: 30px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--bg); font-size: 12.5px; display: flex; align-items: center; gap: 7px"><span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 3px; background: {{a.color}}"></span>{{a.group}} <span aria-hidden="true" style="color: var(--ink-3)">▾</span></button>
+<button style="flex: none; height: 30px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--bg); font-size: 12.5px">{{a.level}} <span aria-hidden="true" style="color: var(--ink-3)">▾</span></button>
+<sc-if value="{{a.clash}}" hint-placeholder-val="{{false}}">
+<div style="flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--warn-soft); font-size: 12.5px"><span style="flex: 1 1 200px; color: var(--warn); font-weight: 600">{{a.clash}}</span><span role="group" aria-label="What to do" style="display: flex; gap: 2px; padding: 2px; border-radius: 9px; background: var(--bg)"><span style="height: 24px; padding: 0 9px; border-radius: 7px; background: var(--glass-strong); font-weight: 600; display: grid; place-items: center">Keep both</span><span style="height: 24px; padding: 0 9px; border-radius: 7px; color: var(--ink-2); display: grid; place-items: center">Replace mine</span><span style="height: 24px; padding: 0 9px; border-radius: 7px; color: var(--ink-2); display: grid; place-items: center">Skip</span></span></div>
+</sc-if>
+<sc-if value="{{a.warn}}" hint-placeholder-val="{{false}}"><div style="flex: 1 1 100%; font-size: 12.5px; color: var(--ink-2)">{{a.warn}}</div></sc-if>
+</div>
+</sc-for>
+</section>
+
+<aside aria-label="What will change" class="glass" style="flex: 1 1 320px; max-width: 380px; min-width: 0; align-self: flex-start; border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 14px">
+<h2 style="margin: 0; font-family: var(--display); font-size: 16px; font-weight: 600">What will change</h2>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+<div style="border-radius: 12px; padding: 10px; background: var(--glass-strong); border: 1px solid var(--glass-line); display: flex; flex-direction: column; gap: 6px"><div style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600"><span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 3px; background: {{g.color}}"></span><span style="flex-grow: 1">{{g.name}}</span><span style="font-size: 12px; font-weight: 500; color: var(--ink-3)">{{g.count}}</span></div>
+<div style="display: flex; flex-wrap: wrap; gap: 5px"><sc-for list="{{g.roles}}" as="r" hint-placeholder-count="3"><span style="height: 24px; padding: 0 8px; border-radius: 7px; border: 1px {{r.line}} {{r.bd}}; background: {{r.bg}}; font-size: 12px; display: inline-flex; align-items: center; gap: 5px">{{r.mark}}{{r.name}}</span></sc-for></div></div>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 5px; font-size: 13px"><sc-for list="{{notes}}" as="n" hint-placeholder-count="3"><div style="display: flex; gap: 9px"><span aria-hidden="true" style="color: var(--ink-3)">·</span><span style="color: var(--ink-2)">{{n}}</span></div></sc-for></div>
+<button class="b b-p" style="height: 40px; justify-content: center; font-size: 14px">{{addLabel}}</button>
+<div style="font-size: 12.5px; color: var(--ink-3)">You can undo the import from the Team tab afterwards.</div>
+</aside>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1040}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+renderVals() {
+const off = this.state.off || { legacy: true };
+const C = { Build: 'var(--r-impl)', Quality: 'var(--r-rev)', Research: 'var(--r-res)' };
+const raw = [
+['api', 'API designer', 'Designs endpoints and writes the interface spec before code.', 'Build', 'Most capable'],
+['db', 'Database migrator', 'Writes and checks schema migrations.', 'Build', 'Standard'],
+['rev', 'Reviewer', 'Reviews diffs for correctness and style.', 'Quality', 'Standard', 'Your team already has a role called Reviewer.'],
+['perf', 'Performance checker', 'Profiles slow endpoints and suggests fixes.', 'Quality', 'Standard'],
+['docs', 'Docs writer', 'Keeps the README and API docs in step with the code.', 'Research', 'Fast', '', 'Its file asks for a tool you have not connected (Notion). It will work without it.'],
+['legacy', 'Legacy porter', 'Ports code from the old service. Last edited 14 months ago.', 'Build', 'Standard']
+];
+const agents = raw.map((r) => { const on = !off[r[0]]; return { name: r[1], does: r[2], group: r[3], color: C[r[3]], level: r[4], clash: on ? (r[5] || '') : '', warn: on ? (r[6] || '') : '', on: on, op: on ? 1 : 0.55,
+bd: on && r[5] ? 'var(--warn-line)' : 'var(--glass-line)', box: on ? 'var(--primary)' : 'transparent', boxBd: on ? 'var(--primary)' : 'var(--line-strong)', tick: on ? '✓' : '',
+toggle: () => this.setState({ off: Object.assign({}, off, { [r[0]]: on }) }) }; });
+const picked = agents.filter((a) => a.on);
+const EX = { Build: ['Lead implementer', 'Implementer'], Quality: ['Lead reviewer', 'Reviewer', 'Tester'], Research: ['Lead researcher', 'Researcher'] };
+const old = (n) => ({ name: n, mark: '', line: 'solid', bd: 'var(--line)', bg: 'transparent' });
+const neu = (n) => ({ name: n, mark: '+ ', line: 'dashed', bd: 'var(--accent)', bg: 'var(--accent-soft)' });
+const groups = Object.keys(EX).map((g) => { const add = picked.filter((a) => a.group === g); return { name: g, color: C[g], count: add.length ? '+' + add.length : 'no change', roles: EX[g].map(old).concat(add.map((a) => neu(a.clash ? a.name + ' 2' : a.name))) }; });
+const src = (label, on) => ({ label: label, on: on, bg: on ? 'var(--accent-soft)' : 'transparent', bd: on ? 'var(--accent)' : 'var(--line-strong)' });
+return Object.assign({
+theme: this.props.theme ?? 'dark',
+sources: [src('A folder of agent files', true), src('Another OrgAI project'), src('A kit')],
+agents: agents, picked: picked.length, groups: groups,
+notes: ['The team goes from 12 to ' + (12 + picked.length) + ' roles.', 'Imported roles keep their own instructions, word for word.', 'Model names in the files become levels (Fast, Standard, Most capable).'],
+addLabel: picked.length ? 'Add ' + picked.length + (picked.length === 1 ? ' role' : ' roles') + ' to the team' : 'Select at least one'
+}, this.side('notes'));
+}
+}
+</script>
+</body>
+</html>

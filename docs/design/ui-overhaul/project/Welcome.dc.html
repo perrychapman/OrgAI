@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI First launch</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+.b{height:36px;padding:0 15px;border-radius:10px;font-size:13.5px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="min-height: 100vh; display: flex; flex-wrap: wrap; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<section style="flex: 999 1 520px; min-width: 0; padding: 40px 48px; display: flex; flex-direction: column; gap: 28px">
+<div style="display: flex; align-items: center; gap: 10px">
+<div aria-hidden="true" style="width: 30px; height: 30px; border-radius: 9px; background: var(--primary); display: grid; place-items: center"><svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg></div>
+<span style="font-family: var(--display); font-size: 19px; font-weight: 600">OrgAI</span>
+<span style="flex-grow: 1"></span>
+<button class="b b-g">Skip setup</button>
+</div>
+
+<ol aria-label="Setup steps" style="list-style: none; margin: 0; padding: 0; display: flex; gap: 8px">
+<sc-for list="{{steps}}" as="s" hint-placeholder-count="3">
+<li style="flex: 1 1 0; display: flex; flex-direction: column; gap: 8px"><span aria-hidden="true" style="height: 4px; border-radius: 2px; background: {{s.bar}}"></span><button onClick="{{s.pick}}" aria-current="{{s.cur}}" style="padding: 0; border: 0; background: transparent; text-align: left; font-size: 12.5px; font-weight: 600; color: {{s.ink}}">{{s.n}} · {{s.label}}</button></li>
+</sc-for>
+</ol>
+
+<div style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 20px; max-width: 640px">
+<div><h1 style="margin: 0; font-family: var(--display); font-size: 32px; line-height: 38px; font-weight: 600; letter-spacing: -0.02em">{{title}}</h1><p style="margin: 8px 0 0; font-size: 15px; line-height: 22px; color: var(--ink-2)">{{sub}}</p></div>
+
+<div role="radiogroup" aria-label="{{title}}" style="display: flex; flex-direction: column; gap: 10px">
+<sc-for list="{{options}}" as="o" hint-placeholder-count="3">
+<button role="radio" aria-checked="{{o.on}}" onClick="{{o.pick}}" class="glass lift" style="border-radius: 16px; padding: 14px 16px; display: flex; align-items: center; gap: 14px; text-align: left; border: 1.5px solid {{o.bd}}; box-shadow: {{o.sh}}">
+<span aria-hidden="true" style="flex: none; width: 40px; height: 40px; border-radius: 12px; background: {{o.tint}}; color: #fff; font-family: var(--display); font-size: 16px; font-weight: 600; display: grid; place-items: center">{{o.initial}}</span>
+<span style="flex: 1 1 0; min-width: 0; display: flex; flex-direction: column"><span style="font-size: 15px; font-weight: 600">{{o.name}} <sc-if value="{{o.badge}}" hint-placeholder-val="{{false}}"><span style="margin-left: 6px; padding: 2px 8px; border-radius: 10px; background: var(--accent-soft); color: var(--accent-text); font-size: 11.5px">{{o.badge}}</span></sc-if></span><span style="font-size: 13px; color: var(--ink-2)">{{o.sub}}</span></span>
+<span aria-hidden="true" style="flex: none; width: 20px; height: 20px; border-radius: 50%; border: 2px solid {{o.ring}}; display: grid; place-items: center"><span style="width: 10px; height: 10px; border-radius: 50%; background: {{o.fill}}"></span></span>
+</button>
+</sc-for>
+</div>
+
+<div style="font-size: 13px; color: var(--ink-3)">{{foot}}</div>
+</div>
+
+<div style="display: flex; align-items: center; gap: 10px">
+<button class="b b-s" onClick="{{back}}" style="visibility: {{backVis}}">Back</button>
+<span style="flex-grow: 1"></span>
+<span style="font-size: 12.5px; color: var(--ink-3)">You can change all of this later in Settings</span>
+<button class="b b-p" onClick="{{next}}" style="box-shadow: var(--glow)">{{nextLabel}}</button>
+</div>
+</section>
+
+<aside aria-label="What you are setting up" style="flex: 1 1 420px; min-width: 0; padding: 40px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 18px; background: var(--glass); border-left: 1px solid var(--glass-line)">
+<div style="font-size: 12.5px; font-weight: 600; color: var(--ink-3)">{{sideLabel}}</div>
+<div class="glass a-rise" style="width: 250px; border-radius: 16px; padding: 12px 14px; display: flex; align-items: center; gap: 12px; box-shadow: var(--glow)">
+<span aria-hidden="true" style="flex: none; width: 36px; height: 36px; border-radius: 11px; background: var(--r-orch); color: #fff; font-weight: 600; display: grid; place-items: center">O</span>
+<div><div style="font-weight: 600">Orchestrator</div><div style="font-size: 12.5px; color: var(--ink-2)">{{orchLine}}</div></div>
+</div>
+<div aria-hidden="true" class="edge-v" style="height: 18px; margin: -18px 0"></div>
+<div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; max-width: 420px">
+<sc-for list="{{team}}" as="r" hint-placeholder-count="3">
+<div class="glass" style="width: 126px; border-radius: 14px; padding: 10px; display: flex; flex-direction: column; gap: 8px; opacity: {{r.op}}">
+<span aria-hidden="true" style="width: 28px; height: 28px; border-radius: 9px; background: {{r.color}}; color: #fff; font-size: 12px; font-weight: 600; display: grid; place-items: center">{{r.initial}}</span>
+<span style="font-size: 13px; font-weight: 600">{{r.name}}</span>
+<span style="font-size: 12px; color: var(--ink-2)">{{r.does}}</span>
+</div>
+</sc-for>
+</div>
+<p style="margin: 0; max-width: 360px; text-align: center; font-size: 13.5px; color: var(--ink-2)">{{sideText}}</p>
+</aside>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+renderVals() {
+const step = this.state.step || 1;
+const pick = Object.assign({ 1: 'claude', 2: 'code', 3: 'ask' }, this.state.pick || {});
+const o = (id, name, sub, tint, badge) => { const on = pick[step] === id; return { name: name, sub: sub, tint: tint, initial: name[0], badge: badge || '', on: on,
+bd: on ? 'var(--accent)' : 'var(--glass-line)', sh: on ? 'var(--glow)' : 'none', ring: on ? 'var(--accent)' : 'var(--line-strong)', fill: on ? 'var(--accent)' : 'transparent',
+pick: () => this.setState({ pick: Object.assign({}, pick, { [step]: id }) }) }; };
+const P = {
+1: { title: 'Connect the AI your teams will use', sub: 'OrgAI does not come with its own AI. It runs teams on a provider you already have.', foot: 'Sign-in opens in your browser. OrgAI never sees your password.', next: 'Sign in and continue',
+options: [o('claude', 'Claude', 'Sign in with your Claude plan. Nothing extra to pay.', '#c9673f', 'Most common'), o('gpt', 'ChatGPT', 'Sign in with your ChatGPT plan.', '#10a37f'), o('key', 'An API key', 'Pay per use with a key from your provider.', '#8a5cf0'), o('proxy', 'My company\'s gateway', 'Your IT team gave you an address and a key.', '#5b6b82')] },
+2: { title: 'What will you work on first?', sub: 'This decides what kind of team you start with. You can add the other kind any time.', foot: 'Your files stay on this computer. Teams only touch the folders you pick.', next: 'Continue',
+options: [o('code', 'Software in a repository', 'A team that writes, reviews and tests code.', 'var(--primary)'), o('eng', 'Work that is not code', 'A team that researches, analyses and writes documents.', 'var(--r-analyst)'), o('chat', 'Just look around', 'Start with Chat. No project yet.', '#5b6b82')] },
+3: { title: 'How much should the team ask you?', sub: 'Every team starts careful. You can loosen this per project once you trust it.', foot: 'Whatever you pick, a team can never leave the folders you gave it.', next: 'Open OrgAI',
+options: [o('all', 'Ask about everything', 'Every file change and command waits for you.', '#5b6b82'), o('ask', 'Ask before risky actions', 'Reads and small edits go ahead. Commands and deletes wait.', 'var(--primary)', 'Recommended'), o('auto', 'Go ahead within the rules', 'Only stops for things you have not allowed.', 'var(--warn)')] }
+};
+const cur = P[step];
+const eng = pick[2] === 'eng', chat = pick[2] === 'chat';
+const r = (name, does, color, dim) => ({ name: name, does: does, color: color, initial: name[0], op: dim ? 0.35 : 1 });
+const team = eng ? [r('Researcher', 'Reads the source material', 'var(--r-res)'), r('Analyst', 'Finds what it means', 'var(--r-analyst)'), r('Writer', 'Drafts the output', 'var(--r-writer)')]
+: [r('Implementer', 'Writes the change', 'var(--r-impl)', chat), r('Reviewer', 'Checks it', 'var(--r-rev)', chat), r('Researcher', 'Looks things up', 'var(--r-res)', chat)];
+const names = ['Provider', 'First project', 'How much to ask'];
+return {
+theme: this.props.theme ?? 'dark',
+steps: names.map((label, i) => ({ n: i + 1, label: label, cur: i + 1 === step ? 'step' : 'false', bar: i + 1 < step ? 'var(--ok)' : i + 1 === step ? 'var(--accent)' : 'var(--sunk)', ink: i + 1 === step ? 'var(--ink)' : 'var(--ink-3)', pick: () => this.setState({ step: i + 1 }) })),
+title: cur.title, sub: cur.sub, foot: cur.foot, options: cur.options, nextLabel: cur.next,
+backVis: step > 1 ? 'visible' : 'hidden', back: () => this.setState({ step: Math.max(1, step - 1) }), next: () => this.setState({ step: Math.min(3, step + 1) }),
+sideLabel: chat ? 'What a team looks like' : 'Your first team',
+orchLine: step === 1 ? 'Waiting for a provider' : 'Plans the work and hands it out',
+team: team,
+sideText: step === 1 ? 'You describe a task. The Orchestrator splits it up and a team does the parts side by side.' : step === 2 ? 'This is a starting point. The Architect will tailor the team to your project next.' : 'When someone needs you, the question lands in your Inbox and the rest keep working.'
+};
+}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI New project</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; align-items: center; padding: 36px 24px 48px">
+<div style="width: 100%; max-width: 980px; display: flex; flex-direction: column; gap: 24px">
+
+<section style="display: flex; flex-direction: column; gap: 6px">
+<h1 style="margin: 0; font-family: var(--display); font-size: 28px; line-height: 34px; font-weight: 600; letter-spacing: -0.02em">What are you starting?</h1>
+<p style="margin: 0; font-size: 14.5px; color: var(--ink-2)">Both give you a team on an org chart. They differ in where the team works and what it leaves behind.</p>
+</section>
+
+<section aria-label="Kind" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px">
+<sc-for list="{{kinds}}" as="c" hint-placeholder-count="2">
+<button role="radio" aria-checked="{{c.on}}" onClick="{{c.pick}}" class="glass lift" style="border-radius: 18px; padding: 18px; display: flex; flex-direction: column; gap: 14px; text-align: left; border: 1.5px solid {{c.bd}}; box-shadow: {{c.sh}}">
+<span style="display: flex; align-items: center; gap: 12px">
+<span aria-hidden="true" style="flex: none; width: 42px; height: 42px; border-radius: 13px; background: {{c.tint}}; color: #fff; display: grid; place-items: center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="{{c.icon}}"></path></svg></span>
+<span style="flex-grow: 1; display: flex; flex-direction: column"><span style="font-family: var(--display); font-size: 18px; font-weight: 600">{{c.title}}</span><span style="font-size: 13px; color: var(--ink-2)">{{c.sub}}</span></span>
+<span aria-hidden="true" style="flex: none; width: 20px; height: 20px; border-radius: 50%; border: 2px solid {{c.ring}}; display: grid; place-items: center"><span style="width: 10px; height: 10px; border-radius: 50%; background: {{c.fill}}"></span></span>
+</span>
+<span style="display: flex; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{c.team}}" as="r" hint-placeholder-count="4">
+<span style="display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px 0 6px; border-radius: 13px; background: var(--glass-strong); border: 1px solid var(--glass-line); font-size: 12px"><span aria-hidden="true" style="width: 14px; height: 14px; border-radius: 5px; background: {{r.color}}"></span>{{r.name}}</span>
+</sc-for>
+</span>
+<span style="font-size: 12.5px; color: var(--ink-3)">{{c.eg}}</span>
+</button>
+</sc-for>
+</section>
+
+<section aria-label="How they differ" class="glass" style="border-radius: 18px; padding: 6px 18px">
+<div style="display: grid; grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1.4fr) minmax(0, 1.4fr); gap: 0 18px; padding: 12px 0 8px; font-size: 12px; font-weight: 600; color: var(--ink-3)">
+<span></span><span style="color: {{codeHead}}">Code project</span><span style="color: {{engHead}}">Engagement</span>
+</div>
+<sc-for list="{{rows}}" as="r" hint-placeholder-count="6">
+<div style="display: grid; grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1.4fr) minmax(0, 1.4fr); gap: 0 18px; padding: 11px 0; border-top: 1px solid var(--line); font-size: 13px">
+<span style="font-weight: 600">{{r.label}}</span>
+<span style="color: {{codeInk}}">{{r.code}}</span>
+<span style="color: {{engInk}}">{{r.eng}}</span>
+</div>
+</sc-for>
+</section>
+
+<section aria-label="Details" class="glass" style="border-radius: 18px; padding: 18px; display: flex; flex-direction: column; gap: 16px">
+<h2 style="margin: 0; font-family: var(--display); font-size: 16px; font-weight: 600">{{formTitle}}</h2>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px">
+<sc-for list="{{fields}}" as="f" hint-placeholder-count="4">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span style="font-size: 12.5px; font-weight: 600">{{f.label}}</span>
+<div style="min-height: 38px; padding: 6px 8px 6px 12px; border-radius: 10px; border: 1px solid var(--line-strong); background: var(--bg); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13.5px">
+<sc-if value="{{f.value}}" hint-placeholder-val="{{true}}"><span style="flex-grow: 1; color: {{f.ink}}">{{f.value}}</span></sc-if>
+<sc-for list="{{f.chips}}" as="ch" hint-placeholder-count="2">
+<span style="height: 24px; padding: 0 8px; border-radius: 7px; background: var(--sunk); display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color: var(--ink-3)"><path d="M6 11h12v9H6zM9 11V8a3 3 0 0 1 6 0v3"></path></svg>{{ch}}</span>
+</sc-for>
+<sc-if value="{{f.action}}" hint-placeholder-val="{{false}}"><span style="flex-grow: 1"></span><button style="height: 26px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--line); background: transparent; font-size: 12px; color: var(--ink-2)">{{f.action}}</button></sc-if>
+</div>
+<span style="font-size: 12px; color: var(--ink-3)">{{f.help}}</span>
+</div>
+</sc-for>
+</div>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 4px; border-top: 1px solid var(--line)">
+<span style="flex: 1 1 260px; font-size: 12.5px; color: var(--ink-2); padding-top: 12px">{{next}}</span>
+<button style="height: 36px; margin-top: 12px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line-strong); background: transparent; font-size: 13.5px; font-weight: 500">{{altAction}}</button>
+<button style="height: 36px; margin-top: 12px; padding: 0 16px; border-radius: 10px; border: 0; background: var(--primary); color: var(--on-primary); font-size: 13.5px; font-weight: 600; box-shadow: var(--glow)">{{mainAction}}</button>
+</div>
+</section>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1080}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+renderVals() {
+const kind = this.state.kind || 'engagement';
+const isCode = kind === 'code';
+const card = (id, title, sub, icon, tint, team, eg) => ({
+title: title, sub: sub, icon: icon, tint: tint, team: team, eg: eg, on: kind === id,
+bd: kind === id ? 'var(--accent)' : 'var(--glass-line)',
+sh: kind === id ? 'var(--glow)' : 'none',
+ring: kind === id ? 'var(--accent)' : 'var(--line-strong)',
+fill: kind === id ? 'var(--accent)' : 'transparent',
+pick: () => this.setState({ kind: id })
+});
+const r = (name, color) => ({ name: name, color: color });
+const kinds = [
+card('code', 'Code project', 'The team builds and changes software in a repository.', 'M8 7l-5 5 5 5M16 7l5 5-5 5', 'var(--primary)',
+[r('Orchestrator', 'var(--r-orch)'), r('Implementer', 'var(--r-impl)'), r('Reviewer', 'var(--r-rev)'), r('Researcher', 'var(--r-res)')],
+'For example: add a feature, fix a bug, upgrade a dependency.'),
+card('engagement', 'Engagement', 'The team does research, analysis and writing. For any work that is not code.', 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', 'var(--r-analyst)',
+[r('Orchestrator', 'var(--r-orch)'), r('Researcher', 'var(--r-res)'), r('Analyst', 'var(--r-analyst)'), r('Writer', 'var(--r-writer)')],
+'For example: a report, a plan, a review, a set of slides.')
+];
+const rows = [
+{ label: 'Where it works', code: 'A repository folder. Each agent that writes gets its own copy on a branch.', eng: 'A working folder for drafts. OrgAI adds no files of its own to it.' },
+{ label: 'Source material', code: 'The code in the repository.', eng: 'Reference folders the team can read and never change.' },
+{ label: 'What it produces', code: 'Code changes, reviewed and merged.', eng: 'Documents, slides and sheets, kept with versions in Files.' },
+{ label: 'What it remembers', code: 'Team files kept in the repository.', eng: 'Knowledge: people, decisions, risks and notes, with who recorded each.' },
+{ label: 'How the team is set', code: 'The Architect reads the code and proposes a team.', eng: 'The Architect interviews you, or you start from a template.' },
+{ label: 'Asking you', code: 'You choose how much the team asks.', eng: 'Starts on "Ask before risky actions". A command that names a reference folder is always asked.' }
+];
+const f = (label, value, help, extra) => Object.assign({ label: label, value: value, help: help, ink: 'var(--ink)', chips: [], action: '' }, extra || {});
+const fields = isCode ? [
+f('Name', 'Notes API', 'Shown in the sidebar under Projects.'),
+f('Repository folder', 'C:\\Code\\notes-api', 'Or start from a GitHub address.', { action: 'Choose' }),
+f('Main branch', 'main', 'Finished work is merged here after review.'),
+f('Team', 'Let the Architect read the code and propose one', 'You approve the team before any work starts.', { action: 'Change' })
+] : [
+f('Name', 'Acme onboarding', 'Shown in the sidebar under Engagements.'),
+f('Who it is for', 'Acme Corp', 'Optional. Engagements with the same name here are grouped together.'),
+f('Working folder', 'C:\\Work\\Acme\\onboarding', 'The only place the team may write.', { action: 'Choose' }),
+f('Reference folders', '', 'Read only. The team can quote from these but cannot edit them.', { chips: ['Source documents', 'Background files'], action: 'Add' })
+];
+return Object.assign({
+theme: this.props.theme ?? 'dark',
+kinds: kinds,
+rows: rows,
+fields: fields,
+codeHead: isCode ? 'var(--accent-text)' : 'var(--ink-3)',
+engHead: isCode ? 'var(--ink-3)' : 'var(--accent-text)',
+codeInk: isCode ? 'var(--ink)' : 'var(--ink-3)',
+engInk: isCode ? 'var(--ink-3)' : 'var(--ink)',
+formTitle: isCode ? 'Set up the code project' : 'Set up the engagement',
+next: isCode ? 'Next: the Architect reads the repository and proposes a team for you to approve.' : 'Next: a short interview about the work, then an engagement plan for you to approve.',
+altAction: isCode ? 'Create without a team' : 'Start from a template',
+mainAction: isCode ? 'Create and propose a team' : 'Create and start interview'
+}, this.side('new'));
+}
+}
+</script>
+</body>
+</html>

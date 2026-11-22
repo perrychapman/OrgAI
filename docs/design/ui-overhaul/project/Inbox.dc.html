@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Inbox</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad)}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line)">
+<h1 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">Inbox</h1>
+<span style="font-size: 13px; color: var(--ink-2)">4 waiting on you · 3 finished</span>
+<div role="group" aria-label="Show" style="display: flex; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{chips}}" as="c" hint-placeholder-count="6">
+<button aria-pressed="{{c.on}}" onClick="{{c.pick}}" style="height: 30px; padding: 0 11px; border-radius: 15px; border: 1px solid {{c.bd}}; background: {{c.bg}}; font-size: 12.5px; font-weight: 500">{{c.label}} <span style="color: var(--ink-3)">{{c.n}}</span></button>
+</sc-for>
+</div>
+<span style="flex-grow: 1"></span>
+<button class="b b-s">All projects <span aria-hidden="true" style="color: var(--ink-3)">▾</span></button>
+<button class="b b-p">Answer in order</button>
+</header>
+
+<div class="dots" style="flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 16px; padding: 16px; min-height: 0">
+
+<section aria-label="Items" style="flex: 1 1 360px; max-width: 460px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+<sc-for list="{{sections}}" as="s" hint-placeholder-count="2">
+<div class="glass" style="border-radius: 16px; padding: 8px; display: flex; flex-direction: column; gap: 2px">
+<div style="padding: 4px 8px 6px; font-size: 12px; font-weight: 600; color: {{s.ink}}">{{s.label}}</div>
+<sc-for list="{{s.items}}" as="it" hint-placeholder-count="3">
+<button aria-pressed="{{it.sel}}" onClick="{{it.pick}}" style="display: flex; align-items: flex-start; gap: 10px; padding: 10px; border-radius: 11px; border: 1px solid {{it.bd}}; background: {{it.bg}}; text-align: left">
+<span aria-hidden="true" class="{{it.cls}}" style="flex: none; width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; background: {{it.dot}}"></span>
+<span style="flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 1px"><span style="font-size: 13.5px; font-weight: 600">{{it.title}}</span><span style="font-size: 12.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{it.who}} · {{it.project}}</span></span>
+<span style="flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 3px"><span style="font-size: 11.5px; color: var(--ink-3)">{{it.when}}</span><span style="height: 18px; padding: 0 7px; border-radius: 9px; background: var(--sunk); font-size: 11px; color: var(--ink-2); display: grid; place-items: center">{{it.kind}}</span></span>
+</button>
+</sc-for>
+</div>
+</sc-for>
+<div style="display: flex; gap: 12px; padding: 0 8px; font-size: 12px; color: var(--ink-3)"><span><span class="kbd">J</span> <span class="kbd">K</span> move</span><span><span class="kbd">Enter</span> main action</span><span><span class="kbd">Esc</span> decline</span></div>
+</section>
+
+<section aria-label="Selected item" style="flex: 999 1 460px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+<article class="glass a-rise" style="border-radius: 18px; padding: 18px; display: flex; flex-direction: column; gap: 12px; border: 1px solid {{d.frame}}">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2)">
+<span style="height: 22px; padding: 0 9px; border-radius: 11px; background: {{d.pillBg}}; color: {{d.pillFg}}; font-weight: 600; display: inline-flex; align-items: center">{{d.kind}}</span>
+<span>{{d.who}}</span><span style="color: var(--ink-3)">in {{d.project}}</span>
+<span style="flex-grow: 1"></span>
+<a href="{{d.href}}" style="font-weight: 600; text-decoration: none">Show on the canvas</a>
+</div>
+<h2 style="margin: 0; font-family: var(--display); font-size: 20px; line-height: 26px; font-weight: 600">{{d.title}}</h2>
+<sc-if value="{{d.code}}" hint-placeholder-val="{{true}}"><div class="code">{{d.code}}</div></sc-if>
+<p style="margin: 0; font-size: 13.5px; color: var(--ink-2)">{{d.note}}</p>
+<sc-if value="{{d.hasFacts}}" hint-placeholder-val="{{false}}">
+<div style="display: flex; flex-wrap: wrap; gap: 6px">
+<sc-for list="{{d.facts}}" as="f" hint-placeholder-count="3"><span style="height: 28px; padding: 0 10px; border-radius: 9px; background: var(--glass-strong); border: 1px solid var(--glass-line); font-size: 12.5px; display: inline-flex; align-items: center; gap: 7px"><span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: {{f.dot}}"></span>{{f.text}}</span></sc-for>
+</div>
+</sc-if>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 4px">
+<sc-for list="{{d.actions}}" as="a" hint-placeholder-count="3"><button class="{{a.cls}}">{{a.label}}</button></sc-for>
+</div>
+</article>
+
+<div class="glass" style="border-radius: 16px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">Just before this</div>
+<sc-for list="{{d.trail}}" as="t" hint-placeholder-count="3">
+<div style="display: flex; align-items: baseline; gap: 10px; font-size: 13px"><span aria-hidden="true" style="flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); transform: translateY(-2px)"></span><span style="flex: 1 1 0; min-width: 0; color: var(--ink-2)">{{t.text}}</span><span style="flex: none; font-size: 12px; color: var(--ink-3)">{{t.when}}</span></div>
+</sc-for>
+</div>
+
+<div style="display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 13px; border: 1px dashed var(--line-strong); font-size: 13px; color: var(--ink-2)"><span style="font-weight: 600; color: var(--ink-3)">Up next</span><span style="flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{d.next}}</span></div>
+</section>
+
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":940}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+renderVals() {
+const P = 'b b-p', Sx = 'b b-s', G = 'b b-g';
+const act = (label, cls) => ({ label: label, cls: cls });
+const ok = (text) => ({ text: text, dot: 'var(--ok)' });
+const raw = [
+{ id: 'perm', group: 'wait', kind: 'Permission', f: 'permission', title: 'Run a command', who: 'Implementer 2', project: 'Notes API', when: '2 min', href: 'Run.dc.html', code: 'npm test',
+note: 'Runs in Implementer 2\'s own copy of the code. Nothing outside that folder changes.', facts: [],
+actions: [act('Allow once', P), act('Always allow npm test', Sx), act('Deny', G)],
+trail: [['Finished editing cache.js, 96 lines added', '3 min'], ['Wrote 6 new tests in notes.test.js', '4 min'], ['Was asked by Lead implementer to prove the cache works', '9 min']] },
+{ id: 'ask', group: 'wait', kind: 'Question', f: 'question', title: 'Which office should be the pilot?', who: 'Lead analyst', project: 'Acme onboarding', when: '5 min', href: 'Engagement.dc.html', code: '',
+note: 'Leeds has the most new starters, Glasgow is the newest office. The plan is written around whichever you pick.', facts: [],
+actions: [act('Leeds', P), act('Bristol', Sx), act('Glasgow', Sx), act('Let the team decide', G)],
+trail: [['Compared starter numbers across the 3 offices', '6 min'], ['Read the 2025 handbook summary', '11 min']] },
+{ id: 'merge', group: 'wait', kind: 'Review', f: 'review', title: 'Merge "Add the cache layer"', who: 'Implementer 1', project: 'Notes API', when: '1 min', href: 'Run.dc.html', code: '',
+note: 'Merges 4 changed files into main in your folder. You can undo it from History.', facts: [ok('42 of 42 tests pass'), ok('Reviewer 1 approved'), { text: '+128 −14 in 4 files', dot: 'var(--accent-2)' }],
+actions: [act('Merge', P), act('View changes', Sx), act('Send back', G)],
+trail: [['Reviewer 1 approved the change', '1 min'], ['Security check found no new dependencies', '2 min']] },
+{ id: 'plan', group: 'wait', kind: 'Proposal', f: 'proposal', title: 'Approve the engagement plan', who: 'Architect', project: 'Northwind audit prep', when: '12 min', href: '#', code: '',
+note: 'A two-week plan in four steps with a team of 7. Work starts only after you approve.', facts: [{ text: '7 roles in 2 groups', dot: 'var(--accent)' }, { text: 'About $6 to $9 in total', dot: 'var(--accent)' }],
+actions: [act('Approve', P), act('Read the plan', Sx), act('Ask for changes', Sx)],
+trail: [['Finished the setup interview with you', '14 min']] },
+{ id: 'd1', group: 'done', kind: 'Finished', f: 'done', title: 'Update the pricing page', who: '6 files changed, merged', project: 'Website refresh', when: '18 min', href: '#', code: '',
+note: 'The run finished and everything was merged. Nothing is waiting on you.', facts: [ok('All checks passed'), { text: '$1.12 · 9 min', dot: 'var(--ink-3)' }],
+actions: [act('See what changed', P), act('Start a follow-up', Sx), act('Clear', G)], trail: [['Orchestrator wrote a summary of the run', '18 min']] },
+{ id: 'd2', group: 'done', kind: 'Finished', f: 'done', title: 'Kickoff summary written', who: '1 document in Files', project: 'Acme onboarding', when: '40 min', href: 'Files.dc.html', code: '',
+note: 'A two-page summary of the kickoff call is in Files, with 6 items added to Knowledge.', facts: [], actions: [act('Open the document', P), act('Clear', G)], trail: [['Writer 1 finished the second draft', '41 min']] },
+{ id: 'd3', group: 'done', kind: 'Finished', f: 'done', title: 'Dependency check found nothing', who: 'Scheduled, daily', project: 'Notes API', when: '3 h', href: '#', code: '',
+note: 'The daily scheduled check ran and found no updates that need attention.', facts: [], actions: [act('Clear', P), act('Open the schedule', Sx)], trail: [['Scheduled run started at 06:00', '3 h']] }
+];
+const f = this.state.f || 'all';
+const sel = this.state.sel || 'perm';
+const item = (r) => { const on = r.id === sel, w = r.group === 'wait'; return { title: r.title, who: r.who, project: r.project, when: r.when, kind: r.kind, sel: on,
+dot: w ? 'var(--warn)' : 'var(--ok)', cls: w ? 'a-breathe' : '', bg: on ? 'var(--accent-soft)' : 'transparent', bd: on ? 'var(--accent)' : 'transparent', pick: () => this.setState({ sel: r.id }) }; };
+const shown = raw.filter((r) => f === 'all' || r.f === f);
+const chip = (id, label) => ({ label: label, n: id === 'all' ? raw.length : raw.filter((r) => r.f === id).length, on: f === id, bg: f === id ? 'var(--accent-soft)' : 'var(--glass)', bd: f === id ? 'var(--accent)' : 'var(--glass-line)', pick: () => this.setState({ f: id }) });
+const cur = raw.find((r) => r.id === sel), wait = cur.group === 'wait';
+const after = raw[(raw.indexOf(cur) + 1) % raw.length];
+const sections = [];
+const w = shown.filter((r) => r.group === 'wait'), dn = shown.filter((r) => r.group === 'done');
+if (w.length) sections.push({ label: 'Waiting on you', ink: 'var(--warn)', items: w.map(item) });
+if (dn.length) sections.push({ label: 'Finished since you last looked', ink: 'var(--ink-3)', items: dn.map(item) });
+return Object.assign({
+theme: this.props.theme ?? 'dark',
+chips: [chip('all', 'All'), chip('permission', 'Permissions'), chip('question', 'Questions'), chip('review', 'Reviews'), chip('proposal', 'Proposals'), chip('done', 'Finished')],
+sections: sections,
+d: { kind: cur.kind, who: cur.who, project: cur.project, href: cur.href, title: cur.title, code: cur.code, note: cur.note, facts: cur.facts, hasFacts: cur.facts.length > 0, actions: cur.actions,
+trail: cur.trail.map((t) => ({ text: t[0], when: t[1] + ' ago' })), next: after.title + ' · ' + after.project,
+frame: wait ? 'var(--warn-line)' : 'var(--glass-line)', pillBg: wait ? 'var(--warn-soft)' : 'var(--ok-soft)', pillFg: wait ? 'var(--warn)' : 'var(--ok)' }
+}, this.side('inbox'));
+}
+}
+</script>
+</body>
+</html>

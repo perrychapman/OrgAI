@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Schedules</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#4a3bd0}a:hover{color:#12151f}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+.b-g{background:transparent;color:var(--ink-2);font-weight:500}
+.b-d{background:var(--bad-soft);color:var(--bad)}
+.kbd{font-size:11px;padding:1px 5px;border-radius:5px;border:1px solid var(--line-strong);color:var(--ink-3)}
+.code{font-family:var(--mono);font-size:12.5px;background:var(--bg);border-radius:8px;padding:7px 9px}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="display: flex; flex-wrap: wrap; min-height: 100vh; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px">
+
+<nav aria-label="Main" style="flex: 1 0 232px; padding: 16px 12px; display: flex; flex-direction: column; gap: 18px; background: var(--glass); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-right: 1px solid var(--glass-line)">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px">
+<div aria-hidden="true" style="width: 26px; height: 26px; border-radius: 8px; background: var(--primary); display: grid; place-items: center">
+<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#ffffff" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="3" r="1.8"></circle><circle cx="3" cy="11" r="1.8"></circle><circle cx="11" cy="11" r="1.8"></circle><path d="M7 5v2.5M3 9V7.5h8V9"></path></svg>
+</div>
+<span style="font-family: var(--display); font-size: 17px; font-weight: 600; letter-spacing: -0.01em">OrgAI</span>
+</div>
+<button style="display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--ink-3); font-size: 13px; text-align: left">
+<span style="flex-grow: 1">Search or jump to</span><span style="font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong)">Ctrl K</span>
+</button>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{nav}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span style="flex-grow: 1">{{n.label}}</span>
+<sc-if value="{{n.count}}" hint-placeholder-val="{{false}}"><span style="min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-size: 12px; font-weight: 600; display: grid; place-items: center">{{n.count}}</span></sc-if>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="display: flex; align-items: center; padding: 0 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)"><span style="flex-grow: 1">Projects</span><a href="NewProject.dc.html" aria-label="New project or engagement" style="width: 22px; height: 22px; border-radius: 6px; color: var(--ink-3); font-size: 16px; line-height: 22px; text-align: center; text-decoration: none">+</a></div>
+<sc-for list="{{projects}}" as="p" hint-placeholder-count="3">
+<sc-if value="{{p.head}}" hint-placeholder-val="{{false}}"><div style="padding: 12px 10px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{p.head}}</div></sc-if>
+<a href="{{p.href}}" title="{{p.kind}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{p.bg}}; color: {{p.fg}}; font-weight: {{p.w}}">
+<span aria-hidden="true" class="{{p.dotClass}}" style="width: 8px; height: 8px; margin: 0 4px; border-radius: 50%; background: {{p.dot}}"></span>
+<span style="flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{p.label}}</span>
+<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; color: var(--ink-3)"><path d="{{p.kicon}}"></path></svg>
+</a>
+</sc-for>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<sc-for list="{{foot}}" as="n" hint-placeholder-count="3">
+<a href="{{n.href}}" style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px; text-decoration: none; font-size: 13.5px; background: {{n.bg}}; color: {{n.fg}}; font-weight: {{n.w}}">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{n.icon}}"></path></svg>
+<span>{{n.label}}</span>
+</a>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line)">
+<div style="display: flex; font-size: 12px; color: var(--ink-3)"><span style="flex-grow: 1">Plan limit, next 5 hours</span><span style="color: var(--ink); font-weight: 600">22%</span></div>
+<div aria-hidden="true" style="height: 4px; border-radius: 2px; background: var(--sunk)"><div style="width: 22%; height: 4px; border-radius: 2px; background: var(--accent)"></div></div>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; min-height: 52px; padding: 8px 20px; border-bottom: 1px solid var(--line)">
+<h1 style="margin: 0; font-family: var(--display); font-size: 17px; font-weight: 600">Schedules</h1>
+<span style="font-size: 13px; color: var(--ink-2)">{{onCount}} on · next run {{nextIn}}</span>
+<span style="flex-grow: 1"></span>
+<span style="font-size: 12.5px; color: var(--ink-3)">Schedules run while OrgAI is open on this computer</span>
+<button class="b b-p">New schedule</button>
+</header>
+
+<div class="dots" style="flex: 1 1 auto; display: flex; flex-direction: column; gap: 16px; padding: 16px; min-height: 0">
+
+<section aria-label="This week" class="glass" style="border-radius: 18px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: baseline; gap: 10px"><h2 style="margin: 0; flex-grow: 1; font-family: var(--display); font-size: 15px; font-weight: 600">This week</h2><span style="font-size: 12.5px; color: var(--ink-2)">About {{weekCost}} if every run goes ahead</span></div>
+<div style="display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px">
+<sc-for list="{{week}}" as="d" hint-placeholder-count="7">
+<div style="border-radius: 12px; padding: 8px; min-height: 104px; background: {{d.bg}}; border: 1px solid {{d.bd}}; display: flex; flex-direction: column; gap: 5px">
+<div style="display: flex; align-items: baseline; gap: 6px; font-size: 12px"><span style="font-weight: 600; color: {{d.ink}}">{{d.name}}</span><span style="color: var(--ink-3)">{{d.date}}</span></div>
+<sc-for list="{{d.runs}}" as="r" hint-placeholder-count="2">
+<div style="display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 7px; background: var(--glass-strong); border-left: 3px solid {{r.color}}; font-size: 11.5px; opacity: {{r.op}}"><span style="flex: none; color: var(--ink-3); font-variant-numeric: tabular-nums">{{r.at}}</span><span style="flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{r.name}}</span></div>
+</sc-for>
+</div>
+</sc-for>
+</div>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px">
+
+<section aria-label="Schedules" style="flex: 999 1 520px; min-width: 0; display: flex; flex-direction: column; gap: 8px">
+<sc-for list="{{items}}" as="s" hint-placeholder-count="4">
+<div class="glass" style="border-radius: 14px; padding: 12px 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; border: 1px solid {{s.bd}}; opacity: {{s.op}}">
+<span aria-hidden="true" style="flex: none; width: 4px; align-self: stretch; border-radius: 2px; background: {{s.color}}"></span>
+<button onClick="{{s.pick}}" aria-pressed="{{s.sel}}" style="flex: 1 1 240px; min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600">{{s.name}}</span><span style="font-size: 12.5px; color: var(--ink-2)">{{s.when}} · {{s.project}} · {{s.who}}</span></button>
+<span style="flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: 12px"><span style="color: var(--ink-2)">{{s.next}}</span><span style="display: inline-flex; align-items: center; gap: 6px; color: {{s.lastInk}}"><span aria-hidden="true" style="width: 7px; height: 7px; border-radius: 50%; background: {{s.lastDot}}"></span>{{s.last}}</span></span>
+<button role="switch" aria-checked="{{s.on}}" aria-label="{{s.swLabel}}" onClick="{{s.toggle}}" style="flex: none; width: 38px; height: 22px; padding: 2px; border: 0; border-radius: 11px; background: {{s.swBg}}; display: flex; justify-content: {{s.swPos}}"><span style="width: 18px; height: 18px; border-radius: 50%; background: #fff"></span></button>
+</div>
+</sc-for>
+<div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 14px; border: 1px dashed var(--line-strong); font-size: 13px; color: var(--ink-2)"><span style="flex: 1 1 0">You can also ask in Chat: "check for outdated dependencies every weekday morning".</span><a href="Chat.dc.html" style="font-weight: 600; text-decoration: none">Open Chat</a></div>
+</section>
+
+<aside aria-label="Selected schedule" class="glass a-rise" style="flex: 1 1 340px; max-width: 420px; min-width: 0; align-self: flex-start; border-radius: 18px; padding: 16px; display: flex; flex-direction: column; gap: 14px">
+<div><h2 style="margin: 0; font-family: var(--display); font-size: 18px; font-weight: 600">{{d.name}}</h2><div style="font-size: 12.5px; color: var(--ink-2)">{{d.project}}</div></div>
+<div style="padding: 10px 12px; border-radius: 12px; background: var(--sunk); font-size: 13.5px">{{d.task}}</div>
+<div style="display: flex; flex-direction: column">
+<sc-for list="{{d.rows}}" as="r" hint-placeholder-count="5"><button style="display: flex; align-items: baseline; gap: 12px; padding: 9px 0; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; font-size: 13px"><span style="flex: 0 0 110px; color: var(--ink-3)">{{r.a}}</span><span style="flex: 1 1 0; min-width: 0; font-weight: 600">{{r.b}}</span><span aria-hidden="true" style="color: var(--ink-3)">›</span></button></sc-for>
+</div>
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">Last 7 runs</div>
+<div style="display: flex; align-items: flex-end; gap: 5px; height: 44px"><sc-for list="{{d.bars}}" as="b" hint-placeholder-count="7"><span title="{{b.t}}" style="flex: 1 1 0; height: {{b.h}}%; border-radius: 4px; background: {{b.c}}"></span></sc-for></div>
+<div style="font-size: 12.5px; color: var(--ink-2)">{{d.lastNote}}</div>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px"><button class="b b-p">Run it now</button><button class="b b-s">Edit</button><span style="flex-grow: 1"></span><button class="b b-g">Delete</button></div>
+</aside>
+
+</div>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":980}}'>
+class Component extends DCLogic {
+side(a) {
+const I = {
+home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z',
+inbox: 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5',
+chat: 'M4 5h16v11H9l-5 4z',
+usage: 'M5 20V10M12 20V4M19 20v-7',
+cal: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+gear: 'M4 7h10M18 7h2M4 17h2M10 17h10M16 5v4M8 15v4'
+};
+const it = (k, label, href, extra) => Object.assign({ label: label, href: href, icon: I[k] || '', count: '', note: '', head: '', kicon: '', kind: '', dotClass: '', bg: k === a ? 'var(--sunk)' : 'transparent', fg: k === a ? 'var(--ink)' : 'var(--ink-2)', w: k === a ? 600 : 500 }, extra || {});
+return {
+nav: [it('home', 'Home', 'Main.dc.html'), it('inbox', 'Inbox', 'Inbox.dc.html', { count: 3 }), it('chat', 'Chat', 'Chat.dc.html')],
+projects: [
+it('notes', 'Notes API', 'ProjectHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('web', 'Website refresh', '#', { dot: 'var(--line-strong)', kicon: 'M8 7l-5 5 5 5M16 7l5 5-5 5', kind: 'Code project' }),
+it('acme', 'Acme onboarding', 'EngagementHome.dc.html', { dot: 'var(--accent-2)', dotClass: 'a-pulse', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Acme Corp', head: 'Engagements' }),
+it('north', 'Northwind audit prep', '#', { dot: 'var(--line-strong)', kicon: 'M4 8h16v11H4zM9 8V5h6v3M4 13h16', kind: 'Engagement for Northwind' })
+],
+foot: [it('usage', 'Usage', 'Usage.dc.html'), it('cal', 'Schedules', 'Schedules.dc.html'), it('gear', 'Settings', 'Settings.dc.html')]
+};
+}
+renderVals() {
+const off = this.state.off || { review: true };
+const sel = this.state.sel || 'deps';
+const raw = [
+{ id: 'deps', name: 'Daily dependency check', when: 'Every weekday at 06:00', project: 'Notes API', who: 'one assistant', color: 'var(--accent-2)', next: 'Tomorrow 06:00', last: 'Yesterday: nothing needed', lastOk: true, days: [0, 1, 2, 3, 4], at: '06:00', cost: 0.03,
+task: 'Check for outdated or vulnerable dependencies and tell me only if something needs attention.', bars: [30, 30, 34, 30, 62, 30, 30], note: 'Found something once in the last 7 runs (Thursday).' },
+{ id: 'digest', name: 'Weekly progress digest', when: 'Fridays at 16:00', project: 'Acme onboarding', who: 'whole team', color: 'var(--r-writer)', next: 'Friday 16:00', last: 'Last Friday: document written', lastOk: true, days: [4], at: '16:00', cost: 1.4,
+task: 'Summarise this week\'s progress and open questions into a one-page update for Jane Doe.', bars: [70, 64, 80, 72, 68, 76, 70], note: 'Every run produced a document in Files.' },
+{ id: 'tests', name: 'Nightly full test run', when: 'Every day at 02:00', project: 'Notes API', who: 'Quality group', color: 'var(--r-rev)', next: 'Tonight 02:00', last: 'Last night: 2 tests failed', lastOk: false, days: [0, 1, 2, 3, 4, 5, 6], at: '02:00', cost: 0.22,
+task: 'Run the whole test suite. If anything fails, find the cause and propose a fix, but do not merge.', bars: [40, 40, 42, 40, 40, 44, 88], note: 'Last night\'s failure is waiting in your Inbox.' },
+{ id: 'review', name: 'Monthly spending review', when: 'First Monday of the month, 09:00', project: 'No project', who: 'one assistant', color: 'var(--ink-3)', next: 'Turned off', last: '3 Nov: report written', lastOk: true, days: [], at: '09:00', cost: 0.1,
+task: 'Look at last month\'s usage and suggest where a cheaper model would do.', bars: [50, 55, 48, 52, 50, 50, 54], note: 'Turned off by you on 10 Nov.' }
+];
+const NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+let weekCost = 0;
+const week = NAMES.map((n, i) => { const runs = raw.filter((s) => s.days.indexOf(i) >= 0).sort((a, b) => a.at.localeCompare(b.at)).map((s) => { const on = !off[s.id]; if (on && i >= 2) weekCost += s.cost; return { at: s.at, name: s.name, color: s.color, op: on ? 1 : 0.35 }; });
+return { name: n, date: 16 + i, runs: runs, bg: i === 2 ? 'var(--accent-soft)' : 'transparent', bd: i === 2 ? 'var(--accent)' : 'var(--line)', ink: i === 2 ? 'var(--accent-text)' : 'var(--ink-2)' }; });
+const items = raw.map((s) => { const on = !off[s.id]; return { name: s.name, when: s.when, project: s.project, who: s.who, color: s.color, next: on ? 'Next: ' + s.next : 'Turned off', last: s.last, lastDot: s.lastOk ? 'var(--ok)' : 'var(--bad)', lastInk: s.lastOk ? 'var(--ink-3)' : 'var(--bad)',
+on: on, op: on ? 1 : 0.6, sel: s.id === sel, bd: s.id === sel ? 'var(--accent)' : 'var(--glass-line)', swBg: on ? 'var(--primary)' : 'var(--line-strong)', swPos: on ? 'flex-end' : 'flex-start', swLabel: s.name + (on ? ', on' : ', off'),
+pick: () => this.setState({ sel: s.id }), toggle: () => this.setState({ off: Object.assign({}, off, { [s.id]: on }) }) }; });
+const cur = raw.find((s) => s.id === sel);
+return Object.assign({
+theme: this.props.theme ?? 'dark',
+onCount: raw.filter((s) => !off[s.id]).length, nextIn: off.tests ? 'tomorrow at 06:00' : 'tonight at 02:00', weekCost: '$' + weekCost.toFixed(2),
+week: week, items: items,
+d: { name: cur.name, project: cur.project, task: cur.task, lastNote: cur.note,
+rows: [{ a: 'When', b: cur.when }, { a: 'Who', b: cur.who === 'one assistant' ? 'One assistant' : cur.who === 'whole team' ? 'Whole team' : cur.who }, { a: 'If it needs you', b: 'Waits in your Inbox' }, { a: 'May change files', b: cur.id === 'digest' ? 'Yes, in the working folder' : 'No, it only reports' }, { a: 'Spending limit', b: '$' + Math.max(0.5, cur.cost * 3).toFixed(2) + ' a run' }],
+bars: cur.bars.map((h, i) => ({ h: h, c: h > 60 && cur.id !== 'digest' ? (cur.id === 'tests' ? 'var(--bad)' : 'var(--warn)') : 'var(--accent-2)', t: 'Run ' + (i + 1) })) }
+}, this.side('cal'));
+}
+}
+</script>
+</body>
+</html>

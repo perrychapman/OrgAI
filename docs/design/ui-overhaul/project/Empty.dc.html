@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OrgAI Empty states</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./tokens.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap">
+<style>
+body{margin:0}
+.b{height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:600;border:1px solid transparent;display:inline-flex;align-items:center;gap:7px}
+.b-p{background:var(--primary);color:var(--on-primary)}
+.b-s{background:var(--glass);border-color:var(--line-strong);font-weight:500}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="min-height: 100vh; padding: 32px; background: var(--bg-art); color: var(--ink); font-family: Inter, system-ui, sans-serif; font-size: 14px; line-height: 20px; display: flex; flex-direction: column; gap: 20px">
+<div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px"><h1 style="margin: 0; flex-grow: 1; font-family: var(--display); font-size: 20px; font-weight: 600">When there is nothing to show</h1><span style="font-size: 13px; color: var(--ink-2)">Each one says what belongs here and offers the one step that fills it.</span></div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 16px">
+<sc-for list="{{states}}" as="s" hint-placeholder-count="6">
+<section class="glass" style="border-radius: 18px; padding: 10px; display: flex; flex-direction: column; gap: 10px">
+<div style="padding: 2px 6px; font-size: 12px; font-weight: 600; color: var(--ink-3)">{{s.where}}</div>
+<div class="dots" style="flex: 1 1 auto; min-height: 250px; border-radius: 13px; border: 1px dashed var(--line-strong); padding: 26px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center">
+<div aria-hidden="true" style="display: flex; align-items: flex-end; gap: 6px; height: 46px">
+<sc-for list="{{s.art}}" as="a" hint-placeholder-count="3"><span class="{{a.cls}}" style="width: {{a.w}}px; height: {{a.h}}px; border-radius: {{a.r}}; background: {{a.bg}}; border: 1.5px {{a.line}} {{a.bd}}"></span></sc-for>
+</div>
+<div style="font-family: var(--display); font-size: 17px; font-weight: 600">{{s.title}}</div>
+<div style="max-width: 320px; font-size: 13.5px; color: var(--ink-2)">{{s.text}}</div>
+<div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px"><sc-if value="{{s.main}}" hint-placeholder-val="{{true}}"><button class="b b-p">{{s.main}}</button></sc-if><sc-if value="{{s.second}}" hint-placeholder-val="{{false}}"><button class="b b-s">{{s.second}}</button></sc-if></div>
+</div>
+</section>
+</sc-for>
+</div>
+
+<section class="glass" style="border-radius: 18px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px">
+<div style="font-size: 12px; font-weight: 600; color: var(--ink-3)">App-wide banners, shown under the top bar</div>
+<sc-for list="{{banners}}" as="n" hint-placeholder-count="3">
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 12px; background: {{n.bg}}; border: 1px solid {{n.bd}}; font-size: 13px"><span aria-hidden="true" class="{{n.cls}}" style="flex: none; width: 8px; height: 8px; border-radius: 50%; background: {{n.dot}}"></span><span style="flex: 1 1 260px"><b style="font-weight: 600">{{n.title}}</b> <span style="color: var(--ink-2)">{{n.text}}</span></span><button class="b b-s" style="height: 28px; font-size: 12.5px">{{n.action}}</button></div>
+</sc-for>
+</section>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["dark","light"],"default":"dark"},"$preview":{"width":1440,"height":1080}}'>
+class Component extends DCLogic {
+renderVals() {
+const box = (w, h, bg, o) => Object.assign({ w: w, h: h, bg: bg, r: '9px', line: 'solid', bd: 'transparent', cls: '' }, o || {});
+const ghost = (w, h) => box(w, h, 'transparent', { line: 'dashed', bd: 'var(--line-strong)' });
+const dot = (bg, cls) => box(14, 14, bg, { r: '50%', cls: cls || '' });
+return {
+theme: this.props.theme ?? 'dark',
+states: [
+{ where: 'Home, first time', art: [ghost(34, 26), box(44, 40, 'var(--primary)'), ghost(34, 26)], title: 'Start with a project', text: 'Point OrgAI at a folder and it proposes a team for it. Or try Chat first to look around.', main: 'New project', second: 'Open Chat' },
+{ where: 'Inbox, all answered', art: [dot('var(--ok)'), dot('var(--ok)'), dot('var(--ok)')], title: 'Nothing is waiting on you', text: '2 teams are working. Anything they need from you shows up here.', main: '', second: 'See what is running' },
+{ where: 'Work tab, no run yet', art: [box(40, 30, 'var(--r-orch)'), ghost(26, 20), ghost(26, 20), ghost(26, 20)], title: 'The team is ready', text: '12 roles in 3 groups are set up for Notes API. Give them something to do.', main: 'New run', second: 'Look at the team' },
+{ where: 'Files, nothing produced', art: [ghost(30, 40), ghost(30, 40), ghost(30, 40)], title: 'No files yet', text: 'Documents, slides and sheets the team produces show up here, with every version kept.', main: '', second: 'Start a run' },
+{ where: 'Knowledge, new engagement', art: [dot('var(--line-strong)'), box(18, 18, 'var(--accent)', { r: '50%' }), dot('var(--line-strong)')], title: 'Nothing recorded yet', text: 'As the team works it records people, decisions and risks here. You can add what you already know.', main: 'Add an item', second: '' },
+{ where: 'Search, no match', art: [ghost(120, 30)], title: 'No results for "cachng"', text: 'Check the spelling, or search across all projects.', main: '', second: 'Search all projects' }
+],
+banners: [
+{ title: 'You are offline.', text: 'Running teams are paused and will pick up when the connection is back.', action: 'Try now', dot: 'var(--warn)', cls: 'a-breathe', bg: 'var(--warn-soft)', bd: 'var(--warn-line)' },
+{ title: 'Claude needs you to sign in again.', text: '3 projects use it. Runs on it are paused.', action: 'Sign in', dot: 'var(--bad)', cls: '', bg: 'var(--bad-soft)', bd: 'transparent' },
+{ title: 'Version 1.5.0 is ready.', text: 'It installs the next time you restart.', action: 'Restart', dot: 'var(--accent)', cls: '', bg: 'var(--accent-soft)', bd: 'transparent' }
+]
+};
+}
+}
+</script>
+</body>
+</html>
