@@ -1073,9 +1073,12 @@ try {
   check((await page.locator('.motion-ring').count()) === 0, 'A25 no ring is left on the page at rest')
 
   // ---------------------------------------------------------------- More menu, delete confirm, New run
-  // A trace of what could close the menu or take its focus (CI failed these three checks on Windows and the third on macOS,
-  // and no local run reproduced it): window blur, resize, wheel, focus leaving, the menu mounting or going, and re-sorts of
-  // the tiles. It only feeds the check details below; no assertion depends on it.
+  // A trace of what could close the menu or take its focus: window blur, resize, wheel, focus leaving, the menu mounting or
+  // going, and re-sorts of the tiles. It only feeds the check details below; no assertion depends on it. CI failed these
+  // three checks once the MO block's emulateMedia({ reducedMotion: null }) handed the page from Playwright's default
+  // no-preference to the runner's own setting, evidently reduce: the menu items then transitioned their inherited
+  // visibility as the panel unhid, so focus() did nothing (fixed in ui.css .ctx-menu *; e2e/context-menus.mjs checks both
+  // reduced-motion paths).
   await page.evaluate(() => {
     const t0 = performance.now()
     const tr = (window.__menuTrace = [])
