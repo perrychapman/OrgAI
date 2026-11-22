@@ -12,6 +12,23 @@
   border: 0;
 }
 
+/* Glass panels (UI overhaul): translucent over the ambient ground (--bg-art). .glass for cards and panels,
+   .glass-strong for floating chrome (popovers, menus, docks) that must stay readable over busy content. */
+.glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--elev-2);
+}
+.glass-strong {
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  box-shadow: var(--elev-2);
+}
+
 .spin {
   display: inline-flex;
   animation: spin 0.9s linear infinite;

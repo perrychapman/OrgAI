@@ -164,6 +164,46 @@ describe('brand tokens (ui-review-2.md C)', () => {
   }
 })
 
+const OVERHAUL_TOKENS = ['--bg-art', '--glass', '--glass-strong', '--glass-line', '--glass-blur', '--working', '--working-soft', '--working-text', '--glow-working', '--eng', '--eng-soft', '--eng-line']
+
+/** Parses `rgb(r g b / a)` into channels and alpha. */
+function rgba(v: string): [number[], number] {
+  const m = v.match(/rgb\((\d+)\s+(\d+)\s+(\d+)\s*\/\s*([\d.]+)\)/)
+  if (!m) throw new Error(`not rgb(): ${v}`)
+  return [[Number(m[1]), Number(m[2]), Number(m[3])], Number(m[4])]
+}
+const hex = (c: number[]): string => `#${c.map((n) => Math.round(n).toString(16).padStart(2, '0')).join('')}`
+const over = (fg: number[], a: number, bg: string): string => {
+  const b = [1, 3, 5].map((i) => parseInt(bg.slice(i, i + 2), 16))
+  return hex(fg.map((v, i) => v * a + b[i] * (1 - a)))
+}
+
+describe('ui overhaul tokens (docs/design/ui-overhaul)', () => {
+  it('every theme block defines the overhaul tokens', () => {
+    for (const set of [dark, light, system]) for (const t of OVERHAUL_TOKENS) expect(set).toContain(t)
+  })
+
+  it('defines the display and serif stacks', () => {
+    expect(css).toMatch(/--font-display:\s*'Space Grotesk'/)
+    expect(css).toMatch(/--font-serif:/)
+  })
+
+  // Glass over the brightest point of the ambient ground (the violet corner, unblurred: a worst case).
+  for (const [name, body, ground, alpha] of [['dark', darkBody, [124, 108, 255], 0.3], ['light', lightBody, [124, 108, 255], 0.22]] as const) {
+    it(`text passes 4.5 on glass over the ambient ground, ${name}`, () => {
+      const v = (t: string): string => value(body, t)
+      const peak = over([...ground], alpha, v('--surface-0'))
+      for (const g of ['--glass', '--glass-strong']) {
+        const [c, a] = rgba(v(g))
+        const bg = over(c, a, peak)
+        for (const t of ['--text-primary', '--text-secondary', '--text-tertiary', '--accent-text', '--success-text', '--warning-text', '--danger-text', '--working-text']) {
+          expect(contrast(v(t), bg), `${t} on ${g}`).toBeGreaterThanOrEqual(4.5)
+        }
+      }
+    })
+  }
+})
+
 describe('tokens.css', () => {
   it('defines a non-trivial theme token set', () => {
     expect(dark.length).toBeGreaterThan(40)
