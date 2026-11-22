@@ -285,6 +285,34 @@ try {
   await page.mouse.wheel(0, 200)
   check(await until(async () => (await menuOpen('project-tile-menu').count()) === 0, 2000), 'tile: a wheel scroll outside the menu closes it')
   check(await until(() => page.evaluate(moreIsActive), 2000), 'tile: focus returns to More after the wheel dismissal', JSON.stringify(await active()))
+  // Reduced motion (the OS preference, then the app setting): the global 0.01ms transition rule once made the items
+  // transition the visibility they inherit as the panel unhid, so focus() in the same task did nothing (CI runners
+  // report reduced motion). Focus must be on the first item at once, not after a frame.
+  const openedFocus = () =>
+    page.evaluate(() => {
+      const a = document.activeElement
+      const first = document.querySelector('[data-testid=project-tile-menu] [role=menuitem]')
+      return { role: a?.getAttribute('role') ?? a?.tagName ?? '', firstVisibility: first ? getComputedStyle(first).visibility : 'none' }
+    })
+  for (const how of ['os', 'app']) {
+    if (how === 'os') await page.emulateMedia({ reducedMotion: 'reduce' })
+    else
+      await page.evaluate(async () => {
+        const { dataDir: _d, appVersion: _v, ...s } = await window.orgai.settings.get()
+        await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, reduceMotion: 'on' } })
+      })
+    await until(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--dur-fast').trim() === '0.01ms'), 3000)
+    await more.click()
+    const f = await openedFocus()
+    check(f.role === 'menuitem' && f.firstVisibility === 'visible', `tile (${how} reduced motion): More moves focus to the first item at once`, JSON.stringify(f))
+    await checkEscape(`tile (${how} reduced motion)`, 'project-tile-menu', moreIsActive)
+    if (how === 'os') await page.emulateMedia({ reducedMotion: null })
+    else
+      await page.evaluate(async () => {
+        const { dataDir: _d, appVersion: _v, ...s } = await window.orgai.settings.get()
+        await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, reduceMotion: 'system' } })
+      })
+  }
   // Activation: the Menu key on Open, then Enter on Open, opens the project.
   await tile.locator('[data-testid=project-tile-main]').focus()
   await page.keyboard.press('ContextMenu')

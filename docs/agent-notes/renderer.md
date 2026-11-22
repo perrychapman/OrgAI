@@ -227,6 +227,16 @@ type-ahead, `isMenuKey`, `nativeMenuWins`; unit tested in `lib/contextMenu.test.
   open ignores the platform's `contextmenu` echo for 600 ms unless a pointer press came after it (without that
   condition a real right click right after Shift+F10 and Escape was swallowed, found by `e2e/team.mjs`); an invoker that cannot take focus falls back to
   `fallbackFocus`; a menu whose target disappears closes itself.
+- Reduced motion (2026-11-21): the global rule in `global.css` sets `transition-duration: 0.01ms !important` on every
+  element, so an element with no transition of its own (initial `transition-property: all`) transitions everything,
+  including the `visibility` it inherits. The menu's items stayed hidden through the synchronous unhide-then-focus:
+  focus stayed on the invoker, Escape did nothing and the text read empty. `ui.css` sets `.ctx-menu * {
+  transition-property: none }`. Found from red CI on `e2e/dashboard.mjs`: its MO block ends with
+  `emulateMedia({ reducedMotion: null })`, which hands the page from Playwright's forced no-preference to the runner's
+  own setting (reduce on the CI runners, inferred from the failures). Reproduced locally with
+  `--force-prefers-reduced-motion` and with emulateMedia, and at the pre-redesign head a1743b35 too (so the bug was there
+  already). `e2e/context-menus.mjs` now opens the tile menu under both the OS and the app setting. Any other "unhide, then
+  focus in the same task" code under a reduced-motion rule has the same hazard; `Popover` waits a frame and is not affected.
 - A real right click in a field, on a link or over a selection pops the native menu from main
   (`src/main/textContextMenu.ts`); e2e cannot dismiss it, so `e2e/context-menus.mjs` dispatches `contextmenu` from
   script for those cases and checks the event is not cancelled.

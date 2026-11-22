@@ -765,6 +765,13 @@ ul.maint-list {
 .ctx-menu[data-placed='false'] {
   visibility: hidden;
 }
+/* The panel unhides and focuses its first item in the same task (ContextMenu's layout effect), so nothing inside may
+   transition the visibility it inherits. Under reduced motion the global rule (global.css) gives every element a 0.01ms
+   duration, which turns an element with no transition of its own (transition-property: all) into one that transitions
+   everything, visibility included: the items stayed hidden for that frame, focus() did nothing and the text read empty. */
+.ctx-menu * {
+  transition-property: none;
+}
 .ctx-menu:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
