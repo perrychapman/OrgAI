@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentCostInput, costView, formatDuration, formatUsd, formatUsdCompact, formatUsdFull, formatUsdPage, runCostInput, sumCosts, unpricedModels } from './cost'
+import { agentCostInput, costView, formatDuration, formatUsd, formatUsdCompact, formatUsdFull, formatUsdGrouped, formatUsdPage, runCostInput, sumCosts, unpricedModels } from './cost'
 
 describe('cost', () => {
   it('formats amounts', () => {
@@ -71,6 +71,16 @@ describe('cost', () => {
     expect(formatDuration(45_000)).toBe('45s')
     expect(formatDuration(80_000)).toBe('1m 20s')
     expect(formatDuration(3_900_000)).toBe('1h 05m')
+  })
+})
+
+describe('grouped compact cost', () => {
+  it('separates thousands and leaves smaller figures as compact', () => {
+    expect(formatUsdGrouped(493835.25)).toBe('$493,835.25')
+    expect(formatUsdGrouped(1000)).toBe('$1,000.00')
+    expect(formatUsdGrouped(999.5)).toBe('$999.50')
+    expect(formatUsdGrouped(0.004)).toBe('<$0.01')
+    expect(formatUsdGrouped(0)).toBe('$0.00')
   })
 })
 

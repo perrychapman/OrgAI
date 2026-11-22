@@ -67,6 +67,12 @@ export function formatUsdCompact(usd: number): string {
   return `$${usd.toFixed(2)}`
 }
 
+/** `formatUsdCompact` with thousands separated from $1,000 up (the Dashboard; the CLI keeps the plain compact form). */
+export function formatUsdGrouped(usd: number): string {
+  if (usd >= 1000) return `$${usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return formatUsdCompact(usd)
+}
+
 /**
  * The Usage page's one decimals rule (docs/design/usage-app.md section 5): 2 decimals from $1 (thousands separated),
  * 3 from $0.01, 4 above $0, "< $0.0001" below that; $0 is "$0.00". Every figure on the page uses it, so a row and its
