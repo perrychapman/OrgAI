@@ -164,5 +164,7 @@ folder for each, median of 11 runs (5 for exec).
 
 - Following another session's live run from the terminal UI.
 - A `/sessions` view that updates by itself (it reads the sessions when opened).
-- Removing the unused modules of `parallel-sessions.md` phase 1 (`lockOrder`, `sharedJsonFile`, `journal`,
-  `hostRegistry`, `consumers`, `startTokens`, `chainClaim`, `sessionBinding`). Only `osLock.ts` is in use.
+- Trimming `osLock.ts`. The modules `parallel-sessions.md` phase 1 added for its larger design (`lockOrder`,
+  `sharedJsonFile`, `journal`, `atomicWrite`, `paths`, `hostRegistry`, `consumers`, `startTokens`, `chainClaim`,
+  `sessionBinding`) were removed on 2026-11-22: nothing in the product called them. `osLock.ts` stays, because the
+  session locks are built on its file checks and probe; its asynchronous waiting API is now used only by its own tests.

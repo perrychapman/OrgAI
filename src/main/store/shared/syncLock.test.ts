@@ -145,7 +145,7 @@ describe('ReentrantSyncLock', () => {
   })
 })
 
-// Children run under the vite-node CLI with the module imported by absolute path (see sharedJsonFile.test.ts).
+// Children run under the vite-node CLI (testing/viteNode.ts), with the module imported by absolute path.
 const modulePath = resolve(__dirname, 'syncLock.ts')
 
 function childScript(body: string): string {

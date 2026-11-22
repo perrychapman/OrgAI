@@ -5,8 +5,13 @@
  * process's locks, so no pid, start time, heartbeat or age ever decides that a holder is gone.
  *
  * This module is the mechanism only: one coordinator per path and process (shared holders share one connection with a
- * reference count; exclusive waiters queue in FIFO order; claims never queue). Lock order, reentrancy per async context
- * and the lock catalogue live in lockOrder.ts.
+ * reference count; exclusive waiters queue in FIFO order; claims never queue).
+ *
+ * What the product uses of it today is the mechanism's parts: the lock file checks, the busy tests and the probe, on
+ * which syncLock.ts builds the synchronous locks of the sessions (docs/design/cli-sessions.md). The asynchronous,
+ * waiting API below (acquireOsLock, the shared mode, upgrade and downgrade) was written for a larger design that was
+ * not built; it has no caller outside its tests, which are kept because they exercise this same mechanism across
+ * processes on every platform CI runs.
  *
  * Lock files are never opened, read or closed outside SQLite: closing a raw descriptor would drop this process's POSIX
  * locks on the inode (SQLite "how to corrupt" 2.2). They are checked with lstat only.

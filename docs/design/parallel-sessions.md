@@ -3,8 +3,9 @@
 **Not what was built.** The goal of this spec (any number of `orgai` processes on one data folder) shipped on
 2026-11-22 with a much smaller design, described in `cli-sessions.md`: one session per project, one write lock for the
 shared files, run ownership in the run index, and `daemon.json` kept for older versions. This document is kept as the
-record of the larger design and its reviews. Of its phase 1 modules only `osLock.ts` is in use; the format-2 tree,
-journals, chain claims, consumer evidence and admission described below do not exist in the product. It is left out of
+record of the larger design and its reviews. Of its phase 1 modules only `osLock.ts` remains (the others were removed
+on 2026-11-22; they are in the history of PR 55); the format-2 tree, journals, chain claims, consumer evidence and
+admission described below do not exist in the product. It is left out of
 the in-app reference so that Ask OrgAI does not quote it as fact.
 
 Status: draft 14, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2-13 by GPT Astra and Gemini

@@ -1,6 +1,6 @@
 // Parser: rolldown's oxc parseSync, imported through vite 8's own re-export (vite is a declared devDependency;
 // rolldown is only a transitive one); the repo's TypeScript 7 has no JS compiler API.
-// Write-path inventory (docs/design/parallel-sessions.md 8). Statically scans src/main and src/cli for file-write call
+// Write-path inventory (docs/design/cli-sessions.md; the idea is from docs/design/parallel-sessions.md 8). Statically scans src/main and src/cli for file-write call
 // sites and fails on any site that is not classified in writePathInventory.allowlist.ts (and on stale entries).
 //
 // Scanner limits (best effort, by design):
@@ -319,7 +319,7 @@ describe('write-path inventory (parallel sessions, design section 8)', () => {
     expect(
       missing,
       `Unclassified file writers. Classify each new writer with the lock or ownership rule that covers it, ` +
-        `docs/design/parallel-sessions.md 8. Add to src/main/writePathInventory.allowlist.ts:\n${lines.join('\n')}\n`
+        `docs/design/cli-sessions.md "What stores do". Add to src/main/writePathInventory.allowlist.ts:\n${lines.join('\n')}\n`
     ).toEqual([])
   })
 
