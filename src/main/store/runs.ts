@@ -169,8 +169,10 @@ export function isWorkingRunStatus(status: RunSummary['status']): boolean {
   return status === 'starting' || status === 'running' || status === 'stopping'
 }
 
-/** Worktree states in which a report (or the harness, or the user at a merge card) is still at work on the branch. */
-const WORKTREE_AT_WORK: ReadonlySet<string> = new Set(['active', 'waiting-children', 'merging', 'review'])
+/** Worktree states in which the harness, or the user at a merge card, is at work on the branch whatever its agent does. */
+const WORKTREE_AT_WORK: ReadonlySet<string> = new Set(['merging', 'review'])
+/** Worktree states that mean work only while the agent itself is still going (an interrupted or failed report keeps the state). */
+const WORKTREE_AGENT_AT_WORK: ReadonlySet<string> = new Set(['active', 'waiting-children'])
 
 /**
  * Whether any agent of a run has a worktree that is still at work (`agents` as in a RunRecord). A run can be idle
@@ -180,8 +182,12 @@ const WORKTREE_AT_WORK: ReadonlySet<string> = new Set(['active', 'waiting-childr
 export function hasWorktreeAtWork(agents: unknown): boolean {
   if (agents === null || typeof agents !== 'object') return false
   for (const a of Object.values(agents as Record<string, unknown>)) {
-    const status = (a as { worktree?: { status?: unknown } } | null)?.worktree?.status
-    if (typeof status === 'string' && WORKTREE_AT_WORK.has(status)) return true
+    const agent = a as { state?: unknown; worktree?: { status?: unknown } } | null
+    const status = agent?.worktree?.status
+    if (typeof status !== 'string') continue
+    if (WORKTREE_AT_WORK.has(status)) return true
+    // A report that was interrupted or failed is 'done' or 'error' with its worktree still 'active': nobody works there.
+    if (WORKTREE_AGENT_AT_WORK.has(status) && agent?.state !== 'done' && agent?.state !== 'error') return true
   }
   return false
 }
@@ -362,6 +368,11 @@ export class RunStore {
     renameSyncRetry(tmp, this.file)
   }
 
+  /** Several orgai sessions share this data folder (false for the desktop app and a lone-owner host). */
+  get shared(): boolean {
+    return this.sync.shared
+  }
+
   /**
    * The session id of another running orgai that hosts this run (it is not ended there), or null. Always null with one
    * process per data folder. Such a run can be read here but never changed: its host writes it.
@@ -395,7 +406,8 @@ export class RunStore {
     this.fresh()
     const out = new Set<string>()
     for (const r of this.runs) {
-      if (r.projectId !== projectId || !isOpenRunStatus(r.status) || (r.kind !== undefined && r.kind !== 'work')) continue
+      // A paused run's session has ended (it waits for a usage window): nothing of it is running, whatever its record says.
+      if (r.projectId !== projectId || r.status === 'paused' || !isOpenRunStatus(r.status) || (r.kind !== undefined && r.kind !== 'work')) continue
       const owner = this.elsewhere(r.id)
       if (!owner || out.has(owner)) continue
       if (isWorkingRunStatus(r.status) || this.recordHasWorktreeAtWork(r.id)) out.add(owner)

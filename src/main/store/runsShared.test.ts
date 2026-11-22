@@ -196,6 +196,10 @@ describe('two sessions, one run index', () => {
     // A record that cannot be read counts as at work: nothing of that run is touched.
     writeFileSync(join(dataDir, 'runs', 'a1.json'), '{ damaged')
     expect(b.store.workingElsewhereIn('proj_1')).toEqual([A])
+    // A paused run's session has ended: nothing of it runs, whatever its record says.
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'paused', startedAt: 1 }))
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
+    a.store.upsert(run('a1', { projectId: 'proj_1', status: 'idle', startedAt: 1 }))
     rmSync(join(dataDir, 'runs', 'a1.json'))
     a.store.upsert(run('a-setup', { projectId: 'proj_1', status: 'running', kind: 'setup', startedAt: 3 }))
     expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
@@ -333,9 +337,17 @@ setInterval(() => {}, 1000)`,
 
 describe('hasWorktreeAtWork', () => {
   it('is true while any agent worktree is active, waiting on children, merging or under review', () => {
-    const wt = (status: string) => ({ a: { worktree: { status } } })
+    const wt = (status: string, state = 'working') => ({ a: { state, worktree: { status } } })
     for (const s of ['active', 'waiting-children', 'merging', 'review']) expect(hasWorktreeAtWork(wt(s))).toBe(true)
     for (const s of ['merged', 'empty', 'removed', 'conflict', 'held']) expect(hasWorktreeAtWork(wt(s))).toBe(false)
+    // A report that was interrupted or failed keeps its worktree 'active': nobody works there any more.
+    for (const state of ['done', 'error']) {
+      expect(hasWorktreeAtWork(wt('active', state))).toBe(false)
+      expect(hasWorktreeAtWork(wt('waiting-children', state))).toBe(false)
+      // The harness merging it, or the user at its merge card, is work whatever the agent's state.
+      expect(hasWorktreeAtWork(wt('merging', state))).toBe(true)
+      expect(hasWorktreeAtWork(wt('review', state))).toBe(true)
+    }
     expect(hasWorktreeAtWork({ root: {}, a: { worktree: null } })).toBe(false)
     expect(hasWorktreeAtWork(undefined)).toBe(false)
     expect(hasWorktreeAtWork('agents')).toBe(false)

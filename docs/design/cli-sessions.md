@@ -154,7 +154,10 @@ project, by kind of state (inventory of 2026-11-22):
   another session hosts a run that is working there. A run that only waits for its user has no report at work, so
   the branches it left are leftovers as before. This also closes the same hole between two runs of one project in
   the desktop app. An idle run still counts while one of its reports works in the background or its branch waits at
-  a merge card (`hasWorktreeAtWork`; for a run in another session, read from its saved record). (Unit.)
+  a merge card (`hasWorktreeAtWork`: a worktree that is merging or under review, or active with an agent that is
+  neither done nor failed). For a run in another session that is read from its saved record, which its host saves at
+  once when the run goes idle with a branch at work, and when a branch comes to be at work in an idle run; a paused
+  run's session has ended and does not count. (Unit; the save-at-once is read from the code, not exercised by a test.)
 - **What one process keeps in memory about a project** is rebuilt from the files where it matters: the team files'
   status cache is keyed on the saved state too, so a change by another session invalidates it (unit); a skill's undo
   backups are no longer wiped at start while another session runs.
@@ -203,6 +206,9 @@ A re-read that cannot parse a file keeps the store's memory and never writes an 
 - **A team review** (the Team assistant's recommendations and what was dismissed) is saved whole: one computed or
   edited in one session replaces what another saved meanwhile. It is advisory data.
 - **A project created in one terminal is open there from its next request on**, not from the moment it is created.
+- **A report that does not write, working in its parent report's worktree, is not seen** once that parent has
+  finished and its branch is left in conflict or held: the branch then counts as a leftover although the child still
+  reads there. The integrator does not wait for such children inside one run either.
 - **An output changed outside OrgAI while one session is saving an edit of it** can be recorded twice (once as an
   outside change by a delete preview in another session, once as the edit). Nothing is lost.
 - **A process stopped inside a write** (SIGSTOP in the few milliseconds a section takes) makes other sessions' writes

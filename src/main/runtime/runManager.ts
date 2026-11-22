@@ -2056,6 +2056,7 @@ export class RunManager {
           if (e.autoResume === false) this.clearResume(summary.id)
           else this.scheduleResume(summary.id, e.pausedUntil ?? Date.now() + DEFAULT_PAUSE_MS)
         }
+        this.saveWorktreesAtWork(active, true)
         this.store.upsert(summary)
         // Who ended it rides on the terminal status (and on 'stopping' after End session), never from an adapter.
         e = withEndFacts(e, summary)
@@ -4497,6 +4498,26 @@ export class RunManager {
         return
     }
     if (!active.flushTimer) active.flushTimer = setTimeout(() => this.flush(active), FLUSH_INTERVAL_MS)
+    if (e.type === 'agent.upsert') this.saveWorktreesAtWork(active, false)
+  }
+
+  /** Runs whose saved record already says a report branch is at work (saveWorktreesAtWork). */
+  private atWorkSaved = new WeakSet<ActiveRun>()
+
+  /**
+   * Several orgai sessions on one data folder: another session learns from this run's SAVED record that an idle run
+   * still has a report branch at work (RunStore.workingElsewhereIn). The record is otherwise saved up to 1.5 s late,
+   * so it is saved at once in the two moments that matter: when the run stops counting as working by its status
+   * (`statusChanged`, called before the index gets that status), and when a branch comes to be at work while the run
+   * is already idle. A no-op with one process per data folder.
+   */
+  private saveWorktreesAtWork(active: ActiveRun, statusChanged: boolean): void {
+    if (!this.store.shared) return
+    const atWork = hasWorktreeAtWork(active.record.agents)
+    const was = this.atWorkSaved.has(active)
+    if (atWork) this.atWorkSaved.add(active)
+    else this.atWorkSaved.delete(active)
+    if (atWork && !isWorkingRunStatus(active.summary.status) && (statusChanged || !was)) this.flush(active)
   }
 
   private flush(active: ActiveRun): void {
