@@ -21,6 +21,8 @@ import LiveRunView from './views/LiveRunView'
 import AppSettingsView from './views/AppSettingsView'
 import UsageView from './views/UsageView'
 import SchedulesView from './views/SchedulesView'
+import InboxView from './views/InboxView'
+import ProjectHomeView from './views/ProjectHomeView'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import Sidebar from './components/Sidebar'
 import RunHistory from './components/RunHistory'
@@ -43,8 +45,8 @@ import { MAIN_MIN_PX, SIDEBAR_W, clampWidth, maxWidthFor, usePersistedWidth } fr
 import { toggleSidebar, useSidebarCollapsed } from './lib/useSidebarCollapsed'
 import { useBellCue } from './lib/useBellCue'
 
-type SectionView = 'run' | 'history' | 'outputs' | 'knowledge' | 'todos' | 'team' | 'settings'
-const SECTION_VIEWS: readonly string[] = ['run', 'history', 'outputs', 'knowledge', 'todos', 'team', 'settings']
+type SectionView = 'home' | 'run' | 'history' | 'outputs' | 'knowledge' | 'todos' | 'team' | 'settings'
+const SECTION_VIEWS: readonly string[] = ['home', 'run', 'history', 'outputs', 'knowledge', 'todos', 'team', 'settings']
 
 export default function App(): ReactElement {
   const init = useAppStore((s) => s.init)
@@ -131,6 +133,7 @@ export default function App(): ReactElement {
     if (view === 'appSettings') document.title = 'App settings · OrgAI'
     else if (view === 'usage') document.title = 'Usage · OrgAI'
     else if (view === 'schedules') document.title = 'Schedules · OrgAI'
+    else if (view === 'inbox') document.title = 'Inbox · OrgAI'
     else if (!where || view === 'projects') document.title = 'OrgAI'
     else if (run && view === 'run') document.title = `${where} · ${runTag(runIndex)}: ${displayRunName(first)} · OrgAI`
     else document.title = `${where} · OrgAI`
@@ -144,10 +147,12 @@ export default function App(): ReactElement {
   const hasTodos = todoScope !== null
   const openTodos = useOpenTodoCount(todoScope)
   const sections: TabItem[] = [
+    // Home (ui-overhaul ProjectHome / EngagementHome): stored projects only, never the assistants.
+    ...(isVirtual ? [] : [{ id: 'home', label: 'Home', testId: 'tab-home' }]),
     { id: 'run', label: 'Live', testId: 'tab-live' },
     { id: 'history', label: 'History', testId: 'tab-history' },
     // Outputs (docs/design/outputs.md section 1): every stored project, never the assistants.
-    ...(isVirtual ? [] : [{ id: 'outputs', label: 'Outputs', testId: 'tab-outputs' }]),
+    ...(isVirtual ? [] : [{ id: 'outputs', label: 'Files', testId: 'tab-outputs' }]),
     ...(hasKnowledge ? [{ id: 'knowledge', label: 'Knowledge', testId: 'tab-knowledge' }] : []),
     ...(hasTodos ? [{ id: 'todos', label: 'To-dos', testId: 'tab-todos', count: openTodos ?? 0, countLabel: todosCountLabel(openTodos ?? 0), countTestId: 'todos-tab-count' }] : []),
     ...(isVirtual
@@ -199,6 +204,8 @@ export default function App(): ReactElement {
             <UsageView />
           ) : view === 'schedules' ? (
             <SchedulesView />
+          ) : view === 'inbox' ? (
+            <InboxView />
           ) : view === 'projects' || !project ? (
             <DashboardView />
           ) : (
@@ -214,7 +221,7 @@ export default function App(): ReactElement {
                 )}
                 <Tabs
                   tabs={sections}
-                  value={SECTION_VIEWS.includes(view) && (view !== 'knowledge' || hasKnowledge) && (view !== 'outputs' || !isVirtual) && (view !== 'todos' || hasTodos) ? view : 'run'}
+                  value={SECTION_VIEWS.includes(view) && (view !== 'home' || !isVirtual) && (view !== 'knowledge' || hasKnowledge) && (view !== 'outputs' || !isVirtual) && (view !== 'todos' || hasTodos) ? view : 'run'}
                   onChange={(id) => setView(id as SectionView)}
                   label="Project sections"
                   idPrefix="project"
@@ -244,7 +251,9 @@ export default function App(): ReactElement {
               </div>
               <AppNavigateBanner />
               <div className={`view-root${seenView.fade ? ' motion-view' : ''}`} key={view}>
-              {view === 'settings' ? (
+              {view === 'home' && !isVirtual ? (
+                <ProjectHomeView key={project.id} project={project} />
+              ) : view === 'settings' ? (
                 <SettingsView project={project} />
               ) : view === 'outputs' && !isVirtual ? (
                 <OutputsView key={project.id} project={project} />
