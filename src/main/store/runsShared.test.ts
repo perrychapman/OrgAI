@@ -1,13 +1,13 @@
 // RunStore on a data folder several orgai sessions share (docs/design/cli-sessions.md). Two sessions in one process
 // stand in for two processes where only the merge logic matters; the last block uses real processes.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import type { RunSummary } from '@shared/types'
 import { RunBusyError, registerSession, type SessionHandle } from '../host/sessions'
-import { RunStore, loadRunIndex, parseRunOwners } from './runs'
+import { RunStore, hasWorktreeAtWork, loadRunIndex, parseRunOwners } from './runs'
 import { createSharedStoreSync, type StoreSync } from './shared/storeSync'
 import { killAndWait, viteNodeCli } from './shared/testing/viteNode'
 
@@ -181,6 +181,22 @@ describe('two sessions, one run index', () => {
     a.store.upsert(run('a1', { projectId: 'proj_1', status: 'idle', startedAt: 1 }))
     expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
     expect(b.store.get('a1')?.liveElsewhere).toEqual(where)
+    // Idle, but one of its reports still works in the background (or its branch waits at a merge card): at work.
+    const recordOf = (agents: Record<string, unknown>): void => {
+      mkdirSync(join(dataDir, 'runs'), { recursive: true })
+      writeFileSync(join(dataDir, 'runs', 'a1.json'), JSON.stringify({ summary: run('a1', { projectId: 'proj_1', status: 'idle' }), agents, transcript: [], logs: [] }))
+    }
+    recordOf({ root: { id: 'root' }, w1: { id: 'w1', worktree: { path: '/r/wt', branch: 'worktree-agent-w1', status: 'active' } } })
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([A])
+    recordOf({ root: { id: 'root' }, w1: { id: 'w1', worktree: { path: '/r/wt', branch: 'worktree-agent-w1', status: 'review' } } })
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([A])
+    // Its reports are done; a branch left in conflict or held is a leftover, not work in progress.
+    recordOf({ root: { id: 'root' }, w1: { id: 'w1', worktree: { path: '/r/wt', branch: 'worktree-agent-w1', status: 'conflict' } } })
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
+    // A record that cannot be read counts as at work: nothing of that run is touched.
+    writeFileSync(join(dataDir, 'runs', 'a1.json'), '{ damaged')
+    expect(b.store.workingElsewhereIn('proj_1')).toEqual([A])
+    rmSync(join(dataDir, 'runs', 'a1.json'))
     a.store.upsert(run('a-setup', { projectId: 'proj_1', status: 'running', kind: 'setup', startedAt: 3 }))
     expect(b.store.workingElsewhereIn('proj_1')).toEqual([])
     a.store.upsert(run('a-setup', { projectId: 'proj_1', status: 'finished', kind: 'setup', startedAt: 3 }))
@@ -313,4 +329,15 @@ setInterval(() => {}, 1000)`,
     expect(next.get('k1')).toMatchObject({ status: 'finished', endedBy: 'app', endedWithApp: true, endedWhile: 'working' })
     expect(next.hostedElsewhere('k1')).toBeNull()
   }, 120_000)
+})
+
+describe('hasWorktreeAtWork', () => {
+  it('is true while any agent worktree is active, waiting on children, merging or under review', () => {
+    const wt = (status: string) => ({ a: { worktree: { status } } })
+    for (const s of ['active', 'waiting-children', 'merging', 'review']) expect(hasWorktreeAtWork(wt(s))).toBe(true)
+    for (const s of ['merged', 'empty', 'removed', 'conflict', 'held']) expect(hasWorktreeAtWork(wt(s))).toBe(false)
+    expect(hasWorktreeAtWork({ root: {}, a: { worktree: null } })).toBe(false)
+    expect(hasWorktreeAtWork(undefined)).toBe(false)
+    expect(hasWorktreeAtWork('agents')).toBe(false)
+  })
 })

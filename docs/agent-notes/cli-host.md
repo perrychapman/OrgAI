@@ -41,7 +41,8 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     release, the dispatcher calls it in `finally`) or throw `ProjectBusyError`; one session at a time tries for a
     project alone (`alone-turn.lock`), and a session's exclusive holds are released when it ends;
     `maintenance:integrateWorktree` / `discardWorktree` throw `WorktreesBusyError` while another session hosts a work
-    run that is working in the project (`RunStore.workingElsewhereIn`: starting, running or stopping). All three are
+    run that is working in the project (`RunStore.workingElsewhereIn`: starting, running or stopping, or idle with a worktree
+    still active, merging or under review in its saved record, `hasWorktreeAtWork`). All three are
     `session_busy` on the wire and exit 6 in the CLI (`manage.ts` `hostError`, `exec.ts` `hostFailure`). Checked by
     `sessions.test.ts` (also across processes), `sessionGuard.test.ts`, `inprocHost.test.ts` (two hosts in one project
     over RPC), `cli.int.test.ts`, e2e.
@@ -68,7 +69,7 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     whole fields, lists with ids per item); an unknown base is stored as it is. `nextUpdatedAt` keeps two saves of one
     project from sharing an `updatedAt` (shared only). Checked by `projectMerge.test.ts`, `sameProject.test.ts`.
   - Worktrees: `RuntimeContext.otherRunsLive()` (RunManager: another work run of the project that is working, in this
-    process or by `RunStore.workingElsewhereIn`; an idle or paused run does not count) makes `WorktreeIntegrator.reconcileLeftovers` skip (nothing committed or announced)
+    process or by `RunStore.workingElsewhereIn`; an idle run counts only while `hasWorktreeAtWork`) makes `WorktreeIntegrator.reconcileLeftovers` skip (nothing committed or announced)
     and `integratePending` refuse a branch this run does not track. This also covers two runs of one project in the
     desktop app. Checked by `integration.test.ts`.
   - Terminal UI: `TuiState.othersHere` (the status bar shows "Name (2 terminals)"), kept current by

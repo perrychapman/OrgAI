@@ -169,6 +169,23 @@ export function isWorkingRunStatus(status: RunSummary['status']): boolean {
   return status === 'starting' || status === 'running' || status === 'stopping'
 }
 
+/** Worktree states in which a report (or the harness, or the user at a merge card) is still at work on the branch. */
+const WORKTREE_AT_WORK: ReadonlySet<string> = new Set(['active', 'waiting-children', 'merging', 'review'])
+
+/**
+ * Whether any agent of a run has a worktree that is still at work (`agents` as in a RunRecord). A run can be idle
+ * while that is so: its orchestrator ended its turn and waits for reports that work in the background, or a finished
+ * report's branch waits at a merge review card.
+ */
+export function hasWorktreeAtWork(agents: unknown): boolean {
+  if (agents === null || typeof agents !== 'object') return false
+  for (const a of Object.values(agents as Record<string, unknown>)) {
+    const status = (a as { worktree?: { status?: unknown } } | null)?.worktree?.status
+    if (typeof status === 'string' && WORKTREE_AT_WORK.has(status)) return true
+  }
+  return false
+}
+
 export function isOpenRunStatus(status: RunSummary['status']): boolean {
   return status !== 'finished' && status !== 'error'
 }
@@ -366,21 +383,35 @@ export class RunStore {
   }
 
   /**
-   * The other running sessions that host a work run of `projectId` which is working right now (starting, running or
-   * stopping; their ids, no duplicates): what a session asks before it touches the project's report branches, and
-   * what tells a new run that those branches may be another run's work in progress. A run that only waits for its
-   * user (idle, paused) has no report at work, and a setup or assistant run makes no branches.
+   * The other running sessions that host a work run of `projectId` with report branches at work right now (their ids,
+   * no duplicates): what a session asks before it touches the project's report branches, and what tells a new run
+   * that those branches may be another run's work in progress. A run counts while it is starting, running or
+   * stopping, and also while it is idle with a report still working in the background or a branch waiting at a merge
+   * card (read from its record, which its host saves about every 1.5 s). A run that only waits for its user has no
+   * report at work, and a setup or assistant run makes no branches.
    */
   workingElsewhereIn(projectId: string): string[] {
     if (!this.sync.shared) return []
     this.fresh()
     const out = new Set<string>()
     for (const r of this.runs) {
-      if (r.projectId !== projectId || !isWorkingRunStatus(r.status) || (r.kind !== undefined && r.kind !== 'work')) continue
+      if (r.projectId !== projectId || !isOpenRunStatus(r.status) || (r.kind !== undefined && r.kind !== 'work')) continue
       const owner = this.elsewhere(r.id)
-      if (owner) out.add(owner)
+      if (!owner || out.has(owner)) continue
+      if (isWorkingRunStatus(r.status) || this.recordHasWorktreeAtWork(r.id)) out.add(owner)
     }
     return [...out]
+  }
+
+  /** {@link hasWorktreeAtWork} for a run's saved record. A record that cannot be read counts as at work: nothing of it is touched. */
+  private recordHasWorktreeAtWork(runId: string): boolean {
+    const file = this.recordPath(runId)
+    if (!existsSync(file)) return false
+    try {
+      return hasWorktreeAtWork((JSON.parse(readFileSync(file, 'utf8')) as { agents?: unknown }).agents)
+    } catch {
+      return true
+    }
   }
 
   /** {@link hostedElsewhere} on the index as loaded (no refresh; used inside a change). */

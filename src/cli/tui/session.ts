@@ -756,7 +756,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     },
     switchModel: doSwitchModel,
     async resumeNow() {
-      const from = activeId()
+      const from = ownActiveId()
       const chain = [...state.activeChain]
       const next = await call<RunSummary>('runs:resumeNow', [from])
       return next && next.id !== from ? adopt(next, chain) : adopt(next)

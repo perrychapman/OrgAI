@@ -153,7 +153,8 @@ project, by kind of state (inventory of 2026-11-22):
   (`RuntimeContext.otherRunsLive`, `runtime/integration.ts`), and `orgai worktrees merge|discard` is refused while
   another session hosts a run that is working there. A run that only waits for its user has no report at work, so
   the branches it left are leftovers as before. This also closes the same hole between two runs of one project in
-  the desktop app. (Unit.)
+  the desktop app. An idle run still counts while one of its reports works in the background or its branch waits at
+  a merge card (`hasWorktreeAtWork`; for a run in another session, read from its saved record). (Unit.)
 - **What one process keeps in memory about a project** is rebuilt from the files where it matters: the team files'
   status cache is keyed on the saved state too, so a change by another session invalidates it (unit); a skill's undo
   backups are no longer wiped at start while another session runs.
@@ -202,6 +203,8 @@ A re-read that cannot parse a file keeps the store's memory and never writes an 
 - **A team review** (the Team assistant's recommendations and what was dismissed) is saved whole: one computed or
   edited in one session replaces what another saved meanwhile. It is advisory data.
 - **A project created in one terminal is open there from its next request on**, not from the moment it is created.
+- **An output changed outside OrgAI while one session is saving an edit of it** can be recorded twice (once as an
+  outside change by a delete preview in another session, once as the edit). Nothing is lost.
 - **A process stopped inside a write** (SIGSTOP in the few milliseconds a section takes) makes other sessions' writes
   wait up to 15 s and then fail with an error naming the lock. A crash there loses nothing: files are replaced whole.
 - **Settings merge is per field and best effort**: two sessions changing the same field at the same moment, the later
