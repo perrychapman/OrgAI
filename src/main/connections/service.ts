@@ -715,7 +715,8 @@ export class ConnectionService {
     const current = this.deps.settings.get()
     if (isProxyConnection(c)) {
       if (!proxyOf(current, c.id)) throw new Error('Unknown connection')
-      this.deps.settings.setProxies(current.proxies.map((p) => (p.id === c.id ? c : p)))
+      // Applied to the list as stored at that moment (another orgai session may have added a proxy since `current`).
+      this.deps.settings.setProxies((list) => list.map((p) => (p.id === c.id ? c : p)))
       return
     }
     if (!isBuiltinConnectionId(c.id)) throw new Error('Unknown connection')
@@ -842,10 +843,14 @@ export class ConnectionService {
     const before = this.effectiveDefault()
     if (key) this.deps.secrets.set(proxySecretKey(id), key)
     try {
-      this.deps.settings.setProxies([
-        ...s.proxies,
-        { id, name, kind, ...(input.litellmFeatures !== undefined ? { litellmFeatures: input.litellmFeatures } : {}), anthropicBaseUrl, ...(openaiBaseUrl ? { openaiBaseUrl } : {}), ...(modelsUrl ? { modelsUrl } : {}), enabled: true, hasApiKey: !!key, tierModels: {} }
-      ])
+      this.deps.settings.setProxies((list) => {
+        // Checked again on the stored list: another orgai session may have added proxies since `s` was read.
+        if (list.length >= PROXIES_MAX) throw new Error(`You can add at most ${PROXIES_MAX} proxy connections. Remove one first.`)
+        return [
+          ...list,
+          { id, name, kind, ...(input.litellmFeatures !== undefined ? { litellmFeatures: input.litellmFeatures } : {}), anthropicBaseUrl, ...(openaiBaseUrl ? { openaiBaseUrl } : {}), ...(modelsUrl ? { modelsUrl } : {}), enabled: true, hasApiKey: !!key, tierModels: {} }
+        ]
+      })
     } catch (e) {
       this.deps.secrets.delete(proxySecretKey(id))
       throw e
@@ -871,8 +876,7 @@ export class ConnectionService {
       throw new Error(`${proxy.name} is used by ${shown.join(', ')}${more}. Move those projects to another connection first.`)
     }
     const before = this.effectiveDefault()
-    const s = this.settingsNow()
-    this.deps.settings.setProxies(s.proxies.filter((p) => p.id !== proxy.id))
+    this.deps.settings.setProxies((list) => list.filter((p) => p.id !== proxy.id))
     this.deps.secrets.delete(proxySecretKey(proxy.id))
     delete this.modelsErrors[proxy.id]
     delete this.statuses[proxy.id]

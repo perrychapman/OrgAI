@@ -93,7 +93,12 @@ describe('session registry', () => {
     writeFileSync(sessionRecordPath(dataDir, A), JSON.stringify({ ...info(B), projects: [] }))
     writeFileSync(sessionRecordPath(dataDir, B), '{ not json')
     expect(listSessions(dataDir)).toEqual([])
-    expect(parseSessionRecord({ ...info(A), projects: ['p', 7, ''], cwd: 'x\0y', command: 5 }, A)).toMatchObject({ projects: ['p'], cwd: '', command: '' })
+    expect(parseSessionRecord({ ...info(A), projects: ['p', 7, ''], cwd: 5, command: 5 }, A)).toMatchObject({ projects: ['p'], cwd: '', command: '' })
+    // A folder name can hold anything; what a refusal quotes from another session's record cannot drive a terminal.
+    const hostile = parseSessionRecord({ ...info(A), cwd: '/work/\u001b[2Jwiped\u0000\n\u202eevil\u2028', command: 'tui\u0007', endpoint: '/run/d.sock' }, A)
+    expect(hostile).toMatchObject({ cwd: '/work/[2Jwipedevil', command: 'tui', endpoint: '/run/d.sock' })
+    // An endpoint is a path this process may connect to: never rewritten, dropped when it holds a NUL.
+    expect(parseSessionRecord({ ...info(A), endpoint: '/run/d\u0000.sock' }, A)?.endpoint).toBeUndefined()
     expect(parseSessionRecord({ ...info(A), pid: -1 }, A)).toBeNull()
     expect(parseSessionRecord(null, A)).toBeNull()
   })

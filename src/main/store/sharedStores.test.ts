@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { McpLibraryEntry, Project, SkillLibraryEntry } from '@shared/types'
+import type { McpLibraryEntry, Project, ProxyConnection, SkillLibraryEntry } from '@shared/types'
 import { newProject } from '@shared/defaults'
 import { SessionBusyError, registerSession, type SessionHandle } from '../host/sessions'
 import { McpLibraryStore } from './mcpLibrary'
@@ -111,6 +111,29 @@ describe('SettingsStore, two sessions', () => {
     expect(b.get().displayName).toBe('Grace')
     expect(b.get().displayName).toBe('Grace')
     expect(heard).toEqual(['Grace'])
+  })
+
+  it('a proxy added through the updater in each session: both are stored (a list built before the lock would drop one)', () => {
+    const a = new SettingsStore(dataDir, { sync: session(A).sync })
+    const b = new SettingsStore(dataDir, { sync: session(B).sync })
+    const proxy = (id: string, name: string): ProxyConnection => ({ id, name, kind: 'openai-compatible', anthropicBaseUrl: `https://${name}.example/v1`, enabled: true, hasApiKey: false, tierModels: {} })
+    // Both read the (empty) list, as ConnectionService.createProxy does before it stores the key.
+    expect([a.get().proxies, b.get().proxies]).toEqual([[], []])
+    a.setProxies((list) => [...list, proxy('proxy-aaaaaaaa', 'alpha')])
+    b.setProxies((list) => [...list, proxy('proxy-bbbbbbbb', 'beta')])
+    expect(a.get().proxies.map((p) => p.id)).toEqual(['proxy-aaaaaaaa', 'proxy-bbbbbbbb'])
+    // Changing one and removing one work on the stored list too.
+    a.setProxies((list) => list.map((p) => (p.id === 'proxy-bbbbbbbb' ? { ...p, enabled: false } : p)))
+    b.setProxies((list) => list.filter((p) => p.id !== 'proxy-aaaaaaaa'))
+    expect(a.get().proxies).toMatchObject([{ id: 'proxy-bbbbbbbb', enabled: false }])
+    // An updater that refuses (the limit was reached meanwhile) changes nothing and lets the lock go.
+    expect(() =>
+      a.setProxies(() => {
+        throw new Error('at most 12')
+      })
+    ).toThrow('at most 12')
+    expect(b.get().proxies).toHaveLength(1)
+    b.setProxies((list) => list)
   })
 
   it('changedFields compares deeply and reports only what differs', () => {

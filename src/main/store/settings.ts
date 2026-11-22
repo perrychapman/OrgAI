@@ -459,13 +459,17 @@ export class SettingsStore {
   }
 
   /**
-   * Replace the proxy list (main only: ConnectionService create / update / remove). The list is normalized (a name
+   * Replace the proxy list, or change it with an updater (main only: ConnectionService create / update / remove). The list is normalized (a name
    * clash is suffixed, junk dropped, PROXIES_MAX), a default naming a removed proxy returns to anthropic / automatic,
    * and the saved settings are sent to listeners like set().
    */
-  setProxies(proxies: ProxyConnection[]): AppSettings {
+  setProxies(proxies: ProxyConnection[] | ((current: ProxyConnection[]) => ProxyConnection[])): AppSettings {
     this.change(() => {
-      this.settings = normalizeSettings({ ...this.settings, proxies })
+      // An updater builds the new list from the one stored now. On a data folder several orgai sessions share that is
+      // the list as another session may just have saved it, so adding or changing one proxy here never drops one it
+      // added. A plain list replaces the stored one (a caller that holds the whole list on purpose).
+      const next = typeof proxies === 'function' ? proxies(structuredClone(this.settings.proxies)) : proxies
+      this.settings = normalizeSettings({ ...this.settings, proxies: next })
       this.persist()
     })
     return this.notify()

@@ -44,9 +44,16 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     `orgai`, which reads only daemon.json, always sees one live host and refuses. Gap: up to 2 s after a crash of the
     advertised session an older `orgai` could take the folder. Checked by `inprocHostRace.test.ts` (three real-process
     cases) and e2e; no older binary was run against this build.
-  - Housekeeping (prune, orphan records, scratch folders) runs only when the session is alone, inside the startup
-    mutex (`tryUnderStartupMutex`); `bootOrgAIHost` gets `deferHousekeeping` and returns `housekeep()`. The temp folder
-    sweep of stale skill folders is asynchronous and skipped by management commands (`tempSweep: false`).
+  - The boot housekeeping (runs of removed projects, prune, orphan records, scratch folders) runs only when the session
+    is alone, inside the startup mutex (`tryUnderStartupMutex`); `bootOrgAIHost` gets `deferHousekeeping` and returns
+    `housekeep()`. The temp folder sweep of stale skill folders is asynchronous and skipped by management commands
+    (`tempSweep: false`). The retention prune at every run end (`RunManager`, `store.prune`) still runs in every
+    session: under the write lock, on the newest index, ended runs only.
+  - Review (2026-11-22, one independent read-only pass; both external reviewers were out of quota): it found that
+    `ConnectionService` built the proxy list before the lock (fixed: `SettingsStore.setProxies` takes an updater),
+    that the docs called the run-end prune alone-only (corrected), and that another session's folder name reached
+    refusals unsanitized (fixed in `parseSessionRecord`). Its settings-merge finding does not apply to the CLI: `orgai
+    settings set` and the TUI send one key, merged in the host onto the stored settings.
   - Vault: every commit under the write lock; a value change re-reads first; a creation re-checks under the lock and
     fails clean if another session created one meanwhile (the retry opens it); a vault another session created is
     opened in the background; `secrets init` / `reset` are refused while another session runs. Checked with the fake
@@ -56,7 +63,7 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
     doctor's connection checks start their own host beside sessions. TUI `/sessions` lists the others.
   - Startup: `ownership.ts` no longer reads the runtime base (the temp folder) unless this data folder's socket path
     needs it; with the skill sweep off the start path that removed two temp folder reads per start. `compileCache.ts`
-    enables V8's compile cache in `<data>/run/compile-cache` before the host and TUI chunks load; never for hostless
+    enables V8's compile cache in `<data>/run/compile-cache/<version>` before the host and TUI chunks load; never for hostless
     commands, never against `NODE_COMPILE_CACHE`. Measured before (d10dea58) and after on the built CLI, median of 11:
     `settings list` 335 ms to 206 ms with 80,000 entries in the temp folder, 236 ms to 204 ms with a clean one; hostless
     commands unchanged (64 ms). `launchTui` starts the host while the TUI chunk

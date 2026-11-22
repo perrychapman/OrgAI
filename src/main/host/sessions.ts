@@ -24,9 +24,10 @@
  * Electron-free; relative imports only.
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { probeSyncLock, trySyncLock, type SyncLockHandle } from '../store/shared/syncLock'
+import { renameSyncRetry } from './fsRetry'
 import { HOST_INSTANCE_ID_RE } from './identity'
 
 /** What a session tells the others about itself. */
@@ -120,7 +121,16 @@ export function projectLockPath(dataDir: string, projectId: string): string {
   return join(sessionsDirOf(dataDir), `project-${createHash('sha256').update(projectId).digest('hex').slice(0, 32)}.lock`)
 }
 
-const cleanText = (v: unknown): string | undefined => (typeof v === 'string' && v.length <= TEXT_MAX && !v.includes('\0') ? v : undefined)
+/**
+ * Text from a record another process wrote (a folder name, a command word), as it may be shown in a terminal: no
+ * control characters, no line or paragraph separators and no bidirectional overrides (a folder name can hold any of
+ * them, and a refusal quotes it). Over-long text is dropped.
+ */
+// eslint-disable-next-line no-control-regex
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g
+const cleanText = (v: unknown): string | undefined => (typeof v === 'string' && v.length <= TEXT_MAX ? v.replace(UNPRINTABLE, '') : undefined)
+/** A path this process will bind or compare, not show: kept only when it has no NUL (never altered). */
+const cleanPath = (v: unknown): string | undefined => (typeof v === 'string' && v.length <= TEXT_MAX && !v.includes('\0') ? v : undefined)
 
 /** A validated record, or null: the file is written by other processes and is read as data. */
 export function parseSessionRecord(raw: unknown, id: string): SessionRecord | null {
@@ -130,7 +140,7 @@ export function parseSessionRecord(raw: unknown, id: string): SessionRecord | nu
   if (typeof r.pid !== 'number' || !Number.isInteger(r.pid) || r.pid <= 0) return null
   if (typeof r.startedAt !== 'number' || !Number.isFinite(r.startedAt)) return null
   const start = cleanText(r.processStartTime)
-  const endpoint = cleanText(r.endpoint)
+  const endpoint = cleanPath(r.endpoint)
   const projects = Array.isArray(r.projects) ? r.projects.filter((p): p is string => typeof p === 'string' && p.length > 0 && p.length <= 200).slice(0, PROJECTS_MAX) : []
   return {
     hostInstanceId: id,
@@ -159,7 +169,9 @@ function writeRecord(dataDir: string, record: SessionRecord): void {
   // Its own temp name: only this session writes its record, and a crash leaves a file the next sweep removes.
   const tmp = `${file}.tmp-${randomBytes(4).toString('hex')}`
   writeFileSync(tmp, JSON.stringify(record, null, 2), { mode: 0o600 })
-  renameSync(tmp, file)
+  // Other sessions read this record while it is replaced; on Windows a reader or a scanner can make the rename fail
+  // for a moment (fsRetry.ts), which is retried there and is a plain rename everywhere else.
+  renameSyncRetry(tmp, file)
 }
 
 function isLiveLock(path: string): boolean {

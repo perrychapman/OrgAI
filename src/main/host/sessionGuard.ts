@@ -29,27 +29,31 @@ const ID_MAX_CHARS = 200
 const MAX_DEPTH = 5
 const MAX_VALUES = 4000
 
-/** Every short string in `args` (object values and array items, bounded). */
+/**
+ * Every short string in `args` (object values and array items), bounded in depth and count. The walk is breadth
+ * first: the ids of a request sit near its top (`projectId`, `runId`, a project's own `id`), so they are reached before
+ * the count limit even when a large object (a project with many roles and long prompts) hangs below them.
+ */
 export function shortStringsIn(args: readonly unknown[]): Set<string> {
   const out = new Set<string>()
   let seen = 0
-  const walk = (v: unknown, depth: number): void => {
-    if (seen >= MAX_VALUES) return
-    seen += 1
-    if (typeof v === 'string') {
-      if (v.length > 0 && v.length <= ID_MAX_CHARS) out.add(v)
-      return
+  let level: unknown[] = [...args]
+  for (let depth = 0; depth <= MAX_DEPTH && level.length > 0 && seen < MAX_VALUES; depth++) {
+    const next: unknown[] = []
+    for (const v of level) {
+      if (seen >= MAX_VALUES) break
+      seen += 1
+      if (typeof v === 'string') {
+        if (v.length > 0 && v.length <= ID_MAX_CHARS) out.add(v)
+        continue
+      }
+      // Typed arrays and buffers (image bytes) hold no ids.
+      if (v === null || typeof v !== 'object' || ArrayBuffer.isView(v)) continue
+      if (Array.isArray(v)) for (const item of v) next.push(item)
+      else for (const item of Object.values(v as Record<string, unknown>)) next.push(item)
     }
-    if (v === null || typeof v !== 'object' || depth >= MAX_DEPTH) return
-    if (Array.isArray(v)) {
-      for (const item of v) walk(item, depth + 1)
-      return
-    }
-    // Typed arrays and buffers (image bytes) hold no ids.
-    if (ArrayBuffer.isView(v)) return
-    for (const item of Object.values(v as Record<string, unknown>)) walk(item, depth + 1)
+    level = next
   }
-  for (const a of args) walk(a, 0)
   return out
 }
 

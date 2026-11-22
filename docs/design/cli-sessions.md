@@ -60,7 +60,7 @@ that does nothing (`SOLO`), so every path there is byte for byte what it was. (U
   daemon.json              the one host an older orgai sees (see "Older versions")
   startup.mkdir/           the startup mutex (unchanged)
   d-<id>.sock              each session's liveness endpoint (unchanged)
-  compile-cache/           V8 compile cache of the host and TUI chunks
+  compile-cache/<version>/ V8 compile cache of the host and TUI chunks
   sessions/
     <id>.lock              a session's lock: 0 bytes, never written
     <id>.json              its record: pid, cwd, command, claimed projects
@@ -78,9 +78,13 @@ protecting.
   `daemon.json`); otherwise become the advertised host. Either way sweep what dead sessions left and register. Two
   sessions starting together therefore register one after the other. A starting `orgai` waits up to 15 s for one that
   holds the mutex, instead of failing at once. (Processes: two started together both start.)
-- **Housekeeping.** Pruning runs and deleting record files, scratch folders and stale temp folders is only right while
-  nobody else is working. It runs when a session finds itself alone, inside the startup mutex so that nobody can join
-  meanwhile; otherwise that start skips it. (Unit.)
+- **Housekeeping.** The start-up sweeps (runs of removed projects, record files and scratch folders nothing points
+  to, stale temp folders) are only right while nobody else is working: a run another session is just creating looks
+  like an orphan. They run when a session finds itself alone, inside the startup mutex so that nobody can join
+  meanwhile; otherwise that start skips them. (Unit.)
+- **Retention.** Dropping a project's oldest ended runs past its `keepRuns` still happens at every run end, in every
+  session. It runs under the write lock on the newest index and never drops a run that is not ended, so its outcome is
+  the same whichever session does it. (Unit: `runsShared.test.ts`.)
 - **End.** The session releases its claims and removes its record and lock file. If it was the advertised host and
   others run, it rewrites `daemon.json` to name the oldest of them rather than removing it. (Processes, e2e.)
 - **Crash.** A killed session leaves its files; its locks are gone with it. Its runs read as crashed everywhere at
@@ -97,9 +101,11 @@ would settle every open run as crashed and sweep. So `daemon.json` always names 
 - New `orgai` starts beside an older one: the record has no `sessions`, so nobody joins it; refused (exit 6) with the
   old sentence. Read-only commands then answer from the saved files with the "saved snapshot" note, as before.
 
-The one gap: between a crash of the advertised session and a survivor's next check (up to 2 s) an older `orgai`
-starting right then would take the folder. It needs an old binary, a crash and that window together. (Unverified: no
-older binary was run against this build; the rule was read from `ownership.ts` at the previous release.)
+The one gap: for up to 2 s (a survivor's next check) `daemon.json` can be missing or name a session that is gone,
+and an older `orgai` starting right then would take the folder. That happens after a crash of the advertised session,
+and when the advertised session and the one it hands the record to quit at the same moment while a third keeps
+running. It needs an old binary and that window together. (Unverified: no older binary was run against this build;
+the rule was read from `ownership.ts` at the previous release.)
 
 ## What stores do
 
@@ -149,7 +155,7 @@ folder for each, median of 11 runs (5 for exec).
   socket path does not fit in the run folder; stale skill folders are swept off the start path, and only when alone).
   That is the whole difference between the two halves of the table: about 100 ms on a temp folder with 80,000 entries
   (this Mac's, full of test leftovers), a few milliseconds on a clean one.
-- The compile cache (`<data>/run/compile-cache`) saves about 30 to 40 ms per command that starts a host.
+- The compile cache (`<data>/run/compile-cache/<version>`) saves about 30 to 40 ms per command that starts a host.
 - The terminal UI's chunk loads while the host starts, not before it. Not measured separately.
 - Sessions cost a start nothing that shows: the numbers above are with sessions on.
 - A session running a mock turn peaks at about 150 MB of memory, before and after.

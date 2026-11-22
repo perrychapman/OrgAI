@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { _resetCompileCacheForTest, compileCacheDir, enableCliCompileCache } from './compileCache'
+import { COMPILE_CACHE_KEEP_MS, _resetCompileCacheForTest, compileCacheDir, enableCliCompileCache, versionFolder } from './compileCache'
 
 let dataDir: string
 beforeEach(() => {
@@ -12,34 +12,49 @@ beforeEach(() => {
 afterEach(() => rmSync(join(dataDir, '..'), { recursive: true, force: true }))
 
 describe('enableCliCompileCache', () => {
-  it('enables the cache in <dataDir>/run/compile-cache, private to the user, once per process', () => {
+  it("enables the cache in this version's folder under <dataDir>/run/compile-cache, private to the user, once per process", () => {
     const calls: string[] = []
     const dir = enableCliCompileCache(dataDir, { env: {}, version: '1.2.3', enable: (d) => calls.push(d) })
-    expect(dir).toBe(compileCacheDir(dataDir))
-    expect(dir).toBe(join(dataDir, 'run', 'compile-cache'))
+    expect(dir).toBe(join(compileCacheDir(dataDir), 'v-1.2.3'))
+    expect(compileCacheDir(dataDir)).toBe(join(dataDir, 'run', 'compile-cache'))
     expect(calls).toEqual([dir])
-    expect(readFileSync(join(dir as string, 'version'), 'utf8')).toBe('1.2.3')
     if (process.platform !== 'win32') {
-      expect(statSync(dir as string).mode & 0o777).toBe(0o700)
-      // The run folder it sits in is made private too when this call creates it.
-      expect(statSync(join(dataDir, 'run')).mode & 0o777).toBe(0o700)
+      for (const d of [dir as string, compileCacheDir(dataDir), join(dataDir, 'run')]) expect(statSync(d).mode & 0o777).toBe(0o700)
     }
     // A second call in the same process does nothing.
     expect(enableCliCompileCache(dataDir, { env: {}, version: '1.2.3', enable: (d) => calls.push(d) })).toBeUndefined()
     expect(calls).toHaveLength(1)
   })
 
-  it('keeps the entries of the same version and drops those of another one', () => {
-    const dir = compileCacheDir(dataDir)
-    mkdirSync(join(dir, 'v8-abc'), { recursive: true })
-    writeFileSync(join(dir, 'v8-abc', 'entry'), 'compiled')
-    writeFileSync(join(dir, 'version'), '1.0.0')
-    enableCliCompileCache(dataDir, { env: {}, version: '1.0.0', enable: () => undefined })
-    expect(existsSync(join(dir, 'v8-abc', 'entry'))).toBe(true)
-    _resetCompileCacheForTest()
-    enableCliCompileCache(dataDir, { env: {}, version: '1.1.0', enable: () => undefined })
-    expect(existsSync(join(dir, 'v8-abc'))).toBe(false)
-    expect(readFileSync(join(dir, 'version'), 'utf8')).toBe('1.1.0')
+  it('two versions used in turn keep their own folder; one that nobody used for two weeks is removed', () => {
+    const root = compileCacheDir(dataDir)
+    const entry = (version: string): string => join(root, versionFolder(version), 'entry')
+    const use = (version: string, at: number): void => {
+      _resetCompileCacheForTest()
+      const dir = enableCliCompileCache(dataDir, { env: {}, version, enable: () => undefined, now: () => at }) as string
+      writeFileSync(join(dir, 'entry'), 'compiled')
+    }
+    const day = 24 * 60 * 60 * 1000
+    const t0 = Date.now()
+    use('1.0.0', t0)
+    use('1.1.0-dev', t0 + day)
+    use('1.0.0', t0 + 2 * day)
+    // Neither wiped the other.
+    expect([existsSync(entry('1.0.0')), existsSync(entry('1.1.0-dev'))]).toEqual([true, true])
+    // 1.1.0-dev was last used a day in; 1.0.0 keeps being used, and past the limit the unused one goes.
+    use('1.0.0', t0 + day + COMPILE_CACHE_KEEP_MS + 1000)
+    expect([existsSync(entry('1.0.0')), existsSync(entry('1.1.0-dev'))]).toEqual([true, false])
+  })
+
+  it('a version becomes a safe folder name', () => {
+    expect(versionFolder('0.1.9-dev1')).toBe('v-0.1.9-dev1')
+    expect(versionFolder('../../etc/passwd')).toBe('v-.._.._etc_passwd')
+    expect(versionFolder('')).toBe('v-unknown')
+    // Whatever the text, the folder stays inside the cache root.
+    const calls: string[] = []
+    enableCliCompileCache(dataDir, { env: {}, version: '../../outside', enable: (d) => calls.push(d) })
+    expect(calls[0]?.startsWith(compileCacheDir(dataDir))).toBe(true)
+    expect(existsSync(join(dataDir, 'outside'))).toBe(false)
   })
 
   it("leaves the user's own choice alone and never throws", () => {
@@ -58,5 +73,11 @@ describe('enableCliCompileCache', () => {
         }
       })
     ).toBeUndefined()
+    // A folder that cannot be made (a file where the run folder would be) is no reason to fail either.
+    _resetCompileCacheForTest()
+    rmSync(dataDir, { recursive: true, force: true })
+    mkdirSync(dataDir, { recursive: true })
+    writeFileSync(join(dataDir, 'run'), 'not a folder')
+    expect(enableCliCompileCache(dataDir, { env: {}, enable: (d) => calls.push(d) })).toBeUndefined()
   })
 })

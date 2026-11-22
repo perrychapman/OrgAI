@@ -80,7 +80,7 @@ const VAULT_ALONE = 'vault reset: refused while another orgai session runs (Secr
 const TEMP_AGE = 'temp folder: run skill folders older than 24 h, swept by a session that is alone on its data folder (age keeps a session that starts meanwhile safe)'
 const DATA_MKDIR = 'data folder creation: idempotent recursive mkdir'
 const COMPILE_CACHE =
-  "compile cache: <data>/run/compile-cache (mode 0700, inside the folder agent tools are kept out of); V8 writes its own entries there with unique names, and the version stamp and a stale folder's removal are idempotent (any session writes the same)"
+  "compile cache: <data>/run/compile-cache/<version> (mode 0700, inside the folder agent tools are kept out of); V8 writes its own entries there with unique names; the folder's creation is idempotent and only another version's folder unused for 14 days is removed (a session that still used it would only lose cached code)"
 export const WRITE_SITES: Record<string, string> = {
   'src/cli/commands/exec.ts:writeLastMessage:openSync': EXEC_OUTPUT_FILE,
   'src/cli/commands/exec.ts:writeLastMessage:renameSync': EXEC_OUTPUT_FILE,
@@ -101,7 +101,6 @@ export const WRITE_SITES: Record<string, string> = {
   'src/cli/commands/usage.ts:runCsv:fs.writeFileSync': 'single owner',
   'src/cli/compileCache.ts:enableCliCompileCache:mkdirSync': COMPILE_CACHE,
   'src/cli/compileCache.ts:enableCliCompileCache:rmSync': COMPILE_CACHE,
-  'src/cli/compileCache.ts:enableCliCompileCache:writeFileSync': COMPILE_CACHE,
   'src/cli/inprocHost.ts:inprocHardLimitExit:writeSync': 'single owner',
   'src/cli/manage.ts:ttyAsk:fs.openSync': 'single owner',
   'src/cli/tui/configApi.ts:hintStore:mkdirSync': 'single owner',
@@ -180,7 +179,7 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/host/sessions.ts:registerSession:mkdirSync': SESSION_MKDIR,
   'src/main/host/sessions.ts:release:unlinkSync': SESSION_RELEASE,
   'src/main/host/sessions.ts:remove:unlinkSync': SESSION_SWEEP,
-  'src/main/host/sessions.ts:writeRecord:renameSync': SESSION_OWN,
+  'src/main/host/sessions.ts:writeRecord:renameSyncRetry': SESSION_OWN,
   'src/main/host/sessions.ts:writeRecord:writeFileSync': SESSION_OWN,
   'src/main/host/shimInstaller.ts:remove:fs.unlinkSync': 'single owner',
   'src/main/host/shimInstaller.ts:unlinkSync:nodeFs.unlinkSync': 'single owner',

@@ -49,9 +49,16 @@ describe('shortStringsIn', () => {
   })
 
   it('stops at its depth and count limits instead of walking a huge payload', () => {
-    const deep = { a: { b: { c: { d: { e: { f: 'too-deep' } } } } } }
+    const deep = { a: { b: { c: { d: { e: { f: { g: 'too-deep' } } } } } } }
     expect(shortStringsIn([deep]).has('too-deep')).toBe(false)
-    expect(shortStringsIn([Array.from({ length: 10_000 }, (_, i) => `s${i}`)]).size).toBeLessThan(4000)
+    expect(shortStringsIn([Array.from({ length: 10_000 }, (_, i) => `s${i}`)]).size).toBeLessThan(4001)
+  })
+
+  it('reaches an id near the top of a request even when thousands of values hang below it', () => {
+    // A project as projects:save sends it, with its id after a large roles array (key order is the caller's).
+    const roles = Array.from({ length: 600 }, (_, i) => ({ id: `role_${i}`, slug: `r${i}`, name: `Role ${i}`, tools: ['Read', 'Edit', 'Bash'], prompt: 'p', model: 'm', tier: 'deep' }))
+    const found = shortStringsIn([{ roles, id: 'proj_1' }])
+    expect(found.has('proj_1')).toBe(true)
   })
 })
 

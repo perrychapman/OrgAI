@@ -349,6 +349,9 @@ export async function startInprocHost(opts: StartInprocHostOptions): Promise<Inp
   const adoptEveryMs = opts.adoptEveryMs ?? 2000
   const adoptTimer = held && adoptEveryMs > 0 ? setInterval(() => void ownership.adopt(), adoptEveryMs) : undefined
   adoptTimer?.unref()
+  // A session that joined while the advertised one was leaving may find no record at all (that one saw nobody to hand
+  // it to): take it now rather than at the first tick. A no-op when the record names a running session.
+  if (held && !ownership.advertised) ownership.adopt()
   const endSession = (): void => {
     if (adoptTimer) clearInterval(adoptTimer)
     disableSync?.()
