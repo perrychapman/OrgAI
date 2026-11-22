@@ -26,6 +26,9 @@ function normalizeQuery(q: string): string {
   return one.startsWith('/') ? one : `/${one}`
 }
 
+/** The width of the palette's command column (the command and as much of its arguments as fits). */
+export const PALETTE_HEAD_COLS = 24
+
 export interface PaletteState {
   query: string
   selected: number
@@ -147,10 +150,12 @@ export function SlashPalette(props: SlashPaletteProps) {
   } else {
     shown.forEach((cmd, i) => {
       const isSel = first + i === sel
-      const head = `/${cleanLine(cmd.name, 32)}${cmd.args ? ` ${cleanLine(cmd.args, 40)}` : ''}`
+      const full = `/${cleanLine(cmd.name, 32)}${cmd.args ? ` ${cleanLine(cmd.args, 40)}` : ''}`
+      // The descriptions line up in one column: arguments that do not fit it are cut here (/help has them in full).
+      const head = full.length > PALETTE_HEAD_COLS ? `${full.slice(0, PALETTE_HEAD_COLS - (ascii ? 3 : 1))}${ascii ? '...' : '…'}` : full
       rows.push(
         row(cmd.name, [
-          { text: `${isSel ? marker : ' '} ${head.padEnd(20)} `, inverse: isSel },
+          { text: `${isSel ? marker : ' '} ${head.padEnd(PALETTE_HEAD_COLS)} `, inverse: isSel },
           { text: cleanLine(cmd.summary, 120), dim: !isSel, inverse: isSel }
         ])
       )

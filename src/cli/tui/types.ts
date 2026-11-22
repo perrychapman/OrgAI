@@ -555,6 +555,8 @@ export interface TuiSessionApi {
   approvals?: ApprovalsApi
   /** /sessions: the other orgai sessions running on this data folder right now (each with its folder and projects). */
   otherSessions?(): SessionPeer[]
+  /** Project id to name for every stored project (projects:list), for texts that name another session's projects. */
+  projectNames?(): Promise<Map<string, string>>
   /** The host calls of /team and /settings (cli-parity 3.7): the channels the commands use. */
   config?: TuiConfigApi
   getState(): TuiState

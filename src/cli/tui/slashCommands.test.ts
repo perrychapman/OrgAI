@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, RunSummary } from '../../shared/types'
-import { findSlash, HELP_TEXT, matchSlash, parseSlash, resolveDiffTarget, runsTable, SLASH_COMMANDS, unavailableFor, unavailableMessage } from './slashCommands'
+import { findSlash, HELP_TEXT, matchSlash, parseSlash, resolveDiffTarget, runsTable, sessionsText, SLASH_COMMANDS, unavailableFor, unavailableMessage, wrapWords } from './slashCommands'
 import type { SlashContext, TuiSessionApi, TuiState } from './types'
 
 const summary = (id: string, over: Partial<RunSummary> = {}): RunSummary =>
@@ -252,5 +252,59 @@ describe('/logs', () => {
   })
   it('needs a followed run', () => {
     expect(cmd('logs').available?.(stateWith({ activeRunId: undefined }))).toBe(false)
+  })
+})
+
+describe('/help layout', () => {
+  const commandBlock = HELP_TEXT.split('\n\n')[0].split('\n').slice(1)
+
+  it('no line is wider than an 80 column terminal, so the terminal never cuts a word in the middle', () => {
+    for (const line of commandBlock) expect(line.length, line).toBeLessThanOrEqual(78)
+  })
+
+  it('a description never runs into its command: there is a gap or a line break between them', () => {
+    for (const c of SLASH_COMMANDS) {
+      const head = `  /${c.name}${c.args ? ` ${c.args}` : ''}`
+      const at = commandBlock.findIndex((l) => l === head || l.startsWith(`${head} `))
+      expect(at, head).toBeGreaterThanOrEqual(0)
+      const line = commandBlock[at]
+      // Either the head has the line to itself (its arguments fill the column) and the description follows indented...
+      if (line === head) expect(commandBlock[at + 1]).toMatch(/^ {24}\S/)
+      // ...or the description starts in its column on the same line.
+      else expect(line.slice(head.length)).toMatch(/^ +\S/)
+    }
+    // The case that used to read "[prompt]Start a new team run".
+    expect(HELP_TEXT).not.toMatch(/\]Start a new team run/)
+    expect(HELP_TEXT).toContain('  /new [--goal g] [--permission-mode m] [--strict-delegation] [prompt]\n                        Start a new team run')
+  })
+
+  it('wrapWords breaks at spaces, keeps a long word whole and never returns nothing', () => {
+    expect(wrapWords('one two three four', 9)).toEqual(['one two', 'three', 'four'])
+    expect(wrapWords('a-very-long-word-that-does-not-fit and more', 10)).toEqual(['a-very-long-word-that-does-not-fit', 'and more'])
+    expect(wrapWords('', 10)).toEqual([''])
+  })
+})
+
+describe('/sessions text', () => {
+  const peer = (over: Partial<Parameters<typeof sessionsText>[0][number]> = {}) => ({ pid: 4242, cwd: '/work/beta', command: 'tui', projects: ['proj_b'], startedAt: 1_000_000, ...over })
+
+  it('names what this terminal holds and says when nobody else runs', () => {
+    expect(sessionsText([], 'Alpha')).toContain('This terminal holds Alpha.')
+    expect(sessionsText([], 'Alpha')).toContain('No other orgai session is running.')
+    expect(sessionsText([])).toContain('This terminal holds no project.')
+  })
+
+  it('lists each other session with its command, pid, age, the projects it holds by name, and its folder on its own line', () => {
+    const text = sessionsText([peer(), peer({ pid: 7, cwd: '/work/gamma', command: 'exec', projects: [], startedAt: 1_000_000 - 5 * 60_000 })], 'Alpha', 1_000_000, new Map([['proj_b', 'Beta']]))
+    expect(text).toContain('2 other orgai sessions:')
+    expect(text).toContain('  tui · pid 4242 · just started · holds Beta\n    /work/beta')
+    expect(text).toContain('  exec · pid 7 · up 5 min · holds no project\n    /work/gamma')
+    for (const line of text.split('\n')) if (!line.startsWith('    /')) expect(line.length, line).toBeLessThanOrEqual(78)
+  })
+
+  it('falls back to a count when a project name is not known, and cleans what another session wrote', () => {
+    expect(sessionsText([peer({ projects: ['proj_b', 'proj_x'] })], undefined, 1_000_000, new Map([['proj_b', 'Beta']]))).toContain('holds 2 projects')
+    const hostile = sessionsText([peer({ cwd: '/work/\u001b[2Jx', command: 'tui\u0007' })], undefined, 1_000_000)
+    expect(hostile).not.toMatch(/[\u001b\u0007]/)
   })
 })

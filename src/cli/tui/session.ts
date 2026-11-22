@@ -672,6 +672,7 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     modelCatalog: () => loadModelCatalog(call),
     // Sessions: the other orgai processes on this data folder (read from their records; none on a fake host).
     otherSessions: () => conn.inproc?.otherSessions?.() ?? [],
+    projectNames: async () => new Map((await conn.projects()).map((p) => [p.id, p.name])),
     approvals: {
       list: () => waitingItems(),
       waiting: async () => waitingNotice(await waitingItems())

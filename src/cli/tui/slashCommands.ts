@@ -236,7 +236,7 @@ async function runModel(ctx: SlashContext, args: string): Promise<void> {
  * /sessions: several orgai processes can run on one data folder, one per project. This lists the others, so it is
  * clear why a project may be refused here ("open in another orgai session") and where it is open.
  */
-export function sessionsText(others: readonly SessionPeer[], here?: string, now: number = Date.now()): string {
+export function sessionsText(others: readonly SessionPeer[], here?: string, now: number = Date.now(), projectNames: ReadonlyMap<string, string> = new Map()): string {
   const lines = [here ? `This terminal holds ${cleanLine(here, 80)}.` : 'This terminal holds no project.', '']
   if (!others.length) {
     lines.push('No other orgai session is running.')
@@ -244,12 +244,19 @@ export function sessionsText(others: readonly SessionPeer[], here?: string, now:
     lines.push(`${others.length} other orgai ${others.length === 1 ? 'session' : 'sessions'}:`)
     for (const s of others) {
       const up = Math.max(0, Math.round((now - s.startedAt) / 60_000))
-      const facts = [`pid ${s.pid}`, up < 1 ? 'just started' : `up ${up} min`, s.projects.length ? `holds ${s.projects.length} ${s.projects.length === 1 ? 'project' : 'projects'}` : 'holds no project']
-      lines.push(`  ${cleanLine(s.command || 'orgai', 24)}  ${cleanLine(s.cwd, 160)}`)
-      lines.push(`      ${facts.join(' · ')}`)
+      // The projects by name where this terminal knows them (it lists every project), else how many.
+      const named = s.projects.map((id) => projectNames.get(id)).filter((n): n is string => !!n)
+      const holds = !s.projects.length ? 'holds no project' : named.length === s.projects.length ? `holds ${named.map((n) => cleanLine(n, 60)).join(', ')}` : `holds ${s.projects.length} ${s.projects.length === 1 ? 'project' : 'projects'}`
+      lines.push('', `  ${cleanLine(s.command || 'orgai', 24)} · pid ${s.pid} · ${up < 1 ? 'just started' : `up ${up} min`} · ${holds}`)
+      // The folder on its own line: it is the long part, and the one to look for among the terminals.
+      lines.push(`    ${cleanLine(s.cwd, 400)}`)
     }
   }
-  lines.push('', 'Each session works in its own projects: a project open in one session is refused in another until that one quits.', 'Chats without a project run in any number of sessions. orgai status lists every session from outside.')
+  lines.push(
+    '',
+    ...wrapWords('Each session works in its own projects: a project open in one session is refused in another until that one quits. Chats without a project run in any number of sessions.', HELP_WIDTH),
+    ...wrapWords('From outside the terminal UI, orgai status lists every session.', HELP_WIDTH)
+  )
   return lines.join('\n')
 }
 
@@ -275,11 +282,37 @@ function retroReason(s: TuiState): string | undefined {
   return 'Only ended team runs of a project have a retrospective, not chats or assistant runs.'
 }
 
+/** Where a command's description starts in /help, and how wide a help line may be (it fits an 80 column terminal). */
+const HELP_COLUMN = 24
+const HELP_WIDTH = 78
+
+/** `text` broken at spaces into lines of at most `width` characters (a longer word keeps its own line). */
+export function wrapWords(text: string, width: number): string[] {
+  const lines: string[] = []
+  let line = ''
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line && line.length + 1 + word.length > width) {
+      lines.push(line)
+      line = word
+    } else line = line ? `${line} ${word}` : word
+  }
+  if (line) lines.push(line)
+  return lines.length ? lines : ['']
+}
+
+/**
+ * One block per command for /help: the command and its arguments, then the description in its own column, wrapped at
+ * words with a hanging indent. A command whose arguments fill the column (the run flags of /new and /ask) gets a line
+ * of its own, so the description never runs into it and nothing is cut in the middle of a word by the terminal.
+ */
 function commandLines(): string[] {
-  return SLASH_COMMANDS.map((c) => {
-    const head = `/${c.name}${c.args ? ` ${c.args}` : ''}`
+  const pad = ' '.repeat(HELP_COLUMN)
+  return SLASH_COMMANDS.flatMap((c) => {
+    const head = `  /${c.name}${c.args ? ` ${c.args}` : ''}`
     const alias = c.aliases?.length ? ` (also ${c.aliases.map((a) => `/${a}`).join(', ')})` : ''
-    return `  ${head.padEnd(22)}${c.summary}${alias}`
+    const body = wrapWords(`${c.summary}${alias}`, HELP_WIDTH - HELP_COLUMN)
+    if (head.length >= HELP_COLUMN - 1) return [head, ...body.map((l) => pad + l)]
+    return [head.padEnd(HELP_COLUMN) + body[0], ...body.slice(1).map((l) => pad + l)]
   })
 }
 
@@ -438,7 +471,13 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     name: 'sessions',
     summary: 'The other orgai sessions running now: their folder, what they run and the projects they hold',
-    run: (ctx) => guarded(ctx, () => ctx.openText('Sessions', sessionsText(ctx.session.otherSessions?.() ?? [], ctx.state().project?.name)))
+    run: (ctx) =>
+      guarded(ctx, async () => {
+        const others = ctx.session.otherSessions?.() ?? []
+        // Names for the projects the others hold; without them (a failed list) the count is shown.
+        const names = others.some((s) => s.projects.length) ? await (ctx.session.projectNames?.() ?? Promise.resolve(new Map<string, string>())).catch(() => new Map<string, string>()) : new Map<string, string>()
+        await ctx.openText('Sessions', sessionsText(others, ctx.state().project?.name, Date.now(), names))
+      })
   },
   {
     name: 'approvals',

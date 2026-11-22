@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_TUI_ENV, InputBus, InputBusContext, TuiEnvContext } from './context'
 import { KeyParser } from './input/keys'
 import { SLASH_COMMANDS } from './slashCommands'
-import { SlashPalette } from './SlashPalette'
+import { PALETTE_HEAD_COLS, SlashPalette } from './SlashPalette'
 import { textWidth } from './panes/text'
 import type { InputEvent, SlashPaletteProps, TuiEnv, TuiState } from './types'
 
@@ -75,6 +75,22 @@ describe('SlashPalette', () => {
     await t.send('zz')
     await vi.waitFor(() => expect(t.frame()).toContain('No matching command'))
     t.r.unmount()
+  })
+
+  it('the descriptions line up in one column: arguments that do not fit the command column are cut', async () => {
+    const t = setup({ width: 100 })
+    const rows = t.frame().split('\n').filter((l) => /^[› >] \//.test(l))
+    expect(rows.length).toBeGreaterThan(3)
+    // Marker, space, the command column, a space, then the description.
+    const at = 2 + PALETTE_HEAD_COLS + 1
+    for (const row of rows) {
+      expect(row[at - 1], row).toBe(' ')
+      expect(row[at], row).toMatch(/\S/)
+    }
+    // /new carries run flags that would push its description far to the right: they are cut, /help has them in full.
+    const fresh = rows.find((l) => l.includes('/new'))
+    // "..." in this test's plain-ASCII terminal, "…" elsewhere.
+    expect(fresh).toMatch(/\[--pe(\.\.\.|…) Start a new team run$/)
   })
 
   it('Up / Down select and Enter runs the selection', async () => {
