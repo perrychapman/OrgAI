@@ -438,6 +438,64 @@ describe('RunManager usage and pricing', () => {
     expect(up.agent.usage!.models.some((x) => x.priceSource === 'provider')).toBe(false)
   })
 
+  describe('RunUsage.decisions (decisionsOpened)', () => {
+    const question = (runId: string, id: string): RunEvent => ({ type: 'question.request', runId, question: { id, runId, agentId: 'root', question: 'Which?', options: [{ label: 'A' }], allowMultiple: false, allowFreeText: true, createdAt: 1 } })
+    const permission = (runId: string, id: string): RunEvent => ({ type: 'permission.request', runId, request: { id, runId, agentId: 'root', toolName: 'Bash', input: {}, summary: 'Run ls' } })
+
+    it('starts at 0 and counts each *.request once, not the resolutions', async () => {
+      const { m, p, ctxs } = setup()
+      const run = await m.start({ project: p, prompt: 'go' })
+      expect(m.summaryOf(run.id)!.usage!.decisions).toBe(0)
+      ctxs[0]!.emit(permission(run.id, 'p1'))
+      ctxs[0]!.emit(question(run.id, 'q1'))
+      ctxs[0]!.emit(permission(run.id, 'p2'))
+      // resolutions never count
+      ctxs[0]!.emit({ type: 'permission.resolved', runId: run.id, requestId: 'p1' })
+      ctxs[0]!.emit({ type: 'permission.resolved', runId: run.id, requestId: 'p2' })
+      const requests = events.filter((e) => e.type.endsWith('.request') && 'runId' in e && e.runId === run.id).length
+      expect(requests).toBe(3)
+      // push a usage recompute through a cost event, then read the stored usage
+      ctxs[0]!.emit({ type: 'run.cost', runId: run.id, totalCostUsd: 0.01 })
+      expect(m.summaryOf(run.id)!.usage!.decisions).toBe(3)
+    })
+
+    it('reaches the usage queries for a live run', async () => {
+      const { m, p, ctxs } = setup()
+      const run = await m.start({ project: p, prompt: 'go' })
+      ctxs[0]!.emit(question(run.id, 'q1'))
+      const stats = m.usageStats({ projectId: p.id })
+      expect(stats.runs.find((r) => r.runId === run.id)!.usage.decisions).toBe(1)
+    })
+
+    it('leaves decisions unset on a run stored before the field existed, and a resumed run counts only its own cards', async () => {
+      const writer = setup()
+      const { p, store } = writer
+      // A pre-field run: current-format usage, no decisions key (an unknown count, not 0).
+      const first = await writer.m.start({ project: p, prompt: 'old' })
+      const bare = { ...writer.m.summaryOf(first.id)!.usage! }
+      delete (bare as { decisions?: number }).decisions
+      await writer.m.stop(first.id)
+      store.upsert({ ...store.get(first.id)!, usage: bare, status: 'paused' })
+      expect(store.get(first.id)!.usage!.decisions).toBeUndefined()
+      // A fresh manager over the same store: the run is only stored, as after an app restart.
+      const ctxs: RuntimeContext[] = []
+      const adapter: RuntimeAdapter = { id: 'mock', complete: async () => '', start: async (ctx) => (ctxs.push(ctx), { send: async () => {}, interrupt: async () => {}, stop: async () => {}, finished: new Promise<void>(() => {}) }) }
+      const m = new RunManager({ mock: adapter }, sink(), store, fakeSetup(p).service, () => 100)
+      // The usage query keeps it unknown (no 0 is invented).
+      const old = m.usageStats({ projectId: p.id }).runs.find((r) => r.runId === first.id)!
+      expect(old.usage.decisions).toBeUndefined()
+      // Resuming starts a NEW run (own id, resumedFrom): it counts from 0 for its own cards only.
+      const next = await m.start({ project: p, prompt: 'more', resumedFrom: first.id })
+      expect(next.id).not.toBe(first.id)
+      ctxs.at(-1)!.emit(question(next.id, 'q9'))
+      const stats = m.usageStats({ projectId: p.id })
+      expect(stats.runs.find((r) => r.runId === next.id)!.usage.decisions).toBe(1)
+      // and the old run is still unknown, never rewritten to a small number
+      expect(stats.runs.find((r) => r.runId === first.id)!.usage.decisions).toBeUndefined()
+      expect(store.get(first.id)!.usage!.decisions).toBeUndefined()
+    })
+  })
+
   it('ignores the adapter run.cost on a priced (LiteLLM) connection but keeps it elsewhere', async () => {
     const proxy = setup({ resolveConnection: () => ({ connection: 'litellm', env: {}, pricing: { m: { inputPerToken: 0.000001, outputPerToken: 0.000002 } } }) as never })
     const r1 = await proxy.m.start({ project: proxy.p, prompt: 'go' })
