@@ -544,7 +544,11 @@ function cachedEntryRow(e: TranscriptEntry, runId: string, who: string, toolName
   return row
 }
 
+/** Test counter: how many entries were turned into rows (a cache hit does not count). */
+export const selectorStats = { entryRowBuilds: 0 }
+
 function entryRow(e: TranscriptEntry, runId: string, who: string, toolName: (id: string) => string | undefined): TranscriptRow | null {
+  selectorStats.entryRowBuilds++
   const key = `${runId}|${e.id}`
   const harness = e.source === 'harness'
   const base = { key, runId, agentId: e.agentId, agentLabel: who, at: e.at }
@@ -628,7 +632,7 @@ export function partialRows(s: TuiState, filter: TranscriptFilter = {}): Partial
   const run = activeRun(s)
   if (!run) return []
   const out: PartialRow[] = []
-  for (const [agentId, text] of Object.entries(run.partials)) {
+  for (const [agentId, text] of Object.entries(s.partials?.[run.summary.id] ?? {})) {
     if (!text || (filter.agentIds && !filter.agentIds.has(agentId))) continue
     out.push({ key: `partial|${run.summary.id}|${agentId}`, runId: run.summary.id, agentId, agentLabel: agentLabel(run.agents[agentId]), identityTone: agentIdentityTone(s.project?.roles ?? [], run.agents[agentId]), text })
   }

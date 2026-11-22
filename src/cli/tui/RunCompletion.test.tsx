@@ -16,7 +16,6 @@ function state(over: Partial<RunSummary> = {}, runOver: Partial<TuiRun> = {}): T
     summary: summary('r1', { status: 'finished', endedAt: 6_000, ...over }),
     agents: {},
     transcript: [],
-    partials: {},
     cards: cards(),
     recordLoaded: true,
     ...runOver

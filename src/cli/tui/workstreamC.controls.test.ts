@@ -19,7 +19,7 @@ const PROJECT = { id: 'p1', name: 'P', provider: { id: 'claude', auth: { kind: '
 function state(over: Partial<RunSummary> = {}, texts: string[] = [], hasRun = true, project: unknown = PROJECT): TuiState {
   const transcript = texts.map((text, i) => ({ id: `e${i}`, agentId: 'root', at: i, block: { kind: 'text' as const, text } }))
   return {
-    connection: 'live', folder: '/tmp/proj', runs: hasRun ? { r1: { summary: run(over), agents: {}, transcript, partials: {}, cards: { permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], mcpInstalls: [] }, recordLoaded: true } } : {},
+    connection: 'live', folder: '/tmp/proj', runs: hasRun ? { r1: { summary: run(over), agents: {}, transcript, cards: { permissions: [], proposals: [], questions: [], ruleRequests: [], mergeReviews: [], mcpInstalls: [] }, recordLoaded: true } } : {},
     runOrder: ['r1'], activeChain: hasRun ? ['r1'] : [], activeRunId: hasRun ? 'r1' : undefined, composeTarget: 'active', notices: [], resolved: [], cardSeq: 0,
     ...(project ? { project } : {})
   } as unknown as TuiState

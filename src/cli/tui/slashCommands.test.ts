@@ -16,7 +16,6 @@ function stateWith(over: Partial<TuiState> = {}, status: RunSummary['status'] = 
         summary: summary('r1', { status }),
         agents,
         transcript: [],
-        partials: {},
         cards: {} as TuiState['runs'][string]['cards'],
         recordLoaded: true
       }

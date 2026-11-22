@@ -8,7 +8,7 @@
  * same rows again writes nothing), and partials are not shown at all.
  */
 import { Box, Static, Text } from 'ink'
-import { useMemo, useRef, useState } from 'react'
+import { memo, useMemo, useRef, useState } from 'react'
 import { omittedLabel } from '../../shared/view/transcriptRows'
 import { useFocusHandler, useTuiEnv } from './context'
 import { glyphs } from './theme'
@@ -308,7 +308,7 @@ export interface RowCache {
   expanded?: boolean
   width: number
   env: TuiEnv
-  rows: Map<string, { row: TranscriptRow; collapsedLines?: DisplayLine[]; expandedLines?: DisplayLine[] }>
+  rows: Map<string, { row: TranscriptRow; collapsedLines?: DisplayLine[]; expandedLines?: DisplayLine[]; collapsedPane?: PaneLine[]; expandedPane?: PaneLine[] }>
 }
 
 const sameRow = (a: TranscriptRow, b: TranscriptRow): boolean =>
@@ -363,10 +363,19 @@ export function build(rows: readonly TranscriptRow[], omitted: number, width: nu
       else entry.collapsedLines = wrappedLines
     }
     seen.add(row.key)
-    wrappedLines.forEach((l, i) => {
-      lines.push({ key: `${row.key}:${i}`, segs: l.segs ?? [{ text: l.text, tone: l.style.tone, dim: l.style.dim, bold: l.style.bold }] })
+    // The pane lines of an unchanged row are the same objects each build (the slot follows `wrappedLines`), so a rebuild
+    // after one new row allocates nothing for the rows before it.
+    let paneLines = expanded ? entry.expandedPane : entry.collapsedPane
+    if (!paneLines) {
+      const keyed = row.key
+      paneLines = wrappedLines.map((l, i) => ({ key: `${keyed}:${i}`, segs: l.segs ?? [{ text: l.text, tone: l.style.tone, dim: l.style.dim, bold: l.style.bold }] }))
+      if (expanded) entry.expandedPane = paneLines
+      else entry.collapsedPane = paneLines
+    }
+    for (let i = 0; i < paneLines.length; i++) {
+      lines.push(paneLines[i])
       rowOfLine.push(row.key)
-    })
+    }
     previous = row
   }
   if (cache) for (const k of [...cache.rows.keys()]) if (!seen.has(k)) cache.rows.delete(k)
@@ -403,10 +412,11 @@ export function groupToolRows(rows: TranscriptRow[], expanded = false): Transcri
   return out
 }
 
-export function TranscriptPane(props: TranscriptPaneProps & { mode: BufferMode }) {
+// Memoized: a re-render of the shell (a keystroke, a status change) with the same rows, partials and size repaints nothing here.
+export const TranscriptPane = memo(function TranscriptPane(props: TranscriptPaneProps & { mode: BufferMode }) {
   if (props.mode === 'inline') return <InlineTranscript rows={props.rows} width={props.width} scope={props.scope} detailsExpanded={props.detailsExpanded} />
   return <FullTranscript {...props} />
-}
+})
 
 function FullTranscript(props: TranscriptPaneProps) {
   const env = useTuiEnv()
@@ -419,9 +429,20 @@ function FullTranscript(props: TranscriptPaneProps) {
 
   const rowCache = useRef<RowCache>({ width, env, rows: new Map() })
   const built = useMemo(() => build(grouped, props.omitted ?? 0, width, env, rowCache.current, props.compact, toolsExpanded), [grouped, props.omitted, width, env, props.compact, toolsExpanded])
+  // The speaker before the streaming text: found once per row list, not by copying and reversing it every frame.
+  const lastSpoke = useMemo(() => {
+    for (let i = grouped.length - 1; i >= 0; i--) {
+      const row = grouped[i]
+      if (row.kind === 'user' || row.kind === 'divider' || row.agentLabel) return row
+    }
+    return undefined
+  }, [grouped])
+  let lastSpeaker: { agentId?: string; runId?: string; kind: string } | undefined = lastSpoke
+  const partialCache = useRef<Map<string, { text: string; width: number; env: TuiEnv; compact: boolean; lines: PaneLine[] }>>(new Map())
   const partial: PaneLine[] = []
-  let lastSpeaker = [...grouped].reverse().find(row => row.kind === 'user' || row.kind === 'divider' || row.agentLabel)
+  const liveKeys = new Set<string>()
   for (const p of props.partials) {
+    liveKeys.add(p.key)
     if (props.compact) {
       if (built.lines.length || partial.length) partial.push({ key: `partial:${p.key}:gap`, segs: [] })
       if (lastSpeaker?.agentId !== p.agentId || lastSpeaker?.runId !== p.runId || lastSpeaker?.kind === 'user' || lastSpeaker?.kind === 'divider') {
@@ -429,13 +450,23 @@ function FullTranscript(props: TranscriptPaneProps) {
       }
       lastSpeaker = { ...p, kind: 'text' }
     }
-    partialLines(p, width, env, props.compact).forEach((line, i) => partial.push({
-      key: `partial:${p.key}:${i}`,
-      segs: line.segs ?? [{ text: line.text, tone: line.style.tone, dim: line.style.dim, bold: line.style.bold }]
-    }))
+    // Wrapping a long streaming block is the one per-frame cost left: an agent whose text did not change keeps its lines.
+    const compact = props.compact === true
+    let cached = partialCache.current.get(p.key)
+    if (!cached || cached.text !== p.text || cached.width !== width || cached.env !== env || cached.compact !== compact) {
+      const own: PaneLine[] = partialLines(p, width, env, props.compact).map((line, i) => ({
+        key: `partial:${p.key}:${i}`,
+        segs: line.segs ?? [{ text: line.text, tone: line.style.tone, dim: line.style.dim, bold: line.style.bold }]
+      }))
+      cached = { text: p.text, width, env, compact, lines: own }
+      partialCache.current.set(p.key, cached)
+    }
+    for (const line of cached.lines) partial.push(line)
   }
-  const lines = [...built.lines, ...partial]
-  const total = lines.length
+  for (const k of partialCache.current.keys()) if (!liveKeys.has(k)) partialCache.current.delete(k)
+  // The built lines are a stable array; the streaming lines are read after them instead of copying both every frame.
+  const total = built.lines.length + partial.length
+  const lineAt = (i: number): PaneLine => (i < built.lines.length ? built.lines[i] : partial[i - built.lines.length])
 
   const lastKey = props.rows[props.rows.length - 1]?.key
   const newBelow = (() => {
@@ -510,7 +541,8 @@ function FullTranscript(props: TranscriptPaneProps) {
     props.focused
   )
 
-  const view = lines.slice(top, top + viewH)
+  const view: PaneLine[] = []
+  for (let i = top; i < Math.min(total, top + viewH); i++) view.push(lineAt(i))
   if (anchor && height > 0) {
     const text = newBelow > 0 ? `${newBelow} new ${newBelow === 1 ? 'row' : 'rows'} below; End to jump` : 'More below; End to jump'
     view.push({ key: 'below', segs: cutSegs([{ text, tone: 'warn' }], width, env) })

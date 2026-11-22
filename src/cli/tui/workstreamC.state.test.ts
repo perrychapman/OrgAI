@@ -56,7 +56,7 @@ describe('applyEvent fast paths and new events', () => {
     const p = applyEvent(s, ev({ type: 'agent.partial', runId: 'r1', agentId: 'root', text: 'abc' }))
     expect(p.runOrder).toBe(s.runOrder)
     expect(p.activeChain).toBe(s.activeChain)
-    expect(p.runs.r1.partials.root).toBe('abc')
+    expect(p.partials?.r1.root).toBe('abc')
     const u = applyEvent(p, ev({ type: 'run.usage', runId: 'r1', usage: { costUsd: 0.5, tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } as never }))
     expect(u.runOrder).toBe(p.runOrder)
     expect(u.activeChain).toBe(p.activeChain)

@@ -13,7 +13,7 @@ function stateWith(over: Partial<RunSummary> = {}, extra: Partial<TuiState> = {}
     connection: 'live',
     folder: '/w',
     project: { id: 'p1', name: 'P' } as TuiState['project'],
-    runs: { r1: { summary: summary(over), agents: {}, transcript: [], partials: {}, cards: {} as TuiState['runs'][string]['cards'], recordLoaded: true } },
+    runs: { r1: { summary: summary(over), agents: {}, transcript: [], cards: {} as TuiState['runs'][string]['cards'], recordLoaded: true } },
     runOrder: ['r1'],
     activeChain: ['r1'],
     activeRunId: 'r1',

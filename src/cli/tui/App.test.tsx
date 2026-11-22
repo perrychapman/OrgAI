@@ -172,7 +172,6 @@ interface TestRun {
   summary: Partial<RunSummary>
   agents?: Record<string, never>
   transcript?: unknown[]
-  partials?: Record<string, string>
   cards?: {
     permissions: unknown[]
     questions: unknown[]
@@ -190,7 +189,6 @@ const completeRun = (id: string, run: TestRun): TestRun => ({
   summary: { id, status: 'idle', ...run.summary },
   agents: run.agents ?? {},
   transcript: run.transcript ?? [],
-  partials: run.partials ?? {},
   cards: run.cards ?? { permissions: [], questions: [], proposals: [], ruleRequests: [], mergeReviews: [], mcpInstalls: [] },
   recordLoaded: run.recordLoaded ?? true
 })

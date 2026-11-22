@@ -1,5 +1,5 @@
 /** Compact run checklist: pinned progress/ETA and as many one-line tasks as fit. */
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { useFocusHandler, useTuiEnv } from './context'
 import { observePlan, planProgress, type PlanObservation } from './planProgress'
 import { namesText } from './planGraph'
@@ -82,7 +82,7 @@ export function graphSegs(step: PlanStepView, env: TuiEnv): Seg[] {
 /** The ETA is a rough pace estimate: refreshing it every 10 s is plenty. */
 export const PLAN_ETA_REFRESH_MS = 10_000
 
-export function PlanPane(props: PlanPaneProps) {
+export const PlanPane = memo(function PlanPane(props: PlanPaneProps) {
   const env = useTuiEnv()
   const width = Math.max(0, Math.floor(props.width))
   const height = Math.max(0, Math.floor(props.height))
@@ -161,4 +161,4 @@ export function PlanPane(props: PlanPaneProps) {
   const lines = [...head, ...steps.slice(shownTop, shownTop + bodyH)]
   if (overflow) lines.push({ key: 'more', segs: cutSegs([{ text: `${shownTop + 1}${asciiOnly(env) ? '-' : '–'}${Math.min(steps.length, shownTop + bodyH)} of ${steps.length}${asciiOnly(env) ? ' | ' : ' · '}${props.focused ? 'Up/Down scroll' : 'Tab to view'}`, dim: true }], width, env) })
   return <PaneLines width={width} height={height} lines={lines} env={env} />
-}
+})

@@ -452,16 +452,21 @@ export function App(props: AppProps) {
     if (was !== undefined && state.activeRunId !== was) dismissNotices()
   }, [state.activeRunId, dismissNotices])
 
-  // Selector results memoized on the state slices they read, so a streaming delta that touches none of them (or only
-  // `partials`) does not recompute the tray, transcript, plan or worktrees on every render.
-  const { runs: stateRuns, activeChain: stateChain, activeRunId: stateActiveRun, project: stateProject } = state
+  // Selector results memoized on the state slices they read, so a streaming delta that touches none of them (a delta
+  // only replaces `state.partials`, never `state.runs`) does not recompute the tray, transcript, plan or worktrees on every render.
+  const { runs: stateRuns, activeChain: stateChain, activeRunId: stateActiveRun, project: stateProject, partials: statePartials } = state
   const cards = useMemo(() => trayCards(state), [stateRuns, stateChain, stateProject]) // eslint-disable-line react-hooks/exhaustive-deps
   // When the last decision went away (answered, expired or resolved elsewhere): a Shift+Tab right after it was probably
   // meant for that decision and is ignored on the composer (SHIFT_TAB_AFTER_CARDS_MS). A ref write, no re-render.
   if (prevCardCount.current > 0 && cards.length === 0) cardsEmptiedAt.current = now()
   prevCardCount.current = cards.length
   const top = topCard(state)
-  const summary = { ...statusSummary(state), ...(launch.title ? { title: sanitizeTty(launch.title).replace(/\s+/g, ' ').trim() } : {}) }
+  // Everything statusSummary reads, so a streamed delta (which changes none of it) keeps the same object and the memoized status bar skips.
+  const { connection: stateConnection, planUsage: statePlanUsage, runOrder: stateRunOrder, hostKind: stateHostKind, readOnlyReason: stateReadOnly } = state
+  const summary = useMemo(
+    () => ({ ...statusSummary(state), ...(launch.title ? { title: sanitizeTty(launch.title).replace(/\s+/g, ' ').trim() } : {}) }),
+    [stateRuns, stateChain, stateActiveRun, stateProject, stateConnection, statePlanUsage, stateRunOrder, stateHostKind, stateReadOnly, launch.title] // eslint-disable-line react-hooks/exhaustive-deps
+  )
   const activeStatus = state.activeRunId ? state.runs[state.activeRunId]?.summary.status : undefined
   const inline = env.bufferMode === 'inline'
   const readOnly = state.readOnlyReason !== undefined
@@ -1488,7 +1493,7 @@ export function App(props: AppProps) {
     () => ({ ...rawTranscript, rows: zoomIds ? rawTranscript.rows : withTeamMilestones(state, rawTranscript.rows) }),
     [rawTranscript, zoomIds, stateRuns, stateActiveRun] // eslint-disable-line react-hooks/exhaustive-deps
   )
-  const mainPartials = useMemo(() => partialRows(state, zoomFilter), [stateRuns, stateActiveRun, stateProject, zoomFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+  const mainPartials = useMemo(() => partialRows(state, zoomFilter), [stateRuns, statePartials, stateActiveRun, stateProject, zoomFilter]) // eslint-disable-line react-hooks/exhaustive-deps
   // The footer shows the focused card (the inspector's `d` and Enter on a waiting row move it), so that is the one printed.
   const { rows: scrollback, printed: printedCards } = useScrollback(inline, transcript.rows, focusedCard, size.cols, state.activeChain[0] ?? state.activeRunId)
   const latestNotice = state.notices.at(-1)
