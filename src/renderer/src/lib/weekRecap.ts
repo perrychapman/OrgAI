@@ -1,4 +1,4 @@
-import { costView, formatDuration, formatUsdCompact, type CostInput } from './cost'
+import { costView, formatDuration, formatUsdGrouped, type CostInput } from './cost'
 import { dayLedger, ledgerTotals, LEDGER_DAYS, type CostKind, type DayBucket, type LedgerRun, type LedgerTotals } from './activityStrip'
 import { FOCUS_FIGURES, FOCUS_TITLES, type FocusFigure } from './dashboardLayout'
 import type { SparkPoint } from './usageDashboard'
@@ -153,11 +153,11 @@ function spendCard(r: WeekRecap): StatCard {
     label2 = 'nothing spent'
   } else {
     value = r.cost.costUsd ?? 0
-    text = `${formatUsdCompact(value)}${partial ? '+' : ''}`
-    label2 = partial ? `at least ${formatUsdCompact(value)}` : text
+    text = `${formatUsdGrouped(value)}${partial ? '+' : ''}`
+    label2 = partial ? `at least ${formatUsdGrouped(value)}` : text
   }
   const comparable = (k: CostKind): boolean => k === 'known' || k === 'none'
-  const move = comparable(r.costKind) && comparable(prevKind) ? movement(r.cost.costUsd ?? 0, r.previous.cost.costUsd ?? 0, formatUsdCompact) : notCompared('some runs are not priced')
+  const move = comparable(r.costKind) && comparable(prevKind) ? movement(r.cost.costUsd ?? 0, r.previous.cost.costUsd ?? 0, formatUsdGrouped) : notCompared('some runs are not priced')
   return finish({ id: 'spend', label, value, text, label2, partial, ...(r.costShown && r.costKind !== 'unknown' ? { cost: r.cost } : {}), movement: move, series, metric: 'cost', help: '' })
 }
 

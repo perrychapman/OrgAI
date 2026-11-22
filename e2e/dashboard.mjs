@@ -1185,6 +1185,23 @@ try {
       check(o.over <= 1 && o.docOver <= 1, `SZ the dashboard has no horizontal overflow ${tag}`, JSON.stringify({ ...m, ...o }))
       check(o.winTop === 0, `SZ the window does not scroll ${tag}`, JSON.stringify(o))
       check(m.inner.length === 0, `SZ the Dashboard has no inner scrolling column (one page scroll) ${tag}`, m.inner.join(' | '))
+      // An agent row's activity (and every child) stays inside its row, and the row inside Right now (the document-level check misses a clipped card).
+      const rowsFit = await page.evaluate(() => {
+        const now = document.querySelector('[data-testid=dash-now]')?.getBoundingClientRect()
+        const bad = []
+        let n = 0
+        for (const row of document.querySelectorAll('[data-testid=dash-agent-row]')) {
+          n += 1
+          const r = row.getBoundingClientRect()
+          if (now && r.right > now.right + 1) bad.push(`row ${Math.round(r.right)}>${Math.round(now.right)}`)
+          for (const c of row.children) {
+            const cr = c.getBoundingClientRect()
+            if (cr.width > 0 && cr.right > r.right + 1) bad.push(`${c.className} ${Math.round(cr.right)}>${Math.round(r.right)}`)
+          }
+        }
+        return { n, bad }
+      })
+      check(rowsFit.bad.length === 0, `SZ every agent row's text stays inside its run card ${tag}`, JSON.stringify(rowsFit))
       check(m.salInside, `SZ a 40-character name stays inside the greeting ${tag}`, JSON.stringify(m))
       check(m.pulseInside, `SZ the Team pulse stays inside the Briefing ${tag}`, JSON.stringify(m))
       await visualPassChecks(tag)

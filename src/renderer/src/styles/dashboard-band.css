@@ -451,8 +451,11 @@
 
 /* The role caption goes first when the card is narrow; it stays in the accessible name. */
 @container runcard (max-width: 519px) {
+  /* Keep the grid slot (display: none would shift the activity into the max-content track): collapse it to zero width. */
   .dash-role {
-    display: none;
+    max-width: 0;
+    margin: 0;
+    visibility: hidden;
   }
   .dash-wt {
     max-width: 30cqi;
