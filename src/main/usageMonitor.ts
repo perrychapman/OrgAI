@@ -42,6 +42,8 @@ export class UsageMonitor {
   private timer: ReturnType<typeof setInterval> | null = null
   private inFlight: Promise<UsageStatus | null> | null = null
   private liveTimer: ReturnType<typeof setInterval> | null = null
+  /** The first probe, BOOT_DELAY_MS after start(). Kept so stop() can cancel it. */
+  private bootTimer: ReturnType<typeof setTimeout> | null = null
   private last: UsageStatus | null = null
   private lastSent: UsageStatus | null = null
   private lastSentAt = 0
@@ -64,7 +66,10 @@ export class UsageMonitor {
   ) {}
 
   start(): void {
-    setTimeout(() => void this.refresh(), BOOT_DELAY_MS)
+    this.bootTimer = setTimeout(() => {
+      this.bootTimer = null
+      void this.refresh()
+    }, BOOT_DELAY_MS)
     this.timer = setInterval(() => {
       if (this.opts.liveRuns() === 0) void this.refresh()
     }, IDLE_INTERVAL_MS)
@@ -75,6 +80,10 @@ export class UsageMonitor {
   }
 
   stop(): void {
+    // The first probe too: a host stopped within BOOT_DELAY_MS of its start (a terminal UI opened and quit at once)
+    // must not stay alive until that timer fires, nor probe a provider after it has shut down.
+    if (this.bootTimer) clearTimeout(this.bootTimer)
+    this.bootTimer = null
     if (this.timer) clearInterval(this.timer)
     this.timer = null
     if (this.liveTimer) clearInterval(this.liveTimer)

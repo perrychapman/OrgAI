@@ -64,6 +64,7 @@ import { listModelPrices, sanitizeModelPrice } from '../runtime/pricing'
 import type { ProjectStore } from '../store/projects'
 import { proxySecretKey, type SecretStore } from '../store/secrets'
 import type { SettingsStore } from '../store/settings'
+import { SyncedFile, storeSyncFor } from '../store/shared/storeSync'
 import type { AdapterModelInfo, RunConnection } from '../runtime/types'
 import { anthropicStatus } from './anthropicAuth'
 import { anthropicModelsToCatalog, builtinTierModels, makeDiscoveredModel, newerClaudeModel, suggestTierModels, tierFromDescription } from './catalog'
@@ -195,9 +196,12 @@ export class ConnectionService {
   /** Proxy ids removed in this session; a new id never reuses one (a run record or usage row may still name it). */
   private removedProxyIds = new Set<string>()
 
+  /** Keeps models.json correct when several orgai sessions share the data folder (store/shared/storeSync.ts). */
+  private modelsSync: SyncedFile
+
   constructor(private deps: ConnectionServiceDeps) {
     this.modelsFile = join(deps.dataDir, 'models.json')
-    this.loadModels()
+    this.modelsSync = new SyncedFile(this.modelsFile, storeSyncFor(deps.dataDir), (first) => this.loadModels(first))
   }
 
   private settingsNow(): AppSettings {
@@ -226,7 +230,11 @@ export class ConnectionService {
 
   // ---------- persistence of discovered catalogs ----------
 
-  private loadModels(): void {
+  /**
+   * Read models.json into the catalogs. A re-read (`first` false: another orgai session discovered models) replaces
+   * the lists the file holds and keeps the rest; when the file cannot be read then, the catalogs in memory stay.
+   */
+  private loadModels(first: boolean): void {
     try {
       if (!existsSync(this.modelsFile)) return
       const parsed = JSON.parse(readFileSync(this.modelsFile, 'utf8')) as { models?: Record<string, unknown>; refreshedAt?: Record<string, unknown> }
@@ -253,6 +261,10 @@ export class ConnectionService {
         }
       }
     } catch (e) {
+      if (!first) {
+        console.error('Failed to read models.json again, keeping the catalogs in memory:', (e as Error).message)
+        return
+      }
       console.error('Failed to read models.json, starting empty:', (e as Error).message)
       this.discovered = {}
     }
@@ -268,6 +280,8 @@ export class ConnectionService {
   // ---------- catalog ----------
 
   private catalogFor(id: ConnectionId): ProviderModel[] {
+    // Models another orgai session discovered since this one last looked.
+    this.modelsSync.fresh()
     const found = this.discovered[id] ?? []
     if (id === 'anthropic') {
       // Discovered entries first (newest or recommended first), then any builtin alias discovery did not list: saved
@@ -377,11 +391,13 @@ export class ConnectionService {
     const before = this.catalogFor(id)
     const beforeIds = before.map((m) => m.id).join('\n')
     const previousSuggestion = suggestTierModels(id, before)
-    this.discovered[id] = found
     const refreshedAt = this.now()
-    this.refreshedAt[id] = refreshedAt
+    this.modelsSync.change(() => {
+      this.discovered[id] = found
+      this.refreshedAt[id] = refreshedAt
+      this.persistModels()
+    })
     delete this.modelsErrors[id]
-    this.persistModels()
     const catalog = this.catalogFor(id)
     const changed = beforeIds !== catalog.map((m) => m.id).join('\n')
     const { previous, next } = this.retier(id, catalog, previousSuggestion)
@@ -699,7 +715,8 @@ export class ConnectionService {
     const current = this.deps.settings.get()
     if (isProxyConnection(c)) {
       if (!proxyOf(current, c.id)) throw new Error('Unknown connection')
-      this.deps.settings.setProxies(current.proxies.map((p) => (p.id === c.id ? c : p)))
+      // Applied to the list as stored at that moment (another orgai session may have added a proxy since `current`).
+      this.deps.settings.setProxies((list) => list.map((p) => (p.id === c.id ? c : p)))
       return
     }
     if (!isBuiltinConnectionId(c.id)) throw new Error('Unknown connection')
@@ -826,10 +843,14 @@ export class ConnectionService {
     const before = this.effectiveDefault()
     if (key) this.deps.secrets.set(proxySecretKey(id), key)
     try {
-      this.deps.settings.setProxies([
-        ...s.proxies,
-        { id, name, kind, ...(input.litellmFeatures !== undefined ? { litellmFeatures: input.litellmFeatures } : {}), anthropicBaseUrl, ...(openaiBaseUrl ? { openaiBaseUrl } : {}), ...(modelsUrl ? { modelsUrl } : {}), enabled: true, hasApiKey: !!key, tierModels: {} }
-      ])
+      this.deps.settings.setProxies((list) => {
+        // Checked again on the stored list: another orgai session may have added proxies since `s` was read.
+        if (list.length >= PROXIES_MAX) throw new Error(`You can add at most ${PROXIES_MAX} proxy connections. Remove one first.`)
+        return [
+          ...list,
+          { id, name, kind, ...(input.litellmFeatures !== undefined ? { litellmFeatures: input.litellmFeatures } : {}), anthropicBaseUrl, ...(openaiBaseUrl ? { openaiBaseUrl } : {}), ...(modelsUrl ? { modelsUrl } : {}), enabled: true, hasApiKey: !!key, tierModels: {} }
+        ]
+      })
     } catch (e) {
       this.deps.secrets.delete(proxySecretKey(id))
       throw e
@@ -855,16 +876,17 @@ export class ConnectionService {
       throw new Error(`${proxy.name} is used by ${shown.join(', ')}${more}. Move those projects to another connection first.`)
     }
     const before = this.effectiveDefault()
-    const s = this.settingsNow()
-    this.deps.settings.setProxies(s.proxies.filter((p) => p.id !== proxy.id))
+    this.deps.settings.setProxies((list) => list.filter((p) => p.id !== proxy.id))
     this.deps.secrets.delete(proxySecretKey(proxy.id))
-    delete this.discovered[proxy.id]
-    delete this.refreshedAt[proxy.id]
     delete this.modelsErrors[proxy.id]
     delete this.statuses[proxy.id]
     this.tentative.delete(proxy.id)
     this.removedProxyIds.add(proxy.id)
-    this.persistModels()
+    this.modelsSync.change(() => {
+      delete this.discovered[proxy.id]
+      delete this.refreshedAt[proxy.id]
+      this.persistModels()
+    })
     this.rewriteDefault()
     this.defaultMayHaveMoved(before)
     this.deps.broadcast({ type: 'connections.changed' })

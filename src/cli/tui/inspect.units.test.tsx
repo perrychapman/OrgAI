@@ -248,7 +248,7 @@ describe('slash commands: /usage /retro /focus /agent /runs', () => {
       connection: 'live',
       folder: '/w',
       project: { id: 'p1' },
-      runs: { r1: { summary: summary('r1', { status, ...over }), agents: {}, transcript: [], partials: {}, cards: {}, recordLoaded: true } },
+      runs: { r1: { summary: summary('r1', { status, ...over }), agents: {}, transcript: [], cards: {}, recordLoaded: true } },
       runOrder: ['r1'],
       activeChain: ['r1'],
       activeRunId: 'r1',

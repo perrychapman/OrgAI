@@ -5856,6 +5856,9 @@ export class RunManager {
 
     // One live run per provider session: two runs resuming one session would interleave in it.
     const chain = this.chainOf(from)
+    // Several orgai sessions on one data folder: a run of this conversation that another session hosts (live or paused
+    // there) is that session's to continue. A no-op when this process has the data folder to itself.
+    for (const r of chain) if (!this.runs.has(r.id)) this.store.assertHostedHere(r.id)
     const chainIds = new Set(chain.map((r) => r.id))
     const chainSessions = new Set(chain.flatMap((r) => (r.sessionId ? [r.sessionId] : [])))
     for (const a of this.runs.values()) {

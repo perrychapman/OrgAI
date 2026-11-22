@@ -2,6 +2,76 @@
 
 Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, TUI, packaged and standalone CLI, vault, shutdown and handoff, repository lock. Moved out of CLAUDE.md on 2026-11-07; see CLAUDE.md for the index.
 
+- Sessions (docs/design/cli-sessions.md, 2026-11-22): any number of `orgai` processes share one CLI data folder, one
+  per project. This replaces "one `orgai` per CLI data folder"; lines below that say a second `orgai` is refused or
+  that read-only commands print a "saved snapshot" note now hold only beside an `orgai` that owns the folder alone (an
+  older version, or a host started with `listen: true`). Each fact says how it was checked; only macOS was run.
+  - A session is one host process. It holds `<data>/run/sessions/<id>.lock` for its life (a kernel lock through
+    SQLite's `BEGIN EXCLUSIVE` on an empty file, `store/shared/syncLock.ts` over `osLock.ts`) and writes `<id>.json`
+    (pid, cwd, command, claimed projects). Alive means the lock is held: never a pid, a start time or an age. A held
+    lock is pinned in a module-level set: a handle that became unreachable was collected and its finalizer closed the
+    connection, silently freeing the lock (found by a test child; `syncLock.test.ts` "a lock outlives its handle"
+    fails without the pin). `node:sqlite` loads on first use (`sqliteLoader.ts`); on Node 22.22.3 the load prints an
+    ExperimentalWarning, which is dropped for that one load (checked on 22.22.3 and 26.0.0).
+  - Shared files: every store that keeps a JSON file in memory goes through `store/shared/storeSync.ts`. `write`
+    takes the data folder's one write lock (`sessions/write.lock`, blocking, 15 s budget, held only in synchronous
+    code), re-reads the file if its stamp (size, mtime ns, inode) changed, runs the change and records the new stamp;
+    `refresh` before a read is one `stat` (about 1 microsecond, measured), so there is no staleness window (a 50 ms
+    throttle was tried and removed: a host test read a neighbour's save too late). `SOLO` (the desktop app, tests) does
+    none of it. Stores converted: runs, projects, settings, vault, skill / MCP library, connector presets, org templates,
+    retained run projects, models and price caches, the outputs index; the skill library's folder changes run under the
+    lock. A re-read that cannot parse keeps memory and never writes an emptied copy. Checked by `runsShared.test.ts`,
+    `sharedStores.test.ts` (two sessions in one process), two real processes x 100 runs, and the unchanged store suites
+    (798 tests) for the `SOLO` path.
+  - Runs: `runs.json` gained `owners` (run id to session id, open runs only; an older `orgai` and the app ignore and
+    drop it). A run whose owner's lock is held keeps its status elsewhere and `RunStore.upsert` / `moveToProject` refuse
+    it (`RunBusyError`); otherwise an open run is normalized as crashed on read, and a read re-checks the owners every
+    second so a host's death shows without a write. An open run of a stored project claims the project in `upsert`.
+    `RunManager.continueRun` refuses a conversation with a member hosted elsewhere (`assertHostedHere`; inert alone).
+    A live record reaches disk every 1.5 s, so another session reads it that much behind.
+  - Projects: one session per project (`project-<sha256 prefix>.lock`). `host/sessionGuard.ts` runs before every
+    mutating RPC: every short string in the arguments that is a stored project id or a run id counts (no per-channel
+    table); a run hosted elsewhere throws `RunBusyError`, a project held elsewhere `ProjectBusyError`, both
+    `session_busy` on the wire and exit 6 in the CLI (`manage.ts` `hostError`, `exec.ts` `hostFailure`). The terminal
+    UI claims its project at open (`tui/index.ts`, `InprocHostHandle.claimProject`). Cross-project saves that name no
+    project (a library removal unlinking it everywhere, a tier remap) are not refused: they are locked read-modify-writes.
+    Checked by `sessionGuard.test.ts`, `inprocHost.test.ts` (two hosts over RPC), `cli.int.test.ts`, e2e.
+  - Ownership (`ownership.ts` `sessions` option, CLI only, `listen: false` only): a live incumbent whose daemon.json
+    says `sessions: true` is joined (no daemon.json written, `advertised` false); `register` runs under the startup
+    mutex (sweep dead sessions, then register), so starts are serialized and a starting `orgai` waits up to 15 s for
+    one holding the mutex (`wait: 'wait'`, 25 ms polls). At release the advertised session rewrites daemon.json to name
+    the oldest other session (`successor`); after a crash a survivor's 2 s timer takes it over (`adopt`). So an older
+    `orgai`, which reads only daemon.json, always sees one live host and refuses. Gap: up to 2 s after a crash of the
+    advertised session an older `orgai` could take the folder. Checked by `inprocHostRace.test.ts` (three real-process
+    cases) and e2e; no older binary was run against this build.
+  - The boot housekeeping (runs of removed projects, prune, orphan records, scratch folders) runs only when the session
+    is alone, inside the startup mutex (`tryUnderStartupMutex`); `bootOrgAIHost` gets `deferHousekeeping` and returns
+    `housekeep()`. The temp folder sweep of stale skill folders is asynchronous and skipped by management commands
+    (`tempSweep: false`). The retention prune at every run end (`RunManager`, `store.prune`) still runs in every
+    session: under the write lock, on the newest index, ended runs only.
+  - Review (2026-11-22, one independent read-only pass; both external reviewers were out of quota): it found that
+    `ConnectionService` built the proxy list before the lock (fixed: `SettingsStore.setProxies` takes an updater),
+    that the docs called the run-end prune alone-only (corrected), and that another session's folder name reached
+    refusals unsanitized (fixed in `parseSessionRecord`). Its settings-merge finding does not apply to the CLI: `orgai
+    settings set` and the TUI send one key, merged in the host onto the stored settings.
+  - Vault: every commit under the write lock; a value change re-reads first; a creation re-checks under the lock and
+    fails clean if another session created one meanwhile (the retry opens it); a vault another session created is
+    opened in the background; `secrets init` / `reset` are refused while another session runs. Checked with the fake
+    custodian (`sharedStores.test.ts`); no real key store.
+  - Read-only commands: `ReadOnlySnapshot.sessions` and `soleOwner`. `status` lists sessions (text and JSON
+    `sessions`); `ownerSnapshot` returns the files only for a sole owner, so `usage show`, `secrets status` and
+    doctor's connection checks start their own host beside sessions. TUI `/sessions` lists the others.
+  - Startup: `ownership.ts` no longer reads the runtime base (the temp folder) unless this data folder's socket path
+    needs it; with the skill sweep off the start path that removed two temp folder reads per start. `compileCache.ts`
+    enables V8's compile cache in `<data>/run/compile-cache/<version>` before the host and TUI chunks load; never for hostless
+    commands, never against `NODE_COMPILE_CACHE`. Measured before (d10dea58) and after on the built CLI, median of 11:
+    `settings list` 335 ms to 206 ms with 80,000 entries in the temp folder, 236 ms to 204 ms with a clean one; hostless
+    commands unchanged (64 ms). `launchTui` starts the host while the TUI chunk
+    loads. TUI streaming: partial text moved out of `TuiRun` into `TuiState.partials`, so a delta no longer replaces
+    `state.runs` and recomputes every selector (1.9 ms to 0.05 ms per delta on a 5,000 entry transcript, reducer plus
+    selectors, no React; `streamPerf.test.ts`).
+  - Not built: two sessions in one project; following another session's run live; an automatic `/sessions` refresh.
+    The unused phase 1 modules of `parallel-sessions.md` are still in the tree.
 - CLI & host: THE MODEL (docs/design/cli-standalone-default.md, status "implemented on feat/cli-standalone-default", 2026-11-08). The `orgai` CLI (npm package `orgai-cli`) and the OrgAI desktop app share NOTHING, like Claude Code and Claude Desktop: separate data folders (app `<userData>/data`, override `ORGAI_DATA_DIR`; CLI `orgai-cli`, override `--data-dir` / `ORGAI_CLI_DATA_DIR`; `ORGAI_DATA_DIR` is ignored by the CLI; product markers in each folder), separate vaults and key custody (desktop `OrgAI Vault` / `ORGAI_VAULT_*`; CLI `OrgAI CLI Vault` / `ORGAI_CLI_VAULT_*`), approvals, libraries and Codex logins. The app has no socket server, no `--headless-host`, no handoff and no Terminal access setting, and its package does not contain the CLI; it offers an Install row (App settings > Terminal) that runs `npm install -g orgai-cli`. `orgai` runs in-process; no run lives behind the scenes. The sections below are partly HISTORY (cli-spec.md and cli-standalone.md are superseded where they differ); the spec's section 6 lists the corpus exclusions.
   - Waves 0-5 landed the socket protocol, the in-process host, the self-control gate, the read-only `orgai` CLI, headless exec, the terminal UI and the management commands; see cli-spec.md "Implementation status" for deviations and what is unverified.
   - Wave 7 (standalone `orgai`; docs/design/cli-standalone.md; merged to dev via PR #24, 2026-11-07; its Node host, daemon and handoff parts are removed). Verified on macOS by unit tests, in-process integration tests and a few e2e scripts; nothing ran on Windows or Linux, against a real OS key store, the real npm registry or a packaged build (see Unverified at the end of this bullet).

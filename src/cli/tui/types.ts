@@ -83,7 +83,7 @@ import type {
   WorktreeDiff,
   WorktreeStatus
 } from '../../shared/types'
-import type { HostClient, InprocHostHandle } from '../types'
+import type { HostClient, InprocHostHandle, SessionPeer } from '../types'
 import type { ModelCatalog, SwitchOutcome } from '../modelSwitch'
 import type { ApprovalsApi } from './approvals'
 import type { TuiConfigApi } from './configApi'
@@ -467,8 +467,6 @@ export interface TuiRun {
   plan?: RunPlan
   /** Latest staffing record (staffing.updated, or the run record). Shown on agent rows, the inspector and the status bar. */
   staffing?: RunStaffing
-  /** Sanitized display text per agent id (agent.partial, cumulative). */
-  partials: Record<string, string>
   cards: PendingCards
   /** Oldest transcript entries left out (snapshot cap or TUI_TRANSCRIPT_MAX). */
   omitted?: number
@@ -496,6 +494,11 @@ export interface TuiState {
   project?: Project
   folder: string
   runs: Record<string, TuiRun>
+  /**
+   * Streaming text per run id, then agent id (agent.partial, cumulative, sanitized). Kept beside `runs`, not in a run,
+   * so a streamed delta leaves `runs` (and every selector memo keyed on it) untouched. Absent means none.
+   */
+  partials?: Record<string, Record<string, string>>
   /** Project runs oldest first, for R# tags. */
   runOrder: string[]
   /** Followed chain, oldest first. */
@@ -550,6 +553,10 @@ export interface StagedRunOptions {
 export interface TuiSessionApi {
   /** Read-only /approvals (cli-parity 3.4 as built): what waits for approval; deciding is done in the desktop app. */
   approvals?: ApprovalsApi
+  /** /sessions: the other orgai sessions running on this data folder right now (each with its folder and projects). */
+  otherSessions?(): SessionPeer[]
+  /** Project id to name for every stored project (projects:list), for texts that name another session's projects. */
+  projectNames?(): Promise<Map<string, string>>
   /** The host calls of /team and /settings (cli-parity 3.7): the channels the commands use. */
   config?: TuiConfigApi
   getState(): TuiState

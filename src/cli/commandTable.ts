@@ -132,7 +132,7 @@ const EXEC_START_FLAGS: readonly CommandFlag[] = [
 export const COMMANDS: readonly CommandEntry[] = [
   {
     name: 'status',
-    summary: 'Show the data folder, the current project and your runs',
+    summary: 'Show the data folder, the orgai sessions running on it, the current project and your runs',
     usage: 'status [--all-projects]',
     flags: [{ name: 'all-projects', takesValue: false, summary: 'Every project' }],
     available: true

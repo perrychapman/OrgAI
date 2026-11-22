@@ -72,7 +72,7 @@ export const RULES = [
   { match: ['src/main/runtime/runManager.ts', 'src/main/runtime/mock.ts', 'src/main/runtime/harnessTools.ts', 'src/main/runtime/types.ts', 'src/main/ipc.ts', 'src/main/index.ts', 'src/main/store/**', 'src/main/host/**'], kind: 'full', scripts: [], why: 'hot main-process file every flow passes through' },
 
   // ---- e2e helpers that belong to one script ----
-  { match: ['e2e/ptyDriver.mjs', 'e2e/pty-helper.py'], scripts: ['cli-tui'], why: 'pseudo-terminal driver of cli-tui' },
+  { match: ['e2e/ptyDriver.mjs', 'e2e/pty-helper.py'], scripts: ['cli-tui', 'cli-parallel'], why: 'pseudo-terminal driver of cli-tui and cli-parallel' },
   { match: ['e2e/dialog-stub.cjs'], scripts: ['separation'], why: 'dialog stub of separation' },
   { match: ['e2e/office.mjs', 'e2e/pocket-office.mjs'], scripts: ['canvas'], why: 'Pocket Office checks canvas.mjs imports' },
   { match: ['e2e/outputs-compare.part.mjs', 'e2e/outputs-edit.part.mjs'], scripts: ['outputs-versions'], why: 'part called by outputs-versions' },
@@ -153,7 +153,9 @@ export const RULES = [
   { match: ['src/main/setup/**'], scripts: ['import', 'org-change', 'team', 'engagement2', 'dashboard'], why: 'setup, org merge, templates' },
 
   // ---- CLI, by command ----
-  { match: ['src/cli/tui/**', 'src/cli/commands/tui.ts', 'src/cli/commands/interactive.ts'], scripts: ['cli-tui'], why: 'terminal UI' },
+  { match: ['src/cli/tui/**', 'src/cli/commands/tui.ts', 'src/cli/commands/interactive.ts'], scripts: ['cli-tui', 'cli-parallel'], why: 'terminal UI (cli-parallel opens two at once)' },
+  // Sessions (docs/design/cli-sessions.md): how an orgai starts its host, joins other sessions and reads beside them.
+  { match: ['src/cli/inprocHost.ts', 'src/cli/context.ts', 'src/cli/compileCache.ts', 'src/cli/ownedMessage.ts', 'src/cli/runRef.ts', 'src/cli/client/**', 'e2e/cli-parallel.mjs'], scripts: ['cli-parallel', 'cli-readonly', 'cli-exec', 'cli-tui'], why: 'the in-process host, sessions and the hostless reader' },
   { match: ['src/cli/commands/projects.ts', 'src/cli/commands/init.ts', 'src/cli/entries/projects.ts', 'src/cli/entries/init.ts'], scripts: ['cli-projects'], why: 'orgai projects / init' },
   { match: ['src/cli/commands/{org,team,permissions,worktrees}.ts', 'src/cli/entries/{org,team,permissions,worktrees}.ts'], scripts: ['cli-org', 'cli-org-evolve'], why: 'orgai org / team / permissions / worktrees (org retro --unattended and org evolve route through org.ts)' },
   { match: ['src/cli/commands/orgEvolve.ts', 'src/main/evolve/**', 'e2e/cli-org-evolve.mjs'], scripts: ['cli-org-evolve'], why: 'orgai org evolve, loop and retro --unattended; the team-evolution engine' },

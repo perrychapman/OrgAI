@@ -22,6 +22,8 @@ import { isInsideEither } from '../quick/scratch'
 import { DurableFsError, errorCode, nodeVaultFs, renameDurable, unlinkDurable, writeFileDurable, type VaultFs } from './durableFs'
 import { baselineOf, legacyIsNewer, planReconcile, planRetirement, retirementBlocker, setBaseline, type ReconcileCrypto } from './reconcile'
 import { createCustodianFactory } from './custodians'
+import { SessionBusyError, sessionWords } from '../host/sessions'
+import { SOLO, storeSyncFor, type StoreSync } from './shared/storeSync'
 import { isPlaceholderCustodian, unavailableCustodian, unavailableCustodianFactory } from './unavailableCustodian'
 import { checkMatches, decryptEntry, encryptEntry, isDek, makeCheck, newVaultId, sha256Hex, zeroize } from './vaultCrypto'
 import {
@@ -160,6 +162,8 @@ export interface VaultFlags {
 
 /** SecretStore options. Without any, the store is an app host's (desktop) store with no vault opened yet. */
 export interface SecretStoreOptions {
+  /** Overrides the data folder's own sync (tests that put two orgai sessions in one process). */
+  sync?: StoreSync
   /**
    * Never write: available() is false, set() with a value throws, and delete / deletePrefix / set(null) only drop
    * overlay entries. Kept for older callers; no host passes it since Node hosts write the vault (Wave 7).
@@ -329,6 +333,8 @@ const EMPTY = dict<string>()
 
 export class SecretStore implements SecretStoreApi {
   private readonly dataDir: string
+  /** How the secret files stay correct when several orgai sessions share the data folder; set by the constructor. */
+  private sync: StoreSync = SOLO
   private readonly vaultPath: string
   private readonly legacyPath: string
   private readonly hostKind: HostKind
@@ -423,7 +429,45 @@ export class SecretStore implements SecretStoreApi {
     this.retirement = opts.vaultFlags?.retirement ?? VAULT_RETIREMENT_ENABLED
     this.retryMs = opts.retryMs ?? VAULT_RETRY_MS
     this.userDataDir = opts.userDataDir
-    this.reload()
+    this.sync = opts.sync ?? storeSyncFor(dataDir)
+    this.sync.load(this.vaultPath, () => this.reload())
+  }
+
+  // ---------- Several orgai sessions on one data folder (store/shared/storeSync.ts) ----------
+
+  /**
+   * vault.json changed on disk (another session stored or removed a value, or created or reset the vault): read it
+   * again. The key stays while it still opens the vault; a vault this session cannot open yet (created or reset by
+   * the other one) is opened in the background, so its values can be read shortly after without a restart.
+   */
+  private reloadShared(): void {
+    try {
+      this.reload()
+    } catch (e) {
+      this.log(`could not read the secret files again (${e instanceof Error ? e.message : 'error'})`)
+      return
+    }
+    if (this.vstate === 'locked' && !this.flight && !this.readOnly) {
+      void this.startFlight('open', () => this.custodyStep('open')).catch((e: unknown) => this.log(`open failed: ${e instanceof Error ? e.message : 'error'}`))
+    }
+  }
+
+  /** Before a read. Nothing to do with one process per data folder, or while a custody step or a recovery runs. */
+  private freshShared(): void {
+    if (!this.sync.shared || this.flight || this.recovering) return
+    this.sync.refresh(this.vaultPath, () => this.reloadShared())
+  }
+
+  /** A change: under the data folder's write lock, on vault.json as it is on disk now (shared), or directly. */
+  private mutate<T>(fn: () => T): T {
+    if (!this.sync.shared) return fn()
+    return this.sync.write(this.vaultPath, () => this.reloadShared(), fn)
+  }
+
+  /** init and reset replace secure storage under every session: only a session that is alone may run them. */
+  private refuseWhileOthersRun(what: string): void {
+    const others = this.sync.session?.others() ?? []
+    if (others.length) throw new SessionBusyError(`${what} changes secure storage for every orgai session, and another one is running${sessionWords(others[0])}. Quit it first.`)
   }
 
   // ---------- Loading ----------
@@ -627,6 +671,7 @@ export class SecretStore implements SecretStoreApi {
 
   /** The value and its status in one step (decrypts at most twice). */
   private read(key: string): { value: string } | { unreadable: string } | 'unset' {
+    this.freshShared()
     const o = this.overlay.get(key)
     if (o !== undefined) return { value: o }
     const r = this.resolve(key)
@@ -693,12 +738,14 @@ export class SecretStore implements SecretStoreApi {
   }
 
   state(): VaultState {
+    this.freshShared()
     // An unreadable vault.json (an I/O error) is reported as locked with the read error, never as damaged.
     return this.vaultReadError ? 'locked' : this.vstate
   }
 
   /** Keys (stored and overlay) starting with a prefix that hold a value somewhere, readable or not. */
   keys(prefix = ''): string[] {
+    this.freshShared()
     const out = new Set<string>()
     for (const k of this.overlay.keys()) if (k.startsWith(prefix)) out.add(k)
     const candidates = new Set<string>(Object.keys(this.legacyValues()))
@@ -715,6 +762,20 @@ export class SecretStore implements SecretStoreApi {
    * reconciles (rows 1 and 2 without a key) and throws CommitError 'indeterminate'.
    */
   private commit(steps: CommitStep[]): void {
+    if (!this.sync.shared) return this.commitNow(steps)
+    // Every write of the secret files runs under the data folder's write lock (callers that change a value already
+    // hold it through mutate(); a creation holds it only here).
+    this.sync.write(this.vaultPath, null, () => {
+      // Creating the vault: another orgai session may have created one since this one looked (createVault re-checks
+      // right after its key store call, outside the lock). Never write over it; the next attempt opens it instead.
+      if (this.vstate === 'absent' && steps[0]?.kind === 'vault' && readVaultFile(this.vaultPath, this.fs).kind !== 'absent') {
+        throw new CommitError('clean', new Error('another orgai session created secure storage at the same moment'), this.msg)
+      }
+      this.commitNow(steps)
+    })
+  }
+
+  private commitNow(steps: CommitStep[]): void {
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i] as CommitStep
       try {
@@ -885,6 +946,10 @@ export class SecretStore implements SecretStoreApi {
    * its save failed; removals use delete() / deletePrefix(), which never throw).
    */
   set(key: string, value: string | null): void {
+    this.mutate(() => this.setNow(key, value))
+  }
+
+  private setNow(key: string, value: string | null): void {
     if (value === null || value === '') {
       this.clear(key)
       return
@@ -977,6 +1042,10 @@ export class SecretStore implements SecretStoreApi {
    * cannot handle is left in place, logged and counted as orphaned. An explicit clear is clear() (or set(key, null)).
    */
   delete(key: string): void {
+    this.mutate(() => this.deleteNow(key))
+  }
+
+  private deleteNow(key: string): void {
     this.overlay.delete(key)
     if (this.readOnly || typeof key !== 'string') return
     this.retryRead()
@@ -994,6 +1063,10 @@ export class SecretStore implements SecretStoreApi {
    * for 30 days. Not for removals the user could want back: use delete().
    */
   purge(key: string): void {
+    this.mutate(() => this.purgeNow(key))
+  }
+
+  private purgeNow(key: string): void {
     this.overlay.delete(key)
     if (this.readOnly || typeof key !== 'string') return
     this.retryRead()
@@ -1006,6 +1079,10 @@ export class SecretStore implements SecretStoreApi {
 
   /** A removal of every key starting with a prefix; returns how many were removed (overlay included). Never throws. */
   deletePrefix(prefix: string): number {
+    return this.mutate(() => this.deletePrefixNow(prefix))
+  }
+
+  private deletePrefixNow(prefix: string): number {
     const before = this.keys(prefix)
     for (const k of [...this.overlay.keys()]) if (k.startsWith(prefix)) this.overlay.delete(k)
     if (!this.readOnly) {
@@ -1030,6 +1107,10 @@ export class SecretStore implements SecretStoreApi {
    * exists nowhere is a no-op. A read-only store only drops the overlay value.
    */
   clear(key: string): void {
+    this.mutate(() => this.clearNow(key))
+  }
+
+  private clearNow(key: string): void {
     this.overlay.delete(key)
     if (this.readOnly || !validSecretKey(key)) return
     const refusal = this.clearRefusal(key)
@@ -1663,6 +1744,7 @@ export class SecretStore implements SecretStoreApi {
 
   /** secrets:init: create a vault (absent), or retry opening it; with keyFile the key-file scheme. */
   async initVault(input: SecretsInitInput): Promise<SecretsInitResult> {
+    this.refuseWhileOthersRun('orgai secrets init')
     const keyFile = input?.keyFile
     if (keyFile !== undefined && (typeof keyFile !== 'string' || keyFile.trim() === '')) throw new Error('The key file path is empty.')
     if (input?.importKeyFile && keyFile === undefined) throw new Error('--import needs --key-file <path>.')
@@ -1701,6 +1783,7 @@ export class SecretStore implements SecretStoreApi {
    */
   async resetVault(input: SecretsResetInput): Promise<SecretsResetResult> {
     if (input?.confirm !== true) throw new Error('Reset needs confirm: true.')
+    this.refuseWhileOthersRun('orgai secrets reset')
     if (this.flight || this.resetBusy?.() === true) throw new Error(VAULT_MESSAGES.resetBusy)
     const moved = await this.startFlight('reset', async (): Promise<{ vault: string | null; legacy: string | null; durable: boolean }> => {
       let durable = true
@@ -1782,6 +1865,10 @@ export class SecretStore implements SecretStoreApi {
 
   /** secrets:undelete ("Restore"): store the kept value again (a normal write, which removes the tombstone). */
   undelete(input: SecretsUndeleteInput): SecretsUndeleteResult {
+    return this.mutate(() => this.undeleteNow(input))
+  }
+
+  private undeleteNow(input: SecretsUndeleteInput): SecretsUndeleteResult {
     const key = input?.key
     if (!validSecretKey(key)) return { restored: false, reason: NOTHING_TO_RESTORE_MESSAGE }
     this.retryRead()
@@ -1812,6 +1899,10 @@ export class SecretStore implements SecretStoreApi {
 
   /** secrets:confirmDelete ("Keep removed"): drop the kept values of the named soft deletes (metadata only). */
   confirmDeletes(input: SecretsConfirmDeleteInput): SecretsConfirmDeleteResult {
+    return this.mutate(() => this.confirmDeletesNow(input))
+  }
+
+  private confirmDeletesNow(input: SecretsConfirmDeleteInput): SecretsConfirmDeleteResult {
     const keys = Array.isArray(input?.keys) ? input.keys.filter(validSecretKey) : []
     this.retryRead()
     const v = this.vault

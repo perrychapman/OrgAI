@@ -1,5 +1,12 @@
 # Parallel `orgai` sessions: design spec
 
+**Not what was built.** The goal of this spec (any number of `orgai` processes on one data folder) shipped on
+2026-11-22 with a much smaller design, described in `cli-sessions.md`: one session per project, one write lock for the
+shared files, run ownership in the run index, and `daemon.json` kept for older versions. This document is kept as the
+record of the larger design and its reviews. Of its phase 1 modules only `osLock.ts` is in use; the format-2 tree,
+journals, chain claims, consumer evidence and admission described below do not exist in the product. It is left out of
+the in-app reference so that Ask OrgAI does not quote it as fact.
+
 Status: draft 14, 2026-11-12. Draft 1 was reviewed by GPT Astra and Gemini Argon, drafts 2-13 by GPT Astra and Gemini
 Carbon; all twenty-six reviews BLOCKED. Owner decision (2026-11-12): after draft 13 and one more review round,
 implementation starts with phase 1; later findings are folded into phases 2 and 3 as spec changes and tests. Resolutions are in section 14. Owner direction (2026-11-11): "mirror Claude Code / Codex":

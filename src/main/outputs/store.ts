@@ -18,6 +18,7 @@ import { hiddenCharIn } from '../capabilities/sanitize'
 import { log } from '../log'
 import { pathKey } from '../quick/scratch'
 import { atomicWrite, ensurePlainDir, projectDataDir, readPlain } from '../store/projectData'
+import { storeSyncFor } from '../store/shared/storeSync'
 
 /**
  * The outputs index: `<data>/projects/<id>/outputs.json` = { version: 2, outputs: [...] } (no `missing`). Format 1 files
@@ -253,6 +254,12 @@ export function createOutputStore(dataDir: string, hooks: OutputStoreHooks = {})
   }
 
   const keyOf = (p: string): string => pathKey(p)
+  /**
+   * Every change reads the index, changes it and writes it back. Several orgai sessions may do that to one index at
+   * the same time (the Chat's outputs are shared by all of them), so the whole step runs under the data folder's write
+   * lock. A no-op for a process that has its data folder to itself.
+   */
+  const locked = <T>(fn: () => T): T => storeSyncFor(dataDir).locked(fn)
 
   return {
     list(projectId) {
@@ -266,7 +273,7 @@ export function createOutputStore(dataDir: string, hooks: OutputStoreHooks = {})
       const k = keyOf(path)
       return this.list(projectId).find((o) => keyOf(o.path) === k)
     },
-    add(projectId, entry) {
+    add: (projectId, entry) => locked(() => {
       const all = loadForWrite(projectId)
       const created: StoredOutput = applyVersionFields({ version: 1, versionCount: 1, openNoteCount: 0, ...entry, versions: entry.versions ?? [], id: entry.id && OUTPUT_ID_RE.test(entry.id) ? entry.id : newOutputId(), projectId })
       all.push(created)
@@ -280,8 +287,8 @@ export function createOutputStore(dataDir: string, hooks: OutputStoreHooks = {})
       save(projectId, all)
       if (dropped.length) hooks.onDropped?.(projectId, dropped)
       return created
-    },
-    update(projectId, id, patch) {
+    }),
+    update: (projectId, id, patch) => locked(() => {
       const all = loadForWrite(projectId)
       const i = all.findIndex((o) => o.id === id)
       if (i < 0) return undefined
@@ -290,21 +297,21 @@ export function createOutputStore(dataDir: string, hooks: OutputStoreHooks = {})
       all[i] = next
       save(projectId, all)
       return next
-    },
-    updateMany(projectId, entries) {
+    }),
+    updateMany: (projectId, entries) => locked(() => {
       const all = loadForWrite(projectId)
       const byId = new Map(entries.map((e) => [e.id, e]))
       save(
         projectId,
         all.map((o) => byId.get(o.id) ?? o)
       )
-    },
-    remove(projectId, id) {
+    }),
+    remove: (projectId, id) => locked(() => {
       const all = loadForWrite(projectId)
       const next = all.filter((o) => o.id !== id)
       if (next.length === all.length) return false
       save(projectId, next)
       return true
-    }
+    })
   }
 }

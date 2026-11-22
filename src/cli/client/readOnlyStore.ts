@@ -1,24 +1,27 @@
 /**
  * ReadOnlyStoreReader (cli-spec 3.2(3)): projects and runs straight from the data dir, for read-only commands that
  * cannot (or need not) reach a host. Never writes, never migrates, never touches `startup.mkdir` (it only reads its
- * owner.json). Pending decision cards live only in a host's memory, so `liveInboxAvailable` is always false.
+ * owner.json) and takes no lock (it only probes the session locks). Pending decision cards live only in a host's
+ * memory, so `liveInboxAvailable` is always false.
  *
- * - A live host in state 'starting' (or a live startup.mkdir owner) is polled for up to 2,000 ms; if it is still
- *   starting the files are read as they are (hostState 'starting', nothing normalized).
- * - A live 'ready' / 'draining' host: hostState as advertised, nothing normalized (its runs may really be live).
- * - No live host: hostState 'stopped' and every non-terminal run is normalized in memory with
- *   normalizeCrashedRunSummary (finished, endedBy 'app'), exactly what the next host boot would write.
+ * - A live host in state 'starting' (or a live startup.mkdir owner) is polled for up to 2,000 ms.
+ * - Sessions (main/host/sessions.ts): a run that is not ended keeps its status when the session the index names as its
+ *   host is running; every other one is normalized in memory with normalizeCrashedRunSummary (finished, endedBy
+ *   'app'), exactly what the next orgai's start would write. With no session running that is every open run.
+ * - A live host that does not share the folder (an orgai from before sessions, `soleOwner`): nothing is normalized, its
+ *   runs may really be live and it records no hosts.
  */
 import { closeSync, fstatSync, lstatSync, openSync, readSync } from 'node:fs'
 import { join } from 'node:path'
 import type { DaemonInfo, Project, RunRecord, RunSummary } from '../../shared/types'
 import { parseJsonSafe } from '../../main/host/jsonCodec'
 import { readDaemonInfo, runDirOf } from '../../main/host/ownership'
+import { liveSessions } from '../../main/host/sessions'
 import { PARAM_ID_PATTERN } from '../../main/host/params'
 import { isLiveProcessCached } from '../../main/host/processInfo'
 import { parseProjectsFile } from '../../main/store/projects'
-import { normalizeCrashedRunSummary, parseRunIndex, runRecordFileName } from '../../main/store/runs'
-import type { ReadOnlySnapshot } from '../types'
+import { isOpenRunStatus, normalizeCrashedRunSummary, parseRunIndex, parseRunOwners, runRecordFileName } from '../../main/store/runs'
+import type { ReadOnlySnapshot, SessionSummary } from '../types'
 
 export const PROJECTS_FILE_MAX_BYTES = 64 * 1024 * 1024
 export const RUNS_INDEX_MAX_BYTES = 64 * 1024 * 1024
@@ -33,6 +36,8 @@ export interface ReadOnlyStoreOptions {
   isLive?: (pid: number, startTime?: string) => boolean
   now?: () => number
   sleep?: (ms: number) => Promise<void>
+  /** The running sessions (default: read and probed from `<dataDir>/run/sessions`); tests. */
+  sessions?: () => SessionSummary[]
 }
 
 /**
@@ -79,7 +84,15 @@ function readJson(path: string, maxBytes: number): unknown {
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
-const NON_TERMINAL = new Set(['starting', 'running', 'idle', 'paused', 'stopping'])
+
+/** The running sessions of a data folder; never throws (an unreadable folder reads as none). */
+function runningSessions(dataDir: string): SessionSummary[] {
+  try {
+    return liveSessions(dataDir).map((s) => ({ hostInstanceId: s.hostInstanceId, pid: s.pid, startedAt: s.startedAt, appVersion: s.appVersion, cwd: s.cwd, command: s.command, projects: s.projects }))
+  } catch {
+    return []
+  }
+}
 
 /** The live owner of `<run>/startup.mkdir`, if any (read only: owner.json, never the directory itself). */
 function startupOwnerLive(dataDir: string, isLive: (pid: number, start?: string) => boolean): boolean {
@@ -109,17 +122,27 @@ export class ReadOnlyStoreReader {
       await sleep(Math.min(POLL_MS, Math.max(1, deadline - now())))
     }
 
-    const hostState: ReadOnlySnapshot['hostState'] = starting ? 'starting' : live ? daemon!.state : 'stopped'
-    const normalize = hostState === 'stopped'
+    const sessions = this.opts.sessions ? this.opts.sessions() : runningSessions(dataDir)
+    // A live host whose record does not say it shares the folder: an orgai from before sessions. It owns the folder.
+    const soleOwner = live && daemon!.sessions !== true
+    const hostState: ReadOnlySnapshot['hostState'] = starting ? 'starting' : live ? daemon!.state : sessions.length ? 'ready' : 'stopped'
     const at = now()
-    const fix = (r: RunSummary): RunSummary => (normalize && NON_TERMINAL.has(r.status) ? normalizeCrashedRunSummary(r, at) : r)
+    const rawRuns = readJson(join(dataDir, 'runs.json'), RUNS_INDEX_MAX_BYTES)
+    const owners = parseRunOwners(rawRuns)
+    const running = new Set(sessions.map((s) => s.hostInstanceId))
+    /** An open run stays open only while the session that hosts it runs (or an older orgai owns the folder). */
+    const fix = (r: RunSummary): RunSummary => {
+      if (soleOwner || !isOpenRunStatus(r.status)) return r
+      const owner = owners[r.id]
+      return owner !== undefined && running.has(owner) ? r : normalizeCrashedRunSummary(r, at)
+    }
 
     let projects: Project[] = []
     const rawProjects = readJson(join(dataDir, 'projects.json'), PROJECTS_FILE_MAX_BYTES)
     if (isObj(rawProjects)) {
       projects = parseProjectsFile(rawProjects).projects.filter((p): p is Project => isObj(p) && typeof p.id === 'string')
     }
-    const runs = parseRunIndex(readJson(join(dataDir, 'runs.json'), RUNS_INDEX_MAX_BYTES))
+    const runs = parseRunIndex(rawRuns)
       .map(fix)
       .sort((a, b) => (typeof b.startedAt === 'number' ? b.startedAt : 0) - (typeof a.startedAt === 'number' ? a.startedAt : 0))
     const byId = new Map(runs.map((r) => [r.id, r]))
@@ -144,6 +167,8 @@ export class ReadOnlyStoreReader {
 
     return {
       hostState,
+      sessions,
+      soleOwner,
       liveInboxAvailable: false,
       ...(daemon ? { daemon } : {}),
       projects,

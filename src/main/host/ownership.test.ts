@@ -539,8 +539,9 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     expect(lstatSync(outside).isSocket()).toBe(true)
   })
 
-  it('sweeps orgai-* runtime dirs whose owner is dead and keeps live ones', async () => {
-    const env = tempEnv()
+  it('a host whose socket lives in a runtime dir sweeps orgai-* runtime dirs whose owner is dead and keeps live ones', async () => {
+    // A data folder whose socket path does not fit in <dataDir>/run: its hosts are the ones that make runtime dirs.
+    const env = tempEnv('x'.repeat(90))
     const child = spawnSleeper()
     const dead = join(env.runtimeBase, 'orgai-121212121212')
     const live = join(env.runtimeBase, 'orgai-343434343434')
@@ -551,6 +552,17 @@ describe.skipIf(!posix)('acquireHostOwnership', () => {
     await acquire(env, { isLiveProcess: (pid) => pid !== 999_998 })
     expect(existsSync(dead)).toBe(false)
     expect(existsSync(live)).toBe(true)
+  })
+
+  it('a host whose socket fits in the run folder never reads the runtime base (the temp folder, on every start)', async () => {
+    const env = tempEnv()
+    // No host of this data folder ever made a runtime dir, so one left by another folder's host is not its to find.
+    const other = join(env.runtimeBase, 'orgai-121212121212')
+    mkdirSync(other, { mode: 0o700 })
+    writeFileSync(join(other, 'owner.json'), JSON.stringify({ pid: 999_998 }))
+    const o = await acquire(env, { isLiveProcess: (pid) => pid !== 999_998 })
+    expect(o.runtimeDir).toBeUndefined()
+    expect(existsSync(other)).toBe(true)
   })
 
   it('binds under <runtimeBase>/orgai-<id> when the socket path would be 100 bytes or longer; release removes it', async () => {

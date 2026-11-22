@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, isAbsolute } from 'node:path'
 import { renameSyncRetry } from '../host/fsRetry'
+import { RunBusyError } from '../host/sessions'
+import { storeSyncFor, type StoreSync } from './shared/storeSync'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
 import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
-import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, OUTPUT_COLOR_RE, QUICK_PROJECT_ID, isEffort, isPermissionMode, isStaffingGoal } from '@shared/types'
+import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, OUTPUT_COLOR_RE, QUICK_PROJECT_ID, isEffort, isPermissionMode, isStaffingGoal, isVirtualProjectId } from '@shared/types'
 import type {
   ExecOutcome,
   HeadlessDecisionPolicy,
@@ -19,6 +21,9 @@ import type {
   RunUsage,
   TranscriptEntry
 } from '@shared/types'
+
+/** How often a read re-checks that the sessions hosting other runs are still running (ms). */
+const OWNER_RECHECK_MS = 1000
 
 const MAX_TRANSCRIPT_ENTRIES = 5000
 const MAX_LOG_LINES = 400
@@ -100,8 +105,11 @@ export function cleanRunOverrides(v: unknown): RunOverrides | undefined {
  * (timers die with the process) but keep pausedUntil, so the Runs tab can offer Continue. endedWithApp / endedBy
  * 'app' tell the UI the session was cut by the app quitting, not closed by the run itself. endedBy, endedWithApp,
  * endedWhile, execOutcome and overrides come from an untrusted file and are normalized here.
+ *
+ * `opts.live` (several orgai sessions on one data folder): the run is hosted by a session that is still running, so it
+ * really is live. Its fields are cleaned the same way, but its status, its session grant and its auto-resume stay.
  */
-export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date.now()): RunSummary {
+export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date.now(), opts: { live?: boolean } = {}): RunSummary {
   const r: RunSummary = { ...input }
   if (typeof r.conversationBudgetUsd !== 'number' || !Number.isFinite(r.conversationBudgetUsd) || r.conversationBudgetUsd <= 0) delete r.conversationBudgetUsd
   if (r.modelAdapter !== 'claude' && r.modelAdapter !== 'codex' && r.modelAdapter !== 'mock') delete r.modelAdapter
@@ -126,14 +134,14 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
   if (r.rootEffort !== undefined && !isEffort(r.rootEffort)) delete r.rootEffort
   if (r.permissionMode !== undefined && !isPermissionMode(r.permissionMode)) delete r.permissionMode
   if (r.permissionModeChosen !== undefined && ((r.permissionModeChosen as unknown) !== true || r.permissionMode === undefined)) delete r.permissionModeChosen
-  // A session's "accept edits" grant ended with the session: never on a loaded run.
-  delete r.sessionPermissionMode
+  // A session's "accept edits" grant ended with the session: never on a loaded run (unless its session still runs).
+  if (!opts.live) delete r.sessionPermissionMode
   if (r.overrides !== undefined) {
     const overrides = cleanRunOverrides(r.overrides)
     if (overrides) r.overrides = overrides
     else delete r.overrides
   }
-  if (r.status !== 'finished' && r.status !== 'error') {
+  if (!opts.live && r.status !== 'finished' && r.status !== 'error') {
     // What it was doing, from the status as saved: idle (open cards unknown) is 'idle', not 'waiting'; paused gets none.
     const was = r.status
     r.status = 'finished'
@@ -150,9 +158,46 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
       if (was === 'paused') delete r.endedWhile
     }
   }
-  if (r.autoResume) delete r.autoResume
+  if (r.autoResume && !opts.live) delete r.autoResume
   if (!r.kind) r.kind = 'work'
   return r
+}
+
+/** Not ended: a run its host still has in memory (starting, running, idle, stopping) or holds paused. */
+export function isOpenRunStatus(status: RunSummary['status']): boolean {
+  return status !== 'finished' && status !== 'error'
+}
+
+/**
+ * `owners` of a parsed `runs.json`: which orgai session hosts each run that is not ended (run id -> session id).
+ * Written only when several sessions may share the data folder; an older orgai and the desktop app ignore and drop it.
+ * Anything that is not a plain map of strings reads as empty.
+ */
+export function parseRunOwners(parsed: unknown): Record<string, string> {
+  const raw = (parsed as { owners?: unknown } | null)?.owners
+  const out: Record<string, string> = Object.create(null) as Record<string, string>
+  if (!isPlainObject(raw)) return out
+  for (const [runId, sessionId] of Object.entries(raw)) {
+    if (typeof sessionId === 'string' && /^[0-9a-f]{12}$/.test(sessionId)) out[runId] = sessionId
+  }
+  return out
+}
+
+/**
+ * The summaries of a parsed index as a process should see them (pure). A run that is not ended and whose owner session
+ * `isLive` says is running keeps its status; every other one is normalized as crashed. Without `isLive` (one process per
+ * data folder) every run is normalized, as before.
+ */
+export function loadRunIndex(parsed: unknown, isLive?: (sessionId: string) => boolean, now: number = Date.now()): { runs: RunSummary[]; owners: Record<string, string> } {
+  const owners = isLive ? parseRunOwners(parsed) : (Object.create(null) as Record<string, string>)
+  const kept: Record<string, string> = Object.create(null) as Record<string, string>
+  const runs = parseRunIndex(parsed).map((r) => {
+    const owner = owners[r.id]
+    const live = !!isLive && owner !== undefined && isOpenRunStatus(r.status) && isLive(owner)
+    if (live) kept[r.id] = owner
+    return normalizeCrashedRunSummary(r, now, { live })
+  })
+  return { runs, owners: kept }
 }
 
 /**
@@ -215,6 +260,14 @@ export class RunStore {
   private file: string
   private recordsDir: string
   private runs: RunSummary[] = []
+  /**
+   * Shared data folder only: the session hosting each run that is not ended (run id -> session id), as `runs.json`
+   * says and trimmed to sessions that are running. Empty with one process per data folder.
+   */
+  private owners: Record<string, string> = Object.create(null) as Record<string, string>
+  /** When the owners were last checked for a session that died (see fresh()). */
+  private ownersCheckedAt = 0
+  private sync: StoreSync
   /** Images already written, by object identity, so periodic flushes of a live record skip hashing. */
   private storedImages = new WeakMap<ImageAttachment, string>()
   /**
@@ -223,32 +276,116 @@ export class RunStore {
    */
   onRunsRemoved?: (removed: RunSummary[]) => void
 
-  constructor(dataDir: string) {
+  /** `opts.sync` overrides the data folder's own sync (tests that put two sessions in one process). */
+  constructor(dataDir: string, opts: { sync?: StoreSync } = {}) {
     this.file = join(dataDir, 'runs.json')
     this.recordsDir = join(dataDir, 'runs')
+    this.sync = opts.sync ?? storeSyncFor(dataDir)
+    this.sync.load(this.file, () => this.loadIndex(true))
+  }
+
+  /**
+   * Read the index from disk. Anything still marked live from a session that is gone is actually dead (see
+   * normalizeCrashedRunSummary); on a shared data folder a run another running session hosts keeps its status.
+   * A first read that fails starts empty, as before. A later re-read that fails keeps what is in memory: the file is
+   * only ever replaced whole, so that is damage from outside, and writing an empty index over it would lose every run.
+   */
+  private loadIndex(first: boolean): void {
+    let parsed: unknown
     try {
-      if (existsSync(this.file)) {
-        this.runs = parseRunIndex(JSON.parse(readFileSync(this.file, 'utf8')))
+      parsed = existsSync(this.file) ? JSON.parse(readFileSync(this.file, 'utf8')) : null
+    } catch (e) {
+      if (!first) {
+        console.warn(`runs.json could not be read again (${e instanceof Error ? e.name : 'Error'}); keeping the runs in memory.`)
+        return
       }
-    } catch {
-      this.runs = []
+      parsed = null
     }
-    // Anything still marked live from a previous app session is actually dead (see normalizeCrashedRunSummary).
-    this.runs = this.runs.map((r) => normalizeCrashedRunSummary(r))
+    const loaded = loadRunIndex(parsed, this.sync.shared ? (id) => this.sync.isSessionLive(id) : undefined)
+    this.runs = loaded.runs
+    this.owners = loaded.owners
+  }
+
+  /**
+   * Before a read: pick up what another session wrote, and notice a session that died while hosting a run (its runs
+   * are then crashed runs, whether or not the file changed). Nothing to do with one process per data folder.
+   */
+  private fresh(): void {
+    if (!this.sync.shared) return
+    if (this.sync.refresh(this.file, () => this.loadIndex(false))) return
+    const now = Date.now()
+    if (now - this.ownersCheckedAt < OWNER_RECHECK_MS) return
+    this.ownersCheckedAt = now
+    for (const owner of new Set(Object.values(this.owners))) {
+      if (owner !== this.sync.sessionId && !this.sync.isSessionLive(owner)) {
+        this.loadIndex(false)
+        return
+      }
+    }
+  }
+
+  /** A change to the index: under the write lock, on the newest content (shared), or directly (one process). */
+  private change<T>(fn: () => T): T {
+    return this.sync.write(this.file, () => this.loadIndex(false), fn)
   }
 
   private persist(): void {
     mkdirSync(dirname(this.file), { recursive: true })
     const tmp = `${this.file}.tmp`
-    writeFileSync(tmp, JSON.stringify({ version: 1, runs: this.runs.slice(-500) }, null, 2), 'utf8')
+    const owners = this.sync.shared && Object.keys(this.owners).length ? { owners: this.owners } : {}
+    writeFileSync(tmp, JSON.stringify({ version: 1, runs: this.runs.slice(-500), ...owners }, null, 2), 'utf8')
     renameSyncRetry(tmp, this.file)
   }
 
+  /**
+   * The session id of another running orgai that hosts this run (it is not ended there), or null. Always null with one
+   * process per data folder. Such a run can be read here but never changed: its host writes it.
+   */
+  hostedElsewhere(runId: string): string | null {
+    if (!this.sync.shared) return null
+    this.fresh()
+    return this.elsewhere(runId)
+  }
+
+  /**
+   * Throws RunBusyError when another running orgai session hosts this run (naming that session). A no-op with one
+   * process per data folder. For callers about to act on a stored run (continue it, resume it, change it).
+   */
+  assertHostedHere(runId: string): void {
+    if (!this.sync.shared) return
+    this.fresh()
+    this.refuseElsewhere(runId)
+  }
+
+  /** {@link hostedElsewhere} on the index as loaded (no refresh; used inside a change). */
+  private elsewhere(runId: string): string | null {
+    const owner = this.owners[runId]
+    if (owner === undefined || owner === this.sync.sessionId) return null
+    return this.sync.isSessionLive(owner) ? owner : null
+  }
+
+  private refuseElsewhere(runId: string): void {
+    const owner = this.elsewhere(runId)
+    if (!owner) return
+    throw new RunBusyError(runId, this.sync.session?.others().find((s) => s.hostInstanceId === owner))
+  }
+
   upsert(run: RunSummary): void {
-    const idx = this.runs.findIndex((r) => r.id === run.id)
-    if (idx === -1) this.runs.push({ ...run })
-    else this.runs[idx] = { ...run }
-    this.persist()
+    this.change(() => {
+      if (this.sync.shared) {
+        // Another running session hosts this run: only it may write the run.
+        this.refuseElsewhere(run.id)
+        const open = isOpenRunStatus(run.status)
+        // A run that is not ended belongs to a project this session holds (a Chat run has no project to hold).
+        if (open && !isVirtualProjectId(run.projectId)) this.sync.requireProject(run.projectId)
+        if (open) this.owners[run.id] = this.sync.sessionId
+        else delete this.owners[run.id]
+      }
+      const idx = this.runs.findIndex((r) => r.id === run.id)
+      if (idx === -1) this.runs.push({ ...run })
+      else this.runs[idx] = { ...run }
+      this.persist()
+    })
   }
 
   /**
@@ -256,28 +393,35 @@ export class RunStore {
    * usage tracking). Existing usage is kept; unknown ids are ignored. totalCostUsd is left as it was saved.
    */
   setUsage(updates: readonly { id: string; usage: RunUsage }[]): void {
-    let changed = false
-    // One index for the batch: the app-wide usage overview may normalize every legacy run at once.
-    const byId = new Map(this.runs.map((r) => [r.id, r]))
-    for (const u of updates) {
-      const run = byId.get(u.id)
-      if (!run || run.usage) continue
-      run.usage = u.usage
-      changed = true
-    }
-    if (changed) this.persist()
+    if (!updates.length) return
+    this.change(() => {
+      let changed = false
+      // One index for the batch: the app-wide usage overview may normalize every legacy run at once.
+      const byId = new Map(this.runs.map((r) => [r.id, r]))
+      for (const u of updates) {
+        const run = byId.get(u.id)
+        // A run another session hosts gets its usage from that session.
+        if (!run || run.usage || this.elsewhere(u.id)) continue
+        run.usage = u.usage
+        changed = true
+      }
+      if (changed) this.persist()
+    })
   }
 
   list(projectId: string): RunSummary[] {
+    this.fresh()
     return this.runs.filter((r) => r.projectId === projectId).sort((a, b) => b.startedAt - a.startedAt)
   }
 
   get(runId: string): RunSummary | null {
+    this.fresh()
     const run = this.runs.find((r) => r.id === runId)
     return run ? { ...run } : null
   }
 
   allProjectIds(): string[] {
+    this.fresh()
     return this.runs.map((r) => r.projectId)
   }
 
@@ -395,6 +539,7 @@ export class RunStore {
         else delete record.roster
       }
       // The index is the source of truth for status; a crash can leave a record marked live.
+      this.fresh()
       const summary = this.runs.find((r) => r.id === runId)
       return summary ? { ...record, summary } : record
     } catch {
@@ -411,10 +556,17 @@ export class RunStore {
 
   /** Forget every run of a project, index entries and record files alike. */
   removeProject(projectId: string): number {
-    const gone = this.runs.filter((r) => r.projectId === projectId)
+    const gone = this.change(() => {
+      // A run another running session hosts stays: that session writes it and would lose its record.
+      const drop = this.runs.filter((r) => r.projectId === projectId && !this.elsewhere(r.id))
+      if (!drop.length) return drop
+      const ids = new Set(drop.map((r) => r.id))
+      this.runs = this.runs.filter((r) => !ids.has(r.id))
+      for (const id of ids) delete this.owners[id]
+      this.persist()
+      return drop
+    })
     if (!gone.length) return 0
-    this.runs = this.runs.filter((r) => r.projectId !== projectId)
-    this.persist()
     for (const r of gone) this.removeRecord(r.id)
     this.notifyRemoved(gone)
     return gone.length
@@ -422,21 +574,30 @@ export class RunStore {
 
   /** Keep only the newest `keepFor(projectId)` finished runs per project; delete the rest with their records. */
   prune(keepFor: (projectId: string) => number): number {
-    const byProject = new Map<string, RunSummary[]>()
-    for (const r of this.runs) byProject.set(r.projectId, [...(byProject.get(r.projectId) ?? []), r])
-    const drop = new Set<string>()
-    for (const [projectId, runs] of byProject) {
-      const keep = Math.max(1, keepFor(projectId))
-      const sorted = [...runs].sort((a, b) => b.startedAt - a.startedAt)
-      for (const r of sorted.slice(keep)) if (r.status === 'finished' || r.status === 'error') drop.add(r.id)
-    }
-    if (!drop.size) return 0
-    const removed = this.runs.filter((r) => drop.has(r.id))
-    this.runs = this.runs.filter((r) => !drop.has(r.id))
-    this.persist()
-    for (const id of drop) this.removeRecord(id)
+    const removed = this.change(() => {
+      const byProject = new Map<string, RunSummary[]>()
+      for (const r of this.runs) {
+        const list = byProject.get(r.projectId)
+        if (list) list.push(r)
+        else byProject.set(r.projectId, [r])
+      }
+      const drop = new Set<string>()
+      for (const [projectId, runs] of byProject) {
+        const keep = Math.max(1, keepFor(projectId))
+        if (runs.length <= keep) continue
+        const sorted = [...runs].sort((a, b) => b.startedAt - a.startedAt)
+        for (const r of sorted.slice(keep)) if (r.status === 'finished' || r.status === 'error') drop.add(r.id)
+      }
+      if (!drop.size) return []
+      const gone = this.runs.filter((r) => drop.has(r.id))
+      this.runs = this.runs.filter((r) => !drop.has(r.id))
+      this.persist()
+      return gone
+    })
+    if (!removed.length) return 0
+    for (const r of removed) this.removeRecord(r.id)
     this.notifyRemoved(removed)
-    return drop.size
+    return removed.length
   }
 
   private notifyRemoved(removed: RunSummary[]): void {
@@ -452,27 +613,35 @@ export class RunStore {
    * from the index). Unknown ids are skipped. Returns the moved summaries (new projectId) in the order given.
    */
   moveToProject(runIds: readonly string[], projectId: string): RunSummary[] {
-    const moved: RunSummary[] = []
-    for (const id of runIds) {
-      const run = this.runs.find((r) => r.id === id)
-      if (!run) continue
-      run.projectId = projectId
-      // Out of the Chat: from now on it is a project run (continuing it uses the project's own roles).
-      if (projectId !== QUICK_PROJECT_ID) delete run.quick
-      moved.push({ ...run })
-    }
-    if (moved.length) this.persist()
-    return moved
+    return this.change(() => {
+      // Checked before anything moves: a run another running session hosts cannot change project under it.
+      for (const id of runIds) this.refuseElsewhere(id)
+      const moved: RunSummary[] = []
+      for (const id of runIds) {
+        const run = this.runs.find((r) => r.id === id)
+        if (!run) continue
+        run.projectId = projectId
+        // Out of the Chat: from now on it is a project run (continuing it uses the project's own roles).
+        if (projectId !== QUICK_PROJECT_ID) delete run.quick
+        moved.push({ ...run })
+      }
+      if (moved.length) this.persist()
+      return moved
+    })
   }
 
   /** Every stored summary (copies), for the scratch-dir sweep. */
   all(): RunSummary[] {
+    this.fresh()
     return this.runs.map((r) => ({ ...r }))
   }
 
   /** Delete record files and run directories (image stores) whose run is no longer in the index. */
   sweepOrphans(): number {
     if (!existsSync(this.recordsDir)) return 0
+    // On a shared data folder only a session that is alone sweeps (bootstrap.ts): a record file is written before its
+    // run reaches the index, so another session's new run would look like an orphan here.
+    this.fresh()
     const known = new Set(this.runs.map((r) => this.recordPath(r.id)))
     const knownDirs = new Set(this.runs.map((r) => this.runDir(r.id)))
     let removed = 0

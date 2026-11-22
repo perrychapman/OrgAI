@@ -1,11 +1,13 @@
 /**
  * Tests only: seed or inspect a data folder through a real in-process host, the way the orgai process itself would. The
- * host serves its own process only (owner proof, cli-standalone-default.md 4.1), so a test cannot keep one running
- * beside `main()` calls or attach a second client to it. It starts a host, hands `fn` an owner client, and stops the host
- * again before it returns, so the next `main()` call can take the folder.
+ * host serves its own process only (owner proof, cli-standalone-default.md 4.1). It starts a host with its own instance
+ * id, hands `fn` an owner client, and stops the host again before it returns. A `main()` call made inside `fn` is a
+ * second orgai session beside it (sessions); pass `host: { listen: true }` for a host that owns the folder alone, as
+ * an orgai from before sessions does.
  */
 import { connectHost } from '../client/hostClient'
 import { startInprocHost, type StartInprocHostOptions } from '../inprocHost'
+import { newHostInstanceId } from '../../main/host/identity'
 import type { HostClient } from '../types'
 import { CLI_VERSION } from '../version'
 import type { HostScope } from '../../shared/types'
@@ -27,6 +29,9 @@ export async function withSeedHost<T>(userDataDir: string, fn: (client: HostClie
     logging: false,
     startBackground: false,
     systemCertificates: false,
+    // Its own instance id, as another process would have: a `main()` call made while this host runs is a second
+    // session on the folder, not the same one twice.
+    hostInstanceId: newHostInstanceId(),
     ...opts.host
   })
   const opened: HostClient[] = []

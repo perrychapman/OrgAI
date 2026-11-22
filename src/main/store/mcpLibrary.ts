@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { SyncedFile, storeSyncFor, type StoreSync } from './shared/storeSync'
 import type { McpLibraryEntry } from '@shared/types'
 import { MCP_PER_PROJECT_ENV_MAX } from '@shared/types'
 import { perProjectEnvProblems } from '../mcp/validate'
@@ -54,13 +55,15 @@ function normalizeEntry(e: McpLibraryEntry): McpLibraryEntry {
 export class McpLibraryStore {
   private file: string
   private entries: McpLibraryEntry[] = []
+  /** Keeps the file correct when several orgai sessions share the data folder (store/shared/storeSync.ts). */
+  private synced: SyncedFile
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, opts: { sync?: StoreSync } = {}) {
     this.file = join(dataDir, 'mcp-library.json')
-    this.load()
+    this.synced = new SyncedFile(this.file, opts.sync ?? storeSyncFor(dataDir), (first) => this.load(first))
   }
 
-  private load(): void {
+  private load(first: boolean): void {
     try {
       if (!existsSync(this.file)) return
       const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { entries?: unknown }
@@ -70,6 +73,10 @@ export class McpLibraryStore {
             .map(normalizeEntry)
         : []
     } catch (e) {
+      if (!first) {
+        console.error('Failed to read mcp-library.json again, keeping the entries in memory:', (e as Error).message)
+        return
+      }
       console.error('Failed to read mcp-library.json, starting empty:', (e as Error).message)
       this.entries = []
     }
@@ -84,10 +91,12 @@ export class McpLibraryStore {
 
   /** Every entry, in insertion order (copies). */
   list(): McpLibraryEntry[] {
+    this.synced.fresh()
     return this.entries.map((e) => structuredClone(e))
   }
 
   get(id: string): McpLibraryEntry | undefined {
+    this.synced.fresh()
     const e = this.entries.find((x) => x.id === id)
     return e ? structuredClone(e) : undefined
   }
@@ -95,19 +104,23 @@ export class McpLibraryStore {
   /** Add (new id) or replace the entry with that id. Returns the saved copy. */
   save(entry: McpLibraryEntry): McpLibraryEntry {
     const copy = structuredClone(entry)
-    const idx = this.entries.findIndex((e) => e.id === copy.id)
-    if (idx === -1) this.entries.push(copy)
-    else this.entries[idx] = copy
-    this.persist()
+    this.synced.change(() => {
+      const idx = this.entries.findIndex((e) => e.id === copy.id)
+      if (idx === -1) this.entries.push(copy)
+      else this.entries[idx] = copy
+      this.persist()
+    })
     return structuredClone(copy)
   }
 
   /** Delete one entry; false when it did not exist. */
   remove(id: string): boolean {
-    const before = this.entries.length
-    this.entries = this.entries.filter((e) => e.id !== id)
-    if (this.entries.length === before) return false
-    this.persist()
-    return true
+    return this.synced.change(() => {
+      const before = this.entries.length
+      this.entries = this.entries.filter((e) => e.id !== id)
+      if (this.entries.length === before) return false
+      this.persist()
+      return true
+    })
   }
 }

@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
+import { storeSyncFor, type StoreSync } from './shared/storeSync'
 import type {
   AppearanceSettings,
   NormalizedAppearanceSettings,
@@ -348,15 +350,25 @@ export class SettingsStore {
   private file: string
   private settings: AppSettings = normalizeSettings(null)
   private listeners = new Set<(settings: AppSettings) => void>()
+  /** How this store stays correct when several orgai sessions share the data folder (store/shared/storeSync.ts). */
+  private sync: StoreSync
+  /** True while listeners hear about a change another session saved (they read the store again; no second round). */
+  private announcing = false
 
-  constructor(readonly dataDir: string) {
+  /** `opts.sync` overrides the data folder's own sync (tests that put two sessions in one process). */
+  constructor(readonly dataDir: string, opts: { sync?: StoreSync } = {}) {
     this.file = join(dataDir, 'settings.json')
     // Exists up front so "Open folder" works before anything has been saved.
     mkdirSync(dataDir, { recursive: true })
-    this.load()
+    this.sync = opts.sync ?? storeSyncFor(dataDir)
+    this.sync.load(this.file, () => this.load(true))
   }
 
-  private load(): void {
+  /**
+   * Read settings.json. A first read that fails uses the defaults, as before. A later re-read that fails (several orgai
+   * sessions on one data folder) keeps what is in memory, so a save never writes defaults over a file damaged from outside.
+   */
+  private load(first: boolean): void {
     try {
       if (existsSync(this.file)) {
         const parsed = JSON.parse(readFileSync(this.file, 'utf8')) as { settings?: Partial<AppSettings> }
@@ -365,9 +377,35 @@ export class SettingsStore {
     } catch (e) {
       // Never log the error message: a JSON parse error can quote file text (which may hold displayName).
       const kind = e instanceof Error ? e.name : 'Error'
+      if (!first) {
+        console.error(`Failed to read settings.json again (${kind}), keeping the settings in memory. File: ${this.file}`)
+        return
+      }
       console.error(`Failed to read settings.json (${kind}), using defaults. File: ${this.file}`)
       this.settings = normalizeSettings(null)
     }
+  }
+
+  /**
+   * Before a read: pick up what another session saved, and tell the listeners (settings:changed, the theme) when it
+   * differs. Nothing to do with one process per data folder.
+   */
+  private fresh(): void {
+    if (!this.sync.shared || this.announcing) return
+    const before = this.settings
+    if (!this.sync.refresh(this.file, () => this.load(false))) return
+    if (isDeepStrictEqual(before, this.settings)) return
+    this.announcing = true
+    try {
+      this.notify()
+    } finally {
+      this.announcing = false
+    }
+  }
+
+  /** A change: under the write lock, on the newest content (shared), or directly (one process). */
+  private change<T>(fn: () => T): T {
+    return this.sync.write(this.file, () => this.load(false), fn)
   }
 
   private persist(): void {
@@ -378,6 +416,7 @@ export class SettingsStore {
   }
 
   get(): AppSettings {
+    this.fresh()
     return structuredClone(this.settings)
   }
 
@@ -386,22 +425,29 @@ export class SettingsStore {
    * kept as stored: change it only with setProxies / setProxyKeyStored. An old renderer's `connections.litellm` is
    * ignored. appearance merges over the stored value, so a caller that leaves it out (or sends part of it) keeps the rest.
    */
-  set(next: Partial<AppSettings>): AppSettings {
-    // A partial appearance (or none, from an older renderer) is merged over the stored one, not the defaults.
-    const stored = this.settings.appearance
-    const given = (next.appearance ?? {}) as Partial<AppearanceSettings>
-    const appearance = { ...stored, ...given, canvas: { ...stored.canvas, ...(given.canvas ?? {}) } }
-    // modelPrices left out (an older renderer) keeps the stored overrides; an array (even empty) replaces them.
-    const modelPrices = next.modelPrices !== undefined ? next.modelPrices : this.settings.modelPrices
-    const proxies = this.settings.proxies
-    const normalized = normalizeSettings(reconcileNearLimit(this.settings, reconcileAnthropicAuth(this.settings, { ...next, appearance, modelPrices, proxies })))
-    this.settings = normalized
-    this.persist()
+  set(given: Partial<AppSettings>): AppSettings {
+    const base = this.settings
+    this.change(() => {
+      // Another session saved meanwhile (the settings were re-read just now): the caller built `given` from the older
+      // copy, so only the fields it really changed are taken, on top of what is stored now. Without this, saving one
+      // setting here would put every other setting back to what this process last saw.
+      const next = this.settings === base ? given : { ...this.settings, ...changedFields(base, given) }
+      // A partial appearance (or none, from an older renderer) is merged over the stored one, not the defaults.
+      const stored = this.settings.appearance
+      const part = (next.appearance ?? {}) as Partial<AppearanceSettings>
+      const appearance = { ...stored, ...part, canvas: { ...stored.canvas, ...(part.canvas ?? {}) } }
+      // modelPrices left out (an older renderer) keeps the stored overrides; an array (even empty) replaces them.
+      const modelPrices = next.modelPrices !== undefined ? next.modelPrices : this.settings.modelPrices
+      const proxies = this.settings.proxies
+      const normalized = normalizeSettings(reconcileNearLimit(this.settings, reconcileAnthropicAuth(this.settings, { ...next, appearance, modelPrices, proxies })))
+      this.settings = normalized
+      this.persist()
+    })
     return this.notify()
   }
 
   private notify(): AppSettings {
-    const saved = this.get()
+    const saved = structuredClone(this.settings)
     for (const listener of this.listeners) {
       try {
         listener(saved)
@@ -413,13 +459,19 @@ export class SettingsStore {
   }
 
   /**
-   * Replace the proxy list (main only: ConnectionService create / update / remove). The list is normalized (a name
+   * Replace the proxy list, or change it with an updater (main only: ConnectionService create / update / remove). The list is normalized (a name
    * clash is suffixed, junk dropped, PROXIES_MAX), a default naming a removed proxy returns to anthropic / automatic,
    * and the saved settings are sent to listeners like set().
    */
-  setProxies(proxies: ProxyConnection[]): AppSettings {
-    this.settings = normalizeSettings({ ...this.settings, proxies })
-    this.persist()
+  setProxies(proxies: ProxyConnection[] | ((current: ProxyConnection[]) => ProxyConnection[])): AppSettings {
+    this.change(() => {
+      // An updater builds the new list from the one stored now. On a data folder several orgai sessions share that is
+      // the list as another session may just have saved it, so adding or changing one proxy here never drops one it
+      // added. A plain list replaces the stored one (a caller that holds the whole list on purpose).
+      const next = typeof proxies === 'function' ? proxies(structuredClone(this.settings.proxies)) : proxies
+      this.settings = normalizeSettings({ ...this.settings, proxies: next })
+      this.persist()
+    })
     return this.notify()
   }
 
@@ -434,11 +486,22 @@ export class SettingsStore {
    * Does not notify listeners (the service announces the change). An unknown proxy id changes nothing.
    */
   setProxyKeyStored(id: string, stored: boolean): AppSettings {
-    const p = this.settings.proxies.find((x) => x.id === id)
-    if (p && p.hasApiKey !== stored) {
-      p.hasApiKey = stored
-      this.persist()
-    }
+    this.change(() => {
+      const p = this.settings.proxies.find((x) => x.id === id)
+      if (p && p.hasApiKey !== stored) {
+        p.hasApiKey = stored
+        this.persist()
+      }
+    })
     return this.get()
   }
+}
+
+/** The fields of `given` whose value differs from `base` (deep comparison): what a caller holding `base` changed. */
+export function changedFields(base: AppSettings, given: Partial<AppSettings>): Partial<AppSettings> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(given)) {
+    if (!isDeepStrictEqual(value, (base as unknown as Record<string, unknown>)[key])) out[key] = value
+  }
+  return out as Partial<AppSettings>
 }
