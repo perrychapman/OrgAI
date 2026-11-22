@@ -24,6 +24,9 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  /* Contain absolutely positioned descendants (sr-only legends and live regions, native inputs) in the scroll region, so
+     their static position never extends the document: without it the From GitHub form's sr-only legend made the page scroll. */
+  position: relative;
 }
 /* `dash` is the inline-size container every section queries (and DashboardView measures for its row caps); it carries no
    padding, so its width is the page's width. The padded column is `.dash-inner`: the gutter is --space-4, --space-6 from

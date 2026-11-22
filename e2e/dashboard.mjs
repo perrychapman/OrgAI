@@ -1073,12 +1073,33 @@ try {
   check((await page.locator('.motion-ring').count()) === 0, 'A25 no ring is left on the page at rest')
 
   // ---------------------------------------------------------------- More menu, delete confirm, New run
+  // A trace of what could close the menu or take its focus (CI failed these three checks on Windows and the third on macOS,
+  // and no local run reproduced it): window blur, resize, wheel, focus leaving, the menu mounting or going, and re-sorts of
+  // the tiles. It only feeds the check details below; no assertion depends on it.
+  await page.evaluate(() => {
+    const t0 = performance.now()
+    const tr = (window.__menuTrace = [])
+    const add = (what) => tr.push(`${Math.round(performance.now() - t0)}ms ${what}`)
+    const d = (el) => (el ? `${el.tagName}${el.dataset?.testid ? '[' + el.dataset.testid + ']' : ''}` : 'null')
+    window.addEventListener('blur', () => add('window blur'), true)
+    window.addEventListener('resize', () => add('window resize'))
+    window.addEventListener('wheel', () => add('wheel'), true)
+    document.addEventListener('focusout', (e) => add(`focusout ${d(e.target)} -> ${d(e.relatedTarget)}`), true)
+    document.addEventListener('focusin', (e) => add(`focusin ${d(e.target)}`), true)
+    new MutationObserver((ms) => {
+      for (const m of ms) {
+        for (const n of m.addedNodes) if (n.nodeType === 1 && (n.matches?.('[role=menu]') || n.querySelector?.('[role=menu]'))) add('menu added')
+        for (const n of m.removedNodes) if (n.nodeType === 1 && (n.matches?.('[role=menu]') || n.querySelector?.('[role=menu]'))) add('menu removed')
+      }
+    }).observe(document.body, { childList: true, subtree: true })
+  })
   await tileOf(WAIT).locator('[data-testid=project-tile-more]').click()
   await T('project-tile-open-folder').waitFor({ state: 'visible', timeout: 5000 }).catch(() => {})
   const menu = clean(await page.getByRole('menu').last().innerText().catch(() => ''))
-  check((await visible('[data-testid=project-tile-open-folder]')) && (await visible('[data-testid=project-tile-delete]')) && /Open folder/.test(menu) && /Delete project/.test(menu), 'the More menu offers Open folder and Delete', menu)
-  check((await visible('[data-testid=project-tile-new-run]')) && /New run/.test(menu) && (await visible('[data-testid=project-tile-pin-item]')) && /Pin to top/.test(menu), 'the More menu offers New run and Pin to top', menu)
-  check(await page.evaluate(() => !!document.activeElement?.closest?.('[role=menu]')), 'opening the More menu moves focus into it')
+  const menuTrace = await page.evaluate(() => `${(window.__menuTrace ?? []).join(' | ')} | active=${document.activeElement?.tagName}${document.activeElement?.dataset?.testid ? '[' + document.activeElement.dataset.testid + ']' : ''} hasFocus=${document.hasFocus()}`)
+  check((await visible('[data-testid=project-tile-open-folder]')) && (await visible('[data-testid=project-tile-delete]')) && /Open folder/.test(menu) && /Delete project/.test(menu), 'the More menu offers Open folder and Delete', `${menu} -- trace: ${menuTrace}`)
+  check((await visible('[data-testid=project-tile-new-run]')) && /New run/.test(menu) && (await visible('[data-testid=project-tile-pin-item]')) && /Pin to top/.test(menu), 'the More menu offers New run and Pin to top', `${menu} -- trace: ${menuTrace}`)
+  check(await page.evaluate(() => !!document.activeElement?.closest?.('[role=menu]')), 'opening the More menu moves focus into it', menuTrace)
   await T('project-tile-delete').click()
   const dlg = page.getByRole('alertdialog').or(page.getByRole('dialog')).last()
   await dlg.waitFor({ timeout: 5000 })
