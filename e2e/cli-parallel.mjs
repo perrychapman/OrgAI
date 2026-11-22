@@ -5,7 +5,7 @@
 //
 // Checked:
 //  1. Two TUIs open at once in different projects; neither is refused; `orgai status` lists both sessions with the
-//     project each holds; daemon.json names one of them and says the folder is shared.
+//     project each holds; daemon.json names one of them and says the folder is shared; /sessions in one names the other.
 //  2. Both run work at the same time; each run reaches the index and neither loses the other's.
 //  3. A third TUI and an `orgai exec` in a held project are refused (exit 6) naming the session's folder and pid, and
 //     change nothing; a command in a third project and a management command work beside both.
@@ -102,6 +102,21 @@ try {
   check(daemon?.sessions === true && [pidA, pidB].includes(daemon.pid), 'daemon.json names one of the two and says the folder is shared', JSON.stringify(daemon)?.slice(0, 300))
   const statusText = (await cli(['status', '--all-projects'], { cwd: repoC })).out
   check(/orgai sessions running: 2/.test(statusText) && /holds Alpha/.test(statusText) && /holds Beta/.test(statusText), 'the status text names both sessions and what they hold', statusText.slice(0, 500))
+
+  // /sessions inside one terminal lists the other one.
+  await type(a, '/sessions')
+  a.key('enter')
+  const listed = await a.waitFor(/1 other orgai session/, 15_000).catch(() => null)
+  check(!!listed && a.screen().includes(`pid ${pidB}`) && /This terminal holds Alpha/.test(a.screen()), '/sessions in one terminal names the other session and what this one holds', a.screen().slice(0, 700))
+  // The listing is long text: it opens in the pager (less by default, closed with q) or, without one, in the TUI's own
+  // overlay (closed with Esc). Either way the terminal must come back to its prompt.
+  a.write('q')
+  let closed = await a.waitFor(READY, 6_000).catch(() => null)
+  if (!closed) {
+    a.key('escape')
+    closed = await a.waitFor(READY, 10_000).catch(() => null)
+  }
+  check(!!closed && !a.exitInfo, 'closing the listing brings the terminal back to its prompt', a.screen().slice(0, 500))
 
   // ---------- 2. Work in both at the same time ----------
   await type(a, 'do the alpha work')
