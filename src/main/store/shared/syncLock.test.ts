@@ -124,7 +124,9 @@ describe('ReentrantSyncLock', () => {
     lock.close()
   })
 
-  it('reopens when the lock file was replaced on disk (a deleted run folder)', () => {
+  // POSIX only: Windows does not let a file be deleted while a process has it open (SQLite opens it without delete
+  // sharing), so a run folder cannot be removed under a live orgai there and the case cannot arise.
+  it.skipIf(process.platform === 'win32')('reopens when the lock file was replaced on disk (a deleted run folder)', () => {
     const lock = new ReentrantSyncLock(lockPath)
     lock.run(() => undefined)
     unlinkSync(lockPath)
