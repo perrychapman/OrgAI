@@ -1,12 +1,11 @@
-// Write-path inventory allow-list (docs/design/parallel-sessions.md 8).
+// Write-path inventory allow-list (docs/design/cli-sessions.md; the idea comes from docs/design/parallel-sessions.md 8).
 //
 // Every file-write call site under src/main and src/cli, keyed `relativePath:enclosingFunction:callee` (see
 // writePathInventory.test.ts for how keys are built and what the scanner cannot see). The value names the lock, claim or
 // ownership rule that makes the write safe when several app/CLI hosts share the data folder.
 //
-// Phase 1: every pre-existing site in the data folder says 'single owner' (written only by the process that owns the
-// data folder today). Later phases replace each with the real rule (osLock, atomicWrite, chain claim, journal ...) as the
-// site moves under the shared-store primitives. A new site MUST name its rule; do not add 'single owner' for new code.
+// 'single owner' is the label of a site that is written only by the process that owns the data folder (or the project,
+// see below). A new site MUST name its rule; do not add 'single owner' for new code.
 //
 // Sessions (docs/design/cli-sessions.md, 2026-11): the orgai CLI now runs several processes on one data folder. The
 // shared JSON files carry their rule (WRITE_LOCK, RUN_HOST, SESSION_*, VAULT_*). A site that still says 'single owner'
@@ -35,13 +34,6 @@ const OWNERSHIP_PRIMITIVE = 'ownership primitive: part of the cross-process data
 const REPO_LOCK_PRIMITIVE = 'repo lock primitive: part of the cross-process repository lock itself (runtime/repoLock.ts)'
 const REPO_LOCK = 'repo lock: runs inside withRepoLock for the repository (cross-process)'
 const OUTSIDE_DATA_FOLDER = 'outside data folder: project file shared with other tools, no OrgAI lock yet (later phase)'
-const HOST_OWN = "hostRegistry: this host's own registry and evidence files, written under its own host-<id> osLock via atomicWrite"
-const HOST_OWN_RELEASE =
-  "hostRegistry: this host's own files, removed only by this host at a clean exit (its lock file after releasing it, spec 4.1)"
-const CONTROL_MKDIR = 'control folder creation: idempotent recursive mkdir, mode 0700'
-const JOURNAL = "journal: written only by the holder of the journal's requiredLocks (caller-held osLocks), atomicWrite or durable unlink"
-const JOURNAL_SHARED_CHECK =
-  'journal: stale foreign shared locator removed under the caller-held output-file-<hash> osLock'
 // Added after Phase 1 by Schedules, to-dos and team evolution: <dataDir>/schedules.json, <dataDir>/todos.json (and .bak) and <dataDir>/evolution/<projectId>.json
 // are written by whichever host owns that data folder (the desktop or the CLI's in-process host, each on its own folder;
 // host/ownership.ts refuses a second owner). No shared-store osLock covers them yet: ownership, not a file lock, keeps a
@@ -137,14 +129,7 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/connections/service.ts:ConnectionService.persistModels:writeFileSync': WRITE_LOCK,
   'src/main/evolve/ratchet.ts:readLedger:renameSync': DATA_FOLDER_OWNER,
   'src/main/evolve/ratchet.ts:writeLedger:writeFileDurable': DATA_FOLDER_OWNER,
-  'src/main/host/consumers.ts:ConsumerEvidence.flush:writeFileAtomic':
-    'consumers: per-host evidence file owned by its own host, atomicWrite',
   'src/main/host/fsRetry.ts:renameSyncRetry:fsRenameSync#ref': 'single owner',
-  'src/main/host/hostRegistry.ts:claimHost:mkdirSync': CONTROL_MKDIR,
-  'src/main/host/hostRegistry.ts:claimHost:writeFileAtomic': HOST_OWN,
-  'src/main/host/hostRegistry.ts:release:unlinkDurable': HOST_OWN_RELEASE,
-  'src/main/host/hostRegistry.ts:release:unlinkSync': HOST_OWN_RELEASE,
-  'src/main/host/hostRegistry.ts:takeAdmission:mkdirSync': CONTROL_MKDIR,
   'src/main/host/ownership.ts:acquire:mkdirSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:acquire:rmSync': OWNERSHIP_PRIMITIVE,
   'src/main/host/ownership.ts:acquire:writeAtomic': OWNERSHIP_PRIMITIVE,
@@ -248,9 +233,6 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/repoClone.ts:removeCreatedParents:rmdirSync': 'single owner',
   'src/main/repoClone.ts:RepoCloneService.mockAttempt:mkdirSync': 'single owner',
   'src/main/repoClone.ts:RepoCloneService.mockAttempt:writeFileSync': 'single owner',
-  'src/main/runtime/chainClaim.ts:writeChainRecord:mkdirSync': CONTROL_MKDIR,
-  'src/main/runtime/chainClaim.ts:writeChainRecord:writeFileAtomic':
-    'chainClaim: chain record under the chain osLock, atomicWrite',
   'src/main/runtime/claudeSkills.ts:buildSkillPlugin:mkdirSync': 'single owner',
   'src/main/runtime/claudeSkills.ts:buildSkillPlugin:mkdtempSync': 'single owner',
   'src/main/runtime/claudeSkills.ts:buildSkillPlugin:writeFileSync': 'single owner',
@@ -283,18 +265,6 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/runtime/repoLock.ts:release:renameSyncRetry': REPO_LOCK_PRIMITIVE,
   'src/main/runtime/repoLock.ts:release:rmSync': REPO_LOCK_PRIMITIVE,
   'src/main/runtime/runManager.ts:RunManager.start:mkdirSync': 'single owner',
-  'src/main/runtime/sessionBinding.ts:bindProviderSession:linkSync':
-    'sessionBinding: unique temp + link (exclusive create), owner-checked unlink',
-  'src/main/runtime/sessionBinding.ts:bindProviderSession:mkdirSync':
-    'sessionBinding: unique temp + link (exclusive create), owner-checked unlink',
-  'src/main/runtime/sessionBinding.ts:bindProviderSession:openSync':
-    'sessionBinding: unique temp + link (exclusive create), owner-checked unlink',
-  'src/main/runtime/sessionBinding.ts:bindProviderSession:unlinkSync':
-    'sessionBinding: unique temp + link (exclusive create), owner-checked unlink',
-  'src/main/runtime/sessionBinding.ts:bindProviderSession:writeSync':
-    'sessionBinding: unique temp + link (exclusive create), owner-checked unlink',
-  'src/main/runtime/sessionBinding.ts:removeBindingsForChain:unlinkSync':
-    'sessionBinding: unique temp + link (exclusive create), owner-checked unlink',
   'src/main/runtime/worktrees.ts:evacuateNested:mkdirSync': 'single owner',
   'src/main/runtime/worktrees.ts:prepareRepoUnlocked:appendFileSync': REPO_LOCK,
   'src/main/runtime/worktrees.ts:prepareRepoUnlocked:mkdirSync': REPO_LOCK,
@@ -396,28 +366,7 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/store/settings.ts:SettingsStore.persist:mkdirSync': WRITE_LOCK,
   'src/main/store/settings.ts:SettingsStore.persist:renameSync': WRITE_LOCK,
   'src/main/store/settings.ts:SettingsStore.persist:writeFileSync': WRITE_LOCK,
-  'src/main/store/shared/atomicWrite.ts:unlinkDurable:unlinkSync':
-    'atomicWrite: durable unlink (the caller holds the covering osLock)',
-  'src/main/store/shared/atomicWrite.ts:writeFileAtomic:openSync': 'atomicWrite: unique temp + rename',
-  'src/main/store/shared/atomicWrite.ts:writeFileAtomic:renameSyncRetry': 'atomicWrite: unique temp + rename',
-  'src/main/store/shared/atomicWrite.ts:writeFileAtomic:unlinkSync': 'atomicWrite: unique temp + rename',
-  'src/main/store/shared/atomicWrite.ts:writeFileAtomic:writeSync': 'atomicWrite: unique temp + rename',
-  'src/main/store/shared/journal.ts:checkSharedLocators:unlinkDurable': JOURNAL_SHARED_CHECK,
-  'src/main/store/shared/journal.ts:ensureDir:mkdirSync': JOURNAL,
-  'src/main/store/shared/journal.ts:findPendingJournals:unlinkDurable': JOURNAL,
-  'src/main/store/shared/journal.ts:persist:writeFileAtomic': JOURNAL,
-  'src/main/store/shared/journal.ts:removeJournal:unlinkDurable': JOURNAL,
-  'src/main/store/shared/journal.ts:removeLocators:unlinkDurable': JOURNAL,
-  'src/main/store/shared/journal.ts:removeStaleOwnSharedLocators:unlinkDurable': JOURNAL,
-  'src/main/store/shared/journal.ts:touchEmpty:openSync':
-    "journal: empty local locator file (0-byte, append), under the journal's requiredLocks",
-  'src/main/store/shared/journal.ts:tryRmdir:rmdirSync': JOURNAL,
-  'src/main/store/shared/journal.ts:writeLocators:writeFileAtomic': JOURNAL,
   'src/main/store/shared/osLock.ts:ensureLockFile:openSync': 'osLock: lock file create (0-byte, O_EXCL)',
-  'src/main/store/shared/sharedJsonFile.ts:SharedJsonFile.update:mkdirSync':
-    'sharedJsonFile: read-modify-write under osLock, atomicWrite',
-  'src/main/store/shared/sharedJsonFile.ts:SharedJsonFile.update:writeFileAtomic':
-    'sharedJsonFile: read-modify-write under osLock, atomicWrite',
   'src/main/store/shared/storeSync.ts:createSharedStoreSync:mkdirSync': SESSION_MKDIR,
   'src/main/store/skillLibrary.ts:SkillLibraryStore.persist:mkdirSync': WRITE_LOCK,
   'src/main/store/skillLibrary.ts:SkillLibraryStore.persist:renameSync': WRITE_LOCK,
