@@ -91,7 +91,27 @@ async function sectionEditor(page) {
   const roleName = (await page.locator('.role-inspector .ri-heading h2').innerText()).trim()
   check(!sub.cut && !new RegExp(`^${roleName}\\b`).test(sub.text), 'the panel header sub-line is not truncated and does not repeat the name', JSON.stringify(sub))
   check((await page.locator('[data-testid=role-model-advanced] > summary').innerText()).trim() === 'Choose an exact model', 'the exact model controls sit behind "Choose an exact model"')
-  check((await page.locator('[data-testid=role-section-count] [data-testid=role-concurrency]').count()) === 1, 'How many at once is in the panel (Role.maxConcurrent)')
+  // How many at once is a real control (ROLE_CONCURRENCY_SUPPORTED): no limit by default, a set limit persists and shows on the card.
+  const conc = page.locator('[data-testid=role-section-count] [data-testid=role-concurrency]')
+  check((await conc.count()) === 1, 'How many at once is in the panel (Role.maxConcurrent)')
+  check((await conc.locator('[data-testid=role-concurrency-text]').innerText()).trim() === 'No limit of its own', 'How many at once reads "No limit of its own" by default')
+  const revId = await page.evaluate(() => document.querySelector('.react-flow__node.selected')?.dataset.id)
+  check((await page.locator(`.react-flow__node[data-id="${revId}"] [data-testid=role-node-many]`).count()) === 0, 'a role with no limit shows no "up to" chip')
+  await conc.locator('[data-testid=role-concurrency-less]').click() // from no limit: starts at the most
+  await conc.locator('[data-testid=role-concurrency-less]').click() // one fewer
+  const setN = Number((await conc.locator('.ri-step-n').innerText()).trim())
+  check(Number.isInteger(setN) && setN >= 1, 'Fewer sets a numeric limit', String(setN))
+  await page.waitForFunction(([id, n]) => document.querySelector(`.react-flow__node[data-id="${id}"] [data-testid=role-node-many]`)?.textContent?.trim() === `up to ${n}`, [revId, setN], { timeout: 5000 })
+  check(true, `the role card shows "up to ${setN}"`)
+  await sleep(600)
+  check((await findProject(page, NAME)).roles.find((r) => r.id === revId)?.maxConcurrent === setN, 'the limit is saved on the role', String(setN))
+  // Put it back to no limit so later sections see the default.
+  while ((await conc.locator('[data-testid=role-concurrency-text]').innerText()).trim() !== 'No limit of its own') {
+    const more = conc.locator('[data-testid=role-concurrency-more]')
+    if (await more.isDisabled()) break
+    await more.click()
+  }
+  await sleep(400)
   const preview = page.locator('[data-testid=role-preview-prompt]')
   check((await preview.getAttribute('aria-disabled')) === 'true' || (await preview.isDisabled()), '"Preview final prompt" is disabled')
   check(/Not available yet\./.test(await page.locator('[data-testid=role-section-does]').innerText({ timeout: 2000 }).catch(() => '')) || (await page.locator('#' + ((await preview.getAttribute('aria-describedby')) ?? 'x')).count()) === 1, '"Preview final prompt" explains "Not available yet."')
@@ -760,8 +780,11 @@ async function sectionDismiss(page, shot, app) {
   check(/Restored/.test(await page.locator('[data-testid=team-announce]').innerText()), 'Undo announces the restore')
   await tray.locator(`[data-testid=capability-card][data-name="${name}"] [data-testid=capability-dismiss]`).click()
   await row.waitFor({ timeout: 5000 })
+  // The Dismissed list leaves out a card whose "Dismissed X. Undo" row is still showing (the row holds the card's place
+  // for 8 s), so the list item for `name` exists only once that row has closed: wait for exactly that, not for a guess.
+  await row.waitFor({ state: 'detached', timeout: 15_000 })
   const toggle = tray.locator('[data-testid=team-dismissed-toggle]')
-  await toggle.waitFor({ timeout: 10_000 })
+  await toggle.waitFor({ timeout: 5000 })
   check(/Dismissed \(\d+\)/.test(await toggle.innerText()), 'a Dismissed (n) disclosure appears', await toggle.innerText())
   await toggle.click()
   const item = tray.locator('[data-testid=team-dismissed-item]', { hasText: name })
