@@ -108,16 +108,12 @@ try {
   // /sessions inside one terminal lists the other one.
   await type(a, '/sessions')
   a.key('enter')
-  const listed = await a.waitFor(/1 other orgai session/, 15_000).catch(() => null)
+  // The whole listing, not its first rows: the view is drawn by the app and a frame can arrive in several reads.
+  const listed = await a.waitFor((s) => /1 other orgai session/.test(s) && s.includes(`pid ${pidB}`), 15_000).catch(() => null)
   check(!!listed && a.screen().includes(`pid ${pidB}`) && /This terminal is in Alpha/.test(a.screen()), '/sessions in one terminal names the other session and the project this one is in', a.screen().slice(0, 700))
-  // The listing is long text: it opens in the pager (less by default, closed with q) or, without one, in the TUI's own
-  // overlay (closed with Esc). Either way the terminal must come back to its prompt.
-  a.write('q')
-  let closed = await a.waitFor(READY, 6_000).catch(() => null)
-  if (!closed) {
-    a.key('escape')
-    closed = await a.waitFor(READY, 10_000).catch(() => null)
-  }
+  // The listing opens in the app's own text view (only a diff goes to the system pager): Esc closes it.
+  a.key('escape')
+  const closed = await a.waitFor((s) => READY.test(s) && !/1 other orgai session/.test(s), 10_000).catch(() => null)
   check(!!closed && !a.exitInfo, 'closing the listing brings the terminal back to its prompt', a.screen().slice(0, 500))
 
   // ---------- 2. Work in both at the same time ----------

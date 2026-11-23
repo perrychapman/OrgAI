@@ -261,9 +261,10 @@ try {
       t.key('enter')
       await t.waitFor(/Warnings and errors: \d+ of \d+/, 10_000)
       check(true, 'a: /logs opens the run\'s warnings and errors with a count')
-      // The overlay is the system pager: q leaves it (escape does not).
-      await type(t, 'q')
-      await sleep(500)
+      // Text opens in the app's own view (only a diff goes to the system pager): Esc leaves it, and so does q.
+      t.key('escape')
+      const logsClosed = await t.waitFor((s) => !/Warnings and errors: \d+ of \d+/.test(s), 10_000).then(() => true, () => false)
+      check(logsClosed, 'a: Esc closes the /logs view (no system pager to get stuck in)', esc(t.screen()))
 
       // /team and /settings (cli-parity 3.7): views over the run view (the status bar stays); Esc returns to it.
       await type(t, '/team')

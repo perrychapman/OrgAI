@@ -635,7 +635,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
         const stat = sanitizeTty(diff.stat ?? '').trimEnd()
         const patch = sanitizeTty(diff.patch ?? '')
         const body = [stat, patch].filter((p) => p !== '').join('\n\n') || 'No changes.'
-        await ctx.openText(`Diff ${cleanLine(target.branch, 120)}`, body)
+        await ctx.openText(`Diff ${cleanLine(target.branch, 120)}`, body, { pager: true })
       })
   },
   {
