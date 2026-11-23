@@ -431,10 +431,11 @@ try {
 
   // Settings > Appearance: the theme switch flips data-theme on <html>, persists across a reload and reaches a second window.
   await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   const appearance = page.locator('[data-testid=appearance-section]')
   await appearance.waitFor({ timeout: 10_000 })
-  const themeGroup = appearance.getByRole('radiogroup', { name: 'Theme' })
-  await themeGroup.locator('label.seg-item', { hasText: 'Light' }).click()
+  const themeGroup = appearance.getByRole('radiogroup', { name: 'Colour mode' })
+  await themeGroup.getByRole('radio', { name: 'Light', exact: true }).check()
   await sleep(800)
   check((await page.evaluate(() => document.documentElement.dataset.theme)) === 'light', 'Settings > Appearance Light flips data-theme to light')
   await shot('settings-appearance-light')
@@ -460,6 +461,7 @@ try {
     }
   }
   await openAppSettings(page)
+  await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
   await appearance.waitFor({ timeout: 10_000 })
   await themeGroup.locator('label.seg-item', { hasText: 'Dark' }).click()
   await sleep(800)

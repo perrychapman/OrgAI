@@ -136,7 +136,7 @@ try {
       // Project A (on the proxy)
       await page.locator(`.sidebar [data-testid=nav-project][data-name="${A}"]`).first().click()
       await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'General', exact: true }).click()
+      await page.getByRole('tab', { name: 'Basics', exact: true }).click()
       await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
       await page.locator('#settings-section-connection').scrollIntoViewIfNeeded()
       const rows = page.locator('[data-testid=project-connection-option]')
@@ -165,7 +165,7 @@ try {
       // Project B (on the default, usually Anthropic): pick the proxy, review the mapping
       await page.locator(`.sidebar [data-testid=nav-project][data-name="${B}"]`).first().click()
       await projectTab(page, 'Settings').click()
-      await page.getByRole('tab', { name: 'General', exact: true }).click()
+      await page.getByRole('tab', { name: 'Basics', exact: true }).click()
       await page.waitForSelector('#settings-section-connection', { timeout: 10_000 })
       await page.locator(`[data-testid=project-connection-option][data-id="${proxyId}"]`).click()
       await page.getByRole('button', { name: 'Review changes', exact: true }).click()

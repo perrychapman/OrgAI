@@ -797,7 +797,7 @@ try {
     check(!(await visible('[data-testid=assistant-start-harness]')) && (await page.locator('.run-tablist .run-tab-wrap.selected:not([data-run="new"])').count()) === 1, 'MCP assistant sidebar row after an ended run returns to its tab')
     await gotoProjects(page)
     await openAppSettings(page)
-    await page.getByRole('tab', { name: 'Connectors', exact: true }).click()
+    await page.getByRole('tab', { name: 'Tools and services', exact: true }).click()
     await page.locator('[data-testid=mcp-library-assist]').click()
     await sleep(800)
     check(await visible('[data-testid=assistant-start-harness]'), 'Configure with AI after an ended MCP run shows the start page')

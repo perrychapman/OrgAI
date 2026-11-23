@@ -425,7 +425,7 @@ try {
       const perm = await tabStops()
       check(perm.length <= 3, `Permissions has at most 3 tab stops at rest ${tag} ${theme}`, perm.join(' | '))
       await shot(`pane-permissions-${tag}-${theme}`)
-      await paneTab('General')
+      await paneTab('Basics')
       const gen = await tabStops()
       if (anyConnected) check(gen.length <= 4, `General has at most 4 tab stops at rest ${tag} ${theme}`, gen.join(' | '))
       else log(`SKIP General tab stop count ${tag} ${theme}: no connection connected (the Connection section adds links), saw ${gen.length}`)
@@ -433,7 +433,7 @@ try {
       check((await wd.getAttribute('title')) === repo && (await page.locator('input[aria-label="Working directory"]').count()) === 0, `the working directory is a read-only path with the full path in its title ${tag} ${theme}`)
       await shot(`pane-general-${tag}-${theme}`)
       // (4) subscription project: plan guard line, no percent input at rest.
-      await paneTab('Limits')
+      await paneTab('Spending limits')
       await setAdvanced('project-limits', false)
       await sleep(200)
       const lim = await tabStops()
@@ -449,7 +449,7 @@ try {
 
   // N2: with a five-hour share set the line names it; cleared again afterwards.
   {
-    await paneTab('Limits')
+    await paneTab('Spending limits')
     await setAdvanced('project-limits', true)
     const share = page.getByLabel('Stop at a share of the five-hour window (%)', { exact: true })
     await share.fill('30')
@@ -466,7 +466,7 @@ try {
   // checked in connections.mjs), and a closed one stays closed.
   {
     for (const pane of ['project-limits', 'project-permissions']) {
-      const name = pane === 'project-limits' ? 'Limits' : 'Permissions'
+      const name = pane === 'project-limits' ? 'Spending limits' : 'Permissions'
       await paneTab(name)
       await setAdvanced(pane, true)
       await sleep(300)
@@ -539,7 +539,7 @@ try {
       for (const theme of ['dark', 'light']) {
         await setTheme(theme)
         const tag = `${w}x${h} ${theme}`
-        await paneTab('Limits')
+        await paneTab('Spending limits')
         for (const open of [false, true]) {
           await setAdvanced('project-limits', open)
           await sleep(200)
