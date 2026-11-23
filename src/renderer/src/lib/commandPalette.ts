@@ -209,6 +209,28 @@ export function flatten(sections: readonly PaletteSection[]): PaletteItem[] {
   return sections.flatMap((s) => s.items)
 }
 
+export interface PaletteFields {
+  query: string
+  active: number
+}
+
+/**
+ * What the palette shows the moment it opens: an empty search and the first row. Closing keeps the fields (the exit
+ * fades the same content). The component applies this while rendering the change of `open`, so the first committed frame
+ * of an opened palette is already clean: resetting in an effect left a frame (a task) where the dialog was visible with
+ * the last search in it, and a fast typist's first keys were appended to that old text ("usage2e palette"), found no
+ * result, and Enter did nothing.
+ */
+export function fieldsOnToggle(prev: PaletteFields, wasOpen: boolean, open: boolean): PaletteFields {
+  return open && !wasOpen ? { query: '', active: 0 } : prev
+}
+
+/** The highlighted row for the list as it is now: a stale index (the list shrank) never points at nothing. */
+export function clampActive(active: number, length: number): number {
+  if (length <= 0) return -1
+  return active < 0 ? 0 : Math.min(active, length - 1)
+}
+
 /** Move the active index by one with wrap-around; -1 when the list is empty. */
 export function stepIndex(current: number, delta: 1 | -1, length: number): number {
   if (length <= 0) return -1

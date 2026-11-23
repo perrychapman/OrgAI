@@ -18,8 +18,7 @@ import { projectKindOf } from '@shared/defaults'
 import { folderName } from '../lib/paths'
 import { breakdownKey, breakdownTotal, EMPTY_BREAKDOWN, parseBreakdownKey, parseBreakdownPartial, recordedBreakdown, recordedBreakdownText, recordedLabel, recordedTitle } from '../lib/knowledgeRun'
 import { isRunWindow, revealKnowledgeTab } from '../lib/runKnowledge'
-import { PROPOSAL_NEXT_COPY, proposalNextLead } from '../lib/proposalNext'
-import { APP_SETTINGS_PANES, requestAppSettingsSection, requestSkillLibrary } from '../lib/settingsTarget'
+import { proposalNextLead } from '../lib/proposalNext'
 import { useAppStore, useProjectSummaries, type RunState } from '../store/useAppStore'
 import { planProgress } from '../lib/layout'
 import { staffingCounts } from '../lib/planGraph'
@@ -54,6 +53,13 @@ interface FoldedItem {
   idx: number
   label: string
   interactive: boolean
+  /** The test id of the chip's button (or of the chip), repeated on its menu item: only one of the two is visible at a time. */
+  testId?: string
+}
+
+/** A chip with a button in it (link, count that opens a tab): reachable in one step, so it folds after the chips that only state a fact. */
+function isActionChip(c: Element): boolean {
+  return c.tagName === 'BUTTON' || !!c.querySelector('button')
 }
 
 /** Plain text of a chip without its screen reader additions. */
@@ -66,12 +72,14 @@ function chipText(el: Element): string {
 /**
  * Folds the chips that do not fit into one "more" menu instead of cutting them: the chip with the highest data-prio
  * number goes first (ties: the later one); data-prio 0 never folds. Order of loss: everything else, then the status word
- * shortens, then cost folds, and the permission mode (data-compactable) shortens to its icon instead of folding.
+ * shortens, then the permission mode (data-compactable, never folds) shortens to its icon, then cost folds.
  * Runs after every render and when the line resizes.
  * A folded chip stays in the DOM (display none) so its button can still be activated from the menu.
  */
 function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
   const [folded, setFolded] = useState<FoldedItem[]>([])
+  const burst = useRef({ at: 0, n: 0 })
+  const lastSig = useRef('')
   const measure = (): void => {
     const el = ref.current
     if (!el) return
@@ -89,22 +97,25 @@ function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
       more?.removeAttribute('hidden')
       const order = chips
         .map((c, i) => ({ c, i, p: Number(c.getAttribute('data-prio')) }))
-        .filter((x) => x.p > 0)
-        .sort((a, b) => b.p - a.p || b.i - a.i)
+        .filter((x) => x.p > 0 && chipText(x.c) !== '')
+        // Groups: facts (fold first), then chips that are actions (a menu item does the same thing), then cost and the
+        // permission mode (data-prio 1 and 2). Inside a group the highest data-prio goes first, ties the later chip.
+        .map((x) => ({ ...x, g: x.p <= 2 ? 2 : isActionChip(x.c) ? 1 : 0 }))
+        .sort((a, b) => a.g - b.g || b.p - a.p || b.i - a.i)
       let squeezed = false
       for (const x of order) {
         if (el.scrollWidth <= el.clientWidth + 1) break
-        // Cost and the permission mode are the last two to go: before cost folds, a long status word shortens to an ellipsis.
+        // Status, the permission mode and cost are what is left: first a long status word shortens to an ellipsis, then the
+        // permission mode shortens to its icon (words stay in its name and title), and only then does cost fold.
         if (x.p <= 2 && !squeezed) {
           squeezed = true
           el.setAttribute('data-squeeze', '')
           if (el.scrollWidth <= el.clientWidth + 1) break
+          chips.filter((c) => c.hasAttribute('data-compactable')).forEach((c) => c.setAttribute('data-compact', 'true'))
+          if (el.scrollWidth <= el.clientWidth + 1) break
         }
-        // The permission mode is safety information: it never folds, it shortens to its icon (words stay in the name and title).
-        if (x.c.hasAttribute('data-compactable')) {
-          x.c.setAttribute('data-compact', 'true')
-          continue
-        }
+        // The permission mode is safety information: it never folds.
+        if (x.c.hasAttribute('data-compactable')) continue
         x.c.setAttribute('data-folded', 'true')
         out.push(x.c)
       }
@@ -112,10 +123,25 @@ function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
     }
     const next = out
       .sort((a, b) => kids.indexOf(a) - kids.indexOf(b))
-      .map((c) => ({ idx: kids.indexOf(c), label: chipText(c), interactive: c.tagName === 'BUTTON' || !!c.querySelector('button') }))
+      .map((c) => ({
+        idx: kids.indexOf(c),
+        label: chipText(c),
+        interactive: isActionChip(c),
+        testId: (c.tagName === 'BUTTON' ? c : c.querySelector('button'))?.getAttribute('data-testid') ?? c.getAttribute('data-testid') ?? undefined
+      }))
       .filter((f) => f.label)
-    const sig = (l: FoldedItem[]): string => l.map((f) => `${f.idx}:${f.label}`).join('|')
-    setFolded((prev) => (sig(prev) === sig(next) ? prev : next))
+    const sig = (l: FoldedItem[]): string => l.map((f) => `${f.idx}:${f.label}:${f.testId ?? ''}`).join('|')
+    const nextSig = sig(next)
+    if (nextSig !== lastSig.current) {
+      // Two answers that keep replacing each other (a chip that fits only by a sub-pixel) would loop until React stops
+      // the page. Past a few changes in one burst, keep the last answer.
+      const now = performance.now()
+      if (now - burst.current.at > 200) burst.current = { at: now, n: 0 }
+      if (++burst.current.n <= 6) {
+        lastSig.current = nextSig
+        setFolded(next)
+      }
+    }
   }
   useLayoutEffect(measure)
   useEffect(() => {
@@ -238,8 +264,6 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const metaTone = metaMode ? permissionTone(metaEnded ? metaMode : modeInForce(summary, metaMode)) : null
   const metaLabel = metaMode ? (metaEnded ? permissionModeName(metaMode) : modeInForceLabel(summary, metaMode)) : ''
   const scheduleName = showHidden(summary.scheduleName ?? '').trim() || 'Scheduled run'
-  const next = useAppStore((s) => s.proposalNextByRun[summary.id])
-  const nextCopy = next ? PROPOSAL_NEXT_COPY[next.kind] : null
   // Status (dot and word, never colour alone) and the model with its exact id in the title.
   const status = statusOfRun(run, project, needsYou(run))
   const statusWord = statusText(status)
@@ -248,22 +272,6 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
   const modelLabel = (modelId && modelCatalog?.find((m) => m.id === modelId)?.label) || modelId
   const lineRef = useRef<HTMLDivElement>(null)
   const folded = useMetaFold(lineRef)
-  const goNext = (): void => {
-    if (!next) return
-    const st = useAppStore.getState()
-    if (next.kind === 'skillsLibrary') {
-      requestSkillLibrary()
-      st.setView('appSettings')
-    } else if (next.kind === 'connectors') {
-      requestAppSettingsSection(APP_SETTINGS_PANES.mcpLibrary)
-      st.setView('appSettings')
-    } else if (next.kind === 'mcpProject' || next.kind === 'mcpSecrets') {
-      st.openProjectMcp(next.projectId)
-    } else {
-      if (st.selectedProjectId !== next.projectId) st.selectProject(next.projectId)
-      st.setView('team')
-    }
-  }
   return (
     <div className="run-meta" data-testid="run-meta" ref={lineRef}>
       <span className="run-meta-item run-meta-status" data-prio="0" data-testid="run-meta-status" data-tone={STATUS_TONE[status.tone]} title={status.note && status.note !== statusWord ? `${statusWord}: ${status.note}` : statusWord}>
@@ -278,7 +286,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         </span>
       )}
       {wallMs >= 0 && (
-        <span className="run-meta-item run-meta-wall" data-prio="3" title={live ? 'Wall time so far' : 'Wall time'}>
+        <span className="run-meta-item run-meta-wall" data-prio="4" title={live ? 'Wall time so far' : 'Wall time'}>
           <Icon icon={Clock} size="xs" />
           {formatDuration(wallMs)}
         </span>
@@ -287,26 +295,6 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         <span className="run-meta-item run-meta-cost" data-prio="2">
           <Cost value={cost} labelled />
         </span>
-      )}
-      {next && nextCopy && (
-        <div className="run-meta-item run-meta-next" data-prio="9">
-          <span data-testid="proposal-next-lead">{proposalNextLead(next)}</span>
-          {next.roster && next.roster.deferred.length > 0 && (
-            <ul className="run-meta-next-list" data-testid="proposal-next-deferred">
-              {next.roster.deferred.map((d, i) => (
-                <li key={i}>
-                  {clampLabel(showHidden(d.name), 40)}: {clampLabel(showHidden(d.reason), 200)}
-                </li>
-              ))}
-            </ul>
-          )}{' '}
-          <button type="button" className="link-btn" data-testid={nextCopy.testId} onClick={goNext}>
-            {nextCopy.action}
-          </button>
-          <button type="button" className="link-btn" onClick={() => useAppStore.getState().noteProposalNext(summary.id, null)} aria-label="Dismiss this note">
-            Dismiss
-          </button>
-        </div>
       )}
       {!isVirtualProjectId(project.id) && (
         <span className="run-meta-wrap" data-prio="9">
@@ -489,6 +477,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
                     <button
                       type="button"
                       className="run-meta-more-item"
+                      data-testid={f.testId}
                       onClick={() => {
                         close()
                         const target = lineRef.current?.children[f.idx] as HTMLElement | undefined

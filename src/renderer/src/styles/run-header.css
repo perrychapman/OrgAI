@@ -24,8 +24,7 @@
 .run-meta > .run-meta-wrap {
   display: contents;
 }
-/* A note that reads as a sentence (next-step note, team files pointer) is not a chip. */
-.run-meta > .run-meta-next,
+/* A note that reads as a sentence (the team files pointer) is not a chip. */
 .run-meta > .run-meta-wrap > .team-files-pointer {
   border-radius: var(--radius-md);
   font-weight: var(--weight-regular);
@@ -163,18 +162,23 @@
     clip-path: none;
   }
 }
+/* RunMeta measures the line right after it changes data-folded, data-compact and data-squeeze, and reads widths in the same
+   task. Under reduced motion global.css gives every element a 0.01 ms transition duration, and with the default
+   transition-property (all) and interpolate-size that animates width, max-width and margin for a frame: the line was
+   measured mid-transition, so a chip that did not fit read as fitting (found with the permission chip at 1024 px).
+   Nothing in the line transitions a size, so none may. */
+.run-meta,
+.run-meta *,
+.run-meta *::before,
+.run-meta *::after {
+  transition-property: none;
+}
 /* The permission mode never folds. When even status, mode and cost do not fit, RunMeta sets data-compact: the chip keeps
    its icon and tone, and the words stay in the accessible name and the title (visually hidden, not removed). */
 .run-meta > .run-meta-permission[data-compact='true'] .run-meta-permission-text {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
+  max-width: 0;
+  margin-inline-start: calc(var(--space-1) * -1);
   overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
 }
 /* Folded chips (set by RunMeta before paint). Same specificity as the rules above and last, so it wins. */
 .run-meta > [data-folded='true'],
@@ -201,6 +205,14 @@
   font-size: var(--text-caption);
   font-weight: var(--weight-semibold);
   cursor: pointer;
+}
+/* The count never changes the button's width: a sub-pixel difference between "4" and "5" decided whether a chip fit
+   and made the fold flip between two answers (React error 185). */
+.run-meta-more-count {
+  display: inline-block;
+  min-width: 2ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 .run-meta-more-btn:hover {
   background: color-mix(in oklab, var(--text-primary) 7%, transparent);
