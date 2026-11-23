@@ -1,7 +1,8 @@
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import {
+  SKILL_NAME_MAX,
   SKILL_MAX_FILE_BYTES,
   SKILL_MAX_PER_PROJECT,
   SKILL_MAX_TOTAL_BYTES,
@@ -31,7 +32,7 @@ import type { ProjectStore } from '../store/projects'
 import { SkillLibraryStore } from '../store/skillLibrary'
 import type { RunSkill } from '../runtime/types'
 import type { SkillRunSource, SkillServiceApi, SkillSnapshotInput } from './types'
-import { childPath, digestFiles, fileInfos, readBundle, readStoredFolder, removeFolder, writeFolder, type FileData } from './files'
+import { childPath, digestFiles, fileInfos, readBundle, readStoredFolder, removeFolder, safeRelPath, writeFolder, type FileData } from './files'
 import { composeSkillMd, parseSkillMd, skillFromMd, validDraft } from './skillMd'
 import { skillProposalProblem } from './assist'
 import { buildScannedSkill, planImport, scanRepoSkills, scanSkillFolder, type ScannedSkill } from './scan'
@@ -644,16 +645,96 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     return this.libraryList()
   }
 
-  /** UI overhaul (skills:duplicate). CONTRACT STUB: implemented by a Runtime Engineer. */
+  /**
+   * UI overhaul (skills:duplicate). A project skill copied as a plain project skill named "<name> copy" (then "copy 2" ...),
+   * same description and files, source 'user', no role grants, enabled as the original. A library link is not copied.
+   */
   duplicate(input: { projectId: string; skillId: string }): SkillInfo[] {
-    void input
-    throw new Error('Duplicating a skill is not available yet.')
+    const project = this.project(input?.projectId)
+    const existing = this.refreshed(project).project.skills ?? []
+    const src = existing.find((s) => s.id === input?.skillId)
+    if (!src) throw new Error('Skill not found')
+    if (existing.length >= SKILL_MAX_PER_PROJECT) throw new Error(`A project has at most ${SKILL_MAX_PER_PROJECT} skills.`)
+    if (src.libraryId && !this.library.get(src.libraryId)) throw new Error(`${src.name} was removed from the skill library.`)
+    const stored = readStoredFolder(this.specDir(project.id, src))
+    const content = this.storedContent(this.specDir(project.id, src))
+    const taken = new Set(existing.map((s) => s.name))
+    let name = ''
+    for (let n = 1; ; n++) {
+      const suffix = n === 1 ? '-copy' : `-copy-${n}`
+      name = `${src.name.slice(0, Math.max(1, SKILL_NAME_MAX - suffix.length)).replace(/-+$/, '')}${suffix}`
+      if (!taken.has(name)) break
+    }
+    const draft = validDraft({ name, description: src.description, body: content.body })
+    const files = assembleFiles(draft, stored)
+    const now = this.now()
+    const spec: SkillSpec = {
+      id: newId('skill'),
+      name: draft.name,
+      description: draft.description,
+      enabled: src.enabled,
+      source: 'user',
+      digest: digestFiles(files),
+      files: fileInfos(files),
+      addedAt: now,
+      updatedAt: now
+    }
+    const dir = this.ownDir(project.id, spec.id)
+    writeFolder(dir, files)
+    try {
+      const saved = this.deps.projects.save({ ...project, skills: [...(project.skills ?? []), spec] })
+      this.expireUndo(project.id)
+      return this.infos(saved)
+    } catch (e) {
+      removeFolder(dir)
+      throw e
+    }
   }
 
-  /** UI overhaul (skills:export). CONTRACT STUB: implemented by a Runtime Engineer. */
+  /**
+   * UI overhaul (skills:export). Writes the skill's regular files into a new folder `<destDir>/<slug>` (`-2`, `-3` when
+   * taken); never overwrites and never writes outside the new folder. Resolves to that folder.
+   */
   async exportTo(input: { projectId: string; skillId: string; destDir: string }): Promise<string> {
-    void input
-    throw new Error('Exporting a skill is not available yet.')
+    const project = this.project(input?.projectId)
+    const spec = this.refreshed(project).project.skills?.find((s) => s.id === input?.skillId)
+    if (!spec) throw new Error('Skill not found')
+    const destDir = input?.destDir
+    if (typeof destDir !== 'string' || !isAbsolute(destDir)) throw new Error('Choose a folder to export into.')
+    try {
+      if (!statSync(destDir).isDirectory()) throw new Error('not a folder')
+    } catch {
+      throw new Error('The export folder does not exist or is not a folder.')
+    }
+    if (spec.libraryId && !this.library.get(spec.libraryId)) throw new Error(`${spec.name} was removed from the skill library.`)
+    // The service's reader keeps to regular files and refuses links, size and count caps included.
+    const files = readStoredFolder(this.specDir(project.id, spec))
+    const slug = spec.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, SKILL_NAME_MAX) || 'skill'
+    let target = ''
+    for (let n = 1; n < 1000; n++) {
+      const candidate = resolve(destDir, n === 1 ? slug : `${slug}-${n}`)
+      try {
+        mkdirSync(candidate)
+        target = candidate
+        break
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error('The skill could not be exported to that folder.')
+      }
+    }
+    if (!target) throw new Error('The export folder already holds too many copies of this skill.')
+    try {
+      for (const f of files) {
+        if (!safeRelPath(f.path)) throw new Error(`Unsafe file path: ${f.path}`)
+        const abs = resolve(target, ...f.path.split('/'))
+        if (relative(target, abs).startsWith('..')) throw new Error(`Unsafe file path: ${f.path}`)
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, f.data, { flag: 'wx' })
+      }
+    } catch (e) {
+      rmSync(target, { recursive: true, force: true })
+      throw e instanceof Error ? e : new Error('The skill could not be exported.')
+    }
+    return target
   }
 
   libraryRemove(input: { libraryId: string }): SkillLibraryInfo[] {
