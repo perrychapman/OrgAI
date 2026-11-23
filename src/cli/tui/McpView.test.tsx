@@ -1,7 +1,8 @@
 /**
  * /mcp: the list at 120 columns, Space on/off, the role ticks saved as one field (and saving them unchanged), the
  * confirm before a removal, the selection kept on a row after one, adding a library entry, the empty library and
- * read-only refusals, the live-run note, and Esc.
+ * read-only refusals, the live-run note, setting or deleting a secret value (masked in the frame, one slot or several,
+ * this project's own or the library entry's), and Esc.
  * The host is an in-memory fake of TuiToolsApi that keeps a server list and records every call.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -10,6 +11,7 @@ import { fixtureProject, mountView, tick } from './configTestUtil'
 import { MCP_LIVE_NOTE, McpView, type McpViewProps } from './McpView'
 import { char, env, key } from './panes/testUtil'
 import { patchedMcpSpec, type McpPatch, type TuiToolsApi } from './toolsApi'
+import type { InputEvent } from './types'
 
 const mounted: { unmount(): void }[] = []
 afterEach(() => {
@@ -18,7 +20,7 @@ afterEach(() => {
 
 const ENV = env({ color: false })
 
-const server = (over: Partial<McpServerSpec> & Pick<McpServerSpec, 'id' | 'name'> & { authState?: McpAuthState; missingSecrets?: string[] }): McpServerInfo => ({
+const server = (over: Partial<McpServerSpec> & Pick<McpServerSpec, 'id' | 'name'> & { authState?: McpAuthState; missingSecrets?: string[]; envSet?: string[]; headersSet?: string[]; secretScope?: 'project' | 'library' }): McpServerInfo => ({
   spec: {
     id: over.id,
     name: over.name,
@@ -31,12 +33,15 @@ const server = (over: Partial<McpServerSpec> & Pick<McpServerSpec, 'id' | 'name'
     ...(over.url ? { url: over.url } : {}),
     ...(over.roles ? { roles: over.roles } : {}),
     ...(over.description ? { description: over.description } : {}),
-    ...(over.libraryId ? { libraryId: over.libraryId } : {})
+    ...(over.libraryId ? { libraryId: over.libraryId } : {}),
+    ...(over.secretEnv ? { secretEnv: over.secretEnv } : {}),
+    ...(over.secretHeaders ? { secretHeaders: over.secretHeaders } : {})
   },
-  envSet: [],
-  headersSet: [],
+  envSet: over.envSet ?? [],
+  headersSet: over.headersSet ?? [],
   missingSecrets: over.missingSecrets ?? [],
-  auth: { state: over.authState ?? 'notRequired' }
+  auth: { state: over.authState ?? 'notRequired' },
+  ...(over.secretScope ? { secretScope: over.secretScope } : {})
 })
 
 const libEntry = (id: string, name: string, description?: string): McpLibraryInfo => ({
@@ -54,6 +59,16 @@ const servers = (): McpServerInfo[] => [
   server({ id: 'm3', name: 'Tracker', transport: 'http', url: 'https://tracker.example/mcp', roles: ['lead'], enabled: false, missingSecrets: ['Authorization'], authState: 'notAuthorized' })
 ]
 
+/** Servers that take secrets: one slot, two slots, and a link whose values live in the library entry (rows: Docs, Notion, Tracker). */
+const secretServers = (): McpServerInfo[] => [
+  server({ id: 's1', name: 'Docs', command: 'npx', secretEnv: ['DOCS_TOKEN'], missingSecrets: ['DOCS_TOKEN'] }),
+  server({ id: 's2', name: 'Tracker', transport: 'http', url: 'https://tracker.example/mcp', secretEnv: ['TRACKER_KEY'], secretHeaders: ['Authorization'], missingSecrets: ['TRACKER_KEY', 'Authorization'] }),
+  server({ id: 's3', name: 'Notion', libraryId: 'l1', secretHeaders: ['Authorization'], headersSet: ['Authorization'], secretScope: 'library' })
+]
+
+/** Type a whole string into an open dialog, one character at a time. */
+const typed = (s: string): InputEvent[] => [...s].map((c) => char(c))
+
 export interface FakeTools extends TuiToolsApi {
   stored: Project
   servers: McpServerInfo[]
@@ -64,6 +79,22 @@ export interface FakeTools extends TuiToolsApi {
   links: string[]
   /** Every mcp:remove the view made. */
   removes: string[]
+  /** Every mcp:setSecret the view made (the value is kept here only so a test can read it back). */
+  secrets: { serverId: string; kind: 'env' | 'header'; name: string; value: string | null }[]
+  /** Every mcpLibrary:setSecret the view made. */
+  librarySecrets: { libraryId: string; kind: 'env' | 'header'; name: string; value: string | null }[]
+}
+
+/** The has-flags a secret save leaves on a server or a library entry (`null` deletes the stored value). */
+const secretFlags = (info: { envSet: string[]; headersSet: string[]; missingSecrets: string[] }, kind: 'env' | 'header', name: string, value: string | null): { envSet: string[]; headersSet: string[]; missingSecrets: string[] } => {
+  const add = (list: string[]): string[] => (list.includes(name) ? list : [...list, name])
+  const drop = (list: string[]): string[] => list.filter((n) => n !== name)
+  const stored = (list: string[]): string[] => (value === null ? drop(list) : add(list))
+  return {
+    envSet: kind === 'env' ? stored(info.envSet) : [...info.envSet],
+    headersSet: kind === 'header' ? stored(info.headersSet) : [...info.headersSet],
+    missingSecrets: value === null ? add(info.missingSecrets) : drop(info.missingSecrets)
+  }
 }
 
 function fakeTools(over: Partial<Pick<FakeTools, 'servers' | 'library'>> = {}): FakeTools {
@@ -75,6 +106,8 @@ function fakeTools(over: Partial<Pick<FakeTools, 'servers' | 'library'>> = {}): 
     sets: [],
     links: [],
     removes: [],
+    secrets: [],
+    librarySecrets: [],
     ...over,
     project: async () => structuredClone(api.stored),
     mcpServers: async () => structuredClone(api.servers),
@@ -97,6 +130,15 @@ function fakeTools(over: Partial<Pick<FakeTools, 'servers' | 'library'>> = {}): 
       api.removes.push(serverId)
       api.servers = api.servers.filter((s) => s.spec.id !== serverId)
       return done()
+    },
+    async setMcpSecret(_projectId, serverId, kind, name, value) {
+      api.secrets.push({ serverId, kind, name, value })
+      api.servers = api.servers.map((s) => (s.spec.id === serverId ? { ...s, ...secretFlags(s, kind, name, value) } : s))
+      return done()
+    },
+    async setMcpLibrarySecret(libraryId, kind, name, value) {
+      api.librarySecrets.push({ libraryId, kind, name, value })
+      api.library = api.library.map((e) => (e.entry.id === libraryId ? { ...e, ...secretFlags(e, kind, name, value) } : e))
     },
     // The view never touches the skills half of the api.
     skills: async () => [],
@@ -343,5 +385,121 @@ describe('MCP view', () => {
     await tick(60)
     await v.keys(key('char', { ch: 'c', ctrl: true, raw: '\u0003' }))
     expect(v.onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('s on a server that takes no secret says so and calls nothing', async () => {
+    const v = mcpView(120)
+    await tick(60)
+    expect(v.frame()).toContain('s secret')
+    await v.keys(char('s'))
+    const f = v.frame()
+    expect(f).toContain('Docs takes no secret.')
+    expect(v.api.secrets).toHaveLength(0)
+    expect(v.api.librarySecrets).toHaveLength(0)
+  })
+
+  it('s sets one secret: the value is masked in the frame and reaches the host once', async () => {
+    const api = fakeTools({ servers: secretServers() })
+    const v = mcpView(120, { liveRun: true }, api)
+    await tick(60)
+    await v.keys(char('s'))
+    expect(v.frame()).toContain('Value of DOCS_TOKEN for Docs')
+    expect(v.frame()).toContain('Typed text is hidden')
+    await v.keys(...typed('super-secret-value'))
+    let f = v.frame()
+    expect(f).toContain('•'.repeat('super-secret-value'.length))
+    expect(f).not.toContain('super-secret-value')
+    await v.keys(key('enter'))
+    await tick(60)
+    expect(api.secrets).toEqual([{ serverId: 's1', kind: 'env', name: 'DOCS_TOKEN', value: 'super-secret-value' }])
+    f = unwrapped(v.frame())
+    expect(f).toContain('Saved DOCS_TOKEN for Docs.')
+    expect(f).toContain('A run that is live now may not use it until its next run.')
+    expect(f).not.toContain('super-secret-value')
+    // The live-run note is about on/off and roles; a secret does not add it.
+    expect(f).not.toContain(MCP_LIVE_NOTE)
+    expect(api.servers.find((s) => s.spec.id === 's1')?.envSet).toEqual(['DOCS_TOKEN'])
+    expect(api.servers.find((s) => s.spec.id === 's1')?.missingSecrets).toEqual([])
+    expect(selectedRow(v.frame())).toContain('Docs')
+  })
+
+  it('an empty value deletes the stored one', async () => {
+    const api = fakeTools({ servers: secretServers() })
+    const v = mcpView(120, {}, api)
+    await tick(60)
+    await v.keys(char('s'), key('enter'))
+    await tick(60)
+    expect(api.secrets).toEqual([{ serverId: 's1', kind: 'env', name: 'DOCS_TOKEN', value: null }])
+    expect(unwrapped(v.frame())).toContain('Deleted DOCS_TOKEN of Docs.')
+    expect(api.servers.find((s) => s.spec.id === 's1')?.envSet).toEqual([])
+    expect(api.servers.find((s) => s.spec.id === 's1')?.missingSecrets).toEqual(['DOCS_TOKEN'])
+  })
+
+  it('s on a server with two secrets asks which one first, then takes the value', async () => {
+    const api = fakeTools({ servers: secretServers() })
+    const v = mcpView(120, {}, api)
+    await tick(60)
+    // Tracker is the last row (Docs, Notion, Tracker).
+    await v.keys(key('down'), key('down'), char('s'))
+    let f = v.frame()
+    expect(f).toContain('Which secret of Tracker?')
+    expect(f).toContain('TRACKER_KEY')
+    expect(f).toContain('Authorization')
+    expect(f).toContain('missing')
+    await v.keys(key('enter'))
+    f = v.frame()
+    expect(f).toContain('Value of TRACKER_KEY for Tracker')
+    await v.keys(...typed('tracker-key'), key('enter'))
+    await tick(60)
+    expect(api.secrets).toEqual([{ serverId: 's2', kind: 'env', name: 'TRACKER_KEY', value: 'tracker-key' }])
+    expect(v.frame()).toContain('Saved TRACKER_KEY for Tracker.')
+    // The other slot, picked from the list now that the first one reads set.
+    await v.keys(char('s'), key('down'), key('enter'))
+    expect(v.frame()).toContain('Value of Authorization for Tracker')
+    await v.keys(...typed('Bearer abc'), key('enter'))
+    await tick(60)
+    expect(api.secrets[1]).toEqual({ serverId: 's2', kind: 'header', name: 'Authorization', value: 'Bearer abc' })
+    expect(api.servers.find((s) => s.spec.id === 's2')?.headersSet).toEqual(['Authorization'])
+  })
+
+  it('s on a linked server writes the value to the library entry every project shares', async () => {
+    const api = fakeTools({ servers: secretServers() })
+    const v = mcpView(120, {}, api)
+    await tick(60)
+    // Notion is the middle row.
+    await v.keys(key('down'), char('s'))
+    expect(v.frame()).toContain('Value of Authorization for Notion')
+    expect(unwrapped(v.frame())).toContain('It belongs to your library entry: every project that links it uses it.')
+    await v.keys(...typed('library-token'), key('enter'))
+    await tick(60)
+    expect(api.librarySecrets).toEqual([{ libraryId: 'l1', kind: 'header', name: 'Authorization', value: 'library-token' }])
+    expect(api.secrets).toHaveLength(0)
+    const f = unwrapped(v.frame())
+    expect(f).toContain('Saved Authorization for Notion.')
+    expect(f).not.toContain('library-token')
+    expect(api.library.find((e) => e.entry.id === 'l1')?.headersSet).toEqual(['Authorization'])
+    expect(selectedRow(v.frame())).toContain('Notion')
+  })
+
+  it('s works on the server whose details are open', async () => {
+    const api = fakeTools({ servers: secretServers() })
+    const v = mcpView(120, {}, api)
+    await tick(60)
+    await v.keys(key('enter'), char('s'))
+    expect(v.frame()).toContain('Value of DOCS_TOKEN for Docs')
+    await v.keys(...typed('docs-token'), key('enter'))
+    await tick(60)
+    expect(api.secrets).toEqual([{ serverId: 's1', kind: 'env', name: 'DOCS_TOKEN', value: 'docs-token' }])
+    expect(v.frame()).toContain('MCP · Docs')
+  })
+
+  it('s is refused in a read-only session', async () => {
+    const api = fakeTools({ servers: secretServers() })
+    const v = mcpView(120, { readOnly: 'Another orgai owns this data folder.' }, api)
+    await tick(60)
+    await v.keys(char('s'))
+    expect(v.frame()).toContain('Read-only: Another orgai owns this data folder.')
+    expect(api.secrets).toHaveLength(0)
+    expect(api.librarySecrets).toHaveLength(0)
   })
 })

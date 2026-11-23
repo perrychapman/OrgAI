@@ -2,8 +2,9 @@
  * /mcp: the project's MCP servers. Enter opens a server's details; the letter keys edit the selected
  * (or detailed) server. Every edit is ONE field of ONE server through the host's mcp:* channels (toolsApi.ts):
  * `setMcp` reads the server afresh and sends the spec with that one field changed, `linkMcp` adds a library entry for
- * every role, `removeMcp` drops it from this project. After a save the view reloads the list and keeps the selection on
- * the same server. Errors show in place.
+ * every role, `removeMcp` drops it from this project, and `setMcpSecret` / `setMcpLibrarySecret` set (or delete) one
+ * secret value, which is typed once and never read back or shown. After a save the view reloads the list and keeps the
+ * selection on the same server. Errors show in place.
  *
  * The host lets a project be saved while a run is live. A work run this terminal hosts takes the save itself and says
  * so in the status line (liveChangeText.ts); any other live run keeps the servers it started with, and only then the
@@ -13,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { McpMutationResult } from '../../shared/types'
 import { useFocusHandler } from './context'
 import { charOf, clean, ConfigFrame, contentSize, dialogKey, dialogKeys, dialogLines, errorMessage, isCtrlC, keyIs, moveSel, windowOf, type Dialog, type Message } from './configUi'
-import { checkedFromRoles, libraryOptions, mcpDetailLines, mcpRoleOptions, mcpRowSegs, mcpRows, rolesFromChecks, type McpData } from './mcpModel'
+import { checkedFromRoles, libraryOptions, mcpDetailLines, mcpRoleOptions, mcpRowSegs, mcpRows, mcpSecretScope, mcpSecretSlots, rolesFromChecks, type McpData, type McpSecretSlot } from './mcpModel'
 import type { PaneLine } from './panes/lines'
 import { textWidth, truncateEnd } from './panes/text'
 import { glyphs, separatorFor } from './theme'
@@ -35,8 +36,8 @@ export interface McpViewProps {
 
 export const MCP_LIVE_NOTE = 'A live run without a team, or in another terminal, keeps the servers it started with; this applies from its next run.'
 
-export const MCP_LIST_KEYS = ['Up/Down select', 'Enter details', 'Space on/off', 'r roles', 'l add from library', 'x remove', 'Esc back']
-export const MCP_DETAIL_KEYS = ['Up/Down scroll', 'Space on/off', 'r roles', 'x remove', 'Esc back']
+export const MCP_LIST_KEYS = ['Up/Down select', 'Enter details', 'Space on/off', 'r roles', 's secret', 'l add from library', 'x remove', 'Esc back']
+export const MCP_DETAIL_KEYS = ['Up/Down scroll', 'Space on/off', 'r roles', 's secret', 'x remove', 'Esc back']
 
 /** The same set of role slugs (order aside). */
 const sameRoles = (before: string[], after: string[]): boolean => [...before].sort().join('\u0000') === [...after].sort().join('\u0000')
@@ -81,9 +82,10 @@ export function McpView(props: McpViewProps) {
   /**
    * One save (`mcp:upsert` / `mcp:linkLibrary` / `mcp:remove`), then the saved list with the selection kept on the
    * server `keep` names (a function reads it from the refreshed data, e.g. the id a link got); when that server is no
-   * longer in the list the selection falls back to the last row there is.
+   * longer in the list the selection falls back to the last row there is. `liveNote` false leaves MCP_LIVE_NOTE out of
+   * the message (it is about on/off and roles, not about a secret value).
    */
-  const save = (fn: () => Promise<McpMutationResult>, keep: string | undefined | ((next: McpData) => string | undefined), done: string): void => {
+  const save = (fn: () => Promise<McpMutationResult>, keep: string | undefined | ((next: McpData) => string | undefined), done: string, liveNote = true): void => {
     act('Saving', async () => {
       const res = await fn()
       const next = await load().catch(() => ({ project: res.project, servers: res.servers }))
@@ -95,7 +97,7 @@ export function McpView(props: McpViewProps) {
       // The server kept is gone (its own removal): fall back to the last row there is, so one stays highlighted.
       if (at >= 0) setSel(at)
       else setSel((s) => Math.min(s, Math.max(0, rowsOfNext.length - 1)))
-      setMessage({ text: [done, ...(props.liveRun ? [MCP_LIVE_NOTE] : [])].join(' '), tone: 'ok' })
+      setMessage({ text: [done, ...(props.liveRun && liveNote ? [MCP_LIVE_NOTE] : [])].join(' '), tone: 'ok' })
     })
   }
 
@@ -143,6 +145,69 @@ export function McpView(props: McpViewProps) {
     })
   }
 
+  /**
+   * s: set one secret value of this server, or delete it (empty text). The value is typed once and never shown again,
+   * in the frame or in the message. A server with several secrets asks which one first. When the values live in the
+   * library entry the server links, the save goes to that entry and every project that links it gets it.
+   */
+  const editSecret = (): void => {
+    const info = target!
+    const name = clean(info.spec.name, 80)
+    const slots = mcpSecretSlots(info)
+    if (slots.length === 0) {
+      setMessage({ text: `${name} takes no secret.`, tone: 'dim' })
+      return
+    }
+    const library = mcpSecretScope(info) === 'library'
+    const libraryId = info.spec.libraryId ?? ''
+    const ask = (slot: McpSecretSlot): void => {
+      const secret = clean(slot.name, 80)
+      setDialog({
+        kind: 'input',
+        secret: true,
+        title: `Value of ${secret} for ${name}`,
+        text: '',
+        hint: `Typed text is hidden. Enter saves it, Esc cancels. Leave it empty to delete the stored value.${library ? ' It belongs to your library entry: every project that links it uses it.' : ''}`,
+        onSubmit: (text) => {
+          // Empty text deletes the stored value, anything else replaces it.
+          const value = text === '' ? null : text
+          const done = `${value === null ? 'Deleted' : 'Saved'} ${secret} ${value === null ? 'of' : 'for'} ${name}. A run that is live now may not use it until its next run.`
+          if (!library) {
+            save(() => api.setMcpSecret(projectId, info.spec.id, slot.kind, slot.name, value), info.spec.id, done, false)
+            return
+          }
+          // The library save answers with the library, not the project: reload the list the same way `save` does.
+          act('Saving', async () => {
+            await api.setMcpLibrarySecret(libraryId, slot.kind, slot.name, value)
+            const next = await load().catch(() => undefined)
+            if (!alive.current) return
+            // The value is saved even when the list cannot be read again: say so either way.
+            if (next) {
+              setData(next)
+              const at = mcpRows(next).findIndex((r) => r.id === info.spec.id)
+              if (at >= 0) setSel(at)
+            }
+            setMessage({ text: done, tone: 'ok' })
+          })
+        }
+      })
+    }
+    if (slots.length === 1) {
+      ask(slots[0])
+      return
+    }
+    setDialog({
+      kind: 'pick',
+      title: `Which secret of ${name}?`,
+      options: slots.map((s) => ({ value: `${s.kind}:${s.name}`, label: clean(s.name, 120), detail: s.set ? 'set' : 'missing' })),
+      sel: 0,
+      onPick: (picked) => {
+        const slot = slots.find((s) => `${s.kind}:${s.name}` === picked)
+        if (slot) ask(slot)
+      }
+    })
+  }
+
   /** l: add one of your library's entries to this project, for every role. */
   const addFromLibrary = (): void => {
     const servers = data!.servers
@@ -181,7 +246,7 @@ export function McpView(props: McpViewProps) {
     })
   }
 
-  const actions: Record<string, () => void> = { ' ': toggle, r: editRoles, l: addFromLibrary, x: remove }
+  const actions: Record<string, () => void> = { ' ': toggle, r: editRoles, s: editSecret, l: addFromLibrary, x: remove }
 
   const page = Math.max(1, contentSize(props.width, props.height, env, MCP_LIST_KEYS, message).bodyRows - 1)
 

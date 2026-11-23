@@ -672,6 +672,11 @@ export async function openTuiSession(conn: TuiHostConnection, opts: OpenTuiSessi
     },
     linkMcp: async (projectId, libraryId) => followProject(await write<McpMutationResult>('mcp:linkLibrary', [{ projectId, libraryId }])),
     removeMcp: async (projectId, serverId) => followProject(await write<McpMutationResult>('mcp:remove', [{ projectId, serverId }])),
+    // A secret value goes one way only: it is never read back, so nothing here keeps it.
+    setMcpSecret: async (projectId, serverId, kind, name, value) => followProject(await write<McpMutationResult>('mcp:setSecret', [{ projectId, serverId, kind, name, value }])),
+    async setMcpLibrarySecret(libraryId, kind, name, value) {
+      await write<unknown>('mcpLibrary:setSecret', [{ libraryId, kind, name, value }])
+    },
     async skills(projectId) {
       const list = await call<SkillInfo[]>('skills:list', [projectId])
       return Array.isArray(list) ? list : []

@@ -34,8 +34,8 @@
 //    overlay, then the inspector; `z` roots the tree at mock-lead (breadcrumb) and Z goes back. The `n` jump to a waiting
 //    agent, message marks and the run chips have no mock source here: unit tests only.
 //    Then /team raises a report role's effort (y confirms): the status line says the live run uses the change now.
-//    Then /mcp turns the project's one server off with Space (the live run says it uses the change now), and /skills
-//    opens on a project without skills.
+//    Then /mcp turns a server off with Space (the live run says it uses the change now) and sets another server's
+//    secret with s (the typed value never reaches the terminal), and /skills opens on a project without skills.
 // j. A team change an agent proposes mid-run (`[mock:org-change]`): the card says what changes compared with this run's
 //    team, v shows the diff, y asks before it changes the live run, and after the second y the new role works in it.
 // h. SIGTERM in full screen: the tail has \x1b[?1049l and \x1b[?25h and the exit code is 143.
@@ -49,6 +49,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { APP_DIR, DATA_DIR, check, finish, log, makeFixtureRepo, removeFixture, sleep } from './lib.mjs'
 import { probePty, spawnTui } from './ptyDriver.mjs'
+// The throwaway vault key file the other CLI scripts use (cliLib.mjs makes it): /mcp's `s` key saves a secret.
+import { ENV as CLI_ENV } from './cliLib.mjs'
 import { writeFileSync as markWrite } from 'node:fs'
 import { join as markJoin } from 'node:path'
 // The CLI marks its own data folder (spec 3.1); this script seeds files before the first command, so it marks it itself.
@@ -150,6 +152,9 @@ const SCRIPTS = { simple: scriptFile('simple', SIMPLE), escapes: scriptFile('esc
 
 const baseEnv = (script) => {
   const env = { ...process.env, ORGAI_CLI_DATA_DIR: DATA_DIR, ORGAI_MOCK: '1', NO_COLOR: '1', TERM: 'xterm-256color', ORGAI_MOCK_SCRIPT: script, LANG: 'en_US.UTF-8' }
+  // A mock host never touches the OS key store: its vault key comes from a throwaway key file.
+  env.ORGAI_CLI_VAULT_KEY_FILE = CLI_ENV.ORGAI_CLI_VAULT_KEY_FILE
+  env.ORGAI_CLI_VAULT_NO_OS_KEYSTORE = '1'
   // No script: the mock's default script, which understands the [mock:deep-tree] marker in the prompt.
   if (!script) delete env.ORGAI_MOCK_SCRIPT
   delete env.ELECTRON_RUN_AS_NODE
@@ -545,6 +550,9 @@ try {
     // A server for the /mcp check below, added before the TUI starts (a save from another orgai reaches no live run).
     const added = await cli(['mcp', 'add', 'e2e-docs', '--command', 'node', '--arg', 'server.js'], { cwd: repo })
     check(added.code === 0, 'i: mcp add gives the project a server for the /mcp view', show(added))
+    // ... and one that needs a secret, for the `s` key (the name sorts after e2e-docs, so the first row stays the same).
+    const vault = await cli(['mcp', 'add', 'e2e-vault', '--command', 'node', '--arg', 'vault.js', '--secret-var', 'E2E_TOKEN'], { cwd: repo })
+    check(vault.code === 0, 'i: mcp add gives the project a server that needs a secret', show(vault))
     const t = tui([...UI.fullscreenArgs], { cols: 120, rows: 40, script: '', cwd: repo })
     open.push(t)
     try {
@@ -633,6 +641,20 @@ try {
       await type(t, ' ')
       const mcpSaid = await t.waitFor((s) => s.includes('Turned e2e-docs off.') && s.includes('MCP servers: this run uses the change now.'), 15_000).then(() => true, () => false)
       check(mcpSaid, 'i: Space in /mcp turns the server off, and the live team run says it uses the change now', esc(t.screen()))
+      // s: a secret is typed into a hidden field; the value never reaches the terminal.
+      check(/e2e-vault[^\n]*needs a secret/.test(t.screen()), 'i: /mcp marks the server whose secret is missing', esc(t.screen()))
+      t.key('down')
+      await sleep(300)
+      const beforeSecret = t.raw().length
+      await type(t, 's')
+      await t.waitFor((s) => s.includes('Value of E2E_TOKEN for e2e-vault'), 10_000)
+      await type(t, 'e2e-tok-4711')
+      await sleep(300)
+      t.key('enter')
+      const secretSaved = await t.waitFor((s) => s.includes('Saved E2E_TOKEN for e2e-vault.'), 15_000).then(() => true, () => false)
+      check(secretSaved, 'i: s in /mcp saves the secret the user typed', esc(t.screen()))
+      check(!t.raw().slice(beforeSecret).includes('e2e-tok-4711'), 'i: ... and the typed value never appears in what the terminal received')
+      check(!/e2e-vault[^\n]*needs a secret/.test(t.screen()), 'i: ... and the server no longer needs a secret', esc(t.screen()))
       t.key('escape')
       await t.waitFor((s) => !s.includes('MCP servers of '), 10_000)
       // /skills on a project without skills says how to add the first one.
@@ -662,7 +684,8 @@ try {
       const summary = await t.waitFor((s) => s.includes("1 added, 1 changed (compared with this run's team)"), 10_000).then(() => true, () => false)
       check(summary, "j: the org chart card says what changes, compared with this run's team", esc(t.screen()))
       check(t.screen().includes('Takes effect now.'), 'j: ... and that it takes effect in this run', esc(t.screen()))
-      // v: the whole diff, in the app's own text view.
+      // v: the whole diff, in the app's own text view. (A card ignores keys for a moment after it arrives.)
+      await sleep(1200)
       t.key('f2')
       await sleep(400)
       t.write('v')

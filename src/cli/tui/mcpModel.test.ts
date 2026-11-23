@@ -6,10 +6,10 @@
 import { describe, expect, it } from 'vitest'
 import type { McpAuthState, McpLibraryInfo, McpServerInfo, McpServerSpec } from '../../shared/types'
 import { fixtureProject, role } from './configTestUtil'
-import { checkedFromRoles, libraryOptions, mcpDetailLines, mcpRoleOptions, mcpRowSegs, mcpRows, rolesFromChecks, type McpData } from './mcpModel'
+import { checkedFromRoles, libraryOptions, mcpDetailLines, mcpRoleOptions, mcpRowSegs, mcpRows, mcpSecretScope, mcpSecretSlots, rolesFromChecks, type McpData } from './mcpModel'
 import { textWidth } from './panes/text'
 
-const server = (over: Partial<McpServerSpec> & Pick<McpServerSpec, 'id' | 'name'> & { authState?: McpAuthState; libraryMissing?: true; missingSecrets?: string[] }): McpServerInfo => ({
+const server = (over: Partial<McpServerSpec> & Pick<McpServerSpec, 'id' | 'name'> & { authState?: McpAuthState; libraryMissing?: true; missingSecrets?: string[]; envSet?: string[]; headersSet?: string[]; secretScope?: 'project' | 'library' }): McpServerInfo => ({
   spec: {
     id: over.id,
     name: over.name,
@@ -22,13 +22,16 @@ const server = (over: Partial<McpServerSpec> & Pick<McpServerSpec, 'id' | 'name'
     ...(over.url ? { url: over.url } : {}),
     ...(over.roles ? { roles: over.roles } : {}),
     ...(over.description ? { description: over.description } : {}),
-    ...(over.libraryId ? { libraryId: over.libraryId } : {})
+    ...(over.libraryId ? { libraryId: over.libraryId } : {}),
+    ...(over.secretEnv ? { secretEnv: over.secretEnv } : {}),
+    ...(over.secretHeaders ? { secretHeaders: over.secretHeaders } : {})
   },
-  envSet: [],
-  headersSet: [],
+  envSet: over.envSet ?? [],
+  headersSet: over.headersSet ?? [],
   missingSecrets: over.missingSecrets ?? [],
   auth: { state: over.authState ?? 'notRequired' },
-  ...(over.libraryMissing ? { libraryMissing: true } : {})
+  ...(over.libraryMissing ? { libraryMissing: true } : {}),
+  ...(over.secretScope ? { secretScope: over.secretScope } : {})
 })
 
 const entry = (id: string, name: string, description?: string): McpLibraryInfo => ({
@@ -124,6 +127,7 @@ describe('mcpDetailLines', () => {
       'available to: Dev',
       'granted on their own: Lead',
       'secrets missing: DOCS_TOKEN',
+      'secrets: none',
       'sign-in: notRequired',
       'source: this project',
       'Reads the docs.'
@@ -138,6 +142,39 @@ describe('mcpDetailLines', () => {
     expect(lines).toContain('source: library entry l9')
     expect(lines).toContain('secrets missing: none')
     expect(mcpDetailLines(data([]), 'nope')).toEqual(['This server is gone.'])
+  })
+
+  it('lists every secret slot the server takes, each with whether a value is stored', () => {
+    const lines = mcpDetailLines(data([server({ id: 'm1', name: 'Docs', secretEnv: ['DOCS_TOKEN', 'DOCS_REGION'], secretHeaders: ['Authorization'], envSet: ['DOCS_TOKEN'], missingSecrets: ['DOCS_REGION', 'Authorization'] })]), 'm1')
+    expect(lines).toContain('secrets missing: DOCS_REGION, Authorization')
+    expect(lines).toContain('secrets: DOCS_TOKEN (set), DOCS_REGION (missing), Authorization (missing)')
+    expect(mcpDetailLines(data([server({ id: 'm2', name: 'Plain' })]), 'm2')).toContain('secrets: none')
+  })
+})
+
+describe('mcpSecretSlots and mcpSecretScope', () => {
+  it('the env slots first, then the header slots, each with whether a value is stored', () => {
+    const info = server({ id: 'm1', name: 'Docs', secretEnv: ['DOCS_TOKEN', 'DOCS_REGION'], secretHeaders: ['Authorization'], envSet: ['DOCS_TOKEN'], headersSet: [], missingSecrets: ['DOCS_REGION', 'Authorization'] })
+    expect(mcpSecretSlots(info)).toEqual([
+      { kind: 'env', name: 'DOCS_TOKEN', set: true },
+      { kind: 'env', name: 'DOCS_REGION', set: false },
+      { kind: 'header', name: 'Authorization', set: false }
+    ])
+  })
+
+  it('no slot when the spec names none, and a field that is missing or not an array names none either', () => {
+    expect(mcpSecretSlots(server({ id: 'm1', name: 'Docs' }))).toEqual([])
+    const broken = { spec: { id: 'm1', name: 'Docs', transport: 'stdio', enabled: true, source: 'user', addedAt: '', secretEnv: 'DOCS_TOKEN', secretHeaders: { 0: 'Authorization' } }, envSet: null, headersSet: 'Authorization' } as unknown as McpServerInfo
+    expect(mcpSecretSlots(broken)).toEqual([])
+  })
+
+  it('library scope only for a link whose values live in the entry it links', () => {
+    expect(mcpSecretScope(server({ id: 'm1', name: 'Docs' }))).toBe('project')
+    expect(mcpSecretScope(server({ id: 'm2', name: 'Notion', libraryId: 'l1' }))).toBe('project')
+    expect(mcpSecretScope(server({ id: 'm3', name: 'Notion', libraryId: 'l1', secretScope: 'project' }))).toBe('project')
+    expect(mcpSecretScope(server({ id: 'm4', name: 'Notion', libraryId: 'l1', secretScope: 'library' }))).toBe('library')
+    // 'library' with no entry to write to is still this project's own secret.
+    expect(mcpSecretScope(server({ id: 'm5', name: 'Odd', secretScope: 'library' }))).toBe('project')
   })
 })
 

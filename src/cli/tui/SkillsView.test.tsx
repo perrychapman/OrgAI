@@ -123,7 +123,9 @@ function fakeTools(over: Partial<Pick<FakeTools, 'held' | 'library'>> = {}): Fak
     mcpLibrary: async () => [],
     setMcp: async () => undefined as never,
     linkMcp: async () => undefined as never,
-    removeMcp: async () => undefined as never
+    removeMcp: async () => undefined as never,
+    setMcpSecret: async () => undefined as never,
+    setMcpLibrarySecret: async () => undefined as never
   }
   return api
 }

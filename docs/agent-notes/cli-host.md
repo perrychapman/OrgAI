@@ -586,7 +586,12 @@ Waves 0-7: host ownership, dispatcher, socket server, self-control gate, exec, T
   in the background). Each save is ONE field of ONE item, so it reaches the live team runs this terminal hosts
   (ARCHITECTURE.md "Host changes in a live run", TERMINAL); the run answers in the status line, and the view adds its
   "keeps what it started with" note only when some live run does not take the save. `setMcp` reads mcp:list afresh
-  and upserts the spec with that one field changed, which is what the host's one-field rule expects. Not in the views:
-  adding a new server or skill by hand, secrets and sign-in (the `orgai mcp` / `orgai skills` commands). Checked by
+  and upserts the spec with that one field changed, which is what the host's one-field rule expects. `s` in /mcp
+  (2026-11-23) sets or deletes one secret value: a hidden input (`configUi.tsx` 'input' dialog with `secret: true`:
+  dots, never the text; a pasted line break is dropped; up to 4000 characters), saved with mcp:setSecret, or
+  mcpLibrary:setSecret when the values live in the linked library entry (`McpServerInfo.secretScope`); the value is
+  never read back and never in a message; e2e checks the raw pty output never carries it. A live run is not told
+  about a new secret (mcp:setSecret has no live path on any host). Not in the views: adding a new server or skill by
+  hand, and sign-in (the `orgai mcp` / `orgai skills` commands). Checked by
   the four view and model test files and e2e `cli-tui.mjs` section i (mock adapter); no live provider. The views were
   written by a local model from a design brief and reviewed line by line.

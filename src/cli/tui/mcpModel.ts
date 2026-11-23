@@ -96,6 +96,33 @@ export function mcpRowSegs(row: McpRow, width: number, nameWidth: number, sep: s
   ]
 }
 
+/** One secret a server takes: an env var or a header name, and whether a value is stored for it. Never a value. */
+export interface McpSecretSlot {
+  kind: 'env' | 'header'
+  name: string
+  set: boolean
+}
+
+/** The names of a secret list, guarding a field that is missing or not an array. */
+const secretNames = (v: unknown): string[] => (Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string' && n !== '') : [])
+
+/** The secret slots of one server: its `secretEnv` names, then its `secretHeaders` names, each with whether a value is stored. */
+export function mcpSecretSlots(info: McpServerInfo): McpSecretSlot[] {
+  const spec = info.spec
+  const envSet = secretNames(info.envSet)
+  const headersSet = secretNames(info.headersSet)
+  return [
+    ...secretNames(spec.secretEnv).map((name): McpSecretSlot => ({ kind: 'env', name, set: envSet.includes(name) })),
+    ...secretNames(spec.secretHeaders).map((name): McpSecretSlot => ({ kind: 'header', name, set: headersSet.includes(name) }))
+  ]
+}
+
+/** Where one server's secret values live: its library entry (shared by every project that links it), else this project. */
+export function mcpSecretScope(info: McpServerInfo): 'project' | 'library' {
+  const libraryId = info.spec.libraryId
+  return info.secretScope === 'library' && typeof libraryId === 'string' && libraryId !== '' ? 'library' : 'project'
+}
+
 /** What one server is: its facts, then its description. Plain lines; the view cuts them to the width. */
 export function mcpDetailLines(data: McpData, serverId: string): string[] {
   const info = data.servers.find((s) => s.spec.id === serverId)
@@ -106,6 +133,7 @@ export function mcpDetailLines(data: McpData, serverId: string): string[] {
   const known = everyRole ? data.project.roles : data.project.roles.filter((r) => slugs.includes(r.slug))
   const available = everyRole ? 'every role' : known.length === 0 ? 'no role' : known.map((r) => clean(r.name, 80)).join(', ')
   const own = data.project.roles.filter((r) => r.mcpServers?.includes(spec.id))
+  const slots = mcpSecretSlots(info)
   const command = [clean(spec.command ?? '', 200), ...(spec.args ?? []).map((a) => clean(a, 120))].filter(Boolean).join(' ')
   return [
     clean(spec.name, 120),
@@ -115,6 +143,7 @@ export function mcpDetailLines(data: McpData, serverId: string): string[] {
     `available to: ${available}`,
     `granted on their own: ${own.length ? own.map((r) => clean(r.name, 80)).join(', ') : 'none'}`,
     `secrets missing: ${info.missingSecrets.length ? info.missingSecrets.map((n) => clean(n, 80)).join(', ') : 'none'}`,
+    `secrets: ${slots.length ? slots.map((s) => `${clean(s.name, 80)} (${s.set ? 'set' : 'missing'})`).join(', ') : 'none'}`,
     `sign-in: ${clean(info.auth.state, 40)}`,
     `source: ${spec.libraryId ? `library entry ${clean(spec.libraryId, 120)}` : 'this project'}`,
     ...(spec.description ? [clean(spec.description, 1000)] : [])

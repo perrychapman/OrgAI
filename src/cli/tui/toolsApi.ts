@@ -27,6 +27,10 @@ export interface TuiToolsApi {
   linkMcp(projectId: string, libraryId: string): Promise<McpMutationResult>
   /** mcp:remove (configure). */
   removeMcp(projectId: string, serverId: string): Promise<McpMutationResult>
+  /** mcp:setSecret (configure): one secret value of a project server; `null` deletes it. The value is never read back. */
+  setMcpSecret(projectId: string, serverId: string, kind: 'env' | 'header', name: string, value: string | null): Promise<McpMutationResult>
+  /** mcpLibrary:setSecret (configure): one secret value of a library entry, used by every project that links it. */
+  setMcpLibrarySecret(libraryId: string, kind: 'env' | 'header', name: string, value: string | null): Promise<void>
   /** skills:list (read). */
   skills(projectId: string): Promise<SkillInfo[]>
   /** skillLibrary:list (read). */
