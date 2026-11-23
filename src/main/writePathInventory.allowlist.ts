@@ -279,6 +279,12 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/schedules/testkit.ts:cleanup:rmSync': TEST_TEMP,
   'src/main/schedules/testkit.ts:fakeEnv:mkdtempSync': TEST_TEMP,
   'src/main/skills/files.ts:writeFolder:writeFileSync': 'single owner',
+  // UI overhaul: the per-project allow counter (<data>/projects/<id>/allow-counts.json, written from the desktop
+  // decide path only) and skill export (a new folder under a destination the user just picked; never overwrites).
+  'src/main/runtime/allowCounter.ts:bumpAllowCount:atomicWrite': 'single owner',
+  'src/main/skills/service.ts:SkillService.exportTo:mkdirSync': 'single owner',
+  'src/main/skills/service.ts:SkillService.exportTo:rmSync': 'single owner',
+  'src/main/skills/service.ts:SkillService.exportTo:writeFileSync': 'single owner',
   'src/main/skills/service.ts:copy:cpSync': 'single owner',
   'src/main/skills/service.ts:discard:rmSync': 'single owner',
   'src/main/skills/service.ts:restore:cpSync': 'single owner',
