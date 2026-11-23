@@ -96,7 +96,7 @@ try {
     check((await form.getByLabel('Name', { exact: true }).count()) === 0, 'first launch: no name or folder fields before a kind is chosen')
     await shot('first-launch')
     await form.locator('[data-testid=project-kind-option][data-kind=engagement] input[type=radio]').check({ force: true })
-    check((await form.getByLabel('Name', { exact: true }).getAttribute('placeholder')) === 'Client or case name', 'engagement: Name placeholder is "Client or case name"')
+    check((await form.getByLabel('Name', { exact: true }).getAttribute('placeholder')) === 'Name this engagement', 'engagement: Name placeholder is "Name this engagement"')
     check(clean(await form.locator('label[for$="-path"]').innerText()) === 'Working folder' && !/\bgit\b/i.test(await form.locator('label[for$="-path"]').locator('xpath=..').innerText()), 'engagement: "Working folder" label with no git wording')
     check((await form.getByRole('button', { name: 'Create and start interview' }).count()) === 1, 'engagement: submit reads "Create and start interview" with the interview on')
     check((await form.getByText('What is the engagement about? (optional)').count()) === 1, 'engagement: brief label is "What is the engagement about? (optional)"')

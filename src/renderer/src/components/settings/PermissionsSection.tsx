@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 import { useCallback, useEffect, useId, useState } from 'react'
 import { flushSync } from 'react-dom'
 import type { PermissionMode, Project, TeamReviewAuto } from '@shared/types'
-import { DEFAULT_MAX_AUTO_CONTINUES, PERMISSION_MODE_OPTIONS } from '@shared/types'
+import { DEFAULT_MAX_AUTO_CONTINUES } from '@shared/types'
 import { MAX_AUTO_CONTINUES_LIMIT, projectKindOf, runMessagingOn, teamReviewOf } from '@shared/defaults'
 import PermissionRulesPanel from '../PermissionRulesPanel'
 import { SettingRow, settingDescId } from '../ui/SettingRow'
@@ -118,7 +118,7 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
   const referenceCount = (project.referenceDirectories ?? []).length
   const engagement = projectKindOf(project) === 'engagement'
 
-  const current = PERMISSION_MODE_OPTIONS.find((o) => o.value === project.permissionMode)
+  const currentTitle = PERMISSION_TITLE[project.permissionMode]
   const review = teamReviewOf(project)
   const autoOn = project.autoContinue !== false
   // Worktree isolation and merge review moved to the Branches pane (WorkCopiesSection, Branches board).
@@ -140,7 +140,7 @@ export function PermissionsSection({ project, patch }: { project: Project; patch
             <p className="perm-mode-now">
               <span className="sr-only">Now: </span>
               <span className="perm-mode-tradeoff" data-testid="permission-mode-tradeoff">
-                {PERMISSION_MODE_TRADEOFF[project.permissionMode] ?? current?.label}
+                {PERMISSION_MODE_TRADEOFF[project.permissionMode] ?? currentTitle}
               </span>
               {appDefault && (
                 <span className="perm-mode-default" data-testid="permission-mode-default">

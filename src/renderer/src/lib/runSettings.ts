@@ -8,7 +8,7 @@ import type { ConnectionId, Effort, ModelTier, ModelRef, PermissionMode, Project
 import { EFFORTS, isPermissionMode, runPermissionModeChoices } from '@shared/types'
 import { adapterOnConnection, effortOptionsFor, modelFamily, projectConnection, resolveModelSetting, staffingGoalOf } from '@shared/defaults'
 import { showsGoalChoice } from './runGoal'
-import { PERMISSION_MODE_SHORT } from '@shared/view/settingsCopy'
+import { permissionTitle } from './permissionWords'
 import { PERMISSION_MODE_TRADEOFF } from '@shared/view/permissionCopy'
 
 // ---------- Effort ----------
@@ -147,9 +147,9 @@ export function permissionTone(mode: PermissionMode): 'danger' | 'warning' | nul
   return isPermissiveMode(mode) ? 'warning' : null
 }
 
-/** Short name for the chip ("Plan only"). */
+/** Plain name for the chip and notes ("Ask before risky actions"); the exact mode name is secondary (permissionWords). */
 export function permissionModeName(mode: PermissionMode): string {
-  return PERMISSION_MODE_SHORT[mode]
+  return permissionTitle(mode)
 }
 
 /** One line on what the mode does (the settings select's trade-off line). */

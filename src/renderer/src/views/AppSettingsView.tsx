@@ -26,7 +26,8 @@ import { SettingsAdvanced, openSettingsAdvanced } from '../components/settings/S
 import { SettingsPage } from '../components/settings/SettingsPage'
 import { SettingsCard } from '../components/settings/SettingsCard'
 import { SettingsGroup, SettingsSection } from '../components/settings/SettingsSection'
-import { PERMISSION_MODE_SHORT, SETTINGS_COPY } from '../lib/settingsCopy'
+import { SETTINGS_COPY } from '../lib/settingsCopy'
+import { permissionTitle } from '../lib/permissionWords'
 import { connectionLabel } from '../lib/connectionLabel'
 import { PERMISSION_MODE_TRADEOFF } from '../lib/permissionCopy'
 import { modelSettingGroups, modelSources } from '../lib/assistantModels'
@@ -627,7 +628,7 @@ export default function AppSettingsView({ project: embedded }: { project?: Proje
                     >
                       {PERMISSION_MODE_OPTIONS.map((o) => (
                         <option key={o.value} value={o.value}>
-                          {PERMISSION_MODE_SHORT[o.value]}
+                          {permissionTitle(o.value)}
                         </option>
                       ))}
                     </select>

@@ -760,3 +760,10 @@
 .dash-first-panel[hidden] {
   display: none;
 }
+
+/* The sticky submit row never covers a setup choice: anything inside the form's options scrolls clear of it (focus,
+   scrollIntoView and keyboard moves all honour scroll-margin). --form-submit-h is measured in NewProjectForm. */
+.project-form.in-panel .form-options :is(input, select, label, .hint, .import-choice),
+.project-form.in-dialog .form-options :is(input, select, label, .hint, .import-choice) {
+  scroll-margin-bottom: calc(var(--form-submit-h, calc(var(--space-8) + var(--space-3))) + var(--space-3));
+}

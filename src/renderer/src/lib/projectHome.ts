@@ -13,12 +13,12 @@ import { bandAgentState, planProgress, planProgressText, runMarks, type BandAgen
 
 /** Plain words for a permission mode, after "N roles · " (the board: "12 roles · asks before risky actions"). */
 export const PERMISSION_WORDS: Readonly<Record<PermissionMode, string>> = {
-  auto: 'works on its own and asks when unsure',
+  auto: 'goes ahead within the rules, asks when unsure',
   acceptEdits: 'edits files freely, asks before commands',
   default: 'asks before risky actions',
   dontAsk: 'never asks, blocks what needs approval',
   plan: 'plans only, changes nothing',
-  bypassPermissions: 'asks nothing (all prompts bypassed)'
+  bypassPermissions: 'skips all checks, asks nothing'
 }
 
 export function permissionWords(mode: PermissionMode | undefined): string {

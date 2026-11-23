@@ -1,5 +1,5 @@
 import { projectKindOf } from '@shared/defaults'
-import type { PermissionMode, Project } from '@shared/types'
+import type { Project } from '@shared/types'
 
 /**
  * Pure helpers for Home's task box (docs/design/ui-overhaul/project/Main.dc.html): the heading, the "Try" suggestions, the
@@ -44,20 +44,6 @@ export function heroScopeLabel(project: Pick<Project, 'roles'> | undefined): str
   if (!project) return ''
   const n = project.roles.length
   return `Whole team · ${n} ${n === 1 ? 'role' : 'roles'}`
-}
-
-const PERMISSION_WORDS: Record<PermissionMode, string> = {
-  default: 'Asks before risky actions',
-  acceptEdits: 'Edits allowed, asks for commands',
-  auto: 'Unattended, asks when unsure',
-  dontAsk: 'Only pre-approved actions',
-  plan: 'Plans first, changes nothing',
-  bypassPermissions: 'Never asks'
-}
-
-/** The project's permission setting in plain words (read only here; the New run page changes it). */
-export function heroPermissionLabel(mode: PermissionMode | undefined): string {
-  return mode ? PERMISSION_WORDS[mode] : ''
 }
 
 /** A task can be sent when it has something other than white space. */

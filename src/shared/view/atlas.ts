@@ -233,7 +233,7 @@ export const PROJECT_SETTINGS_SECTIONS = {
   engagementPlan: 'settings-section-engagement-plan',
   /** General > Context notes (engagements only). */
   contextNotes: 'settings-section-context-notes',
-  /** Maintenance pane (the Dashboard tile's "N branches waiting" chip). */
+  /** Maintenance pane (the Home tile's "N branches waiting" chip). */
   maintenance: 'settings-section-maintenance'
 } as const
 export type ProjectSettingsSection = (typeof PROJECT_SETTINGS_SECTIONS)[keyof typeof PROJECT_SETTINGS_SECTIONS]
@@ -293,31 +293,31 @@ const PRJ_SETTINGS = ['Project', 'Settings'] as const // the renderer swaps the 
 const PROJ = 'Project'
 
 export const ATLAS_SURFACES: readonly AtlasSurface[] = [
-  // ----- Dashboard and New project -----
+  // ----- Home and New project -----
   {
     id: 'dashboard',
-    label: 'Dashboard',
-    path: ['Dashboard'],
+    label: 'Home',
+    path: ['Home'],
     kind: 'view',
     scope: 'app',
     summary: 'See what needs you, running and paused runs, what happened since you last looked and every project at a glance. Open, delete or start a project from here.',
-    reach: [{ via: 'sidebar', label: 'Dashboard' }],
+    reach: [{ via: 'sidebar', label: 'Home' }],
     testIds: ['dashboard-hero', 'dash-projects', 'project-tile', 'dash-usage', 'dash-cost', 'dash-connections']
   },
   {
     id: 'dashboard-needs-you',
     label: 'Waiting on you',
-    path: ['Dashboard', 'Waiting on you'],
+    path: ['Home', 'Waiting on you'],
     kind: 'section',
     scope: 'app',
-    summary: 'The decisions waiting on you across projects, first on the Dashboard; Working now lists live runs and Pick up where you left off lists paused, ended and recent runs. A row opens the run and its card.',
-    reach: [{ via: 'sidebar', label: 'Dashboard' }],
+    summary: 'The decisions waiting on you across projects, first on the Home; Working now lists live runs and Pick up where you left off lists paused, ended and recent runs. A row opens the run and its card.',
+    reach: [{ via: 'sidebar', label: 'Home' }],
     testIds: ['dash-needs-you', 'dash-needs-row', 'dash-now', 'dash-running-row', 'dash-resume', 'dash-resume-row']
   },
   {
     id: 'dashboard-new-project',
     label: 'New project',
-    path: ['Dashboard', 'New project'],
+    path: ['Home', 'New project'],
     kind: 'dialog',
     scope: 'app',
     summary: 'Create a project from a folder. Choose Code or Engagement, name it, pick the folder, and choose how the team is set up (setup interview, found agents, a template or the default chart).',
@@ -331,7 +331,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'dashboard-new-project-github',
     label: 'From GitHub',
-    path: ['Dashboard', 'New project', 'From GitHub'],
+    path: ['Home', 'New project', 'From GitHub'],
     kind: 'section',
     scope: 'app',
     summary: 'Clone, or fork and clone, a repository by address into a folder you choose, then continue creating the project. Code projects only.',
@@ -341,7 +341,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'dashboard-new-project-template',
     label: 'Start from a template',
-    path: ['Dashboard', 'New project', 'Start from a template'],
+    path: ['Home', 'New project', 'Start from a template'],
     kind: 'section',
     scope: 'app',
     summary: 'Give the new project a saved team template instead of the default chart or the setup interview.',
@@ -351,7 +351,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   {
     id: 'dashboard-new-project-import',
     label: 'Import found agents',
-    path: ['Dashboard', 'New project', 'Import found agents'],
+    path: ['Home', 'New project', 'Import found agents'],
     kind: 'section',
     scope: 'app',
     summary: 'When the folder already holds agent definitions from other tools, choose to import them, run the setup interview or keep the default chart. Import opens a review after the project is created.',
@@ -419,7 +419,7 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
     path: ['Sidebar'],
     kind: 'view',
     scope: 'app',
-    summary: 'Navigate to the Dashboard, the Assistants and your projects, with their open runs. It collapses to a narrow rail and can be resized.',
+    summary: 'Navigate to the Home, the Assistants and your projects, with their open runs. It collapses to a narrow rail and can be resized.',
     reach: [{ via: 'menu', action: 'toggle-sidebar' }, { via: 'shortcut', label: 'Ctrl/Cmd+B' }],
     testIds: ['sidebar-toggle', 'sidebar-resize', 'nav-project', 'nav-assistant', 'app-settings-button']
   },
@@ -519,12 +519,12 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'project-outputs',
-    label: 'Outputs',
-    path: [PROJ, 'Outputs'],
+    label: 'Files',
+    path: [PROJ, 'Files'],
     kind: 'tab',
     scope: 'project',
     summary: 'Documents, spreadsheets, diagrams and files the agents produced, shown here as a list with a preview. Open, save or remove one from its actions.',
-    reach: [{ via: 'tab', label: 'Outputs' }],
+    reach: [{ via: 'tab', label: 'Files' }],
     testIds: ['tab-outputs', 'outputs-search', 'outputs-list', 'output-row']
   },
   {
@@ -790,8 +790,8 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'project-settings-maintenance',
-    label: 'Maintenance',
-    path: [...PRJ_SETTINGS, 'Maintenance'],
+    label: 'Branches or Maintenance',
+    path: [...PRJ_SETTINGS, 'Branches or Maintenance'],
     kind: 'pane',
     scope: 'project',
     summary: 'Branches for code projects, Maintenance for engagements: refresh the architecture document, remove OrgAI files from the folder, forget an engagement, clear recorded knowledge or delete the project.',
@@ -1149,12 +1149,12 @@ export const ATLAS_SURFACES: readonly AtlasSurface[] = [
   },
   {
     id: 'run-outputs',
-    label: 'Outputs',
-    path: [PROJ, 'Live', 'Side panel', 'Outputs'],
+    label: 'Files',
+    path: [PROJ, 'Live', 'Side panel', 'Files'],
     kind: 'tab',
     scope: 'run',
     summary: 'The documents, spreadsheets, diagrams and files this run produced, with an in-window preview.',
-    reach: [{ via: 'button', label: 'Outputs', on: 'run-side-panel' }],
+    reach: [{ via: 'button', label: 'Files', on: 'run-side-panel' }],
     testIds: ['side-tab-outputs', 'run-output-row', 'run-meta-outputs']
   },
   {
@@ -1402,8 +1402,8 @@ export const APP_SETTING_DOCS: Readonly<Record<keyof AppSettings, AtlasSettingDo
   },
   // PLACEHOLDER (Schedules contract): the renderer engineer points this at the Schedules surface. Never proposable.
   schedulesPaused: { summary: 'Pause every schedule at once. Nothing fires while it is on.', surface: 'schedules', control: 'user' },
-  // The person's own name for the Dashboard greeting. Never proposable and never sent to a model.
-  displayName: { summary: 'Your own name, shown only in the Dashboard greeting. Optional, up to 40 characters, kept on this computer and never sent to a model.', surface: 'dashboard', control: 'user' },
+  // The person's own name for the Home greeting. Never proposable and never sent to a model.
+  displayName: { summary: 'Your own name, shown only in the Home greeting. Optional, up to 40 characters, kept on this computer and never sent to a model.', surface: 'dashboard', control: 'user' },
   // UI overhaul (docs/design/ui-overhaul/impl-runtime.md). Surfaces move to the new settings pages when the renderer lands them.
   playSound: { summary: 'Play a sound when something needs you. Off unless turned on.', surface: 'none', control: 'user' },
   spendWarnPercent: { summary: 'Warn in the run (and the Inbox) when spending reaches this percent of a limit, for example 80. Off unless set.', surface: 'none', control: 'user' },

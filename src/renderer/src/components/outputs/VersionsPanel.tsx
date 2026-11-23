@@ -173,7 +173,7 @@ export default function VersionsPanel(): ReactElement | null {
                     data-testid="output-version-name-input"
                     value={label}
                     maxLength={VERSION_NAME_MAX}
-                    placeholder="For example: Sent to the client"
+                    placeholder="For example: Sent for review"
                     onChange={(e) => setLabel(e.target.value)}
                   />
                   <Button type="submit" size="sm" variant="primary" testId="output-version-name-save">

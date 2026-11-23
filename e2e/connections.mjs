@@ -122,7 +122,7 @@ try {
       check(!!mb && mb.width >= 170 && mb.width <= 250, `Permission mode select is about 240 px wide at ${w}x${h} ${theme}`, JSON.stringify(mb))
       // N8: the same short names as the project's mode select (lib/settingsCopy.ts PERMISSION_MODE_SHORT).
       const appModes = (await modeSel.locator('option').allTextContents()).map((t) => t.trim())
-      check(JSON.stringify(appModes) === JSON.stringify(['Unattended', 'Auto-accept edits', 'Ask for everything risky', 'Never ask', 'Plan only', 'Bypass all prompts']), `default-mode-select uses the shared short names at ${w}x${h} ${theme}`, appModes.join(' | '))
+      check(JSON.stringify(appModes) === JSON.stringify(['Go ahead within the rules', 'Edit freely, ask for commands', 'Ask before risky actions', 'Never ask', 'Plan only', 'Skip all checks']), `default-mode-select uses the plain mode titles at ${w}x${h} ${theme}`, appModes.join(' | '))
       check(/Each project can change these\. Existing projects keep their own\./.test((await page.locator('[data-testid=new-projects-section]').textContent()) ?? ''), 'New projects lead reads as specced')
       await shot(`general-${w}x${h}-${theme}`)
       await openAdvanced('app-general')

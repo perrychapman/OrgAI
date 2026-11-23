@@ -2,7 +2,7 @@
 // long repository path (no horizontal page scroll, sidebar visible, empty state shown), screenshots, and deletes them.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { TMP, check, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, cleanup, endSession, openAppSettings, projectTab, teamPanelTab, runRecordsDir, createProject, gotoProjects, openProjectForm, deleteProject, findProject, finish, launch, log, makeFixtureRepo, openProject, removeFixture, sleep } from './lib.mjs'
 
 // The scripted mock adapter (no tokens) is opt-in via this env var; the app child inherits it.
 process.env.ORGAI_MOCK = '1'
@@ -70,6 +70,48 @@ try {
     check(await page.locator('[data-testid=project-kind-option][data-kind=engagement] input').isChecked(), 'W4 Skip setup lands on the start choice with the picked kind preselected')
     check(await page.evaluate(() => localStorage.getItem('orgai.welcome.done') === '1'), 'W4 skipping is remembered')
     await shot('welcome-start')
+  }
+
+  // ---- Setup choices are never covered by the sticky submit row (inline first-launch form, or the dialog) ----
+  {
+    const countProjects = () => page.evaluate(async () => (await window.orgai.projects.list()).length)
+    const before = await countProjects()
+    await gotoProjects(page)
+    const form = await openProjectForm(page)
+    await form.locator('[data-testid=project-kind-option][data-kind=code] input[type=radio]').check({ force: true })
+    await form.getByRole('radio', { name: 'Existing code', exact: true }).check({ force: true })
+    await form.locator('input[placeholder*="repo"]').fill(repo)
+    const fieldset = form.locator('[data-testid=setup-choice]')
+    await fieldset.or(form.locator('[data-testid=architect-setup]')).first().waitFor({ timeout: 30_000 })
+    if (await fieldset.count()) {
+      for (const [w, h] of [[1600, 1000], [1024, 640]]) {
+        await app.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+        await sleep(300)
+        const radios = fieldset.locator('input[type=radio]')
+        const n = await radios.count()
+        for (let i = 0; i < n; i++) {
+          const radio = radios.nth(i)
+          const value = await radio.getAttribute('value')
+          // Keyboard focus scrolls the radio the least it can; it must still clear the sticky row.
+          await radio.focus()
+          const hit = await radio.evaluate((el) => {
+            const r = el.getBoundingClientRect()
+            const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+            return { ok: !!top && (top === el || !!top.closest('label')?.contains(el)), tag: top ? `${top.tagName}.${String(top.className)}` : 'none', submit: !!top?.closest('[data-testid=new-project-submit]') }
+          })
+          check(hit.ok && !hit.submit, `the "${value}" setup choice is not under the submit row at ${w}x${h}`, JSON.stringify(hit))
+          await radio.click()
+          check(await radio.isChecked(), `clicking the "${value}" setup choice only selects it at ${w}x${h}`)
+        }
+        check((await countProjects()) === before, `no project is created by clicking the setup choices at ${w}x${h}`)
+      }
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1600, 1000))
+      await sleep(300)
+    }
+    if (await page.locator('[data-testid=new-project-dialog]').count()) {
+      await page.keyboard.press('Escape')
+      await page.locator('[data-testid=new-project-dialog]').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+    }
   }
 
   const project = await createProject(page, { mode: 'existing', path: repo, name: NAME })

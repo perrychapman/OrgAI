@@ -8,7 +8,6 @@ import type { PermissionMode, PermissionSuggestion } from '@shared/types'
 import { PROJECT_ALLOWED_DIRECTORIES_MAX, PROJECT_ALLOWED_DIRECTORY_MAX_CHARS } from '@shared/types'
 import { isCdSegment, oneLine, shellSegments } from './decisionTitle'
 import { abbreviatePath } from './paths'
-import { PERMISSION_MODE_SHORT } from './settingsCopy'
 
 // ---------- Paths ----------
 
@@ -313,7 +312,7 @@ export interface ScopeCopy {
 /**
  * One sentence per answer, from what the suggestions grant. Session: rules, folders and a mode for the rest of this
  * run. Project: rules saved to the project's rules file, folders added to its allowed folders, and an edit in a project
- * on "Ask for everything risky" switches it to "Auto-accept edits" (PERMISSION_MODE_SHORT).
+ * on "Ask before risky actions" switches it to "Edit freely, ask for commands" (the renderer's permissionWords titles).
  */
 export function scopeCopy(suggestions: readonly PermissionSuggestion[] | undefined, projectMode?: PermissionMode): ScopeCopy {
   const once = 'Allow once: this call only.'
@@ -340,8 +339,8 @@ export function scopeCopy(suggestions: readonly PermissionSuggestion[] | undefin
   for (const mode of modes) {
     if (mode === 'acceptEdits') {
       session.push('auto-accepts file edits')
-      // Main switches the project's mode only from "Ask for everything risky"; in other modes the switch is session-only.
-      if (projectMode === 'default') project.push(`switches this project to ${PERMISSION_MODE_SHORT.acceptEdits}`)
+      // Main switches the project's mode only from "Ask before risky actions";in other modes the switch is session-only.
+      if (projectMode === 'default') project.push('switches this project to Edit freely, ask for commands')
     } else {
       session.push(oneLine(`uses permission mode ${mode}`, 60))
     }

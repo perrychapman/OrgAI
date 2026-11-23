@@ -26,7 +26,7 @@ export const APP_MENU_PANES: readonly SettingsMenuPane[] = [
 /** Project panes; the maintenance pane reads "Branches" on code projects and "Maintenance" on engagements. */
 export function projectMenuPanes(engagement: boolean): SettingsMenuPane[] {
   return [
-    { id: 'general', label: 'Basics', description: engagement ? 'Name, client, folder, plan and the provider this engagement uses.' : 'Name, folder, brief and the provider this project uses.' },
+    { id: 'general', label: 'Basics', description: engagement ? 'Name, who or what it is for, folder, plan and the provider this engagement uses.' : 'Name, folder, brief and the provider this project uses.' },
     { id: 'permissions', label: 'Permissions', description: 'How much the team asks you, and what it may touch.' },
     { id: 'limits', label: 'Spending limits', description: 'What this project spent, the cap that stops a run, and how big a run can get.' },
     engagement

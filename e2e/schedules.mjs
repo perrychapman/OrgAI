@@ -6,7 +6,7 @@
 // Pause all (banner, a due slot is recorded as skipped and does not start, Run now still works) and persistence (restart
 // on the same data dir: schedules and history are back, no slot fires twice). Waits on conditions, not fixed sleeps.
 // A check on a known integration defect logs KNOWN: and is skipped so the rest still runs.
-import { TMP, check, createProject, endSession, finish, launch, log, makeFixtureRepo, relaunch, removeFixture, sleep } from './lib.mjs'
+import { TMP, check, createProject, endSession, finish, launch, log, makeFixtureRepo, openProject, projectTab, relaunch, removeFixture, sleep } from './lib.mjs'
 
 process.env.ORGAI_MOCK = '1'
 process.env.ORGAI_SCHEDULE_TEST_TICK_MS = '200'
@@ -424,6 +424,54 @@ try {
     await shot('done-row')
   }
   await endSession(page).catch(() => {})
+
+  // ---------- 8b. New run: "Save as a schedule instead" ----------
+  {
+    const NRT = (id) => page.locator(`[data-testid=${id}]`)
+    await page.evaluate(async (name) => {
+      const p = (await window.orgai.projects.list()).find((x) => x.name === name)
+      await window.orgai.projects.save({ ...p, permissionMode: 'acceptEdits' })
+    }, PROJECT)
+    await page.reload()
+    await page.waitForSelector('.sidebar', { timeout: 60_000 })
+    await openProject(page, PROJECT)
+    await projectTab(page, 'Live').click()
+    if (!(await page.locator('.new-run').count())) await page.keyboard.press('Control+t')
+    await page.locator('.new-run').waitFor({ timeout: 10_000 })
+    const longPrompt = 'Go through every open pull request in this repository and write a short summary of what changed in each one, grouped by area.\nSecond line that must not be in the name.'
+    await page.locator('.composer textarea').fill(longPrompt)
+    const chooseMode = async (mode) => {
+      await NRT('run-permission-change').click()
+      await NRT('run-permission-picker').waitFor({ state: 'visible' })
+      await page.locator(`[data-testid=run-permission-choice][value="${mode}"]`).check()
+      await NRT('run-permission-apply').click()
+      if (await NRT('run-permission-confirm').isVisible().catch(() => false)) await NRT('run-permission-confirm').click()
+    }
+    await chooseMode('plan')
+    await NRT('new-run-limit').fill('0.75')
+    await NRT('new-run-schedule').click()
+    await NRT('schedule-editor').waitFor({ timeout: 10_000 })
+    const nm = await NRT('schedule-field-name').inputValue()
+    check(nm.length > 0 && nm.length <= 49 && nm.endsWith('…') && !nm.includes('Second line'), '8b the editor opens with a short clamped name from the first line', nm)
+    check((await NRT('schedule-field-budget').inputValue()) === '0.75', '8b the per-run limit is carried over', await NRT('schedule-field-budget').inputValue())
+    check((await NRT('schedule-field-permission').inputValue()) === 'plan', '8b an allowed, narrower permission mode is carried over', await NRT('schedule-field-permission').inputValue())
+    const note = clean(await NRT('schedule-not-kept-note').innerText())
+    check(/cannot hold effort or goal|always starts with the whole team/.test(note), '8b the note names what a schedule cannot hold', note)
+    await shot('new-run-seed')
+    await NRT('schedule-cancel').click()
+    await NRT('schedule-editor').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+    // Bypass is never carried, and the note says why.
+    await chooseMode('bypassPermissions')
+    await NRT('new-run-schedule').click()
+    await NRT('schedule-editor').waitFor({ timeout: 10_000 })
+    const bypass = await NRT('schedule-field-permission').inputValue()
+    const note2 = clean(await NRT('schedule-not-kept-note').innerText())
+    check(bypass !== 'bypassPermissions' && bypass === '', '8b Bypass is never carried into the schedule', bypass)
+    check(/permission mode that asks less/.test(note2), '8b the note says the wider permission mode was not carried', note2)
+    await NRT('schedule-cancel').click()
+    await NRT('schedule-editor').waitFor({ state: 'detached', timeout: 5000 }).catch(() => {})
+    check(!(await list()).some((s) => s.name === nm), '8b cancelling saves no schedule')
+  }
 
   // ---------- 9. Persistence ----------
   // Let ended runs settle so the snapshot is stable.
