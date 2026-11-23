@@ -89,6 +89,12 @@ describe('hold builders', () => {
     const other = providerHold({ auth: false, lastOkAt: 3, since: 1, facts: ended })
     expect(other.provider).toEqual({ error: 'The provider could not be reached or answered with an error.', lastOkAt: 3 })
   })
+
+  it('provider tries are carried only as a positive whole number', () => {
+    expect(providerHold({ auth: false, tries: 4, since: 1, facts: ended }).provider).toMatchObject({ tries: 4 })
+    for (const tries of [0, -1, 1.5, NaN, Infinity, undefined]) expect(providerHold({ auth: false, ...(tries !== undefined ? { tries } : {}), since: 1, facts: ended }).provider).not.toHaveProperty('tries')
+    expect(structuredClone(providerHold({ auth: false, tries: 2, since: 1, facts: ended }))).toBeTruthy()
+  })
 })
 
 describe('plan holds', () => {
