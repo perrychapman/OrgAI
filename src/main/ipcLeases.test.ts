@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC } from '@shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, KIT_IPC, OVERHAUL_IPC } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>()
@@ -92,7 +92,9 @@ async function refusalOf(channel: string): Promise<string | undefined> {
 
 describe('desktop mutation leases (cli-standalone.md 4.3)', () => {
   it('every desktop-only channel is classified as mutating or not, and nothing else is', () => {
-    expect(Object.keys(DESKTOP_CHANNEL_MUTATES).sort()).toEqual([...DESKTOP_ONLY_CHANNELS].sort())
+    // OVERHAUL_IPC channels are desktop-only too but are not registry entries (overhaulIpc.test.ts covers them).
+    const overhaul = new Set<string>(Object.values(OVERHAUL_IPC))
+    expect(Object.keys(DESKTOP_CHANNEL_MUTATES).filter((c) => !overhaul.has(c)).sort()).toEqual([...DESKTOP_ONLY_CHANNELS].sort())
     // The ones the spec names are mutating.
     for (const c of [KIT_IPC.kitApplyImport, IPC.skillLibraryAddFromFolder, IPC.appSetNotifications, IPC.projectsCloneRepo]) expect(DESKTOP_CHANNEL_MUTATES[c], c).toBe(true)
   })
