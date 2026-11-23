@@ -65,7 +65,9 @@ function chipText(el: Element): string {
 
 /**
  * Folds the chips that do not fit into one "more" menu instead of cutting them: the chip with the highest data-prio
- * number goes first (ties: the later one); data-prio 0 never folds. Runs after every render and when the line resizes.
+ * number goes first (ties: the later one); data-prio 0 never folds. Order of loss: everything else, then the status word
+ * shortens, then cost folds, and the permission mode (data-compactable) shortens to its icon instead of folding.
+ * Runs after every render and when the line resizes.
  * A folded chip stays in the DOM (display none) so its button can still be activated from the menu.
  */
 function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
@@ -76,7 +78,10 @@ function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
     const kids = Array.from(el.children) as HTMLElement[]
     const chips = kids.filter((k) => k.hasAttribute('data-prio'))
     const more = kids.find((k) => k.hasAttribute('data-more'))
-    chips.forEach((c) => c.removeAttribute('data-folded'))
+    chips.forEach((c) => {
+      c.removeAttribute('data-folded')
+      c.removeAttribute('data-compact')
+    })
     el.removeAttribute('data-squeeze')
     more?.setAttribute('hidden', '')
     const out: HTMLElement[] = []
@@ -89,11 +94,16 @@ function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
       let squeezed = false
       for (const x of order) {
         if (el.scrollWidth <= el.clientWidth + 1) break
-        // Cost and status are the last two to go: before cost folds, a long status word shortens to an ellipsis.
-        if (x.p <= 1 && !squeezed) {
+        // Cost and the permission mode are the last two to go: before cost folds, a long status word shortens to an ellipsis.
+        if (x.p <= 2 && !squeezed) {
           squeezed = true
           el.setAttribute('data-squeeze', '')
           if (el.scrollWidth <= el.clientWidth + 1) break
+        }
+        // The permission mode is safety information: it never folds, it shortens to its icon (words stay in the name and title).
+        if (x.c.hasAttribute('data-compactable')) {
+          x.c.setAttribute('data-compact', 'true')
+          continue
         }
         x.c.setAttribute('data-folded', 'true')
         out.push(x.c)
@@ -274,7 +284,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         </span>
       )}
       {showCost && (
-        <span className="run-meta-item run-meta-cost" data-prio="1">
+        <span className="run-meta-item run-meta-cost" data-prio="2">
           <Cost value={cost} labelled />
         </span>
       )}
@@ -329,7 +339,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
             {quickFolderLabel(summary.quick)}
           </span>
           {accessState && (
-            <span className="run-meta-item run-meta-access" data-prio="2" data-testid="run-meta-access" data-state={accessState} title={CHAT_ACCESS_TITLE[accessState]}>
+            <span className="run-meta-item run-meta-access" data-prio="3" data-testid="run-meta-access" data-state={accessState} title={CHAT_ACCESS_TITLE[accessState]}>
               {CHAT_ACCESS_LABEL[accessState]}
               <span className="sr-only">. {CHAT_ACCESS_TITLE[accessState]}</span>
             </span>
@@ -342,15 +352,17 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           {folderName(summary.buildWorkspace)}
         </span>
       )}
-      <span className="run-meta-item run-meta-agents" data-prio="2">
+      <span className="run-meta-item run-meta-agents" data-prio="3">
         <Icon icon={Bot} size="xs" />
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
       {metaMode && (
-        // Early in the line: the items at the end are the first to be cut in a narrow frame, and this one is a safety cue.
+        // A safety cue: it never folds into the "more" menu. Under pressure it shortens to its icon (data-compact, set by
+        // useMetaFold); the words stay in the accessible name and the title.
         <span
           className={`run-meta-item run-meta-permission${metaMode === 'auto' ? ' run-meta-unattended' : ''}`}
-          data-prio="4"
+          data-prio="1"
+          data-compactable=""
           data-testid="run-meta-permission"
           data-mode={metaMode}
           data-next={metaNext ? 'true' : undefined}
@@ -362,8 +374,10 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           }`}
         >
           <Icon icon={metaTone === 'danger' ? ShieldOff : metaTone ? ShieldAlert : Shield} size="xs" />
-          {metaPrefix}
-          {metaLabel}
+          <span className="run-meta-permission-text">
+            {metaPrefix}
+            {metaLabel}
+          </span>
           <span className="sr-only">
             {' '}
             (permission mode{summary.permissionModeChosen ? ', this run' : ''})
