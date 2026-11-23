@@ -256,6 +256,105 @@ try {
     check((await chip.getAttribute('data-default')) === 'true' && (await chip.getAttribute('data-tone')) === null, '4 choosing the project mode again is the default without a confirmation')
   })
 
+  // ---------- E. Enter must not send on key repeat or on a press that began outside the field ----------
+  await section('enter-guard', async () => {
+    await mainSize(1600, 1000)
+    await reopen()
+    const before = (await runsOf()).length
+    const ta = page.locator('.composer textarea')
+    const draft = `${IDLE_MARK} the repeat guard draft`
+    await ta.fill(draft)
+    await ta.focus()
+    // A held Enter and a held Ctrl+Enter arrive as repeat keydowns: nothing is sent.
+    await ta.evaluate((el) => {
+      for (const ctrlKey of [false, true]) el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey, repeat: true, bubbles: true, cancelable: true }))
+    })
+    await sleep(700)
+    check((await runsOf()).length === before, 'E Enter and Ctrl+Enter with repeat: true send nothing')
+    check((await ta.inputValue()) === draft, 'E the draft is still in the box after repeated Enter')
+    // An Enter that went down elsewhere (a button, the page) before the box had focus does not send when focus lands here.
+    await ta.evaluate((el) => {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+      el.focus()
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    await sleep(700)
+    check((await runsOf()).length === before, 'E an Enter that began before the box had focus sends nothing')
+    // Once that key is released a fresh Enter is allowed again (checked without sending: only the guard state is read).
+    await ta.evaluate(() => window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true })))
+    check((await ta.inputValue()) === draft, 'E the draft is kept')
+    await ta.fill('')
+  })
+
+  // ---------- W. who will work on it, the spending limit, the one Start ----------
+  await section('who-limit', async () => {
+    await mainSize(1600, 1000)
+    await setTheme('dark')
+    await reopen()
+    const before = (await runsOf()).length
+    check((await page.locator(T('new-run-who')).isVisible()) && (await page.locator(T('new-run-start')).isVisible()), 'W the aside with Start is beside the task at 1600x1000')
+    check((await page.locator('.composer .btn.primary').count()) === 1 && (await page.locator(`.composer ${T('new-run-who')} ${T('new-run-start')}`).count()) === 1, 'W there is one Start and it is the aside one, inside .composer')
+    check(/^Start run/.test(await text(page, T('new-run-start'))), 'W the Start reads "Start run"', await text(page, T('new-run-start')))
+    check((await page.locator(T('new-run-start')).isDisabled()), 'W Start is off with an empty draft')
+    await page.waitForFunction(() => document.querySelector('[data-testid=new-run-estimate]')?.getAttribute('data-state') !== 'loading', null, { timeout: 10_000 }).catch(() => {})
+    const cost = await text(page, T('new-run-estimate-cost'))
+    const time = await text(page, T('new-run-estimate-time'))
+    check(cost === 'Unknown' || /^(about )?\$[\d.]+( to \$[\d.]+)?$/.test(cost), 'W the cost is Unknown or a real range, never invented', cost)
+    check(time === 'Unknown' || /\d+ (to .*)?(min|h)/.test(time), 'W the time is Unknown or a real figure', time)
+    if (cost === 'Unknown') check((await page.locator(T('new-run-estimate-note')).count()) === 1, 'W an Unknown estimate carries main\'s sentence')
+    // Groups are native checkboxes; the orchestrator is on and disabled.
+    check((await page.locator(`${T('new-run-role-root')}`).isDisabled()) && (await page.locator(T('new-run-role-root')).isChecked()), 'W the orchestrator checkbox is checked and disabled')
+    const info = await page.evaluate(async (id) => {
+      const p = (await window.orgai.projects.list()).find((x) => x.id === id)
+      const root = p.roles.find((r) => r.reportsTo === null)
+      return { groups: p.roles.filter((r) => r.reportsTo === root.id).map((r) => r.id), cap: p.maxBudgetUsd ?? null }
+    }, project.id)
+    const groupBoxes = page.locator(T('new-run-group-check'))
+    check((await groupBoxes.count()) === info.groups.length, 'W one checkbox per direct report of the orchestrator', `${await groupBoxes.count()} vs ${info.groups.length}`)
+    // The limit: higher than the project's own is refused with the reason; empty means the project default.
+    const limit = page.locator(T('new-run-limit'))
+    const text1 = `${IDLE_MARK} who and limit`
+    await page.locator('.composer textarea').fill(text1)
+    if (info.cap !== null) {
+      await limit.fill(String(info.cap + 1))
+      check((await page.locator(T('new-run-limit-error')).count()) === 1, 'W a limit above the project limit shows its reason')
+      await page.locator(T('new-run-start')).click()
+      await page.locator(T('composer-error')).waitFor({ state: 'visible', timeout: 5000 })
+      check((await runsOf()).length === before && (await page.locator('.composer textarea').inputValue()) === text1, 'W a refused limit sends nothing and keeps the draft')
+    }
+    await limit.fill('0')
+    check((await page.locator(T('new-run-limit-error')).count()) === 1, 'W a limit of 0 is refused')
+    await limit.fill('0.75')
+    check((await page.locator(T('new-run-limit-error')).count()) === 0, 'W 0.75 is accepted')
+    if (info.groups.length > 0) {
+      await groupBoxes.first().uncheck()
+      check((await page.locator(T('new-run-group')).first().getAttribute('data-on')) === 'false', 'W unchecking a group marks it off')
+    }
+    await page.locator(T('new-run-start')).click()
+    const run = await newestRunAfter(before)
+    check(!!run, 'W Start from the aside creates a run')
+    if (run) {
+      check(run.runBudgetUsd === 0.75, 'W the run records its own limit', String(run.runBudgetUsd))
+      if (info.groups.length > 0) check(JSON.stringify(run.excludedRoleIds) === JSON.stringify([info.groups[0]]), 'W the run records the group left out', JSON.stringify(run.excludedRoleIds))
+      await waitStatus(run.id, ['idle']).catch(() => {})
+      await page.evaluate((id) => window.orgai.runs.stop(id), run.id)
+    }
+    // The next draft starts clean again.
+    await page.keyboard.press('Control+t')
+    await page.locator(T('new-run-limit')).waitFor()
+    check((await page.locator(T('new-run-limit')).inputValue()) === '', 'W the next draft has no limit and every group on')
+    // One column (a 1024 window at 150% zoom is about 680 CSS px wide): the composer keeps its own Start and the aside has none.
+    await mainSize(1024, 640)
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().includes('#/run/'))?.webContents.setZoomFactor(1.5))
+    await sleep(500)
+    check((await page.locator('.composer .btn.primary').count()) === 1 && (await page.locator(T('new-run-start')).count()) === 0, 'W in one column the composer keeps the one Start')
+    check(/^Start$/.test(await text(page, '.composer .btn.primary')), 'W the one-column Start reads "Start"')
+    check((await page.locator(T('new-run-who')).count()) === 1 && (await page.locator(`.composer ${T('new-run-who')}`).count()) === 0, 'W in one column the aside sits after the settings, outside .composer')
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().includes('#/run/'))?.webContents.setZoomFactor(1))
+    await sleep(300)
+    await mainSize(1600, 1000)
+  })
+
   // ---------- V. sizes x themes ----------
   await section('visual', async () => {
     for (const [w, h] of [[1600, 1000], [1024, 640]]) {
@@ -408,11 +507,15 @@ try {
     const before = (await runsOf()).length
     await page.locator('[data-testid=new-run-mode] input:checked').focus()
     const stops = []
-    for (let i = 0; i < 6; i++) {
+    // The textarea and Attach come first, then (two columns) the aside's group checkboxes and "Save as a schedule instead"
+    // (the one Start is off with an empty draft), then the setting tiles Model, Effort, Asking you, Goal and the limit.
+    for (let i = 0; i < 12; i++) {
       await page.keyboard.press('Tab')
       stops.push(await activeTestId(page))
     }
-    check(JSON.stringify(stops) === JSON.stringify(['Attach images', 'TEXTAREA', 'run-model-change', 'run-effort-change', 'run-permission-change', 'run-goal-change']), '9 Tab order after Team|Ask is Attach, textarea, then the setting tiles Model, Effort, Asking you, Goal', stops.join(' > '))
+    const tiles = stops.filter((s) => /^run-(model|effort|permission|goal)-change$/.test(s))
+    check(stops[0] === 'TEXTAREA' && stops.includes('Attach images') && JSON.stringify(tiles) === JSON.stringify(['run-model-change', 'run-effort-change', 'run-permission-change', 'run-goal-change']), '9 Tab order after Team|Ask is the textarea, Attach, then the setting tiles Model, Effort, Asking you, Goal', stops.join(' > '))
+    check(stops.includes('new-run-limit'), '9 the spending limit field is a tab stop after the tiles', stops.join(' > '))
     for (const [trigger, picker] of [['run-model-change', 'run-model-picker'], ['run-effort-change', 'run-effort-picker'], ['run-permission-change', 'run-permission-picker'], ['run-goal-change', 'run-goal-picker']]) {
       await page.locator(T(trigger)).focus()
       await page.keyboard.press('Enter')
