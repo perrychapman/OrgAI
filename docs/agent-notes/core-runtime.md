@@ -1084,10 +1084,16 @@ Stated plainly; the same list is in `docs/design/ui-overhaul/impl-runtime.md`.
   merge, its `mainBranch` switch and its cleanup. This affects git-lfs hooks, secret scanners that sit in those hooks and signing
   prompts started from them. The report's own commit in its copy still runs the repository's hooks.
 - **Merges ignore the user's global and system git config and attributes** (a merge driver, `core.attributesFile`,
-  `commit.gpgsign` set only there); the user's `user.name` / `user.email`, their line-ending and file-comparison settings
-  (`core.autocrlf` ...) and `safe.directory` are still used (`mergeCarriedConfigArgs`). A merge whose files an attribute sends to
-  a custom merge driver or to `merge=union` is refused before it runs and the copy is kept; git's text merge, `merge=binary`,
-  `merge=text` and `-merge` are unaffected (`worktrees.ts mergeAttributeRefusal`, `GIT_NULL_FILE`).
+  `commit.gpgsign` set only there); only `user.name` / `user.email`, `core.autocrlf`, `core.eol`, `core.safecrlf`,
+  `core.filemode` and `core.symlinks` from the system / global scope are used, validated and read BEFORE the test command runs
+  (`mergeCarriedConfigArgs`, handed on as `GateDecision.carried`; the merge reads no config), and `core.protectNTFS` /
+  `core.protectHFS` are forced to true on every guarded call (`WRITE_SAFETY_OVERRIDES`; a test command can edit the global
+  config, and carrying them from there let a tree entry aliasing `.git` write into the real `.git`). A merge whose files an
+  attribute sends to a custom merge driver, to `merge=union` or to a `filter` (git-lfs: the merge would write pointer files) is
+  refused before it runs and the copy is kept, with renamed files looked up under both names; git's text merge, `merge=binary`,
+  `merge=text` and `-merge` are unaffected (`worktrees.ts mergeAttributeRefusal`, `GIT_NULL_FILE`). The orgai move ledger records a
+  move only when the new HEAD is the merge commit of the HEAD read right before `git merge` and the merged sha (`mergeMadeMove`).
+  Details and tests: `docs/design/ui-overhaul/impl-runtime.md` "Security fix round".
 - **Inherited `GIT_*` variables are dropped** for OrgAI's guarded git calls, now on a linked worktree as well as on a plain
   checkout, and replace objects are ignored: `GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `GIT_DIR`, `GIT_INDEX_FILE` from the environment
   OrgAI was started in do not reach a merge or a branch deletion (`worktrees.ts guardedGitEnv`).

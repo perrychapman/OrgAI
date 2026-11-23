@@ -29,7 +29,8 @@ vi.mock('./worktrees', () => ({
   inspectPending: vi.fn(async () => []),
   commitLeftovers: vi.fn(async () => ({ committed: true })),
   pendingWorktrees: vi.fn(async () => []),
-  branchTip: vi.fn(async () => 'a'.repeat(40))
+  branchTip: vi.fn(async () => 'a'.repeat(40)),
+  mergeCarriedConfigArgs: vi.fn(async () => ['-c', 'core.autocrlf=false'])
 }))
 
 const TIP = 'a'.repeat(40)
@@ -639,7 +640,8 @@ describe('test gate (requireTestsPass)', () => {
       vi.mocked(runTestGate).mockResolvedValue(passed)
       const { integrator, ctx } = setup(true, { behavior: 'merge' }, GATED)
       const gate = integrator.reviewGate('a1', WT)!
-      expect(await gate(['a.ts'], TIP)).toEqual({ behavior: 'merge', sha: TIP })
+      // `carried`: the git settings snapshot taken with the pin, before the command ran, handed to the merge.
+      expect(await gate(['a.ts'], TIP)).toEqual({ behavior: 'merge', sha: TIP, carried: ['-c', 'core.autocrlf=false'] })
       expect(diffWorktree).toHaveBeenCalledWith('/repo', WT.branch, TIP)
       expect(ctx.requestMergeReview).toHaveBeenCalledTimes(1)
     })
@@ -649,7 +651,7 @@ describe('test gate (requireTestsPass)', () => {
       vi.mocked(branchTip).mockResolvedValueOnce(NEW).mockResolvedValue(NEW)
       const { integrator, ctx, logs } = setup(true, { behavior: 'merge' }, GATED)
       const gate = integrator.reviewGate('a1', WT)!
-      expect(await gate(['a.ts'], TIP)).toEqual({ behavior: 'merge', sha: NEW })
+      expect(await gate(['a.ts'], TIP)).toEqual({ behavior: 'merge', sha: NEW, carried: ['-c', 'core.autocrlf=false'] })
       expect(ctx.requestMergeReview).toHaveBeenCalledTimes(2)
       expect(vi.mocked(diffWorktree).mock.calls.map((c) => c[2])).toEqual([TIP, NEW])
       expect(logs().some((l) => l.startsWith('warn:') && l.includes('changed after the review'))).toBe(true)

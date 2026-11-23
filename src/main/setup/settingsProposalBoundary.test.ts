@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { PROJECT_SETTINGS_PROPOSABLE_FIELDS } from '@shared/types'
-import type { Project, Proposal, SettingsProposalPayload } from '@shared/types'
+import type { Project, Proposal, Role, SettingsProposalPayload } from '@shared/types'
 import { proposeProjectSettings } from '../runtime/harnessTools'
 import { ProjectStore } from '../store/projects'
 import { SetupService } from './service'
@@ -111,10 +111,52 @@ describe('settings proposals never carry the desktop-only overhaul fields', () =
         expect(service.applyProposal(p.id, settings({ maxSubagentDepth: 1 }), { targeted: true, nonDesktop: true }).maxSubagentDepth).toBe(1)
       })
 
-      it('fields that are not limits (a brief, review merges) are unaffected', () => {
+      it('fields that are not limits (a brief, review merges turned on) are unaffected', () => {
         const p = withCap()
         const saved = service.applyProposal(p.id, settings({ brief: 'New', reviewMerges: true }), { targeted: true, nonDesktop: true })
         expect(saved).toMatchObject({ brief: 'New', reviewMerges: true, maxBudgetUsd: 5 })
+      })
+
+      // Security review M3 (fix round): turning review of merges off removes the person who looks at a report's changes.
+      it('refuses a card that turns review merges off, and saves nothing; the window may', () => {
+        const p = withCap({ reviewMerges: true })
+        for (const opts of [{ targeted: true as const, nonDesktop: true as const }, { nonDesktop: true as const }]) {
+          expect(() => service.applyProposal(p.id, settings({ reviewMerges: false }), opts)).toThrow(/OrgAI window only: reviewMerges/)
+          expect(store.get(p.id)?.reviewMerges).toBe(true)
+        }
+        expect(service.applyProposal(p.id, settings({ reviewMerges: false }), { targeted: true }).reviewMerges).toBe(false)
+      })
+
+      describe('an org chart card (its merge drops every current role the proposal omits)', () => {
+        const role = (id: string, extra: Partial<Role> = {}): Role =>
+          ({ id, slug: id, name: id[0]!.toUpperCase() + id.slice(1), description: 'd', responsibilities: [], prompt: 'p', tools: [], model: 'sonnet', canSpawn: false, spawnable: [], reportsTo: null, position: { x: 0, y: 0 }, ...extra }) as Role
+        const chart = (roles: Role[]): Proposal => ({ id: 'prop-2', runId: 'run-1', agentId: 'root', title: 'Org', createdAt: 0, kind: 'orgChart', payload: { rationale: 'r', roles } }) as Proposal
+        const withRoles = (): Project => {
+          const created = store.create({ name: 'T', path: repo, brief: '' })
+          return store.save({ ...created, roles: [role('lead'), role('worker', { reportsTo: 'lead', maxConcurrent: 1, knowledgeWrite: false })] } as Project)
+        }
+
+        it('refuses a card that omits a capped or restricted role, and saves nothing', () => {
+          const p = withRoles()
+          expect(() => service.applyProposal(p.id, chart([role('lead')]), { nonDesktop: true })).toThrow(/OrgAI window only: Role\.maxConcurrent, Role\.knowledgeWrite/)
+          expect(store.get(p.id)?.roles.map((r) => r.id)).toEqual(['lead', 'worker'])
+        })
+
+        it('refuses a card that adds a same-named role with no limit next to a kept one', () => {
+          const p = withRoles()
+          const proposed = chart([role('lead'), role('worker', { reportsTo: 'lead', maxConcurrent: 1, knowledgeWrite: false }), role('worker-2', { name: 'Worker', slug: 'worker', reportsTo: 'lead' })])
+          expect(() => service.applyProposal(p.id, proposed, { nonDesktop: true })).toThrow(/OrgAI window only/)
+          expect(store.get(p.id)?.roles).toHaveLength(2)
+        })
+
+        it('the window applies the same cards, and a card that keeps every limit applies from another surface', () => {
+          const p = withRoles()
+          expect(service.applyProposal(p.id, chart([role('lead')])).roles.map((r) => r.id)).toEqual(['lead'])
+          const q = withRoles()
+          const kept = service.applyProposal(q.id, chart([role('lead'), role('worker', { reportsTo: 'lead' }), role('extra', { reportsTo: 'lead' })]), { nonDesktop: true })
+          expect(kept.roles.map((r) => r.name)).toEqual(['Lead', 'Worker', 'Extra'])
+          expect(kept.roles.find((r) => r.name === 'Worker')).toMatchObject({ maxConcurrent: 1, knowledgeWrite: false })
+        })
       })
     })
   })

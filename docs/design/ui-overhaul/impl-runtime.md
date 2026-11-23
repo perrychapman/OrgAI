@@ -421,7 +421,8 @@ Reviewer result: no Critical or High, four Medium, some Low. Every fix only enfo
   - Tests: `setup/settingsProposalBoundary.test.ts`, `runtime/runManagerSelfKnowledge.test.ts` (`decidedBy` to `nonDesktop`),
     `host/projectSaveGuard.test.ts` (`guardedFieldsOf`, remove, template and import wiring), `setup/templates.test.ts`,
     `setup/import/importer.test.ts`, `connections/remap.test.ts`.
-- **S2. The merge could still be altered through configuration the pin does not cover.** `mergeInto` (`worktrees.ts`):
+- **S2. The merge could still be altered through configuration the pin does not cover.** (The carried set below is replaced by
+  the smaller, validated, earlier-read one of "Security fix round" H1.) `mergeInto` (`worktrees.ts`):
   - runs with the user's system and global git config and attributes ignored (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL`,
     `GIT_ATTR_NOSYSTEM=1`, `-c core.attributesFile`, all the null file: `NUL` on Windows, `/dev/null` elsewhere, because git cannot
     open `\\.\nul` as a config), and with `-c merge.default=text`; a small allowlist of values is read from the user's config as git
@@ -450,6 +451,76 @@ Reviewer result: no Critical or High, four Medium, some Low. Every fix only enfo
   its native agents' sum (a root with no per-agent cost no longer counts as 0 in the daily and monthly figure), plus the bridged
   agents' known cost (`runManager.capBridged.test.ts`; `integration.rootPinMoves.test.ts` for the file reads).
 
+### Security fix round (the merge gate: one High, four Mediums, Lows)
+
+Reviewer blocked the push on H1; fixed here with real-git tests (`runtime/integration.mergeGateFix.test.ts` unless named).
+
+- **H1. The merge read the user's global git config AFTER the test command, and carried `core.protectNTFS` / `core.protectHFS`
+  from it.** The test command is repository code run as the user and can edit `~/.gitconfig`; with the protections carried as
+  `-c core.protectNTFS=false`, a branch tree holding an entry that aliases `.git` (`.git::$INDEX_ALLOCATION`, `.git.`, `GIT~1`;
+  `.git ` is the same class) made the merge write into the real `.git`. Reproduced on this Windows machine with the old code
+  (the three names above wrote `.git/pwned`; the test fails there and passes now). Now:
+  - (a) `core.protectNTFS=true` and `core.protectHFS=true` are forced on every guarded git call (`WRITE_SAFETY_OVERRIDES` in
+    `gitGuarded`), on every platform; a `-c` beats every config file, and neither key is ever carried.
+  - (b) The carried settings are read ONCE, before the test command runs, in the same locked reading as the root pin
+    (`integration.ts runTests`), and handed through `GateDecision.carried` to `mergeInto`. With no test command they are read
+    when the gate would have pinned (after the review approval; with no gate at all, in `integrateWorktree`'s first locked step).
+    `mergeInto` reads no config. The re-ask path keeps the snapshot of the first reading.
+  - (c) The carried set is `user.name`, `user.email`, `core.autocrlf`, `core.eol`, `core.safecrlf`, `core.filemode`,
+    `core.symlinks`, each validated (booleans, `input`, `lf` / `crlf` / `native`, `warn`; name and email without control
+    characters, angle brackets or spaces in the email), and only when the winning value comes from the system or global scope
+    (`git config --show-scope`): a value the repository's own config sets is read by the merge itself, and a command-line copy
+    would override it. `core.ignorecase`, `longpaths`, `fscache`, `precomposeunicode`, `checkstat`, `trustctime` are no longer
+    carried (the repository's own config holds ignorecase; the others were not shown to be needed). `safe.directory` is never
+    copied from config: when the user's config trusts the folder (its exact path, or `*`) the merge gets
+    `-c safe.directory=<root>` with the path OrgAI computed (a linked worktree has no pinned `GIT_DIR`).
+  - Tests: four alias names with the protections switched off globally by the gate step (nothing is written under `.git`, the
+    merge is refused); a test command rewriting global `user.name` / `core.autocrlf` (without and with a review card) does not
+    change the merge commit's author or the CRLF handling; the guarded runner forces both protections over a repository config
+    that turns them off; the carried set is exact and validated; a repository value is not copied over. The earlier line-ending
+    tests (`integration.rootPinMoves.test.ts` "line-ending", `teamFiles/service.sync.test.ts`) pass unchanged.
+- **M1. The merge ledger could record someone else's move as OrgAI's.** The ledger no longer takes a HEAD snapshot at function
+  entry and one in a `finally`. `mergeInto` reads HEAD immediately before each `git merge` attempt and records a move only when
+  the new HEAD is a merge commit whose first parent is that HEAD and whose second parent is the merged sha (or, for a
+  fast-forward, is the merged sha with the old HEAD as ancestor): `mergeMadeMove`. `ensureMainBranch` records the exact old HEAD
+  and the exact commit it checked out. A plumbing `update-ref` or commit that lands between the gate and the merge is therefore
+  not in the ledger, and the chain check (`rootVerdict`) reports it as a change by someone else. Tests: a commit landing in the
+  verify window gives `folder` (fails with the old ledger), `mergeMadeMove` cases, the `mainBranch` switch chain, the plain merge
+  still `orgai`.
+- **M2. The re-ask card did not show the root's own change.** `folderChangeNote` (`rootPin.ts`) now carries, in the card's
+  existing `stat` text field (`MergeReview.stat`; the renderer is not changed), a bounded plain-text summary: up to five commit
+  subjects, `git diff --stat` between the pinned and the current HEAD, and the stat of the staged and of the unstaged changes (the
+  unstaged one only when the repository defines no filter driver, as the pin; else a line says so). Each block is cut to 12
+  lines and 1.6 KB with "... n more lines not shown", every line clamped to 120 characters, control and bidirectional characters
+  removed, no external diff or textconv program run (guarded runner). The note says the project folder itself changed while the
+  tests ran and that approving merges the report on top of that change, and labels the block "text from the repository (commit
+  subjects, file names), not from OrgAI".
+- **M3. The org chart and settings cards had no non-desktop guard on two paths.** `SetupService.applyProposal` with `nonDesktop`
+  (a decision from `cli`, `tui` or `policy`): the `orgChart` case runs `desktopOnlyProjectChanges` on the merged project (the merge
+  drops every current role the proposal omits and a second proposal can add a same-named uncapped role: a role's `maxConcurrent`
+  or `knowledgeWrite: false` cannot be shed that way), and the `settings` case also refuses turning `reviewMerges` off. Both come
+  back as a revise with the window-only sentence, nothing saved; the window is unchanged. `requireTestsPass` and `testCommand`
+  were already refused by the same function. A project save from a terminal may still turn `reviewMerges` off (`orgai projects set
+  --review-merges off` is unchanged). The false comment in `projectSaveGuard.ts` is corrected: team files DO carry
+  `maxBudgetUsd`, `maxSubagentDepth` and `maxConcurrentSubagents`, and `teamFiles/gate.ts` holds any change that raises them
+  (effective values) for the desktop review (`gate.test.ts` "looser settings pend"). `keepFailedBranchesDays` is not counted in
+  `guardedFieldsOf`: a new project starts without it, which only keeps copies longer, so removing a project sheds no protection.
+  Tests: `setup/settingsProposalBoundary.test.ts`.
+- **M4. Filters (git-lfs and other clean / smudge programs).** The neutral merge ignores filter drivers in the user's global and
+  system config and runs none, so it would write the stored form of a filtered file (git-lfs pointer files) and the folder would
+  show them as modified. Decision: the automatic merge is refused, before anything is merged, when a `filter` attribute is set
+  for any path the merge changes (read like the merge attributes: the root's working tree and `info/attributes`, and the
+  attributes the merged commit itself carries). The message names the files, says OrgAI runs no filter program, and says to merge
+  it by hand with git in the project folder (`git merge <sha>`), where the user's filters run; the branch is kept. No filter
+  program is run. For the pin: `pinRoot` already reports the working tree "not pinned" under a repository filter driver and
+  builds `changes` from HEAD, the index and the staged difference (all read without running a filter), so parallel OrgAI merges
+  chain; the report said `changes` was unreadable there, which the code does not do. A test pins it (two reports finishing together
+  with a repository `filter.*.clean` configured both merge, no re-ask); it passed before this round as well.
+- **Lows.** `mergeAttributeRefusal` looks up attributes under both names of a renamed file (`git diff --name-status -M -z` on
+  `HEAD...sha`, plus the renames of the checkout's own side) and refuses when the paths cannot be read. The scratch index of that
+  check is named under `<tmp>/orgai-merge-scratch/`, and the first use in a process removes `*.index` / `*.index.lock` files older
+  than ten minutes there (`sweepMergeScratch`); it is not called from the desktop boot.
+
 ### Behaviour changes for existing users
 
 - A run under any cap stops when part of its cost has no known price or is unknown (a per-run cap the user chose, the project's
@@ -470,9 +541,13 @@ Reviewer result: no Critical or High, four Medium, some Low. Every fix only enfo
   those hooks and signing prompts started from them. The report's own commit in its copy (`commitLeftovers`) still runs the
   repository's hooks.
 - **Merges ignore the user's global and system git config and attributes.** A merge driver, `core.attributesFile`, signing
-  settings (`commit.gpgsign`) or other settings that live only in the user's global config do not apply to the merge commit; the
-  user's `user.name` and `user.email`, their line-ending and file-comparison settings (`core.autocrlf` ...) and `safe.directory`
-  are still used for it. A merge whose files an attribute sends to a custom merge driver or
+  settings (`commit.gpgsign`) or other settings that live only in the user's global config do not apply to the merge commit; only
+  the user's `user.name` and `user.email` and `core.autocrlf`, `core.eol`, `core.safecrlf`, `core.filemode`, `core.symlinks`
+  are used for it, read before the test command runs (a command that rewrites the global config does not change the merge), and
+  git's `core.protectNTFS` / `core.protectHFS` are forced on for every OrgAI git call whatever any config says. `core.longpaths`,
+  `core.fscache`, `core.precomposeunicode`, `core.checkstat` and `core.trustctime` set only in the user's global config no
+  longer reach the merge; `safe.directory` reaches it only as the project folder's own path, when the user's config trusts it.
+  A merge whose files an attribute sends to a custom merge driver or
   to `merge=union` is refused before it runs ("Not merged: a merge attribute selects a custom merge ..."), the copy is kept; git's
   own text merge, `merge=binary`, `merge=text` and `-merge` are unaffected.
 - **Inherited `GIT_*` variables are dropped** for OrgAI's git calls on a plain checkout (as before) and now on a linked worktree
@@ -490,6 +565,20 @@ Reviewer result: no Critical or High, four Medium, some Low. Every fix only enfo
   hooks folder or an untracked `.gitattributes` is always refused. A test command that commits on the root is refused when there is
   no review card (with one, you are asked).
 - The git summary shows no working-tree status on a repository that defines its own filter drivers.
+- **A merge that touches a file with a `filter` attribute (git-lfs, any clean / smudge filter) is refused, and the branch kept.**
+  "Not merged: a filter is set for <files> (filter=lfs) ... Merge it by hand with git in the project folder". OrgAI's merge runs no
+  filter program and would otherwise have written pointer files instead of content. Merge those branches yourself with git (your
+  filters run there), or discard or hold them. Repositories whose filter attributes sit only on files a report did not touch are
+  unaffected. In such a repository the test gate still pins HEAD, the index and the staged changes (not the working tree), so
+  parallel OrgAI merges chain as before.
+- **A renamed file is checked for merge and filter attributes under both its old and its new name**, so a merge that was
+  accepted before because the attribute sat on the old name is now refused.
+- **When the review card is asked again ("The project folder changed while the tests ran"), it now lists the change**: commit
+  subjects, the `git diff --stat` between the old and new HEAD, and the staged and unstaged stat, bounded, as plain text marked as
+  coming from the repository, and says approving merges the report on top of that change.
+- **From a terminal, TUI or the headless policy, approving an org chart card that drops or replaces a role carrying a cap
+  (`maxConcurrent`) or a knowledge restriction, and approving a settings card that turns Review merges off, is refused** (the card
+  comes back as a revise). The window is unchanged, and `orgai projects set --review-merges off` still works.
 - **Non-desktop surfaces (socket, `orgai`, the TUI, the headless policy) cannot raise or remove a spending or agent limit, and now
   cannot shed one by another road.** Before: `orgai projects set --max-budget none` or a higher figure fails with a window-only
   message (setting a budget where there was none and lowering one work as before). New in this pass, from those surfaces:
