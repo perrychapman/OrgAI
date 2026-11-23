@@ -23,13 +23,29 @@ reports carry their sections; merge them in here once they land.
   - A Home tab (`tab-home`, view `home`) comes first, on stored projects only.
   - Outputs now reads "Files" (`tab-outputs` unchanged).
   - App-level view `inbox`.
-- **Welcome (`FirstLaunch.tsx`):**
-  - The start choice is unchanged: radios "Start a project" and "Chat now", with the inline form. Many e2e helpers depend on it.
-  - A side panel holds:
-    - The steps (aria-current), taken from real state.
-    - The real default connection, with Sign in / Change that opens App settings: Connections.
-    - "What you are setting up": an Orchestrator card plus a neutral team card. There are no sample roles.
-  - "Skip setup" shows the Empty board's "Start with a project" state (New project, Open Chat). It is remembered in `localStorage['orgai.welcome.skipped']`.
+- **Welcome (`FirstLaunch.tsx`, `lib/welcome.ts`):** first launch opens on three setup steps (`welcome-setup`, `data-stage` 1 to 3), then the start choice.
+  - Step 1, "Connect the AI your teams will use":
+    - A radiogroup of the real enabled connections, the default first, each with its real status.
+    - A connected pick becomes the default through `setDefaultConnection`.
+    - An unconnected pick offers "Sign in" (App settings: Connections, where sign-in opens the browser) and "Continue without it".
+    - The mock adapter shows a note instead.
+  - Step 2, "What will you work on first?":
+    - Code, not code, or "Just look around".
+    - Code and not code preselect the New project kind (`writeLastProjectKind`). Chat opens a new Chat and finishes setup.
+  - Step 3, "How much should the team ask you?":
+    - Three real modes in plain words: `default`, `acceptEdits` and `auto`.
+    - The saved `AppSettings.defaultPermissionMode` is preselected when it is one of the three, and Next saves it through `settings:set`.
+  - Navigation:
+    - Back, Skip setup and the steps list (aria-current) work on every step.
+    - After a step change, focus moves to the new step's heading.
+    - The place is kept for the window while the user signs in.
+  - Finishing or skipping lands on the start choice and is remembered in `localStorage['orgai.welcome.done']`.
+  - The start choice keeps its radios "Start a project" and "Chat now" and the inline form, so the e2e helpers still work.
+  - The side panel shows the real default connection card and "What you are setting up": an Orchestrator card plus a neutral team card that names no roles.
+  - e2e:
+    - `launch()` marks setup as done unless a script passes `welcome: true`.
+    - `openProjectForm` clicks Skip setup if the steps are showing.
+    - `layout.mjs` W1 to W4 walks the steps.
 - **NewProject (`NewProjectForm.tsx`):**
   - The two kinds look separate: code is violet with a mono title, engagement is coral `--eng` with a serif title.
   - A "How they differ" table shows only while no kind is chosen.
@@ -42,8 +58,9 @@ reports carry their sections; merge them in here once they land.
 
 - **Opening a project:** it still lands on Live, not Home. Every area's e2e expects the composer after clicking `nav-project`.
 - **Welcome:**
-  - It is not a three-page wizard. `e2e/lib.mjs` `openProjectForm` and `assistants.mjs` drive the inline radio form.
-  - The board's permission step is not drawn. Project permission defaults are set per project in Settings.
+  - The board's last button "Open OrgAI" leads to the start choice and the inline New project form, not to an empty Home. The project still has to be created.
+  - Step 1 has no API-key or company-gateway cards. Connections are added in App settings, and the step lists the ones that exist.
+  - No option carries a "Recommended" badge, because the app does not mark a recommended mode for this choice.
 - **Trust:** there is no radiogroup. The real choice is binary (Allow these settings / Stop using these settings), and the buttons carry it.
 - **Notices:** `AppNavigateBanner`, `RemapNotices` and `SecretNotices` keep their structure and take the restyled Banner primitive.
 
@@ -61,7 +78,7 @@ sh-projhome builds against whatever contract lands, and omits a section when its
 
 - **Welcome:**
   - Before: a greeting and two radio cards.
-  - After: the same choice plus a side panel with steps, the connection and its sign-in, what is being set up, and Skip setup.
+  - After: three steps (connection, first work, how much to ask) with Back and Skip setup, then the same two radio cards and form beside a side panel with the connection and what is being set up.
 - **New project:**
   - Before: two plain kind cards.
   - After: visually distinct kind cards and a "How they differ" table until a kind is picked.
