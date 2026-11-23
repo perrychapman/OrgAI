@@ -9,19 +9,47 @@
   container-name: factory-scene;
 }
 
-.factory-controls {
+/*
+ * UI overhaul (Factory board): glass chrome over the floor. The top row holds Find a worker and the Show filter; the
+ * bottom row holds the control toolbar, the stack light legend and the floor log. Both rows let pointer events through
+ * between their pieces, so the floor can still be dragged there.
+ */
+.factory-top,
+.factory-bottom {
   position: absolute;
   left: var(--space-2);
-  bottom: var(--space-2);
+  right: var(--space-2);
   z-index: var(--z-canvas-overlay);
   display: flex;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+.factory-top {
+  top: var(--space-2);
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.factory-bottom {
+  bottom: var(--space-2);
+  align-items: flex-end;
+}
+.factory-top > *,
+.factory-bottom > * {
+  pointer-events: auto;
+}
+
+.factory-controls {
+  flex: none;
+  display: flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1);
-  border: 1px solid var(--border-default);
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--glass-line);
   border-radius: var(--radius-lg);
-  background: var(--surface-2);
-  box-shadow: var(--elev-1);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--elev-2);
 }
 
 .factory-controls .btn.sm {
@@ -38,15 +66,109 @@
   display: inline-flex;
 }
 
+/* Find a worker: a glass chip at the stage's top left. */
+.factory-top .factory-find-trigger {
+  height: var(--control-md);
+  padding-inline: var(--space-3);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--elev-2);
+  color: var(--text-secondary);
+}
+.factory-top .factory-find-trigger:hover {
+  color: var(--text-primary);
+}
+
+/* Show filter: All / Working / Waiting, live only. */
+.factory-show {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+}
+.factory-show .seg {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.factory-show .seg-item {
+  padding: var(--space-1) var(--space-2);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.factory-show .seg-item.on {
+  background: var(--field-bg);
+  box-shadow: none;
+  font-weight: var(--weight-semibold);
+}
+.factory-show .seg-item:last-child {
+  color: var(--warning-text);
+}
+
+/* Stack light legend (Factory board): what each lit lamp means, in the lamp colours the engine reads. */
+.factory-legend {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-height: var(--control-md);
+  box-sizing: border-box;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.factory-legend-title {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.factory-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+.factory-legend-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+.factory-legend-item[data-lamp='failed'] .factory-legend-swatch {
+  background: var(--danger);
+}
+.factory-legend-item[data-lamp='needs-you'] .factory-legend-swatch {
+  background: var(--warning);
+}
+.factory-legend-item[data-lamp='running'] .factory-legend-swatch {
+  background: var(--working);
+}
+
+/* The legend gives way first on a narrow stage; the nameplates and the mirror carry each lamp's word anyway. */
+@container factory-scene (max-width: 879.98px) {
+  .factory-legend {
+    display: none;
+  }
+}
+
 /* Below a stage width of 560 px Find and Pause motion show only their icon; the accessible name stays. */
 @container factory-scene (max-width: 559.98px) {
   .factory-chrome-label {
     display: none;
   }
-  .factory-controls .btn.sm {
+  .factory-controls .btn.sm,
+  .factory-top .factory-find-trigger {
     width: var(--control-md);
     justify-content: center;
     padding-inline: 0;
+  }
+  .factory-show .seg-item {
+    padding-inline: var(--space-1h);
   }
 }
 
@@ -123,30 +245,58 @@
 
 /* Floor log: bottom right of the stage, grows upward when open. Closed it is one summary row (about 36 px). */
 .factory-log {
-  position: absolute;
-  right: var(--space-2);
-  bottom: var(--space-2);
-  z-index: var(--z-canvas-overlay);
-  width: min(360px, calc(100cqw - 2 * var(--space-2)));
+  margin-inline-start: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 360px;
   box-sizing: border-box;
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--glass-line);
   border-radius: var(--radius-lg);
-  background: var(--surface-2);
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   color: var(--text-primary);
-  box-shadow: var(--elev-1);
+  box-shadow: var(--elev-2);
+}
+.factory-log[open] {
+  width: min(360px, calc(100cqw - 2 * var(--space-2)));
 }
 .factory-log > summary {
   min-height: var(--control-md);
   display: flex;
   align-items: center;
-  padding: 0 var(--space-2);
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
   cursor: pointer;
+  list-style: none;
   font-size: var(--text-small);
   line-height: var(--text-small-lh);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   overflow: hidden;
   white-space: nowrap;
+}
+.factory-log > summary::-webkit-details-marker {
+  display: none;
+}
+.factory-log-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+}
+.factory-log-count {
+  flex: none;
+  color: var(--text-tertiary);
+  font-weight: var(--weight-regular);
+  font-variant-numeric: tabular-nums;
+}
+.factory-log-chevron {
+  flex: none;
+  color: var(--text-tertiary);
+}
+/* Closed it points up (it opens upward); open it points down. A state flip, not an animation. */
+.factory-log[open] .factory-log-chevron {
+  transform: rotate(180deg);
 }
 .factory-log > summary:focus-visible,
 .factory-log-scroll:focus-visible {
@@ -188,15 +338,17 @@
   line-height: var(--text-small-lh);
 }
 
-/* Below 560 px the controls are icon-only (about 120 px); keep the log clear of them. */
+/* Below 560 px the controls are icon-only (about 120 px); keep the open log clear of them. */
 @container factory-scene (max-width: 559.98px) {
-  .factory-log {
+  .factory-log[open] {
     width: min(360px, calc(100cqw - 152px));
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .factory-controls *,
+  .factory-top *,
+  .factory-bottom *,
   .factory-find-panel * {
     transition: none;
     animation: none;
@@ -204,6 +356,8 @@
 }
 
 :root[data-reduce-motion='on'] .factory-controls *,
+:root[data-reduce-motion='on'] .factory-top *,
+:root[data-reduce-motion='on'] .factory-bottom *,
 :root[data-reduce-motion='on'] .factory-find-panel * {
   transition: none;
   animation: none;
