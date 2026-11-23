@@ -334,6 +334,10 @@ export async function pickSetup(form, skipSetup) {
     return
   }
   const radio = fieldset.locator(`input[type=radio][value=${skipSetup ? 'default' : 'architect'}]`)
+  // The form's submit row is sticky: Playwright's own scroll can leave the last radio underneath it, and a forced click
+  // then lands on "Create project" (it created the project with the Architect choice). Centre the radio first.
+  await radio.waitFor({ state: 'attached' })
+  await radio.evaluate((el) => el.scrollIntoView({ block: 'center' }))
   await radio.check({ force: true })
   if (!(await radio.isChecked())) throw new Error(`could not pick the "${skipSetup ? 'default' : 'architect'}" setup choice`)
 }

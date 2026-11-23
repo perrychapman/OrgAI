@@ -1759,7 +1759,20 @@ async function setName(name) {
 
     // ---- Oldest first: the run that started first is first.
     const ids0 = await rowIds()
-    check(ids0[0]?.startsWith(`w:${runA.id}/`) && ids0.slice(1).some((id) => id?.startsWith(`w:${runB.id}/`)), 'IB the oldest waiting decision is listed first', JSON.stringify(ids0))
+    // The Inbox orders by when each decision was raised (PermissionRequest.requestedAt), not by when its run started, so the
+    // expected order is read from the runs' own open cards. The [mock:fatigue] run asks at once and can beat the inline one.
+    const raisedOf = (id) =>
+      ip.evaluate(async (wid) => {
+        const [runId, key] = wid.slice(2).split('/')
+        const cards = await window.orgai.runs.pendingCards(runId)
+        return cards?.permissions?.find((p) => p.id === key)?.requestedAt ?? null
+      }, id)
+    const raised0 = await Promise.all(ids0.map(raisedOf))
+    check(
+      raised0.every((t) => typeof t === 'number') && raised0.every((t, i) => i === 0 || t >= raised0[i - 1]) && ids0.some((id) => id?.startsWith(`w:${runA.id}/`)) && ids0.some((id) => id?.startsWith(`w:${runB.id}/`)),
+      'IB the longest-waiting decision (earliest requestedAt) is listed first, across both runs',
+      JSON.stringify({ ids0, raised0 })
+    )
     check((await selectedId()) === ids0[0], 'IB the first item is selected on arrival', String(await selectedId()))
     check(!(await focusIn('[data-testid=inbox-detail-pane]')), 'IB arriving on the Inbox does not move focus into the first card', JSON.stringify(await ip.evaluate(() => document.activeElement?.getAttribute('data-testid'))))
 
@@ -1924,7 +1937,7 @@ async function setName(name) {
     await ip.keyboard.down('Enter')
     await sleep(80)
     await ip.keyboard.down('Enter')
-    await ibUntil(async () => (await waitRows().count()) === n - 1, 15_000)
+    await ibUntil(async () => !(await rowIds()).includes(idsBefore[0]), 15_000)
     await sleep(500)
     const heldFocus = await focusedRowId()
     for (let i = 0; i < 4; i++) {
@@ -1934,11 +1947,17 @@ async function setName(name) {
     await ip.keyboard.up('Enter')
     await sleep(300)
     const idsAfter = await rowIds()
-    check(idsAfter.length === n - 1 && !idsAfter.includes(idsBefore[0]), 'IB IBH6 the deliberate Enter answered exactly the selected permission and the held Enter answered nothing more', `${idsAfter.length} left of ${n}`)
+    // Identify decisions by id, not by count: an answered [mock:fatigue] permission can be followed by a NEW one from the same run.
+    // Exactly the selected decision is gone, every other earlier decision is still waiting (the held repeats answered nothing
+    // more), and at most the one follow-up is new.
+    const stillThere = idsBefore.slice(1).every((id) => idsAfter.includes(id))
+    const fresh = idsAfter.filter((id) => !idsBefore.includes(id))
+    check(!idsAfter.includes(idsBefore[0]) && stillThere && fresh.length <= 1, 'IB IBH6 the deliberate Enter answered exactly the selected permission and the held Enter answered nothing more', JSON.stringify({ before: idsBefore, after: idsAfter, fresh }))
+    const nAfter = idsAfter.length
     check(heldFocus === idsAfter[0] && (await focusedRowId()) === idsAfter[0], 'IB IBH7 after the answer focus is on the next ROW (not the next card\'s action), also after the held Enter repeated', `${heldFocus} / ${await focusedRowId()} / ${idsAfter[0]}`)
     check(!(await focusIn('[data-testid=inbox-detail-pane]')), 'IB IBH8 no card took focus on its own after the answer')
-    check(idsAfter.length === n - 1 && !idsAfter.includes(idsBefore[0]), 'IB answering removes the item from the list', JSON.stringify(idsAfter))
-    check((await badge()) === n - 1 && (await bell()) === bellBefore - 1 && (await summary()).waiting === n - 1, 'IB the badge, the Needs-you row and the summary all drop by one', `${await badge()} / ${await bell()} / ${(await summary()).waiting}`)
+    check(!idsAfter.includes(idsBefore[0]), 'IB answering removes the item from the list', JSON.stringify(idsAfter))
+    check((await badge()) === nAfter && (await bell()) === nAfter && (await summary()).waiting === nAfter && nAfter === n - 1 + fresh.length, 'IB the badge, the Needs-you row and the summary all drop by the one answered (plus a follow-up from the same run, if any) and agree', `${await badge()} / ${await bell()} / ${(await summary()).waiting}`)
     check((await selectedId()) === idsAfter[0], 'IB the next item is selected after an answer', String(await selectedId()))
     check(/^Answered\. Next: .+ \d+ of \d+\.$/.test(await live()), 'IB the live region says what was answered and what is next', await live())
     const afterFocus = await ip.evaluate(() => ({ body: document.activeElement === document.body, inView: !!document.activeElement?.closest?.('[data-testid=inbox-view]') }))
@@ -1953,8 +1972,8 @@ async function setName(name) {
     const fin = ip.locator('[data-testid=inbox-row][data-group=finished]')
     check((await fin.count()) === 1 && (await fin.first().getAttribute('data-kind')) === 'failed', 'IB a run that ended in an error is listed under "Finished since you last looked"', String(await fin.count()))
     const s1 = await summary()
-    check(s1.finished === 1 && s1.waiting === n - 1 && /1 finished$/.test(s1.text), 'IB the summary counts it as finished, not waiting', s1.text)
-    check((await badge()) === n - 1, 'IB a finished run does not change the sidebar badge', String(await badge()))
+    check(s1.finished === 1 && s1.waiting === nAfter && /1 finished$/.test(s1.text), 'IB the summary counts it as finished, not waiting', s1.text)
+    check((await badge()) === nAfter, 'IB a finished run does not change the sidebar badge', String(await badge()))
     check((await I('inbox-section-finished').locator('h2').innerText()).includes('Finished since you last looked'), 'IB the finished section is named')
     await I('inbox-chip-finished').click()
     check((await rows().count()) === 1 && (await ip.locator('[data-testid=inbox-section-waiting]').count()) === 0, 'IB the Finished chip lists only finished runs')
