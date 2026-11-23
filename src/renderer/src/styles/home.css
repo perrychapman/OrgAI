@@ -237,12 +237,9 @@
   color: var(--text-primary);
   font-weight: var(--weight-semibold);
 }
+/* A long path wraps at any character instead of being cut: the folder name at its end stays readable. */
 .home-repo-value.is-path {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl; /* a long path keeps its tail (the folder) visible */
-  text-align: left;
+  overflow-wrap: anywhere;
 }
 .home-ground {
   display: flex;

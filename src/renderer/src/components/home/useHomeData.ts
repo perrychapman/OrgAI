@@ -70,8 +70,7 @@ export function useMonthOverview(projectId: string, refreshKey: string): UsageOv
 type GitReader = (projectId: string) => Promise<unknown>
 
 /** The main process's git read for a code project, when this build has it (it lands with the Home brief's runtime half). */
-function gitReader(): GitReader | null {
-  const projects = (api() as unknown as { projects?: { gitSummary?: GitReader } } | undefined)?.projects
+function gitReader(): GitReader | null {  const projects = (api() as unknown as { projects?: { gitSummary?: GitReader } } | undefined)?.projects
   const fn = projects?.gitSummary
   return typeof fn === 'function' ? (id) => fn.call(projects, id) : null
 }

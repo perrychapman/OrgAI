@@ -109,7 +109,7 @@ describe('recentRuns', () => {
 describe('latestFiles', () => {
   const o = (id: string, over: Partial<RunOutput> = {}): RunOutput => ({ id, title: id, fileName: `${id}.docx`, kind: 'docx', createdAt: NOW - 5 * D, version: 2, ...over }) as RunOutput
   it('shows the newest present files with kind and version', () => {
-    const files = latestFiles([o('a', { updatedAt: NOW - 2 * H }), o('b', { missing: true, updatedAt: NOW }), o('c', { kind: 'xlsx', version: 1, updatedAt: NOW - H }), o('d', { title: '', kind: 'weird' })], NOW)
+    const files = latestFiles([o('a', { updatedAt: NOW - 2 * H }), o('b', { missing: true, updatedAt: NOW }), o('c', { kind: 'xlsx', version: 1, updatedAt: NOW - H }), o('d', { title: '', kind: 'weird' as RunOutput['kind'] })], NOW)
     expect(files.map((f) => f.id)).toEqual(['c', 'a', 'd'])
     expect(files[0]).toMatchObject({ kind: 'Sheet', note: 'Version 1 · 1 h ago' })
     expect(files[2]).toMatchObject({ name: 'd.docx', kind: 'Weird' })
