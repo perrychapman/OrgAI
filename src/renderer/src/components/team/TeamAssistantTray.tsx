@@ -87,7 +87,12 @@ export default function TeamAssistantTray({
   // On a short window the tray is one line (the Ask bar): the recommendations fold away so the chart keeps its room
   // (review M8). A role's "Ask the Team assistant" opens them. Elsewhere, and whenever results exist, they are open.
   const short = useShortWindow()
-  const [more, setMore] = useState<boolean | null>(null)
+  // The user's last fold choice outlives a tab switch (module-level, not saved to disk); null follows the window and results.
+  const [more, setMoreState] = useState<boolean | null>(lastFold)
+  const setMore = (v: boolean): void => {
+    lastFold = v
+    setMoreState(v)
+  }
   // Results with something to show (a recommendation or a gap) keep the pane open; an empty check does not.
   const hasCards = useTeamAssistantStore((s) => {
     const r = s.sessions[project.id]?.result
@@ -133,6 +138,8 @@ export default function TeamAssistantTray({
     </div>
   )
 }
+
+let lastFold: boolean | null = null
 
 /** Window event that unfolds the tray's recommendations (the role panel's "Ask the Team assistant"). */
 export const TEAM_ASSISTANT_EXPAND = 'orgai:team-assistant-expand'
