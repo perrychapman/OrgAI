@@ -32,7 +32,7 @@ describe('theme', () => {
   it('has no colour when colour is off or no tone is given', () => {
     expect(toneColor('danger', env({ color: false }))).toBeUndefined()
     expect(toneColor(undefined, env())).toBeUndefined()
-    expect(toneColor('danger', env())).toBe('#ff8a80')
+    expect(toneColor('danger', env())).toBe('#ff9a92')
     expect(toneColor('ok', env())).toBe('#52d6a0')
   })
 

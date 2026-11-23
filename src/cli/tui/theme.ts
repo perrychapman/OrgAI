@@ -24,7 +24,7 @@ export function terminalThemeFor(env: Record<string, string | undefined>): 'dark
 const TERMINAL_PALETTES = {
   dark: {
     primary: '#eef0f7', secondary: '#bcc3d3', surface: '#1a1e2c', brandBase: '#ffffff',
-    accent: '#b6acff', running: '#6fd3f3', ok: '#52d6a0', warn: '#f5b260', danger: '#ff8a80',
+    accent: '#b6acff', running: '#6fd3f3', ok: '#52d6a0', warn: '#f5b260', danger: '#ff9a92',
     identity: '#b18aff', identityCyan: '#64d8e8', identityGreen: '#7dd3a8', identityAmber: '#edc46a', identityPink: '#ef9dc6', identityBlue: '#8bb8ff', message: '#5d8bd6', code: '#bcc3d3'
   },
   light: {
