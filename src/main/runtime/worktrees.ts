@@ -1107,7 +1107,9 @@ const ATTR_CHUNK_CHARS = 12_000
 
 /**
  * A sentence when the merge of `sha` into `root` would run an attribute-selected merge (a driver of any name, or the built-in
- * `union`, which concatenates both sides) on one of the files it changes, else undefined. Read where git reads them for the
+ * `union`, which concatenates both sides) on one of the files it changes, or when a `filter` attribute is set for one of them
+ * (git-lfs and other clean / smudge programs: the neutral merge runs none and would write the stored form, so the automatic
+ * merge is refused and the user merges by hand), else undefined. A renamed file counts under both names. Read where git reads them for the
  * merge: the root's working tree (tracked, untracked and ignored `.gitattributes`, `info/attributes`, with the user's global
  * and system attributes off) and the attributes the merged commit carries (its own `.gitattributes`, read from a scratch index
  * holding that commit). A failed read refuses, it never passes.
