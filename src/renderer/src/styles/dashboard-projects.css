@@ -69,10 +69,13 @@
   gap: var(--space-2);
   min-width: 0;
   padding: var(--space-3) var(--space-4);
-  /* A raised tile on surface-2 and never state-tinted (a decision, a running run: the Needs you and Right now bands say it). */
-  background: var(--surface-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
+  /* A glass tile over the ambient ground (Main board), never state-tinted (a decision, a running run: the Waiting on you and
+     Working now columns say it). */
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
   transition:
     transform var(--dur-fast) var(--ease-out),
     border-color var(--dur-fast) var(--ease-out),
@@ -81,7 +84,7 @@
 /* Hover lifts the tile 2 px with --elev-1 (the distance token collapses to 0 under reduced motion and Pause motion). */
 .project-tile:hover {
   transform: translateY(calc(var(--motion-distance-sm) / -2));
-  box-shadow: var(--elev-1);
+  box-shadow: var(--elev-2);
   border-color: var(--border-strong);
 }
 .project-tile:has(.project-tile-main:focus-visible) {
@@ -92,7 +95,52 @@
   border-color: var(--accent-border);
   background:
     linear-gradient(var(--accent-faint), var(--accent-faint)),
-    var(--surface-2);
+    var(--glass);
+}
+/* The kind line under the name: "Code · 12 roles". */
+.project-tile-kind {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-secondary);
+}
+/* The dashed "New project" tile at the end of the grid. */
+.project-tile-new-item {
+  display: flex;
+  min-width: 0;
+}
+.project-tile-new {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 120px;
+  padding: var(--space-4);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-xl);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-weight: var(--weight-medium, 500);
+  cursor: pointer;
+}
+.project-tile-new:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-border);
+  background: var(--accent-faint);
+}
+.project-tile-new:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.tile-mark[data-kind='working'] {
+  border-radius: var(--radius-full);
+  --pulse-color: var(--working);
 }
 
 /* Badge on the left, then the name over the one meta line. */
@@ -182,45 +230,26 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 14px;
+  height: 24px;
   min-width: 0;
 }
 .tile-team-marks {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1);
   min-width: 0;
 }
-/* The line runs from the root's edge to the last mark's centre, behind the marks. */
-.tile-team-marks[data-line]::before {
-  content: '';
-  position: absolute;
-  left: 12px;
-  right: 5px;
-  top: 50%;
-  height: 2px;
-  margin-top: -1px;
-  background: var(--tile-team-line, var(--border-strong));
-}
+/* Main board: the roles as small rounded squares in their own colours, the root first (no connecting line). */
 .tile-team-root,
 .tile-team-mark {
   position: relative;
   flex: none;
   box-sizing: border-box;
-  border-radius: var(--radius-full);
-}
-.tile-team-root {
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--role);
-  background: radial-gradient(circle, var(--role) 0 2px, transparent 2.5px);
-}
-.tile-team-mark {
-  width: 10px;
-  height: 10px;
-  border: 1px solid var(--role);
-  background: color-mix(in oklab, var(--role) 70%, var(--surface-1));
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  background: var(--role);
 }
 .tile-team-more {
   flex: none;
