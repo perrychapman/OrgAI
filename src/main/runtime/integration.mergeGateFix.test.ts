@@ -182,6 +182,30 @@ describe('H1: the merge carries a snapshot taken before the test command, and gi
     expect(execFileSync('git', ['log', '-1', '--format=%an'], { cwd: root, encoding: 'utf8' }).trim()).toBe('Before Person')
   }, 60_000)
 
+  it('review round 2 keeps the first snapshot: a round-1 command that moves the tip and rewrites the global settings gets a refusal, never the rewritten values', async () => {
+    await prepareRepo(root)
+    git(root, 'config', '--unset', 'user.name')
+    git(root, 'config', '--unset', 'user.email')
+    writeFileSync(join(home, '.gitconfig'), '[user]\n\tname = Before Person\n\temail = before@example.test\n[core]\n\tautocrlf = false\n')
+    useGlobalHome()
+    const wt = addWorktree('h1r2')
+    const script = join(scripts, 'round1.js')
+    writeFileSync(
+      script,
+      "const { execFileSync } = require('child_process'), fs = require('fs'), p = require('path');\n" +
+        "const marker = p.join(process.argv[2], 'ran'); if (fs.existsSync(marker)) process.exit(0); fs.writeFileSync(marker, '1');\n" +
+        "const g = (a) => execFileSync('git', a, { stdio: 'ignore' });\n" +
+        "g(['config', '--global', 'user.name', 'Evil Person']); g(['config', '--global', 'core.autocrlf', 'true']);\n" +
+        "g(['-c', 'user.name=T', '-c', 'user.email=t@x.test', 'commit', '--allow-empty', '-q', '-m', 'moved by the tests']);\n"
+    )
+    const g = integrator(`node "${script}" "${scripts}"`, true)
+    const out = await g.i.integratePending(wt)
+    expect(readFileSync(join(home, '.gitconfig'), 'utf8')).toContain('Evil Person')
+    expect(out).toMatch(/git settings .* changed while the tests ran/)
+    expect(out).not.toMatch(/Merged worktree-agent-h1r2/)
+    expect(git(root, 'log', '-1', '--format=%an')).not.toBe('Evil Person')
+  }, 60_000)
+
   /** Remove a key from the repository's own config (a fresh Windows repo carries filemode and symlinks there). */
   function unsetLocal(...keys: string[]): void {
     for (const k of keys) {
