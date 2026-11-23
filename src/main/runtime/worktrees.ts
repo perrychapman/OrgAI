@@ -631,6 +631,46 @@ export interface IntegrateResult {
   info: WorktreeInfo
   /** Human summary for the log and the orchestrator. */
   message: string
+  /** Set when the merge was refused by the test gate (status 'conflict', the copy is kept as it is). */
+  refused?: 'tests'
+}
+
+/**
+ * What the pre-merge gate of integrateWorktree answers: the user's review decision, or a refusal (the test gate failed):
+ * nothing is merged or deleted, the copy stays pending on its branch and `message` says why.
+ */
+export type GateDecision = MergeDecision | { behavior: 'refuse'; reason: 'tests'; message: string }
+
+export interface IntegrateOptions {
+  /**
+   * Project.mainBranch: the local branch a merge into the main checkout lands on. Ignored when unset or when no such
+   * local branch exists (then the checkout's current branch is used, as before). Pass it only for the main checkout,
+   * never for a merge into a parent report's worktree. Never creates a branch.
+   */
+  mainBranch?: string
+}
+
+/**
+ * Make `root` sit on `mainBranch` before a merge. Null when it already does, when no mainBranch is set, or when it
+ * names no local branch (today's behaviour: merge into whatever the checkout has). The branch is switched only when the
+ * checkout has no uncommitted change to tracked files; otherwise, or when git refuses (the branch is checked out in
+ * another worktree), the sentence says nothing was merged. Call it holding the repository lock.
+ */
+export async function ensureMainBranch(root: string, mainBranch: string | undefined): Promise<string | null> {
+  const name = mainBranch?.trim()
+  if (!name || name.startsWith('-') || /[\0\r\n]/.test(name)) return null
+  const exists = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])
+  if (!exists.ok) return null
+  const head = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  if (head.ok && head.out === name) return null
+  const current = head.ok ? head.out : 'another branch'
+  const dirty = await git(root, ['status', '--porcelain', '--untracked-files=no'])
+  if (!dirty.ok || dirty.out) {
+    return `The project's main branch is ${name} but the main checkout is on ${current} with uncommitted changes, so nothing was merged. Commit or stash them, or switch to ${name}, then integrate again.`
+  }
+  const sw = await git(root, ['checkout', '--quiet', name, '--'])
+  if (!sw.ok) return `The project's main branch is ${name} but the main checkout could not switch to it from ${current} (${sw.err.slice(0, 200)}), so nothing was merged.`
+  return null
 }
 
 /** How a merge target is named in messages: the main checkout, or the parent report's branch. */
@@ -651,7 +691,8 @@ export async function integrateWorktree(
   info: WorktreeInfo,
   commitMessage: string,
   /** Optional gate before merging (review-before-merge). Not called when there is nothing to merge. */
-  review?: (changedFiles: string[]) => Promise<MergeDecision>
+  review?: (changedFiles: string[]) => Promise<GateDecision>,
+  opts: IntegrateOptions = {}
 ): Promise<IntegrateResult> {
   const wt = info.path
   // The target's lock is held for the git work but not while the user reviews the merge, which can take as
@@ -668,6 +709,10 @@ export async function integrateWorktree(
     if (commit.error) {
       return { info: { ...info, status: 'conflict' }, message: `Could not commit the worktree changes: ${commit.error}` }
     }
+
+    // Project.mainBranch: the merge lands there (the checkout is switched to it only when that loses nothing).
+    const branchRefusal = await ensureMainBranch(root, opts.mainBranch)
+    if (branchRefusal) return { info: { ...info, status: 'conflict' }, message: branchRefusal }
 
     // Anything to merge at all?
     const head = await git(root, ['rev-parse', 'HEAD'])
@@ -688,6 +733,9 @@ export async function integrateWorktree(
 
   if (review) {
     const decision = await review(changedFiles)
+    if (decision.behavior === 'refuse') {
+      return { info: { ...info, status: 'conflict', changedFiles }, message: decision.message, refused: decision.reason }
+    }
     if (decision.behavior === 'discard') {
       try {
         await discardWorktree(root, info)
@@ -712,6 +760,8 @@ export async function integrateWorktree(
     }
     const refusal = await unfinishedGitStateRefusal([root, wt], `branch ${info.branch} is kept at ${wt}`)
     if (refusal) return { info: { ...info, status: 'conflict', changedFiles }, message: refusal.message }
+    const branchRefusal = await ensureMainBranch(root, opts.mainBranch)
+    if (branchRefusal) return { info: { ...info, status: 'conflict', changedFiles }, message: branchRefusal }
     return mergeInto(root, info, commitMessage, changedFiles)
   })
 }
