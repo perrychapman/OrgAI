@@ -4,7 +4,7 @@ import { dirname, join, relative, isAbsolute } from 'node:path'
 import { renameSyncRetry } from '../host/fsRetry'
 import { mapTranscriptImages } from '../runtime/transcriptMedia'
 import { sanitizeImages } from '../runtime/attachments'
-import { MAX_AUTO_CONTINUES_LIMIT } from '@shared/defaults'
+import { MAX_AUTO_CONTINUES_LIMIT, isSafeId } from '@shared/defaults'
 import { DEFAULT_HEADLESS_DECISION_POLICY, EXEC_OUTCOMES, OUTPUT_COLOR_RE, QUICK_PROJECT_ID, isEffort, isPermissionMode, isStaffingGoal } from '@shared/types'
 import type {
   ExecOutcome,
@@ -12,6 +12,9 @@ import type {
   ImageAttachment,
   ImageMediaType,
   RunEndedBy,
+  RunHold,
+  RunHoldAction,
+  RunHoldKind,
   RunOverrides,
   RunRecord,
   RunRosterRole,
@@ -92,6 +95,58 @@ export function cleanRunOverrides(v: unknown): RunOverrides | undefined {
   return Object.keys(out).length ? out : undefined
 }
 
+const HOLD_KINDS: readonly string[] = ['budget', 'spend-limit', 'usage-limit', 'provider', 'agent-failed', 'plan-blocked']
+const HOLD_ACTIONS: readonly string[] = ['addBudget', 'resume', 'retry', 'switchModel', 'skipReview', 'end']
+const HOLD_SCOPES: readonly string[] = ['run', 'conversation', 'day', 'month']
+const HOLD_STR_MAX = 500
+const fin = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+const optFin = (v: unknown): boolean => v === undefined || fin(v)
+const str = (v: unknown, max = HOLD_STR_MAX): v is string => typeof v === 'string' && v.length <= max
+const optStr = (v: unknown, max = HOLD_STR_MAX): boolean => v === undefined || str(v, max)
+
+/** A stored RunHold from an untrusted file: the same shape rebuilt field by field, or undefined (drop the whole hold). */
+export function cleanRunHold(v: unknown): RunHold | undefined {
+  if (!isPlainObject(v)) return undefined
+  if (typeof v.kind !== 'string' || !HOLD_KINDS.includes(v.kind) || !fin(v.since) || !str(v.reason)) return undefined
+  if (!Array.isArray(v.actions) || v.actions.length > HOLD_ACTIONS.length || !v.actions.every((a) => typeof a === 'string' && HOLD_ACTIONS.includes(a))) return undefined
+  const out: RunHold = { kind: v.kind as RunHoldKind, since: v.since, reason: v.reason, actions: [...(v.actions as RunHoldAction[])] }
+  if (v.budget !== undefined) {
+    const b = v.budget
+    if (!isPlainObject(b) || typeof b.scope !== 'string' || !HOLD_SCOPES.includes(b.scope) || !fin(b.limitUsd) || !fin(b.spentUsd) || !optFin(b.resetsAt)) return undefined
+    out.budget = { scope: b.scope as 'run', limitUsd: b.limitUsd, spentUsd: b.spentUsd, ...(b.resetsAt !== undefined ? { resetsAt: b.resetsAt as number } : {}) }
+  }
+  if (v.provider !== undefined) {
+    const p = v.provider
+    if (!isPlainObject(p) || !optStr(p.connection, 200) || !optStr(p.error) || !optFin(p.lastOkAt)) return undefined
+    out.provider = {
+      ...(p.connection !== undefined ? { connection: p.connection as string } : {}),
+      ...(p.error !== undefined ? { error: p.error as string } : {}),
+      ...(p.lastOkAt !== undefined ? { lastOkAt: p.lastOkAt as number } : {})
+    }
+  }
+  if (v.failed !== undefined) {
+    const f = v.failed
+    if (!isPlainObject(f) || !str(f.agentId, 200) || !(f.roleId === undefined || f.roleId === null || str(f.roleId, 200)) || !optStr(f.name, 200) || !optFin(f.costUsd)) return undefined
+    out.failed = {
+      agentId: f.agentId,
+      ...(f.roleId !== undefined ? { roleId: f.roleId as string | null } : {}),
+      ...(f.name !== undefined ? { name: f.name as string } : {}),
+      ...(f.costUsd !== undefined ? { costUsd: f.costUsd as number } : {})
+    }
+  }
+  if (v.plan !== undefined) {
+    const p = v.plan
+    if (!isPlainObject(p) || !optStr(p.blockedReason)) return undefined
+    const ids = p.blockedStepIds
+    if (ids !== undefined && (!Array.isArray(ids) || ids.length > 200 || !ids.every((i) => str(i, 200)))) return undefined
+    out.plan = {
+      ...(p.blockedReason !== undefined ? { blockedReason: p.blockedReason as string } : {}),
+      ...(ids !== undefined ? { blockedStepIds: [...(ids as string[])] } : {})
+    }
+  }
+  return out
+}
+
 /**
  * Boot normalization of one stored summary (pure: returns a copy, never mutates `input`). Used by the RunStore
  * constructor and, later, by a read-only store reader in memory.
@@ -133,6 +188,14 @@ export function normalizeCrashedRunSummary(input: RunSummary, now: number = Date
     if (overrides) r.overrides = overrides
     else delete r.overrides
   }
+  // UI overhaul fields (untrusted file): a malformed hold is dropped whole; ids and the per-run cap are checked.
+  if (r.hold !== undefined) {
+    const hold = cleanRunHold(r.hold)
+    if (hold) r.hold = hold
+    else delete r.hold
+  }
+  if (r.excludedRoleIds !== undefined && (!Array.isArray(r.excludedRoleIds) || r.excludedRoleIds.length > 200 || !r.excludedRoleIds.every((x) => isSafeId(x)))) delete r.excludedRoleIds
+  if (r.runBudgetUsd !== undefined && (typeof r.runBudgetUsd !== 'number' || !Number.isFinite(r.runBudgetUsd) || r.runBudgetUsd <= 0)) delete r.runBudgetUsd
   if (r.status !== 'finished' && r.status !== 'error') {
     // What it was doing, from the status as saved: idle (open cards unknown) is 'idle', not 'waiting'; paused gets none.
     const was = r.status

@@ -498,3 +498,31 @@ describe('bootOrgAIHost', () => {
     expect(spawned).toEqual([])
   })
 })
+
+describe('startFinishedCopiesSweep', () => {
+  it('runs the sweep once on the desktop host and logs what it removed', async () => {
+    const { startFinishedCopiesSweep } = await import('./bootstrap')
+    const sweep = vi.fn(async () => ['a', 'b'])
+    const log = vi.fn()
+    await startFinishedCopiesSweep('desktop', { sweepFinishedCopies: sweep }, log)
+    expect(sweep).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledTimes(1)
+  })
+
+  it('never sweeps on a host that does not own the repository', async () => {
+    const { startFinishedCopiesSweep } = await import('./bootstrap')
+    const sweep = vi.fn(async () => [] as string[])
+    await startFinishedCopiesSweep('inproc', { sweepFinishedCopies: sweep }, vi.fn())
+    expect(sweep).not.toHaveBeenCalled()
+  })
+
+  it('catches and logs a failure instead of throwing', async () => {
+    const { startFinishedCopiesSweep } = await import('./bootstrap')
+    const log = vi.fn()
+    const failing = async (): Promise<string[]> => {
+      throw new Error('boom')
+    }
+    await expect(startFinishedCopiesSweep('desktop', { sweepFinishedCopies: failing }, log)).resolves.toBeUndefined()
+    expect(log.mock.calls[0][0]).toContain('boom')
+  })
+})
