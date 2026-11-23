@@ -35,7 +35,8 @@
 }
 /* The frame itself stays on the page surface; the stage paints the backdrop colour and the accent wash. */
 .canvas.canvas-frame {
-  background: var(--surface-0);
+  /* Transparent: the ambient ground (.app, shell.css) shows around the stage. */
+  background: transparent;
 }
 .frame-stage {
   grid-area: stage;
@@ -594,8 +595,10 @@ button.run-meta-item:focus-visible {
   z-index: var(--z-sticky);
   min-width: 0;
   margin: calc(-1 * var(--space-1)) 0 0;
-  padding: var(--space-1) 0;
-  background: var(--surface-1);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-lg);
+  /* Amber "N waiting on you" row, kept opaque because it is sticky over scrolling cards. */
+  background: linear-gradient(var(--warning-soft), var(--warning-soft)), var(--surface-1);
 }
 .frame-tray .decision-stepper-title {
   flex: none;
@@ -606,7 +609,7 @@ button.run-meta-item:focus-visible {
   min-height: var(--control-sm);
 }
 .decision-count {
-  margin-left: var(--space-1);
+  margin-left: 0;
   padding: 0 var(--space-1h);
   border-radius: var(--radius-full);
   background: var(--warning-soft);

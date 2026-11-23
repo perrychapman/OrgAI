@@ -121,7 +121,8 @@ export interface ImportNotice {
   error?: string
 }
 
-export type View = 'projects' | 'team' | 'settings' | 'run' | 'history' | 'outputs' | 'knowledge' | 'todos' | 'appSettings' | 'usage' | 'schedules'
+/** 'home' is a project tab (ProjectHome / EngagementHome, stored projects only); 'inbox' is app-level like usage. */
+export type View = 'projects' | 'inbox' | 'home' | 'team' | 'settings' | 'run' | 'history' | 'outputs' | 'knowledge' | 'todos' | 'appSettings' | 'usage' | 'schedules'
 /** Tabs of the live view's side panel. The side tab is remembered per run. */
 export type SideTab = 'transcript' | 'plan' | 'usage' | 'outputs' | 'knowledge' | 'logs'
 

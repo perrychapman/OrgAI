@@ -48,7 +48,7 @@ const repoD = makeFixtureRepo('dash-d')
 const clean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
 const DEFAULT_ORDER = ['week', 'pickup', 'upnext', 'projects', 'engagements', 'commits', 'todos']
 const TITLES = { week: 'Your week', pickup: 'Pick up', upnext: 'Up next', projects: 'Projects', engagements: 'Engagements', commits: 'Commits this week', todos: 'To-dos' }
-const SECTION_IDS = { 'dash-needs-you': 'Needs you', 'dash-now': 'Right now', 'dash-week': TITLES.week, 'dash-resume': TITLES.pickup, 'dash-upnext': TITLES.upnext, 'dash-projects': TITLES.projects, 'dash-engagements': TITLES.engagements, 'dash-commits': TITLES.commits, 'dash-todos': TITLES.todos }
+const SECTION_IDS = { 'dash-needs-you': 'Waiting on you', 'dash-now': 'Working now', 'dash-week': TITLES.week, 'dash-resume': TITLES.pickup, 'dash-upnext': TITLES.upnext, 'dash-projects': TITLES.projects, 'dash-engagements': TITLES.engagements, 'dash-commits': TITLES.commits, 'dash-todos': TITLES.todos }
 const KIND_WEIGHT = { plan: 0, question: 1, permission: 2, merge: 3, proposal: 4, install: 5, rules: 6, team: 7 }
 const REMOVED_IDS = [
   'dashboard-app-facts', 'dash-status-line', 'dash-paused', 'dash-since-clear', 'dash-now-empty', 'dash-attn-summary', 'dash-attn-tile', 'dash-attn-reply-count', 'dash-hero-stat', 'dash-hero-stats',
@@ -163,7 +163,8 @@ const headingFacts = () =>
       return !!el && el.offsetParent !== null
     })
     const wrong = present.filter((id) => (document.querySelector(`[data-testid=${id}] h2`)?.textContent ?? '').trim() !== map[id])
-    const hs = [...document.querySelectorAll('[data-testid=dashboard] h2')].filter((h) => h.offsetParent !== null).map((h) => {
+    // The quiet-state panels (EmptyState titles) are not sections.
+    const hs = [...document.querySelectorAll('[data-testid=dashboard] h2:not(.empty-state-title)')].filter((h) => h.offsetParent !== null).map((h) => {
       const r = h.getBoundingClientRect()
       return { text: (h.textContent ?? '').trim(), top: r.top, left: r.left }
     })
@@ -177,9 +178,13 @@ const headingFacts = () =>
   }, SECTION_IDS)
 async function checkHeadings(tag) {
   const f = await headingFacts()
-  check(f.h1s === 1 && f.h1 === 'Dashboard', `A1 the page has exactly one h1 "Dashboard" ${tag}`, JSON.stringify(f))
-  // One h2 per rendered section with its title, plus the Briefing's greeting (the page's one large line is an h2).
-  check(f.wrong.length === 0 && f.h2s === f.present.length + 1 && f.present.length >= 1 && f.texts[0] === (await salutationText()), `A1 every rendered section has one h2 with its title, after the greeting's h2 ${tag}`, JSON.stringify(f))
+  check(f.h1s === 1 && f.h1 === 'Home', `A1 the page has exactly one h1 "Home" ${tag}`, JSON.stringify(f))
+  // One h2 per rendered section with its title, plus the task box's question and the Briefing's greeting (both h2).
+  check(
+    f.wrong.length === 0 && f.h2s === f.present.length + 2 && f.present.length >= 1 && f.texts[0] === 'What should your team work on?' && f.texts[1] === (await salutationText()),
+    `A1 every rendered section has one h2 with its title, after the task box's and the greeting's h2 ${tag}`,
+    JSON.stringify(f)
+  )
   check(f.ordered, `A1 DOM order of the section headings equals their visual order ${tag}`, JSON.stringify(f))
 }
 /** The same salutation / brief rules everywhere: no "$0.00", the brief is not live, one live region. */
@@ -251,10 +256,10 @@ async function visualPassChecks(tag) {
       const n = linesOf(el)
       if (n > max) over.push(`${s}:${n}:${(el.textContent ?? '').slice(0, 40)}`)
     }
-    // A project tile: name, status line and its run count (three lines at most).
+    // A project tile: name, kind line, status line and its run count (four lines at most).
     for (const el of document.querySelectorAll('[data-testid=project-tile]')) {
       const n = linesOf(el)
-      if (n > 3) over.push(`tile:${n}:${(el.textContent ?? '').slice(0, 40)}`)
+      if (n > 4) over.push(`tile:${n}:${(el.textContent ?? '').slice(0, 40)}`)
     }
     const hues = {}
     for (const b of document.querySelectorAll('[data-testid=dash-project-badge]')) {
@@ -282,7 +287,7 @@ async function visualPassChecks(tag) {
       commits: !!commits,
       commitDays,
       commitsText,
-      sideBeside: !!(needs && now && now.getBoundingClientRect().left > needs.getBoundingClientRect().right - 1),
+      sideBeside: !!(needs && now && needs.getBoundingClientRect().left > now.getBoundingClientRect().right - 1),
       stats,
       heatName: heat?.getAttribute('aria-label') ?? '',
       heatToday: document.querySelectorAll('[data-testid=dash-heat-col][data-today]').length
@@ -295,7 +300,7 @@ async function visualPassChecks(tag) {
   // Decisions has no card until a run of the week carries the count, so three or four cards.
   check(v.stats.length >= 3 && v.stats.length <= 4 && ['spend', 'runs', 'time'].every((id) => v.stats.some((s) => s.stat === id)) && v.stats.every((s) => s.buttons === 1 && s.name.length > 0), `VP Your week shows its stat cards (Spend, Runs, Agent time, Decisions once counted), each one named button ${tag}`, JSON.stringify(v.stats))
   check(v.heatName.length > 0 && v.heatToday === 1, `VP the activity map has a text alternative and one marked today column ${tag}`, JSON.stringify({ n: v.heatName.slice(0, 60), t: v.heatToday }))
-  if (tag.includes('1600')) check(v.sideBeside, `VP Right now sits to the right of Needs you ${tag}`, JSON.stringify(v))
+  if (tag.includes('1600')) check(v.sideBeside, `VP Waiting on you sits to the right of Working now ${tag}`, JSON.stringify(v))
 }
 
 const NOW_OFFSET_DAY = (h, m) => `new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - 1, ${h}, ${m}).getTime()`
@@ -312,7 +317,7 @@ try {
   check(await visible('[data-testid=dash-name-add]'), 'A2 first launch offers "Add your name"')
   check((await T('dashboard-app-facts').count()) === 0, 'BR there is no app-facts footer on first launch')
   const first = await headingFacts()
-  check(first.h1s === 1 && first.h1 === 'Dashboard' && first.texts[0] === 'Welcome to OrgAI', 'A1 first launch has exactly one h1 and the greeting h2', JSON.stringify(first))
+  check(first.h1s === 1 && first.h1 === 'Home' && first.texts[0] === 'Welcome to OrgAI' && (await T('home-hero').count()) === 0, 'A1 first launch has exactly one h1 and the greeting h2', JSON.stringify(first))
   await checkBrief('on first launch')
   await page.evaluate(() => {
     const h = document.querySelector('main .topbar h1')
@@ -380,6 +385,30 @@ try {
   check(await visible('[data-testid=dash-customise]'), 'the Customise button shows once a project exists')
   await checkHeadings('with no runs')
   await checkBrief('with no runs')
+
+  // ---------------------------------------------------------------- HM Home task box and quiet states (Main board)
+  check(await visible('[data-testid=home-hero]'), 'HM Home shows the task box')
+  check((await page.getByLabel('Task', { exact: true }).count()) === 1, 'HM the task box has the accessible name "Task"')
+  check(await T('home-start').isDisabled(), 'HM Start run is disabled while the task is empty')
+  await T('home-suggest').first().click()
+  const suggested = await T('home-task').inputValue()
+  check(suggested === 'Fix a failing test' && !(await T('home-start').isDisabled()), 'HM a "Try" chip fills the box and enables Start run', suggested)
+  const targetOptions = await T('home-target').locator('option').allInnerTexts()
+  check(targetOptions.includes(BUSY) && targetOptions.includes(WAIT) && targetOptions.some((o) => /^Chat/.test(o)), 'HM the target lists the projects and Chat', targetOptions.join('|'))
+  check(/^Whole team · \d+ roles?$/.test(await text('home-scope')) && (await text('home-permission')).length > 0, 'HM the team scope and permission setting show as read-only chips', `${await text('home-scope')} / ${await text('home-permission')}`)
+  check((await T('home-hint').innerText()).trim().endsWith('+ Enter'), 'HM the shortcut hint is shown')
+  check(await visible('[data-testid=home-empty-now]') && await visible('[data-testid=home-empty-needs]'), 'HM idle Working now and Waiting on you show their quiet states')
+  check((await T('dash-open-inbox').count()) === 0, 'HM Open inbox is only drawn with decisions waiting')
+  await T('home-target').selectOption({ label: PINNED })
+  await T('home-task').fill('Check the home task box')
+  await T('home-task').press('Control+Enter')
+  await page.locator('.composer textarea').waitFor({ timeout: 10_000 })
+  check((await page.locator('.composer textarea').inputValue()) === 'Check the home task box', 'HM Ctrl+Enter opens that project\'s New run page with the task in the composer')
+  check((await page.locator('main .topbar h1').first().innerText()).trim() === PINNED, 'HM the New run page is the chosen project\'s')
+  await page.locator('.composer textarea').fill('')
+  await gotoProjects(page)
+  await sleep(400)
+  check((await T('home-task').inputValue()) === '', 'HM the box is empty after the task moved to the composer')
 
   // ---------------------------------------------------------------- A3 / A7 The name
   const noName = await salutationText()
@@ -825,7 +854,11 @@ try {
   const keysBefore = await needsKeys()
   await sleep(2500)
   check((await needsKeys()).join('|') === keysBefore.join('|'), 'A10 a row does not move while other events arrive', `${keysBefore.join('|')} -> ${(await needsKeys()).join('|')}`)
-  check((await text('dash-needs-you')).startsWith('Needs you'), 'NY the region is called "Needs you"', (await text('dash-needs-you')).slice(0, 40))
+  check((await visible('[data-testid=dash-open-inbox]')) && (await T('dash-open-inbox').innerText()).trim() === 'Open inbox' && (await T('home-empty-needs').count()) === 0, 'HM with decisions waiting the column offers Open inbox and no quiet state')
+  check((await visible('[data-testid=home-legend]')) && /Working.*Waiting on you.*Finished.*Queued/.test(clean(await T('home-legend').innerText())), 'HM Working now shows its legend (Working, Waiting on you, Finished, Queued)')
+  check(/^\d+ runs? · \d+ agents?/.test(await text('dash-now-counts')), 'HM Working now says "N runs · M agents"', await text('dash-now-counts'))
+  check((await T('home-empty-now').count()) === 0, 'HM with a run open Working now shows no quiet state')
+  check((await text('dash-needs-you')).startsWith('Waiting on you'), 'NY the region is called "Waiting on you"', (await text('dash-needs-you')).slice(0, 40))
   check((await page.locator('[data-testid=dash-needs-you]').evaluate((el) => !el.closest('[data-testid=dash-section]'))) && (await page.locator('[data-testid=dash-section][data-section=now]').count()) === 1, 'NY Needs you is a fixed region outside the arrangeable slots; Right now is the one fixed slot')
   const regions = await headingFacts()
   check(['dash-needs-you', 'dash-now', 'dash-week', 'dash-todos'].every((id) => regions.present.includes(id)), 'EM with data Needs you, Right now, Your week and To-dos render', JSON.stringify(regions.present))
@@ -837,7 +870,7 @@ try {
   // Right now.
   check((await page.locator('[data-testid=dash-now] [data-testid=dash-running-row][data-status]').count()) >= 1, 'RN a live run appears in Right now (dash-now > dash-running-row)')
   check((await T('dash-now-empty').count()) === 0, 'RN there is no dash-now-empty while runs are live')
-  check((await text('dash-now')).startsWith('Right now'), 'RN the band is called "Right now"', (await text('dash-now')).slice(0, 30))
+  check((await text('dash-now')).startsWith('Working now'), 'RN the band is called "Working now"', (await text('dash-now')).slice(0, 30))
   const runIds = await T('dash-running-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-run')))
   check(new Set(runIds).size === runIds.length, 'each run appears once in the band', JSON.stringify(runIds))
   const waitGroup = page.locator('[data-testid=dash-now] [data-testid=dash-now-project]', { has: page.locator('h3', { hasText: WAIT }) })
@@ -1055,7 +1088,7 @@ try {
   check(pairedOk, 'SZ outside customise mode two half-width sections sit side by side and the others take the row (1600x1000)', JSON.stringify(arrangeable))
   log(`note: ${rowsOf.filter((r) => r.length === 2).length} paired row(s) of half-width sections at 1600x1000`)
   check(slots.find((s) => s.id === 'projects')?.span === 'full', 'SZ Projects is always full width')
-  check(slots.find((s) => s.id === 'week')?.lead === true, 'SZ Your week, the first visible section, takes the work area\'s left column (data-lead)')
+  check(slots.find((s) => s.id === 'week')?.lead === false && slots.find((s) => s.id === 'week')?.span === 'full', 'SZ Your week takes the full row under the two work columns (no lead column any more)')
 
   // ---------------------------------------------------------------- A25 reduced motion
   await setAppearance({ reduceMotion: 'on' })
@@ -1229,9 +1262,9 @@ try {
       check(m.salInside, `SZ a 40-character name stays inside the greeting ${tag}`, JSON.stringify(m))
       check(m.pulseInside, `SZ the Team pulse stays inside the Briefing ${tag}`, JSON.stringify(m))
       await visualPassChecks(tag)
-      // Two work columns from an 880 px page: Needs you left, Right now right; one column below that.
+      // Two work columns from an 880 px page: Working now left, Waiting on you right on the same row; one column below that.
       const twoCols = m.pageW >= 880
-      check(m.nowLeft > 0 && (twoCols ? m.nowLeft >= m.needsRight - 1 : m.nowLeft <= m.needsLeft + 1 && m.nowTop > m.needsTop), `SZ the work area is ${twoCols ? 'two columns' : 'one column'} at a ${m.pageW} px page ${tag}`, JSON.stringify(m))
+      check(m.nowLeft > 0 && (twoCols ? m.needsLeft > m.nowLeft && Math.abs(m.needsTop - m.nowTop) <= 2 : m.needsLeft <= m.nowLeft + 1 && m.needsTop > m.nowTop), `SZ the work area is ${twoCols ? 'two columns' : 'one column'} at a ${m.pageW} px page ${tag}`, JSON.stringify(m))
       await checkHeadings(tag)
       check(m.heroBottom > 0 && m.actionsBottom > 0 && m.actionsBottom <= m.vh, `SZ the greeting, status and quick actions sit above the fold ${tag}`, JSON.stringify(m))
       if (h === 640) {
@@ -1392,7 +1425,7 @@ try {
   const runKeys = resumeFacts.filter((r) => r.run).map((r) => r.run)
   check(new Set(runKeys).size === runKeys.length, 'WK each chain appears once in Pick up', JSON.stringify(runKeys))
   check((await T('dash-resume-row').locator('[data-action=new-run]').count()) === 0 && !resumeFacts.some((r) => r.kind === 'pinned'), 'WK a pinned project with no runs is not a Pick up row after a relaunch either')
-  check((await T('dash-now').count()) === 0 && (await T('dash-now-empty').count()) === 0, 'RN with nothing running Right now is not rendered and there is no dash-now-empty')
+  check((await T('dash-now').count()) === 0 && (await T('dash-now-empty').count()) === 0 && (await T('home-empty-now').count()) === 1, 'RN with nothing running Working now is not rendered (its quiet state is) and there is no dash-now-empty')
   // The since line: what ended after the last visit (a relaunch keeps the stored last-seen time, so the cut runs count).
   const sinceLine = await T('dash-since').first().evaluate((el) => ({ sr: el.querySelector('.sr-only')?.textContent?.trim() ?? '', visible: el.querySelector('.dash-since-visual')?.textContent?.replace(/\s+/g, ' ').trim() ?? '', hiddenVisual: el.querySelector('.dash-since-visual')?.getAttribute('aria-hidden') })).catch(() => null)
   check(!!sinceLine && /^Since .+: \d+ .+\.$/.test(sinceLine.sr) && sinceLine.hiddenVisual === 'true' && sinceLine.visible.startsWith('Since '), 'BR after a relaunch the since line says what ended since the last visit (screen-reader sentence, decorative visual)', JSON.stringify(sinceLine))
@@ -1630,4 +1663,303 @@ log('done')
 async function setName(name) {
   await setSettings({ displayName: name })
   await sleep(300)
+}
+
+// ================================================================ inboxChecks (Inbox view, UI overhaul; owner: sh-inbox)
+// Appended block, its own launch (the Dashboard run above has finished and closed its app). Token-free, mock adapter.
+//  IB  the Inbox opened from the sidebar: the waiting number is the sidebar badge and the Needs-you popover number, oldest
+//      first, the selected decision is the run view's own card, J / K / Home / End, Enter goes to the main action and Esc
+//      back to the list, an answer selects the next item and says so, a failed run is listed as finished until it is
+//      cleared or marked read, the chips and the project filter, "Answer in order", the empty state, both themes and sizes.
+// Not covered here: a run that finished successfully (the mock ends sessions only by stop, which is not news; unit tests
+// cover it), a question, proposal, merge or install card in the Inbox, screen-reader speech.
+{
+  const IB_A = 'E2E inbox alpha (orgai test)'
+  const IB_B = 'E2E inbox beta (orgai test)'
+  const ibRepoA = makeFixtureRepo('inbox-a')
+  const ibRepoB = makeFixtureRepo('inbox-b')
+  let ibApp
+  const ibClean = (s) => (s ?? '').replace(/\s+/g, ' ').trim()
+  const ibUntil = async (fn, ms = 20_000, every = 200) => {
+    const end = Date.now() + ms
+    for (;;) {
+      const v = await fn().catch(() => null)
+      if (v) return v
+      if (Date.now() > end) return null
+      await sleep(every)
+    }
+  }
+  try {
+    const launched = await launch({ shotPrefix: 'inbox' })
+    ibApp = launched.app
+    const ip = launched.page
+    const ipErrors = []
+    ip.on('pageerror', (e) => ipErrors.push(e.message))
+    const I = (id) => ip.locator(`[data-testid=${id}]`)
+    const rows = () => ip.locator('[data-testid=inbox-row]')
+    const waitRows = () => ip.locator('[data-testid=inbox-row][data-group=waiting]')
+    const rowIds = () => rows().evaluateAll((els) => els.map((e) => e.getAttribute('data-id')))
+    const selectedId = () => ip.evaluate(() => document.querySelector('[data-testid=inbox-row][aria-current=true]')?.getAttribute('data-id') ?? null)
+    const badge = async () => Number(ibClean(await I('nav-inbox-count').first().innerText().catch(() => '0')) || 0)
+    const bell = async () => Number(/Needs you · (\d+)/.exec(ibClean(await I('needs-you-row').first().innerText().catch(() => '')))?.[1] ?? 0)
+    const summary = async () => ({
+      waiting: Number(await I('inbox-summary').getAttribute('data-waiting')),
+      finished: Number(await I('inbox-summary').getAttribute('data-finished')),
+      text: ibClean(await I('inbox-summary').innerText())
+    })
+    const focusIn = (sel) => ip.evaluate((s) => !!document.activeElement?.closest?.(s), sel)
+    const focusedRowId = () => ip.evaluate(() => (document.activeElement?.matches?.('[data-testid=inbox-row]') ? document.activeElement.getAttribute('data-id') : null))
+    const live = async () => ibClean(await I('inbox-live').innerText().catch(() => ''))
+    const openInbox = async () => {
+      await I('nav-inbox').click()
+      await I('inbox-view').waitFor({ timeout: 10_000 })
+      await sleep(400)
+    }
+    const startViaIpc = (projectId, prompt) => ip.evaluate(({ id, p }) => window.orgai.runs.start({ projectId: id, prompt: p }), { id: projectId, p: prompt })
+    const runStatus = (runId) => ip.evaluate((id) => window.orgai.runs.get(id).then((r) => r?.summary?.status ?? null), runId)
+    const setSize = async (w, h) => {
+      await ibApp.evaluate(({ BrowserWindow }, [cw, ch]) => BrowserWindow.getAllWindows()[0].setContentSize(cw, ch), [w, h])
+      await ip.waitForFunction((w2) => Math.abs(window.innerWidth - w2) <= 1, w, { timeout: 10_000 }).catch(() => {})
+      await ip.evaluate(() => window.dispatchEvent(new Event('resize')))
+      await sleep(500)
+    }
+    const setTheme = async (theme) => {
+      await ip.evaluate(async (t) => {
+        const s = await window.orgai.settings.get()
+        await window.orgai.settings.set({ ...s, appearance: { ...s.appearance, theme: t } })
+      }, theme)
+      await sleep(600)
+    }
+    const overflowX = () => ip.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
+
+    // ---- Empty first: nothing waits, nothing is working.
+    await openInbox()
+    check((await I('inbox-empty').count()) === 1 && /Nothing is waiting on you/.test(ibClean(await I('inbox-empty').innerText())), 'IB an empty Inbox says "Nothing is waiting on you"')
+    check(/(No teams are|\d+ teams? (is|are)) working/.test(ibClean(await I('inbox-empty').innerText())), 'IB the empty state says how many teams are working', ibClean(await I('inbox-empty').innerText()))
+    check((await summary()).text === '0 waiting on you · 0 finished', 'IB the summary reads 0 waiting · 0 finished', (await summary()).text)
+    check((await I('inbox-answer-order').count()) === 0 && (await I('inbox-chips').count()) === 0, 'IB no "Answer in order" button or chips while the Inbox is empty')
+
+    // ---- Two projects, each with a run that asks for permission.
+    const projA = await createProject(ip, { path: ibRepoA, name: IB_A })
+    const projB = await createProject(ip, { path: ibRepoB, name: IB_B })
+    check(!!projA && !!projB, 'IB two projects created')
+    const runA = await startViaIpc(projA.id, 'Inline task')
+    await sleep(700)
+    const runB = await startViaIpc(projB.id, 'Compound [mock:fatigue]')
+    await ibUntil(async () => (await badge()) >= 2, 25_000)
+    await openInbox()
+    await waitRows().first().waitFor({ timeout: 15_000 })
+    await sleep(500)
+
+    // ---- Count consistency: the sidebar badge, the Needs-you popover and the Inbox are one number.
+    const n = await waitRows().count()
+    const s0 = await summary()
+    check(n >= 2 && n === (await badge()) && n === (await bell()) && n === s0.waiting, 'IB the Inbox rows, its summary, the sidebar badge and the Needs-you row are the same number', `${n} rows / badge ${await badge()} / bell ${await bell()} / summary ${s0.waiting}`)
+    check(/^\d+ waiting on you · 0 finished$/.test(s0.text), 'IB the summary reads "N waiting on you · M finished"', s0.text)
+
+    // ---- Oldest first: the run that started first is first.
+    const ids0 = await rowIds()
+    check(ids0[0]?.startsWith(`w:${runA.id}/`) && ids0.slice(1).some((id) => id?.startsWith(`w:${runB.id}/`)), 'IB the oldest waiting decision is listed first', JSON.stringify(ids0))
+    check((await selectedId()) === ids0[0], 'IB the first item is selected on arrival', String(await selectedId()))
+    check(!(await focusIn('[data-testid=inbox-detail-pane]')), 'IB arriving on the Inbox does not move focus into the first card', JSON.stringify(await ip.evaluate(() => document.activeElement?.getAttribute('data-testid'))))
+
+    // ---- The selected decision is the run view's own card.
+    const card = ip.locator('[data-testid=inbox-detail-pane] article.decision-card[data-kind=permission]')
+    check((await card.count()) === 1, 'IB the selected permission is the real decision card', String(await card.count()))
+    check((await card.locator('.decision-footer .btn.primary').count()) === 1, 'IB the card has its own primary button')
+    const rowsNamed = await rows().evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? ''))
+    check(rowsNamed.every((t) => /^(Permission|Question|Rule|Proposal|Review|New tool|Plan|Team files|Finished|Failed): /.test(t) && /run started/.test(t)), 'IB each row is named with its kind, ask, who, project and age', JSON.stringify(rowsNamed.slice(0, 2)))
+    await ip.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
+    await launched.shot('waiting-dark-1440')
+
+    // ---- Click selects and keeps focus on the list.
+    await rows().nth(1).click()
+    check((await selectedId()) === ids0[1], 'IB clicking a row selects it', String(await selectedId()))
+    check((await focusedRowId()) === ids0[1], 'IB the clicked row keeps focus (the card does not take it)', String(await focusedRowId()))
+    check((await ip.locator('[data-testid=inbox-row][aria-current=true]').count()) === 1 && (await ip.locator('[data-testid=inbox-row][tabindex="0"]').count()) === 1, 'IB exactly one row is current and one is a Tab stop')
+
+    // ---- J / K / Home / End.
+    await rows().first().click()
+    await sleep(200)
+    await ip.keyboard.press('j')
+    await sleep(200)
+    check((await selectedId()) === ids0[1], 'IB J from the first item selects the second', String(await selectedId()))
+    check((await focusedRowId()) === ids0[1], 'IB J keeps focus on the selected row', String(await focusedRowId()))
+    await ip.keyboard.press('k')
+    check((await selectedId()) === ids0[0], 'IB K moves back up', String(await selectedId()))
+    await ip.keyboard.press('k')
+    check((await selectedId()) === ids0[0], 'IB K at the top stays on the first item')
+    await ip.keyboard.press('End')
+    check((await selectedId()) === ids0[ids0.length - 1], 'IB End selects the last item', String(await selectedId()))
+    await ip.keyboard.press('Home')
+    check((await selectedId()) === ids0[0], 'IB Home selects the first item')
+    await ip.keyboard.press('ArrowDown')
+    check((await selectedId()) === ids0[1], 'IB ArrowDown also moves down')
+    await ip.keyboard.press('ArrowUp')
+
+    // ---- No key handling while typing in a field.
+    const field = ip.locator('[data-testid=inbox-detail-pane] textarea, [data-testid=inbox-detail-pane] input[type=text]').first()
+    if (await field.count()) {
+      const before = await selectedId()
+      await field.focus()
+      await ip.keyboard.type('jkjk')
+      check((await selectedId()) === before && (await field.inputValue()) === 'jkjk', 'IB J and K typed into a field do not move the selection', `${before} -> ${await selectedId()}`)
+      await field.fill('')
+      await rows().first().focus()
+    } else log('SKIP typing guard: the selected card has no text field')
+
+    // ---- Enter goes to the main action, Esc goes back to the list.
+    await rows().first().focus()
+    await ip.keyboard.press('Enter')
+    check(await focusIn('[data-testid=inbox-detail-pane]'), 'IB Enter on a row moves focus into the card', JSON.stringify(await ip.evaluate(() => document.activeElement?.outerHTML?.slice(0, 120))))
+    check((await selectedId()) === ids0[0] && (await waitRows().count()) === n, 'IB Enter on a row answers nothing', `${await waitRows().count()} of ${n} left`)
+    await ip.keyboard.press('j')
+    check((await selectedId()) === ids0[0], 'IB J does nothing while focus is inside the card')
+    await ip.keyboard.press('Escape')
+    await sleep(200)
+    check((await focusedRowId()) === ids0[0], 'IB Esc inside the card goes back to the selected row', String(await focusedRowId()))
+    check((await waitRows().count()) === n, 'IB Esc answers nothing (a decline is always a visible button)')
+
+    // ---- Chips and the project filter.
+    const chipTexts = await I('inbox-chips').locator('button').evaluateAll((els) => els.map((e) => ({ label: (e.textContent ?? '').replace(/\s+/g, ' ').trim(), pressed: e.getAttribute('aria-pressed') })))
+    check(chipTexts[0]?.pressed === 'true' && /^All\s*\d+$/.test(chipTexts[0].label) && chipTexts.some((c) => /^Permissions\s*\d+$/.test(c.label)) && !chipTexts.some((c) => /^Finished/.test(c.label)), 'IB the chips are a pressed group: All plus only the kinds present', JSON.stringify(chipTexts))
+    await I('inbox-chip-permission').click()
+    check((await I('inbox-chip-permission').getAttribute('aria-pressed')) === 'true' && (await I('inbox-chip-all').getAttribute('aria-pressed')) === 'false', 'IB a chip toggles aria-pressed')
+    check((await rows().count()) === n, 'IB the Permissions chip keeps the permission rows')
+    await I('inbox-chip-all').click()
+    const select = ip.getByRole('combobox', { name: 'Project' })
+    check((await select.count()) === 1, 'IB a project filter appears when two projects have items')
+    const bCount = (await rowIds()).filter((id) => id?.startsWith(`w:${runB.id}/`)).length
+    await select.selectOption({ label: `${IB_B} (${bCount})` })
+    const onlyB = await rowIds()
+    check(onlyB.length >= 1 && onlyB.every((id) => id?.startsWith(`w:${runB.id}/`)), 'IB the project filter keeps only that project\'s items', JSON.stringify(onlyB))
+    check((await summary()).waiting === n, 'IB the summary and the badge ignore the filters', String((await summary()).waiting))
+    await select.selectOption('all')
+    check((await rows().count()) === n, 'IB "All projects" brings every item back')
+
+    // ---- Answer in order: the oldest item, with focus on its main action.
+    await rows().last().click()
+    await I('inbox-answer-order').click()
+    await sleep(500)
+    check((await selectedId()) === ids0[0], 'IB "Answer in order" selects the oldest waiting item', String(await selectedId()))
+    check(await focusIn('[data-testid=inbox-detail-pane]'), 'IB "Answer in order" moves focus into the card', JSON.stringify(await ip.evaluate(() => document.activeElement?.outerHTML?.slice(0, 120))))
+
+    // ---- Theme and size sweep on the filled Inbox.
+    await ip.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null))
+    for (const [theme, w, h] of [['dark', 1024, 640], ['light', 1440, 900], ['light', 1024, 640]]) {
+      await setTheme(theme)
+      await setSize(w, h)
+      check(!(await overflowX()), `IB ${theme} ${w}x${h}: no horizontal overflow`)
+      check((await I('inbox-detail-pane').isVisible()) && (await rows().first().isVisible()), `IB ${theme} ${w}x${h}: the list and the card are both on screen or reachable`)
+      await launched.shot(`waiting-${theme}-${w}`)
+    }
+    await setTheme('dark')
+    await setSize(1440, 900)
+
+    // ---- Answer one in the Inbox: the next item is selected and announced.
+    await rows().first().click()
+    const idsBefore = await rowIds()
+    const bellBefore = await bell()
+    await card.locator('.decision-footer .btn.primary').click()
+    await ibUntil(async () => (await waitRows().count()) === n - 1, 15_000)
+    await sleep(500)
+    const idsAfter = await rowIds()
+    check(idsAfter.length === n - 1 && !idsAfter.includes(idsBefore[0]), 'IB answering removes the item from the list', JSON.stringify(idsAfter))
+    check((await badge()) === n - 1 && (await bell()) === bellBefore - 1 && (await summary()).waiting === n - 1, 'IB the badge, the Needs-you row and the summary all drop by one', `${await badge()} / ${await bell()} / ${(await summary()).waiting}`)
+    check((await selectedId()) === idsAfter[0], 'IB the next item is selected after an answer', String(await selectedId()))
+    check(/^Answered\. Next: .+ \d+ of \d+\.$/.test(await live()), 'IB the live region says what was answered and what is next', await live())
+    const afterFocus = await ip.evaluate(() => ({ body: document.activeElement === document.body, inView: !!document.activeElement?.closest?.('[data-testid=inbox-view]') }))
+    check(afterFocus.inView && !afterFocus.body, 'IB focus stays in the Inbox after an answer (not on the body)', JSON.stringify(afterFocus))
+    check((await ip.locator('[data-testid=inbox-detail-pane] article.decision-card').count()) === 1, 'IB the next decision is shown as its card')
+
+    // ---- A failed run is news until it is cleared or marked read.
+    const fail1 = await startViaIpc(projA.id, 'Break it [mock:model-switch-error]')
+    const failed1 = await ibUntil(async () => (await runStatus(fail1.id)) === 'error', 25_000)
+    check(!!failed1, 'IB the [mock:model-switch-error] run ends in error')
+    await ibUntil(async () => (await ip.locator('[data-testid=inbox-row][data-group=finished]').count()) === 1, 15_000)
+    const fin = ip.locator('[data-testid=inbox-row][data-group=finished]')
+    check((await fin.count()) === 1 && (await fin.first().getAttribute('data-kind')) === 'failed', 'IB a run that ended in an error is listed under "Finished since you last looked"', String(await fin.count()))
+    const s1 = await summary()
+    check(s1.finished === 1 && s1.waiting === n - 1 && /1 finished$/.test(s1.text), 'IB the summary counts it as finished, not waiting', s1.text)
+    check((await badge()) === n - 1, 'IB a finished run does not change the sidebar badge', String(await badge()))
+    check((await I('inbox-section-finished').locator('h2').innerText()).includes('Finished since you last looked'), 'IB the finished section is named')
+    await I('inbox-chip-finished').click()
+    check((await rows().count()) === 1 && (await ip.locator('[data-testid=inbox-section-waiting]').count()) === 0, 'IB the Finished chip lists only finished runs')
+    await I('inbox-chip-all').click()
+    await fin.first().click()
+    check((await I('inbox-finished-open').count()) === 1 && (await I('inbox-finished-clear').count()) === 1 && /Failed/.test(ibClean(await I('inbox-detail').innerText())), 'IB a finished run shows what happened with Open run and Clear', ibClean(await I('inbox-detail').innerText()).slice(0, 160))
+    await launched.shot('finished-dark-1440')
+    await I('inbox-finished-clear').click()
+    await ibUntil(async () => (await fin.count()) === 0, 8000)
+    check((await fin.count()) === 0 && (await summary()).finished === 0, 'IB Clear removes the finished run for good')
+    check(/^Cleared\./.test(await live()), 'IB Clear is announced', await live())
+    // Marked read: a second failed run, then "Mark all read".
+    const fail2 = await startViaIpc(projB.id, 'Break it again [mock:model-switch-error]')
+    await ibUntil(async () => (await runStatus(fail2.id)) === 'error', 25_000)
+    await ibUntil(async () => (await fin.count()) === 1, 15_000)
+    check((await fin.count()) === 1, 'IB a second failed run is listed')
+    await I('inbox-mark-read').click()
+    await ibUntil(async () => (await fin.count()) === 0, 8000)
+    check((await fin.count()) === 0 && (await I('inbox-mark-read').count()) === 0, 'IB "Mark all read" empties the finished section')
+    // The finished list survives leaving and coming back until read (a third run, then Home and back).
+    const fail3 = await startViaIpc(projA.id, 'Break it a third time [mock:model-switch-error]')
+    await ibUntil(async () => (await runStatus(fail3.id)) === 'error', 25_000)
+    await ibUntil(async () => (await fin.count()) === 1, 15_000)
+    await I('nav-home').click()
+    await sleep(500)
+    await openInbox()
+    check((await fin.count()) === 1, 'IB an unread finished run is still there after leaving the Inbox and coming back')
+    await fin.first().click()
+    await I('inbox-finished-open').click()
+    await sleep(1200)
+    check((await I('inbox-view').count()) === 0, 'IB Open run leaves the Inbox for the run')
+    await openInbox()
+    check((await fin.count()) === 0, 'IB opening a finished run marks it read')
+
+    // ---- Answer everything left: the empty state.
+    // The mock's second card arrives a beat after the first is answered, so stop only after the list stayed empty a while.
+    let quiet = 0
+    for (let i = 0; i < 24 && quiet < 3; i++) {
+      const before = await waitRows().count()
+      if (before === 0) {
+        quiet++
+        await sleep(700)
+        continue
+      }
+      quiet = 0
+      const primary = ip.locator('[data-testid=inbox-detail-pane] .decision-footer .btn.primary, [data-testid=inbox-detail-pane] .inbox-main').first()
+      if (!(await primary.count())) break
+      await primary.click()
+      await ibUntil(async () => (await waitRows().count()) < before, 12_000)
+    }
+    await ibUntil(async () => (await I('inbox-empty').count()) === 1, 10_000)
+    check((await waitRows().count()) === 0, 'IB every waiting decision was answered from the Inbox')
+    check((await badge()) === 0 && (await I('nav-inbox-count').count()) === 0, 'IB the sidebar badge is gone with the last decision')
+    check((await I('inbox-empty').count()) === 1, 'IB the empty state returns when the last decision is answered')
+    await launched.shot('empty-dark-1440')
+    await setTheme('light')
+    await launched.shot('empty-light-1440')
+    await setSize(1024, 640)
+    check(!(await overflowX()), 'IB light 1024x640: the empty state has no horizontal overflow')
+    await launched.shot('empty-light-1024')
+    await setTheme('dark')
+    await launched.shot('empty-dark-1024')
+    await setSize(1440, 900)
+    await I('inbox-see-running').click()
+    await I('dashboard').waitFor({ timeout: 10_000 }).catch(() => {})
+    check((await I('dashboard').count()) === 1 && (await I('inbox-view').count()) === 0, 'IB "See what is running" goes to Home')
+    check(ipErrors.length === 0, 'IB no page errors', ipErrors.join(' | ').slice(0, 300))
+
+    for (const name of [IB_A, IB_B]) {
+      const left = await deleteProject(ip, name)
+      check(left === 0, `IB project "${name}" deleted`, `${left} tile(s) left`)
+    }
+  } catch (e) {
+    check(false, 'inbox checks ran to the end', e.stack ?? e.message)
+  } finally {
+    await ibApp?.close().catch(() => {})
+    removeFixture(ibRepoA)
+    removeFixture(ibRepoB)
+    finish('inbox')
+  }
 }

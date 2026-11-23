@@ -2,12 +2,13 @@ import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import type { AuthStatusResult, ConnectionId, ConnectionStatus, Project, RunSummary, UsageStatus, VirtualProjectId } from '@shared/types'
 import { projectConnection, projectKindOf } from '@shared/defaults'
-import { AppWindow, BellRing, Briefcase, ExternalLink, FolderOpen, Plus, CalendarClock, ChartColumn, ChevronDown, ChevronRight, LayoutDashboard, MessageSquare, Network, PanelLeftClose, Plug, Settings, Sparkles, X, type LucideIcon } from 'lucide-react'
+import { AppWindow, BellRing, Briefcase, Code, ExternalLink, FolderOpen, House, Inbox, Plus, CalendarClock, ChartColumn, ChevronDown, ChevronRight, MessageSquare, Network, PanelLeftClose, Plug, Search, Settings, Sparkles, X, type LucideIcon } from 'lucide-react'
 import { ASSISTANT_ORDER, assistantLabel, displayProject } from '../lib/assistants'
 import { decisionLocationLabel } from '../lib/chatPermissions'
 import { useShallow } from 'zustand/react/shallow'
 import { useConfirm } from './ui/ConfirmDialog'
-import { closeConfirmFor, isRunLive, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
+import { closeConfirmFor, isRunLive, openNewProject, useAppStore, useRunIndexes, waitingRuns, type RunState } from '../store/useAppStore'
+import { paletteShortcut } from './layout/CommandPalette'
 import { combinedDecisionCount, teamDecisionsFor, waitingItems } from '../lib/needsYou'
 import { announceMenu, openRunWindow, openTeamFilesDecision, useTeamAttentionItems } from '../lib/menuActions'
 import { ContextMenu, useContextMenu, type MenuEntry } from './ui/ContextMenu'
@@ -39,6 +40,9 @@ import UpdateNotice from './updates/UpdateNotice'
 
 const MOCK_TIP = 'ORGAI_MOCK is on: runs use scripted data, no tokens are spent'
 
+/** The views that belong to one project (its tabs). Everything else is an app-level place. */
+const PROJECT_VIEWS: ReadonlySet<string> = new Set(['home', 'run', 'history', 'outputs', 'knowledge', 'todos', 'team', 'settings'])
+
 const ASSISTANT_ICONS: Record<VirtualProjectId, LucideIcon> = { quick: MessageSquare, harness: Plug, skills: Sparkles }
 
 /** One sidebar row: a project or an assistant. */
@@ -53,6 +57,8 @@ interface NavEntry {
   titleLines: string[]
   /** The mark in the 56 px rail: initials or an icon. */
   railMark: ReactNode
+  /** An icon the full row leads with (Chat and the helpers); project rows lead with their status dot instead. */
+  icon?: LucideIcon
   /** Rail accessible name; default is "<name>, N need you". */
   accessibleName?: (decisions: number, needsLabel: string) => string
   /** 'engagement' rows carry a kind mark (icon in the full list, tooltip and name in the rail). */
@@ -110,10 +116,13 @@ function connectionPill(id: ConnectionId, status: ConnectionStatus | undefined, 
 }
 
 export default function Sidebar({
-  resize
+  resize,
+  onOpenPalette
 }: {
   /** Drag-resize wiring from App (width in px, range, change and reset). The handle shows only in the full sidebar. */
   resize: { value: number; min: number; max: number; onChange: (w: number) => void; onReset: () => void }
+  /** Opens the command palette (App owns it; Ctrl/Cmd+K opens it too). */
+  onOpenPalette: () => void
 }): ReactElement {
   const projects = useAppStore((s) => s.projects)
   const selectedId = useAppStore((s) => s.selectedProjectId)
@@ -190,7 +199,8 @@ export default function Sidebar({
   const needsCount = items.length + teamItems.length
   const bellCue = useBellCue(needsCount)
 
-  const inProject = (v: string): boolean => v !== 'projects' && v !== 'appSettings'
+  // A project row is the current place only on one of the project's own tabs (not Home, Inbox, Usage, Schedules or App settings).
+  const inProject = (v: string): boolean => PROJECT_VIEWS.has(v)
   const names = projects.map((p) => p.name)
 
   const account = mockAdapter ? { tone: 'ok', label: 'Mock adapter', title: undefined } : pill
@@ -216,6 +226,7 @@ export default function Sidebar({
   const sidebarKey = isMacPlatform(currentPlatform()) ? '⌘B' : `${modKeyLabel(currentPlatform())}+B`
 
   const newChatKey = isMacPlatform(currentPlatform()) ? '⌘⇧N' : 'Ctrl+Shift+N'
+  const shortcut = paletteShortcut()
 
   const { confirm, dialog: confirmDialog } = useConfirm()
   const closeRun = useAppStore((s) => s.closeRun)
@@ -308,19 +319,6 @@ export default function Sidebar({
     return (
       <div key={id} className="nav-project">
         <div className="nav-row">
-          {rail ? null : open.length > 0 ? (
-            <button
-              type="button"
-              className="nav-chevron"
-              aria-expanded={expanded}
-              aria-label={`${expanded ? 'Hide' : 'Show'} open runs of ${name}`}
-              onClick={() => setCollapsedRuns((c) => ({ ...c, [id]: expanded }))}
-            >
-              <Icon icon={expanded ? ChevronDown : ChevronRight} size="xs" />
-            </button>
-          ) : (
-            <span className="nav-chevron-spacer" aria-hidden="true" />
-          )}
           <button
             type="button"
             className={`nav-item nav-project-btn ${active ? 'active' : ''}`}
@@ -341,16 +339,29 @@ export default function Sidebar({
               </span>
             ) : (
               <>
-                <span className={`dot ${st.dot}`} aria-hidden="true" />
-                {entry.kind === 'engagement' && (
-                  <span className="nav-kind" data-testid="nav-kind-mark">
-                    <Icon icon={Briefcase} size="xs" label="Engagement" />
+                {entry.icon ? (
+                  // A helper or Chat: its own mark, the status dot rides on it.
+                  <span className="nav-icon">
+                    <Icon icon={entry.icon} size="sm" />
+                    {st.dot && <span className={`dot ${st.dot}`} aria-hidden="true" />}
                   </span>
+                ) : (
+                  <span className={`dot ${st.dot}`} aria-hidden="true" />
                 )}
                 <span className="nav-text">
                   <span className="nav-name">{name}</span>
                   {active && st.subtitle && <span className="nav-counts">{st.subtitle}</span>}
                 </span>
+                {entry.kind === 'engagement' && (
+                  <span className="nav-kind" data-testid="nav-kind-mark">
+                    <Icon icon={Briefcase} size="xs" label="Engagement" />
+                  </span>
+                )}
+                {projectEntry && entry.kind !== 'engagement' && (
+                  <span className="nav-kind" data-testid="nav-code-mark" aria-hidden="true">
+                    <Icon icon={Code} size="xs" />
+                  </span>
+                )}
                 {st.decisions > 0 && (
                   <Badge tone="attention" title={st.needsLabel}>
                     {st.decisions}
@@ -359,6 +370,17 @@ export default function Sidebar({
               </>
             )}
           </button>
+          {!rail && open.length > 0 && (
+            <button
+              type="button"
+              className="nav-chevron"
+              aria-expanded={expanded}
+              aria-label={`${expanded ? 'Hide' : 'Show'} open runs of ${name}`}
+              onClick={() => setCollapsedRuns((c) => ({ ...c, [id]: expanded }))}
+            >
+              <Icon icon={expanded ? ChevronDown : ChevronRight} size="xs" />
+            </button>
+          )}
         </div>
         {expanded && (
           <ul className="nav-runs" aria-label={`Open runs of ${name}`}>
@@ -434,6 +456,7 @@ export default function Sidebar({
     dataAttr: { 'data-id': id },
     titleLines: id === 'quick' ? [`New chat (${newChatKey})`] : [],
     railMark: <Icon icon={ASSISTANT_ICONS[id]} size="sm" />,
+    icon: ASSISTANT_ICONS[id],
     accessibleName: (decisions) => (decisions > 0 ? `${assistantLabel(id)}, ${decisions} ${decisions === 1 ? 'decision' : 'decisions'}` : assistantLabel(id)),
     onOpen: () => void openAssistant(id)
   }))
@@ -472,42 +495,67 @@ export default function Sidebar({
         }
         trailing={<IconButton icon={PanelLeftClose} label={`Collapse sidebar (${sidebarKey})`} size="sm" testId="sidebar-toggle" onClick={toggle} />}
       />
-      <div className="sidebar-section sidebar-nav">
+      <div className="sidebar-search">
+        <button
+          type="button"
+          className="sidebar-search-btn"
+          data-testid="sidebar-search"
+          aria-label={rail ? `Search or jump to (${shortcut.text})` : undefined}
+          aria-keyshortcuts={shortcut.aria}
+          title={rail ? `Search or jump to (${shortcut.text})` : undefined}
+          onClick={onOpenPalette}
+        >
+          <Icon icon={Search} size="sm" />
+          {!rail && (
+            <>
+              <span className="nav-text">Search or jump to</span>
+              <kbd className="sidebar-search-kbd" aria-hidden="true">
+                {shortcut.text}
+              </kbd>
+            </>
+          )}
+        </button>
+      </div>
+      <nav className="sidebar-section sidebar-nav" aria-label="Main">
         <button
           type="button"
           className={`nav-item ${view === 'projects' ? 'active' : ''}`}
+          data-testid="nav-home"
           aria-current={view === 'projects' ? 'page' : undefined}
-          aria-label={rail ? 'Dashboard' : undefined}
-          title={rail ? 'Dashboard' : undefined}
+          aria-label={rail ? 'Home' : undefined}
+          title={rail ? 'Home' : undefined}
           onClick={() => setView('projects')}
         >
-          <Icon icon={LayoutDashboard} size="sm" />
-          {!rail && 'Dashboard'}
+          <Icon icon={House} size="sm" />
+          {!rail && 'Home'}
         </button>
-        <button
-          type="button"
-          className={`nav-item ${view === 'usage' ? 'active' : ''}`}
-          data-testid="nav-usage"
-          aria-current={view === 'usage' ? 'page' : undefined}
-          aria-label={rail ? 'Usage' : undefined}
-          title={rail ? 'Usage' : undefined}
-          onClick={() => openUsage()}
-        >
-          <Icon icon={ChartColumn} size="sm" />
-          {!rail && 'Usage'}
-        </button>
-        <button
-          type="button"
-          className={`nav-item ${view === 'schedules' ? 'active' : ''}`}
-          data-testid="nav-schedules"
-          aria-current={view === 'schedules' ? 'page' : undefined}
-          aria-label={rail ? 'Schedules' : undefined}
-          title={rail ? 'Schedules' : undefined}
-          onClick={() => openSchedules()}
-        >
-          <Icon icon={CalendarClock} size="sm" />
-          {!rail && 'Schedules'}
-        </button>
+        <div className="nav-split">
+          <button
+            type="button"
+            className={`nav-item ${view === 'inbox' ? 'active' : ''}`}
+            data-testid="nav-inbox"
+            aria-current={view === 'inbox' ? 'page' : undefined}
+            aria-label={rail ? (needsCount > 0 ? `Inbox, ${needsCount} waiting on you` : 'Inbox') : undefined}
+            title={rail ? 'Inbox' : undefined}
+            onClick={() => setView('inbox')}
+          >
+            <Icon icon={Inbox} size="sm" />
+            {rail ? (
+              needsCount > 0 && <span className="nav-rail-count" aria-hidden="true">{needsCount}</span>
+            ) : (
+              <>
+                <span className="nav-text">Inbox</span>
+                {needsCount > 0 && (
+                  <span className="needs-count" data-ping={bellCue.ping ? '' : undefined} onAnimationEnd={bellCue.onPingEnd}>
+                    <Badge tone="attention" testId="nav-inbox-count">
+                      <span aria-hidden="true">{needsCount}</span>
+                    </Badge>
+                    <span className="sr-only">{`, ${needsCount} waiting on you`}</span>
+                  </span>
+                )}
+              </>
+            )}
+          </button>
         {needsCount > 0 && (
           <Popover
             trigger={
@@ -515,21 +563,10 @@ export default function Sidebar({
                 <span className={`needs-bell${bellCue.ring ? ' motion-ring' : ''}`}>
                   <Icon icon={BellRing} size="sm" />
                 </span>
-                {rail ? (
-                  <span className="needs-count" data-ping={bellCue.ping ? '' : undefined} onAnimationEnd={bellCue.onPingEnd}>
-                    <span className="nav-rail-count">{needsCount}</span>
-                  </span>
-                ) : (
-                  <span className="nav-text">
-                    <span className="needs-count" data-ping={bellCue.ping ? '' : undefined} onAnimationEnd={bellCue.onPingEnd}>
-                      {needsLabel}
-                    </span>
-                  </span>
-                )}
-                {!rail && <Icon icon={ChevronDown} size="xs" />}
+                <span className="sr-only">{needsLabel}</span>
               </>
             }
-            triggerLabel={rail ? needsLabel : undefined}
+            triggerTitle="Everything waiting for you"
             triggerClassName="nav-item needs-row"
             triggerTestId="needs-you-row"
             label="Everything waiting for you"
@@ -581,14 +618,19 @@ export default function Sidebar({
             )}
           </Popover>
         )}
+        </div>
+        {assistantEntries.filter((e) => e.id === 'quick').map(renderEntry)}
+      </nav>
+
+      {!rail && <div className="sidebar-label">Helpers</div>}
+      <div className="sidebar-section sidebar-assistants" role="group" aria-label="Helpers">
+        {assistantEntries.filter((e) => e.id !== 'quick').map(renderEntry)}
       </div>
 
-      {!rail && <div className="sidebar-label">Assistants</div>}
-      <div className="sidebar-section sidebar-assistants" role="group" aria-label="Assistants">
-        {assistantEntries.map(renderEntry)}
+      <div className="sidebar-heading">
+        {!rail && <span className="sidebar-label sidebar-heading-text">Projects</span>}
+        <IconButton icon={Plus} label="New project or engagement" size="sm" testId="nav-new-project" onClick={openNewProject} />
       </div>
-
-      {!rail && <div className="sidebar-label">Projects</div>}
       <div className="sidebar-section sidebar-projects">
         {projects.length === 0 && !rail && <div className="sidebar-empty">No projects yet</div>}
         {!grouping.showHeaders
@@ -651,25 +693,69 @@ export default function Sidebar({
       </div>
 
       <UpdateNotice rail={rail} />
+      <div className="sidebar-section sidebar-foot-nav">
+        <button
+          type="button"
+          className={`nav-item ${view === 'usage' ? 'active' : ''}`}
+          data-testid="nav-usage"
+          aria-current={view === 'usage' ? 'page' : undefined}
+          aria-label={rail ? 'Usage' : undefined}
+          title={rail ? 'Usage' : undefined}
+          onClick={() => openUsage()}
+        >
+          <Icon icon={ChartColumn} size="sm" />
+          {!rail && 'Usage'}
+        </button>
+        <button
+          type="button"
+          className={`nav-item ${view === 'schedules' ? 'active' : ''}`}
+          data-testid="nav-schedules"
+          aria-current={view === 'schedules' ? 'page' : undefined}
+          aria-label={rail ? 'Schedules' : undefined}
+          title={rail ? 'Schedules' : undefined}
+          onClick={() => openSchedules()}
+        >
+          <Icon icon={CalendarClock} size="sm" />
+          {!rail && 'Schedules'}
+        </button>
+        <button
+          type="button"
+          className={`nav-item ${view === 'appSettings' ? 'active' : ''}`}
+          data-testid="app-settings-button"
+          aria-current={view === 'appSettings' ? 'page' : undefined}
+          // The visible word is "Settings"; the name says which settings (there are project settings too).
+          aria-label="App settings"
+          title={rail ? 'App settings' : undefined}
+          onClick={() => setView('appSettings')}
+        >
+          <Icon icon={Settings} size="sm" />
+          {!rail && 'Settings'}
+        </button>
+      </div>
       <div className="sidebar-footer">
         <Popover
           trigger={
             <>
-              <span className={`dot ${account.tone}`} aria-hidden="true" />
-              {rowView.figures.length > 0 ? (
-                <span className="account-label account-figures" data-testid="account-figures">
-                  {rowView.figures.map((f) => (
-                    <span key={f.key} className="account-fig" data-level={f.level || undefined} data-window={f.key}>
-                      <span className="account-fig-name">{f.name}</span> <span className="account-fig-value">{f.value}</span>
-                      {f.level ? <span className="sr-only">{f.level === 'danger' ? ' (limit reached)' : ' (high)'}</span> : null}
+              <span className="account-top">
+                <span className={`dot ${account.tone}`} aria-hidden="true" />
+                {rowView.figures.length > 0 ? (
+                  <>
+                    <span className="account-caption">Plan limit</span>
+                    <span className="account-label account-figures" data-testid="account-figures">
+                      {rowView.figures.map((f) => (
+                        <span key={f.key} className="account-fig" data-level={f.level || undefined} data-window={f.key}>
+                          <span className="account-fig-name">{f.name}</span> <span className="account-fig-value">{f.value}</span>
+                          {f.level ? <span className="sr-only">{f.level === 'danger' ? ' (limit reached)' : ' (high)'}</span> : null}
+                        </span>
+                      ))}
                     </span>
-                  ))}
-                </span>
-              ) : (
-                <span className="account-label" data-testid="account-text">
-                  {rowView.text}
-                </span>
-              )}
+                  </>
+                ) : (
+                  <span className="account-label" data-testid="account-text">
+                    {rowView.text}
+                  </span>
+                )}
+              </span>
               {!rail && !mockAdapter && (onProxy ? currentSpends ? <SpendBar spend={currentUsage?.spend} id={current} /> : null : <UsageBar usage={currentUsage} />)}
             </>
           }
@@ -702,9 +788,6 @@ export default function Sidebar({
             </div>
           )}
         </Popover>
-        <span className="sidebar-gear" data-active={view === 'appSettings'}>
-          <IconButton icon={Settings} label="App settings" testId="app-settings-button" onClick={() => setView('appSettings')} />
-        </span>
       </div>
       <ContextMenu control={projectMenu} label={(id) => `Actions for ${projects.find((p) => p.id === id)?.name ?? 'project'}`} items={projectMenuItems} testId="nav-project-menu" />
       <ContextMenu

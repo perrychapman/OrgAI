@@ -10,6 +10,7 @@
 @import './dashboard-pickup.css';
 @import './dashboard-upnext.css';
 @import './dashboard-activity.css';
+@import './dashboard-home.css';
 
 /* ---------- Dashboard (docs/design/dashboard-usage-redesign/project/dashboard.md, docs/design/dashboard-overhaul.md) ----------
    Page shell: the Briefing, then the work area (one grid: Needs you, Right now, the arranged sections); the customise bar
@@ -54,12 +55,11 @@
   }
 }
 
-/* The work area (dashboard.md "Reading order"): Needs you, Right now, then the arranged sections in the person's order, as
-   direct children of one grid. One column under 880 px of the container. From 880 px twelve columns: Needs you and the lead
-   section (Your week, `data-lead`, only while it is the first visible arrangeable section) take the left five, Right now the
-   right seven beside them; every other section takes the full row, and from 1280 px two half-width sections (Pick up and
-   Up next, paired in JS by placeSections) share a row. With no Right now the left items take the full row; with Right now
-   but nothing for the left, Right now takes the full row. Customise mode is one column. Empty regions are not drawn. */
+/* The work area (Main board): Working now, Waiting on you, then the arranged sections in the person's order, as direct
+   children of one grid. One column under 880 px of the container. From 880 px twelve columns: Working now takes the left six
+   and Waiting on you the right six (each shows a `.home-empty` panel when idle); every other section takes the full row, and
+   from 1280 px two half-width sections (Pick up and Up next, paired in JS by placeSections) share a row. Customise mode is
+   one column. Empty arrangeable sections are not drawn. */
 .dash-work {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -89,20 +89,16 @@
   .dash-work:not([data-customising]) > .dash-slot[data-span='half'] {
     grid-column: span 6;
   }
-  .dash-work:not([data-customising]):has(> [data-section='now']) > .dash-needs,
-  .dash-work:not([data-customising]):has(> [data-section='now']) > .dash-slot[data-lead] {
-    grid-column: 1 / span 5;
-  }
-  .dash-work:not([data-customising]) > .dash-slot[data-section='now'] {
-    grid-column: 6 / span 7;
-    grid-row: 1 / span 2;
-  }
-  .dash-work:not([data-customising]):not(:has(> .dash-slot[data-lead])) > .dash-slot[data-section='now'] {
+  /* Main board: Working now left, Waiting on you right, equal columns, one row. */
+  .dash-work:not([data-customising]) > .dash-slot[data-section='now'],
+  .dash-work:not([data-customising]) > .home-empty[data-kind='now'] {
+    grid-column: 1 / span 6;
     grid-row: 1;
   }
-  /* Right now with nothing to its left: the whole row. */
-  .dash-work:not([data-customising]):not(:has(> .dash-needs)):not(:has(> .dash-slot[data-lead])) > .dash-slot[data-section='now'] {
-    grid-column: 1 / -1;
+  .dash-work:not([data-customising]) > .dash-needs,
+  .dash-work:not([data-customising]) > .home-empty[data-kind='needs'] {
+    grid-column: 7 / span 6;
+    grid-row: 1;
   }
 }
 @container dash (min-width: 1100px) {
@@ -133,9 +129,13 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-3);
-  padding: var(--space-2) 0;
-  background: var(--surface-0);
-  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-3);
+  /* Glass over the ambient ground: the page background shows through, text stays on the glass. */
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-lg);
 }
 .dash-customise-bar p {
   margin: 0;
@@ -229,11 +229,23 @@
 /* A section is a card (Visual pass, replacing the hairline of section 3): a --surface-1 surface, --radius-lg, a soft
    border and --elev-1, generous padding; the header carries an icon chip, the h2, an optional mono count. */
 .dash-section {
-  background: var(--surface-1);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--elev-1);
+  /* A glass panel over the ambient ground (ui-overhaul). Working now and Waiting on you are unboxed columns of glass cards. */
+  background: var(--glass);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-2);
   padding: var(--space-4) var(--space-5) var(--space-5);
+}
+.dash-section.dash-now {
+  background: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
 }
 @container dash (max-width: 559px) {
   .dash-section {
@@ -327,8 +339,9 @@
 [data-hue='8'] { --dash-hue: var(--project-8); }
 .dash-section-head h2 {
   margin: 0;
-  font-size: var(--text-title-sm);
-  line-height: var(--text-title-sm-lh);
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
   border-radius: var(--radius-sm);

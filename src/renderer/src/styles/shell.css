@@ -4,6 +4,8 @@
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   height: 100%;
+  /* The ambient ground (ui-overhaul tokens: violet and cyan light over the base colour); the sidebar and topbars are glass over it. */
+  background: var(--bg-art, var(--surface-0));
 }
 /* Below 1180 px (or by choice, Ctrl/Cmd+B) the sidebar is a rail. */
 .app[data-sidebar='rail'] {
@@ -41,12 +43,22 @@ html[data-resizing] .app {
   display: flex;
   flex-direction: column;
 }
+/* Everything under <main>, keyed by the route (App.tsx): rises in once when the user changes place. Same box as .main. */
+.main-route {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
 
-/* Sidebar and topbar sit on --surface-1; the one 1 px --border-default is on the edge that touches --surface-0. */
+/* The sidebar is a glass panel over the ambient ground: --glass fill, --glass-blur, a --glass-line edge. */
 .sidebar {
   position: relative;
-  background: var(--surface-1);
-  border-right: 1px solid var(--border-default);
+  background: var(--glass, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
+  border-right: 1px solid var(--glass-line, var(--border-default));
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -71,6 +83,77 @@ html[data-resizing] .app {
   padding: var(--space-3) var(--space-4) var(--space-1);
 }
 
+/* "Search or jump to  Ctrl K": a field-looking button that opens the command palette. */
+.sidebar-search {
+  padding: var(--space-1) var(--space-2);
+}
+.sidebar-search-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: var(--control-md);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--text-small);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.sidebar-search-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.sidebar-search-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.sidebar-search-btn .nav-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-search-kbd {
+  flex: none;
+  padding: 0 var(--space-1h);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+.sidebar[data-collapsed='true'] .sidebar-search {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-1) var(--space-1h);
+}
+.sidebar[data-collapsed='true'] .sidebar-search-btn {
+  justify-content: center;
+  padding: 0;
+}
+
+/* "Projects" heading with its + button. */
+.sidebar-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: var(--space-2);
+}
+.sidebar-heading-text {
+  flex: 1;
+}
+.sidebar[data-collapsed='true'] .sidebar-heading {
+  justify-content: center;
+  padding: var(--space-1) 0;
+}
+
 .nav-item {
   display: flex;
   align-items: center;
@@ -90,12 +173,47 @@ html[data-resizing] .app {
     color var(--dur-fast) var(--ease-out);
 }
 .nav-item:hover {
-  background: var(--surface-2);
+  background: var(--glass, var(--surface-2));
   color: var(--text-primary);
 }
 .nav-item.active {
-  background: var(--surface-3);
+  background: var(--field-bg);
   color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+/* The mark of Chat and the helpers; their status dot rides on its corner. */
+.nav-icon {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+.nav-icon > .dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 2px var(--surface-1);
+}
+/* Inbox: the row navigates, the bell beside it lists what waits. */
+.nav-split {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0h);
+}
+.nav-split > .nav-item:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.nav-split .nav-item.needs-row {
+  flex: none;
+  width: var(--control-md);
+  justify-content: center;
+  padding: 0;
+  color: var(--warning-text);
+}
+.nav-split .needs-count {
+  align-self: center;
 }
 .nav-item:focus-visible,
 .account-row:focus-visible,
@@ -110,9 +228,10 @@ html[data-resizing] .app {
   background: var(--text-tertiary);
   flex: none;
 }
+/* A live run is cyan and pulses (--working); something that needs you is amber; the rest is quiet. */
 .nav-item .dot.is-running {
-  background: var(--success);
-  box-shadow: var(--halo-dot-live);
+  background: var(--working, var(--success));
+  box-shadow: var(--glow-working, var(--halo-dot-live));
   animation: breathe var(--dur-pulse) var(--ease-in-out) infinite;
 }
 .nav-item .dot.warn {
@@ -173,8 +292,8 @@ html[data-resizing] .app {
   flex: 1;
   min-width: 0;
 }
-.nav-chevron,
-.nav-chevron-spacer {
+/* The open-runs disclosure trails the row (the dot leads, like the board). */
+.nav-chevron {
   flex: none;
   width: var(--space-5);
   height: var(--control-sm);
@@ -289,14 +408,17 @@ html[data-resizing] .app {
   color: var(--text-secondary);
 }
 
-/* Footer: one 52 px account row and the gear. */
-.sidebar-footer {
+/* Footer nav (Usage, Schedules, Settings) then the plan-limit row: caption and figures over a thin bar. */
+.sidebar-foot-nav {
   margin-top: auto;
+}
+.update-notice-slot ~ .sidebar-foot-nav {
+  margin-top: 0;
+}
+.sidebar-footer {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  height: 52px;
-  padding: 0 var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-2);
   border-top: 1px solid var(--border-subtle);
   font-size: var(--text-small);
   color: var(--text-secondary);
@@ -307,12 +429,14 @@ html[data-resizing] .app {
 }
 .account-row {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: var(--space-1h);
   width: 100%;
   min-width: 0;
-  height: var(--control-lg);
-  padding: 0 var(--space-2);
+  min-height: var(--control-lg);
+  padding: var(--space-1h) var(--space-2);
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;
@@ -326,8 +450,30 @@ html[data-resizing] .app {
     color var(--dur-fast) var(--ease-out);
 }
 .account-row:hover {
-  background: var(--surface-2);
+  background: var(--glass, var(--surface-2));
   color: var(--text-primary);
+}
+.account-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.account-caption {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: var(--text-caption);
+}
+/* The thin bar spans the row (usage.css gives it a 4 px height and a gradient fill). */
+.account-row > .usage-mini {
+  flex: none;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
 }
 .account-row .dot {
   flex: none;
@@ -362,19 +508,6 @@ html[data-resizing] .app {
   flex: 0 0 var(--space-6);
   min-width: 0;
 }
-.sidebar-gear {
-  flex: none;
-  display: inline-flex;
-}
-.sidebar-gear[data-active='true'] .icon-btn {
-  background: var(--surface-3);
-  color: var(--text-primary);
-}
-.sidebar-gear .icon-btn:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-
 /* Account popover. */
 .account-popover {
   width: min(20rem, calc(100vw - 16px));
@@ -416,6 +549,13 @@ html[data-resizing] .app {
 .sidebar[data-collapsed='true'] .nav-row {
   width: 100%;
 }
+.sidebar[data-collapsed='true'] .nav-split {
+  flex-direction: column;
+  width: 100%;
+}
+.sidebar[data-collapsed='true'] .nav-split .nav-item.needs-row {
+  width: 100%;
+}
 .nav-initials {
   position: relative;
   display: inline-grid;
@@ -448,10 +588,14 @@ html[data-resizing] .app {
   width: 100%;
 }
 .sidebar[data-collapsed='true'] .account-row {
+  align-items: center;
   justify-content: center;
   padding: 0;
 }
-.sidebar[data-collapsed='true'] .account-label {
+.sidebar[data-collapsed='true'] .account-top {
+  justify-content: center;
+}
+.sidebar[data-collapsed='true'] :is(.account-label, .account-caption) {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -528,8 +672,10 @@ html[data-resizing] .app {
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
-  border-bottom: 1px solid var(--border-default);
-  background: var(--surface-1);
+  border-bottom: 1px solid var(--glass-line, var(--border-default));
+  background: var(--glass, var(--surface-1));
+  -webkit-backdrop-filter: var(--glass-blur, none);
+  backdrop-filter: var(--glass-blur, none);
   min-height: var(--topbar-h);
 }
 .topbar h1 {
@@ -562,7 +708,8 @@ html[data-resizing] .app {
   gap: var(--space-4);
 }
 .project-topbar h1 {
-  flex: 0 1 auto;
+  /* The name never gives way to the chip, folder or tabs; only its own 220 px cap clips it. */
+  flex: 0 0 auto;
   min-width: 0;
   max-width: 220px;
   overflow: hidden;
@@ -584,6 +731,54 @@ html[data-resizing] .app {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Kind chip: "Code project" (outlined) or "Engagement · <client>" (the --eng coral). */
+.kind-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 260px;
+  height: var(--space-6);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+.kind-chip > svg {
+  flex: none;
+}
+.kind-chip[data-kind='engagement'] {
+  border-color: var(--eng-line, var(--border-strong));
+  background: var(--eng-soft, transparent);
+  color: var(--eng, var(--text-secondary));
+}
+.kind-chip .project-client {
+  max-width: none;
+  color: inherit;
+  font-weight: var(--weight-medium);
+}
+.kind-chip .project-client::before {
+  content: '· ';
+}
+/* The Settings tab is the keyboard way; this button is the plain-words shortcut and gives up its words first. */
+.topbar-settings {
+  flex: none;
+}
+@container (max-width: 1100px) {
+  .topbar-settings-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
 }
 .topbar-tabs {
   flex: 0 0 auto;

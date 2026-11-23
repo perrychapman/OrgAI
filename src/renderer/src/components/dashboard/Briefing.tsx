@@ -156,7 +156,7 @@ export function Briefing({ firstLaunch, announce, onAnnounce, customise, onNewPr
         {!firstLaunch && (
           <div className="dash-brief-actions" data-testid="dash-quick-actions">
             {continueId && continueName && (
-              <Button variant="primary" onClick={() => void openProject(continueId)} testId="dash-continue" ariaLabel={`Continue ${continueName}`} title={`Continue ${continueName}`}>
+              <Button variant="secondary" onClick={() => void openProject(continueId)} testId="dash-continue" ariaLabel={`Continue ${continueName}`} title={`Continue ${continueName}`}>
                 <Icon icon={Play} size="sm" />
                 <span className="dash-continue-name">Continue {continueName}</span>
               </Button>

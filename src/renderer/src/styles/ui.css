@@ -1101,7 +1101,7 @@ ul.maint-list {
   flex: none;
   width: 32px;
   height: 32px;
-  border-radius: 22%;
+  border-radius: var(--radius-md);
 }
 :root[data-theme='light'] .brand-lockup-mark {
   box-shadow: 0 0 0 1px var(--border-subtle);
@@ -1111,16 +1111,25 @@ ul.maint-list {
     box-shadow: 0 0 0 1px var(--border-subtle);
   }
 }
+/* The wordmark keeps its width; the tags (MOCK, Dev) are what gives way: they wrap onto two lines, then clip. */
 .brand-lockup-word {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
   color: var(--text-primary);
   font-size: var(--text-title);
   line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
   letter-spacing: -0.01em;
   white-space: nowrap;
+}
+.brand-lockup-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0h) var(--space-1);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-height: 100%;
+  overflow: hidden;
 }
 .brand-lockup-trail {
   display: inline-flex;
@@ -1181,9 +1190,10 @@ button.brand-lockup-expand:hover {
   width: 14px;
   height: 14px;
   border-radius: var(--radius-full);
-  background: var(--info);
-  color: var(--surface-1);
-  font-size: 9px;
+  /* An accent / on-accent pair: readable in both themes (the old info fill took surface text, faint on cyan in light). */
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: calc(var(--text-caption) * 0.75);
   line-height: 1;
   font-weight: var(--weight-semibold);
   box-shadow: 0 0 0 2px var(--surface-1);
