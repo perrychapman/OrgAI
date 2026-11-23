@@ -98,6 +98,25 @@ strip Keep both / Replace mine / Skip mapped to `AgentImportChoice.action`, drop
   layout, engagement2. See the final report for team-files, org-change, presets, layout and canvas results.
 - Screenshots of the Team tab (code project and engagement) at 1600x1000 and 1024x640 in dark and light.
 
+## Reviewer pass (2026-11-22) and fixes
+
+- H1 fixed: the NodeToolbar is portalled but React bubbles its events to the node wrapper, so Duplicate re-selected the
+  original. The toolbar row stops click, double click, context menu, pointer and mouse down and every non-arrow key;
+  e2e/team.mjs now checks the copy is selected and its description has focus after Duplicate.
+- M1 fixed: the required-review box now says what is enforced: "{manager} must always involve this role before
+  finishing" (it is the manager's `requiredReports`, not a merge gate).
+- M2 fixed: imported names, descriptions, slugs, tools and original models go through `showHidden`, and a row whose
+  name, description or prompt has hidden characters says so (`import-hidden-chars`). (Pre-existing gap.)
+- M3 fixed: "Review with the Architect" goes through `useArchitectForm` (asks before a full review, names the cost,
+  busy while starting).
+- M4 fixed: the line says "Your first Architect interview was on {date}." (a summary cannot tell whether the proposal was
+  applied).
+- Lows fixed: raw glow shadows removed (selection is ring plus `--elev-2`), stable context value for the node actions,
+  the theme note is the item's description, zoom buttons disable at the limits, new roles avoid the provenance line,
+  the duplicate's notice says it carries the same tools, services and model. Not fixed: L2 (`black` in the avatar mix,
+  contrast not measured by a test), L3 (the toolbar comes late in Tab order; Shift+F10 on the node opens the same
+  actions), L8 (the Ask bar's raw input).
+
 ## Open
 
 - Screen-reader speech of the node toolbar, tier radios and chips; the zoom readout is not announced (aria-live off).

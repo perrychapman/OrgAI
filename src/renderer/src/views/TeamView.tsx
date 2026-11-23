@@ -95,18 +95,21 @@ const nodeTypes = { role: RoleNode }
 function TeamZoomControls({ onTidy, padding }: { onTidy: () => void; padding: `${number}%` }): ReactElement {
   const { zoomIn, zoomOut, fitView } = useReactFlow()
   const { zoom } = useViewport()
+  // React Flow's defaults (minZoom 0.5, maxZoom 2): the buttons say when they can go no further (review L6).
+  const atMin = zoom <= 0.5 + 0.001
+  const atMax = zoom >= 2 - 0.001
   const pct = `${Math.round(zoom * 100)}%`
   const reduced = useReducedMotion()
   const ms = reduced ? 0 : 160
   return (
     <Controls showInteractive={false} showZoom={false} showFitView={false} position="bottom-right" orientation="horizontal" className="team-zoom" aria-label="Zoom">
-      <ControlButton className="react-flow__controls-zoomout" onClick={() => void zoomOut({ duration: ms })} aria-label="Zoom out" title="Zoom out">
+      <ControlButton className="react-flow__controls-zoomout" onClick={() => void zoomOut({ duration: ms })} disabled={atMin} aria-label="Zoom out" title="Zoom out">
         <Icon icon={Minus} size="sm" />
       </ControlButton>
       <span className="team-zoom-level" data-testid="team-zoom-level" aria-live="off" title="Zoom level">
         {pct}
       </span>
-      <ControlButton className="react-flow__controls-zoomin" onClick={() => void zoomIn({ duration: ms })} aria-label="Zoom in" title="Zoom in">
+      <ControlButton className="react-flow__controls-zoomin" onClick={() => void zoomIn({ duration: ms })} disabled={atMax} aria-label="Zoom in" title="Zoom in">
         <Icon icon={Plus} size="sm" />
       </ControlButton>
       <ControlButton className="react-flow__controls-fitview" onClick={() => void fitView({ padding, maxZoom: 1, duration: reduced ? 0 : 200 })} aria-label="Fit the chart" title="Fit the chart">
@@ -810,7 +813,7 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
         inStage(stage.querySelector(`.react-flow__node[data-id="${CSS.escape(roleId)}"]`)) ??
         { x: pos.x * vp.zoom + vp.x, y: pos.y * vp.zoom + vp.y, w: size.width * vp.zoom, h: size.height * vp.zoom }
       // QA S1: the zoom controls and the minimap float over the stage's bottom corners; the new node must clear both.
-      const obstacles = [stage.querySelector('.react-flow__controls'), stage.querySelector('.react-flow__minimap')]
+      const obstacles = [stage.querySelector('.react-flow__controls'), stage.querySelector('.react-flow__minimap'), stage.querySelector('.team-provenance')]
         .map(inStage)
         .filter((r): r is StageRect => r !== null)
       const { dx, dy } = revealShift(node, { w: view.width, h: view.height }, REVEAL_MARGIN, obstacles)
@@ -881,7 +884,9 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
       if (useAppStore.getState().selectedRoleId === role.id) selectRole(null)
       focusNode(edit.managerId)
     }
-    post({ key: NOTICE_ROLE_EDIT, kind: 'edit', text: addedText(name, manager?.name ?? null), actions: [{ id: 'undo', label: 'Undo', testId: 'team-notice-undo' }] }, EDIT_NOTICE_MS)
+    // A duplicate says what it copied (review L9): it carries the original's tools, services, skills and model.
+    const text = from ? `${addedText(name, manager?.name ?? null).replace(/\.$/, '')}, with the same tools, services and model as ${from.name}.` : addedText(name, manager?.name ?? null)
+    post({ key: NOTICE_ROLE_EDIT, kind: 'edit', text, actions: [{ id: 'undo', label: 'Undo', testId: 'team-notice-undo' }] }, EDIT_NOTICE_MS)
     clear('error:drop')
     setSelectedEdgeId(null)
     focusTarget.current = 'role-description'
@@ -908,12 +913,23 @@ export default function TeamView({ project }: { project: Project }): ReactElemen
     setFocusTick((t) => t + 1)
     selectRole(roleId)
   }
-  const nodeActions: RoleNodeActions = {
+  // One stable context value (review L4): the callbacks read the latest closures through a ref, so the nodes' memo holds.
+  const latestActions = useRef<RoleNodeActions | null>(null)
+  latestActions.current = {
     addReport: (id) => openAddRole(id),
     duplicate: duplicateRole,
     move: moveRole,
     remove: (id) => void requestRemove(id)
   }
+  const nodeActions = useMemo<RoleNodeActions>(
+    () => ({
+      addReport: (id) => latestActions.current?.addReport(id),
+      duplicate: (id) => latestActions.current?.duplicate(id),
+      move: (id) => latestActions.current?.move(id),
+      remove: (id) => latestActions.current?.remove(id)
+    }),
+    []
+  )
 
   // The assistant lives in the tray under the chart, so the role inspector stays in the side panel. "Ask the Team
   // assistant" from a role opens Recommend (scoped to that role) and focuses its primary button.

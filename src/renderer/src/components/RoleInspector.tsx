@@ -421,8 +421,8 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
                 checked={isRequiredByManager(project.roles, role)}
                 onChange={setMustPass}
                 testId="role-must-pass"
-                label="Every change must pass this role before merging"
-                description={manager ? `Saved on ${manager.name}, which always involves it.` : undefined}
+                label={manager ? `${manager.name} must always involve this role before finishing` : 'Its manager must always involve this role before finishing'}
+                description={manager ? `Each time one of ${manager.name}'s agents completes work, it hands the result to this role. Saved on ${manager.name}.` : undefined}
               />
             )}
             {engagement && ROLE_KNOWLEDGE_WRITE_SUPPORTED && (

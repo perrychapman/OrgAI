@@ -681,3 +681,11 @@
   overflow-wrap: anywhere;
 }
 /* ---------- end skills import ---------- */
+
+/* An imported name, description or prompt with hidden characters (review M2). */
+.import-root .import-hidden-note {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--warning-text);
+}

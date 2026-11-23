@@ -1,6 +1,6 @@
 import { BookOpen, Plug, TriangleAlert, Wrench } from 'lucide-react'
 import { Icon } from './ui/Icon'
-import type { CSSProperties, KeyboardEvent, ReactElement } from 'react'
+import type { CSSProperties, KeyboardEvent, ReactElement, SyntheticEvent } from 'react'
 import { memo } from 'react'
 import { Handle, NodeToolbar, useConnection, type Position, type Node, type NodeProps } from '@xyflow/react'
 import { useRoleNodeActions } from './team/roleNodeActions'
@@ -143,8 +143,20 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
       </div>}
       <Handle type="source" position={sides.source as Position} {...hs(sides.source)} />
       {team && actions && (
-        <NodeToolbar isVisible={selected} position={'top' as Position} offset={8} className="role-node-toolbar" data-testid="role-node-toolbar">
-          <div role="toolbar" aria-label={`Actions for ${role.name}`} className="role-node-toolbar-row" onKeyDown={onToolbarKey}>
+        <NodeToolbar isVisible={selected} position={'top' as Position} offset={8} align="start" className="role-node-toolbar" data-testid="role-node-toolbar">
+          {/* The toolbar is portalled, but React still bubbles its events to the node wrapper (select, menu, keys):
+              stop them here so an action never re-selects the node it came from (review H1). */}
+          <div
+            role="toolbar"
+            aria-label={`Actions for ${role.name}`}
+            className="role-node-toolbar-row"
+            onKeyDown={onToolbarKey}
+            onClick={stop}
+            onDoubleClick={stop}
+            onContextMenu={stop}
+            onPointerDown={stop}
+            onMouseDown={stop}
+          >
             <button type="button" data-testid="role-node-add-report" onClick={() => actions.addReport(id)}>
               Add a report
             </button>
@@ -169,8 +181,16 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
 }
 
 /** Left / Right, Home and End move between the toolbar's buttons (one toolbar, every button still a Tab stop). */
+function stop(e: SyntheticEvent): void {
+  e.stopPropagation()
+}
+
 function onToolbarKey(e: KeyboardEvent<HTMLDivElement>): void {
-  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return
+  // Enter, Space, Escape, Delete and the menu keys belong to the button, not to the node behind the portal.
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+    e.stopPropagation()
+    return
+  }
   const items = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button'))
   const at = items.indexOf(document.activeElement as HTMLButtonElement)
   if (items.length === 0) return

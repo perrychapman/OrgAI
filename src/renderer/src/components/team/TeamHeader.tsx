@@ -132,13 +132,24 @@ function ThemeMenu({ compact }: { compact: boolean }): ReactElement {
     >
       {({ close }) => (
         <div className="team-header-menu" role="presentation" onKeyDown={onMenuKey}>
-          <button type="button" role="menuitemradio" aria-checked="true" className="team-header-menu-item" data-testid="team-theme-org-chart" onClick={close}>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked="true"
+            aria-describedby="team-theme-note"
+            className="team-header-menu-item"
+            data-testid="team-theme-org-chart"
+            onClick={close}
+          >
             <span className="team-header-menu-check" aria-hidden="true">
               <Icon icon={Check} size="sm" />
             </span>
             Org chart
           </button>
-          <p className="team-header-menu-note">Pocket Office and Factory floor show a running team on Work.</p>
+          {/* Read as the item's description; hidden from the menu's own children (a menu holds only items). */}
+          <p className="team-header-menu-note" id="team-theme-note" aria-hidden="true">
+            Pocket Office and Factory floor show a running team on Work.
+          </p>
         </div>
       )}
     </Popover>

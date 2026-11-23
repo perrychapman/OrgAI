@@ -818,6 +818,10 @@ async function sectionNodeMenu(page) {
     'Duplicate adds "Reviewer copy" under the same manager with the same instructions and its own ID',
     JSON.stringify(copy && { name: copy.name, reportsTo: copy.reportsTo, slug: copy.slug })
   )
+  // Review H1: the toolbar's click must not re-select the original; the copy is selected and its description has focus.
+  const panelTitle = ((await page.locator('aside.side-panel .side-header h2').first().textContent()) ?? '').trim()
+  const focusedDesc = await page.evaluate(() => document.activeElement?.id === 'role-description')
+  check(panelTitle === 'Reviewer copy' && focusedDesc, 'after Duplicate the copy is selected and its description has focus', `${panelTitle} / ${focusedDesc}`)
   await page.locator('[data-testid=team-notice-undo]').click()
   await sleep(400)
   check((await findProject(page, NAME)).roles.length === beforeDup.length, 'Undo removes the duplicate')

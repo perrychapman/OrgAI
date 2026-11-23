@@ -4,7 +4,7 @@ import { ArrowRight, ChevronDown, ChevronRight, FileSearch, Package, TriangleAle
 import type { AgentImportAction, AgentImportItem, AgentImportMode, AgentImportPreview, AgentImportScan, Project } from '@shared/types'
 import { projectConnection, projectKindLabel, projectKindOf } from '@shared/defaults'
 import { roleModelSentenceFor } from '../../lib/roleModelSentence'
-import { showHidden } from '../../lib/hiddenChars'
+import { hasHidden, showHidden } from '../../lib/hiddenChars'
 import { useAppStore } from '../../store/useAppStore'
 import { connectionLabel } from '../../lib/connectionLabel'
 import {
@@ -103,8 +103,13 @@ function ImportRow({
     >
       <div className="import-row-main">
         <div className="import-id">
-          <Checkbox checked={edit?.include ?? true} onChange={(include) => onEdit({ include })} label={<strong>{item.name}</strong>} testId="import-include" />
-          {item.description && <p className="import-desc muted">{item.description}</p>}
+          <Checkbox checked={edit?.include ?? true} onChange={(include) => onEdit({ include })} label={<strong>{showHidden(item.name)}</strong>} testId="import-include" />
+          {item.description && <p className="import-desc muted">{showHidden(item.description)}</p>}
+          {(hasHidden(item.name) || hasHidden(item.description) || hasHidden(item.prompt)) && (
+            <p className="import-hidden-note" data-testid="import-hidden-chars">
+              Contains hidden characters (shown as codes). Read the prompt before adding it.
+            </p>
+          )}
         </div>
         <div className="import-picks">
           <div className="import-field">
@@ -132,7 +137,7 @@ function ImportRow({
       </div>
       <div className="import-meta">
         <span className="chip">{sourceLabel(item.source)}</span>
-        <span className="mono muted import-slug">{item.slug}</span>
+        <span className="mono muted import-slug">{showHidden(item.slug)}</span>
         {elevated.map((label) => (
           <span key={label} className="chip warn">
             {label}
@@ -140,7 +145,7 @@ function ImportRow({
         ))}
         <span className="import-model">
           <span className="remap-from mono" title="Model in the source file">
-            {item.originalModel ?? 'not set'}
+            {item.originalModel ? showHidden(item.originalModel) : 'not set'}
           </span>
           <span className="remap-arrow">
             <Icon icon={ArrowRight} size="xs" />
@@ -157,14 +162,14 @@ function ImportRow({
         </p>
       )}
       {item.slugConflict && (
-        <div className="import-clash" role="group" aria-label={`Name clash for ${item.name}`}>
+        <div className="import-clash" role="group" aria-label={`Name clash for ${showHidden(item.name)}`}>
           <span className="import-clash-text">
             <Icon icon={TriangleAlert} size="sm" />
             <span>Your team already has a role called {showHidden(mine)}.</span>
           </span>
           <fieldset className="import-clash-pick" disabled={unchecked}>
             <SegmentedControl
-              label={`What to do with ${item.name}`}
+              label={`What to do with ${showHidden(item.name)}`}
               value={item.action === 'skip' ? 'skip' : (edit?.action ?? item.action)}
               options={CLASH_CHOICES}
               onChange={(action) => onEdit({ action })}
@@ -183,7 +188,7 @@ function ImportRow({
             <span className="muted">Granted: </span>
             {item.tools.map((t) => (
               <span key={t} className="chip mono">
-                {t}
+                {showHidden(t)}
               </span>
             ))}
           </span>
@@ -200,7 +205,7 @@ function ImportRow({
       </div>
       {open && (
         <div id={`${uid}-prompt`} className="import-prompt">
-          <pre tabIndex={0} role="region" aria-label={`Prompt of ${item.name}`}>
+          <pre tabIndex={0} role="region" aria-label={`Prompt of ${showHidden(item.name)}`}>
             {full}
           </pre>
           <p className="hint">

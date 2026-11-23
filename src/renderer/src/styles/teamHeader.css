@@ -78,9 +78,6 @@
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
 }
-.team-header .btn.primary {
-  box-shadow: 0 8px 22px -8px var(--accent);
-}
 .team-theme-swatch {
   flex: none;
   width: 18px;
@@ -115,7 +112,6 @@
   background: var(--eng);
   border-color: var(--eng);
   color: var(--surface-0);
-  box-shadow: 0 8px 22px -8px var(--eng);
 }
 
 /* ---------- Zoom group (bottom right of the stage): − 100% + Fit Tidy ---------- */
@@ -148,6 +144,11 @@
   background: var(--field-bg);
   color: var(--text-primary);
 }
+.editor .react-flow__controls.team-zoom button:disabled {
+  color: var(--text-disabled, var(--text-tertiary));
+  background: transparent;
+  cursor: default;
+}
 .editor .react-flow__controls.team-zoom button:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
@@ -175,7 +176,8 @@
   left: var(--space-2);
   max-width: min(46rem, calc(100% - var(--space-4)));
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
   align-items: center;
   gap: var(--space-1) var(--space-3);
   padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1);
@@ -202,7 +204,18 @@
 }
 .team-provenance-text {
   min-width: 0;
-  flex: 1 1 16rem;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.team-provenance .link-btn {
+  flex: none;
+}
+/* A narrow stage: the sentence goes (it is in the title), the two actions stay. */
+@container frame (max-width: 640px) {
+  .team-provenance-text {
+    display: none;
+  }
 }
 .team-provenance .link-btn {
   font-weight: var(--weight-semibold);
