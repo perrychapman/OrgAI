@@ -206,15 +206,14 @@ function KnowledgeWriteRow({ row, body, projectId, runId, arrive }: { arrive?: b
     <div className={`entry system harness knowledge-write-row${arriveClass(arrive)}`} data-testid="knowledge-write-row">
       <Icon icon={Database} size="sm" />
       <div className="tool-main">
-        <span className="entry-plain">{row.text}</span>
-        {row.focus && projectId && (
-          <>
-            {' '}
+        <div className="knowledge-row-head">
+          <span className="entry-plain">{row.text}</span>
+          {row.focus && projectId && (
             <button type="button" className="link-btn knowledge-row-open" data-testid="knowledge-row-open" aria-label={`Open ${row.name || 'this item'} in Knowledge`} onClick={open}>
               Open
             </button>
-          </>
-        )}
+          )}
+        </div>
         {body && (
           <details className="entry-detail">
             <summary>Show output</summary>

@@ -18,7 +18,7 @@ const { app, page, shot } = await launch({ shotPrefix: 'run-start' })
 const T = (id) => `[data-testid=${id}]`
 const START_ROW = `${T('run-settings')}[data-surface=start]`
 const LIVE_ROW = `${T('run-settings')}[data-surface=live]`
-const MODE_NAME = { auto: 'Unattended', acceptEdits: 'Auto-accept edits', default: 'Ask for everything risky', dontAsk: 'Never ask', plan: 'Plan only', bypassPermissions: 'Bypass all prompts' }
+const MODE_NAME = { auto: 'Go ahead within the rules', acceptEdits: 'Edit freely, ask for commands', default: 'Ask before risky actions', dontAsk: 'Never ask', plan: 'Plan only', bypassPermissions: 'Skip all checks' }
 const IDLE_MARK = '[mock:model-switch]'
 
 let gatewayA = ''
@@ -245,7 +245,7 @@ try {
     check((await activeTestId(page)) === 'run-permission-change', '4 focus returns to the permission chip after Keep current mode', await activeTestId(page))
     await chooseMode(page, 'bypassPermissions')
     await page.locator(T('run-permission-confirm')).click()
-    await page.waitForFunction(() => document.querySelector('[data-testid=run-permission-current]')?.textContent === 'Bypass all prompts', null, { timeout: 5000 }).catch(() => {})
+    await page.waitForFunction(() => document.querySelector('[data-testid=run-permission-current]')?.textContent === 'Skip all checks', null, { timeout: 5000 }).catch(() => {})
     check((await text(page, T('run-permission-current'))) === MODE_NAME.bypassPermissions, '4 confirming sets Bypass', await text(page, T('run-permission-current')))
     const chip = page.locator(T('run-permission-change'))
     check((await chip.getAttribute('data-tone')) === 'danger' && (await chip.getAttribute('data-default')) === 'false', '4 Bypass shows data-tone=danger (not the warning amber) and data-default=false')

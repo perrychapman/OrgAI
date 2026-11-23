@@ -94,7 +94,7 @@ const LIVE_STATES = new Set(['starting', 'thinking', 'tool', 'delegating', 'wait
 /** A finished report keeps its own node this long before folding into its parent's "done" group. */
 const COLLAPSE_KEY = 'orgai.collapseFinished'
 /** The conversation dock starts hidden when the run view is narrower than this (px); the user's own choice wins from then on. */
-const DOCK_AUTO_HIDE_BELOW = 700
+const DOCK_AUTO_HIDE_BELOW = 900
 /** An agent-to-agent message stays drawn this long. */
 const MESSAGE_EDGE_MS = 12_000
 /** Neutral role colour used when a role has none; resolved from a token at render time (React Flow cannot take var()). */
@@ -396,7 +396,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   }
   const onDockState = useCallback((s: { collapsed: boolean; noRoom: boolean }) => setDockReport((was) => (was.collapsed === s.collapsed && was.noRoom === s.noRoom ? was : s)), [])
   const focusDockComposer = useCallback((): void => {
-    const field = bodyRef.current?.querySelector<HTMLElement>('.live-composer-region .composer textarea')
+    const region = bodyRef.current?.querySelector<HTMLElement>('.live-composer-region')
+    const field = region?.querySelector<HTMLElement>('.composer textarea') ?? region?.querySelector<HTMLElement>('button, input, textarea, select') ?? bodyRef.current?.querySelector<HTMLElement>('.side-panel [role=tab][aria-selected=true]')
     field?.focus({ preventScroll: true })
   }, [])
   const focusDockButton = useCallback((): void => {
@@ -1225,6 +1226,18 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dockHidden, replyCount, openDecisionList])
   const dockUnread = dockHidden && (replyCount > dockSeen.current.replies || openDecisionKeys.some((k) => !dockSeen.current.keys.has(k)))
+  // A new reply while hidden is said once per hide period (a new decision is already announced above).
+  const saidReply = useRef(false)
+  useEffect(() => {
+    if (!dockHidden) {
+      saidReply.current = false
+      return
+    }
+    if (replyCount > dockSeen.current.replies && !saidReply.current) {
+      saidReply.current = true
+      setArrival((a) => ({ text: 'New reply in the conversation', n: (a?.n ?? 0) + 1 }))
+    }
+  }, [dockHidden, replyCount])
 
   // What the user approved in this view; the setup banner only claims what was actually applied.
   const trackProposal = async (p: Proposal, d: ProposalDecision): Promise<void> => {
@@ -1408,7 +1421,11 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
             sessionOpen={sessionOpen}
             onAnswer={() => focusComposer()}
             onShowPlan={() => showTab('plan')}
-            onSwitchModel={() => bodyRef.current?.querySelector<HTMLElement>('[data-testid="live-settings-bar"] button')?.focus()}
+            onSwitchModel={() => {
+              // A hidden dock holds the model switch: show it, then focus once it is drawn.
+              showDock(false)
+              requestAnimationFrame(() => requestAnimationFrame(() => bodyRef.current?.querySelector<HTMLElement>('[data-testid="live-settings-bar"] button')?.focus()))
+            }}
           />
 
           <DecisionTray items={decisionItems} selected={selectedDecision} onSelect={(i) => setPickedDecision(decisionItems[i].key)} onPin={pinShown} />

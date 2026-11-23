@@ -27,8 +27,8 @@ from the boards, and how it was checked.
   node. Escape or "Back to chart" closes it and focus returns to the opener (found again by test id when it re-mounted).
 - **Engagement.** `.run-view[data-kind='engagement']`: serif headings, coral selection and plan accents, neutral wording.
   No Context screen, no per-run source picker.
-- **Toolbar fit.** The chrome (Theme, Find, Show) shares the 32 px dense toolbar row; it drops Show under 900 px of frame
-  width, Find and the "Theme" word under 680, the theme name under 520, and hides under 320 (the theme is then set in
+- **Toolbar fit.** The chrome (Theme, Find, Show) shares the 32 px dense toolbar row; it drops Show under 1100 px of frame
+  width, Find and the "Theme" word under 900, the theme name under 700, and hides under 320 (the theme is then set in
   App settings > Canvas).
 - **Owed fixes.** Composer Enter guard and one-shot New run mode were already on dev. RunActions copy already used the
   current pane names. Usage kind names now read "Tools helper" and "Skills helper".
@@ -62,7 +62,7 @@ Screenshots of the hold card and the one-agent view were looked at in dark and l
   button shows the dock again: a keyboard activation moves focus to the composer, a mouse click does not. Anything that
   needs the composer or a tab (a decision answer, History's Continue, the plan strip, Find an agent) shows a hidden dock
   first. Everything stays mounted while hidden, so the draft, the model switch element, its pending state and the scroll
-  position survive. The dock starts hidden under 700 px of run view width (was 1100); the saved choice
+  position survive. The dock starts hidden under 900 px of run view width (was 1100); the saved choice
   (`orgai.sidePanel.run`) still wins. With no room at all (about 560 px) the old rail and the composer under the canvas return.
 - **Unread.** An amber dot and "(new)" on the button for a root reply or a decision that arrived while hidden (run events).
 - **Decisions.** The tray and hold card stay on the stage under the canvas, dock shown or not (the board draws the card in

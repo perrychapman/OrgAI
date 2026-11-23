@@ -487,14 +487,14 @@
   flex-wrap: nowrap;
   overflow: hidden;
 }
-@container frame (max-width: 900px) {
+@container frame (max-width: 1100px) {
   .canvas-chrome-start .agent-filter { display: none; }
 }
-@container frame (max-width: 680px) {
+@container frame (max-width: 900px) {
   .canvas-chrome-start [data-testid='find-agent'] { display: none; }
   .canvas-chrome-start .canvas-theme-label { display: none; }
 }
-@container frame (max-width: 520px) {
+@container frame (max-width: 700px) {
   .canvas-chrome-start .canvas-theme-current { display: none; }
 }
 @container frame (max-width: 340px) {
