@@ -1,86 +1,98 @@
-/* Outputs project tab (docs/design/outputs.md section 8): filter column, day-grouped list and the preview pane.
-   Owned by views/OutputsView.tsx and components/outputs/OutputsFilters.tsx / OutputsList.tsx. Tokens only; both themes
-   come from them. Same grid shape as .knowledge: the side panel sets --side-panel-w on it, the collapsed rail narrows
-   the last column. The page never scrolls: the filter column, the list and the pane scroll inside themselves. */
+/* Files project tab (docs/design/ui-overhaul/project/Files.dc.html; docs/design/outputs.md section 8): a toolbar row
+   (search, kind group, run), the day-grouped list or the card grid, and the glass preview pane.
+   Owned by views/OutputsView.tsx and components/outputs/OutputsFilters.tsx / OutputsList.tsx / OutputsGrid.tsx.
+   Tokens only; both themes come from them. The side panel sets --side-panel-w on the grid, the collapsed rail narrows the
+   last column. The page never scrolls: the list and the pane scroll inside themselves.
+   The glass tokens (--glass, --glass-strong, --glass-line, --glass-blur, --working) come from the foundation; each has a
+   fallback to the older surface tokens so the view reads the same before and after they land. */
 
-/* The preview pane is the wide column (ux-review-outputs-usability H2): with no saved width it takes 3/5 of what the
-   filters leave, the list the rest (list at least 260 px). A dragged width (--side-panel-w, SidePanel) still wins. */
+/* The local --o-* glass aliases are defined in outputs.css (shared with the run side tab). */
+
+/* The preview pane is the wide column on narrow windows (ux-review-outputs-usability H2): list and pane share the width
+   evenly, 360 px at least for the pane. Wide windows give the cards 3/5. A dragged width (--side-panel-w) still wins. */
 .outputs {
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
-  /* The list has no hard floor here: a dragged pane width (SidePanel keeps 280 px beside it) must never push the pane
-     past the grid's edge. With no saved width, 2fr of about 1130 px keeps the list near 450 px. */
-  grid-template-columns: auto minmax(0, 2fr) var(--side-panel-w, minmax(360px, 3fr));
-  grid-template-rows: minmax(0, 1fr);
-  grid-template-areas: 'filters main side';
+  grid-template-columns: minmax(0, 1fr) var(--side-panel-w, minmax(360px, 1fr));
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    'filters side'
+    'main side';
+  gap: var(--space-3) var(--space-4);
+  padding: var(--space-3) var(--space-4) var(--space-4);
   overflow: hidden;
-  background: var(--surface-0);
+  background: transparent;
 }
 .outputs:has(> .side-panel[data-collapsed='true']) {
-  grid-template-columns: auto minmax(0, 1fr) 40px;
+  grid-template-columns: minmax(0, 1fr) 40px;
 }
-.outputs > .side-panel {
-  grid-area: side;
-}
-/* Narrow windows (1024x640): the filters stack above the list in one column, so the pane keeps the larger share.
-   A media query on the window (the grid itself sizes the pane, so it cannot be a container of its own queries). */
-@media (max-width: 1279px) {
+@media (min-width: 1280px) {
   .outputs {
-    grid-template-columns: minmax(240px, 2fr) var(--side-panel-w, minmax(320px, 3fr));
-    grid-template-rows: auto minmax(0, 1fr);
-    grid-template-areas:
-      'filters side'
-      'main side';
+    grid-template-columns: minmax(0, 3fr) var(--side-panel-w, minmax(400px, 2fr));
   }
   .outputs:has(> .side-panel[data-collapsed='true']) {
     grid-template-columns: minmax(0, 1fr) 40px;
   }
-  /* Grid view needs two card columns: list and pane share the width evenly. */
-  .outputs:has(> .outputs-main[data-view='grid']) {
-    grid-template-columns: minmax(240px, 1fr) var(--side-panel-w, minmax(320px, 1fr));
-  }
-  .outputs:has(> .outputs-main[data-view='grid']):has(> .side-panel[data-collapsed='true']) {
-    grid-template-columns: minmax(0, 1fr) 40px;
-  }
-  .outputs > .outputs-filters {
-    width: auto;
-    max-height: 38vh;
-    padding: var(--space-2);
-    border-right: 0;
-    border-bottom: 1px solid var(--border-default);
-  }
 }
 
-/* ---------- Filter column ---------- */
-.outputs-filters {
-  grid-area: filters;
-  width: 240px;
-  box-sizing: border-box;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--space-3);
-  border-right: 1px solid var(--border-default);
-  background: var(--surface-1);
+/* ---------- The preview pane: one glass panel ---------- */
+.outputs > .side-panel {
+  grid-area: side;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  min-height: 0;
+  background: var(--o-glass);
+  -webkit-backdrop-filter: var(--o-blur);
+  backdrop-filter: var(--o-blur);
+  border: 1px solid var(--o-glass-line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elev-2);
 }
-.outputs-filters-title {
-  margin: 0;
-  font-size: var(--text-title-sm);
-  line-height: var(--text-title-sm-lh);
-  font-weight: var(--weight-semibold);
+/* The glass edge replaces the resize handle's hairline; the grip and the keyboard resize stay. */
+.outputs > .side-panel > .resize-handle::after {
+  display: none;
+}
+
+/* ---------- Toolbar row: search, kinds, run ---------- */
+.outputs-filters {
+  grid-area: filters;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+/* "Show" names the search landmark; the board has no visible heading for it. */
+.outputs-filters-title,
+.outputs-legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 .outputs-search {
   position: relative;
   display: flex;
   align-items: center;
+  flex: 1 1 160px;
+  min-width: 0;
 }
 .outputs-search .input {
   width: 100%;
+  height: var(--control-lg);
   padding-left: var(--space-8);
+  border-radius: var(--radius-lg);
+  background: var(--o-glass);
+  -webkit-backdrop-filter: var(--o-blur);
+  backdrop-filter: var(--o-blur);
+  border-color: var(--o-glass-line);
 }
 .outputs-search-icon {
   position: absolute;
@@ -94,47 +106,52 @@
   padding: 0;
   border: 0;
   min-width: 0;
+  flex: 1 1 100%;
 }
-.outputs-legend {
-  display: block;
-  padding: 0;
-  margin: 0 0 var(--space-1h);
-  font-size: var(--text-caption);
-  line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
-  font-weight: var(--weight-semibold);
-}
+/* The kinds in use form one glass group; a pressed chip is the violet one (several can be pressed: kinds are OR). */
 .outputs-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-1h);
+  width: fit-content;
+  max-width: 100%;
+  gap: var(--space-0h);
+  padding: 3px;
+  border: 1px solid var(--o-glass-line);
+  border-radius: var(--radius-lg);
+  background: var(--o-glass);
+  -webkit-backdrop-filter: var(--o-blur);
+  backdrop-filter: var(--o-blur);
 }
 .outputs-chip {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1h);
-  padding: 0 var(--space-3);
+  padding: 0 var(--space-2);
   height: var(--control-sm);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-full);
-  background: var(--surface-1);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--text-secondary);
   font: inherit;
   font-size: var(--text-small);
+  font-weight: var(--weight-regular);
   cursor: pointer;
   white-space: nowrap;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 .outputs-chip:hover {
-  background: var(--surface-2);
+  background: var(--o-hover);
   color: var(--text-primary);
 }
 .outputs-chip[aria-pressed='true'] {
-  background: var(--accent-soft);
-  border-color: var(--accent-soft-border);
-  color: var(--text-primary);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-weight: var(--weight-semibold);
 }
 .outputs-chip:focus-visible {
   outline: 2px solid var(--focus-ring);
@@ -142,27 +159,39 @@
 }
 .outputs-chip-n {
   color: var(--text-tertiary);
+  font-weight: var(--weight-regular);
+}
+.outputs-chip[aria-pressed='true'] .outputs-chip-n {
+  color: inherit;
+  opacity: 0.85;
+}
+.outputs-run-filter {
+  flex: 0 1 170px;
+  min-width: 140px;
 }
 .outputs-run-filter .select {
   width: 100%;
-}
-.outputs-run-filter > span {
-  display: block;
+  height: var(--control-lg);
+  border-radius: var(--radius-lg);
+  background-color: var(--o-glass);
+  border-color: var(--o-glass-line);
 }
 .outputs-count {
+  flex: none;
   margin: 0;
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   color: var(--text-tertiary);
 }
 
-/* ---------- List ---------- */
+/* ---------- Main column ---------- */
 .outputs-main {
   grid-area: main;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  gap: var(--space-2);
 }
 .outputs-main > .empty-state {
   margin: auto;
@@ -181,7 +210,7 @@
   min-height: 0;
   overflow-y: auto;
   margin: 0;
-  padding: 0 0 var(--space-4);
+  padding: 0 var(--space-1) var(--space-4) 0;
   list-style: none;
 }
 .outputs-list:focus-visible {
@@ -194,45 +223,60 @@
   padding: 0;
   list-style: none;
 }
+.outputs-group-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+}
 .outputs-group-title {
   margin: 0;
-  padding: var(--space-3) var(--space-3) var(--space-1);
+  padding: var(--space-3) var(--space-1) var(--space-1h);
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
   font-weight: var(--weight-semibold);
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
+}
+.outputs-group:first-child > .outputs-group-title {
+  padding-top: var(--space-1);
 }
 .outputs-group-n {
   color: var(--text-tertiary);
   font-weight: var(--weight-regular);
 }
+
+/* A row is a quiet glass tile: no blur per row (a long list stays cheap), a violet edge and wash when shown. */
 .outputs-row {
   box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  min-height: 56px;
-  padding: var(--space-0h) var(--space-3) var(--space-0h) var(--space-4);
-  border-left: 3px solid transparent;
+  min-height: 60px;
+  padding: var(--space-1h) var(--space-3);
+  border: 1px solid var(--o-glass-line);
+  border-radius: var(--radius-xl);
+  background: var(--o-glass);
   cursor: pointer;
   min-width: 0;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
 }
 .outputs-row-thumb {
   display: inline-flex;
   flex: none;
-  width: 48px;
-  height: 36px;
+  width: 52px;
+  height: 40px;
 }
 .outputs-row:hover {
-  background: var(--surface-2);
+  background: var(--o-glass-strong);
 }
 .outputs-row[aria-selected='true'] {
   background: var(--accent-soft);
-  border-left-color: var(--accent);
+  border-color: var(--accent);
 }
 .outputs-row:focus-visible {
   outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 .outputs-row[data-missing='true'] .outputs-row-title {
   color: var(--text-tertiary);
@@ -300,17 +344,18 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3) var(--space-3);
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-4);
 }
 .outputs-detail-body:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
+  border-radius: var(--radius-xl);
 }
 /* The pane's Hide button and the stepper share one row (the Hide bar floats over the body's first row). */
 .outputs > .side-panel > .side-panel-bar {
   position: absolute;
-  top: var(--space-2);
+  top: var(--space-3);
   right: var(--space-3);
   padding: 0;
   z-index: 1;
@@ -331,21 +376,38 @@
   line-height: var(--text-small-lh);
   color: var(--text-secondary);
 }
+.outputs-notice:empty {
+  display: none;
+}
 
-/* ---------- Toolbar (view switch, Select) and bulk bar ---------- */
+/* ---------- Toolbar (title, view switch, Select) and bulk bar ---------- */
 .outputs-toolbar {
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-default);
+  padding: 0 var(--space-1);
 }
 .outputs-toolbar-title {
   margin: 0 auto 0 0;
-  font-size: var(--text-title-sm);
-  line-height: var(--text-title-sm-lh);
+  font-family: var(--font-display, var(--font-sans));
+  font-size: var(--text-title);
+  line-height: var(--text-title-lh);
   font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
+}
+.outputs-toolbar .outputs-chip {
+  height: var(--control-md);
+  border: 1px solid var(--o-glass-line);
+  border-radius: var(--radius-lg);
+  background: var(--o-glass);
+}
+.outputs-toolbar .outputs-chip:hover {
+  background: var(--o-glass-strong);
+}
+.outputs-toolbar .outputs-chip[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
 }
 .outputs-toolbar .outputs-chip:disabled {
   opacity: 0.5;
@@ -360,8 +422,11 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--border-default);
-  background: var(--surface-1);
+  border: 1px solid var(--o-glass-line);
+  border-radius: var(--radius-xl);
+  background: var(--o-glass-strong);
+  -webkit-backdrop-filter: var(--o-blur);
+  backdrop-filter: var(--o-blur);
 }
 .outputs-bulk-count {
   margin-right: auto;
@@ -392,12 +457,10 @@
 [data-select='true'] > [aria-selected='true'],
 [data-select='true'] [role='option'][aria-selected='true'] {
   background: var(--accent-soft);
-}
-[data-select='true'] [role='option'][data-shown='true'] {
-  border-left-color: var(--accent);
+  border-color: var(--accent);
 }
 
-/* ---------- Thumbnails ---------- */
+/* ---------- Thumbnails: the sunk tile with the paper on it ---------- */
 .output-thumb {
   position: relative;
   display: flex;
@@ -407,9 +470,9 @@
   height: 100%;
   overflow: hidden;
   box-sizing: border-box;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+  border: 1px solid var(--o-glass-line);
   color: var(--text-secondary);
 }
 .output-thumb[data-kind='pending'],
@@ -492,7 +555,7 @@
   min-height: 0;
   overflow-y: auto;
   margin: 0;
-  padding: var(--space-3);
+  padding: var(--space-1) var(--space-1) var(--space-4) 0;
   list-style: none;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
@@ -506,17 +569,20 @@
 .output-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1h);
+  gap: var(--space-2);
   min-width: 0;
   padding: var(--space-2);
   box-sizing: border-box;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
+  border: 1px solid var(--o-glass-line);
+  border-radius: var(--radius-xl);
+  background: var(--o-glass);
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
 }
 .output-card:hover {
-  background: var(--surface-2);
+  background: var(--o-glass-strong);
 }
 .output-card[data-shown='true'] {
   background: var(--accent-soft);
@@ -534,12 +600,14 @@
   display: block;
   aspect-ratio: 16 / 10;
   overflow: hidden;
+  border-radius: var(--radius-lg);
 }
 .output-card-thumb > .output-thumb {
   position: absolute;
   inset: 0;
   width: auto;
   height: auto;
+  border-radius: var(--radius-lg);
 }
 .output-card-thumb .output-select {
   position: absolute;
@@ -547,8 +615,9 @@
   left: var(--space-1h);
 }
 .output-card-title {
-  font-size: var(--text-small);
-  line-height: var(--text-small-lh);
+  padding: 0 var(--space-1);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
   display: -webkit-box;
@@ -564,9 +633,10 @@
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
+  padding: 0 var(--space-1) var(--space-1);
 }
 .output-card-meta {
   font-size: var(--text-caption);
   line-height: var(--text-caption-lh);
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
 }

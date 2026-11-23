@@ -81,6 +81,17 @@
   color: var(--text-secondary);
   font-size: var(--text-small);
 }
+/* The team is on it: cyan (working); answered: green; ended: quiet. The words carry the state, the colour only echoes it. */
+.output-revision[data-phase='pending'] {
+  border-radius: var(--radius-md);
+  background: var(--working-soft, var(--info-soft, transparent));
+  color: var(--working-text, var(--info-text, var(--text-secondary)));
+}
+.output-revision[data-phase='answered'] {
+  border-radius: var(--radius-md);
+  background: var(--success-soft, transparent);
+  color: var(--success-text, var(--text-secondary));
+}
 .output-revision-text {
   overflow-wrap: anywhere;
 }
