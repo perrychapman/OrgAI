@@ -5,9 +5,10 @@ import { Icon } from './Icon'
 /**
  * One shape, three tones (docs/design/ui-review-2.md C.5): `neutral` (kind labels, counts, MOCK), `accent`
  * (selected or "yours") and status. The status tones are `success`, `attention` (the warning hue, "needs you"),
- * `info` and `danger`. `warning` stays as an alias of `attention` so existing call sites keep working.
+ * `info` and `danger`. `warning` stays as an alias of `attention` so existing call sites keep working. `working` (cyan,
+ * UI overhaul) marks something running right now.
  */
-export type BadgeTone = 'neutral' | 'accent' | 'success' | 'attention' | 'info' | 'warning' | 'danger'
+export type BadgeTone = 'neutral' | 'accent' | 'success' | 'attention' | 'info' | 'warning' | 'danger' | 'working'
 
 /** Small label, 20 px, soft fill, no border. Always pair a status tone with an icon or words; color is never the only signal. */
 export function Badge({
