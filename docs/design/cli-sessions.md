@@ -203,8 +203,9 @@ A re-read that cannot parse a file keeps the store's memory and never writes an 
   live runs; an `orgai` session does not, in its own runs either.)
 - **Runs in different sessions do not message each other** (`message_run` answers that the target is not live here).
 - **Undo of a skill or team change** works in the session that made the change, while it runs.
-- **A team review** (the Team assistant's recommendations and what was dismissed) is saved whole: one computed or
-  edited in one session replaces what another saved meanwhile. It is advisory data.
+- **A team review** (the Team assistant's recommendations and what was dismissed) and **a skill evaluation** are
+  each computed over a model call and then saved whole: one from one session replaces what another saved meanwhile.
+  Both are advisory caches, and the files stay valid.
 - **A project created in one terminal is open there from its next request on**, not from the moment it is created.
 - **A report that does not write, working in its parent report's worktree, is not seen** once that parent has
   finished and its branch is left in conflict or held: the branch then counts as a leftover although the child still
