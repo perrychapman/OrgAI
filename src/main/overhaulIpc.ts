@@ -56,6 +56,9 @@ export interface OverhaulIpcServices {
 
 type Handler = (e: IpcMainInvokeEvent, ...args: never[]) => unknown
 
+/** Senders that already have a 'destroyed' listener for their folder picks. */
+const pickTracked = new Set<number>()
+
 function requireWindow(e: IpcMainInvokeEvent): void {
   const win = e?.sender ? BrowserWindow.fromWebContents(e.sender) : null
   if (!win || win.isDestroyed()) throw new Error('Refused: not an OrgAI window.')
@@ -180,7 +183,14 @@ export function registerOverhaulIpc(
     if (picked) {
       const id = e.sender.id
       rememberAgentFolder(id, picked)
-      e.sender.once('destroyed', () => forgetAgentFolders(id))
+      // One 'destroyed' listener per window, however many folders it picks.
+      if (!pickTracked.has(id)) {
+        pickTracked.add(id)
+        e.sender.once('destroyed', () => {
+          forgetAgentFolders(id)
+          pickTracked.delete(id)
+        })
+      }
     }
     return picked
   })

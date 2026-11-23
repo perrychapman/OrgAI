@@ -302,6 +302,26 @@ export async function openProjectForm(page) {
 }
 
 /**
+ * Choose whether the new project runs the Architect setup. The form shows either the "Set up with the Architect"
+ * checkbox (`architect-setup`; checked = run setup) or, when templates (the built-in charts count) or importable agents
+ * exist, the "How should the team start?" fieldset (`setup-choice`), whose radios are picked by value: 'architect'
+ * runs setup, 'default' starts with the default roles. Both start on the Architect interview on a fresh profile.
+ */
+export async function pickSetup(form, skipSetup) {
+  const box = form.locator('[data-testid=architect-setup]')
+  const fieldset = form.locator('[data-testid=setup-choice]')
+  await box.or(fieldset).first().waitFor({ timeout: 30_000 })
+  if (await box.count()) {
+    if ((await box.isChecked()) === skipSetup) await form.locator('label.checkbox', { hasText: /Set up with the Architect|Start with the setup interview/ }).click()
+    if ((await box.isChecked()) === skipSetup) throw new Error('could not toggle "Set up with the Architect"')
+    return
+  }
+  const radio = fieldset.locator(`input[type=radio][value=${skipSetup ? 'default' : 'architect'}]`)
+  await radio.check({ force: true })
+  if (!(await radio.isChecked())) throw new Error(`could not pick the "${skipSetup ? 'default' : 'architect'}" setup choice`)
+}
+
+/**
  * Create a project through the New project form.
  * mode: 'existing' (repository folder) or 'new' (idea + folder). skipSetup: tick "Skip AI setup" (token-free).
  * Resolves once the app has navigated away from the projects view.
@@ -320,10 +340,7 @@ export async function createProject(page, { mode = 'existing', path: dir, name, 
     await form.locator('input[placeholder*="Defaults to the folder name"]').fill(name)
     if (brief) await form.locator('textarea').first().fill(brief)
   }
-  // "Set up with the Architect" has the inverse meaning of skipSetup (checked = run setup).
-  const box = form.locator('[data-testid=architect-setup]')
-  if ((await box.isChecked()) === skipSetup) await form.locator('label.checkbox', { hasText: 'Set up with the Architect' }).click()
-  if ((await box.isChecked()) === skipSetup) throw new Error('could not toggle "Set up with the Architect"')
+  await pickSetup(form, skipSetup)
   // The mock checkbox only exists under ORGAI_MOCK=1 and is on by default; useMock: false saves the project with the real adapter.
   const mock = form.locator('[data-testid=use-mock]')
   if ((await mock.count()) && (await mock.isChecked()) !== useMock) await form.locator('label.checkbox', { hasText: 'Use the mock adapter' }).click()

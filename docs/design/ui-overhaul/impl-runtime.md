@@ -132,29 +132,73 @@ support for what the overhaul boards draw that the app did not have. The orchest
 - **`schedulesNearPlanLimit`.** Scheduled runs are not skipped near the plan limit today, so the switch has no
   behaviour to control. Settings leaves these four controls out.
 
-## Second batch (in progress on this branch)
+## Second batch
 
-- The `bridge.ts delegate_agent` spawn caps.
-- The `priorAllows` counter.
-- `askBeforeStrongerModel`.
-- `runActions.retryAgent`.
-- `skillsExtra.duplicate` and `skillsExtra.export`.
-- `branchNamePattern`.
-- `maintenanceExtra.finishedCopiesSize` and `maintenanceExtra.deleteBranch`.
-- Provider retry counters: the `provider.retry` event, `RunSummary.providerRetry` and `RunHold.provider.tries`.
+- **Bridge spawn caps.** `bridge.ts delegate_agent` applies `spawnCapRefusal`, counting the whole run's agents plus
+  pending bridged spawns.
+  - Gap: inside a bridged child session, the child's adapter counts only its own agents.
+  - Gap: a native Claude spawn does not see bridged children.
+- **`priorAllows`** (`runtime/allowCounter.ts`).
+  - Counts only "Allow once" answered on the desktop. The key is the allow rules from the card's own suggestions,
+    falling back to `permissionRules.ts` keying.
+  - Stored at `<data>/projects/<id>/allow-counts.json`: at most 500 keys, counts capped at 9999.
+  - Absent when unknown.
+- **`askBeforeStrongerModel`** (`staffing.ts` gate, used by the Claude, Codex and mock spawn paths).
+  - Asks "Use a stronger model for <role>?". Only "Use it" uses the stronger tier; anything else keeps it. The Claude
+    wait ends after 580 s with keep.
+  - Because `resolveStaffing` clamps to the role's tier, today it fires only on a retry escalation.
+- **`runActions.retryAgent`.** A user instruction to the orchestrator, sent through `send()`. Staffing still clamps the
+  tier.
+- **Provider retries.**
+  - Claude maps the SDK `api_retry` message. Codex maps `error` with `willRetry` (no delay known). The mock has
+    `[mock:provider-retry]`.
+  - RunManager rebuilds the event, keeps `RunSummary.providerRetry` and sets `hold.provider.tries`.
+- **Skills.**
+  - `duplicate` names the copy `<name>-copy`, because skill names allow only lowercase letters, digits and hyphens. It
+    copies no grants.
+  - `export` writes a new folder under the picked folder, never overwrites, and refuses symlinks.
+- **Branches.**
+  - `finishedCopiesSize` is an lstat walk with a bounded entry count.
+  - `deleteBranch` goes through the guarded git helpers. It refuses the current, default and main branch, branches in
+    use by a live run, non-report branches, unfinished git state, and a branch with no copy that has unmerged commits.
+  - `branchNamePattern` is validated and offered through `branchNameFor`. No live run applies it yet: Claude's SDK
+    names its branches, and the Codex call site is noted in `codexAgents.ts`. Worktree recognition still keys on
+    `worktree-agent-`.
+
+## Reviewer fixes (first pass blocked on H1)
+
+- **H1.** `settings:set` from the socket or the in-process CLI cannot change `openAtLogin`, `closeBehavior`,
+  `keepAwakeDuringRuns` or `spendWarnPercent`.
+- **M1.** Daily and monthly caps count every run that overlaps the period.
+- **M2.** A start under a daily or monthly cap is refused when a role model has no known price, and a live run warns
+  once when its cost turns unknown.
+- **M3.**
+  - The test gate scrubs token, secret and password variables and cloud credentials.
+  - With merge review on, it runs after the user approves.
+  - `requireTestsPass` with an empty command refuses the merge.
+- **M4.** `gitInfo` skips `git status` when the repository defines its own filter drivers.
+- **M5.** Non-desktop saves cannot widen the agent caps, `knowledgeWrite`, retention, `mainBranch`,
+  `branchNamePattern` or `askBeforeStrongerModel`.
+- **M6.** The knowledge write gate fails closed for an unresolved caller.
+- **M7.** Bridge caps (see Second batch).
+- **M8.** `spendWarnPercent` can switch between a number and null.
+- **L1.** One `destroyed` listener per window.
+- **Open, Low:**
+  - **L2.** `maxAgentsPerRun` counts per session, so a continuation starts a fresh count. The UI should say "per run
+    session".
+  - **L3.** A live org change may re-add left-out roles. Unverified.
+  - **L4.** Agent names and blocked reasons are data and must render as text.
+  - **L5.** The retention sweep takes no activity lease.
+  - **L6.** A `mainBranch` checkout switch is not named in the merge message.
+  - **L7.** An agent that runs `git merge` itself is not blocked by the gate.
 
 ## Not built, and why
 
 - **Undo of an answered decision.** Agents act on an answer at once, so taking back an answered permission, question,
   proposal or merge is not real. Only a saved "Always allow" rule can be undone, through the existing `permissions.remove`.
   Session grants live inside the adapter session and have no revoke path.
-- **`PermissionRequest.priorAllows`.** Main keeps no allow counter, so the field stays absent (unknown).
-- **`schedulesNearPlanLimit`.** No near-limit skip of scheduled runs exists: they start and pause at the limit. The
-  field is stored and has no consumer.
-- **Not built at all:** locale, update autoDownload (the consent model says the app never downloads on its own),
-  branchNamePattern (the SDK names worktree branches), askBeforeStrongerModel, the byte size of finished copies, skill
-  duplicate and export, provider retry counters, retry with a stronger model, and undo merge or delete branch
-  (destructive git writes).
+- **Owner decision needed.** autoDownload, undo merge, locale and `schedulesNearPlanLimit` (see "Needs owner
+  decision").
 - **Not recorded today:** per-file +/- counts per run, plan step durations, and test or dependency health.
 
 ## Verification
