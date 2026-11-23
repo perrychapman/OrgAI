@@ -260,6 +260,54 @@ export function stepTone(status: PlanStepStatus): StepTone {
   }
 }
 
+/** Whether a conversation's newest session is working or waiting on the user: the "Running now" scope. */
+export const isRunningNow = (word: string): boolean => word === 'Running' || word === 'Needs you'
+
+/**
+ * The two scope counts under the current filters. `fits` says the conversation passes kind, period and search; `bucket`
+ * is the status chip. "All runs" counts what the list would show with that scope, "Running now" what it would show
+ * if it were chosen, so each number matches its list.
+ */
+export function scopeCounts(items: readonly { word: string; bucket: HistoryBucket; fits: boolean }[], chip: 'all' | HistoryBucket): { all: number; running: number } {
+  let all = 0
+  let running = 0
+  for (const it of items) {
+    if (!it.fits || (chip !== 'all' && it.bucket !== chip)) continue
+    all++
+    if (isRunningNow(it.word)) running++
+  }
+  return { all, running }
+}
+
+/** Whether the outputs index is still being fetched, could not be fetched or is in the store. */
+export type OutputsPhase = 'loading' | 'failed' | 'ready'
+
+/** The "What it left" line when there is nothing to list yet (or nothing at all); null when files can be listed. */
+export function filesNote(phase: OutputsPhase, count: number): string | null {
+  if (phase === 'loading') return 'Checking files…'
+  if (phase === 'failed') return 'Could not load the files.'
+  return count === 0 ? 'No files registered.' : null
+}
+
+/** Shown beside "Run it again": what the new request does and does not take from the old run. */
+export const RERUN_NOT_CARRIED = 'Model, effort, permission mode, goal and images are not carried over: the run uses this project as it is set up now.'
+
+export type RerunPlan = { ok: true; text: string; mode: 'team' | 'ask' } | { ok: false; reason: string }
+
+/**
+ * What "Run it again" does: prefill the New run page of the run's own project with its request, sending nothing. The page
+ * applies every start guard (setup pending, a project that cannot start, the permission-mode confirmation). Refuses when
+ * the run is not repeatable or does not belong to the project on screen, so it can never land in another project.
+ */
+export function rerunPlan(run: Pick<RunSummary, 'kind' | 'quick' | 'prompt' | 'projectId' | 'team'>, selectedProjectId: string | null | undefined): RerunPlan {
+  if (run.kind !== 'work' || run.quick) return { ok: false, reason: 'Only a team run can be run again.' }
+  const text = run.prompt.trim()
+  if (!text) return { ok: false, reason: 'This run has no request to repeat.' }
+  if (!selectedProjectId) return { ok: false, reason: 'Open the project first.' }
+  if (run.projectId !== selectedProjectId) return { ok: false, reason: 'This run belongs to another project. Open that project to run it again.' }
+  return { ok: true, text, mode: run.team === 'single' ? 'ask' : 'team' }
+}
+
 /** The plan summary or, failing that, the root agent's last result, one clipped paragraph. Empty when neither exists. */
 export function runSummaryText(opts: { planSummary?: string; rootResult?: string }, max = 360): string {
   const raw = (opts.planSummary?.trim() || opts.rootResult?.trim() || '').replace(/\s+/g, ' ')
