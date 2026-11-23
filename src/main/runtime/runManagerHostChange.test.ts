@@ -76,9 +76,9 @@ function rig(opts: { hook?: Hook; cliHost?: boolean; terminalHost?: boolean; gat
     }
   }
   const options = {
-    // cliHost: a host with neither switch. terminalHost: the orgai command's own host (bootstrap.ts, hostKind 'inproc'):
-    // the user's saves reach live runs, org chart cards do not (its card shows no diff).
-    ...(opts.cliHost ? {} : opts.terminalHost ? { liveHostChanges: true as const } : { liveRosterCards: true as const, liveHostChanges: true as const }),
+    // cliHost: a host with no switch. terminalHost: the orgai command's own host (bootstrap.ts, hostKind 'inproc'): a
+    // project save the user typed reaches live runs; item saves and cards do not.
+    ...(opts.cliHost ? {} : opts.terminalHost ? { liveUserSaves: true as const } : { liveRosterCards: true as const, liveHostChanges: true as const }),
     ...(opts.waitMs ? { liveHostChangeWaitMs: opts.waitMs } : {}),
     // As bootstrap.ts wires it: a card's fan-out reads the stored project before the apply through it.
     resolveProject: (id: string) => store.get(id),
@@ -481,17 +481,29 @@ describe('applyProjectChange: hosts, sessions and run states', () => {
     await m.stopAll()
   })
 
-  it("the terminal's own host: another run's approved org chart card still waits for the next run", async () => {
+  it("the terminal's own host: another run's approved card reaches no live run (card fan-out stays with the desktop)", async () => {
     const p = newProject()
     const { m, ctxs, calls } = rig({ terminalHost: true })
-    const run = await m.start({ project: p, prompt: 'go' })
+    await m.start({ project: p, prompt: 'go' })
     const before = store.get(p.id)!
     const roles = structuredClone(before.roles).map((r) => (r.id === 'r-eng' ? { ...r, prompt: 'From a card.' } : r))
     const saved = store.save({ ...structuredClone(before), roles })
-    const res = await m.applyProjectChange(p.id, saved, { kind: 'orgChart', before, roles }, { source: 'card' })
-    expect(res).toEqual([{ runId: run.id, title: expect.any(String), availability: 'next-run', reason: 'This run takes org chart changes from the next run.' }])
+    expect(await m.applyProjectChange(p.id, saved, { kind: 'orgChart', before, roles }, { source: 'card' })).toEqual([])
+    // A project save that did not come from the user (source 'card') is not passed on either.
+    expect(await m.applyProjectChange(p.id, saved, { kind: 'projectSave', before, request: saved }, { source: 'card' })).toEqual([])
     expect(ctxs[0].roles[1].prompt).toBe('You are engineer.')
-    expect(calls.some((c) => c.roles)).toBe(false)
+    expect(calls).toEqual([])
+    await m.stopAll()
+  })
+
+  it("the terminal's own host: a saved MCP server reaches no live run (its before is read outside the write lock)", async () => {
+    const p = newProject()
+    const { m, ctxs, calls } = rig({ terminalHost: true })
+    await m.start({ project: p, prompt: 'go' })
+    const s = itemSave(p, (c) => ({ ...c, mcpServers: [server('m-docs', 'docs'), server('m-new', 'tracker')] }))
+    expect(await m.applyProjectChange(p.id, s.saved, { kind: 'mcp', ids: ['m-new'], names: ['tracker'], label: 'the MCP server tracker', before: s.before })).toEqual([])
+    expect(ctxs[0].mcpServers!().map((x) => x.id)).toEqual(['m-docs'])
+    expect(calls).toEqual([])
     await m.stopAll()
   })
 

@@ -611,8 +611,12 @@ function buildHandlers(services: HostServices, env: HostDispatchEnv, events: Hos
     if (typeof project?.id === 'string' && isVirtualProjectId(project.id)) throw new Error('This assistant project cannot be saved.')
     // Read BEFORE the save: the save ingests team files inside the service, and a live run must not see that as the user's edit.
     // A copy: nothing the save or its ingest does to the stored object may reach the comparison.
-    const stored = isUsersOwnSurface(ctx) && typeof project?.id === 'string' ? projects.get(project.id) : null
-    const before = stored ? structuredClone(stored) : null
+    const stored = ctx.surface === 'desktop' && typeof project?.id === 'string' ? projects.get(project.id) : null
+    // The terminal's own orgai process shares its data folder with other orgai processes: the stored project can be
+    // newer than the copy the user edited, and can change again before the save takes the write lock. There the edit
+    // is read against the version the request was made from (ProjectStore.baseOf); unknown = no live change.
+    const base = ctx.surface === 'inproc' && typeof projects.baseOf === 'function' ? projects.baseOf(project) : null
+    const before = stored ? structuredClone(stored) : base
     const saved = projects.saveFromRenderer(project)
     // Sync for any other surface (and when there is nothing to compare against), exactly as before.
     if (!before) return saved
@@ -1070,8 +1074,9 @@ function registerTemplateEngagementIpc(handle: Register, { projects, templates, 
 /** Project skills, the skill library, the repo import and evaluation: the services 1:1, ids checked first. */
 /**
  * The user's own surface: the desktop window, or the terminal's own orgai process (surface 'inproc': the host runs
- * inside the `orgai` command the user typed and serves that process only). A save from either is the user's own
- * action, so it may reach the project's live runs. Any other surface (a socket client) is not.
+ * inside the `orgai` command the user typed and serves that process only). A PROJECT SAVE from either is the user's own
+ * action and may reach the project's live runs (the terminal's through RunManagerOptions.liveUserSaves). A socket
+ * client is not. mcp:* / skills:* saves reach live runs from the desktop window only (beforeSave, withLive).
  */
 const isUsersOwnSurface = (ctx: InvokeContext): boolean => ctx.surface === 'desktop' || ctx.surface === 'inproc'
 
@@ -1118,11 +1123,11 @@ const skillChange = (before: Project, ids: string[], names: string[], scope: Ite
 })
 const uniq = (list: string[]): string[] => [...new Set(list.filter((s) => typeof s === 'string' && s))]
 /**
- * The stored project BEFORE a save from the user's own surface, as a copy (projects:save does the same): the save and its team-file ingest
- * change the store's object, and live runs take only what this save changed against it (review M1). Null for any other surface.
+ * The stored project BEFORE a desktop save, as a copy (projects:save does the same): the save and its team-file ingest
+ * change the store's object, and live runs take only what this save changed against it (review M1). Null elsewhere.
  */
 const beforeSave = (ctx: InvokeContext, getProject: (id: string) => Project | null, projectId: unknown): Project | null => {
-  if (!isUsersOwnSurface(ctx) || typeof projectId !== 'string') return null
+  if (ctx.surface !== 'desktop' || typeof projectId !== 'string') return null
   const p = getProject(projectId)
   return p ? structuredClone(p) : null
 }
@@ -1156,9 +1161,9 @@ function registerSkillIpc(
   }
   handle(IPC.skillsList, (_e, projectId: unknown): SkillInfo[] => skills.list(projectIdArg(projectId)))
   handle(IPC.skillsRead, (_e, input: unknown): SkillContent => skills.read(projectSkill(input)))
-  /** Attach liveRuns (the user's own surfaces only, non-empty only) to a skills mutation result. */
+  /** Attach liveRuns (desktop only, non-empty only) to a skills mutation result. */
   const withLive = (ctx: InvokeContext, result: SkillMutationResult, projectId: string, change: HostProjectChange): SkillMutationResult | Promise<SkillMutationResult> => {
-    if (!isUsersOwnSurface(ctx)) return result
+    if (ctx.surface !== 'desktop') return result
     return liveRunsOf(ctx, runs, projectId, result.project, change).then((live) => (live ? { ...result, liveRuns: live } : result))
   }
   const skillName = (p: Project | null | undefined, id: string): string | undefined => p?.skills?.find((s) => s.id === id)?.name
@@ -1296,9 +1301,9 @@ function registerMcpIpc(
   projects?: Partial<Pick<ProjectStore, 'renamedAwaySlugs' | 'forgetRenamedServer'>>
 ): void {
   handle(IPC.mcpList, (_e, projectId: string): McpServerInfo[] => mcp.list(projectId))
-  /** Attach liveRuns (the user's own surfaces only, non-empty only) to an MCP mutation result. */
+  /** Attach liveRuns (desktop only, non-empty only) to an MCP mutation result. */
   const withLive = (ctx: InvokeContext, result: McpMutationResult, projectId: string, change: HostProjectChange): McpMutationResult | Promise<McpMutationResult> => {
-    if (!isUsersOwnSurface(ctx)) return result
+    if (ctx.surface !== 'desktop') return result
     return liveRunsOf(ctx, runs, projectId, result.project, change).then((live) => (live ? { ...result, liveRuns: live } : result))
   }
   const serverName = (p: Project | null | undefined, id: string): string | undefined => p?.mcpServers?.find((s) => s.id === id)?.name

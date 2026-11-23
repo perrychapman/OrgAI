@@ -401,12 +401,12 @@ Application menu, run end and decision cards, settings, run titles, projects, us
       unverified: that thread/resume applies new developerInstructions (the MCP restart assumes the same), and that a
       new role's own model gets the native-agents catalog override before the next app-server restart.
   - Host changes in a live run (owner request 2026-11-19; ARCHITECTURE.md Conventions "Host changes in a live run";
-    the desktop app and, since 2026-11-22, the terminal's own orgai process for saves typed there): the user's own
-    saves (projects:save roles and role grants, mcp:upsert / remove / linkLibrary /
+    the desktop app; since 2026-11-22 also a PROJECT save typed in the terminal's own orgai process, nothing else
+    there): desktop saves (projects:save roles and role grants, mcp:upsert / remove / linkLibrary /
     setProjectOverrides, skills:create / update / remove / linkLibrary) and approved MCP / skill / org chart cards of
     another session of the same project reach every other live team work run through
     `RunManager.applyProjectChange` (`runtime/hostChange.ts`; handlers in `host/dispatcher.ts`, `liveRunsOf`, only for
-    `isUsersOwnSurface(ctx)`, surface 'desktop' or 'inproc'; `RunManagerOptions.liveHostChanges` set by bootstrap.ts with `desktop` or hostKind 'inproc'; a user-saved role edit asks `liveRosterTakesSave`, a card `liveRosterApplies`). Each run's
+    `ctx.surface === 'desktop'`; `RunManagerOptions.liveHostChanges` set by bootstrap.ts with `desktop`; the terminal: projects:save alone, `isUsersOwnSurface` and `liveUserSaves`, read against `ProjectStore.baseOf`, a user-saved role edit asks `liveRosterTakesSave`). Each run's
     `ActiveRun.hostApply` reuses `setLive` (new settle 'grants') and `applyRosterChange` with the run's own baseline;
     the handler reads the stored project before the save (a structuredClone copy, every handler), so a team-file ingest
     of the same save does not ride along on roles and grants (`runManagerHostChange.test.ts` "INVARIANT", which fails if

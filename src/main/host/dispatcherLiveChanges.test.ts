@@ -35,6 +35,9 @@ function rig(answer: () => Promise<LiveRunChange[]> = async () => CANNED) {
   const calls: Call[] = []
   const reads: Array<{ id: string; at: string }> = []
   let step = 'start'
+  /** What ProjectStore.baseOf answers: the version the request was made from, or null when it is not remembered. */
+  let baseAnswer: Project | null = null
+  const setBase = (p: Project | null): void => void (baseAnswer = p)
   const current = (): Project => store[0]
   const set = (patch: Partial<Project>): Project => {
     store[0] = { ...store[0], ...patch }
@@ -52,6 +55,7 @@ function rig(answer: () => Promise<LiveRunChange[]> = async () => CANNED) {
       return store.find((p) => p.id === id) ?? null
     },
     list: () => store,
+    baseOf: vi.fn((_p: Project): Project | null => baseAnswer),
     // The save ingests team files inside the service: the stored project gains a grant the request never named.
     saveFromRenderer: vi.fn((p: Project) => {
       step = 'saved'
@@ -92,7 +96,9 @@ function rig(answer: () => Promise<LiveRunChange[]> = async () => CANNED) {
   }
   const d = new HostDispatcher(services)
   const call = (channel: string, input: unknown, ctx: typeof DESKTOP | typeof INPROC | typeof SOCKET = DESKTOP): Promise<any> => Promise.resolve(d.invoke(channel, [input], ctx))
-  return { call, runs, calls, store, projects, mcp, skillsSvc, reads, current, services }
+  /** The handler's own return value (a promise only when the handler is asynchronous). */
+  const raw = (channel: string, input: unknown, ctx: typeof DESKTOP | typeof INPROC | typeof SOCKET): unknown => d.invoke(channel, [input], ctx)
+  return { call, raw, setBase, runs, calls, store, projects, mcp, skillsSvc, reads, current, services }
 }
 
 const P = 'proj_a'
@@ -341,37 +347,62 @@ describe('desktop saves reach live runs (applyProjectChange)', () => {
   })
 })
 
+const CHANNELS = [
+  [IPC.projectsSave, (r: ReturnType<typeof rig>) => ({ ...r.store[0], brief: 'x' })],
+  [IPC.mcpUpsert, () => ({ projectId: P, spec: server('mcp_a', 'alpha') })],
+  [IPC.mcpRemove, () => ({ projectId: P, serverId: 'mcp_old' })],
+  [IPC.mcpLinkLibrary, () => ({ projectId: P, libraryId: 'lib_1' })],
+  [MCP_SCOPE_IPC.mcpSetProjectOverrides, () => ({ projectId: P, serverId: 'mcp_old', env: { A: 'b' } })],
+  [IPC.skillsCreate, () => ({ projectId: P, draft: { name: 'fresh', description: 'd', body: 'b' } })],
+  [IPC.skillsUpdate, () => ({ projectId: P, skillId: 'sk_old', enabled: false })],
+  [IPC.skillsRemove, () => ({ projectId: P, skillId: 'sk_old' })],
+  [IPC.skillsLinkLibrary, () => ({ projectId: P, libraryId: 'lib_9' })]
+] as const
+const ITEM_CHANNELS = CHANNELS.filter(([channel]) => channel !== IPC.projectsSave)
+const isPromise = (v: unknown): boolean => typeof (v as { then?: unknown } | null)?.then === 'function'
+
 describe('other surfaces never call applyProjectChange', () => {
-  it.each([
-    [IPC.projectsSave, (r: ReturnType<typeof rig>) => ({ ...r.store[0], brief: 'x' })],
-    [IPC.mcpUpsert, () => ({ projectId: P, spec: server('mcp_a', 'alpha') })],
-    [IPC.mcpRemove, () => ({ projectId: P, serverId: 'mcp_old' })],
-    [IPC.mcpLinkLibrary, () => ({ projectId: P, libraryId: 'lib_1' })],
-    [MCP_SCOPE_IPC.mcpSetProjectOverrides, () => ({ projectId: P, serverId: 'mcp_old', env: { A: 'b' } })],
-    [IPC.skillsCreate, () => ({ projectId: P, draft: { name: 'fresh', description: 'd', body: 'b' } })],
-    [IPC.skillsUpdate, () => ({ projectId: P, skillId: 'sk_old', enabled: false })],
-    [IPC.skillsRemove, () => ({ projectId: P, skillId: 'sk_old' })],
-    [IPC.skillsLinkLibrary, () => ({ projectId: P, libraryId: 'lib_9' })]
-  ] as const)('%s on a socket surface is synchronous and adds nothing', (channel, input) => {
+  it.each(CHANNELS)('%s on a socket surface answers synchronously and adds nothing', (channel, input) => {
     const r = rig()
-    const out = r.call(channel, input(r), SOCKET)
-    return out.then((value) => {
-      expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
-      expect(value && typeof value === 'object' && 'liveRuns' in value).toBe(false)
-    })
+    const value = r.raw(channel, input(r), SOCKET)
+    // The handler's own value: wrapping it in Promise.resolve would hide a handler that became asynchronous.
+    expect(isPromise(value)).toBe(false)
+    expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
+    expect(!!value && typeof value === 'object' && 'liveRuns' in value).toBe(false)
+  })
+
+  it.each(ITEM_CHANNELS)("%s on the terminal's own surface answers synchronously and adds nothing", (channel, input) => {
+    const r = rig()
+    const value = r.raw(channel, input(r), INPROC)
+    expect(isPromise(value)).toBe(false)
+    expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
+    expect(!!value && typeof value === 'object' && 'liveRuns' in value).toBe(false)
   })
 })
 
-describe('the terminal\'s own orgai process is the user\'s surface too', () => {
-  it('projects:save on the inproc surface passes the change to the live runs, as on the desktop', async () => {
+describe("the terminal's own orgai process: a project save the user typed", () => {
+  it('passes the change with the version the request was made from, never the stored project', async () => {
     const r = rig()
-    await r.call(IPC.projectsSave, { ...r.store[0], brief: 'x' }, INPROC)
-    expect(r.runs.applyProjectChange).toHaveBeenCalledTimes(1)
+    const base = { ...structuredClone(r.store[0]), brief: 'the version the user edited' }
+    r.setBase(base)
+    const request = { ...r.store[0], brief: 'x' }
+    await r.call(IPC.projectsSave, request, INPROC)
+    expect(r.projects.baseOf).toHaveBeenCalledTimes(1)
+    expect(r.calls).toHaveLength(1)
+    const change = r.calls[0].change as { kind: string; before: Project; request: Project }
+    expect(change.kind).toBe('projectSave')
+    expect(change.before).toBe(base)
+    expect(change.request).toEqual(request)
+    expect(r.calls[0].opts).toEqual({ source: 'user' })
+    // The stored project is never read for the comparison on this surface.
+    expect(r.reads.filter((x) => x.at === 'start')).toEqual([])
   })
 
-  it('mcp:remove on the inproc surface passes the change to the live runs, as on the desktop', async () => {
+  it('a copy whose version this process no longer remembers reaches no live run', () => {
     const r = rig()
-    await r.call(IPC.mcpRemove, { projectId: P, serverId: 'mcp_old' }, INPROC)
-    expect(r.runs.applyProjectChange).toHaveBeenCalledTimes(1)
+    r.setBase(null)
+    const value = r.raw(IPC.projectsSave, { ...r.store[0], brief: 'x' }, INPROC)
+    expect(isPromise(value)).toBe(false)
+    expect(r.runs.applyProjectChange).not.toHaveBeenCalled()
   })
 })

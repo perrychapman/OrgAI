@@ -432,9 +432,8 @@ Tiers and model discovery, connections vs adapters, multi-provider, proxies, chi
     still shows raw strings). Unit-tested.
   - Host changes (2026-11-19): desktop saves (mcp:*, skills:*, role grants and roles in projects:save) and other
     sessions' approved cards reach live team work runs of the project through `RunManager.applyProjectChange` and
-    `RuntimeSession.hostConfigChanged` (core-runtime.md "Host changes in a live run"). Since 2026-11-22 the terminal's
-    own orgai process does the same for saves typed in it; a save from another process (another terminal, a shell)
-    applies from the next run.
+    `RuntimeSession.hostConfigChanged` (core-runtime.md "Host changes in a live run"); the CLI / TUI / exec host still
+    applies them from the next run (only a project save typed in the terminal reaches its live runs, 2026-11-22).
   - Skills mid-run (corrects an older note that said there was no path): an approved propose_skills (and, through
     `hostConfigChanged`, a skill change the user saves in OrgAI) reaches a live work run. RunManager recomputes
     `active.skills` (`ctx.skills()`); Claude's Skill gate reads the live grants at every call (ungrant / removal at

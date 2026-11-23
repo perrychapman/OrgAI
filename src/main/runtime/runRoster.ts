@@ -17,16 +17,16 @@ export function liveRosterApplies(
 
 /**
  * Whether a role edit the user saved themselves (projects:save on the user's own surface, hostChange.ts) reaches this
- * run's roles: the same runs and sessions as liveRosterApplies, on a host that passes the user's saves to live runs
- * (`host.liveHostChanges`). No card is involved, so what the card surface can show (liveRosterCards) does not decide
- * it: the user typed the edit. Pure.
+ * run's roles: the same runs and sessions as liveRosterApplies, on the desktop app (liveRosterCards) or on the orgai
+ * command's own host (`host.liveUserSaves`). No card is involved there, so what the card surface can show does not
+ * decide it: the user typed the edit. Pure.
  */
 export function liveRosterTakesSave(
   summary: Pick<RunSummary, 'kind' | 'projectId' | 'quick' | 'team'>,
   session: { liveRoster?: boolean } | undefined,
-  host: { liveRosterCards?: boolean; liveHostChanges?: boolean }
+  host: { liveRosterCards?: boolean; liveUserSaves?: boolean }
 ): boolean {
-  return liveRosterApplies(summary, session, { liveRosterCards: host.liveRosterCards === true || host.liveHostChanges === true })
+  return liveRosterApplies(summary, session, { liveRosterCards: host.liveRosterCards === true || host.liveUserSaves === true })
 }
 
 /**

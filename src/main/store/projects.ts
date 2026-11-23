@@ -531,6 +531,12 @@ export class ProjectStore {
    * VERSIONS_KEPT). A save whose copy was made from one of them is merged onto what the file holds now (projectMerge.ts).
    */
   private versions = new Map<string, Map<string, Project>>()
+  /**
+   * Versions (`<id>\n<updatedAt>`) this process has seen with two different contents: a migration rewrites a project
+   * without a new stamp (migrateAll). Nobody can tell which of the two a caller's copy was made from, so baseOf
+   * answers null for them.
+   */
+  private restamped = new Set<string>()
 
   /**
    * `opts.tierContext` gives a connection's tier mapping for the invalid-model fallback (sanitizeRoleModels).
@@ -593,10 +599,16 @@ export class ProjectStore {
     if (!this.sync?.shared || typeof p?.id !== 'string' || typeof p.updatedAt !== 'string') return
     let known = this.versions.get(p.id)
     if (!known) this.versions.set(p.id, (known = new Map()))
+    const had = known.get(p.updatedAt)
+    if (had && JSON.stringify(had) !== JSON.stringify(p)) this.restamped.add(`${p.id}\n${p.updatedAt}`)
     known.delete(p.updatedAt)
     // A copy of its own: whatever a caller later does to the object it was handed, the version stays what was stored.
     known.set(p.updatedAt, structuredClone(p))
-    while (known.size > VERSIONS_KEPT) known.delete(known.keys().next().value as string)
+    while (known.size > VERSIONS_KEPT) {
+      const oldest = known.keys().next().value as string
+      known.delete(oldest)
+      this.restamped.delete(`${p.id}\n${oldest}`)
+    }
   }
 
   /**
@@ -611,6 +623,25 @@ export class ProjectStore {
     if (!stored || typeof project.updatedAt !== 'string' || project.updatedAt === stored.updatedAt) return project
     const base = this.versions.get(project.id)?.get(project.updatedAt)
     return base ? mergeProject(base, project, stored) : project
+  }
+
+  /**
+   * The version a caller's copy was made from (same id and `updatedAt`), as this process had it: a copy, or null when
+   * this process no longer remembers it or has seen that stamp with two different contents (a migration rewrites
+   * a project without a new stamp). For reading what a save itself changed (dispatcher.ts projects:save on the
+   * terminal's own host): another orgai session may have saved the project since, so the stored project is not what
+   * the caller edited. With one process per data folder: the stored project, when the copy was made from it.
+   */
+  baseOf(project: Pick<Project, 'id' | 'updatedAt'>): Project | null {
+    if (typeof project?.id !== 'string' || typeof project.updatedAt !== 'string') return null
+    if (this.sync.shared) {
+      // Seen with two contents under one stamp: which one the caller's copy came from is unknown.
+      if (this.restamped.has(`${project.id}\n${project.updatedAt}`)) return null
+      const base = this.versions.get(project.id)?.get(project.updatedAt)
+      return base ? structuredClone(base) : null
+    }
+    const stored = this.projects.find((p) => p.id === project.id)
+    return stored && stored.updatedAt === project.updatedAt ? structuredClone(stored) : null
   }
 
   /** Before a read: pick up what another session saved. Nothing to do with one process per data folder. */

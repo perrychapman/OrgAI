@@ -25,6 +25,7 @@ import type {
 } from '../../shared/types'
 import { applyRunDelegation } from '../../shared/delegationView'
 import { statusEventEndFacts } from '../../shared/view/runChains'
+import { runTag } from '../../shared/view/runLabels'
 import type { SnapshotResult } from '../client/runStream'
 import { safeLine } from '../output'
 import { StreamSanitizers, sanitizeTty } from './sanitizeTty'
@@ -542,10 +543,14 @@ export function applyEvent(s: TuiState, p: RunsEventParams, opts: ApplyOptions =
     case 'run.moved':
       run = { ...run, summary: { ...summary, projectId: e.projectId } }
       break
-    case 'run.liveChange':
-      // A change the user saved while this run is live (docs: "Host changes in a live run"): say what this run does with it.
-      liveChange = liveChangeNotice(e.change, Array.isArray(e.what) ? e.what : [])
+    case 'run.liveChange': {
+      // A change the user saved while this run is live (docs: "Host changes in a live run"): say what the run does with
+      // it. "This run" is the run on screen; another run of the project is named by its tag (R2).
+      const at = out.runOrder.indexOf(e.runId)
+      const who = e.runId === out.activeRunId ? undefined : runTag(at >= 0 ? at + 1 : undefined)
+      liveChange = liveChangeNotice(e.change, Array.isArray(e.what) ? e.what : [], who)
       break
+    }
     case 'run.model':
       // The root's live model (a model switch): the status bar and the inspector read summary.modelSelection.
       if (!e.selection || typeof e.selection.model !== 'string' || typeof e.selection.connection !== 'string') return out

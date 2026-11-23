@@ -775,12 +775,19 @@ export interface RunManagerOptions {
    */
   liveRosterCards?: true
   /**
-   * Host changes in a live run (applyProjectChange, hostChange.ts): true on a host whose saves are the user's own: the
-   * desktop app (its windows) and the orgai command's own host (it serves only the terminal process that started it).
-   * Unset (tests, any other host): a save applies from the next run and applyProjectChange returns [] without touching
-   * a run.
+   * Host changes in a live run (applyProjectChange, hostChange.ts): true only on the desktop app (bootstrap.ts with
+   * `desktop`), whose saves come from the user's own windows: project saves, mcp:* / skills:* saves and the approved
+   * cards of other sessions. Unset: applyProjectChange returns [] without touching a run, except for `liveUserSaves`.
    */
   liveHostChanges?: true
+  /**
+   * The orgai command's own host (bootstrap.ts, hostKind 'inproc': it serves only the terminal process that started
+   * it): a PROJECT SAVE the user typed there (projects:save, source 'user') reaches the team work runs that process
+   * hosts, read against the version the user edited (dispatcher.ts, ProjectStore.baseOf). Nothing else does: mcp:* /
+   * skills:* saves and card fan-out stay with liveHostChanges, because their "before" is read outside the data
+   * folder's write lock and another orgai process can save in between.
+   */
+  liveUserSaves?: true
   /** How long applyProjectChange waits for each run's session before answering 'pending'. Tests; default LIVE_RUN_CHANGE_WAIT_MS. */
   liveHostChangeWaitMs?: number
   /**
@@ -5271,11 +5278,13 @@ export class RunManager {
   /**
    * A change the user saved in the desktop app (projects:save, mcp:*, skills:*) or approved on another session's card,
    * already saved as `saved`, reaching every live work run of the project (hostChange.ts, ARCHITECTURE.md "Host changes
-   * in a live run"). Only what `change` names moves. Desktop host only (RunManagerOptions.liveHostChanges): elsewhere
+   * in a live run"). Only what `change` names moves. The desktop host (liveHostChanges), or a project save typed on the terminal's own host (liveUserSaves): elsewhere
    * returns [] and touches nothing. Never throws; each run's answer is waited for at most LIVE_RUN_CHANGE_WAIT_MS.
    */
   async applyProjectChange(projectId: string, saved: Project, change: HostProjectChange, opts: { exceptRunId?: string; source?: 'user' | 'card' } = {}): Promise<LiveRunChange[]> {
-    if (!this.options.liveHostChanges || typeof projectId !== 'string' || isVirtualProjectId(projectId) || saved?.id !== projectId) return []
+    // The terminal's own host (liveUserSaves) passes on only a project save the user typed there.
+    const allowed = this.options.liveHostChanges === true || (this.options.liveUserSaves === true && change?.kind === 'projectSave' && (opts.source ?? 'user') === 'user')
+    if (!allowed || typeof projectId !== 'string' || isVirtualProjectId(projectId) || saved?.id !== projectId) return []
     const out: Promise<LiveRunChange | undefined>[] = []
     for (const a of this.runs.values()) {
       const s = a.summary

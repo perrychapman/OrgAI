@@ -62,14 +62,30 @@ describe('liveChangeNotice', () => {
       liveChangeNotice(c({ deferred: [{ name: 'A', reason: 'x' }, { name: 'B', reason: 'y' }], notes: [{ name: 'A', note: ' Renamed to Lead. ' }] }), ['orgChart'])?.text
     ).toBe('The team: this run uses the change now. 2 roles wait for the next run. Renamed to Lead.')
   })
+
+  it('names a run that is not on screen by its tag, also inside the reason and the note', () => {
+    expect(liveChangeNotice(c({}), ['orgChart'], 'R2')?.text).toBe('The team: R2 uses the change now.')
+    expect(liveChangeNotice(c({ availability: 'after-idle' }), ['skills'], 'R2')?.text).toBe('Skills: R2 takes the change when it is next idle.')
+    expect(liveChangeNotice(c({ availability: 'next-run', reason: 'This run takes org chart changes from the next run.' }), ['orgChart'], 'R2')?.text).toBe(
+      'The team: R2 takes org chart changes from the next run.'
+    )
+    expect(liveChangeNotice(c({ notes: [{ name: 'Lead', note: 'Renamed to Lead. This run keeps calling it boss until the next run.' }] }), ['orgChart'], 'R3')?.text).toBe(
+      'The team: R3 uses the change now. Renamed to Lead. R3 keeps calling it boss until the next run.'
+    )
+    // A reason that does not name the run cannot stand in for the sentence that does.
+    expect(liveChangeNotice(c({ availability: 'next-run', reason: 'The top role keeps whether it can hand out work until the next run.' }), ['orgChart'], 'R2')?.text).toBe(
+      'The team: R2 uses the change from the next run. The top role keeps whether it can hand out work until the next run.'
+    )
+  })
 })
 
 describe('takesSavedTeam', () => {
   it('is true only for a team work run this terminal hosts', () => {
-    expect(takesSavedTeam({ kind: 'work' })).toBe(true)
-    expect(takesSavedTeam({ kind: 'work', team: 'single' })).toBe(false)
-    expect(takesSavedTeam({ kind: 'work', quick: {} as never })).toBe(false)
-    expect(takesSavedTeam({ kind: 'setup' })).toBe(false)
-    expect(takesSavedTeam({ kind: 'work', liveElsewhere: { pid: 1, cwd: '/x', command: 'orgai' } })).toBe(false)
+    expect(takesSavedTeam({ kind: 'work', status: 'running' })).toBe(true)
+    expect(takesSavedTeam({ kind: 'work', team: 'single', status: 'running' })).toBe(false)
+    expect(takesSavedTeam({ kind: 'work', quick: {} as never, status: 'running' })).toBe(false)
+    expect(takesSavedTeam({ kind: 'setup', status: 'running' })).toBe(false)
+    expect(takesSavedTeam({ kind: 'work', liveElsewhere: { pid: 1, cwd: '/x', command: 'orgai' }, status: 'running' })).toBe(false)
+    expect(takesSavedTeam({ kind: 'work', status: 'stopping' })).toBe(false)
   })
 })
