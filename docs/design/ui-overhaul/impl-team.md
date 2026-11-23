@@ -79,15 +79,17 @@ strip Keep both / Replace mine / Skip mapped to `AgentImportChoice.action`, drop
 - Import's primary button stays in the dialog footer (always visible), not at the bottom of the aside.
 - Tier words: the board has three (Fast / Standard / Most capable); the app has four tiers, so deep reads "Advanced".
 
-## Needs runtime (asked of ov-runtime, 2026-11-22)
+## Runtime contract (ov-runtime branch, merged 2026-11-22)
 
-1. `Role.maxConcurrent` ("How many at once", node chip "up to N"): built, hidden behind `ROLE_CONCURRENCY_SUPPORTED`
-   in `lib/roleStaffing.ts` until the field exists.
-2. `Role.knowledgeWrite` ("Records what it learns in Knowledge", engagements): built, hidden behind
-   `ROLE_KNOWLEDGE_WRITE_SUPPORTED`.
-3. Import from another folder (`sourcePath` + folder picker) and from another OrgAI project (`fromProjectId`): the
-   buttons are `aria-disabled` with "Not available yet" through `importSourceSupport()` in `lib/agentImport.ts`.
-4. The board's "Suggested" role card (Add / Dismiss) has no token-free source; not built.
+1. `Role.maxConcurrent` (1..`ROLE_MAX_CONCURRENT_LIMIT`, missing = no cap of its own): the inspector's "How many at once"
+   stepper (`role-concurrency`; "No limit of its own" when unset, Fewer starts a cap at the limit, More past the limit
+   clears it) and the node chip "up to N" (`role-node-many`).
+2. `Role.knowledgeWrite` (engagements; missing = may write, false = reads only): "Records what it learns in Knowledge"
+   (`role-knowledge-write`); ticking clears the field.
+3. Import: "Choose another" calls `importSources.pickAgentFolder()` and previews / applies with `sourcePath`
+   (`import-from-here` goes back); "Another OrgAI project" shows a project select and uses `fromProjectId` (inert with a
+   reason when there is no other project). `importSourceSupport()` turns both on when the bridge has the picker.
+4. Not built: the board's "Suggested" role card (Add / Dismiss) has no token-free source.
 
 ## Verified
 

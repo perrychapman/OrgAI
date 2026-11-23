@@ -135,11 +135,21 @@ describe('import dialog wording and groups', () => {
     expect(opts.find((o) => o.value === 'big-1')?.label).toBe('Advanced · big-1')
     expect(levelOptions({}, undefined).map((o) => o.label)).toEqual(['Inherit from parent', 'Fast', 'Standard', 'Advanced', 'Most capable'])
   })
-  it('keeps the unbuilt sources off', () => {
+  it('turns the other sources on only when the bridge has the folder picker', () => {
     const s = importSourceSupport()
     expect(s.otherProject).toBe(false)
     expect(s.chooseFolder).toBe(false)
-    expect(s.unavailable).toBe('Not available yet')
+    expect(s.unavailable).toBe('Not available in this build')
+    const w = globalThis as unknown as { window?: unknown }
+    const had = 'window' in w
+    const prev = w.window
+    w.window = { orgai: { importSources: { pickAgentFolder: () => Promise.resolve(null) } } }
+    try {
+      expect(importSourceSupport()).toMatchObject({ otherProject: true, chooseFolder: true })
+    } finally {
+      if (had) w.window = prev
+      else delete w.window
+    }
   })
   it('groups the previewed chart by lead role and marks what is new', () => {
     const role = (id: string, name: string, reportsTo: string | null) => ({ id, name, reportsTo, color: 'c' }) as never

@@ -164,18 +164,21 @@ describe('import and kit lines', () => {
 
 describe('count, knowledge and required review', () => {
   it('reads and clamps the count', () => {
-    expect(roleConcurrency(role())).toBe(1)
+    expect(roleConcurrency(role())).toBeUndefined()
     expect(roleConcurrency({ maxConcurrent: 4 })).toBe(4)
     expect(roleConcurrency({ maxConcurrent: 99 })).toBe(CONCURRENCY_MAX)
     expect(roleConcurrency({ maxConcurrent: 0 })).toBe(1)
     expect(withConcurrency(20)).toEqual({ maxConcurrent: 8 })
+    expect(withConcurrency(undefined)).toEqual({ maxConcurrent: undefined })
+    expect(concurrencyText(undefined)).toBe('No limit of its own')
     expect(concurrencyText(1)).toBe('One at a time')
     expect(concurrencyText(3)).toBe('Up to 3')
   })
-  it('reads the knowledge flag', () => {
-    expect(roleKnowledgeWrite(role())).toBe(false)
-    expect(roleKnowledgeWrite({ knowledgeWrite: true })).toBe(true)
-    expect(withKnowledgeWrite(true)).toEqual({ knowledgeWrite: true })
+  it('reads the knowledge flag (missing means it may write)', () => {
+    expect(roleKnowledgeWrite(role())).toBe(true)
+    expect(roleKnowledgeWrite({ knowledgeWrite: false })).toBe(false)
+    expect(withKnowledgeWrite(true)).toEqual({ knowledgeWrite: undefined })
+    expect(withKnowledgeWrite(false)).toEqual({ knowledgeWrite: false })
   })
   it('offers required review only when the manager can hand it work', () => {
     const lead = role({ id: 'lead', reportsTo: 'root', canSpawn: true, spawnable: ['r1'], requiredReports: ['r1'] })

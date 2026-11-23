@@ -125,6 +125,11 @@ function RoleNodeView({ id, data, selected }: NodeProps<RoleFlowNode>): ReactEle
           {chip}
         </span>
         {delegateCount > 0 && <span className="chip" data-testid="role-node-leads">Delegates to {delegateCount}</span>}
+        {typeof role.maxConcurrent === 'number' && (
+          <span className="chip" data-testid="role-node-many" title={`At most ${role.maxConcurrent} of this role at once`}>
+            up to {role.maxConcurrent}
+          </span>
+        )}
       </div>}
       {!compact && <div className="caps" data-testid="role-node-caps" role="img" aria-label={capsLabel}>
         {parts.length === 0 ? 'No tools' : parts.map((p, i) => (

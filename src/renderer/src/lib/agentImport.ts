@@ -170,7 +170,9 @@ export interface ImportSourceSupport {
 }
 
 export function importSourceSupport(): ImportSourceSupport {
-  return { otherProject: false, chooseFolder: false, unavailable: 'Not available yet' }
+  // Main supports both since the runtime contract of 2026-11-22 (importSources.pickAgentFolder, sourcePath, fromProjectId).
+  const on = typeof window !== 'undefined' && typeof window.orgai?.importSources?.pickAgentFolder === 'function'
+  return { otherProject: on, chooseFolder: on, unavailable: 'Not available in this build' }
 }
 
 export interface ImportGroupRole {

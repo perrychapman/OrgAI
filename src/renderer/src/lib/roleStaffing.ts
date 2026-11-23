@@ -1,5 +1,5 @@
 import type { Effort, ModelTier, Project, ProviderId, ReviewPolicy, Role, RoleStaffing, StaffingGoal, StaffingMode } from '@shared/types'
-import { MODEL_TIERS } from '@shared/types'
+import { MODEL_TIERS, ROLE_MAX_CONCURRENT_LIMIT } from '@shared/types'
 import { cleanRoleStaffing, compareTier, effectiveRoleStaffing, effortOptionsFor, reviewPolicyOf, staffingGoalOf, staffingModeOf } from '@shared/defaults'
 import { roleTier } from './remap'
 import { TIER_LABEL } from './roleModels'
@@ -244,40 +244,41 @@ export function kitRoleSpend(role: object, project: Pick<Project, 'staffing'>): 
 // ---------- Role panel: count, knowledge write, required by the manager (UI overhaul, Team board) ----------
 
 /**
- * "How many at once" (1..8) and "Records what it learns in Knowledge" wait for two Role fields a runtime change adds
- * (`maxConcurrent`, `knowledgeWrite`). The controls stay hidden while these flags are false; set them once the fields are
- * in src/shared/types.ts. The accessors read the fields loosely so this file compiles either way.
+ * "How many at once" (`Role.maxConcurrent`, 1..ROLE_MAX_CONCURRENT_LIMIT; missing = no per-role cap, the project's
+ * limit still applies) and "Records what it learns in Knowledge" (`Role.knowledgeWrite`, engagements; missing = today's
+ * behaviour, it may write; false = reads only). Contract from the runtime lead, 2026-11-22.
  */
-export const ROLE_CONCURRENCY_SUPPORTED = false
-export const ROLE_KNOWLEDGE_WRITE_SUPPORTED = false
+export const ROLE_CONCURRENCY_SUPPORTED = true
+export const ROLE_KNOWLEDGE_WRITE_SUPPORTED = true
 export const CONCURRENCY_MIN = 1
-export const CONCURRENCY_MAX = 8
+export const CONCURRENCY_MAX = ROLE_MAX_CONCURRENT_LIMIT
 
 const clampCount = (n: number): number => Math.min(CONCURRENCY_MAX, Math.max(CONCURRENCY_MIN, Math.round(n)))
 
-/** How many agents of the role may run at once; 1 when none is set. */
-export function roleConcurrency(role: object): number {
-  const v = (role as { maxConcurrent?: unknown }).maxConcurrent
-  return typeof v === 'number' && Number.isFinite(v) ? clampCount(v) : CONCURRENCY_MIN
+/** The role's own cap, or undefined when it has none. */
+export function roleConcurrency(role: Pick<Role, 'maxConcurrent'>): number | undefined {
+  const v = role.maxConcurrent
+  return typeof v === 'number' && Number.isFinite(v) ? clampCount(v) : undefined
 }
 
-/** The patch that sets the count, clamped to 1..8. */
-export function withConcurrency(n: number): Partial<Role> {
-  return { maxConcurrent: clampCount(n) } as unknown as Partial<Role>
+/** The patch that sets the count, clamped to 1..limit; undefined clears the cap. */
+export function withConcurrency(n: number | undefined): Partial<Role> {
+  return { maxConcurrent: n === undefined ? undefined : clampCount(n) }
 }
 
-/** "Up to 4"; "One at a time" for 1. */
-export function concurrencyText(n: number): string {
-  return n <= 1 ? 'One at a time' : `Up to ${n}`
+/** "No limit of its own", "One at a time", "Up to 4". */
+export function concurrencyText(n: number | undefined): string {
+  return n === undefined ? 'No limit of its own' : n <= 1 ? 'One at a time' : `Up to ${n}`
 }
 
-/** Does the role record what it learns in Knowledge? */
-export function roleKnowledgeWrite(role: object): boolean {
-  return (role as { knowledgeWrite?: unknown }).knowledgeWrite === true
+/** Does the role record what it learns in Knowledge? Missing means yes (today's behaviour). */
+export function roleKnowledgeWrite(role: Pick<Role, 'knowledgeWrite'>): boolean {
+  return role.knowledgeWrite !== false
 }
 
+/** Off writes false; on clears the field (the default). */
 export function withKnowledgeWrite(on: boolean): Partial<Role> {
-  return { knowledgeWrite: on } as unknown as Partial<Role>
+  return { knowledgeWrite: on ? undefined : false }
 }
 
 /**

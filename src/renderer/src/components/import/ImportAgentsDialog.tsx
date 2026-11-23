@@ -255,6 +255,16 @@ export default function ImportAgentsDialog({
   onClose: () => void
 }): ReactElement {
   const [scan, setScan] = useState<AgentImportScan | null>(null)
+  // Where the agents come from: this project's folder, a folder the user picked, or another stored project.
+  const [src, setSrc] = useState<{ kind: 'here' } | { kind: 'path'; path: string } | { kind: 'project'; projectId: string }>({ kind: 'here' })
+  const [pickingProject, setPickingProject] = useState(false)
+  const [srcError, setSrcError] = useState<string | null>(null)
+  const allProjects = useAppStore((s) => s.projects)
+  const otherProjects = useMemo(() => allProjects.filter((p) => p.id !== project.id), [allProjects, project.id])
+  const srcInput = useMemo(
+    () => (src.kind === 'path' ? { sourcePath: src.path } : src.kind === 'project' ? { fromProjectId: src.projectId } : {}),
+    [src]
+  )
   const [mode, setMode] = useState<AgentImportMode>(defaultMode)
   const [edits, setEdits] = useState<Record<string, ImportEdit>>({})
   const [preview, setPreview] = useState<AgentImportPreview | null>(null)
@@ -290,14 +300,34 @@ export default function ImportAgentsDialog({
 
   useEffect(() => {
     let live = true
+    setEdits({})
+    setPreview(null)
+    if (src.kind === 'project') {
+      // Another stored project: its roles are the agents (main builds the items from them, source 'orgai').
+      const other = useAppStore.getState().projects.find((p) => p.id === src.projectId)
+      const n = other?.roles.length ?? 0
+      setScan({ sources: n > 0 ? [{ source: 'orgai', label: other?.name ?? 'Another project', files: [], agentCount: n }] : [], instructionFiles: [], warnings: [] })
+      return undefined
+    }
+    setScan(null)
     window.orgai.projects
-      .scanAgents(project.path)
+      .scanAgents(src.kind === 'path' ? src.path : project.path)
       .then((s) => live && setScan(s))
       .catch(() => live && setScan({ sources: [], instructionFiles: [], warnings: [] }))
     return () => {
       live = false
     }
-  }, [project.path])
+  }, [project.path, src])
+
+  const chooseFolder = async (): Promise<void> => {
+    setSrcError(null)
+    try {
+      const path = await window.orgai.importSources.pickAgentFolder()
+      if (path) setSrc({ kind: 'path', path })
+    } catch (e) {
+      setSrcError(cleanIpcError(e))
+    }
+  }
 
   const hasSources = (scan?.sources.length ?? 0) > 0
   const choices = useMemo(() => buildChoices(edits), [edits])
@@ -308,7 +338,7 @@ export default function ImportAgentsDialog({
     let live = true
     setLoading(true)
     window.orgai.projects
-      .previewImport({ projectId: project.id, mode, choices })
+      .previewImport({ projectId: project.id, mode, choices, ...srcInput })
       .then((p) => {
         if (!live) return
         setPreview(p)
@@ -323,7 +353,7 @@ export default function ImportAgentsDialog({
     return () => {
       live = false
     }
-  }, [scan, hasSources, project.id, project.roles, mode, choices, refresh])
+  }, [scan, hasSources, project.id, project.roles, mode, choices, refresh, srcInput])
 
   const modelOptions = useMemo(() => levelOptions(info?.connection.tierModels ?? {}, catalog), [info, catalog])
 
@@ -371,7 +401,7 @@ export default function ImportAgentsDialog({
     setApplying(true)
     setApplyError(null)
     try {
-      const result = await window.orgai.projects.applyImport({ projectId: project.id, mode, choices, digest: preview.digest })
+      const result = await window.orgai.projects.applyImport({ projectId: project.id, mode, choices, digest: preview.digest, ...srcInput })
       useAppStore.getState().replaceProject(result.project)
       useAppStore.getState().recordImport(project.id, {
         count,
@@ -416,6 +446,128 @@ export default function ImportAgentsDialog({
   const off = [!support.otherProject && 'Another OrgAI project', !support.chooseFolder && 'Choosing another folder', !kitOn && 'Kits'].filter(Boolean) as string[]
   const anyOff = off.length > 0
   const offLine = `${off.join(', ').replace(/, ([^,]*)$/, ' and $1')} ${off.length === 1 ? 'is' : 'are'} ${support.unavailable.toLowerCase()}.`
+  const fromPath = src.kind === 'path' ? src.path : project.path
+  const fromProject = src.kind === 'project' ? otherProjects.find((p) => p.id === src.projectId) : undefined
+  const fromCard = (
+    <div className="import-from" data-testid="import-from">
+      <div className="import-from-row">
+        <span className="import-from-label" id={`${reasonId}-from`}>
+          From
+        </span>
+        <div className="import-srcs" role="group" aria-labelledby={`${reasonId}-from`}>
+          <Button
+            size="sm"
+            className="import-src"
+            pressed={src.kind !== 'project'}
+            testId="import-src-folder"
+            onClick={() => {
+              setPickingProject(false)
+              if (src.kind === 'project') setSrc({ kind: 'here' })
+            }}
+          >
+            A folder of agent files
+          </Button>
+          <Button
+            size="sm"
+            className="import-src"
+            pressed={src.kind === 'project' || pickingProject}
+            inert={!support.otherProject || otherProjects.length === 0}
+            title={!support.otherProject ? support.unavailable : otherProjects.length === 0 ? 'You have no other projects' : undefined}
+            ariaDescribedBy={support.otherProject ? undefined : `${reasonId}-why`}
+            testId="import-src-project"
+            onClick={() => setPickingProject(true)}
+          >
+            Another OrgAI project
+          </Button>
+          <Button
+            size="sm"
+            className="import-src"
+            pressed={false}
+            icon={Package}
+            loading={kitBusy}
+            inert={!kitOn}
+            title={kitOn ? undefined : support.unavailable}
+            ariaDescribedBy={kitOn ? undefined : `${reasonId}-why`}
+            testId="import-src-kit"
+            onClick={() => void chooseKit()}
+          >
+            A kit
+          </Button>
+        </div>
+      </div>
+      {src.kind === 'project' || pickingProject ? (
+        <div className="import-from-row">
+          <label className="import-from-label" htmlFor={`${reasonId}-proj`}>
+            Project
+          </label>
+          <Select
+            id={`${reasonId}-proj`}
+            value={src.kind === 'project' ? src.projectId : ''}
+            options={[{ value: '', label: 'Choose a project', disabled: true }, ...otherProjects.map((p) => ({ value: p.id, label: `${showHidden(p.name)} (${p.roles.length} ${p.roles.length === 1 ? 'role' : 'roles'})` }))]}
+            onChange={(id) => {
+              if (id) setSrc({ kind: 'project', projectId: id })
+            }}
+          />
+          {fromProject && <span className="muted">Imports its roles; this project keeps its own.</span>}
+        </div>
+      ) : (
+        <div className="import-from-row">
+          <span className="mono import-from-path" title={showHidden(fromPath)}>
+            {showHidden(fromPath)}
+          </span>
+          <Button
+            size="sm"
+            inert={!support.chooseFolder}
+            title={support.chooseFolder ? undefined : support.unavailable}
+            ariaDescribedBy={support.chooseFolder ? undefined : `${reasonId}-why`}
+            testId="import-choose-folder"
+            onClick={() => void chooseFolder()}
+          >
+            Choose another
+          </Button>
+          {src.kind === 'path' && (
+            <Button size="sm" variant="ghost" testId="import-from-here" onClick={() => setSrc({ kind: 'here' })}>
+              Use this project&apos;s folder
+            </Button>
+          )}
+        </div>
+      )}
+      {anyOff && (
+        <p className="hint import-from-why" id={`${reasonId}-why`}>
+          {offLine}
+        </p>
+      )}
+      {scan && scan.sources.length > 0 && (
+        <ul className="import-sources" aria-label="Sources">
+          {scan.sources.map((s) => (
+            <li key={s.source}>
+              <strong>{showHidden(s.label)}</strong> <span className="muted">{s.agentCount} agent{s.agentCount === 1 ? '' : 's'}</span>
+              {s.files.length > 0 && (
+                <span className="mono muted import-files" title={showHidden(s.files.join('\n'))}>
+                  {s.files.length > 1 ? `${s.files.length} files` : showHidden(s.files[0] ?? '')}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {srcError && (
+        <p className="field-error" role="alert" data-testid="import-src-error">
+          {srcError}
+        </p>
+      )}
+      {kitError && (
+        <p className="field-error" role="alert" data-testid="import-kit-error">
+          {kitError}
+        </p>
+      )}
+      {kitDone && (
+        <p className="import-kit-done" role="status" data-testid="import-kit-done">
+          {kitDone}
+        </p>
+      )}
+    </div>
+  )
   return (
     <>
       <Dialog open onClose={onClose} title={`Import agents into ${projectName}`} description={`Nothing changes until you press ${mode === 'replace' ? 'Replace' : 'Add'}`} size="lg" footer={footer} testId="import-dialog">
@@ -430,92 +582,20 @@ export default function ImportAgentsDialog({
               Looking for agent files…
             </p>
           ) : !hasSources ? (
-            <EmptyState
-              compact
-              icon={FileSearch}
-              title="No agent files found"
-              description={`Searched ${SEARCHED} in ${project.path}.`}
-              testId="import-empty"
-            />
+            <>
+              {fromCard}
+              <EmptyState
+                compact
+                icon={FileSearch}
+                title={src.kind === 'project' ? 'That project has no roles' : 'No agent files found'}
+                description={src.kind === 'project' ? 'Pick another project or folder.' : `Searched ${SEARCHED} in ${showHidden(fromPath)}.`}
+                testId="import-empty"
+              />
+            </>
           ) : (
             <div className="import-body">
               <div className="import-main">
-                <div className="import-from" data-testid="import-from">
-                  <div className="import-from-row">
-                    <span className="import-from-label" id={`${reasonId}-from`}>
-                      From
-                    </span>
-                    <div className="import-srcs" role="group" aria-labelledby={`${reasonId}-from`}>
-                      <Button size="sm" className="import-src" pressed testId="import-src-folder">
-                        A folder of agent files
-                      </Button>
-                      <Button
-                        size="sm"
-                        className="import-src"
-                        pressed={false}
-                        inert={!support.otherProject}
-                        title={support.otherProject ? undefined : support.unavailable}
-                        ariaDescribedBy={support.otherProject ? undefined : `${reasonId}-why`}
-                        testId="import-src-project"
-                      >
-                        Another OrgAI project
-                      </Button>
-                      <Button
-                        size="sm"
-                        className="import-src"
-                        pressed={false}
-                        icon={Package}
-                        loading={kitBusy}
-                        inert={!kitOn}
-                        title={kitOn ? undefined : support.unavailable}
-                        ariaDescribedBy={kitOn ? undefined : `${reasonId}-why`}
-                        testId="import-src-kit"
-                        onClick={() => void chooseKit()}
-                      >
-                        A kit
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="import-from-row">
-                    <span className="mono import-from-path" title={showHidden(project.path)}>
-                      {showHidden(project.path)}
-                    </span>
-                    <Button
-                      size="sm"
-                      inert={!support.chooseFolder}
-                      title={support.chooseFolder ? undefined : support.unavailable}
-                      ariaDescribedBy={support.chooseFolder ? undefined : `${reasonId}-why`}
-                      testId="import-choose-folder"
-                    >
-                      Choose another
-                    </Button>
-                  </div>
-                  {anyOff && (
-                    <p className="hint import-from-why" id={`${reasonId}-why`}>
-                      {offLine}
-                    </p>
-                  )}
-                  <ul className="import-sources" aria-label="Sources">
-                    {scan.sources.map((s) => (
-                      <li key={s.source}>
-                        <strong>{s.label}</strong> <span className="muted">{s.agentCount} agent{s.agentCount === 1 ? '' : 's'}</span>
-                        <span className="mono muted import-files" title={showHidden(s.files.join('\n'))}>
-                          {s.files.length > 1 ? `${s.files.length} files` : showHidden(s.files[0] ?? '')}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                  {kitError && (
-                    <p className="field-error" role="alert" data-testid="import-kit-error">
-                      {kitError}
-                    </p>
-                  )}
-                  {kitDone && (
-                    <p className="import-kit-done" role="status" data-testid="import-kit-done">
-                      {kitDone}
-                    </p>
-                  )}
-                </div>
+                {fromCard}
                 <SegmentedControl label="Import mode" value={mode} options={MODES} onChange={setMode} />
                 {preview && <p className="hint import-mode-line">{modeLine(mode, count, project.roles.length)}</p>}
                 {error && (

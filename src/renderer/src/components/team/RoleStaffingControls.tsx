@@ -23,13 +23,28 @@ export function RoleConcurrency({ role, onChange }: { role: Role; onChange: (pat
         {concurrencyText(n)}
       </span>
       <span className="ri-stepper">
-        <button type="button" className="ri-step" aria-label="Fewer at once" disabled={n <= CONCURRENCY_MIN} data-testid="role-concurrency-less" onClick={() => onChange(withConcurrency(n - 1))}>
+        {/* No cap of its own: Fewer starts a cap at the most, More is not offered (there is nothing above "no limit"). */}
+        <button
+          type="button"
+          className="ri-step"
+          aria-label="Fewer at once"
+          disabled={n !== undefined && n <= CONCURRENCY_MIN}
+          data-testid="role-concurrency-less"
+          onClick={() => onChange(withConcurrency(n === undefined ? CONCURRENCY_MAX : n - 1))}
+        >
           <Icon icon={Minus} size="sm" />
         </button>
         <span className="ri-step-n" aria-hidden="true">
-          {n}
+          {n ?? '∞'}
         </span>
-        <button type="button" className="ri-step" aria-label="More at once" disabled={n >= CONCURRENCY_MAX} data-testid="role-concurrency-more" onClick={() => onChange(withConcurrency(n + 1))}>
+        <button
+          type="button"
+          className="ri-step"
+          aria-label={n !== undefined && n >= CONCURRENCY_MAX ? 'No limit of its own' : 'More at once'}
+          disabled={n === undefined}
+          data-testid="role-concurrency-more"
+          onClick={() => onChange(withConcurrency(n === undefined || n >= CONCURRENCY_MAX ? undefined : n + 1))}
+        >
           <Icon icon={Plus} size="sm" />
         </button>
       </span>
