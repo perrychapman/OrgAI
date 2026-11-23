@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { HOST_IPC, HOST_METHODS, IPC } from '@shared/types'
+import { HOST_IPC, HOST_METHODS, IPC, OVERHAUL_IPC } from '@shared/types'
 import type { CliCommandStatus, EngagementChangedEvent } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 
@@ -82,7 +82,7 @@ describe('registerIpc (thin adapter)', () => {
     const desktopOnly = withOptional
       ? DESKTOP_ONLY_CHANNELS
       : DESKTOP_ONLY_CHANNELS.filter((c) => !c.startsWith('kit:') && !c.startsWith('teamFiles:') && !c.startsWith('updates:') && !REPO_CHANNELS.includes(c))
-    const expected = [...reference.channels().filter((c) => !SOCKET_ONLY.has(c)), ...desktopOnly]
+    const expected = [...reference.channels().filter((c) => !SOCKET_ONLY.has(c)), ...desktopOnly, ...Object.values(OVERHAUL_IPC)]
     expect([...handlers.keys()].sort()).toEqual([...expected].sort())
     for (const ch of handlers.keys()) expect(SOCKET_ONLY.has(ch), ch).toBe(false)
     expect(handlers.has(IPC.usageRefresh)).toBe(true)
