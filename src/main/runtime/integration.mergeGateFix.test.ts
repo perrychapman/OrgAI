@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { AgentInstance, WorktreeInfo } from '@shared/types'
 import { WorktreeIntegrator } from './integration'
-import { gitGuarded, integrateWorktree, mergeAttributeRefusal, mergeCarriedConfigArgs, mergeMadeMove, mergeScratchDir, prepareRepo, sweepMergeScratch } from './worktrees'
+import { ensureMainBranch, gitGuarded, gitVersionRefusal, integrateWorktree, parseGitVersion, setGitVersionForTest, mergeAttributeRefusal, mergeCarriedConfigArgs, mergeMadeMove, mergeScratchDir, prepareRepo, sweepMergeScratch } from './worktrees'
 import { pinRoot, rootDrift, rootVerdict } from './rootPin'
 import { resetOrgAiMoves } from './orgaiMoves'
 import { fakeCtx, project } from './testHelpers'
@@ -463,6 +463,52 @@ describe('M4: filters (git-lfs and other clean/smudge programs)', () => {
 })
 
 describe('Lows', () => {
+  it('parses git versions, and an installed git below 2.32 refuses the automatic merge with both versions named; the branch is kept', async () => {
+    expect(parseGitVersion('git version 2.43.0.windows.1')).toEqual([2, 43, 0])
+    expect(parseGitVersion('git version 2.31')).toEqual([2, 31, 0])
+    expect(parseGitVersion('nonsense')).toBeNull()
+    expect(gitVersionRefusal('git version 2.31.1')).toBe('the installed git is 2.31.1 and the automatic merge needs 2.32 or newer.')
+    expect(gitVersionRefusal('git version 2.32.0')).toBeNull()
+    expect(gitVersionRefusal('git version 3.0.0')).toBeNull()
+    expect(gitVersionRefusal('')).toBeNull()
+    await prepareRepo(root)
+    const wt = addWorktree('old')
+    try {
+      setGitVersionForTest('git version 2.30.2')
+      const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'OLD')
+      expect(res.info.status).toBe('conflict')
+      expect(res.message).toMatch(/installed git is 2\.30\.2 and the automatic merge needs 2\.32 or newer/)
+      expect(existsSync(wt.path)).toBe(true)
+      expect(existsSync(join(root, 'src/old.js'))).toBe(false)
+    } finally {
+      setGitVersionForTest()
+    }
+  })
+
+  it('the mainBranch checkout with the snapshot runs neutral: a global attributes file (eol=crlf) does not change what it writes', async () => {
+    put(root, 'a.txt', 'one\ntwo\n')
+    git(root, 'add', '-A')
+    git(root, 'commit', '-q', '-m', 'a')
+    git(root, 'branch', 'feat')
+    git(root, 'checkout', '-q', 'feat')
+    put(root, 'a.txt', 'one\ntwo\nthree\n')
+    git(root, 'commit', '-q', '-am', 'a2')
+    git(root, 'checkout', '-q', 'main')
+    writeFileSync(join(home, 'attrs'), '*.txt eol=crlf\n')
+    writeFileSync(join(home, '.gitconfig'), `[core]\n\tattributesFile = ${norm(join(home, 'attrs'))}\n`)
+    useGlobalHome()
+    const carried = await mergeCarriedConfigArgs(root)
+    expect(await ensureMainBranch(root, 'feat', carried)).toBeNull()
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('one\ntwo\nthree\n')
+    // Contrast: without the snapshot the checkout is not neutral and the global attributes file applies.
+    git(root, 'checkout', '-q', '-f', 'main')
+    git(root, 'rm', '-q', '--cached', 'a.txt')
+    rmSync(join(root, 'a.txt'))
+    git(root, 'reset', '-q', '--hard')
+    expect(await ensureMainBranch(root, 'feat')).toBeNull()
+    expect(readFileSync(join(root, 'a.txt'), 'utf8')).toBe('one\r\ntwo\r\nthree\r\n')
+  })
+
   it('a renamed file is looked up under both names: an attribute on the old name refuses the merge', async () => {
     put(root, 'src/old.js', 'export const old = 1\n')
     git(root, 'add', '-A')
