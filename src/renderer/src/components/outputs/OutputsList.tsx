@@ -8,7 +8,7 @@ import { canOpenOutput } from '../../lib/outputs'
 import { cleanIpcError } from '../../lib/ipcError'
 import { ContextMenu, useContextMenu, type MenuEntry } from '../ui/ContextMenu'
 import { OUTPUT_OPEN_HINT } from './OutputActions'
-import { OUTPUTS_PAGE, currentProvenance, dayGroups, isNewVersion, rowMetaLine, titleTypeAhead } from '../../lib/outputsList'
+import { OUTPUTS_PAGE, currentProvenance, isNewVersion, outputGroups, rowMetaLine, titleTypeAhead, type OutputsSort } from '../../lib/outputsList'
 import { showHidden } from '../../lib/hiddenChars'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
@@ -102,8 +102,11 @@ export function OutputsList({
   onToggle,
   onSelect,
   onOpen,
-  onNotice
+  onNotice,
+  sort = 'newest'
 }: {
+  /** The view's sort order: picks the headings (days, kinds or one A to Z group). */
+  sort?: OutputsSort
   /** Answers of the row menu (Open in default app, Copy path). */
   onNotice?: (text: string) => void
   ref?: Ref<OutputsListHandle>
@@ -132,7 +135,7 @@ export function OutputsList({
   const selectedAt = selectedId ? rows.findIndex((r) => r.id === selectedId) : -1
   const shownCount = Math.min(rows.length, Math.max(limit, selectedAt >= 0 ? selectedAt + 1 : 0))
   const shown = useMemo(() => rows.slice(0, shownCount), [rows, shownCount])
-  const groups = useMemo(() => dayGroups(shown, now), [shown, now])
+  const groups = useMemo(() => outputGroups(shown, sort, now), [shown, sort, now])
 
   // ---- roving focus (one Tab stop) ----
   const current = useRef<string | null>(null)

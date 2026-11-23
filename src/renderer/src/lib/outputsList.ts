@@ -115,6 +115,49 @@ export function dayGroups(list: readonly RunOutput[], now: number): DayGroup[] {
   return out
 }
 
+/** The Files sort order (a view preference kept per project; never changes the data). */
+export type OutputsSort = 'newest' | 'oldest' | 'name' | 'kind'
+export const OUTPUTS_SORT_OPTIONS: readonly { value: OutputsSort; label: string }[] = [
+  { value: 'newest', label: 'Newest first' },
+  { value: 'oldest', label: 'Oldest first' },
+  { value: 'name', label: 'Name, A to Z' },
+  { value: 'kind', label: 'By kind' }
+]
+export const outputsSortKey = (projectId: string): string => `orgai.outputsSort.${projectId}`
+export function readSortMode(raw: string | null): OutputsSort {
+  return raw === 'oldest' || raw === 'name' || raw === 'kind' ? raw : 'newest'
+}
+
+const byTitle = (a: RunOutput, b: RunOutput): number => a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true })
+
+/**
+ * The rows in the chosen order. "Newest first" keeps the list's own order (main already sends newest first); the
+ * others sort a copy, stably, so equal items keep their newest-first order.
+ */
+export function sortOutputs(list: readonly RunOutput[], sort: OutputsSort): RunOutput[] {
+  if (sort === 'newest') return [...list]
+  const indexed = list.map((o, i) => ({ o, i }))
+  const tie = (a: { i: number }, b: { i: number }): number => a.i - b.i
+  if (sort === 'oldest') indexed.sort((a, b) => outputTime(a.o) - outputTime(b.o) || b.i - a.i)
+  else if (sort === 'name') indexed.sort((a, b) => byTitle(a.o, b.o) || tie(a, b))
+  else indexed.sort((a, b) => kindLabel(a.o.kind).localeCompare(kindLabel(b.o.kind)) || tie(a, b))
+  return indexed.map((x) => x.o)
+}
+
+/** Headings for the list: days for the date orders, kinds for "By kind", one "A to Z" group for the name order. */
+export function outputGroups(list: readonly RunOutput[], sort: OutputsSort, now: number): DayGroup[] {
+  if (sort === 'newest' || sort === 'oldest') return dayGroups(list, now)
+  if (sort === 'name') return list.length ? [{ key: 'name', label: 'A to Z', items: [...list] }] : []
+  const out: DayGroup[] = []
+  for (const o of list) {
+    const label = kindLabel(o.kind)
+    const last = out[out.length - 1]
+    if (last && last.label === label) last.items.push(o)
+    else out.push({ key: `kind-${o.kind}`, label, items: [o] })
+  }
+  return out
+}
+
 /** "Excel workbook · v2 · 3 versions · 24 KB" (the version parts only once there is history). */
 export function rowMetaLine(o: Pick<RunOutput, 'kind' | 'bytes' | 'version' | 'versionCount'>): string {
   const v = o.version ?? 1

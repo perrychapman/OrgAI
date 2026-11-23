@@ -1,6 +1,37 @@
 import { describe, expect, it } from 'vitest'
 import type { RunOutput } from '@shared/types'
-import { countLine, dayGroups, dayLabel, filterOutputs, idAfterRemoval, isOutputsFilterActive, kindCounts, matchesQuery, newOutputIds, producedText, resolveOutputFocus, runOptions, titleTypeAhead, stepId, positionText, EMPTY_OUTPUTS_FILTER } from './outputsList'
+import { countLine, dayGroups, dayLabel, filterOutputs, idAfterRemoval, isOutputsFilterActive, kindCounts, matchesQuery, newOutputIds, producedText, resolveOutputFocus, runOptions, titleTypeAhead, stepId, positionText, EMPTY_OUTPUTS_FILTER, sortOutputs, outputGroups, readSortMode } from './outputsList'
+
+describe('sortOutputs / outputGroups', () => {
+  const t = (d: number): number => new Date(2026, 10, d, 10).getTime()
+  const mk = (id: string, title: string, kind: RunOutput['kind'], d: number): RunOutput => ({ id, projectId: 'p', runId: 'r', kind, title, fileName: `${id}.x`, path: `/p/${id}`, relPath: id, bytes: 1, createdAt: t(d), source: 'produced' })
+  // Newest first, as main sends it.
+  const list = [mk('a', 'beta', 'xlsx', 7), mk('b', 'Alpha', 'docx', 6), mk('c', 'gamma', 'xlsx', 6)]
+  it('keeps the list order for newest first and never mutates the input', () => {
+    expect(sortOutputs(list, 'newest').map((o) => o.id)).toEqual(['a', 'b', 'c'])
+    sortOutputs(list, 'name')
+    expect(list.map((o) => o.id)).toEqual(['a', 'b', 'c'])
+  })
+  it('sorts oldest first, by name (case-insensitive) and by kind, stably', () => {
+    expect(sortOutputs(list, 'oldest').map((o) => o.id)).toEqual(['c', 'b', 'a'])
+    expect(sortOutputs(list, 'name').map((o) => o.id)).toEqual(['b', 'a', 'c'])
+    const byKind = sortOutputs(list, 'kind').map((o) => o.id)
+    expect(byKind.indexOf('a')).toBeLessThan(byKind.indexOf('c'))
+    expect(byKind).toHaveLength(3)
+  })
+  it('heads days for date orders, kinds for kind, one group for names', () => {
+    const now = t(7)
+    expect(outputGroups(list, 'newest', now).map((g) => g.label)).toEqual(['Today', 'Yesterday'])
+    expect(outputGroups(sortOutputs(list, 'kind'), 'kind', now)).toHaveLength(2)
+    expect(outputGroups(list, 'name', now).map((g) => g.items.length)).toEqual([3])
+    expect(outputGroups([], 'name', now)).toEqual([])
+  })
+  it('reads unknown stored values as newest', () => {
+    expect(readSortMode(null)).toBe('newest')
+    expect(readSortMode('kind')).toBe('kind')
+    expect(readSortMode('bogus')).toBe('newest')
+  })
+})
 
 describe('stepId / positionText', () => {
   const rows = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
