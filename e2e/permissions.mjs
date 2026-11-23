@@ -439,10 +439,11 @@ try {
       await setAdvanced('project-limits', false)
       await sleep(200)
       const lim = await tabStops()
-      // ui-overhaul Limits board: "See where it went", the two run-size selects and Advanced.
-      check(lim.length <= 4, `Limits has at most 4 tab stops at rest ${tag} ${theme}`, lim.join(' | '))
+      // ui-overhaul Limits board (ux-review H2): every limit a person sets is on the page with Advanced closed.
+      const limAtRest = await Promise.all(['limit-run-input', 'limit-day-input', 'limit-month-input'].map((id) => page.locator(`[data-testid=${id}]`).isVisible()))
+      check(limAtRest.every(Boolean), `Limits shows the per-run, day and month limits at rest ${tag} ${theme}`, `${limAtRest.join(',')} | ${lim.join(' | ')}`)
       check((await page.locator('[data-testid=plan-guard-line]').count()) === 1, `Limits shows the plan guard line on a subscription project ${tag} ${theme}`)
-      check((await page.locator('[role=tabpanel] input[type=number]:visible').count()) === 0, `no number input is visible at rest on a subscription project ${tag} ${theme}`)
+      check((await page.locator('[role=tabpanel] input[type=number]:visible').count()) === 3, `only the per-run, day and month number inputs are visible at rest on a subscription project ${tag} ${theme}`)
       // N2: the line says only what runs: no five-hour promise unless the share is set.
       const guardText = await page.locator('[data-testid=plan-guard-line]').innerText()
       check(!/five-hour/i.test(guardText) && /weekly window passes 80%/.test(guardText) && /pauses until it resets/.test(guardText), `the plan guard line promises no five-hour stop without a share ${tag} ${theme}`, guardText)
