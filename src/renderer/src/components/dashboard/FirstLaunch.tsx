@@ -1,7 +1,8 @@
 import type { ReactElement, ReactNode } from 'react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Check, MessageSquare, Plug } from 'lucide-react'
-import type { ConnectionId, PermissionMode } from '@shared/types'
+import type { ConnectionId, PermissionMode, ProjectKind } from '@shared/types'
+import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 import { openNewChat, useAppStore } from '../../store/useAppStore'
 import { connectionLabel } from '../../lib/connectionLabel'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
@@ -60,16 +61,44 @@ function openConnections(setView: (v: 'appSettings') => void): void {
 }
 
 /** One glass radio card (native radio inside a label, so arrows move within the group). */
-function Choice({ name, value, checked, onPick, title, text, badge, kind }: { name: string; value: string; checked: boolean; onPick: () => void; title: string; text: string; badge?: string; kind?: string }): ReactElement {
+function Choice({
+  name,
+  value,
+  checked,
+  onPick,
+  title,
+  text,
+  badge,
+  badgeKind,
+  meta,
+  kind
+}: {
+  name: string
+  value: string
+  checked: boolean
+  onPick: () => void
+  title: string
+  text: string
+  badge?: string
+  badgeKind?: string
+  /** Secondary line under the description (the exact mode name). */
+  meta?: string
+  kind?: string
+}): ReactElement {
   return (
     <label className="welcome-option glass" data-kind={kind} data-testid="welcome-option" data-value={value}>
       <input type="radio" name={name} value={value} checked={checked} onChange={onPick} aria-labelledby={`${name}-${value}-t`} aria-describedby={`${name}-${value}-d`} />
       <span id={`${name}-${value}-t`} className="welcome-option-title">
         {title}
-        {badge && <span className="welcome-option-badge">{badge}</span>}
+        {badge && (
+          <span className="welcome-option-badge" data-kind={badgeKind}>
+            {badge}
+          </span>
+        )}
       </span>
       <span id={`${name}-${value}-d`} className="welcome-option-text">
         {text}
+        {meta && <span className="welcome-option-mode"> Also called {meta}.</span>}
       </span>
     </label>
   )
@@ -99,6 +128,8 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
   const [chosenConnection, setChosenConnection] = useState<ConnectionId | null>(() => resumeAt?.connection ?? null)
   const [ask, setAsk] = useState<PermissionMode | null>(() => resumeAt?.ask ?? null)
   const [start, setStart] = useState<Start>('project')
+  /** The kind the inline New project form currently has (null until chosen), for the side card's wording. */
+  const [formKind, setFormKind] = useState<ProjectKind | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -114,7 +145,8 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
     window.orgai.settings
       .get()
       .then((s) => live && setAsk(askChoiceFor(s.defaultPermissionMode)))
-      .catch(() => undefined)
+      // Settings unreadable: show the app's own default, the same mode the Permissions page marks Recommended.
+      .catch(() => live && setAsk(askChoiceFor(DEFAULT_APP_SETTINGS.defaultPermissionMode)))
     return () => {
       live = false
     }
@@ -208,7 +240,7 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
       body = (
         <div className="welcome-options" role="radiogroup" aria-labelledby={`${uid}-h`}>
           {ASK_OPTIONS.map((o) => (
-            <Choice key={o.mode} name={`${uid}-ask`} value={o.mode} checked={ask === o.mode} onPick={() => setAsk(o.mode)} title={o.name} text={o.sub} />
+            <Choice key={o.mode} name={`${uid}-ask`} value={o.mode} checked={ask === o.mode} onPick={() => setAsk(o.mode)} title={o.name} text={o.sub} meta={o.engine} badge={o.recommended ? 'Recommended' : undefined} badgeKind="recommended" />
           ))}
         </div>
       )
@@ -307,7 +339,7 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
           </div>
         </fieldset>
         <div className="dash-first-panel" hidden={start !== 'project'}>
-          <NewProjectForm mockAvailable={mockAvailable} variant="inline" autoFocus={false} />
+          <NewProjectForm mockAvailable={mockAvailable} variant="inline" autoFocus={false} onKindChange={setFormKind} />
         </div>
         {start === 'chat' && (
           <div className="dash-first-panel">
@@ -331,14 +363,15 @@ export function FirstLaunch({ mockAvailable }: { mockAvailable: boolean }): Reac
           </Button>
         </section>
         <div className="welcome-aside-label">What you are setting up</div>
-        <SetupPreview work={start === 'chat' ? 'chat' : 'code'} />
+        {/* Before a kind is chosen the card stays neutral: it must not promise "the code" to a non-code project. */}
+        <SetupPreview work={start === 'chat' ? 'chat' : formKind} />
       </aside>
     </div>
   )
 }
 
 /** The side panel: what the choice sets up, in words. Roles are never invented: the Architect proposes them later. */
-function SetupPreview({ work }: { work: WorkKind }): ReactElement {
+function SetupPreview({ work }: { work: WorkKind | null }): ReactElement {
   if (work === 'chat') {
     return (
       <div className="welcome-card glass motion-rise">
@@ -364,13 +397,13 @@ function SetupPreview({ work }: { work: WorkKind }): ReactElement {
         </div>
       </div>
       <div className="welcome-edge" aria-hidden="true" />
-      <div className="welcome-card welcome-card-ghost" data-kind={work}>
+      <div className="welcome-card welcome-card-ghost" data-kind={work ?? undefined}>
         <div>
           <div className="welcome-card-title">The team</div>
           <div className="welcome-card-text">
-            {work === 'engagement'
-              ? 'Once you pick a working folder, the Architect proposes roles that research, analyse and write. Nothing is created until you approve.'
-              : 'Once you pick a folder, the Architect looks at the code and proposes roles that build, review and test. Nothing is created until you approve.'}
+            {work === 'code'
+              ? 'Once you pick a folder, the Architect looks at the code and proposes roles that build, review and test. Nothing is created until you approve.'
+              : 'Once you pick a folder, the Architect reads what is in it and proposes roles. Nothing is created until you approve.'}
           </div>
         </div>
       </div>

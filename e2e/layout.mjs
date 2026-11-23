@@ -45,6 +45,24 @@ try {
     await page.locator('[data-testid=welcome-next]').click()
     await page.locator('[data-testid=welcome-setup][data-stage="3"]').waitFor({ timeout: 5000 })
     check((await page.locator('[data-testid=welcome-option]').count()) === 3, 'W3 step 3 offers three ways to ask')
+    // The preselected way is the app's own default for a new project; only that one says Recommended; one name per mode.
+    const appDefault = await page.evaluate(async () => (await window.orgai.settings.get()).defaultPermissionMode)
+    await page.locator('[data-testid=welcome-option] input:checked').waitFor({ timeout: 5000 })
+    const checkedMode = await page.locator('[data-testid=welcome-option]:has(input:checked)').getAttribute('data-value')
+    check(checkedMode === appDefault, 'W3 step 3 preselects the app default permission mode', `${checkedMode} vs ${appDefault}`)
+    const recommended = await page.locator('[data-testid=welcome-option]:has(.welcome-option-badge[data-kind=recommended])').evaluateAll((els) => els.map((e) => e.getAttribute('data-value')))
+    check(recommended.length === 1 && recommended[0] === appDefault, 'W3 only the default is marked Recommended', recommended.join(','))
+    const askTitles = await page.locator('[data-testid=welcome-option] .welcome-option-title').allInnerTexts()
+    check(askTitles.some((t) => t.startsWith('Ask before risky actions')) && askTitles.some((t) => t.startsWith('Go ahead within the rules')) && !askTitles.some((t) => /Ask about everything|Unattended/.test(t)), 'W3 step 3 uses the one name set', askTitles.join(' | '))
+    // At the smallest supported window the step's buttons are fully inside the viewport (sticky footer).
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1024, 640))
+    await sleep(300)
+    for (const tid of ['welcome-back', 'welcome-next']) {
+      const box = await page.locator(`[data-testid=${tid}]`).boundingBox()
+      const vh = await page.evaluate(() => window.innerHeight)
+      check(!!box && box.y >= 0 && box.y + box.height <= vh + 0.5, `W3 ${tid} is fully visible at 1024x640`, JSON.stringify({ box, vh }))
+    }
+    await shot('welcome-step3-1024')
     await page.locator('[data-testid=welcome-back]').click()
     check((await page.locator('[data-testid=welcome-setup]').getAttribute('data-stage')) === '2', 'W3 Back returns to step 2')
     await page.locator('[data-testid=welcome-skip]').click()

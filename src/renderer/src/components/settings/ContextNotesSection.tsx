@@ -62,7 +62,7 @@ export function ContextNotesSection({ project }: { project: Project }): ReactEle
       id={PROJECT_SETTINGS_SECTIONS.contextNotes}
       title="Context notes"
       testId="context-notes-section"
-      description="Background the team can look up when it needs it: meeting notes, client preferences, terms. Agents read and write these notes; do not put passwords or keys here."
+      description="Background the team can look up when it needs it: meeting notes, preferences, terms. Agents read and write these notes; do not put passwords or keys here."
     >
       {error && (
         <Banner tone="danger" title="Context notes" onDismiss={() => setError(null)}>

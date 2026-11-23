@@ -13,7 +13,7 @@ import { SettingsCard } from './SettingsCard'
 import { SettingsSection } from './SettingsSection'
 
 /**
- * "Client or case" (engagements). Typing saves through the pane's debounced path; leaving the field saves at once and
+ * "Who or what it is for" (engagements; stored as project.client). Typing saves through the pane's debounced path; leaving the field saves at once and
  * shows the value main returns (trimmed, hidden characters dropped). Empty clears it.
  */
 function ClientField({ id, project, patch }: { id: string; project: Project; patch: (p: Partial<Project>) => void }): ReactElement {
@@ -30,7 +30,7 @@ function ClientField({ id, project, patch }: { id: string; project: Project; pat
     <>
       <Input
         id={id}
-        aria-label="Client or case"
+        aria-label="Who or what it is for"
         aria-describedby={error || note ? msgId : undefined}
         invalid={!!error}
         maxLength={PROJECT_CLIENT_MAX_CHARS}
@@ -101,7 +101,7 @@ export function GeneralSection({ project, patch }: { project: Project; patch: (p
         />
         {kind === 'engagement' && (
           <SettingRow
-            title="Client or case"
+            title="Who or what it is for"
             width="select"
             control={<ClientField id={`${uid}-client`} project={project} patch={patch} />}
           />

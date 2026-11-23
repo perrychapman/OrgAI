@@ -1,5 +1,6 @@
 import type { ConnectionId, ConnectionInfo, PermissionMode, ProjectKind } from '@shared/types'
 import { connectionLabel } from './connectionLabel'
+import { permissionWords, RECOMMENDED_PERMISSION_MODE } from './permissionWords'
 
 /** First launch (ui-overhaul Welcome board): the steps before the start choice. 'start' is the choice and form itself. */
 export type WelcomeStage = 1 | 2 | 3 | 'start'
@@ -65,14 +66,17 @@ export interface AskOption {
   mode: PermissionMode
   name: string
   sub: string
+  /** The exact mode name, shown as secondary text. */
+  engine: string
+  /** Marked "Recommended": only the mode the Permissions page marks too (the app's default for new projects). */
+  recommended: boolean
 }
 
-/** Step 3's choices: three real permission modes in plain words, most careful first. */
-export const ASK_OPTIONS: readonly AskOption[] = [
-  { mode: 'default', name: 'Ask about everything', sub: 'Every file change and command waits for you.' },
-  { mode: 'acceptEdits', name: 'Ask before risky actions', sub: 'File changes inside the project go ahead. Commands wait unless a rule allows them.' },
-  { mode: 'auto', name: 'Go ahead within the rules', sub: 'A safety check approves routine actions and asks when it is unsure. Fewest questions.' }
-]
+/** Step 3's choices: three real permission modes, most careful first. Names and lines come from lib/permissionWords. */
+export const ASK_OPTIONS: readonly AskOption[] = (['default', 'acceptEdits', 'auto'] as const).map((mode) => {
+  const w = permissionWords(mode)
+  return { mode, name: w.title, sub: w.description, engine: w.engine, recommended: mode === RECOMMENDED_PERMISSION_MODE }
+})
 
 /** The option to preselect for a saved mode; a mode outside the three keeps no preselection. */
 export function askChoiceFor(mode: PermissionMode | undefined): PermissionMode | null {
