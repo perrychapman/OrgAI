@@ -15,12 +15,23 @@ export function periodBounds(now: number): { dayFrom: number; dayUntil: number; 
   }
 }
 
-function period(runs: readonly RunSummary[], from: number, until: number): ProjectSpendPeriod {
+/**
+ * When the run stopped being active: its endedAt, `now` while it is still open, or (a finished / failed record that never
+ * got an endedAt) its start, so an old record does not count toward every later period.
+ */
+function runEnd(r: RunSummary, now: number): number {
+  if (typeof r.endedAt === 'number' && Number.isFinite(r.endedAt)) return Math.max(r.endedAt, r.startedAt)
+  return r.status === 'finished' || r.status === 'error' ? r.startedAt : Math.max(now, r.startedAt)
+}
+
+function period(runs: readonly RunSummary[], from: number, until: number, now: number): ProjectSpendPeriod {
   let spentUsd = 0
   let count = 0
   let unknownRuns = 0
   for (const r of runs) {
-    if (r.startedAt < from || r.startedAt >= until) continue
+    // A run counts in every period it overlaps, with its full known cost (the cost is not split by time, so a session that
+    // runs across midnight counts toward both days: conservative for a spending limit).
+    if (r.startedAt >= until || runEnd(r, now) < from) continue
     count++
     const c = knownRunCostUsd(r)
     if (c === null) unknownRuns++
@@ -31,12 +42,13 @@ function period(runs: readonly RunSummary[], from: number, until: number): Proje
 
 /**
  * UI overhaul (runInsights.projectSpend and the daily / monthly caps): a project's spend today and this month.
- * Pure. Runs of any kind count by start time; the caller passes the project's runs, live ones with their current cost.
+ * Pure. Runs of any kind count in each period they overlap (start to end, or to now while open), with their full known
+ * cost, so a session begun before midnight still counts toward today's cap; the caller passes the project's runs, live ones with their current cost.
  */
 export function projectSpend(project: Pick<Project, 'id' | 'maxDailyUsd' | 'maxMonthlyUsd'>, runs: readonly RunSummary[], now: number): ProjectSpend {
   const b = periodBounds(now)
-  const day = period(runs, b.dayFrom, b.dayUntil)
-  const month = period(runs, b.monthFrom, b.monthUntil)
+  const day = period(runs, b.dayFrom, b.dayUntil, now)
+  const month = period(runs, b.monthFrom, b.monthUntil, now)
   const elapsedDays = (now - b.monthFrom) / 86_400_000
   const nd = new Date(now)
   const daysInMonth = new Date(nd.getFullYear(), nd.getMonth() + 1, 0).getDate()

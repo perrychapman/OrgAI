@@ -663,6 +663,8 @@ interface ActiveRun {
   // ---------- UI overhaul: holds and spending limits ----------
   /** Spend warnings already sent this run, one per scope (never repeated). */
   warned: Set<WarnScope>
+  /** The run log already said that an unknown-cost part of this run escapes the project's daily / monthly cap. */
+  capUnknownWarned?: boolean
   /** A spending limit (the project's daily / monthly cap or the run's own) already ended or paused this run. */
   spendStopped?: boolean
   /** Cost of the other runs of this run's model-handoff chain (a conversation budget); read once, on first need. */
@@ -1952,6 +1954,11 @@ export class RunManager {
     // the same pricing as active.modelPriced, so the refusal still leaves no run.
     if (chosen?.modelSelection && projectBudgetUsd(project) !== undefined && !overrides?.allowUnpricedBudget && !this.modelIsPriced(chosen.modelSelection.model, choice.connection, connection)) {
       throw new Error('This model has no known price, so the project budget cannot be enforced.')
+    }
+    // A daily / monthly cap is only enforceable on a priced model: an unknown-cost run would never count toward it.
+    const unpricedUnderCap = this.capUnpricedModel(project, kind, choice, connection, bridging, !!quick || !!buildWorkspace)
+    if (unpricedUnderCap !== undefined) {
+      throw new Error(`This project has a daily or monthly spending limit, but ${logText(unpricedUnderCap)} has no known price, so the limit cannot be enforced. Set a model price in Settings or remove the limit.`)
     }
     const libraryEntries = (): McpLibraryEntry[] => this.options.mcp?.libraryEntries?.() ?? []
     if (hiddenContext === undefined && kind === 'mcp-assist') hiddenContext = assistContext(project, libraryEntries(), buildWorkspace ? { allowBuild: true } : {})
@@ -6002,6 +6009,39 @@ export class RunManager {
     return projectSpend(p, this.spendRuns(p.id), now)
   }
 
+  /**
+   * The first model of a run that has no known price while the project has a daily or monthly cap (M2), or undefined. Uses
+   * the same pricing as the exec-budget check (modelIsPriced) and its mock exemption: a mock run, a mock bridged role, an
+   * 'inherit' model and a model that only the CLI resolves (a bare tier name) are not refused. A work run checks every role
+   * (a bridged role by its own connection); a setup-like run checks its built-in role's model. Chats, build sessions and
+   * virtual projects have no caps.
+   */
+  private capUnpricedModel(
+    project: Project,
+    kind: RunKind,
+    choice: AdapterChoice,
+    connection: RunConnection | undefined,
+    bridging: { bridged: BridgedRoleChoice[]; connections: Map<string, RunConnection> },
+    quickLike: boolean
+  ): string | undefined {
+    if (!this.capsOn(this.liveCapProject(project.id, quickLike, project))) return undefined
+    if (choice.adapter === 'mock') return undefined
+    if (kind === 'work') {
+      for (const role of project.roles) {
+        if (typeof role.model !== 'string' || !role.model) continue
+        const bridged = bridging.bridged.find((b) => b.roleId === role.id)
+        if (bridged) {
+          if (bridged.adapter === 'mock') continue
+          if (!this.modelIsPriced(role.model, bridged.connection, bridging.connections.get(bridgeKey(bridged.connection, bridged.adapter)))) return role.model
+        } else if (!this.modelIsPriced(role.model, choice.connection, connection)) return role.model
+      }
+      return undefined
+    }
+    const builtin = this.builtinRoleModel(kind, project, choice)?.model
+    if (typeof builtin === 'string' && builtin && !this.modelIsPriced(builtin, choice.connection, connection)) return builtin
+    return undefined
+  }
+
   /** Refuse (before any run exists) when the project's daily or monthly cap is already reached. */
   private assertSpendAllowed(project: Project, quickLike: boolean): void {
     const refusal = startRefusal(this.spendNow(this.liveCapProject(project.id, quickLike, project)))
@@ -6206,6 +6246,12 @@ export class RunManager {
     const project = this.liveCapProject(s.projectId, !!s.quick || !!s.buildWorkspace, a.liveProject?.())
     const ownCap = !exec && s.conversationBudgetUsd === undefined ? s.runBudgetUsd : undefined
     const spend = this.spendNow(project)
+    // M2: a cap counts known costs only. When this run's cost turns unknown (a model with no price) or partly unknown while a
+    // cap is set, say so once in the run log: the cap cannot see the unpriced part.
+    if (spend && !a.capUnknownWarned && (s.usage?.costSource === 'unknown' || s.usage?.costPartial)) {
+      a.capUnknownWarned = true
+      a.emit({ type: 'log', runId: s.id, level: 'warn', message: 'This project has a daily or monthly spending limit, but part of this run has no known price, so that part does not count toward the limit. Set a model price in Settings.' })
+    }
     if (!spend && ownCap === undefined && percent === undefined) return
     const cost = this.runCostUsd(s)
     const reached = spend ? capsReached(spend)[0] : undefined

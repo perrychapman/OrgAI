@@ -12,7 +12,13 @@ import { HOSTILE_CONFIG_OVERRIDES, hasPlainGitDir, readOnlyGitEnv } from '../run
  * The environment is the read-only one of worktrees.ts (readOnlyGitEnv: GIT_DIR pinned to `<root>/.git`, no transport,
  * no lazy fetch, no prompts, no optional locks) and every command carries the hostile-config overrides of that module
  * plus `core.untrackedCache=false` and `--no-optional-locks`, so an untrusted repository's config can neither run a
- * program (core.fsmonitor, hooks, pager, ssh) nor write a lock or cache. Nothing here fetches, merges or writes.
+ * program through core.fsmonitor, hooks, pager or ssh nor write a lock or cache. One program path is NOT closed by those
+ * overrides: `git status` runs a `filter.<name>.clean` / `.process` driver (named by the repository's config, selected by
+ * its .gitattributes) to hash a changed file, and no `-c` switch turns that off. So before `status` the local config is
+ * asked for `filter.*` keys, and when the repository defines any (or the question fails) status is not run and
+ * `dirtyFiles` is reported as 0: dirty counting is skipped for repositories with their own filter drivers. The other
+ * commands here (rev-parse, symbolic-ref, for-each-ref, log with --no-textconv --no-ext-diff, rev-list) run no filter.
+ * Nothing here fetches, merges or writes.
  * `root` must hold a real `.git` directory (hasPlainGitDir): a `.git` file, a symlink or a linked worktree is "not a
  * repository" here, the same rule as projects:commitActivity.
  *
@@ -34,6 +40,8 @@ interface GitResult {
   out: string
   /** The output hit the cap (out holds what was read before git was stopped). */
   truncated: boolean
+  /** The process exit code when git exited non-zero (`git config --get-regexp` exits 1 when nothing matches). */
+  exitCode?: number
 }
 
 function run(bin: string, root: string, args: string[]): Promise<GitResult> {
@@ -46,7 +54,8 @@ function run(bin: string, root: string, args: string[]): Promise<GitResult> {
         { cwd: root, env, windowsHide: true, timeout: GIT_INFO_TIMEOUT_MS, maxBuffer: GIT_INFO_MAX_OUTPUT, encoding: 'utf8' },
         (error, stdout) => {
           const truncated = !!error && (error as NodeJS.ErrnoException).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
-          resolve({ ok: !error, out: typeof stdout === 'string' ? stdout : String(stdout ?? ''), truncated })
+          const code = (error as NodeJS.ErrnoException | null)?.code
+          resolve({ ok: !error, out: typeof stdout === 'string' ? stdout : String(stdout ?? ''), truncated, ...(typeof code === 'number' ? { exitCode: code } : {}) })
         }
       )
       trackChildProcess(child, 'git')
@@ -96,6 +105,17 @@ async function detectDefault(bin: string, root: string, local: LocalBranch[], cu
   }
   for (const c of ['main', 'master']) if (names.has(c)) return c
   return current
+}
+
+/**
+ * True unless the repository's own config (includes followed) is known to define no `filter.*` driver. `git status` runs a
+ * `filter.<name>.clean` / `.process` program, named by the repository's config and selected by its .gitattributes, to hash
+ * a file whose stat data changed, and no `-c` override switches that off. A failure to ask counts as "has one" (fail closed).
+ */
+async function hasLocalFilterDriver(bin: string, root: string): Promise<boolean> {
+  const r = await run(bin, root, ['config', '--local', '--includes', '--name-only', '--get-regexp', '^filter\\.'])
+  if (r.ok) return r.out.trim().length > 0
+  return r.exitCode !== 1
 }
 
 /** Count of `status --porcelain=v1 -z` entries: a rename or copy entry carries a second path token that is not an entry. */
@@ -207,8 +227,10 @@ export async function gitSummary(path: string, mainBranch?: string): Promise<Git
     const [local, branch] = await Promise.all([listBranches(bin, path), currentBranch(bin, path)])
     const defaultBranch = await detectDefault(bin, path, local, branch, mainBranch)
     const exists = defaultBranch !== null && local.some((b) => b.name === defaultBranch)
+    // Dirty counting is skipped (0) for a repository with its own filter drivers: status could run one of its programs.
+    const skipStatus = await hasLocalFilterDriver(bin, path)
     const [status, commits, unmergedBranches, upstream] = await Promise.all([
-      run(bin, path, ['status', '--porcelain=v1', '-z', '--untracked-files=normal']),
+      skipStatus ? Promise.resolve({ ok: false, out: '', truncated: false } as GitResult) : run(bin, path, ['status', '--porcelain=v1', '-z', '--untracked-files=normal']),
       exists ? recentCommits(bin, path, defaultBranch) : Promise.resolve([] as GitCommitInfo[]),
       exists ? unmerged(bin, path, defaultBranch, now) : Promise.resolve({ count: 0 } as GitSummary['unmergedBranches']),
       exists ? aheadBehind(bin, path, defaultBranch, local.find((b) => b.name === defaultBranch)?.upstream) : Promise.resolve(undefined)

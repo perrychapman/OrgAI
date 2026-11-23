@@ -203,6 +203,47 @@ describe('gitSummary', () => {
     expect(existsSync(marker)).toBe(false)
   })
 
+  it('does not run a filter driver from the repository config, and skips dirty counting for such a repository (M4)', async () => {
+    commit(root, 'a.txt', 'one\n', 'base')
+    const marker = join(root, '..', `filter-marker-${Date.now()}.txt`).replace(/\\/g, '/')
+    created.push(marker)
+    const script = join(root, '..', `filter-clean-${Date.now()}.sh`)
+    created.push(script)
+    writeFileSync(script, `#!/bin/sh\necho ran > "${marker}"\ncat\n`, { mode: 0o755 })
+    git(root, ['config', 'filter.evil.clean', `sh "${script.replace(/\\/g, '/')}"`])
+    writeFileSync(join(root, '.gitattributes'), 'a.txt filter=evil\n', 'utf8')
+    // A rewrite with the same size and an older mtime still looks stat-dirty to git, which then hashes it through the filter.
+    writeFileSync(join(root, 'a.txt'), 'two\n', 'utf8')
+    // Control: plain git status runs the clean filter here (so the absent marker below means something).
+    git(root, ['status', '--porcelain'])
+    expect(existsSync(marker)).toBe(true)
+    rmSync(marker, { force: true })
+    const s = await gitSummary(root)
+    expect(s).not.toBeNull()
+    expect(existsSync(marker)).toBe(false)
+    expect(s!.dirtyFiles).toBe(0)
+    // The rest of the summary still works.
+    expect(s!.defaultBranch).toBe('main')
+    expect(s!.recentCommits).toHaveLength(1)
+  })
+
+  it('also skips status when the filter comes from an included config file (M4)', async () => {
+    commit(root, 'a.txt', 'one\n', 'base')
+    const inc = join(root, '..', `filter-include-${Date.now()}.cfg`)
+    created.push(inc)
+    writeFileSync(inc, '[filter "evil"]\n\tclean = false\n', 'utf8')
+    git(root, ['config', 'include.path', inc.replace(/\\/g, '/')])
+    writeFileSync(join(root, 'dirty.txt'), 'x\n', 'utf8')
+    expect((await gitSummary(root))!.dirtyFiles).toBe(0)
+  })
+
+  it('still counts dirty files when the repository has no filter.* keys', async () => {
+    commit(root, 'a.txt', 'one\n', 'base')
+    git(root, ['config', 'core.whitespace', 'trailing-space'])
+    writeFileSync(join(root, 'dirty.txt'), 'x\n', 'utf8')
+    expect((await gitSummary(root))!.dirtyFiles).toBe(1)
+  })
+
   it('does not write an index lock or refresh the index (optional locks off)', async () => {
     commit(root, 'a.txt', 'one\n', 'base')
     writeFileSync(join(root, 'a.txt'), 'changed\n', 'utf8')
