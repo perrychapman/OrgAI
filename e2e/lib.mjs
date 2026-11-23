@@ -273,8 +273,10 @@ export async function screenshot(page, name) {
 }
 
 export async function gotoProjects(page) {
+  // The Home row (data-testid nav-home, also in the rail) first; older trees fall back to the Dashboard / Projects row.
   await page
-    .locator('.sidebar .nav-item', { hasText: /^\s*(Dashboard|Projects)\s*$/ })
+    .locator('[data-testid=nav-home]')
+    .or(page.locator('.sidebar .nav-item', { hasText: /^\s*(Home|Dashboard|Projects)\s*$/ }))
     .or(page.locator('.sidebar [aria-label="Dashboard"], .sidebar [aria-label="All projects"]'))
     .first()
     .click()
