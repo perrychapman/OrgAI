@@ -10,7 +10,7 @@ vi.mock('electron', () => {
 vi.mock('../log', () => ({ log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }, logPath: () => '/logs/main.log', logsDir: () => '/logs' }))
 
 const { HostDispatcher } = await import('./dispatcher')
-const { desktopOnlyProjectChanges, desktopOnlyProjectMessage, desktopOnlySettingChanges } = await import('./projectSaveGuard')
+const { desktopOnlyProjectChanges, desktopOnlyProjectMessage, desktopOnlySettingChanges, guardedFieldsOf } = await import('./projectSaveGuard')
 const { normalizeSettings } = await import('../store/settings')
 const { project: makeProject } = await import('../runtime/testHelpers')
 type HostServices = import('./types').HostServices
@@ -22,6 +22,8 @@ const rpc = (scopes: HostScope[]): RpcInvokeContext => ({ surface: 'socket', gra
 const CONFIGURE = rpc(['read', 'operate', 'configure'])
 
 const withLimits = (extra: Record<string, unknown> = {}): Project => ({ ...makeProject({ id: 'proj_a' }), ...extra }) as Project
+/** A project with no explicit subagent limits (the test project helper sets some), i.e. one that carries no guarded limit. */
+const plain = (extra: Record<string, unknown> = {}): Project => withLimits({ maxSubagentDepth: undefined, maxConcurrentSubagents: undefined, ...extra })
 
 describe('desktopOnlyProjectChanges (pure)', () => {
   const stored = withLimits({ maxDailyUsd: 10, maxMonthlyUsd: 100, onSpendLimit: 'stop', requireTestsPass: true, testCommand: 'npm test', schedulesNearPlanLimit: true })
@@ -400,5 +402,138 @@ describe('projects:save from a non-desktop surface', () => {
     const { d, saveFromRenderer } = setup(stored)
     await d.invoke(IPC.projectsSave, [{ ...stored, maxDailyUsd: 500, requireTestsPass: true, testCommand: 'npm test', onSpendLimit: 'stop' }], DESKTOP)
     expect(saveFromRenderer).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('guardedFieldsOf (what removing and re-creating a project would shed)', () => {
+  const role0 = makeProject().roles[0]
+
+  it('is empty for a project that carries no guarded limit', () => {
+    expect(guardedFieldsOf(plain())).toEqual([])
+  })
+
+  it.each([
+    ['maxBudgetUsd', { maxBudgetUsd: 5 }],
+    ['maxDailyUsd', { maxDailyUsd: 5 }],
+    ['maxMonthlyUsd', { maxMonthlyUsd: 50 }],
+    ['maxAgentsPerRun', { maxAgentsPerRun: 4 }],
+    ['requireTestsPass', { requireTestsPass: true }],
+    ['testCommand', { testCommand: 'npm test' }],
+    ['onSpendLimit', { onSpendLimit: 'stop' }],
+    ['mainBranch', { mainBranch: 'main' }]
+  ])('names %s', (name, extra) => {
+    expect(guardedFieldsOf(withLimits(extra))).toContain(name)
+  })
+
+  it('names a role\'s cap and a role\'s knowledge restriction, and an explicit subagent limit below the automatic one', () => {
+    expect(guardedFieldsOf(plain({ roles: [{ ...role0, maxConcurrent: 2 }] }))).toEqual(['Role.maxConcurrent'])
+    expect(guardedFieldsOf(plain({ roles: [{ ...role0, knowledgeWrite: false }] }))).toEqual(['Role.knowledgeWrite'])
+  })
+})
+
+describe('projects:remove from a non-desktop surface (third pass S1b)', () => {
+  function setup(stored: Project) {
+    const settings = { get: () => DEFAULT_APP_SETTINGS, dataDir: '/data-not-used', set: vi.fn() }
+    const remove = vi.fn()
+    const removeProject = vi.fn(async () => 0)
+    const services: HostServices = {
+      projects: { get: (id: string) => (id === stored.id ? stored : null), list: () => [stored], remove } as never,
+      runs: { list: () => [], removeProject } as never,
+      setup: {} as never,
+      maintenance: {} as never,
+      settings: settings as never,
+      connections: { effectiveSettings: () => settings.get(), effectiveDefault: () => 'anthropic' } as never,
+      mcp: { removeProjectSecrets: vi.fn() } as never,
+      adapterIds: ['mock'],
+      harnessProject: () => makeProject({ id: 'harness', roles: [] }),
+      importer: {} as never,
+      skills: { removeProjectFiles: vi.fn() } as never,
+      skillEvaluation: {} as never,
+      capabilities: { forgetProject: vi.fn() } as never,
+      quick: {} as never,
+      templates: { list: () => [] } as never
+    }
+    return { d: new HostDispatcher(services), remove, removeProject }
+  }
+  const inproc: InvokeContext = { surface: 'inproc', grantedScopes: ['read', 'operate', 'configure'] } as InvokeContext
+
+  it.each([
+    ['a project budget', { maxBudgetUsd: 5 }],
+    ['a daily cap', { maxDailyUsd: 5 }],
+    ['an agent cap', { maxAgentsPerRun: 3 }],
+    ['the test gate', { requireTestsPass: true, testCommand: 'npm test' }]
+  ])('refuses removing a project with %s from a socket client and the in-process surface, and removes nothing', async (_what, extra) => {
+    const { d, remove, removeProject } = setup(withLimits(extra))
+    await expect(d.invokeRpc(IPC.projectsRemove, ['proj_a'], CONFIGURE)).rejects.toMatchObject({ code: 'scope_denied', message: expect.stringContaining('OrgAI window only') as unknown as string })
+    await expect(async () => d.invoke(IPC.projectsRemove, ['proj_a'], inproc)).rejects.toMatchObject({ code: 'scope_denied' })
+    expect(removeProject).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('refuses it for a role cap too', async () => {
+    const role0 = makeProject().roles[0]
+    const { d, remove } = setup(plain({ roles: [{ ...role0, maxConcurrent: 1 }] }))
+    await expect(d.invokeRpc(IPC.projectsRemove, ['proj_a'], CONFIGURE)).rejects.toMatchObject({ code: 'scope_denied', message: expect.stringContaining('Role.maxConcurrent') as unknown as string })
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('the desktop window may remove it', async () => {
+    const { d, remove } = setup(withLimits({ maxBudgetUsd: 5 }))
+    await d.invoke(IPC.projectsRemove, ['proj_a'], DESKTOP)
+    expect(remove).toHaveBeenCalledWith('proj_a')
+  })
+
+  it('a project with no guarded field is removed from every surface as before', async () => {
+    const { d, remove } = setup(plain())
+    await d.invokeRpc(IPC.projectsRemove, ['proj_a'], CONFIGURE)
+    expect(remove).toHaveBeenCalledWith('proj_a')
+  })
+})
+
+describe('templates:apply and projects:applyImport from a non-desktop surface (third pass S1c)', () => {
+  function setup() {
+    const settings = { get: () => DEFAULT_APP_SETTINGS, dataDir: '/data-not-used', set: vi.fn() }
+    const templatesApply = vi.fn((_input: unknown, _check?: (a: Project, b: Project) => void) => ({ project: withLimits(), previousRoles: [] }))
+    const importerApply = vi.fn((_input: unknown, _access: unknown, _check?: (a: Project, b: Project) => void) => ({ project: withLimits(), previousRoles: [] }))
+    const services: HostServices = {
+      projects: { get: () => null, list: () => [] } as never,
+      runs: { list: () => [] } as never,
+      setup: {} as never,
+      maintenance: {} as never,
+      settings: settings as never,
+      connections: { effectiveSettings: () => settings.get(), effectiveDefault: () => 'anthropic' } as never,
+      mcp: {} as never,
+      adapterIds: ['mock'],
+      harnessProject: () => makeProject({ id: 'harness', roles: [] }),
+      importer: { apply: importerApply } as never,
+      skills: {} as never,
+      skillEvaluation: {} as never,
+      capabilities: {} as never,
+      quick: {} as never,
+      templates: { list: () => [], apply: templatesApply } as never
+    }
+    return { d: new HostDispatcher(services), templatesApply, importerApply }
+  }
+  const role0 = makeProject().roles[0]
+  const capped = withLimits({ roles: [{ ...role0, maxConcurrent: 2 }] })
+  const shed = withLimits({ roles: [{ ...role0 }] })
+
+  it('a socket client gets the widening check, which refuses a chart that sheds a role cap and passes one that keeps it', async () => {
+    const { d, templatesApply, importerApply } = setup()
+    await d.invokeRpc(IPC.templatesApply, [{ projectId: 'proj_a', templateId: 'tpl_x', mode: 'replace' }], CONFIGURE)
+    await d.invokeRpc(IPC.projectsApplyImport, [{ projectId: 'proj_a', mode: 'replace', digest: 'd' }], CONFIGURE)
+    for (const check of [templatesApply.mock.calls[0]![1], importerApply.mock.calls[0]![2]]) {
+      expect(check).toBeTypeOf('function')
+      expect(() => check!(capped, shed)).toThrow(/OrgAI window only: Role\.maxConcurrent/)
+      expect(() => check!(capped, structuredClone(capped))).not.toThrow()
+    }
+  })
+
+  it('the desktop window gets no check', async () => {
+    const { d, templatesApply, importerApply } = setup()
+    await d.invoke(IPC.templatesApply, [{ projectId: 'proj_a', templateId: 'tpl_x', mode: 'replace' }], DESKTOP)
+    await d.invoke(IPC.projectsApplyImport, [{ projectId: 'proj_a', mode: 'replace', digest: 'd' }], DESKTOP)
+    expect(templatesApply.mock.calls[0]![1]).toBeUndefined()
+    expect(importerApply.mock.calls[0]![2]).toBeUndefined()
   })
 })

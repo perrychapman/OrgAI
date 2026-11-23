@@ -9,6 +9,7 @@ import { isPermissionMode, PROJECT_CLIENT_MAX_CHARS } from '@shared/types'
 import { defaultRoles, engagementRoles, effectiveSubagentLimits, projectDocumentPath, projectKindOf, projectRulesLocation, MAX_AUTO_CONTINUES_LIMIT, MAX_CONCURRENT_SUBAGENTS_LIMIT, MAX_SUBAGENT_DEPTH_LIMIT } from '@shared/defaults'
 import { addRules, allowRuleRefusal } from '../runtime/permissionRules'
 import { hiddenCharIn } from '../capabilities/sanitize'
+import { desktopOnlyProjectChanges, desktopOnlyProjectMessage } from '../host/projectSaveGuard'
 import type { ProjectStore } from '../store/projects'
 import { profileRepo, renderProfile } from './profile'
 import { mergeOrgChart } from './orgMerge'
@@ -317,7 +318,13 @@ export class SetupService {
    * opts.secrets (Wave 7, round 6 item 10): an MCP proposal's typed values, handed to the MCP hook, which stores them
    * before it changes any record. Other kinds ignore it.
    */
-  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean; secrets?: Record<string, string>; targeted?: true } = {}): Project {
+  /**
+   * opts.nonDesktop: the approval came from a surface other than the OrgAI window (a socket client, the CLI, the headless
+   * policy). A settings proposal then may set a spending or agent limit where there was none or lower one, never raise or
+   * remove one (the same rule a project save from that surface follows, projectSaveGuard.ts): refused with the same sentence,
+   * nothing saved.
+   */
+  applyProposal(projectId: string, proposal: Proposal, opts: { projectOnly?: boolean; secrets?: Record<string, string>; targeted?: true; nonDesktop?: true } = {}): Project {
     const project = this.projects.get(projectId)
     if (!project) throw new Error('Project not found')
     // A targeted proposal (Chat's propose_project_settings) changes a stored project from outside any setup session:
@@ -385,6 +392,10 @@ export class SetupService {
         if (typeof p.autoContinue === 'boolean') next.autoContinue = p.autoContinue
         if (typeof p.maxAutoContinues === 'number' && Number.isFinite(p.maxAutoContinues)) {
           next.maxAutoContinues = clamp(Math.floor(p.maxAutoContinues), 0, MAX_AUTO_CONTINUES_LIMIT)
+        }
+        if (opts.nonDesktop) {
+          const widened = desktopOnlyProjectChanges(project, next)
+          if (widened.length) throw new Error(desktopOnlyProjectMessage(widened))
         }
         // The safe-command allowlist lives with the other saved rules: .claude/settings.local.json for code projects,
         // OrgAI's data folder for engagements.

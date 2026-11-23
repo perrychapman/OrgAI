@@ -20,6 +20,22 @@ function chart() {
   })
 }
 
+describe('remapProject keeps a role\'s limits (third pass S1c: projects:remapModels needs no surface guard)', () => {
+  it('only the model changes: a role\'s cap and knowledge restriction stay, so a remap from a terminal cannot shed them', () => {
+    const p = project({
+      provider: { id: 'codex', label: 'Codex', auth: { kind: 'subscription' }, connection: 'openai' },
+      roles: [
+        role({ id: 'a', slug: 'a', model: 'gpt-5', tier: 'deep' }),
+        role({ id: 'd', slug: 'd', model: 'sonnet', tier: 'everyday', reportsTo: 'a', maxConcurrent: 2, knowledgeWrite: false })
+      ]
+    })
+    const { project: out } = remapProject(p, { connection: 'openai', tierModels, catalog: openai, reason: 'switched' })
+    const d = out.roles.find((r) => r.id === 'd')!
+    expect(d.model).toBe('gpt-5-mini')
+    expect(d).toMatchObject({ maxConcurrent: 2, knowledgeWrite: false })
+  })
+})
+
 describe('remapProject', () => {
   it('maps tiered roles, skips inherit and tierless roles and keeps explicit catalog picks', () => {
     const { project: out, result } = remapProject(chart(), {

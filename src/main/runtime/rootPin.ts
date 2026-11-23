@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { gitExecutable } from '../host/systemBinaries'
 import { hasRepoFilterDriver } from '../projects/gitInfo'
+import { movedOnlyByOrgAi, orgAiGeneration } from './orgaiMoves'
 import { commonGitDir, gitPath } from './repoLock'
 import { gitGuarded } from './worktrees'
 
@@ -13,24 +14,39 @@ import { gitGuarded } from './worktrees'
  * its working directory is the finished copy. The branch tip is pinned elsewhere (worktrees.ts branchTip); this pins the
  * target:
  *
- * PINNED (a change between the two readings refuses the merge, the copy is kept):
+ * PINNED, hard (a change between the two readings always refuses the merge, the copy is kept):
+ * - the repository's `config` and, when present, `config.worktree` and `info/attributes` (content digest): where a hook path, a
+ *   merge or diff driver, a filter or an alias would be named;
+ * - the `hooks` directory (file names and content digests; a symlink by its target);
+ * - the `.gitattributes` files that are not tracked, in the root and in the folders of the files the merge changes (an
+ *   untracked one can select a merge driver, or the built-in `union`, for the merge);
+ * PINNED, soft (a change is read against what OrgAI itself did meanwhile, see "Moves of OrgAI's own"):
  * - HEAD's commit and the branch (or detached state) it is on;
  * - the index, entry by entry (`ls-files -s`: mode, object, stage, path), so a staged change or an unmerged entry shows;
  * - tracked working-tree changes (`diff-files --raw`: which tracked files differ from the index, and how), unless the
  *   repository defines a filter driver of its own (`hasRepoFilterDriver`): `git diff-files` would run its clean program, so
  *   the working tree is then reported "not pinned" and left alone;
- * - the repository's `config` and, when present, `config.worktree` and `info/attributes` (content digest): where a hook path, a
- *   merge or diff driver, a filter or an alias would be named;
- * - the `hooks` directory (file names and content digests).
+ * - `changes`: the staged and unstaged differences against HEAD as one digest, which a merge of other files does not move.
  *
- * NOT PINNED (said plainly, never claimed): untracked files; a tracked file that was already modified before the tests and was
- * modified again (the raw diff shows the same row); other refs and other worktrees; the object database; the user's own system and
- * global config and the global hooks directory they name; a process the test command leaves running (it is outside the
- * command's lifetime, and the readings are taken when it has ended); the working tree of a repository with its own filter
- * drivers. The merge itself and what follows run through the guarded git runner with hooks off (worktrees.ts mergeInto).
+ * Moves of OrgAI's own (orgaiMoves.ts). A merge of another report into the same checkout while the tests ran (several reports
+ * finishing together is normal) moves HEAD, the index and the files it touches. Every OrgAI move is recorded under the
+ * repository lock; when HEAD moved only through recorded moves and `changes` is unchanged, the pin is read again and the merge
+ * goes on (the report's reviewed commit is merged into the new HEAD, conflicts are handled as always). Anything else that moved
+ * a soft part reads as a change "by something other than OrgAI": the test command, or the user committing or editing in the
+ * project folder, which git cannot tell apart. The caller then asks the user once when a review card is part of the merge, and
+ * refuses otherwise (nobody is there to ask).
+ *
+ * NOT PINNED (said plainly, never claimed): untracked files other than the `.gitattributes` above; a tracked file that was
+ * already modified before the tests and was modified again (the raw diff shows the same row); other refs and other worktrees;
+ * the object database; the user's own system and global config and the global hooks directory they name (the merge ignores
+ * them, worktrees.ts mergeInto); a process the test command leaves running (it is outside the command's lifetime, and the
+ * readings are taken when it has ended); the working tree of a repository with its own filter drivers; a file a config
+ * `include.path` names. The merge itself and what follows run through the guarded git runner with hooks off.
  *
  * Every git call here goes through gitGuarded (hostile-config overrides, a pinned read-only environment on a plain `.git`
- * checkout). A part git cannot read is given a value that never equals another reading, so it counts as moved.
+ * checkout). A part git cannot read is given a value that never equals another reading, so it counts as moved. Files are
+ * opened without following a link and read only when regular and small (a FIFO, a device, a link or a huge file counts as
+ * moved, it is never read).
  */
 
 export interface RootPin {
@@ -38,9 +54,18 @@ export interface RootPin {
   branch: string
   index: string
   worktree: string
+  /** The staged and unstaged differences against HEAD (see above). Not a label: it only decides whether OrgAI's moves explain the rest. */
+  changes: string
   config: string
+  attributes: string
   hooks: string
+  /** The generation of OrgAI's own moves of this checkout when the pin was read (orgaiMoves.ts). */
+  gen: number
+  /** The folders (relative, '' = the root) whose `.gitattributes` the pin looked at. */
+  attrDirs: string[]
 }
+
+type Labelled = Exclude<keyof RootPin, 'gen' | 'attrDirs' | 'changes'>
 
 const BIG = { maxBuffer: 64 * 1024 * 1024 }
 const sha = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex')
@@ -48,28 +73,61 @@ const sha = (data: string | Buffer): string => createHash('sha256').update(data)
 const unreadable = (): string => `unreadable:${randomUUID()}`
 
 const HOOK_FILES_MAX = 500
-const HOOK_FILE_BYTES_MAX = 4 * 1024 * 1024
+/** A config, attributes or hook file larger than this is not read (it counts as moved). */
+const FILE_BYTES_MAX = 4 * 1024 * 1024
+/** Folders whose `.gitattributes` are looked at (the root first). */
+const ATTR_DIRS_MAX = 300
 
-function fileDigest(path: string | null): string {
+/**
+ * The digest of one file: 'none' when it does not exist, a content digest for a regular small file, and an unreadable value
+ * for anything else (a link, a FIFO, a device, a directory, a file over FILE_BYTES_MAX, an error). The file is opened
+ * without following a link and without blocking, and checked after opening, so a swap between the check and the read cannot
+ * make this wait on a pipe.
+ */
+export function fileDigest(path: string | null): string {
   if (!path) return 'none'
+  let fd: number | undefined
   try {
-    if (!existsSync(path)) return 'none'
-    return sha(readFileSync(path))
+    try {
+      // lstat first: a link (also on Windows, where O_NOFOLLOW does not exist), a FIFO, a device or a folder is never opened.
+      const first = lstatSync(path)
+      if (!first.isFile() || first.size > FILE_BYTES_MAX) return unreadable()
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === 'ENOENT' || (e as NodeJS.ErrnoException).code === 'ENOTDIR' ? 'none' : unreadable()
+    }
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    const st = fstatSync(fd)
+    if (!st.isFile() || st.size > FILE_BYTES_MAX) return unreadable()
+    return sha(readFileSync(fd))
   } catch {
     return unreadable()
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
 function hooksDigest(dir: string | null): string {
   if (!dir) return unreadable()
   try {
-    if (!existsSync(dir)) return 'none'
+    try {
+      lstatSync(dir)
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'none' : unreadable()
+    }
     const parts: string[] = []
     const names = readdirSync(dir).sort()
     for (const name of names.slice(0, HOOK_FILES_MAX)) {
       const full = join(dir, name)
       const st = lstatSync(full)
-      parts.push(`${name}\0${st.isSymbolicLink() ? 'link' : st.isDirectory() ? 'dir' : st.size > HOOK_FILE_BYTES_MAX ? `big:${st.size}` : sha(readFileSync(full))}`)
+      // A link is recorded by its target and never followed; a regular file by content; anything else cannot be compared.
+      const what = st.isSymbolicLink() ? `link:${readlinkSync(full)}` : st.isDirectory() ? 'dir' : st.isFile() ? fileDigest(full) : unreadable()
+      parts.push(`${name}\0${what}`)
     }
     if (names.length > HOOK_FILES_MAX) parts.push(`+${names.length - HOOK_FILES_MAX}`)
     return sha(parts.join('\n'))
@@ -78,19 +136,59 @@ function hooksDigest(dir: string | null): string {
   }
 }
 
-/** Read the pin of `root` now. Never throws. */
-export async function pinRoot(root: string): Promise<RootPin> {
+/** The folders of `files` and the root, relative with '/', the root first, at most ATTR_DIRS_MAX. */
+export function attributeDirsOf(files: readonly string[]): string[] {
+  const dirs = new Set<string>([''])
+  for (const f of files) {
+    const parts = f.replace(/\\/g, '/').split('/').filter(Boolean)
+    parts.pop()
+    let at = ''
+    for (const p of parts) {
+      at = at ? `${at}/${p}` : p
+      dirs.add(at)
+      if (dirs.size >= ATTR_DIRS_MAX) return [...dirs]
+    }
+  }
+  return [...dirs]
+}
+
+/** The untracked `.gitattributes` files of `dirs` (content digests); a tracked one is reviewed content and left out. */
+async function attributesDigest(root: string, dirs: readonly string[]): Promise<string> {
+  const rels = dirs.map((d) => (d ? `${d}/.gitattributes` : '.gitattributes'))
+  const tracked = await gitGuarded(root, ['ls-files', '-z', '--', ...rels], BIG)
+  if (!tracked.ok) return unreadable()
+  const known = new Set(tracked.out.split('\0').filter(Boolean))
+  const parts: string[] = []
+  for (const rel of rels) {
+    if (known.has(rel)) continue
+    const d = fileDigest(join(root, ...rel.split('/')))
+    if (d !== 'none') parts.push(`${rel}\0${d}`)
+  }
+  return sha(parts.join('\n'))
+}
+
+/** Read the pin of `root` now. Never throws. `attrDirs`: the folders whose `.gitattributes` are looked at (default the root). */
+export async function pinRoot(root: string, opts: { attrDirs?: readonly string[] } = {}): Promise<RootPin> {
+  const gen = orgAiGeneration(root)
+  const attrDirs = opts.attrDirs?.length ? [...opts.attrDirs] : ['']
   const bin = gitExecutable()
   const head = await gitGuarded(root, ['rev-parse', '--verify', '--quiet', 'HEAD'])
   const branch = await gitGuarded(root, ['symbolic-ref', '--quiet', 'HEAD'])
   const index = await gitGuarded(root, ['ls-files', '--stage', '-z'], BIG)
   let worktree: string
+  let filesRaw: string | undefined
   if (!bin) worktree = unreadable()
-  else if (await hasRepoFilterDriver(bin, root)) worktree = 'not pinned'
-  else {
+  else if (await hasRepoFilterDriver(bin, root)) {
+    worktree = 'not pinned'
+    filesRaw = 'not pinned'
+  } else {
     const diff = await gitGuarded(root, ['diff-files', '--raw', '-z', '--no-ext-diff', '--no-textconv'], BIG)
     worktree = diff.ok ? sha(diff.out) : unreadable()
+    if (diff.ok) filesRaw = diff.out
   }
+  // Staged differences against HEAD, plus the working tree's against the index: unchanged by a merge of other files.
+  const staged = head.ok && head.out ? await gitGuarded(root, ['diff-index', '--cached', '--raw', '-z', '--no-ext-diff', '--no-textconv', 'HEAD'], BIG) : undefined
+  const changes = staged?.ok && filesRaw !== undefined ? sha(`${staged.out}\0\0${filesRaw}`) : unreadable()
   const common = await commonGitDir(root).catch(() => null)
   const [local, perWorktree, attributes] = await Promise.all([
     common ? Promise.resolve(join(common, 'config')) : Promise.resolve(null),
@@ -103,36 +201,85 @@ export async function pinRoot(root: string): Promise<RootPin> {
     branch: branch.ok ? branch.out : 'detached',
     index: index.ok ? sha(index.out) : unreadable(),
     worktree,
+    changes,
     config: sha([fileDigest(local), fileDigest(perWorktree), fileDigest(attributes)].join('|')),
-    hooks: hooksDigest(common ? join(common, 'hooks') : null)
+    attributes: await attributesDigest(root, attrDirs),
+    hooks: hooksDigest(common ? join(common, 'hooks') : null),
+    gen,
+    attrDirs
   }
 }
 
-const LABELS: Record<keyof RootPin, string> = {
+const LABELS: Record<Labelled, string> = {
   head: 'its HEAD commit',
   branch: 'the branch it is on',
   index: 'its index (staged changes)',
   worktree: 'its tracked files',
   config: 'the repository config',
+  attributes: 'its untracked .gitattributes files',
   hooks: 'the git hooks'
 }
+const HARD: Labelled[] = ['config', 'attributes', 'hooks']
+const SOFT: Labelled[] = ['head', 'branch', 'index', 'worktree']
 
 /** What differs between two readings, in plain words (empty = the same). */
 export function pinDrift(was: RootPin, now: RootPin): string[] {
-  return (Object.keys(LABELS) as (keyof RootPin)[]).filter((k) => was[k] !== now[k]).map((k) => LABELS[k])
+  return (Object.keys(LABELS) as Labelled[]).filter((k) => was[k] !== now[k]).map((k) => LABELS[k])
 }
 
 /** The refusal sentence for a drift, ending with what to do. */
 export function pinDriftMessage(labels: readonly string[], checkout: string): string {
   return (
     `Not merged: while the project's tests ran, ${labels.join(', ')} of ${checkout} changed. The test command runs repository code as you and can reach ` +
-    `that checkout through the shared git folder, so OrgAI does not merge after it has. Look at what changed (git log, git status, .git/config, .git/hooks), ` +
-    `undo anything you did not mean, then integrate again.`
+    `that checkout through the shared git folder, and OrgAI cannot tell its changes from yours (a commit or an edit in the project folder while the tests ran), so it does not merge after one. ` +
+    `Look at what changed (git log, git status, .git/config, .git/hooks), undo anything you did not mean, then integrate again.`
   )
 }
 
-/** The drift sentence of `root` against an earlier pin, or undefined when nothing moved. */
+/**
+ * The checkout against an earlier pin:
+ * - same: nothing moved;
+ * - orgai: HEAD, the index and tracked files moved only through merges (or the main-branch switch) OrgAI itself recorded, and
+ *   the changes against HEAD are as they were: `pin` is the reading now and the merge goes on;
+ * - hard: the config, the hooks or an untracked `.gitattributes` moved (always a refusal, whoever did it);
+ * - folder: HEAD, the index or tracked files moved by something other than OrgAI (the test command, or the user): `pin` is the
+ *   reading now, for a caller that asks the user and goes on.
+ */
+export type PinVerdict =
+  | { kind: 'same' | 'orgai'; pin: RootPin }
+  | { kind: 'hard'; labels: string[] }
+  | { kind: 'folder'; labels: string[]; pin: RootPin; was: RootPin }
+
+export async function rootVerdict(root: string, was: RootPin): Promise<PinVerdict> {
+  const now = await pinRoot(root, { attrDirs: was.attrDirs })
+  const all = pinDrift(was, now)
+  if (!all.length) return { kind: 'same', pin: now }
+  if (HARD.some((k) => was[k] !== now[k])) return { kind: 'hard', labels: all }
+  const explained = movedOnlyByOrgAi(root, { head: was.head, branch: was.branch }, was.gen, { head: now.head, branch: now.branch })
+  if (explained && was.changes === now.changes) return { kind: 'orgai', pin: now }
+  // OrgAI's own moves explain HEAD but not the files: the tracked files (or the index) were changed as well.
+  const labels = explained ? [LABELS.worktree] : SOFT.filter((k) => was[k] !== now[k]).map((k) => LABELS[k])
+  return { kind: 'folder', labels, pin: now, was }
+}
+
+/** The drift sentence of `root` against an earlier pin, or undefined when nothing moved (or only OrgAI's own merges did). */
 export async function rootDrift(root: string, was: RootPin): Promise<string | undefined> {
-  const labels = pinDrift(was, await pinRoot(root))
-  return labels.length ? pinDriftMessage(labels, root) : undefined
+  const v = await rootVerdict(root, was)
+  return v.kind === 'hard' || v.kind === 'folder' ? pinDriftMessage(v.labels, root) : undefined
+}
+
+/**
+ * The plain reason shown when the user is asked again after the project folder changed while the tests ran: what moved, and the
+ * new commits when HEAD did (at most five subjects).
+ */
+export async function folderChangeNote(root: string, was: RootPin, now: RootPin): Promise<string> {
+  const parts: string[] = []
+  if (was.head !== now.head && was.head !== 'none' && now.head !== 'none') {
+    const log = await gitGuarded(root, ['log', '--format=%h %s', '--no-show-signature', '-n', '5', `${was.head}..${now.head}`])
+    if (log.ok && log.out) parts.push(`new commits:\n${log.out.split(/\r?\n/).map((l) => `  ${l.slice(0, 120)}`).join('\n')}`)
+    else parts.push('HEAD moved')
+  } else if (was.head !== now.head) parts.push('HEAD moved')
+  if (was.branch !== now.branch) parts.push('the checked-out branch changed')
+  if (was.changes !== now.changes) parts.push('tracked files or staged changes differ')
+  return `The project folder changed while the tests ran (${parts.length ? parts.join('; ') : 'something moved'}). The tests ran in the copy, and the merge would land in the folder as it is now. Merge it there?`
 }

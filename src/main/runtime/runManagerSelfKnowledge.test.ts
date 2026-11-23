@@ -254,6 +254,35 @@ describe('proposal apply paths', () => {
     expect(updated).toMatchObject({ runId: ctx.run.id, project: { id: 'p_real' } })
   })
 
+  it('targeted settings: an approval from a terminal or the headless policy tells the apply it is not the window; the window and an internal caller do not', async () => {
+    for (const [decidedBy, expected] of [
+      [{ surface: 'cli' as const }, { targeted: true, nonDesktop: true }],
+      [{ surface: 'tui' as const }, { targeted: true, nonDesktop: true }],
+      [{ surface: 'policy' as const }, { targeted: true, nonDesktop: true }],
+      [{ surface: 'desktop' as const }, { targeted: true }],
+      [undefined, { targeted: true }]
+    ] as const) {
+      events.length = 0
+      const { m, ctx, raw } = await chat({ selfKnowledge: hooks(), resolveProject: (id) => (id === 'p_real' ? stored('p_real') : null) })
+      const pending = ctx.requestProposal(settingsReq as never)
+      const card = events.find((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request')!
+      m.decideProposal(ctx.run.id, card.proposal.id, { behavior: 'approve' }, decidedBy ? { decidedBy } : {})
+      await pending
+      expect(raw.applyProposal.mock.calls[0][2], JSON.stringify(decidedBy)).toEqual(expected)
+    }
+  })
+
+  it('targeted settings: a refusal from the apply (a cap raised from a terminal) comes back as a revise with the reason', async () => {
+    const { m, ctx, raw } = await chat({ selfKnowledge: hooks(), resolveProject: (id) => (id === 'p_real' ? stored('p_real') : null) })
+    raw.applyProposal.mockImplementation(() => {
+      throw new Error('These project settings can be changed in the OrgAI window only: maxBudgetUsd.')
+    })
+    const pending = ctx.requestProposal(settingsReq as never)
+    const card = events.find((e): e is Extract<RunEvent, { type: 'proposal.request' }> => e.type === 'proposal.request')!
+    m.decideProposal(ctx.run.id, card.proposal.id, { behavior: 'approve' }, { decidedBy: { surface: 'cli' } })
+    expect(await pending).toMatchObject({ behavior: 'revise', feedback: expect.stringContaining('OrgAI window only') })
+  })
+
   it('targeted settings: a vanished project revises and applies nothing', async () => {
     let present = true
     const { m, ctx, raw } = await chat({ selfKnowledge: hooks(), resolveProject: (id) => (id === 'p_real' && present ? stored('p_real') : null) })

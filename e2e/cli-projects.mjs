@@ -103,8 +103,16 @@ async function partA() {
   check(removed.code === 0 && rj?.removed === true && rj.result?.kind === 'engagement', 'projects remove --yes (JSON)', show(removed))
   const noTty = await cli(['projects', 'remove', codeDir])
   check(noTty.code === 2 && /--yes/.test(noTty.err), 'projects remove without a terminal or --yes exits 2', show(noTty))
+  // A project that carries a limit (this one has a budget of 3) is removed in the OrgAI window only: removing it and creating it
+  // again would start it with none (third pass S1b). The project stays.
   const removedCode = await cli(['projects', 'remove', codeDir, '--yes'])
-  check(removedCode.code === 0 && /Removed E2E code/.test(removedCode.out), 'projects remove --yes (text)', show(removedCode))
+  check(removedCode.code === 1 && /carries limits \(maxBudgetUsd\).*OrgAI window only/.test(removedCode.err) && storedProject(cj?.project?.id)?.maxBudgetUsd === 3, 'projects remove --yes of a project with a budget is refused (window only) and keeps it', show(removedCode))
+  // A project with no limit removes from the terminal as before.
+  const plainDir = fixture('cli-projects-plain')
+  const plain = await cli(['projects', 'create', plainDir, '--name', 'E2E plain'])
+  check(plain.code === 0, 'projects create (a project with no limit)', show(plain))
+  const removedPlain = await cli(['projects', 'remove', plainDir, '--yes'])
+  check(removedPlain.code === 0 && /Removed E2E plain/.test(removedPlain.out), 'projects remove --yes (text)', show(removedPlain))
 }
 
 async function partB() {

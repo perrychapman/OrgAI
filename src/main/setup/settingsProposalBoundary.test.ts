@@ -71,5 +71,51 @@ describe('settings proposals never carry the desktop-only overhaul fields', () =
       expect(saved).toMatchObject(mine)
       expect(store.get(created.id)).toMatchObject(mine)
     })
+
+    // Third pass S1a: maxBudgetUsd, maxSubagentDepth and maxConcurrentSubagents ARE proposable, so an approval from a terminal or
+    // the headless policy (opts.nonDesktop) follows the same rule as a project save from there: set or lower, never raise or remove.
+    describe('an approval from a surface other than the window (nonDesktop)', () => {
+      const withCap = (extra: Partial<Project> = {}): Project => {
+        const created = store.create({ name: 'T', path: repo, brief: '' })
+        return store.save({ ...created, maxBudgetUsd: 5, ...extra } as Project)
+      }
+
+      it.each([
+        ['removes the budget', { maxBudgetUsd: null }],
+        ['raises the budget', { maxBudgetUsd: 50 }]
+      ])('refuses a card that %s, and saves nothing (targeted and setup)', (_what, payload) => {
+        const p = withCap()
+        for (const opts of [{ targeted: true as const, nonDesktop: true as const }, { nonDesktop: true as const }]) {
+          expect(() => service.applyProposal(p.id, settings(payload), opts)).toThrow(/OrgAI window only: maxBudgetUsd/)
+          expect(store.get(p.id)?.maxBudgetUsd).toBe(5)
+        }
+      })
+
+      it('the same cards apply from the window (no nonDesktop), as before', () => {
+        const p = withCap()
+        expect(service.applyProposal(p.id, settings({ maxBudgetUsd: 50 }), { targeted: true }).maxBudgetUsd).toBe(50)
+        expect(service.applyProposal(p.id, settings({ maxBudgetUsd: null }), { targeted: true }).maxBudgetUsd).toBeUndefined()
+      })
+
+      it('lowering the budget and setting one where there was none still apply from another surface', () => {
+        const p = withCap()
+        expect(service.applyProposal(p.id, settings({ maxBudgetUsd: 2 }), { targeted: true, nonDesktop: true }).maxBudgetUsd).toBe(2)
+        const free = store.create({ name: 'F', path: repo, brief: '' })
+        expect(service.applyProposal(free.id, settings({ maxBudgetUsd: 9 }), { targeted: true, nonDesktop: true }).maxBudgetUsd).toBe(9)
+      })
+
+      it('an explicit subagent depth or concurrency may be lowered, not raised, from another surface', () => {
+        const p = withCap({ maxSubagentDepth: 2, maxConcurrentSubagents: 2 })
+        expect(() => service.applyProposal(p.id, settings({ maxSubagentDepth: 6 }), { targeted: true, nonDesktop: true })).toThrow(/maxSubagentDepth/)
+        expect(() => service.applyProposal(p.id, settings({ maxConcurrentSubagents: 9 }), { targeted: true, nonDesktop: true })).toThrow(/maxConcurrentSubagents/)
+        expect(service.applyProposal(p.id, settings({ maxSubagentDepth: 1 }), { targeted: true, nonDesktop: true }).maxSubagentDepth).toBe(1)
+      })
+
+      it('fields that are not limits (a brief, review merges) are unaffected', () => {
+        const p = withCap()
+        const saved = service.applyProposal(p.id, settings({ brief: 'New', reviewMerges: true }), { targeted: true, nonDesktop: true })
+        expect(saved).toMatchObject({ brief: 'New', reviewMerges: true, maxBudgetUsd: 5 })
+      })
+    })
   })
 })
