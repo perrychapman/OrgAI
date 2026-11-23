@@ -822,6 +822,19 @@ export interface Project {
   testCommand?: string
   /** Code projects: Maintenance removes finished copies (worktrees) that failed or were discarded after this many days (1..365). Missing = keep. */
   keepFailedBranchesDays?: number
+  /**
+   * UI overhaul: automatic staffing must ask the user before it puts an assignment on a stronger tier than the
+   * role's own (an escalation). Missing = false (today: escalation within the role's bounds without asking).
+   * Desktop projects:save only (it can only lower spend, but it adds cards, so team files do not carry it).
+   */
+  askBeforeStrongerModel?: boolean
+  /**
+   * UI overhaul: name pattern for report branches OrgAI itself creates, e.g. 'orgai/{task}'. Placeholders: {task}
+   * (slug of the brief), {role} (role slug), {id} (short unique id, always appended when absent). Safe characters only
+   * (BRANCH_NAME_PATTERN_RE), at most BRANCH_NAME_PATTERN_MAX_CHARS, no '..', no leading '/' or '-', no '.lock'.
+   * Branches a provider SDK names itself (Claude worktree isolation) keep the SDK's names. Missing = today's names.
+   */
+  branchNamePattern?: string
   roles: Role[]
   /**
    * MCP servers this project's agents may use (mcp__<name>__* tools). Missing = none. Secret values are
@@ -3579,6 +3592,11 @@ export interface RunSummary {
   excludedRoleIds?: string[]
   /** UI overhaul: the run's own per-run cap from StartRunInput.maxBudgetUsd / runActions.addBudget (USD, already min'd with the project cap). Main-owned. */
   runBudgetUsd?: number
+  /**
+   * UI overhaul (RunHold "Trying again"): the provider retry in progress, from the adapter's `provider.retry` events.
+   * Cleared on the next successful answer and at run end. Main-owned; live runs only.
+   */
+  providerRetry?: { attempt: number; nextTryAt?: number; since: number; connection?: ConnectionId }
 }
 
 /**
@@ -4082,6 +4100,11 @@ export type RunEvent =
   | { type: 'run.hold'; runId: string; hold: RunHold | null }
   /** UI overhaul, RunManager only: spending reached AppSettings.spendWarnPercent of a limit. Once per run and limit scope. */
   | { type: 'run.spendWarning'; runId: string; warning: SpendWarning }
+  /**
+   * UI overhaul, adapters: the provider call failed and the SDK / app-server is retrying (attempt 1-based; nextTryAt when
+   * known). `ok: true` = an answer arrived after retries (clears RunSummary.providerRetry). Never carries provider text.
+   */
+  | { type: 'provider.retry'; runId: string; attempt: number; nextTryAt?: number; ok?: true }
   | { type: 'run.model'; runId: string; selection: { model: string; connection: ConnectionId } }
   /**
    * RunManager only (an adapter's is dropped): the run's permission mode fields after any change on a live run
@@ -10254,7 +10277,7 @@ export interface RunHold {
   /** 'budget' and 'spend-limit': which limit, what it is and what was spent (estimated USD). */
   budget?: { scope: 'run' | 'conversation' | 'day' | 'month'; limitUsd: number; spentUsd: number; resetsAt?: number }
   /** 'provider': the connection and the last error in OrgAI's words. */
-  provider?: { connection?: ConnectionId; error?: string; lastOkAt?: number }
+  provider?: { connection?: ConnectionId; error?: string; lastOkAt?: number; tries?: number }
   /** 'agent-failed': the agent that failed. */
   failed?: { agentId: string; roleId?: string | null; name?: string; costUsd?: number }
   /** 'plan-blocked': what the orchestrator said must be decided, and the blocked steps. */
@@ -10311,6 +10334,41 @@ export interface MessageAgentInput {
   agentId: string
   text: string
 }
+
+/**
+ * runActions.retryAgent: the user asks a live run's orchestrator to give a failed or stopped agent's task to a new agent
+ * of the same role, optionally on `tier`. Delivered through send() as the user's instruction; staffing still clamps the
+ * tier to the role's bounds (runtime/staffing.ts), so this never exceeds what the role allows.
+ */
+export interface RetryAgentInput {
+  runId: string
+  agentId: string
+  tier?: ModelTier
+}
+
+/** maintenanceExtra.finishedCopiesSize: removable finished copies (pending worktrees) and their size on disk. */
+export interface FinishedCopiesSize {
+  count: number
+  /** Bytes of regular files (symlinks not followed, each copy's .git link skipped). */
+  bytes: number
+  /** The walk hit FINISHED_COPIES_WALK_MAX_ENTRIES; bytes is a lower bound. */
+  truncated: boolean
+}
+export const FINISHED_COPIES_WALK_MAX_ENTRIES = 200_000
+
+/**
+ * maintenanceExtra.deleteBranch: delete a report branch (and its finished copy) through the existing worktree
+ * maintenance checks. Desktop only; refused for the current branch, the default / main branch, a branch a live run
+ * uses, and any branch that is not an OrgAI report branch. The renderer confirms naming the branch first.
+ */
+export interface DeleteBranchInput {
+  projectId: string
+  branch: string
+}
+
+export const BRANCH_NAME_PATTERN_MAX_CHARS = 80
+/** Allowed characters of Project.branchNamePattern (placeholders included). */
+export const BRANCH_NAME_PATTERN_RE = /^[A-Za-z0-9._\-/{}]+$/
 
 /** runActions.stopAgent result. stopped false: the adapter cannot stop one agent (reason says so) or it already ended. */
 export interface StopAgentResult {
@@ -10454,7 +10512,12 @@ export const OVERHAUL_IPC = {
   templatesDuplicate: 'templates:duplicate',
   aboutSupportDetails: 'app:supportDetails',
   aboutReportProblem: 'app:reportProblem',
-  aboutOpenLicences: 'app:openLicences'
+  aboutOpenLicences: 'app:openLicences',
+  runsRetryAgent: 'runs:retryAgent',
+  skillsDuplicate: 'skills:duplicate',
+  skillsExport: 'skills:export',
+  maintFinishedCopiesSize: 'maintenance:finishedCopiesSize',
+  maintDeleteBranch: 'maintenance:deleteBranch'
 } as const
 
 /** window.orgai additions of this section (declaration-merged into OrgAIApi). */
@@ -10479,6 +10542,19 @@ export interface OrgAIApi {
     skipReview(input: SkipReviewInput): Promise<void>
     messageAgent(input: MessageAgentInput): Promise<void>
     stopAgent(input: { runId: string; agentId: string }): Promise<StopAgentResult>
+    /** Ask the orchestrator to redo a failed agent's task with a new agent (RetryAgentInput). */
+    retryAgent(input: RetryAgentInput): Promise<void>
+  }
+  skillsExtra: {
+    /** Copy a project skill as "<name> copy" in the same project (grants not copied). Resolves to the project's skills. */
+    duplicate(input: { projectId: string; skillId: string }): Promise<SkillInfo[]>
+    /** Save the skill folder to a folder the user picks in a dialog. Resolves to the written path, or null when cancelled. */
+    export(input: { projectId: string; skillId: string }): Promise<string | null>
+  }
+  maintenanceExtra: {
+    finishedCopiesSize(projectId: string): Promise<FinishedCopiesSize>
+    /** Resolves to the same result shape as maintenance.discardWorktree. */
+    deleteBranch(input: DeleteBranchInput): Promise<MaintenanceResult>
   }
   gitInfo: {
     summary(projectId: string): Promise<GitSummary | null>

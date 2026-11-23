@@ -453,7 +453,16 @@ const api: OrgAIApi = {
     retry: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsRetry, input),
     skipReview: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsSkipReview, input),
     messageAgent: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsMessageAgent, input),
-    stopAgent: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsStopAgent, { runId: input?.runId, agentId: input?.agentId })
+    stopAgent: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsStopAgent, { runId: input?.runId, agentId: input?.agentId }),
+    retryAgent: (input) => ipcRenderer.invoke(OVERHAUL_IPC.runsRetryAgent, { runId: input?.runId, agentId: input?.agentId, tier: input?.tier })
+  },
+  skillsExtra: {
+    duplicate: (input) => ipcRenderer.invoke(OVERHAUL_IPC.skillsDuplicate, { projectId: input?.projectId, skillId: input?.skillId }),
+    export: (input) => ipcRenderer.invoke(OVERHAUL_IPC.skillsExport, { projectId: input?.projectId, skillId: input?.skillId })
+  },
+  maintenanceExtra: {
+    finishedCopiesSize: (projectId) => ipcRenderer.invoke(OVERHAUL_IPC.maintFinishedCopiesSize, projectId),
+    deleteBranch: (input) => ipcRenderer.invoke(OVERHAUL_IPC.maintDeleteBranch, { projectId: input?.projectId, branch: input?.branch })
   },
   gitInfo: {
     summary: (projectId) => ipcRenderer.invoke(OVERHAUL_IPC.gitSummary, projectId),

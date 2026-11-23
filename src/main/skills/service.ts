@@ -644,6 +644,18 @@ export class SkillService implements SkillServiceApi, SkillRunSource {
     return this.libraryList()
   }
 
+  /** UI overhaul (skills:duplicate). CONTRACT STUB: implemented by a Runtime Engineer. */
+  duplicate(input: { projectId: string; skillId: string }): SkillInfo[] {
+    void input
+    throw new Error('Duplicating a skill is not available yet.')
+  }
+
+  /** UI overhaul (skills:export). CONTRACT STUB: implemented by a Runtime Engineer. */
+  async exportTo(input: { projectId: string; skillId: string; destDir: string }): Promise<string> {
+    void input
+    throw new Error('Exporting a skill is not available yet.')
+  }
+
   libraryRemove(input: { libraryId: string }): SkillLibraryInfo[] {
     const entry = this.entry(input?.libraryId)
     for (const p of this.deps.projects.list()) {

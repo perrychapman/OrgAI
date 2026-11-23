@@ -1556,6 +1556,8 @@ export const PROJECT_SETTING_DOCS: Readonly<Record<keyof Project, AtlasSettingDo
   mainBranch: { summary: 'The branch finished work merges into. The detected default branch unless set.', surface: 'none', control: 'user' },
   requireTestsPass: { summary: 'Run the test command in a finished copy before merging it; a failure stops the merge. Off unless turned on.', surface: 'none', control: 'user' },
   testCommand: { summary: 'The command that runs the tests for "Require tests to pass".', surface: 'none', control: 'user' },
+  askBeforeStrongerModel: { summary: 'Ask before automatic staffing moves work to a stronger model than the role\'s own. Off unless turned on.', surface: 'none', control: 'user' },
+  branchNamePattern: { summary: 'How OrgAI names the branches it creates for reports, for example orgai/{task}. Branches a provider names itself keep their names.', surface: 'none', control: 'user' },
   keepFailedBranchesDays: { summary: 'Remove failed or discarded finished copies after this many days. Kept unless set.', surface: 'none', control: 'user' },
   mcpServers: {
     summary: 'The MCP servers and connected services this project\'s roles may use.',

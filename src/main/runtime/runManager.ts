@@ -80,6 +80,7 @@ import type {
   AddRunBudgetInput,
   MessageAgentInput,
   RetryRunInput,
+  RetryAgentInput,
   RunHold,
   SkipReviewInput,
   StopAgentResult,
@@ -5859,6 +5860,12 @@ export class RunManager {
     if (!agent) throw new Error('That agent is not in this run.')
     if (agent.parentId === null) return this.send(runId, text)
     await this.send(runId, `Message from the user for ${logText(agent.name)} (${logText(agent.handle ?? agent.id)}): ${text}`)
+  }
+
+  /** runs:retryAgent. Desktop only. CONTRACT STUB (batch 2): implemented by the Runtime Engineer who owns runManager.ts. */
+  async retryAgent(input: RetryAgentInput): Promise<void> {
+    void input
+    throw new Error('Retrying one agent is not available yet.')
   }
 
   /** runs:stopAgent. Desktop only. Stops one report of a live run (never the orchestrator) when its adapter can. */

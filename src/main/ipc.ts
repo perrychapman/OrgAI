@@ -206,7 +206,12 @@ export const DESKTOP_CHANNEL_MUTATES: Readonly<Record<string, boolean>> = {
   [OVERHAUL_IPC.templatesDuplicate]: true,
   [OVERHAUL_IPC.aboutSupportDetails]: false,
   [OVERHAUL_IPC.aboutReportProblem]: false,
-  [OVERHAUL_IPC.aboutOpenLicences]: false
+  [OVERHAUL_IPC.aboutOpenLicences]: false,
+  [OVERHAUL_IPC.runsRetryAgent]: true,
+  [OVERHAUL_IPC.skillsDuplicate]: true,
+  [OVERHAUL_IPC.skillsExport]: false,
+  [OVERHAUL_IPC.maintFinishedCopiesSize]: false,
+  [OVERHAUL_IPC.maintDeleteBranch]: true
 }
 
 /**
@@ -360,7 +365,9 @@ export function registerIpc(services: IpcServices): void {
     runs: services.runs,
     schedules: services.schedules,
     templates: services.templates,
-    connections: services.connections
+    connections: services.connections,
+    skills,
+    maintenance: services.maintenance
   })
 }
 

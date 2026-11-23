@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { removeOrgaiIfEmpty, removeTeamFolderFiles } from './teamFiles/disk'
-import type { MaintenanceResult, PendingWorktree, Project, RunRecord, RunSummary, WorktreeDiff } from '@shared/types'
+import type { FinishedCopiesSize, MaintenanceResult, PendingWorktree, Project, RunRecord, RunSummary, WorktreeDiff } from '@shared/types'
 import { writesToProjectFolder } from '@shared/defaults'
 import type { ProjectStore } from './store/projects'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER } from './setup/service'
@@ -162,6 +162,19 @@ export class MaintenanceService {
       throw e
     }
     return { ok: true, message: `Discarded ${branch}.` }
+  }
+
+  /** UI overhaul (maintenance:finishedCopiesSize). CONTRACT STUB: implemented by a Runtime Engineer. */
+  async finishedCopiesSize(projectId: string): Promise<FinishedCopiesSize> {
+    void projectId
+    return { count: 0, bytes: 0, truncated: true }
+  }
+
+  /** UI overhaul (maintenance:deleteBranch). CONTRACT STUB: implemented by a Runtime Engineer. */
+  async deleteBranch(projectId: string, branch: string): Promise<MaintenanceResult> {
+    void projectId
+    void branch
+    return { ok: false, message: 'Deleting a branch is not available yet.' }
   }
 
   /** The branch's committed changes against the main checkout. Uncommitted files in its worktree are not included. */

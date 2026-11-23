@@ -72,6 +72,13 @@ export interface SkillServiceApi {
   libraryAddFromBundle(input: SkillBundleInput): SkillLibraryInfo[]
   libraryUpdate(input: { libraryId: string; draft: SkillDraft }): SkillLibraryInfo[]
   libraryRemove(input: { libraryId: string }): SkillLibraryInfo[]
+  /** UI overhaul (skills:duplicate, desktop only): copy a project skill as "<name> copy" (no role grants). */
+  duplicate(input: { projectId: string; skillId: string }): SkillInfo[]
+  /**
+   * UI overhaul (skills:export, desktop only): write the skill's folder into `destDir` (a folder the user just picked) as
+   * `<destDir>/<skill name slug>`, never overwriting. Resolves to the written folder path.
+   */
+  exportTo(input: { projectId: string; skillId: string; destDir: string }): Promise<string>
   /** The project with linked skills refreshed from the library (like McpService.withLibrary). */
   withLibrary(project: Project): Project
   /** Delete every stored skill file of a project (projects:remove). */

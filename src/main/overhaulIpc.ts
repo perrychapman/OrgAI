@@ -28,6 +28,9 @@ import type { RunManager } from './runtime/runManager'
 import type { ScheduleService } from './schedules/service'
 import type { TemplateService } from './setup/templates'
 import type { ConnectionService } from './connections/service'
+import type { SkillServiceApi } from './skills/types'
+import type { MaintenanceService } from './maintenance'
+import { isModelTier, type FinishedCopiesSize, type MaintenanceResult, type RetryAgentInput, type SkillInfo } from '../shared/types'
 import { estimateRun } from './runtime/estimate'
 import { projectSpend } from './runtime/projectSpend'
 import { scheduleCosts } from './schedules/scheduleCost'
@@ -47,6 +50,8 @@ export interface OverhaulIpcServices {
   schedules?: ScheduleService
   templates: TemplateService
   connections: ConnectionService
+  skills: SkillServiceApi
+  maintenance: MaintenanceService
 }
 
 type Handler = (e: IpcMainInvokeEvent, ...args: never[]) => unknown
@@ -178,6 +183,44 @@ export function registerOverhaulIpc(
       e.sender.once('destroyed', () => forgetAgentFolders(id))
     }
     return picked
+  })
+
+  // ---- batch 2: retry agent, skills, finished copies, delete branch ----
+  handle(OVERHAUL_IPC.runsRetryAgent, (e, raw: unknown): Promise<void> => {
+    requireWindow(e)
+    const i = obj<RetryAgentInput>(raw)
+    if (i.tier !== undefined && !isModelTier(i.tier)) throw new Error('Invalid tier')
+    return runs.retryAgent({ runId: idArg(i.runId, 'run id'), agentId: idArg(i.agentId, 'agent id'), ...(i.tier ? { tier: i.tier } : {}) })
+  })
+  handle(OVERHAUL_IPC.skillsDuplicate, (e, raw: unknown): SkillInfo[] => {
+    requireWindow(e)
+    const i = obj<{ projectId: string; skillId: string }>(raw)
+    const project = projectOf(i.projectId)
+    return services.skills.duplicate({ projectId: project.id, skillId: idArg(i.skillId, 'skill id') })
+  })
+  handleRead(OVERHAUL_IPC.skillsExport, async (e, raw: unknown): Promise<string | null> => {
+    requireWindow(e)
+    const i = obj<{ projectId: string; skillId: string }>(raw)
+    const project = projectOf(i.projectId)
+    const skillId = idArg(i.skillId, 'skill id')
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = { title: 'Export skill to folder', properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'> }
+    const result = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    const dest = result.canceled ? null : result.filePaths[0] ?? null
+    if (!dest) return null
+    return services.skills.exportTo({ projectId: project.id, skillId, destDir: dest })
+  })
+  handleRead(OVERHAUL_IPC.maintFinishedCopiesSize, (e, projectId: unknown): Promise<FinishedCopiesSize> => {
+    requireWindow(e)
+    const project = projectOf(projectId)
+    return services.maintenance.finishedCopiesSize(project.id)
+  })
+  handle(OVERHAUL_IPC.maintDeleteBranch, (e, raw: unknown): Promise<MaintenanceResult> => {
+    requireWindow(e)
+    const i = obj<{ projectId: string; branch: string }>(raw)
+    const project = projectOf(i.projectId)
+    if (typeof i.branch !== 'string' || !i.branch || i.branch.length > 250 || i.branch.startsWith('-') || /[\x00-\x20\x7f~^:?*[\\]/.test(i.branch)) throw new Error('Invalid branch')
+    return services.maintenance.deleteBranch(project.id, i.branch)
   })
 
   // ---- templates ----
