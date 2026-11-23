@@ -808,7 +808,11 @@ export interface SlashContext {
   pick?(title: string, options: readonly { value: string; label: string }[]): Promise<string | undefined>
   switchRun(ref: string): Promise<void>
   confirm(question: string): Promise<boolean>
-  openText(title: string, text: string): Promise<void>
+  /**
+   * Shows text in the app's own view (q or Esc closes, the keys scroll). `pager: true` is for a diff: it goes to the
+   * system pager when there is one (colour, search), else to the same view.
+   */
+  openText(title: string, text: string, opts?: { pager?: boolean }): Promise<void>
   quit(): void
 }
 
