@@ -99,12 +99,6 @@
   line-height: var(--text-caption-lh);
   color: var(--text-secondary);
 }
-/* The theme button gives way first, then Add group and Import keep only their icons (compact header). */
-@container teamhdr (max-width: 700px) {
-  .team-theme-btn {
-    display: none;
-  }
-}
 .team-header-groups {
   color: var(--text-secondary);
 }

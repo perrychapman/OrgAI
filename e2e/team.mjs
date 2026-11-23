@@ -1023,6 +1023,9 @@ async function sectionAddAndDrag(page, app, shot) {
 
   // Review L1: let the root delegate to Implementer as well, then drop Implementer on the manager it already reports to.
   // That drop must change nothing (it used to strip the root's delegation through setReportsTo).
+  // The drops can leave the root under the side panel's edge: fit the chart first so the click lands on the node.
+  await page.locator('.editor .react-flow__controls-fitview').click()
+  await sleep(400)
   await page.locator(`.react-flow__node[data-id="${root.id}"]`).click()
   await teamPanelTab(page, 'Role').waitFor()
   await page.evaluate(() => document.querySelectorAll('[data-testid=role-delegate-other]').forEach((d) => d.setAttribute('open', '')))

@@ -33,7 +33,10 @@ export default function TeamProvenance({ project }: { project: Project }): React
   const form = useArchitectForm(project)
   const costId = useId()
   const date = planDateLabel(at)
+  // The confirm renders outside the one-line strip, so it never inherits its nowrap (walk High finding).
   return (
+    <>
+    {form.confirmDialog}
     <div className="team-provenance" data-testid="team-provenance" role="note" aria-label="About this team">
       <span className="team-provenance-mark" aria-hidden="true">
         A
@@ -62,7 +65,7 @@ export default function TeamProvenance({ project }: { project: Project }): React
           {form.error}
         </span>
       )}
-      {form.confirmDialog}
     </div>
+    </>
   )
 }
