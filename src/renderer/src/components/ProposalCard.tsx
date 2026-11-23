@@ -187,6 +187,7 @@ export default function ProposalCard({ proposal, runId, currentRoles, who, agent
       runId={runId}
       who={who}
       agentId={agentId}
+      waitingSince={proposal.createdAt}
       expandSignal={expandSignal}
       focusDetails
       title={proposal.kind === 'architecture' ? kindCopy.architectureTitle : target && proposal.kind === 'settings' ? oneLine(`Change settings of ${targetName}`) : proposal.kind === 'appSettings' ? 'Change app settings' : proposalTitle(proposal.kind)}
