@@ -1357,8 +1357,10 @@ try {
     const big = Array.from({ length: LARGE }, (_, i) => ({ type: 'spawn', id: `lt${String(i + 1).padStart(3, '0')}`, name: `lt${String(i + 1).padStart(3, '0')}`, role: slug, description: `Large team ${i + 1}` }))
     writeTimed([...big, { type: 'text', text: 'The large team is staffed.' }], 15)
     // After the 40-agent stress and the cue phases a SwiftShader runner can take longer to end the last session and show
-    // the new run (CI windows-latest hit the 15 s default here twice): this one start waits longer.
-    await startLiveRun('Factory floor large team', 45_000)
+    // the new run (CI windows-latest hit the 15 s default here twice): this one start waits longer. 45 s was not enough
+    // either: on 2026-11-23 three windows-latest runs timed out here with the run already on screen and idle (tab
+    // "R14 Factory floor large team Idle", End session shown) but its run-meta not drawn yet, so the wait is 120 s.
+    await startLiveRun('Factory floor large team', 120_000)
     const bigState = await untilState((s) => s.mode === 'live' && s.workers.length >= LARGE + 1, 150_000)
     chk6(!!bigState, `large team: ${LARGE + 1} agents (root and ${LARGE} spawns) are on the floor`, await state().then((s) => s.workers.length).catch(() => null))
     if (bigState) {
