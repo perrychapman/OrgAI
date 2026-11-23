@@ -1,0 +1,290 @@
+/* First launch (ui-overhaul Welcome board) and the shell team's onboarding notices. Tokens only. */
+
+.dash-first.welcome {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-6);
+  max-width: 1120px;
+}
+.welcome-main {
+  flex: 999 1 480px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.welcome-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+.welcome-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-tertiary);
+}
+.welcome-step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.welcome-step[aria-current='step'] {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.welcome-step-mark {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-strong);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+}
+.welcome-step[aria-current='step'] .welcome-step-mark {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+.welcome-step[data-done] .welcome-step-mark {
+  border-color: var(--success-border);
+  color: var(--success-text);
+}
+
+.welcome-connect {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+}
+.welcome-connect-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--warning-text);
+}
+.welcome-connect[data-ready] .welcome-connect-dot {
+  background: var(--success-text);
+}
+.welcome-connect-text {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.welcome-connect-title {
+  font-weight: var(--weight-semibold);
+}
+.welcome-connect-detail {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+
+.welcome .dash-first-choice legend {
+  font-family: var(--font-display);
+  font-size: var(--text-title-lg);
+  letter-spacing: -0.01em;
+}
+.welcome-sub {
+  margin: 0 0 var(--space-3);
+  color: var(--text-secondary);
+}
+.welcome .dash-first-option {
+  border-radius: var(--radius-lg);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.welcome .dash-first-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-faint);
+  box-shadow: 0 0 0 1px var(--accent), var(--elev-2);
+}
+.welcome-foot {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-tertiary);
+}
+
+.welcome-aside {
+  flex: 1 1 240px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.welcome-aside-label {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.welcome-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+}
+.welcome-card-ghost {
+  border: 1px dashed var(--border-strong);
+}
+.welcome-card-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-weight: var(--weight-semibold);
+}
+.welcome-card-title {
+  font-weight: var(--weight-semibold);
+}
+.welcome-card-text {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
+.welcome-edge {
+  align-self: center;
+  width: 2px;
+  height: var(--space-5);
+  background: var(--border-strong);
+}
+.welcome-skipped {
+  max-width: 640px;
+}
+
+/* New project or engagement (ui-overhaul NewProject board): the two kinds look separate. Code is violet with a
+   monospace title (the workbench look), Engagement is coral --eng with a serif title. */
+.project-form .project-kind-option {
+  background: var(--glass);
+  border-color: var(--glass-line);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.project-form .project-kind-option[data-kind='code'] .project-kind-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  letter-spacing: 0;
+}
+.project-form .project-kind-option[data-kind='engagement'] .project-kind-title {
+  font-family: var(--font-serif);
+  font-size: var(--text-title-sm);
+  line-height: var(--text-title-sm-lh);
+}
+.project-form .project-kind-option[data-kind='engagement'] input {
+  accent-color: var(--eng);
+}
+.project-form .project-kind-option[data-kind='code']:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-faint);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.project-form .project-kind-option[data-kind='engagement']:has(input:checked) {
+  border-color: var(--eng-line);
+  background: var(--eng-soft);
+  box-shadow: 0 0 0 1px var(--eng-line);
+}
+.project-kind-diff {
+  margin-top: var(--space-2);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+}
+.project-kind-diff summary {
+  width: fit-content;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.project-kind-diff summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.project-kind-diff table {
+  width: 100%;
+  margin-top: var(--space-2);
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.project-kind-diff th,
+.project-kind-diff td {
+  padding: var(--space-1h) var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+.project-kind-diff thead th,
+.project-kind-diff thead td {
+  border-top: 0;
+}
+.project-kind-diff thead th {
+  font-weight: var(--weight-semibold);
+}
+.project-kind-diff thead th:nth-child(2) {
+  font-family: var(--font-mono);
+  color: var(--accent-text);
+}
+.project-kind-diff thead th:nth-child(3) {
+  font-family: var(--font-serif);
+  color: var(--eng);
+}
+.project-kind-diff tbody th {
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
+
+/* Folder settings review (ui-overhaul Trust board): mono path, a "What it would set up" label, glass item rows. */
+.trust-board .trust-path {
+  margin: 0;
+  padding: var(--space-1h) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--field-bg);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.trust-board .trust-found-label {
+  margin-top: var(--space-1);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.trust-board .trust-item {
+  background: var(--glass);
+  border-color: var(--glass-line);
+  border-radius: var(--radius-md);
+}
+.trust-board .trust-state[data-state='trusted'] {
+  color: var(--success-text);
+}
+.trust-board .trust-state[data-state='untrusted'],
+.trust-board .trust-state[data-state='changed'] {
+  color: var(--warning-text);
+}

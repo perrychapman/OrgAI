@@ -27,6 +27,7 @@ import { Icon } from '../ui/Icon'
 import { Textarea } from '../ui/Textarea'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../../lib/settingsTarget'
 import { RepoStartPanel } from './RepoStartPanel'
+import '../../styles/onboarding.css'
 import { scrollContainerOf, scrollWithin } from '../../lib/scrollWithin'
 
 const KINDS: { value: StartKind; label: string }[] = [
@@ -44,8 +45,15 @@ const PROJECT_KIND_CARDS: { value: ProjectKind; title: string; text: string }[] 
   {
     value: 'engagement',
     title: 'Engagement',
-    text: 'Work for a client or a case: research, analysis and documents. Agents read the material you point them to and write deliverables in one working folder.'
+    text: 'Work that is not code: research, analysis and documents. Agents read the material you point them to and write in one working folder.'
   }
+]
+
+/** "How they differ" (ui-overhaul NewProject board): plain statements of what the app does for each kind. */
+const KIND_DIFFERENCES: { label: string; code: string; engagement: string }[] = [
+  { label: 'Where the team works', code: 'In your project folder, in separate copies when several write at once', engagement: 'In one working folder; folders you add are read for reference' },
+  { label: 'What it leaves behind', code: 'Code changes you review and merge', engagement: 'Documents in Files, and what the team learns in Knowledge' },
+  { label: 'Extra tabs', code: 'None', engagement: 'Knowledge' }
 ]
 
 /**
@@ -636,6 +644,27 @@ export function NewProjectForm({
             </label>
           ))}
         </div>
+        <details className="project-kind-diff" data-testid="project-kind-diff">
+          <summary>How they differ</summary>
+          <table>
+            <thead>
+              <tr>
+                <td />
+                <th scope="col">Code project</th>
+                <th scope="col">Engagement</th>
+              </tr>
+            </thead>
+            <tbody>
+              {KIND_DIFFERENCES.map((d) => (
+                <tr key={d.label}>
+                  <th scope="row">{d.label}</th>
+                  <td data-kind="code">{d.code}</td>
+                  <td data-kind="engagement">{d.engagement}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
       </fieldset>
 
       {projectKind === 'code' && (
