@@ -37,7 +37,7 @@ export function CapabilityGroup({
     <section className="role-cap-group" aria-labelledby={`${id}-title`} aria-describedby={description ? `${id}-desc` : undefined} data-testid={testId} data-empty={empty ? 'true' : undefined}>
       <div className="role-cap-head">
         <h4 className="side-section-title" id={`${id}-title`} title={description}>
-          {title}
+          {title === 'Connections' ? 'Tools and services' : title}
         </h4>
         {empty && <span className="role-cap-none">None yet</span>}
         {empty ? (

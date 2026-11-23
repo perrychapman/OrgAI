@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import type { Effort, ModelTier, Project, Role } from '@shared/types'
 import { MODEL_TIER_OPTIONS } from '@shared/types'
 import { adapterForProject, adapterOnConnection, modelFamily, projectConnection, roleConnection, roleTierContext } from '@shared/defaults'
@@ -8,6 +8,7 @@ import { Button } from './ui/Button'
 import { ModelSelect, type ModelGroup } from './ui/ModelSelect'
 import { connectionLabel, isProxyId } from '../lib/connectionLabel'
 import { roleTier } from '../lib/remap'
+import { PLAIN_TIER_ORDER } from '../lib/tierWords'
 import { connectionsViewOf, isPinned, isWriterRole, ownConnection, rootRunsOnLine, roleProblems, runsOnDefaultText, runsOnHintText, runsOnOptions, showRunsOn } from '../lib/roleConnection'
 import { useFrameAnnounce } from './layout/CanvasFrame'
 import { APP_SETTINGS_SECTIONS, requestAppSettingsSection } from '../lib/settingsTarget'
@@ -26,9 +27,9 @@ function resolveTier(project: Project, role: Role): { tier?: ModelTier; model?: 
 }
 
 /**
- * The role's model controls (the select's own label "Model" is visible now that the section shows a sentence, not a bare title):
- * one Model select (Inherit or a tier, labelled "Everyday (sonnet)") and, behind
- * "Advanced", the exact model and the effort. Nothing at rest shows a concrete id without a tier word.
+ * The role's full model controls, the body of the panel's "Choose an exact model" reveal: Runs on, one Model select
+ * (Inherit or a tier, labelled "Standard (sonnet)"), the exact model and the effort. The tier choice itself is the
+ * segmented `RoleTierChoice` above the reveal. The Model select lists no bare concrete id.
  */
 export default function RoleModelPicker({ project, role }: { project: Project; role: Role }): ReactElement {
   const updateRoles = useAppStore((s) => s.updateRoles)
@@ -151,7 +152,7 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
   const groups: ModelGroup[] = useMemo(() => {
     const tierOptions = MODEL_TIER_OPTIONS.filter((o) => tierModels[o.value]).map((o) => ({ value: o.value as string, label: tierOptionLabel(o.value, tierModels) }))
     const rows = [{ value: 'inherit', label: isRoot ? 'Use the connection default' : 'Inherit from parent' }, ...tierOptions]
-    if (choice === 'custom') rows.push({ value: 'custom', label: proxy ? 'Exact model (set below)' : 'Custom (set under Advanced)' })
+    if (choice === 'custom') rows.push({ value: 'custom', label: proxy ? 'Exact model (set below)' : 'Custom (set below)' })
     return [{ options: rows }]
   }, [tierModels, isRoot, choice, proxy])
 
@@ -235,35 +236,69 @@ export default function RoleModelPicker({ project, role }: { project: Project; r
         <ModelSelect label="Model" value={choice} groups={groups} description={description} onChange={pick} testId="role-model" />
       )}
 
-      {proxy && exactSelect}
-      <details className="setting-row-more role-model-advanced" data-testid="role-model-advanced">
-        <summary>Advanced</summary>
-        <div className="setting-row-more-body stack-2">
-          {!proxy && exactSelect}
-          <div className="field">
-            <label htmlFor={`role-effort-${role.id}`}>Effort</label>
-            <select
-              id={`role-effort-${role.id}`}
-              className="select"
-              value={role.effort ?? ''}
-              aria-describedby={effort.note ? `role-effort-note-${role.id}` : undefined}
-              data-testid="role-effort"
-              onChange={(e) => updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, effort: (e.target.value || undefined) as Effort | undefined } : r)))}
-            >
-              {effort.options.map((o) => (
-                <option key={o.value} value={o.value}>
-                  {o.label}
-                </option>
-              ))}
-            </select>
-            {effort.note && (
-              <span className="hint" id={`role-effort-note-${role.id}`} data-testid="role-effort-unsupported">
-                {effort.note}
-              </span>
-            )}
-          </div>
-        </div>
-      </details>
+      {exactSelect}
+      <div className="field">
+        <label htmlFor={`role-effort-${role.id}`}>Effort</label>
+        <select
+          id={`role-effort-${role.id}`}
+          className="select"
+          value={role.effort ?? ''}
+          aria-describedby={effort.note ? `role-effort-note-${role.id}` : undefined}
+          data-testid="role-effort"
+          onChange={(e) => updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, effort: (e.target.value || undefined) as Effort | undefined } : r)))}
+        >
+          {effort.options.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        {effort.note && (
+          <span className="hint" id={`role-effort-note-${role.id}`} data-testid="role-effort-unsupported">
+            {effort.note}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The role panel's Model choice (UI overhaul, Team board): the tiers its connection maps, as one radio group in plain
+ * words (Fast, Standard, Advanced, Most capable). Nothing is checked while the role inherits or pins an exact model;
+ * "Choose an exact model" below holds Inherit and the exact ids. Hidden until the connection is connected and its models
+ * are loaded, because no tier maps before that.
+ */
+export function RoleTierChoice({ project, role }: { project: Project; role: Role }): ReactElement | null {
+  const updateRoles = useAppStore((s) => s.updateRoles)
+  const name = useId()
+  const connection = roleConnection(role, project)
+  const list = useAppStore((s) => s.connections)
+  const catalog = useAppStore((s) => s.models[connection])
+  const view = useMemo(() => connectionsViewOf(list), [list])
+  const tierModels = useMemo(() => roleTierContext(role, project, view, catalog).tierModels, [role, project, view, catalog])
+  const connected = list?.find((c) => c.connection.id === connection)?.status.state === 'connected'
+  const tiers = PLAIN_TIER_ORDER.filter((t) => tierModels[t])
+  if (!connected || !catalog || tiers.length === 0) return null
+  const choice = roleModelChoice(role, tierModels)
+  return (
+    <div className="re-tiers" role="radiogroup" aria-label="Model" data-testid="role-model-tiers" style={{ ['--tiers' as string]: tiers.length }}>
+      {tiers.map((t) => (
+        <label key={t} className={`re-tier${choice === t ? ' on' : ''}`} title={`${TIER_LABEL[t]} (${tierModels[t]})`}>
+          <input
+            type="radio"
+            name={name}
+            value={t}
+            checked={choice === t}
+            data-testid={`role-model-tier-${t}`}
+            onChange={() => {
+              const w = applyModelChoice(t, tierModels)
+              if (w) updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, model: w.model, tier: w.tier } : r)))
+            }}
+          />
+          {TIER_LABEL[t]}
+        </label>
+      ))}
     </div>
   )
 }

@@ -2,19 +2,29 @@ import type { KeyboardEvent, ReactElement } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { Eye, Trash2 } from 'lucide-react'
 import type { Project, Role } from '@shared/types'
-import RoleModelPicker from './RoleModelPicker'
+import RoleModelPicker, { RoleTierChoice } from './RoleModelPicker'
 import RoleCapabilities from './team/RoleCapabilities'
-import RoleStaffingControls from './team/RoleStaffingControls'
+import RoleStaffingControls, { RoleConcurrency } from './team/RoleStaffingControls'
 import RoleDelegation from './team/RoleDelegation'
 import RoleModelSentence from './team/RoleModelSentence'
 import type { CapabilityKind } from './team/CapabilityBlock'
-import { ROLE_COLORS, slugify } from '@shared/defaults'
+import { ROLE_COLORS, projectKindOf, roleConnection, slugify } from '@shared/defaults'
 import { useAppStore } from '../store/useAppStore'
 import { Button } from './ui/Button'
+import { Checkbox } from './ui/Checkbox'
 import { Input } from './ui/Input'
 import { Textarea } from './ui/Textarea'
 import { initials } from '../lib/layout'
-import { parentOptions, renamePatch, setReportsTo, settleRename, renameSnapshot, slugFieldEdit, type RenameStart } from '../lib/roleOps'
+import { parentOptions, renamePatch, setReportsTo, settleRename, renameSnapshot, slugFieldEdit, withRequiredReport, type RenameStart } from '../lib/roleOps'
+import { roleSubline, roleWorkPlaces } from '../lib/roleCapabilities'
+import {
+  ROLE_CONCURRENCY_SUPPORTED,
+  ROLE_KNOWLEDGE_WRITE_SUPPORTED,
+  canRequireReview,
+  isRequiredByManager,
+  roleKnowledgeWrite,
+  withKnowledgeWrite
+} from '../lib/roleStaffing'
 
 /** The description a new role is seeded with (TeamView, the CLI). The editor shows it as a placeholder and treats it as empty. */
 const SEEDED_DESCRIPTION = 'Describe when a manager should delegate to this role.'
@@ -49,9 +59,10 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
   const updateRoles = useAppStore((s) => s.updateRoles)
   const replaceProject = useAppStore((s) => s.replaceProject)
   const isRoot = role.reportsTo === null
+  const engagement = projectKindOf(project) === 'engagement'
   const id = (name: string): string => `role-${name}`
-  // On a short or narrow window "Model and effort" stays folded behind its one-line sentence; every other section is open.
-  const [roomy] = useState(() => window.innerHeight >= 800 && window.innerWidth >= 1280)
+  // The instructions field shows a few lines; "Open full editor" grows it. It is the same textarea either way.
+  const [fullPrompt, setFullPrompt] = useState(false)
 
   const patch = (p: Partial<Role>): void =>
     updateRoles(project.id, (roles) => roles.map((r) => (r.id === role.id ? { ...r, ...p } : r)))
@@ -154,15 +165,27 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
   // The seeded sentence is a hint, not a description: shown as the placeholder and counted as empty.
   const seeded = role.description === SEEDED_DESCRIPTION
   const parents = isRoot ? [] : parentOptions(project.roles, role.id)
+  const manager = isRoot ? undefined : project.roles.find((r) => r.id === role.reportsTo)
+  const places = engagement ? roleWorkPlaces(project, role.tools) : []
+  // "Every change must pass this role": the same fact as the manager's "Always involve" box, kept in the manager's requiredReports.
+  const mustPass = canRequireReview(project.roles, role)
+  const setMustPass = (on: boolean): void => {
+    if (!manager) return
+    updateRoles(project.id, (roles) => roles.map((r) => (r.id === manager.id ? { ...r, ...withRequiredReport(r, role.id, on) } : r)))
+  }
 
   return (
-    <>
-      <div className="side-header" onKeyDown={onKeyDown}>
-        <div className="avatar sm" style={{ ['--role' as string]: role.color }} aria-hidden="true">
+    <div className="role-inspector" data-kind={engagement ? 'engagement' : 'code'} onKeyDown={onKeyDown}>
+      <div className="side-header ri-header">
+        <div className="ri-avatar" style={{ ['--role' as string]: role.color }} aria-hidden="true">
           {initials(role.name)}
         </div>
-        <h2 title={role.name || 'Role'}>{role.name || 'Role'}</h2>
-        <div className="grow" />
+        <div className="ri-heading">
+          <h2 title={role.name || 'Role'}>{role.name || 'Role'}</h2>
+          <div className="ri-subline" data-testid="role-subline">
+            {roleSubline(project.roles, role)}
+          </div>
+        </div>
         {!isRoot && (
           <div className="role-header-actions">
             <Button size="sm" variant="danger" icon={Trash2} onClick={onRemove}>
@@ -171,9 +194,120 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
           </div>
         )}
       </div>
-      <div className="side-body stack-3 role-editor" onKeyDown={onKeyDown}>
+      <div className="side-body stack-3 role-editor">
+        <section className="stack-2" aria-labelledby={id('description-title')} data-testid="role-section-job">
+          <div className="field">
+            <label className="ri-label" id={id('description-title')} htmlFor={id('description')}>
+              What this role does
+            </label>
+            <Textarea
+              id={id('description')}
+              value={seeded ? '' : role.description}
+              placeholder={SEEDED_DESCRIPTION}
+              aria-describedby={id('description-help')}
+              onChange={(v) => patch({ description: v })}
+            />
+            <span className="re-hint" id={id('description-help')}>
+              The lead reads this to decide when to hand work over.
+            </span>
+          </div>
+        </section>
+
+        {/* Model: the tier choice and one line naming the resolved model and connection (exact ids stay visible); everything else is behind "Choose an exact model". */}
+        <ModelSection project={project} role={role} headingId={id('model-title')} />
+
+        {ROLE_CONCURRENCY_SUPPORTED && (
+          <section className="stack-2" data-testid="role-section-count" aria-label="How many at once">
+            <RoleConcurrency role={role} onChange={patch} />
+          </section>
+        )}
+
+        {engagement && (
+          <section className="stack-2" aria-labelledby={id('where-title')} data-testid="role-section-where">
+            <h3 className="side-section-title ri-title" id={id('where-title')}>
+              Where it can work
+            </h3>
+            <ul className="ri-places" aria-labelledby={id('where-title')}>
+              {places.map((p, i) => (
+                <li key={`${i}:${p.name}`} className="ri-place" data-testid="role-place" data-mode={p.mode === 'Can write' ? 'write' : 'read'}>
+                  <span className="ri-place-name" title={p.name}>
+                    {p.name}
+                  </span>
+                  <span className="ri-place-mode">{p.mode}</span>
+                </li>
+              ))}
+            </ul>
+            <span className="re-hint">Reference folders stay read only for every role.</span>
+          </section>
+        )}
+
+        <RoleCapabilities project={project} role={role} onChange={patch} onAskAssistant={onAskAssistant} />
+
+        <section className="stack-2" aria-labelledby={id('does-title')} data-testid="role-section-does">
+          <div className="ri-head">
+            <h3 className="side-section-title ri-title" id={id('does-title')}>
+              Instructions
+            </h3>
+            <button
+              type="button"
+              className="link-btn ri-edit"
+              data-testid="role-prompt-expand"
+              aria-expanded={fullPrompt}
+              aria-controls={id('prompt')}
+              onClick={() => {
+                setFullPrompt((v) => !v)
+                if (!fullPrompt) window.requestAnimationFrame(() => document.getElementById(id('prompt'))?.focus({ preventScroll: true }))
+              }}
+            >
+              {fullPrompt ? 'Close full editor' : 'Open full editor'}
+            </button>
+          </div>
+          <div className="field">
+            <Textarea
+              id={id('prompt')}
+              mono
+              rows={fullPrompt ? 14 : 4}
+              value={role.prompt}
+              aria-labelledby={id('does-title')}
+              aria-describedby={id('prompt-help')}
+              data-size={fullPrompt ? 'full' : 'preview'}
+              onChange={(v) => patch({ prompt: v })}
+            />
+            <span className="re-hint" id={id('prompt-help')}>
+              Responsibilities, the roles it can delegate to and the project brief are added when it runs.
+            </span>
+          </div>
+          <div className="field">
+            <label htmlFor={id('responsibilities')}>Responsibilities</label>
+            <Textarea
+              id={id('responsibilities')}
+              value={role.responsibilities.join('\n')}
+              onChange={(v) =>
+                patch({ responsibilities: v.split('\n').map((s) => s.replace(/^[-•]\s*/, '')).filter((s) => s.trim()) })
+              }
+              placeholder="One per line"
+            />
+          </div>
+          {/* Placeholder until main can hand the assembled prompt over (docs/design/team-tab-overhaul.md 1.13). Stays focusable so its reason is read. */}
+          <div className="re-preview">
+            <Button size="sm" icon={Eye} inert ariaDescribedBy={id('preview-note')} testId="role-preview-prompt">
+              Preview final prompt
+            </Button>
+            <span className="re-preview-note" id={id('preview-note')}>
+              Not available yet.
+            </span>
+          </div>
+        </section>
+
+        <section className="stack-2" aria-labelledby={id('delegate-title')} data-testid="role-section-delegate">
+          <h3 className="side-section-title ri-title" id={id('delegate-title')}>
+            Who it can delegate to
+          </h3>
+          <RoleDelegation roles={project.roles} role={role} onChange={patch} onAddReport={onAddReport} headingId={id('delegate-title')} />
+        </section>
+
         <section className="stack-2" aria-labelledby={id('who-title')} data-testid="role-section-who">
-          <h3 className="side-section-title" id={id('who-title')}>
+          <h3 className="side-section-title ri-title" id={id('who-title')}>
             Who it is
           </h3>
           <div className="field">
@@ -190,19 +324,6 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
             />
           </div>
           <div className="field">
-            <label htmlFor={id('description')}>What is this role for?</label>
-            <Textarea
-              id={id('description')}
-              value={seeded ? '' : role.description}
-              placeholder={SEEDED_DESCRIPTION}
-              aria-describedby={id('description-help')}
-              onChange={(v) => patch({ description: v })}
-            />
-            <span className="re-hint" id={id('description-help')}>
-              Managers read this to decide when to hand work to it.
-            </span>
-          </div>
-          <div className="field">
             {isRoot ? (
               <>
                 <span className="field-label">Reports to</span>
@@ -216,7 +337,7 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
                 <select id={id('reports-to')} className="select" data-testid="role-reports-to" value={role.reportsTo ?? ''} onChange={(e) => changeParent(e.target.value)}>
                   {parents.map((o) => (
                     <option key={o.id} value={o.id} disabled={o.disabled}>
-                      {`${'  '.repeat(o.depth)}${o.name}`}
+                      {`${'  '.repeat(o.depth)}${o.name}`}
                     </option>
                   ))}
                 </select>
@@ -293,67 +414,55 @@ export default function RoleInspector({ project, role, onReportsToChanged, onSet
           </details>
         </section>
 
-        <section className="stack-2" aria-labelledby={id('does-title')} data-testid="role-section-does">
-          <h3 className="side-section-title" id={id('does-title')}>
-            What it does
-          </h3>
-          <div className="field">
-            <label htmlFor={id('responsibilities')}>Responsibilities</label>
-            <Textarea
-              id={id('responsibilities')}
-              value={role.responsibilities.join('\n')}
-              onChange={(v) =>
-                patch({ responsibilities: v.split('\n').map((s) => s.replace(/^[-•]\s*/, '')).filter((s) => s.trim()) })
-              }
-              placeholder="One per line"
-            />
-          </div>
-          <div className="field">
-            <label htmlFor={id('prompt')}>Instructions</label>
-            <Textarea id={id('prompt')} mono rows={8} value={role.prompt} aria-describedby={id('prompt-help')} onChange={(v) => patch({ prompt: v })} />
-            <span className="re-hint" id={id('prompt-help')}>
-              Responsibilities, the roles it can delegate to and the project brief are added when it runs.
-            </span>
-          </div>
-          {/* Placeholder until main can hand the assembled prompt over (docs/design/team-tab-overhaul.md 1.13). Stays focusable so its reason is read. */}
-          <div className="re-preview">
-            <Button size="sm" icon={Eye} inert ariaDescribedBy={id('preview-note')} testId="role-preview-prompt">
-              Preview final prompt
-            </Button>
-            <span className="re-preview-note" id={id('preview-note')}>
-              Not available yet.
-            </span>
-          </div>
-        </section>
-
-        <RoleCapabilities project={project} role={role} onChange={patch} onAskAssistant={onAskAssistant} />
-
-        <section className="stack-2" aria-labelledby={id('delegate-title')} data-testid="role-section-delegate">
-          <h3 className="side-section-title" id={id('delegate-title')}>
-            Who it can delegate to
-          </h3>
-          <RoleDelegation roles={project.roles} role={role} onChange={patch} onAddReport={onAddReport} headingId={id('delegate-title')} />
-        </section>
-
-        {/* Folded behind its sentence on a short window: the summary holds the title and the sentence, so closed it still says what the role runs on. */}
-        <details className="re-model stack-2" open={roomy} data-testid="role-section-model">
-          <summary>
-            <h3 className="side-section-title" id={id('model-title')}>
-              Model and effort
-            </h3>
-            <RoleModelSentence project={project} role={role} />
-          </summary>
-          <div className="stack-2 re-model-body">
-            <RoleModelPicker project={project} role={role} />
-            <details className="re-fold" data-testid="role-staffing-fold">
-              <summary>Staffing details</summary>
-              <div className="re-fold-body">
-                <RoleStaffingControls project={project} role={role} />
-              </div>
-            </details>
-          </div>
-        </details>
+        {(mustPass || (engagement && ROLE_KNOWLEDGE_WRITE_SUPPORTED)) && (
+          <section className="stack-2 ri-rules" aria-label="Team rules for this role" data-testid="role-section-rules">
+            {mustPass && (
+              <Checkbox
+                checked={isRequiredByManager(project.roles, role)}
+                onChange={setMustPass}
+                testId="role-must-pass"
+                label="Every change must pass this role before merging"
+                description={manager ? `Saved on ${manager.name}, which always involves it.` : undefined}
+              />
+            )}
+            {engagement && ROLE_KNOWLEDGE_WRITE_SUPPORTED && (
+              <Checkbox checked={roleKnowledgeWrite(role)} onChange={(v) => patch(withKnowledgeWrite(v))} testId="role-knowledge-write" label="Records what it learns in Knowledge" />
+            )}
+          </section>
+        )}
       </div>
-    </>
+    </div>
+  )
+}
+
+/**
+ * "Model": the tier segmented choice, the sentence that names the resolved model and connection, and a reveal
+ * ("Choose an exact model") holding Runs on, the Model select with Inherit, the exact model, effort and Staffing details.
+ * The reveal opens by itself when the role's connection is not connected, so the way to fix that is in sight.
+ */
+function ModelSection({ project, role, headingId }: { project: Project; role: Role; headingId: string }): ReactElement {
+  const connection = roleConnection(role, project)
+  const list = useAppStore((s) => s.connections)
+  const notConnected = list !== null && list.find((c) => c.connection.id === connection)?.status.state !== 'connected'
+  return (
+    <section className="re-model stack-2" aria-labelledby={headingId} data-testid="role-section-model">
+      <h3 className="side-section-title ri-title" id={headingId}>
+        Model
+      </h3>
+      <RoleTierChoice project={project} role={role} />
+      <RoleModelSentence project={project} role={role} />
+      <details className="re-fold re-exact" data-testid="role-model-advanced" open={notConnected}>
+        <summary>Choose an exact model</summary>
+        <div className="stack-2 re-model-body">
+          <RoleModelPicker project={project} role={role} />
+          <details className="re-fold" data-testid="role-staffing-fold">
+            <summary>Staffing details</summary>
+            <div className="re-fold-body">
+              <RoleStaffingControls project={project} role={role} />
+            </div>
+          </details>
+        </div>
+      </details>
+    </section>
   )
 }

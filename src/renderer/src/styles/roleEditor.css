@@ -1,9 +1,287 @@
 /* Team tab phase 2: role editor sections, delegation, model sentence (docs/design/team-tab-overhaul.md 1.6). Tokens only. */
 
-/* Sections are direct children of the side body: the model section is a <details>, so it gets the divider the sections get. */
-.role-editor > .re-model {
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border-default);
+/* Role panel (UI overhaul, Team and EngagementTeam boards). The panel's accent is the app accent on a code project and the
+   engagement coral (--eng) on an engagement; every token has a fallback so the panel reads the same before the theme
+   layer adds them. Selected choices are filled on a code project and soft on an engagement. */
+.role-inspector {
+  --ri-accent: var(--accent);
+  --ri-accent-text: var(--accent-text);
+  --ri-sel-bg: var(--accent);
+  --ri-sel-fg: var(--text-on-accent);
+  --ri-sel-line: transparent;
+  --ri-heading: var(--font-display, inherit);
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.role-inspector[data-kind='engagement'] {
+  --ri-accent: var(--eng, var(--accent));
+  --ri-accent-text: var(--eng, var(--accent-text));
+  --ri-sel-bg: var(--eng-soft, var(--accent-soft));
+  --ri-sel-fg: var(--text-primary);
+  --ri-sel-line: var(--eng, var(--accent-text));
+  --ri-heading: var(--font-serif, var(--font-display, inherit));
+}
+
+/* Header: a 40 px rounded square in the role colour, the name, then "{group} · reports to {manager}". */
+.role-inspector .ri-header {
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-3);
+  border-bottom: 0;
+  background: var(--glass-strong, var(--surface-1));
+}
+.ri-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: var(--space-10);
+  height: var(--space-10);
+  border-radius: var(--radius-lg);
+  background: var(--role);
+  color: var(--text-on-accent);
+  font-size: var(--text-title-sm);
+  font-weight: var(--weight-semibold);
+}
+.ri-heading {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.role-inspector .ri-heading h2 {
+  font-family: var(--ri-heading);
+  font-size: var(--text-title-lg);
+  line-height: var(--text-title-lg-lh);
+  letter-spacing: 0;
+}
+.ri-subline {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption-lh);
+  color: var(--text-tertiary);
+}
+
+/* Sections: the board spaces them without dividers; nested capability groups keep their own. */
+.role-inspector .role-editor {
+  gap: var(--space-5);
+}
+.role-inspector .role-editor > section + section {
+  padding-top: 0;
+  border-top: 0;
+}
+.role-inspector .ri-title,
+.role-inspector .ri-label,
+.role-inspector .role-capabilities-title {
+  margin: 0;
+  font-family: var(--ri-heading);
+  font-size: var(--text-body);
+  line-height: var(--text-body-lh);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.role-inspector .ri-label {
+  font-family: inherit;
+}
+.role-inspector .ri-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.role-inspector .ri-edit {
+  flex: none;
+  color: var(--ri-accent-text);
+  font-size: var(--text-body);
+  text-decoration: none;
+}
+.role-inspector .ri-edit:hover {
+  text-decoration: underline;
+}
+.role-inspector .input,
+.role-inspector .textarea,
+.role-inspector .select {
+  background: var(--field-bg);
+}
+.role-inspector .textarea[data-size='preview'] {
+  color: var(--text-secondary);
+}
+
+/* "What it can use" at a glance: pills on the field background; the dashed one says what it cannot do. */
+.ri-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1h);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ri-chip {
+  max-width: 100%;
+  padding: var(--space-0h) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--field-bg);
+  color: var(--text-primary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  overflow-wrap: anywhere;
+}
+.ri-chip-dashed {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--text-tertiary);
+}
+
+/* Model: the tiers as one segmented choice (a native radio group), then the sentence and the reveal. */
+.re-tiers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(4.25rem, 1fr));
+  gap: var(--space-0h);
+  padding: var(--space-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+}
+.re-tier {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: var(--space-8);
+  padding: var(--space-1) var(--space-1h);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  font-weight: var(--weight-medium);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.re-tier:hover {
+  color: var(--text-primary);
+}
+.re-tier.on {
+  background: var(--ri-sel-bg);
+  border-color: var(--ri-sel-line);
+  color: var(--ri-sel-fg);
+  font-weight: var(--weight-semibold);
+}
+.re-tier input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.re-tier:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.re-exact > .re-model-body {
+  padding-top: 0;
+}
+
+/* How many at once: a label, the readout and a small stepper. */
+.ri-count {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.ri-count .ri-label {
+  flex: 1 1 auto;
+}
+.ri-count-value {
+  font-size: var(--text-body);
+  color: var(--text-secondary);
+}
+.ri-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0h);
+  padding: var(--space-0h);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--field-bg);
+}
+.ri-step {
+  display: grid;
+  place-items: center;
+  width: var(--space-6);
+  height: var(--space-6);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.ri-step:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+.ri-step:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+.ri-step:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.ri-step-n {
+  min-width: var(--space-6);
+  text-align: center;
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-body);
+}
+
+/* Where it can work (engagements): one row per folder with Can write or Read only. */
+.ri-places {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ri-place {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--glass-line, var(--border-subtle));
+  border-radius: var(--radius-md);
+  background: var(--glass-strong, var(--surface-1));
+  font-size: var(--text-body);
+}
+.ri-place-name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--weight-semibold);
+}
+.ri-place-mode {
+  flex: none;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+  line-height: var(--space-5);
+  font-weight: var(--weight-semibold);
+}
+.ri-place[data-mode='write'] .ri-place-mode {
+  background: var(--ri-sel-bg);
+  color: var(--ri-sel-fg);
+}
+
+.ri-rules {
+  padding-top: var(--space-1);
 }
 
 /* Helper text under a field and the static "Reports to" sentence of the root. */
