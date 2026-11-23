@@ -812,6 +812,9 @@ export function strongerModelCheck(input: {
   const own = roleModelTier(role) ?? (isModelTier(role.tier) ? role.tier : undefined) ?? parentTier
   let keep: ModelTier | undefined
   if (own && compareTier(to, own) > 0) keep = own
+  // Neither the role nor its parent says what tier it runs on: that is not "nothing above it". Treat it as the everyday
+  // tier (the one a role gets by default), so a result above everyday still waits for the user (security review L4).
+  if (!own && compareTier(to, 'everyday') > 0) keep = 'everyday'
   if (resolved.source === 'escalated' && resolved.note) {
     // joinNotes capitalises the first letter and ends with a period, so compare without case.
     const note = resolved.note.toLowerCase()

@@ -22,7 +22,7 @@ import { effectiveSubagentLimits, effortOptionsFor, newId, staffingGoalOf } from
 import { resolveStaffing } from './staffing'
 import { HandleNamer, spawnHandle } from './network'
 import { settleAgent, isLiveAgent, type RunOutcome } from './activity'
-import { spawnCapRefusal } from './spawnCaps'
+import { spawnAllowanceAfter, spawnCapRefusal } from './spawnCaps'
 import {
   ROOT_AGENT_ID,
   type BridgeSpawnInput,
@@ -299,8 +299,19 @@ export class BridgedSessions {
 
     // The child's own adapter reads limits from its project and chart: hand it what is left of the run's budget.
     const childDepthBudget = limits.depth - (depth + 1)
-    const childLimits = { depth: Math.max(1, childDepthBudget), concurrency: Math.max(1, limits.concurrency - live - 1) }
-    const childRoles = this.childRoles(this.staffedRole(role, choice, conn, input, parent), choice, parent.roles, childDepthBudget <= 0)
+    // The same for the UI overhaul caps (security review L3): the child's adapter counts only its own agents, so it gets what
+    // is left of Project.maxAgentsPerRun and of each Role.maxConcurrent, not the whole cap. Nothing left means no spawning
+    // (a cap of 0 does not exist), and a capped role with no free slot is not reachable from the child.
+    const allowance = spawnAllowanceAfter({ project: parent.project, roles: parent.roles, roleId: role.id, agents, pending })
+    const childLimits = {
+      depth: Math.max(1, childDepthBudget),
+      concurrency: Math.max(1, limits.concurrency - live - 1),
+      ...(allowance.agentsLeft !== undefined ? { maxAgents: Math.max(1, allowance.agentsLeft) } : {})
+    }
+    const childRoles = this.withRoleAllowance(
+      this.childRoles(this.staffedRole(role, choice, conn, input, parent), choice, parent.roles, childDepthBudget <= 0 || allowance.agentsLeft === 0),
+      allowance.roleLeft
+    )
     const child: Child = {
       agentId,
       handle,
@@ -398,11 +409,28 @@ export class BridgedSessions {
     return [copy(role, true), ...[...reachable.values()].map((r) => copy(r, false))]
   }
 
+  /**
+   * The child's roles with each capped role's Role.maxConcurrent lowered to the slots still free in the run; a reachable
+   * role with none free is dropped (and from every spawnable list), since a cap of 0 does not exist. The first role is the
+   * child's own root, which the child never spawns, so it is left as configured.
+   */
+  private withRoleAllowance(roles: Role[], left: ReadonlyMap<string, number>): Role[] {
+    if (!left.size) return roles
+    const [root, ...rest] = roles
+    const blocked = new Set(rest.filter((r) => left.get(r.id) === 0).map((r) => r.id))
+    const narrow = (r: Role): Role => {
+      const spawnable = r.spawnable.filter((id) => !blocked.has(id))
+      const slots = left.get(r.id)
+      return { ...r, spawnable, canSpawn: r.canSpawn && spawnable.length > 0, ...(slots !== undefined && r !== root ? { maxConcurrent: slots } : {}) }
+    }
+    return [narrow(root), ...rest.filter((r) => !blocked.has(r.id)).map(narrow)]
+  }
+
   private mapId(child: Child, childId: string): string {
     return childId === ROOT_AGENT_ID ? child.agentId : `${child.agentId}:${childId}`
   }
 
-  private childContext(child: Child, conn: RunConnection, roles: Role[], input: BridgeSpawnInput, limits: { depth: number; concurrency: number }): RuntimeContext {
+  private childContext(child: Child, conn: RunConnection, roles: Role[], input: BridgeSpawnInput, limits: { depth: number; concurrency: number; maxAgents?: number }): RuntimeContext {
     const parentNow = (): RuntimeContext => this.deps.parent()
     const p0 = parentNow()
     const agent = (id: string | undefined): string | undefined => (id === undefined ? undefined : this.mapId(child, id))
@@ -417,6 +445,7 @@ export class BridgedSessions {
       isolateWriters: false,
       maxSubagentDepth: limits.depth,
       maxConcurrentSubagents: limits.concurrency,
+      ...(limits.maxAgents !== undefined ? { maxAgentsPerRun: limits.maxAgents } : {}),
       provider: { ...p0.project.provider, id: child.choice.adapter }
     }
     // The child session keeps this mode for its life (its project is a snapshot): see liveWiderThan.

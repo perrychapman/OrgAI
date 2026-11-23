@@ -281,7 +281,7 @@ export const WRITE_SITES: Record<string, string> = {
   'src/main/skills/files.ts:writeFolder:writeFileSync': 'single owner',
   // UI overhaul: the per-project allow counter (<data>/projects/<id>/allow-counts.json, written from the desktop
   // decide path only) and skill export (a new folder under a destination the user just picked; never overwrites).
-  'src/main/runtime/allowCounter.ts:bumpAllowCount:atomicWrite': 'single owner',
+  'src/main/runtime/allowCounter.ts:writeCounts:atomicWrite': 'single owner',
   'src/main/skills/service.ts:SkillService.exportTo:mkdirSync': 'single owner',
   'src/main/skills/service.ts:SkillService.exportTo:rmSync': 'single owner',
   'src/main/skills/service.ts:SkillService.exportTo:writeFileSync': 'single owner',

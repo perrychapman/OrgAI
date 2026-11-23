@@ -8,7 +8,7 @@ import { setModelTokens } from './runUsage'
 import { RunStore } from '../store/runs'
 import type { SetupService } from '../setup/service'
 import type { RuntimeAdapter, RuntimeContext, RuntimeSession } from './types'
-import { project as makeProject, role } from './testHelpers'
+import { project as makeProject, role, runSummary } from './testHelpers'
 
 vi.mock('../log', () => ({ logRunEvent: () => {}, logPermission: () => {}, log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } }))
 
@@ -29,7 +29,7 @@ afterEach(() => {
 const model = (id: string): ProviderModel => ({ id, label: id, connection: 'anthropic', family: 'claude', adapter: 'claude', source: 'builtin' })
 const CATALOG: ProviderModel[] = [model('claude-sonnet-4-5'), model('claude-opus-4-5'), model('mystery-model')]
 
-function rig() {
+function rig(extra: Partial<ConstructorParameters<typeof RunManager>[5]> = {}) {
   const started: { ctx: RuntimeContext }[] = []
   const make = (id: ProviderId): RuntimeAdapter => ({
     id,
@@ -46,7 +46,8 @@ function rig() {
   const own = events
   const m = new RunManager({ mock: make('mock'), claude: make('claude'), codex: make('codex') }, (e) => void own.push(e), store, setup, () => 100, {
     dataDir: join(dir, 'data'),
-    catalog: () => CATALOG
+    catalog: () => CATALOG,
+    ...extra
   })
   return { m, store, started }
 }
@@ -120,5 +121,58 @@ describe('a daily or monthly cap needs priced models (M2)', () => {
     expect(warnings(capped.id)).toHaveLength(1)
     expect(warnings(uncapped.id)).toHaveLength(0)
     await r.m.stopAll()
+  })
+})
+
+describe('a live model switch under a daily or monthly cap needs a priced model (M1)', () => {
+  const REASON = SENTENCE('mystery-model')
+
+  it('refuses a live switch to an unpriced model before the adapter changes anything, and saves nothing', async () => {
+    const p = claudeTeam('claude-sonnet-4-5', { maxDailyUsd: 5 })
+    const r = rig({ resolveProject: () => p })
+    const run = await r.m.start({ project: p, prompt: 'go' })
+    const active = Reflect.get(r.m, 'runs').get(run.id)
+    const change = vi.fn(async () => {})
+    active.session.switchModel = change
+    const before = r.m.summaryOf(run.id)!.modelSelection
+    const result = await r.m.switchModel({ runId: run.id, model: 'mystery-model' })
+    expect(result).toMatchObject({ applied: false, reason: REASON })
+    expect(change).not.toHaveBeenCalled()
+    expect(r.m.summaryOf(run.id)!.modelSelection).toEqual(before)
+    expect(events.some((e) => e.type === 'run.model')).toBe(false)
+    // A priced model on the same connection still switches.
+    const ok = await r.m.switchModel({ runId: run.id, model: 'claude-opus-4-5' })
+    expect(ok.applied).toBe(true)
+    expect(change).toHaveBeenCalledOnce()
+    await r.m.stopAll()
+  })
+
+  it('refuses under a monthly cap, and allows the same unpriced model when the project has no cap', async () => {
+    const monthly = claudeTeam('claude-sonnet-4-5', { maxMonthlyUsd: 50 })
+    const r = rig({ resolveProject: () => monthly })
+    const run = await r.m.start({ project: monthly, prompt: 'go' })
+    Reflect.get(r.m, 'runs').get(run.id).session.switchModel = vi.fn(async () => {})
+    expect(await r.m.switchModel({ runId: run.id, model: 'mystery-model' })).toMatchObject({ applied: false, reason: REASON })
+    await r.m.stopAll()
+
+    const open = claudeTeam('claude-sonnet-4-5', { id: 'p9', path: folder('open') })
+    const r2 = rig({ resolveProject: () => open })
+    const run2 = await r2.m.start({ project: open, prompt: 'go' })
+    Reflect.get(r2.m, 'runs').get(run2.id).session.switchModel = vi.fn(async () => {})
+    expect((await r2.m.switchModel({ runId: run2.id, model: 'mystery-model' })).applied).toBe(true)
+    await r2.m.stopAll()
+  })
+
+  it('refuses a selection saved for the next continuation of an ended run, so a continuation cannot start unpriced', async () => {
+    const p = claudeTeam('claude-sonnet-4-5', { maxDailyUsd: 5 })
+    const r = rig({ resolveProject: () => p })
+    r.store.upsert(runSummary({ id: 'ended', projectId: 'p1', status: 'finished', connection: 'anthropic', modelAdapter: 'claude' }))
+    const result = await r.m.switchModel({ runId: 'ended', model: 'mystery-model' })
+    expect(result).toMatchObject({ applied: false, reason: REASON })
+    expect(r.store.get('ended')?.modelSelection).toBeUndefined()
+    expect(events.some((e) => e.type === 'run.model')).toBe(false)
+    const ok = await r.m.switchModel({ runId: 'ended', model: 'claude-opus-4-5' })
+    expect(ok).toMatchObject({ applied: false, reason: 'Model will be used when the run continues.' })
+    expect(r.store.get('ended')?.modelSelection).toEqual({ model: 'claude-opus-4-5', connection: 'anthropic' })
   })
 })

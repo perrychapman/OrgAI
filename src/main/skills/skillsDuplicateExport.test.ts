@@ -103,6 +103,16 @@ describe('SkillService.exportTo', () => {
     expect(readdirSync(dest).sort()).toEqual(['review-code', 'review-code-2'])
   })
 
+  it('never names the export folder after a Windows device (con, nul, com1 ...) (security review L7)', async () => {
+    const dest = temp()
+    for (const name of ['con', 'nul', 'com1']) {
+      const skillId = svc.create({ projectId: 'p1', draft: draft(name) }).skills.find((s) => s.spec.name === name)!.spec.id
+      const out = await svc.exportTo({ projectId: 'p1', skillId, destDir: dest })
+      expect(out).toBe(join(dest, `${name}-skill`))
+      expect(existsSync(join(out, 'SKILL.md'))).toBe(true)
+    }
+  })
+
   it('refuses a relative, missing or non-directory destination', async () => {
     const id = made()
     const dest = temp()

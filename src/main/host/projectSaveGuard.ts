@@ -18,7 +18,9 @@ import { normalizeSpendWarnPercent } from '../store/settings'
  *   treat as OrgAI's; the question gates staffing escalation). A missing flag equals false.
  *
  * - `maxAgentsPerRun`, `Role.maxConcurrent`: a cap may be set where there was none, kept, or lowered; never raised or
- *   removed (a role is matched by id; a role new in the save starts uncapped, as any new role does).
+ *   removed. A role that carries a cap (or knowledgeWrite false) must stay in the save under its own id: removing it, or
+ *   re-adding it under a new id, is refused, and so is any role with the same slug or name that lacks the limit. A role
+ *   that carries no limit may be removed, and a role new in the save starts uncapped, as any new role does.
  * - `Role.knowledgeWrite`: may be set to false or kept; a stored false is never removed or turned true.
  * - `keepFailedBranchesDays`: may be raised, cleared or kept; never set where there was none or lowered (the boot sweep
  *   would delete finished copies sooner).
@@ -37,16 +39,32 @@ export function desktopOnlyProjectChanges(stored: Project, incoming: Project): s
   if (now.keepFailedBranchesDays !== undefined && (was.keepFailedBranchesDays === undefined || now.keepFailedBranchesDays < was.keepFailedBranchesDays)) {
     refused.push('keepFailedBranchesDays')
   }
-  const nowRoles = new Map<string, Role>()
-  for (const r of Array.isArray(incoming.roles) ? incoming.roles : []) if (r && typeof r.id === 'string') nowRoles.set(r.id, cleanRoleLimits(r))
+  const nowRoles: Role[] = []
+  for (const r of Array.isArray(incoming.roles) ? incoming.roles : []) if (r && typeof r.id === 'string') nowRoles.push(cleanRoleLimits(r))
+  const key = (s: unknown): string => (typeof s === 'string' ? s.trim().toLowerCase() : '')
   let concurrentWidened = false
   let knowledgeWidened = false
   for (const old of Array.isArray(stored.roles) ? stored.roles : []) {
     const before = cleanRoleLimits(old)
-    const after = nowRoles.get(before.id)
-    if (!after) continue // the role is gone: nothing of it runs
-    if (before.maxConcurrent !== undefined && (after.maxConcurrent === undefined || after.maxConcurrent > before.maxConcurrent)) concurrentWidened = true
-    if (before.knowledgeWrite === false && after.knowledgeWrite !== false) knowledgeWidened = true
+    const capped = before.maxConcurrent !== undefined
+    const restricted = before.knowledgeWrite === false
+    if (!capped && !restricted) continue
+    // A role that carries a limit must stay in the save under its own id: dropping it, or dropping it and adding the same
+    // role again under a new id (a fresh role starts uncapped), is how a limit would be shed from a terminal.
+    // ProjectStore does not stop that (a role's id is whatever the saved copy says), so it is refused here.
+    const same = nowRoles.find((r) => r.id === before.id)
+    if (!same) {
+      if (capped) concurrentWidened = true
+      if (restricted) knowledgeWidened = true
+      continue
+    }
+    // Every incoming role that is this role by id, slug or name must keep the limit (a second copy with the same slug
+    // or name and no limit is the same bypass without removing the original).
+    for (const after of nowRoles) {
+      if (after.id !== before.id && key(after.slug) !== key(before.slug) && key(after.name) !== key(before.name)) continue
+      if (capped && (after.maxConcurrent === undefined || after.maxConcurrent > before.maxConcurrent!)) concurrentWidened = true
+      if (restricted && after.knowledgeWrite !== false) knowledgeWidened = true
+    }
   }
   if (concurrentWidened) refused.push('Role.maxConcurrent')
   if (knowledgeWidened) refused.push('Role.knowledgeWrite')

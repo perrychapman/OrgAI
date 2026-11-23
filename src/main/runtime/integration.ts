@@ -1,7 +1,7 @@
 import type { AgentInstance, MergeReview, WorktreeInfo, WorktreeStatus } from '@shared/types'
 import { ROOT_AGENT_ID, type RuntimeContext } from './types'
 import { INTEGRATE_TOOL } from './harnessTools'
-import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type GateDecision, type IntegrateOptions, type IntegrateResult } from './worktrees'
+import { branchTip, commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type GateDecision, type IntegrateOptions, type IntegrateResult } from './worktrees'
 import { runTestGate, testGateCommand, testGateMissingCommand } from './testGate'
 
 /**
@@ -26,6 +26,9 @@ import { runTestGate, testGateCommand, testGateMissingCommand } from './testGate
  * Merges into the same working directory are serialized (git takes one index lock per worktree),
  * including the review wait, so a reviewed diff is the diff that gets merged.
  */
+
+/** How many times the user is asked about one branch when its tip moves while the gate runs (the first review plus one re-ask). */
+const MERGE_REVIEW_ROUNDS = 2
 
 export interface IntegratorHost {
   /** The adapter's current snapshot of an agent (for its name and activity). */
@@ -423,11 +426,11 @@ export class WorktreeIntegrator {
     agentId: string | null,
     info: WorktreeInfo,
     targetRoot: string = this.root
-  ): ((changedFiles: string[]) => Promise<GateDecision>) | undefined {
+  ): ((changedFiles: string[], tip: string) => Promise<GateDecision>) | undefined {
     const testCommand = testGateCommand(this.ctx.project)
     const missingCommand = testGateMissingCommand(this.ctx.project)
     if (!this.ctx.project.reviewMerges && !testCommand && !missingCommand) return undefined
-    return async (changedFiles) => {
+    return async (changedFiles, tip) => {
       const owner = agentId ? this.host.agent(agentId) : undefined
       const ownerName = owner?.name ?? agentId ?? undefined
       // Tests are required but no command is set: an untested merge is not what the project asked for, so refuse it
@@ -443,27 +446,43 @@ export class WorktreeIntegrator {
       }
       // With reviewMerges the gate runs repository code, so it waits for the user's approval: the card shows tests
       // 'unknown' and the command runs only after "merge" is chosen.
-      const checks: NonNullable<MergeReview['checks']> = { tests: 'unknown', review: 'unknown' }
-      if (agentId) this.set(agentId, { ...info, status: 'review', changedFiles })
-      const diff = await diffWorktree(targetRoot, info.branch)
-      const into = targetRoot === this.root ? '' : ` into ${info.parentBranch ?? targetRoot}`
-      this.log('info', `${ownerName ?? info.branch}: waiting for the user to review ${info.branch} before merging${into}.`)
-      const decision = await this.ctx.requestMergeReview({
-        agentId: agentId ?? ROOT_AGENT_ID,
-        agentName: ownerName ?? info.branch,
-        branch: info.branch,
-        path: info.path,
-        changedFiles: diff.changedFiles.length ? diff.changedFiles : changedFiles,
-        stat: diff.stat,
-        patch: diff.patch,
-        checks
-      })
-      if (agentId && decision.behavior === 'merge') this.set(agentId, { ...info, status: 'merging', changedFiles })
-      if (decision.behavior === 'merge' && testCommand) {
-        const gate = await this.runTests(ownerName ?? info.branch, info, testCommand, true)
-        if (gate.refusal) return gate.refusal
+      // The user approves one commit (`approved`, recorded before the card is made). The test command is repository code
+      // and may commit to the branch: if the tip moved, the approval does not cover it, so the user is asked again about
+      // the new tip (once), and only the approved commit is handed back to be merged (GateDecision.sha).
+      let approved = tip
+      for (let round = 1; round <= MERGE_REVIEW_ROUNDS; round++) {
+        const checks: NonNullable<MergeReview['checks']> = { tests: 'unknown', review: 'unknown' }
+        if (agentId) this.set(agentId, { ...info, status: 'review', changedFiles })
+        const diff = await diffWorktree(targetRoot, info.branch, approved)
+        const into = targetRoot === this.root ? '' : ` into ${info.parentBranch ?? targetRoot}`
+        this.log('info', `${ownerName ?? info.branch}: waiting for the user to review ${info.branch} before merging${into}.`)
+        const decision = await this.ctx.requestMergeReview({
+          agentId: agentId ?? ROOT_AGENT_ID,
+          agentName: ownerName ?? info.branch,
+          branch: info.branch,
+          path: info.path,
+          changedFiles: diff.changedFiles.length ? diff.changedFiles : changedFiles,
+          stat: diff.stat,
+          patch: diff.patch,
+          checks
+        })
+        if (decision.behavior !== 'merge') return decision
+        if (agentId) this.set(agentId, { ...info, status: 'merging', changedFiles })
+        if (testCommand) {
+          const gate = await this.runTests(ownerName ?? info.branch, info, testCommand, true)
+          if (gate.refusal) return gate.refusal
+        }
+        const now = await branchTip(targetRoot, info.branch)
+        if (now === approved) return { behavior: 'merge', sha: approved }
+        this.log('warn', `${ownerName ?? info.branch}: branch ${info.branch} changed after the review (the tests may have committed to it).`)
+        if (!now) break
+        approved = now
       }
-      return decision
+      return {
+        behavior: 'refuse',
+        reason: 'tests',
+        message: `Not merged: branch ${info.branch} changed after it was reviewed, so the new commits were not approved. It is kept as it is at ${info.path}; check what changed, then call ${INTEGRATE_TOOL} again.`
+      }
     }
   }
 

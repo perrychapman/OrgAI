@@ -237,6 +237,60 @@ describe('gitSummary', () => {
     expect((await gitSummary(root))!.dirtyFiles).toBe(0)
   })
 
+  it('skips status when a filter driver lives in .git/config.worktree (extensions.worktreeConfig) and never runs it (security review M3)', async () => {
+    commit(root, 'a.txt', 'one\n', 'base')
+    const marker = join(root, '..', `wt-filter-marker-${Date.now()}.txt`).replace(/\\/g, '/')
+    created.push(marker)
+    const script = join(root, '..', `wt-filter-clean-${Date.now()}.sh`)
+    created.push(script)
+    writeFileSync(script, `#!/bin/sh\necho ran > "${marker}"\ncat\n`, { mode: 0o755 })
+    git(root, ['config', 'extensions.worktreeConfig', 'true'])
+    writeFileSync(join(root, '.git', 'config.worktree'), `[filter "evil"]\n\tclean = sh "${script.replace(/\\/g, '/')}"\n`, 'utf8')
+    writeFileSync(join(root, '.gitattributes'), 'a.txt filter=evil\n', 'utf8')
+    writeFileSync(join(root, 'a.txt'), 'two\n', 'utf8')
+    // Control: `config --local` is blind to the worktree file, and plain git status runs the driver.
+    expect(() => git(root, ['config', '--local', '--get', 'filter.evil.clean'])).toThrow()
+    git(root, ['status', '--porcelain'])
+    expect(existsSync(marker)).toBe(true)
+    rmSync(marker, { force: true })
+    const s = await gitSummary(root)
+    expect(s).not.toBeNull()
+    expect(existsSync(marker)).toBe(false)
+    expect(s!.dirtyFiles).toBe(0)
+    expect(s!.defaultBranch).toBe('main')
+  })
+
+  it('skips status for extensions.worktreeConfig alone and for a config.worktree file alone (security review M3)', async () => {
+    commit(root, 'a.txt', 'one\n', 'base')
+    writeFileSync(join(root, 'dirty.txt'), 'x\n', 'utf8')
+    expect((await gitSummary(root))!.dirtyFiles).toBe(1)
+    writeFileSync(join(root, '.git', 'config.worktree'), '[core]\n\twhitespace = trailing-space\n', 'utf8')
+    expect((await gitSummary(root))!.dirtyFiles).toBe(0)
+    rmSync(join(root, '.git', 'config.worktree'))
+    expect((await gitSummary(root))!.dirtyFiles).toBe(1)
+    git(root, ['config', 'extensions.worktreeConfig', 'true'])
+    expect((await gitSummary(root))!.dirtyFiles).toBe(0)
+  })
+
+  it('ignores filter drivers of the user\'s global config (lfs and the like), still counting dirty files (security review M3)', async () => {
+    commit(root, 'a.txt', 'one\n', 'base')
+    const home = tmp('orgai-gitinfo-home-')
+    writeFileSync(join(home, '.gitconfig'), '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n', 'utf8')
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, XDG: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.USERPROFILE = home
+    process.env.XDG_CONFIG_HOME = join(home, 'xdg')
+    try {
+      writeFileSync(join(root, 'dirty.txt'), 'x\n', 'utf8')
+      expect((await gitSummary(root))!.dirtyFiles).toBe(1)
+    } finally {
+      for (const [k, v] of [['HOME', saved.HOME], ['USERPROFILE', saved.USERPROFILE], ['XDG_CONFIG_HOME', saved.XDG]] as const) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  })
+
   it('still counts dirty files when the repository has no filter.* keys', async () => {
     commit(root, 'a.txt', 'one\n', 'base')
     git(root, ['config', 'core.whitespace', 'trailing-space'])

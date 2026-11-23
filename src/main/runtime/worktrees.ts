@@ -640,7 +640,17 @@ export interface IntegrateResult {
  * What the pre-merge gate of integrateWorktree answers: the user's review decision, or a refusal (the test gate failed):
  * nothing is merged or deleted, the copy stays pending on its branch and `message` says why.
  */
-export type GateDecision = MergeDecision | { behavior: 'refuse'; reason: 'tests'; message: string }
+export type GateDecision = Exclude<MergeDecision, { behavior: 'merge' }> | { behavior: 'merge'; sha?: string } | { behavior: 'refuse'; reason: 'tests'; message: string }
+
+/**
+ * The commit a local branch points at now, or null (no such branch, or git failed). The merge gate records it before the
+ * user reviews or the tests run and merges that commit, never the branch name: whatever the test command (repository
+ * code) commits to the branch meanwhile cannot land unreviewed.
+ */
+export async function branchTip(root: string, branch: string): Promise<string | null> {
+  const r = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`])
+  return r.ok && /^[0-9a-f]{40,64}$/.test(r.out) ? r.out : null
+}
 
 export interface IntegrateOptions {
   /**
@@ -692,13 +702,14 @@ export async function integrateWorktree(
   info: WorktreeInfo,
   commitMessage: string,
   /** Optional gate before merging (review-before-merge). Not called when there is nothing to merge. */
-  review?: (changedFiles: string[]) => Promise<GateDecision>,
+  review?: (changedFiles: string[], tip: string) => Promise<GateDecision>,
   opts: IntegrateOptions = {}
 ): Promise<IntegrateResult> {
   const wt = info.path
   // The target's lock is held for the git work but not while the user reviews the merge, which can take as
   // long as the user likes; another run's merge into the same checkout then waits only for git.
-  const prepared = await withRepoLock(root, async (): Promise<IntegrateResult | { changedFiles: string[]; merged?: IntegrateResult }> => {
+  // `tip` is the branch's commit recorded before the gate (review card, test command) runs; that commit is what merges.
+  const prepared = await withRepoLock(root, async (): Promise<IntegrateResult | { changedFiles: string[]; tip: string; merged?: IntegrateResult }> => {
     if (!existsSync(wt)) {
       return { info: { ...info, status: 'removed' }, message: 'Worktree was already removed; nothing to integrate.' }
     }
@@ -725,15 +736,19 @@ export async function integrateWorktree(
 
     const changed = await git(root, ['diff', '--name-only', `${head.out}...${info.branch}`])
     const changedFiles = changed.ok ? changed.out.split(/\r?\n/).filter(Boolean) : []
+    const tip = await branchTip(root, info.branch)
+    if (!tip) return { info: { ...info, status: 'conflict' }, message: `Could not read branch ${info.branch}; it is kept at ${wt}.` }
     // Without a review gate the merge follows under the same lock.
-    return review ? { changedFiles } : { changedFiles, merged: await mergeInto(root, info, commitMessage, changedFiles) }
+    return review ? { changedFiles, tip } : { changedFiles, tip, merged: await mergeInto(root, info, commitMessage, changedFiles, tip) }
   })
   if ('info' in prepared) return prepared
   if (prepared.merged) return prepared.merged
   const { changedFiles } = prepared
+  let approvedTip = prepared.tip
 
   if (review) {
-    const decision = await review(changedFiles)
+    const decision = await review(changedFiles, prepared.tip)
+    if (decision.behavior === 'merge' && decision.sha) approvedTip = decision.sha
     if (decision.behavior === 'refuse') {
       return { info: { ...info, status: 'conflict', changedFiles }, message: decision.message, refused: decision.reason }
     }
@@ -763,14 +778,23 @@ export async function integrateWorktree(
     if (refusal) return { info: { ...info, status: 'conflict', changedFiles }, message: refusal.message }
     const branchRefusal = await ensureMainBranch(root, opts.mainBranch)
     if (branchRefusal) return { info: { ...info, status: 'conflict', changedFiles }, message: branchRefusal }
-    return mergeInto(root, info, commitMessage, changedFiles)
+    // Only the commit the user approved (or the one recorded before the test command ran) may land. The gate (the review
+    // card, the tests) can run repository code that commits to the branch: a moved tip is refused, never merged unseen.
+    const now = await branchTip(root, info.branch)
+    if (now !== approvedTip) {
+      return {
+        info: { ...info, status: 'conflict', changedFiles },
+        message: `Not merged: branch ${info.branch} changed after it was reviewed or before the tests finished, so the new commits were not approved. It is kept at ${wt}; integrate it again to review it as it is now.`
+      }
+    }
+    return mergeInto(root, info, commitMessage, changedFiles, approvedTip)
   })
 }
 
-/** integrateWorktree's merge step; the caller holds the target's lock. */
-async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string, changedFiles: string[]): Promise<IntegrateResult> {
+/** integrateWorktree's merge step; the caller holds the target's lock. Merges the commit `sha`, never the branch name. */
+async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string, changedFiles: string[], sha: string): Promise<IntegrateResult> {
   const wt = info.path
-  const mergeArgs = ['merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, info.branch]
+  const mergeArgs = ['merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, sha]
   let merge = await git(root, mergeArgs)
   if (!merge.ok && IDENTITY_ERROR.test(merge.err)) {
     // No git identity (fresh CI runner, new machine): undo any half-made merge and retry with OrgAI's, as commits do.
@@ -803,8 +827,9 @@ async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string
 const MAX_PATCH_BYTES = 200 * 1024
 
 /** A branch's changes since it forked from HEAD of `root` (the main checkout, or a parent's worktree). */
-export async function diffWorktree(root: string, branch: string): Promise<WorktreeDiff & { changedFiles: string[] }> {
-  const range = `HEAD...${branch}`
+export async function diffWorktree(root: string, branch: string, ref: string = branch): Promise<WorktreeDiff & { changedFiles: string[] }> {
+  // `ref` is the commit the merge gate recorded (so the card shows exactly what will merge); a branch name otherwise.
+  const range = `HEAD...${ref}`
   const [stat, patch, names] = await Promise.all([
     git(root, ['diff', '--stat', range]),
     git(root, ['diff', range]),
@@ -839,6 +864,15 @@ function gitGuarded(root: string, args: string[]): Promise<{ ok: boolean; out: s
     })
     trackChildProcess(child, 'git')
   })
+}
+
+/**
+ * Whether two branch names are the same branch to the file system holding the repository: refs are files, so on Windows
+ * and macOS (case-insensitive by default) `Main` and `main` are one branch, and a protection of one covers the other.
+ * Elsewhere names are compared exactly. `platform` is for tests.
+ */
+export function sameBranchName(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'win32' || platform === 'darwin' ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
 /** The branch the checkout at `root` is on, or null on a detached HEAD (or when git cannot say). */
@@ -876,11 +910,25 @@ export type DeleteBranchOutcome = { ok: true; removedCopy: boolean } | { ok: fal
  * unfinished operation (a merge in progress, an index.lock that stays). Re-checks under the lock that the branch is not
  * the checkout's current one. The caller has already decided the branch may go (maintenance.ts deleteBranch).
  */
-export async function deleteReportBranch(root: string, branch: string, opts: { copyPath?: string } = {}): Promise<DeleteBranchOutcome> {
+export async function deleteReportBranch(
+  root: string,
+  branch: string,
+  opts: {
+    copyPath?: string
+    /**
+     * Asked first, under the repository lock: the caller's refusal (a live run now uses the branch, it is now the default or
+     * main branch, ...) or nothing. The conditions were true when the caller looked and may not be now (security review L8).
+     */
+    recheck?: () => Promise<string | undefined> | string | undefined
+  } = {}
+): Promise<DeleteBranchOutcome> {
   return withRepoLock(root, async (): Promise<DeleteBranchOutcome> => {
+    const again = await opts.recheck?.()
+    if (again) return { ok: false, message: again }
     const refusal = await unfinishedGitStateRefusal(opts.copyPath ? [root, opts.copyPath] : [root], `branch ${branch} is kept`)
     if (refusal) throw new UnfinishedGitStateError(refusal.message, refusal.files)
-    if ((await currentBranchName(root)) === branch) return { ok: false, message: `${branch} is the branch this checkout is on, so it was not deleted.` }
+    const onBranch = await currentBranchName(root)
+    if (onBranch !== null && sameBranchName(onBranch, branch)) return { ok: false, message: `${branch} is the branch this checkout is on, so it was not deleted.` }
     if (opts.copyPath) await removeWorktree(root, opts.copyPath)
     const res = await gitGuarded(root, ['branch', opts.copyPath ? '-D' : '-d', '--', branch])
     if (res.ok) return { ok: true, removedCopy: Boolean(opts.copyPath) }

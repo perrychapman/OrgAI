@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { PROJECT_TEST_COMMAND_MAX_CHARS, type Project } from '@shared/types'
 import { writesToProjectFolder } from '@shared/defaults'
 import { isolateClaudeEnv } from './childEnv'
+import { maskKeyLike } from './codexAppServer'
 import { killProcessTree } from './worktrees'
 import { system32Path } from '../host/systemBinaries'
 import { trackChildProcess } from '../host/shutdown'
@@ -18,10 +19,12 @@ import { trackChildProcess } from '../host/shutdown'
  * - shell: win32 `%SystemRoot%\System32\cmd.exe /d /s /c "<command>"` (absolute path, verbatim arguments); elsewhere
  *   `/bin/sh -c <command>`. The command is a user-written shell line only the desktop user can set (projects:save).
  * - cwd: the finished copy (its worktree directory).
- * - env: testGateEnv(process.env): the child env helper (routing variables, OrgAI control variables) plus every provider
- *   secret (ANTHROPIC_*, OPENAI_*, CODEX_*, a Claude login, any *_API_KEY), any name containing TOKEN / SECRET / PASSWORD
- *   and the AWS_ / AZURE_ / GH_ / GITHUB_ / NPM_TOKEN names dropped, so a test run never sees them.
- * - stdin closed ('ignore'); stdout and stderr merged into a rolling tail, only the last TEST_GATE_DETAIL_CHARS kept.
+ * - env: testGateEnv(process.env): an ALLOWLIST (ENV_ALLOW: PATH, the shell, home and temp folders, the locale, CI and what
+ *   Node and npm need on Windows and POSIX). No other variable reaches the command, whatever its name; the provider
+ *   secrets, routing and OrgAI control variables, tokens and cloud credentials are dropped a second time by name.
+ * - stdin closed ('ignore'); stdout and stderr merged into a rolling tail, only the last TEST_GATE_DETAIL_CHARS kept, with
+ *   obvious credentials masked (scrubTestOutput). The detail goes to the run log and to the maintenance result shown to
+ *   the user; the text told to the orchestrator and the agents (integration.ts notifications) never includes it.
  * - timeout TEST_GATE_TIMEOUT_MS; on timeout the whole process tree is killed (taskkill /T /F on win32, the process
  *   group elsewhere: the child leads its own group). The shutdown registry also ends it with the host.
  */
@@ -68,9 +71,39 @@ export function testGateMissingCommand(project: Pick<Project, 'requireTestsPass'
 }
 
 /**
- * Names a test run must not inherit, beyond what isolateClaudeEnv drops: provider secrets, any name that says it holds a
- * token, secret or password, and cloud / source-host credentials (AWS_, AZURE_, GH_, GITHUB_, NPM_TOKEN). PATH, HOME and
- * the like stay. The command runs repository code the agents edited, so what it can read is limited to what a build needs.
+ * The environment names a test run inherits (an allowlist, matched case-insensitively because Windows has no case in
+ * names): where programs and the shell live, who and where the user is, the temp folders, the locale and CI. The command
+ * runs repository code the agents edited, so it gets what Node, npm and a shell strictly need to start and nothing else:
+ * no other variable reaches it, whatever its name (a deny list could never name every credential).
+ */
+const ENV_ALLOW = new Set(
+  [
+    // programs and the shell
+    'PATH', 'PATHEXT', 'COMSPEC', 'SHELL', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR',
+    // user and home (npm, git and Node read their per-user config from here)
+    'HOME', 'USER', 'LOGNAME', 'USERNAME', 'USERDOMAIN', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+    'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'ALLUSERSPROFILE', 'PUBLIC',
+    'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)', 'COMMONPROGRAMW6432',
+    'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+    // temp folders
+    'TEMP', 'TMP', 'TMPDIR',
+    // machine facts Node and native build tools ask for
+    'OS', 'COMPUTERNAME', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_ARCHITEW6432', 'NUMBER_OF_PROCESSORS',
+    // locale, time zone, terminal, CI
+    'LANG', 'LANGUAGE', 'TZ', 'TERM', 'NO_COLOR', 'CI'
+  ]
+)
+
+/** True for a name a gate run may inherit. */
+function envAllowed(name: string): boolean {
+  const n = name.toUpperCase()
+  return ENV_ALLOW.has(n) || n.startsWith('LC_')
+}
+
+/**
+ * Names dropped even when they pass the allowlist (it holds none today; a second check so that widening the list cannot
+ * let a credential through): provider secrets, any name that says it holds a token, secret or password, and cloud /
+ * source-host credentials (AWS_, AZURE_, GH_, GITHUB_, NPM_TOKEN).
  */
 const SECRET_NAME = [
   /^ANTHROPIC_/i,
@@ -85,14 +118,25 @@ const SECRET_NAME = [
   /^NPM_TOKEN/i
 ]
 
-/** The environment of a gate run: no routing variables, no OrgAI control variables, no provider secret. */
+/** The environment of a gate run: only the allowlisted names (ENV_ALLOW), none of them a routing, control or secret variable. */
 export function testGateEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [name, value] of Object.entries(isolateClaudeEnv(base))) {
-    if (SECRET_NAME.some((re) => re.test(name))) continue
+    if (!envAllowed(name) || SECRET_NAME.some((re) => re.test(name))) continue
     out[name] = value
   }
   return out
+}
+
+/** Obvious credentials in test output (Bearer tokens, sk- keys, `token=...`, URL userinfo, GitHub / GitLab tokens) masked. */
+export function scrubTestOutput(text: string): string {
+  return maskKeyLike(text)
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s@/]*@/g, '$1')
+    .replace(/\bgh[pousr]_[A-Za-z0-9]+/g, '[redacted]')
+    .replace(/\bgithub_pat_[A-Za-z0-9_]+/g, '[redacted]')
+    .replace(/\bglpat-[A-Za-z0-9_-]+/g, '[redacted]')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[redacted]')
+    .replace(/\bnpm_[A-Za-z0-9]{20,}/g, '[redacted]')
 }
 
 /** Keep the last `max` characters (the end of the output is where a test run says what failed). */
@@ -120,7 +164,9 @@ export function runTestGate(command: string, cwd: string, deps: TestGateDeps = {
   const timeoutMs = deps.timeoutMs ?? TEST_GATE_TIMEOUT_MS
   const done = (outcome: TestGateResult['outcome'], exitCode: number | null, summary: string, output: string): TestGateResult => {
     const durationMs = Date.now() - started
-    const body = tail(clean(output).trim(), TEST_GATE_DETAIL_CHARS)
+    // Scrubbed before the cut so a key split by the cut cannot survive half masked. The detail goes to the run log and to
+    // the maintenance result the user reads in OrgAI; it is never put into a message for a model (integration.ts, notifications).
+    const body = tail(scrubTestOutput(clean(output)).trim(), TEST_GATE_DETAIL_CHARS)
     return { outcome, exitCode, detail: body ? `${summary}\n${body}` : summary, durationMs }
   }
   if (command.length > PROJECT_TEST_COMMAND_MAX_CHARS || /[\r\n\0]/.test(command)) {

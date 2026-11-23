@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentInstance, MergeDecision, WorktreeInfo, WorktreeStatus } from '@shared/types'
 import { WorktreeIntegrator } from './integration'
 import { fakeCtx, project } from './testHelpers'
-import { commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type GateDecision } from './worktrees'
+import { branchTip, commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type GateDecision } from './worktrees'
 import { runTestGate } from './testGate'
 import type { Project } from '@shared/types'
 
@@ -18,9 +18,11 @@ vi.mock('./worktrees', () => ({
   diffWorktree: vi.fn(async () => ({ stat: ' a.ts | 2 +-', patch: 'diff --git a/a.ts b/a.ts', changedFiles: ['a.ts'] })),
   inspectPending: vi.fn(async () => []),
   commitLeftovers: vi.fn(async () => ({ committed: true })),
-  pendingWorktrees: vi.fn(async () => [])
+  pendingWorktrees: vi.fn(async () => []),
+  branchTip: vi.fn(async () => 'a'.repeat(40))
 }))
 
+const TIP = 'a'.repeat(40)
 const WT: WorktreeInfo = { path: '/repo/.claude/worktrees/agent-a1', branch: 'worktree-agent-a1', status: 'active' }
 
 function agent(id: string, name: string): AgentInstance {
@@ -45,7 +47,7 @@ function integrateTo(status: WorktreeStatus, message = `${status} message`, chan
   vi.mocked(integrateWorktree).mockImplementation(async (_root, info, _msg, review) => {
     let final = status
     if (review) {
-      const d: GateDecision = await review(changedFiles)
+      const d: GateDecision = await review(changedFiles, TIP)
       if (d.behavior === 'refuse') return { info: { ...info, status: 'conflict', changedFiles }, message: d.message, refused: d.reason }
       final = d.behavior === 'discard' ? 'removed' : d.behavior === 'hold' ? 'held' : status
     }
@@ -175,7 +177,7 @@ describe('WorktreeIntegrator', () => {
       integrator.track('a1', WT)
       await integrator.onSubagentFinished('a1')
       expect(transitions.map((t) => t.status)).toEqual(['merging', 'review', 'merging', 'merged'])
-      expect(diffWorktree).toHaveBeenCalledWith('/repo', 'worktree-agent-a1')
+      expect(diffWorktree).toHaveBeenCalledWith('/repo', 'worktree-agent-a1', TIP)
       expect(ctx.requestMergeReview).toHaveBeenCalledWith(
         expect.objectContaining({ agentId: 'a1', agentName: 'Engineer', branch: 'worktree-agent-a1', changedFiles: ['a.ts'], stat: ' a.ts | 2 +-' })
       )
@@ -294,7 +296,7 @@ describe('nested isolation', () => {
     vi.mocked(integrateWorktree).mockImplementation(async (_root, info, _msg, review) => {
       let final = statuses[info.branch] ?? 'merged'
       if (review) {
-        const d = await review(['a.ts'])
+        const d = await review(['a.ts'], TIP)
         final = d.behavior === 'discard' ? 'removed' : d.behavior === 'hold' ? 'held' : final
       }
       return { info: { ...info, status: final, changedFiles: ['a.ts'] }, message: `${info.branch} ${final}` }
@@ -413,7 +415,7 @@ describe('nested isolation', () => {
     integrateBy({})
     const { integrator, ctx, statusesOf, logs } = nested(true, { behavior: 'merge' })
     await integrator.onSubagentFinished('c1')
-    expect(diffWorktree).toHaveBeenCalledWith(P, 'worktree-agent-c1')
+    expect(diffWorktree).toHaveBeenCalledWith(P, 'worktree-agent-c1', TIP)
     expect(ctx.requestMergeReview).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'c1', agentName: 'Dev1', branch: 'worktree-agent-c1' }))
     expect(statusesOf('c1')).toEqual(['merging', 'review', 'merging', 'merged'])
     expect(logs()).toContain('info: Dev1: waiting for the user to review worktree-agent-c1 before merging into worktree-agent-p1.')
@@ -617,6 +619,49 @@ describe('test gate (requireTestsPass)', () => {
       await other.integrator.onSubagentFinished('a1')
       expect(runTestGate).not.toHaveBeenCalled()
     }
+  })
+
+  describe('the approved commit is the one that merges (security review M2)', () => {
+    const NEW = 'b'.repeat(40)
+    const NEWER = 'c'.repeat(40)
+
+    it('hands the approved commit back for the merge', async () => {
+      vi.mocked(runTestGate).mockResolvedValue(passed)
+      const { integrator, ctx } = setup(true, { behavior: 'merge' }, GATED)
+      const gate = integrator.reviewGate('a1', WT)!
+      expect(await gate(['a.ts'], TIP)).toEqual({ behavior: 'merge', sha: TIP })
+      expect(diffWorktree).toHaveBeenCalledWith('/repo', WT.branch, TIP)
+      expect(ctx.requestMergeReview).toHaveBeenCalledTimes(1)
+    })
+
+    it('asks again about the new tip when the test command committed to the branch, and merges only what was approved last', async () => {
+      vi.mocked(runTestGate).mockResolvedValue(passed)
+      vi.mocked(branchTip).mockResolvedValueOnce(NEW).mockResolvedValue(NEW)
+      const { integrator, ctx, logs } = setup(true, { behavior: 'merge' }, GATED)
+      const gate = integrator.reviewGate('a1', WT)!
+      expect(await gate(['a.ts'], TIP)).toEqual({ behavior: 'merge', sha: NEW })
+      expect(ctx.requestMergeReview).toHaveBeenCalledTimes(2)
+      expect(vi.mocked(diffWorktree).mock.calls.map((c) => c[2])).toEqual([TIP, NEW])
+      expect(logs().some((l) => l.startsWith('warn:') && l.includes('changed after the review'))).toBe(true)
+    })
+
+    it('refuses, keeping the copy, when the tip moves again after the second approval or the branch is gone', async () => {
+      vi.mocked(runTestGate).mockResolvedValue(passed)
+      vi.mocked(branchTip).mockResolvedValueOnce(NEW).mockResolvedValueOnce(NEWER)
+      const moving = setup(true, { behavior: 'merge' }, GATED)
+      const refused = await moving.integrator.reviewGate('a1', WT)!(['a.ts'], TIP)
+      expect(refused).toMatchObject({ behavior: 'refuse', reason: 'tests' })
+      expect((refused as { message: string }).message).toContain('changed after it was reviewed')
+      expect(moving.ctx.requestMergeReview).toHaveBeenCalledTimes(2)
+
+      vi.mocked(branchTip).mockReset()
+      vi.mocked(branchTip).mockResolvedValue(null)
+      const gone = setup(true, { behavior: 'merge' }, GATED)
+      expect(await gone.integrator.reviewGate('a1', WT)!(['a.ts'], TIP)).toMatchObject({ behavior: 'refuse' })
+      expect(gone.ctx.requestMergeReview).toHaveBeenCalledTimes(1)
+      vi.mocked(branchTip).mockReset()
+      vi.mocked(branchTip).mockResolvedValue(TIP)
+    })
   })
 
   it('refuses the merge when tests are required but no command is set, without a card or a run (review)', async () => {
