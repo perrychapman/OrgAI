@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   agentTally,
+  branchFacts,
+  branchLines,
+  mergeWord,
+  refusalText,
+  retryPlan,
   bucketCounts,
   bucketOf,
   chainFacts,
@@ -148,6 +153,46 @@ describe('files note', () => {
     expect(filesNote('failed', 0)).toBe('Could not load the files.')
     expect(filesNote('ready', 0)).toBe('No files registered.')
     expect(filesNote('ready', 2)).toBeNull()
+  })
+})
+
+describe('merge facts', () => {
+  const wt = (status: string, changedFiles?: string[]) => ({ worktree: { path: 'p', branch: 'b', status: status as never, changedFiles } })
+  it('says nothing when no agent used a copy', () => {
+    const f = branchFacts([{}, {}])
+    expect(f.isolated).toBe(0)
+    expect(branchLines(f)).toEqual([])
+    expect(mergeWord(f)).toBe('')
+  })
+  it('counts merged copies and distinct files without inventing line counts', () => {
+    const f = branchFacts([wt('merged', ['a.ts', 'b.ts']), wt('merged', ['b.ts'])])
+    expect(f).toMatchObject({ isolated: 2, merged: 2, kept: 0, files: ['a.ts', 'b.ts'] })
+    expect(mergeWord(f)).toBe('Merged · 2 files changed')
+    expect(branchLines(f)[0]).toEqual({ title: '2 copies merged', note: '2 files changed' })
+  })
+  it('keeps conflicts and held copies as not merged', () => {
+    const f = branchFacts([wt('conflict', ['x']), wt('held'), wt('merged')])
+    expect(f).toMatchObject({ merged: 1, kept: 2, conflict: 1 })
+    expect(mergeWord(f)).toBe('Merge needs you')
+    expect(branchLines(branchFacts([wt('held')])).map((l) => l.title)).toEqual(['1 copy kept'])
+  })
+  it('reports a merged copy with no recorded files as such, not as zero', () => {
+    expect(mergeWord(branchFacts([wt('merged')]))).toBe('Merged')
+    expect(branchLines(branchFacts([wt('merged')]))[0].note).toBe('no changed files recorded')
+  })
+})
+
+describe('try again', () => {
+  const run = { status: 'error' as const, prompt: ' Do it ', projectId: 'p1' }
+  it('is offered for a failed run in the project on screen only', () => {
+    expect(retryPlan(run, 'p1')).toEqual({ ok: true, request: 'Do it' })
+    expect(retryPlan({ ...run, status: 'finished' }, 'p1')).toMatchObject({ ok: false })
+    expect(retryPlan(run, 'p2')).toMatchObject({ ok: false })
+    expect(retryPlan(run, null)).toMatchObject({ ok: false })
+  })
+  it('strips the IPC wrapper from a refusal', () => {
+    expect(refusalText(new Error("Error invoking remote method 'x': Error: Retrying is not available yet."), 'f')).toBe('Retrying is not available yet.')
+    expect(refusalText(undefined, 'fallback')).toBe('fallback')
   })
 })
 

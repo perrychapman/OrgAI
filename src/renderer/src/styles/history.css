@@ -203,6 +203,21 @@
   .hb-row.active > td:first-child {
     border-inline-start: var(--space-1) solid CanvasText;
   }
+  /* Agent marks: filled = done, ring = idle, outlined cross-hatch is not available, so failed uses Mark with the words beside it. */
+  .hb-mark {
+    background: CanvasText;
+    border: 1px solid CanvasText;
+  }
+  .hb-mark[data-mark='idle'] {
+    background: Canvas;
+  }
+  .hb-mark[data-mark='error'] {
+    background: Mark;
+    border-color: MarkText;
+  }
+  .hb-confirm {
+    border-color: CanvasText;
+  }
 }
 /* "Run it again" wraps the button only to see its Enter key; it does not take part in the layout. */
 .hb-again {
@@ -540,6 +555,44 @@
 .hb-mark[data-mark='idle'] {
   background: transparent;
   border: 1px solid var(--text-tertiary);
+}
+/* The row's agent strip: the same marks, smaller, under the count. Failed also says "N failed" in words. */
+.hb-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-0h);
+  margin-block-start: var(--space-0h);
+  max-inline-size: 100%;
+}
+.hb-strip .hb-mark {
+  inline-size: var(--space-1);
+  block-size: var(--space-1);
+}
+.hb-strip-bad {
+  flex-basis: 100%;
+  text-align: end;
+  font-size: var(--text-caption);
+  color: var(--danger-text);
+}
+.hb-strip-note {
+  display: block;
+  font-size: var(--text-caption);
+  color: var(--text-tertiary);
+}
+.hb-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-line);
+  background: var(--glass-strong);
+}
+.hb-confirm-actions {
+  display: flex;
+  gap: var(--space-2);
 }
 .hb-marks-more {
   margin-inline-start: var(--space-1);
