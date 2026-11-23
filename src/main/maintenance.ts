@@ -1,14 +1,30 @@
-import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { removeOrgaiIfEmpty, removeTeamFolderFiles } from './teamFiles/disk'
-import type { FinishedCopiesSize, MaintenanceResult, PendingWorktree, Project, RunRecord, RunSummary, WorktreeDiff } from '@shared/types'
+import { FINISHED_COPIES_WALK_MAX_ENTRIES, type FinishedCopiesSize, type MaintenanceResult, type PendingWorktree, type Project, type RunRecord, type RunSummary, type WorktreeDiff } from '@shared/types'
 import { writesToProjectFolder } from '@shared/defaults'
 import type { ProjectStore } from './store/projects'
 import { ARCHITECTURE_PATH, CLAUDE_MD_MARKER } from './setup/service'
-import { diffWorktree, discardWorktree, inspectPending, integrateWorktree, isGitRepo, removeExcludeLine, UnfinishedGitStateError, type GateDecision } from './runtime/worktrees'
+import {
+  currentBranchName,
+  defaultBranchNames,
+  deleteReportBranch,
+  diffWorktree,
+  discardWorktree,
+  inspectPending,
+  integrateWorktree,
+  isGitRepo,
+  localBranchExists,
+  removeExcludeLine,
+  UnfinishedGitStateError,
+  type GateDecision
+} from './runtime/worktrees'
+import { branchNameMatcher, isValidBranchName, REPORT_BRANCH_PREFIX } from './runtime/branchNames'
 import { runTestGate, testGateCommand } from './runtime/testGate'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+/** How many of a project's newest stored runs deleteBranch reads to learn which branches were agents' worktrees. */
+const RECORDED_RUNS_CHECKED = 100
 /** Run statuses after which nothing of the run is live and it will not resume by itself. */
 const ENDED_RUN: ReadonlySet<RunSummary['status']> = new Set<RunSummary['status']>(['finished', 'error'])
 
@@ -24,6 +40,8 @@ export interface MaintenanceDeps {
   hasLiveRun?: (projectId: string) => boolean
   now?: () => number
   log?: (message: string) => void
+  /** Tests: the entry budget of finishedCopiesSize (default FINISHED_COPIES_WALK_MAX_ENTRIES). */
+  walkMaxEntries?: number
 }
 
 /**
@@ -164,17 +182,108 @@ export class MaintenanceService {
     return { ok: true, message: `Discarded ${branch}.` }
   }
 
-  /** UI overhaul (maintenance:finishedCopiesSize). CONTRACT STUB: implemented by a Runtime Engineer. */
+  /**
+   * maintenance:finishedCopiesSize: how many finished copies (the same list as listWorktrees) the project has and the
+   * bytes of the regular files in them. The walk uses lstat only: a symlink, junction or other link is never followed
+   * (and counts no bytes), each copy's own `.git` link file is skipped, and a copy nested inside another one
+   * (<copy>/.claude/worktrees) is left to its own entry so nothing is counted twice. At most
+   * FINISHED_COPIES_WALK_MAX_ENTRIES entries are looked at in all; past that `truncated` is true and `bytes` a lower
+   * bound. A hard link counts once per path. An engagement or a folder that is not a git repository has none.
+   */
   async finishedCopiesSize(projectId: string): Promise<FinishedCopiesSize> {
-    void projectId
-    return { count: 0, bytes: 0, truncated: true }
+    const project = this.project(projectId)
+    if (!writesToProjectFolder(project) || !isGitRepo(project.path)) return { count: 0, bytes: 0, truncated: false }
+    const copies = await inspectPending(project.path)
+    const budget = { left: this.deps.walkMaxEntries ?? FINISHED_COPIES_WALK_MAX_ENTRIES }
+    let bytes = 0
+    let truncated = false
+    for (const copy of copies) {
+      if (!copy.exists) continue
+      const walked = walkCopyBytes(copy.path, budget)
+      bytes += walked.bytes
+      if (walked.truncated) {
+        truncated = true
+        break
+      }
+    }
+    return { count: copies.length, bytes, truncated }
   }
 
-  /** UI overhaul (maintenance:deleteBranch). CONTRACT STUB: implemented by a Runtime Engineer. */
+  /**
+   * maintenance:deleteBranch: delete one OrgAI report branch (and its finished copy) from the project's repository.
+   * Local branches only; no remote is touched. Refused, with a sentence and nothing changed, for: a name that is not a
+   * valid branch name, a branch that does not exist, the branch the checkout is on, the repository's default branch
+   * and Project.mainBranch, a branch a live run uses (or any branch while a live run's worktrees cannot be read), and
+   * any branch that is not a report branch (see isReportBranch). Then, through the same path as a discard:
+   * - the branch has a finished copy: the copy is removed and the branch force-deleted (`git branch -D -- <branch>`);
+   *   an unfinished git operation in the repository or the copy refuses it, as for a discard;
+   * - no copy: `git branch -d -- <branch>`, which git refuses unless the branch is merged into the current branch.
+   */
   async deleteBranch(projectId: string, branch: string): Promise<MaintenanceResult> {
-    void projectId
-    void branch
-    return { ok: false, message: 'Deleting a branch is not available yet.' }
+    const project = this.project(projectId)
+    const root = project.path
+    if (!writesToProjectFolder(project) || !isGitRepo(root)) return { ok: false, message: 'This project has no git repository, so there are no branches to delete.' }
+    if (!isValidBranchName(branch)) return { ok: false, message: 'That is not a branch name OrgAI will delete.' }
+    if (!(await localBranchExists(root, branch))) return { ok: false, message: `There is no local branch named ${branch}.` }
+    if ((await currentBranchName(root)) === branch) return { ok: false, message: `${branch} is the branch this checkout is on, so it was not deleted. Switch to another branch first.` }
+    const protectedNames = new Set(await defaultBranchNames(root))
+    const mainBranch = project.mainBranch?.trim()
+    if (mainBranch) protectedNames.add(mainBranch)
+    if (protectedNames.has(branch)) return { ok: false, message: `${branch} is this project's default or main branch, so it was not deleted.` }
+    const live = this.liveBranches(project.id)
+    if (live === 'unknown') return { ok: false, message: 'A run of this project is active and OrgAI cannot tell which branches it uses, so nothing was deleted. Try again when the run has ended.' }
+    if (live.has(branch)) return { ok: false, message: `${branch} is used by a run that is still active, so it was not deleted.` }
+    if (!this.isReportBranch(project, branch)) return { ok: false, message: `${branch} is not a report branch OrgAI made, so it was left alone.` }
+    const copy = (await inspectPending(root)).find((w) => w.branch === branch)
+    try {
+      const result = await deleteReportBranch(root, branch, copy ? { copyPath: copy.path } : {})
+      if (!result.ok) return { ok: false, message: result.message }
+      this.deps.log?.(`Deleted the report branch ${branch} of ${project.name}${result.removedCopy ? ' with its finished copy' : ''}.`)
+      return { ok: true, message: result.removedCopy ? `Deleted ${branch} and its finished copy.` : `Deleted ${branch}.` }
+    } catch (e) {
+      if (e instanceof UnfinishedGitStateError) return { ok: false, message: e.message }
+      throw e
+    }
+  }
+
+  /**
+   * Branches the live runs of the project use: every agent worktree branch in the stored records of runs that have not
+   * ended, plus the `worktree-agent-<agent id>` name of each such agent. 'unknown' when RunManager reports a live run
+   * that the stored runs do not show, or a live record cannot be read: then nothing may be judged unused.
+   */
+  private liveBranches(projectId: string): Set<string> | 'unknown' {
+    const runs = this.deps.runs
+    const live = (runs?.list(projectId) ?? []).filter((s) => !ENDED_RUN.has(s.status))
+    if (!live.length) return this.deps.hasLiveRun?.(projectId) ? 'unknown' : new Set()
+    const used = new Set<string>()
+    for (const summary of live) {
+      const record = runs?.getRecord(summary.id)
+      if (!record) return 'unknown'
+      for (const [agentId, agent] of Object.entries(record.agents ?? {})) {
+        used.add(`${REPORT_BRANCH_PREFIX}${agentId}`)
+        used.add(`${REPORT_BRANCH_PREFIX}${agent.id}`)
+        if (agent.worktree?.branch) used.add(agent.worktree.branch)
+      }
+    }
+    return used
+  }
+
+  /**
+   * An OrgAI report branch: named like the ones OrgAI and the SDKs create (`worktree-agent-<id>`), matching the
+   * project's branchNamePattern (only when the pattern starts with a literal prefix, see branchNameMatcher), or named as
+   * an agent's worktree branch in one of the project's most recent stored runs. Anything else is the user's.
+   */
+  private isReportBranch(project: Project, branch: string): boolean {
+    if (branch.startsWith(REPORT_BRANCH_PREFIX) && branch.length > REPORT_BRANCH_PREFIX.length) return true
+    if (branchNameMatcher(project.branchNamePattern)?.test(branch)) return true
+    const runs = this.deps.runs
+    if (!runs) return false
+    const recent = [...runs.list(project.id)].sort((a, b) => b.startedAt - a.startedAt).slice(0, RECORDED_RUNS_CHECKED)
+    for (const summary of recent) {
+      const record = runs.getRecord(summary.id)
+      for (const agent of Object.values(record?.agents ?? {})) if (agent.worktree?.branch === branch) return true
+    }
+    return false
   }
 
   /** The branch's committed changes against the main checkout. Uncommitted files in its worktree are not included. */
@@ -250,6 +359,45 @@ export class MaintenanceService {
 
     return { ok: true, message: removed.length ? `Removed ${removed.join(', ')}.` : 'Nothing to remove.' }
   }
+}
+
+/**
+ * Bytes of the regular files under one finished copy. `budget.left` is the entries still allowed for the whole size
+ * query; every entry looked at (file, directory or link) uses one, and `truncated` is true when it ran out. lstat on every
+ * entry, so a symlink or junction is neither followed nor counted; the copy's own `.git` entry and the nested
+ * `.claude/worktrees` folder (other copies, listed on their own) are skipped. An unreadable folder or file counts nothing.
+ * Iterative, so a deep tree cannot overflow the stack. Exported for tests.
+ */
+export function walkCopyBytes(copyPath: string, budget: { left: number }): { bytes: number; truncated: boolean } {
+  let bytes = 0
+  const nested = join(copyPath, '.claude', 'worktrees')
+  const pending: string[] = [copyPath]
+  while (pending.length) {
+    const dir = pending.pop() as string
+    let names: string[]
+    try {
+      names = readdirSync(dir)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      if (budget.left <= 0) return { bytes, truncated: true }
+      budget.left -= 1
+      const full = join(dir, name)
+      if (dir === copyPath && name === '.git') continue
+      if (full === nested) continue
+      let st
+      try {
+        st = lstatSync(full)
+      } catch {
+        continue
+      }
+      if (st.isSymbolicLink()) continue
+      if (st.isDirectory()) pending.push(full)
+      else if (st.isFile()) bytes += st.size
+    }
+  }
+  return { bytes, truncated: false }
 }
 
 /** Remove the block writeArchitecture appends to CLAUDE.md, from the marker through its paragraph. */

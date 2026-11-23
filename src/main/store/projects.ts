@@ -8,6 +8,7 @@ import { migrateProject } from '../connections/remap'
 import { validModelId } from '../connections/codexAccount'
 import { isInsideEither, pathKey, samePath } from '../quick/scratch'
 import { allowedDirectoryRisk } from '../runtime/allowedDirectories'
+import { cleanBranchNamePattern } from '../runtime/branchNames'
 import { cleanFolderConfigTrust, initialFolderConfigTrust } from '../runtime/folderConfigTrust'
 import { homedir } from 'node:os'
 
@@ -149,7 +150,9 @@ export function cleanProjectLimits(project: Project): Project {
     ['mainBranch', cleanMainBranch],
     ['requireTestsPass', (v) => (typeof v === 'boolean' ? v : undefined)],
     ['testCommand', cleanTestCommand],
-    ['keepFailedBranchesDays', (v) => intInRange(v, 1, 365)]
+    ['keepFailedBranchesDays', (v) => intInRange(v, 1, 365)],
+    ['askBeforeStrongerModel', (v) => (typeof v === 'boolean' ? v : undefined)],
+    ['branchNamePattern', cleanBranchNamePattern]
   ]
   let next: Record<string, unknown> | null = null
   for (const [key, clean] of rules) {
