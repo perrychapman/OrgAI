@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInstance, TranscriptEntry } from '@shared/types'
-import { agentInitials, agentSiblings, entriesOfAgent, extractBrief, focusState, positionLabel, whereItSits } from './agentFocus'
+import { agentInitials, agentSiblings, entriesOfAgent, extractBrief, focusState, parseUnifiedDiff, positionLabel, whereItSits } from './agentFocus'
 
 const mk = (id: string, parentId: string | null, over: Partial<AgentInstance> = {}): AgentInstance =>
   ({ id, roleId: null, roleSlug: id, name: id, parentId, spawnToolUseId: null, state: 'idle', activity: '', inputTokens: 0, outputTokens: 0, costUsd: 0, startedAt: 1, ...over }) as AgentInstance
@@ -15,6 +15,40 @@ const team = byId([
   mk('i3', 'i2', { name: 'Helper' }),
   mk('qa', 'root', { name: 'QA' })
 ])
+
+describe('parseUnifiedDiff', () => {
+  const patch = [
+    'diff --git a/src/a.ts b/src/a.ts',
+    'index 1..2 100644',
+    '--- a/src/a.ts',
+    '+++ b/src/a.ts',
+    '@@ -1,3 +1,3 @@',
+    ' keep',
+    '-old',
+    '+new',
+    '+more',
+    '\\ No newline at end of file',
+    'diff --git a/b.md b/b.md',
+    'new file mode 100644',
+    '--- /dev/null',
+    '+++ b/b.md',
+    '@@ -0,0 +1 @@',
+    '+hello',
+    ''
+  ].join('\n')
+
+  it('splits files and counts changes without the file headers', () => {
+    const files = parseUnifiedDiff(patch)
+    expect(files.map((f) => [f.path, f.added, f.removed])).toEqual([['src/a.ts', 2, 1], ['b.md', 1, 0]])
+    expect(files[0].lines).toEqual(['@@ -1,3 +1,3 @@', ' keep', '-old', '+new', '+more'])
+    expect(files[1].lines).toEqual(['@@ -0,0 +1 @@', '+hello'])
+  })
+
+  it('returns nothing for empty or unrelated text', () => {
+    expect(parseUnifiedDiff('')).toEqual([])
+    expect(parseUnifiedDiff('Could not load')).toEqual([])
+  })
+})
 
 describe('agentSiblings', () => {
   it('lists the group of the lead and everyone below it', () => {
