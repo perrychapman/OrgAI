@@ -505,3 +505,14 @@
 @container frame (max-width: 320px) {
   .frame-toolbar.frame-toolbar-dense > .canvas-chrome-start { display: none; }
 }
+
+/* Engagement runs: the coral accent and serif headings of the engagement look; wording stays neutral. */
+.run-view[data-kind='engagement'] :is(.run-hold-title, .agent-focus-name, .agent-focus h2, .agent-focus h3, .side-panel .live-panel h2) {
+  font-family: var(--font-serif);
+}
+.run-view[data-kind='engagement'] .plan-strip-seg[data-status='in_progress'] { background-color: var(--eng); }
+.run-view[data-kind='engagement'] .react-flow__node.selected,
+.run-view[data-kind='engagement'] .agent-row[aria-current='true'] {
+  border-color: var(--eng-line);
+}
+.run-view[data-kind='engagement'] .agent-row[aria-current='true'] { background: var(--eng-soft); }

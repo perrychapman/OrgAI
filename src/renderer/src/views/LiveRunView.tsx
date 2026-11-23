@@ -293,7 +293,12 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   // The "Show" filter dims the chart's other nodes; one agent can take the stage (AgentFocus) and hands focus back to its opener.
   const [agentFilter, setAgentFilter] = useState<AgentFilterValue>('all')
   const [focusAgentId, setFocusAgentId] = useState<string | null>(null)
-  const focusOpener = useRef<HTMLElement | null>(null)
+  const focusOpener = useRef<{ el: HTMLElement; testId: string | null } | null>(null)
+  // The one-agent view belongs to the run it was opened in (the root id exists in every run).
+  useEffect(() => {
+    setFocusAgentId(null)
+    focusOpener.current = null
+  }, [runId])
 
   // Turning "Hide finished agents" back on folds every expanded group again (the way back after expanding).
   const toggleCollapse = (): void => {
@@ -697,7 +702,8 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_e, node) => selectAgent(node.id), [selectAgent])
   /** Takes one agent onto the stage; focus goes back to what opened it when the view closes. */
   const openAgentView = useCallback((id: string): void => {
-    focusOpener.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
+    const from = document.activeElement
+    focusOpener.current = from instanceof HTMLElement && from !== document.body ? { el: from, testId: from.getAttribute('data-testid') } : null
     selectAgent(id)
     setFocusAgentId(id)
   }, [selectAgent])
@@ -708,7 +714,9 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
       requestAnimationFrame(() => {
         const opener = focusOpener.current
         focusOpener.current = null
-        if (opener?.isConnected) return opener.focus({ preventScroll: true })
+        // The opener may have re-mounted while the view was open (the panel's button): find it again by its test id.
+        const again = opener?.el.isConnected ? opener.el : opener?.testId ? bodyRef.current?.querySelector<HTMLElement>(`[data-testid="${opener.testId}"]`) : null
+        if (again) return again.focus({ preventScroll: true })
         const node = id ? document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`) : null
         ;(node ?? bodyRef.current?.querySelector<HTMLElement>('[data-testid="agent-focus-open"], .frame-stage button'))?.focus({ preventScroll: true })
       })
@@ -1158,7 +1166,7 @@ function RunView({ project, runId }: { project: Project; runId: string }): React
   const conversationFeed = <TranscriptPanel variant="conversation" runId={runId} tagRunId={chainIds[chainIds.length - 1]} agent={rootAgent} entries={[]} feed={feed} lead={loadEarlierRow} logs={[]} showThinking={stageThinking} />
 
   return (
-    <div className="run-view">
+    <div className="run-view" data-kind={projectKindOf(project) === 'engagement' ? 'engagement' : undefined}>
       {setupDone && (
         <Banner
           tone="success"

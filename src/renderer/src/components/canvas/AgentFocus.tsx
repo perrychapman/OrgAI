@@ -188,7 +188,7 @@ export default function AgentFocus({ runId, agentId, onClose, onSelect }: AgentF
   const showCost = costKind === 'known' || costKind === 'partial'
 
   return (
-    <section className="agent-focus" aria-label={`Agent ${label}`} ref={rootRef} onKeyDown={onKeyDown} data-testid="agent-focus" data-state={state}>
+    <section className="agent-focus" aria-label={`Agent ${label}`} ref={rootRef} onKeyDown={onKeyDown} tabIndex={-1} data-testid="agent-focus" data-state={state}>
       <div className="agent-focus-bar">
         <Button variant="secondary" size="sm" icon={ChevronLeft} onClick={onClose} testId="agent-focus-back" title="Back to chart (Escape)">
           Back to chart

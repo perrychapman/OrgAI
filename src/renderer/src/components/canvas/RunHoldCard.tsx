@@ -1,8 +1,9 @@
 import type { ReactElement } from 'react'
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { RUN_ADD_BUDGET_MAX_USD, type RunHoldAction } from '@shared/types'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
+import { useConfirm } from '../ui/ConfirmDialog'
 import { holdOf } from '../../lib/runHold'
 import { money } from '../../lib/usage'
 import '../../styles/run-hold.css'
@@ -52,6 +53,9 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
   const [amountText, setAmountText] = useState<string | null>(null)
   const [note, setNote] = useState('')
   const [hintShown, setHintShown] = useState(false)
+  // A second activation before the first has settled (key repeat, double click) is dropped; spending and gate changes ask first.
+  const actingRef = useRef(false)
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const titleId = useId()
   const groupId = useId()
   const amountId = useId()
@@ -67,6 +71,8 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
   if (!hold) return null
 
   const act = async (fn: () => Promise<void> | void): Promise<void> => {
+    if (actingRef.current) return
+    actingRef.current = true
     setBusy(true)
     setError(null)
     try {
@@ -74,8 +80,15 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
     } catch (e) {
       setError((e as Error).message)
     } finally {
+      actingRef.current = false
       setBusy(false)
     }
+  }
+  /** Asks first, naming what the action does; nothing runs unless the user confirms. A refusal from main shows inline. */
+  const confirmed = async (opts: Parameters<typeof confirm>[0], fn: () => Promise<void>): Promise<void> => {
+    if (actingRef.current) return
+    if (!(await confirm(opts))) return
+    await act(fn)
   }
 
   const kind = hold.kind
@@ -102,14 +115,21 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
       case 'resume':
         return void act(() => resumeNow(runId))
       case 'addBudget':
-        return void act(() => (parsed === null ? Promise.resolve() : addBudget(runId, parsed)))
+        if (parsed === null) return
+        return void confirmed(
+          { title: `Add ${money(parsed)} to this run?`, body: `This raises this run’s spending limit by ${money(parsed)} and lets it continue, so it can spend up to that much more. Your project limits still apply.`, confirmLabel: `Add ${money(parsed)} and continue`, confirmTestId: 'run-hold-confirm' },
+          () => addBudget(runId, parsed)
+        )
       case 'retry':
         return void act(() => retryRun(runId))
       case 'switchModel':
         setHintShown(!sessionOpen)
         return onSwitchModel?.()
       case 'skipReview':
-        return void act(() => skipReview(runId, note.trim() || undefined))
+        return void confirmed(
+          { title: 'Skip the review for this change?', body: 'The change goes ahead without the review step. Merge review still asks before anything is merged.', confirmLabel: 'Skip review for this change', danger: true, confirmTestId: 'run-hold-confirm' },
+          () => skipReview(runId, note.trim() || undefined)
+        )
       default:
         return
     }
@@ -119,8 +139,9 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
   const failedBody = kind === 'failed'
 
   return (
+    <>
     <section className={rootClass} aria-labelledby={titleId} data-testid="run-hold" data-kind={kind} data-tone={hold.tone}>
-      <div className="run-hold-head">
+      <div className="run-hold-head" role="status">
         <span className="run-hold-pill" data-tone={hold.tone}>
           <span className={hold.tone === 'failed' ? 'run-hold-dot' : hold.tone === 'retrying' ? 'run-hold-dot motion-pulse' : 'run-hold-dot motion-breathe'} aria-hidden="true" />
           {hold.word}
@@ -197,7 +218,7 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
       )}
 
       {error && (
-        <p className="run-hold-error pause-error" role="status" aria-live="polite">
+        <p className="run-hold-error pause-error" role="alert">
           {error}
         </p>
       )}
@@ -237,5 +258,7 @@ export function RunHoldCard({ runId, canContinue, sessionOpen, onAnswer, onShowP
         )}
       </div>
     </section>
+    {confirmDialog}
+    </>
   )
 }
