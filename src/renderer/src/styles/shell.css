@@ -708,9 +708,10 @@ html[data-resizing] .app {
   gap: var(--space-4);
 }
 .project-topbar h1 {
-  /* The name never gives way to the chip, folder or tabs; only its own 220 px cap clips it. */
-  flex: 0 0 auto;
-  min-width: 0;
+  /* The name keeps up to 220 px and gives way after the folder and chip, but never below 64 px: the tabs and the
+     Settings button must stay on screen. The full name is the title. */
+  flex: 0 1 auto;
+  min-width: 64px;
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -738,8 +739,10 @@ html[data-resizing] .app {
   align-items: center;
   gap: var(--space-1h);
   flex: 0 1 auto;
-  min-width: 0;
+  min-width: var(--space-6);
   max-width: 260px;
+  position: relative;
+  overflow: hidden;
   height: var(--space-6);
   padding: 0 var(--space-2);
   border: 1px solid var(--border-strong);
@@ -765,6 +768,27 @@ html[data-resizing] .app {
 }
 .kind-chip .project-client::before {
   content: '· ';
+}
+.kind-chip-word {
+  flex: none;
+}
+/* Narrow pane: the chip is its icon; the full "Engagement · client" text is its title and stays in the accessibility tree. */
+@container (max-width: 900px) {
+  .kind-chip {
+    flex: none;
+    justify-content: center;
+    padding: 0;
+    width: var(--space-6);
+  }
+  .kind-chip-word,
+  .kind-chip .project-client {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
 }
 /* The Settings tab is the keyboard way; this button is the plain-words shortcut and gives up its words first. */
 .topbar-settings {
@@ -798,7 +822,7 @@ html[data-resizing] .app {
   outline-offset: 2px;
 }
 /* The folder name hides when the pane is narrow; the save indicator keeps its width and loses its words instead. */
-@container (max-width: 900px) {
+@container (max-width: 1100px) {
   .project-folder {
     display: none;
   }

@@ -77,6 +77,7 @@ function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
     const chips = kids.filter((k) => k.hasAttribute('data-prio'))
     const more = kids.find((k) => k.hasAttribute('data-more'))
     chips.forEach((c) => c.removeAttribute('data-folded'))
+    el.removeAttribute('data-squeeze')
     more?.setAttribute('hidden', '')
     const out: HTMLElement[] = []
     if (el.scrollWidth > el.clientWidth + 1) {
@@ -85,8 +86,15 @@ function useMetaFold(ref: RefObject<HTMLDivElement | null>): FoldedItem[] {
         .map((c, i) => ({ c, i, p: Number(c.getAttribute('data-prio')) }))
         .filter((x) => x.p > 0)
         .sort((a, b) => b.p - a.p || b.i - a.i)
+      let squeezed = false
       for (const x of order) {
         if (el.scrollWidth <= el.clientWidth + 1) break
+        // Cost and status are the last two to go: before cost folds, a long status word shortens to an ellipsis.
+        if (x.p <= 1 && !squeezed) {
+          squeezed = true
+          el.setAttribute('data-squeeze', '')
+          if (el.scrollWidth <= el.clientWidth + 1) break
+        }
         x.c.setAttribute('data-folded', 'true')
         out.push(x.c)
       }
@@ -250,7 +258,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
     <div className="run-meta" data-testid="run-meta" ref={lineRef}>
       <span className="run-meta-item run-meta-status" data-prio="0" data-testid="run-meta-status" data-tone={STATUS_TONE[status.tone]} title={status.note && status.note !== statusWord ? `${statusWord}: ${status.note}` : statusWord}>
         <span className={`run-status-dot${status.tone === 'is-running' ? ' motion-pulse' : status.tone === 'warn' ? ' motion-breathe' : ''}`} aria-hidden="true" />
-        {statusWord}
+        <span className="run-meta-status-word">{statusWord}</span>
       </span>
       {modelId && (
         <span className="run-meta-item run-meta-model" data-prio="5" data-testid="run-meta-model" title={`Model ${modelId} via ${connectionLabel(summary.modelSelection?.connection)}${modelLabel !== modelId ? ` (${modelLabel})` : ''}`}>
@@ -266,7 +274,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
         </span>
       )}
       {showCost && (
-        <span className="run-meta-item run-meta-cost" data-prio="2">
+        <span className="run-meta-item run-meta-cost" data-prio="1">
           <Cost value={cost} labelled />
         </span>
       )}
@@ -334,7 +342,7 @@ export default function RunMeta({ run, project, agentCount }: { run: RunState; p
           {folderName(summary.buildWorkspace)}
         </span>
       )}
-      <span className="run-meta-item run-meta-agents" data-prio="1">
+      <span className="run-meta-item run-meta-agents" data-prio="2">
         <Icon icon={Bot} size="xs" />
         {agentCount} agent{agentCount === 1 ? '' : 's'}
       </span>
