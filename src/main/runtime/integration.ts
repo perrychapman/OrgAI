@@ -3,6 +3,7 @@ import { ROOT_AGENT_ID, type RuntimeContext } from './types'
 import { INTEGRATE_TOOL } from './harnessTools'
 import { branchTip, commitLeftovers, diffWorktree, findWorktree, inspectPending, integrateWorktree, prepareRepo, type GateDecision, type IntegrateOptions, type IntegrateResult } from './worktrees'
 import { runTestGate, testGateCommand, testGateMissingCommand } from './testGate'
+import { pinRoot, rootDrift } from './rootPin'
 
 /**
  * The per-run worktree state machine, shared by every adapter whose writing reports work in git
@@ -441,8 +442,8 @@ export class WorktreeIntegrator {
       }
       // Without a review the tests run now (no card is waiting on them).
       if (!this.ctx.project.reviewMerges) {
-        const gate = testCommand ? await this.runTests(ownerName ?? info.branch, info, testCommand, false) : undefined
-        return gate?.refusal ?? { behavior: 'merge' }
+        const gate = testCommand ? await this.runTests(ownerName ?? info.branch, info, testCommand, false, targetRoot) : undefined
+        return gate?.refusal ?? { behavior: 'merge', ...(gate?.verify ? { verify: gate.verify } : {}) }
       }
       // With reviewMerges the gate runs repository code, so it waits for the user's approval: the card shows tests
       // 'unknown' and the command runs only after "merge" is chosen.
@@ -468,12 +469,14 @@ export class WorktreeIntegrator {
         })
         if (decision.behavior !== 'merge') return decision
         if (agentId) this.set(agentId, { ...info, status: 'merging', changedFiles })
+        let verify: (() => Promise<string | undefined>) | undefined
         if (testCommand) {
-          const gate = await this.runTests(ownerName ?? info.branch, info, testCommand, true)
+          const gate = await this.runTests(ownerName ?? info.branch, info, testCommand, true, targetRoot)
           if (gate.refusal) return gate.refusal
+          verify = gate.verify
         }
         const now = await branchTip(targetRoot, info.branch)
-        if (now === approved) return { behavior: 'merge', sha: approved }
+        if (now === approved) return { behavior: 'merge', sha: approved, ...(verify ? { verify } : {}) }
         this.log('warn', `${ownerName ?? info.branch}: branch ${info.branch} changed after the review (the tests may have committed to it).`)
         if (!now) break
         approved = now
@@ -497,13 +500,26 @@ export class WorktreeIntegrator {
     ownerName: string,
     info: WorktreeInfo,
     command: string,
-    afterApproval: boolean
-  ): Promise<{ detail: string; refusal?: GateDecision }> {
+    afterApproval: boolean,
+    targetRoot: string
+  ): Promise<{ detail: string; refusal?: GateDecision; verify?: () => Promise<string | undefined> }> {
     this.log('info', `${ownerName}: running the project's tests in ${info.path} before merging ${info.branch}${afterApproval ? ' (the merge was approved)' : ''}.`)
+    // The command is repository code run as the user: it can reach the checkout the merge lands in through the shared git
+    // folder. That checkout is read before and after (rootPin.ts); a change refuses the merge, and the merge step reads it
+    // once more under the repository lock (GateDecision.verify) in case something changed it after the command ended.
+    const pin = await pinRoot(targetRoot)
     const result = await runTestGate(command, info.path)
+    const drift = pin ? await rootDrift(targetRoot, pin) : undefined
+    if (drift) {
+      this.log('warn', `${ownerName}: ${drift}`)
+      return {
+        detail: result.detail,
+        refusal: { behavior: 'refuse', reason: 'tests', message: `${drift} Branch ${info.branch} is kept as it is at ${info.path}.` }
+      }
+    }
     if (result.outcome === 'passed') {
       this.log('info', `${ownerName}: tests passed before merging ${info.branch}.`)
-      return { detail: result.detail }
+      return { detail: result.detail, ...(pin ? { verify: () => rootDrift(targetRoot, pin) } : {}) }
     }
     const why = result.outcome === 'timeout' ? 'the tests timed out' : result.exitCode === null ? 'the tests could not complete' : `the tests failed (exit code ${result.exitCode})`
     const message =

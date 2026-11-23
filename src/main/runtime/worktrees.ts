@@ -383,18 +383,22 @@ async function evacuateNested(root: string, parentPath: string): Promise<string[
     const dest = join(dir, basename(wt.path))
     if (existsSync(dest)) continue
     mkdirSync(dir, { recursive: true })
-    if ((await git(main, ['worktree', 'move', wt.path, dest])).ok) moved.push(dest)
+    if ((await gitGuarded(main, ['worktree', 'move', wt.path, dest])).ok) moved.push(dest)
   }
   return moved
 }
 
-/** Remove one worktree directory (keeping nested agent worktrees) and prune its record. */
+/**
+ * Remove one worktree directory (keeping nested agent worktrees) and prune its record. Through the guarded runner (hooks,
+ * fsmonitor and the other program-naming keys off): it runs after a merge, when a test command may have changed the
+ * repository's config.
+ */
 async function removeWorktree(root: string, path: string): Promise<void> {
   if (existsSync(path)) {
     await evacuateNested(root, path)
-    await git(root, ['worktree', 'remove', '--force', path])
+    await gitGuarded(root, ['worktree', 'remove', '--force', path])
   }
-  await git(root, ['worktree', 'prune'])
+  await gitGuarded(root, ['worktree', 'prune'])
 }
 
 /** Locate the worktree Claude Code created for a subagent, if any. */
@@ -640,7 +644,18 @@ export interface IntegrateResult {
  * What the pre-merge gate of integrateWorktree answers: the user's review decision, or a refusal (the test gate failed):
  * nothing is merged or deleted, the copy stays pending on its branch and `message` says why.
  */
-export type GateDecision = Exclude<MergeDecision, { behavior: 'merge' }> | { behavior: 'merge'; sha?: string } | { behavior: 'refuse'; reason: 'tests'; message: string }
+export type GateDecision =
+  | Exclude<MergeDecision, { behavior: 'merge' }>
+  | {
+      behavior: 'merge'
+      sha?: string
+      /**
+       * Run under the repository lock right before the merge: a sentence (nothing is merged, the copy is kept) when the checkout
+       * the merge lands in changed while repository code ran (rootPin.ts), else undefined.
+       */
+      verify?: () => Promise<string | undefined>
+    }
+  | { behavior: 'refuse'; reason: 'tests'; message: string }
 
 /**
  * The commit a local branch points at now, or null (no such branch, or git failed). The merge gate records it before the
@@ -670,23 +685,25 @@ export interface IntegrateOptions {
 export async function ensureMainBranch(root: string, mainBranch: string | undefined): Promise<string | null> {
   const name = mainBranch?.trim()
   if (!name || name.startsWith('-') || /[\0\r\n]/.test(name)) return null
-  const exists = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])
+  // Guarded: a checkout runs post-checkout hooks and a status runs fsmonitor, and this runs after a test command may have
+  // changed the repository's config or hooks.
+  const exists = await gitGuarded(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])
   if (!exists.ok) return null
-  const head = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const head = await gitGuarded(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
   if (head.ok && head.out === name) return null
   const current = head.ok ? head.out : 'another branch'
-  const dirty = await git(root, ['status', '--porcelain', '--untracked-files=no'])
+  const dirty = await gitGuarded(root, ['status', '--porcelain', '--untracked-files=no'])
   if (!dirty.ok || dirty.out) {
     return `The project's main branch is ${name} but the main checkout is on ${current} with uncommitted changes, so nothing was merged. Commit or stash them, or switch to ${name}, then integrate again.`
   }
-  const sw = await git(root, ['checkout', '--quiet', name, '--'])
+  const sw = await gitGuarded(root, ['checkout', '--quiet', name, '--'])
   if (!sw.ok) return `The project's main branch is ${name} but the main checkout could not switch to it from ${current} (${sw.err.slice(0, 200)}), so nothing was merged.`
   return null
 }
 
 /** How a merge target is named in messages: the main checkout, or the parent report's branch. */
 async function targetName(root: string): Promise<string> {
-  const head = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const head = await gitGuarded(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
   return head.ok && head.out.startsWith(BRANCH_PREFIX) ? `branch ${head.out}` : 'the main checkout'
 }
 
@@ -745,10 +762,12 @@ export async function integrateWorktree(
   if (prepared.merged) return prepared.merged
   const { changedFiles } = prepared
   let approvedTip = prepared.tip
+  let verifyRoot: (() => Promise<string | undefined>) | undefined
 
   if (review) {
     const decision = await review(changedFiles, prepared.tip)
     if (decision.behavior === 'merge' && decision.sha) approvedTip = decision.sha
+    if (decision.behavior === 'merge') verifyRoot = decision.verify
     if (decision.behavior === 'refuse') {
       return { info: { ...info, status: 'conflict', changedFiles }, message: decision.message, refused: decision.reason }
     }
@@ -774,6 +793,11 @@ export async function integrateWorktree(
     if (!existsSync(wt)) {
       return { info: { ...info, status: 'removed', changedFiles }, message: `${info.branch} was removed during the review; nothing was merged.` }
     }
+    // Repository code (the test command) ran as the user since the checkout was last looked at: the merge lands only if that
+    // checkout is as the gate left it (HEAD, index, config and hooks did not move afterwards). Before anything of OrgAI's own
+    // touches the checkout (the switch to mainBranch below moves HEAD on purpose).
+    const drift = await verifyRoot?.()
+    if (drift) return { info: { ...info, status: 'conflict', changedFiles }, message: `${drift} Branch ${info.branch} is kept at ${wt}.` }
     const refusal = await unfinishedGitStateRefusal([root, wt], `branch ${info.branch} is kept at ${wt}`)
     if (refusal) return { info: { ...info, status: 'conflict', changedFiles }, message: refusal.message }
     const branchRefusal = await ensureMainBranch(root, opts.mainBranch)
@@ -791,20 +815,31 @@ export async function integrateWorktree(
   })
 }
 
-/** integrateWorktree's merge step; the caller holds the target's lock. Merges the commit `sha`, never the branch name. */
+/** A merge prints a diffstat of every file it touches. */
+const MERGE_OUTPUT = { maxBuffer: 8 * 1024 * 1024 }
+
+/**
+ * integrateWorktree's merge step; the caller holds the target's lock. Merges the commit `sha`, never the branch name.
+ * Every git call here, and the removal and branch deletion after it, goes through the guarded runner (gitGuarded): no hooks
+ * (core.hooksPath off), no fsmonitor, no pager or ssh program. A test command (repository code, run as the user) may have
+ * changed the shared git dir's config or hooks before this runs; the overrides on the command line win over the file.
+ * Not closed by them: a merge driver (merge.<name>.driver) the config already named, a clean filter, a program the user's
+ * own system or global config names. The caller checks the repository's config and hooks did not change while the tests
+ * ran (rootPin.ts); what was there before is the user's own.
+ */
 async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string, changedFiles: string[], sha: string): Promise<IntegrateResult> {
   const wt = info.path
   const mergeArgs = ['merge', '--no-ff', '--no-edit', '-m', `Merge ${info.branch}: ${commitMessage}`, sha]
-  let merge = await git(root, mergeArgs)
+  let merge = await gitGuarded(root, mergeArgs, MERGE_OUTPUT)
   if (!merge.ok && IDENTITY_ERROR.test(merge.err)) {
     // No git identity (fresh CI runner, new machine): undo any half-made merge and retry with OrgAI's, as commits do.
-    await git(root, ['merge', '--abort'])
-    merge = await git(root, [...FALLBACK_IDENTITY, ...mergeArgs])
+    await gitGuarded(root, ['merge', '--abort'])
+    merge = await gitGuarded(root, [...FALLBACK_IDENTITY, ...mergeArgs], MERGE_OUTPUT)
   }
   if (!merge.ok) {
-    const conflicts = await git(root, ['diff', '--name-only', '--diff-filter=U'])
+    const conflicts = await gitGuarded(root, ['diff', '--no-ext-diff', '--name-only', '--diff-filter=U'])
     const conflictFiles = conflicts.ok ? conflicts.out.split(/\r?\n/).filter(Boolean) : []
-    await git(root, ['merge', '--abort'])
+    await gitGuarded(root, ['merge', '--abort'])
     const reason = conflictFiles.length ? `conflicts in ${conflictFiles.join(', ')}` : merge.err.slice(0, 300)
     // Team files changed in the main checkout and not committed: git refuses a merge that would overwrite them.
     const teamBlock = !conflictFiles.length && /\.orgai\//.test(merge.err) ? ' Uncommitted team files in .orgai block this merge; commit them and integrate again.' : ''
@@ -816,7 +851,7 @@ async function mergeInto(root: string, info: WorktreeInfo, commitMessage: string
 
   const into = await targetName(root)
   await removeWorktree(root, wt)
-  await git(root, ['branch', '-d', info.branch])
+  await gitGuarded(root, ['branch', '-d', info.branch])
   return {
     info: { ...info, status: 'merged', changedFiles },
     message: `Merged ${info.branch} into ${into} (${changedFiles.length} file${changedFiles.length === 1 ? '' : 's'}: ${changedFiles.slice(0, 12).join(', ')}${changedFiles.length > 12 ? ', …' : ''}).`
@@ -854,12 +889,12 @@ export async function diffWorktree(root: string, branch: string, ref: string = b
  * subcommand, and (when `root` has a plain `.git` directory) the pinned read-only environment of readOnlyGitEnv, which
  * allows no transport and no lazy fetch. Branch deletion talks to no remote and runs no hook; this is defence in depth.
  */
-function gitGuarded(root: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+export function gitGuarded(root: string, args: string[], opts: { maxBuffer?: number } = {}): Promise<{ ok: boolean; out: string; err: string }> {
   const bin = gitExecutable()
   if (!bin) return Promise.resolve({ ok: false, out: '', err: 'git was not found on PATH.' })
   const env = hasPlainGitDir(root) ? readOnlyGitEnv(root) : scrubControlEnv(process.env)
   return new Promise((resolve) => {
-    const child = execFile(bin, ['--no-pager', ...HOSTILE_CONFIG_OVERRIDES, ...args], { cwd: root, env, windowsHide: true, timeout: 60_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile(bin, ['--no-pager', ...HOSTILE_CONFIG_OVERRIDES, ...args], { cwd: root, env, windowsHide: true, timeout: 60_000, maxBuffer: opts.maxBuffer ?? 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, out: String(stdout).trim(), err: String(stderr ?? error?.message ?? '').trim() })
     })
     trackChildProcess(child, 'git')

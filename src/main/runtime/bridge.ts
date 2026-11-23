@@ -56,7 +56,17 @@ export interface BridgedSessionsDeps {
   agents: () => AgentInstance[]
   connectionName: (id: ConnectionId) => string
   log?: { info(m: string): void; warn(m: string): void }
+  /**
+   * The run's spending cap as RunManager enforces it now, read live: the limit (the per-run cap, else the project's, an exec or
+   * conversation budget less what its chain already spent) and what the whole run has spent, known costs only, bridged agents
+   * included. Missing (or returning undefined) = the run has no cap. A bridged child is only started with something left and
+   * its own session cap is what is left of the limit, never a full copy.
+   */
+  budget?: () => { limitUsd: number; spentUsd: number } | undefined
 }
+
+/** A positive stand-in for "nothing left" as a child's session cap: Project.maxBudgetUsd <= 0 reads as "no cap" everywhere. */
+export const BRIDGE_NO_BUDGET_LEFT_USD = 1e-6
 
 /** Key of a RunConnection in BridgedSessionsDeps.connections. */
 export const bridgeKey = (connection: ConnectionId, adapter: ProviderId): string => `${connection}|${adapter}`
@@ -82,6 +92,8 @@ interface Child {
   startMode?: PermissionMode
   /** The child's adapter applied an "accept edits" grant to the child session (its own acceptEditsGranted hook). */
   acceptEditsGranted?: true
+  /** The child's adapter's reader of its approved-but-not-started spawns (RuntimeContext.spawnCapPending). */
+  pending?: () => readonly (string | undefined)[]
 }
 
 const slim = (a: AgentInstance): Pick<AgentInstance, 'id' | 'state' | 'roleId'> => ({ id: a.id, state: a.state, roleId: a.roleId })
@@ -184,6 +196,8 @@ export function cutResult(text: string, max = BRIDGE_RESULT_MAX_CHARS): string {
 
 export class BridgedSessions {
   private children = new Map<string, Child>()
+  /** The run's own adapter's reader of its approved-but-not-started spawns (spawnCapPending on the run's context). */
+  private rootPending?: () => readonly (string | undefined)[]
 
   constructor(private deps: BridgedSessionsDeps) {}
 
@@ -212,6 +226,48 @@ export class BridgedSessions {
     return this.activeCount() > 0
   }
 
+  /** The run's own adapter hands over how it lists its approved-but-not-started spawns (the run context's spawnCapPending). */
+  registerRootPending(read: () => readonly (string | undefined)[]): void {
+    this.rootPending = read
+  }
+
+  private readPending(fn: (() => readonly (string | undefined)[]) | undefined): (string | undefined)[] {
+    try {
+      return fn ? [...fn()] : []
+    } catch {
+      // a reader that fails shows nothing
+      return []
+    }
+  }
+
+  /**
+   * Spawns approved but not started yet in the sessions other than `forChildId`'s own: the run's own session seen from a child
+   * (never when `forChildId` is undefined: the run's adapter counts its own list itself) and every live child's seen from
+   * anywhere else.
+   */
+  private pendingOthers(forChildId?: string): (string | undefined)[] {
+    const out: (string | undefined)[] = forChildId !== undefined ? this.readPending(this.rootPending) : []
+    for (const c of this.children.values()) if (!c.done && c.agentId !== forChildId) out.push(...this.readPending(c.pending))
+    return out
+  }
+
+  /** What the whole run has left under its cap, or undefined without a cap. */
+  private budgetLeft(): number | undefined {
+    const b = this.deps.budget?.()
+    return b ? b.limitUsd - b.spentUsd : undefined
+  }
+
+  /** The known cost of this child's agents in the run's record (priced by RunManager). */
+  private childSpentUsd(child: Child): number {
+    const mine = new Set(child.agents.keys())
+    let usd = 0
+    for (const a of this.deps.agents()) {
+      const c = mine.has(a.id) ? a.usage?.costUsd : undefined
+      if (typeof c === 'number' && Number.isFinite(c) && c > 0) usd += c
+    }
+    return usd
+  }
+
   /** The bridged roles as RuntimeContext.bridge.roles() lists them (roles that no longer exist in the chart are skipped). */
   roles(): BridgedRole[] {
     const roles = this.deps.parent().roles
@@ -236,7 +292,10 @@ export class BridgedSessions {
     const forChild = forChildId === undefined ? undefined : this.children.get(forChildId)
     const bridged = new Map<string, Child>()
     for (const c of this.children.values()) for (const id of c.agents.keys()) bridged.set(id, c)
-    if (!forChild) return [...bridged.keys()].map((id) => slim(bridged.get(id)!.agents.get(id)!))
+    // Approved-but-not-started spawns of the other sessions count as agents about to exist (ids that cannot meet a real one).
+    const pendingEntries = (): Pick<AgentInstance, 'id' | 'state' | 'roleId'>[] =>
+      this.pendingOthers(forChildId).map((roleId, i) => ({ id: `pending:${i}`, state: 'thinking' as const, roleId: roleId ?? null }))
+    if (!forChild) return [...[...bridged.keys()].map((id) => slim(bridged.get(id)!.agents.get(id)!)), ...pendingEntries()]
     const out: Pick<AgentInstance, 'id' | 'state' | 'roleId'>[] = []
     for (const a of this.deps.agents()) {
       if (a.id === ROOT_AGENT_ID || bridged.has(a.id)) continue
@@ -246,6 +305,7 @@ export class BridgedSessions {
       if (c === forChild && id !== forChild.agentId) continue
       out.push(slim(c.agents.get(id)!))
     }
+    out.push(...pendingEntries())
     return out
   }
 
@@ -308,9 +368,15 @@ export class BridgedSessions {
     // the parent context. A child this class started that the record does not show yet counts as pending, so parallel
     // delegate calls cannot all pass under a cap.
     const known = new Set(agents.map((a) => a.id))
-    const pending = [...this.children.values()].filter((c) => !c.done && !known.has(c.agentId)).map((c) => c.role.id)
+    const pending: (string | undefined)[] = [...this.children.values()].filter((c) => !c.done && !known.has(c.agentId)).map((c) => c.role.id)
+    // Spawns the run's own adapter (or a live child) approved that have no agent yet count too (spawnCapPending): a delegation
+    // in that window cannot pass maxAgentsPerRun or Role.maxConcurrent.
+    pending.push(...this.readPending(this.rootPending), ...this.pendingOthers(undefined))
     const capped = spawnCapRefusal({ project: parent.project, roles: parent.roles, roleId: role.id, agents, pending })
     if (capped) throw new Error(capped)
+    // The run's spending cap: with nothing left nothing starts (the known cost of every agent of the run, bridged ones included).
+    const left = this.budgetLeft()
+    if (left !== undefined && left <= 0) throw new Error(`This run has used all of its spending limit, so ${role.name} was not started. Do the remaining work yourself, or tell the user the limit was reached.`)
 
     const namer = new HandleNamer()
     const taken = new Set<string>()
@@ -429,7 +495,20 @@ export class BridgedSessions {
     const ids = new Set([role.id, ...reachable.keys()])
     const copy = (r: Role, root: boolean): Role => {
       const spawnable = noSpawn ? [] : r.spawnable.filter((id) => ids.has(id))
-      return { ...r, spawnable, canSpawn: r.canSpawn && spawnable.length > 0, reportsTo: root ? null : r.reportsTo && ids.has(r.reportsTo) ? r.reportsTo : role.id }
+      const out: Role = { ...r, spawnable, canSpawn: r.canSpawn && spawnable.length > 0, reportsTo: root ? null : r.reportsTo && ids.has(r.reportsTo) ? r.reportsTo : role.id }
+      // Role.maxConcurrent is read live from the run's chart at every spawn check, like Project.maxAgentsPerRun (a user can
+      // lower, add or remove it mid-run); a role the chart no longer has keeps the value it started with. Never spread
+      // these copies once and keep the result: the getter would freeze.
+      const snapshot = r.maxConcurrent
+      Object.defineProperty(out, 'maxConcurrent', {
+        enumerable: true,
+        configurable: true,
+        get: (): number | undefined => {
+          const now = this.deps.parent().roles.find((x) => x.id === r.id)
+          return now ? now.maxConcurrent : snapshot
+        }
+      })
+      return out
     }
     return [copy(role, true), ...[...reachable.values()].map((r) => copy(r, false))]
   }
@@ -458,6 +537,21 @@ export class BridgedSessions {
     // The total cap is the run's own, read live (the user can change it mid-run); the child's adapter counts the rest of the
     // run through spawnCapAgents below.
     Object.defineProperty(project, 'maxAgentsPerRun', { enumerable: true, configurable: true, get: () => parentNow().project.maxAgentsPerRun })
+    // The run's spending cap is shared, not copied: this child's own session cap is what is left of it (the child's own known
+    // spend plus whatever the rest of the run has not spent), read live at every query it builds or restarts. The run's total
+    // stays RunManager's to enforce on every agent update (checkSpend); this only keeps a Claude child's SDK stop near it.
+    if (this.deps.budget) {
+      Object.defineProperty(project, 'maxBudgetUsd', {
+        enumerable: true,
+        configurable: true,
+        get: (): number | undefined => {
+          const b = this.deps.budget?.()
+          if (!b) return undefined
+          const room = b.limitUsd - (b.spentUsd - this.childSpentUsd(child))
+          return room > 0 ? room : BRIDGE_NO_BUDGET_LEFT_USD
+        }
+      })
+    }
     // The child session keeps this mode for its life (its project is a snapshot): see liveWiderThan.
     child.startMode = project.permissionMode
     // The adapters read ctx.project.permissionMode on every check (their plan / dontAsk "accept edits" drop included), so
@@ -485,6 +579,9 @@ export class BridgedSessions {
       maxAutoContinues: 0,
       bridgedChild: { agentId: child.agentId, parentAgentId: child.parentAgentId, roleId: child.role.id },
       spawnCapAgents: () => this.spawnCapAgents(child.agentId),
+      spawnCapPending: (read) => {
+        child.pending = read
+      },
       // The child's own "accept edits" grant moves only the child session: recorded here, never forwarded to the parent.
       acceptEditsGranted: () => {
         child.acceptEditsGranted = true

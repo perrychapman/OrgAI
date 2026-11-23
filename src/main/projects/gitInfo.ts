@@ -123,7 +123,7 @@ async function detectDefault(bin: string, root: string, local: LocalBranch[], cu
  *   a scope this code does not know counts as the repository's.
  * A failure to ask (including a git too old for --show-scope) counts as "has one" (fail closed).
  */
-async function hasRepoFilterDriver(bin: string, root: string): Promise<boolean> {
+export async function hasRepoFilterDriver(bin: string, root: string): Promise<boolean> {
   try {
     if (existsSync(join(root, '.git', 'config.worktree'))) return true
   } catch {

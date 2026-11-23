@@ -979,8 +979,8 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
   `DESKTOP_CHANNEL_MUTATES` (`ipc.ts`). A channel missing from the map, or registered through the wrong helper, fails
   `overhaulIpc.test.ts`. None is on the dispatcher, so socket / CLI / agents cannot reach them.
 - **Holds** (`runHold.ts`, `runHold.test.ts`): six kinds; `actions` recomputed on each read; the `provider` hold's reason
-  is fixed OrgAI text. Codex reads no budget, so a Codex run with only the project cap gets no `budget` hold.
-  RunManager owns `run.hold`, `run.spendWarning` and `provider.retry` (an adapter's copy is dropped or rebuilt). Provider
+  is fixed OrgAI text. Codex reads no budget, but main enforces the project cap (see "Project budget cap in main"), so a Codex
+  run under only a project cap gets a `budget` hold. RunManager owns `run.hold`, `run.spendWarning` and `provider.retry` (an adapter's copy is dropped or rebuilt). Provider
   retries: Claude maps `api_retry` (`claudeProviderRetry.test.ts`), Codex `error` with `willRetry` (no delay known;
   `codex.test.ts`), the mock `[mock:provider-retry]` (`mockProviderRetry.test.ts`).
 - **Add budget / retry / skip review / message / stop / retryAgent:** `addBudget` only on an ended run held on `budget`;
@@ -1000,19 +1000,39 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
   `Project.maxAgentsPerRun`, read live, approved but unstarted spawns count. `RuntimeContext.spawnCapAgents()` (RunManager from
   `BridgedSessions`, live) lists the run's agents the session's adapter does not hold (bridged children for the run session;
   native agents, other children and its own root for a child, ids prefixed `run:`) and adapters pass it as `extraAgents`; a
-  bridged child holds the whole cap, not a start-time snapshot. Known gaps: a native spawn approved but not started is not
-  visible to a bridged delegation in that window; the count is per session, so a continuation starts a fresh one.
+  bridged child holds the whole cap, not a start-time snapshot, and a child's `Role.maxConcurrent` is a live getter on its
+  role copies (never spread a child's role or project once and keep the copy: the getter would freeze; a test scans the
+  adapters for it). A native spawn an adapter has approved but not started is visible to a bridged delegation:
+  `RuntimeContext.spawnCapPending(read)` (Claude registers `spawnModes` at construction; RunManager gives it to the bridge, the
+  bridge to each child) feeds the bridge's own check and shows as `pending:` entries in `spawnCapAgents`. Known gap: the count
+  is per session, so a continuation starts a fresh one.
 - **Project budget cap in main:** `checkSpend`'s own cap is `runBudgetUsd`, else `Project.maxBudgetUsd` as the run sees it, on
   every adapter (a project cap alone used to stop only Claude, through the SDK). Unknown or partly unknown price under a cap
-  stops the run (known part on the hold). For a Claude run the project-cap fallback compares only the adapter's reported run
-  total, so the SDK's own stop is never preempted and both stops make one hold (`spendStopped`). Conversation budgets and exec
-  runs stay on `checkExecBudget`. `runManager.projectCap.test.ts`; live providers unverified.
+  stops the run (known part on the hold). Both stops make one hold (`spendStopped`). What is compared (`spendOf`): the run's
+  best known cost; with bridged agents also the parent session's best cost plus the bridged agents' known cost (a parent's
+  provider total never covers them, on any adapter), and a bridged agent with no known price counts as unknown. A first-party
+  Anthropic Claude run under the project's cap compares the SDK's own total (plus bridged agents), so main does not stop it
+  before the SDK would, except: the SDK has reported no total yet or 0 while tokens were used (main's estimate decides), or
+  main's estimate reaches `SDK_BACKSTOP_RATIO` (1.5) times the cap (then the SDK's total or the price table is wrong, and the
+  run holds). A proxy connection, and a per-run cap the user chose, always compare the best known cost. A bridged child's own
+  session cap is what is left of the run's cap, read live (`BridgedSessionsDeps.budget`: its own spend plus what the rest
+  of the run has not spent; `BRIDGE_NO_BUDGET_LEFT_USD` when nothing is left, since 0 would read as no cap), and no child
+  starts once the run's cap is used. With bridged agents on the run's own connection (a proxy serving two families) the
+  adapter's total is not used for `RunUsage` (`bridgedAgentIds`), so the day / month caps see the children. Conversation
+  budgets and exec runs stay on `checkExecBudget`. `runManager.projectCap.test.ts`, `runManager.capBridged.test.ts`,
+  `bridgeSpawnCaps.test.ts`; live providers unverified.
 - **Test gate** (`testGate.ts`, `testGate.test.ts`, `integration.test.ts`): the user's command runs in the finished copy
   before the merge; allowlisted environment with secret-looking and cloud variables scrubbed; stdin closed; 10 minutes then
   the tree is killed; the last 4,000 characters kept and scrubbed, shown only in the run log and the maintenance result. The
   gate records `branchTip`, merges that commit and refuses if the branch moved; with merge review on the user is asked again
   once about a new tip. A failure is `conflict` with `refused: 'tests'`. `requireTestsPass` with an empty command refuses the
-  merge. An agent that runs `git merge` itself is not blocked (open Low).
+  merge. An agent that runs `git merge` itself is not blocked (open Low). The command can also reach the checkout the merge
+  lands in through the shared git folder, so `rootPin.ts` reads that checkout before and after it (HEAD and branch, the index,
+  tracked working-tree changes, `config`, `config.worktree`, `info/attributes`, the hooks folder) and again under the repository
+  lock right before the merge (`GateDecision.verify`); a change refuses the merge and keeps the copy. The merge, its abort, the
+  conflict list, the worktree removal, the `branch -d` and the `mainBranch` switch run through `gitGuarded` (hostile-config
+  overrides, hooks off). `integration.rootPin.test.ts` (real git, real gate); exact list of what is and is not pinned in
+  `docs/design/ui-overhaul/impl-runtime.md`.
 - **mainBranch / retention:** merges land on `mainBranch` when it exists (the checkout is switched only when tracked files are
   clean; the branch is never created). `keepFailedBranchesDays` is a desktop-host boot sweep over old conflict / removed /
   errored copies of stored runs, never while a run of the project is live and never one with uncommitted work.
@@ -1022,11 +1042,12 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
   its tests calls it, so no live run applies the pattern (checked by grep; Claude's SDK names its worktree branches).
 - **Who may set the fields** (`host/projectSaveGuard.ts`, `projectSaveGuard.test.ts`; `teamFiles/overhaulBoundary.test.ts`,
   `setup/settingsProposalBoundary.test.ts`): a non-desktop save can only narrow; `settings:set` from those surfaces cannot
-  change `openAtLogin`, `closeBehavior`, `keepAwakeDuringRuns` or `spendWarnPercent`.
+  change `openAtLogin`, `closeBehavior`, `keepAwakeDuringRuns` or `spendWarnPercent`, and cannot raise or remove
+  `Project.maxBudgetUsd`, nor raise an explicit `maxSubagentDepth` / `maxConcurrentSubagents` (nor clear one when automatic
+  would allow more).
 - **askBeforeStrongerModel** (`staffing.ts`, used by the Claude, Codex and mock spawn paths): asks "Use a stronger model for
-  <role>?"; only "Use it" keeps the stronger tier; the Claude hook wait ends after 580 s with keep and the question then
-  stays pending (Codex and the mock have no timeout). Today it fires only on a retry escalation because `resolveStaffing`
-  clamps to the role's tier.
+  <role>?"; only "Use it" keeps the stronger tier; the wait ends after 580 s on all three adapters with the role's own tier
+  and the card is cancelled. Today it fires only on a retry escalation because `resolveStaffing` clamps to the role's tier.
 - **Knowledge write:** a role with `knowledgeWrite: false` is refused `upsert_node`, `link` and `retire` at call time (the
   tool stays listed); an unresolved caller fails closed.
 - **App behaviour** (`appBehaviour.ts`, `appBehaviour.test.ts`), **About** (`about.ts`, `about.test.ts`): see ARCHITECTURE.md
@@ -1035,3 +1056,31 @@ packaged login item, the power blocker, the POSIX shell and process-group kill o
   activity lease; a `mainBranch` switch is not named in the merge message; a loose `branchNamePattern` can make a user's
   branch count as a report branch for delete. **Needs owner decision, not built:** update auto-download (the updater never
   downloads on its own, `docs/agent-notes/updates.md`), undo merge, locale, `schedulesNearPlanLimit` behaviour.
+
+### Behaviour changes for existing users
+
+Stated plainly; the same list is in `docs/design/ui-overhaul/impl-runtime.md`.
+
+- A run under any cap stops when part of its cost has no known price or is unknown (a per-run cap the user chose, the
+  project's budget, and Claude runs included). Before, that spend counted as $0 and the cap never fired.
+- A project budget (`maxBudgetUsd`) now holds Codex runs and any adapter whose SDK does not enforce one; a Codex run that only
+  produced a warning before now stops, and can be continued from the hold card with more budget.
+- A first-party Claude run under the project budget is also stopped when main's own estimate is the only figure there is (the
+  SDK has reported no total yet, or 0) or when it reaches 1.5 times the cap while the SDK's total is lower. A bridged report
+  on another connection or adapter counts against the cap on every adapter, and its own session cap is what is left of the run's.
+- `runs:switchModel` refuses a model with no known price under any cap (daily, monthly, the project's budget or a per-run cap),
+  for a live switch and a saved selection alike.
+- A stronger-model question nobody answers within 580 s keeps the role's own tier (a run line says so) and the card goes away.
+- The test command's environment is an allowlist (`testGate.ts`): scripts that need other variables (cloud credentials, tokens,
+  anything not on the list) fail. The run log shows it: the line "<agent>: test output (end):" after "Not merged: the tests
+  failed" carries the tail of the output, where a missing variable usually appears as an unset or authorization error.
+- The test command can no longer change the checkout a merge lands in and still have that merge: if HEAD, the branch, the index,
+  tracked files, `.git/config`, `info/attributes` or the hooks folder of the target changed while it ran, the merge is
+  refused and the copy kept, with the reason in the run log. OrgAI's merge, branch switch and cleanup run with git hooks off
+  (a repository's `commit-msg`, `post-merge` and similar hooks do not run for OrgAI's merges).
+- The git summary shows no working-tree status (`dirtyFiles` 0) on a repository that defines its own filter drivers.
+- Saves from the socket and the CLI (`orgai projects set`, `orgai org`, the TUI settings) cannot raise or remove
+  `maxBudgetUsd`, and cannot raise an explicit `maxSubagentDepth` / `maxConcurrentSubagents` (nor clear one when automatic would
+  allow more). They can still set a budget where there was none and lower one; `orgai projects set --max-budget none` or a
+  higher figure fails with "These project settings can be changed in the OrgAI window only: maxBudgetUsd." The desktop window is
+  unchanged.

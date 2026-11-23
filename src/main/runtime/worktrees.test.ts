@@ -259,11 +259,15 @@ describe('integrateWorktree', () => {
     git(root, 'config --unset user.name')
     git(root, 'config --unset user.email')
     git(root, 'config user.useConfigOnly true')
-    const keys = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL']
+    // The merge runs through the guarded git runner, whose environment drops every inherited GIT_* variable (so GIT_CONFIG_GLOBAL
+    // no longer hides a machine's global identity): the user's home is emptied as well, which is where git finds it.
+    const keys = ['GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL', 'HOME', 'USERPROFILE', 'XDG_CONFIG_HOME']
     const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]))
     for (const k of keys) delete process.env[k]
     process.env.GIT_CONFIG_GLOBAL = join(root, 'no-global-gitconfig')
     process.env.GIT_CONFIG_NOSYSTEM = '1'
+    mkdirSync(join(root, 'no-home'), { recursive: true })
+    process.env.HOME = process.env.USERPROFILE = process.env.XDG_CONFIG_HOME = join(root, 'no-home')
     try {
       const res = await integrateWorktree(root, { ...wt, status: 'merging' }, 'Implementer: no identity')
       expect(res.info.status, res.message).toBe('merged')
