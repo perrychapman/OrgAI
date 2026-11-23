@@ -1,7 +1,7 @@
 import type { ReactElement } from 'react'
 import { useEffect, useState } from 'react'
 import type { Project } from '@shared/types'
-import { formatUsd } from '../../lib/cost'
+import { formatUsdCompact } from '../../lib/cost'
 import { defaultUsageFilters } from '../../lib/usageOverview'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui/Button'
@@ -58,8 +58,8 @@ export function MonthSpend({ project }: { project: Project }): ReactElement {
       title = `Nothing spent in ${month} yet`
       line = 'No runs in this project this month.'
     } else {
-      const cost = spend.costUsd === null ? 'Cost unknown' : `${spend.partial ? 'At least ' : ''}${formatUsd(spend.costUsd)}`
-      title = `${cost} in ${month}`
+      const cost = spend.costUsd === null ? 'unknown' : `${spend.partial ? 'at least ' : ''}${formatUsdCompact(spend.costUsd)}`
+      title = `Spent in ${month}: ${cost}`
       line = `${spend.runs} ${spend.runs === 1 ? 'run' : 'runs'} so far${spend.unknownRuns > 0 ? `, ${spend.unknownRuns} without a known price` : ''}.`
     }
   }
@@ -69,7 +69,7 @@ export function MonthSpend({ project }: { project: Project }): ReactElement {
         <div className="month-spend-text">
           <div className="month-spend-title">{title}</div>
           {line && <div className="month-spend-line">{line}</div>}
-          {project.maxBudgetUsd !== undefined && <div className="month-spend-line">Each run stops at {formatUsd(project.maxBudgetUsd)}.</div>}
+          {project.maxBudgetUsd !== undefined && <div className="month-spend-line">Each run stops at {formatUsdCompact(project.maxBudgetUsd)}.</div>}
         </div>
         <Button size="sm" testId="limits-see-usage" onClick={open}>
           See where it went

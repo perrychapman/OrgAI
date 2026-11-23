@@ -688,6 +688,59 @@
   flex-direction: column;
   gap: var(--space-5);
 }
+/* First use: serif lead, coral numbers, one step per row; the section fills the main column so no hole remains. */
+.eng-first-lead {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-serif);
+  font-size: var(--text-body);
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+.eng-first-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  counter-reset: eng-step;
+}
+.eng-first-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+  counter-increment: eng-step;
+}
+.eng-first-step::before {
+  content: counter(eng-step);
+  flex: none;
+  width: var(--space-6);
+  height: var(--space-6);
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--eng-soft);
+  color: var(--eng);
+  font-family: var(--font-serif);
+  font-weight: var(--weight-semibold);
+}
+.eng-first-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.eng-first-title {
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.eng-first-note {
+  font-size: var(--text-small);
+  line-height: var(--text-small-lh);
+  color: var(--text-secondary);
+}
 .eng-waiting {
   background: var(--warning-soft);
   border-color: color-mix(in srgb, var(--warning) 45%, transparent);
