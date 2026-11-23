@@ -722,6 +722,25 @@ try {
     check((await page.evaluate(() => window.orgai.settings.get())).notifyRunFinished === false, 'turning off "When a run finishes" is saved')
     await page.locator('[data-testid=notifyRunFinished-switch]').click()
     await sleep(700)
+
+    // Templates: the built-in charts are listed read-only; Duplicate makes an editable copy, which can be removed.
+    await page.getByRole('tab', { name: 'Templates', exact: true }).click()
+    const builtins = page.locator('[data-testid=template-builtin]')
+    await builtins.first().waitFor({ timeout: 10_000 }).catch(() => {})
+    check((await builtins.count()) >= 1, 'Templates lists the built-in charts', String(await builtins.count()))
+    if (await builtins.count()) {
+      await builtins.first().locator('.settings-gallery-pick').click()
+      const det = page.locator('[data-testid=template-detail]')
+      check((await det.locator('[data-testid=template-remove]').count()) === 0, 'a built-in template has no Remove')
+      const before = await page.locator('[data-testid=template-row]').count()
+      await det.locator('[data-testid=template-duplicate]').click()
+      await page.waitForFunction((n) => document.querySelectorAll('[data-testid=template-row]').length === n + 1, before, { timeout: 8000 }).catch(() => {})
+      check((await page.locator('[data-testid=template-row]').count()) === before + 1, 'Duplicate adds a saved template')
+      await page.locator('[data-testid=template-detail] [data-testid=template-remove]').click()
+      await page.getByRole('button', { name: 'Remove template', exact: true }).click()
+      await page.waitForFunction((n) => document.querySelectorAll('[data-testid=template-row]').length === n, before, { timeout: 8000 }).catch(() => {})
+      check((await page.locator('[data-testid=template-row]').count()) === before, 'the copy can be removed again')
+    }
   }
 
   // PROXIES_MAX: Add is inert with a reason.

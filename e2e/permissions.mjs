@@ -558,6 +558,27 @@ try {
       if (wasOn) await iso.click()
       await sleep(300)
     } else check(true, 'worktree isolation is not switchable here; the N10 check was skipped')
+    // Branches board rules (code projects): main branch list from git, tests gate and failed-branch retention save.
+    const rules = page.locator('[data-testid=branch-rules-section]')
+    if (await rules.count()) {
+      const mainSel = rules.getByRole('combobox', { name: 'Main branch', exact: true })
+      await page.waitForFunction(() => !document.querySelector('[data-testid=branch-rules-section] select')?.disabled, null, { timeout: 8000 }).catch(() => {})
+      const opts = await mainSel.locator('option').allTextContents()
+      check(opts.length >= 1 && /^Detected/.test(opts[0]), 'Main branch offers the detected default first', opts.join(' | '))
+      const tests = page.locator('[data-testid=require-tests-switch]')
+      const wasTests = (await tests.getAttribute('aria-checked')) === 'true'
+      await tests.click()
+      await sleep(700)
+      check((await findProject(page, NAME))?.requireTestsPass === !wasTests, 'Tests must pass saves to the project')
+      await tests.click()
+      await sleep(700)
+      const keep = rules.getByRole('combobox', { name: 'Keep branches of failed runs for', exact: true })
+      await keep.selectOption('7')
+      await sleep(700)
+      check((await findProject(page, NAME))?.keepFailedBranchesDays === 7, 'Keep branches of failed runs saves the days')
+      await keep.selectOption('')
+      await sleep(700)
+    } else check(true, 'not a code project here; the Branches rules check was skipped')
   }
 
   // N6: the Team tab reaches the Team assistant select in one click (Permissions > Advanced, select focused).
